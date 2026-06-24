@@ -1,0 +1,66 @@
+{
+  "_comment": "Template for the per-build memory layout the Cheat Engine discovery produces. Copy to layout.<sha256-prefix>.json and fill the FILL_ME fields as each Phase-0 step succeeds. Offsets shown are STARTING HINTS cribbed from the open Hexorg v1.3 table (RESEARCH_memory_reader.md appendix) and MUST be re-verified on the user's 1.19.x build - they will likely differ.",
+
+  "build": {
+    "exe_sha256": "FILL_ME (from: phase0.py info)",
+    "module": "hoi4.exe",
+    "version_string": "FILL_ME e.g. v1.19.1.0.b49d",
+    "note": "Reader MUST refuse to run unless the live exe sha256 matches one in this manifest (fail closed - no silent misreads)."
+  },
+
+  "date": {
+    "status": "Step 2",
+    "addr": "FILL_ME absolute, or use rip/sig below",
+    "type": "u32",
+    "kind": "FILL_ME prefer a monotonic num_days/tick counter over a Y/M/D field",
+    "note": "Daily trigger AND torn-read sentinel. Must tick exactly once per in-game day and be stable when paused.",
+    "anchor_sig": "FILL_ME optional AOB at a code site that loads this global",
+    "anchor_rip": { "disp": 3, "len": 7 }
+  },
+
+  "player_country_chain": {
+    "status": "Step 3",
+    "base": "FILL_ME absolute address of the pPlayer global",
+    "offsets": ["0x408", "0x90"],
+    "deref_base": true,
+    "note": "Resolves to the player's Country object base. Crib the current chain from the FearLess 1.19.1 table in CE."
+  },
+
+  "country_object": {
+    "status": "Step 3 (offsets within a Country object)",
+    "tag_offset": "0x10",
+    "id_offset": "0xC",
+    "mil_factory_offset": "FILL_ME (Step 3 - total vs free?)",
+    "civ_factory_offset": "FILL_ME",
+    "dockyard_offset": "FILL_ME",
+    "pp_offset": "0x9C", "pp_scale": 1000,
+    "stability_offset": "0x4E8", "stability_scale": 10,
+    "support_block": { "via": "0x18 -> 0xC", "dem": 0, "com": 4, "fas": 8, "non": 12, "scale": 1000 },
+    "xp": { "army": "0xE8", "navy": "0xF8", "air": "0x108", "scale": 32.768 },
+    "note": "Fixed-point: many scalars are stored x1000 / x10 / x32.768. Verify each against the UI."
+  },
+
+  "country_container": {
+    "status": "Step 4 - THE KEY UNLOCK",
+    "base": "FILL_ME global that holds the country array/manager",
+    "kind": "FILL_ME ptr_array | msvc_vector | id_indexed | handle_table | pool",
+    "begin_offset": "0x0",
+    "stride": "0x8",
+    "count": "FILL_ME (or end/cap offsets for an msvc vector triple)",
+    "note": "Found by searching for the 8-byte player Country* value and walking up to what points to it. 'All countries' may include dormant/releasable tags - filter to live tags by validity."
+  },
+
+  "division_example": {
+    "status": "Step 5 - division reachability probe",
+    "loc_addr_or_chain": "FILL_ME address/chain to ONE division's current province id",
+    "fields": { "owner": "FILL_ME", "org": "FILL_ME", "strength": "FILL_ME", "template": "FILL_ME" },
+    "note": "Must track the division's ACTUAL current province (not move-order destination / UI selection). This is the gate on the daily division time-lapse stretch goal."
+  },
+
+  "validators": {
+    "max_countries": 2000,
+    "max_divisions": 50000,
+    "province_id_max": 20000,
+    "note": "Hard sanity bounds; reads outside these => mark layout broken and stop publishing (RESEARCH section 3)."
+  }
+}
