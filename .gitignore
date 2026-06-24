@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+
+# generated dashboards
+dashboard/dashboard.html
+dashboard/offline_demo.html
+
+# OS / editor cruft
+Thumbs.db
+desktop.ini
+.DS_Store
+*.swp
