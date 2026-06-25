@@ -48,6 +48,12 @@ DOMAINS = (
     # PROXY/region-level live sidecars promoted to first-class fields (badged below)
     "naval_air",         # naval region control + air superiority (live, proxy/region)
     "supply",            # live supply proxy (where troops are; confidence-badged)
+    "weather",           # live per-region temperature + phenomenon (M; no save oracle)
+    # NEW WAVE-2 save deep domains (all save-sourced; folded under provenance.save)
+    "abilities",         # aces + commander cooldowns + officer corps (parse_abilities)
+    "projects",          # special-projects/facilities/scientists deep (parse_projects)
+    "market_extra",      # equipment-market price bands + subsidies (parse_market_extra)
+    "deployment",        # deploying-division conveyor + expeditionary (parse_deployment)
     # --- Tier-1 EXTRACT save domains (parse_supply/strategic/events/world/country_extra/
     #     players + divisions_full). All save-sourced (S); folded under provenance.save.
     "supply_logistics",  # supply_system_2 per-country logistics (nodes/trucks/lost_*)
@@ -175,6 +181,47 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.commanders.admirals": "S",
     "countries.*.commanders.advisors": "S",
     "countries.*.commanders.counts": "S/D",
+    # --- country.scalars (§3.13, derived; models/scalars.py). All D. ---
+    "countries.*.scalars.capitulation.cap_pct": "D",
+    "countries.*.scalars.capitulation.vp_lost_fraction": "D",
+    "countries.*.scalars.capitulation.surrender_threshold": "D",
+    "countries.*.scalars.capitulation.surrender_limit_modifier": "D",
+    "countries.*.scalars.research_speed.pct": "D",
+    "countries.*.scalars.research_speed.multiplier": "D",
+    "countries.*.scalars.research_speed.factor_total": "D",
+    "countries.*.scalars.special_forces.used_divisions": "D",
+    "countries.*.scalars.special_forces.cap": "D",
+    "countries.*.scalars.special_forces.special_forces_cap_modifier": "D",
+    # --- country.score (§3.14, derived victory-score ladder; models/victory_score) ---
+    "countries.*.score.army": "D",
+    "countries.*.score.navy": "D",
+    "countries.*.score.air": "D",
+    "countries.*.score.industry": "D",
+    "countries.*.score.territory": "D",
+    "countries.*.score.army_n": "D",
+    "countries.*.score.navy_n": "D",
+    "countries.*.score.air_n": "D",
+    "countries.*.score.industry_n": "D",
+    "countries.*.score.territory_n": "D",
+    "countries.*.score.overall": "D",
+    "countries.*.score.rank": "D",
+    # --- country.abilities (§3.15, from abilities.json). S, two capture tallies D. ---
+    "countries.*.abilities.aces": "S",
+    "countries.*.abilities.commander_cooldowns": "S",
+    "countries.*.abilities.officer_corps": "S",
+    "countries.*.abilities.officer_corps.captured_enemy_generals": "D",
+    "countries.*.abilities.officer_corps.own_generals_captured": "D",
+    # --- country.projects + scientists (§3.16, from projects.json). S, two joins D. ---
+    "countries.*.projects": "S",
+    "countries.*.projects.facilities.*.scientist_token": "D",
+    "countries.*.projects.active_projects.*.in_facility": "D",
+    "countries.*.scientists": "S",
+    # --- country.economy market-extra (§3.1, from market_extra.json). S. ---
+    "countries.*.economy.market_price_levels": "S",
+    "countries.*.economy.market_subsidies": "S",
+    # --- country.military deployment (§3.2, from deployment.json). S. ---
+    "countries.*.military.deployment_queue": "S",
+    "countries.*.military.reinforcement_priority": "S",
     # --- country.mios (§3.10, from designs.json) ---
     "countries.*.mios": "S",
     "countries.*.scheduled_variants": "S",
@@ -182,6 +229,12 @@ FIELD_SOURCES: Dict[str, str] = {
     # --- top-level designs (§11, from designs.json) ---
     "designs.division_templates": "S",
     "designs.equipment_variants": "S",
+    # derived design stats (WAVE-2; models/division_stats + models/equipment_stats).
+    # Single prefix entry covers every nested stat (source_of longest-prefix match).
+    "designs.template_stats": "D",            # {template_id: DivisionStats}
+    "designs.equipment_variant_stats": "D",   # {"id:type": VariantStats}
+    "designs.equipment_variant_stats.*.archetype": "S",  # echoed straight from variant
+    "designs.equipment_variant_stats.*.family": "S",
     # --- top-level order_of_battle (§12, from oob.json) ---
     "order_of_battle.army_groups": "S",
     "order_of_battle.armies": "S",
@@ -248,6 +301,10 @@ FIELD_SOURCES: Dict[str, str] = {
     "combats.*": "M*",
     # --- world-scoped trade contracts (§7b, from market.json) ---
     "diplomacy_world.trade_contracts": "S",
+    # world-scoped market-extra + deployment (WAVE-2). All S.
+    "diplomacy_world.market_price_levels": "S",   # per-contract price band
+    "diplomacy_world.market_requests": "S",        # pending request id list
+    "diplomacy_world.expeditionary": "S",          # owner->controller lent divisions
     # --- live region/proxy sidecars promoted to first-class fields (§13) ---
     # These are PROXY / region-level / confidence-badged LIVE reads, NOT
     # authoritative per-province/per-ship values. The source is M (live memory) but
@@ -256,6 +313,48 @@ FIELD_SOURCES: Dict[str, str] = {
     "naval_air.region_control": "M",
     "naval_air.air_superiority": "M",
     "supply.by_province": "M",
+    # MODEL air-superiority estimate (WAVE-2, models/air_superiority). Derived
+    # (planes x stat); the per-region percent is a W6 display estimate -> D.
+    "naval_air.air_superiority_model.*.by_owner.*.score": "D",
+    "naval_air.air_superiority_model.*.total_score": "D",
+    "naval_air.air_superiority_model.*.leader": "D",
+    "naval_air.air_superiority_model.*.percent": "D",
+    "naval_air.air_superiority_model_meta": "D",
+    # --- live weather domain (§19, WAVE-2). M live; phenom_name + rollup are D. ---
+    "weather.regions.*.temp_c": "M",          # SWeatherPerRegion+0x138 i64/1e5
+    "weather.regions.*.phenom": "M",          # +0x78 enum (already pinned)
+    "weather.regions.*.phenom_name": "D",     # derived from phenom via file-order map
+    "weather.regions.*.active": "M",          # +0x5D intensity flag
+    "weather.global_rollup": "D",             # rolled up from the M rows
+    # --- naval combat-side stats (§7c, WAVE-2, naval_combat_stats). Live M / M*. ---
+    "combats.naval.*.attacker.positioning": "M",       # validated live
+    "combats.naval.*.attacker.damage_map_size": "M",   # validated live
+    "combats.naval.*.attacker.damage_history": "M*",   # layout M; values W1 transient
+    "combats.naval.*.attacker.ships.*.state_bitmask": "M",
+    "combats.naval.*.attacker.ships.*.engagement_weight": "M",
+    "combats.naval.*.attacker.ships.*.damage_scalar": "M*",  # W1 tick-transient
+    "combats.naval.*.attacker.ships.*.hit_records": "M*",
+    "combats.naval.*.defender.positioning": "M",
+    "combats.naval.*.defender.damage_map_size": "M",
+    "combats.naval.*.defender.damage_history": "M*",
+    "combats.naval.*.defender.ships.*.state_bitmask": "M",
+    "combats.naval.*.defender.ships.*.engagement_weight": "M",
+    "combats.naval.*.defender.ships.*.damage_scalar": "M*",
+    "combats.naval.*.defender.ships.*.hit_records": "M*",
+    # --- derived-MODEL supply estimate (§20, WAVE-2, models/supply_number). D. ---
+    "models.supply_estimate.provinces.*.supply": "D",     # rows self-badge true tier
+    "models.supply_estimate.provinces.*.provenance": "D",
+    "models.supply_estimate.provinces.*.confidence": "D",
+    "models.supply_estimate.provinces.*.value_kind": "D",
+    "models.supply_estimate.states.*.estimated_supply": "D",
+    "models.supply_estimate.global_rollup": "D",
+    # --- pairwise intel ledger (§3.13b, WAVE-2, models/scalars). All D. ---
+    "intel_ledger.*.*.categories.civilian.confidence": "D",
+    "intel_ledger.*.*.categories.army.confidence": "D",
+    "intel_ledger.*.*.categories.navy.confidence": "D",
+    "intel_ledger.*.*.categories.airforce.confidence": "D",
+    "intel_ledger.*.*.cipher_progress": "D",
+    "intel_ledger.*.*.actively_decrypting": "D",
     # --- Tier-1 EXTRACT world-scoped save domains (§14-§18). All save-sourced (S). ---
     "strategic_air.air_bases": "S",
     "strategic_air.indices": "S",
@@ -388,6 +487,10 @@ class Economy:
     # supply_system_2 per-country logistics (from supply.json). null until ingested;
     # an obj when measured (incl. genuine 0/0.0 leaves the verifier confirmed exist).
     logistics: Optional[Dict[str, Any]] = None
+    # market_extra.json (WAVE-2) — equipment-market manual price bands + subsidies.
+    # null/empty until ingested; auto-price worlds leave price_levels empty (S).
+    market_price_levels: Optional[List[Dict[str, Any]]] = None
+    market_subsidies: Optional[List[Dict[str, Any]]] = None
 
 
 @dataclass
@@ -401,6 +504,10 @@ class Military:
     ships_by_hull: Optional[Dict[str, Any]] = None
     casualties: Dict[str, Any] = field(default_factory=_none_dict)
     command_power: Optional[float] = None
+    # deployment.json (WAVE-2) — the deploying-division conveyor + reinforcement
+    # priority. null until ingested; only countries with a non-default value (S).
+    deployment_queue: Optional[List[Dict[str, Any]]] = None
+    reinforcement_priority: Optional[int] = None
 
 
 @dataclass
@@ -479,6 +586,18 @@ class Intel:
 
 
 @dataclass
+class Scalars:
+    """Derived per-country scalar cluster (§3.13, from models/scalars.py). All D.
+
+    Every value nullable; ``None`` == not computed / input absent (never a guessed 0).
+    Each sub-dict carries its own ``is_estimate`` / ``is_proxy`` honesty flags.
+    """
+    capitulation: Optional[Dict[str, Any]] = None
+    research_speed: Optional[Dict[str, Any]] = None
+    special_forces: Optional[Dict[str, Any]] = None
+
+
+@dataclass
 class Commanders:
     """Country leader + military leaders + advisors (from characters.json, §3.9)."""
     leader: Optional[Dict[str, Any]] = None             # active country leader (ruling party)
@@ -502,6 +621,12 @@ class Country:
     diplomacy: Dict[str, Any] = field(default_factory=lambda: asdict(Diplomacy()))
     intel: Dict[str, Any] = field(default_factory=lambda: asdict(Intel()))
     commanders: Dict[str, Any] = field(default_factory=lambda: asdict(Commanders()))
+    # derived scalar cluster (§3.13, models/scalars.py). Always present; each
+    # sub-field null until computed (no fabrication). All D-source.
+    scalars: Dict[str, Any] = field(default_factory=lambda: asdict(Scalars()))
+    # derived victory-score ladder block (§3.14, models/victory_score.py). null until
+    # computed; the per-country CountryScore.as_dict() shape. All D-source.
+    score: Optional[Dict[str, Any]] = None
     # designs.json per-country military-industrial picture (§3.10)
     mios: List[Dict[str, Any]] = field(default_factory=list)
     scheduled_variants: List[Dict[str, Any]] = field(default_factory=list)
@@ -513,6 +638,14 @@ class Country:
     # players.json — human player's lobby/persona display name (NOT a Steam id).
     # Populates in MP only; null for AI and for SP/missing players (§3.12).
     human_name: Optional[str] = None
+    # abilities.json (WAVE-2) — aces + commander cooldowns + officer corps (§3.15).
+    # null until ingested; the deep ace/cooldown/officer-corps reach (S, two D tallies).
+    abilities: Optional[Dict[str, Any]] = None
+    # projects.json (WAVE-2) — special-projects / facilities / breakthrough deep reach
+    # (§3.16). null until ingested. All S except two cross-ref join fields (D).
+    projects: Optional[Dict[str, Any]] = None
+    # projects.json scientists roster for this TAG (§3.16). null until ingested (S).
+    scientists: Optional[List[Dict[str, Any]]] = None
 
 
 @dataclass
@@ -601,6 +734,11 @@ class Combat:
     terrain: Optional[str] = None
     progress: Optional[float] = None
     modifiers: Optional[Dict[str, Any]] = None
+    # NAVAL combat-side damage/stat rows (WAVE-2, memory_reader/combat/
+    # naval_combat_stats). null unless this is a naval combat with a live per-side
+    # read. {attacker:{...}, defender:{...}}; positioning/state/weight are M
+    # (validated live), damage_history/scalar/hit_records are M* (W1 tick-transient).
+    naval_stats: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -624,6 +762,41 @@ class Designs:
     """
     division_templates: List[Dict[str, Any]] = field(default_factory=list)
     equipment_variants: Dict[str, Any] = field(default_factory=_none_dict)
+    # NEW (WAVE-2, DERIVED) — never from the save. None until the model runs.
+    # template_stats: {str(template_id): DivisionStats.as_dict()} (models/division_stats)
+    template_stats: Optional[Dict[str, Any]] = None
+    template_stats_source: Optional[str] = None        # "D" when populated, else None
+    # equipment_variant_stats: {"id:type": VariantStats.as_dict()} (models/equipment_stats)
+    equipment_variant_stats: Optional[Dict[str, Any]] = None
+    equipment_variant_stats_source: Optional[str] = None  # "D" when populated, else None
+
+
+@dataclass
+class WeatherRegion:
+    """One strategic-region weather row (§19, live). M = process memory.
+
+    ``temp_c`` is the realized region-aggregate temperature (None when raw==0, i.e.
+    not realized this tick — NOT a literal 0 C). ``phenom`` is the +0x78 phenomenon
+    enum; ``phenom_name`` its file-order label (D, derived). Always source-badged.
+    """
+    region_id: Optional[int] = None
+    phenom: Optional[int] = None
+    phenom_name: Optional[str] = None
+    temp_c: Optional[float] = None
+    active: Optional[bool] = None
+
+
+@dataclass
+class Weather:
+    """Live weather domain (§19, from weather_temp_model + weather_state_reader).
+
+    NEW first-class domain. There is NO save oracle for weather (never persisted),
+    so every row is live-memory (M) except ``phenom_name`` + the rollup (D). Always
+    present; ``regions`` null until a live read folds it. ``source`` self-badges.
+    """
+    regions: Optional[Dict[str, Any]] = None   # {region_id(str): WeatherRegion dict}
+    global_rollup: Optional[Dict[str, Any]] = None
+    source: Optional[str] = None        # "M" when a live read filled it, else null
 
 
 @dataclass
@@ -641,6 +814,12 @@ class NavalAir:
     air_superiority: Optional[Dict[str, Any]] = None   # {region_id: record}
     source: Optional[str] = None        # "M" when a live read filled it, else null
     confidence: Optional[str] = None    # e.g. "region_proxy" (never "exact")
+    # MODEL estimate (WAVE-2, models/air_superiority): stat-weighted per-region
+    # contest. Distinct from the raw effective_planes proxy above. Each record
+    # self-badges source:"MODEL"; the percent is a W6 display estimate (D), never
+    # tagged exact. null until the model runs.
+    air_superiority_model: Optional[Dict[str, Any]] = None  # {region_id: record}
+    air_superiority_model_meta: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -656,6 +835,19 @@ class Supply:
     by_province: Optional[Dict[str, Any]] = None
     source: Optional[str] = None        # "M" when a live read filled it, else null
     confidence: Optional[str] = None    # e.g. "division_province_proxy"
+
+
+@dataclass
+class ModelsBlock:
+    """Derived-MODEL sidecar block (§20, from models/*). Provenance = derived.
+
+    NEW first-class container for confidence-badged compute layers that have no
+    single save/memory home. ``supply_estimate`` (models/supply_number) is the
+    priority-laddered per-province supply estimate: every row self-badges its tier
+    (solver/proxy/structural) so a consumer never reads a structural estimate as an
+    exact reading. null until the model runs. All D-tier (rows carry true per-tier S/M).
+    """
+    supply_estimate: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -791,6 +983,17 @@ EVENT_TYPES = (
     "nuke_count_changed", "ace_gained", "project_completed",
     # combat
     "combat_started", "combat_ended",
+    # --- WAVE-2 new events ---
+    # abilities.json (commander cooldowns + officer corps + ace lifecycle)
+    "ace_lost", "commander_cooldown_started", "commander_freed",
+    "general_captured", "general_freed", "officer_spirit_changed",
+    # projects.json (special projects / facilities / scientists)
+    "project_finished", "project_started", "facility_built", "facility_dismantled",
+    "scientist_specialization_up",
+    # market_extra.json + deployment.json
+    "unit_deployment_started", "unit_deployment_completed",
+    "expeditionary_force_sent", "expeditionary_force_recalled",
+    "market_subsidy_changed", "market_price_level_changed",
 )
 CONFIDENCE_LEVELS = ("exact", "interval", "inferred")
 EVENT_SOURCES = ("M", "M*", "S", "D", "marker")
@@ -877,6 +1080,14 @@ def empty_supply() -> Dict[str, Any]:
     return asdict(Supply())
 
 
+def empty_weather() -> Dict[str, Any]:
+    return asdict(Weather())
+
+
+def empty_models() -> Dict[str, Any]:
+    return asdict(ModelsBlock())
+
+
 def empty_strategic_air() -> Dict[str, Any]:
     return asdict(StrategicAir())
 
@@ -923,6 +1134,13 @@ def empty_snapshot(game_id: str, date: Optional[str] = None) -> Dict[str, Any]:
         # present; null-but-present until a live read folds them. Confidence-badged.
         "naval_air": empty_naval_air(),
         "supply": empty_supply(),
+        # live weather domain (§19, M). NEW first-class domain; no save oracle.
+        "weather": empty_weather(),
+        # derived-MODEL sidecar block (§20, D). Confidence-badged compute layers.
+        "models": empty_models(),
+        # pairwise intel ledger (§3.13b, observer->target, D). Always present;
+        # populated only for meaningful pairs (crypto/leak), never the full NxN matrix.
+        "intel_ledger": {},
         # Tier-1 EXTRACT save-side world domains (§14-§18). Always present;
         # null/empty-but-present until their parser feeds them. Save-sourced (S).
         "strategic_air": empty_strategic_air(),
@@ -950,6 +1168,8 @@ _TOP_CONTAINERS = {
     # Tier-1 EXTRACT world-scoped save domains (§14-§18)
     "strategic_air": dict, "strategic_operatives": dict, "raids": dict,
     "world_events": dict, "world": dict,
+    # WAVE-2 first-class domains (§19-§20 + pairwise ledger)
+    "weather": dict, "models": dict, "intel_ledger": dict,
 }
 
 
@@ -1101,15 +1321,16 @@ __all__ = [
     "SCHEMA_VERSION", "DOMAINS", "RESOURCE_KEYS", "BUILDING_KEYS",
     "FIELD_SOURCES", "source_of", "date_to_hour_index",
     "Economy", "Military", "Politics", "Research", "Focus", "Decisions",
-    "Diplomacy", "Intel", "Commanders", "Country", "State", "Province",
+    "Diplomacy", "Intel", "Scalars", "Commanders", "Country", "State", "Province",
     "Division", "Combat", "MapLayers", "Designs", "OrderOfBattle",
-    "NavalAir", "Supply",
+    "NavalAir", "Supply", "Weather", "WeatherRegion", "ModelsBlock",
     "StrategicAir", "StrategicOperatives", "Raids", "WorldEvents", "World",
     "Provenance", "Event", "make_event",
     "EVENT_TYPES", "CONFIDENCE_LEVELS", "EVENT_SOURCES",
     "empty_country", "empty_state", "empty_province", "empty_division",
     "empty_map", "empty_designs", "empty_order_of_battle",
-    "empty_naval_air", "empty_supply", "empty_snapshot",
+    "empty_naval_air", "empty_supply", "empty_weather", "empty_models",
+    "empty_snapshot",
     "empty_strategic_air", "empty_strategic_operatives", "empty_raids",
     "empty_world_events", "empty_world",
     "validate_snapshot", "validate_event", "div_uid",

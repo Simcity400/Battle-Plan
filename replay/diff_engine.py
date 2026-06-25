@@ -76,6 +76,27 @@ _EVENT_DOMAIN = {
     "nuke_count_changed": "country_extra",
     "ace_gained": "country_extra",
     "project_completed": "country_extra",
+    # --- WAVE-2 events ---
+    # abilities.json (aces richer source + commander cooldowns + officer corps)
+    "ace_lost": "abilities",
+    "commander_cooldown_started": "abilities",
+    "commander_freed": "abilities",
+    "general_captured": "abilities",
+    "general_freed": "abilities",
+    "officer_spirit_changed": "abilities",
+    # projects.json (special projects / facilities / scientists)
+    "project_finished": "projects",
+    "project_started": "projects",
+    "facility_built": "projects",
+    "facility_dismantled": "projects",
+    "scientist_specialization_up": "projects",
+    # market_extra.json + deployment.json
+    "unit_deployment_started": "deployment",
+    "unit_deployment_completed": "deployment",
+    "expeditionary_force_sent": "deployment",
+    "expeditionary_force_recalled": "deployment",
+    "market_subsidy_changed": "market_extra",
+    "market_price_level_changed": "market_extra",
 }
 
 
@@ -362,6 +383,11 @@ def _diff_countries(a: Dict[str, Any], b: Dict[str, Any], emit,
     do_mios = _both_captured(a, b, "designs")
     do_market = _both_captured(a, b, "market")
     do_country_extra = _both_captured(a, b, "country_extra")
+    # WAVE-2 deep domains, each gated on its OWN domain.
+    do_abilities = _both_captured(a, b, "abilities")
+    do_projects = _both_captured(a, b, "projects")
+    do_deployment = _both_captured(a, b, "deployment")
+    do_market_extra = _both_captured(a, b, "market_extra")
     for tag in set(ca) | set(cb):
         old = ca.get(tag) or {}
         new = cb.get(tag) or {}
@@ -387,7 +413,25 @@ def _diff_countries(a: Dict[str, Any], b: Dict[str, Any], emit,
         if do_market:
             _diff_market(tag, old, new, emit)
         if do_country_extra:
-            _diff_country_extra(tag, old, new, emit)
+            # ACE DEDUP (Codex-reviewed): within a single (a,b) diff, aces come from
+            # exactly ONE source — abilities (id-keyed) when `do_abilities`, else
+            # country_extra (name-keyed). `emit_aces=not do_abilities` guarantees the
+            # two paths never BOTH emit ace_gained for the same pair, so no per-pair
+            # double-count. `_diff_*` each read a UNIFORM source on both snapshots, so
+            # no id-vs-name key mismatch can arise WITHIN a pair. The only residual is
+            # cross-pair: a timeline that flips abilities-capture between adjacent pairs
+            # uses id-keys for one pair and name-keys for another — that is consistent
+            # per-pair, fires each ace once at its own gain hour, and is NOT a double
+            # count (real ingested snapshots capture abilities uniformly anyway).
+            _diff_country_extra(tag, old, new, emit, emit_aces=not do_abilities)
+        if do_abilities:
+            _diff_abilities(tag, old, new, emit)
+        if do_projects:
+            _diff_projects(tag, old, new, emit)
+        if do_deployment:
+            _diff_deployment(tag, old, new, emit)
+        if do_market_extra:
+            _diff_market_extra(tag, old, new, emit)
 
 
 def _domain_present(snap: Dict[str, Any], domain: str) -> bool:
@@ -898,13 +942,20 @@ def _diff_world_events(a: Dict[str, Any], b: Dict[str, Any], emit) -> None:
 # (per-country, from countries.*.extra).
 # ---------------------------------------------------------------------------
 def _ace_key(ac: Dict[str, Any]) -> str:
-    """Stable per-ace identity = name+surname+callsign (the save has no ace id)."""
+    """Stable per-ace identity. PREFER the save's ace_id (the abilities parser exposes
+    `id={id type}` as ace_id — the old 'save has no ace id' note was wrong, WIRE_abilities
+    §4); fall back to name+surname+callsign for the legacy country_extra ace shape
+    (which carries no ace_id)."""
+    aid = ac.get("ace_id")
+    if aid is not None:
+        return "id:%s" % aid
     return "%s|%s|%s" % (ac.get("name"), ac.get("surname"), ac.get("callsign"))
 
 
-def _diff_country_extra(tag, old, new, emit) -> None:
+def _diff_country_extra(tag, old, new, emit, *, emit_aces: bool = True) -> None:
     """nuke_count_changed: countries.*.extra.nukes_total changed.
-    ace_gained: a new ace (by name/surname/callsign) appears.
+    ace_gained: a new ace (by identity) appears — ONLY when ``emit_aces`` (the richer
+    abilities domain is not the ace source; ACE DEDUP, WIRE_abilities §4).
     project_completed: special_projects.projects_completed increased (by the delta)."""
     o_ext = old.get("extra") if isinstance(old.get("extra"), dict) else {}
     n_ext = new.get("extra") if isinstance(new.get("extra"), dict) else {}
@@ -916,17 +967,19 @@ def _diff_country_extra(tag, old, new, emit) -> None:
     if (isinstance(o_n, int) and isinstance(n_n, int) and o_n != n_n):
         emit("nuke_count_changed", subject=tag, **{"from": o_n}, to=n_n)
 
-    # newly-gained aces (set-diff by ace identity)
-    o_aces = {_ace_key(x) for x in (o_ext.get("aces") or []) if isinstance(x, dict)}
-    for ac in (n_ext.get("aces") or []):
-        if not isinstance(ac, dict):
-            continue
-        if _ace_key(ac) not in o_aces:
-            emit("ace_gained", subject=tag, key=_ace_key(ac),
-                 to=ac.get("callsign") or ac.get("surname"),
-                 detail={"name": ac.get("name"), "surname": ac.get("surname"),
-                         "callsign": ac.get("callsign"),
-                         "modifier": ac.get("modifier")})
+    # newly-gained aces (set-diff by ace identity). Suppressed when the abilities
+    # domain owns aces, so the same ace never fires twice.
+    if emit_aces:
+        o_aces = {_ace_key(x) for x in (o_ext.get("aces") or []) if isinstance(x, dict)}
+        for ac in (n_ext.get("aces") or []):
+            if not isinstance(ac, dict):
+                continue
+            if _ace_key(ac) not in o_aces:
+                emit("ace_gained", subject=tag, key=_ace_key(ac),
+                     to=ac.get("callsign") or ac.get("surname"),
+                     detail={"name": ac.get("name"), "surname": ac.get("surname"),
+                             "callsign": ac.get("callsign"),
+                             "modifier": ac.get("modifier")})
 
     # special-project completions (count INCREASE only)
     o_done = (o_ext.get("special_projects") or {}).get("projects_completed")
@@ -934,6 +987,264 @@ def _diff_country_extra(tag, old, new, emit) -> None:
     if (isinstance(o_done, int) and isinstance(n_done, int) and n_done > o_done):
         emit("project_completed", subject=tag, **{"from": o_done}, to=n_done,
              detail={"completed_delta": n_done - o_done})
+
+
+# ---------------------------------------------------------------------------
+# Abilities (abilities.json): ace lifecycle (richer source), commander cooldowns,
+# general captures, officer-corps spirits (per-country, from countries.*.abilities).
+# ---------------------------------------------------------------------------
+def _diff_abilities(tag, old, new, emit) -> None:
+    """ace_gained / ace_lost (richer abilities source, keyed by ace_id);
+    commander_cooldown_started / commander_freed (keyed by unit_leader_id);
+    general_captured / general_freed (captured flag flips);
+    officer_spirit_changed (set-diff of officer_corps_spirits tokens).
+
+    Owns the ace_gained event when the abilities domain is captured (DEDUP: the
+    country_extra emission is suppressed in that case)."""
+    o_ab = old.get("abilities") if isinstance(old.get("abilities"), dict) else {}
+    n_ab = new.get("abilities") if isinstance(new.get("abilities"), dict) else {}
+    if not o_ab and not n_ab:
+        return
+
+    # aces — gained/lost by ace identity (ace_id preferred).
+    o_aces = {_ace_key(x): x for x in (o_ab.get("aces") or []) if isinstance(x, dict)}
+    n_aces = {_ace_key(x): x for x in (n_ab.get("aces") or []) if isinstance(x, dict)}
+    for k, ac in n_aces.items():
+        if k not in o_aces:
+            emit("ace_gained", subject=tag, key=k,
+                 to=ac.get("callsign") or ac.get("surname"),
+                 detail={"name": ac.get("name"), "surname": ac.get("surname"),
+                         "callsign": ac.get("callsign"), "modifier": ac.get("modifier"),
+                         "ace_category": ac.get("ace_category"), "tier": ac.get("tier")})
+    for k, ac in o_aces.items():
+        # lost = gone from the roster, OR alive flipped true->false.
+        n_ac = n_aces.get(k)
+        was_alive = ac.get("alive") is not False
+        now_dead = (n_ac is None) or (n_ac.get("alive") is False)
+        if was_alive and now_dead:
+            killer = (n_ac or {}).get("killer_country") or ac.get("killer_country")
+            emit("ace_lost", subject=tag, key=k,
+                 **{"from": ac.get("callsign") or ac.get("surname")},
+                 object=killer,
+                 detail={"name": ac.get("name"), "callsign": ac.get("callsign"),
+                         "killer_country": killer})
+
+    # commander cooldowns + captures (keyed by unit_leader_id).
+    def _cd_index(ab):
+        out = {}
+        for r in (ab.get("commander_cooldowns") or []):
+            if isinstance(r, dict) and r.get("unit_leader_id") is not None:
+                out[str(r["unit_leader_id"])] = r
+        return out
+
+    oc, nc = _cd_index(o_ab), _cd_index(n_ab)
+    for ident in set(oc) | set(nc):
+        o_r, n_r = oc.get(ident), nc.get(ident)
+        o_reason = (o_r or {}).get("cooldown_reason")
+        n_reason = (n_r or {}).get("cooldown_reason")
+        if not o_reason and n_reason:
+            emit("commander_cooldown_started", subject=tag, key=ident, to=n_reason,
+                 detail={"role": (n_r or {}).get("role"),
+                         "enable_date": (n_r or {}).get("modifier_enable_date")})
+        elif o_reason and not n_reason:
+            emit("commander_freed", subject=tag, key=ident, **{"from": o_reason},
+                 detail={"role": (o_r or {}).get("role")})
+        # capture flag flip (only meaningful when the leader exists both sides).
+        if o_r is not None and n_r is not None:
+            o_cap = bool(o_r.get("captured"))
+            n_cap = bool(n_r.get("captured"))
+            if not o_cap and n_cap:
+                emit("general_captured", subject=tag, key=ident,
+                     object=n_r.get("captured_by"),
+                     detail={"role": n_r.get("role"),
+                             "location": n_r.get("location")})
+            elif o_cap and not n_cap:
+                emit("general_freed", subject=tag, key=ident,
+                     **{"from": o_r.get("captured_by")},
+                     detail={"role": o_r.get("role")})
+
+    # officer-corps spirits (set-diff of tokens).
+    def _spirits(ab):
+        oc_blk = ab.get("officer_corps") if isinstance(ab.get("officer_corps"), dict) else {}
+        return {s.get("token") for s in (oc_blk.get("officer_corps_spirits") or [])
+                if isinstance(s, dict) and s.get("token")}
+
+    o_sp, n_sp = _spirits(o_ab), _spirits(n_ab)
+    for tok in sorted((n_sp - o_sp) | (o_sp - n_sp)):
+        emit("officer_spirit_changed", subject=tag, key=tok,
+             to=tok if tok in n_sp else None,
+             **({} if tok in n_sp else {"from": tok}))
+
+
+# ---------------------------------------------------------------------------
+# Projects (projects.json): special-project lifecycle, facilities, scientists
+# (per-country, from countries.*.projects + countries.*.scientists).
+# ---------------------------------------------------------------------------
+def _diff_projects(tag, old, new, emit) -> None:
+    """project_finished: a NAMED token enters completed_projects.
+    project_started: a token enters active_projects.
+    facility_built / facility_dismantled: a facility id appears / disappears (or
+    dismantle_in_progress flips true). Diffs token SETS + flags, never raw floats.
+
+    DISTINCT from the existing `project_completed` (Codex-reviewed): that event is a
+    COUNT-delta from country_extra.special_projects.projects_completed (sourced from a
+    different parser, fired in _diff_country_extra) — a coarse "N more finished" signal.
+    `project_finished` is a per-TOKEN event naming WHICH project finished. They are
+    different event TYPES with different keys/semantics; a consumer must not sum across
+    both names as if they were the same metric (they describe the same underlying fact
+    at two granularities). This is enrichment, NOT a double-count of a single event."""
+    o_pj = old.get("projects") if isinstance(old.get("projects"), dict) else {}
+    n_pj = new.get("projects") if isinstance(new.get("projects"), dict) else {}
+    if not o_pj and not n_pj:
+        return
+
+    # completed-project token SET (names which project finished — enriches the
+    # existing count-based project_completed, no double-fire: different event type).
+    o_done = set(o_pj.get("completed_projects") or [])
+    n_done = set(n_pj.get("completed_projects") or [])
+    for tok in sorted(n_done - o_done):
+        emit("project_finished", subject=tag, key=tok, to=tok)
+
+    # active-project token SET (started).
+    def _active_tokens(pj):
+        return {p.get("token") for p in (pj.get("active_projects") or [])
+                if isinstance(p, dict) and p.get("token")}
+
+    o_act, n_act = _active_tokens(o_pj), _active_tokens(n_pj)
+    for tok in sorted(n_act - o_act):
+        emit("project_started", subject=tag, key=tok, to=tok)
+
+    # facilities (keyed by id) — built / dismantled.
+    def _fac_index(pj):
+        out = {}
+        for f in (pj.get("facilities") or []):
+            if isinstance(f, dict) and f.get("id") is not None:
+                out[str(f["id"])] = f
+        return out
+
+    o_fac, n_fac = _fac_index(o_pj), _fac_index(n_pj)
+    for fid in set(n_fac) - set(o_fac):
+        f = n_fac[fid]
+        emit("facility_built", subject=tag, key=fid, to=f.get("type"),
+             detail={"type": f.get("type"), "province": f.get("province")})
+    for fid in set(o_fac) - set(n_fac):
+        f = o_fac[fid]
+        emit("facility_dismantled", subject=tag, key=fid, **{"from": f.get("type")},
+             detail={"type": f.get("type"), "province": f.get("province")})
+    # a facility entering dismantle while still present (flag flip false->true).
+    for fid in set(o_fac) & set(n_fac):
+        o_dis = bool(o_fac[fid].get("dismantle_in_progress"))
+        n_dis = bool(n_fac[fid].get("dismantle_in_progress"))
+        if not o_dis and n_dis:
+            emit("facility_dismantled", subject=tag, key=fid,
+                 to=n_fac[fid].get("type"),
+                 detail={"type": n_fac[fid].get("type"), "in_progress": True})
+
+    # scientist specialization increases (per char_id; from countries.*.scientists).
+    _diff_scientists(tag, old, new, emit)
+
+
+def _diff_scientists(tag, old, new, emit) -> None:
+    """scientist_specialization_up: a scientist's skills.specialization_* increases."""
+    def _index(country):
+        out = {}
+        for s in (country.get("scientists") or []):
+            if isinstance(s, dict) and s.get("char_id") is not None:
+                out[str(s["char_id"])] = s
+        return out
+
+    oi, ni = _index(old), _index(new)
+    for cid in set(oi) & set(ni):
+        o_sk = oi[cid].get("skills") or {}
+        n_sk = ni[cid].get("skills") or {}
+        for spec in set(n_sk) | set(o_sk):
+            ov, nv = o_sk.get(spec), n_sk.get(spec)
+            if isinstance(ov, int) and isinstance(nv, int) and nv > ov:
+                emit("scientist_specialization_up", subject=tag, key="%s:%s" % (cid, spec),
+                     **{"from": ov}, to=nv,
+                     detail={"scientist": ni[cid].get("name_token"),
+                             "specialization": spec})
+
+
+# ---------------------------------------------------------------------------
+# Deployment (deployment.json): deploying-division conveyor + expeditionary
+# (per-country, from countries.*.military + diplomacy.expeditionary).
+# ---------------------------------------------------------------------------
+def _diff_deployment(tag, old, new, emit) -> None:
+    """unit_deployment_started / unit_deployment_completed: a conveyor (keyed by
+    template_id @ location) appears / disappears.
+    expeditionary_force_sent / expeditionary_force_recalled: an (owner,controller)
+    lent-division pairing appears/grows / disappears/shrinks."""
+    def _conv_index(country):
+        out = {}
+        for c in ((country.get("military") or {}).get("deployment_queue") or []):
+            if not isinstance(c, dict):
+                continue
+            tid = c.get("template_id")
+            tid_key = ":".join(str(x) for x in tid) if isinstance(tid, list) else str(tid)
+            out["%s@%s" % (tid_key, c.get("location"))] = c
+        return out
+
+    oc, nc = _conv_index(old), _conv_index(new)
+    for key in set(nc) - set(oc):
+        c = nc[key]
+        emit("unit_deployment_started", subject=tag, key=key, to=c.get("location"),
+             detail={"name": c.get("name"), "template_id": c.get("template_id")})
+    for key in set(oc) - set(nc):
+        c = oc[key]
+        emit("unit_deployment_completed", subject=tag, key=key,
+             **{"from": c.get("location")},
+             detail={"name": c.get("name"), "template_id": c.get("template_id")})
+
+    # expeditionary (per-owner; keyed by controller). count = number of divisions.
+    def _exp_index(country):
+        out = {}
+        for e in ((country.get("diplomacy") or {}).get("expeditionary") or []):
+            if isinstance(e, dict) and e.get("controller"):
+                out[str(e["controller"])] = len(e.get("divisions") or [])
+        return out
+
+    oe, ne = _exp_index(old), _exp_index(new)
+    for ctrl in set(ne) | set(oe):
+        ov, nv = oe.get(ctrl, 0), ne.get(ctrl, 0)
+        if nv > ov:
+            emit("expeditionary_force_sent", subject=tag, object=ctrl,
+                 **{"from": ov}, to=nv)
+        elif nv < ov:
+            emit("expeditionary_force_recalled", subject=tag, object=ctrl,
+                 **{"from": ov}, to=nv)
+
+
+# ---------------------------------------------------------------------------
+# Market extra (market_extra.json): equipment-market subsidies + manual price bands
+# (per-country, from countries.*.economy.market_*).
+# ---------------------------------------------------------------------------
+def _diff_market_extra(tag, old, new, emit) -> None:
+    """market_subsidy_changed: a country's subsidies[] set changes (add/remove/cic).
+    market_price_level_changed: a manual price band changes (dormant on auto-price)."""
+    o_eco = old.get("economy") if isinstance(old.get("economy"), dict) else {}
+    n_eco = new.get("economy") if isinstance(new.get("economy"), dict) else {}
+
+    def _subs_index(eco):
+        out = {}
+        for s in (eco.get("market_subsidies") or []):
+            if isinstance(s, dict) and s.get("archetype") is not None:
+                out[str(s["archetype"])] = s.get("cic")
+        return out
+
+    os_, ns_ = _subs_index(o_eco), _subs_index(n_eco)
+    for arch in set(os_) | set(ns_):
+        ov, nv = os_.get(arch), ns_.get(arch)
+        if ov != nv:
+            emit("market_subsidy_changed", subject=tag, key=str(arch),
+                 **{"from": ov}, to=nv)
+
+    # price-level set (dormant until a manual band is set; harmless no-op otherwise).
+    o_pl = o_eco.get("market_price_levels") or []
+    n_pl = n_eco.get("market_price_levels") or []
+    if o_pl != n_pl and (o_pl or n_pl):
+        emit("market_price_level_changed", subject=tag,
+             detail={"from_count": len(o_pl), "to_count": len(n_pl)})
 
 
 # ---------------------------------------------------------------------------

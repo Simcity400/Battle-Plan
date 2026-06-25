@@ -57,6 +57,12 @@ def _redact_path(value: Any) -> Any:
 _SAVE_PATH_KEYS = ("melt_file", "state_detail_file", "melt_path",
                    "state_detail_path", "path", "file")
 
+# Keys whose mere PRESENCE (key name OR value) the path-leak guard rejects — derived
+# models echo a `source_path_redacted` (a ~/AppData/... path) in their meta. These are
+# DROPPED outright (key+value) before any model meta enters the persisted snapshot;
+# the redacted basename already survives as `source_filename`.
+_DROP_META_KEYS = ("source_path_redacted", "source_path")
+
 
 def _redact_save_payload(payload: Any) -> Any:
     """Return a shallow copy of a save-backstop payload with every path-valued key
@@ -74,6 +80,26 @@ def _redact_save_payload(payload: Any) -> Any:
                 del out[k]
             else:
                 out[k] = _redact_path(out[k])
+    return out
+
+
+def _scrub_model_meta(meta: Any) -> Any:
+    """Recursively drop path-leaking keys (_DROP_META_KEYS) from a derived-model meta
+    block and basename any remaining path-valued key (_SAVE_PATH_KEYS). The path-leak
+    guard rejects even the key NAME `source_path_redacted`, so we delete it outright;
+    the basename survives as `source_filename`. Non-dict input passes through."""
+    if isinstance(meta, list):
+        return [_scrub_model_meta(x) for x in meta]
+    if not isinstance(meta, dict):
+        return meta
+    out = {}
+    for k, v in meta.items():
+        if k in _DROP_META_KEYS:
+            continue  # drop key + value entirely
+        if k in _SAVE_PATH_KEYS:
+            out[k] = _redact_path(v)
+        else:
+            out[k] = _scrub_model_meta(v)
     return out
 
 
@@ -290,6 +316,16 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
     if intel is not None:
         snap["_save_intel"] = _redact_save_payload(intel)
         save_backstops.append("intel")
+
+    # --- WAVE-2 live readers (weather temperature + naval combat stats) ---------
+    # Each is guarded so the offline snapshot-build path (no running game) NEVER
+    # crashes: a missing pid / import / live read returns None/empty and the domain
+    # is simply not claimed (no fabrication). pid is the resolved live process id.
+    pid = (identity.pid if identity is not None else None)
+    if _wire_weather(snap, pid):
+        captured_domains.append("weather")
+    if _wire_naval_combat_stats(snap, pid):
+        captured_domains.append("naval_air_combat_stats")
 
     # --- provenance: memory channel, honest domain list --------------------
     notes = list(extra_notes or [])
@@ -515,6 +551,12 @@ def fold_save_bundle(snap: Dict[str, Any], output_dir: str, *,
     # --- map mirrors: refill from the merged state/province data ---
     _fill_map_mirrors(snap)
 
+    # --- WAVE-2 derived-model attachments (designs stats, victory score, scalars,
+    # air-superiority model, supply estimate). Computed over the merged snapshot +
+    # this save's output dir; each is independently guarded (a missing game install
+    # leaves the field None). Provenance = derived (NOT a save/memory channel). ---
+    attach_derived_models(snap, output_dir)
+
     # --- provenance.save: record the save-filled canonical domains HONESTLY -------
     # Preserve any pre-existing non-canonical backstops (buildings/intel sidecars).
     prov = snap.setdefault("provenance", {})
@@ -545,6 +587,349 @@ def fold_save_bundle(snap: Dict[str, Any], output_dir: str, *,
     return snap
 
 
+# ---------------------------------------------------------------------------
+# WAVE-2 LIVE READERS (weather temperature + naval combat per-side stats).
+# Every entry point is import-guarded AND value-guarded so the offline/no-live-game
+# path returns False (domain not claimed) instead of raising. READ-ONLY memory.
+# ---------------------------------------------------------------------------
+def _wire_weather(snap: Dict[str, Any], pid: Optional[int]) -> bool:
+    """Fold live per-region temperature + phenomenon into snap["weather"] (§19, M).
+
+    Guarded: no pid (offline) or any import/read failure -> leave the null-but-present
+    weather skeleton and return False (domain not claimed; no fabrication)."""
+    if pid is None:
+        return False
+    try:
+        from memory_reader.weather import weather_temp_model as _wt  # noqa: E402
+    except Exception:
+        return False
+    try:
+        res = _wt.read_region_temperatures(pid)
+    except Exception:
+        return False
+    if not isinstance(res, dict):
+        return False
+    regions = res.get("regions")
+    if not isinstance(regions, dict) or not regions:
+        return False
+    # Normalize each row to the schema WeatherRegion shape (temp_c None when not
+    # realized; never fabricate a 0 C). The reader already yields temp_c/name/phenom.
+    out_regions: Dict[str, Any] = {}
+    for rid, row in regions.items():
+        if not isinstance(row, dict):
+            continue
+        out_regions[str(rid)] = {
+            "region_id": (int(rid) if str(rid).lstrip("-").isdigit() else None),
+            "phenom": row.get("phenom"),
+            "phenom_name": row.get("name"),
+            "temp_c": row.get("temp_c"),
+            "active": row.get("active"),
+        }
+    if not out_regions:
+        return False
+    snap["weather"] = {
+        "regions": out_regions,
+        "global_rollup": {
+            "n_regions": len(out_regions),
+            "n_with_temp": res.get("n_with_temp"),
+            "temp_min_c": res.get("temp_min_c"),
+            "temp_max_c": res.get("temp_max_c"),
+            "temp_mean_c": res.get("temp_mean_c"),
+        },
+        "source": "M",
+    }
+    return True
+
+
+def _wire_naval_combat_stats(snap: Dict[str, Any], pid: Optional[int]) -> bool:
+    """Fold per-side naval combat damage/stat rows onto naval combat records under
+    combats[] (kind=="naval"), keyed by combat_id (§7c, M / M*).
+
+    Guarded: no pid (offline) or any import/read failure -> return False, leaving the
+    typed combats[] untouched (no fabrication). Per-side rows self-badge their tier."""
+    if pid is None:
+        return False
+    try:
+        from memory_reader.combat import combat_enum as _ce  # noqa: E402
+        from memory_reader.combat import naval_combat_stats as _ncs  # noqa: E402
+    except Exception:
+        return False
+    try:
+        reader = _ce.CombatReader(pid)
+        combats = reader.enumerate_naval_combats(with_defenders=True)
+    except Exception:
+        return False
+    if not combats:
+        return False
+    try:
+        statreader = _ncs.NavalCombatStats(reader)
+    except Exception:
+        return False
+    # index live naval combats by combat_id so we can merge onto matching records.
+    by_id: Dict[str, Any] = {}
+    for c in combats:
+        if not isinstance(c, dict) or c.get("body_addr") is None:
+            continue
+        try:
+            s = statreader.read_combat_stats(c["body_addr"])
+        except Exception:
+            continue
+        cid = s.get("combat_id") if isinstance(s, dict) else None
+        if cid is not None:
+            by_id[str(cid)] = {"attacker": s.get("attacker"),
+                               "defender": s.get("defender")}
+    if not by_id:
+        return False
+    # merge onto existing combats[] records of kind "naval"; if none matched, append
+    # a minimal naval combat record carrying just the stats (still no fabrication of
+    # participants — those stay absent).
+    merged_any = False
+    existing = {str(c.get("combat_id")): c for c in snap.get("combats") or []
+                if isinstance(c, dict)}
+    for cid, stats in by_id.items():
+        rec = existing.get(cid)
+        if rec is not None:
+            rec["naval_stats"] = stats
+            if rec.get("kind") is None:
+                rec["kind"] = "naval"
+            merged_any = True
+        else:
+            combat = schema.asdict(schema.Combat(combat_id=cid, kind="naval"))
+            combat["naval_stats"] = stats
+            snap.setdefault("combats", []).append(combat)
+            merged_any = True
+    return merged_any
+
+
+# ---------------------------------------------------------------------------
+# WAVE-2 DERIVED-MODEL attachments (division/equipment stats, air superiority,
+# victory score, scalars, supply estimate). Computed over the assembled snapshot +
+# the save oracle output dir, so they live in the save-fold path (where designs /
+# economy / tech / divisions actually populate). All D-source (provenance.derived).
+# Every model is guarded: a missing game install / import / read leaves the field
+# None (no fabrication) and never aborts the fold.
+# ---------------------------------------------------------------------------
+def attach_derived_models(snap: Dict[str, Any], output_dir: Optional[str]) -> Dict[str, Any]:
+    """Attach all WAVE-2 derived-model layers to ``snap`` in place. Returns snap.
+
+    Builds the expensive GameDefs / EquipmentDefs ONCE and reuses them. Each block is
+    independently guarded so one model failing (e.g. no installed content) never blocks the
+    others. Safe to call with output_dir=None (only the designs-based models, which
+    read the snapshot's own designs block, then run; the output_dir-based ones skip)."""
+    _attach_design_stats(snap)                         # division + equipment stats (D)
+    if output_dir:
+        _attach_victory_score(snap, output_dir)        # per-country score ladder (D)
+        _attach_scalars(snap, output_dir)              # capitulation/research/SF (D)
+        _attach_air_superiority_model(snap, output_dir)  # stat-weighted % (D)
+        _attach_supply_estimate(snap, output_dir)      # priority-laddered supply (D)
+    return snap
+
+
+def _attach_design_stats(snap: Dict[str, Any]) -> None:
+    """designs.template_stats (DivisionStats) + designs.equipment_variant_stats
+    (VariantStats). Pure-derived from the snapshot's designs block + installed content."""
+    designs = snap.get("designs")
+    if not isinstance(designs, dict):
+        return
+    # division template stats
+    try:
+        from models import division_stats as _ds  # noqa: E402
+        # GameDefs needs explicit dirs; the module exposes env-var-resolved defaults
+        # (_DEFAULT_VANILLA / _DEFAULT_MOD). A missing install raises -> guarded skip.
+        gdefs = _ds.GameDefs(vanilla_dir=_ds._DEFAULT_VANILLA,
+                             mod_dir=_ds._DEFAULT_MOD)
+        compute_division_stats = _ds.compute_division_stats
+        make_modular_resolver = _ds.make_modular_resolver
+        resolver = make_modular_resolver(gdefs, designs.get("equipment_variants") or {})
+        out: Dict[str, Any] = {}
+        for t in (designs.get("division_templates") or []):
+            if not isinstance(t, dict) or t.get("id") is None:
+                continue
+            try:
+                ds = compute_division_stats(t, gdefs, equip_resolver=resolver)
+                out[str(t["id"])] = ds.as_dict()
+            except Exception:
+                continue
+        if out:
+            designs["template_stats"] = out
+            designs["template_stats_source"] = "D"
+    except Exception:
+        pass  # no game install / parse failure -> leave template_stats None
+    # equipment variant stats
+    try:
+        import dataclasses as _dc
+        from models.equipment_stats import EquipmentDefs, compute_all  # noqa: E402
+        edefs = EquipmentDefs()
+        vstats = {k: _dc.asdict(vs) for k, vs in compute_all(designs, edefs).items()}
+        if vstats:
+            designs["equipment_variant_stats"] = vstats
+            designs["equipment_variant_stats_source"] = "D"
+    except Exception:
+        pass  # leave equipment_variant_stats None
+
+
+def _attach_victory_score(snap: Dict[str, Any], output_dir: str) -> None:
+    """countries.*.score = per-country derived rank-ladder (models/victory_score)."""
+    try:
+        from models.victory_score import compute_victory_score  # noqa: E402
+        ladder = compute_victory_score(output_dir)
+    except Exception:
+        return
+    countries = getattr(ladder, "countries", None)
+    if not isinstance(countries, dict):
+        return
+    for tag, cs in countries.items():
+        c = snap["countries"].get(tag)
+        if c is None:
+            continue
+        try:
+            c["score"] = cs.as_dict()
+        except Exception:
+            continue
+
+
+def _attach_scalars(snap: Dict[str, Any], output_dir: str) -> None:
+    """countries.*.scalars (capitulation/research/special_forces) + intel_ledger
+    (pairwise). Builds the static modifier index ONCE (models/scalars)."""
+    try:
+        from models import scalars as S  # noqa: E402
+        import os as _os
+        import json as _json
+    except Exception:
+        return
+
+    def _load(name):
+        p = _os.path.join(output_dir, name)
+        if not _os.path.isfile(p):
+            return None
+        try:
+            with open(p, "r", encoding="utf-8") as fh:
+                return _json.load(fh)
+        except Exception:
+            return None
+
+    economy = _load("economy.json")
+    state_detail = _load("state_detail.json")
+    tech = _load("tech.json")
+    divisions = _load("divisions.json")
+    intel = _load("intel.json")
+    try:
+        modifier_index = S.build_modifier_index()
+    except Exception:
+        modifier_index = None
+
+    for tag, c in snap["countries"].items():
+        scal = c.get("scalars")
+        if not isinstance(scal, dict):
+            scal = {}
+            c["scalars"] = scal
+        try:
+            if state_detail is not None and economy is not None:
+                scal["capitulation"] = S.capitulation_progress(
+                    tag, state_detail, economy, modifier_index)
+        except Exception:
+            pass
+        try:
+            if economy is not None and tech is not None:
+                scal["research_speed"] = S.research_speed(
+                    tag, economy, tech, modifier_index)
+        except Exception:
+            pass
+        try:
+            if divisions is not None and economy is not None and tech is not None:
+                scal["special_forces"] = S.special_forces(
+                    tag, divisions, economy, tech, modifier_index)
+        except Exception:
+            pass
+
+    # pairwise intel ledger — only meaningful (crypto/leak) pairs, never NxN.
+    if intel is not None and economy is not None:
+        ledger = snap.setdefault("intel_ledger", {})
+        targets_fn = getattr(S, "targets_of_interest", None)
+        cdata = intel.get("countries") if isinstance(intel.get("countries"), dict) else {}
+        for observer in cdata:
+            try:
+                tgts = (targets_fn(observer, intel) if callable(targets_fn)
+                        else _crypto_targets(cdata.get(observer)))
+            except Exception:
+                tgts = ()
+            for tgt in (tgts or ()):
+                try:
+                    led = S.intel_ledger(observer, tgt, intel, economy, modifier_index)
+                except Exception:
+                    led = None
+                if led is not None:
+                    ledger.setdefault(observer, {})[tgt] = led
+
+
+def _crypto_targets(observer_rec: Any):
+    """Best-effort: the targets the observer is tracking via cryptology (so the
+    ledger stays small). Returns a set of target TAGs."""
+    out = set()
+    if not isinstance(observer_rec, dict):
+        return out
+    crypto = observer_rec.get("cryptology")
+    if isinstance(crypto, dict):
+        for t in (crypto.get("targets") or []):
+            if isinstance(t, dict) and isinstance(t.get("target"), str):
+                out.add(t["target"])
+            elif isinstance(t, str):
+                out.add(t)
+    return out
+
+
+def _attach_air_superiority_model(snap: Dict[str, Any], output_dir: str) -> None:
+    """naval_air.air_superiority_model = stat-weighted per-region contest
+    (models/air_superiority). Reads oob.json from the output dir."""
+    try:
+        from models.air_superiority import compute_air_superiority  # noqa: E402
+        result = compute_air_superiority(output_dir)
+    except Exception:
+        return
+    try:
+        d = result.as_dict()
+    except Exception:
+        return
+    regions = d.get("regions")
+    if not isinstance(regions, dict) or not regions:
+        return
+    na = snap.get("naval_air")
+    if not isinstance(na, dict):
+        na = schema.empty_naval_air()
+        snap["naval_air"] = na
+    na["air_superiority_model"] = regions
+    # scrub path-leaking meta keys (source_path_redacted dropped; others basenamed)
+    # before it enters the persisted snapshot (HARD path-leak rule).
+    na["air_superiority_model_meta"] = _scrub_model_meta(d.get("meta"))
+
+
+def _attach_supply_estimate(snap: Dict[str, Any], output_dir: str) -> None:
+    """models.supply_estimate = priority-laddered per-province supply estimate
+    (models/supply_number). Reuses the live supply proxy if the snapshot has one."""
+    try:
+        from models.supply_number import compute_supply_number  # noqa: E402
+    except Exception:
+        return
+    # reuse the live division-province proxy already folded into snap["supply"].
+    proxy = None
+    sup = snap.get("supply")
+    if isinstance(sup, dict) and isinstance(sup.get("by_province"), dict):
+        proxy = sup["by_province"]
+    try:
+        est = compute_supply_number(output_dir, proxy_by_province=proxy)
+    except Exception:
+        return
+    if isinstance(est, dict) and est:
+        # defensively scrub any path-leaking key in the model's meta (HARD rule).
+        if isinstance(est.get("meta"), dict):
+            est["meta"] = _scrub_model_meta(est["meta"])
+        models_blk = snap.get("models")
+        if not isinstance(models_blk, dict):
+            models_blk = schema.empty_models()
+            snap["models"] = models_blk
+        models_blk["supply_estimate"] = est
+
+
 def _fill_map_mirrors(snap: Dict[str, Any]) -> None:
     """Mirror measured owner/controller into map.* (D convenience). Only emit a
     mirror when at least one measured value exists, else leave null (the empty
@@ -571,4 +956,4 @@ def _collect_unresolved(results: Dict[str, Any]) -> Dict[str, int]:
     return out
 
 
-__all__ = ["assemble_snapshot", "fold_save_bundle"]
+__all__ = ["assemble_snapshot", "fold_save_bundle", "attach_derived_models"]

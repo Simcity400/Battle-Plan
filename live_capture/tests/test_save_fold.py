@@ -305,6 +305,38 @@ class TestRealFold(unittest.TestCase):
         for needle in ("redacted", "OneDrive", "re_scratch", "source_path_redacted"):
             self.assertNotIn(needle, blob, needle)
 
+    def test_derived_models_attach_via_fold(self):
+        """WAVE-2: fold_save_bundle attaches the derived-model layers (provenance D)
+        WITHOUT leaking a path and WITHOUT breaking validation. Models that need a
+        game install degrade to None (no fabrication) — we only assert the
+        output-dir-driven ones, which run from the oracle JSON alone."""
+        res = {"country_scalars": reg.DomainResult("country_scalars", True, True, {
+            "countries": {"GER": {"stability": 0.5}}})}
+        snap = asm.assemble_snapshot(res, game_id="g", date="1946.5.18.12",
+                                     identity=FakeIdentity())
+        asm.fold_save_bundle(snap, ORACLE_OUT)
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        # victory score: at least some countries got a derived score block.
+        n_score = sum(1 for c in snap["countries"].values() if c.get("score"))
+        self.assertGreater(n_score, 0)
+        # supply estimate folded under the new models block.
+        self.assertIsNotNone((snap.get("models") or {}).get("supply_estimate"))
+        # no path leak survives the model meta scrub.
+        blob = json.dumps(snap)
+        for needle in ("redacted", "OneDrive", "SteamLibrary", "source_path_redacted"):
+            self.assertNotIn(needle, blob, needle)
+
+    def test_live_readers_guarded_offline(self):
+        """WAVE-2: with no live pid (identity=None) the weather + naval-combat-stat
+        live readers must NOT run, NOT claim a domain, and NOT crash. The offline
+        snapshot stays the null-but-present weather skeleton."""
+        snap = asm.assemble_snapshot({}, game_id="g", date="1936.1.1.12")
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        self.assertNotIn("weather", snap["provenance"]["memory"]["domains"])
+        self.assertNotIn("naval_air_combat_stats",
+                         snap["provenance"]["memory"]["domains"])
+        self.assertIsNone((snap.get("weather") or {}).get("regions"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

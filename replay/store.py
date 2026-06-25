@@ -88,6 +88,12 @@ class OracleBundle:
         # (parse_occupation). Both optional; ingested below.
         "market": "market.json",
         "occupation": "occupation.json",
+        # WAVE-2 NEW save deep parsers (all optional; ingested below). market.json
+        # is ALREADY wired (contracts/stockpile) — these add only the NEW state.
+        "abilities": "abilities.json",         # aces + cmdr cooldowns + officer corps
+        "projects": "projects.json",           # special projects/facilities/scientists
+        "market_extra": "market_extra.json",   # price bands + subsidies + requests
+        "deployment": "deployment.json",       # deploy conveyor + expeditionary
         # Tier-1 EXTRACT save domains (all optional; ingested below)
         "supply": "supply.json",
         "strategic_air": "strategic_air.json",
@@ -169,6 +175,8 @@ def build_snapshot_from_oracle(
     _ingest_intel(bundle, snap)
     # --- market (market.json: trade contracts -> lend_lease + market stockpiles) ---
     _ingest_market(bundle, snap)
+    # --- WAVE-2 market_extra (price bands + subsidies + requests) ---
+    _ingest_market_extra(bundle, snap)
     # --- order of battle (oob.json: armies/fleets/wings/plans, cross-refs joined) ---
     _ingest_oob(bundle, snap)
     # --- states (ownership/control merged, then detail) ---
@@ -193,6 +201,10 @@ def build_snapshot_from_oracle(
     _ingest_world(bundle, snap)                # top-level world (scenario/vars/flags)
     _ingest_country_extra(bundle, snap)        # per-country extra (nukes/aces/...)
     _ingest_players(bundle, snap)              # per-country human_name
+    # --- WAVE-2 NEW save deep domains -----------------------------------------
+    _ingest_abilities(bundle, snap)            # per-country aces/cooldowns/officer corps
+    _ingest_projects(bundle, snap)             # per-country projects/facilities/scientists
+    _ingest_deployment(bundle, snap)           # per-country deploy queue + expeditionary
     # --- map convenience layers (mirror state/province) ---
     _fill_map_layers(snap)
     # --- provenance ---
@@ -952,6 +964,141 @@ def _ingest_players(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
             _ensure_country(snap, tag)["human_name"] = name
 
 
+# ---------------------------------------------------------------------------
+# WAVE-2 NEW save deep ingests (market_extra / abilities / projects / deployment).
+# All save-sourced (S); no fabrication — a missing file leaves the field absent.
+# ---------------------------------------------------------------------------
+# Per-country projects fields to surface under countries.*.projects (allow-list so
+# parser meta never leaks; mirrors _EXTRA_FIELDS).
+_PROJECT_FIELDS = (
+    "projects_total", "projects_started", "projects_completed", "projects_active",
+    "active_projects", "completed_projects", "projects", "facilities",
+    "breakthrough",
+)
+
+
+def _ingest_market_extra(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
+    """Fold market_extra.json: per-country price bands + subsidies (economy.*),
+    contract-scoped price levels + pending requests (diplomacy_world.*). All S.
+
+    NON-DUPLICATION: market.json (already ingested by _ingest_market) carries the
+    contracts/stockpile/automation; this adds ONLY the price-level/subsidy/request
+    state that parser skipped. Empty price_levels (auto-price world) are skipped."""
+    mx = bundle.get("market_extra")
+    if not isinstance(mx, dict):
+        return
+    cdata = mx.get("countries")
+    if isinstance(cdata, dict):
+        for tag, rec in cdata.items():
+            if not isinstance(rec, dict):
+                continue
+            dst = _ensure_country(snap, tag)["economy"]
+            pls = rec.get("price_levels")
+            if isinstance(pls, list) and pls:
+                dst["market_price_levels"] = pls
+            subs = rec.get("subsidies")
+            if isinstance(subs, list) and subs:
+                dst["market_subsidies"] = subs
+    contracts = mx.get("contracts")
+    if isinstance(contracts, list):
+        pl_contracts = [
+            {"contract_id": c.get("contract_id"), "seller": c.get("seller"),
+             "buyer": c.get("buyer"), "price_levels": c.get("price_levels")}
+            for c in contracts
+            if isinstance(c, dict) and c.get("price_levels")
+        ]
+        if pl_contracts:
+            snap["diplomacy_world"]["market_price_levels"] = pl_contracts
+    reqs = mx.get("requests")
+    if isinstance(reqs, list) and reqs:
+        snap["diplomacy_world"]["market_requests"] = reqs
+
+
+def _ingest_abilities(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
+    """Fold abilities.json into countries.*.abilities (aces + commander cooldowns +
+    officer corps). All S except the two officer-corps capture tallies (D, but the
+    parser already aggregated them — copied as-is). Missing file -> field absent."""
+    ab = bundle.get("abilities")
+    if not isinstance(ab, dict):
+        return
+    aces = ab.get("aces") if isinstance(ab.get("aces"), dict) else {}
+    cmdr = (ab.get("commander_abilities")
+            if isinstance(ab.get("commander_abilities"), dict) else {})
+    oc = ab.get("officer_corps") if isinstance(ab.get("officer_corps"), dict) else {}
+    tags = set(aces) | set(cmdr) | set(oc)
+    for tag in tags:
+        # skip unresolvable placeholder keys (e.g. "?") so no junk tag is created.
+        if not (isinstance(tag, str) and 2 <= len(tag) <= 4 and tag[0].isalpha()):
+            continue
+        dst = _ensure_country(snap, tag)
+        dst["abilities"] = {
+            "aces": (aces.get(tag, {}) or {}).get("aces", []),
+            "commander_cooldowns": cmdr.get(tag, []),
+            "officer_corps": oc.get(tag),
+        }
+
+
+def _ingest_projects(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
+    """Fold projects.json: per-country projects/facilities/breakthrough body onto
+    countries.*.projects (allow-list), and the per-TAG scientist roster onto
+    countries.*.scientists. All S except two cross-ref join fields (D). Missing
+    file -> fields absent (no fabrication)."""
+    pj = bundle.get("projects")
+    if not isinstance(pj, dict):
+        return
+    cdata = pj.get("countries")
+    if isinstance(cdata, dict):
+        for tag, c in cdata.items():
+            if not isinstance(c, dict):
+                continue
+            dst = _ensure_country(snap, tag)
+            dst["projects"] = {k: c[k] for k in _PROJECT_FIELDS if k in c}
+    scientists = pj.get("scientists")
+    if isinstance(scientists, dict):
+        for tag, lst in scientists.items():
+            if isinstance(lst, list):
+                _ensure_country(snap, tag)["scientists"] = lst
+
+
+def _ingest_deployment(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
+    """Fold deployment.json: per-country deploy conveyor + reinforcement priority
+    onto countries.*.military, and the owner!=controller expeditionary pairing onto
+    diplomacy_world.expeditionary (+ per-owner diplomacy.expeditionary). All S.
+
+    ROBUSTNESS: the expeditionary list is [] in many saves (no lent forces); the
+    ingest no-ops cleanly on the empty list."""
+    dp = bundle.get("deployment")
+    if not isinstance(dp, dict):
+        return
+    cdata = dp.get("countries")
+    if isinstance(cdata, dict):
+        for tag, rec in cdata.items():
+            if not isinstance(rec, dict):
+                continue
+            mil = _ensure_country(snap, tag)["military"]
+            conv = rec.get("conveyors")
+            if isinstance(conv, list) and conv:
+                mil["deployment_queue"] = conv
+            rp = rec.get("reinforcement_priority")
+            if rp is not None:
+                mil["reinforcement_priority"] = rp
+    exped = dp.get("expeditionary")
+    if isinstance(exped, list) and exped:
+        snap["diplomacy_world"]["expeditionary"] = exped
+        by_owner: Dict[str, List[Dict[str, Any]]] = {}
+        for e in exped:
+            if not isinstance(e, dict):
+                continue
+            owner = e.get("owner")
+            if not isinstance(owner, str):
+                continue
+            by_owner.setdefault(owner, []).append(
+                {"controller": e.get("controller"),
+                 "divisions": e.get("divisions", [])})
+        for owner, lst in by_owner.items():
+            _ensure_country(snap, owner)["diplomacy"]["expeditionary"] = lst
+
+
 # divisions_full additive fields to merge onto an existing division (the 9 already
 # in divisions.json are NOT re-copied — they are authoritative from _ingest_divisions).
 _DIVFULL_FIELDS = (
@@ -1064,6 +1211,11 @@ def _fill_provenance(bundle: OracleBundle, snap: Dict[str, Any],
         "world": "world",
         "country_extra": "country_extra",
         "players": "players",
+        # WAVE-2 NEW save deep domains
+        "abilities": "abilities",
+        "projects": "projects",
+        "market_extra": "market_extra",
+        "deployment": "deployment",
     }
     for fkey, dom in domain_map.items():
         obj = bundle.get(fkey)
