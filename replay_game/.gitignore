@@ -1,0 +1,6 @@
+# Layer-2 game UI — generated / large output stays out of git.
+# The committed code = static/*, serve.py, build_centroids.py, README.md, *.bat.
+output/
+__pycache__/
+*.pyc
+re_scratch/

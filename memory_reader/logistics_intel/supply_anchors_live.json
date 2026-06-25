@@ -1,0 +1,11 @@
+{
+  "source": "in-game supply tooltips (hover province), paused frame ~1946.5.18, user-provided 5 readings 2026-06-25",
+  "note": "supply_remaining_province = the per-PROVINCE headline value (the B2 wall: previously thought UI-computed/not-stored). supply_from_* and state_* are exact components. Tooltip shows STATE name, NOT province id -> map name->state_id via map_pipeline state_meta.json. All values UI-rounded to 2 decimals -> match with +-0.05 tolerance. STRATEGY: state-supply totals are STATE-INDEXED (cleanest anchor); if the per-province remaining is not a stored slot, pin the component arrays (state supply / hub supply) and reconstruct remaining ~= hubs + state.",
+  "readings": [
+    { "state_name": "Niederbayern", "supply_remaining_province": 9.64, "supply_from_hubs": 6.73, "supply_from_state": 2.90, "state_base": 1.40, "state_infra": 0.90, "state_pop": 0.26, "state_vp": 0.35 },
+    { "state_name": "Abruzzo", "supply_remaining_province": 9.52, "supply_from_hubs": 9.52, "supply_from_state": 1.40, "state_infra": 0.90, "state_pop": 0.53, "state_vp": 0.25, "state_scaled_pct": 82, "railway": "Foggia-Abruzzo L1", "throughput_cap": 15.00 },
+    { "state_name": "Kalmykia", "supply_remaining_province": 0.65, "supply_from_hubs": 0.00, "supply_from_state": 0.60, "state_infra": 0.30, "state_pop": 0.03, "state_vp": 0.25 },
+    { "state_name": "Moscow", "supply_remaining_province": 7.48, "supply_from_hubs": 7.48, "supply_from_state": 6.60, "state_base": 1.20, "state_infra": 1.20, "state_pop": 1.50, "state_vp": 2.70 },
+    { "state_name": "Moselland", "supply_remaining_province": 11.83, "supply_from_hubs": 11.83, "supply_from_state": 2.80, "state_infra": 1.20, "state_pop": 0.54, "state_vp": 1.05, "railway": "Bitburg-Moselland L2", "throughput_cap": 20.00 }
+  ]
+}

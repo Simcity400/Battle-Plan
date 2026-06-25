@@ -277,7 +277,14 @@ class Process(object):
         self.module_base = 0
         self.module_size = 0
         self.module_path = None
-        self._load_module(module_name)
+        self._last_read_ok = False
+        self._last_read_got = 0
+        self._last_read_err = 0
+        try:
+            self._load_module(module_name)
+        except BaseException:
+            self.close()              # M4: don't leak the OpenProcess handle if
+            raise                     # module enumeration fails before __enter__
 
     def _load_module(self, module_name):
         first = None
@@ -314,21 +321,31 @@ class Process(object):
 
     # -- raw reads ------------------------------------------------------
     def try_read(self, address, size):
-        """Read up to `size` bytes; return whatever was read (may be short)."""
+        """Read up to `size` bytes; return whatever was read (may be short).
+
+        Captures the ReadProcessMemory status (ok / bytes copied / last error)
+        IMMEDIATELY (H3) so callers can react to a partial copy and read() can
+        report the correct errno instead of a stale one from a later WinAPI call.
+        `len(return value)` is the actual byte count, so scanners can advance by
+        real bytes read (with their required overlap) and never skip an unread
+        tail near a region edge."""
         buf = (ctypes.c_char * size)()
         got = ctypes.c_size_t(0)
         ok = _k32.ReadProcessMemory(self.handle, ctypes.c_void_p(address), buf,
                                     size, ctypes.byref(got))
+        self._last_read_ok = bool(ok)
+        self._last_read_got = got.value
+        self._last_read_err = ctypes.get_last_error()
         if not ok and got.value == 0:
             return b""
         return bytes(buf[:got.value])
 
     def read(self, address, size):
-        """Read exactly `size` bytes or raise."""
+        """Read exactly `size` bytes or raise (errno from the actual RPM call)."""
         data = self.try_read(address, size)
         if len(data) != size:
             raise OSError("read 0x%X (%d bytes) failed: got %d (err %d)"
-                          % (address, size, len(data), ctypes.get_last_error()))
+                          % (address, size, len(data), self._last_read_err))
         return data
 
     # -- typed reads ----------------------------------------------------
@@ -417,7 +434,7 @@ class Process(object):
         pat, _ = parse_pattern(pattern)
         plen = len(pat)
         chunk = 8 << 20                       # 8 MB windows
-        stride = max(1, chunk - (plen - 1))   # overlap = plen-1 so boundary hits survive
+        overlap = plen - 1                    # so a match straddling a window survives
         out = []
         end = self.module_base + self.module_size
         for rbase, rsize in self.iter_regions(self.module_base, end, want_exec=want_exec):
@@ -431,7 +448,14 @@ class Process(object):
                                          limit=remaining, allow_short=allow_short))
                     if limit and len(out) >= limit:
                         return out[:limit]
-                pos += stride
+                # advance by bytes ACTUALLY read minus the overlap (H3): a short
+                # read (ERROR_PARTIAL_COPY at a region edge) must not skip the
+                # unread tail by advancing the full requested stride. On a fully
+                # empty read there's nothing to overlap, so skip the dead window.
+                if blob:
+                    pos += max(1, len(blob) - overlap)
+                else:
+                    pos += max(1, want)
         return out
 
     def rip_target(self, instr_addr, disp_offset, instr_len):

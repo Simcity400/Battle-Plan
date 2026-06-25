@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Battle Plan — GUI-driven renderer prototype</title>
+<style>
+  :root { --bg:#10141b; --panel:#1a2230; --ink:#dfe6ef; --muted:#7e8aa0; --line:#2b3344; }
+  * { box-sizing: border-box; }
+  html,body { margin:0; background:var(--bg); color:var(--ink); font-family:"Ubuntu","Segoe UI",Tahoma,sans-serif; }
+  header { padding:10px 16px; border-bottom:1px solid #283143; background:#141a24; }
+  header h1 { margin:0 0 4px; font-size:16px; font-weight:700; }
+  header p { margin:0; font-size:12px; color:var(--muted); }
+  #controls { display:flex; gap:16px; align-items:center; flex-wrap:wrap; padding:10px 16px; background:#161d28; border-bottom:1px solid #283143; }
+  .ctl-wrap { display:flex; align-items:center; gap:6px; }
+  .ctl-lbl { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  .ctl, select.ctl { background:#0e1219; color:var(--ink); border:1px solid #34405a; border-radius:4px; padding:4px 8px; font-size:13px; }
+  .ctl-chk { font-size:12px; color:var(--muted); display:flex; align-items:center; gap:4px; }
+  .ctl-btn { background:#27425e; color:#cfe2ff; border:1px solid #3a5b80; border-radius:4px; padding:5px 10px; font-size:12px; cursor:pointer; }
+  #stage { padding:16px; }
+  .proto-sec { margin-bottom:26px; }
+  .proto-h { font-size:13px; font-weight:600; color:#b7c6dc; margin:0 0 8px; border-left:3px solid #3a5b80; padding-left:8px; }
+  .proto-host { position:relative; background:#0b0e14 url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><rect width="24" height="24" fill="none" stroke="%231a2433" stroke-width="0.5"/></svg>') repeat; border:1px solid #232c3c; overflow:auto; max-width:100%; }
+  .proto-miss { font-size:11px; color:#e7a23c; margin-top:6px; font-family:monospace; }
+  .gr-window { position:relative; }
+  .gr-sprite { image-rendering:auto; }
+  .gr-text { color:#f3f0e2; text-shadow:0 1px 1px rgba(0,0,0,.8); pointer-events:none; }
+  .gr-missing { color:#6b7488; opacity:.45; font-style:italic; }
+  .gr-missing::after { content:"—"; }
+  .gr-miss { background:repeating-linear-gradient(45deg,#3a1d1d,#3a1d1d 4px,#2a1414 4px,#2a1414 8px); color:#e88; font-size:10px; display:flex; align-items:center; justify-content:center; border:1px dashed #a55; }
+  .gr-flag.gr-miss { font-size:9px; }
+  .gr-dbg { position:absolute; outline:1px solid rgba(90,200,255,.5); background:rgba(90,200,255,.06); pointer-events:auto; }
+  .gr-dbg:hover { background:rgba(90,200,255,.18); }
+  .gr-error { color:#ff8a8a; font-family:monospace; font-size:12px; padding:8px; }
+  .slot-stack { display:flex; flex-direction:column; gap:6px; }
+  .ph { color:var(--muted); font-size:13px; padding:10px; }
+  .miss-list { font-family:monospace; font-size:11px; color:#e7a23c; columns:3; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Battle Plan — GUI-driven renderer</h1>
+  <p>Windows rendered straight from the game's own <code>.gui</code> layouts + <code>.gfx</code> sprites (vanilla⊕mod effective set), filled from replay snapshots. No hand-built CSS recreations.</p>
+</header>
+<div id="controls"></div>
+<div id="stage"><div class="ph">loading…</div></div>
+
+<!-- dependency order: registries -> parser -> renderer -> bindings -> driver -->
+<script src="/replay_game/static/store.js"></script>
+<script src="/replay_game/static/gfx_registry.js"></script>
+<script src="/replay_game/static/gui_parser.js"></script>
+<script src="/replay_game/static/fonts.js"></script>
+<script src="/replay_game/static/gui_renderer.js"></script>
+<script src="/replay_game/static/bindings.js"></script>
+<script src="/replay_game/static/prototype.js"></script>
+</body></html>

@@ -1,0 +1,10 @@
+{
+  "source": "in-game air-region (strategic region air zone) views, PAUSED frame ~1946.5.18, user-provided 4 readings 2026-06-25 — LIVE AIR BATTLES in progress (the B1 fixture)",
+  "note": "Each region shows our/enemy plane counts by type, air-superiority %, mission efficiency 105%. Plane counts are exact integers (strong scan anchors). air_sup % are UI-rounded. region names map to strategic-region ids via the strategic_region asset being built. type breakdown is approximate from icons; totals/distinctive counts are reliable.",
+  "readings": [
+    { "region_name": "Central China", "our_planes_total": 200, "our_by_type": { "fighter": 200 }, "enemy_planes_total": 197, "our_air_sup_pct": 8, "enemy_air_sup_pct": 59, "mission_eff_pct": 105 },
+    { "region_name": "Eastern China", "our_planes_total": 1909, "our_by_type": { "fighter": 1549, "b": 152, "c": 208 }, "enemy_planes_total": 907, "our_air_sup_pct": 29, "enemy_air_sup_pct": 24, "mission_eff_pct": 105, "aircraft_detection_pct": 1.00 },
+    { "region_name": "Thar Desert", "our_planes_total": 0, "enemy_planes_total": 247, "enemy_by_type": { "a": 6, "b": 241 }, "our_air_sup_pct": 3, "enemy_air_sup_pct": 25, "mission_eff_pct": 105 },
+    { "region_name": "Central Japan", "our_planes_total": 200, "our_by_type": { "strategic_bomber": 200 }, "enemy_planes_total": 0, "our_air_sup_pct": 1, "enemy_air_sup_pct": 100, "mission_eff_pct": 105 }
+  ]
+}

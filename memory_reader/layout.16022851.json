@@ -34,17 +34,20 @@
   "country_record": {
     "status": "Step 3/4 - VERIFIED inline-record array (2026-06-24, build 16022851)",
     "record_stride": "0x120 (288 bytes)",
+    "CANONICAL_ORIGIN_NOTE": "M9: the ONE canonical origin used by the code (locate.py) and by country_container.record_origin is the RECORD START (= PP field - 0x20). The `fields_within_record` and `identity` offsets DIRECTLY BELOW are LEGACY/PP-RELATIVE discovery notes kept for provenance only - do NOT copy them as code offsets. record-start = PP - 0x20, so the legacy 0x0 / 0x3D / -0x18 map to canonical 0x20 / 0x5D / 0x08. Code constants live in locate.py: OFF_NAMEPTR=0x08, OFF_PP=0x20, OFF_INDEX=0x5D.",
     "fields_within_record": {
-      "political_power": { "offset": "0x0", "type": "i32", "scale": 100000,
+      "_coordinate_system": "LEGACY: offsets here are RELATIVE TO THE PP FIELD, not the record start. See CANONICAL_ORIGIN_NOTE.",
+      "political_power": { "offset": "0x0 (PP-relative; record-start +0x20)", "type": "i32", "scale": 100000,
         "note": "CONFIRMED tracks player PP exactly (453->304 = 30400000). the game fixed_point = x100000, NOT x1000. This is why every x1000/float/double scan missed." },
-      "running_index": { "offset": "0x3D (+61)", "type": "u16",
+      "running_index": { "offset": "0x3D (+61) PP-relative; record-start +0x5D", "type": "u16",
         "note": "clean 0..N running index across the whole array - proves it's the per-country array. Player = index 46." },
-      "packed_handle": { "offset": "0x38 (+56)", "type": "u32",
+      "packed_handle": { "offset": "0x38 (+56) PP-relative; record-start +0x58", "type": "u32",
         "note": "0x2X??AY?? value, varies regularly with index - looks like an internal country handle/generation, NOT an ascii tag. No ascii tag found within +-0x400 of PP, so tags are stored elsewhere (pointer to string, or a parallel Country* array)." }
     },
     "identity": {
-      "struct_ptr_offset": "-0x18 (relative to the PP field)",
-      "deref": "u64 at (pp_field - 0x18) -> identity struct S (heap). Validate S is a heap pointer; inactive/dynamic slots hold garbage here.",
+      "_coordinate_system": "LEGACY: struct_ptr_offset below is PP-relative (-0x18); record-start canonical is name_ptr +0x08. See CANONICAL_ORIGIN_NOTE.",
+      "struct_ptr_offset": "-0x18 (PP-relative; record-start +0x08)",
+      "deref": "u64 at (pp_field - 0x18) == u64 at (record_start + 0x08) -> identity struct S (heap). Validate S is a heap pointer; inactive/dynamic slots hold garbage here.",
       "name": { "at": "S + 0x10", "type": "msvc_std_string (buf16 @+0, size @+0x10, cap @+0x18; SSO if size<16 else ptr@+0)",
         "note": "localized display name e.g. 'Turkey','German Reich','Soviet Union'. PERFECT label - no tag decode needed." },
       "adjective": { "at": "S + 0x30", "type": "msvc_std_string", "note": "e.g. 'Turkish','German'." },
@@ -73,7 +76,7 @@
     "status": "SOLVED - self-locating, no static pointer chain, no restarts (locate.py)",
     "why_not_static_chain": "Reverse pointer-scan: level-1 found exactly ONE pointer to rec0 (M1, the begin field); levels 2-3 loop inside a self-referential cluster (manager<->array<->sibling); a full module static-data scan found ZERO pointers within 512KB of the cluster. The DB is buried deep in a large game-state object => any static chain is deep AND patch-fragile.",
     "method": "Relocate the array each launch by its structural fingerprint: dense incrementing u16 index column at stride 0x120, validated by dereferencing record+0x08 to >=2 printable country names. Patch-tolerant; ~23s scan; VERIFIED live 2026-06-24 (independently rediscovered rec0=0x1F8453A8A40 and the full 70-country roster).",
-    "liveness": "After locate, confirm an EXTERNAL pointer to rec0 exists (the owner M1) => not a stale freed copy. Cache M1 as the same-session fast path: each sample reads [M1] and revalidates index-run + names; re-locate only if it fails.",
+    "liveness": "After locate, confirm a UNIQUE external owner pointer to rec0 (find_vector_owner, B1-hardened): a real std::vector begin/end/cap triple when present, else exactly ONE external aligned holder matching this build's custom-container signature ([owner+8]==0 && [owner+0x10]==0); FAIL CLOSED (return None) on ambiguity (>1 unexplained holder/triple), and re-read [owner]==rec0 immediately before accepting (TOCTOU guard). => not a stale freed copy. Cache M1 as the same-session fast path: resolve_cached() reads [M1] and revalidates index-run + names + count; re-locate only if it fails.",
     "implementation": "locate.py (locate(), count_records(), find_vector_owner(), read_country()). Seeds on rare mid-range indices (16/24/40/64), verifies the run in-buffer before remote reads, capacity-aware MSVC std::string reader."
   },
 

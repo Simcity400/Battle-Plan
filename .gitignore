@@ -11,3 +11,27 @@ Thumbs.db
 desktop.ini
 .DS_Store
 *.swp
+
+# backup assets (L7)
+*.old
+
+# --- Generated / heavy game assets (regenerable via extract.py; keep the source scripts) ---
+game_assets/assets/
+game_assets/gui/
+game_assets/sprites.json
+game_assets/portraits.json
+game_assets/*_report.json
+map_pipeline/assets/*.png
+
+# --- Generated outputs (melted saves, rendered snapshots) ---
+save_oracle/output*/
+replay/snapshots/
+replay_render/output/
+replay_game/output/
+map_view/output/
+
+# --- Scratch / RE scan working dir ---
+re_scratch/
+
+# --- Internal review doc (not for the repo) ---
+CODE_REVIEW.md

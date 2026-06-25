@@ -1,0 +1,54 @@
+{
+  "_comment": "DRAFT live tag-db-id -> 3-letter TAG table for the game build 16022851, solved 2026-06-24 by anchoring on the save-derived tag-db-id ordering and locating the in-memory std::string table, then VALIDATING via the already-proven division-owner field (1603/1603). UNCOMMITTED / awaiting merge into layout.16022851.json. Offsets are build-specific; the reader MUST refuse to run unless the live exe sha256 matches the build below. All reads are READ-ONLY. This REMOVES the save dependency for tag-db-id -> TAG identity (state owner/controller, division owner/controller all read a tag-db-id; this table resolves it live).",
+
+  "build": {
+    "exe_sha256": "16022851eaa571728aa3a0b5fd5f990a56da57e2249a4c1b9cfb30336f59b120",
+    "module": "hoi4.exe",
+    "version_string": "Operation Postern v1.19.1.0.b49d",
+    "module_base_at_capture": "0x7FF783AD0000 (ASLR-randomized per launch; never hardcode - read live)",
+    "save_oracle": "GER_1940_09_10_13 (save_date 1940.9.10.13), melted with rakaly 0.8.17"
+  },
+
+  "summary": "The tag-db-id used by state owner/controller (+0xC8/+0xCC) and division owner/controller (+0x1C8/+0x1D0) is the 1-based index into a contiguous in-memory array of MSVC std::string country TAGs. Index 0 = the null-tag sentinel \"---\"; index 1 = GER, 2 = ENG, 3 = SOV, ... This 1-based index EXACTLY equals the order countries appear in the melted save's top-level countries={} block (0 mismatches vs the independently-derived owner map over 38 ids; and the table resolves 1603/1603 live division owners to the save TAG). So: TAG = tag_table[tag_db_id]; tag_db_id 0 means 'no country'.",
+
+  "tag_table_array": {
+    "kind": "Contiguous inline array of MSVC std::string (NOT a separately-headed std::vector: no external aligned qword in all committed memory holds the begin pointer; it is an inline member of a larger country-database object). DIRECT index by tag-db-id: record = base + tag_db_id*0x20. Slot [0] = \"---\" (null tag). Valid [1..143] this session.",
+    "base_session_dynamic": "0x1F8139FB680 (index 0 = '---'; HEAP, changes every launch - relocate per session, see relocate_method).",
+    "element_stride": "0x20 (32 bytes - one MSVC std::string).",
+    "element_count_this_session": 144,
+    "indexing": "tag = read_msvc_sso_string(base + tag_db_id*0x20). tag_db_id is the SAME id space as state-owner (+0xC8/+0xCC) and division-owner (+0x1C8) fields.",
+    "relocate_method": "Per session: scan committed heap for the 128-byte anchor = the raw bytes of records index0..index3 ('---','GER','ENG','SOV'), each a cap-15 SSO std::string: bytes = chars + NUL pad to 16, then size(u64)=len, then cap(u64)=15. This anchor matched EXACTLY 2 sites in ~8 GB this session (the canonical table A and a secondary copy B) and ZERO false positives. DISAMBIGUATE to the canonical table by: (a) records 0..143 all valid SSO with size 1..15/cap 15, (b) NO duplicate non-sentinel tags (the secondary copy B duplicates D01-D04), (c) the record immediately past the active roster is invalid garbage. Prefer the candidate satisfying all three. Validate by resolving several live division owners (+0x1C8) and state owners (+0xC8) and confirming all ids are in-bounds and yield 3-char tags."
+  },
+
+  "record_layout_msvc_std_string": {
+    "_coordinate_system": "Offsets relative to a record base (base + id*0x20).",
+    "chars": { "offset": "0x00", "type": "char[16] (SSO inline buffer)", "note": "the 3-char TAG, NUL-padded. When size<16 (always true for 3-char tags) the chars live inline here; otherwise +0x00 would be a heap pointer (never the case for tags)." },
+    "size":  { "offset": "0x10", "width": 8, "type": "u64", "note": "string length = 3 for real tags (or 3 for '---')." },
+    "capacity": { "offset": "0x18", "width": 8, "type": "u64", "note": "SSO capacity = 15. A strong validity discriminator (require cap==15 && 0<size<=15)." }
+  },
+
+  "validation": {
+    "save_order_invariant": "1-based index into save countries={} order == in-memory tag-db-id: 0 mismatches vs the draft owner observed_map over 38 known ids.",
+    "division_owner_crosscheck": "DECISIVE: enumerated 1604 live divisions (vtable scan), read owner tag-db-id (+0x1C8), resolved via this table -> TAG, compared to the melted save's div_id->owner: 1603/1603 MATCH, 0 mismatches (the 1 live-only division was created after the save). This validates the table against the already-proven division-owner field, not merely against the save it was derived from.",
+    "anchor_uniqueness": "128-byte index0..3 anchor matched exactly 2 sites in ~8 GB, both 143/143 GT tags; canonical table A is duplicate-free, secondary B duplicates D01-D04.",
+    "tag_db_id_to_tag_map_this_session_first_60": {
+      "0": "---", "1": "GER", "2": "ENG", "3": "SOV", "4": "SWE", "5": "FRA", "6": "LUX", "7": "BEL", "8": "HOL", "9": "CZE", "10": "POL", "11": "AUS", "12": "LIT", "13": "EST", "14": "LAT", "15": "SPR", "16": "ITA", "17": "ROM", "18": "YUG", "19": "SWI", "20": "TUR", "21": "GRE", "22": "ALB", "23": "NOR", "24": "DEN", "25": "BUL", "26": "POR", "27": "FIN", "28": "IRE", "29": "HUN", "30": "AST", "31": "BRA", "32": "CAN", "33": "CHI", "34": "ETH", "35": "JAP", "36": "KOR", "37": "MEX", "38": "NZL", "39": "PER", "40": "PHI", "41": "SAF", "42": "SIA", "43": "VEN", "44": "USA", "45": "MON", "46": "TAN", "47": "RAJ", "48": "ICE", "49": "LBA", "50": "INS", "51": "PAK", "52": "MAN", "53": "BAN", "54": "BRM", "55": "EFR", "56": "WST", "57": "AIF", "58": "MAL", "59": "BLI"
+    }
+  },
+
+  "fail_closed_validators": [
+    "table[0] == '---' (null-tag sentinel at index 0)",
+    "first N fixed tags match expected order at least through HOL/CZE/POL (GER,ENG,SOV,SWE,FRA,LUX,BEL,HOL,CZE,POL)",
+    "every record is a valid MSVC SSO std::string: size in 1..15, cap == 15, NUL-padded, printable uppercase/digit chars (reject heap-string variants)",
+    "NO duplicate non-sentinel tags (the secondary copy B fails this with D01-D04 -> reject)",
+    "all live state owner/controller (+0xC8/+0xCC) and division owner (+0x1C8) tag-db-ids are in [0..count) and resolve to a 3-char tag; else mark layout broken",
+    "anchor matches >=1 site that disambiguates to the duplicate-free table; >1 surviving duplicate-free candidate that disagree -> fail closed",
+    "when >1 canonical candidate agrees on a shared prefix, do NOT accept the shortest unless it COVERS the max observed live tag-db-id (TagTable.covers over the live state+division owner ids) (Codex)",
+    "exe sha256 gate (same as locate.py): unknown build -> no publish"
+  ],
+
+  "residual": {
+    "tag_db_id_to_running_index_bridge": "NOT solved. The country-array record (locate.py, rec0=0x1F8453A8A40) does NOT embed the 3-char TAG anywhere in its 0x120 bytes, and no embedded u16/u32 == tag-db-id was found at a fixed record offset. So linking a tag-db-id (or TAG) to the country-array running_index (which carries economy scalars: PP/stability/war_support/command_power/num_ships) is still unresolved in memory. NOT required for identity (TAG is fully resolved here) - only needed to attach economy scalars to a TAG live. Workaround: bridge via the save (PP-as-Rosetta), or solve the country object's stored tag-db-id in a follow-up.",
+    "two_tables": "A canonical (clean), B secondary (duplicates D01-D04). Use A; the disambiguation rule selects it. If a future build only exposes B-like duplicated tables, fall back to the FIRST occurrence of each tag (indices 1..143 are correct in B too; the dups are appended at the tail)."
+  }
+}

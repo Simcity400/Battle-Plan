@@ -1,0 +1,6 @@
+# Generated time-lapse media must never be committed (large PNG/GIF/MP4 + HTML).
+output/
+
+# Python bytecode
+__pycache__/
+*.pyc

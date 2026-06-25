@@ -1,0 +1,12 @@
+# live_capture generated output (snapshots, continuity state, locks, temp writes)
+__pycache__/
+*.pyc
+
+# any capture output written under this package (tests write here)
+_out/
+snapshots/
+_continuity/
+*.snapshot.json
+*.state.json
+*.lock
+*.tmp.*

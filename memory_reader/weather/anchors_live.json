@@ -1,0 +1,12 @@
+{
+  "source": "in-game debug tooltips (Hold Ctrl+Alt), paused frame ~1946.5.18, user-provided 5 readings 2026-06-25",
+  "note": "temp_c = UI-displayed INTEGER (almost certainly rounded from a float -> match with +-1.5C tolerance). precip = clear|rain|snow|storm. temp_band = the game 'very hot'/'hot'/'cold'/'very cold' band. Use these as EXACT-VALUE anchors to pin the live weather array (replaces fuzzy climatology correlation).",
+  "tag_db_ids_confirmed": { "ITA": 16, "ENG": 2, "FRA": 5, "TUR": 20, "RAJ": 47, "USA": 44 },
+  "readings": [
+    { "province": 7206, "state": 663, "area": "Cyrenaica (Libya)", "terrain": "Desert", "owner": "ITA", "controller": "ENG", "precip": "clear", "temp_band": null, "temp_c": 16, "local_time": "10:00" },
+    { "province": 3946, "state": 31, "area": "Midi-Pyrenees (France)", "terrain": "Hills", "owner": "FRA", "controller": "FRA", "precip": "clear", "temp_band": null, "temp_c": 8, "local_time": "9:00" },
+    { "province": 6945, "state": 343, "area": "Afyon (Turkey)", "terrain": "Hills", "owner": "TUR", "controller": "TUR", "precip": "clear", "temp_band": null, "temp_c": 11, "local_time": "11:00" },
+    { "province": 7250, "state": 983, "area": "Kolhapur and Deccan (India)", "terrain": "Plains", "owner": "RAJ", "controller": "RAJ", "precip": "rain", "temp_band": "very_hot", "temp_c": 26, "local_time": "14:00" },
+    { "province": 10167, "state": 623, "area": "Luzon (Philippines)", "terrain": "Mountain", "owner": "USA", "controller": "USA", "precip": "clear", "temp_band": "very_hot", "temp_c": 24, "local_time": "17:00" }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "source": "in-game supply tooltip with FULL ids (prov+state+region), paused frame ~1946.5.18, 2026-06-25 — the per-PROVINCE readings the supply agent requested for the CProvince pin",
+  "note": "remaining 10.05 != hubs 8.16 + state 2.40 (=10.56) => remaining is a throughput/range-capped solver output. Supply agent's residual lead: CProvince sub-record vtable MOD+0x2950A50. Check if province 3324's object holds 10.05 (cached remaining) OR 8.16 (hub) OR 2.40 (state) OR the components at any offset/encoding. Need ~5 more per-province readings of VARIED kind to validate & disambiguate aliases.",
+  "readings": [
+    { "province": 3324, "state": 806, "region": 38, "area": "Gdynia (Poland)", "supply_remaining_province": 10.05, "supply_from_hubs": 8.16, "supply_from_state": 2.40, "state_infra": 1.20, "state_pop": 0.02, "state_vp": 1.15, "vp_breakdown": { "Bydgoszcz": 0.25, "Torun": 0.45, "Gdynia": 0.45 } },
+    { "province": 9524, "area": "Hessen (Germany)", "supply_remaining_province": 5.87, "supply_from_hubs": 5.87, "supply_from_state": 7.00, "kind": "hub-bottlenecked: remaining==hubs 5.87 < state 7.00 (railway L1, throughput cap 15)" },
+    { "province": 687, "area": "Northern Dobruja (Romania)", "supply_remaining_province": 0.28, "supply_from_hubs": 13.10, "supply_from_state": 1.00, "kind": "near-zero/cut-off: remaining 0.28 << hubs 13.10 -- KILLER discriminator, offset MUST hold 0.28 not 13.10" },
+    { "province": 10523, "area": "Gilan (Iran)", "supply_remaining_province": 0.00, "supply_from_hubs": 0.00, "supply_from_state": 2.00, "kind": "zero: remaining 0.00 despite state 2.00 (no hub reach)" }
+  ]
+}

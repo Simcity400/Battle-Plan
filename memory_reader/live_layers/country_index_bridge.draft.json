@@ -1,0 +1,57 @@
+{
+  "_comment": "DRAFT live tag-db-id <-> country-array running_index BRIDGE for the game build 16022851, solved 2026-06-25 by locating a dense tag-db-id-indexed array of country-object pointers and reverse-mapping to the running_index, validated save-free (localized name + tag table + 18 division-owner anchors) and cross-checked against the prior save-PP-Rosetta running_index anchors (0 disagreements). UNCOMMITTED / awaiting merge into layout.16022851.json. Offsets are build-specific; the reader MUST refuse to run unless the live exe sha256 matches the build below. All reads are READ-ONLY. This REMOVES the SAVE dependency for attaching per-country ECONOMY SCALARS (political_power, stability, war_support, command_power, num_ships) to a TAG: the economy layer reads those scalars by country-array running_index, and this bridge maps that running_index to/from the tag-db-id (hence TAG via tag_table.py) entirely from live memory.",
+
+  "build": {
+    "exe_sha256": "16022851eaa571728aa3a0b5fd5f990a56da57e2249a4c1b9cfb30336f59b120",
+    "module": "hoi4.exe",
+    "version_string": "Operation Postern v1.19.1.0.b49d",
+    "module_base_at_capture": "0x7FF783AD0000 (ASLR-randomized per launch; never hardcode - read live)",
+    "save_oracle": "GER_1940_09_10_13 (save_date 1940.9.10.13) - VALIDATION ORACLE ONLY; the runtime path uses NO save."
+  },
+
+  "summary": "The country-array running_index (locate.py: rec = rec0 + index*0x120; the per-country 'country object' is at [rec+0x08] and carries the economy scalars) is in a DIFFERENT id space from the tag-db-id used by state owner/controller (+0xC8/+0xCC), division owner (+0x1C8), and province control. The game holds a DENSE array, indexed DIRECTLY by tag-db-id (stride 8), where slot[tag_db_id] = a u64 POINTER to that country's 'country object' ([rec+0x08]). So: country_object_ptr = u64[bridge_base + tag_db_id*8]; running_index = OBJ_PTR[country_object_ptr] (reverse of [rec+0x08]); TAG = tag_table[tag_db_id]. Slot[0] = the '---' null-tag sentinel. This is a UNIVERSAL bridge (covers every registered tag - 143 this session, 88 currently active - not just the army-owning subset a division join would reach).",
+
+  "bridge_array": {
+    "kind": "Dense tag-db-id-INDEXED array of u64 pointers to the per-country 'country object' ([country_record+0x08]). DIRECT index by tag-db-id: slot = base + tag_db_id*8. Slot[0] = '---' sentinel (points to a placeholder country object, NOT a live roster country; skip it). It is NOT a clean std::vector begin/end/cap triple; like the other game-state arrays it is a custom typed-collection (the qword at base-0x08 is a packed handle/hash, not a vtable in the canonical copy). The engine keeps SEVERAL MIRROR COPIES of this array (same phenomenon as the tag table's canonical+secondary copies); all copies are byte-identical in the tag-db-id ordering.",
+    "base_session_dynamic": "0x1F845C22F70 (slot 0 = '---'; HEAP, changes every launch - relocate per session, see relocate_method). Other mirror copies this session: 0x1F85D9C2208, 0x1F85D9C3678, 0x1F8C65843F8 (all produced the IDENTICAL 88-entry map).",
+    "element_stride": 8,
+    "element_type": "u64 pointer to a 'country object' (== [country_record+0x08]; +0x10 = localized name, +0x10D0 = stability, +0x10D8 = war_support, +0x1F0 = command_power, +0x1330 = num_ships). 0/non-country = inactive/null tag.",
+    "indexing": "country_object_ptr = u64(base + tag_db_id*8). running_index = OBJ_PTR[country_object_ptr], where OBJ_PTR = {u64[rec0 + i*0x120 + 0x08] : i} over the live country array (locate.py).",
+    "active_entries_this_session": 88,
+    "relocate_method": "SAVE-FREE, self-locating per session: (1) locate the country array (locate.py) -> rec0, count; build OBJ_PTR = {[rec+0x08]: running_index}. (2) Identify >=6 ANCHOR countries by their localized NAME in the country array (majors: German Reich/GER, United Kingdom/ENG, Soviet Union/SOV, Sweden/SWE, Italy/ITA, Japanese Empire/JAP, United States/USA, British Raj/RAJ, Poland/POL, Hungary/HUN, Norway/NOR), and look up each anchor's tag-db-id in the live tag table (tag_table.py). That yields, for each anchor, the EXACT country-object pointer expected at base + tag_db_id*8. (3) Scan committed non-exec heap for the first anchor's object pointer; for each 8-aligned hit at address A, hypothesize bridge_base = A - tag_db_id*8 and accept iff EVERY anchor lands at base + its_tag_db_id*8 (the tag-db-id ORDER fingerprint - essentially collision-free; a different stride-8 country-object array, e.g. an order-of-battle list, is NOT tag-db-id ordered and fails). (4) DISAMBIGUATE mirror copies by ACCEPT-ON-AGREEMENT: build each surviving base's full tag-db-id->running_index map; if all agree on shared keys, accept the lowest base; if any two DISAGREE, fail closed."
+  },
+
+  "country_object_record_recap": {
+    "_note": "Recap of the pieces this bridge ties together (from locate.py + economy_offsets.draft.json; not re-derived here).",
+    "country_record_stride": "0x120 (rec = rec0 + running_index*0x120).",
+    "running_index": "u16 at record+0x5D.",
+    "country_object": "[record+0x08] - the bridge's pointee; +0x10 localized name (std::string), +0x10D0 stability, +0x10D8 war_support, +0x1F0 command_power, +0x1330 num_ships (all confirmed in economy_offsets.draft.json).",
+    "political_power": "i32 fixed-point /100000 at record+0x20 (flat in the record, NOT the object)."
+  },
+
+  "validation": {
+    "identity_name_plus_tag": "ALL 88 active tag-db-ids (1..89) resolve to a running_index whose country object's localized NAME and the tag table's TAG agree 1:1 (e.g. tag-db-id 1->idx14=GER='German Reich', 2->idx18=ENG='United Kingdom', 3->idx58=SOV='Soviet Union', 35->idx54=JAP='Japanese Empire', 44->idx94=USA='United States', 47->idx71=RAJ='British Raj', 50->idx66=INS='Republic of Indonesia'). A random or permuted array cannot reproduce these scattered running_index values AND match the localized names.",
+    "division_owner_crosscheck": "All 18 division-owner tag-db-ids (from the live CDivision +0x1C8 enumeration) land on the correct country via this bridge.",
+    "independent_save_pp_rosetta_agreement": "DECISIVE: the memory-only map AGREES with the PRIOR, INDEPENDENT save-PP-Rosetta running_index anchors documented by another agent (owner_offsets.draft.json tag_id_resolution / division_offsets.draft.json): GER=14, ENG=18, FRA=59, BEL=60, JAP=54, RAJ=71, INS=66 -> 7/7 agree, 0 mismatch. Two independent methods (one save-anchored via PP correlation, one purely memory via this array) produce the identical map.",
+    "end_to_end_economy_vs_save": "Pipeline bridge -> running_index -> read PP/stability/war_support/command_power/num_ships -> label by TAG, compared to save_oracle/output/country_snapshot.json (1940.9.10.13): quiet neutrals match exactly (e.g. SWE stability 0.47, war_support 0.10, command_power 200.0, num_ships 29 - all EXACT; GER stability 0.750 EXACT), while active majors and the fast-regenerating fields (political_power, command_power) and num_ships diverge. This pattern is STALE-SAVE drift (the live game advanced past the 1940.9.10 save - independently corroborated: province control found 2 post-save control changes and division enumeration found +1 live-only division), NOT a bridge error. The bridge IDENTITY is proven independently of the stale scalars by the name+TAG+division+save-PP-Rosetta agreement above. A fresh time-aligned melt would restore near-perfect scalar match (Codex-recommended final audit step; not performed - the running game cannot be save-triggered read-only).",
+    "two_read_sentinel": "The array re-read twice was byte-identical (no mid-read mutation)."
+  },
+
+  "fail_closed_validators": [
+    "exe sha256 gate (same as locate.py): unknown build -> no publish",
+    "tag table located (tag_table.py) and country array located (locate.py) first; else None",
+    ">= 40 country objects in OBJ_PTR (a short set means the country array scan failed) -> fail closed",
+    ">= 6 name-resolvable + tag-table-resolvable anchors found -> else fail closed",
+    "at least one base passes the full anchor (tag-db-id order) fingerprint -> else fail closed",
+    "if >1 base passes, build each base's full map; accept only if ALL agree on shared keys (mirror copies); any disagreement -> fail closed",
+    "resolved map injective (no two tag-db-ids -> same running_index) -> else fail closed",
+    "every resolved tag-db-id resolves to a real 3-char TAG via the tag table -> else fail closed",
+    "revalidate(): tag-db-ids 1/2/3 still point at their cached running_index's country object (same-session TOCTOU / reallocation guard); on failure the caller re-resolves"
+  ],
+
+  "residual": {
+    "static_chain": "No static pointer chain to the owning country-DB container is mapped (the array is a custom typed-collection, not a clean vector with a unique external begin-ptr holder; mirror copies share no unique vtable anchor). Covered by the save-free self-locating relocation + same-session caching + revalidate(); a static chain is a future hardening, identical in status to the tag-table and province-control arrays.",
+    "name_anchor_locale": "The relocation anchors on English localized country names of majors. If a future session ran a non-English localization or civil-war/cosmetic renames hid >3 of the anchor majors, fewer than 6 anchors could resolve -> fail closed (it would not misresolve, just refuse). Mitigation if ever needed: anchor instead on the division-owner-derived tag-db-id set (a name-free anchor: each owner_country_object at CDivision+0x290 is a per-tag-db-id object, distinct from but parallel to this array) for the army-owning subset, then extend. Not needed this build (11 anchors resolved).",
+    "stale_save_oracle": "The committed save oracle (1940.9.10.13) is now behind the live game, so it is no longer a tight SCALAR oracle; the bridge IDENTITY is nonetheless proven save-free (names/TAG/divisions) and cross-checked against the prior save-PP-Rosetta map. A fresh melt would give a final tick-aligned scalar audit."
+  }
+}

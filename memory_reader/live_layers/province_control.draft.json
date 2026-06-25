@@ -1,0 +1,68 @@
+{
+  "_comment": "DRAFT live PER-PROVINCE CONTROLLER layer for the game build 16022851, solved 2026-06-24 by an encoding-agnostic semantic-partition scan over live read-only memory validated against the time-aligned melted save's province_control oracle (1940.9.10.13). UNCOMMITTED / awaiting merge into layout.16022851.json. Offsets are build-specific; the reader MUST refuse to run unless the live exe sha256 matches the build below. All reads are READ-ONLY. This REMOVES the save dependency for province control: the array MATERIALIZES FINAL control (province override merged with state-controller fallback) for every province, as a per-controller country-object POINTER, resolved to a TAG via the live state-crack bridge + tag table.",
+
+  "build": {
+    "exe_sha256": "16022851eaa571728aa3a0b5fd5f990a56da57e2249a4c1b9cfb30336f59b120",
+    "module": "hoi4.exe",
+    "version_string": "Operation Postern v1.19.1.0.b49d",
+    "module_base_at_capture": "0x7FF783AD0000 (ASLR-randomized per launch; never hardcode - read live)",
+    "save_oracle": "GER_1940_09_10_13 (save_date 1940.9.10.13). save_oracle/output/province_control.json = {province_id: controller_TAG} for all 10272 land provinces (33 distinct controllers)."
+  },
+
+  "summary": "Province control lives in a DENSE array indexed DIRECTLY by province_id. Each element is a u64 POINTER to a per-controller country object (33 distinct pointers == 33 distinct live controllers). The array materializes FINAL control = (province-level override) merged with (state-controller fallback): all 22 provinces whose controller diverges from their state controller decode to the correct OVERRIDE controller, which rules out an owner/core array. controller_ptr = u64[base + province_id*8]; ptr==0 means no controller (sea/lake/wasteland; 3143 null slots). Resolve ptr -> TAG via the bridge below.",
+
+  "province_control_array": {
+    "kind": "Dense id-indexed array of u64 controller-country-object pointers. DIRECT index by province_id (slot[0]=0, no province 0). element = u64(base + province_id*8). Owned by a container object (begin-ptr at container+0x00, container vtable MODULE+0x305B170 at container+0x10) - the same typed-collection family as the per-state runtime array. NOT a clean std::vector begin/end/cap triple.",
+    "base_session_dynamic": "0x1F84AE26480 (slot 0; HEAP, changes every launch - relocate per session, see relocate_method).",
+    "element_stride": 8,
+    "element_type": "u64 pointer to a controller country object (in a stride-0x90 per-country pool). 0 = no controller.",
+    "slot_count_this_session": 13415,
+    "max_province_id": 13413,
+    "null_slots_this_session": 3143,
+    "owning_container_holder_session": "0x1F849483EA8 (holds the begin ptr at +0x00; +0x10 == MODULE+0x305B170 container vtable). Exactly ONE external aligned holder of the begin ptr in all committed memory.",
+    "relocate_method": "MULTI-ANCHOR (Codex-recommended; a single anchor is collision-prone because common controller pointers fill many slots): (1) relocate the per-state runtime array (owner crack) and read several states' controller country-object POINTER is not directly available there, so instead (1a) build a few (province_id -> expected controller country-object pointer) anchors from KNOWN provinces by reading the state crack's controller tag-db-id and finding ANY array whose slot[province_id] is consistent; practical robust route: (2) re-derive the base by the encoding-agnostic semantic-partition scan (state-crack controller per province as ground truth, NO save needed) - scan committed heap (writable, arena ~0x1F6..0x1FA first) for an array A with A[base + pid*8] partitioning provinces by their live state-derived controller; pick the base with full bijection (allow a tiny mismatch budget for in-flight control). This is the recovery path. (3) FAST same-session path: cache the base, re-validate slot0==0, length, injective pointer set, and several known provinces vs the state crack; re-derive only on failure. Owning container (begin@+0x00, vtable MODULE+0x305B170 @+0x10) can also be walked once a stable chain to that map-database container is mapped (TODO)."
+  },
+
+  "controller_object_pool": {
+    "note": "The u64 values point into a contiguous per-country pool, stride 0x90 (144 bytes), all pointers 0x90-aligned from the pool base. The pool index is NOT the tag-db-id and the pool object does NOT store the tag-db-id at any single offset hitting all 33 controllers. So ptr->TAG is resolved by the BRIDGE, not by decoding the object.",
+    "pool_stride": "0x90",
+    "pool_base_session": "0x1F837E5A930 (min observed controller ptr this session; dynamic)"
+  },
+
+  "ptr_to_tag_bridge": {
+    "method": "SAVE-FREE join with the already-solved live state-controller crack. The per-state runtime object (enumerated by vtable MODULE+0x2910920) has state_id @+0x58 and controller tag-db-id @+0xCC (1-based; resolve via the tag table). For each province, look up its state's live controller tag-db-id (province_to_state.json gives province->state), and associate that province's array POINTER with that tag-db-id. Aggregate across all provinces mapping to each pointer and take the dominant tag-db-id (Counter.most_common). Yields ptr -> tag-db-id with 0 conflicts (33/33 pointers resolved this session). Then TAG = tag_table[tag_db_id].",
+    "confidence_gates": [
+      "each controller pointer maps to ONE dominant tag-db-id with a high dominance ratio and no strong second candidate (Codex: a split state could in principle poison a country that controls no whole state; gate on dominance)",
+      "every live state-controller tag-db-id resolves back to exactly ONE pointer (injective both ways)",
+      "distinct pointer count == distinct live controller count"
+    ]
+  },
+
+  "validation": {
+    "scan": "Encoding-agnostic semantic-partition scan: arena 0x1F6..0x1FA, writable+RO regions, widths u16/u32/u64, index by pid and pid-1; require the value to partition provinces by FINAL controller (same controller -> same value, different -> different). u64 / direct-index won uniquely; 6 byte-aliased candidates all resolve to base 0x1F84AE26480.",
+    "vs_save_savefree": "Full pipeline province -> u64 ptr -> (state-crack bridge) tag-db-id -> (tag table) TAG, compared to save_oracle province_control: 10270/10272 MATCH, 0 unresolved, 2 mismatch (prov 5017 & 5047: live=ITA, save=ENG) = REAL control changes after the 1940.9.10 save (the live game advanced; consistent with the +1 live-only division and the dense scan's bad=2). NO save used in the resolution - the save was only the validation oracle.",
+    "distinct_controllers": "33 (matches the save's 33 distinct controllers).",
+    "divergent_provinces": "All 22 provinces whose save controller != state controller decoded to the correct OVERRIDE controller (rules out owner/core arrays)."
+  },
+
+  "fail_closed_validators": [
+    "exactly one candidate base; readable contiguous (max_prov_id+1)*8 array",
+    "slot[0] == 0 (null)",
+    "every LAND province slot is non-null and points into the controller pool (null/garbage on a land province -> fail)",
+    "distinct pointer count == expected live controller count (or within a strict explained bound)",
+    "ptr<->tag-db-id mapping injective both directions (>1 tag per pointer -> fail closed)",
+    "ptr->tag bridge has no strong conflict (dominance gate)",
+    "known divergent/override provinces decode correctly",
+    "repeated reads stable across a paused tick",
+    "exe sha256 build gate",
+    "state crack returns a (near-)complete set (>= 1081-5 states) before bridging - a short set means the state vtable scan failed (Codex c)",
+    "EVERY distinct non-null land-province pointer is bridged to a tag-db-id (an un-nameable controller -> fail); distinct non-null pointer count == bridged pointer count",
+    "the tag table covers every bridged tag-db-id (TagTable.covers)"
+  ],
+
+  "residual": {
+    "relocation_static_chain": "No static pointer chain to the owning container is mapped yet (the container uses the generic MODULE+0x305B170 vtable, shared with the state array and ~11M other handle objects, so the vtable alone is not a unique anchor). Same-session caching + the save-free semantic re-derive scan cover relocation; a stable static chain to the map-database container is a future hardening.",
+    "ptr_internal_tagid": "The controller-pool object (stride 0x90) does not expose the tag-db-id at a clean offset; ptr->TAG goes through the state-crack bridge. If the state crack is unavailable, ptr->TAG would need the save. Fully self-contained otherwise.",
+    "controller_only": "This array is the CONTROLLER. Per-province OWNER (if needed) is the state owner (already live, +0xC8) via province->state; a province-level owner override is not expected (the game owns at state level)."
+  }
+}

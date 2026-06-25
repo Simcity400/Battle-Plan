@@ -1,0 +1,10 @@
+{
+  "source": "in-game naval-combat panels, PAUSED frame ~1946.5.18, user-provided 3 LIVE NAVAL BATTLES 2026-06-25 — the B1 naval fixture (discrete naval CCombatSide structures only exist mid-battle)",
+  "note": "These are submarine-vs-surface engagements. Anchors: attacker/defender TAGs (tag-db-ids known), ship/sub counts per fleet, commander NAME strings (attacker side; defenders have No Commander), per-combat stat (549/158/87, distinctive ints), positioning %. Battle location = a sea zone (strategic region). Use the land-combat registry-chain TEMPLATE: CLandCombat vtable MODULE+0x2980CB8 type 62; the naval combat is a SIBLING vtable nearby with the same side-registry layout (attacker side *(combat+0x18), registry +0x18 -> attacker@+0x28 DEFENDER@+0x30, identity {id<<32|type}@+0x18, each side inline small-vec data@+0x20 count@+0x2C).",
+  "tag_db_ids": { "FRA": 5, "JAP": 35, "MEX": 37, "SOV": 3, "FIN": 27 },
+  "battles": [
+    { "name": "Central Atlantic Gap", "attacker_tag": "FRA", "attacker_commander": "Amedee Nivelle", "attacker_fleet": { "submarines": 12 }, "defender_tag": "JAP", "defender_commander": null, "defender_ships": 13, "combat_stat": 549, "positioning_attacker_pct": 100, "positioning_defender_pct": 97 },
+    { "name": "Mexican Coast", "attacker_tag": "MEX", "attacker_commander": "Melchor de Ampudia", "attacker_fleet": { "submarines": 4 }, "defender_tag": "JAP", "defender_commander": null, "defender_ships": 2, "combat_stat": 158, "positioning_attacker_pct": 81, "positioning_defender_pct": 100, "naval_dominance_required": 375, "naval_dominance_current": 0 },
+    { "name": "English Channel", "attacker_tag": "SOV", "attacker_commander": "Anatoly Abramov", "attacker_fleet": { "submarines_fleet1": 9, "submarines_fleet2": 3, "submarines_total": 12 }, "defender_tag": "FIN", "defender_commander": null, "defender_ships": 1, "combat_stat": 87, "positioning_attacker_pct": 100, "positioning_defender_pct": 95 }
+  ]
+}

@@ -1,0 +1,15 @@
+# Converted Paradox art -- NEVER commit (user's own installed content, not redistributable)
+assets/
+
+# Raw extracted textures / scratch
+*.dds
+*.tga
+*.png
+
+# Diagnostics may contain absolute local install paths -> keep out of git
+extract_report.json
+portraits_report.json
+
+# Python
+__pycache__/
+*.pyc

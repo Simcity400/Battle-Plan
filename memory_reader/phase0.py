@@ -7,6 +7,13 @@ the real reader.
 
 Nothing here ever writes to the game. Requires 64-bit Python.
 
+phase0 is a manual DISCOVERY/verification tool and deliberately does NOT enforce
+the exe build-hash gate (you point read/watch/chain at arbitrary addresses on
+whatever build is loaded - that is the whole point). The PRODUCTION reader path
+(locate.locate + the readers) IS build-gated; see locate.main. Do not wire
+phase0's raw read/watch/chain into an automated reader without adding that gate
+(CODE_REVIEW M7).
+
 Quick tour (run with the game open unless noted):
   python phase0.py selftest                 # no game needed - proves the plumbing
   python phase0.py procs --filter hoi        # find the game's process name

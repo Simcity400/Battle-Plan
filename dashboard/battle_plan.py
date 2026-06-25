@@ -18,10 +18,20 @@ so it doubles as a live caster view. Bound to 127.0.0.1 only.
 
 import argparse
 import json
+import math
+import re
 import sys
+import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
+
+# A country tag the mod emits is a short uppercase/underscore code (e.g. "GER",
+# "D01"). Anything else in the tag field is a malformed/hostile log line and is
+# skipped server-side (H1/L2: keeps `</script>`, `__proto__`, markup, etc. out).
+TAG_RE = re.compile(r"^[A-Z0-9_]{2,4}$")
+SCHEMA_VERSION = "v1"
 
 # v1 schema: column order the mod emits after "HOI4MPSTAT;v1;DATA;". Fallback if the
 # HEADER line isn't present in the log.
@@ -76,9 +86,34 @@ def num(s):
     if s == "":
         return 0.0
     try:
-        return float(s)
+        f = float(s)
     except ValueError:
         return 0.0
+    # H2: "nan"/"inf"/"1e9999" parse to non-finite floats that crash int(tick)
+    # and produce invalid JSON (bare NaN/Infinity). Coerce them to 0.0.
+    return f if math.isfinite(f) else 0.0
+
+
+def parse_int(s):
+    """Strict int parse for the tick field; returns None on anything non-integer
+    (incl. nan/inf/garbage) so the caller can skip the row (H2)."""
+    try:
+        return int(str(s).strip())
+    except (ValueError, TypeError):
+        return None
+
+
+def valid_header(payload):
+    """H4: only adopt a HEADER if it is a sane column list - unique names, with
+    both 'tick' and 'tag' present. Otherwise ignore it and keep DEFAULT_COLUMNS,
+    so a malformed/duplicate header can't crash build_series or silently remap
+    columns (e.g. a renamed 'tick' would corrupt the time axis)."""
+    cols = [c.strip() for c in payload]
+    if not cols or len(cols) != len(set(cols)):
+        return None                       # empty or duplicate column names
+    if "tick" not in cols or "tag" not in cols:
+        return None
+    return cols
 
 
 def parse_log(path):
@@ -93,19 +128,38 @@ def parse_log(path):
                 parts = line[i:].strip().split(";")
                 if len(parts) < 4:
                     continue
+                # L6: validate the marker + schema version rather than trusting
+                # "HOI4MPSTAT;" anywhere in the line and ignoring the version.
+                if parts[0] != "HOI4MPSTAT" or parts[1] != SCHEMA_VERSION:
+                    continue
                 kind = parts[2]
                 payload = parts[3:]
                 if kind == "HEADER":
-                    columns = payload
+                    cols = valid_header(payload)
+                    if cols is not None:
+                        columns = cols
                 elif kind == "DATA":
                     cols = columns or DEFAULT_COLUMNS
-                    rec = {}
-                    for idx, colname in enumerate(cols):
-                        val = payload[idx] if idx < len(payload) else ""
-                        rec[colname] = val if colname == "tag" else num(val)
-                    rec["tick"] = int(rec.get("tick", 0))
+                    raw = {colname: (payload[idx] if idx < len(payload) else "")
+                           for idx, colname in enumerate(cols)}
+                    # H1/L2: skip rows whose tag isn't a plain country code, so
+                    # markup / __proto__ / </script> never reach build_series or
+                    # the browser.
+                    tag = raw.get("tag", "")
+                    if not TAG_RE.match(tag):
+                        continue
+                    # H2: parse tick STRICTLY from the raw string (not the num()
+                    # float), so a non-integer/nan/inf tick is skipped rather than
+                    # silently coerced to 0.
+                    tick = parse_int(raw.get("tick", ""))
+                    if tick is None:
+                        continue
+                    rec = {c: (v if c == "tag" else num(v)) for c, v in raw.items()}
+                    rec["tick"] = tick
                     rows.append(rec)
-    except FileNotFoundError:
+    except OSError:
+        # M8: tolerate FileNotFoundError, PermissionError, and transient mid-write
+        # read errors - the tool runs unattended beside a game for hours.
         pass
     return rows
 
@@ -113,7 +167,10 @@ def parse_log(path):
 def build_series(rows):
     by_tag = {}
     for r in rows:
-        by_tag.setdefault(r["tag"], []).append(r)
+        tag = r.get("tag")
+        if not tag:                       # H4: never KeyError on a tagless row
+            continue
+        by_tag.setdefault(tag, []).append(r)
     out = {}
     all_ticks = set()
     for tag, recs in by_tag.items():
@@ -129,6 +186,12 @@ def build_series(rows):
             for k, _, w in TYPES:
                 cum = r.get(k, 0.0)
                 delta = cum - prev[k]
+                # Clamp resets/startup spike to 0. NOTE (M6, DEFERRED): if a tag
+                # is annexed then reappears (released, or handed to another
+                # player), its two "lives" stitch into one series with a 0 at the
+                # seam. Auto-segmenting on a cumulative drop was considered but
+                # false-positives on log truncation / mod reload / tag reuse, so
+                # the safer clamp is kept; revisit once segmentation is needed.
                 if delta < 0 or not seen_first:
                     delta = 0.0
                 row["out_" + k] = delta
@@ -149,6 +212,43 @@ def make_payload(rows):
         "types": [{"key": k, "label": lbl} for k, lbl, _ in TYPES],
         "scalars": SCALARS,
     }
+
+
+def dump_json(payload):
+    """Serialize the payload, failing LOUDLY on any non-finite number rather than
+    emitting invalid JSON (bare NaN/Infinity) that blanks the whole page (H2).
+    num() already coerces non-finite inputs, so allow_nan=False is a backstop."""
+    return json.dumps(payload, separators=(",", ":"), allow_nan=False)
+
+
+def json_for_html(s):
+    """Escape a JSON string for safe embedding inside an inline <script> (M2):
+    a tag/string containing '</script>' would otherwise close the element and
+    inject markup. \\u-escaping these is valid inside JS string literals."""
+    return s.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+
+
+# M3: single-flight cache of the parsed payload keyed on (mtime_ns, size). A long
+# MP game's log grows unbounded; without this every /data.json (and every open
+# tab / external poller) re-parses the whole file under ThreadingHTTPServer.
+_cache_lock = threading.Lock()
+_cache_key = None
+_cache_payload = None
+
+
+def cached_payload(log_path):
+    global _cache_key, _cache_payload
+    try:
+        st = Path(log_path).stat()
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = None                     # missing/unstattable -> always re-parse
+    with _cache_lock:
+        if key is not None and key == _cache_key and _cache_payload is not None:
+            return _cache_payload
+        payload = make_payload(parse_log(log_path))
+        _cache_key, _cache_payload = key, payload
+        return payload
 
 
 _CHARTJS = None
@@ -213,6 +313,11 @@ const palette=["#e6194B","#3cb44b","#4363d8","#f58231","#42d4f4","#f032e6","#bfe
  "#fabed4","#9A6324","#fffac8","#800000","#aaffc3","#808000","#ffd8b1","#000075",
  "#a9a9a9","#ffffff","#e6beff"];
 const color=i=>palette[i%palette.length];
+// H1: HTML-escape any log-derived string before it reaches innerHTML. Tags are
+// validated server-side too (^[A-Z0-9_]{2,4}$), so this is belt-and-suspenders
+// against a hostile/crafted game.log.
+const esc=s=>String(s).replace(/[&<>"']/g,c=>(
+  {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
 let D=null, tags=[], built=false, sortKey="icout", sortDir=-1, lineChart, mixChart;
 
 async function fetchData(){ if(BOOT) return BOOT;
@@ -220,11 +325,11 @@ async function fetchData(){ if(BOOT) return BOOT;
 
 function buildControls(){
   const m=document.getElementById("metric");
-  m.innerHTML=Object.entries(D.scalars).map(([k,v])=>`<option value="${k}">${v}</option>`).join("");
+  m.innerHTML=Object.entries(D.scalars).map(([k,v])=>`<option value="${esc(k)}">${esc(v)}</option>`).join("");
   const tg=document.getElementById("tags");
-  tg.innerHTML=tags.map((t,i)=>`<label><input type="checkbox" class="tagchk" value="${t}" `+
-    `${i<8?"checked":""}>${t}</label>`).join("");
-  document.getElementById("mixCountry").innerHTML=tags.map(t=>`<option value="${t}">${t}</option>`).join("");
+  tg.innerHTML=tags.map((t,i)=>`<label><input type="checkbox" class="tagchk" value="${esc(t)}" `+
+    `${i<8?"checked":""}>${esc(t)}</label>`).join("");
+  document.getElementById("mixCountry").innerHTML=tags.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join("");
   m.onchange=drawLine;
   document.getElementById("mixCountry").onchange=drawMix;
   tg.querySelectorAll(".tagchk").forEach(c=>c.onchange=drawLine);
@@ -254,12 +359,12 @@ function drawMix(){
 function drawTable(){
   const cols=[["tag","Country"],["icout","IC out/mo"],["icout_web","IC out (web)"],["mil_fac","Mil fac"],
     ["civ_fac","Civ fac"],["dock","Dock"],["mp","Manpower"],["cas","Casualties"]];
-  const last={};
+  const last=Object.create(null);   // L2: null-proto so a tag like __proto__ is inert
   for(const t of tags){const a=D.series[t]; if(a&&a.length)last[t]=a[a.length-1];}
   let rows=Object.values(last);
   rows.sort((a,b)=>{const x=a[sortKey],y=b[sortKey];return (x<y?-1:x>y?1:0)*sortDir;});
-  let h="<tr>"+cols.map(c=>`<th data-k="${c[0]}">${c[1]}</th>`).join("")+"</tr>";
-  for(const r of rows){h+="<tr>"+cols.map(c=>`<td>${c[0]==="tag"?r[c[0]]:Math.round(r[c[0]]).toLocaleString()}</td>`).join("")+"</tr>";}
+  let h="<tr>"+cols.map(c=>`<th data-k="${esc(c[0])}">${esc(c[1])}</th>`).join("")+"</tr>";
+  for(const r of rows){h+="<tr>"+cols.map(c=>`<td>${c[0]==="tag"?esc(r[c[0]]):Math.round(r[c[0]]).toLocaleString()}</td>`).join("")+"</tr>";}
   const tb=document.getElementById("snap"); tb.innerHTML=h;
   tb.querySelectorAll("th").forEach(th=>th.onclick=()=>{const k=th.dataset.k;
     if(k===sortKey)sortDir*=-1; else{sortKey=k;sortDir=-1;} drawTable();});
@@ -289,15 +394,32 @@ def make_handler(log_path):
             self.wfile.write(body)
 
         def do_GET(self):
-            if self.path.startswith("/data.json"):
-                payload = make_payload(parse_log(log_path))
-                self._send(json.dumps(payload, separators=(",", ":")).encode("utf-8"),
-                           "application/json")
-            elif self.path in ("/", "/index.html"):
-                page = HTML.replace("__CHARTJS__", chartjs_tag()).replace("__DATA__", "null")
-                self._send(page.encode("utf-8"), "text/html; charset=utf-8")
-            else:
-                self.send_error(404)
+            # L1: match the exact path, not a startswith prefix (so /data.jsonXYZ
+            # doesn't serve data).
+            route = urlsplit(self.path).path
+            try:
+                if route == "/data.json":
+                    body = dump_json(cached_payload(log_path)).encode("utf-8")
+                    self._send(body, "application/json")
+                elif route in ("/", "/index.html"):
+                    page = HTML.replace("__CHARTJS__", chartjs_tag()).replace("__DATA__", "null")
+                    self._send(page.encode("utf-8"), "text/html; charset=utf-8")
+                else:
+                    self.send_error(404)
+            except (BrokenPipeError, ConnectionResetError):
+                pass                       # M8: client closed the tab mid-write
+            except Exception:
+                # M8: never let a handler exception take down the request as an
+                # unhandled traceback; serve an empty-but-valid payload so the
+                # page degrades to "waiting for data" instead of going blank.
+                try:
+                    if route == "/data.json":
+                        self._send(b'{"series":{},"ticks":[],"types":[],"scalars":{}}',
+                                   "application/json")
+                    else:
+                        self.send_error(500)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
 
         def log_message(self, *a):  # keep the console quiet
             pass
@@ -323,7 +445,10 @@ def write_static(log_path, out):
     if not rows:
         sys.exit("No HOI4MPSTAT lines found in the log yet.")
     payload = make_payload(rows)
-    html = HTML.replace("__CHARTJS__", chartjs_tag()).replace("__DATA__", json.dumps(payload, separators=(",", ":")))
+    # M2: escape <, >, & in the embedded JSON so a string containing "</script>"
+    # can't break out of the inline <script> element in the offline file.
+    data = json_for_html(dump_json(payload))
+    html = HTML.replace("__CHARTJS__", chartjs_tag()).replace("__DATA__", data)
     Path(out).write_text(html, encoding="utf-8")
     print(f"Wrote {Path(out).resolve()} ({len(rows)} rows, {len(payload['series'])} countries)")
 

@@ -1,0 +1,81 @@
+{
+  "_comment": "DRAFT findings for the B1 air-combat 'fixture' wall: cracking per-strategic-region AIR plane counts + air-superiority + (non-)existence of a discrete air-combat object, against a LIVE PAUSED hoi4.exe (~1946.5.18) with active air battles frozen in-frame. Read-only. UNCOMMITTED. Build-specific offsets. Companion to naval_air_offsets.draft.json + naval_air_reader.py. Validated 2026-06-25.",
+  "build": {
+    "proc": "hoi4.exe",
+    "expected_sha256": "16022851eaa571728aa3a0b5fd5f990a56da57e2249a4c1b9cfb30336f59b120",
+    "live_run": {
+      "module_base_observed": "0x7FF783AD0000 (ASLR; per-launch)",
+      "arena_discovered_live": "0x24900000000..0x24B09282000 (8.14 GB)",
+      "arena_constant_in_reader_STALE": "naval_air_reader.ARENA_LO/HI = 0x1F600000000..0x1FA00000000 found 0 regions live; MUST live-discover via fastscan.discover_arena(pid) each run"
+    }
+  },
+
+  "region_name_to_id_mapping": {
+    "_warning": "CRITICAL TRAP: the mod's map/strategicregions/*.txt FILENAMES do NOT equal the in-game display names. The display name comes from the localisation key STRATEGICREGION_<id>. Two of the four anchor regions have misleading filenames. Always map by the LOCALISATION display string, never the filename.",
+    "source_loc": "X:/SteamLibrary/steamapps/common/Hearts of Iron IV/localisation/english/*strategic*_l_english.yml (mod inherits vanilla; no STRATEGICREGION_ override in mod/test/localisation)",
+    "regions": {
+      "Central China":  { "region_id": 246, "loc_key": "STRATEGICREGION_246", "mod_filename": "246-Central China.txt (matches)" },
+      "Eastern China":  { "region_id": 164, "loc_key": "STRATEGICREGION_164", "mod_filename": "164-South East China.txt (MISLEADING)" },
+      "Thar Desert":    { "region_id": 254, "loc_key": "STRATEGICREGION_254", "mod_filename": "254-Thar Desert.txt (matches)" },
+      "Central Japan":  { "region_id": 154, "loc_key": "STRATEGICREGION_154", "mod_filename": "154-Home Islands.txt (MISLEADING)" }
+    }
+  },
+
+  "task1_air_superiority_validation": {
+    "status": "VALIDATED with an important REFINEMENT. The existing reader correctly enumerates the wing-level INPUTS; the displayed air-sup PERCENT is a derived value the wing-sum alone does NOT reproduce.",
+    "reader_finds_live": "with the arena live-discovered, NavalAirReader finds 614 air wings (owner resolved 614/614; 162 on a region-bearing mission). The 4 target regions are all present in enumerate_air_superiority.",
+    "live_per_region_owner_effective_planes": {
+      "246_Central_China": { "SOV": {"eff": 332, "wings": 11}, "JAP": {"eff": 207, "wings": 5} },
+      "164_Eastern_China": { "USA": {"eff": 1387, "wings": 24}, "JAP": {"eff": 261, "wings": 18}, "ENG": {"eff": 193, "wings": 8}, "SOV": {"eff": 26, "wings": 1}, "FRA": {"eff": 25, "wings": 2}, "MEX": {"eff": 0, "wings": 2} },
+      "254_Thar_Desert":  { "JAP": {"eff": 91, "wings": 7} },
+      "154_Central_Japan":{ "SOV": {"eff": 18, "wings": 2} }
+    },
+    "ui_air_sup_anchors_pct": { "246": [8, 59], "164": [29, 24], "254": [3, 25], "154": [1, 100] },
+    "finding": "sum(effective_planes) per owner does NOT equal the UI air-superiority %. Proof: region 254 has ONLY JAP (eff=91) yet UI shows JAP=25%, viewer(0 wings)=3% (a lone side is NOT 100%); region 154 has ONLY SOV (eff=18) yet UI shows SOV=1%, JAP(ZERO wings present)=100%. The prior '12/12 oracle EXACT' validation was against the SAVE's mission.effective_planes SUMS, NOT against the displayed air-superiority PERCENT - this live run is the first check of the actual UI %.",
+    "model_for_ui_pct": "side_air_sup_pct ~= side_air_sup_score / max(region_air_capacity, total_relevant_score). side_air_sup_score is NOT raw effective_planes: it is effective_planes * equipment air_superiority stat * mission-efficiency/range/weather/night * country air_superiority_efficiency, PLUS a possible non-wing static regional contribution. region_air_capacity scales with region size/province count. The remainder is contested/uncontrolled.",
+    "strat_bomber_corroboration": "region 154 SOV = 200 strategic bombers (mission_type 8), eff=18, air-sup only 1%. Strategic / intercontinental bombers have air_superiority = 0.01 in the mod (mod/test/common/units/equipment/plane_airframes.txt and intercontinental_bomber.txt). 200 * ~0.01 = a negligible air-superiority score -> ~1% is exactly expected. Confirms effective_planes@+0x160 is 'effective ACTIVE planes', NOT an already-air-superiority-weighted score.",
+    "zero_wing_100pct_caveat": "region 154 JAP shows 100% air-sup with ZERO wings present. Could be DEFAULT/no-hostile-opposition control (the side with no enemy air gets default control), or a non-wing static contribution (state AA / radar / detection / owner fallback). NOT proven; do not over-claim 'ownership => 100%' or 'positive home-air contribution' without a clean empty-region control test (Codex caution).",
+    "honest_status": "The reader cracks the wing-level air-superiority INPUTS exactly (owner 614/614, mission region, raw count, effective active planes). The displayed air-sup PERCENT additionally needs region air-capacity + stat-weighted score + static/ground contribution that are NOT in the wing objects. effective_planes is a faithful COLOR proxy (orders the leaders correctly) but is not the percent."
+  },
+
+  "task2_per_region_plane_counts": {
+    "status": "SOLVED. Per-region plane counts by side and aircraft type = SUM of raw air-wing strength grouped by (mission_region, owner, mission_type).",
+    "offsets": {
+      "wing_raw_count":   { "offset": "wing+0x6C", "width": 4, "type": "u32", "meaning": "the raw aircraft count the UI plane-count rows are summed from (NOT yet proven to be assigned-vs-current-vs-deployable strength in edge cases - damaged/reinforcing/grounded/no-fuel/out-of-range wings untested; call it 'UI aircraft count' for precision). Pre-existing in draft (265/265 vs save); reconfirmed as the UI count source." },
+      "wing_mission_mask":{ "offset": "wing+0x90", "width": 4, "type": "u32", "meaning": "the game mission BITMASK (bitflags, NOT a scalar enum): bit values seen 1=air_superiority, 2=CAS, 4=interception, 8=strategic_bomber, 512=(recon/patrol - UNCONFIRMED label), 16384=(port/naval strike - UNCONFIRMED label), 0=idle/none. CAUTION: a wing running multiple missions would OR them (e.g. air_superiority|interception = 1|4 = 5); group by DECOMPOSED bits, not the raw u32 - all current anchor samples happened to be one-hot. Duplicated at +0x94 (579/614 match). Was 'mission_type_candidate' (tentative) in naval_air_offsets.draft.json; NOW CONFIRMED as the mission discriminator by 4/4 anchor matches below. Live distribution over 614 wings (all one-hot here): {0:504, 1:46, 2:28, 16384:12, 8:12, 512:7, 4:5}. RESIDUAL: close the multi-mission case with one controlled fighter wing toggled to both air-sup + interception." },
+      "wing_mission_region_ptr": { "offset": "wing+0xB0", "width": 8, "note": "-> strategic-region obj (vtable MODULE+0x29468B8) -> region_id @+0x58. Pre-existing." }
+    },
+    "exact_anchor_matches": {
+      "254_Thar_Desert_enemy": "JAP grouped by mission_type = {1: 247, 2: 109}. UI enemy by-type 'a=6, b=241' (total 247) == mission_type 1 (air_superiority) sum EXACT (6+241 across two type-1 wings). The type-2 (CAS) 109 is a third row the player didn't read.",
+      "246_Central_China": "SOV {1: 200, 2: 893}; JAP {1: 197, 2: 149}. UI our 200 fighters / enemy 197 == both = mission_type 1 sums EXACT.",
+      "154_Central_Japan": "SOV {8: 200}. UI our 200 strategic bombers == mission_type 8 (strategic_bomber) sum EXACT.",
+      "164_Eastern_China_enemy": "JAP {1: 808, 4: 99, 2: 149}. UI enemy 907 == mission_type 1 (808) + mission_type 4 (99) = 907 EXACT => 'enemy planes' counts the air-superiority-CONTRIBUTING missions (air_superiority + interception)."
+    },
+    "our_side_partition_note": "the 'our' total in the heavily-contested multi-faction region 164 (our 1909 = 1549 fighter + 152 + 208) does NOT fall out of a naive owner grouping: region 164 has 6 owners (USA 2060, JAP 1056, ENG 410, FRA 111, SOV 85, MEX 8) split across 6 mission types. Resolving the exact 'our' bucket requires the VIEWER'S faction/diplomacy graph (which owners are friendly to the viewer) plus the same type-1+type-4 air-combat filter - a faction transform applied ON TOP of the per-(owner,mission_type) raw-count buckets, NOT a memory-offset gap. The buckets themselves are cracked exactly.",
+    "ui_count_model": "UI per-region plane count = sum(wing+0x6C) over wings whose +0xB0 region == this region, grouped by owner and by mission_type@+0x90; the viewer/enemy split is a faction-relative transform on those buckets; 'enemy' aggregates hostile owners' air-combat missions (type1 air_superiority + type4 interception), with CAS/strat-bomber/port-strike shown as their own rows."
+  },
+
+  "task3_air_combat_object": {
+    "status": "VALIDATED NEGATIVE - NO discrete air-combat object. Air combat in the game is CONTINUOUS per-region attrition, resolved each air tick; there is no CLandCombat-style battle object with air-wing participants.",
+    "evidence_against_live_battles": "this is the first test DURING active air battles (the prior pass had only a save with 0 air combats). With live air battles frozen: enumerate_air_combats() = 0. Of 46 live CCombatSide objects (vtable MODULE+0x2980AC0): 30 empty, 16 division-only (land). 0 sides hold ANY air-wing participant. The land combat side/registry classes are confirmed NOT reused for air.",
+    "resolution": "what is cracked is the per-region INPUT AGGREGATION, not the full attrition RESOLUTION: UI plane counts by (owner, mission-bit) [task2], effective active planes per wing [+0x160], wings-on-mission [+0xB0]. The actual attrition math (equipment stats, detection/radar, mission efficiency, disruption, weather/day-night, region coverage, AA, aces/doctrines/modifiers, tick timing) is a separate region-side calculation NOT in the wing objects.",
+    "negative_scope": "PROVEN: no persistent land/naval-style CCombatSide object holds air-wing participants while the UI shows live air battles (46 sides enumerated, 0 with wings). NOT proven: that no transient/internal air-combat object EVER exists - one could be created and destroyed within an hourly tick (never present at a paused frame), or live in a region-local stats struct outside the CCombatSide enumerator. Strongly supports region-tick aggregation over object-per-combat."
+  },
+
+  "task4_validation_readback": {
+    "regions_present": "4/4 target regions (164, 246, 254, 154) present and readable live.",
+    "plane_count_by_type_offsets_pinned": "wing+0x6C (raw count) + wing+0x90 (mission_type) + wing+0xB0 (region ptr) -> region_id@+0x58. All relative to the stable air-wing object (vtable MODULE+0x29540C0, type 69) and the stable strategic-region object (vtable MODULE+0x29468B8, region_id@+0x58).",
+    "anchor_match_summary": "EXACT on the clean single-side / enemy-side anchors: 254 enemy=247, 246 our=200 & enemy=197, 154 our=200, 164 enemy=907. The 164 'our'=1909 requires the viewer faction graph (application layer).",
+    "uniqueness_confidence": "HIGH for the count model: mission_type@0x90 is the documented the game mission bitflag with a sane live distribution and 4/4 anchor matches; raw count@0x6C is pre-validated 265/265 vs the save. MEDIUM-LOW for reproducing the displayed air-sup PERCENT (needs region capacity + stat-weighted score + static contribution not yet located)."
+  },
+
+  "naval_combat_status": {
+    "status": "STILL UNRESOLVED - needs a LIVE surface (fleet-vs-fleet) sea battle. The current paused frame has active AIR battles but no anchorable surface naval battle. enumerate_naval_combats() = 0 (saved naval entries were transient submarine convoy-RAID contacts). The detector machinery (CCombatSide path + aggregate per-region/per-TF detector) is in place and will light up if a live surface battle instantiates participants; re-anchor needs a before/during/after temporal diff of a real surface battle."
+  },
+
+  "codex_review": {
+    "rounds": 2,
+    "confirmed": "(1) UI plane-count = raw wing strength grouped by air-unit role; the Thar subset match is strong. (2) air-sup % is NOT sum(effective_planes)/total; it is a capacity-normalized stat-weighted score + possible static contribution. (3) strat bombers air_superiority=0.01 in the mod files explains SOV's 1% (Codex read the mod plane files directly). (4) no discrete air-combat object; tick/resolution-based per region.",
+    "cautions_adopted": "do NOT call wing+0x160 'air superiority' - it is effective ACTIVE planes. do NOT over-claim 'home-islands ownership => 100%' for the zero-wing JAP case without a clean empty-region control. the per-region cached air-sup %, if it exists, is likely a per-country/per-side container in an air-manager/runtime region object separate from the strategic-region definition object (worth a future hunt keyed by region_id + country_id, fixed-point, changing on air tick)."
+  }
+}

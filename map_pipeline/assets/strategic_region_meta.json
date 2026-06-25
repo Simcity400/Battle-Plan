@@ -1,0 +1,1218 @@
+{
+ "1": {
+  "name": "STRATEGICREGION_1",
+  "province_count": 43
+ },
+ "2": {
+  "name": "STRATEGICREGION_2",
+  "province_count": 29
+ },
+ "3": {
+  "name": "STRATEGICREGION_3",
+  "province_count": 37
+ },
+ "4": {
+  "name": "STRATEGICREGION_4",
+  "province_count": 34
+ },
+ "5": {
+  "name": "STRATEGICREGION_5",
+  "province_count": 40
+ },
+ "6": {
+  "name": "STRATEGICREGION_6",
+  "province_count": 38
+ },
+ "7": {
+  "name": "STRATEGICREGION_7",
+  "province_count": 85
+ },
+ "8": {
+  "name": "STRATEGICREGION_8",
+  "province_count": 87
+ },
+ "9": {
+  "name": "STRATEGICREGION_9",
+  "province_count": 3
+ },
+ "10": {
+  "name": "STRATEGICREGION_10",
+  "province_count": 78
+ },
+ "11": {
+  "name": "STRATEGICREGION_11",
+  "province_count": 90
+ },
+ "12": {
+  "name": "STRATEGICREGION_12",
+  "province_count": 33
+ },
+ "13": {
+  "name": "STRATEGICREGION_13",
+  "province_count": 63
+ },
+ "14": {
+  "name": "STRATEGICREGION_14",
+  "province_count": 84
+ },
+ "15": {
+  "name": "STRATEGICREGION_15",
+  "province_count": 4
+ },
+ "16": {
+  "name": "STRATEGICREGION_16",
+  "province_count": 15
+ },
+ "17": {
+  "name": "STRATEGICREGION_17",
+  "province_count": 20
+ },
+ "18": {
+  "name": "STRATEGICREGION_18",
+  "province_count": 19
+ },
+ "19": {
+  "name": "STRATEGICREGION_19",
+  "province_count": 75
+ },
+ "20": {
+  "name": "STRATEGICREGION_20",
+  "province_count": 109
+ },
+ "21": {
+  "name": "STRATEGICREGION_21",
+  "province_count": 102
+ },
+ "22": {
+  "name": "STRATEGICREGION_22",
+  "province_count": 61
+ },
+ "23": {
+  "name": "STRATEGICREGION_23",
+  "province_count": 61
+ },
+ "24": {
+  "name": "STRATEGICREGION_24",
+  "province_count": 118
+ },
+ "25": {
+  "name": "STRATEGICREGION_25",
+  "province_count": 49
+ },
+ "26": {
+  "name": "STRATEGICREGION_26",
+  "province_count": 92
+ },
+ "27": {
+  "name": "STRATEGICREGION_27",
+  "province_count": 81
+ },
+ "28": {
+  "name": "STRATEGICREGION_28",
+  "province_count": 46
+ },
+ "29": {
+  "name": "STRATEGICREGION_29",
+  "province_count": 11
+ },
+ "30": {
+  "name": "STRATEGICREGION_30",
+  "province_count": 7
+ },
+ "31": {
+  "name": "STRATEGICREGION_31",
+  "province_count": 43
+ },
+ "32": {
+  "name": "STRATEGICREGION_32",
+  "province_count": 95
+ },
+ "33": {
+  "name": "STRATEGICREGION_33",
+  "province_count": 15
+ },
+ "34": {
+  "name": "STRATEGICREGION_34",
+  "province_count": 20
+ },
+ "35": {
+  "name": "STRATEGICREGION_35",
+  "province_count": 36
+ },
+ "36": {
+  "name": "STRATEGICREGION_36",
+  "province_count": 5
+ },
+ "37": {
+  "name": "STRATEGICREGION_37",
+  "province_count": 77
+ },
+ "38": {
+  "name": "STRATEGICREGION_38",
+  "province_count": 83
+ },
+ "39": {
+  "name": "STRATEGICREGION_39",
+  "province_count": 83
+ },
+ "40": {
+  "name": "STRATEGICREGION_40",
+  "province_count": 209
+ },
+ "41": {
+  "name": "STRATEGICREGION_41",
+  "province_count": 85
+ },
+ "42": {
+  "name": "STRATEGICREGION_42",
+  "province_count": 9
+ },
+ "43": {
+  "name": "STRATEGICREGION_43",
+  "province_count": 35
+ },
+ "44": {
+  "name": "STRATEGICREGION_44",
+  "province_count": 26
+ },
+ "45": {
+  "name": "STRATEGICREGION_45",
+  "province_count": 37
+ },
+ "46": {
+  "name": "STRATEGICREGION_46",
+  "province_count": 15
+ },
+ "47": {
+  "name": "STRATEGICREGION_47",
+  "province_count": 23
+ },
+ "48": {
+  "name": "STRATEGICREGION_48",
+  "province_count": 17
+ },
+ "49": {
+  "name": "STRATEGICREGION_49",
+  "province_count": 31
+ },
+ "50": {
+  "name": "STRATEGICREGION_50",
+  "province_count": 48
+ },
+ "51": {
+  "name": "STRATEGICREGION_51",
+  "province_count": 26
+ },
+ "52": {
+  "name": "STRATEGICREGION_52",
+  "province_count": 10
+ },
+ "53": {
+  "name": "STRATEGICREGION_53",
+  "province_count": 68
+ },
+ "54": {
+  "name": "STRATEGICREGION_54",
+  "province_count": 9
+ },
+ "55": {
+  "name": "STRATEGICREGION_55",
+  "province_count": 11
+ },
+ "56": {
+  "name": "STRATEGICREGION_56",
+  "province_count": 26
+ },
+ "57": {
+  "name": "STRATEGICREGION_57",
+  "province_count": 36
+ },
+ "58": {
+  "name": "STRATEGICREGION_58",
+  "province_count": 28
+ },
+ "59": {
+  "name": "STRATEGICREGION_59",
+  "province_count": 45
+ },
+ "60": {
+  "name": "STRATEGICREGION_60",
+  "province_count": 99
+ },
+ "61": {
+  "name": "STRATEGICREGION_61",
+  "province_count": 45
+ },
+ "62": {
+  "name": "STRATEGICREGION_62",
+  "province_count": 109
+ },
+ "63": {
+  "name": "STRATEGICREGION_63",
+  "province_count": 28
+ },
+ "64": {
+  "name": "STRATEGICREGION_64",
+  "province_count": 86
+ },
+ "65": {
+  "name": "STRATEGICREGION_65",
+  "province_count": 45
+ },
+ "66": {
+  "name": "STRATEGICREGION_66",
+  "province_count": 92
+ },
+ "67": {
+  "name": "STRATEGICREGION_67",
+  "province_count": 47
+ },
+ "68": {
+  "name": "STRATEGICREGION_68",
+  "province_count": 16
+ },
+ "69": {
+  "name": "STRATEGICREGION_69",
+  "province_count": 13
+ },
+ "70": {
+  "name": "STRATEGICREGION_70",
+  "province_count": 4
+ },
+ "71": {
+  "name": "STRATEGICREGION_71",
+  "province_count": 62
+ },
+ "72": {
+  "name": "STRATEGICREGION_72",
+  "province_count": 10
+ },
+ "73": {
+  "name": "STRATEGICREGION_73",
+  "province_count": 6
+ },
+ "74": {
+  "name": "STRATEGICREGION_74",
+  "province_count": 76
+ },
+ "75": {
+  "name": "STRATEGICREGION_75",
+  "province_count": 31
+ },
+ "76": {
+  "name": "STRATEGICREGION_76",
+  "province_count": 27
+ },
+ "77": {
+  "name": "STRATEGICREGION_77",
+  "province_count": 6
+ },
+ "78": {
+  "name": "STRATEGICREGION_78",
+  "province_count": 35
+ },
+ "79": {
+  "name": "STRATEGICREGION_79",
+  "province_count": 16
+ },
+ "80": {
+  "name": "STRATEGICREGION_80",
+  "province_count": 10
+ },
+ "81": {
+  "name": "STRATEGICREGION_81",
+  "province_count": 23
+ },
+ "82": {
+  "name": "STRATEGICREGION_82",
+  "province_count": 5
+ },
+ "83": {
+  "name": "STRATEGICREGION_83",
+  "province_count": 48
+ },
+ "84": {
+  "name": "STRATEGICREGION_84",
+  "province_count": 63
+ },
+ "85": {
+  "name": "STRATEGICREGION_85",
+  "province_count": 97
+ },
+ "86": {
+  "name": "STRATEGICREGION_86",
+  "province_count": 42
+ },
+ "87": {
+  "name": "STRATEGICREGION_87",
+  "province_count": 38
+ },
+ "88": {
+  "name": "STRATEGICREGION_88",
+  "province_count": 68
+ },
+ "89": {
+  "name": "STRATEGICREGION_89",
+  "province_count": 10
+ },
+ "90": {
+  "name": "STRATEGICREGION_90",
+  "province_count": 17
+ },
+ "91": {
+  "name": "STRATEGICREGION_91",
+  "province_count": 15
+ },
+ "92": {
+  "name": "STRATEGICREGION_92",
+  "province_count": 17
+ },
+ "93": {
+  "name": "STRATEGICREGION_93",
+  "province_count": 57
+ },
+ "94": {
+  "name": "STRATEGICREGION_94",
+  "province_count": 44
+ },
+ "95": {
+  "name": "STRATEGICREGION_95",
+  "province_count": 60
+ },
+ "96": {
+  "name": "STRATEGICREGION_96",
+  "province_count": 52
+ },
+ "97": {
+  "name": "STRATEGICREGION_97",
+  "province_count": 83
+ },
+ "98": {
+  "name": "STRATEGICREGION_98",
+  "province_count": 36
+ },
+ "99": {
+  "name": "STRATEGICREGION_99",
+  "province_count": 83
+ },
+ "100": {
+  "name": "STRATEGICREGION_100",
+  "province_count": 5
+ },
+ "101": {
+  "name": "STRATEGICREGION_101",
+  "province_count": 39
+ },
+ "102": {
+  "name": "STRATEGICREGION_102",
+  "province_count": 23
+ },
+ "103": {
+  "name": "STRATEGICREGION_103",
+  "province_count": 12
+ },
+ "104": {
+  "name": "STRATEGICREGION_104",
+  "province_count": 29
+ },
+ "105": {
+  "name": "STRATEGICREGION_105",
+  "province_count": 68
+ },
+ "106": {
+  "name": "STRATEGICREGION_106",
+  "province_count": 27
+ },
+ "107": {
+  "name": "STRATEGICREGION_107",
+  "province_count": 16
+ },
+ "108": {
+  "name": "STRATEGICREGION_108",
+  "province_count": 31
+ },
+ "109": {
+  "name": "STRATEGICREGION_109",
+  "province_count": 24
+ },
+ "110": {
+  "name": "STRATEGICREGION_110",
+  "province_count": 67
+ },
+ "111": {
+  "name": "STRATEGICREGION_111",
+  "province_count": 60
+ },
+ "112": {
+  "name": "STRATEGICREGION_112",
+  "province_count": 77
+ },
+ "113": {
+  "name": "STRATEGICREGION_113",
+  "province_count": 39
+ },
+ "114": {
+  "name": "STRATEGICREGION_114",
+  "province_count": 40
+ },
+ "115": {
+  "name": "STRATEGICREGION_115",
+  "province_count": 34
+ },
+ "116": {
+  "name": "STRATEGICREGION_116",
+  "province_count": 14
+ },
+ "117": {
+  "name": "STRATEGICREGION_117",
+  "province_count": 101
+ },
+ "118": {
+  "name": "STRATEGICREGION_118",
+  "province_count": 45
+ },
+ "119": {
+  "name": "STRATEGICREGION_119",
+  "province_count": 65
+ },
+ "120": {
+  "name": "STRATEGICREGION_120",
+  "province_count": 106
+ },
+ "121": {
+  "name": "STRATEGICREGION_121",
+  "province_count": 51
+ },
+ "122": {
+  "name": "STRATEGICREGION_122",
+  "province_count": 3
+ },
+ "123": {
+  "name": "STRATEGICREGION_123",
+  "province_count": 27
+ },
+ "124": {
+  "name": "STRATEGICREGION_124",
+  "province_count": 52
+ },
+ "125": {
+  "name": "STRATEGICREGION_125",
+  "province_count": 44
+ },
+ "126": {
+  "name": "STRATEGICREGION_126",
+  "province_count": 67
+ },
+ "127": {
+  "name": "STRATEGICREGION_127",
+  "province_count": 12
+ },
+ "128": {
+  "name": "STRATEGICREGION_128",
+  "province_count": 48
+ },
+ "129": {
+  "name": "STRATEGICREGION_129",
+  "province_count": 169
+ },
+ "130": {
+  "name": "STRATEGICREGION_130",
+  "province_count": 171
+ },
+ "131": {
+  "name": "STRATEGICREGION_131",
+  "province_count": 110
+ },
+ "132": {
+  "name": "STRATEGICREGION_132",
+  "province_count": 133
+ },
+ "133": {
+  "name": "STRATEGICREGION_133",
+  "province_count": 279
+ },
+ "134": {
+  "name": "STRATEGICREGION_134",
+  "province_count": 66
+ },
+ "135": {
+  "name": "STRATEGICREGION_135",
+  "province_count": 131
+ },
+ "136": {
+  "name": "STRATEGICREGION_136",
+  "province_count": 106
+ },
+ "137": {
+  "name": "STRATEGICREGION_137",
+  "province_count": 209
+ },
+ "138": {
+  "name": "STRATEGICREGION_138",
+  "province_count": 27
+ },
+ "139": {
+  "name": "STRATEGICREGION_139",
+  "province_count": 31
+ },
+ "140": {
+  "name": "STRATEGICREGION_140",
+  "province_count": 64
+ },
+ "141": {
+  "name": "STRATEGICREGION_141",
+  "province_count": 40
+ },
+ "142": {
+  "name": "STRATEGICREGION_142",
+  "province_count": 60
+ },
+ "143": {
+  "name": "STRATEGICREGION_143",
+  "province_count": 71
+ },
+ "144": {
+  "name": "STRATEGICREGION_144",
+  "province_count": 39
+ },
+ "145": {
+  "name": "STRATEGICREGION_145",
+  "province_count": 22
+ },
+ "146": {
+  "name": "STRATEGICREGION_146",
+  "province_count": 21
+ },
+ "147": {
+  "name": "STRATEGICREGION_147",
+  "province_count": 22
+ },
+ "148": {
+  "name": "STRATEGICREGION_148",
+  "province_count": 66
+ },
+ "149": {
+  "name": "STRATEGICREGION_149",
+  "province_count": 42
+ },
+ "150": {
+  "name": "STRATEGICREGION_150",
+  "province_count": 121
+ },
+ "151": {
+  "name": "STRATEGICREGION_151",
+  "province_count": 57
+ },
+ "152": {
+  "name": "STRATEGICREGION_152",
+  "province_count": 56
+ },
+ "153": {
+  "name": "STRATEGICREGION_153",
+  "province_count": 36
+ },
+ "154": {
+  "name": "STRATEGICREGION_154",
+  "province_count": 42
+ },
+ "155": {
+  "name": "STRATEGICREGION_155",
+  "province_count": 75
+ },
+ "156": {
+  "name": "STRATEGICREGION_156",
+  "province_count": 28
+ },
+ "157": {
+  "name": "STRATEGICREGION_157",
+  "province_count": 24
+ },
+ "158": {
+  "name": "STRATEGICREGION_158",
+  "province_count": 58
+ },
+ "159": {
+  "name": "STRATEGICREGION_159",
+  "province_count": 69
+ },
+ "160": {
+  "name": "STRATEGICREGION_160",
+  "province_count": 77
+ },
+ "161": {
+  "name": "STRATEGICREGION_161",
+  "province_count": 7
+ },
+ "162": {
+  "name": "STRATEGICREGION_162",
+  "province_count": 17
+ },
+ "163": {
+  "name": "STRATEGICREGION_163",
+  "province_count": 61
+ },
+ "164": {
+  "name": "STRATEGICREGION_164",
+  "province_count": 76
+ },
+ "165": {
+  "name": "STRATEGICREGION_165",
+  "province_count": 37
+ },
+ "166": {
+  "name": "STRATEGICREGION_166",
+  "province_count": 14
+ },
+ "167": {
+  "name": "STRATEGICREGION_167",
+  "province_count": 72
+ },
+ "168": {
+  "name": "STRATEGICREGION_168",
+  "province_count": 3
+ },
+ "169": {
+  "name": "STRATEGICREGION_169",
+  "province_count": 26
+ },
+ "170": {
+  "name": "STRATEGICREGION_170",
+  "province_count": 22
+ },
+ "171": {
+  "name": "STRATEGICREGION_171",
+  "province_count": 29
+ },
+ "172": {
+  "name": "STRATEGICREGION_172",
+  "province_count": 49
+ },
+ "173": {
+  "name": "STRATEGICREGION_173",
+  "province_count": 9
+ },
+ "174": {
+  "name": "STRATEGICREGION_174",
+  "province_count": 9
+ },
+ "175": {
+  "name": "STRATEGICREGION_175",
+  "province_count": 53
+ },
+ "176": {
+  "name": "STRATEGICREGION_176",
+  "province_count": 53
+ },
+ "177": {
+  "name": "STRATEGICREGION_177",
+  "province_count": 25
+ },
+ "178": {
+  "name": "STRATEGICREGION_178",
+  "province_count": 39
+ },
+ "179": {
+  "name": "STRATEGICREGION_179",
+  "province_count": 40
+ },
+ "180": {
+  "name": "STRATEGICREGION_180",
+  "province_count": 26
+ },
+ "181": {
+  "name": "STRATEGICREGION_181",
+  "province_count": 10
+ },
+ "182": {
+  "name": "STRATEGICREGION_182",
+  "province_count": 38
+ },
+ "183": {
+  "name": "STRATEGICREGION_183",
+  "province_count": 20
+ },
+ "184": {
+  "name": "STRATEGICREGION_184",
+  "province_count": 13
+ },
+ "185": {
+  "name": "STRATEGICREGION_185",
+  "province_count": 20
+ },
+ "186": {
+  "name": "STRATEGICREGION_186",
+  "province_count": 69
+ },
+ "187": {
+  "name": "STRATEGICREGION_187",
+  "province_count": 63
+ },
+ "188": {
+  "name": "STRATEGICREGION_188",
+  "province_count": 44
+ },
+ "189": {
+  "name": "STRATEGICREGION_189",
+  "province_count": 72
+ },
+ "190": {
+  "name": "STRATEGICREGION_190",
+  "province_count": 21
+ },
+ "191": {
+  "name": "STRATEGICREGION_191",
+  "province_count": 45
+ },
+ "192": {
+  "name": "STRATEGICREGION_192",
+  "province_count": 63
+ },
+ "193": {
+  "name": "STRATEGICREGION_193",
+  "province_count": 44
+ },
+ "194": {
+  "name": "STRATEGICREGION_194",
+  "province_count": 36
+ },
+ "195": {
+  "name": "STRATEGICREGION_195",
+  "province_count": 29
+ },
+ "196": {
+  "name": "STRATEGICREGION_196",
+  "province_count": 22
+ },
+ "197": {
+  "name": "STRATEGICREGION_197",
+  "province_count": 66
+ },
+ "198": {
+  "name": "STRATEGICREGION_198",
+  "province_count": 112
+ },
+ "199": {
+  "name": "STRATEGICREGION_199",
+  "province_count": 49
+ },
+ "200": {
+  "name": "STRATEGICREGION_200",
+  "province_count": 27
+ },
+ "201": {
+  "name": "STRATEGICREGION_201",
+  "province_count": 33
+ },
+ "202": {
+  "name": "STRATEGICREGION_202",
+  "province_count": 13
+ },
+ "203": {
+  "name": "STRATEGICREGION_203",
+  "province_count": 4
+ },
+ "204": {
+  "name": "STRATEGICREGION_204",
+  "province_count": 48
+ },
+ "205": {
+  "name": "STRATEGICREGION_205",
+  "province_count": 16
+ },
+ "206": {
+  "name": "STRATEGICREGION_206",
+  "province_count": 10
+ },
+ "207": {
+  "name": "STRATEGICREGION_207",
+  "province_count": 4
+ },
+ "208": {
+  "name": "STRATEGICREGION_208",
+  "province_count": 46
+ },
+ "209": {
+  "name": "STRATEGICREGION_209",
+  "province_count": 87
+ },
+ "210": {
+  "name": "STRATEGICREGION_210",
+  "province_count": 93
+ },
+ "211": {
+  "name": "STRATEGICREGION_211",
+  "province_count": 93
+ },
+ "212": {
+  "name": "STRATEGICREGION_212",
+  "province_count": 26
+ },
+ "213": {
+  "name": "STRATEGICREGION_213",
+  "province_count": 16
+ },
+ "214": {
+  "name": "STRATEGICREGION_214",
+  "province_count": 42
+ },
+ "215": {
+  "name": "STRATEGICREGION_NAMIBIA",
+  "province_count": 14
+ },
+ "216": {
+  "name": "STRATEGICREGION_216",
+  "province_count": 44
+ },
+ "217": {
+  "name": "STRATEGICREGION_217",
+  "province_count": 42
+ },
+ "218": {
+  "name": "STRATEGICREGION_218",
+  "province_count": 71
+ },
+ "219": {
+  "name": "STRATEGICREGION_219",
+  "province_count": 60
+ },
+ "220": {
+  "name": "STRATEGICREGION_220",
+  "province_count": 20
+ },
+ "221": {
+  "name": "STRATEGICREGION_221",
+  "province_count": 40
+ },
+ "222": {
+  "name": "STRATEGICREGION_222",
+  "province_count": 14
+ },
+ "223": {
+  "name": "STRATEGICREGION_223",
+  "province_count": 22
+ },
+ "224": {
+  "name": "STRATEGICREGION_224",
+  "province_count": 18
+ },
+ "225": {
+  "name": "STRATEGICREGION_225",
+  "province_count": 24
+ },
+ "226": {
+  "name": "STRATEGICREGION_226",
+  "province_count": 25
+ },
+ "227": {
+  "name": "STRATEGICREGION_227",
+  "province_count": 19
+ },
+ "228": {
+  "name": "STRATEGICREGION_228",
+  "province_count": 64
+ },
+ "229": {
+  "name": "STRATEGICREGION_229",
+  "province_count": 70
+ },
+ "230": {
+  "name": "STRATEGICREGION_230",
+  "province_count": 61
+ },
+ "231": {
+  "name": "STRATEGICREGION_231",
+  "province_count": 47
+ },
+ "232": {
+  "name": "STRATEGICREGION_232",
+  "province_count": 46
+ },
+ "233": {
+  "name": "STRATEGICREGION_233",
+  "province_count": 37
+ },
+ "234": {
+  "name": "STRATEGICREGION_234",
+  "province_count": 30
+ },
+ "235": {
+  "name": "STRATEGICREGION_235",
+  "province_count": 37
+ },
+ "236": {
+  "name": "STRATEGICREGION_236",
+  "province_count": 13
+ },
+ "237": {
+  "name": "STRATEGICREGION_237",
+  "province_count": 20
+ },
+ "238": {
+  "name": "STRATEGICREGION_238",
+  "province_count": 17
+ },
+ "239": {
+  "name": "STRATEGICREGION_239",
+  "province_count": 22
+ },
+ "240": {
+  "name": "STRATEGICREGION_240",
+  "province_count": 11
+ },
+ "241": {
+  "name": "STRATEGICREGION_241",
+  "province_count": 16
+ },
+ "242": {
+  "name": "STRATEGICREGION_242",
+  "province_count": 40
+ },
+ "243": {
+  "name": "STRATEGICREGION_243",
+  "province_count": 69
+ },
+ "244": {
+  "name": "STRATEGICREGION_244",
+  "province_count": 39
+ },
+ "245": {
+  "name": "STRATEGICREGION_245",
+  "province_count": 41
+ },
+ "246": {
+  "name": "STRATEGICREGION_246",
+  "province_count": 63
+ },
+ "247": {
+  "name": "STRATEGICREGION_247",
+  "province_count": 91
+ },
+ "248": {
+  "name": "STRATEGICREGION_248",
+  "province_count": 75
+ },
+ "249": {
+  "name": "STRATEGICREGION_249",
+  "province_count": 32
+ },
+ "250": {
+  "name": "STRATEGICREGION_250",
+  "province_count": 23
+ },
+ "251": {
+  "name": "STRATEGICREGION_251",
+  "province_count": 14
+ },
+ "252": {
+  "name": "STRATEGICREGION_252",
+  "province_count": 34
+ },
+ "253": {
+  "name": "STRATEGICREGION_253",
+  "province_count": 0
+ },
+ "254": {
+  "name": "STRATEGICREGION_254",
+  "province_count": 33
+ },
+ "255": {
+  "name": "STRATEGICREGION_255",
+  "province_count": 49
+ },
+ "256": {
+  "name": "STRATEGICREGION_256",
+  "province_count": 49
+ },
+ "257": {
+  "name": "STRATEGICREGION_257",
+  "province_count": 13
+ },
+ "258": {
+  "name": "STRATEGICREGION_258",
+  "province_count": 14
+ },
+ "259": {
+  "name": "STRATEGICREGION_259",
+  "province_count": 12
+ },
+ "260": {
+  "name": "STRATEGICREGION_260",
+  "province_count": 29
+ },
+ "261": {
+  "name": "STRATEGICREGION_261",
+  "province_count": 30
+ },
+ "262": {
+  "name": "STRATEGICREGION_262",
+  "province_count": 41
+ },
+ "263": {
+  "name": "STRATEGICREGION_263",
+  "province_count": 19
+ },
+ "264": {
+  "name": "STRATEGICREGION_264",
+  "province_count": 46
+ },
+ "265": {
+  "name": "STRATEGICREGION_265",
+  "province_count": 59
+ },
+ "266": {
+  "name": "STRATEGICREGION_266",
+  "province_count": 32
+ },
+ "267": {
+  "name": "STRATEGICREGION_267",
+  "province_count": 59
+ },
+ "268": {
+  "name": "STRATEGICREGION_268",
+  "province_count": 48
+ },
+ "269": {
+  "name": "STRATEGICREGION_269",
+  "province_count": 27
+ },
+ "270": {
+  "name": "STRATEGICREGION_270",
+  "province_count": 57
+ },
+ "271": {
+  "name": "STRATEGICREGION_271",
+  "province_count": 15
+ },
+ "272": {
+  "name": "STRATEGICREGION_272",
+  "province_count": 24
+ },
+ "273": {
+  "name": "STRATEGICREGION_273",
+  "province_count": 18
+ },
+ "274": {
+  "name": "STRATEGICREGION_274",
+  "province_count": 31
+ },
+ "275": {
+  "name": "STRATEGICREGION_275",
+  "province_count": 31
+ },
+ "276": {
+  "name": "STRATEGICREGION_276",
+  "province_count": 66
+ },
+ "277": {
+  "name": "STRATEGICREGION_277",
+  "province_count": 60
+ },
+ "278": {
+  "name": "STRATEGICREGION_278",
+  "province_count": 50
+ },
+ "279": {
+  "name": "STRATEGICREGION_279",
+  "province_count": 6
+ },
+ "280": {
+  "name": "STRATEGICREGION_280",
+  "province_count": 24
+ },
+ "281": {
+  "name": "STRATEGICREGION_281",
+  "province_count": 24
+ },
+ "282": {
+  "name": "STRATEGICREGION_282",
+  "province_count": 45
+ },
+ "283": {
+  "name": "STRATEGICREGION_283",
+  "province_count": 40
+ },
+ "284": {
+  "name": "STRATEGICREGION_284",
+  "province_count": 38
+ },
+ "285": {
+  "name": "STRATEGICREGION_285",
+  "province_count": 18
+ },
+ "286": {
+  "name": "STRATEGICREGION_286",
+  "province_count": 42
+ },
+ "287": {
+  "name": "STRATEGICREGION_287",
+  "province_count": 25
+ },
+ "288": {
+  "name": "STRATEGICREGION_288",
+  "province_count": 14
+ },
+ "289": {
+  "name": "STRATEGICREGION_289",
+  "province_count": 16
+ },
+ "290": {
+  "name": "STRATEGICREGION_290",
+  "province_count": 40
+ },
+ "291": {
+  "name": "STRATEGICREGION_291",
+  "province_count": 12
+ },
+ "292": {
+  "name": "STRATEGICREGION_292",
+  "province_count": 79
+ },
+ "293": {
+  "name": "STRATEGICREGION_293",
+  "province_count": 30
+ },
+ "294": {
+  "name": "STRATEGICREGION_294",
+  "province_count": 0
+ },
+ "295": {
+  "name": "STRATEGICREGION_295",
+  "province_count": 4
+ },
+ "296": {
+  "name": "STRATEGICREGION_296",
+  "province_count": 24
+ },
+ "297": {
+  "name": "STRATEGICREGION_297",
+  "province_count": 16
+ },
+ "298": {
+  "name": "STRATEGICREGION_298",
+  "province_count": 10
+ },
+ "299": {
+  "name": "STRATEGICREGION_299",
+  "province_count": 29
+ },
+ "300": {
+  "name": "STRATEGICREGION_300",
+  "province_count": 37
+ },
+ "301": {
+  "name": "STRATEGICREGION_301",
+  "province_count": 16
+ },
+ "302": {
+  "name": "STRATEGICREGION_302",
+  "province_count": 62
+ },
+ "303": {
+  "name": "STRATEGICREGION_303",
+  "province_count": 20
+ },
+ "304": {
+  "name": "STRATEGICREGION_304",
+  "province_count": 10
+ }
+}
