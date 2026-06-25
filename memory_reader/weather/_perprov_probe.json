@@ -1,0 +1,45 @@
+{
+  "perprov_vtable": "0x7FF786420A50",
+  "perprov_vtable_rva": "0x2950A50",
+  "n_instances": 13414,
+  "province_id_off": "0x8",
+  "province_id_width": 2,
+  "anchors_present": [
+    7206,
+    3946,
+    6945,
+    7250,
+    10167
+  ],
+  "anchor_objs": {
+    "7206": "0x24A2A853940",
+    "3946": "0x24A2A721F40",
+    "6945": "0x24A2A83B1C0",
+    "7250": "0x24A2A857B40",
+    "10167": "0x24A2A9692C0"
+  },
+  "phenomenon_candidates": [
+    {
+      "off": "0x3A",
+      "width": 1,
+      "clear": 0,
+      "rain": 16,
+      "plausible": false
+    },
+    {
+      "off": "0x3A",
+      "width": 2,
+      "clear": 0,
+      "rain": 16,
+      "plausible": false
+    },
+    {
+      "off": "0x3A",
+      "width": 4,
+      "clear": 0,
+      "rain": 16,
+      "plausible": false
+    }
+  ],
+  "temp_candidates": []
+}

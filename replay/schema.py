@@ -48,6 +48,16 @@ DOMAINS = (
     # PROXY/region-level live sidecars promoted to first-class fields (badged below)
     "naval_air",         # naval region control + air superiority (live, proxy/region)
     "supply",            # live supply proxy (where troops are; confidence-badged)
+    # --- Tier-1 EXTRACT save domains (parse_supply/strategic/events/world/country_extra/
+    #     players + divisions_full). All save-sourced (S); folded under provenance.save.
+    "supply_logistics",  # supply_system_2 per-country logistics (nodes/trucks/lost_*)
+    "strategic_air",     # world air-base capacity table + air theatre/group indices
+    "strategic_operatives",  # per-operative subversive-activity + intel-network graph
+    "raids",             # strategic-bombing/naval-raid target table + per-country priority
+    "world_events",      # fired events, threat ledger, sunk-convoy history (events.json)
+    "world",             # scenario meta, global vars/flags, tech-sharing, power balance
+    "country_extra",     # nukes / dynamic_modifiers / aces / special projects / misc
+    "players",           # human player persona names (player.user); MP-only
 )
 
 # Resource keys used across economy.resources.* sub-maps (SCHEMA §3.1).
@@ -89,6 +99,10 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.economy.gross_ic_by_equipment": "S/D",
     "countries.*.economy.market_stockpile": "S",
     "countries.*.economy.market_automation": "S",
+    "countries.*.economy.logistics": "S",            # supply.json (§3.1)
+    # --- country extras + player name (Tier-1 EXTRACT, §3.11/§3.12) ---
+    "countries.*.extra": "S",                        # country_extra.json
+    "countries.*.human_name": "S",                   # players.json (persona name)
     # --- country.military (§3.2) ---
     "countries.*.military.num_ships": "M/S",
     "countries.*.military.division_count": "M/D",
@@ -213,6 +227,23 @@ FIELD_SOURCES: Dict[str, str] = {
     "divisions.*.experience": "M*",
     "divisions.*.moving": "M*",
     "divisions.*.in_combat": "M*",
+    # divisions_full.json additive body (Tier-1 EXTRACT). LITERAL save fields (S).
+    "divisions.*.script_id": "S",
+    "divisions.*.division_name": "S",
+    "divisions.*.max_supply": "S",
+    "divisions.*.army_current_supply_ratio": "S",
+    "divisions.*.supply_gain": "S",
+    "divisions.*.motorization_level": "S",
+    "divisions.*.move_priority": "S",
+    "divisions.*.last_combat_date": "S",
+    "divisions.*.dig_in": "S",
+    "divisions.*.dig_in_cap": "S",
+    "divisions.*.acclimatization": "S",
+    "divisions.*.army_manpower": "S",
+    "divisions.*.killed": "S",
+    "divisions.*.killer_definition": "S",
+    "divisions.*.equipment_archetypes": "S",
+    "divisions.*.has_officer": "S",
     # --- combat (§7) ---
     "combats.*": "M*",
     # --- world-scoped trade contracts (§7b, from market.json) ---
@@ -225,6 +256,28 @@ FIELD_SOURCES: Dict[str, str] = {
     "naval_air.region_control": "M",
     "naval_air.air_superiority": "M",
     "supply.by_province": "M",
+    # --- Tier-1 EXTRACT world-scoped save domains (§14-§18). All save-sourced (S). ---
+    "strategic_air.air_bases": "S",
+    "strategic_air.indices": "S",
+    "strategic_air.per_country_region_blocks": "S",
+    "strategic_operatives.pools": "S",
+    "raids.counters": "S",
+    "raids.targets": "S",
+    "raids.countries": "S",
+    "world_events.fired_events": "S",
+    "world_events.pending_events": "S",
+    "world_events.threat": "S",
+    "world_events.sunk_convoys": "S",
+    "world_events.convoy_losses_by_killer": "S",
+    "world_events.convoy_losses_by_owner": "S",
+    "world.scenario": "S",
+    "world.variables": "S",
+    "world.flags": "S",
+    "world.tech_sharing_groups": "S",
+    "world.power_balances": "S",
+    "world.faction_influence": "S",
+    "world.world_tension_inputs": "S",
+    "world.saved_event_targets": "S",
     # --- map (§8) ---
     "map.owner_by_state": "M/D",
     "map.control_by_province": "S/D",
@@ -332,6 +385,9 @@ class Economy:
     resources: Dict[str, Any] = field(default_factory=_none_dict)
     fuel: Dict[str, Any] = field(default_factory=_none_dict)
     gross_ic_by_equipment: Optional[Dict[str, float]] = None
+    # supply_system_2 per-country logistics (from supply.json). null until ingested;
+    # an obj when measured (incl. genuine 0/0.0 leaves the verifier confirmed exist).
+    logistics: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -452,6 +508,11 @@ class Country:
     mio_policies: Optional[Dict[str, Any]] = None
     # oob.json per-country rollup (counts of armies/fleets/wings); null until ingested (§12)
     order_of_battle: Optional[Dict[str, Any]] = None
+    # country_extra.json (Tier-1 EXTRACT) — null-but-present until ingested (§3.11)
+    extra: Optional[Dict[str, Any]] = None
+    # players.json — human player's lobby/persona display name (NOT a Steam id).
+    # Populates in MP only; null for AI and for SP/missing players (§3.12).
+    human_name: Optional[str] = None
 
 
 @dataclass
@@ -508,6 +569,25 @@ class Division:
     in_combat: Optional[bool] = None
     encircled: Optional[bool] = None
     supply_status: Optional[float] = None
+    # --- divisions_full.json additive body (Tier-1 EXTRACT). LITERAL save fields,
+    # not derived; absent on a division iff that division did not store them (null,
+    # not fabricated). The 9 already above are NOT re-declared here.
+    script_id: Optional[int] = None
+    division_name: Optional[Dict[str, Any]] = None   # {type, name_order}
+    max_supply: Optional[float] = None
+    army_current_supply_ratio: Optional[float] = None
+    supply_gain: Optional[float] = None              # genuine 0.0 exists — keep it
+    motorization_level: Optional[int] = None
+    move_priority: Optional[str] = None
+    last_combat_date: Optional[str] = None
+    dig_in: Optional[float] = None
+    dig_in_cap: Optional[float] = None
+    acclimatization: Optional[Dict[str, Any]] = None  # {hot_climate, cold_climate, max}
+    army_manpower: Optional[Dict[str, Any]] = None    # {value, need}
+    killed: Optional[int] = None
+    killer_definition: Optional[str] = None
+    equipment_archetypes: Optional[int] = None
+    has_officer: Optional[bool] = None
 
 
 @dataclass
@@ -579,6 +659,85 @@ class Supply:
 
 
 @dataclass
+class StrategicAir:
+    """World strategic-air picture (from strategic_air.json, §14). Always present.
+
+    ``air_bases`` is the world list of air-base capacity records (each carries its
+    state + the per-country capacity-penalty list). ``indices`` holds the engine's
+    air_theatre/air_group running indices. ``per_country_region_blocks`` is the
+    per-TAG count of strategic-air region sub-blocks (a coverage indicator).
+    null/empty-but-present until the parser feeds it.
+    """
+    air_bases: List[Dict[str, Any]] = field(default_factory=list)
+    indices: Optional[Dict[str, Any]] = None
+    per_country_region_blocks: Optional[Dict[str, int]] = None
+
+
+@dataclass
+class StrategicOperatives:
+    """World operative pools + intel-network graph (from strategic_operatives.json,
+    §15). Always present. ``pools`` maps an operative index (string) to its
+    ``{subversive_activity_level, danger_level, networks[]}`` record; each network is
+    ``{target, vertices}``. null/empty until the parser feeds it.
+    """
+    pools: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class Raids:
+    """World strategic-bombing / naval-raid target table (from raids.json, §16).
+
+    ``counters`` = the engine's next_state / target counters; ``targets`` = the raid
+    target list (province/building/location); ``countries`` = per-TAG raid priority.
+    Always present; empty/null until the parser feeds it.
+    """
+    counters: Optional[Dict[str, Any]] = None
+    targets: List[Dict[str, Any]] = field(default_factory=list)
+    countries: List[Dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class WorldEvents:
+    """Persisted event ledgers (from events.json, §17). Always present.
+
+    ``fired_events`` = list of scripted-event ids that fired this game (persisted);
+    ``pending_events`` = scheduled-but-unfired (empty in most saves; future-proofed);
+    ``threat`` = the world-tension CONTRIBUTOR ledger (per threat-action entry, NOT
+    the aggregate tension scalar); ``sunk_convoys`` = per-month convoy-loss ledger;
+    ``convoy_losses_by_killer`` / ``convoy_losses_by_owner`` = rolled-up tallies.
+    Lists default empty; rollup dicts null until measured.
+    """
+    fired_events: List[str] = field(default_factory=list)
+    pending_events: List[Dict[str, Any]] = field(default_factory=list)
+    threat: List[Dict[str, Any]] = field(default_factory=list)
+    sunk_convoys: List[Dict[str, Any]] = field(default_factory=list)
+    convoy_losses_by_killer: Optional[Dict[str, int]] = None
+    convoy_losses_by_owner: Optional[Dict[str, int]] = None
+
+
+@dataclass
+class World:
+    """World/scenario meta (from world.json, §18). Always present.
+
+    ``scenario`` = start-date/dlcs/mods/game-rules/speed/ideology; ``variables`` =
+    global script variables; ``flags`` = global flags (each ``{value, date}``);
+    ``tech_sharing_groups`` = research-sharing groups; ``power_balances`` = balance-
+    of-power tracks; ``faction_influence`` = per-faction initiative/contribution/
+    war-score internals; ``world_tension_inputs`` = the tension-scaling inputs (NOT
+    the aggregate tension value, which is not stored); ``saved_event_targets`` =
+    named saved scopes. null/empty-but-present until the parser feeds it.
+    """
+    scenario: Optional[Dict[str, Any]] = None
+    variables: Optional[Dict[str, Any]] = None
+    flags: Optional[Dict[str, Any]] = None
+    tech_sharing_groups: List[Dict[str, Any]] = field(default_factory=list)
+    power_balances: List[Dict[str, Any]] = field(default_factory=list)
+    faction_influence: List[Dict[str, Any]] = field(default_factory=list)
+    world_tension_inputs: Optional[Dict[str, Any]] = None
+    saved_event_targets: List[Dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
 class OrderOfBattle:
     """Top-level world order-of-battle (from oob.json, §12). Always present.
 
@@ -625,6 +784,11 @@ EVENT_TYPES = (
     "lend_lease_started", "lend_lease_ended",
     # occupation governance (from state_detail + occupation.json)
     "resistance_changed", "compliance_changed", "occupation_law_changed",
+    # Tier-1 EXTRACT save domains
+    # events.json
+    "event_fired", "convoy_sunk",
+    # country_extra.json
+    "nuke_count_changed", "ace_gained", "project_completed",
     # combat
     "combat_started", "combat_ended",
 )
@@ -713,6 +877,26 @@ def empty_supply() -> Dict[str, Any]:
     return asdict(Supply())
 
 
+def empty_strategic_air() -> Dict[str, Any]:
+    return asdict(StrategicAir())
+
+
+def empty_strategic_operatives() -> Dict[str, Any]:
+    return asdict(StrategicOperatives())
+
+
+def empty_raids() -> Dict[str, Any]:
+    return asdict(Raids())
+
+
+def empty_world_events() -> Dict[str, Any]:
+    return asdict(WorldEvents())
+
+
+def empty_world() -> Dict[str, Any]:
+    return asdict(World())
+
+
 def empty_snapshot(game_id: str, date: Optional[str] = None) -> Dict[str, Any]:
     """A fully-present, all-null SNAPSHOT skeleton (SCHEMA §1)."""
     return {
@@ -739,6 +923,13 @@ def empty_snapshot(game_id: str, date: Optional[str] = None) -> Dict[str, Any]:
         # present; null-but-present until a live read folds them. Confidence-badged.
         "naval_air": empty_naval_air(),
         "supply": empty_supply(),
+        # Tier-1 EXTRACT save-side world domains (§14-§18). Always present;
+        # null/empty-but-present until their parser feeds them. Save-sourced (S).
+        "strategic_air": empty_strategic_air(),
+        "strategic_operatives": empty_strategic_operatives(),
+        "raids": empty_raids(),
+        "world_events": empty_world_events(),
+        "world": empty_world(),
         "events": [],
     }
 
@@ -756,6 +947,9 @@ _TOP_CONTAINERS = {
     "provenance": dict, "diplomacy_world": dict,
     "designs": dict, "order_of_battle": dict,
     "naval_air": dict, "supply": dict,
+    # Tier-1 EXTRACT world-scoped save domains (§14-§18)
+    "strategic_air": dict, "strategic_operatives": dict, "raids": dict,
+    "world_events": dict, "world": dict,
 }
 
 
@@ -910,10 +1104,13 @@ __all__ = [
     "Diplomacy", "Intel", "Commanders", "Country", "State", "Province",
     "Division", "Combat", "MapLayers", "Designs", "OrderOfBattle",
     "NavalAir", "Supply",
+    "StrategicAir", "StrategicOperatives", "Raids", "WorldEvents", "World",
     "Provenance", "Event", "make_event",
     "EVENT_TYPES", "CONFIDENCE_LEVELS", "EVENT_SOURCES",
     "empty_country", "empty_state", "empty_province", "empty_division",
     "empty_map", "empty_designs", "empty_order_of_battle",
     "empty_naval_air", "empty_supply", "empty_snapshot",
+    "empty_strategic_air", "empty_strategic_operatives", "empty_raids",
+    "empty_world_events", "empty_world",
     "validate_snapshot", "validate_event", "div_uid",
 ]

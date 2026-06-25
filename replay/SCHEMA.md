@@ -17,6 +17,17 @@
 > `occupation_law` (§4) from `occupation.json`; and two top-level PROXY/region LIVE
 > sidecars promoted to first-class confidence-badged fields — `naval_air` and
 > `supply` (§13). `schema_version` stays `"1"` because every change is additive.
+> **Tier-1 EXTRACT batch (still `schema_version` `"1"`):** nine save domains wired —
+> per-country `economy.logistics` (supply_system_2) from `supply.json`; per-country
+> `extra` (nukes / dynamic_modifiers / aces / special-projects / misc) from
+> `country_extra.json` (§3.11); per-country `human_name` (persona, MP-only) from
+> `players.json` (§3.12); the additive per-division body (`dig_in`/`acclimatization`/
+> `army_manpower`/`max_supply`/`supply_gain`/`killed`/… §6) MERGED from
+> `divisions_full.json`; and five top-level world blocks — `strategic_air` (§14),
+> `strategic_operatives` (§15), `raids` (§16), `world_events` (§17), `world` (§18).
+> Every one is save-sourced (**S**), folded under `provenance.save`, schema-present
+> and `null`/`[]`/`{}` until its parser feeds it. New diff events: `event_fired`,
+> `convoy_sunk`, `nuke_count_changed`, `ace_gained`, `project_completed`.
 
 A **replay** of one game = an ordered series of **SNAPSHOTS** (full point-in-time
 world state) plus a derived **EVENT timeline** (what changed between snapshots). This
@@ -102,6 +113,13 @@ Aggregates over null members skip them and report a coverage count, never impute
   "map":        { MapLayers },               // §8, derived/raster-ready aggregates
   "designs":    { Designs },                 // §11, world design catalogs (templates + equipment-variant catalog)
   "order_of_battle": { OrderOfBattle },      // §12, world command structure (armies/fleets/wings/plans)
+  "naval_air":  { NavalAir },                // §13, live PROXY/region naval+air sidecar (badged)
+  "supply":     { Supply },                  // §13, live PROXY supply sidecar (badged)
+  "strategic_air": { StrategicAir },         // §14, world air-base capacity table (save)
+  "strategic_operatives": { StrategicOperatives }, // §15, operative pools + intel-network graph (save)
+  "raids":      { Raids },                   // §16, strategic-bombing/naval-raid targets (save)
+  "world_events": { WorldEvents },           // §17, fired events + threat + sunk-convoy ledgers (save)
+  "world":      { World },                   // §18, scenario meta + global vars/flags/tech-share/balance (save)
   "events":     [ {Event}, ... ]             // §9, per-snapshot marker events (usually
                                              //     empty; the diff engine fills the
                                              //     cross-snapshot timeline separately)
@@ -169,6 +187,7 @@ are `null`.
 | `gross_ic_by_equipment` | obj\|null | S/D | `{equip_archetype: produced_delta}`; null until production-delta pass runs |
 | `market_stockpile[]` | list | S | equipment this country placed ON the equipment market (sellable). Each: `equip_id`, `equip_type`, `archetype`, `amount`. From `market.json`. |
 | `market_automation` | obj\|null | S | market-request automation flags (`auto_accept_purchase`, `auto_accept_market_access`, …); null when none set |
+| `logistics` | obj\|null | S | supply_system_2 per-country logistics (from `supply.json`). `{priority, buffer, wanted_supply_trucks, capital, last_supply_capital_move, daily_losses_index, last_lost_train_province, truck_count, truck_damage_avg, trucks[{equip_id,equip_type,count,damage}], node_count, node_motorization[{node_province,levels{TAG:lvl}}], disrupted_count, disrupted_supply[{node_province,value}], foreign_homebase_nodes[{province,supply,penalty,source}], lost_railways(+_total), lost_trains(+_total), lost_trucks_attrition(+_total), lost_trucks_killed(+_total)}`. `lost_*` are ~30-day ring buffers; `*_total` is the sum. Only the keys the parser emitted are present; a genuine `0`/`0.0` is preserved. |
 
 ### 3.2 `military`
 | field | type | source | notes |
@@ -284,6 +303,32 @@ Per-country military-industrial picture (the world variant CATALOG is top-level 
 | `scheduled_variants[]` | list | S | named designer PRESETS: `{archetype, family, name, icon, obsolete, modules, upgrades, industrial_organisation([id,type]\|null), industrial_organisation_mio}` |
 | `mio_policies` | obj\|null | S | `{policy_name: {cost, cooldown}}` — MIO-policy cost/cooldown state |
 
+### 3.11 `extra` (from `country_extra.json`)
+Country-level extras not covered by the other domains. `null`-but-present until ingested;
+when present it carries only the keys the parser emitted (no fabrication; a genuine `0`
+stays `0`, e.g. a nuke RECORD with `amount=0` yields `nukes_total=0`).
+| field | type | source | notes |
+|-------|------|--------|-------|
+| `nukes_total` / `nukes_ready_total` | int\|null | S | summed across the country's nuke records |
+| `nukes[]` | list | S | each: `{amount, nukes_ready}` (a real all-zero list ⇒ `nukes_total=0`) |
+| `dynamic_modifiers[]` | list | S | each: `{modifier, enabled, value[]}` (the value array is the modifier's stored coefficients) |
+| `ace_count` | int\|null | S | number of `aces[]` |
+| `aces[]` | list | S | each: `{name, surname, callsign, modifier, alive, kill_type, killer_country}` (post-death fields null while the ace is alive) |
+| `reinforcement_priority` | int\|null | S | |
+| `deployment_blocks[]` | list | S | active deployment toggles |
+| `special_projects` | obj\|null | S | `{projects_started, projects_completed, active_programs[{building,province,country}], breakthrough{specialization_*:points}}` |
+| `experience_status` | obj\|null | S | `{army_experience, navy_experience, air_experience}` |
+| `convoys_destroyed` | int\|null | S | |
+| `accidents_score` | float\|null | S | |
+| `cosmetic_tag` | str\|null | S | active cosmetic tag (`""` when none) |
+| `pride_of_the_fleet` | obj\|null | S | `{id, type}` of the flagship ship |
+| `collaboration_present` | bool\|null | S | whether a collaboration government exists |
+
+### 3.12 `human_name` (from `players.json`)
+| field | type | source | notes |
+|-------|------|--------|-------|
+| `human_name` | str\|null | S | the human player's lobby/persona DISPLAY name (`player_countries.<TAG>.user`). Populates in MP; `null` for AI and SP. **Not** a Steam id / OS account — those remain a hard wall (§10). |
+
 ---
 
 ## 4. `State` object (keyed by state-id string, ×~1081)
@@ -358,6 +403,28 @@ Per-country military-industrial picture (the world variant CATALOG is top-level 
 | `in_combat` | bool\|null | M\* | live combat flag; cross-checked vs §7 |
 | `encircled` | bool\|null | M\* | |
 | `supply_status` | float\|null | M\* | |
+| `script_id` | int\|null | S | save script id (`-1` = none) — **divisions_full** |
+| `division_name` | obj\|null | S | `{type, name_order}` (name-list ref, not the resolved string) — **divisions_full** |
+| `max_supply` | float\|null | S | division supply capacity — **divisions_full** |
+| `army_current_supply_ratio` | float\|null | S | current supply ratio — **divisions_full** |
+| `supply_gain` | float\|null | S | supply gain rate (a genuine `0.0` exists and is kept) — **divisions_full** |
+| `motorization_level` | int\|null | S | — **divisions_full** |
+| `move_priority` | str\|null | S | e.g. `front_order` — **divisions_full** |
+| `last_combat_date` | str\|null | S | Clausewitz date of last combat — **divisions_full** |
+| `dig_in` / `dig_in_cap` | float\|null | S | entrenchment + cap — **divisions_full** |
+| `acclimatization` | obj\|null | S | `{hot_climate, cold_climate, max_acclimatization}` — **divisions_full** |
+| `army_manpower` | obj\|null | S | `{value, need}` — **divisions_full** |
+| `killed` | int\|null | S | manpower killed — **divisions_full** |
+| `killer_definition` | str\|null | S | template that destroyed it (`no` if alive) — **divisions_full** |
+| `equipment_archetypes` | int\|null | S | count of distinct equipment archetypes — **divisions_full** |
+| `has_officer` | bool\|null | S | — **divisions_full** |
+
+> The **divisions_full** rows are LITERAL save fields (not derived), MERGED onto each
+> division by its full `(div_id, div_type)` identity. The 9 fields above them
+> (`div_id`…`equipment`) come from `divisions.json` and are authoritative; the merge
+> never overwrites them. A division present only in `divisions_full.json` is appended
+> (carrying its identity + the additive body); the per-country `division_count`
+> recounts to include it.
 
 > **`strength` note:** the memory reader emits a manpower-scaled strength figure; the
 > save's per-division `strength` is a fraction-of-template. The writer preserves
@@ -490,6 +557,57 @@ Always present; `null`-but-present until a live read folds them.
 
 ---
 
+## 14. `strategic_air` (world air-base table; from `strategic_air.json`)
+
+World strategic-air picture. Save-sourced (**S**). Always present (`[]`/`null`-filled).
+
+| field | type | source | notes |
+|-------|------|--------|-------|
+| `air_bases[]` | list | S | each: `{id, type, state, capacity, base, level, countries[{country, capacity_penalty}]}` — per-state air-base capacity + the per-country capacity penalty list |
+| `indices` | obj\|null | S | `{air_theatre_index, air_group_index}` (engine running indices) |
+| `per_country_region_blocks` | obj\|null | S | `{TAG: count}` of strategic-air region sub-blocks (coverage indicator) |
+
+## 15. `strategic_operatives` (operative pools + intel-network graph; from `strategic_operatives.json`)
+
+| field | type | source | notes |
+|-------|------|--------|-------|
+| `pools` | obj\|null | S | `{operative_index: {subversive_activity_level, danger_level, networks[{target, vertices}]}}`. Index is the save operative slot (string key). `networks` may be empty (the operative runs no intel network) — a genuine empty list, not null. |
+
+## 16. `raids` (strategic-bombing / naval-raid targets; from `raids.json`)
+
+| field | type | source | notes |
+|-------|------|--------|-------|
+| `counters` | obj\|null | S | `{next_state, existing_target_num, detectable_target_num, next_target}` |
+| `targets[]` | list | S | each: `{existing_target_num, detectable_target_num, valid, dynamic, target_province, target_building, target_location}` |
+| `countries[]` | list | S | each: `{tag, priority}` (per-country raid priority) |
+
+## 17. `world_events` (event + convoy ledgers; from `events.json`)
+
+Persisted ledgers. Drives the `event_fired` / `convoy_sunk` diff events (§9.2).
+
+| field | type | source | notes |
+|-------|------|--------|-------|
+| `fired_events[]` | list[str] | S | persisted scripted-event ids that fired this game |
+| `pending_events[]` | list | S | scheduled-but-unfired events (empty in most saves; future-proofed) |
+| `threat[]` | list | S | world-tension CONTRIBUTOR ledger (per threat-action). Each: `{threat, final_threat, daily, tag, date, label}`. **NOT** the aggregate tension scalar (that is not stored — see `world.world_tension_inputs`). |
+| `sunk_convoys[]` | list | S | per-month convoy-loss ledger. Each: `{month (hours-since-epoch bucket), convoys, killer_country, owner}` |
+| `convoy_losses_by_killer` / `convoy_losses_by_owner` | obj\|null | S | `{TAG: n}` rolled-up tallies |
+
+## 18. `world` (scenario meta + globals; from `world.json`)
+
+| field | type | source | notes |
+|-------|------|--------|-------|
+| `scenario` | obj\|null | S | `{start_date, difficulty, historical, tutorial, dlcs, mods[], session, speed, save_version, ideology, gameplaysettings{}, game_rules_empty}` |
+| `variables` | obj\|null | S | `{name: value}` global script variables (array members keyed `name^i` / `name^num`) |
+| `flags` | obj\|null | S | `{name: {value, date}}` global flags |
+| `tech_sharing_groups[]` | list | S | each: `{id, bonuses[], countries[]}` |
+| `power_balances[]` | list | S | each: `{template, value, left_side, right_side, trending_side, countries[]}` |
+| `faction_influence[]` | list | S | per-faction internals (the parser's `faction_system`): each `{key, index, initiative, contribution, war_score_breakdown, member_upgrades[]}` |
+| `world_tension_inputs` | obj\|null | S | `{average_major_ic, tension_scaling_base_country}` — the inputs to world-tension scaling (the aggregate tension VALUE is not stored) |
+| `saved_event_targets[]` | list | S | each: `{country, state, name}` named saved scopes |
+
+---
+
 ## 9. Event records (diff engine output)
 
 Two places events live:
@@ -618,6 +736,22 @@ for the law; keyed by state id):
   15/25/40/60/80 milestones) — sub-band daily drift is suppressed as noise.
 - `compliance_changed` — same shape, on a compliance band crossing.
 - `occupation_law_changed` — `key`=state, `from`/`to`=occupation-law token.
+
+World events / convoys (from `world_events` domain):
+- `event_fired` — `key`=`to`=scripted-event id. A new id appeared in the persisted
+  `fired_events` list.
+- `convoy_sunk` — `subject`=killer TAG, `object`=owner TAG, `key`=`month:killer:owner`,
+  `to`=convoy count (`from`=prior count when an existing month's tally grew). Emitted
+  for a new per-month ledger entry, or an existing `(month,killer,owner)` whose tally
+  increased between two saves.
+
+Country extra (from `country_extra` domain):
+- `nuke_count_changed` — `subject`=TAG, `from`/`to`=`nukes_total`. Only on an actual
+  change (a measured `0`→`0` does not fire).
+- `ace_gained` — `subject`=TAG, `key`=ace ident (`name|surname|callsign`), `to`=callsign,
+  `detail`={name, surname, callsign, modifier}. A new ace appears.
+- `project_completed` — `subject`=TAG, `from`/`to`=`special_projects.projects_completed`,
+  `detail.completed_delta`. Emitted on an INCREASE only (a rollback does not fire).
 
 Combat (Tier C, inferred):
 - `combat_started` — `key`=combat_id; `confidence`="inferred".

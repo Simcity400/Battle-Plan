@@ -70,6 +70,12 @@ _EVENT_DOMAIN = {
     "resistance_changed": "state_detail",
     "compliance_changed": "state_detail",
     "occupation_law_changed": "occupation",
+    # Tier-1 EXTRACT save domains
+    "event_fired": "world_events",
+    "convoy_sunk": "world_events",
+    "nuke_count_changed": "country_extra",
+    "ace_gained": "country_extra",
+    "project_completed": "country_extra",
 }
 
 
@@ -168,6 +174,8 @@ def diff_snapshots(a: Dict[str, Any], b: Dict[str, Any],
         _diff_order_of_battle(a, b, emit)
     if _both_captured(a, b, "designs"):
         _diff_designs(a, b, emit)
+    if _both_captured(a, b, "world_events"):
+        _diff_world_events(a, b, emit)
     _diff_countries(a, b, emit, milestone_steps or {})
 
     events.sort(key=_event_sort_key)
@@ -353,6 +361,7 @@ def _diff_countries(a: Dict[str, Any], b: Dict[str, Any], emit,
     do_intel = _both_captured(a, b, "intel")
     do_mios = _both_captured(a, b, "designs")
     do_market = _both_captured(a, b, "market")
+    do_country_extra = _both_captured(a, b, "country_extra")
     for tag in set(ca) | set(cb):
         old = ca.get(tag) or {}
         new = cb.get(tag) or {}
@@ -377,6 +386,8 @@ def _diff_countries(a: Dict[str, Any], b: Dict[str, Any], emit,
             _diff_mios(tag, old, new, emit)
         if do_market:
             _diff_market(tag, old, new, emit)
+        if do_country_extra:
+            _diff_country_extra(tag, old, new, emit)
 
 
 def _domain_present(snap: Dict[str, Any], domain: str) -> bool:
@@ -836,6 +847,96 @@ def _diff_designs(a: Dict[str, Any], b: Dict[str, Any], emit) -> None:
 
 
 # ---------------------------------------------------------------------------
+# World events (events.json): scripted events newly fired + convoys newly sunk
+# (world-scoped, from snap["world_events"]).
+# ---------------------------------------------------------------------------
+def _diff_world_events(a: Dict[str, Any], b: Dict[str, Any], emit) -> None:
+    """event_fired: a scripted event id newly appears in the persisted fired list.
+    convoy_sunk: a per-month sunk-convoy ledger ENTRY newly appears.
+
+    fired_events is an append-mostly persisted list; we set-diff it so only genuinely
+    new ids fire. sunk_convoys entries are keyed by (month, killer, owner) — a new key,
+    or a higher convoy count for an existing key, emits (the per-month tally can grow
+    within the same month between two saves)."""
+    wea = a.get("world_events") or {}
+    web = b.get("world_events") or {}
+
+    o_fired = set(wea.get("fired_events") or [])
+    n_fired = set(web.get("fired_events") or [])
+    for eid in sorted(n_fired - o_fired):
+        emit("event_fired", key=eid, to=eid)
+
+    def _conv_index(we):
+        out = {}
+        for e in (we.get("sunk_convoys") or []):
+            if not isinstance(e, dict):
+                continue
+            k = (e.get("month"), e.get("killer_country"), e.get("owner"))
+            out[k] = e
+        return out
+
+    oc, nc = _conv_index(wea), _conv_index(web)
+    for k, e in nc.items():
+        ov = (oc.get(k) or {}).get("convoys")
+        nv = e.get("convoys")
+        # new ledger entry, OR an existing month-killer-owner tally that grew.
+        is_new = k not in oc
+        grew = (isinstance(ov, (int, float)) and isinstance(nv, (int, float))
+                and nv > ov)
+        if is_new or grew:
+            emit("convoy_sunk", subject=e.get("killer_country"),
+                 object=e.get("owner"),
+                 key="%s:%s:%s" % (e.get("month"), e.get("killer_country"),
+                                   e.get("owner")),
+                 **{"from": ov if grew else None}, to=nv,
+                 detail={"month": e.get("month"), "owner": e.get("owner"),
+                         "killer": e.get("killer_country")})
+
+
+# ---------------------------------------------------------------------------
+# Country extra (country_extra.json): nuke count, new aces, projects completed
+# (per-country, from countries.*.extra).
+# ---------------------------------------------------------------------------
+def _ace_key(ac: Dict[str, Any]) -> str:
+    """Stable per-ace identity = name+surname+callsign (the save has no ace id)."""
+    return "%s|%s|%s" % (ac.get("name"), ac.get("surname"), ac.get("callsign"))
+
+
+def _diff_country_extra(tag, old, new, emit) -> None:
+    """nuke_count_changed: countries.*.extra.nukes_total changed.
+    ace_gained: a new ace (by name/surname/callsign) appears.
+    project_completed: special_projects.projects_completed increased (by the delta)."""
+    o_ext = old.get("extra") if isinstance(old.get("extra"), dict) else {}
+    n_ext = new.get("extra") if isinstance(new.get("extra"), dict) else {}
+    if not o_ext and not n_ext:
+        return
+
+    # nuke total (a real 0 is a measured value — only emit on an actual change)
+    o_n, n_n = o_ext.get("nukes_total"), n_ext.get("nukes_total")
+    if (isinstance(o_n, int) and isinstance(n_n, int) and o_n != n_n):
+        emit("nuke_count_changed", subject=tag, **{"from": o_n}, to=n_n)
+
+    # newly-gained aces (set-diff by ace identity)
+    o_aces = {_ace_key(x) for x in (o_ext.get("aces") or []) if isinstance(x, dict)}
+    for ac in (n_ext.get("aces") or []):
+        if not isinstance(ac, dict):
+            continue
+        if _ace_key(ac) not in o_aces:
+            emit("ace_gained", subject=tag, key=_ace_key(ac),
+                 to=ac.get("callsign") or ac.get("surname"),
+                 detail={"name": ac.get("name"), "surname": ac.get("surname"),
+                         "callsign": ac.get("callsign"),
+                         "modifier": ac.get("modifier")})
+
+    # special-project completions (count INCREASE only)
+    o_done = (o_ext.get("special_projects") or {}).get("projects_completed")
+    n_done = (n_ext.get("special_projects") or {}).get("projects_completed")
+    if (isinstance(o_done, int) and isinstance(n_done, int) and n_done > o_done):
+        emit("project_completed", subject=tag, **{"from": o_done}, to=n_done,
+             detail={"completed_delta": n_done - o_done})
+
+
+# ---------------------------------------------------------------------------
 # Marker events + merge + dedupe (SCHEMA §9.3)
 # ---------------------------------------------------------------------------
 def _event_sort_key(ev: Dict[str, Any]) -> Tuple:
@@ -982,11 +1083,13 @@ def _merge_two_snapshots(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]
             for ent, bval in bv.items():
                 m[ent] = _deep_null_aware_merge(av.get(ent), bval)
             merged[key] = m
-    # Top-level world catalogs (designs / order_of_battle): null-aware deep merge so a
-    # same-hour partial snapshot (e.g. one carrying only designs, the other only oob)
-    # doesn't drop the sibling's data while provenance still unions both domains
-    # (Codex integ-review finding 1). Empty lists/dicts don't clobber real data.
-    for key in ("designs", "order_of_battle"):
+    # Top-level world catalogs (designs / order_of_battle + Tier-1 EXTRACT world
+    # domains): null-aware deep merge so a same-hour partial snapshot (e.g. one
+    # carrying only designs, the other only world) doesn't drop the sibling's data
+    # while provenance still unions both domains (Codex integ-review finding 1).
+    # Empty lists/dicts don't clobber real data.
+    for key in ("designs", "order_of_battle", "strategic_air",
+                "strategic_operatives", "raids", "world_events", "world"):
         av, bv = a.get(key), b.get(key)
         if av is not None or bv is not None:
             merged[key] = _deep_null_aware_merge(av, bv)

@@ -88,6 +88,16 @@ class OracleBundle:
         # (parse_occupation). Both optional; ingested below.
         "market": "market.json",
         "occupation": "occupation.json",
+        # Tier-1 EXTRACT save domains (all optional; ingested below)
+        "supply": "supply.json",
+        "strategic_air": "strategic_air.json",
+        "strategic_operatives": "strategic_operatives.json",
+        "raids": "raids.json",
+        "events": "events.json",
+        "world": "world.json",
+        "country_extra": "country_extra.json",
+        "players": "players.json",
+        "divisions_full": "divisions_full.json",
         "meta": "meta.json",
         "control_meta": "control_meta.json",
     }
@@ -170,8 +180,19 @@ def build_snapshot_from_oracle(
     _ingest_provinces(bundle, snap)
     # --- divisions ---
     _ingest_divisions(bundle, snap)
+    # --- divisions_full: merge the additive per-division body onto divisions[] ---
+    _ingest_divisions_full(bundle, snap)
     # --- combats (active at snapshot instant) ---
     _ingest_combats(bundle, snap)
+    # --- Tier-1 EXTRACT save domains -------------------------------------------
+    _ingest_supply(bundle, snap)               # per-country economy.logistics
+    _ingest_strategic_air(bundle, snap)        # top-level strategic_air
+    _ingest_strategic_operatives(bundle, snap) # top-level strategic_operatives
+    _ingest_raids(bundle, snap)                # top-level raids
+    _ingest_world_events(bundle, snap)         # top-level world_events
+    _ingest_world(bundle, snap)                # top-level world (scenario/vars/flags)
+    _ingest_country_extra(bundle, snap)        # per-country extra (nukes/aces/...)
+    _ingest_players(bundle, snap)              # per-country human_name
     # --- map convenience layers (mirror state/province) ---
     _fill_map_layers(snap)
     # --- provenance ---
@@ -778,6 +799,228 @@ def _ingest_divisions(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
         c["military"]["division_count"] = n
 
 
+# ---------------------------------------------------------------------------
+# Tier-1 EXTRACT ingestion (supply / strategic / events / world / country_extra /
+# players / divisions_full). All save-sourced; no fabrication — a value is copied
+# only when the parser emitted it; a genuine 0/0.0 is preserved (the Extract
+# verifier confirmed real zeros exist, e.g. supply_gain=0, nuke amount=0).
+# ---------------------------------------------------------------------------
+
+# The per-country supply_system_2 logistics fields to fold onto economy.logistics.
+# Listed explicitly so the parser's own meta/source keys never leak in, and so the
+# block stays stable if the parser adds unrelated keys.
+_SUPPLY_FIELDS = (
+    "priority", "buffer", "wanted_supply_trucks", "capital",
+    "last_supply_capital_move", "daily_losses_index", "last_lost_train_province",
+    "truck_count", "truck_damage_avg", "trucks", "node_count", "node_motorization",
+    "disrupted_count", "disrupted_supply", "foreign_homebase_nodes",
+    "lost_railways_total", "lost_trains_total", "lost_trucks_attrition_total",
+    "lost_trucks_killed_total", "lost_railways", "lost_trains",
+    "lost_trucks_attrition", "lost_trucks_killed",
+)
+
+
+def _ingest_supply(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
+    """Fold supply.json per-country logistics onto countries.*.economy.logistics."""
+    sup = bundle.get("supply")
+    if not isinstance(sup, dict) or not isinstance(sup.get("countries"), dict):
+        return
+    for tag, c in sup["countries"].items():
+        if not isinstance(c, dict):
+            continue
+        dst = _ensure_country(snap, tag)
+        # copy only the present fields; absent keys stay absent (no fabrication)
+        dst["economy"]["logistics"] = {k: c[k] for k in _SUPPLY_FIELDS if k in c}
+
+
+def _ingest_strategic_air(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
+    """Fold strategic_air.json into the top-level strategic_air block."""
+    sa = bundle.get("strategic_air")
+    if not isinstance(sa, dict):
+        return
+    dst = snap["strategic_air"]
+    if isinstance(sa.get("air_bases"), list):
+        dst["air_bases"] = sa["air_bases"]
+    if isinstance(sa.get("indices"), dict):
+        dst["indices"] = sa["indices"]
+    if isinstance(sa.get("per_country_region_blocks"), dict):
+        dst["per_country_region_blocks"] = sa["per_country_region_blocks"]
+
+
+def _ingest_strategic_operatives(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
+    """Fold strategic_operatives.json into top-level strategic_operatives.pools."""
+    so = bundle.get("strategic_operatives")
+    if not isinstance(so, dict):
+        return
+    if isinstance(so.get("operatives"), dict):
+        snap["strategic_operatives"]["pools"] = so["operatives"]
+
+
+def _ingest_raids(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
+    """Fold raids.json into the top-level raids block."""
+    rd = bundle.get("raids")
+    if not isinstance(rd, dict):
+        return
+    dst = snap["raids"]
+    if isinstance(rd.get("counters"), dict):
+        dst["counters"] = rd["counters"]
+    if isinstance(rd.get("targets"), list):
+        dst["targets"] = rd["targets"]
+    if isinstance(rd.get("countries"), list):
+        dst["countries"] = rd["countries"]
+
+
+def _ingest_world_events(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
+    """Fold events.json into the top-level world_events block."""
+    ev = bundle.get("events")
+    if not isinstance(ev, dict):
+        return
+    dst = snap["world_events"]
+    if isinstance(ev.get("fired_event_names"), list):
+        dst["fired_events"] = ev["fired_event_names"]
+    if isinstance(ev.get("pending_events"), list):
+        dst["pending_events"] = ev["pending_events"]
+    if isinstance(ev.get("threat"), list):
+        dst["threat"] = ev["threat"]
+    if isinstance(ev.get("sunk_convoys_history"), list):
+        dst["sunk_convoys"] = ev["sunk_convoys_history"]
+    if isinstance(ev.get("convoy_losses_by_killer"), dict):
+        dst["convoy_losses_by_killer"] = ev["convoy_losses_by_killer"]
+    if isinstance(ev.get("convoy_losses_by_owner"), dict):
+        dst["convoy_losses_by_owner"] = ev["convoy_losses_by_owner"]
+
+
+def _ingest_world(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
+    """Fold world.json (scenario / vars / flags / tech-share / power-balance /
+    faction influence / tension inputs / saved targets) into top-level world."""
+    w = bundle.get("world")
+    if not isinstance(w, dict):
+        return
+    dst = snap["world"]
+    if isinstance(w.get("scenario"), dict):
+        dst["scenario"] = w["scenario"]
+    if isinstance(w.get("variables"), dict):
+        dst["variables"] = w["variables"]
+    if isinstance(w.get("flags"), dict):
+        dst["flags"] = w["flags"]
+    if isinstance(w.get("tech_sharing_groups"), list):
+        dst["tech_sharing_groups"] = w["tech_sharing_groups"]
+    if isinstance(w.get("power_balances"), list):
+        dst["power_balances"] = w["power_balances"]
+    # parser key is faction_system; surface under the schema's faction_influence name
+    if isinstance(w.get("faction_system"), list):
+        dst["faction_influence"] = w["faction_system"]
+    if isinstance(w.get("world_tension_inputs"), dict):
+        dst["world_tension_inputs"] = w["world_tension_inputs"]
+    if isinstance(w.get("saved_event_targets"), list):
+        dst["saved_event_targets"] = w["saved_event_targets"]
+
+
+# The per-country country_extra fields to surface under countries.*.extra. Listed
+# explicitly so parser meta keys never leak in.
+_EXTRA_FIELDS = (
+    "nukes_total", "nukes_ready_total", "nukes", "dynamic_modifiers",
+    "ace_count", "aces", "reinforcement_priority", "deployment_blocks",
+    "special_projects", "experience_status", "convoys_destroyed",
+    "accidents_score", "cosmetic_tag", "pride_of_the_fleet",
+    "collaboration_present",
+)
+
+
+def _ingest_country_extra(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
+    """Fold country_extra.json per-country body onto countries.*.extra."""
+    ce = bundle.get("country_extra")
+    if not isinstance(ce, dict) or not isinstance(ce.get("countries"), dict):
+        return
+    for tag, c in ce["countries"].items():
+        if not isinstance(c, dict):
+            continue
+        dst = _ensure_country(snap, tag)
+        dst["extra"] = {k: c[k] for k in _EXTRA_FIELDS if k in c}
+
+
+def _ingest_players(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
+    """Fold players.json persona name onto countries.*.human_name (MP only)."""
+    pl = bundle.get("players")
+    if not isinstance(pl, dict) or not isinstance(pl.get("players"), dict):
+        return
+    for tag, p in pl["players"].items():
+        if not isinstance(p, dict):
+            continue
+        name = p.get("user")
+        if isinstance(name, str) and name:
+            _ensure_country(snap, tag)["human_name"] = name
+
+
+# divisions_full additive fields to merge onto an existing division (the 9 already
+# in divisions.json are NOT re-copied — they are authoritative from _ingest_divisions).
+_DIVFULL_FIELDS = (
+    "script_id", "division_name", "experience", "max_supply",
+    "army_current_supply_ratio", "supply_gain", "motorization_level",
+    "move_priority", "last_combat_date", "dig_in", "dig_in_cap",
+    "acclimatization", "army_manpower", "killed", "killer_definition",
+    "equipment_archetypes", "has_officer",
+)
+
+
+def _ingest_divisions_full(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
+    """Merge divisions_full.json's additive per-division body onto divisions[].
+
+    Joined by full Clausewitz identity (div_id, div_type). divisions.json was already
+    ingested into snap["divisions"]; this enriches each matched record with the extra
+    LITERAL save fields. A divisions_full record with no matching divisions.json entry
+    is appended as a new division (it still carries div_id/div_type/owner/location).
+    No fabrication: only present fields are copied; a genuine 0/0.0 is preserved."""
+    dvf = bundle.get("divisions_full")
+    if not isinstance(dvf, dict):
+        return
+    full_list = dvf.get("divisions")
+    if not isinstance(full_list, list):
+        return
+
+    def _uid(d: Dict[str, Any]):
+        return (d.get("div_id"), d.get("div_type"))
+
+    index = {_uid(d): d for d in snap["divisions"] if isinstance(d, dict)}
+    counts_dirty = False
+    for f in full_list:
+        if not isinstance(f, dict):
+            continue
+        key = _uid(f)
+        if key[0] is None:
+            continue
+        rec = index.get(key)
+        if rec is None:
+            # a division present only in divisions_full -> create a fresh record so its
+            # body is not dropped (carries identity + the additive fields).
+            rec = schema.empty_division()
+            rec["div_id"] = f.get("div_id")
+            rec["div_type"] = f.get("div_type")
+            rec["owner"] = f.get("owner") if isinstance(f.get("owner"), str) else None
+            rec["location_province"] = f.get("location_province")
+            rec["template_id"] = f.get("template_id")
+            rec["template_type"] = f.get("template_type")
+            rec["organisation"] = f.get("organisation")
+            rec["strength"] = f.get("strength")
+            snap["divisions"].append(rec)
+            index[key] = rec
+            counts_dirty = True
+        for fld in _DIVFULL_FIELDS:
+            if fld in f:
+                rec[fld] = f[fld]
+
+    # If divisions_full introduced divisions absent from divisions.json, refresh the
+    # per-country division_count so it stays a measured truth (Codex-style honesty).
+    if counts_dirty:
+        recount: Dict[str, int] = {}
+        for d in snap["divisions"]:
+            o = d.get("owner")
+            if isinstance(o, str):
+                recount[o] = recount.get(o, 0) + 1
+        for tag, n in recount.items():
+            _ensure_country(snap, tag)["military"]["division_count"] = n
+
+
 def _fill_map_layers(snap: Dict[str, Any]) -> None:
     owner_by_state = {sid: st.get("owner") for sid, st in snap["states"].items()
                       if st.get("owner") is not None}
@@ -812,11 +1055,22 @@ def _fill_provenance(bundle: OracleBundle, snap: Dict[str, Any],
         "intel": "intel",
         "market": "market",
         "occupation": "occupation",
+        # Tier-1 EXTRACT save domains
+        "supply": "supply_logistics",
+        "strategic_air": "strategic_air",
+        "strategic_operatives": "strategic_operatives",
+        "raids": "raids",
+        "events": "world_events",
+        "world": "world",
+        "country_extra": "country_extra",
+        "players": "players",
     }
     for fkey, dom in domain_map.items():
         obj = bundle.get(fkey)
         if obj:  # present and non-empty
             save_domains.append(dom)
+    # divisions_full enriches the existing 'divisions' domain (already listed when
+    # divisions.json is present); it does not add a separate provenance domain.
 
     prov = snap["provenance"]
     prov["save"] = {

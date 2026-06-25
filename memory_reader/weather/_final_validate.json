@@ -1,0 +1,10 @@
+{
+  "phenom_offset": "0x78",
+  "phenom_width": 4,
+  "index_is_region_id": 305,
+  "phenom_active_agreement": "305/305",
+  "disagreements": [],
+  "neg_control_geom_dist": {
+    "2259857776": 304
+  }
+}

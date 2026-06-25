@@ -497,8 +497,16 @@ def fold_save_bundle(snap: Dict[str, Any], output_dir: str, *,
         snap["divisions"] = save_snap["divisions"]
 
     # --- world-scoped catalogs: backstop only if live left them empty ---
-    for key in ("designs", "order_of_battle", "diplomacy_world"):
-        snap[key] = _backstop_merge(snap.get(key), save_snap.get(key))
+    # Includes the Tier-1 EXTRACT world domains (strategic_air / strategic_operatives
+    # / raids / world_events / world). These are save-ONLY today (no live reader emits
+    # them), so the backstop simply fills the empty live skeleton; if a future live
+    # read ever populates one, the live-wins rule still holds (informative wins).
+    for key in ("designs", "order_of_battle", "diplomacy_world",
+                "strategic_air", "strategic_operatives", "raids",
+                "world_events", "world"):
+        sv = save_snap.get(key)
+        if sv is not None:
+            snap[key] = _backstop_merge(snap.get(key), sv)
 
     # --- combats: only adopt the save's active combats when live captured none ---
     if not snap.get("combats") and save_snap.get("combats"):

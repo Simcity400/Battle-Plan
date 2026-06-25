@@ -1,0 +1,24 @@
+{
+  "phenom_offset": "0x78",
+  "phenom_width": 4,
+  "distribution": {
+    "1": 131,
+    "0": 168,
+    "2": 5
+  },
+  "anchor_phenom": {
+    "31": 1,
+    "20": 0,
+    "129": 0,
+    "160": 0,
+    "292": 0
+  },
+  "phenom2_regions": [
+    75,
+    81,
+    84,
+    93,
+    178
+  ],
+  "stride": 352
+}
