@@ -13,8 +13,9 @@
 //!   * state-panel population = `manpower_pool.total` (NOT `.available`),
 //!   * `victory_points_total` is the exact VP int,
 //!   * resistance/compliance are 0..100 percents (bar fraction = value/100),
-//!   * `resources`, `occupation_law`, `is_claimed_by` are always-null in the
-//!     current snapshots → `unavailable` (render "—"), never substituted.
+//!   * `occupation_law`, `is_claimed_by` are null/empty in the current snapshots →
+//!     `unavailable` (render "—"), never substituted. `resources` is live-fed
+//!     when present and still never substituted from country-level aggregates.
 
 use crate::format::{self, NOT_CAPTURED};
 use crate::{classify, Fidelity, ValueState};
@@ -52,7 +53,7 @@ pub struct StateBindReport {
     pub state_buildings: Vec<BuildingRow>,
     /// Province-scoped buildings folded to the state (rail_way, naval_base, …).
     pub province_buildings: Vec<BuildingRow>,
-    /// Resource rows — EMPTY + unavailable in current data (resources == null).
+    /// Resource rows from the selected state's measured raw deposits.
     pub resource_rows: Vec<BuildingRow>,
     pub owner_tag: Option<String>,
     pub controller_tag: Option<String>,
@@ -105,7 +106,7 @@ const PROVINCE_BUILDINGS: &[(&str, u32)] = &[
 ];
 
 /// Resource order + frame map (into `GFX_resources_strip`). Used only when the
-/// `resources` domain is populated; it is `null` in current data → no rows.
+/// selected state carries a measured `resources` object.
 const RESOURCES: &[(&str, u32)] = &[
     ("aluminium", 0),
     ("chromium", 1),
@@ -143,10 +144,9 @@ fn building_rows(obj: Option<&Value>, order: &[(&str, u32)]) -> Vec<BuildingRow>
     rows
 }
 
-/// Build the resource rows. `resources` is always `null` in the current snapshot
-/// generator (BINDING_MAP §2a) → an EMPTY list badged unavailable (never the
-/// country-level aggregate substituted in). Present here so the gridbox renders an
-/// empty/"—" state honestly when the domain is unfed.
+/// Build the resource rows from the selected state's measured raw deposits. A null
+/// or absent block yields no rows and never falls back to the country-level aggregate.
+/// A measured empty `{}` is a real no-deposits state and also yields no rows.
 fn resource_rows(obj: Option<&Value>) -> Vec<BuildingRow> {
     let mut rows = Vec::new();
     let map = match obj.and_then(Value::as_object) {
@@ -382,8 +382,8 @@ mod tests {
         let j = json!({
             "date": "1941.4.13.11",
             "states": {
-                "64": {
-                    "owner": "GER", "controller": "GER", "category": "megalopolis",
+            "64": {
+                "owner": "GER", "controller": "GER", "category": "megalopolis",
                     "victory_points_total": 56,
                     "manpower_pool": {"available": 331620, "locked": 6883615, "total": 7265029},
                     "buildings": {
@@ -392,7 +392,8 @@ mod tests {
                         "fuel_silo": 2, "dockyard": 0
                     },
                     "province_buildings": {"rail_way": 5, "supply_node": 1, "land_facility": 1},
-                    "occupation": null, "occupation_law": null, "resources": null
+                    "occupation": null, "occupation_law": null,
+                    "resources": {"steel": 12.5, "aluminium": 3}
                 },
                 "1": {
                     "owner": "ITA", "controller": "ITA", "category": "town",
@@ -400,7 +401,7 @@ mod tests {
                     "manpower_pool": {"available": 667, "total": 322900},
                     "buildings": {"infrastructure": 2},
                     "occupation": {"resistance": 4.525, "compliance": 97.06527},
-                    "occupation_law": null, "resources": null
+                    "occupation_law": null, "resources": {}
                 }
             }
         });
@@ -480,14 +481,38 @@ mod tests {
             assert!(f.not_captured);
             assert_ne!(f.value, "0");
         }
-        // resources gridbox: empty (null domain), never substituted with country data.
-        assert!(r.resource_rows.is_empty());
+        // resources gridbox: measured deposits render rows, never substituted with country data.
+        assert!(!r.resource_rows.is_empty());
         // a non-occupied state shows "—" for resistance/compliance (not 0%).
         assert_eq!(
             r.get("state_resistance_status_container.progress_text")
                 .unwrap()
                 .value,
             NOT_CAPTURED
+        );
+    }
+
+    #[test]
+    fn resource_rows_accept_live_float_deposits() {
+        let snap = berlin_snapshot();
+        let r = bind_state(&snap, "64", "Brandenburg");
+        let keys: Vec<&str> = r.resource_rows.iter().map(|b| b.key.as_str()).collect();
+        assert_eq!(keys, vec!["aluminium", "steel"]);
+        let aluminium = r
+            .resource_rows
+            .iter()
+            .find(|b| b.key == "aluminium")
+            .unwrap();
+        let steel = r.resource_rows.iter().find(|b| b.key == "steel").unwrap();
+        assert_eq!(aluminium.level, "3");
+        assert_eq!(aluminium.frame, 0);
+        assert_eq!(steel.level, "13");
+        assert_eq!(steel.frame, 4);
+
+        let empty = bind_state(&snap, "1", "Aosta");
+        assert!(
+            empty.resource_rows.is_empty(),
+            "measured empty resources block means no deposits, not a fallback"
         );
     }
 

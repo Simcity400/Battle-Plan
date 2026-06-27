@@ -14,6 +14,7 @@ use std::collections::HashMap;
 
 use combat_panel::bubbles::Bubble;
 use combat_panel::{CombatVM, SideTag};
+use gui_runtime::Rect;
 
 use crate::camera::MapCamera;
 use crate::combat::CombatShell;
@@ -61,12 +62,32 @@ impl CombatView {
 /// `combat_panel::view::draw_panel`'s placement (`px+pw-26, py+5, 20, 20`). Because it
 /// is pure, `on_input` recomputes it without any draw→input feedback channel.
 fn panel_close_rect(screen_w: u32, screen_h: u32) -> (f32, f32, f32, f32) {
+    let panel = panel_rect(screen_w, screen_h);
+    (panel.x + panel.w - 26.0, panel.y + 5.0, 20.0, 20.0)
+}
+
+/// The full open combat panel rect. Misses inside this visible panel block the
+/// map behind it, while misses elsewhere still fall through to map inspection.
+fn panel_rect(screen_w: u32, screen_h: u32) -> Rect {
     let (w, h) = (screen_w as f32, screen_h as f32);
     let pw = (w * 0.46).clamp(360.0, 720.0);
-    let _ph = (h - 120.0).clamp(280.0, 640.0);
+    let ph = (h - 120.0).clamp(280.0, 640.0);
     let px = w - pw - 24.0;
     let py = 64.0;
-    (px + pw - 26.0, py + 5.0, 20.0, 20.0)
+    Rect {
+        x: px,
+        y: py,
+        w: pw,
+        h: ph,
+    }
+}
+
+fn combat_hit_model(panel_open: bool, screen: (u32, u32)) -> HitModel {
+    if panel_open {
+        HitModel::none().with_block_rect(panel_rect(screen.0, screen.1))
+    } else {
+        HitModel::none()
+    }
 }
 
 /// An owned per-frame copy of the combat overlay inputs (so the `Drawable` is self-
@@ -185,6 +206,8 @@ impl ViewInstance for CombatView {
             screen: self.screen,
         };
 
+        let hit = combat_hit_model(self.shell.is_open(), self.screen);
+
         // the combat overlay reports NO GUI leaf to the host (its bubble/close hit-test
         // is internal, in `on_input`), so its hit model is empty — a click that misses a
         // bubble/close falls through to the map. The view's `on_input` runs FIRST (it is
@@ -193,7 +216,7 @@ impl ViewInstance for CombatView {
             instance: InstanceId(0),
             view_id: COMBAT_VIEW_ID,
             policy: self.policy(),
-            hit: HitModel::none(),
+            hit,
             drawable: Box::new(CombatDrawable { overlay }),
             // every battle-detail field is badged unavailable; the surface as a whole is
             // partial → record one unavailable to flag it honestly.
@@ -296,3 +319,29 @@ register_view!(ViewDescriptor {
 });
 
 pub fn link() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_combat_panel_publishes_map_block_rect() {
+        let hit = combat_hit_model(true, (1200, 800));
+        let rect = hit.block_rect.expect("open panel blocks map hover/pick");
+        assert!(rect.contains(rect.x + 12.0, rect.y + 12.0));
+        assert!(!rect.contains(rect.x - 8.0, rect.y + 12.0));
+    }
+
+    #[test]
+    fn closed_combat_overlay_keeps_map_fallthrough() {
+        let hit = combat_hit_model(false, (1200, 800));
+        assert!(
+            hit.block_rect.is_none(),
+            "closed combat overlay must not block map inspection"
+        );
+        assert!(
+            hit.roots.is_empty(),
+            "bubble hit-testing remains internal to CombatView::on_input"
+        );
+    }
+}

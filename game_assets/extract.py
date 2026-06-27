@@ -589,13 +589,41 @@ def gui_node_to_json(key: str, blk: Node) -> dict:
     return out
 
 
-def parse_gui_file(path: Path) -> tuple[list, dict]:
+def gui_define_table(root: Node) -> dict:
+    """Extract numeric Clausewitz GUI `@name = number` layout constants.
+
+    The runtime resolves position anchors against the JSON `defines` table.
+    Clausewitz files may place these constants at file root, inside `guiTypes`,
+    or inside a root/template block. Emit a file-wide define only when the name
+    has a single numeric value in this file; conflicting scoped values stay
+    unresolved rather than being flattened to the wrong coordinate.
+    """
+    seen: dict[str, set] = {}
+
+    def walk(node: Node) -> None:
+        for key, value in node.entries:
+            if isinstance(key, str) and key.startswith("@") and not isinstance(value, Node):
+                parsed = coerce_scalar(value) if isinstance(value, str) else value
+                if not isinstance(parsed, bool) and isinstance(parsed, (int, float)):
+                    name = key[1:].strip()
+                    if name:
+                        seen.setdefault(name, set()).add(parsed)
+            if isinstance(value, Node):
+                walk(value)
+
+    walk(root)
+    return {name: next(iter(values)) for name, values in seen.items() if len(values) == 1}
+
+
+def parse_gui_file(path: Path) -> tuple[list, dict, dict]:
     """Parse one .gui file into a list of top-level window descriptors.
 
-    Returns (windows, stats) where stats counts element types seen / skipped.
+    Returns (windows, defines, stats) where defines holds top-level `@name`
+    layout constants and stats counts element types seen / skipped.
     """
     text = path.read_bytes().decode("latin-1")
     root = parse(text)
+    defines = gui_define_table(root)
     windows = []
     type_counts: dict[str, int] = {}
 
@@ -619,7 +647,7 @@ def parse_gui_file(path: Path) -> tuple[list, dict]:
         windows.append(node)
         count(node)
 
-    return windows, {"element_type_counts": type_counts}
+    return windows, defines, {"element_type_counts": type_counts}
 
 
 # ==========================================================================
@@ -921,7 +949,8 @@ def _modset_manifest(layers: list, source: str, warnings: list,
 
 
 def run(args):
-    from PIL import Image  # noqa: ensure Pillow present early
+    if not args.manifest_only:
+        from PIL import Image  # noqa: ensure Pillow present early
     vanilla = Path(args.vanilla)
     out_assets = HERE / "assets"
     out_gui = HERE / "gui"
@@ -979,10 +1008,11 @@ def run(args):
             continue
         out_name = PRIORITY_GUI[stem]
         try:
-            windows, stats = parse_gui_file(gui_iface[rel])
+            windows, defines, stats = parse_gui_file(gui_iface[rel])
             payload = {
                 "view": out_name,
                 "source": rel,
+                "defines": defines,
                 "windows": windows,
                 "stats": stats,
             }
@@ -1003,7 +1033,7 @@ def run(args):
     manifest = {"sprites": {}, "flags": {}}
 
     do_sprites = "sprites" in args.only or "all" in args.only
-    do_flags = "flags" in args.only or "all" in args.only
+    do_flags = ("flags" in args.only or "all" in args.only) and not args.manifest_only
 
     # Merge mode: a partial pass (e.g. --only flags) keeps the other section's
     # metadata from a prior full run instead of wiping it.

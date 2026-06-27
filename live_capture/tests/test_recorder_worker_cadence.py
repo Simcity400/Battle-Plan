@@ -52,6 +52,19 @@ class _FakeRecorder:
         self.finalize_calls += 1
 
 
+class _FakeClock:
+    def __init__(self, values):
+        self.values = list(values)
+        self.i = 0
+
+    def __call__(self):
+        if self.i >= len(self.values):
+            return self.values[-1]
+        value = self.values[self.i]
+        self.i += 1
+        return value
+
+
 class _FakeLoop:
     def __init__(self, worker, root, *, fail_calls=()):
         self.worker = worker
@@ -68,7 +81,8 @@ class _FakeLoop:
     def open_proc(self):
         return _FakeProc()
 
-    def capture_once(self, *, date_info=None, prev_snapshot=None, proc=None):
+    def capture_once(self, *, date_info=None, prev_snapshot=None, proc=None,
+                     pre_write_check=None):
         del proc
         call = self.calls
         self.calls += 1
@@ -86,6 +100,17 @@ class _FakeLoop:
             tags={},
             canonical=True,
         )
+        if pre_write_check is not None:
+            err = pre_write_check(res.snapshot)
+            if err:
+                return CaptureResult(
+                    written_path=None,
+                    snapshot=res.snapshot,
+                    domains_captured=[],
+                    tags={},
+                    canonical=False,
+                    error=err,
+                )
         self.captured_dates.append(date_info.date)
         return res
 
@@ -112,10 +137,12 @@ class TestRecorderWorkerCadence(unittest.TestCase):
     def _run_sequence(self, dates, *, fail_calls=(),
                       target_step_hours=DEFAULT_TARGET_STEP_HOURS,
                       cadence_label=CADENCE_MODE_LABEL,
-                      manual_once=False):
+                      manual_once=False, monotonic_values=None):
         worker = self._worker(target_step_hours=target_step_hours,
                               cadence_label=cadence_label,
                               manual_once=manual_once)
+        if monotonic_values is not None:
+            worker._monotonic = _FakeClock(monotonic_values)
         loop = _FakeLoop(worker, self.tmp, fail_calls=fail_calls)
         worker._loop = loop
         seq = list(dates)
@@ -232,6 +259,34 @@ class TestRecorderWorkerCadence(unittest.TestCase):
             worker._diagnostics["cadence"]["recorder_mode_label"],
             CADENCE_MANUAL_LABEL)
 
+    def test_hour_crossing_rejects_before_durable_write(self):
+        h0 = DateInfo("1936.1.1.0", trusted=True, source="clock")
+        h1 = DateInfo("1936.1.1.1", trusted=True, source="clock")
+        worker, loop = self._run_sequence([h0, h1, h1, h1])
+
+        self.assertEqual(loop.attempted_dates, [
+            "1936.1.1.0",
+            "1936.1.1.1",
+        ])
+        self.assertEqual(loop.captured_dates, ["1936.1.1.1"])
+        self.assertEqual(worker.n_captured, 1)
+        self.assertEqual(worker._cadence.capture_clock_checks, 2)
+        self.assertEqual(worker._cadence.capture_clock_crossings, 1)
+        self.assertEqual(worker._cadence.last_captured_hour,
+                         schema.date_to_hour_index("1936.1.1.1"))
+        cadence = worker._diagnostics["cadence"]
+        self.assertEqual(cadence["status"], "coverage_warning")
+        self.assertEqual(
+            cadence["capture_clock_sentinel"]["hour_crossings"], 1)
+        self.assertEqual(
+            cadence["capture_clock_sentinel"]["mode"],
+            "pre_write_check_v1")
+        self.assertEqual(
+            cadence["capture_clock_sentinel"]["action"],
+            "reject_before_durable_write")
+        self.assertIn("rejected 1 capture", " ".join(self.statuses))
+        self.assertIn("before write", " ".join(self.statuses))
+
     def test_previous_snapshot_is_kept_between_worker_captures(self):
         h0 = DateInfo("1936.1.1.0", trusted=True, source="clock")
         h1 = DateInfo("1936.1.1.1", trusted=True, source="clock")
@@ -242,18 +297,76 @@ class TestRecorderWorkerCadence(unittest.TestCase):
         self.assertEqual(loop.prev_snapshots[1], {"date": "1936.1.1.0",
                                                   "seq": 0})
 
-    def test_capture_hour_crossing_is_diagnosed(self):
+    def test_worker_reports_capture_timing_when_keeping_up(self):
+        h0 = DateInfo("1936.1.1.0", trusted=True, source="clock")
+        h1 = DateInfo("1936.1.1.1", trusted=True, source="clock")
+        worker, loop = self._run_sequence(
+            [h0, h0, h1, h1],
+            monotonic_values=[0.0, 0.0, 5.0, 30.0, 30.0, 40.0])
+
+        self.assertEqual(worker.n_captured, 2)
+        self.assertEqual(loop.captured_dates, ["1936.1.1.0", "1936.1.1.1"])
+        timing = worker._diagnostics["cadence"]["timing"]
+        self.assertEqual(timing["last_capture_duration_ms"], 10000)
+        self.assertEqual(timing["observed_game_hour_interval_ms"], 30000)
+        self.assertTrue(timing["keeping_up"])
+        self.assertEqual(timing["status"], "keeping_up")
+        self.assertIn("keeping up", " ".join(self.statuses))
+
+    def test_duplicate_polls_do_not_shorten_observed_hour_interval(self):
+        h0 = DateInfo("1936.1.1.0", trusted=True, source="clock")
+        h1 = DateInfo("1936.1.1.1", trusted=True, source="clock")
+        worker, loop = self._run_sequence(
+            [h0, h0, h0, h1, h1],
+            monotonic_values=[0.0, 0.0, 5.0, 29.0, 30.0, 30.0, 40.0])
+
+        self.assertEqual(worker.n_captured, 2)
+        self.assertEqual(loop.captured_dates, ["1936.1.1.0", "1936.1.1.1"])
+        self.assertEqual(worker._cadence.duplicate_observations, 1)
+        timing = worker._diagnostics["cadence"]["timing"]
+        self.assertEqual(timing["last_capture_duration_ms"], 10000)
+        self.assertEqual(timing["observed_game_hour_interval_ms"], 30000)
+        self.assertTrue(timing["keeping_up"])
+        self.assertEqual(timing["warning_count"], 0)
+
+    def test_worker_warns_when_capture_is_slower_than_observed_hour(self):
+        h0 = DateInfo("1936.1.1.0", trusted=True, source="clock")
+        h1 = DateInfo("1936.1.1.1", trusted=True, source="clock")
+        worker, loop = self._run_sequence(
+            [h0, h0, h1, h1],
+            monotonic_values=[0.0, 0.0, 1.0, 3.0, 3.0, 7.0])
+
+        self.assertEqual(worker.n_captured, 2)
+        self.assertEqual(loop.captured_dates, ["1936.1.1.0", "1936.1.1.1"])
+        cadence = worker._diagnostics["cadence"]
+        timing = cadence["timing"]
+        self.assertEqual(timing["last_capture_duration_ms"], 4000)
+        self.assertEqual(timing["observed_game_hour_interval_ms"], 3000)
+        self.assertFalse(timing["keeping_up"])
+        self.assertEqual(timing["status"], "not_keeping_up")
+        self.assertEqual(timing["warning_count"], 1)
+        self.assertEqual(
+            timing["last_warning"]["code"],
+            "capture_slower_than_game_hour")
+        self.assertEqual(cadence["coverage_warnings"][-1]["code"],
+                         "capture_slower_than_game_hour")
+        self.assertIn("not keeping up", " ".join(self.statuses))
+        self.assertIn("Lower game speed", " ".join(self.statuses))
+
+    def test_capture_hour_crossing_rejects_snapshot(self):
         h0 = DateInfo("1936.1.1.0", trusted=True, source="clock")
         h1 = DateInfo("1936.1.1.1", trusted=True, source="clock")
         worker, loop = self._run_sequence([h0, h1])
 
         cadence = worker._diagnostics["cadence"]
-        self.assertEqual(worker.n_captured, 1)
-        self.assertEqual(loop.captured_dates, ["1936.1.1.0"])
+        self.assertEqual(worker.n_captured, 0)
+        self.assertEqual(loop.captured_dates, [])
+        self.assertEqual(loop.attempted_dates, ["1936.1.1.0"])
         self.assertEqual(cadence["capture_clock_sentinel"]["hour_crossings"],
                          1)
         self.assertEqual(cadence["coverage_warnings"][0]["code"],
                          "capture_clock_hour_crossed")
+        self.assertIn("rejected 1 capture", " ".join(self.statuses))
 
     def test_worker_default_cadence_settings_are_explicit(self):
         self.assertEqual(CADENCE_MODE_LABEL, "Every in-game hour")

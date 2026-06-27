@@ -16,12 +16,13 @@ use super::aces::AcesView;
 use super::leader_groups::LeaderGroupsView;
 use super::navy_leader::NavyLeaderView;
 use super::officer_corps::OfficerCorpsView;
-use super::trait_trees::{ArmyTraitTreeView, NavyTraitTreeView};
+use super::trait_trees::{trait_tree_viewport_from_roots, ArmyTraitTreeView, NavyTraitTreeView};
 use super::unit_leader::UnitLeaderView;
 
 use crate::host::context::{BindContext, Stage};
+use crate::host::input::{PointerButton, ViewInput};
 use crate::host::registry::{MenuCluster, ViewId, ViewRegistry};
-use crate::host::view::ViewInstance;
+use crate::host::view::{InputOutcome, RebindContext, ViewInstance};
 use crate::views::digest::bound_digest;
 use gui_runtime::{GuiFile, Loc, Rect};
 use std::collections::HashMap;
@@ -397,6 +398,64 @@ fn bind_digest(view_id: &str, stage: &Stage, snap: &snapshot::Snapshot) -> Strin
 
 /// Each of the 7 routed views: bind A (live) and B (demo) differ, and a scrub A→B→A rebinds
 /// A byte-identically (the immutable-LRU rule — no value carried from the B visit).
+fn rebind_trait_view(view: &mut dyn ViewInstance, snap: &snapshot::Snapshot) {
+    view.rebind(&RebindContext {
+        snapshot: snap,
+        country: "GER",
+        screen: (1600, 900),
+        refit: true,
+    });
+}
+
+fn sync_army_trait_input(view: &mut ArmyTraitTreeView, stage: &Stage, snap: &snapshot::Snapshot) {
+    rebind_trait_view(view, snap);
+    let bv = view.bind(&ctx(stage, snap));
+    view.set_input_viewport(trait_tree_viewport_from_roots(&bv.hit.roots));
+}
+
+fn sync_navy_trait_input(view: &mut NavyTraitTreeView, stage: &Stage, snap: &snapshot::Snapshot) {
+    rebind_trait_view(view, snap);
+    let bv = view.bind(&ctx(stage, snap));
+    view.set_input_viewport(trait_tree_viewport_from_roots(&bv.hit.roots));
+}
+
+fn click_at(view: &mut dyn ViewInstance, x: f32, y: f32) -> (InputOutcome, InputOutcome) {
+    let down = view.on_input(&ViewInput::PointerDown {
+        x,
+        y,
+        button: PointerButton::Left,
+    });
+    let up = view.on_input(&ViewInput::PointerUp {
+        x,
+        y,
+        button: PointerButton::Left,
+    });
+    (down, up)
+}
+
+fn drag_from(view: &mut dyn ViewInstance, x: f32, y: f32) -> InputOutcome {
+    let _ = view.on_input(&ViewInput::PointerDown {
+        x,
+        y,
+        button: PointerButton::Left,
+    });
+    let move_out = view.on_input(&ViewInput::PointerMove {
+        x: x + 8.0,
+        y: y + 6.0,
+        drag: true,
+    });
+    let _ = view.on_input(&ViewInput::PointerUp {
+        x: x + 8.0,
+        y: y + 6.0,
+        button: PointerButton::Left,
+    });
+    move_out
+}
+
+fn hover_at(view: &mut dyn ViewInstance, x: f32, y: f32) -> InputOutcome {
+    view.on_input(&ViewInput::PointerMove { x, y, drag: false })
+}
+
 #[test]
 fn scrub_a_b_a_byte_identical_all_seven() {
     if !assets_present() {
@@ -632,7 +691,7 @@ fn trait_tree_no_leader_is_unavailable_not_fabricated() {
     let d = bind_digest("leaders.army_trait_tree", &stage, &snap_demo());
     // exactly one node is drawn (the no-leader glyph), and the header fields are "—".
     assert!(
-        d.contains("ARMYTRAIT nodes=1"),
+        d.contains("ARMYTRAIT branch=army nodes=1"),
         "no-leader tree has one glyph node, got: {d}"
     );
     assert!(
@@ -659,7 +718,7 @@ fn trait_tree_folded_leader_binds_owned_traits() {
     let d = bound_digest(&bv);
     // Guderian has two owned traits → two N3 nodes drawn.
     assert!(
-        d.contains("ARMYTRAIT nodes=2"),
+        d.contains("ARMYTRAIT branch=army nodes=2"),
         "two owned-trait nodes for the folded leader, got: {d}"
     );
     // the header binds the real skill (6) + stats exact.
@@ -675,6 +734,362 @@ fn trait_tree_folded_leader_binds_owned_traits() {
 
 /// The aces view binds a folded ace's name (name + surname + callsign) — and never
 /// fabricates a blank for an absent ace name.
+#[test]
+fn army_trait_node_click_selects_owned_trait_detail() {
+    if !assets_present() {
+        eprintln!("[leaders] skipped army-trait-click: game_assets/gui not extracted");
+        return;
+    }
+    let stage = stage_with(&["army_trait_tree.json"]);
+    let snap = snap_live();
+    let mut view = ArmyTraitTreeView::new();
+    sync_army_trait_input(&mut view, &stage, &snap);
+    let (x, y) = view
+        .debug_node_center("panzer_leader")
+        .expect("panzer_leader node center");
+
+    let (down, up) = click_at(&mut view, x, y);
+    assert!(down.consumed, "owned trait pointer-down must be captured");
+    assert!(up.consumed, "owned trait pointer-up must select");
+    assert!(up.needs_redraw, "first selection must redraw");
+
+    let d = bound_digest(&view.bind(&ctx(&stage, &snap)));
+    assert!(
+        d.contains("selected=selected"),
+        "selection state visible: {d}"
+    );
+    assert!(
+        d.contains("selected_key=panzer_leader"),
+        "selection key must be the exact trait token: {d}"
+    );
+    assert!(
+        d.contains("Trait ID=text=\"panzer_leader\",fidelity=Exact"),
+        "detail must include factual trait id: {d}"
+    );
+    assert!(
+        d.contains("State=text=\"owned\",fidelity=Exact"),
+        "detail must bind the exact owned state: {d}"
+    );
+    assert!(
+        d.contains("Leader name=text=\"Guderian\",fidelity=Exact"),
+        "detail must bind the measured leader name: {d}"
+    );
+    assert!(
+        d.contains("Catalog type=text=\"corps_commander\",fidelity=Derived"),
+        "detail must bind the static DEF trait scope as derived data: {d}"
+    );
+    assert!(
+        d.contains("Cost=text=\"700\",fidelity=Derived"),
+        "detail must bind the static DEF trait cost as derived data: {d}"
+    );
+    assert!(
+        d.contains("Modifier rows=text=\"2\",fidelity=Derived"),
+        "detail must count static DEF modifier rows without fabricating effects: {d}"
+    );
+    assert!(
+        d.contains("Trait type=text=\"—\",fidelity=Unavailable,reason=Some(Null)"),
+        "null trait_type in the DEF must stay unavailable/null, not become a fake label: {d}"
+    );
+}
+
+#[test]
+fn army_trait_node_hover_emits_factual_tooltip_and_clears_off_node() {
+    if !assets_present() {
+        eprintln!("[leaders] skipped army-trait-hover: game_assets/gui not extracted");
+        return;
+    }
+    let stage = stage_with(&["army_trait_tree.json"]);
+    let snap = snap_live();
+    let mut view = ArmyTraitTreeView::new();
+    sync_army_trait_input(&mut view, &stage, &snap);
+    let (x, y) = view
+        .debug_node_center("panzer_leader")
+        .expect("panzer_leader node center");
+
+    let out = hover_at(&mut view, x, y);
+    assert!(
+        out.needs_redraw,
+        "hovering a trait node must redraw for tooltip"
+    );
+    let bv = view.bind(&ctx(&stage, &snap));
+    assert!(
+        bv.tooltip_plan().is_some(),
+        "owned trait hover emits tooltip"
+    );
+    let d = bound_digest(&bv);
+    assert!(
+        d.contains("panzer_leader"),
+        "tooltip must include trait id: {d}"
+    );
+    assert!(d.contains("owned"), "tooltip must include owned state: {d}");
+    assert!(
+        d.contains("Guderian"),
+        "tooltip must include leader name: {d}"
+    );
+    assert!(
+        d.contains("\"Catalog type\"") && d.contains("\"corps_commander\""),
+        "tooltip must include static DEF trait scope: {d}"
+    );
+    assert!(
+        d.contains("\"Modifier rows\"") && d.contains("\"2\""),
+        "tooltip must include factual static modifier-row count: {d}"
+    );
+
+    let out = hover_at(&mut view, 1.0, 1.0);
+    assert!(out.needs_redraw, "leaving the node must clear tooltip");
+    let bv = view.bind(&ctx(&stage, &snap));
+    assert!(
+        bv.tooltip_plan().is_none(),
+        "hovering outside the trait canvas clears tooltip"
+    );
+}
+
+#[test]
+fn navy_trait_node_click_selects_owned_trait_detail() {
+    if !assets_present() {
+        eprintln!("[leaders] skipped navy-trait-click: game_assets/gui not extracted");
+        return;
+    }
+    let stage = stage_with(&["navy_trait_tree.json"]);
+    let snap = snap_live();
+    let mut view = NavyTraitTreeView::new();
+    sync_navy_trait_input(&mut view, &stage, &snap);
+    let (x, y) = view
+        .debug_node_center("seawolf")
+        .expect("seawolf node center");
+
+    let (_down, up) = click_at(&mut view, x, y);
+    assert!(up.consumed);
+    let d = bound_digest(&view.bind(&ctx(&stage, &snap)));
+    assert!(
+        d.contains("selected=selected"),
+        "selection state visible: {d}"
+    );
+    assert!(
+        d.contains("selected_key=seawolf"),
+        "selection key must be the exact navy trait token: {d}"
+    );
+    assert!(
+        d.contains("Branch=text=\"navy\",fidelity=Exact"),
+        "detail must badge the navy branch exactly: {d}"
+    );
+    assert!(
+        d.contains("Leader name=text=\"Raeder\",fidelity=Exact"),
+        "detail must bind the admiral name: {d}"
+    );
+}
+
+#[test]
+fn navy_trait_node_hover_emits_factual_tooltip() {
+    if !assets_present() {
+        eprintln!("[leaders] skipped navy-trait-hover: game_assets/gui not extracted");
+        return;
+    }
+    let stage = stage_with(&["navy_trait_tree.json"]);
+    let snap = snap_live();
+    let mut view = NavyTraitTreeView::new();
+    sync_navy_trait_input(&mut view, &stage, &snap);
+    let (x, y) = view
+        .debug_node_center("seawolf")
+        .expect("seawolf node center");
+
+    let out = hover_at(&mut view, x, y);
+    assert!(
+        !out.consumed,
+        "trait hover is passive and must not consume input"
+    );
+    assert!(out.needs_redraw, "hovering a navy trait must redraw");
+    let bv = view.bind(&ctx(&stage, &snap));
+    assert!(
+        bv.tooltip_plan().is_some(),
+        "navy trait hover emits tooltip"
+    );
+    let d = bound_digest(&bv);
+    assert!(d.contains("seawolf"), "tooltip must include trait id: {d}");
+    assert!(d.contains("owned"), "tooltip must include owned state: {d}");
+    assert!(d.contains("navy"), "tooltip must include navy branch: {d}");
+    assert!(
+        d.contains("Raeder"),
+        "tooltip must include admiral name: {d}"
+    );
+    assert!(
+        d.contains("\"Catalog type\"") && d.contains("\"navy\""),
+        "tooltip must include the static DEF navy trait scope: {d}"
+    );
+    assert!(
+        d.contains("\"Cost\"") && d.contains("\"700\""),
+        "tooltip must include the static DEF trait cost: {d}"
+    );
+}
+
+#[test]
+fn unavailable_trait_glyph_hover_is_inert_not_tooltip() {
+    if !assets_present() {
+        eprintln!("[leaders] skipped trait-glyph-hover: game_assets/gui not extracted");
+        return;
+    }
+    let stage = stage_with(&["army_trait_tree.json"]);
+    let snap = snap_demo();
+    let mut view = ArmyTraitTreeView::new();
+    sync_army_trait_input(&mut view, &stage, &snap);
+    let (x, y) = view
+        .debug_node_center("no_leader")
+        .expect("no_leader glyph center");
+
+    let out = hover_at(&mut view, x, y);
+    assert!(
+        !out.needs_redraw,
+        "unavailable glyph hover should not publish tooltip state"
+    );
+    let bv = view.bind(&ctx(&stage, &snap));
+    assert!(
+        bv.tooltip_plan().is_none(),
+        "unavailable glyph hover must not invent a trait tooltip"
+    );
+}
+
+#[test]
+fn unavailable_trait_glyphs_are_inert_not_selectable() {
+    if !assets_present() {
+        eprintln!("[leaders] skipped trait-glyph-inert: game_assets/gui not extracted");
+        return;
+    }
+    let stage = stage_with(&["army_trait_tree.json"]);
+    let snap = snap_demo();
+    let mut view = ArmyTraitTreeView::new();
+    sync_army_trait_input(&mut view, &stage, &snap);
+    let (x, y) = view
+        .debug_node_center("no_leader")
+        .expect("no_leader glyph center");
+
+    let (down, up) = click_at(&mut view, x, y);
+    assert!(
+        !down.consumed && !up.consumed,
+        "unavailable glyphs must not behave like selectable traits"
+    );
+    let d = bound_digest(&view.bind(&ctx(&stage, &snap)));
+    assert!(
+        d.contains("selected=none"),
+        "glyph click must not select: {d}"
+    );
+    assert!(
+        d.contains("selected_detail=none"),
+        "glyph click must not invent detail: {d}"
+    );
+
+    let snap_no_traits = snap_with_general(serde_json::json!({
+        "name": "Traitless", "role": "general", "level": 1,
+        "attack": 1, "defense": 1, "planning": 1, "logistics": 1,
+        "traits": []
+    }));
+    sync_army_trait_input(&mut view, &stage, &snap_no_traits);
+    let (x, y) = view
+        .debug_node_center("no_traits")
+        .expect("no_traits glyph center");
+    let (down, up) = click_at(&mut view, x, y);
+    assert!(
+        !down.consumed && !up.consumed,
+        "no-traits glyph must also stay inert"
+    );
+    let d = bound_digest(&view.bind(&ctx(&stage, &snap_no_traits)));
+    assert!(
+        d.contains("selected=none"),
+        "no-traits click must not select: {d}"
+    );
+    assert!(
+        d.contains("selected_detail=none"),
+        "no-traits click must not invent detail: {d}"
+    );
+}
+
+#[test]
+fn trait_node_drag_cancels_click_selection() {
+    if !assets_present() {
+        eprintln!("[leaders] skipped trait-drag-cancel: game_assets/gui not extracted");
+        return;
+    }
+    let stage = stage_with(&["army_trait_tree.json"]);
+    let snap = snap_live();
+    let mut view = ArmyTraitTreeView::new();
+    sync_army_trait_input(&mut view, &stage, &snap);
+    let (x, y) = view
+        .debug_node_center("panzer_leader")
+        .expect("panzer_leader node center");
+
+    let move_out = drag_from(&mut view, x, y);
+    assert!(move_out.consumed, "drag stream belongs to the trait view");
+    let d = bound_digest(&view.bind(&ctx(&stage, &snap)));
+    assert!(
+        d.contains("selected=none"),
+        "drag movement must cancel the pending click: {d}"
+    );
+}
+
+#[test]
+fn trait_tree_missing_selected_key_fails_closed_without_fallback() {
+    if !assets_present() {
+        eprintln!("[leaders] skipped trait-missing-selected: game_assets/gui not extracted");
+        return;
+    }
+    let stage = stage_with(&["army_trait_tree.json"]);
+    let snap = snap_live();
+    let mut view = ArmyTraitTreeView::new();
+    sync_army_trait_input(&mut view, &stage, &snap);
+    view.debug_set_selected_key("ghost_trait");
+
+    let d = bound_digest(&view.bind(&ctx(&stage, &snap)));
+    assert!(
+        d.contains("selected=missing_selected"),
+        "stale key must be visible as missing, not remapped: {d}"
+    );
+    assert!(
+        d.contains("selected_key=ghost_trait"),
+        "the stale key must remain explicit for diagnostics: {d}"
+    );
+    assert!(
+        d.contains("selected_detail=none"),
+        "missing selected key must not fall back to another trait: {d}"
+    );
+    assert!(
+        !d.contains("Trait ID=text=\"panzer_leader\""),
+        "missing selection must not fall back to the first live trait"
+    );
+}
+
+#[test]
+fn trait_tree_selection_scrub_a_b_a_rebuilds_current_detail() {
+    if !assets_present() {
+        eprintln!("[leaders] skipped trait-scrub-selection: game_assets/gui not extracted");
+        return;
+    }
+    let stage = stage_with(&["army_trait_tree.json"]);
+    let (a, b) = (snap_live(), snap_demo());
+    let mut view = ArmyTraitTreeView::new();
+    sync_army_trait_input(&mut view, &stage, &a);
+    let (x, y) = view
+        .debug_node_center("trickster")
+        .expect("trickster node center");
+    let (_down, up) = click_at(&mut view, x, y);
+    assert!(up.consumed);
+
+    let a1 = bound_digest(&view.bind(&ctx(&stage, &a)));
+    assert!(a1.contains("selected_key=trickster"));
+    assert!(a1.contains("Trait ID=text=\"trickster\",fidelity=Exact"));
+
+    sync_army_trait_input(&mut view, &stage, &b);
+    let b_digest = bound_digest(&view.bind(&ctx(&stage, &b)));
+    assert!(b_digest.contains("selected=missing_selected"));
+    assert!(b_digest.contains("selected_key=trickster"));
+    assert!(b_digest.contains("selected_detail=none"));
+
+    sync_army_trait_input(&mut view, &stage, &a);
+    let a2 = bound_digest(&view.bind(&ctx(&stage, &a)));
+    assert_eq!(
+        a1, a2,
+        "A->B->A selection detail must rebuild byte-identically"
+    );
+}
+
 #[test]
 fn aces_folded_binds_joined_name() {
     if !assets_present() {

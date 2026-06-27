@@ -31,13 +31,22 @@ use app::menubar::{MenuBar, MenuClick};
 use app::provenance::Provenance;
 use app::scrubber::{ScrubIntent, Scrubber, TrackRect};
 use app::views::clusters::chrome_outliner_maps::{
-    MapModesView, MinimapView, MAPMODES_VIEW_ID, MINIMAP_VIEW_ID,
+    find_view_button_rects_from_roots, find_view_panel_rect_from_roots,
+    find_view_query_rect_from_roots, mapmode_button_targets_from_roots,
+    mapmodes_all_button_rect_from_roots, mapmodes_all_grid_rect_from_roots, FindView, MapModesView,
+    MinimapView, FIND_VIEW_ID, MAPMODES_VIEW_ID, MINIMAP_VIEW_ID,
+};
+use app::views::clusters::leaders_officers_traits::{
+    trait_tree_viewport_from_roots, ArmyTraitTreeView, NavyTraitTreeView, ARMY_TRAIT_TREE_VIEW_ID,
+    NAVY_TRAIT_TREE_VIEW_ID,
 };
 use app::views::combat::{CombatView, COMBAT_VIEW_ID};
 use app::views::focus::{FocusView, FOCUS_VIEW_ID};
-use app::views::map::{MapData, MapView, MAP_VIEW_ID};
+use app::views::map::{MapData, MapHover, MapView, MAP_VIEW_ID};
 use app::views::state_panel::{StatePanelView, STATE_PANEL_VIEW_ID};
-use app::views::topbar::TopbarView;
+use app::views::topbar::{
+    topbar_drill_targets_from_roots, topbar_inert_targets_from_roots, TopbarView, TOPBAR_VIEW_ID,
+};
 
 use assets::resolver::GameResolver;
 use assets::SpriteManifest;
@@ -153,7 +162,13 @@ fn reject_shot_all_views_mixed_flags(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use app::host::{HostPolicy, ViewDescriptor, ViewInstance, ZBand};
+    use app::host::{
+        BoundView, Drawable, FidelityReport, HitModel, HostPolicy, InputOutcome, ViewDescriptor,
+        ViewInstance, ZBand,
+    };
+    use app::views::digest::bound_digest;
+    use gui_runtime::GuiFile;
+    use std::collections::HashMap;
 
     const TEST_ALPHA: ViewId = ViewId("test.alpha");
     const TEST_BETA: ViewId = ViewId("test.beta");
@@ -187,6 +202,213 @@ mod tests {
         registry.insert_view(&BETA_DESC);
         registry.insert_view(&ALPHA_DESC);
         registry
+    }
+
+    fn synthetic_topbar_gui() -> GuiFile {
+        let doc = serde_json::json!({
+            "view": "topbar",
+            "windows": [{
+                "type": "containerWindowType",
+                "name": "topbar",
+                "position": { "x": 0, "y": 0 },
+                "size": { "width": "100%%", "height": "100%%" },
+                "children": [
+                    {
+                        "type": "buttonType",
+                        "name": "construction_button",
+                        "position": { "x": 20, "y": 20 },
+                        "size": { "width": 40, "height": 40 },
+                        "orientation": "UPPER_LEFT",
+                        "sprite": "GFX_test_topbar_button"
+                    },
+                    {
+                        "type": "buttonType",
+                        "name": "button_speedup",
+                        "position": { "x": 80, "y": 20 },
+                        "size": { "width": 40, "height": 40 },
+                        "orientation": "UPPER_LEFT",
+                        "sprite": "GFX_test_topbar_button"
+                    }
+                ]
+            }]
+        });
+        GuiFile::parse(&doc.to_string()).unwrap()
+    }
+
+    fn synthetic_state_panel_gui() -> GuiFile {
+        let doc = serde_json::json!({
+            "view": "province_state",
+            "windows": [{
+                "type": "containerWindowType",
+                "name": "countrystateview",
+                "position": { "x": 0, "y": 0 },
+                "size": { "width": 436, "height": 496 },
+                "children": [{
+                    "type": "buttonType",
+                    "name": "close_button",
+                    "position": { "x": 390, "y": 8 },
+                    "size": { "width": 28, "height": 28 },
+                    "orientation": "UPPER_LEFT",
+                    "sprite": "GFX_closebutton_small"
+                }]
+            }]
+        });
+        GuiFile::parse(&doc.to_string()).unwrap()
+    }
+
+    fn stage_with_gui(gui_files: HashMap<String, GuiFile>) -> Stage {
+        Stage {
+            resolver: assets::resolver::GameResolver::new(None, None),
+            manifest: assets::SpriteManifest {
+                sprites: HashMap::new(),
+            },
+            loc: Loc::new(),
+            gui_files,
+            map_dir: std::path::PathBuf::from("."),
+            assets_dir: std::path::PathBuf::from("."),
+        }
+    }
+
+    fn stage_with_topbar() -> Stage {
+        let mut gui_files = HashMap::new();
+        gui_files.insert("topbar.json".to_string(), synthetic_topbar_gui());
+        stage_with_gui(gui_files)
+    }
+
+    fn snap_with_construction() -> Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1940.1.1.12",
+            "hour_index": 100,
+            "countries": {
+                "GER": {
+                    "politics": {
+                        "political_power": 10.0,
+                        "stability": 0.5,
+                        "ruling_party": "fascism"
+                    },
+                    "economy": {
+                        "factories": { "civ": 12, "civ_from_states": 10 },
+                        "resources": {}
+                    },
+                    "production": {
+                        "construction_queue": [{
+                            "line_id": "cmd_open_line",
+                            "template_id": "arms_factory",
+                            "active_factories": 7,
+                            "produced": 50.0,
+                            "cost": 100.0
+                        }]
+                    }
+                }
+            }
+        }))
+        .unwrap()
+    }
+
+    struct NoopDrawable;
+
+    impl Drawable for NoopDrawable {
+        fn draw(&self, _fd: &mut app::host::FrameDraw) {}
+    }
+
+    struct BlockingPanel {
+        rect: Rect,
+    }
+
+    impl ViewInstance for BlockingPanel {
+        fn view_id(&self) -> ViewId {
+            ViewId("test.blocking_panel")
+        }
+
+        fn policy(&self) -> HostPolicy {
+            HostPolicy::window(ZBand::Panel)
+        }
+
+        fn on_input(&mut self, _ev: &ViewInput) -> InputOutcome {
+            InputOutcome::ignored()
+        }
+
+        fn bind(&self, _ctx: &BindContext) -> BoundView {
+            BoundView {
+                instance: InstanceId(0),
+                view_id: self.view_id(),
+                policy: self.policy(),
+                hit: HitModel::none().with_block_rect(self.rect),
+                drawable: Box::new(NoopDrawable),
+                fidelity: FidelityReport::default(),
+                commands: Vec::new(),
+            }
+        }
+
+        app::impl_view_any!();
+    }
+
+    fn topbar_construction_center(
+        host: &WindowHost,
+        stage: &'static Stage,
+        snap: &Snapshot,
+    ) -> (f32, f32) {
+        let bound = bind_host(
+            host,
+            stage,
+            snap,
+            "GER",
+            (0.0, 0.0),
+            MapCamera::new(1600, 900, 5632, 2048),
+            1600,
+            900,
+        );
+        let topbar = bound
+            .iter()
+            .find(|bv| bv.view_id == TOPBAR_VIEW_ID)
+            .expect("topbar is bound");
+        let target = topbar_drill_targets_from_roots(&topbar.hit.roots)
+            .into_iter()
+            .find(|target| target.leaf == "construction_button")
+            .expect("synthetic topbar exposes construction button");
+        (
+            target.rect.x + target.rect.w * 0.5,
+            target.rect.y + target.rect.h * 0.5,
+        )
+    }
+
+    fn topbar_speedup_center(
+        host: &WindowHost,
+        stage: &'static Stage,
+        snap: &Snapshot,
+    ) -> (f32, f32) {
+        let bound = bind_host(
+            host,
+            stage,
+            snap,
+            "GER",
+            (0.0, 0.0),
+            MapCamera::new(1600, 900, 5632, 2048),
+            1600,
+            900,
+        );
+        let topbar = bound
+            .iter()
+            .find(|bv| bv.view_id == TOPBAR_VIEW_ID)
+            .expect("topbar is bound");
+        let target = topbar_inert_targets_from_roots(&topbar.hit.roots)
+            .into_iter()
+            .find(|target| target.leaf == "button_speedup")
+            .expect("synthetic topbar exposes speedup button");
+        (
+            target.rect.x + target.rect.w * 0.5,
+            target.rect.y + target.rect.h * 0.5,
+        )
+    }
+
+    fn node_rect(roots: &[gui_runtime::scene::Node], name: &str) -> Option<Rect> {
+        fn walk(node: &gui_runtime::scene::Node, name: &str) -> Option<Rect> {
+            if node.name == name {
+                return Some(node.rect);
+            }
+            node.children.iter().find_map(|child| walk(child, name))
+        }
+        roots.iter().find_map(|root| walk(root, name))
     }
 
     #[test]
@@ -260,6 +482,252 @@ mod tests {
         assert!(err.contains("--shot-focus"));
         assert!(err.contains("--shot-combat"));
     }
+
+    #[test]
+    fn map_hover_transport_blocks_active_scrubber_drag_even_off_track() {
+        let menu = MenuBar::new();
+        let registry = registry();
+        let track = TrackRect {
+            x: 60.0,
+            y: 760.0,
+            w: 680.0,
+            h: 16.0,
+        };
+        assert!(
+            map_hover_blocked_by_transport(true, track, (300.0, 220.0), &menu, &registry, 800),
+            "active scrubber drag owns the pointer even after the cursor leaves the track"
+        );
+    }
+
+    #[test]
+    fn map_hover_transport_blocks_track_and_menubar_but_not_exposed_map() {
+        let menu = MenuBar::new();
+        let registry = registry();
+        let track = TrackRect {
+            x: 60.0,
+            y: 760.0,
+            w: 680.0,
+            h: 16.0,
+        };
+        assert!(map_hover_blocked_by_transport(
+            false,
+            track,
+            (100.0, 765.0),
+            &menu,
+            &registry,
+            800
+        ));
+        assert!(map_hover_blocked_by_transport(
+            false,
+            track,
+            (12.0, 12.0),
+            &menu,
+            &registry,
+            800
+        ));
+        assert!(
+            !map_hover_blocked_by_transport(false, track, (300.0, 220.0), &menu, &registry, 800),
+            "exposed map away from transport chrome can show province hover"
+        );
+    }
+
+    #[test]
+    fn topbar_sync_does_not_arm_targets_under_higher_z_panel() {
+        let stage = Box::leak(Box::new(stage_with_topbar()));
+        let snap = snap_with_construction();
+        let mut host = WindowHost::new();
+        host.open_instance(Box::new(TopbarView::new("GER")));
+        host.rebind_all(&RebindContext {
+            snapshot: &snap,
+            country: "GER",
+            screen: (1600, 900),
+            refit: true,
+        });
+        let (x, y) = topbar_construction_center(&host, stage, &snap);
+        host.open_instance(Box::new(BlockingPanel {
+            rect: Rect {
+                x: x - 5.0,
+                y: y - 5.0,
+                w: 10.0,
+                h: 10.0,
+            },
+        }));
+
+        sync_topbar_input_targets(
+            &mut host,
+            stage,
+            &snap,
+            "GER",
+            (x, y),
+            MapCamera::new(1600, 900, 5632, 2048),
+            1600,
+            900,
+        );
+        let routed = host.route_input(&ViewInput::PointerDown {
+            x,
+            y,
+            button: PointerButton::Left,
+        });
+
+        assert!(
+            routed.commands.is_empty(),
+            "a panel above the chrome must prevent topbar OpenView commands"
+        );
+        assert!(
+            !routed.consumed,
+            "the shell's later hit/block pass, not the hidden topbar, should consume this click"
+        );
+    }
+
+    #[test]
+    fn topbar_sync_does_not_arm_inert_time_controls_under_higher_z_panel() {
+        let stage = Box::leak(Box::new(stage_with_topbar()));
+        let snap = snap_with_construction();
+        let mut host = WindowHost::new();
+        host.open_instance(Box::new(TopbarView::new("GER")));
+        host.rebind_all(&RebindContext {
+            snapshot: &snap,
+            country: "GER",
+            screen: (1600, 900),
+            refit: true,
+        });
+        let (x, y) = topbar_speedup_center(&host, stage, &snap);
+        host.open_instance(Box::new(BlockingPanel {
+            rect: Rect {
+                x: x - 5.0,
+                y: y - 5.0,
+                w: 10.0,
+                h: 10.0,
+            },
+        }));
+
+        sync_topbar_input_targets(
+            &mut host,
+            stage,
+            &snap,
+            "GER",
+            (x, y),
+            MapCamera::new(1600, 900, 5632, 2048),
+            1600,
+            900,
+        );
+        let routed = host.route_input(&ViewInput::PointerDown {
+            x,
+            y,
+            button: PointerButton::Left,
+        });
+
+        assert!(
+            routed.commands.is_empty(),
+            "a panel above the chrome must prevent topbar time-control commands"
+        );
+        assert!(
+            !routed.consumed,
+            "the shell's later hit/block pass, not the hidden topbar, should consume this time-control click"
+        );
+    }
+
+    #[test]
+    fn state_panel_real_close_leaf_closes_through_shell_capture_path() {
+        let mut gui_files = HashMap::new();
+        gui_files.insert(
+            "province_state.json".to_string(),
+            synthetic_state_panel_gui(),
+        );
+        let stage = Box::leak(Box::new(stage_with_gui(gui_files)));
+        let snap = snap_with_construction();
+        let mut host = WindowHost::new();
+        host.open_instance(Box::new(StatePanelView::new(64, "STATE_64")));
+        host.rebind_all(&RebindContext {
+            snapshot: &snap,
+            country: "GER",
+            screen: (1600, 900),
+            refit: true,
+        });
+
+        let bound = bind_host(
+            &host,
+            stage,
+            &snap,
+            "GER",
+            (0.0, 0.0),
+            MapCamera::new(1600, 900, 5632, 2048),
+            1600,
+            900,
+        );
+        let panel = bound
+            .iter()
+            .find(|bv| bv.view_id == STATE_PANEL_VIEW_ID)
+            .expect("state panel bound");
+        let close = node_rect(&panel.hit.roots, "close_button")
+            .expect("state panel exposes close_button leaf");
+        let hit = host.resolve_click(&bound, close.x + close.w * 0.5, close.y + close.h * 0.5);
+        let mut needs_redraw = false;
+        match hit {
+            HostHit::Captured { view_id, leaf, .. } => {
+                assert_eq!(view_id, STATE_PANEL_VIEW_ID);
+                assert_eq!(leaf.as_deref(), Some("close_button"));
+                handle_captured(&mut host, view_id, leaf.as_deref(), &mut needs_redraw);
+            }
+            other => panic!("state panel close leaf must capture, got {other:?}"),
+        }
+
+        assert!(needs_redraw, "closing a panel must request redraw");
+        assert!(
+            !host.is_open(STATE_PANEL_VIEW_ID),
+            "shell close handling must close the captured state panel"
+        );
+    }
+
+    #[test]
+    fn structural_open_commands_rebind_new_view_before_input() {
+        let stage = Box::leak(Box::new(stage_with_gui(HashMap::new())));
+        let snap = snap_with_construction();
+        let registry = ViewRegistry::from_inventory();
+        let mut host = WindowHost::new();
+
+        let effects = execute_view_commands(
+            &mut host,
+            &registry,
+            None,
+            vec![ViewCommand::OpenView {
+                view_id: ViewId("production.construction"),
+                arg: None,
+            }],
+        );
+        assert!(effects.opened_or_closed_view);
+        rebind_after_structural_commands(&mut host, effects, &snap, "GER", (1600, 900));
+
+        let click = host.route_input(&ViewInput::PointerDown {
+            x: 1000.0,
+            y: 217.0,
+            button: PointerButton::Left,
+        });
+        assert!(
+            click.consumed && click.needs_redraw,
+            "the command-opened construction view must have queue keys from rebind before row input"
+        );
+
+        let bound = bind_host(
+            &host,
+            stage,
+            &snap,
+            "GER",
+            (1000.0, 217.0),
+            MapCamera::new(1600, 900, 5632, 2048),
+            1600,
+            900,
+        );
+        let construction = bound
+            .iter()
+            .find(|bv| bv.view_id == ViewId("production.construction"))
+            .expect("construction view opened");
+        let digest = bound_digest(construction);
+        assert!(
+            digest.contains("selected_key=construction:line:cmd_open_line"),
+            "row input after command-open must select the measured construction line, got: {digest}"
+        );
+    }
 }
 
 fn mode_from_slug(slug: &str) -> Option<MapMode> {
@@ -274,6 +742,7 @@ fn mode_from_slug(slug: &str) -> Option<MapMode> {
         "weather" => MapMode::Weather,
         "front_lines" => MapMode::FrontLines,
         "diplomacy" => MapMode::Diplomacy,
+        "intel" => MapMode::Intel,
         "air" => MapMode::Air,
         "naval" => MapMode::Naval,
         "supply" => MapMode::Supply,
@@ -766,6 +1235,26 @@ fn main() {
     let _ = event_loop.run(move |event, elwt| {
         elwt.set_control_flow(winit::event_loop::ControlFlow::Poll);
 
+        macro_rules! refresh_hover {
+            () => {{
+                let (w, h) = gpu.size();
+                refresh_map_hover(
+                    &mut host,
+                    stage,
+                    &current,
+                    &country,
+                    map_data,
+                    &menubar,
+                    &registry,
+                    cursor,
+                    scrubber.is_dragging(),
+                    scrubber.track(),
+                    w,
+                    h,
+                )
+            }};
+        }
+
         // Apply a time change: seek + rebind EVERY open registered window (deliverable 7).
         macro_rules! apply_seek {
             ($pos:expr) => {{
@@ -779,6 +1268,7 @@ fn main() {
                         screen,
                         refit: false,
                     });
+                    let _ = refresh_hover!();
                     needs_redraw = true;
                 }
             }};
@@ -790,6 +1280,7 @@ fn main() {
                     mv.mode = mv.mode.$dir();
                     eprintln!("[app] map mode -> {}", mv.mode.label());
                 }
+                sync_mapmodes_active_mode(&mut host);
                 needs_redraw = true;
             }};
         }
@@ -811,6 +1302,7 @@ fn main() {
                         screen: (size.width, size.height),
                         refit: false,
                     });
+                    let _ = refresh_hover!();
                     needs_redraw = true;
                 }
 
@@ -824,11 +1316,33 @@ fn main() {
                     // route a move (with drag flag) to the host overlays first.
                     let drag = left_down;
                     sync_combat_camera(&mut host);
+                    if host.is_open(MAPMODES_VIEW_ID) {
+                        let (w, h) = gpu.size();
+                        let map_camera = current_camera(&host);
+                        sync_mapmodes_input_panel(
+                            &mut host, stage, &current, &country, cursor, map_camera, w, h,
+                        );
+                    }
                     let r = host.route_input(&ViewInput::PointerMove {
                         x: cursor.0,
                         y: cursor.1,
                         drag,
                     });
+                    let emitter = r.emitter;
+                    if !r.commands.is_empty() {
+                        let effects =
+                            execute_view_commands(&mut host, &registry, emitter, r.commands);
+                        rebind_after_structural_commands(
+                            &mut host,
+                            effects,
+                            &current,
+                            &country,
+                            gpu.size(),
+                        );
+                        if effects.changed {
+                            needs_redraw = true;
+                        }
+                    }
                     if r.needs_redraw {
                         needs_redraw = true;
                     }
@@ -842,6 +1356,9 @@ fn main() {
                             needs_redraw = true;
                         }
                     }
+                    if refresh_hover!() {
+                        needs_redraw = true;
+                    }
                 }
 
                 WindowEvent::MouseWheel { delta, .. } => {
@@ -850,6 +1367,11 @@ fn main() {
                         MouseScrollDelta::PixelDelta(p) => (p.y as f32) / 40.0,
                     };
                     sync_combat_camera(&mut host);
+                    let (w, h) = gpu.size();
+                    let map_camera = current_camera(&host);
+                    sync_find_input_panel(
+                        &mut host, stage, &current, &country, cursor, map_camera, w, h,
+                    );
                     let r = host.route_input(&ViewInput::Wheel {
                         x: cursor.0,
                         y: cursor.1,
@@ -861,6 +1383,7 @@ fn main() {
                         }
                         sync_combat_camera(&mut host);
                     }
+                    let _ = refresh_hover!();
                     needs_redraw = true;
                 }
 
@@ -872,6 +1395,7 @@ fn main() {
                         let menu_layout = menubar.layout(&registry, gpu.size().0 as f32);
                         let menu_click = menubar.pick(&menu_layout, cursor.0, cursor.1);
                         if menu_click != MenuClick::Miss {
+                            blur_find_query(&mut host, &mut needs_redraw);
                             if let Some(vid) = menubar.apply(&menu_click) {
                                 if host.open_view(&registry, vid, None).is_some() {
                                     host.rebind_all(&RebindContext {
@@ -886,6 +1410,7 @@ fn main() {
                         }
                         // 1) scrubber owns the bottom strip.
                         else if let ScrubIntent::Seek(idx) = scrubber.press(cursor.0, cursor.1) {
+                            blur_find_query(&mut host, &mut needs_redraw);
                             apply_seek!(idx);
                         } else {
                             // 2) route the click to the host (overlays + windows).
@@ -895,7 +1420,16 @@ fn main() {
                             sync_minimap_input_panel(
                                 &mut host, stage, &current, &country, cursor, map_camera, w, h,
                             );
+                            sync_topbar_input_targets(
+                                &mut host, stage, &current, &country, cursor, map_camera, w, h,
+                            );
+                            sync_find_input_panel(
+                                &mut host, stage, &current, &country, cursor, map_camera, w, h,
+                            );
                             sync_mapmodes_input_panel(
+                                &mut host, stage, &current, &country, cursor, map_camera, w, h,
+                            );
+                            sync_trait_tree_input_panels(
                                 &mut host, stage, &current, &country, cursor, map_camera, w, h,
                             );
                             let r = host.route_input(&ViewInput::PointerDown {
@@ -906,10 +1440,17 @@ fn main() {
                             // run any commands the views emitted (open/close).
                             let emitter = r.emitter;
                             if !r.commands.is_empty() {
-                                let changed = execute_view_commands(
+                                let effects = execute_view_commands(
                                     &mut host, &registry, emitter, r.commands,
                                 );
-                                if changed {
+                                rebind_after_structural_commands(
+                                    &mut host,
+                                    effects,
+                                    &current,
+                                    &country,
+                                    gpu.size(),
+                                );
+                                if effects.changed {
                                     needs_redraw = true;
                                 }
                             }
@@ -949,157 +1490,242 @@ fn main() {
                                 }
                             }
                         }
+                        if refresh_hover!() {
+                            needs_redraw = true;
+                        }
                     }
                     (ElementState::Released, MouseButton::Left) => {
                         left_down = false;
                         scrubber.release();
                         sync_combat_camera(&mut host);
-                        let _ = host.route_input(&ViewInput::PointerUp {
+                        let r = host.route_input(&ViewInput::PointerUp {
                             x: cursor.0,
                             y: cursor.1,
                             button: PointerButton::Left,
                         });
+                        let emitter = r.emitter;
+                        let effects =
+                            execute_view_commands(&mut host, &registry, emitter, r.commands);
+                        rebind_after_structural_commands(
+                            &mut host,
+                            effects,
+                            &current,
+                            &country,
+                            gpu.size(),
+                        );
+                        if r.needs_redraw || effects.changed {
+                            needs_redraw = true;
+                        }
+                        if refresh_hover!() {
+                            needs_redraw = true;
+                        }
                     }
                     (ElementState::Pressed, MouseButton::Right) => {
                         right_down = true;
                         map_drag = Some(cursor);
+                        if refresh_hover!() {
+                            needs_redraw = true;
+                        }
                     }
                     (ElementState::Released, MouseButton::Right) => {
                         right_down = false;
                         map_drag = None;
+                        if refresh_hover!() {
+                            needs_redraw = true;
+                        }
                     }
                     _ => {}
                 },
 
                 WindowEvent::KeyboardInput { event, .. } => {
                     if event.state == ElementState::Pressed {
+                        let (w, h) = gpu.size();
+                        let map_camera = current_camera(&host);
+                        sync_find_input_panel(
+                            &mut host, stage, &current, &country, cursor, map_camera, w, h,
+                        );
+
+                        let mut key_consumed = false;
                         match event.physical_key {
-                            PhysicalKey::Code(KeyCode::Space) => {
-                                scrubber.toggle_play();
-                                last_tick = Instant::now();
-                            }
-                            PhysicalKey::Code(KeyCode::Escape) => {
-                                // ESC: close the front-most closeable overlay/panel, else quit.
-                                if let Some(vid) = host.front_closeable() {
-                                    let (w, h) = gpu.size();
-                                    let emitter = front_instance_id(
-                                        &host,
-                                        vid,
-                                        stage,
-                                        &current,
-                                        &country,
-                                        cursor,
-                                        current_camera(&host),
-                                        w,
-                                        h,
-                                    );
-                                    let (consumed, route_redraw, commands) =
-                                        if let Some(view) = host.instance_mut(vid) {
-                                            let out = view.on_input(&ViewInput::Key {
-                                                key: ViewKey::Escape,
-                                            });
-                                            (out.consumed, out.needs_redraw, out.commands)
-                                        } else {
-                                            (false, false, Vec::new())
-                                        };
-                                    let changed = execute_view_commands(
-                                        &mut host, &registry, emitter, commands,
-                                    );
-                                    if !consumed {
-                                        host.close_view(vid);
-                                    }
-                                    if route_redraw || changed || !consumed {
-                                        needs_redraw = true;
-                                    }
-                                } else {
-                                    elwt.exit();
-                                }
-                            }
-                            PhysicalKey::Code(KeyCode::KeyF) => {
-                                toggle_focus(
+                            PhysicalKey::Code(KeyCode::Backspace) => {
+                                key_consumed = route_view_key(
                                     &mut host,
-                                    stage,
-                                    focus_white,
+                                    &registry,
+                                    ViewKey::Backspace,
                                     &current,
                                     &country,
                                     gpu.size(),
+                                    &mut needs_redraw,
                                 );
-                                needs_redraw = true;
                             }
-                            PhysicalKey::Code(KeyCode::KeyC) => {
-                                combat_active = !combat_active;
-                                if combat_active {
-                                    let mut shell = CombatShell::new(
-                                        Some(combat_centroids.clone()),
-                                        combat_names.clone(),
-                                    );
-                                    shell.rebind(&current);
-                                    let cam = current_camera(&host);
-                                    host.open_instance(Box::new(CombatView::new(
-                                        shell,
-                                        combat_white,
-                                        cam,
-                                        gpu.size(),
-                                    )));
-                                    host.rebind_all(&RebindContext {
-                                        snapshot: &current,
-                                        country: &country,
-                                        screen: gpu.size(),
-                                        refit: false,
-                                    });
-                                } else {
-                                    host.close_view(COMBAT_VIEW_ID);
-                                }
-                                eprintln!(
-                                    "[app] combat overlay {}",
-                                    if combat_active { "ON" } else { "off" }
+                            PhysicalKey::Code(KeyCode::Enter) => {
+                                key_consumed = route_view_key(
+                                    &mut host,
+                                    &registry,
+                                    ViewKey::Enter,
+                                    &current,
+                                    &country,
+                                    gpu.size(),
+                                    &mut needs_redraw,
                                 );
-                                needs_redraw = true;
-                            }
-                            PhysicalKey::Code(KeyCode::ArrowRight) => {
-                                let _ = timeline.step(Dir::Forward);
-                                apply_seek!(timeline.pos());
-                            }
-                            PhysicalKey::Code(KeyCode::ArrowLeft) => {
-                                let _ = timeline.step(Dir::Backward);
-                                apply_seek!(timeline.pos());
-                            }
-                            PhysicalKey::Code(KeyCode::KeyM)
-                            | PhysicalKey::Code(KeyCode::BracketRight) => {
-                                cycle_mode!(next);
-                            }
-                            PhysicalKey::Code(KeyCode::BracketLeft) => {
-                                cycle_mode!(prev);
-                            }
-                            // GENERIC descriptor-driven shortcuts (Codex (b)/(d)): a
-                            // cluster view that binds `shortcut: Some(Letter('X'))` gets
-                            // toggled here with NO per-view branch — adding a hotkey
-                            // never edits main.rs. (The Core F/C overlays are seeded glue
-                            // above; they declare `shortcut: None`.)
-                            PhysicalKey::Code(code) => {
-                                if let Some(letter) = keycode_letter(code) {
-                                    if let Some(vid) = registry.shortcut_view(letter) {
-                                        if host.is_open(vid) {
-                                            host.close_view(vid);
-                                        } else if host.open_view(&registry, vid, None).is_some() {
-                                            host.rebind_all(&RebindContext {
-                                                snapshot: &current,
-                                                country: &country,
-                                                screen: gpu.size(),
-                                                refit: true,
-                                            });
-                                        }
-                                        needs_redraw = true;
-                                    }
-                                }
                             }
                             _ => {}
+                        }
+                        if let Some(text) = event.text.as_ref() {
+                            for ch in text.chars().filter(|ch| !ch.is_control()) {
+                                key_consumed |= route_view_key(
+                                    &mut host,
+                                    &registry,
+                                    ViewKey::Char(ch),
+                                    &current,
+                                    &country,
+                                    gpu.size(),
+                                    &mut needs_redraw,
+                                );
+                            }
+                        }
+
+                        if !key_consumed {
+                            match event.physical_key {
+                                PhysicalKey::Code(KeyCode::Space) => {
+                                    scrubber.toggle_play();
+                                    last_tick = Instant::now();
+                                }
+                                PhysicalKey::Code(KeyCode::Escape) => {
+                                    // ESC: close the front-most closeable overlay/panel, else quit.
+                                    if let Some(vid) = host.front_closeable() {
+                                        let (w, h) = gpu.size();
+                                        let emitter = front_instance_id(
+                                            &host,
+                                            vid,
+                                            stage,
+                                            &current,
+                                            &country,
+                                            cursor,
+                                            current_camera(&host),
+                                            w,
+                                            h,
+                                        );
+                                        let (consumed, route_redraw, commands) =
+                                            if let Some(view) = host.instance_mut(vid) {
+                                                let out = view.on_input(&ViewInput::Key {
+                                                    key: ViewKey::Escape,
+                                                });
+                                                (out.consumed, out.needs_redraw, out.commands)
+                                            } else {
+                                                (false, false, Vec::new())
+                                            };
+                                        let effects = execute_view_commands(
+                                            &mut host, &registry, emitter, commands,
+                                        );
+                                        rebind_after_structural_commands(
+                                            &mut host,
+                                            effects,
+                                            &current,
+                                            &country,
+                                            gpu.size(),
+                                        );
+                                        if !consumed {
+                                            host.close_view(vid);
+                                        }
+                                        if route_redraw || effects.changed || !consumed {
+                                            needs_redraw = true;
+                                        }
+                                    } else {
+                                        elwt.exit();
+                                    }
+                                }
+                                PhysicalKey::Code(KeyCode::KeyF) => {
+                                    toggle_focus(
+                                        &mut host,
+                                        stage,
+                                        focus_white,
+                                        &current,
+                                        &country,
+                                        gpu.size(),
+                                    );
+                                    needs_redraw = true;
+                                }
+                                PhysicalKey::Code(KeyCode::KeyC) => {
+                                    combat_active = !combat_active;
+                                    if combat_active {
+                                        let mut shell = CombatShell::new(
+                                            Some(combat_centroids.clone()),
+                                            combat_names.clone(),
+                                        );
+                                        shell.rebind(&current);
+                                        let cam = current_camera(&host);
+                                        host.open_instance(Box::new(CombatView::new(
+                                            shell,
+                                            combat_white,
+                                            cam,
+                                            gpu.size(),
+                                        )));
+                                        host.rebind_all(&RebindContext {
+                                            snapshot: &current,
+                                            country: &country,
+                                            screen: gpu.size(),
+                                            refit: false,
+                                        });
+                                    } else {
+                                        host.close_view(COMBAT_VIEW_ID);
+                                    }
+                                    eprintln!(
+                                        "[app] combat overlay {}",
+                                        if combat_active { "ON" } else { "off" }
+                                    );
+                                    needs_redraw = true;
+                                }
+                                PhysicalKey::Code(KeyCode::ArrowRight) => {
+                                    let _ = timeline.step(Dir::Forward);
+                                    apply_seek!(timeline.pos());
+                                }
+                                PhysicalKey::Code(KeyCode::ArrowLeft) => {
+                                    let _ = timeline.step(Dir::Backward);
+                                    apply_seek!(timeline.pos());
+                                }
+                                PhysicalKey::Code(KeyCode::KeyM)
+                                | PhysicalKey::Code(KeyCode::BracketRight) => {
+                                    cycle_mode!(next);
+                                }
+                                PhysicalKey::Code(KeyCode::BracketLeft) => {
+                                    cycle_mode!(prev);
+                                }
+                                // GENERIC descriptor-driven shortcuts (Codex (b)/(d)): a
+                                // cluster view that binds `shortcut: Some(Letter('X'))` gets
+                                // toggled here with NO per-view branch — adding a hotkey
+                                // never edits main.rs. (The Core F/C overlays are seeded glue
+                                // above; they declare `shortcut: None`.)
+                                PhysicalKey::Code(code) => {
+                                    if let Some(letter) = keycode_letter(code) {
+                                        if let Some(vid) = registry.shortcut_view(letter) {
+                                            if host.is_open(vid) {
+                                                host.close_view(vid);
+                                            } else if host.open_view(&registry, vid, None).is_some()
+                                            {
+                                                host.rebind_all(&RebindContext {
+                                                    snapshot: &current,
+                                                    country: &country,
+                                                    screen: gpu.size(),
+                                                    refit: true,
+                                                });
+                                            }
+                                            needs_redraw = true;
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        if refresh_hover!() {
+                            needs_redraw = true;
                         }
                     }
                 }
 
                 WindowEvent::RedrawRequested => {
                     let (w, h) = gpu.size();
+                    sync_mapmodes_active_mode(&mut host);
                     let bound = bind_host(
                         &host,
                         stage,
@@ -1281,18 +1907,24 @@ fn front_instance_id(
         .map(|bv| bv.instance)
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct CommandEffects {
+    changed: bool,
+    opened_or_closed_view: bool,
+}
+
 fn execute_view_commands(
     host: &mut WindowHost,
     registry: &ViewRegistry,
     emitter: Option<InstanceId>,
     commands: Vec<ViewCommand>,
-) -> bool {
-    let mut changed = false;
+) -> CommandEffects {
+    let mut effects = CommandEffects::default();
     for cmd in commands {
         match cmd {
             ViewCommand::RecenterMap { raster_x, raster_y } => {
                 if let Some(mv) = map_view_mut(host) {
-                    changed |= mv.camera.recenter_on_raster(raster_x, raster_y);
+                    effects.changed |= mv.camera.recenter_on_raster(raster_x, raster_y);
                 }
             }
             ViewCommand::SetMapMode { mode } => {
@@ -1300,19 +1932,75 @@ fn execute_view_commands(
                 if let Some(mv) = map_view_mut(host) {
                     if mv.apply_command(&command) {
                         eprintln!("[app] map mode -> {}", mv.mode.label());
-                        changed = true;
+                        if let Some(mm) = host.downcast_mut::<MapModesView>(MAPMODES_VIEW_ID) {
+                            mm.set_active_mode(mode);
+                        }
+                        effects.changed = true;
                     }
                 }
             }
             other => {
-                changed |= host.execute_commands(registry, emitter, [other]);
+                let structural = matches!(
+                    other,
+                    ViewCommand::OpenView { .. }
+                        | ViewCommand::CloseSelf
+                        | ViewCommand::CloseView { .. }
+                );
+                if host.execute_commands(registry, emitter, [other]) {
+                    effects.changed = true;
+                    effects.opened_or_closed_view |= structural;
+                }
             }
         }
     }
-    if changed {
+    if effects.changed {
         sync_combat_camera(host);
     }
-    changed
+    effects
+}
+
+fn rebind_after_structural_commands(
+    host: &mut WindowHost,
+    effects: CommandEffects,
+    snap: &Snapshot,
+    country: &str,
+    screen: (u32, u32),
+) {
+    if effects.opened_or_closed_view {
+        host.rebind_all(&RebindContext {
+            snapshot: snap,
+            country,
+            screen,
+            refit: true,
+        });
+        sync_combat_camera(host);
+    }
+}
+
+fn route_view_key(
+    host: &mut WindowHost,
+    registry: &ViewRegistry,
+    key: ViewKey,
+    snap: &Snapshot,
+    country: &str,
+    screen: (u32, u32),
+    needs_redraw: &mut bool,
+) -> bool {
+    let r = host.route_input(&ViewInput::Key { key });
+    let effects = execute_view_commands(host, registry, r.emitter, r.commands);
+    rebind_after_structural_commands(host, effects, snap, country, screen);
+    if r.needs_redraw || effects.changed {
+        *needs_redraw = true;
+    }
+    r.consumed
+}
+
+fn blur_find_query(host: &mut WindowHost, needs_redraw: &mut bool) {
+    if let Some(find) = host.downcast_mut::<FindView>(FIND_VIEW_ID) {
+        if find.clear_query_focus() {
+            *needs_redraw = true;
+        }
+    }
 }
 
 /// The current map camera (read from the seeded MapView instance).
@@ -1329,6 +2017,44 @@ fn sync_combat_camera(host: &mut WindowHost) {
     let map_cam = host_map_camera(host);
     if let Some(mm) = host.downcast_mut::<MinimapView>(MINIMAP_VIEW_ID) {
         mm.set_camera(map_cam);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sync_topbar_input_targets(
+    host: &mut WindowHost,
+    stage: &'static Stage,
+    snap: &Snapshot,
+    country: &str,
+    cursor: (f32, f32),
+    map_camera: MapCamera,
+    w: u32,
+    h: u32,
+) {
+    let bound = bind_host(host, stage, snap, country, cursor, map_camera, w, h);
+    let topbar_is_front_hit = matches!(
+        host.resolve_click(&bound, cursor.0, cursor.1),
+        HostHit::Captured { view_id, .. } if view_id == TOPBAR_VIEW_ID
+    );
+    let (drill_targets, inert_targets) = if topbar_is_front_hit {
+        let topbar_bound = bound
+            .iter()
+            .find(|bv| bv.view_id == TOPBAR_VIEW_ID)
+            .map(|bv| bv.hit.roots.as_slice());
+        (
+            topbar_bound
+                .map(topbar_drill_targets_from_roots)
+                .unwrap_or_default(),
+            topbar_bound
+                .map(topbar_inert_targets_from_roots)
+                .unwrap_or_default(),
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    if let Some(topbar) = host.downcast_mut::<TopbarView>(TOPBAR_VIEW_ID) {
+        topbar.set_drill_targets(drill_targets);
+        topbar.set_inert_targets(inert_targets);
     }
 }
 
@@ -1353,6 +2079,53 @@ fn sync_minimap_input_panel(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn sync_find_input_panel(
+    host: &mut WindowHost,
+    stage: &'static Stage,
+    snap: &Snapshot,
+    country: &str,
+    cursor: (f32, f32),
+    map_camera: MapCamera,
+    w: u32,
+    h: u32,
+) {
+    let bound = bind_host(host, stage, snap, country, cursor, map_camera, w, h)
+        .into_iter()
+        .find(|bv| bv.view_id == FIND_VIEW_ID);
+    if let (Some(bound), Some(find)) = (bound, host.downcast_mut::<FindView>(FIND_VIEW_ID)) {
+        let panel = find_view_panel_rect_from_roots(
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: w as f32,
+                h: h as f32,
+            },
+            &bound.hit.roots,
+        );
+        let query_rect = find_view_query_rect_from_roots(
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: w as f32,
+                h: h as f32,
+            },
+            &bound.hit.roots,
+        );
+        let (find_button_rect, home_button_rect) = find_view_button_rects_from_roots(
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: w as f32,
+                h: h as f32,
+            },
+            &bound.hit.roots,
+        );
+        find.set_input_regions(panel, query_rect, find_button_rect, home_button_rect);
+        find.set_navigation_geometry(&stage.map_dir, map_camera);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn sync_mapmodes_input_panel(
     host: &mut WindowHost,
     stage: &'static Stage,
@@ -1363,12 +2136,69 @@ fn sync_mapmodes_input_panel(
     w: u32,
     h: u32,
 ) {
-    let panel = bind_host(host, stage, snap, country, cursor, map_camera, w, h)
+    let bound = bind_host(host, stage, snap, country, cursor, map_camera, w, h)
         .into_iter()
-        .find(|bv| bv.view_id == MAPMODES_VIEW_ID)
-        .and_then(|bv| bv.hit.block_rect);
-    if let (Some(panel), Some(mm)) = (panel, host.downcast_mut::<MapModesView>(MAPMODES_VIEW_ID)) {
-        mm.set_input_panel(panel);
+        .find(|bv| bv.view_id == MAPMODES_VIEW_ID);
+    if let (Some(bound), Some(mm)) = (bound, host.downcast_mut::<MapModesView>(MAPMODES_VIEW_ID)) {
+        let targets = mapmode_button_targets_from_roots(&bound.hit.roots);
+        let all_button = mapmodes_all_button_rect_from_roots(&bound.hit.roots);
+        let all_grid = mapmodes_all_grid_rect_from_roots(&bound.hit.roots);
+        if targets.is_empty() {
+            if let Some(panel) = bound.hit.block_rect {
+                mm.set_input_panel(panel);
+            }
+        } else {
+            mm.set_input_targets_with_all(targets, all_button, all_grid);
+        }
+    }
+    sync_mapmodes_active_mode(host);
+}
+
+fn sync_mapmodes_active_mode(host: &mut WindowHost) {
+    let active_mode = map_view_ref(host).map(|mv| mv.mode);
+    if let (Some(mode), Some(mm)) = (
+        active_mode,
+        host.downcast_mut::<MapModesView>(MAPMODES_VIEW_ID),
+    ) {
+        mm.set_active_mode(mode);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sync_trait_tree_input_panels(
+    host: &mut WindowHost,
+    stage: &'static Stage,
+    snap: &Snapshot,
+    country: &str,
+    cursor: (f32, f32),
+    map_camera: MapCamera,
+    w: u32,
+    h: u32,
+) {
+    if !host.is_open(ARMY_TRAIT_TREE_VIEW_ID) && !host.is_open(NAVY_TRAIT_TREE_VIEW_ID) {
+        return;
+    }
+    let bound = bind_host(host, stage, snap, country, cursor, map_camera, w, h);
+    let army_viewport = bound
+        .iter()
+        .find(|bv| bv.view_id == ARMY_TRAIT_TREE_VIEW_ID)
+        .map(|bv| trait_tree_viewport_from_roots(&bv.hit.roots));
+    let navy_viewport = bound
+        .iter()
+        .find(|bv| bv.view_id == NAVY_TRAIT_TREE_VIEW_ID)
+        .map(|bv| trait_tree_viewport_from_roots(&bv.hit.roots));
+
+    if let (Some(viewport), Some(view)) = (
+        army_viewport,
+        host.downcast_mut::<ArmyTraitTreeView>(ARMY_TRAIT_TREE_VIEW_ID),
+    ) {
+        view.set_input_viewport(viewport);
+    }
+    if let (Some(viewport), Some(view)) = (
+        navy_viewport,
+        host.downcast_mut::<NavyTraitTreeView>(NAVY_TRAIT_TREE_VIEW_ID),
+    ) {
+        view.set_input_viewport(viewport);
     }
 }
 
@@ -1440,6 +2270,117 @@ fn toggle_focus(
         refit: true,
     });
     eprintln!("[app] focus overlay OPEN");
+}
+
+#[allow(clippy::too_many_arguments)]
+fn refresh_map_hover(
+    host: &mut WindowHost,
+    stage: &'static Stage,
+    snap: &Snapshot,
+    country: &str,
+    map_data: &MapData,
+    menubar: &MenuBar,
+    registry: &ViewRegistry,
+    cursor: (f32, f32),
+    scrubber_dragging: bool,
+    scrubber_track: TrackRect,
+    w: u32,
+    h: u32,
+) -> bool {
+    let hover = map_hover_at(
+        host,
+        stage,
+        snap,
+        country,
+        map_data,
+        menubar,
+        registry,
+        cursor,
+        scrubber_dragging,
+        scrubber_track,
+        w,
+        h,
+    );
+    map_view_mut(host)
+        .map(|mv| mv.set_hover(hover))
+        .unwrap_or(false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn map_hover_at(
+    host: &WindowHost,
+    stage: &'static Stage,
+    snap: &Snapshot,
+    country: &str,
+    map_data: &MapData,
+    menubar: &MenuBar,
+    registry: &ViewRegistry,
+    cursor: (f32, f32),
+    scrubber_dragging: bool,
+    scrubber_track: TrackRect,
+    w: u32,
+    h: u32,
+) -> Option<MapHover> {
+    if map_hover_blocked_by_transport(
+        scrubber_dragging,
+        scrubber_track,
+        cursor,
+        menubar,
+        registry,
+        w,
+    ) {
+        return None;
+    }
+    let bound = bind_host(
+        host,
+        stage,
+        snap,
+        country,
+        cursor,
+        current_camera(host),
+        w,
+        h,
+    );
+    if !matches!(
+        host.resolve_click(&bound, cursor.0, cursor.1),
+        HostHit::Miss
+    ) {
+        return None;
+    }
+    map_hover_pick(host, map_data, snap, cursor)
+}
+
+fn map_hover_blocked_by_transport(
+    scrubber_dragging: bool,
+    scrubber_track: TrackRect,
+    cursor: (f32, f32),
+    menubar: &MenuBar,
+    registry: &ViewRegistry,
+    screen_w: u32,
+) -> bool {
+    if scrubber_dragging || scrubber_track.contains(cursor.0, cursor.1) {
+        return true;
+    }
+    let menu_layout = menubar.layout(registry, screen_w as f32);
+    !matches!(
+        menubar.pick(&menu_layout, cursor.0, cursor.1),
+        MenuClick::Miss
+    )
+}
+
+fn map_hover_pick(
+    host: &WindowHost,
+    map_data: &MapData,
+    snap: &Snapshot,
+    cursor: (f32, f32),
+) -> Option<MapHover> {
+    let cam = map_view_ref(host)?.camera;
+    let (rx, ry) = cam.screen_to_raster(cursor.0, cursor.1)?;
+    let empty = serde_json::Map::new();
+    let states = snap.states().unwrap_or(&empty);
+    let owners = StateOwners::from_states(states);
+    let pick = pick_at(&map_data.raster, &map_data.ids, &owners, rx, ry)?;
+    Some(MapHover::from_pick(pick, cursor, (rx, ry)))
 }
 
 /// Classify a map click into a picked state id (the bottom-layer pick, on a host Miss).

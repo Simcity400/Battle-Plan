@@ -85,6 +85,31 @@ The two reusable entry templates this view instantiates are `technology_idea_ent
 the folder grid) and `research_slot_entry` (one active-research row). Selected/observed country =
 `<TAG>`.
 
+**Interaction proof.** `ResearchView` now has executable read-only proof for
+active research slot row selection/highlight keyed by the exact
+`in_progress[].name` tech token. Tests cover empty/outside slot inert behavior,
+missing selected tech fail-closed behavior without falling back to another row,
+and A->B->A scrub without carrying B-only rows. Slot detail drilldowns,
+ETA/progress parity, mutating research controls, and side-by-side proof remain
+open.
+
+`TechTreeView` now has executable factual hover-tooltip proof for tech nodes:
+tests cover ID, folder, state, and research-cost rows, and missing/null cost is
+badged unavailable instead of fabricated as zero. Full the game tooltip frames,
+prerequisite/ahead-of-time/bonus composers, localized comparison text, and
+side-by-side proof remain open.
+
+`TechTreeView` also has executable read-only tech-node click-selection proof:
+tests cover exact catalog-id selection/highlight, drag-pan conflict protection,
+missing-selected fail-closed behavior without node fallback, selected-node
+A->B->A scrub rebuild, and independently pickable common completed/in-progress
+nodes after folder-grid, sub-tech, and duplicate-slot layout disambiguation.
+The selected node also emits a first factual read-only selected-detail
+panel/digest slice for title, ID, folder, state, and research cost; missing/null
+cost stays unavailable rather than fabricated as zero. Full the game
+`technology_info_window` parity, research-start mutation controls, exact
+per-folder host geometry, and side-by-side proof remain open.
+
 Formatters: `int`, `percent`, `loc` (token→localised string), `tech-folder-frame` (frame of
 `GFX_research_folder_strip`), `equipment-role-icon` (frame of `GFX_land_equipment_role_icons`),
 `research-date` (Clausewitz date → year), `progressbar-fraction` (0..1), `idea-trait-frame`.
@@ -145,11 +170,11 @@ section maps each tech NODE's *data* state onto our `research` domain.
 | **completion date** (node "year" / timeline) | `technologies[].date` | research-date (Clausewitz→year) | **exact** | e.g. `"1936.1.1.12"`. Feeds the node's done-state + the research-completion event timeline (diff `tech_researched`). |
 | **research points spent** (node tooltip) | `technologies[].research_points` | int | **exact** | e.g. `165.0`. The tech's point cost as recorded. |
 | **in-progress** (node currently researching) | `countries.<TAG>.research.in_progress[]` → match `name` | category (researching frame) | **exact** (membership) / **unavailable** (fraction) | A tech in `in_progress[]` renders the "researching" node frame. The PROGRESS FRACTION is `unavailable` (no stored pct; `in_progress_live=None`; SCHEMA §3.4 `progress_pct` is `M*`). |
-| **not-yet-researched** (available / locked) | absence from both `technologies[]` and `in_progress[]` | category (available/locked frame) | **derived** | A tech absent from both lists is un-researched. available-vs-locked needs the prereq graph (adapter-resolved from the tech-DB) → derive; we have the completed set to test prereqs against. |
+| **not-yet-researched** (available / locked) | measured absence from both `technologies[]` and `in_progress[]` | category (available/locked frame) | **derived** / **unavailable** | A tech is treated as un-researched only when both membership lists are measured and the tech is absent from both. If either array is missing or partial, node state is badged unavailable rather than fabricated as un-researched. available-vs-locked needs the prereq graph (adapter-resolved from the tech-DB) → derive once completed membership is measured. |
 | **research slots** (how many parallel slots) | `countries.<TAG>.research.research_slots` (+ `original_research_slots`) | int | **exact** | `5` (orig `4`) in sample. Bounds how many `in_progress[]` rows can exist; drives the `research_slot_gained` diff event. |
 | **research bonuses** (folder discount) | `countries.<TAG>.research.research_bonuses[]` (`{name, categories[], bonus, kind}`) | percent + category | **exact** | 20 rows. Per-folder/per-category bonus tiles; also tints the tree's folder tabs. |
-| **link lines / prereq edges** | tech-DB prereq graph (static) | — | **adapter-fed** | Edges come from the tech definitions, not the snapshot. The completed set decides which edges render as "satisfied". Not a declarative element bind (PLAN §B.5). |
-| **node rect / position** | `countrytechtreeview.gui` folder blocks (static) | — | **adapter-fed** | Positions are static, embedded in the tech-tree `.gui` (PLAN §B.5: "easiest tree, first proof"). Not a snapshot field. |
+| **link lines / prereq edges** | tech-DB prereq graph (static) + measured `technologies[]` membership | — | **adapter-fed** / **unavailable** | Edge geometry comes from the tech definitions, not the snapshot. The completed set decides which edges render as "satisfied" only when `technologies[]` is measured; otherwise dependency satisfaction uses the unavailable edge style, never a false unsatisfied state. Not a declarative element bind (PLAN §B.5). |
+| **node rect / position** | `countrytechtreeview.gui` folder-grid slots + sub-tech slot offsets (static adapter data) | — | **adapter-fed** / **approximate** | Top-level nodes use static folder-grid positions scaled into the native graph. Sub-techs use parent-relative slot offsets and are approximate-badged where the parser uses canonical prototype offsets. Runtime-positioned secret weapons are parked in a derived strip and approximate-badged. Duplicate folder slots are explicitly fanned out and approximate-badged instead of letting later nodes cover earlier ones. Not a snapshot field. |
 
 ---
 
@@ -173,6 +198,13 @@ Selected/observed country = `<TAG>`. Formatters: `loc`, `int`, `percent`, `progr
 The node prototype `national_focus_item` (and the continuous variant) is **instantiated once per
 focus** by the adapter; its bindable children are mapped here (each binds the per-focus datum the
 adapter supplies). The `national_focus_detail_view` binds the *selected* focus.
+
+Current native status: `core.focus_tree` selected nodes now emit a first factual read-only
+selected-detail panel/digest subset for ID, state, cost, current progress days, prereq-group count,
+and position fidelity. This proves selected-node detail output exists, but it is **not** full
+`national_focus_detail_view` parity: real game chrome, localized description/reward/effect text,
+icon/stat rows, true availability/bypass/capitulation gates, continuous-focus active/progress joins,
+search/filter/shortcut controls, mutation controls, and side-by-side visual proof remain open.
 
 | gui element (name + type) | snapshot source path | formatter | fidelity | notes |
 |---|---|---|---|---|

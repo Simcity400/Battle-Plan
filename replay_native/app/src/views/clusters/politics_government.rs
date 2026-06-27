@@ -13,7 +13,8 @@
 //!     occupied-territory MANAGEMENT rows. The tabbed sub-windows use the **N2 tab
 //!     manager** (`widgets::tabs`).
 //!   * **power_balance** — `powerbalanceview` ROOT: the BoP value/needle/sides bound
-//!     exact; the scripted side-RANGE names/markers + BoP decision grid badged. The
+//!     exact, active range name derived from static BoP defs; the range marker and
+//!     BoP decision grid stay badged. The
 //!     track is rendered with the **N1 node_graph** (`widgets::node_graph`) as a 1-D
 //!     left/value/right track.
 //!   * **command_character** — `command_character_view_window` ROOT: the LIVE
@@ -48,6 +49,10 @@
 //!
 //! THIS FILE IS YOURS, cluster agent — edit ONLY here. Registration is distributed
 //! through `inventory`, so adding/binding a view edits NO shared file.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use gui_runtime::draw::{DrawStats, TextureCache};
 use gui_runtime::fonts::FontCache;
@@ -125,6 +130,121 @@ fn fmt_bop_pos(v: &serde_json::Value) -> String {
             (((f.clamp(-1.0, 1.0) + 1.0) / 2.0) * 100.0).round() as i64
         ),
         None => DASH.to_string(),
+    }
+}
+
+#[derive(Debug, Default)]
+struct BopDefCatalog {
+    balances: HashMap<String, BopDef>,
+}
+
+#[derive(Debug, Default)]
+struct BopDef {
+    ranges: Vec<BopRangeDef>,
+}
+
+#[derive(Debug, Clone)]
+struct BopRangeDef {
+    id: String,
+    min: f64,
+    max: f64,
+}
+
+static BOP_CATALOG: OnceLock<BopDefCatalog> = OnceLock::new();
+
+fn bop_catalog() -> &'static BopDefCatalog {
+    BOP_CATALOG.get_or_init(BopDefCatalog::load)
+}
+
+impl BopDefCatalog {
+    fn load() -> BopDefCatalog {
+        match Self::catalog_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|txt| Self::parse(&txt))
+        {
+            Some(c) => c,
+            None => BopDefCatalog::default(),
+        }
+    }
+
+    fn catalog_path() -> Option<PathBuf> {
+        let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let replay_native = crate_dir.parent()?;
+        let repo = replay_native.parent()?;
+        Some(repo.join("game_defs").join("out").join("catalogs.json"))
+    }
+
+    fn parse(txt: &str) -> Option<BopDefCatalog> {
+        let v: serde_json::Value = serde_json::from_str(txt).ok()?;
+        Self::from_value(&v)
+    }
+
+    fn from_value(v: &serde_json::Value) -> Option<BopDefCatalog> {
+        let cats = v.get("catalogs")?.as_object()?;
+        let pbs = cats.get("power_balances")?.as_object()?;
+        let mut out = BopDefCatalog::default();
+        for (id, body) in pbs {
+            let mut ranges = Vec::new();
+            if let Some(arr) = body
+                .get("neutral_ranges")
+                .and_then(serde_json::Value::as_array)
+            {
+                push_bop_ranges(&mut ranges, arr);
+            }
+            if let Some(sides) = body.get("sides").and_then(serde_json::Value::as_array) {
+                for side in sides {
+                    if let Some(arr) = side.get("ranges").and_then(serde_json::Value::as_array) {
+                        push_bop_ranges(&mut ranges, arr);
+                    }
+                }
+            }
+            out.balances.insert(id.clone(), BopDef { ranges });
+        }
+        Some(out)
+    }
+
+    fn active_range_id(&self, template: &str, value: f64) -> Option<&str> {
+        self.balances.get(template)?.ranges.iter().find_map(|r| {
+            if r.contains(value) {
+                Some(r.id.as_str())
+            } else {
+                None
+            }
+        })
+    }
+}
+
+fn push_bop_ranges(out: &mut Vec<BopRangeDef>, ranges: &[serde_json::Value]) {
+    for r in ranges {
+        let id = match r.get("id").and_then(serde_json::Value::as_str) {
+            Some(s) if !s.is_empty() => s.to_string(),
+            _ => continue,
+        };
+        let min = match value_to_f64(r.get("min")) {
+            Some(v) => v,
+            None => continue,
+        };
+        let max = match value_to_f64(r.get("max")) {
+            Some(v) => v,
+            None => continue,
+        };
+        out.push(BopRangeDef { id, min, max });
+    }
+}
+
+fn value_to_f64(v: Option<&serde_json::Value>) -> Option<f64> {
+    match v? {
+        serde_json::Value::Number(n) => n.as_f64(),
+        serde_json::Value::String(s) => s.parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+impl BopRangeDef {
+    fn contains(&self, value: f64) -> bool {
+        let lo = self.min.min(self.max);
+        let hi = self.min.max(self.max);
+        value >= lo && value <= hi
     }
 }
 
@@ -263,6 +383,7 @@ struct Cell {
 /// power-balance `range_indicator` prototype) — recorded for honesty, never bound.
 #[derive(Clone)]
 struct DataRow {
+    key: Option<String>,
     cells: Vec<Cell>,
     gaps: Vec<String>,
 }
@@ -270,9 +391,14 @@ struct DataRow {
 impl DataRow {
     fn new() -> DataRow {
         DataRow {
+            key: None,
             cells: Vec::new(),
             gaps: Vec::new(),
         }
+    }
+    fn with_key(mut self, key: impl Into<String>) -> DataRow {
+        self.key = Some(key.into());
+        self
     }
     /// Bind `element` to `cap` formatted by `fmt` at `fidelity`, recording the atom.
     /// Absent/Null render "—" automatically (no fabricated value).
@@ -317,6 +443,9 @@ fn row_digest(rows: &[DataRow]) -> String {
     let mut s = String::new();
     for (i, r) in rows.iter().enumerate() {
         s.push_str(&format!("r{i}["));
+        if let Some(key) = &r.key {
+            s.push_str(&format!("key={key};"));
+        }
         for c in &r.cells {
             let badge = match c.atom.fidelity() {
                 Fidelity::Exact => "E",
@@ -333,6 +462,45 @@ fn row_digest(rows: &[DataRow]) -> String {
     s
 }
 
+fn selected_row_digest(rows: &[DataRow], key: Option<&str>) -> String {
+    match key.and_then(|selected| rows.iter().find(|row| row.key.as_deref() == Some(selected))) {
+        Some(row) => row_digest(std::slice::from_ref(row)),
+        None => "none".to_string(),
+    }
+}
+
+fn row_key_token(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+fn suppress_duplicate_keys(keys: &mut [Option<String>]) {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for key in keys.iter().flatten() {
+        *counts.entry(key.clone()).or_insert(0) += 1;
+    }
+    for key in keys.iter_mut() {
+        let duplicate = match key.as_ref().and_then(|k| counts.get(k)) {
+            Some(count) => *count > 1,
+            None => false,
+        };
+        if duplicate {
+            *key = None;
+        }
+    }
+}
+
+fn suppress_duplicate_row_keys(rows: &mut [DataRow]) {
+    let mut keys: Vec<Option<String>> = rows.iter().map(|row| row.key.clone()).collect();
+    suppress_duplicate_keys(&mut keys);
+    for (row, key) in rows.iter_mut().zip(keys) {
+        row.key = key;
+    }
+}
+
 /// The shared per-row custom draw: instantiate the template into the viewport gridbox and
 /// stamp each row's cell atoms into the named children, then draw the rows + scrollbar.
 /// (Mirrors `production_construction_decisions::render_rows`.)
@@ -343,6 +511,19 @@ fn render_rows(
     grid_name: &str,
     template_name: &str,
     rows: &[DataRow],
+) {
+    render_rows_selected(fd, panel, file, grid_name, template_name, rows, 0.0, None);
+}
+
+fn render_rows_selected(
+    fd: &mut FrameDraw,
+    panel: &[Node],
+    file: &GuiFile,
+    grid_name: &str,
+    template_name: &str,
+    rows: &[DataRow],
+    scroll_y: f32,
+    selected_key: Option<&str>,
 ) {
     let viewport = match find_rect(panel, grid_name) {
         Some(r) => r,
@@ -361,16 +542,39 @@ fn render_rows(
         manifest,
         measure: |_t, _f| None,
     };
-    let mut inst = gridbox::instantiate(&template, rows.len(), viewport, &spec, 0.0, &content);
+    let mut inst = gridbox::instantiate(&template, rows.len(), viewport, &spec, scroll_y, &content);
     for (i, row) in inst.rows.iter_mut().enumerate() {
         for cell in &rows[i].cells {
             bind::apply::set_element_text(row, &cell.element, cell.atom.as_str());
         }
     }
     let mut stats = DrawStats::default();
+    let selected_marker = if selected_key.is_some() {
+        Some(widgets::common::white_texture(fd.renderer))
+    } else {
+        None
+    };
     let textures: &mut TextureCache = fd.textures;
     let fonts: &mut FontCache = fd.fonts;
-    for row in &inst.rows {
+    for (row, data) in inst.rows.iter().zip(rows.iter()) {
+        if selected_key.is_some()
+            && data.key.as_deref() == selected_key
+            && row.rect.y + row.rect.h > viewport.y
+            && row.rect.y < viewport.y + viewport.h
+        {
+            if let Some(white) = selected_marker.as_ref() {
+                widgets::common::fill_rect(
+                    fd.renderer,
+                    white,
+                    row.rect.x + 1.0,
+                    row.rect.y + 1.0,
+                    row.rect.w - 2.0,
+                    row.rect.h - 2.0,
+                    [0.24, 0.34, 0.46, 0.70],
+                    Some([viewport.x, viewport.y, viewport.w, viewport.h]),
+                );
+            }
+        }
         gui_runtime::draw::draw_window(fd.renderer, row, textures, fonts, &mut stats);
     }
     if let Some(sb) = inst.scrollbar {
@@ -543,9 +747,13 @@ fn widget_assets(white: &render::Texture) -> DrawAssets<'_> {
 const POLITICS_VIEW_ID: ViewId = ViewId("politics.politics");
 const POLITICS_FILE: &str = "politics.json";
 const POLITICS_ROOT: &str = "countrypoliticsview";
+const POLITICS_PARTY_ROW_H: f32 = 18.0;
+const POLITICS_TAB_ROW_H: f32 = 100.0;
 
 pub struct PoliticsView {
     tabs: TabBar,
+    tab_states: PoliticsTabStates,
+    tab_scroll_drag: Option<PoliticsScrollDrag>,
     screen: Rect,
 }
 
@@ -553,6 +761,8 @@ impl PoliticsView {
     pub fn new() -> PoliticsView {
         PoliticsView {
             tabs: politics_tabs_for_flags(true, true, true, true),
+            tab_states: PoliticsTabStates::default(),
+            tab_scroll_drag: None,
             screen: default_politics_screen(),
         }
     }
@@ -564,12 +774,29 @@ impl Default for PoliticsView {
     }
 }
 
+#[derive(Default)]
+struct PoliticsListState {
+    selected_key: Option<String>,
+    row_keys: Vec<Option<String>>,
+    scroll_y: f32,
+}
+
+#[derive(Default)]
+struct PoliticsTabStates {
+    government: PoliticsListState,
+    national_spirits: PoliticsListState,
+    ideas_laws: PoliticsListState,
+    autonomy: PoliticsListState,
+}
+
 struct PoliticsDrawable {
     roots: Vec<Node>,
     file: GuiFile,
     tab: Option<PoliticsTab>,
     tab_rows: Vec<DataRow>,
     tab_section: SectionState,
+    selected_key: Option<String>,
+    list_window: PoliticsListWindow,
     /// the N2 tab bar (the politics sub-window selector) — its plan goes in the digest.
     tabs: TabBar,
     tab_panel: Rect,
@@ -577,36 +804,38 @@ struct PoliticsDrawable {
 
 impl Drawable for PoliticsDrawable {
     fn draw_digest(&self) -> String {
+        let selected_state = match self.selected_key.as_deref() {
+            None => "none",
+            Some(key) if self.tab_rows.iter().any(|r| r.key.as_deref() == Some(key)) => "selected",
+            Some(_) => "missing_selected",
+        };
         format!(
-            "POL tab={} sect={} rows={} TABS {}",
+            "POL tab={} sect={} selected={} selected_key={} selected_row={} scroll={:.0}/{:.0} visible=[{}] rows={} TABS {}",
             self.tabs.selected().unwrap_or("none"),
             self.tab_section.tag(),
+            selected_state,
+            self.selected_key.as_deref().unwrap_or("none"),
+            selected_row_digest(&self.tab_rows, self.selected_key.as_deref()),
+            self.list_window.scroll_y,
+            self.list_window.max_scroll,
+            visible_politics_row_digest(&self.tab_rows, self.list_window),
             row_digest(&self.tab_rows),
             widgets::tabs::plan_tabs(&self.tabs, self.tab_panel).digest(),
         )
     }
     fn draw(&self, fd: &mut FrameDraw) {
         fd.draw_nodes(&self.roots);
-        match self.tab {
-            Some(PoliticsTab::Government) => render_rows(
+        if let Some(tab) = self.tab {
+            render_rows_selected(
                 fd,
                 &self.roots,
                 &self.file,
-                "parties_grid",
-                "political_party_info_entry",
+                tab.grid_name(),
+                tab.template_name(),
                 &self.tab_rows,
-            ),
-            Some(PoliticsTab::NationalSpirits | PoliticsTab::IdeasLaws | PoliticsTab::Autonomy) => {
-                render_rows(
-                    fd,
-                    &self.roots,
-                    &self.file,
-                    "idea_categories_grid",
-                    "country_politics_idea_category_entry",
-                    &self.tab_rows,
-                );
-            }
-            None => {}
+                self.list_window.scroll_y,
+                self.selected_key.as_deref(),
+            );
         }
         let white = mint_white(fd);
         let assets = widget_assets(&white);
@@ -630,6 +859,35 @@ impl ViewInstance for PoliticsView {
         };
         let next = politics_tabs_from_rebind(ctx, ctx.country);
         reconcile_politics_tabs(&mut self.tabs, next);
+        for tab in [
+            PoliticsTab::Government,
+            PoliticsTab::NationalSpirits,
+            PoliticsTab::IdeasLaws,
+            PoliticsTab::Autonomy,
+        ] {
+            let keys = politics_tab_keys_from_rebind(ctx, ctx.country, tab);
+            let viewport = politics_grid_fallback(self.screen, tab);
+            let max_scroll = max_politics_scroll_fallback(viewport, keys.len(), tab.row_h());
+            let state = self.tab_states.get_mut(tab);
+            state.row_keys = keys;
+            state.scroll_y = state.scroll_y.min(max_scroll);
+        }
+        if let Some(drag) = self.tab_scroll_drag {
+            let active = selected_politics_tab(&self.tabs) == Some(drag.tab);
+            let state = self.tab_states.get(drag.tab);
+            let viewport = politics_grid_fallback(self.screen, drag.tab);
+            if !active
+                || politics_scrollbar_geometry(
+                    viewport,
+                    state.row_keys.len(),
+                    drag.tab.row_h(),
+                    state.scroll_y,
+                )
+                .is_none()
+            {
+                self.tab_scroll_drag = None;
+            }
+        }
     }
     fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
         match *ev {
@@ -637,14 +895,110 @@ impl ViewInstance for PoliticsView {
                 x,
                 y,
                 button: PointerButton::Left,
-            } => match click_politics_tab(&mut self.tabs, politics_tab_fallback(self.screen), x, y)
-            {
-                PoliticsTabClick::Changed => politics_input_consumed(true),
-                PoliticsTabClick::Unchanged | PoliticsTabClick::Inert => {
-                    politics_input_consumed(false)
+            } => {
+                match click_politics_tab(&mut self.tabs, politics_tab_fallback(self.screen), x, y) {
+                    PoliticsTabClick::Changed => return politics_input_consumed(true),
+                    PoliticsTabClick::Unchanged | PoliticsTabClick::Inert => {
+                        return politics_input_consumed(false);
+                    }
+                    PoliticsTabClick::Miss => {}
                 }
-                PoliticsTabClick::Miss => InputOutcome::ignored(),
-            },
+                let tab = match selected_politics_tab(&self.tabs) {
+                    Some(tab) => tab,
+                    None => return InputOutcome::ignored(),
+                };
+                let viewport = politics_grid_fallback(self.screen, tab);
+                let row_h = tab.row_h();
+                let state = self.tab_states.get(tab);
+                let scroll_y = state.scroll_y.min(max_politics_scroll_fallback(
+                    viewport,
+                    state.row_keys.len(),
+                    row_h,
+                ));
+                if let Some(geom) =
+                    politics_scrollbar_geometry(viewport, state.row_keys.len(), row_h, scroll_y)
+                {
+                    if geom.thumb.contains(x, y) {
+                        self.tab_scroll_drag = Some(PoliticsScrollDrag {
+                            tab,
+                            pointer_offset_y: y - geom.thumb.y,
+                        });
+                        return politics_input_consumed(false);
+                    }
+                    if geom.track.contains(x, y) {
+                        return politics_input_consumed(false);
+                    }
+                }
+                if let Some(key) =
+                    pick_politics_row_key(viewport, &state.row_keys, row_h, scroll_y, x, y)
+                {
+                    let state = self.tab_states.get_mut(tab);
+                    let changed = state.selected_key.as_deref() != Some(key.as_str());
+                    state.selected_key = Some(key);
+                    politics_input_consumed(changed)
+                } else {
+                    InputOutcome::ignored()
+                }
+            }
+            ViewInput::Wheel { x, y, dy } => {
+                let tab = match selected_politics_tab(&self.tabs) {
+                    Some(tab) => tab,
+                    None => return InputOutcome::ignored(),
+                };
+                let viewport = politics_grid_fallback(self.screen, tab);
+                if x < viewport.x
+                    || x > viewport.x + viewport.w
+                    || y < viewport.y
+                    || y > viewport.y + viewport.h
+                {
+                    return InputOutcome::ignored();
+                }
+                let state = self.tab_states.get_mut(tab);
+                let current = state.scroll_y;
+                let next = scroll_politics_offset(
+                    current,
+                    viewport,
+                    state.row_keys.len(),
+                    tab.row_h(),
+                    dy,
+                );
+                state.scroll_y = next;
+                politics_input_consumed(next != current)
+            }
+            ViewInput::PointerMove { x: _, y, drag } if drag => {
+                let drag = match self.tab_scroll_drag {
+                    Some(drag) => drag,
+                    None => return InputOutcome::ignored(),
+                };
+                let viewport = politics_grid_fallback(self.screen, drag.tab);
+                let state = self.tab_states.get(drag.tab);
+                let geom = match politics_scrollbar_geometry(
+                    viewport,
+                    state.row_keys.len(),
+                    drag.tab.row_h(),
+                    state.scroll_y,
+                ) {
+                    Some(geom) => geom,
+                    None => {
+                        self.tab_scroll_drag = None;
+                        return InputOutcome::ignored();
+                    }
+                };
+                let current = state.scroll_y;
+                let next = politics_scroll_from_thumb_y(geom, y - drag.pointer_offset_y);
+                self.tab_states.get_mut(drag.tab).scroll_y = next;
+                politics_input_consumed(next != current)
+            }
+            ViewInput::PointerUp {
+                button: PointerButton::Left,
+                ..
+            } => {
+                if self.tab_scroll_drag.take().is_some() {
+                    politics_input_consumed(false)
+                } else {
+                    InputOutcome::ignored()
+                }
+            }
             _ => InputOutcome::ignored(),
         }
     }
@@ -708,6 +1062,18 @@ impl ViewInstance for PoliticsView {
         let (tab_rows, tab_section) = build_politics_tab_rows(ctx, tag, tab, &mut fidelity);
 
         let roots = build_root(ctx, &file, POLITICS_ROOT, &summary);
+        let (selected_key, list_window) = match tab {
+            Some(tab) => {
+                let state = self.tab_states.get(tab);
+                let viewport =
+                    politics_grid_viewport(&roots, tab, politics_grid_fallback(ctx.screen, tab));
+                (
+                    state.selected_key.clone(),
+                    politics_list_window(viewport, tab_rows.len(), state.scroll_y, tab.row_h()),
+                )
+            }
+            None => (None, PoliticsListWindow::default()),
+        };
         let tab_panel =
             find_rect(&roots, "ideas").unwrap_or_else(|| politics_tab_fallback(ctx.screen));
         let drawable = PoliticsDrawable {
@@ -716,6 +1082,8 @@ impl ViewInstance for PoliticsView {
             tab,
             tab_rows,
             tab_section,
+            selected_key,
+            list_window,
             tabs,
             tab_panel,
         };
@@ -751,6 +1119,84 @@ enum PoliticsTab {
     NationalSpirits,
     IdeasLaws,
     Autonomy,
+}
+
+impl PoliticsTab {
+    fn grid_name(self) -> &'static str {
+        match self {
+            PoliticsTab::Government => "parties_grid",
+            PoliticsTab::NationalSpirits | PoliticsTab::IdeasLaws | PoliticsTab::Autonomy => {
+                "idea_categories_grid"
+            }
+        }
+    }
+    fn template_name(self) -> &'static str {
+        match self {
+            PoliticsTab::Government => "political_party_info_entry",
+            PoliticsTab::NationalSpirits | PoliticsTab::IdeasLaws | PoliticsTab::Autonomy => {
+                "country_politics_idea_category_entry"
+            }
+        }
+    }
+    fn row_h(self) -> f32 {
+        match self {
+            PoliticsTab::Government => POLITICS_PARTY_ROW_H,
+            PoliticsTab::NationalSpirits | PoliticsTab::IdeasLaws | PoliticsTab::Autonomy => {
+                POLITICS_TAB_ROW_H
+            }
+        }
+    }
+}
+
+impl PoliticsTabStates {
+    fn get(&self, tab: PoliticsTab) -> &PoliticsListState {
+        match tab {
+            PoliticsTab::Government => &self.government,
+            PoliticsTab::NationalSpirits => &self.national_spirits,
+            PoliticsTab::IdeasLaws => &self.ideas_laws,
+            PoliticsTab::Autonomy => &self.autonomy,
+        }
+    }
+    fn get_mut(&mut self, tab: PoliticsTab) -> &mut PoliticsListState {
+        match tab {
+            PoliticsTab::Government => &mut self.government,
+            PoliticsTab::NationalSpirits => &mut self.national_spirits,
+            PoliticsTab::IdeasLaws => &mut self.ideas_laws,
+            PoliticsTab::Autonomy => &mut self.autonomy,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PoliticsListWindow {
+    scroll_y: f32,
+    max_scroll: f32,
+    first: usize,
+    visible: usize,
+}
+
+impl Default for PoliticsListWindow {
+    fn default() -> Self {
+        PoliticsListWindow {
+            scroll_y: 0.0,
+            max_scroll: 0.0,
+            first: 0,
+            visible: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PoliticsScrollDrag {
+    tab: PoliticsTab,
+    pointer_offset_y: f32,
+}
+
+#[derive(Clone, Copy)]
+struct PoliticsScrollbarGeometry {
+    track: Rect,
+    thumb: Rect,
+    max_scroll: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -915,6 +1361,163 @@ fn politics_tab_fallback(screen: Rect) -> Rect {
     }
 }
 
+fn politics_panel_fallback(screen: Rect) -> Rect {
+    Rect {
+        x: screen.x + screen.w - 606.0,
+        y: screen.y + 78.0,
+        w: 550.0,
+        h: (screen.h - 78.0).max(0.0),
+    }
+}
+
+fn politics_grid_fallback(screen: Rect, tab: PoliticsTab) -> Rect {
+    match tab {
+        PoliticsTab::Government => {
+            let panel = politics_panel_fallback(screen);
+            Rect {
+                x: panel.x + 278.0,
+                y: panel.y + 300.0,
+                w: 330.0,
+                h: 70.0,
+            }
+        }
+        PoliticsTab::NationalSpirits | PoliticsTab::IdeasLaws | PoliticsTab::Autonomy => {
+            let tabs = politics_tab_fallback(screen);
+            let y = tabs.y + widgets::tabs::BAR_THICK;
+            Rect {
+                x: tabs.x + 17.0,
+                y,
+                w: (tabs.w - 17.0).max(0.0),
+                h: (tabs.y + tabs.h - y).max(0.0),
+            }
+        }
+    }
+}
+
+fn politics_grid_viewport(roots: &[Node], tab: PoliticsTab, fallback_viewport: Rect) -> Rect {
+    find_rect(roots, tab.grid_name()).unwrap_or(fallback_viewport)
+}
+
+fn politics_list_window(
+    viewport: Rect,
+    row_count: usize,
+    requested_scroll: f32,
+    row_h: f32,
+) -> PoliticsListWindow {
+    let row_h = row_h.max(1.0);
+    let content_h = row_count as f32 * row_h;
+    let max_scroll = gridbox::ScrollBar::max_scroll(viewport.h, content_h);
+    let scroll_y = requested_scroll.clamp(0.0, max_scroll);
+    let first = (scroll_y / row_h).floor() as usize;
+    let visible = (viewport.h / row_h).ceil().max(1.0) as usize + 1;
+    PoliticsListWindow {
+        scroll_y,
+        max_scroll,
+        first,
+        visible,
+    }
+}
+
+fn visible_politics_row_digest(rows: &[DataRow], window: PoliticsListWindow) -> String {
+    let visible: Vec<DataRow> = rows
+        .iter()
+        .skip(window.first)
+        .take(window.visible)
+        .cloned()
+        .collect();
+    row_digest(&visible)
+}
+
+fn max_politics_scroll_fallback(viewport: Rect, row_count: usize, row_h: f32) -> f32 {
+    (row_count as f32 * row_h.max(1.0) - viewport.h).max(0.0)
+}
+
+fn politics_scrollbar_geometry(
+    viewport: Rect,
+    row_count: usize,
+    row_h: f32,
+    scroll_y: f32,
+) -> Option<PoliticsScrollbarGeometry> {
+    let content_h = row_count as f32 * row_h.max(1.0);
+    let max_scroll = gridbox::ScrollBar::max_scroll(viewport.h, content_h);
+    if max_scroll <= 0.0 {
+        return None;
+    }
+    let track = Rect {
+        x: viewport.x + viewport.w - GUTTER,
+        y: viewport.y,
+        w: GUTTER,
+        h: viewport.h,
+    };
+    let visible_frac = (viewport.h / content_h).clamp(0.05, 1.0);
+    let thumb_h = (track.h * visible_frac).max(16.0).min(track.h);
+    let scroll_frac = if max_scroll > 0.0 {
+        scroll_y.clamp(0.0, max_scroll) / max_scroll
+    } else {
+        0.0
+    };
+    let thumb_y = track.y + (track.h - thumb_h).max(0.0) * scroll_frac.clamp(0.0, 1.0);
+    Some(PoliticsScrollbarGeometry {
+        track,
+        thumb: Rect {
+            x: track.x,
+            y: thumb_y,
+            w: GUTTER,
+            h: thumb_h,
+        },
+        max_scroll,
+    })
+}
+
+fn politics_scroll_from_thumb_y(geom: PoliticsScrollbarGeometry, thumb_y: f32) -> f32 {
+    let travel = (geom.track.h - geom.thumb.h).max(0.0);
+    if travel <= 0.0 || geom.max_scroll <= 0.0 {
+        return 0.0;
+    }
+    let y = thumb_y.clamp(geom.track.y, geom.track.y + travel);
+    ((y - geom.track.y) / travel) * geom.max_scroll
+}
+
+fn scroll_politics_offset(
+    current: f32,
+    viewport: Rect,
+    row_count: usize,
+    row_h: f32,
+    dy: f32,
+) -> f32 {
+    if dy == 0.0 || !dy.is_finite() {
+        return current;
+    }
+    let row_h = row_h.max(1.0);
+    let rows = dy.abs().ceil().max(1.0);
+    let delta = rows * row_h;
+    let next = if dy < 0.0 {
+        current + delta
+    } else {
+        (current - delta).max(0.0)
+    };
+    next.min(max_politics_scroll_fallback(viewport, row_count, row_h))
+}
+
+fn pick_politics_row_key(
+    viewport: Rect,
+    keys: &[Option<String>],
+    row_h: f32,
+    scroll_y: f32,
+    x: f32,
+    y: f32,
+) -> Option<String> {
+    if x < viewport.x
+        || x > viewport.x + viewport.w
+        || y < viewport.y
+        || y > viewport.y + viewport.h
+    {
+        return None;
+    }
+    let idx = ((y - viewport.y + scroll_y.max(0.0)) / row_h.max(1.0)).floor() as usize;
+    keys.get(idx).and_then(|key| key.clone())
+}
+
 fn click_politics_tab(bar: &mut TabBar, panel: Rect, x: f32, y: f32) -> PoliticsTabClick {
     let rects = bar.layout(panel);
     if let Some(id) = bar.pick(&rects, x, y) {
@@ -1000,6 +1603,50 @@ fn push_autonomy(
     });
 }
 
+fn politics_government_row_key(ideology: &str) -> Option<String> {
+    if ideology.is_empty() {
+        None
+    } else {
+        Some(format!("politics:government:ideology:{ideology}"))
+    }
+}
+
+fn politics_token_row_key(source_label: &str, token: &str) -> Option<String> {
+    if source_label.is_empty() || token.is_empty() {
+        None
+    } else {
+        Some(format!("politics:token:{source_label}:{token}"))
+    }
+}
+
+fn politics_overlord_row_key(overlord: &str) -> Option<String> {
+    if overlord.is_empty() {
+        None
+    } else {
+        Some(format!("politics:autonomy:overlord:{overlord}"))
+    }
+}
+
+fn politics_subject_row_key(subject: &str, overlord: &str) -> Option<String> {
+    if subject.is_empty() || overlord.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "politics:autonomy:subject:{subject}:overlord:{overlord}"
+        ))
+    }
+}
+
+fn politics_occupied_owner_row_key(owner: &str, controller: &str) -> Option<String> {
+    if owner.is_empty() || controller.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "politics:autonomy:occupied-owner:{owner}:controller:{controller}"
+        ))
+    }
+}
+
 /// The pie legend: one `political_party_info_entry` row per ideology popularity entry.
 /// `party_popularities` is M/S LIVE-first (46/46 EXACT) → the membership is exact; the
 /// localized party name + colour swatch are idea/party-DB lookups (derived).
@@ -1031,7 +1678,10 @@ fn build_party_rows(
     keys.sort();
     let mut rows = Vec::new();
     for k in keys {
-        let mut row = DataRow::new();
+        let mut row = match politics_government_row_key(k) {
+            Some(key) => DataRow::new().with_key(key),
+            None => DataRow::new(),
+        };
         row.bind(
             fidelity,
             "name",
@@ -1048,6 +1698,7 @@ fn build_party_rows(
         );
         rows.push(row);
     }
+    suppress_duplicate_row_keys(&mut rows);
     SectionState::Present.record(fidelity);
     (rows, SectionState::Present)
 }
@@ -1099,7 +1750,12 @@ fn build_token_rows(
                 saw_present = true;
                 let entries = token_entries(v);
                 for token in entries {
-                    push_category_tab_row(fidelity, &mut rows, &format!("{label}: {token}"));
+                    push_category_tab_row(
+                        fidelity,
+                        &mut rows,
+                        &format!("{label}: {token}"),
+                        politics_token_row_key(label, &token),
+                    );
                 }
             }
             Captured::Null => saw_unusable = true,
@@ -1114,6 +1770,7 @@ fn build_token_rows(
         SectionState::Absent
     };
     state.record(fidelity);
+    suppress_duplicate_row_keys(&mut rows);
     (rows, state)
 }
 
@@ -1148,8 +1805,16 @@ fn token_entries(v: &serde_json::Value) -> Vec<String> {
     out
 }
 
-fn push_category_tab_row(fidelity: &mut FidelityReport, rows: &mut Vec<DataRow>, label: &str) {
-    let mut row = DataRow::new();
+fn push_category_tab_row(
+    fidelity: &mut FidelityReport,
+    rows: &mut Vec<DataRow>,
+    label: &str,
+    key: Option<String>,
+) {
+    let mut row = match key {
+        Some(key) => DataRow::new().with_key(key),
+        None => DataRow::new(),
+    };
     let label_value = serde_json::Value::String(label.to_string());
     row.bind(
         fidelity,
@@ -1178,7 +1843,12 @@ fn build_autonomy_tab_rows(
     if let Captured::Measured(v) = overlord {
         let token = fmt_token(v);
         if token != DASH {
-            push_category_tab_row(fidelity, &mut rows, &format!("Overlord: {token}"));
+            push_category_tab_row(
+                fidelity,
+                &mut rows,
+                &format!("Overlord: {token}"),
+                politics_overlord_row_key(&token),
+            );
         }
     }
 
@@ -1220,7 +1890,12 @@ fn build_autonomy_tab_rows(
                 Some(level) => format!("Subject {sub_tag}: {level}"),
                 None => format!("Subject {sub_tag}"),
             };
-            push_category_tab_row(fidelity, &mut rows, &label);
+            push_category_tab_row(
+                fidelity,
+                &mut rows,
+                &label,
+                politics_subject_row_key(sub_tag, tag),
+            );
         }
     }
 
@@ -1238,10 +1913,16 @@ fn build_autonomy_tab_rows(
             }
         }
         for owner in owners {
-            push_category_tab_row(fidelity, &mut rows, &format!("Occupied {owner}"));
+            push_category_tab_row(
+                fidelity,
+                &mut rows,
+                &format!("Occupied {owner}"),
+                politics_occupied_owner_row_key(&owner, tag),
+            );
         }
     }
 
+    suppress_duplicate_row_keys(&mut rows);
     let state = if rows.is_empty() {
         SectionState::Absent
     } else {
@@ -1249,6 +1930,128 @@ fn build_autonomy_tab_rows(
     };
     state.record(fidelity);
     (rows, state)
+}
+
+fn politics_tab_keys_from_rebind(
+    ctx: &RebindContext,
+    tag: &str,
+    tab: PoliticsTab,
+) -> Vec<Option<String>> {
+    match tab {
+        PoliticsTab::Government => politics_party_keys_from_rebind(ctx, tag),
+        PoliticsTab::NationalSpirits => politics_token_keys_from_rebind(
+            ctx,
+            tag,
+            &[("National Spirit", "politics.ideas_other")],
+        ),
+        PoliticsTab::IdeasLaws => politics_token_keys_from_rebind(
+            ctx,
+            tag,
+            &[
+                ("Law", "politics.laws"),
+                ("Advisor", "politics.appointed_advisors"),
+                ("Idea", "politics.ideas"),
+            ],
+        ),
+        PoliticsTab::Autonomy => politics_autonomy_keys_from_rebind(ctx, tag),
+    }
+}
+
+fn politics_party_keys_from_rebind(ctx: &RebindContext, tag: &str) -> Vec<Option<String>> {
+    let mut keys = match ctx.country_field(tag, "politics.party_popularities") {
+        Captured::Measured(v) => match v.as_object() {
+            Some(obj) => {
+                let mut parts: Vec<&String> = obj.keys().collect();
+                parts.sort();
+                parts
+                    .into_iter()
+                    .map(|k| politics_government_row_key(k))
+                    .collect()
+            }
+            None => Vec::new(),
+        },
+        Captured::Null | Captured::Absent => Vec::new(),
+    };
+    suppress_duplicate_keys(&mut keys);
+    keys
+}
+
+fn politics_token_keys_from_rebind(
+    ctx: &RebindContext,
+    tag: &str,
+    sources: &[(&str, &str)],
+) -> Vec<Option<String>> {
+    let mut keys = Vec::new();
+    for (label, path) in sources {
+        if let Captured::Measured(v) = ctx.country_field(tag, path) {
+            for token in token_entries(v) {
+                keys.push(politics_token_row_key(label, &token));
+            }
+        }
+    }
+    suppress_duplicate_keys(&mut keys);
+    keys
+}
+
+fn politics_autonomy_keys_from_rebind(ctx: &RebindContext, tag: &str) -> Vec<Option<String>> {
+    let mut keys = Vec::new();
+
+    let overlord = ctx.country_field(tag, "diplomacy.overlord");
+    let overlord = if overlord.is_measured() {
+        overlord
+    } else {
+        ctx.country_field(tag, "politics.autonomy.overlord")
+    };
+    if let Captured::Measured(v) = overlord {
+        if let Some(token) = row_key_token(v) {
+            keys.push(politics_overlord_row_key(&token));
+        }
+    }
+
+    if let Some(countries) = ctx.countries() {
+        let mut subjects: Vec<&str> = Vec::new();
+        for (sub_tag, _) in countries {
+            if sub_tag == tag {
+                continue;
+            }
+            let over = ctx.country_field(sub_tag, "diplomacy.overlord");
+            let over = if over.is_measured() {
+                over
+            } else {
+                ctx.country_field(sub_tag, "politics.autonomy.overlord")
+            };
+            if let Captured::Measured(v) = over {
+                if v.as_str() == Some(tag) {
+                    subjects.push(sub_tag.as_str());
+                }
+            }
+        }
+        subjects.sort();
+        for sub_tag in subjects {
+            keys.push(politics_subject_row_key(sub_tag, tag));
+        }
+    }
+
+    if let Some(states) = ctx.states() {
+        let mut owners: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for (sid, _) in states {
+            let ctrl = ctx.state_field(sid, "controller");
+            let owner = ctx.state_field(sid, "owner");
+            if let (Captured::Measured(c), Captured::Measured(o)) = (ctrl, owner) {
+                if c.as_str() == Some(tag) && o.as_str() != Some(tag) {
+                    if let Some(os) = o.as_str() {
+                        owners.insert(os.to_string());
+                    }
+                }
+            }
+        }
+        for owner in owners {
+            keys.push(politics_occupied_owner_row_key(&owner, tag));
+        }
+    }
+
+    suppress_duplicate_keys(&mut keys);
+    keys
 }
 
 fn open_politics(_arg: Option<i64>) -> Box<dyn ViewInstance> {
@@ -1403,7 +2206,7 @@ impl ViewInstance for PowerBalanceView {
             "right_side",
             Fidelity::Derived,
         );
-        push_unavailable(&mut fidelity, &mut summary, "active_range_name");
+        push_active_range_name(&pb, &mut fidelity, &mut summary);
 
         let mut gaps = DataRow::new();
         gaps.badge_gap(&mut fidelity, "range_indicator");
@@ -1508,6 +2311,39 @@ fn push_pb_field(
         element: element.to_string(),
         atom,
     });
+}
+
+/// Bind the current named BoP range from static `common/bop` thresholds. Missing
+/// or unmatched DEF data badges unavailable instead of guessing a range.
+fn push_active_range_name(
+    pb: &Option<serde_json::Value>,
+    report: &mut FidelityReport,
+    summary: &mut Vec<Cell>,
+) {
+    let atom = active_range_name_atom(pb, bop_catalog());
+    report.record(&atom);
+    summary.push(Cell {
+        element: "active_range_name".to_string(),
+        atom,
+    });
+}
+
+fn active_range_name_atom(pb: &Option<serde_json::Value>, cat: &BopDefCatalog) -> DisplayAtom {
+    let Some(track) = pb.as_ref() else {
+        return DisplayAtom::unavailable_because(UnavailableReason::Absent);
+    };
+    let template = match track.get("template").and_then(serde_json::Value::as_str) {
+        Some(s) if !s.is_empty() => s,
+        _ => return DisplayAtom::unavailable_because(UnavailableReason::Blocked),
+    };
+    let value = match track.get("value").and_then(serde_json::Value::as_f64) {
+        Some(v) if v.is_finite() => v,
+        _ => return DisplayAtom::unavailable_because(UnavailableReason::Absent),
+    };
+    match cat.active_range_id(template, value) {
+        Some(id) => DisplayAtom::text(id.to_string(), Fidelity::Derived),
+        None => DisplayAtom::unavailable_because(UnavailableReason::Blocked),
+    }
 }
 
 /// Build the N1 track: left-side node ── value-needle node ── right-side node. The needle
@@ -2407,6 +3243,110 @@ mod tests {
         })
     }
 
+    fn active_politics_tab(v: &PoliticsView) -> PoliticsTab {
+        selected_politics_tab(&v.tabs).expect("politics view has active tab")
+    }
+
+    fn click_politics_row(view: &mut PoliticsView, row: usize) -> InputOutcome {
+        let tab = active_politics_tab(view);
+        let viewport = politics_grid_fallback(view.screen, tab);
+        view.on_input(&ViewInput::PointerDown {
+            x: viewport.x + 4.0,
+            y: viewport.y + tab.row_h() * row as f32 + 4.0,
+            button: PointerButton::Left,
+        })
+    }
+
+    fn wheel_politics(view: &mut PoliticsView, dy: f32) -> InputOutcome {
+        let tab = active_politics_tab(view);
+        let viewport = politics_grid_fallback(view.screen, tab);
+        view.on_input(&ViewInput::Wheel {
+            x: viewport.x + 8.0,
+            y: viewport.y + tab.row_h() * 0.5,
+            dy,
+        })
+    }
+
+    fn politics_scrollbar(v: &PoliticsView) -> PoliticsScrollbarGeometry {
+        let tab = active_politics_tab(v);
+        let viewport = politics_grid_fallback(v.screen, tab);
+        let state = v.tab_states.get(tab);
+        politics_scrollbar_geometry(viewport, state.row_keys.len(), tab.row_h(), state.scroll_y)
+            .expect("active politics list has scrollbar")
+    }
+
+    fn pointer_down_politics_thumb(v: &mut PoliticsView) -> InputOutcome {
+        let geom = politics_scrollbar(v);
+        v.on_input(&ViewInput::PointerDown {
+            x: geom.thumb.x + geom.thumb.w * 0.5,
+            y: geom.thumb.y + geom.thumb.h * 0.5,
+            button: PointerButton::Left,
+        })
+    }
+
+    fn politics_scroll_pair(d: &str) -> (i32, i32) {
+        let rest = d
+            .split(" scroll=")
+            .nth(1)
+            .expect("Politics digest has scroll marker");
+        let pair = rest
+            .split(" visible=")
+            .next()
+            .expect("Politics digest has visible marker");
+        let (cur, max) = pair.split_once('/').expect("politics scroll pair");
+        (
+            cur.parse().expect("scroll current is int"),
+            max.parse().expect("scroll max is int"),
+        )
+    }
+
+    fn visible_politics_chunk(d: &str) -> &str {
+        d.split(" visible=[")
+            .nth(1)
+            .and_then(|rest| rest.split("] rows=").next())
+            .expect("Politics digest has visible row chunk")
+    }
+
+    fn many_politics_snap(count: usize, prefix: &str) -> snapshot::Snapshot {
+        let spirits: Vec<_> = (1..=count)
+            .map(|idx| format!("{prefix}_spirit_{idx:02}"))
+            .collect();
+        let laws: Vec<_> = (1..=count)
+            .map(|idx| format!("{prefix}_law_{idx:02}"))
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "date": "1942.1.1.12", "hour_index": 200,
+            "countries": {
+                "GER": {
+                    "politics": {
+                        "ruling_party": "fascism",
+                        "party_popularities": {"fascism": 1.0},
+                        "ideas_other": spirits,
+                        "laws": laws
+                    },
+                    "focus": {"current": "GER_rhineland"}
+                }
+            }
+        }))
+        .unwrap()
+    }
+
+    fn duplicate_spirits_snap() -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1942.1.1.12", "hour_index": 200,
+            "countries": {
+                "GER": {
+                    "politics": {
+                        "ruling_party": "fascism",
+                        "party_popularities": {"fascism": 1.0},
+                        "ideas_other": ["repeat_spirit", "repeat_spirit", "unique_spirit"]
+                    }
+                }
+            }
+        }))
+        .unwrap()
+    }
+
     fn snap_a() -> snapshot::Snapshot {
         serde_json::from_value(serde_json::json!({
             "date": "1941.1.1.12", "hour_index": 100,
@@ -2655,6 +3595,415 @@ mod tests {
     }
 
     #[test]
+    fn politics_government_row_click_selects_ideology_key() {
+        let stage = stage_with(&[]);
+        let snap = snap_a();
+        let mut v = PoliticsView::new();
+        rebind_politics(&mut v, &snap, true);
+
+        let before = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert!(before.contains("selected=none"), "{before}");
+
+        let out = click_politics_row(&mut v, 2);
+        assert!(out.consumed && out.needs_redraw);
+        assert!(out.commands.is_empty());
+
+        let selected = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert!(selected.contains("selected=selected"), "{selected}");
+        assert!(
+            selected.contains("selected_key=politics:government:ideology:fascism"),
+            "government selection must use ideology token identity, got:\n{selected}"
+        );
+        assert!(
+            selected.contains(
+                "selected_row=r0[key=politics:government:ideology:fascism;name=fascism(D);"
+            ),
+            "selected row digest must point at fascism row, got:\n{selected}"
+        );
+    }
+
+    #[test]
+    fn politics_autonomy_row_click_selects_relationship_key() {
+        let stage = stage_with(&[]);
+        let snap = snap_a();
+        let mut v = PoliticsView::new();
+        rebind_politics(&mut v, &snap, true);
+        let tab = click_politics_tab_center(&mut v, POLITICS_TAB_AUTONOMY);
+        assert!(tab.consumed && tab.needs_redraw);
+
+        let out = click_politics_row(&mut v, 0);
+        assert!(out.consumed && out.needs_redraw);
+        let selected = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert!(
+            selected.contains("selected_key=politics:autonomy:subject:SLO:overlord:GER"),
+            "autonomy selection must use subject/overlord identity, got:\n{selected}"
+        );
+        assert!(
+            selected.contains("selected_row=r0[key=politics:autonomy:subject:SLO:overlord:GER;"),
+            "selected autonomy row digest must point at the subject row, got:\n{selected}"
+        );
+    }
+
+    #[test]
+    fn politics_ideas_laws_row_click_selects_law_key_and_scrolled_backing_row() {
+        let stage = stage_with(&[]);
+        let snap = many_politics_snap(40, "A");
+        let mut v = PoliticsView::new();
+        rebind_politics(&mut v, &snap, true);
+        let tab = click_politics_tab_center(&mut v, POLITICS_TAB_IDEAS_LAWS);
+        assert!(tab.consumed && tab.needs_redraw);
+
+        let top_click = click_politics_row(&mut v, 0);
+        assert!(top_click.consumed && top_click.needs_redraw);
+        let top_selected = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert!(
+            top_selected.contains("selected_key=politics:token:Law:A_law_01"),
+            "ideas/laws row selection must use the exact law token, got:\n{top_selected}"
+        );
+
+        let wheel = wheel_politics(&mut v, -2.0);
+        assert!(wheel.consumed && wheel.needs_redraw);
+        let scrolled = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert_eq!(politics_scroll_pair(&scrolled).0, 200);
+        assert!(
+            visible_politics_chunk(&scrolled).contains("key=politics:token:Law:A_law_03;"),
+            "ideas/laws visible slice must advance to the third law row: {scrolled}"
+        );
+
+        let scrolled_click = click_politics_row(&mut v, 0);
+        assert!(scrolled_click.consumed && scrolled_click.needs_redraw);
+        let scrolled_selected = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert!(
+            scrolled_selected.contains("selected_key=politics:token:Law:A_law_03"),
+            "scrolled ideas/laws click must select the backing law row, got:\n{scrolled_selected}"
+        );
+    }
+
+    #[test]
+    fn politics_duplicate_token_rows_are_unkeyed_and_inert() {
+        let stage = stage_with(&[]);
+        let snap = duplicate_spirits_snap();
+        let mut v = PoliticsView::new();
+        rebind_politics(&mut v, &snap, true);
+        let tab = click_politics_tab_center(&mut v, POLITICS_TAB_NATIONAL_SPIRITS);
+        assert!(tab.consumed && tab.needs_redraw);
+
+        let duplicate = click_politics_row(&mut v, 0);
+        assert!(
+            !duplicate.consumed && !duplicate.needs_redraw && duplicate.commands.is_empty(),
+            "duplicate measured token keys must not be selected by index"
+        );
+        assert!(v
+            .tab_states
+            .get(PoliticsTab::NationalSpirits)
+            .selected_key
+            .is_none());
+
+        let unique = click_politics_row(&mut v, 2);
+        assert!(unique.consumed && unique.needs_redraw);
+        let selected = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert!(
+            selected.contains("selected_key=politics:token:National Spirit:unique_spirit"),
+            "unique token row should remain selectable, got:\n{selected}"
+        );
+    }
+
+    #[test]
+    fn politics_wheel_scroll_clamps_and_scrolled_click_selects_backing_key() {
+        let stage = stage_with(&[]);
+        let snap = many_politics_snap(40, "A");
+        let mut v = PoliticsView::new();
+        rebind_politics(&mut v, &snap, true);
+        click_politics_tab_center(&mut v, POLITICS_TAB_NATIONAL_SPIRITS);
+
+        let before = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert_eq!(politics_scroll_pair(&before).0, 0);
+        assert!(
+            visible_politics_chunk(&before)
+                .contains("key=politics:token:National Spirit:A_spirit_01;"),
+            "initial visible politics rows must start at spirit 1: {before}"
+        );
+
+        let out = wheel_politics(&mut v, -3.0);
+        assert!(out.consumed && out.needs_redraw);
+        let after = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert_eq!(politics_scroll_pair(&after).0, 300);
+        assert!(
+            visible_politics_chunk(&after)
+                .contains("key=politics:token:National Spirit:A_spirit_04;"),
+            "after three-row wheel scroll, visible rows must advance: {after}"
+        );
+        assert!(
+            !visible_politics_chunk(&after)
+                .contains("key=politics:token:National Spirit:A_spirit_01;"),
+            "scrolled visible slice must not keep top politics rows: {after}"
+        );
+
+        let clicked = click_politics_row(&mut v, 0);
+        assert!(clicked.consumed && clicked.needs_redraw);
+        let selected = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert!(
+            selected.contains("selected_key=politics:token:National Spirit:A_spirit_04"),
+            "scrolled row click must select backing spirit 4, got:\n{selected}"
+        );
+
+        let out = wheel_politics(&mut v, -500.0);
+        assert!(out.consumed);
+        let clamped = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        let (cur, max) = politics_scroll_pair(&clamped);
+        assert_eq!(cur, max, "huge wheel-down must clamp to max: {clamped}");
+
+        let viewport = politics_grid_fallback(v.screen, active_politics_tab(&v));
+        let outside = v.on_input(&ViewInput::Wheel {
+            x: viewport.x + viewport.w + 20.0,
+            y: viewport.y + POLITICS_TAB_ROW_H,
+            dy: -5.0,
+        });
+        assert!(
+            !outside.consumed && !outside.needs_redraw && outside.commands.is_empty(),
+            "wheel outside the active politics list must be inert"
+        );
+    }
+
+    #[test]
+    fn politics_scrollbar_thumb_drag_clamps_captures_outside_and_clears_on_up() {
+        let stage = stage_with(&[]);
+        let snap = many_politics_snap(40, "A");
+        let mut v = PoliticsView::new();
+        rebind_politics(&mut v, &snap, true);
+        click_politics_tab_center(&mut v, POLITICS_TAB_NATIONAL_SPIRITS);
+
+        let down = pointer_down_politics_thumb(&mut v);
+        assert!(
+            down.consumed && !down.needs_redraw && down.commands.is_empty(),
+            "thumb pointer-down should capture drag without changing scroll"
+        );
+        let geom = politics_scrollbar(&v);
+        let drag = v.on_input(&ViewInput::PointerMove {
+            x: geom.track.x - 300.0,
+            y: geom.track.y + geom.track.h + 500.0,
+            drag: true,
+        });
+        assert!(
+            drag.consumed && drag.needs_redraw,
+            "captured thumb drag must continue outside the politics list"
+        );
+        let bottom = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        let (cur, max) = politics_scroll_pair(&bottom);
+        assert_eq!(cur, max, "dragging below the track should clamp to max");
+
+        let reset = v.on_input(&ViewInput::PointerMove {
+            x: geom.track.x - 300.0,
+            y: geom.track.y - 500.0,
+            drag: true,
+        });
+        assert!(reset.consumed && reset.needs_redraw);
+        let top = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert_eq!(politics_scroll_pair(&top).0, 0);
+
+        let up = v.on_input(&ViewInput::PointerUp {
+            x: geom.track.x - 300.0,
+            y: geom.track.y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            up.consumed && !up.needs_redraw,
+            "pointer-up should consume solely to clear politics scrollbar capture"
+        );
+        let ignored = v.on_input(&ViewInput::PointerMove {
+            x: geom.track.x - 300.0,
+            y: geom.track.y + geom.track.h,
+            drag: true,
+        });
+        assert!(
+            !ignored.consumed && !ignored.needs_redraw,
+            "pointer move after release must not keep stale politics scrollbar capture"
+        );
+    }
+
+    #[test]
+    fn politics_scrollbar_track_click_is_consumed_and_inert() {
+        let stage = stage_with(&[]);
+        let snap = many_politics_snap(40, "A");
+        let mut v = PoliticsView::new();
+        rebind_politics(&mut v, &snap, true);
+        click_politics_tab_center(&mut v, POLITICS_TAB_NATIONAL_SPIRITS);
+        let before = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        let geom = politics_scrollbar(&v);
+        let track_y = (geom.thumb.y + geom.thumb.h + 10.0).min(geom.track.y + geom.track.h - 1.0);
+
+        let out = v.on_input(&ViewInput::PointerDown {
+            x: geom.track.x + geom.track.w * 0.5,
+            y: track_y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            out.consumed && !out.needs_redraw && out.commands.is_empty(),
+            "scrollbar track click must be a consumed inert UI hit"
+        );
+        assert!(
+            v.tab_states
+                .get(PoliticsTab::NationalSpirits)
+                .selected_key
+                .is_none(),
+            "track click must not select an underlying politics row"
+        );
+        let after = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert_eq!(before, after, "track click must not alter politics digest");
+    }
+
+    #[test]
+    fn politics_ideas_laws_scrollbar_thumb_drag_and_track_click_are_proven() {
+        let stage = stage_with(&[]);
+        let snap = many_politics_snap(40, "A");
+        let mut v = PoliticsView::new();
+        rebind_politics(&mut v, &snap, true);
+        click_politics_tab_center(&mut v, POLITICS_TAB_IDEAS_LAWS);
+
+        let before = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert_eq!(politics_scroll_pair(&before).0, 0);
+        assert!(
+            visible_politics_chunk(&before).contains("key=politics:token:Law:A_law_01;"),
+            "ideas/laws visible rows must begin at the first law row: {before}"
+        );
+
+        let geom = politics_scrollbar(&v);
+        let track_y = (geom.thumb.y + geom.thumb.h + 10.0).min(geom.track.y + geom.track.h - 1.0);
+        let track = v.on_input(&ViewInput::PointerDown {
+            x: geom.track.x + geom.track.w * 0.5,
+            y: track_y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            track.consumed && !track.needs_redraw && track.commands.is_empty(),
+            "ideas/laws scrollbar track click must be a consumed inert UI hit"
+        );
+        assert!(
+            v.tab_states
+                .get(PoliticsTab::IdeasLaws)
+                .selected_key
+                .is_none(),
+            "ideas/laws track click must not select an underlying row"
+        );
+        let after_track = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert_eq!(
+            before, after_track,
+            "track click must not alter ideas/laws digest"
+        );
+
+        let down = pointer_down_politics_thumb(&mut v);
+        assert!(down.consumed && !down.needs_redraw && down.commands.is_empty());
+        let drag = v.on_input(&ViewInput::PointerMove {
+            x: geom.track.x - 200.0,
+            y: geom.track.y + geom.track.h + 400.0,
+            drag: true,
+        });
+        assert!(
+            drag.consumed && drag.needs_redraw,
+            "captured ideas/laws thumb drag must continue outside the list"
+        );
+        let bottom = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        let (cur, max) = politics_scroll_pair(&bottom);
+        assert_eq!(
+            cur, max,
+            "ideas/laws thumb drag below track must clamp to max"
+        );
+
+        let up = v.on_input(&ViewInput::PointerUp {
+            x: geom.track.x - 200.0,
+            y: geom.track.y + geom.track.h,
+            button: PointerButton::Left,
+        });
+        assert!(up.consumed && !up.needs_redraw);
+    }
+
+    #[test]
+    fn politics_per_tab_scroll_state_is_isolated() {
+        let stage = stage_with(&[]);
+        let snap = many_politics_snap(40, "A");
+        let mut v = PoliticsView::new();
+        rebind_politics(&mut v, &snap, true);
+
+        click_politics_tab_center(&mut v, POLITICS_TAB_NATIONAL_SPIRITS);
+        wheel_politics(&mut v, -4.0);
+        let spirits = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert_eq!(politics_scroll_pair(&spirits).0, 400);
+
+        click_politics_tab_center(&mut v, POLITICS_TAB_IDEAS_LAWS);
+        let ideas_initial = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert_eq!(
+            politics_scroll_pair(&ideas_initial).0,
+            0,
+            "ideas/laws tab must not inherit national-spirit scroll"
+        );
+        assert!(
+            visible_politics_chunk(&ideas_initial).contains("key=politics:token:Law:A_law_01;"),
+            "ideas/laws visible rows must start from its own list: {ideas_initial}"
+        );
+        wheel_politics(&mut v, -2.0);
+        let ideas_scrolled = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert_eq!(politics_scroll_pair(&ideas_scrolled).0, 200);
+
+        click_politics_tab_center(&mut v, POLITICS_TAB_NATIONAL_SPIRITS);
+        let spirits_again = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert_eq!(
+            politics_scroll_pair(&spirits_again).0,
+            400,
+            "national-spirit scroll should survive switching away and back"
+        );
+    }
+
+    #[test]
+    fn politics_scroll_and_selection_scrub_a_b_a_without_carrying_b_rows() {
+        let stage = stage_with(&[]);
+        let a = many_politics_snap(40, "A");
+        let b = many_politics_snap(45, "B");
+        let mut v = PoliticsView::new();
+
+        rebind_politics(&mut v, &a, true);
+        click_politics_tab_center(&mut v, POLITICS_TAB_NATIONAL_SPIRITS);
+        wheel_politics(&mut v, -5.0);
+        click_politics_row(&mut v, 0);
+        let a1 = bound_digest(&v.bind(&ctx(&stage, &a)));
+        assert!(
+            a1.contains("selected_key=politics:token:National Spirit:A_spirit_06"),
+            "{a1}"
+        );
+        assert!(
+            visible_politics_chunk(&a1).contains("key=politics:token:National Spirit:A_spirit_06;"),
+            "A visible chunk should include selected row after scroll: {a1}"
+        );
+
+        rebind_politics(&mut v, &b, false);
+        let b_digest = bound_digest(&v.bind(&ctx(&stage, &b)));
+        assert!(
+            b_digest.contains("selected=missing_selected"),
+            "B uses different measured spirit ids, so A's selection must fail closed: {b_digest}"
+        );
+        assert_eq!(
+            politics_scroll_pair(&b_digest).0,
+            politics_scroll_pair(&a1).0
+        );
+        assert!(
+            visible_politics_chunk(&b_digest)
+                .contains("key=politics:token:National Spirit:B_spirit_06;"),
+            "B visible chunk must rebuild from B rows at retained scroll: {b_digest}"
+        );
+        assert!(
+            !visible_politics_chunk(&b_digest)
+                .contains("key=politics:token:National Spirit:A_spirit_06;"),
+            "B visible chunk must not carry A rows: {b_digest}"
+        );
+
+        rebind_politics(&mut v, &a, false);
+        let a2 = bound_digest(&v.bind(&ctx(&stage, &a)));
+        assert_eq!(
+            a1, a2,
+            "politics scroll + selection must be byte-identical across A->B->A"
+        );
+    }
+
+    #[test]
     fn occupation_resistance_compliance_exact() {
         let stage = stage_with(&["occupation.json"]);
         let d = bound_digest(&OccupationView::new().bind(&ctx(&stage, &snap_a())));
@@ -2720,6 +4069,41 @@ mod tests {
             d.contains("range_indicator=—(gap)") && d.contains("decision_grid=—(gap)"),
             "the separate-window prototype + decision grid must badge as gaps"
         );
+    }
+
+    #[test]
+    fn power_balance_catalog_derives_active_range_name() {
+        let cat = BopDefCatalog::from_value(&serde_json::json!({
+            "catalogs": {
+                "power_balances": {
+                    "TEST_balance": {
+                        "neutral_ranges": [
+                            {"id": "balanced_range", "min": "-0.1", "max": "0.1"}
+                        ],
+                        "sides": [
+                            {"id": "left_side", "ranges": [
+                                {"id": "left_range", "min": "-1", "max": "-0.1"}
+                            ]},
+                            {"id": "right_side", "ranges": [
+                                {"id": "right_range", "min": "0.1", "max": "1"}
+                            ]}
+                        ]
+                    }
+                }
+            }
+        }))
+        .expect("test catalog parses");
+        let pb = Some(serde_json::json!({
+            "template": "TEST_balance",
+            "value": 0.5,
+            "left_side": "left_side",
+            "right_side": "right_side",
+            "countries": ["GER"]
+        }));
+
+        let atom = active_range_name_atom(&pb, &cat);
+        assert_eq!(atom.fidelity(), Fidelity::Derived);
+        assert_eq!(atom.as_str(), "right_range");
     }
 
     /// Codex no-fabrication fix: when NO power-balance track names the observed country, the

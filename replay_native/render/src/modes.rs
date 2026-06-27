@@ -81,6 +81,8 @@ pub enum MapMode {
     FrontLines,
     /// faction / wars / subjects (country granularity) — exact.
     Diplomacy,
+    /// intel / counter-intel country shading, derived from measured country intel.
+    Intel,
     /// air superiority (strategic-region proxy) — proxy.
     Air,
     /// naval / sea-zone dominance (region proxy) — proxy.
@@ -139,6 +141,7 @@ impl MapMode {
         MapMode::Weather,
         MapMode::FrontLines,
         MapMode::Diplomacy,
+        MapMode::Intel,
         MapMode::Air,
         MapMode::Naval,
         MapMode::Supply,
@@ -180,6 +183,7 @@ impl MapMode {
             // front — the `derived` badge reinforces it.
             MapMode::FrontLines => "Front Lines (controller boundary)".into(),
             MapMode::Diplomacy => "Diplomacy".into(),
+            MapMode::Intel => "Intel".into(),
             MapMode::Air => "Air".into(),
             MapMode::Naval => "Naval".into(),
             MapMode::Supply => "Supply".into(),
@@ -199,6 +203,7 @@ impl MapMode {
             MapMode::Weather => "weather".into(),
             MapMode::FrontLines => "front_lines".into(),
             MapMode::Diplomacy => "diplomacy".into(),
+            MapMode::Intel => "intel".into(),
             MapMode::Air => "air".into(),
             MapMode::Naval => "naval".into(),
             MapMode::Supply => "supply".into(),
@@ -218,6 +223,7 @@ impl MapMode {
             | MapMode::Buildings(_)
             | MapMode::Resources
             | MapMode::Diplomacy => Fidelity::Exact,
+            MapMode::Intel => Fidelity::Derived,
             MapMode::Weather => Fidelity::Proxy, // exact values, proxy vs game visual mode
             MapMode::FrontLines => Fidelity::Derived,
             MapMode::Air | MapMode::Naval | MapMode::Supply => Fidelity::Proxy,
@@ -253,7 +259,7 @@ pub struct ModeData {
     /// state id -> buildings map (key -> count). Measured 0 is real.
     pub buildings: HashMap<u32, HashMap<String, i64>>,
     /// state id -> total resources (sum of resources.*), when present (non-null).
-    pub resources: HashMap<u32, i64>,
+    pub resources: HashMap<u32, f64>,
     /// province id -> controller TAG (province-level control, from map.control_by_province).
     pub province_control: HashMap<u32, String>,
     /// province id -> supply value, when present (the proxy; usually null = a wall).
@@ -264,6 +270,8 @@ pub struct ModeData {
     pub at_war: std::collections::HashSet<String>,
     /// subject TAG -> overlord TAG (for the diplomacy subject tint).
     pub subject_of: HashMap<String, String>,
+    /// country TAG -> measured intel/counter-intel signal for the Intel map mode.
+    pub intel_score: HashMap<String, f64>,
     /// whether the snapshot carries any weather domain at all (else Unavailable).
     pub has_weather: bool,
     /// whether any air-superiority data is present (else Unavailable).
@@ -347,7 +355,7 @@ impl ModeData {
 
             // resources.* — sum, ONLY when the resources block is a non-null object.
             if let Some(res) = sv.get("resources").and_then(Value::as_object) {
-                let total: i64 = res.values().filter_map(Value::as_i64).sum();
+                let total: f64 = res.values().filter_map(Value::as_f64).sum();
                 resources.insert(sid, total);
             }
         }
@@ -437,6 +445,7 @@ impl ModeData {
             faction_color,
             at_war,
             subject_of,
+            intel_score: HashMap::new(),
             has_weather,
             has_air,
             has_naval,
@@ -523,6 +532,21 @@ impl ModeData {
         self
     }
 
+    /// Fold country intel into the Intel map-mode signal. This is deliberately country-
+    /// granularity and derived: the real game's intel map has richer fog-of-war semantics,
+    /// so we only color tags whose snapshot country object carries measured intel fields.
+    pub fn with_countries(mut self, countries: Option<&Map<String, Value>>) -> ModeData {
+        let Some(countries) = countries else {
+            return self;
+        };
+        for (tag, country) in countries {
+            if let Some(score) = intel_country_score(country) {
+                self.intel_score.insert(tag.clone(), score);
+            }
+        }
+        self
+    }
+
     /// Fold the first-class top-level naval/air proxy domain into map-mode availability.
     pub fn with_naval_air(mut self, naval_air: Option<&Value>) -> ModeData {
         self.has_naval |= domain_has_data(naval_air, &["region_control"]);
@@ -536,6 +560,38 @@ impl ModeData {
         );
         self
     }
+}
+
+fn intel_country_score(country: &Value) -> Option<f64> {
+    let intel = country.get("intel")?;
+    if intel.is_null() {
+        return None;
+    }
+    if let Some(defense) = intel
+        .pointer("/agency/capacity/defense")
+        .and_then(Value::as_f64)
+    {
+        return Some(defense.max(0.0));
+    }
+    if let Some(usable) = intel
+        .pointer("/agency/capacity/usable_slots")
+        .and_then(Value::as_f64)
+    {
+        return Some(usable.max(0.0));
+    }
+    if let Some(max_ops) = intel
+        .pointer("/agency/capacity/max_operatives")
+        .and_then(Value::as_f64)
+    {
+        return Some(max_ops.max(0.0));
+    }
+    if let Some(ops) = intel.get("operatives_live").and_then(Value::as_array) {
+        return Some(ops.len() as f64);
+    }
+    if let Some(ops) = intel.get("operatives").and_then(Value::as_array) {
+        return Some(ops.len() as f64);
+    }
+    None
 }
 
 fn domain_has_data(domain: Option<&Value>, keys: &[&str]) -> bool {
@@ -779,11 +835,16 @@ pub fn recolor(
             if data.resources.is_empty() {
                 fidelity = Fidelity::Unavailable;
             }
-            let max_r = data.resources.values().copied().max().unwrap_or(0).max(1) as f64;
+            let max_r = data
+                .resources
+                .values()
+                .copied()
+                .fold(0.0_f64, f64::max)
+                .max(1.0);
             for (pid, sid) in land {
                 let rgba = match data.resources.get(&sid) {
                     Some(&r) => {
-                        let col = ramp([45, 40, 35], [220, 150, 50], norm(r as f64, max_r));
+                        let col = ramp([45, 40, 35], [220, 150, 50], norm(r, max_r));
                         [col[0], col[1], col[2], 255]
                     }
                     None => grey(),
@@ -872,6 +933,30 @@ pub fn recolor(
                         }
                     }
                     None => grey(),
+                };
+                write(&mut lut, pid, rgba);
+            }
+        }
+        // ----- intel (country-granularity measured agency/counter-intel signal) --
+        MapMode::Intel => {
+            if data.intel_score.is_empty() {
+                fidelity = Fidelity::Unavailable;
+            }
+            let max_i = data
+                .intel_score
+                .values()
+                .copied()
+                .filter(|v| v.is_finite())
+                .fold(0.0_f64, f64::max)
+                .max(1.0);
+            for (pid, sid) in land {
+                let owner = data.owner.get(&sid).and_then(|o| o.as_deref());
+                let rgba = match owner.and_then(|tag| data.intel_score.get(tag).copied()) {
+                    Some(score) if score.is_finite() => {
+                        let col = ramp([45, 45, 80], [60, 210, 200], norm(score, max_i));
+                        [col[0], col[1], col[2], 255]
+                    }
+                    _ => grey(),
                 };
                 write(&mut lut, pid, rgba);
             }
@@ -1146,6 +1231,27 @@ mod tests {
         assert_eq!(&ml.lut[1 * 4..1 * 4 + 4], &NEUTRAL_GREY);
     }
 
+    /// Resources mode consumes the now-live per-state deposits: a non-empty resources
+    /// block colors the state, an empty measured block is a real 0, and an absent block
+    /// remains grey (no fabricated country-level aggregate substitution).
+    #[test]
+    fn resources_recolor_uses_measured_state_deposits() {
+        let ids = ids_with(&[(1, 10), (2, 20), (3, 30)]);
+        let data = data_from(
+            serde_json::json!({
+                "10": {"owner":"ITA","resources": {"steel": 7, "oil": 3}},
+                "20": {"owner":"ITA","resources": {}},
+                "30": {"owner":"ITA"}
+            }),
+            None,
+        );
+        let ml = recolor(MapMode::Resources, &data, &ids, &colors2(), 3);
+        assert_eq!(ml.fidelity, Fidelity::Exact);
+        assert_eq!(&ml.lut[1 * 4..1 * 4 + 4], &[220, 150, 50, 255]);
+        assert_eq!(&ml.lut[2 * 4..2 * 4 + 4], &[45, 40, 35, 255]);
+        assert_eq!(&ml.lut[3 * 4..3 * 4 + 4], &NEUTRAL_GREY);
+    }
+
     /// Weather / Air / Naval: this snapshot family has no such domain → Unavailable,
     /// land all grey, sea terrain — NEVER a fabricated value.
     #[test]
@@ -1264,6 +1370,63 @@ mod tests {
         assert_eq!(&ml.lut[1 * 4..1 * 4 + 4], &[150, 60, 50, 255]); // fascism tint
         assert_eq!(&ml.lut[2 * 4..2 * 4 + 4], &[90, 95, 100, 255]); // non-aligned
         assert_eq!(&ml.lut[3 * 4..3 * 4 + 4], &NEUTRAL_GREY); // null owner
+    }
+
+    #[test]
+    fn intel_recolor_uses_measured_country_intel_only() {
+        let ids = ids_with(&[(1, 10), (2, 20), (3, 30), (4, 40)]);
+        let countries = serde_json::json!({
+            "GER": {"intel": {"agency": {"capacity": {"defense": 6.0}}}},
+            "FRA": {"intel": {"operatives": []}},
+            "SWE": {"intel": null}
+        });
+        let data = data_from(
+            serde_json::json!({
+                "10": {"owner":"GER"},
+                "20": {"owner":"FRA"},
+                "30": {"owner":"SWE"},
+                "40": {"owner": null}
+            }),
+            None,
+        )
+        .with_countries(countries.as_object());
+
+        let ml = recolor(MapMode::Intel, &data, &ids, &colors2(), 4);
+        assert_eq!(ml.fidelity, Fidelity::Derived);
+        assert_eq!(&ml.lut[1 * 4..1 * 4 + 4], &[60, 210, 200, 255]);
+        assert_eq!(
+            &ml.lut[2 * 4..2 * 4 + 4],
+            &[45, 45, 80, 255],
+            "measured empty operatives is a real low intel value, not unavailable"
+        );
+        assert_eq!(&ml.lut[3 * 4..3 * 4 + 4], &NEUTRAL_GREY);
+        assert_eq!(&ml.lut[4 * 4..4 * 4 + 4], &NEUTRAL_GREY);
+    }
+
+    #[test]
+    fn intel_recolor_unavailable_without_measured_country_intel() {
+        let ids = ids_with(&[(1, 10)]);
+        let data = data_from(serde_json::json!({"10": {"owner":"GER"}}), None);
+        let ml = recolor(MapMode::Intel, &data, &ids, &colors2(), 1);
+        assert_eq!(ml.fidelity, Fidelity::Unavailable);
+        assert_eq!(&ml.lut[1 * 4..1 * 4 + 4], &NEUTRAL_GREY);
+    }
+
+    #[test]
+    fn intel_recolor_ignores_nonempty_agency_without_measured_signal() {
+        let ids = ids_with(&[(1, 10)]);
+        let countries = serde_json::json!({
+            "GER": {"intel": {"agency": {"name": "Abwehr"}}}
+        });
+        let data = data_from(serde_json::json!({"10": {"owner":"GER"}}), None)
+            .with_countries(countries.as_object());
+        let ml = recolor(MapMode::Intel, &data, &ids, &colors2(), 1);
+        assert_eq!(
+            ml.fidelity,
+            Fidelity::Unavailable,
+            "non-empty agency chrome must not become a fabricated 0 intel score"
+        );
+        assert_eq!(&ml.lut[1 * 4..1 * 4 + 4], &NEUTRAL_GREY);
     }
 
     /// Supply: with no per-province supply (the wall) the mode is Unavailable + grey.

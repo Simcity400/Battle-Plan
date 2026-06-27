@@ -10,6 +10,8 @@
 //! No-fabrication (Codex): every node `label` is an [`Atom`] (a blocked node draws
 //! `—`, never a fabricated id); a node carries an explicit [`NodeBadge`]; an edge whose
 //! endpoint id is MISSING from the graph draws NOTHING (it never invents a position).
+//! A dependency edge whose satisfaction state is unavailable is drawn with a neutral
+//! unavailable tint, never as satisfied or unsatisfied.
 //! Edge kinds are data-driven ([`EdgeKind`]) so the same primitive expresses focus
 //! prereq/mutually-exclusive links AND a power-balance influence/reference arrow.
 //!
@@ -157,6 +159,18 @@ impl Edge {
             fidelity: Fidelity::Exact,
         }
     }
+    /// A prerequisite dependency whose satisfied/unsatisfied state is unavailable.
+    pub fn dependency_unavailable(from: impl Into<String>, to: impl Into<String>) -> Edge {
+        Edge {
+            from: from.into(),
+            to: to.into(),
+            kind: EdgeKind::Dependency,
+            directed: true,
+            satisfied: false,
+            label: None,
+            fidelity: Fidelity::Unavailable,
+        }
+    }
     /// A mutually-exclusive pair `a ↔ b` (the focus XOR crossbar). Undirected.
     pub fn mutually_exclusive(a: impl Into<String>, b: impl Into<String>) -> Edge {
         Edge {
@@ -265,6 +279,7 @@ pub struct GraphDrawStats {
 
 const DEP_SATISFIED: [f32; 4] = [0.80, 0.80, 0.55, 0.95];
 const DEP_UNSATISFIED: [f32; 4] = [0.45, 0.45, 0.50, 0.55];
+const DEP_UNAVAILABLE: [f32; 4] = [0.34, 0.36, 0.46, 0.42];
 const XOR_C: [f32; 4] = [0.80, 0.25, 0.25, 0.85];
 const INFLUENCE_C: [f32; 4] = [0.45, 0.62, 0.85, 0.85];
 const REFERENCE_C: [f32; 4] = [0.55, 0.56, 0.60, 0.7];
@@ -301,7 +316,9 @@ pub fn plan_graph(cam: &Canvas, graph: &NodeGraph) -> (Plan, GraphDrawStats) {
         let thick = (2.0 * cam.scale).max(0.6);
         match e.kind {
             EdgeKind::Dependency => {
-                let c = if e.satisfied {
+                let c = if e.fidelity == Fidelity::Unavailable {
+                    DEP_UNAVAILABLE
+                } else if e.satisfied {
                     DEP_SATISFIED
                 } else {
                     DEP_UNSATISFIED
@@ -628,6 +645,32 @@ mod tests {
         // re-planning the same camera+graph is byte-identical (scrub A→A).
         let (plan2, _) = plan_graph(&cam, &g);
         assert_eq!(plan.digest(), plan2.digest());
+    }
+
+    #[test]
+    fn unavailable_dependency_edge_uses_neutral_no_fabrication_tint() {
+        let g = NodeGraph::new(
+            vec![
+                GraphNode::box_at("A", 0.0, 0.0, 96.0, 96.0, Atom::exact("A"), [1.0; 4]),
+                GraphNode::box_at("B", 0.0, 130.0, 96.0, 96.0, Atom::exact("B"), [1.0; 4]),
+            ],
+            vec![Edge::dependency_unavailable("A", "B")],
+        );
+        assert_eq!(g.edges[0].fidelity, Fidelity::Unavailable);
+        let cam = Canvas::fit(g.bounds(), [0.0, 0.0, 800.0, 600.0], 24.0);
+        let (plan, stats) = plan_graph(&cam, &g);
+        assert_eq!(stats.edges_drawn, 1);
+        let link_tint = plan
+            .cmds
+            .iter()
+            .find_map(|cmd| match cmd {
+                Cmd::LinkL { tint, .. } => Some(*tint),
+                _ => None,
+            })
+            .expect("dependency link emitted");
+        assert_eq!(link_tint, DEP_UNAVAILABLE);
+        assert_ne!(link_tint, DEP_UNSATISFIED);
+        assert_ne!(link_tint, DEP_SATISFIED);
     }
 
     #[test]

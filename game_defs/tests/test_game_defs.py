@@ -292,6 +292,19 @@ def test_catalogs(layers):
     amp = c["equipment_archetypes"].get("amphibious_mechanized_equipment")
     assert amp and amp["build_cost_ic"] == "8" and amp["is_archetype"]
     assert len(c["equipment_upgrades"]) > 5
+    # power-balance side defs + range thresholds
+    bop = c["power_balances"].get("ITA_power_balance")
+    assert bop and bop["initial_value"] == "0.35"
+    assert bop["left_side"] == "ITA_grand_council_side"
+    assert bop["right_side"] == "ITA_mussolini_side"
+    assert bop["range_count"] > 10
+    side = next((s for s in bop["sides"]
+                 if s["id"] == "ITA_mussolini_side"), None)
+    assert side and side["icon"] == "GFX_bop_ITA_mussolini_side"
+    rng = next((r for r in side["ranges"]
+                if r["id"] == "ITA_mussolini_high_control_range"), None)
+    assert rng and rng["min"] == "0.6" and rng["max"] == "0.9"
+    assert rng["modifier"]["political_power_factor"] == "0.1"
 
 
 def test_catalog_mod_override_wins(layers):

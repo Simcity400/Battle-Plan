@@ -128,6 +128,16 @@ class _RecorderWorker:
         self._diagnostics = None
         self._last_patched_skipped_hours = 0
         self._last_patched_coverage_warnings = 0
+        self._last_patched_timing_warning_count = 0
+        self._monotonic = time.monotonic
+        self._last_trusted_observed_hour = None
+        self._last_trusted_observed_at = None
+        self._observed_game_hour_interval_ms = None
+        self._last_capture_duration_ms = None
+        self._keeping_up = None
+        self._timing_warning_count = 0
+        self._last_timing_warning = None
+        self._capture_timing_seq = 0
 
     def start(self):
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -218,7 +228,6 @@ class _RecorderWorker:
                     return
                 if res.written_path is not None and res.canonical:
                     self.n_captured += 1
-                self._publish_cadence_status()
 
             self._run_until_stop(date_provider, on_capture)
 
@@ -268,7 +277,9 @@ class _RecorderWorker:
                 proc = None
                 try:
                     proc = self._loop.open_proc()
+                    observed_at = self._monotonic()
                     di = date_provider(proc)
+                    self._note_live_clock_observation(di, observed_at)
                     decision = self._cadence.plan(di)
                     self._set_recorder_diagnostics()
 
@@ -277,20 +288,10 @@ class _RecorderWorker:
                     else:
                         if decision.skipped_delta:
                             self._publish_cadence_status(decision)
-                        try:
-                            res = self._loop.capture_once(
-                                date_info=di,
-                                prev_snapshot=prev_snapshot,
-                                proc=proc,
-                            )
-                        except Exception as exc:
-                            if "build gate" in str(exc):
-                                raise
-                            res = CaptureResult(
-                                written_path=None, snapshot={},
-                                domains_captured=[], tags={},
-                                canonical=False, error=str(exc))
-                        else:
+                        capture_started_at = self._monotonic()
+                        sentinel = {"rejected": False}
+
+                        def pre_write_check(_snap):
                             try:
                                 end_di = date_provider(proc)
                             except Exception:
@@ -298,17 +299,51 @@ class _RecorderWorker:
                                                   source="none")
                             if self._cadence.note_capture_clock_sentinel(
                                     decision, end_di):
+                                sentinel["rejected"] = True
+                                self._set_recorder_diagnostics()
+                                return (
+                                    "capture rejected: in-game hour changed "
+                                    "before durable write")
+                            return None
+
+                        try:
+                            res = self._loop.capture_once(
+                                date_info=di,
+                                prev_snapshot=prev_snapshot,
+                                proc=proc,
+                                pre_write_check=pre_write_check,
+                            )
+                        except Exception as exc:
+                            capture_elapsed_s = (
+                                self._monotonic() - capture_started_at)
+                            if "build gate" in str(exc):
+                                raise
+                            res = CaptureResult(
+                                written_path=None, snapshot={},
+                                domains_captured=[], tags={},
+                                canonical=False, error=str(exc))
+                        else:
+                            capture_elapsed_s = (
+                                self._monotonic() - capture_started_at)
+                            if sentinel["rejected"]:
                                 force_patch = True
                                 self._set_recorder_diagnostics()
 
                         if (not res.error and res.written_path is not None
                                 and res.canonical):
+                            self._note_successful_capture_duration(
+                                capture_elapsed_s)
                             self._cadence.commit(decision)
                             prev_snapshot = res.snapshot
                             self._set_recorder_diagnostics()
                             if self.manual_once:
                                 self._stop.set()
                         on_capture(res)
+                        if (not res.error and res.written_path is not None
+                                and res.canonical):
+                            self._publish_cadence_status()
+                        elif sentinel["rejected"]:
+                            self._publish_cadence_status()
                         if res.written_path is not None:
                             self._finalize_recording()
                 except Exception as exc:
@@ -329,7 +364,8 @@ class _RecorderWorker:
                     decision is not None
                     and getattr(decision, "committed", False)
                     and (getattr(decision, "skipped_delta", 0)
-                         or self._cadence.status_label() != "ok")))
+                         or self._cadence.status_label() != "ok"
+                         or self._last_capture_duration_ms is not None)))
                 self._patch_recording_diagnostics(force=force_patch)
                 if self._stop.wait(self.interval_s):
                     break
@@ -363,10 +399,15 @@ class _RecorderWorker:
     def _set_recorder_diagnostics(self):
         if self._cadence is not None:
             self._diagnostics = self._cadence.to_manifest()
-            self._diagnostics["cadence"]["recorder_mode_label"] = (
-                self.cadence_label)
-            self._diagnostics["cadence"]["manual_once"] = bool(
-                self.manual_once)
+            cadence = self._diagnostics["cadence"]
+            cadence["recorder_mode_label"] = self.cadence_label
+            cadence["manual_once"] = bool(self.manual_once)
+            cadence["timing"] = self._timing_manifest()
+            warning = self._timing_coverage_warning()
+            if warning is not None:
+                cadence.setdefault("coverage_warnings", []).append(warning)
+                if cadence.get("status") == "ok":
+                    cadence["status"] = "coverage_warning"
 
     def _patch_recording_diagnostics(self, *, force=False):
         if not self._diagnostics:
@@ -383,9 +424,16 @@ class _RecorderWorker:
                 "coverage_warnings") or [])
         except Exception:
             warnings = 0
+        try:
+            timing_warnings = int(self._diagnostics.get("cadence", {}).get(
+                "timing", {}).get("warning_count") or 0)
+        except Exception:
+            timing_warnings = 0
         if (not force
                 and skipped <= self._last_patched_skipped_hours
-                and warnings <= self._last_patched_coverage_warnings):
+                and warnings <= self._last_patched_coverage_warnings
+                and timing_warnings <=
+                self._last_patched_timing_warning_count):
             return
         try:
             from live_capture.recorder.manifest_diagnostics import (
@@ -394,12 +442,117 @@ class _RecorderWorker:
             if patch_manifest_diagnostics(self.out_path, self._diagnostics):
                 self._last_patched_skipped_hours = skipped
                 self._last_patched_coverage_warnings = warnings
+                self._last_patched_timing_warning_count = timing_warnings
         except Exception:
             pass
+
+    def _note_live_clock_observation(self, date_info, observed_at):
+        trusted = bool(getattr(date_info, "trusted", False))
+        date = getattr(date_info, "date", None)
+        if not trusted or not date:
+            return
+        try:
+            from replay import schema
+            hour = schema.date_to_hour_index(date)
+        except Exception:
+            hour = None
+        if hour is None:
+            return
+        if (self._last_trusted_observed_hour is not None
+                and self._last_trusted_observed_at is not None):
+            gap = hour - self._last_trusted_observed_hour
+            if gap > 0:
+                elapsed_s = max(
+                    0.0, float(observed_at - self._last_trusted_observed_at))
+                self._observed_game_hour_interval_ms = int(
+                    round((elapsed_s * 1000.0) / gap))
+                self._refresh_keeping_up(record_warning=False)
+                self._last_trusted_observed_hour = hour
+                self._last_trusted_observed_at = observed_at
+            elif gap < 0:
+                self._observed_game_hour_interval_ms = None
+                self._keeping_up = None
+                self._last_trusted_observed_hour = hour
+                self._last_trusted_observed_at = observed_at
+            return
+        self._last_trusted_observed_hour = hour
+        self._last_trusted_observed_at = observed_at
+
+    def _note_successful_capture_duration(self, elapsed_s):
+        self._capture_timing_seq += 1
+        self._last_capture_duration_ms = int(
+            round(max(0.0, float(elapsed_s)) * 1000.0))
+        self._refresh_keeping_up(record_warning=True)
+
+    def _refresh_keeping_up(self, *, record_warning):
+        if (self._last_capture_duration_ms is None
+                or self._observed_game_hour_interval_ms is None):
+            self._keeping_up = None
+            return
+        self._keeping_up = (
+            self._last_capture_duration_ms
+            <= self._observed_game_hour_interval_ms)
+        if self._keeping_up or not record_warning:
+            return
+        self._timing_warning_count += 1
+        self._last_timing_warning = {
+            "code": "capture_slower_than_game_hour",
+            "capture_seq": int(self._capture_timing_seq),
+            "last_capture_duration_ms": int(self._last_capture_duration_ms),
+            "observed_game_hour_interval_ms": int(
+                self._observed_game_hour_interval_ms),
+        }
+
+    def _timing_manifest(self):
+        if self._keeping_up is True:
+            status = "keeping_up"
+        elif self._keeping_up is False:
+            status = "not_keeping_up"
+        else:
+            status = "unknown"
+        return {
+            "status": status,
+            "last_capture_duration_ms": self._last_capture_duration_ms,
+            "observed_game_hour_interval_ms": (
+                self._observed_game_hour_interval_ms),
+            "keeping_up": self._keeping_up,
+            "warning_count": int(self._timing_warning_count),
+            "last_warning": self._last_timing_warning,
+        }
+
+    def _timing_coverage_warning(self):
+        if not self._last_timing_warning:
+            return None
+        return dict(self._last_timing_warning)
+
+    def _fmt_ms_as_s(self, value):
+        if value is None:
+            return "unknown"
+        try:
+            return "%.1fs" % (int(value) / 1000.0)
+        except Exception:
+            return "unknown"
+
+    def _timing_status_suffix(self):
+        if self._last_capture_duration_ms is None:
+            return ""
+        parts = ["last capture %s" % self._fmt_ms_as_s(
+            self._last_capture_duration_ms)]
+        if self._observed_game_hour_interval_ms is not None:
+            parts.append("observed hour %s" % self._fmt_ms_as_s(
+                self._observed_game_hour_interval_ms))
+        if self._keeping_up is True:
+            parts.append("keeping up")
+        elif self._keeping_up is False:
+            parts.append("NOT keeping up")
+        else:
+            parts.append("keeping-up proof pending")
+        return "; " + ", ".join(parts)
 
     def _publish_cadence_status(self, decision=None):
         prefix = "Manual snapshot" if self.manual_once else "Recording"
         mode = "%s (%s)" % (prefix, self.cadence_label)
+        timing = self._timing_status_suffix()
         if self._cadence is None:
             self.on_status("%s -- %d snapshot(s) captured"
                            % (mode, self.n_captured))
@@ -408,22 +561,22 @@ class _RecorderWorker:
         if decision is not None and getattr(decision, "reason", None) == "duplicate_hour":
             self.on_status(
                 "%s -- waiting for next scheduled in-game hour "
-                "(%d snapshot(s), %d duplicate poll(s), %d skipped hour(s))"
+                "(%d snapshot(s), %d duplicate poll(s), %d skipped hour(s))%s"
                 % (mode, self.n_captured, c.duplicate_observations,
-                   c.skipped_hours))
+                   c.skipped_hours, timing))
             return
         if decision is not None and getattr(decision, "reason", None) == "cadence_not_due":
             self.on_status(
                 "%s -- waiting for the selected cadence "
-                "(%d snapshot(s), %d not-due poll(s), %d skipped hour(s))"
+                "(%d snapshot(s), %d not-due poll(s), %d skipped hour(s))%s"
                 % (mode, self.n_captured, c.cadence_wait_observations,
-                   c.skipped_hours))
+                   c.skipped_hours, timing))
             return
         if decision is not None and getattr(decision, "reason", None) == "untrusted_time":
             self.on_status(
                 "%s -- waiting for a trusted in-game clock "
-                "(%d snapshot(s), %d untrusted poll(s))"
-                % (mode, self.n_captured, c.untrusted_observations))
+                "(%d snapshot(s), %d untrusted poll(s))%s"
+                % (mode, self.n_captured, c.untrusted_observations, timing))
             return
         if c.status_label() == "clock_untrusted":
             self.on_status(
@@ -433,18 +586,40 @@ class _RecorderWorker:
             return
         if self.manual_once and self.n_captured:
             self.on_status(
-                "%s -- canonical snapshot captured; finalizing replay."
-                % mode)
+                "%s -- canonical snapshot captured; finalizing replay%s."
+                % (mode, timing))
+            return
+        if c.capture_clock_crossings or c.capture_clock_end_untrusted:
+            rejected = (
+                int(c.capture_clock_crossings)
+                + int(c.capture_clock_end_untrusted))
+            self.on_status(
+                "WARNING: %s rejected %d capture(s) because the live "
+                "in-game clock changed or became unreadable before write; "
+                "%d snapshot(s) captured%s. Lower game speed or use a wider "
+                "cadence before trusting hourly replay coverage."
+                % (mode, rejected, self.n_captured, timing))
+            return
+        if self._keeping_up is False:
+            self.on_status(
+                "WARNING: %s is not keeping up: last capture took %s but "
+                "the observed in-game hour interval is %s; %d snapshot(s) "
+                "captured. Lower game speed or use a wider cadence before "
+                "trusting hourly replay coverage."
+                % (mode, self._fmt_ms_as_s(self._last_capture_duration_ms),
+                   self._fmt_ms_as_s(self._observed_game_hour_interval_ms),
+                   self.n_captured))
             return
         if c.skipped_hours:
             self.on_status(
                 "WARNING: %s missed %d scheduled in-game capture hour(s) "
-                "across %d gap(s); %d snapshot(s) captured. Lower game speed "
+                "across %d gap(s); %d snapshot(s) captured%s. Lower game speed "
                 "if this keeps rising."
-                % (mode, c.skipped_hours, c.skip_events, self.n_captured))
+                % (mode, c.skipped_hours, c.skip_events, self.n_captured,
+                   timing))
             return
-        self.on_status("%s -- %d snapshot(s) captured"
-                       % (mode, self.n_captured))
+        self.on_status("%s -- %d snapshot(s) captured%s"
+                       % (mode, self.n_captured, timing))
 
 
 # --------------------------------------------------------------------------

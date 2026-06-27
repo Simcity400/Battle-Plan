@@ -1,4 +1,4 @@
-//! CORE SURFACE 1 (migrated) — the MAP + 13 modes, as a registered Background-band
+//! CORE SURFACE 1 (migrated) — the MAP + 14 modes, as a registered Background-band
 //! view. It owns the pan/zoom CAMERA (its persistent input state) and a `'static`
 //! reference to the GPU map data + the shared `PoliticalMap` pass (leaked once at
 //! startup, as in the old shell).
@@ -35,6 +35,7 @@ use crate::host::view::{
 };
 use crate::host::FidelityReport;
 use crate::register_view;
+use widgets::{plan_tooltip, Atom as WAtom, Reason as WReason, Tooltip, TooltipPlan};
 
 /// The static (hour-independent) map data — the raster + ids + colours + the GPU pass.
 /// Leaked once at startup to `'static` so the map view (which lives across the
@@ -53,6 +54,74 @@ pub struct MapData {
     pub strategic_regions: Option<StrategicRegions>,
 }
 
+/// Factual hover data for the exposed native map. This is populated only from the
+/// same CPU raster pick used by click selection; unresolved state/owner/name fields
+/// stay `None` and render as unavailable rows instead of guessed text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MapHover {
+    pub cursor: (i32, i32),
+    pub raster: (u32, u32),
+    pub province_id: u32,
+    pub state_id: Option<u32>,
+    pub owner: Option<String>,
+    pub state_name_key: Option<String>,
+}
+
+impl MapHover {
+    pub fn from_pick(
+        pick: render::map::PickResult,
+        cursor: (f32, f32),
+        raster: (u32, u32),
+    ) -> MapHover {
+        MapHover {
+            cursor: (cursor.0.round() as i32, cursor.1.round() as i32),
+            raster,
+            province_id: pick.province_id,
+            state_id: pick.state_id,
+            owner: pick.owner,
+            state_name_key: pick.state_name_key,
+        }
+    }
+
+    fn tooltip_plan(&self, ctx: &BindContext) -> TooltipPlan {
+        let state_id = self
+            .state_id
+            .map(|sid| WAtom::exact(format!("#{sid}")))
+            .unwrap_or_else(|| WAtom::unavailable_because(WReason::Absent));
+        let owner = self
+            .owner
+            .as_ref()
+            .map(|tag| WAtom::exact(tag.clone()))
+            .unwrap_or_else(|| WAtom::unavailable_because(WReason::Absent));
+        let state_name = self
+            .state_name_key
+            .as_deref()
+            .map(|key| {
+                let resolved = ctx.stage.loc.resolve(key);
+                if resolved.trim().is_empty() {
+                    WAtom::exact(key)
+                } else {
+                    WAtom::exact(resolved)
+                }
+            })
+            .unwrap_or_else(|| WAtom::unavailable_because(WReason::Absent));
+        let tooltip = Tooltip::new(WAtom::exact(format!("Province #{}", self.province_id)))
+            .with_row("Province", WAtom::exact(format!("#{}", self.province_id)))
+            .with_row("State", state_id)
+            .with_row("State name", state_name)
+            .with_row("Owner", owner)
+            .with_row(
+                "Raster",
+                WAtom::exact(format!("{},{}", self.raster.0, self.raster.1)),
+            );
+        plan_tooltip(
+            &tooltip,
+            (self.cursor.0 as f32, self.cursor.1 as f32),
+            ctx.screen,
+        )
+    }
+}
+
 /// The id the map view keys on.
 pub const MAP_VIEW_ID: ViewId = ViewId("core.map");
 
@@ -61,15 +130,29 @@ pub struct MapView {
     pub camera: MapCamera,
     pub mode: MapMode,
     data: &'static MapData,
+    hover: Option<MapHover>,
 }
 
 impl MapView {
     pub fn new(camera: MapCamera, mode: MapMode, data: &'static MapData) -> MapView {
-        MapView { camera, mode, data }
+        MapView {
+            camera,
+            mode,
+            data,
+            hover: None,
+        }
     }
 
     pub fn apply_command(&mut self, command: &ViewCommand) -> bool {
         apply_map_command_to_mode(&mut self.mode, command)
+    }
+
+    pub fn set_hover(&mut self, hover: Option<MapHover>) -> bool {
+        if self.hover == hover {
+            return false;
+        }
+        self.hover = hover;
+        true
     }
 
     /// Compute the per-hour LUT bytes + badge for `mode` (pure; the byte-identical
@@ -81,6 +164,7 @@ impl MapView {
         let mut md =
             ModeData::from_snapshot(states, snap.domain("map"), snap.domain("diplomacy_world"))
                 .with_provinces(snap.domain("provinces"))
+                .with_countries(snap.countries())
                 .with_weather(snap.domain("weather"))
                 .with_naval_air(snap.domain("naval_air"));
         if matches!(self.mode, MapMode::FrontLines) {
@@ -215,9 +299,15 @@ pub struct MapDrawable {
     dynamic: Option<(Vec<u8>, DynamicUniforms)>,
     /// Text/vector overlays over the native map, already projected for this camera/snapshot.
     overlay: OverlayPlan,
+    /// Passive factual tooltip for the currently exposed province hover.
+    tooltip: Option<TooltipPlan>,
 }
 
 impl Drawable for MapDrawable {
+    fn tooltip_plan(&self) -> Option<&TooltipPlan> {
+        self.tooltip.as_ref()
+    }
+
     /// The map's pixel inputs: a hash of the per-hour LUT bytes (the colouring) + the
     /// camera uniforms (the transform) + the mode label/badge. A wrong LUT upload, a
     /// stale colouring, a changed camera, or a wrong mode all perturb this — so the
@@ -233,6 +323,7 @@ impl Drawable for MapDrawable {
             &self.mode_label,
             &self.badge,
             &self.overlay,
+            self.tooltip.as_ref(),
         )
     }
 
@@ -273,6 +364,7 @@ impl ViewInstance for MapView {
         // the per-hour weather feed (snow/mud + season/day-night), gated to measured weather.
         let dynamic = self.compute_dynamic(ctx.snapshot());
         let overlay = self.compute_overlay(ctx);
+        let tooltip = self.hover.as_ref().map(|h| h.tooltip_plan(ctx));
         let drawable = MapDrawable {
             data: self.data,
             lut,
@@ -283,6 +375,7 @@ impl ViewInstance for MapView {
             screen: (ctx.screen.w as u32, ctx.screen.h as u32),
             dynamic,
             overlay: overlay.clone(),
+            tooltip,
         };
         let mut fidelity = FidelityReport::default();
         match badge {
@@ -300,6 +393,9 @@ impl ViewInstance for MapView {
             || overlay.diagnostics.unavailable_front_lines > 0
         {
             fidelity.unavailable += 1;
+        }
+        if self.hover.is_some() {
+            fidelity.derived += 1;
         }
         BoundView {
             instance: InstanceId(0),
@@ -337,19 +433,23 @@ fn map_draw_digest(
     mode_label: &str,
     badge: &str,
     overlay: &OverlayPlan,
+    tooltip: Option<&TooltipPlan>,
 ) -> String {
     let lut_hash = fnv1a(lut);
     // Include the dynamic (weather) feed in the digest so a scrub that changes the
     // snow/mud LUT (or toggles weather on/off) perturbs the headless render fingerprint.
     let dyn_hash = dynamic_lut.map(fnv1a).unwrap_or(0);
     format!(
-        "MAP lut={lut_hash:016x} dyn={dyn_hash:016x} off={:?} scale={:?} screen={:?} mode={} badge={} overlay={}",
+        "MAP lut={lut_hash:016x} dyn={dyn_hash:016x} off={:?} scale={:?} screen={:?} mode={} badge={} overlay={} {}",
         offset,
         scale,
         screen,
         mode_label,
         badge,
-        overlay.digest()
+        overlay.digest(),
+        tooltip
+            .map(|tt| tt.digest())
+            .unwrap_or_else(|| "hover=-".to_string())
     )
 }
 
@@ -739,7 +839,15 @@ register_view!(ViewDescriptor {
     gui_root: None,
     // `weather` joins states/map: the map now drives its dynamic snow/mud layer from the
     // (optional) weather domain — absent → the static map, present → the per-hour feed.
-    required_domains: &["states", "map", "weather"],
+    required_domains: &[
+        "states",
+        "map",
+        "diplomacy_world",
+        "provinces",
+        "countries",
+        "weather",
+        "naval_air",
+    ],
     route: None, // seeded at startup; the mode switcher is the map's own surface
     shortcut: None,
     open,
@@ -753,6 +861,39 @@ pub fn link() {}
 mod tests {
     use super::*;
 
+    fn test_stage() -> crate::host::context::Stage {
+        crate::host::context::Stage {
+            resolver: assets::resolver::GameResolver::new(None, None),
+            manifest: assets::SpriteManifest {
+                sprites: std::collections::HashMap::new(),
+            },
+            loc: gui_runtime::Loc::new(),
+            gui_files: std::collections::HashMap::new(),
+            map_dir: std::path::PathBuf::from("."),
+            assets_dir: std::path::PathBuf::from("."),
+        }
+    }
+
+    fn test_context<'a>(
+        stage: &'a crate::host::context::Stage,
+        snap: &'a snapshot::Snapshot,
+    ) -> BindContext<'a> {
+        BindContext {
+            stage,
+            snapshot: snap,
+            country: "GER",
+            screen: gui_runtime::Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 800.0,
+                h: 600.0,
+            },
+            date: "1936.1.1.12",
+            cursor: (50.0, 60.0),
+            map_camera: None,
+        }
+    }
+
     #[test]
     fn parse_date_ymdh_components() {
         assert_eq!(parse_date_ymdh("1940.6.27.18"), (1940, 6, 27, 18));
@@ -760,6 +901,71 @@ mod tests {
         // not a fabricated data value).
         assert_eq!(parse_date_ymdh(""), (1936, 7, 15, 12));
         assert_eq!(parse_date_ymdh("1942.3"), (1942, 3, 15, 12));
+    }
+
+    #[test]
+    fn map_descriptor_lists_domains_used_by_render_modes() {
+        let reg = crate::host::registry::ViewRegistry::from_inventory();
+        let desc = reg.view(MAP_VIEW_ID).expect("core.map is registered");
+        for domain in [
+            "states",
+            "map",
+            "diplomacy_world",
+            "provinces",
+            "countries",
+            "weather",
+            "naval_air",
+        ] {
+            assert!(
+                desc.required_domains.contains(&domain),
+                "core.map descriptor must list {domain}"
+            );
+        }
+    }
+
+    #[test]
+    fn map_hover_tooltip_surfaces_factual_pick_rows() {
+        let stage = test_stage();
+        let snap: snapshot::Snapshot =
+            serde_json::from_value(serde_json::json!({ "date": "1936.1.1.12" })).unwrap();
+        let ctx = test_context(&stage, &snap);
+        let hover = MapHover {
+            cursor: (50, 60),
+            raster: (10, 11),
+            province_id: 123,
+            state_id: Some(64),
+            owner: Some("GER".to_string()),
+            state_name_key: Some("STATE_64".to_string()),
+        };
+
+        let digest = hover.tooltip_plan(&ctx).digest();
+        assert!(digest.contains("Province #123"), "{digest}");
+        assert!(digest.contains("#64"), "{digest}");
+        assert!(digest.contains("STATE_64"), "{digest}");
+        assert!(digest.contains("GER"), "{digest}");
+        assert!(digest.contains("10,11"), "{digest}");
+    }
+
+    #[test]
+    fn map_hover_tooltip_keeps_unresolved_land_metadata_unavailable() {
+        let stage = test_stage();
+        let snap: snapshot::Snapshot =
+            serde_json::from_value(serde_json::json!({ "date": "1936.1.1.12" })).unwrap();
+        let ctx = test_context(&stage, &snap);
+        let hover = MapHover {
+            cursor: (75, 80),
+            raster: (3, 4),
+            province_id: 999,
+            state_id: None,
+            owner: None,
+            state_name_key: None,
+        };
+
+        let digest = hover.tooltip_plan(&ctx).digest();
+        assert!(digest.contains("Province #999"), "{digest}");
+        assert!(digest.contains(widgets::common::NOT_CAPTURED), "{digest}");
+        assert!(!digest.contains("STATE_0"), "{digest}");
+        assert!(!digest.contains("UNKNOWN"), "{digest}");
     }
 
     /// The map's weather wiring (mirroring `compute_dynamic`): a snapshot WITH measured
@@ -804,6 +1010,7 @@ mod tests {
             &active.label(),
             "exact",
             &overlay,
+            None,
         );
 
         let command = ViewCommand::SetMapMode {
@@ -819,6 +1026,7 @@ mod tests {
             &active.label(),
             "unavailable",
             &overlay,
+            None,
         );
 
         assert_ne!(before, after, "active mode changes must perturb map digest");

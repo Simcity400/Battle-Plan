@@ -455,14 +455,16 @@ in the slot → empty slot) — which the data answers without any trigger eval.
 
 The whole game ships **130 `.gui` files**. Grouped by what the replay does with each:
 
-**(0) OUT OF SCOPE — frontend / menu / lobby (~28 files):** `frontendmainview`, `frontendgamesetupview`,
+**(0) NON-REPLAY FRONTEND / MENU / LOBBY (not snapshot-bound, ~28 files):** `frontendmainview`, `frontendgamesetupview`,
 `frontendmultiplayerview`, `frontend_friends_view`, `frontendcreditview`, `ingamelobby`, `playerlobby`,
 `matchmaking`, `matchmaking_chat`, `chat`, `hotjoin`, `pops_login`, `social_view`, `subscription_message_view`,
 `achievements`, `credits`, `settings`, `playeraiprefs`, `savedgamerules`, `messagesettings`, `msg_filters`,
 `tutorialscreen`, `load_screen`, `browser`, `musicplayer`, `music_station_base`, `music_station_classic`,
-`backend`. **Not bound** (no in-game replay meaning). The runtime can render them; we don't.
+`backend`. **Not snapshot-bound** (no recorded in-game replay state). The runtime can render them when a
+host-runtime frontend surface is intentionally built; the in-game replay surface does not bind them as
+game-state panels.
 **(User-confirmed 2026-06-26: the in-game set is EXHAUSTIVE — every in-game view/panel/menu/tree/
-designer/combat/stat, zero curation; the pre-game FRONTEND shell stays the only out-of-scope group,
+designer/combat/stat, zero curation; the pre-game FRONTEND shell is the only non-replay frontend group,
 because a replay of a recorded game has no lobby/main-menu state to bind. The lone sliver with data —
 the player roster — may surface inside an in-game surface instead.)**
 

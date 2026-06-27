@@ -98,6 +98,13 @@ templates). The panel is **tabbed** — `{army_header, army_units}`, `{navy_head
 three entry templates. Binds the player/observed country `<TAG>`. Formatters: `int`, `flag`/
 `flag-small`, `progressbar-fraction` (org/strength bars), `category` (unit-type id→icon), `loc`.
 
+> **Interaction proof.** Native `ArmyView` now has executable read-only proof for Army/Navy/Air tab
+> switching, keyed row selection/highlight, wheel-scroll, and scrollbar-thumb drag on all three rosters.
+> Tests prove unavailable-tab inert clicks, measured-id backing-row selection after scroll, captured thumb
+> drags continuing outside the list until pointer-up, inert track clicks that do not select underlying rows,
+> outside-list wheel inertness, per-tab scroll isolation, and A->B->A scrub without carrying stale row text.
+> Exact scrollbar art, row detail drilldowns, sort/filter controls, and side-by-side visual proof remain open.
+
 ## 1a. Army — dynamic (data-bound)
 
 ### Top info bar (`countryarmyview > info`) + titles
@@ -782,6 +789,15 @@ The army/navy/air THEATRE outliner. The list container `theatre_selection_window
 army/fleet/wing shields via `OverlappingElementsBoxType` overlap-boxes and inner `gridBoxType` row
 factories. Sources: `order_of_battle.theatres[]`, `armies[]`, `army_groups[]`, `fleets[]`,
 `navy_theaters[]`, `air_wings[]`, all (M/S or S), filtered by owner=`<TAG>`.
+
+Interaction proof: `TheatreSelectorView` has measured theatre-id row selection,
+wheel-scroll, and scrollbar-thumb drag coverage. Tests prove selected-row
+highlight, scrolled row clicks, A->B->A row rebuilds, missing/duplicate ids fail
+closed without index/name fallback, missing selected rows fail closed,
+outside-list wheel input is inert, thumb drags clamp and continue outside the
+list until pointer-up, and track clicks do not select underlying rows. Theatre
+group/member drilldowns, alerts, pin/priority UI state, scrollbar art, and
+side-by-side visual proof remain open.
 
 ## 11a. Theatre selector — dynamic (data-bound)
 

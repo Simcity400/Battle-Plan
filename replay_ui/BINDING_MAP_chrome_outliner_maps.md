@@ -1,4 +1,4 @@
-# BINDING MAP — CHROME + OUTLINER + MAPS (clock / minimap / alerts / find / right-click / map-modes / map-icons)
+﻿# BINDING MAP — CHROME + OUTLINER + MAPS (clock / minimap / alerts / find / right-click / map-modes / map-icons)
 
 > **What this is.** The COMPLETE, no-truncation data-binding map for seven in-game the game "chrome / outliner /
 > map" views the native replay UI binds in the Phase-3 sweep:
@@ -55,10 +55,10 @@ historical review round on 2026-06-26; the asked/agreed/refuted/fixed log is the
 |---|---|---|
 | The clock/minimap/alerts/find/right-click `.gui` are **mostly template + chrome** — the *content* (alert icons, find results, right-click options, on-map counters) is **adapter-instantiated at runtime**, not declarative `.gui` elements | PLAN §C.4 (outliner/alerts = imperative adapters); the parsed JSONs (e.g. `right_click_entry` has an empty-text `button`, `results_grid_box` is an empty gridbox) | these views bind via **row/entry factories** + **deferred adapters**, mapped per template below |
 | Map-mode recolor fidelity is **already locked** in §B.9 | PLAN §B.9 table | owner/control/resistance/compliance/VP/buildings/resources = **exact**; weather = exact-value/proxy-vs-game-mode; front-lines = derived; faction/wars = exact at country granularity; air/naval/supply = **proxy** (region/division-province) |
-| `supply.by_province` is a **division-province PROXY**; the exact per-province supply NUMBER is a **proven wall** (not stored) | `replay/SCHEMA.md §13.2` + `memory_reader/supply_solver_offsets.draft.json` + `RESEARCH_logistics_intel.md` | the supply map mode + every on-map supply counter is **proxy** (the EXACT tooltip `99/99` is `unavailable`) |
+| `supply.by_province` is a **division-province PROXY**; the exact per-province supply NUMBER is a **proven wall** (not stored) | `replay/SCHEMA.md §13.2` + `memory_reader/supply_solver_offsets.draft.json` + `RESEARCH_logistics_intel.md` | on-map supply counters use `supply.by_province` proxy values; the native supply map mode reads `provinces.*.supply` when present and remains a proxy/badged value, never the exact the game tooltip `99/99` number |
 | `combats[]` is the set of CURRENTLY-ACTIVE engagements, all `M*`-uncracked except enumeration; in the inspected snapshot **13 land, 0 naval**; `combats[].progress` is a large positive float, **NOT** the `-1..1` GUI bar | SCHEMA §7 + sibling combat binding map | the on-map land/naval combat icons bind enumeration + side flags (derived); the progress bars + `combat_progress` text are `unavailable` |
 | `commanders`, `order_of_battle.air_wings`/`navy_theaters` are save-sourced and **not folded in the inspected snapshot**; `order_of_battle.{armies,army_groups,fleets}` + `order_of_battle.ships` ARE live-first | SCHEMA §3.9/§12 + `FIELD_SOURCES` | on-map general portraits/leaders = `unavailable` (current data); naval/air on-map counters bind from OOB where live, else `unavailable` |
-| Per-state `resources` always `null` (0/1081) and `occupation_law` always `null` in the inspected family; `manpower_pool` + `occupation.{resistance,compliance}` + `buildings` + `victory_points_*` ARE populated/live | sibling state/province binding map empirical table + `FIELD_SOURCES` | resources map mode + resource on-map icons = `unavailable` (current data); resistance/compliance/VP/buildings map modes + icons = exact |
+| Per-state `resources` are now live-fed; `occupation_law` remains `null` in the inspected family; `manpower_pool` + `occupation.{resistance,compliance}` + `buildings` + `victory_points_*` ARE populated/live | sibling state/province binding map empirical table + `FIELD_SOURCES` | resources map mode is exact from measured state resources; resource on-map icons emit exact anchored markers for non-empty measured blocks; resistance/compliance/VP/buildings map modes + icons = exact |
 | `raids`, `strategic_air`, `world.flags`/`saved_event_targets`, `diplomacy_world.{wars,factions,subjects}` ARE save-present | SCHEMA §14/§16/§18/§7b | on-map raid/air-base/faction-ping/peace icons bind where those domains are fed; intel on-map icons bind from `intel.*` |
 
 > **Read-only verb note (PLAN §D).** Every `*_button` whose in-game role is to PING the map, MOVE the supply
@@ -94,17 +94,19 @@ are always `00`, so the placeholder `"13:37"` renders as `13:00`).
 # VIEW 2 — MINIMAP (`game_assets/gui/minimap.json`)
 
 Two top-level surfaces: ping-marker icons (`minimap_offensive_icon` / `minimap_defensive_icon`) and the
-`mini_map_interface` container (the world-map thumbnail + the camera viewport quad + ping buttons). The minimap
-**recolors from the same map layers the main map uses** (PLAN §B.9 / the menubar `minimap_pic` precedent) but at
-thumbnail resolution → region-granular **derived raster**, not a per-pixel exact. The camera quad reflects the
-3-D camera's current viewport (a render-state, not country data). Pings are a **live multiplayer verb** (one
-player drops a ping for teammates) → no replay datum.
+`mini_map_interface` container (the world-map thumbnail + the camera viewport quad + ping buttons). The current
+native slice draws the real `.gui` chrome plus the camera viewport outline and supports read-only click/drag
+recenter. The thumbnail raster itself is still **unavailable** in this registry-opened view because the live
+`PoliticalMap` raster is owned by the seeded `core.map` view and is not yet shared into `chrome.minimap`; it must
+not be described as implemented recolor parity. The camera quad reflects the 3-D camera's current viewport
+(a render-state, not country data). Pings are a **live multiplayer verb** (one player drops a ping for teammates)
+-> no replay datum.
 
 ## 2a. Minimap — dynamic (data-bound)
 
 | gui element (name + type, sprite) | snapshot source path | formatter | fidelity | notes |
 |---|---|---|---|---|
-| `worldmap_bg` (iconType, `GFX_minimap_world`) | the active map-mode raster ← `map.owner_by_state` / `map.control_by_province` joined through `[static map meta]` `province_to_state.json` + `country_colors.json` | map-raster (thumbnail) | **derived** | The minimap thumbnail recolors with the SAME LUT as the main map (View 6). Default = political (owner). Thumbnail resolution → derived, not per-pixel exact. `GFX_minimap_world` is the base land/sea silhouette the recolor composites over. |
+| `worldmap_bg` (iconType, `GFX_minimap_world`) | blocked: the active `PoliticalMap` raster is not available to the registry-opened minimap view | unavailable badge | **unavailable** | Current native minimap draws the panel background and camera viewport outline only (`draw_minimap(..., None, ...)`). A true thumbnail recolor should reuse the same map layers/LUT as the main map, but that raster handoff remains open and must not be fabricated. |
 
 ## 2b. Minimap — STATIC / decoration / camera-state / live-verb (no data binding)
 
@@ -163,17 +165,23 @@ adapter**, not a declarative country-field bind: alerts are a runtime, fog-of-wa
 # VIEW 4 — FIND VIEW (`game_assets/gui/find_view.json`)
 
 A **search panel**: an edit box (`to_find_text`), a results gridbox (`results_grid_box`) populated with
-`find_view_item` rows, a Find button, a "go to capital" button, and a close button. The find feature is a
-**search ADAPTER** over the world's named entities (states/provinces/countries) — the search TERM is replay-local
-UI input, and the RESULT rows are produced by querying static map metadata + the snapshot. Selecting a result
-recenters the camera (a read-only navigation verb).
+`find_view_item` rows, a Find button, a "go to capital" button, and a close button. The current native slice is a
+browsable read-only catalog over snapshot entities: States, Countries, and Victory Points tabs produce
+adapter rows from captured state/country fields, the list is uncapped and wheel-scrollable, and state/VP row clicks
+open the read-only state panel. The `to_find_text` edit box now supports replay-local typed filtering over the
+honest displayed row labels/keys. The `find_button` and `goto_home_button` now emit read-only map recenter
+commands from selected/first filtered catalog rows and measured capital VP geometry.
+The results list also has scrollbar-thumb drag with captured drags continuing outside the list until pointer-up;
+track clicks are inert and do not select or drill underlying rows. Localized names, country detail panels,
+province-level VP drilldown, exact scrollbar art, and screenshot proof remain
+open.
 
 ## 4a. Find view — dynamic / derivable
 
 | gui element (name + type, text) | source | formatter | fidelity | notes |
 |---|---|---|---|---|
-| `results_grid_box` (gridboxtype) → **N × `find_view_item`** | search over `[static map meta]` `state_meta.json` names (`name_key`) + province names + `countries.*` TAGs/names, filtered by `to_find_text` | row factory | **derived** | The result list is computed by matching the search term against state/province/country names. Names come from static map metadata + loc (not a per-snapshot field); the MATCH SET is an adapter query. The replay can support find-state/find-country/find-VP; live-game extras (find-by-decision, find-by-template) need more catalogs. |
-| ↳ `find_view_item.name` (instantTextboxType, `"invasion"`) | the matched entity's display name → loc | loc | **derived** | One row per result; the row label is the entity name. `find_view_item` is a runtime ROW template (the row is not a declarative element). |
+| `results_grid_box` (gridboxtype) → **N × `find_view_item`** | browse/query over captured `states.<id>.owner`, `states.<id>.victory_points_total`, and observed-country identity fields | row factory | **derived** | Native exposes a browse catalog for States/Countries/Victory Points and filters it with replay-local `to_find_text` input over the displayed token/key strings. It labels rows with honest tokens such as `#64 (GER)`, `#64: 50 VP`, or `GER` plus measured identity enrichments; no localized static-map name is synthesized. The row catalog is uncapped and wheel/thumb-scrollable; Find/Goto Capital can recenter selected or first filtered results using state/capital geometry. Country detail panels, province-level VP drilldown, localized names, exact scrollbar art, and live-game extras (find-by-decision, find-by-template) remain open. |
+| ↳ `find_view_item.name` (instantTextboxType, `"invasion"`) | the catalog row token described above | row text | **derived** | One row per result; the row label is the snapshot-derived token, not a localized entity name yet. `find_view_item` is a runtime ROW template (the row is not a declarative element). |
 
 ## 4b. Find view — STATIC / decoration / navigation / UI-input (no data binding)
 
@@ -182,9 +190,11 @@ recenters the camera (a read-only navigation verb).
   (`GFX_tiled_plain_bg`), `GFX_find_screen_bottom` (iconType — note: the element NAME equals the sprite name, a
   vanilla quirk; bottom chrome).
 - **Search input / navigation buttons (replay-local UI input + read-only verbs):** `to_find_text` (editBoxType —
-  the search box; replay-local input, no country datum), `find_button` (buttonText `FIND` — runs the search),
-  `goto_home_button` (buttonText `GOTO_CAPITAL` — recenters camera on `countries.<TAG>.politics.capital_state`;
-  read-only navigation verb), `back_button` (`GFX_close_button_small` — close).
+  the search box; replay-local input, no country datum; filters the current catalog labels/keys), `find_button`
+  (buttonText `FIND` — recenters the selected row or first filtered state/country/VP row when measured geometry is
+  available), `goto_home_button` (buttonText `GOTO_CAPITAL` — recenters camera on
+  `countries.<TAG>.politics.capital_state` VP geometry when measured), `back_button`
+  (`GFX_close_button_small` — close).
 - **Structural containers / layout:** `find_view_item` (row-template root), `find_view` (root),
   `results_window`, plus the `margin` / `slotsize` layout nodes in the results gridbox (geometry only).
 
@@ -247,14 +257,14 @@ per PLAN §B.9.
 | **Compliance** | `states.<id>.occupation.compliance` (0..100) | state-recolor heat LUT | **exact** | `occupation.compliance` `M/S`. |
 | **Victory points** | `map.vp_by_state` / `states.<id>.victory_points_total` (+ per-province via `[static map meta]` `state_meta.json` `victory_points{pid:vp}`) | state/province VP gradient LUT | **exact** | VP is `M/S` (live state_vp) + static geometry. Per-province VP markers come from `state_meta.json`. |
 | **Buildings (factories/infra/forts/airbase/…)** | `states.<id>.buildings.{infrastructure,industrial_complex,arms_factory,air_base,…}` (+ `province_buildings` for naval base/forts) | state-recolor level LUT (per selected building) | **exact** | `buildings` is `M/S` (live buildings_live). One sub-mode per building type. |
-| **Resources** | `states.<id>.resources.{steel,oil,aluminium,tungsten,chromium,rubber,coal}` | state-recolor deposit LUT | **unavailable** (current data) | Schema-present (`states.<id>.resources`, "raw deposits") but **always `null` (0/1081)** in the inspected family. Do NOT substitute country-level `economy.resources.produced` (national aggregate ≠ per-state deposit). Becomes `exact` once the per-state resource parser feeds it. |
+| **Resources** | `states.<id>.resources.{steel,oil,aluminium,tungsten,chromium,rubber,coal}` | state-recolor deposit LUT | **exact** | Per-state raw deposits are now live-fed. `MapMode::Resources` consumes `states.<id>.resources` directly; measured empty `{}` renders as real 0 and absent data stays grey. Do NOT substitute country-level `economy.resources.produced` (national aggregate != per-state deposit). |
 | **Weather (temp / precip / snow)** | `weather.provinces.<pid>.{temp_c,precip,snow}` (M) / `weather.regions.<rid>.{phenom,phenom_name,active}` (M) | province/region weather LUT | **proxy** | §B.9: **exact VALUES, proxy vs the game's exact visual weather mode**. `weather.provinces.*` is `M` (live per-province); `weather.regions.*.temp_c` is a retracted reader (`null`). The recolor reproduces the values, not the game's exact pixel shader → proxy. |
 | **Front lines** | explicit `map.front_lines[]` measured geometry, else controller-boundary derivation from province/state control | front-line overlay | **exact / derived / unavailable** | §B.9: measured `map.front_lines[]` geometry ingests as exact when present. Otherwise the native overlay can derive controller-boundary front segments from measured control data. Missing or malformed explicit geometry badges unavailable; this is still not a side-by-side-proven reproduction of the game's battleplan front rendering. |
 | **Faction / wars / subjects** | `diplomacy_world.{factions,wars,subjects}` | country-granular faction/war LUT | **exact** (country granularity) | §B.9. `diplomacy_world` populated (75 wars / 4 factions / 5 subjects in sample). Colour by faction membership / belligerent side / overlord. |
 | **Air superiority** | `naval_air.air_superiority` (`{strategic_region_id: {controller, …}}`) → region geometry via `[static map meta]` `strategic_region_meta.json` | region-recolor LUT (badged) | **proxy** | §B.9: **strategic-region granularity**. `naval_air.air_superiority` is `M` with `confidence` never `"exact"`. The optional `naval_air.air_superiority_model.*` is a `D` display ESTIMATE. |
 | **Naval (sea-zone dominance)** | `naval_air.region_control` (`{strategic_region_id: [{controller,…}]}`) → region geometry | sea-region-recolor LUT (badged) | **proxy** | §B.9: region only. `naval_air.region_control` is `M`, region-proxy confidence. |
-| **Supply** | `supply.by_province` (`{pid:{current,capacity,gain,divisions}}`) → province LUT | province supply LUT (badged) | **proxy** | §B.9: the division-province PROXY. The **exact per-province supply NUMBER is a proven wall** (`replay/SCHEMA.md §13.2`, `memory_reader/supply_solver_offsets.draft.json` — not stored). The `supply.solver_*_by_province` inputs are `M` but self-badge "not exact supply". |
-| **Intel / counter-intel** (intel map mode) | `countries.<TAG>.intel.agency.*` + `strategic_operatives.pools` + per-state cipher | intel-recolor LUT | **derived** | Intel map mode shades by intel level / counter-intel rating. `intel.agency` is `S` (+ live scalars); `strategic_operatives` is `S`. Country/region granularity → derived. |
+| **Supply** | `provinces.<pid>.supply` when present | province supply LUT (badged) | **proxy** | §B.9: province supply is a proxy and is usually absent because the **exact per-province supply NUMBER is a proven wall** (`replay/SCHEMA.md §13.2`, `memory_reader/supply_solver_offsets.draft.json` — not stored). Native `MapMode::Supply` only colors numeric `provinces.*.supply`; absent data stays grey/unavailable. |
+| **Intel / counter-intel** (intel map mode) | `countries.<TAG>.intel.agency.capacity.{defense,usable_slots,max_operatives}` + `countries.<TAG>.intel.{operatives,operatives_live}` | intel-recolor LUT | **derived** | Intel map mode shades owner-country provinces only from measured agency capacity or operative-count signals. Native `MapMode::Intel` badges unavailable when those measured fields are absent, and remains derived because the real game has richer fog-of-war semantics than this country-granularity readout. |
 | **(other configurable modes — radar coverage, manpower, etc.)** | the specific driving domain (e.g. `states.<id>.manpower_pool` for a manpower mode) | per-mode LUT | **exact/derived/proxy** by the driving domain | Any configurable mode binds the domain it visualises with that domain's badge. Modes with **no captured domain** (see gap ledger) badge `unavailable`. |
 
 ## 6b. Map-mode rail — STATIC / decoration / navigation / toggle (no data binding)
@@ -266,10 +276,16 @@ per PLAN §B.9.
   `mapmode_button_5_s_bg` … `mapmode_button_12_s_bg` (`GFX_mapmode_button_bg` / `GFX_mapmode_button_depressed`).
   These exist in BOTH `3_button_mapmode` and `4_button_mapmode` layout containers (the engine shows the variant
   matching the active mode-group's submode count). The button is a **read-only "switch map mode" verb**; the
-  selected/deselected sprite swap is **UI state** (which mode is active), not a country field. Each button's
+  selected/deselected sprite swap is **UI state** (which mode is active), not a country field; native now syncs
+  that active echo from the seeded `core.map` mode and badges it only in registry-only contexts. Native rail
+  hover now emits a factual source/fidelity tooltip for each row; full the game legend tooltip frame/text parity
+  remains open. The extracted `.gui` exposes 12 numbered rail slots here; the renderer supports 14 logical
+  replay map modes, and native now uses the real `mapmodes_all` button + `WindowWithAllMapModes` popup to
+  expose the non-rail Supply/Intel logical modes without pretending they are numbered rail slots.
+  Each button's
   `pdx_tooltip_anchor` child anchors the mode's legend tooltip (the tooltip TEXT is the mode's loc — a
   per-mode loc constant, not a datum). `mapmodes_all` (`GFX_mapmode_button_all`, tooltip `MAPMODE_ALL`) toggles
-  the all-modes window.
+  the all-modes window; custom slot configuration/defaults remain open.
 - **Bottom toggle row (live render-state toggles — inert in replay):** `day_night_toggle`
   (`GFX_day_night_toggle`, tooltip `TOGGLE_NIGHT_ENABLED`), `player_counters_toggle`
   (`TOGGLE_PLAYER_COUNTERS_ONLY`), `button_counters_color_mode` (`TOGGLE_UNIT_COUNTER_MODE`),
@@ -297,11 +313,11 @@ per PLAN §B.9.
 - **Structural containers / layout:** `MapmodesInterface_Ingame` (root), `3_button_mapmode`, `4_button_mapmode`,
   and the `background`/`gridboxtype`/`slotsize` layout nodes inside the configurable windows.
 
-> **Schema-gap (capture work-items) for map modes:** (1) *per-state `resources`* unfed (resources mode
-> `unavailable`); (2) *real the game front-line extraction/styling* not proven (the native renderer now has
-> measured `map.front_lines[]` ingestion plus a derived controller-boundary fallback); (3) *exact
-> per-province supply* is a proven wall (supply mode permanently `proxy`); (4)
-> *air-superiority / naval region control* are region-proxy by nature (permanently `proxy`); (5) any
+> **Schema-gap (capture work-items) for map modes:** (1) *real the game front-line extraction/styling*
+> is not proven (the native renderer now has measured `map.front_lines[]` ingestion plus a derived
+> controller-boundary fallback); (2) *exact per-province supply* is a proven wall (supply mode permanently
+> `proxy`); (3)
+> *air-superiority / naval region control* are region-proxy by nature (permanently `proxy`); (4) any
 > configurable mode visualising a domain we don't capture (e.g. *radar coverage* — no per-state radar-range
 > field beyond `buildings.radar_station` level) badges `unavailable`.
 
@@ -363,7 +379,7 @@ same. Foreign-owner and target-only/no-anchor divisions do not place counter vis
 |---|---|---|---|---|
 | `victory_point_mapicon.text` (instantTextboxType) + `icon` (`GFX_onmap_victorypoints_strip`) | `states.<id>.victory_points_total` / per-province `[static map meta]` `state_meta.json` `victory_points{<pid>:vp}` | int + frame | **exact** | On-map VP number at the VP province. `victory_points_total` is `M/S`; per-province geometry static. |
 | `capital_mapicon.text` + `icon` (`GFX_onmap_victorypoints_strip`) | the capital state's VP ← `countries.<TAG>.politics.capital_state` → `states.<id>.victory_points_total` | int + frame | **exact** | Capital marker (capital is a VP location). `capital_state` is `S`. |
-| `resource_mapicon_item.desc` + `flag` (`GFX_flag_smallest`) ; `resource_mapicon.resources_list` (listbox) → items | `states.<id>.resources.{…}` + state owner `<TAG>` | int + flag | **unavailable** (current data) | Per-state resource deposits on the map. `states.<id>.resources` is **always `null` (0/1081)** in the inspected family → "—" (same gap as the resources map mode). Owner flag would be exact. |
+| `resource_mapicon_item.desc` + `flag` (`GFX_flag_smallest`) ; `resource_mapicon.resources_list` (listbox) -> items | `states.<id>.resources.{...}` + state owner `<TAG>` | int + flag | **partial exact** | Per-state resource deposits are live-fed. Native map icons currently emit an exact anchored resource-type count for non-empty measured resource blocks, measured empty `{}` emits no icon, and absent data emits no fabricated marker. Full per-resource list/chrome parity remains a visual/detail task. |
 | `construction_info_mapicon.construction_info_window.text` + `flag` + `subject_flag` + `infrastructure_effect` (`"+25%"`) | the building under construction at this state ← `countries.<TAG>.economy.construction_queue[]` / `production.construction_queue` (template + location_state) | loc + int + flag | **derived** | Construction-progress label at the build site. `economy.construction_queue` is `S` (location_state + active_factories + produced). `infrastructure_effect` (the infra speed bonus) is a derived modifier. `subject_flag` = the building country if a subject builds in an overlord's state. |
 | `construction_info_mapicon.conversion_info_window.*` — `industry_btn`/`arms_btn` (+ `_disabled`), `industry_count`/`arms_count` | factory-conversion counts at this state ← `states.<id>.buildings.{industrial_complex,arms_factory}` (convertible) | int | **derived** | Civ↔mil factory conversion UI; the COUNTS derive from `buildings` levels, the buttons are mutations (inert). |
 | `state_modifier_mapicon.modifiers_list` (gridbox) → modifier icons | per-state dynamic modifiers | category (modifier→icon) | **unavailable** | No per-state modifier ARRAY in the schema (`country_extra.dynamic_modifiers` is country-level, not per-state). Capture gap: *no `states.<id>.dynamic_modifiers[]`*. |
@@ -525,7 +541,7 @@ placed in exactly one bucket by the per-element tables above.
 
 | bucket | count | examples |
 |---|---:|---|
-| **Dynamic-bound** (per-MAP-MODE recolor, not per-button) | **~14 modes** | political/control/resistance/compliance/VP/buildings/resources/weather/front-lines/faction/air/naval/supply/intel — each instantiated by a `mapmode_button_*` slot |
+| **Dynamic-bound** (per-MAP-MODE recolor, not per-button) | **14 logical modes; 12 real numbered rail slots + all-modes popup access proven** | political/control/resistance/compliance/VP/buildings/resources/weather/front-lines/faction/air/naval are backed by the extracted numbered `mapmode_button_*` rail slots; supply/intel exist as native logical modes and are reached through the real `mapmodes_all` / `WindowWithAllMapModes` path |
 | **Static / decoration / navigation / toggle** | **~164** | the 12 mode-button slots ×(deselect+select+bg) ≈ 50 buttons + 43 icons (bgs/glows/tutorial), 55 `pdx_tooltip_anchor`, the 6 bottom toggles, social-view widget (6), `open_find_view_button`, configurable-mode windows (3 + their bg/grid/slot/name/shortcut/icons), 9 containers, `mapmodes_all` |
 
 (The 58 buttonType = 12 mode slots + 12 selected twins + 6 small-mode pairs already counted + 6 bottom toggles +
@@ -549,7 +565,7 @@ Every element in each of the seven `.gui` trees falls into exactly one bucket; t
 **`unavailable` (schema-present-but-unfed, or no field):**
 - **Alerts:** `global_alerticon_window.icon` type/glow (no `alerts[]` ledger — alerts recomputed live, never
   persisted).
-- **Map modes:** Resources (per-state `resources` always null), Front-lines (`map.front_lines` `D`, compute
+- **Map modes:** Front-lines (`map.front_lines` `D`, compute
   pass not run), any configurable mode over an uncaptured domain (e.g. radar coverage).
 - **On-map icons:** general portrait + leader-enroute (`commanders` unfed + portrait asset step); attrition /
   training / order-state overlays (no per-division order/attrition/training field); air-wing + carrier +
@@ -558,12 +574,12 @@ Every element in each of the seven `.gui` trees falls into exactly one bucket; t
   mines (no mine domain); on-map decision icons (no decision-target geometry in `decisions`); intel-ledger
   industry counts (intel-scaled ESTIMATE not modelled — real values would misrepresent fog-of-war);
   spotting bars (live fog-of-war); naval-combat icon (0 naval combats + OOB ship rosters unfed); `combat_progress`
-  text + combat progress bars (`combats[].progress` is not the displayable bar — §G HARD LIMIT); resource on-map
-  items (per-state `resources` null); peace-conference on-map markers (only `{active}` stored).
+  text + combat progress bars (`combats[].progress` is not the displayable bar — §G HARD LIMIT);
+  peace-conference on-map markers (only `{active}` stored).
 
 **`proxy` (region/division-province PROXY by nature — never `exact`):**
-- **Map modes:** Air superiority + Naval (strategic-region granularity, `naval_air.*`), Supply (division-province
-  proxy, `supply.by_province`; exact per-province supply is a **proven wall**), Weather (exact values, proxy vs
+- **Map modes:** Air superiority + Naval (strategic-region granularity, `naval_air.*`), Supply (province
+  proxy, `provinces.*.supply` when present; exact per-province supply is a **proven wall**), Weather (exact values, proxy vs
   the game's exact visual mode).
 - **On-map icons:** every supply value (`supply_node_map_icon.supply`, `supply_mapicon.*`,
   `unit_counter.low_supply`, air/naval mission supply counts) — all the `supply.by_province` PROXY.
@@ -586,14 +602,13 @@ inspected snapshot family). Each is a capture work-item, never a silent hole.
 - **`alerts[]` / per-country active-alert ledger** — alerts are recomputed live per player and never persisted
   (not in save, not pinned in memory). Needed for the alerts strip badge type + severity glow. *No schema field
   exists; would need a live alerts adapter or an alerts memory crack.*
-- **`states.<id>.resources` is always `null` (0/1081)** in the inspected family — needed for the Resources map
-  mode + `resource_mapicon`. Schema-present (`S`), parser-unfed. (Do NOT substitute country `economy.resources`.)
 - **Front-line geometry** — the native renderer now has a derived controller-boundary fallback and exact
   `map.front_lines[]` measured-geometry ingestion path. Product parity still needs real the game front extraction
   coverage and side-by-side styling proof.
 - **Exact per-province supply NUMBER** — a **proven wall** (`replay/SCHEMA.md §13.2`, `memory_reader/supply_solver_offsets.draft.json`; transient routing-solver
-  output, not stored). Forces every supply map-mode/icon to `proxy` (`supply.by_province`). *Hard limit, not a
-  TODO.*
+  output, not stored). Forces supply icons (`supply.by_province`) and the native supply map mode
+  (`provinces.*.supply` when present) to remain proxy/badged rather than exact the game tooltip values. *Hard
+  limit, not a TODO.*
 - **`naval_air.{air_superiority,region_control}` are region-proxy** by nature (strategic-region granularity).
   Forces Air/Naval map modes to `proxy`. *Hard limit.*
 - **`weather.regions.<rid>.temp_c` is a retracted reader (`null`)** — the per-region temperature is unpinned;
@@ -646,11 +661,11 @@ cited `schema.py` line:
 
 | claim Codex checked | verdict | `schema.py` citation |
 |---|---|---|
-| `states.*.resources` = `S` and null/unfed → Resources map mode + `resource_mapicon` `unavailable` | **OK** | line 560 (`S`); field nullable line 1173 |
+| `states.*.resources` live-fed -> Resources map mode exact; `resource_mapicon` partially exact | **UPDATED** | `states.*.resources` now closes the Resources map mode; native map icons emit exact anchored resource-count markers for non-empty measured blocks. |
 | `map.front_lines` = `D` plus derived controller-boundary fallback | **OK with implementation update** | line 721 (`D`, null until computed). Native overlay now renders exact measured `map.front_lines[]` geometry when fed, or derived controller-boundary segments from measured control data; real the game extraction/styling proof remains open. |
 | `order_of_battle.fleets` = `M/S` + `ships` = `M` (live-first → bind) vs `air_wings` = `S` (save-only → unfed/`unavailable`) | **OK** | lines 503 / 509 / 506 — the live-first-vs-save-unfed split is correct |
 | `divisions.*.organisation` = `M`, `.strength` = `M/S`; `.dig_in` = `S` | **OK with channel caveat** | lines 589 / 590 / 607. Org bars are exact; strength bars are exact only for fractional save-style values. Memory-scaled strength is not converted into a fake progressbar percent. |
-| `supply.by_province` = `M`; exact per-province supply is a **wall** → all supply icons/modes `proxy` | **OK** | line 630 + solver-input note 631-636 + §13.2 wall 1382-1385 |
+| `supply.by_province` = `M`; exact per-province supply is a **wall** → supply icons proxy from `supply.by_province`; the native supply map mode proxies `provinces.*.supply` when present | **OK with implementation update** | line 630 + solver-input note 631-636 + §13.2 wall 1382-1385 |
 | `intel.agency.capacity.defense` = `M/S` → counter-intel rating `exact` | **OK** | line 366 |
 | binding intel-ledger industry counts to real `economy.factories` is **WRONG** → must be `unavailable` (intel ESTIMATE) | **OK (refute-the-alternative)** | real factories `S` 194-196; `intel_ledger` has only derived confidence/cipher fields 681-687, no intel-scaled industry counts |
 

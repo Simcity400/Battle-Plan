@@ -34,6 +34,9 @@ pub enum PointerButton {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewKey {
     Escape,
+    Backspace,
+    Enter,
+    Char(char),
 }
 
 impl ViewInput {

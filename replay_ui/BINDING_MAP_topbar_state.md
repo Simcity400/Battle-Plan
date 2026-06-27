@@ -33,7 +33,7 @@ Codex** (`gpt-5.5`, read-only, 2026-06-26). Codex AGREED on items 1–6 and 8 an
 
 | schema field | populated in current snapshots | consequence |
 |---|---|---|
-| `states.<id>.resources` | **0 / 1081** (always `null`) | state resource rows → `unavailable` |
+| `states.<id>.resources` | live-fed when present | state resource rows -> exact rows for measured deposits; measured empty `{}` means no rows |
 | `states.<id>.victory_points_by_province` | **0 / 1081** (always `null`) | per-province VP → `unavailable` |
 | `states.<id>.occupation_law` | **0 / 1081** (always `null`) | occupation-law icon → `unavailable` |
 | `states.<id>.supply` | **0 / 1081** (always `null`) | (no state-panel binding needs it) |
@@ -43,7 +43,7 @@ Codex** (`gpt-5.5`, read-only, 2026-06-26). Codex AGREED on items 1–6 and 8 an
 **Confirmed PRESENT & usable:** `economy.factories.{civ,mil,dockyard,under_construction}`,
 `economy.fuel.{current,max}`, `military.manpower.available`, `military.convoys[]` (list),
 `politics.{political_power,stability,war_support,command_power,ruling_party,faction}`,
-`states.<id>.{owner,controller,buildings,province_buildings,victory_points_total,manpower_pool,
+`states.<id>.{owner,controller,buildings,province_buildings,resources,victory_points_total,manpower_pool,
 category,occupation,demilitarized}`.
 
 ---
@@ -117,8 +117,8 @@ binding is invented.
 | gui element (name + type) | why deferred |
 |---|---|
 | `dismissed_alerts_button` (buttonType) | **deferred: needs adapter** — alerts feed is an imperative adapter (PLAN §C.4 alerts/outliner), out of slice. |
-| `decisionview_button` + `decision_view_alert_glow` + `decisionview_amount_timeout_bg` + `decisionview_amount_timeout_items` + `decisionview_amount_to_take_bg` + `decisionview_amount_to_take_items` | **deferred: needs adapter** — decision-alert counters require the decisions-grouping adapter. Placeholders (`999`) render inert. |
-| `intel_agency_button` + `intelview_ops_prepared_or_completed_bg` + `intelview_ops_prepared_or_completed_items` + `intelview_ops_available_bg` + `intelview_ops_available_items` | **deferred: needs adapter** — intel ops counters need the intel adapter. |
+| `decision_view_alert_glow` + `decisionview_amount_timeout_bg` + `decisionview_amount_timeout_items` + `decisionview_amount_to_take_bg` + `decisionview_amount_to_take_items` | **deferred: needs adapter** — decision-alert counters require the decisions-grouping adapter. Placeholders (`999`) render inert. The `decisionview_button` navigation click itself is wired in §1c. |
+| `intelview_ops_prepared_or_completed_bg` + `intelview_ops_prepared_or_completed_items` + `intelview_ops_available_bg` + `intelview_ops_available_items` | **deferred: needs adapter** — intel ops counters need the intel adapter. The `intel_agency_button` navigation click itself is wired in §1c. |
 | `prototype_rewards_aquired` (+ `_bg`) | **deferred: needs adapter** — tech-reward counter (research adapter). |
 | `non_delivering_contract_amount` (+ `non_delivering_contract_amount_bg`, container `non_delivering_contracts`) | **deferred: needs adapter** — trade-contract counters (diplomacy/trade adapter). |
 | `ongoing_contract_amount` (+ `ongoing_contract_amount_bg`, container `delivering_contracts`) | **deferred: needs adapter** — as above. |
@@ -134,14 +134,23 @@ Listed for completeness so the map is provably exhaustive.
   backgrounds), `pause_button_date`/`pause_button_date_paused` (clock chrome — the *paused* frame
   is a replay/scrubber state, not country data), the 5 speed steps `button_speedstep1` /
   `button_speedstep2` / `button_speedstep3` / `button_speedstep4` / `button_speedstep5` +
-  `button_speedup` / `button_speeddown` (sim-speed control — **inert in a replay**, the scrubber owns time),
+  `button_speedup` / `button_speeddown` (sim-speed control — **inert in a replay**, the scrubber owns time;
+  executable `TopbarView` tests prove these pause/date and speed-control leaves consume pointer-down/up
+  as replay-disabled no-ops with unchanged digest, and shell tests prove higher-z panels prevent hidden
+  time-control targets from arming),
   `decisionview_amount_*_bg` / `intelview_*_bg` / `*_contract_amount_bg` / `prototype_rewards_aquired_bg`
   (alert-count backgrounds, paired with their deferred counters above).
-- **Navigation buttons (wired to read-only "open view" verbs, no datum bound):** `reopen_ingame_lobby`
-  (+ `reopen_ingame_lobby_label` "LOBBY" text — replay: inert), `menu_button`, `help_button`, `achievements_button`, `playlist_button`,
-  `army_button`, `navy_button`, `air_button`, `technology_button`, `diplomacy_button`,
-  `trade_button`, `construction_button`, `production_button` (+ `production_button_glow`),
-  `deployment_button`, `logistics_button`, `officer_corp_button`, plus the structural containers
+- **Navigation buttons (wired to read-only "open view" verbs, no datum bound):**
+  executable `TopbarView` tests prove synced real `.gui` rects emit read-only
+  `OpenView` commands, leave the topbar render digest unchanged, and keep empty
+  topbar space falling through for `decisionview_button`, `intel_agency_button`,
+  `technology_button`, `diplomacy_button`, `trade_button`,
+  `construction_button`, `production_button`, `deployment_button`,
+  `logistics_button`, `officer_corp_button`, `army_button`, `navy_button`, and
+  `air_button`. `reopen_ingame_lobby` (+ `reopen_ingame_lobby_label` "LOBBY"
+  text — replay: inert), `menu_button`, `help_button`, `achievements_button`,
+  and `playlist_button` remain unproven/inert navigation chrome. Structural
+  containers:
   `country_menu_window`, `faction_button_container`, `after_faction_button`, `after_intel_agency_button`,
   `time_control_window`, `land`/`navy`/`air`/`nukes`/`cp` (positioning containers).
 
@@ -175,10 +184,10 @@ Formatters: `int`, `level-int`, `percent`, `manpower`, `flag` / `flag-small`, `c
 | `victory_points_bg` (iconType, `GFX_victorypoint_stateview_bg`) | — | — | static | VP icon background. |
 | `manpower` (instantTextboxType, in `state_info_window`) | `states.<id>.manpower_pool.total` | manpower | **exact** | **Codex correction:** state-view population shows the **total** state manpower pool (sample total=322900), NOT `.available` (=667, a separate recruitable concept). `manpower_pool` populated 1081/1081. |
 | `population_icon` (iconType, `GFX_population_icon`) | — | — | static | Population icon for the manpower field. |
-| `state_building_entries` (gridBoxType) → `state_building_entry` rows | `states.<id>.buildings.{infrastructure,industrial_complex,arms_factory,air_base,anti_air_building,radar_station,fuel_silo,synthetic_refinery}` | row factory; per row: `level`→level-int, `building_picture`→building-icon | **exact** | One row per present state-scoped building. Levels are measured ints (populated 951/1081). Building→sprite frame is a static icon map. `dockyard` also appears here when present. |
+| `state_building_entries` (gridBoxType) → `state_building_entry` rows | `states.<id>.buildings.{infrastructure,industrial_complex,arms_factory,air_base,anti_air_building,radar_station,fuel_silo,synthetic_refinery}` | row factory; per row: `level`→level-int, `building_picture`→building-icon | **exact** | One row per present state-scoped building. Levels are measured ints (populated 951/1081). Building→sprite frame is a static icon map. `dockyard` also appears here when present. Native state-panel wheel/thumb scroll now uses the real `state_building_entries` geometry, clamps to row-factory content height, consumes track clicks without map leakage, and preserves/clamps scroll across scrub rebinds. |
 | `state_shared_slot_building_entries` (gridBoxType) → `state_shared_slot_building_entry` rows | `states.<id>.buildings.*` (shared-slot subset: `dockyard`, large slots) | row factory; `building_picture`→building-icon, `damage_bar`→damage-bar-fraction | **exact** (levels) / **unavailable** (damage) | Shared building slots. Levels exact; **per-building damage is not stored** → `damage_bar` and `building_status_overlay` badged unavailable. `remove` button inert (read-only). |
 | `shared_slot_count` (instantTextboxType, placeholder `"SLOTS"`) | derived: used vs max shared building slots | int (`n/m`) | **derived** | In-game = used/total shared slots; we count `buildings.*` shared entries but **max-slots is a state-category/tech computed value** we don't store → derived/approximate. |
-| `state_resources_entries` (gridBoxType, in `state_resources`) → `state_resource_entry` rows | `states.<id>.resources.{steel,oil,aluminium,tungsten,chromium,rubber,coal}` | row factory; `resource`→resource-icon, `amount`→int | **unavailable** (current data) | Schema-present (`states.<id>.resources`, "raw deposits") but **always `null` (0/1081)** in current snapshots. **Codex:** do NOT substitute country-level `economy.resources.produced` (national aggregate ≠ per-state deposit). Badge unavailable. |
+| `state_resources_entries` (gridBoxType, in `state_resources`) -> `state_resource_entry` rows | `states.<id>.resources.{steel,oil,aluminium,tungsten,chromium,rubber}` | row factory; `resource` -> resource-icon, `amount` -> int | **exact** | Live per-state raw deposits. The native panel renders one row per positive measured deposit, accepts float values, omits measured empty `{}` as real no-deposits, and never substitutes country-level `economy.resources.produced` (national aggregate != per-state deposit). A geometry test proves the six known resource rows fit without overflow in the measured resource grid, so no resource scrollbar is required under the current data model. |
 | `state_resistance_status_container.progress` (iconType bar) | `states.<id>.occupation.resistance` / 100 | progressbar-fraction | **exact** | Resistance is a **0..100 percent** (sample 4.525). Bar fraction = value/100. Occupation present 400/1081. |
 | `state_resistance_status_container.progress_text` (instantTextBoxType, placeholder `"100%"`) | `states.<id>.occupation.resistance` | percent | **exact** | Shown as `4.5%`. |
 | `state_compliance_status_container.progress` (iconType bar) | `states.<id>.occupation.compliance` / 100 | progressbar-fraction | **exact** | Compliance 0..100 (sample 97.07). |
@@ -216,11 +225,13 @@ Formatters: `int`, `level-int`, `percent`, `manpower`, `flag` / `flag-small`, `c
 - **Garrison / template (occupation sub-panel) — inert in replay:** `template_garrison_button`,
   `template_garrison` (`GFX_locked_icon`), `template_need_text` (placeholder `42`),
   `law_and_template_container`, `select_law_button` — garrison-template assignment is a **mutation**
-  (PLAN §D, DISABLED); rendered inert. `template_need_text` would be a derived garrison requirement
-  we don't store → treat as unavailable if ever shown.
+  (PLAN §D, DISABLED); `template_garrison_button` and `select_law_button` now have executable
+  replay-disabled no-op proof. `template_need_text` would be a derived garrison requirement we don't
+  store → treat as unavailable if ever shown.
 - **Navigation / window controls:** `close_button` (`GFX_closebutton_small`), `scorched_earth_state_button`
-  (mutation → inert/read-only), the structural containers `countrystateview`, `state_info_window`,
-  `province_info_window`, `state_resources`, `resistance_container`, `custom_icon_container`,
+  (mutation → inert/read-only, with executable replay-disabled no-op proof), the structural
+  containers `countrystateview`, `state_info_window`, `province_info_window`, `state_resources`,
+  `resistance_container`, `custom_icon_container`,
   `claim_entry` (+ `claim_flag`), and the reusable building/resource entry **template roots**
   (`state_building_entry`, `state_shared_slot_building_entry`, `province_building_entry`,
   `province_building_special_icon_entry`, `state_resource_entry`) when considered as containers
@@ -242,8 +253,8 @@ bar-like icons in the topbar are `industrial_ratio_bar`, `fuel_ratio_bar`, `conv
 in-game *tooltip* breakdown, not a topbar element. Codex confirmed: **the stability/WS progressbar
 claim is unfounded for this view.** (Fuel/IC/convoy/supply ratio bars ARE present and mapped.)
 
-**B. `unavailable` ≠ "missing forever".** Several `unavailable` badges (state `resources`,
-`victory_points_by_province`, `occupation_law`, `is_core_of`/`is_claimed_by`, country `military.xp`,
+**B. `unavailable` ≠ "missing forever".** Several `unavailable` badges
+(`victory_points_by_province`, `occupation_law`, `is_core_of`/`is_claimed_by`, country `military.xp`,
 `extra.nukes_total`, the `world`/`world_events` topbar gaps) are **schema-present fields the current
 snapshot generator does not yet feed** (parser-unfed), or save domains not folded into THESE
 snapshots — not hard-impossible (SCHEMA §10) limits. They become `exact` once their parser/oracle
@@ -278,6 +289,6 @@ Every one of the 112 state-panel elements is enumerated by name in tables 2a/2b.
 
 **Topbar (9):** `convoys_ratio_bar` (assigned/free split not stored), `supply_value` + `supply_ratio_bar` (no national supply scalar), `experience_value`/`navy_experience_value`/`air_experience_value` (`military.xp` = `{}` unfed), `nukes_value` (no `extra` domain), `threat_value` + `threat_button` (world-tension aggregate not stored), `initiative_text` (faction-system unfed).
 
-**State panel (8):** `state_claims` (`is_claimed_by` always `[]`), `state_resources_entries` rows (`resources` always null), `select_law_icon` (`occupation_law` always null), `energy_text` (no per-state energy field), `state_stakeholder_entry` flags (no stakeholder data), `state_view_dynamic_modifier_entry` (no per-state modifier array), `province_view_strategic_location_entry` (no strategic-location data), shared/province building `damage_bar`/`building_status_overlay` (per-building damage not stored).
+**State panel (7):** `state_claims` (`is_claimed_by` always `[]`), `select_law_icon` (`occupation_law` always null), `energy_text` (no per-state energy field), `state_stakeholder_entry` flags (no stakeholder data), `state_view_dynamic_modifier_entry` (no per-state modifier array), `province_view_strategic_location_entry` (no strategic-location data), shared/province building `damage_bar`/`building_status_overlay` (per-building damage not stored).
 
-**Total `unavailable`: 17 elements.** All are schema-present-but-unfed or runtime-computed values — none fabricated; each renders "—" per no-fabrication.
+**Total `unavailable`: 16 elements.** All are schema-present-but-unfed or runtime-computed values — none fabricated; each renders "—" per no-fabrication.

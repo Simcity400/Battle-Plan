@@ -23,6 +23,8 @@ Covers, per the bucket-(c) ledger:
                     per category->idea: modifier{}, allowed{}, available presence,
                     cost/removal_cost, ledger, the advisor `traits`+`slot`/`ledger`.
   state_categories: common/state_category/* -> local_building_slots (panel chrome).
+  power_balances  : common/bop/* -> balance id, left/right side ids, side icons,
+                    and per-range min/max threshold + modifier blocks.
 
 stdlib only.
 """
@@ -181,6 +183,63 @@ def _state_cat(iid, n, rel):
             "color": _plain(n.get("color")), "source_file": rel}
 
 
+def _bop_range(n, rel, side_id=None, order=0):
+    return {
+        "id": _scalar(n.get("id")),
+        "side_id": side_id,
+        "order": int(order),
+        "min": n.get("min"),
+        "max": n.get("max"),
+        "modifier": _plain(n.get("modifier")) or {},
+        "has_on_activate": n.get("on_activate") is not None,
+        "has_on_deactivate": n.get("on_deactivate") is not None,
+        "on_activate": _plain(n.get("on_activate")) or {},
+        "on_deactivate": _plain(n.get("on_deactivate")) or {},
+        "source_file": rel,
+    }
+
+
+def _bop_side(n, rel, order=0):
+    side_id = _scalar(n.get("id"))
+    ranges = []
+    for i, (_k, v) in enumerate(
+            (entry for entry in n.entries
+             if entry[0].lower() == "range" and isinstance(entry[1], Node))):
+        ranges.append(_bop_range(v, rel, side_id=side_id, order=i))
+    return {
+        "id": side_id,
+        "order": int(order),
+        "icon": _scalar(n.get("icon")),
+        "ranges": ranges,
+        "range_count": len(ranges),
+        "source_file": rel,
+    }
+
+
+def _power_balance(iid, n, rel):
+    neutral_ranges = []
+    sides = []
+    for k, v in n.entries:
+        kl = k.lower()
+        if kl == "range" and isinstance(v, Node):
+            neutral_ranges.append(
+                _bop_range(v, rel, side_id=None, order=len(neutral_ranges)))
+        elif kl == "side" and isinstance(v, Node):
+            sides.append(_bop_side(v, rel, order=len(sides)))
+    return {
+        "id": iid,
+        "initial_value": n.get("initial_value"),
+        "left_side": _scalar(n.get("left_side")),
+        "right_side": _scalar(n.get("right_side")),
+        "decision_category": _scalar(n.get("decision_category")),
+        "neutral_ranges": neutral_ranges,
+        "sides": sides,
+        "range_count": len(neutral_ranges)
+        + sum(side["range_count"] for side in sides),
+        "source_file": rel,
+    }
+
+
 def _archetype(iid, n, rel):
     """An equipment ARCHETYPE/variant entry from common/units/equipment/*.txt
     `equipments={ <id>={ is_archetype= type{} <base stats> build_cost_ic= } }`.
@@ -275,6 +334,7 @@ def parse_catalogs(layers) -> dict:
         ("opinion_modifiers", "common/opinion_modifiers", "opinion_modifiers", _opinion),
         ("equipment_modules", "common/units/equipment/modules", "equipment_modules", _module),
         ("state_categories", "common/state_category", "state_categories", _state_cat),
+        ("power_balances", "common/bop", None, _power_balance),
     ]
     for name, subdir, wrapper, fn in spec:
         dest, c = {}, []

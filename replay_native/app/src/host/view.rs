@@ -53,6 +53,11 @@ impl<'a> RebindContext<'a> {
         classify_value(self.snapshot.domain("order_of_battle"))
     }
 
+    /// The top-level `divisions` domain during the pre-bind refresh.
+    pub fn divisions(&self) -> Captured<&'a serde_json::Value> {
+        classify_value(self.snapshot.domain("divisions"))
+    }
+
     /// Country ids and payloads for iteration-only accounting. Per-field reads still
     /// go through [`Self::country_field`].
     pub fn countries(&self) -> Option<&'a serde_json::Map<String, serde_json::Value>> {

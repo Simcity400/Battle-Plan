@@ -96,11 +96,13 @@ use widgets::naval_combat::{RosterPanel, SideColumn};
 
 use crate::host::context::{BindContext, Captured, DisplayAtom, FidelityReport, UnavailableReason};
 use crate::host::draw::FrameDraw;
+use crate::host::input::{PointerButton, ViewInput};
 use crate::host::registry::{
     GuiSymbolRef, MenuCluster, MenuRoute, TemplateDescriptor, ViewDescriptor, ViewId,
 };
 use crate::host::view::{
-    BoundView, Drawable, HitModel, HostPolicy, InstanceId, ViewCommand, ViewInstance, ZBand,
+    BoundView, Drawable, HitModel, HostPolicy, InputOutcome, InstanceId, RebindContext,
+    ViewCommand, ViewInstance, ZBand,
 };
 use crate::{register_template, register_view};
 
@@ -281,6 +283,7 @@ struct Cell {
 /// honesty, never bound (so it can never silently no-op a `set_element_text`).
 #[derive(Clone)]
 struct DataRow {
+    key: Option<String>,
     cells: Vec<Cell>,
     gaps: Vec<String>,
 }
@@ -288,9 +291,14 @@ struct DataRow {
 impl DataRow {
     fn new() -> DataRow {
         DataRow {
+            key: None,
             cells: Vec::new(),
             gaps: Vec::new(),
         }
+    }
+    fn with_key(mut self, key: impl Into<String>) -> DataRow {
+        self.key = Some(key.into());
+        self
     }
     /// Bind `element` to `cap` formatted by `fmt` at `fidelity`, recording the atom.
     /// Absent/Null render "—" automatically (no fabricated value).
@@ -345,6 +353,9 @@ fn row_digest(rows: &[DataRow]) -> String {
     let mut s = String::new();
     for (i, r) in rows.iter().enumerate() {
         s.push_str(&format!("r{i}["));
+        if let Some(key) = &r.key {
+            s.push_str(&format!("key={key};"));
+        }
         for c in &r.cells {
             let badge = badge_char(&c.atom);
             s.push_str(&format!("{}={}({badge});", c.element, c.atom.as_str()));
@@ -355,6 +366,21 @@ fn row_digest(rows: &[DataRow]) -> String {
         s.push(']');
     }
     s
+}
+
+fn selected_row_digest(rows: &[DataRow], key: Option<&str>) -> String {
+    match key.and_then(|selected| rows.iter().find(|row| row.key.as_deref() == Some(selected))) {
+        Some(row) => row_digest(std::slice::from_ref(row)),
+        None => "none".to_string(),
+    }
+}
+
+fn row_key_token(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
 }
 
 /// The fidelity badge char, distinguishing the unavailable REASON (Absent/Null/Blocked) so
@@ -381,10 +407,44 @@ fn render_rows(
     template_name: &str,
     rows: &[DataRow],
 ) {
+    render_rows_selected(fd, panel, file, grid_name, template_name, rows, None);
+}
+
+fn render_rows_selected(
+    fd: &mut FrameDraw,
+    panel: &[Node],
+    file: &GuiFile,
+    grid_name: &str,
+    template_name: &str,
+    rows: &[DataRow],
+    selected_key: Option<&str>,
+) {
     let viewport = match find_rect(panel, grid_name) {
         Some(r) => r,
         None => return,
     };
+    render_rows_selected_in_viewport(
+        fd,
+        file,
+        grid_name,
+        template_name,
+        rows,
+        viewport,
+        0.0,
+        selected_key,
+    );
+}
+
+fn render_rows_selected_in_viewport(
+    fd: &mut FrameDraw,
+    file: &GuiFile,
+    grid_name: &str,
+    template_name: &str,
+    rows: &[DataRow],
+    viewport: Rect,
+    scroll_y: f32,
+    selected_key: Option<&str>,
+) {
     let template = match find_template(file, template_name) {
         Some(t) => t,
         None => return,
@@ -393,21 +453,48 @@ fn render_rows(
         return;
     }
     let manifest = &fd.stage.manifest;
-    let spec = GridSpec::from_gridbox(&stub_grid(grid_name, viewport), &template, GUTTER);
+    let spec = if grid_name == "divisions_window" && template_name == "army_division_view" {
+        unit_division_grid_spec(viewport)
+    } else {
+        GridSpec::from_gridbox(&stub_grid(grid_name, viewport), &template, GUTTER)
+    };
     let content = ManifestContent {
         manifest,
         measure: |_t, _f| None,
     };
-    let mut inst = gridbox::instantiate(&template, rows.len(), viewport, &spec, 0.0, &content);
+    let mut inst = gridbox::instantiate(&template, rows.len(), viewport, &spec, scroll_y, &content);
     for (i, row) in inst.rows.iter_mut().enumerate() {
         for cell in &rows[i].cells {
             bind::apply::set_element_text(row, &cell.element, cell.atom.as_str());
         }
     }
     let mut stats = DrawStats::default();
+    let selected_marker = if selected_key.is_some() {
+        Some(mint_white(fd))
+    } else {
+        None
+    };
     let textures: &mut TextureCache = fd.textures;
     let fonts: &mut FontCache = fd.fonts;
-    for row in &inst.rows {
+    for (row, data) in inst.rows.iter().zip(rows.iter()) {
+        if selected_key.is_some()
+            && data.key.as_deref() == selected_key
+            && row.rect.y + row.rect.h > viewport.y
+            && row.rect.y < viewport.y + viewport.h
+        {
+            if let Some(white) = selected_marker.as_ref() {
+                widgets::common::fill_rect(
+                    fd.renderer,
+                    white,
+                    row.rect.x + 1.0,
+                    row.rect.y + 1.0,
+                    row.rect.w - 2.0,
+                    row.rect.h - 2.0,
+                    [0.24, 0.34, 0.46, 0.70],
+                    Some([viewport.x, viewport.y, viewport.w, viewport.h]),
+                );
+            }
+        }
         gui_runtime::draw::draw_window(fd.renderer, row, textures, fonts, &mut stats);
     }
     if let Some(sb) = inst.scrollbar {
@@ -443,6 +530,16 @@ fn stub_grid(name: &str, rect: Rect) -> Node {
         rect,
         clip: None,
         children: vec![],
+    }
+}
+
+fn unit_division_grid_spec(viewport: Rect) -> GridSpec {
+    GridSpec {
+        cell_w: (viewport.w - GUTTER).max(1.0),
+        cell_h: UNIT_VIEW_ROW_H,
+        columns: 1,
+        flow: gridbox::GridFlow::RowMajor,
+        scrollbar_w: GUTTER,
     }
 }
 
@@ -1536,18 +1633,465 @@ const UNIT_VIEW_ID: ViewId = ViewId("logistics.unit_view");
 const UNIT_VIEW_FILE: &str = "unit_view.json";
 const UNIT_VIEW_LIST_ROOT: &str = "army_division_list_view";
 const UNIT_VIEW_STATS_ROOT: &str = "army_division_stats_view";
+const UNIT_VIEW_ROW_H: f32 = 33.0;
+const UNIT_EQUIPMENT_ROW_H: f32 = 50.0;
 
-pub struct UnitView;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnitSelectionStatus {
+    DefaultFirst,
+    Selected,
+    MissingSelected,
+    NoneAvailable,
+}
+
+impl UnitSelectionStatus {
+    fn tag(self) -> &'static str {
+        match self {
+            UnitSelectionStatus::DefaultFirst => "default_first",
+            UnitSelectionStatus::Selected => "selected",
+            UnitSelectionStatus::MissingSelected => "missing_selected",
+            UnitSelectionStatus::NoneAvailable => "none_available",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnitEquipmentState {
+    PresentRows,
+    PresentEmpty,
+    Absent,
+    Null,
+    Degraded,
+    NoSelection,
+    MissingSelected,
+}
+
+impl UnitEquipmentState {
+    fn tag(self) -> &'static str {
+        match self {
+            UnitEquipmentState::PresentRows => "present_rows",
+            UnitEquipmentState::PresentEmpty => "present_empty",
+            UnitEquipmentState::Absent => "absent",
+            UnitEquipmentState::Null => "null",
+            UnitEquipmentState::Degraded => "degraded",
+            UnitEquipmentState::NoSelection => "no_selection",
+            UnitEquipmentState::MissingSelected => "missing_selected",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnitStatsTab {
+    Stats,
+    History,
+    Template,
+}
+
+impl UnitStatsTab {
+    fn tag(self) -> &'static str {
+        match self {
+            UnitStatsTab::Stats => "stats",
+            UnitStatsTab::History => "history",
+            UnitStatsTab::Template => "template",
+        }
+    }
+}
+
+struct UnitSelection {
+    key: Option<String>,
+    label: Option<String>,
+    status: UnitSelectionStatus,
+    equipment_state: UnitEquipmentState,
+}
+
+struct UnitRows {
+    division_rows: Vec<DataRow>,
+    equipment_rows: Vec<DataRow>,
+    division_section: SectionState,
+    division_count: usize,
+    selection: UnitSelection,
+}
+
+#[derive(Clone)]
+struct UnitDivisionInputRow {
+    key: Option<String>,
+    equipment_count: usize,
+}
+
+pub struct UnitView {
+    selected_division_key: Option<String>,
+    selected_stats_tab: UnitStatsTab,
+    division_input_rows: Vec<UnitDivisionInputRow>,
+    division_scroll_y: f32,
+    equipment_scroll_y: f32,
+    equipment_row_count: usize,
+    scroll_drag: Option<UnitScrollDrag>,
+    screen: Rect,
+}
 
 impl UnitView {
     pub fn new() -> UnitView {
-        UnitView
+        UnitView {
+            selected_division_key: None,
+            selected_stats_tab: UnitStatsTab::Stats,
+            division_input_rows: Vec::new(),
+            division_scroll_y: 0.0,
+            equipment_scroll_y: 0.0,
+            equipment_row_count: 0,
+            scroll_drag: None,
+            screen: default_unit_view_screen(),
+        }
+    }
+
+    fn scrollbar_geometry(&self, surface: UnitScrollSurface) -> Option<UnitScrollbarGeometry> {
+        match surface {
+            UnitScrollSurface::Divisions => unit_scrollbar_geometry(
+                unit_division_list_fallback(self.screen),
+                self.division_input_rows.len(),
+                UNIT_VIEW_ROW_H,
+                self.division_scroll_y,
+            ),
+            UnitScrollSurface::Equipment => {
+                if self.selected_stats_tab != UnitStatsTab::Stats {
+                    return None;
+                }
+                unit_scrollbar_geometry(
+                    unit_equipment_list_fallback(self.screen),
+                    self.equipment_row_count,
+                    UNIT_EQUIPMENT_ROW_H,
+                    self.equipment_scroll_y,
+                )
+            }
+        }
+    }
+
+    fn clear_scroll_drag_if_unavailable(&mut self) {
+        let drag = match self.scroll_drag {
+            Some(drag) => drag,
+            None => return,
+        };
+        if self.scrollbar_geometry(drag.surface).is_none() {
+            self.scroll_drag = None;
+        }
     }
 }
 impl Default for UnitView {
     fn default() -> Self {
         UnitView::new()
     }
+}
+
+fn default_unit_view_screen() -> Rect {
+    Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 1600.0,
+        h: 900.0,
+    }
+}
+
+fn unit_division_list_fallback(screen: Rect) -> Rect {
+    Rect {
+        x: screen.x + 6.0,
+        y: screen.y + 55.0,
+        w: 410.0,
+        h: 375.0,
+    }
+}
+
+fn unit_equipment_list_fallback(screen: Rect) -> Rect {
+    Rect {
+        x: screen.x + 1087.0,
+        y: screen.y + 336.0,
+        w: 294.0,
+        h: 356.0,
+    }
+}
+
+fn unit_stats_tab_button_fallback(screen: Rect, tab: UnitStatsTab) -> Rect {
+    let root_x = screen.x + screen.w * 0.5 - 275.0;
+    let root_y = screen.y + screen.h * 0.5 - 235.0;
+    let tab_x = match tab {
+        UnitStatsTab::Stats => 10.0,
+        UnitStatsTab::History => 120.0,
+        UnitStatsTab::Template => 230.0,
+    };
+    Rect {
+        x: root_x + tab_x,
+        y: root_y + 487.0,
+        w: 104.0,
+        h: 32.0,
+    }
+}
+
+fn pick_unit_stats_tab(screen: Rect, x: f32, y: f32) -> Option<UnitStatsTab> {
+    for tab in [
+        UnitStatsTab::Stats,
+        UnitStatsTab::History,
+        UnitStatsTab::Template,
+    ] {
+        if unit_stats_tab_button_fallback(screen, tab).contains(x, y) {
+            return Some(tab);
+        }
+    }
+    None
+}
+
+fn unit_input_consumed(needs_redraw: bool) -> InputOutcome {
+    InputOutcome {
+        consumed: true,
+        commands: Vec::new(),
+        needs_redraw,
+    }
+}
+
+fn replay_modal_disabled_input(ev: &ViewInput) -> InputOutcome {
+    match ev {
+        ViewInput::PointerDown { .. }
+        | ViewInput::PointerMove { .. }
+        | ViewInput::PointerUp { .. }
+        | ViewInput::Wheel { .. } => InputOutcome {
+            consumed: true,
+            commands: Vec::new(),
+            needs_redraw: false,
+        },
+        ViewInput::Key { .. } => InputOutcome::ignored(),
+    }
+}
+
+#[derive(Clone, Copy)]
+struct UnitRowWindow {
+    scroll_y: f32,
+    max_scroll: f32,
+    first: usize,
+    visible: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnitScrollSurface {
+    Divisions,
+    Equipment,
+}
+
+#[derive(Clone, Copy)]
+struct UnitScrollDrag {
+    surface: UnitScrollSurface,
+    pointer_offset_y: f32,
+}
+
+#[derive(Clone, Copy)]
+struct UnitScrollbarGeometry {
+    track: Rect,
+    thumb: Rect,
+    max_scroll: f32,
+}
+
+fn division_row_key(d: &serde_json::Value) -> Option<String> {
+    match elem_field(d, "div_id") {
+        Captured::Measured(v) => row_key_token(v).map(|token| format!("division:{token}")),
+        Captured::Null | Captured::Absent => None,
+    }
+}
+
+fn unit_equipment_count(d: &serde_json::Value) -> usize {
+    match elem_field(d, "equipment") {
+        Captured::Measured(v) => match v.as_array() {
+            Some(eq) => eq.len(),
+            None => 0,
+        },
+        Captured::Null | Captured::Absent => 0,
+    }
+}
+
+fn unit_division_input_rows(
+    divs_capture: Captured<&serde_json::Value>,
+    tag: &str,
+) -> Vec<UnitDivisionInputRow> {
+    let (divs, _) = domain_array(divs_capture);
+    match divs {
+        Some(values) => values
+            .iter()
+            .filter(|d| d.get("owner").and_then(|o| o.as_str()) == Some(tag))
+            .map(|d| UnitDivisionInputRow {
+                key: division_row_key(d),
+                equipment_count: unit_equipment_count(d),
+            })
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
+fn selected_unit_equipment_count(
+    rows: &[UnitDivisionInputRow],
+    selected_key: Option<&str>,
+) -> usize {
+    match selected_key {
+        Some(key) => match rows.iter().find(|row| row.key.as_deref() == Some(key)) {
+            Some(row) => row.equipment_count,
+            None => 0,
+        },
+        None => match rows.first() {
+            Some(row) => row.equipment_count,
+            None => 0,
+        },
+    }
+}
+
+fn max_unit_division_scroll_fallback(viewport: Rect, row_count: usize) -> f32 {
+    (row_count as f32 * UNIT_VIEW_ROW_H - viewport.h).max(0.0)
+}
+
+fn max_unit_equipment_scroll_fallback(viewport: Rect, row_count: usize) -> f32 {
+    (row_count as f32 * UNIT_EQUIPMENT_ROW_H - viewport.h).max(0.0)
+}
+
+fn unit_scrollbar_geometry(
+    viewport: Rect,
+    row_count: usize,
+    row_h: f32,
+    scroll_y: f32,
+) -> Option<UnitScrollbarGeometry> {
+    if row_count == 0 || row_h <= 0.0 || viewport.w <= GUTTER || viewport.h <= 0.0 {
+        return None;
+    }
+    let content_h = row_count as f32 * row_h;
+    let max_scroll = gridbox::ScrollBar::max_scroll(viewport.h, content_h);
+    if max_scroll <= 0.0 {
+        return None;
+    }
+    let track = Rect {
+        x: viewport.x + viewport.w - GUTTER,
+        y: viewport.y,
+        w: GUTTER,
+        h: viewport.h,
+    };
+    let visible_frac = (viewport.h / content_h).clamp(0.05, 1.0);
+    let thumb_h = (track.h * visible_frac).max(16.0).min(track.h);
+    let scroll_frac = (scroll_y.clamp(0.0, max_scroll) / max_scroll).clamp(0.0, 1.0);
+    let thumb_y = track.y + (track.h - thumb_h).max(0.0) * scroll_frac;
+    Some(UnitScrollbarGeometry {
+        track,
+        thumb: Rect {
+            x: track.x,
+            y: thumb_y,
+            w: track.w,
+            h: thumb_h,
+        },
+        max_scroll,
+    })
+}
+
+fn unit_scroll_from_thumb_y(geom: UnitScrollbarGeometry, thumb_y: f32) -> f32 {
+    let travel = (geom.track.h - geom.thumb.h).max(0.0);
+    if travel <= 0.0 || geom.max_scroll <= 0.0 {
+        return 0.0;
+    }
+    let y = thumb_y.clamp(geom.track.y, geom.track.y + travel);
+    ((y - geom.track.y) / travel) * geom.max_scroll
+}
+
+fn scroll_unit_division_offset(current: f32, viewport: Rect, row_count: usize, dy: f32) -> f32 {
+    if dy == 0.0 || !dy.is_finite() {
+        return current;
+    }
+    let rows = dy.abs().ceil().max(1.0);
+    let delta = rows * UNIT_VIEW_ROW_H;
+    let next = if dy < 0.0 {
+        current + delta
+    } else {
+        (current - delta).max(0.0)
+    };
+    next.min(max_unit_division_scroll_fallback(viewport, row_count))
+}
+
+fn scroll_unit_equipment_offset(current: f32, viewport: Rect, row_count: usize, dy: f32) -> f32 {
+    if dy == 0.0 || !dy.is_finite() {
+        return current;
+    }
+    let rows = dy.abs().ceil().max(1.0);
+    let delta = rows * UNIT_EQUIPMENT_ROW_H;
+    let next = if dy < 0.0 {
+        current + delta
+    } else {
+        (current - delta).max(0.0)
+    };
+    next.min(max_unit_equipment_scroll_fallback(viewport, row_count))
+}
+
+fn pick_unit_division_key(
+    viewport: Rect,
+    rows: &[UnitDivisionInputRow],
+    scroll_y: f32,
+    x: f32,
+    y: f32,
+) -> Option<(usize, String)> {
+    if !viewport.contains(x, y) {
+        return None;
+    }
+    let idx = ((y - viewport.y + scroll_y.max(0.0)) / UNIT_VIEW_ROW_H).floor() as usize;
+    rows.get(idx)
+        .and_then(|row| row.key.clone().map(|key| (idx, key)))
+}
+
+fn unit_division_row_window(
+    file: &GuiFile,
+    row_count: usize,
+    requested_scroll: f32,
+    viewport: Rect,
+) -> UnitRowWindow {
+    let metrics = find_template(file, "army_division_view").map(|_template| {
+        let spec = unit_division_grid_spec(viewport);
+        (spec.cell_h.max(1.0), spec.columns.max(1))
+    });
+    let (cell_h, columns) = metrics.unwrap_or((UNIT_VIEW_ROW_H, 1));
+    let grid_rows = row_count.div_ceil(columns);
+    let content_h = grid_rows as f32 * cell_h;
+    let max_scroll = gridbox::ScrollBar::max_scroll(viewport.h, content_h);
+    let scroll_y = requested_scroll.clamp(0.0, max_scroll);
+    let first_grid_row = (scroll_y / cell_h).floor() as usize;
+    let visible_grid_rows = (viewport.h / cell_h).ceil().max(1.0) as usize + 1;
+    UnitRowWindow {
+        scroll_y,
+        max_scroll,
+        first: first_grid_row.saturating_mul(columns),
+        visible: visible_grid_rows.saturating_mul(columns),
+    }
+}
+
+fn unit_equipment_row_window(
+    file: &GuiFile,
+    row_count: usize,
+    requested_scroll: f32,
+    viewport: Rect,
+) -> UnitRowWindow {
+    let metrics = find_template(file, "stat_equipment_entry").map(|template| {
+        let spec =
+            GridSpec::from_gridbox(&stub_grid("equipment_list", viewport), &template, GUTTER);
+        (spec.cell_h.max(1.0), spec.columns.max(1))
+    });
+    let (cell_h, columns) = metrics.unwrap_or((UNIT_EQUIPMENT_ROW_H, 1));
+    let grid_rows = row_count.div_ceil(columns);
+    let content_h = grid_rows as f32 * cell_h;
+    let max_scroll = gridbox::ScrollBar::max_scroll(viewport.h, content_h);
+    let scroll_y = requested_scroll.clamp(0.0, max_scroll);
+    let first_grid_row = (scroll_y / cell_h).floor() as usize;
+    let visible_grid_rows = (viewport.h / cell_h).ceil().max(1.0) as usize + 1;
+    UnitRowWindow {
+        scroll_y,
+        max_scroll,
+        first: first_grid_row.saturating_mul(columns),
+        visible: visible_grid_rows.saturating_mul(columns),
+    }
+}
+
+fn visible_row_digest(rows: &[DataRow], window: UnitRowWindow) -> String {
+    let visible: Vec<DataRow> = rows
+        .iter()
+        .skip(window.first)
+        .take(window.visible)
+        .cloned()
+        .collect();
+    row_digest(&visible)
 }
 
 struct UnitViewDrawable {
@@ -1559,51 +2103,91 @@ struct UnitViewDrawable {
     file: GuiFile,
     division_rows: Vec<DataRow>,
     equipment_rows: Vec<DataRow>,
+    division_viewport: Rect,
+    division_window: UnitRowWindow,
+    equipment_viewport: Rect,
+    equipment_window: UnitRowWindow,
+    stats_tab: UnitStatsTab,
     division_section: SectionState,
     division_count: usize,
     /// Whether the `equipment_list` grid was FOUND in the stats root (a layout fact),
     /// distinct from how many equipment rows exist — so the digest never conflates
     /// "no equipment rows" with "grid missing" (Codex (C) caveat / (G)).
     equipment_grid_found: bool,
-    /// The explicit DEFAULT-SELECTION label: which division the equipment panel is showing
-    /// (the first owned division, in `divisions[]` ARRAY order — deterministic, NOT an
-    /// unordered-map iteration). `None` when there is no owned division.
+    selected_division_key: Option<String>,
+    selection_status: UnitSelectionStatus,
+    equipment_state: UnitEquipmentState,
     selected_division_label: Option<String>,
 }
 
 impl Drawable for UnitViewDrawable {
     fn draw_digest(&self) -> String {
+        let equipment_visible_window = if self.stats_tab == UnitStatsTab::Stats {
+            self.equipment_window
+        } else {
+            UnitRowWindow {
+                scroll_y: self.equipment_window.scroll_y,
+                max_scroll: self.equipment_window.max_scroll,
+                first: 0,
+                visible: 0,
+            }
+        };
+        let selected_key = match self.selected_division_key.as_deref() {
+            Some(key) => key,
+            None => DASH,
+        };
+        let selected_label = match self.selected_division_label.as_deref() {
+            Some(label) => label,
+            None => DASH,
+        };
         format!(
-            "UNIT div_sect={} divs={} eq_grid_found={} eq_rows={} sel={} DIVROWS {} EQROWS {}",
+            "UNIT div_sect={} divs={} unit_tab={} eq_grid_found={} eq_state={} eq_rows={} sel_status={} sel_key={} sel_label={} sel_row={} scroll={:.0}/{:.0} visible=[{}] DIVROWS {} eq_scroll={:.0}/{:.0} eq_visible=[{}] EQROWS {}",
             self.division_section.tag(),
             self.division_count,
+            self.stats_tab.tag(),
             self.equipment_grid_found,
+            self.equipment_state.tag(),
             self.equipment_rows.len(),
-            self.selected_division_label.as_deref().unwrap_or("—"),
+            self.selection_status.tag(),
+            selected_key,
+            selected_label,
+            selected_row_digest(&self.division_rows, self.selected_division_key.as_deref()),
+            self.division_window.scroll_y,
+            self.division_window.max_scroll,
+            visible_row_digest(&self.division_rows, self.division_window),
             row_digest(&self.division_rows),
+            equipment_visible_window.scroll_y,
+            equipment_visible_window.max_scroll,
+            visible_row_digest(&self.equipment_rows, equipment_visible_window),
             row_digest(&self.equipment_rows),
         )
     }
     fn draw(&self, fd: &mut FrameDraw) {
         fd.draw_nodes(&self.list_roots);
-        render_rows(
+        render_rows_selected_in_viewport(
             fd,
-            &self.list_roots,
             &self.file,
-            "divisions_grid",
+            "divisions_window",
             "army_division_view",
             &self.division_rows,
+            self.division_viewport,
+            self.division_window.scroll_y,
+            self.selected_division_key.as_deref(),
         );
         // The equipment drill-down renders into the STATS root's `equipment_list` grid.
         fd.draw_nodes(&self.stats_roots);
-        render_rows(
-            fd,
-            &self.stats_roots,
-            &self.file,
-            "equipment_list",
-            "stat_equipment_entry",
-            &self.equipment_rows,
-        );
+        if self.stats_tab == UnitStatsTab::Stats {
+            render_rows_selected_in_viewport(
+                fd,
+                &self.file,
+                "equipment_list",
+                "stat_equipment_entry",
+                &self.equipment_rows,
+                self.equipment_viewport,
+                self.equipment_window.scroll_y,
+                None,
+            );
+        }
     }
 }
 
@@ -1614,28 +2198,195 @@ impl ViewInstance for UnitView {
     fn policy(&self) -> HostPolicy {
         HostPolicy::window(ZBand::Panel)
     }
+    fn rebind(&mut self, ctx: &RebindContext) {
+        self.screen = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: ctx.screen.0 as f32,
+            h: ctx.screen.1 as f32,
+        };
+        self.division_input_rows = unit_division_input_rows(ctx.divisions(), ctx.country);
+        self.equipment_row_count = selected_unit_equipment_count(
+            &self.division_input_rows,
+            self.selected_division_key.as_deref(),
+        );
+        self.division_scroll_y = self
+            .division_scroll_y
+            .min(max_unit_division_scroll_fallback(
+                unit_division_list_fallback(self.screen),
+                self.division_input_rows.len(),
+            ));
+        self.clear_scroll_drag_if_unavailable();
+    }
+    fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
+        match *ev {
+            ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            } => {
+                if let Some(tab) = pick_unit_stats_tab(self.screen, x, y) {
+                    let changed = self.selected_stats_tab != tab;
+                    self.selected_stats_tab = tab;
+                    self.clear_scroll_drag_if_unavailable();
+                    return unit_input_consumed(changed);
+                }
+                let viewport = unit_division_list_fallback(self.screen);
+                let scroll_y = self
+                    .division_scroll_y
+                    .min(max_unit_division_scroll_fallback(
+                        viewport,
+                        self.division_input_rows.len(),
+                    ));
+                if let Some(geom) = self.scrollbar_geometry(UnitScrollSurface::Divisions) {
+                    if geom.thumb.contains(x, y) {
+                        self.scroll_drag = Some(UnitScrollDrag {
+                            surface: UnitScrollSurface::Divisions,
+                            pointer_offset_y: y - geom.thumb.y,
+                        });
+                        return unit_input_consumed(false);
+                    }
+                    if geom.track.contains(x, y) {
+                        return unit_input_consumed(false);
+                    }
+                }
+                if let Some(geom) = self.scrollbar_geometry(UnitScrollSurface::Equipment) {
+                    if geom.thumb.contains(x, y) {
+                        self.scroll_drag = Some(UnitScrollDrag {
+                            surface: UnitScrollSurface::Equipment,
+                            pointer_offset_y: y - geom.thumb.y,
+                        });
+                        return unit_input_consumed(false);
+                    }
+                    if geom.track.contains(x, y) {
+                        return unit_input_consumed(false);
+                    }
+                }
+                if let Some((idx, key)) =
+                    pick_unit_division_key(viewport, &self.division_input_rows, scroll_y, x, y)
+                {
+                    let changed = self.selected_division_key.as_deref() != Some(key.as_str());
+                    self.equipment_row_count = match self.division_input_rows.get(idx) {
+                        Some(row) => row.equipment_count,
+                        None => 0,
+                    };
+                    if changed {
+                        self.selected_division_key = Some(key);
+                        self.equipment_scroll_y = 0.0;
+                    }
+                    unit_input_consumed(changed)
+                } else {
+                    InputOutcome::ignored()
+                }
+            }
+            ViewInput::Wheel { x, y, dy } => {
+                let division_viewport = unit_division_list_fallback(self.screen);
+                if division_viewport.contains(x, y) {
+                    let current = self.division_scroll_y;
+                    let next = scroll_unit_division_offset(
+                        current,
+                        division_viewport,
+                        self.division_input_rows.len(),
+                        dy,
+                    );
+                    self.division_scroll_y = next;
+                    return unit_input_consumed(next != current);
+                }
+                let equipment_viewport = unit_equipment_list_fallback(self.screen);
+                if self.selected_stats_tab == UnitStatsTab::Stats
+                    && equipment_viewport.contains(x, y)
+                {
+                    if self.equipment_row_count == 0 {
+                        return unit_input_consumed(false);
+                    }
+                    let current = self
+                        .equipment_scroll_y
+                        .min(max_unit_equipment_scroll_fallback(
+                            equipment_viewport,
+                            self.equipment_row_count,
+                        ));
+                    let next = scroll_unit_equipment_offset(
+                        current,
+                        equipment_viewport,
+                        self.equipment_row_count,
+                        dy,
+                    );
+                    self.equipment_scroll_y = next;
+                    return unit_input_consumed(next != current);
+                }
+                InputOutcome::ignored()
+            }
+            ViewInput::PointerMove { x: _, y, drag } if drag => {
+                let drag = match self.scroll_drag {
+                    Some(drag) => drag,
+                    None => return InputOutcome::ignored(),
+                };
+                let geom = match self.scrollbar_geometry(drag.surface) {
+                    Some(geom) => geom,
+                    None => {
+                        self.scroll_drag = None;
+                        return InputOutcome::ignored();
+                    }
+                };
+                let next = unit_scroll_from_thumb_y(geom, y - drag.pointer_offset_y);
+                match drag.surface {
+                    UnitScrollSurface::Divisions => {
+                        let current = self.division_scroll_y;
+                        self.division_scroll_y = next;
+                        unit_input_consumed(next != current)
+                    }
+                    UnitScrollSurface::Equipment => {
+                        let current = self.equipment_scroll_y;
+                        self.equipment_scroll_y = next;
+                        unit_input_consumed(next != current)
+                    }
+                }
+            }
+            ViewInput::PointerUp {
+                button: PointerButton::Left,
+                ..
+            } => {
+                if self.scroll_drag.take().is_some() {
+                    unit_input_consumed(false)
+                } else {
+                    InputOutcome::ignored()
+                }
+            }
+            _ => InputOutcome::ignored(),
+        }
+    }
     fn bind(&self, ctx: &BindContext) -> BoundView {
         let tag = ctx.country;
         let mut fidelity = FidelityReport::default();
         let file = load_gui(ctx, UNIT_VIEW_FILE);
 
-        let (
-            division_rows,
-            equipment_rows,
-            division_section,
-            division_count,
-            selected_division_label,
-        ) = build_division_rows(ctx, tag, &mut fidelity);
+        let unit_rows = build_division_rows(
+            ctx,
+            tag,
+            &mut fidelity,
+            self.selected_division_key.as_deref(),
+        );
+        let selection = &unit_rows.selection;
 
-        // The list root binds the division rows. The stats root's `unit_title` is set to an
-        // EXPLICIT default-selection label naming the division the equipment panel shows (the
-        // first owned division — there is no interactive selection in a replay) so the panel
-        // is never misread as a real selection (Codex (G)). No owned division → "—".
+        // The list root binds the division rows. The stats root's `unit_title` names the
+        // current read-only equipment pane source. After a user click, missing selected
+        // divisions fail closed instead of falling back to the first row.
         let list_summary: Vec<Cell> = Vec::new();
         let mut stats_summary: Vec<Cell> = Vec::new();
-        let label_text = match &selected_division_label {
-            Some(name) => format!("Equipment — first owned division (default): {name}"),
-            None => "Equipment — no owned division".to_string(),
+        let label_text = match selection.status {
+            UnitSelectionStatus::DefaultFirst => match &selection.label {
+                Some(name) => format!("Equipment — first owned division (default): {name}"),
+                None => "Equipment — first owned division (default)".to_string(),
+            },
+            UnitSelectionStatus::Selected => match &selection.label {
+                Some(name) => format!("Equipment — selected division: {name}"),
+                None => "Equipment — selected division".to_string(),
+            },
+            UnitSelectionStatus::MissingSelected => match self.selected_division_key.as_deref() {
+                Some(key) => format!("Equipment — selected division unavailable: {key}"),
+                None => "Equipment — selected division unavailable".to_string(),
+            },
+            UnitSelectionStatus::NoneAvailable => "Equipment — no owned division".to_string(),
         };
         let label_atom = DisplayAtom::text(label_text, Fidelity::Derived);
         fidelity.record(&label_atom);
@@ -1649,6 +2400,21 @@ impl ViewInstance for UnitView {
         let list_roots = build_root(ctx, &file, UNIT_VIEW_LIST_ROOT, &list_summary);
         let stats_roots = build_root(ctx, &file, UNIT_VIEW_STATS_ROOT, &stats_summary);
         let equipment_grid_found = find_rect(&stats_roots, "equipment_list").is_some();
+        let division_viewport = unit_division_list_fallback(ctx.screen);
+        let division_window = unit_division_row_window(
+            &file,
+            unit_rows.division_rows.len(),
+            self.division_scroll_y,
+            division_viewport,
+        );
+        let equipment_viewport = find_rect(&stats_roots, "equipment_list")
+            .unwrap_or_else(|| unit_equipment_list_fallback(ctx.screen));
+        let equipment_window = unit_equipment_row_window(
+            &file,
+            unit_rows.equipment_rows.len(),
+            self.equipment_scroll_y,
+            equipment_viewport,
+        );
 
         // The hit model spans both roots (front-to-back).
         let mut hit_roots = list_roots.clone();
@@ -1658,12 +2424,20 @@ impl ViewInstance for UnitView {
             list_roots,
             stats_roots,
             file,
-            division_rows,
-            equipment_rows,
-            division_section,
-            division_count,
+            division_rows: unit_rows.division_rows,
+            equipment_rows: unit_rows.equipment_rows,
+            division_viewport,
+            division_window,
+            equipment_viewport,
+            equipment_window,
+            stats_tab: self.selected_stats_tab,
+            division_section: unit_rows.division_section,
+            division_count: unit_rows.division_count,
             equipment_grid_found,
-            selected_division_label,
+            selected_division_key: selection.key.clone(),
+            selection_status: selection.status,
+            equipment_state: selection.equipment_state,
+            selected_division_label: selection.label.clone(),
         };
         BoundView {
             instance: InstanceId(0),
@@ -1680,8 +2454,9 @@ impl ViewInstance for UnitView {
 }
 
 /// Build the per-division `army_division_view` rows (filtered to the observed country) +
-/// the `stat_equipment_entry` rows for the FIRST division's equipment (the selected-division
-/// drill-down stand-in). EXACT fields: `template_name`/`template_role`/`organisation`/
+/// the `stat_equipment_entry` rows for the explicit selected division, or the first owned
+/// division only before the user has clicked a row. EXACT fields: `template_name`/
+/// `template_role`/`organisation`/
 /// `strength`/`moving`/`owner`. Present-but-NULL `experience`/`supply_status` → unavailable
 /// (badged with the Null reason, never a fabricated 0). The absent `divisions_full` body
 /// (dig-in/manpower/accl/kills) → unavailable. Codex (d): owner is compared EXACTLY and a
@@ -1691,30 +2466,50 @@ fn build_division_rows(
     ctx: &BindContext,
     tag: &str,
     fidelity: &mut FidelityReport,
-) -> (
-    Vec<DataRow>,
-    Vec<DataRow>,
-    SectionState,
-    usize,
-    Option<String>,
-) {
+    selected_key: Option<&str>,
+) -> UnitRows {
     let (divs, section) = domain_array(ctx.divisions());
     let divs = match divs {
         Some(d) => d,
         None => {
             section.record(fidelity);
-            return (Vec::new(), Vec::new(), section, 0, None);
+            let status = if selected_key.is_some() {
+                UnitSelectionStatus::MissingSelected
+            } else {
+                UnitSelectionStatus::NoneAvailable
+            };
+            let equipment_state = if selected_key.is_some() {
+                UnitEquipmentState::MissingSelected
+            } else {
+                UnitEquipmentState::NoSelection
+            };
+            return UnitRows {
+                division_rows: Vec::new(),
+                equipment_rows: Vec::new(),
+                division_section: section,
+                division_count: 0,
+                selection: UnitSelection {
+                    key: selected_key.map(str::to_string),
+                    label: None,
+                    status,
+                    equipment_state,
+                },
+            };
         }
     };
     // Owner filter — EXACT string compare, missing owner never coerced to the viewer.
-    let mine: Vec<&serde_json::Value> = divs
+    let mine: Vec<(&serde_json::Value, Option<String>)> = divs
         .iter()
         .filter(|d| d.get("owner").and_then(|o| o.as_str()) == Some(tag))
+        .map(|d| (d, division_row_key(d)))
         .collect();
 
     let mut rows = Vec::new();
-    for d in &mine {
-        let mut row = DataRow::new();
+    for (d, key) in &mine {
+        let mut row = match key {
+            Some(k) => DataRow::new().with_key(k.clone()),
+            None => DataRow::new(),
+        };
         // unit_name: division_name (divisions_full, absent) ELSE template_name (exact).
         row.bind(
             fidelity,
@@ -1781,51 +2576,100 @@ fn build_division_rows(
         rows.push(row);
     }
 
-    // The equipment drill-down for the FIRST owned division — a deterministic default
-    // selection (the `divisions[]` ARRAY is ordered; `mine.first()` is the first owned in
-    // that order, NOT an unordered-map pick). The caller labels the panel explicitly so this
-    // default is never misread as a real selection (Codex (G)). Each `equipment[]` entry →
-    // a `stat_equipment_entry` row; `amount` + `archetype` EXACT, name/creator are DB lookups.
-    let mut equipment_rows = Vec::new();
-    let mut selected_label: Option<String> = None;
-    if let Some(first) = mine.first() {
-        selected_label = first
-            .get("template_name")
-            .and_then(|n| n.as_str())
-            .map(|s| s.to_string());
-        if let Some(eq) = first.get("equipment").and_then(|e| e.as_array()) {
-            for e in eq {
-                let mut row = DataRow::new();
-                row.bind(
-                    fidelity,
-                    "equipment_name",
-                    elem_field(e, "archetype"),
-                    Fidelity::Derived,
-                    fmt_token,
-                );
-                row.bind(
-                    fidelity,
-                    "equipment_amount",
-                    elem_field(e, "amount"),
-                    Fidelity::Exact,
-                    fmt_int,
-                );
-                row.bind(
-                    fidelity,
-                    "equipment_icon",
-                    elem_field(e, "archetype"),
-                    Fidelity::Derived,
-                    fmt_token,
-                );
-                row.badge_unavailable(fidelity, "creator_flag");
-                equipment_rows.push(row);
-            }
+    let (selected_division, selected_key_out, selection_status) = match selected_key {
+        Some(key) => match mine.iter().find(|(_, k)| k.as_deref() == Some(key)) {
+            Some((d, k)) => (Some(*d), k.clone(), UnitSelectionStatus::Selected),
+            None => (
+                None,
+                Some(key.to_string()),
+                UnitSelectionStatus::MissingSelected,
+            ),
+        },
+        None => match mine.first() {
+            Some((d, k)) => (Some(*d), k.clone(), UnitSelectionStatus::DefaultFirst),
+            None => (None, None, UnitSelectionStatus::NoneAvailable),
+        },
+    };
+
+    let selected_label = selected_division
+        .and_then(|d| d.get("template_name"))
+        .and_then(|n| n.as_str())
+        .map(|s| s.to_string());
+
+    let (equipment_rows, equipment_state) = match selected_division {
+        Some(d) => build_unit_equipment_rows(d, fidelity),
+        None => {
+            let state = if selection_status == UnitSelectionStatus::MissingSelected {
+                UnitEquipmentState::MissingSelected
+            } else {
+                UnitEquipmentState::NoSelection
+            };
+            (Vec::new(), state)
         }
-    }
+    };
 
     section.record(fidelity);
     let count = mine.len();
-    (rows, equipment_rows, section, count, selected_label)
+    UnitRows {
+        division_rows: rows,
+        equipment_rows,
+        division_section: section,
+        division_count: count,
+        selection: UnitSelection {
+            key: selected_key_out,
+            label: selected_label,
+            status: selection_status,
+            equipment_state,
+        },
+    }
+}
+
+fn build_unit_equipment_rows(
+    selected: &serde_json::Value,
+    fidelity: &mut FidelityReport,
+) -> (Vec<DataRow>, UnitEquipmentState) {
+    match elem_field(selected, "equipment") {
+        Captured::Measured(v) => match v.as_array() {
+            Some(eq) => {
+                let mut equipment_rows = Vec::new();
+                for e in eq {
+                    let mut row = DataRow::new();
+                    row.bind(
+                        fidelity,
+                        "equipment_name",
+                        elem_field(e, "archetype"),
+                        Fidelity::Derived,
+                        fmt_token,
+                    );
+                    row.bind(
+                        fidelity,
+                        "equipment_amount",
+                        elem_field(e, "amount"),
+                        Fidelity::Exact,
+                        fmt_int,
+                    );
+                    row.bind(
+                        fidelity,
+                        "equipment_icon",
+                        elem_field(e, "archetype"),
+                        Fidelity::Derived,
+                        fmt_token,
+                    );
+                    row.badge_unavailable(fidelity, "creator_flag");
+                    equipment_rows.push(row);
+                }
+                let state = if equipment_rows.is_empty() {
+                    UnitEquipmentState::PresentEmpty
+                } else {
+                    UnitEquipmentState::PresentRows
+                };
+                (equipment_rows, state)
+            }
+            None => (Vec::new(), UnitEquipmentState::Degraded),
+        },
+        Captured::Null => (Vec::new(), UnitEquipmentState::Null),
+        Captured::Absent => (Vec::new(), UnitEquipmentState::Absent),
+    }
 }
 
 fn open_unit_view(_arg: Option<i64>) -> Box<dyn ViewInstance> {
@@ -1872,6 +2716,10 @@ register_template!(TemplateDescriptor {
 /// fabricates an event). Deterministic; touches no shared state.
 fn load_events_defs(ctx: &BindContext) -> Option<serde_json::Value> {
     let repo = ctx.stage.assets_dir.parent()?;
+    load_events_defs_from_repo(repo)
+}
+
+fn load_events_defs_from_repo(repo: &std::path::Path) -> Option<serde_json::Value> {
     let path = repo.join("game_defs").join("out").join("events.json");
     let raw = std::fs::read_to_string(&path).ok()?;
     let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
@@ -1902,6 +2750,38 @@ fn sample_event_defs(events: &serde_json::Value, n: usize) -> Vec<(String, serde
         .collect()
 }
 
+fn event_definition_preview_card_from_repo() -> Option<PopupCard> {
+    let crate_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let replay_native = crate_dir.parent()?;
+    let repo = replay_native.parent()?;
+    let events = load_events_defs_from_repo(repo)?;
+    first_event_definition_preview_card(&events)
+}
+
+fn first_event_definition_preview_card(events: &serde_json::Value) -> Option<PopupCard> {
+    sample_event_defs(events, 1)
+        .into_iter()
+        .next()
+        .map(|(id, ev)| event_definition_preview_card(&id, &ev))
+}
+
+fn event_definition_preview_card(id: &str, ev: &serde_json::Value) -> PopupCard {
+    let inner = EventCard::from_event_json(ev);
+    let heading = if inner.title.is_unavailable() {
+        format!("[event def preview — not fired] {id}")
+    } else {
+        format!("[event def preview — not fired] {}", inner.title.as_str())
+    };
+    let mut c = PopupCard::new(Atom::derived(heading)).media(inner.media.clone());
+    for b in &inner.body {
+        c = c.body(b.clone());
+    }
+    for a in &inner.actions {
+        c = c.action(a.clone());
+    }
+    c
+}
+
 // =====================================================================================
 // VIEW 7 — EVENT WINDOW  (EventWindow)  [N5 EventCard]
 // =====================================================================================
@@ -1910,11 +2790,15 @@ const EVENT_WINDOW_VIEW_ID: ViewId = ViewId("logistics.event_window");
 const EVENT_WINDOW_FILE: &str = "event_window.json";
 const EVENT_WINDOW_ROOT: &str = "EventWindow";
 
-pub struct EventWindowView;
+pub struct EventWindowView {
+    screen: Rect,
+}
 
 impl EventWindowView {
     pub fn new() -> EventWindowView {
-        EventWindowView
+        EventWindowView {
+            screen: default_event_window_screen(),
+        }
     }
 }
 impl Default for EventWindowView {
@@ -1930,6 +2814,40 @@ struct EventWindowDrawable {
     card: Option<PopupCard>,
     /// Always unavailable in the demo: which event FIRED (needs `world_events.fired_events`).
     fired_section: SectionState,
+}
+
+fn default_event_window_screen() -> Rect {
+    Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 1600.0,
+        h: 900.0,
+    }
+}
+
+fn event_window_preview_card_area(screen: Rect) -> Rect {
+    Rect {
+        x: screen.x + screen.w * 0.5 - 282.0,
+        y: screen.y + screen.h * 0.5 - 310.0,
+        w: 581.0,
+        h: 427.0,
+    }
+}
+
+#[cfg(test)]
+fn event_window_preview_action_rect(screen: Rect, index: usize) -> Option<Rect> {
+    let card = event_definition_preview_card_from_repo()?;
+    let laid = card.layout(event_window_preview_card_area(screen));
+    laid.action_rects.get(index).map(|a| a.rect)
+}
+
+fn event_window_preview_action_hit(screen: Rect, x: f32, y: f32) -> bool {
+    let Some(card) = event_definition_preview_card_from_repo() else {
+        return false;
+    };
+    card.layout(event_window_preview_card_area(screen))
+        .pick_action(x, y)
+        .is_some()
 }
 
 impl Drawable for EventWindowDrawable {
@@ -1968,6 +2886,33 @@ impl ViewInstance for EventWindowView {
     fn policy(&self) -> HostPolicy {
         HostPolicy::window(ZBand::Overlay)
     }
+    fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
+        match *ev {
+            ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            }
+            | ViewInput::PointerUp {
+                x,
+                y,
+                button: PointerButton::Left,
+            } if event_window_preview_action_hit(self.screen, x, y) => InputOutcome {
+                consumed: true,
+                commands: Vec::new(),
+                needs_redraw: false,
+            },
+            _ => InputOutcome::ignored(),
+        }
+    }
+    fn rebind(&mut self, rc: &RebindContext) {
+        self.screen = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: rc.screen.0 as f32,
+            h: rc.screen.1 as f32,
+        };
+    }
     fn bind(&self, ctx: &BindContext) -> BoundView {
         let mut fidelity = FidelityReport::default();
         let file = load_gui(ctx, EVENT_WINDOW_FILE);
@@ -1988,33 +2933,16 @@ impl ViewInstance for EventWindowView {
         // preview marker so it can never read as an active event; the title/desc text come
         // from the def; the actually-fired event is unavailable (badged on the root above).
         let card = load_events_defs(ctx).and_then(|events| {
-            sample_event_defs(&events, 1)
-                .into_iter()
-                .next()
-                .map(|(id, ev)| {
-                    let inner = EventCard::from_event_json(&ev);
-                    let heading = if inner.title.is_unavailable() {
-                        format!("[event def preview — not fired] {id}")
-                    } else {
-                        format!("[event def preview — not fired] {}", inner.title.as_str())
-                    };
-                    let mut c = PopupCard::new(Atom::derived(heading)).media(inner.media.clone());
-                    for b in &inner.body {
-                        c = c.body(b.clone());
-                    }
-                    for a in &inner.actions {
-                        c = c.action(a.clone());
-                    }
-                    // tally the card's fields into the report (heading derived + body sections).
-                    fidelity.record(&DisplayAtom::text(
-                        "def-preview".to_string(),
-                        Fidelity::Derived,
-                    ));
-                    for b in &c.body {
-                        fidelity.record(&atom_to_display(b));
-                    }
-                    c
-                })
+            first_event_definition_preview_card(&events).inspect(|c| {
+                // tally the card's fields into the report (heading derived + body sections).
+                fidelity.record(&DisplayAtom::text(
+                    "def-preview".to_string(),
+                    Fidelity::Derived,
+                ));
+                for b in &c.body {
+                    fidelity.record(&atom_to_display(b));
+                }
+            })
         });
 
         // The ROOT Title/Description represent the ACTIVE (fired) event. In the demo NO
@@ -2189,7 +3117,10 @@ impl ViewInstance for PopupWindowView {
         POPUP_WINDOW_VIEW_ID
     }
     fn policy(&self) -> HostPolicy {
-        HostPolicy::window(ZBand::Overlay)
+        HostPolicy::modal_overlay(ZBand::Overlay)
+    }
+    fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
+        replay_modal_disabled_input(ev)
     }
     fn bind(&self, ctx: &BindContext) -> BoundView {
         let mut fidelity = FidelityReport::default();
@@ -2517,6 +3448,9 @@ impl ViewInstance for IngameMenuView {
     }
     fn policy(&self) -> HostPolicy {
         HostPolicy::modal_overlay(ZBand::Overlay)
+    }
+    fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
+        replay_modal_disabled_input(ev)
     }
     fn bind(&self, ctx: &BindContext) -> BoundView {
         let mut fidelity = FidelityReport::default();
@@ -2961,6 +3895,7 @@ register_template!(TemplateDescriptor {
 mod tests {
     use super::*;
     use crate::host::context::Stage;
+    use crate::host::window_host::WindowHost;
     use crate::views::digest::bound_digest;
     use std::collections::HashMap;
     use std::path::Path;
@@ -3030,6 +3965,215 @@ mod tests {
         gui_dir().join("logistics.json").exists()
     }
 
+    #[test]
+    fn ingame_menu_disabled_verbs_clicks_are_modal_noops() {
+        let stage = stage_with(&[]);
+        let snap = snap_a();
+        let mut host = WindowHost::new();
+        host.open_instance(Box::new(IngameMenuView::new()));
+
+        let before = {
+            let bound = host.bind_all(&ctx(&stage, &snap));
+            assert_eq!(bound.len(), 1);
+            assert_eq!(bound[0].view_id, INGAME_MENU_VIEW_ID);
+            assert!(
+                bound[0].commands.is_empty(),
+                "binding the replay ingame menu must not emit save/load/resign/quit commands"
+            );
+            let digest = bound_digest(&bound[0]);
+            assert!(
+                digest.contains("INGAMEMENU save_list=os_scope verbs=inert"),
+                "ingame menu digest must keep save-list OS scope and inert verbs explicit, got:\n{digest}"
+            );
+            digest
+        };
+
+        for ev in [
+            ViewInput::PointerDown {
+                x: 800.0,
+                y: 450.0,
+                button: PointerButton::Left,
+            },
+            ViewInput::PointerUp {
+                x: 800.0,
+                y: 450.0,
+                button: PointerButton::Left,
+            },
+        ] {
+            let out = host.route_input(&ev);
+            assert!(out.consumed, "ingame menu modal click must be consumed");
+            assert!(
+                out.commands.is_empty(),
+                "disabled ingame menu verbs must not emit commands on {ev:?}"
+            );
+            assert!(
+                !out.needs_redraw,
+                "disabled ingame menu verb no-op must not request redraw on {ev:?}"
+            );
+        }
+
+        let after = {
+            let bound = host.bind_all(&ctx(&stage, &snap));
+            assert_eq!(bound.len(), 1);
+            bound_digest(&bound[0])
+        };
+        assert_eq!(
+            before, after,
+            "disabled ingame-menu verb clicks must not mutate replay-local view state"
+        );
+    }
+
+    #[test]
+    fn event_window_definition_option_clicks_are_replay_disabled_noops() {
+        let stage = stage_with(&[]);
+        let snap = snap_a();
+        let mut host = WindowHost::new();
+        let mut view = EventWindowView::new();
+        view.rebind(&RebindContext {
+            snapshot: &snap,
+            country: "GER",
+            screen: (1600, 900),
+            refit: true,
+        });
+        host.open_instance(Box::new(view));
+
+        let before = {
+            let bound = host.bind_all(&ctx(&stage, &snap));
+            assert_eq!(bound.len(), 1);
+            assert_eq!(bound[0].view_id, EVENT_WINDOW_VIEW_ID);
+            assert!(
+                bound[0].commands.is_empty(),
+                "binding the replay event preview must not emit option/effect commands"
+            );
+            let digest = bound_digest(&bound[0]);
+            assert!(digest.contains("EVENTWIN"), "{digest}");
+            assert!(
+                digest.contains("act=[opt_0:"),
+                "event definition preview must expose a real option action for the no-op proof, got:\n{digest}"
+            );
+            digest
+        };
+
+        let action = event_window_preview_action_rect(default_event_window_screen(), 0)
+            .expect("current static event catalog exposes a first preview option action");
+        for ev in [
+            ViewInput::PointerDown {
+                x: action.x + 4.0,
+                y: action.y + 4.0,
+                button: PointerButton::Left,
+            },
+            ViewInput::PointerUp {
+                x: action.x + 4.0,
+                y: action.y + 4.0,
+                button: PointerButton::Left,
+            },
+        ] {
+            let out = host.route_input(&ev);
+            assert!(
+                out.consumed,
+                "event definition option click must be consumed as a replay-disabled no-op"
+            );
+            assert!(
+                out.commands.is_empty(),
+                "event definition option no-op must not emit commands on {ev:?}"
+            );
+            assert!(
+                !out.needs_redraw,
+                "event definition option no-op must not request redraw on {ev:?}"
+            );
+        }
+
+        let outside = host.route_input(&ViewInput::PointerDown {
+            x: 8.0,
+            y: 8.0,
+            button: PointerButton::Left,
+        });
+        assert!(
+            !outside.consumed,
+            "this slice must not claim broad event-window modal blocking outside option actions"
+        );
+        assert!(outside.commands.is_empty());
+
+        let after = {
+            let bound = host.bind_all(&ctx(&stage, &snap));
+            assert_eq!(bound.len(), 1);
+            bound_digest(&bound[0])
+        };
+        assert_eq!(
+            before, after,
+            "disabled event option clicks must not mutate replay-local view state"
+        );
+    }
+
+    #[test]
+    fn popup_window_displayed_action_clicks_are_replay_disabled_modal_noops() {
+        let stage = stage_with(&[]);
+        let snap = snap_a();
+        let mut host = WindowHost::new();
+        host.open_instance(Box::new(PopupWindowView::new()));
+
+        let before = {
+            let bound = host.bind_all(&ctx(&stage, &snap));
+            assert_eq!(bound.len(), 1);
+            assert_eq!(bound[0].view_id, POPUP_WINDOW_VIEW_ID);
+            assert!(
+                bound[0].commands.is_empty(),
+                "binding the popup library must not emit popup accept/decline commands"
+            );
+            let digest = bound_digest(&bound[0]);
+            assert!(
+                digest.contains("POPUP roots=32"),
+                "popup digest must prove the real popup library roots are enumerated, got:\n{digest}"
+            );
+            assert!(
+                digest.contains("diplomacy_standard_popup_window"),
+                "test click targets the first displayed popup root, got:\n{digest}"
+            );
+            digest
+        };
+
+        // `diplomacy_standard_popup_window` is centered at (-225,-160), and its real
+        // `accept_button` sits at (386,265) in `popup_window.json`.
+        let accept_x = 1600.0 * 0.5 - 225.0 + 386.0 + 4.0;
+        let accept_y = 900.0 * 0.5 - 160.0 + 265.0 + 4.0;
+        for ev in [
+            ViewInput::PointerDown {
+                x: accept_x,
+                y: accept_y,
+                button: PointerButton::Left,
+            },
+            ViewInput::PointerUp {
+                x: accept_x,
+                y: accept_y,
+                button: PointerButton::Left,
+            },
+        ] {
+            let out = host.route_input(&ev);
+            assert!(
+                out.consumed,
+                "displayed popup action click must be consumed as a replay-disabled modal no-op"
+            );
+            assert!(
+                out.commands.is_empty(),
+                "popup action no-op must not emit commands on {ev:?}"
+            );
+            assert!(
+                !out.needs_redraw,
+                "popup action no-op must not request redraw on {ev:?}"
+            );
+        }
+
+        let after = {
+            let bound = host.bind_all(&ctx(&stage, &snap));
+            assert_eq!(bound.len(), 1);
+            bound_digest(&bound[0])
+        };
+        assert_eq!(
+            before, after,
+            "disabled popup action clicks must not mutate replay-local view state"
+        );
+    }
+
     /// SAVE-backed GER snapshot mirroring the real demo: `economy.resources` +
     /// `economy.fuel.{current,max}` + `economy.factories.{mil,dockyard}` present;
     /// `divisions[]` present (org/strength/equipment EXACT, experience/supply_status null);
@@ -3084,6 +4228,273 @@ mod tests {
             "diplomacy_world": { "factions": {} }
         }))
         .unwrap()
+    }
+
+    fn unit_rebind_ctx<'a>(snap: &'a snapshot::Snapshot) -> RebindContext<'a> {
+        RebindContext {
+            snapshot: snap,
+            country: "GER",
+            screen: (1600, 900),
+            refit: false,
+        }
+    }
+
+    fn snap_unit_a_multi() -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1941.4.13.11", "hour_index": 100,
+            "countries": { "GER": {}, "ENG": {} },
+            "divisions": [
+                { "div_id": 101, "owner": "GER", "template_name": "Duplicate Template", "template_role": "infantry",
+                  "organisation": 90.0, "strength": 100.0, "moving": false, "experience": null,
+                  "supply_status": null, "equipment": [ { "archetype": "infantry_equipment_2", "amount": 11.0 } ] },
+                { "div_id": 202, "owner": "GER", "template_name": "Duplicate Template", "template_role": "infantry",
+                  "organisation": 80.0, "strength": 95.0, "moving": false, "experience": null,
+                  "supply_status": null, "equipment": [ { "archetype": "artillery_equipment_2", "amount": 22.0 } ] },
+                { "div_id": 303, "owner": "ENG", "template_name": "Foreign Duplicate Template", "template_role": "infantry",
+                  "organisation": 70.0, "strength": 90.0, "moving": false, "experience": null,
+                  "supply_status": null, "equipment": [ { "archetype": "anti_tank_equipment_1", "amount": 33.0 } ] }
+            ]
+        }))
+        .unwrap()
+    }
+
+    fn snap_unit_b_same_selected() -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1941.4.13.12", "hour_index": 101,
+            "countries": { "GER": {} },
+            "divisions": [
+                { "div_id": 101, "owner": "GER", "template_name": "Duplicate Template", "template_role": "infantry",
+                  "organisation": 91.0, "strength": 101.0, "moving": false, "experience": null,
+                  "supply_status": null, "equipment": [ { "archetype": "infantry_equipment_2", "amount": 12.0 } ] },
+                { "div_id": 202, "owner": "GER", "template_name": "Duplicate Template", "template_role": "infantry",
+                  "organisation": 81.0, "strength": 96.0, "moving": false, "experience": null,
+                  "supply_status": null, "equipment": [ { "archetype": "artillery_equipment_2", "amount": 77.0 } ] }
+            ]
+        }))
+        .unwrap()
+    }
+
+    fn snap_unit_b_missing_selected() -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1941.4.13.12", "hour_index": 101,
+            "countries": { "GER": {}, "ENG": {} },
+            "divisions": [
+                { "div_id": 101, "owner": "GER", "template_name": "Duplicate Template", "template_role": "infantry",
+                  "organisation": 91.0, "strength": 101.0, "moving": false, "experience": null,
+                  "supply_status": null, "equipment": [ { "archetype": "infantry_equipment_2", "amount": 99.0 } ] },
+                { "div_id": 202, "owner": "ENG", "template_name": "Foreign Duplicate Template", "template_role": "infantry",
+                  "organisation": 81.0, "strength": 96.0, "moving": false, "experience": null,
+                  "supply_status": null, "equipment": [ { "archetype": "artillery_equipment_2", "amount": 77.0 } ] }
+            ]
+        }))
+        .unwrap()
+    }
+
+    fn snap_unit_missing_first_identity() -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1941.4.13.11", "hour_index": 100,
+            "countries": { "GER": {} },
+            "divisions": [
+                { "owner": "GER", "template_name": "No Id", "template_role": "infantry",
+                  "organisation": 90.0, "strength": 100.0, "moving": false, "experience": null,
+                  "supply_status": null, "equipment": [ { "archetype": "infantry_equipment_2", "amount": 11.0 } ] },
+                { "div_id": 202, "owner": "GER", "template_name": "Has Id", "template_role": "infantry",
+                  "organisation": 80.0, "strength": 95.0, "moving": false, "experience": null,
+                  "supply_status": null, "equipment": [ { "archetype": "artillery_equipment_2", "amount": 22.0 } ] }
+            ]
+        }))
+        .unwrap()
+    }
+
+    fn many_unit_divisions_snap(count: usize, prefix: &str) -> snapshot::Snapshot {
+        let divisions: Vec<_> = (1..=count)
+            .map(|i| {
+                serde_json::json!({
+                    "div_id": i,
+                    "owner": "GER",
+                    "template_name": format!("{prefix} {i:02}"),
+                    "template_role": "infantry",
+                    "organisation": 50.0 + i as f64,
+                    "strength": 80.0 + i as f64,
+                    "moving": false,
+                    "experience": null,
+                    "supply_status": null,
+                    "equipment": [
+                        { "archetype": "infantry_equipment_2", "amount": (i as f64) * 10.0 }
+                    ]
+                })
+            })
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "date": "1941.4.13.11",
+            "hour_index": 100,
+            "countries": { "GER": {} },
+            "divisions": divisions
+        }))
+        .unwrap()
+    }
+
+    fn equipment_values(count: usize, prefix: &str) -> Vec<serde_json::Value> {
+        (1..=count)
+            .map(|i| {
+                serde_json::json!({
+                    "archetype": format!("{prefix}_eq_{i:02}"),
+                    "amount": i as f64
+                })
+            })
+            .collect()
+    }
+
+    fn snap_unit_many_equipment(count: usize, prefix: &str) -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1941.4.13.11",
+            "hour_index": 100,
+            "countries": { "GER": {} },
+            "divisions": [
+                { "div_id": 101, "owner": "GER", "template_name": format!("{prefix} Division"), "template_role": "infantry",
+                  "organisation": 90.0, "strength": 100.0, "moving": false, "experience": null,
+                  "supply_status": null, "equipment": equipment_values(count, prefix) }
+            ]
+        }))
+        .unwrap()
+    }
+
+    fn snap_unit_two_equipment_divisions(
+        first_count: usize,
+        second_count: usize,
+        prefix: &str,
+    ) -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1941.4.13.11",
+            "hour_index": 100,
+            "countries": { "GER": {} },
+            "divisions": [
+                { "div_id": 101, "owner": "GER", "template_name": format!("{prefix} First"), "template_role": "infantry",
+                  "organisation": 90.0, "strength": 100.0, "moving": false, "experience": null,
+                  "supply_status": null, "equipment": equipment_values(first_count, &format!("{prefix}_first")) },
+                { "div_id": 202, "owner": "GER", "template_name": format!("{prefix} Second"), "template_role": "infantry",
+                  "organisation": 80.0, "strength": 95.0, "moving": false, "experience": null,
+                  "supply_status": null, "equipment": equipment_values(second_count, &format!("{prefix}_second")) }
+            ]
+        }))
+        .unwrap()
+    }
+
+    fn click_unit_row(view: &mut UnitView, row: usize) -> InputOutcome {
+        let viewport = unit_division_list_fallback(view.screen);
+        view.on_input(&ViewInput::PointerDown {
+            x: viewport.x + 4.0,
+            y: viewport.y + UNIT_VIEW_ROW_H * (row as f32) + 4.0,
+            button: PointerButton::Left,
+        })
+    }
+
+    fn wheel_unit_rows(view: &mut UnitView, dy: f32) -> InputOutcome {
+        let viewport = unit_division_list_fallback(view.screen);
+        view.on_input(&ViewInput::Wheel {
+            x: viewport.x + 8.0,
+            y: viewport.y + UNIT_VIEW_ROW_H * 0.5,
+            dy,
+        })
+    }
+
+    fn wheel_unit_equipment(view: &mut UnitView, dy: f32) -> InputOutcome {
+        let viewport = unit_equipment_list_fallback(view.screen);
+        view.on_input(&ViewInput::Wheel {
+            x: viewport.x + 8.0,
+            y: viewport.y + UNIT_EQUIPMENT_ROW_H * 0.5,
+            dy,
+        })
+    }
+
+    fn unit_division_scrollbar(view: &UnitView) -> UnitScrollbarGeometry {
+        view.scrollbar_geometry(UnitScrollSurface::Divisions)
+            .expect("division list should overflow and expose a scrollbar")
+    }
+
+    fn unit_equipment_scrollbar(view: &UnitView) -> UnitScrollbarGeometry {
+        view.scrollbar_geometry(UnitScrollSurface::Equipment)
+            .expect("equipment pane should overflow and expose a scrollbar")
+    }
+
+    fn pointer_down_unit_division_thumb(view: &mut UnitView) -> InputOutcome {
+        let geom = unit_division_scrollbar(view);
+        view.on_input(&ViewInput::PointerDown {
+            x: geom.thumb.x + geom.thumb.w * 0.5,
+            y: geom.thumb.y + geom.thumb.h * 0.5,
+            button: PointerButton::Left,
+        })
+    }
+
+    fn pointer_down_unit_equipment_thumb(view: &mut UnitView) -> InputOutcome {
+        let geom = unit_equipment_scrollbar(view);
+        view.on_input(&ViewInput::PointerDown {
+            x: geom.thumb.x + geom.thumb.w * 0.5,
+            y: geom.thumb.y + geom.thumb.h * 0.5,
+            button: PointerButton::Left,
+        })
+    }
+
+    fn click_unit_stats_tab(view: &mut UnitView, tab: UnitStatsTab) -> InputOutcome {
+        let rect = unit_stats_tab_button_fallback(view.screen, tab);
+        view.on_input(&ViewInput::PointerDown {
+            x: rect.x + 4.0,
+            y: rect.y + 4.0,
+            button: PointerButton::Left,
+        })
+    }
+
+    fn unit_stats_tab_digest(d: &str) -> &str {
+        d.split(" unit_tab=")
+            .nth(1)
+            .and_then(|rest| rest.split(" eq_grid_found=").next())
+            .expect("UnitView digest has unit_tab marker")
+    }
+
+    fn unit_scroll_pair(d: &str) -> (i32, i32) {
+        let rest = d
+            .split(" scroll=")
+            .nth(1)
+            .expect("UnitView digest has scroll marker");
+        let pair = rest
+            .split(" visible=")
+            .next()
+            .expect("UnitView digest has visible marker");
+        let (cur, max) = pair.split_once('/').expect("scroll pair");
+        (
+            cur.parse().expect("scroll current is int"),
+            max.parse().expect("scroll max is int"),
+        )
+    }
+
+    fn visible_unit_chunk(d: &str) -> &str {
+        d.split(" visible=[")
+            .nth(1)
+            .and_then(|rest| rest.split("] DIVROWS").next())
+            .expect("UnitView digest has visible row chunk")
+    }
+
+    fn equipment_scroll_pair(d: &str) -> (i32, i32) {
+        let rest = d
+            .split(" eq_scroll=")
+            .nth(1)
+            .expect("UnitView digest has equipment scroll marker");
+        let pair = rest
+            .split(" eq_visible=")
+            .next()
+            .expect("UnitView digest has equipment visible marker");
+        let (cur, max) = pair.split_once('/').expect("equipment scroll pair");
+        (
+            cur.parse().expect("equipment scroll current is int"),
+            max.parse().expect("equipment scroll max is int"),
+        )
+    }
+
+    fn visible_equipment_chunk(d: &str) -> &str {
+        d.split(" eq_visible=[")
+            .nth(1)
+            .and_then(|rest| rest.split("] EQROWS").next())
+            .expect("UnitView digest has visible equipment chunk")
     }
 
     // -------- render-plan digest: scrub A→B→A byte-identical (the immutable-LRU rule) -----
@@ -3199,6 +4610,741 @@ mod tests {
             !d.contains("unit_level=0("),
             "null experience must NEVER render a fabricated 0"
         );
+    }
+
+    #[test]
+    fn unit_view_division_row_click_selects_measured_div_id_and_updates_equipment() {
+        let stage = stage_with(&[]);
+        let snap = snap_unit_a_multi();
+        let mut view = UnitView::new();
+        view.rebind(&unit_rebind_ctx(&snap));
+
+        let default = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert!(
+            default.contains("sel_status=default_first"),
+            "pre-click pane must be explicitly default-first, got: {default}"
+        );
+        assert!(
+            default.contains("sel_key=division:101"),
+            "pre-click default may use the first measured div_id, got: {default}"
+        );
+        assert!(
+            default.contains("equipment_amount=11(E)"),
+            "default equipment must come from first owned division, got: {default}"
+        );
+
+        let out = click_unit_row(&mut view, 1);
+        assert!(out.consumed && out.needs_redraw);
+        assert!(out.commands.is_empty());
+
+        let selected = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert!(
+            selected.contains("sel_status=selected"),
+            "row click must switch to selected status, got: {selected}"
+        );
+        assert!(
+            selected.contains("sel_key=division:202"),
+            "row click must use measured div_id, not duplicate template text/index, got: {selected}"
+        );
+        assert!(
+            selected.contains("sel_row=r0[key=division:202;"),
+            "selected-row digest must point at the clicked backing row, got: {selected}"
+        );
+        assert!(
+            selected.contains("equipment_amount=22(E)"),
+            "equipment pane must rebuild from selected division, got: {selected}"
+        );
+        assert!(
+            !selected.contains("equipment_amount=11(E)"),
+            "selected pane must not retain first-row equipment, got: {selected}"
+        );
+    }
+
+    #[test]
+    fn unit_view_selected_division_scrub_a_b_a_rebuilds_current_hour_equipment() {
+        let stage = stage_with(&[]);
+        let a = snap_unit_a_multi();
+        let b = snap_unit_b_same_selected();
+        let mut view = UnitView::new();
+
+        view.rebind(&unit_rebind_ctx(&a));
+        let out = click_unit_row(&mut view, 1);
+        assert!(out.consumed && out.needs_redraw);
+        let a1 = bound_digest(&view.bind(&ctx(&stage, &a)));
+        assert!(a1.contains("equipment_amount=22(E)"));
+
+        view.rebind(&unit_rebind_ctx(&b));
+        let b_digest = bound_digest(&view.bind(&ctx(&stage, &b)));
+        assert!(
+            b_digest.contains("sel_key=division:202"),
+            "selection key must survive scrub into B, got: {b_digest}"
+        );
+        assert!(
+            b_digest.contains("equipment_amount=77(E)"),
+            "B pane must rebuild from B's current selected division, got: {b_digest}"
+        );
+        assert!(
+            !b_digest.contains("equipment_amount=22(E)"),
+            "B pane must not carry A-only equipment, got: {b_digest}"
+        );
+
+        view.rebind(&unit_rebind_ctx(&a));
+        let a2 = bound_digest(&view.bind(&ctx(&stage, &a)));
+        assert_eq!(
+            a1, a2,
+            "selected UnitView scrub A->B->A must be byte-identical"
+        );
+    }
+
+    #[test]
+    fn unit_view_missing_selected_division_fails_closed_without_first_row_fallback() {
+        let stage = stage_with(&[]);
+        let a = snap_unit_a_multi();
+        let b = snap_unit_b_missing_selected();
+        let mut view = UnitView::new();
+
+        view.rebind(&unit_rebind_ctx(&a));
+        let out = click_unit_row(&mut view, 1);
+        assert!(out.consumed && out.needs_redraw);
+        let a1 = bound_digest(&view.bind(&ctx(&stage, &a)));
+        assert!(a1.contains("sel_key=division:202"));
+        assert!(a1.contains("equipment_amount=22(E)"));
+
+        view.rebind(&unit_rebind_ctx(&b));
+        let missing = bound_digest(&view.bind(&ctx(&stage, &b)));
+        assert!(
+            missing.contains("sel_status=missing_selected"),
+            "foreign-owned/missing selected div_id must fail closed, got: {missing}"
+        );
+        assert!(
+            missing.contains("sel_key=division:202"),
+            "missing selected digest must keep the user's requested key, got: {missing}"
+        );
+        assert!(
+            missing.contains("eq_state=missing_selected"),
+            "missing selected equipment state must be explicit, got: {missing}"
+        );
+        assert!(
+            missing.contains("eq_rows=0"),
+            "missing selected division must not emit equipment rows, got: {missing}"
+        );
+        assert!(
+            !missing.contains("equipment_amount=99(E)") && !missing.contains("equipment_amount=77(E)"),
+            "missing selected pane must not fall back to first owned or foreign rows, got: {missing}"
+        );
+
+        view.rebind(&unit_rebind_ctx(&a));
+        let restored = bound_digest(&view.bind(&ctx(&stage, &a)));
+        assert_eq!(
+            a1, restored,
+            "returning to A must restore the selected pane exactly"
+        );
+    }
+
+    #[test]
+    fn unit_view_missing_identity_and_outside_clicks_are_inert() {
+        let snap = snap_unit_missing_first_identity();
+        let mut view = UnitView::new();
+        view.rebind(&unit_rebind_ctx(&snap));
+
+        let missing_id = click_unit_row(&mut view, 0);
+        assert!(
+            !missing_id.consumed && !missing_id.needs_redraw && missing_id.commands.is_empty(),
+            "row without measured div_id must not be selectable by index/name"
+        );
+        assert!(
+            view.selected_division_key.is_none(),
+            "missing div_id click must not set a fabricated selection key"
+        );
+
+        let viewport = unit_division_list_fallback(view.screen);
+        let outside = view.on_input(&ViewInput::PointerDown {
+            x: viewport.x + viewport.w + 20.0,
+            y: viewport.y + 4.0,
+            button: PointerButton::Left,
+        });
+        assert!(
+            !outside.consumed && !outside.needs_redraw && outside.commands.is_empty(),
+            "outside-row click must be inert"
+        );
+
+        let selectable = click_unit_row(&mut view, 1);
+        assert!(selectable.consumed && selectable.needs_redraw);
+        assert_eq!(view.selected_division_key.as_deref(), Some("division:202"));
+    }
+
+    #[test]
+    fn unit_view_division_wheel_scroll_changes_visible_rows_and_clamps() {
+        let stage = stage_with(&[]);
+        let snap = many_unit_divisions_snap(30, "A");
+        let mut view = UnitView::new();
+        view.rebind(&unit_rebind_ctx(&snap));
+
+        let before = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert_eq!(unit_scroll_pair(&before).0, 0);
+        assert!(
+            visible_unit_chunk(&before).contains("key=division:1;unit_name=A 01(D);"),
+            "{before}"
+        );
+
+        let out = wheel_unit_rows(&mut view, -3.0);
+        assert!(out.consumed && out.needs_redraw);
+        let after = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert_eq!(unit_scroll_pair(&after).0, 99);
+        assert!(
+            visible_unit_chunk(&after).contains("key=division:4;unit_name=A 04(D);"),
+            "after three-row wheel scroll, visible rows must advance: {after}"
+        );
+        assert!(
+            !visible_unit_chunk(&after).contains("key=division:1;unit_name=A 01(D);"),
+            "scrolled visible slice must not keep top rows: {after}"
+        );
+
+        let out = wheel_unit_rows(&mut view, -500.0);
+        assert!(out.consumed);
+        let clamped = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        let (cur, max) = unit_scroll_pair(&clamped);
+        assert_eq!(cur, max, "huge wheel-down must clamp to max: {clamped}");
+
+        let out = wheel_unit_rows(&mut view, 500.0);
+        assert!(out.consumed);
+        let reset = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert_eq!(unit_scroll_pair(&reset).0, 0);
+    }
+
+    #[test]
+    fn unit_view_scrolled_division_click_selects_correct_backing_div_id() {
+        let stage = stage_with(&[]);
+        let snap = many_unit_divisions_snap(30, "A");
+        let mut view = UnitView::new();
+        view.rebind(&unit_rebind_ctx(&snap));
+
+        wheel_unit_rows(&mut view, -5.0);
+        let out = click_unit_row(&mut view, 0);
+        assert!(out.consumed && out.needs_redraw);
+        let d = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert!(
+            d.contains("sel_key=division:6"),
+            "after five-row scroll, visible row 0 must select backing division 6, got:\n{d}"
+        );
+        assert!(
+            d.contains("equipment_amount=60(E)"),
+            "equipment pane must rebuild from backing division 6, got:\n{d}"
+        );
+    }
+
+    #[test]
+    fn unit_view_division_scroll_survives_scrub_a_b_a_without_b_rows() {
+        let stage = stage_with(&[]);
+        let a = many_unit_divisions_snap(30, "A");
+        let b = many_unit_divisions_snap(35, "B");
+        let mut view = UnitView::new();
+        view.rebind(&unit_rebind_ctx(&a));
+
+        wheel_unit_rows(&mut view, -5.0);
+        click_unit_row(&mut view, 0);
+        let a1 = bound_digest(&view.bind(&ctx(&stage, &a)));
+        assert!(a1.contains("sel_key=division:6"));
+        assert!(visible_unit_chunk(&a1).contains("unit_name=A 06(D);"));
+
+        view.rebind(&unit_rebind_ctx(&b));
+        let b_digest = bound_digest(&view.bind(&ctx(&stage, &b)));
+        assert!(
+            b_digest.contains("sel_key=division:6"),
+            "selected measured id should survive into B, got:\n{b_digest}"
+        );
+        assert!(
+            visible_unit_chunk(&b_digest).contains("unit_name=B 06(D);"),
+            "visible chunk must rebuild from B rows instead of carrying A text, got:\n{b_digest}"
+        );
+
+        view.rebind(&unit_rebind_ctx(&a));
+        let a2 = bound_digest(&view.bind(&ctx(&stage, &a)));
+        assert_eq!(
+            a1, a2,
+            "UnitView row selection + scroll must be byte-identical across A->B->A"
+        );
+    }
+
+    #[test]
+    fn unit_view_division_scrollbar_drag_changes_visible_rows_and_clamps() {
+        let stage = stage_with(&[]);
+        let snap = many_unit_divisions_snap(30, "A");
+        let mut view = UnitView::new();
+        view.rebind(&unit_rebind_ctx(&snap));
+
+        let down = pointer_down_unit_division_thumb(&mut view);
+        assert!(
+            down.consumed && !down.needs_redraw && down.commands.is_empty(),
+            "thumb pointer-down should only capture division drag"
+        );
+        let geom = unit_division_scrollbar(&view);
+        let drag = view.on_input(&ViewInput::PointerMove {
+            x: geom.thumb.x + geom.thumb.w * 0.5,
+            y: geom.track.y + geom.track.h + 200.0,
+            drag: true,
+        });
+        assert!(
+            drag.consumed && drag.needs_redraw,
+            "captured division thumb drag should scroll even past the track"
+        );
+        let scrolled = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        let (cur, max) = unit_scroll_pair(&scrolled);
+        assert_eq!(
+            cur, max,
+            "division thumb drag must clamp to max: {scrolled}"
+        );
+        assert!(
+            visible_unit_chunk(&scrolled).contains("key=division:19;unit_name=A 19(D);"),
+            "bottom-clamped division drag should expose backing later rows: {scrolled}"
+        );
+        assert!(
+            !visible_unit_chunk(&scrolled).contains("key=division:1;unit_name=A 01(D);"),
+            "bottom-clamped division drag must not keep top rows visible: {scrolled}"
+        );
+
+        let reset = view.on_input(&ViewInput::PointerMove {
+            x: geom.thumb.x + geom.thumb.w * 0.5,
+            y: geom.track.y - 200.0,
+            drag: true,
+        });
+        assert!(reset.consumed && reset.needs_redraw);
+        let restored = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert_eq!(unit_scroll_pair(&restored).0, 0);
+    }
+
+    #[test]
+    fn unit_view_equipment_wheel_scroll_changes_visible_rows_and_clamps() {
+        let stage = stage_with(&[]);
+        let snap = snap_unit_many_equipment(20, "A");
+        let mut view = UnitView::new();
+        view.rebind(&unit_rebind_ctx(&snap));
+
+        let before = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert_eq!(equipment_scroll_pair(&before).0, 0);
+        assert!(
+            visible_equipment_chunk(&before).contains("equipment_name=A_eq_01(D);"),
+            "{before}"
+        );
+
+        let out = wheel_unit_equipment(&mut view, -3.0);
+        assert!(out.consumed && out.needs_redraw);
+        let after = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert_eq!(equipment_scroll_pair(&after).0, 150);
+        assert_eq!(
+            unit_scroll_pair(&after).0,
+            0,
+            "equipment wheel must not move the division list: {after}"
+        );
+        assert!(
+            visible_equipment_chunk(&after).contains("equipment_name=A_eq_04(D);"),
+            "after three-row equipment wheel scroll, visible rows must advance: {after}"
+        );
+        assert!(
+            !visible_equipment_chunk(&after).contains("equipment_name=A_eq_01(D);"),
+            "scrolled equipment slice must not keep top rows: {after}"
+        );
+
+        let out = wheel_unit_equipment(&mut view, -500.0);
+        assert!(out.consumed);
+        let clamped = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        let (cur, max) = equipment_scroll_pair(&clamped);
+        assert_eq!(
+            cur, max,
+            "huge equipment wheel-down must clamp to max: {clamped}"
+        );
+
+        let out = wheel_unit_equipment(&mut view, 500.0);
+        assert!(out.consumed);
+        let reset = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert_eq!(equipment_scroll_pair(&reset).0, 0);
+    }
+
+    #[test]
+    fn unit_view_equipment_scroll_resets_when_selected_division_changes() {
+        let stage = stage_with(&[]);
+        let snap = snap_unit_two_equipment_divisions(20, 2, "A");
+        let mut view = UnitView::new();
+        view.rebind(&unit_rebind_ctx(&snap));
+
+        wheel_unit_equipment(&mut view, -3.0);
+        let scrolled = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert_eq!(equipment_scroll_pair(&scrolled).0, 150);
+        assert!(visible_equipment_chunk(&scrolled).contains("equipment_name=A_first_eq_04(D);"));
+
+        let out = click_unit_row(&mut view, 1);
+        assert!(out.consumed && out.needs_redraw);
+        let selected = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert!(
+            selected.contains("sel_key=division:202"),
+            "click must select the second measured division, got: {selected}"
+        );
+        assert_eq!(equipment_scroll_pair(&selected).0, 0);
+        assert!(
+            visible_equipment_chunk(&selected).contains("equipment_name=A_second_eq_01(D);"),
+            "newly selected division equipment must start at the top, got: {selected}"
+        );
+        assert!(
+            !visible_equipment_chunk(&selected).contains("equipment_name=A_first_eq_04(D);"),
+            "new selection must not retain previous division equipment rows, got: {selected}"
+        );
+    }
+
+    #[test]
+    fn unit_view_equipment_scroll_survives_scrub_a_b_a_for_same_selected_division() {
+        let stage = stage_with(&[]);
+        let a = snap_unit_two_equipment_divisions(1, 20, "A");
+        let b = snap_unit_two_equipment_divisions(1, 20, "B");
+        let mut view = UnitView::new();
+        view.rebind(&unit_rebind_ctx(&a));
+
+        click_unit_row(&mut view, 1);
+        wheel_unit_equipment(&mut view, -3.0);
+        let a1 = bound_digest(&view.bind(&ctx(&stage, &a)));
+        assert!(a1.contains("sel_key=division:202"));
+        assert_eq!(equipment_scroll_pair(&a1).0, 150);
+        assert!(visible_equipment_chunk(&a1).contains("equipment_name=A_second_eq_04(D);"));
+
+        view.rebind(&unit_rebind_ctx(&b));
+        let b_digest = bound_digest(&view.bind(&ctx(&stage, &b)));
+        assert!(
+            b_digest.contains("sel_key=division:202"),
+            "selection key must survive scrub into B, got: {b_digest}"
+        );
+        assert_eq!(equipment_scroll_pair(&b_digest).0, 150);
+        assert!(
+            visible_equipment_chunk(&b_digest).contains("equipment_name=B_second_eq_04(D);"),
+            "equipment rows must rebuild from B instead of carrying A rows, got: {b_digest}"
+        );
+        assert!(
+            !visible_equipment_chunk(&b_digest).contains("equipment_name=A_second_eq_04(D);"),
+            "B digest must not carry A-only equipment text, got: {b_digest}"
+        );
+
+        view.rebind(&unit_rebind_ctx(&a));
+        let a2 = bound_digest(&view.bind(&ctx(&stage, &a)));
+        assert_eq!(
+            a1, a2,
+            "UnitView selected equipment scroll must be byte-identical across A->B->A"
+        );
+    }
+
+    #[test]
+    fn unit_view_equipment_scroll_clamps_when_selected_division_missing_without_losing_a() {
+        let stage = stage_with(&[]);
+        let a = snap_unit_two_equipment_divisions(1, 20, "A");
+        let b = snap_unit_b_missing_selected();
+        let mut view = UnitView::new();
+        view.rebind(&unit_rebind_ctx(&a));
+
+        click_unit_row(&mut view, 1);
+        wheel_unit_equipment(&mut view, -3.0);
+        let a1 = bound_digest(&view.bind(&ctx(&stage, &a)));
+        assert_eq!(equipment_scroll_pair(&a1).0, 150);
+        assert!(visible_equipment_chunk(&a1).contains("equipment_name=A_second_eq_04(D);"));
+
+        view.rebind(&unit_rebind_ctx(&b));
+        let missing = bound_digest(&view.bind(&ctx(&stage, &b)));
+        assert!(
+            missing.contains("sel_status=missing_selected"),
+            "foreign-owned/missing selected div_id must fail closed, got: {missing}"
+        );
+        assert!(
+            missing.contains("eq_rows=0"),
+            "missing selected division must not emit equipment rows, got: {missing}"
+        );
+        assert_eq!(equipment_scroll_pair(&missing), (0, 0));
+        assert_eq!(visible_equipment_chunk(&missing), "");
+        assert!(
+            !missing.contains("equipment_amount=99(E)") && !missing.contains("equipment_amount=77(E)"),
+            "missing selected pane must not fall back to first owned or foreign rows, got: {missing}"
+        );
+
+        view.rebind(&unit_rebind_ctx(&a));
+        let restored = bound_digest(&view.bind(&ctx(&stage, &a)));
+        assert_eq!(
+            a1, restored,
+            "returning to A must restore the selected equipment scroll exactly"
+        );
+    }
+
+    #[test]
+    fn unit_view_equipment_scrollbar_drag_capture_continues_outside_and_clears_on_up() {
+        let stage = stage_with(&[]);
+        let snap = snap_unit_many_equipment(20, "A");
+        let mut view = UnitView::new();
+        view.rebind(&unit_rebind_ctx(&snap));
+
+        let down = pointer_down_unit_equipment_thumb(&mut view);
+        assert!(
+            down.consumed && !down.needs_redraw && down.commands.is_empty(),
+            "thumb pointer-down should only capture equipment drag"
+        );
+        let geom = unit_equipment_scrollbar(&view);
+        let drag = view.on_input(&ViewInput::PointerMove {
+            x: geom.track.x + geom.track.w + 150.0,
+            y: geom.track.y + geom.track.h + 200.0,
+            drag: true,
+        });
+        assert!(
+            drag.consumed && drag.needs_redraw,
+            "captured equipment thumb drag should continue outside the pane"
+        );
+        let scrolled = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        let (cur, max) = equipment_scroll_pair(&scrolled);
+        assert_eq!(
+            cur, max,
+            "equipment thumb drag must clamp to max: {scrolled}"
+        );
+        assert_eq!(
+            unit_scroll_pair(&scrolled).0,
+            0,
+            "equipment thumb drag must not move the division list: {scrolled}"
+        );
+        assert!(
+            visible_equipment_chunk(&scrolled).contains("equipment_name=A_eq_13(D);"),
+            "bottom-clamped equipment drag should expose backing later rows: {scrolled}"
+        );
+
+        let up = view.on_input(&ViewInput::PointerUp {
+            x: geom.track.x + geom.track.w + 150.0,
+            y: geom.track.y + geom.track.h + 200.0,
+            button: PointerButton::Left,
+        });
+        assert!(
+            up.consumed && !up.needs_redraw,
+            "pointer-up should consume solely to clear equipment scrollbar capture"
+        );
+        let ignored = view.on_input(&ViewInput::PointerMove {
+            x: geom.track.x,
+            y: geom.track.y,
+            drag: true,
+        });
+        assert!(
+            !ignored.consumed && !ignored.needs_redraw && ignored.commands.is_empty(),
+            "pointer move after thumb release must not keep stale equipment capture"
+        );
+        let after_up = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert_eq!(
+            equipment_scroll_pair(&after_up),
+            (cur, max),
+            "post-release move should not mutate equipment scroll"
+        );
+    }
+
+    #[test]
+    fn unit_view_scrollbar_track_clicks_are_consumed_without_selection_or_scroll() {
+        let stage = stage_with(&[]);
+        let divisions = many_unit_divisions_snap(30, "A");
+        let mut view = UnitView::new();
+        view.rebind(&unit_rebind_ctx(&divisions));
+        let before = bound_digest(&view.bind(&ctx(&stage, &divisions)));
+        let geom = unit_division_scrollbar(&view);
+        let track_y = (geom.thumb.y + geom.thumb.h + 10.0).min(geom.track.y + geom.track.h - 1.0);
+
+        let out = view.on_input(&ViewInput::PointerDown {
+            x: geom.track.x + geom.track.w * 0.5,
+            y: track_y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            out.consumed && !out.needs_redraw && out.commands.is_empty(),
+            "division scrollbar track click should be an inert consumed UI hit"
+        );
+        assert_eq!(
+            view.selected_division_key, None,
+            "division scrollbar track click must not select an underlying row"
+        );
+        let after = bound_digest(&view.bind(&ctx(&stage, &divisions)));
+        assert_eq!(
+            before, after,
+            "division track click must not alter selection or visible rows"
+        );
+
+        let equipment = snap_unit_many_equipment(20, "A");
+        let mut view = UnitView::new();
+        view.rebind(&unit_rebind_ctx(&equipment));
+        let before = bound_digest(&view.bind(&ctx(&stage, &equipment)));
+        let geom = unit_equipment_scrollbar(&view);
+        let track_y = (geom.thumb.y + geom.thumb.h + 10.0).min(geom.track.y + geom.track.h - 1.0);
+
+        let out = view.on_input(&ViewInput::PointerDown {
+            x: geom.track.x + geom.track.w * 0.5,
+            y: track_y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            out.consumed && !out.needs_redraw && out.commands.is_empty(),
+            "equipment scrollbar track click should be an inert consumed UI hit"
+        );
+        let after = bound_digest(&view.bind(&ctx(&stage, &equipment)));
+        assert_eq!(
+            before, after,
+            "equipment track click must not alter scroll or selected equipment pane"
+        );
+    }
+
+    #[test]
+    fn unit_view_scrollbar_drag_capture_clears_on_rebind_without_geometry() {
+        let many = many_unit_divisions_snap(30, "A");
+        let few = snap_unit_a_multi();
+        let mut view = UnitView::new();
+        view.rebind(&unit_rebind_ctx(&many));
+
+        let down = pointer_down_unit_division_thumb(&mut view);
+        assert!(down.consumed);
+        assert!(
+            view.scroll_drag.is_some(),
+            "division thumb pointer-down should install a capture"
+        );
+
+        view.rebind(&unit_rebind_ctx(&few));
+        assert!(
+            view.scroll_drag.is_none(),
+            "rebind to a non-overflowing division list must clear stale capture"
+        );
+
+        let ignored = view.on_input(&ViewInput::PointerMove {
+            x: 0.0,
+            y: 500.0,
+            drag: true,
+        });
+        assert!(
+            !ignored.consumed && !ignored.needs_redraw && ignored.commands.is_empty(),
+            "drag move after stale capture clears must be inert"
+        );
+    }
+
+    #[test]
+    fn unit_view_stats_tab_click_switches_digest_and_visible_body() {
+        let stage = stage_with(&[]);
+        let snap = snap_unit_many_equipment(20, "A");
+        let mut view = UnitView::new();
+        view.rebind(&unit_rebind_ctx(&snap));
+
+        wheel_unit_equipment(&mut view, -3.0);
+        let stats = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert_eq!(unit_stats_tab_digest(&stats), "stats");
+        assert_eq!(equipment_scroll_pair(&stats).0, 150);
+        assert!(visible_equipment_chunk(&stats).contains("equipment_name=A_eq_04(D);"));
+
+        let out = click_unit_stats_tab(&mut view, UnitStatsTab::History);
+        assert!(out.consumed && out.needs_redraw);
+        let history = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert_eq!(unit_stats_tab_digest(&history), "history");
+        assert_eq!(
+            visible_equipment_chunk(&history),
+            "",
+            "history tab must hide the stats-tab equipment body without fabricating rows: {history}"
+        );
+        assert!(
+            history.contains("equipment_name=A_eq_04(D);"),
+            "hidden equipment rows should remain bound in EQROWS for scrub/fidelity accounting: {history}"
+        );
+
+        let same = click_unit_stats_tab(&mut view, UnitStatsTab::History);
+        assert!(same.consumed && !same.needs_redraw);
+
+        let out = click_unit_stats_tab(&mut view, UnitStatsTab::Template);
+        assert!(out.consumed && out.needs_redraw);
+        let template = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert_eq!(unit_stats_tab_digest(&template), "template");
+        assert_eq!(visible_equipment_chunk(&template), "");
+
+        let out = click_unit_stats_tab(&mut view, UnitStatsTab::Stats);
+        assert!(out.consumed && out.needs_redraw);
+        let restored = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert_eq!(unit_stats_tab_digest(&restored), "stats");
+        assert_eq!(equipment_scroll_pair(&restored).0, 150);
+        assert!(visible_equipment_chunk(&restored).contains("equipment_name=A_eq_04(D);"));
+    }
+
+    #[test]
+    fn unit_view_hidden_equipment_pane_wheel_is_inert_on_non_stats_tabs() {
+        let stage = stage_with(&[]);
+        let snap = snap_unit_many_equipment(20, "A");
+        let mut view = UnitView::new();
+        view.rebind(&unit_rebind_ctx(&snap));
+
+        wheel_unit_equipment(&mut view, -3.0);
+        let stats = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert_eq!(equipment_scroll_pair(&stats).0, 150);
+
+        click_unit_stats_tab(&mut view, UnitStatsTab::History);
+        let history_before = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        let out = wheel_unit_equipment(&mut view, -3.0);
+        assert!(!out.consumed);
+        assert!(!out.needs_redraw);
+        let history_after = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert_eq!(
+            history_before, history_after,
+            "hidden History-tab equipment pane must not mutate scroll state"
+        );
+
+        click_unit_stats_tab(&mut view, UnitStatsTab::Template);
+        let template_before = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        let out = wheel_unit_equipment(&mut view, -3.0);
+        assert!(!out.consumed);
+        assert!(!out.needs_redraw);
+        let template_after = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert_eq!(
+            template_before, template_after,
+            "hidden Template-tab equipment pane must not mutate scroll state"
+        );
+
+        click_unit_stats_tab(&mut view, UnitStatsTab::Stats);
+        let restored = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert_eq!(equipment_scroll_pair(&restored).0, 150);
+        assert!(visible_equipment_chunk(&restored).contains("equipment_name=A_eq_04(D);"));
+    }
+
+    #[test]
+    fn unit_view_stats_tab_selection_survives_scrub_a_b_a() {
+        let stage = stage_with(&[]);
+        let a = snap_unit_many_equipment(20, "A");
+        let b = snap_unit_many_equipment(20, "B");
+        let mut view = UnitView::new();
+        view.rebind(&unit_rebind_ctx(&a));
+
+        let out = click_unit_stats_tab(&mut view, UnitStatsTab::Template);
+        assert!(out.consumed && out.needs_redraw);
+        let a1 = bound_digest(&view.bind(&ctx(&stage, &a)));
+        assert_eq!(unit_stats_tab_digest(&a1), "template");
+        assert_eq!(visible_equipment_chunk(&a1), "");
+        assert!(a1.contains("equipment_name=A_eq_01(D);"));
+
+        view.rebind(&unit_rebind_ctx(&b));
+        let b_digest = bound_digest(&view.bind(&ctx(&stage, &b)));
+        assert_eq!(unit_stats_tab_digest(&b_digest), "template");
+        assert_eq!(visible_equipment_chunk(&b_digest), "");
+        assert!(b_digest.contains("equipment_name=B_eq_01(D);"));
+        assert!(!b_digest.contains("equipment_name=A_eq_01(D);"));
+
+        view.rebind(&unit_rebind_ctx(&a));
+        let a2 = bound_digest(&view.bind(&ctx(&stage, &a)));
+        assert_eq!(
+            a1, a2,
+            "UnitView stats-tab scrub A->B->A must be byte-identical"
+        );
+    }
+
+    #[test]
+    fn unit_view_wheel_outside_division_list_is_inert() {
+        let snap = many_unit_divisions_snap(30, "A");
+        let mut view = UnitView::new();
+        view.rebind(&unit_rebind_ctx(&snap));
+        let viewport = unit_division_list_fallback(view.screen);
+
+        let out = view.on_input(&ViewInput::Wheel {
+            x: viewport.x + viewport.w + 20.0,
+            y: viewport.y + UNIT_VIEW_ROW_H,
+            dy: -5.0,
+        });
+        assert!(
+            !out.consumed && !out.needs_redraw && out.commands.is_empty(),
+            "wheel outside the division list must be inert"
+        );
+        assert_eq!(view.division_scroll_y, 0.0);
     }
 
     #[test]

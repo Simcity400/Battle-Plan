@@ -251,6 +251,7 @@ struct SpriteCell {
 /// the view's `Drawable` through the template; recorded in the digest so a scrub is exact.
 #[derive(Clone)]
 struct DataRow {
+    key: Option<String>,
     cells: Vec<Cell>,
     sprites: Vec<SpriteCell>,
     gaps: Vec<String>,
@@ -259,9 +260,19 @@ struct DataRow {
 impl DataRow {
     fn new() -> DataRow {
         DataRow {
+            key: None,
             cells: Vec::new(),
             sprites: Vec::new(),
             gaps: Vec::new(),
+        }
+    }
+    /// Assign a stable read-only selection key from a measured row id. Missing ids
+    /// remain unselectable by key; no row index or display text is fabricated as identity.
+    fn set_key_from(&mut self, prefix: &str, elem: &serde_json::Value, field: &str) {
+        if let Captured::Measured(v) = elem_field(elem, field) {
+            if let Some(token) = row_key_token(v) {
+                self.key = Some(format!("{prefix}:{token}"));
+            }
         }
     }
     /// Bind `element` to `cap` formatted by `fmt` at `fidelity`, recording the atom.
@@ -353,6 +364,9 @@ fn row_digest(rows: &[DataRow]) -> String {
     let mut s = String::new();
     for (i, r) in rows.iter().enumerate() {
         s.push_str(&format!("r{i}["));
+        if let Some(key) = &r.key {
+            s.push_str(&format!("key={key};"));
+        }
         for c in &r.cells {
             let badge = match c.atom.fidelity() {
                 Fidelity::Exact => "E",
@@ -370,6 +384,14 @@ fn row_digest(rows: &[DataRow]) -> String {
         s.push(']');
     }
     s
+}
+
+fn row_key_token(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
 }
 
 /// Why a row section has no rows — so "no data" (the live domain is absent) is never
@@ -894,6 +916,19 @@ fn render_rows(
     template_name: &str,
     rows: &[DataRow],
 ) {
+    render_rows_scrolled(fd, panel, file, grid_name, template_name, rows, 0.0, None);
+}
+
+fn render_rows_scrolled(
+    fd: &mut FrameDraw,
+    panel: &[Node],
+    file: &GuiFile,
+    grid_name: &str,
+    template_name: &str,
+    rows: &[DataRow],
+    scroll_y: f32,
+    selected_key: Option<&str>,
+) {
     let viewport = match find_rect(panel, grid_name) {
         Some(r) => r,
         None => return,
@@ -911,7 +946,7 @@ fn render_rows(
         manifest,
         measure: |_t, _f| None,
     };
-    let mut inst = gridbox::instantiate(&template, rows.len(), viewport, &spec, 0.0, &content);
+    let mut inst = gridbox::instantiate(&template, rows.len(), viewport, &spec, scroll_y, &content);
     for (i, row) in inst.rows.iter_mut().enumerate() {
         for cell in &rows[i].cells {
             bind::apply::set_element_text(row, &cell.element, cell.atom.as_str());
@@ -926,9 +961,32 @@ fn render_rows(
     } else {
         None
     };
+    let selected_marker = if selected_key.is_some() {
+        Some(mint_white(fd))
+    } else {
+        None
+    };
     let textures: &mut TextureCache = fd.textures;
     let fonts: &mut FontCache = fd.fonts;
     for (row, data) in inst.rows.iter().zip(rows.iter()) {
+        if selected_key.is_some()
+            && data.key.as_deref() == selected_key
+            && row.rect.y + row.rect.h > viewport.y
+            && row.rect.y < viewport.y + viewport.h
+        {
+            if let Some(white) = selected_marker.as_ref() {
+                widgets::common::fill_rect(
+                    fd.renderer,
+                    white,
+                    row.rect.x + 1.0,
+                    row.rect.y + 1.0,
+                    row.rect.w - 2.0,
+                    row.rect.h - 2.0,
+                    [0.24, 0.34, 0.46, 0.70],
+                    Some([viewport.x, viewport.y, viewport.w, viewport.h]),
+                );
+            }
+        }
         gui_runtime::draw::draw_window(fd.renderer, row, textures, fonts, &mut stats);
         if let Some(white) = unavailable_marker.as_ref() {
             draw_unavailable_sprite_markers(fd.renderer, white, row, data);
@@ -1065,6 +1123,277 @@ fn army_tabs_fallback(screen: Rect) -> Rect {
     }
 }
 
+fn army_roster_fallback(screen: Rect, tab: &str) -> Rect {
+    let root_x = screen.x + screen.w - 606.0;
+    let (y, h) = match tab {
+        "navy" => (screen.y + 315.0, screen.h - 315.0),
+        "air" => (screen.y + 375.0, screen.h - 375.0),
+        _ => (screen.y + 340.0, screen.h - 340.0),
+    };
+    Rect {
+        x: root_x,
+        y,
+        w: 550.0,
+        h: h.max(0.0),
+    }
+}
+
+const ARMY_ROSTER_ROW_H: f32 = 35.0;
+
+#[derive(Clone, Default)]
+struct ArmyRosterKeys {
+    army: Vec<Option<String>>,
+    navy: Vec<Option<String>>,
+    air: Vec<Option<String>>,
+}
+
+impl ArmyRosterKeys {
+    fn get(&self, tab: &str) -> &[Option<String>] {
+        match tab {
+            "navy" => &self.navy,
+            "air" => &self.air,
+            _ => &self.army,
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct ArmyRosterSelection {
+    army: Option<String>,
+    navy: Option<String>,
+    air: Option<String>,
+}
+
+impl ArmyRosterSelection {
+    fn get(&self, tab: &str) -> Option<&str> {
+        match tab {
+            "navy" => self.navy.as_deref(),
+            "air" => self.air.as_deref(),
+            _ => self.army.as_deref(),
+        }
+    }
+
+    fn set(&mut self, tab: &str, key: String) {
+        match tab {
+            "navy" => self.navy = Some(key),
+            "air" => self.air = Some(key),
+            _ => self.army = Some(key),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct ArmyRosterScroll {
+    army: f32,
+    navy: f32,
+    air: f32,
+}
+
+impl ArmyRosterScroll {
+    fn get(&self, tab: &str) -> f32 {
+        match tab {
+            "navy" => self.navy,
+            "air" => self.air,
+            _ => self.army,
+        }
+    }
+
+    fn set(&mut self, tab: &str, value: f32) {
+        match tab {
+            "navy" => self.navy = value,
+            "air" => self.air = value,
+            _ => self.army = value,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ArmyRowWindow {
+    scroll_y: f32,
+    max_scroll: f32,
+    first: usize,
+    visible: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ArmyScrollDrag {
+    tab: &'static str,
+    pointer_offset_y: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ArmyScrollbarGeometry {
+    track: Rect,
+    thumb: Rect,
+    max_scroll: f32,
+}
+
+fn selected_army_tab_id(tabs: &TabBar) -> &'static str {
+    match tabs.selected() {
+        Some("navy") => "navy",
+        Some("air") => "air",
+        _ => "army",
+    }
+}
+
+fn measured_row_key(prefix: &str, elem: &serde_json::Value, field: &str) -> Option<String> {
+    match elem_field(elem, field) {
+        Captured::Measured(v) => row_key_token(v).map(|token| format!("{prefix}:{token}")),
+        Captured::Null | Captured::Absent => None,
+    }
+}
+
+fn roster_keys_for(
+    rows: Option<&[serde_json::Value]>,
+    tag: &str,
+    prefix: &str,
+) -> Vec<Option<String>> {
+    match rows {
+        Some(rows) => rows
+            .iter()
+            .filter(|row| owned_by(row, tag))
+            .map(|row| measured_row_key(prefix, row, "id"))
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
+fn army_roster_keys(oob: &Captured<&serde_json::Value>, tag: &str) -> ArmyRosterKeys {
+    let (armies, _) = oob_list(oob, "armies");
+    let (fleets, _) = oob_list(oob, "fleets");
+    let (wings, _) = oob_list(oob, "air_wings");
+    ArmyRosterKeys {
+        army: roster_keys_for(armies, tag, "army"),
+        navy: roster_keys_for(fleets, tag, "navy"),
+        air: roster_keys_for(wings, tag, "air"),
+    }
+}
+
+fn max_army_scroll_fallback(viewport: Rect, row_count: usize) -> f32 {
+    (row_count as f32 * ARMY_ROSTER_ROW_H - viewport.h).max(0.0)
+}
+
+fn scroll_army_roster_offset(current: f32, viewport: Rect, row_count: usize, dy: f32) -> f32 {
+    if dy == 0.0 || !dy.is_finite() {
+        return current;
+    }
+    let rows = dy.abs().ceil().max(1.0);
+    let delta = rows * ARMY_ROSTER_ROW_H;
+    let next = if dy < 0.0 {
+        current + delta
+    } else {
+        (current - delta).max(0.0)
+    };
+    next.min(max_army_scroll_fallback(viewport, row_count))
+}
+
+fn army_scrollbar_geometry(
+    viewport: Rect,
+    row_count: usize,
+    scroll_y: f32,
+) -> Option<ArmyScrollbarGeometry> {
+    let content_h = row_count as f32 * ARMY_ROSTER_ROW_H;
+    let max_scroll = gridbox::ScrollBar::max_scroll(viewport.h, content_h);
+    if max_scroll <= 0.0 || viewport.h <= 0.0 {
+        return None;
+    }
+    let track = Rect {
+        x: viewport.x + viewport.w - GUTTER,
+        y: viewport.y,
+        w: GUTTER,
+        h: viewport.h,
+    };
+    let visible_frac = (viewport.h / content_h).clamp(0.05, 1.0);
+    let thumb_h = (track.h * visible_frac).max(16.0).min(track.h);
+    let scroll_frac = (scroll_y.clamp(0.0, max_scroll) / max_scroll).clamp(0.0, 1.0);
+    let thumb_y = track.y + (track.h - thumb_h).max(0.0) * scroll_frac;
+    Some(ArmyScrollbarGeometry {
+        track,
+        thumb: Rect {
+            x: track.x,
+            y: thumb_y,
+            w: track.w,
+            h: thumb_h,
+        },
+        max_scroll,
+    })
+}
+
+fn army_scroll_from_thumb_y(geom: ArmyScrollbarGeometry, thumb_y: f32) -> f32 {
+    let travel = (geom.track.h - geom.thumb.h).max(0.0);
+    if travel <= 0.0 {
+        return 0.0;
+    }
+    let y = thumb_y.clamp(geom.track.y, geom.track.y + travel);
+    ((y - geom.track.y) / travel).clamp(0.0, 1.0) * geom.max_scroll
+}
+
+fn pick_army_row_key(
+    viewport: Rect,
+    keys: &[Option<String>],
+    scroll_y: f32,
+    x: f32,
+    y: f32,
+) -> Option<String> {
+    if !viewport.contains(x, y) {
+        return None;
+    }
+    let idx = ((y - viewport.y + scroll_y.max(0.0)) / ARMY_ROSTER_ROW_H).floor() as usize;
+    keys.get(idx).and_then(|key| key.clone())
+}
+
+fn army_grid_window(
+    roots: &[Node],
+    file: &GuiFile,
+    grid_name: &str,
+    template_name: &str,
+    row_count: usize,
+    requested_scroll: f32,
+    fallback_viewport: Rect,
+) -> ArmyRowWindow {
+    let metrics = find_rect(roots, grid_name)
+        .and_then(|viewport| {
+            find_template(file, template_name).map(|template| (viewport, template))
+        })
+        .map(|(viewport, template)| {
+            let spec = GridSpec::from_gridbox(&stub_grid(grid_name, viewport), &template, GUTTER);
+            (viewport, spec.cell_h.max(1.0), spec.columns.max(1))
+        });
+    let (viewport_h, cell_h, columns) = match metrics {
+        Some((viewport, cell_h, columns)) => (viewport.h, cell_h, columns),
+        None => (fallback_viewport.h, ARMY_ROSTER_ROW_H, 1),
+    };
+    let grid_rows = row_count.div_ceil(columns);
+    let content_h = grid_rows as f32 * cell_h;
+    let max_scroll = gridbox::ScrollBar::max_scroll(viewport_h, content_h);
+    let scroll_y = requested_scroll.clamp(0.0, max_scroll);
+    let first_grid_row = (scroll_y / cell_h).floor() as usize;
+    let visible_grid_rows = (viewport_h / cell_h).ceil().max(1.0) as usize + 1;
+    ArmyRowWindow {
+        scroll_y,
+        max_scroll,
+        first: first_grid_row.saturating_mul(columns),
+        visible: visible_grid_rows.saturating_mul(columns),
+    }
+}
+
+fn visible_row_digest(rows: &[DataRow], window: ArmyRowWindow) -> String {
+    let visible: Vec<DataRow> = rows
+        .iter()
+        .skip(window.first)
+        .take(window.visible)
+        .cloned()
+        .collect();
+    row_digest(&visible)
+}
+
+fn selected_row_digest(rows: &[DataRow], key: Option<&str>) -> String {
+    match key.and_then(|selected| rows.iter().find(|row| row.key.as_deref() == Some(selected))) {
+        Some(row) => row_digest(std::slice::from_ref(row)),
+        None => "none".to_string(),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ArmyTabClick {
     Changed,
@@ -1106,6 +1435,10 @@ const ARMY_ROOT: &str = "countryarmyview";
 
 pub struct ArmyView {
     selected_tab: Option<String>,
+    selected_rows: ArmyRosterSelection,
+    scroll: ArmyRosterScroll,
+    scroll_drag: Option<ArmyScrollDrag>,
+    row_keys: ArmyRosterKeys,
     tabs: TabBar,
     screen: Rect,
 }
@@ -1119,6 +1452,10 @@ impl ArmyView {
         );
         ArmyView {
             selected_tab: tabs.selected().map(str::to_string),
+            selected_rows: ArmyRosterSelection::default(),
+            scroll: ArmyRosterScroll::default(),
+            scroll_drag: None,
+            row_keys: ArmyRosterKeys::default(),
             tabs,
             screen: default_army_screen(),
         }
@@ -1142,23 +1479,31 @@ struct ArmyDrawable {
     air_section: SectionState,
     /// N2 sub-view selector (Army / Navy / Air).
     tabs: TabBar,
+    selected_rows: ArmyRosterSelection,
+    army_window: ArmyRowWindow,
+    navy_window: ArmyRowWindow,
+    air_window: ArmyRowWindow,
 }
 
 impl Drawable for ArmyDrawable {
     fn draw_digest(&self) -> String {
-        let (visible_tab, visible_rows) = match self.tabs.selected() {
-            Some("navy") => ("navy", &self.navy_rows),
-            Some("air") => ("air", &self.air_rows),
-            _ => ("army", &self.army_rows),
+        let (visible_tab, visible_rows, window) = match self.tabs.selected() {
+            Some("navy") => ("navy", &self.navy_rows, self.navy_window),
+            Some("air") => ("air", &self.air_rows, self.air_window),
+            _ => ("army", &self.army_rows, self.army_window),
         };
+        let selected_key = self.selected_rows.get(visible_tab);
         format!(
-            "ARMY army_sect={} navy_sect={} air_sect={} selected={:?} visible_tab={} visible=[{}] army={} navy={} air={} TABS {}",
+            "ARMY army_sect={} navy_sect={} air_sect={} selected={:?} visible_tab={} row_selected={} scroll={:.0}/{:.0} visible=[{}] army={} navy={} air={} TABS {}",
             self.army_section.tag(),
             self.navy_section.tag(),
             self.air_section.tag(),
             self.tabs.selected(),
             visible_tab,
-            row_digest(visible_rows),
+            selected_row_digest(visible_rows, selected_key),
+            window.scroll_y,
+            window.max_scroll,
+            visible_row_digest(visible_rows, window),
             row_digest(&self.army_rows),
             row_digest(&self.navy_rows),
             row_digest(&self.air_rows),
@@ -1169,29 +1514,35 @@ impl Drawable for ArmyDrawable {
         fd.draw_nodes(&self.roots);
         // the active tab decides which roster fills the (tab-shared) `item_grid` region.
         match self.tabs.selected() {
-            Some("navy") => render_rows(
+            Some("navy") => render_rows_scrolled(
                 fd,
                 &self.roots,
                 &self.file,
                 "item_grid",
                 "armyview_navy_entry",
                 &self.navy_rows,
+                self.navy_window.scroll_y,
+                self.selected_rows.get("navy"),
             ),
-            Some("air") => render_rows(
+            Some("air") => render_rows_scrolled(
                 fd,
                 &self.roots,
                 &self.file,
                 "item_grid",
                 "armyview_air_entry",
                 &self.air_rows,
+                self.air_window.scroll_y,
+                self.selected_rows.get("air"),
             ),
-            _ => render_rows(
+            _ => render_rows_scrolled(
                 fd,
                 &self.roots,
                 &self.file,
                 "item_grid",
                 "armyview_army_entry",
                 &self.army_rows,
+                self.army_window.scroll_y,
+                self.selected_rows.get("army"),
             ),
         }
         draw_tabs_over(fd, &self.roots, "info", &self.tabs);
@@ -1214,6 +1565,24 @@ impl ViewInstance for ArmyView {
         };
         let oob = ctx.order_of_battle();
         self.tabs = army_tabs_with_selection(army_tabs_for_oob(&oob), self.selected_tab.as_deref());
+        self.row_keys = army_roster_keys(&oob, ctx.country);
+        for tab in ["army", "navy", "air"] {
+            let viewport = army_roster_fallback(self.screen, tab);
+            let clamped = self.scroll.get(tab).min(max_army_scroll_fallback(
+                viewport,
+                self.row_keys.get(tab).len(),
+            ));
+            self.scroll.set(tab, clamped);
+        }
+        if let Some(drag) = self.scroll_drag {
+            let viewport = army_roster_fallback(self.screen, drag.tab);
+            let scroll_y = self.scroll.get(drag.tab);
+            if army_scrollbar_geometry(viewport, self.row_keys.get(drag.tab).len(), scroll_y)
+                .is_none()
+            {
+                self.scroll_drag = None;
+            }
+        }
     }
     fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
         match *ev {
@@ -1231,8 +1600,78 @@ impl ViewInstance for ArmyView {
                     army_input_consumed(false)
                 }
                 ArmyTabClick::Inert => army_input_consumed(false),
-                ArmyTabClick::Miss => InputOutcome::ignored(),
+                ArmyTabClick::Miss => {
+                    let tab = selected_army_tab_id(&self.tabs);
+                    let viewport = army_roster_fallback(self.screen, tab);
+                    let scroll_y = self.scroll.get(tab).min(max_army_scroll_fallback(
+                        viewport,
+                        self.row_keys.get(tab).len(),
+                    ));
+                    if let Some(geom) =
+                        army_scrollbar_geometry(viewport, self.row_keys.get(tab).len(), scroll_y)
+                    {
+                        if geom.thumb.contains(x, y) {
+                            self.scroll_drag = Some(ArmyScrollDrag {
+                                tab,
+                                pointer_offset_y: y - geom.thumb.y,
+                            });
+                            return army_input_consumed(false);
+                        }
+                        if geom.track.contains(x, y) {
+                            return army_input_consumed(false);
+                        }
+                    }
+                    if let Some(key) =
+                        pick_army_row_key(viewport, self.row_keys.get(tab), scroll_y, x, y)
+                    {
+                        self.selected_rows.set(tab, key);
+                        army_input_consumed(true)
+                    } else {
+                        InputOutcome::ignored()
+                    }
+                }
             },
+            ViewInput::Wheel { x, y, dy } => {
+                let tab = selected_army_tab_id(&self.tabs);
+                let viewport = army_roster_fallback(self.screen, tab);
+                if !viewport.contains(x, y) {
+                    return InputOutcome::ignored();
+                }
+                let count = self.row_keys.get(tab).len();
+                let current = self.scroll.get(tab);
+                let next = scroll_army_roster_offset(current, viewport, count, dy);
+                self.scroll.set(tab, next);
+                army_input_consumed(next != current)
+            }
+            ViewInput::PointerMove { x: _, y, drag } if drag => {
+                let drag = match self.scroll_drag {
+                    Some(drag) => drag,
+                    None => return InputOutcome::ignored(),
+                };
+                let viewport = army_roster_fallback(self.screen, drag.tab);
+                let geom = match army_scrollbar_geometry(
+                    viewport,
+                    self.row_keys.get(drag.tab).len(),
+                    self.scroll.get(drag.tab),
+                ) {
+                    Some(geom) => geom,
+                    None => return InputOutcome::ignored(),
+                };
+                let current = self.scroll.get(drag.tab);
+                let next = army_scroll_from_thumb_y(geom, y - drag.pointer_offset_y);
+                self.scroll.set(drag.tab, next);
+                army_input_consumed((next - current).abs() > f32::EPSILON)
+            }
+            ViewInput::PointerUp {
+                button: PointerButton::Left,
+                ..
+            } => {
+                if self.scroll_drag.take().is_some() {
+                    army_input_consumed(false)
+                } else {
+                    InputOutcome::ignored()
+                }
+            }
             _ => InputOutcome::ignored(),
         }
     }
@@ -1278,6 +1717,36 @@ impl ViewInstance for ArmyView {
         );
 
         let roots = build_root(ctx, &file, ARMY_ROOT, &summary);
+        let army_fallback = army_roster_fallback(self.screen, "army");
+        let navy_fallback = army_roster_fallback(self.screen, "navy");
+        let air_fallback = army_roster_fallback(self.screen, "air");
+        let army_window = army_grid_window(
+            &roots,
+            &file,
+            "item_grid",
+            "armyview_army_entry",
+            army_rows.len(),
+            self.scroll.get("army"),
+            army_fallback,
+        );
+        let navy_window = army_grid_window(
+            &roots,
+            &file,
+            "item_grid",
+            "armyview_navy_entry",
+            navy_rows.len(),
+            self.scroll.get("navy"),
+            navy_fallback,
+        );
+        let air_window = army_grid_window(
+            &roots,
+            &file,
+            "item_grid",
+            "armyview_air_entry",
+            air_rows.len(),
+            self.scroll.get("air"),
+            air_fallback,
+        );
         let drawable = ArmyDrawable {
             roots: roots.clone(),
             file,
@@ -1288,6 +1757,10 @@ impl ViewInstance for ArmyView {
             navy_section,
             air_section,
             tabs,
+            selected_rows: self.selected_rows.clone(),
+            army_window,
+            navy_window,
+            air_window,
         };
         BoundView {
             instance: InstanceId(0),
@@ -1319,6 +1792,7 @@ fn build_army_rows(
     let mut rows = Vec::new();
     for a in armies.iter().filter(|a| owned_by(a, tag)) {
         let mut row = DataRow::new();
+        row.set_key_from("army", a, "id");
         row.bind(
             fidelity,
             "name",
@@ -1363,6 +1837,7 @@ fn build_armyview_navy_rows(
     let mut rows = Vec::new();
     for f in fleets.iter().filter(|f| owned_by(f, tag)) {
         let mut row = DataRow::new();
+        row.set_key_from("navy", f, "id");
         row.bind(
             fidelity,
             "unit_name",
@@ -1413,6 +1888,7 @@ fn build_armyview_air_rows(
     let mut rows = Vec::new();
     for w in wings.iter().filter(|w| owned_by(w, tag)) {
         let mut row = DataRow::new();
+        row.set_key_from("air", w, "id");
         row.bind(
             fidelity,
             "unit_name",
@@ -3045,12 +3521,25 @@ register_view!(ViewDescriptor {
 const THEATRE_SELECTOR_VIEW_ID: ViewId = ViewId("military.theatre_selector");
 const THEATRE_SELECTOR_FILE: &str = "theatre_selector.json";
 const THEATRE_SELECTOR_ROOT: &str = "theatre_selection_window";
+const THEATRE_SELECTOR_ROW_H: f32 = 65.0;
 
-pub struct TheatreSelectorView;
+pub struct TheatreSelectorView {
+    selected_theatre_key: Option<String>,
+    theatre_keys: Vec<Option<String>>,
+    scroll_y: f32,
+    scroll_drag: Option<TheatreScrollDrag>,
+    screen: Rect,
+}
 
 impl TheatreSelectorView {
     pub fn new() -> TheatreSelectorView {
-        TheatreSelectorView
+        TheatreSelectorView {
+            selected_theatre_key: None,
+            theatre_keys: Vec::new(),
+            scroll_y: 0.0,
+            scroll_drag: None,
+            screen: default_theatre_selector_screen(),
+        }
     }
 }
 
@@ -3060,30 +3549,254 @@ impl Default for TheatreSelectorView {
     }
 }
 
+fn default_theatre_selector_screen() -> Rect {
+    Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 1600.0,
+        h: 900.0,
+    }
+}
+
+fn theatre_selector_list_fallback(screen: Rect) -> Rect {
+    Rect {
+        x: screen.x + screen.w - 758.0,
+        y: screen.y + 120.0,
+        w: 300.0,
+        h: (screen.h - 360.0).max(0.0),
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TheatreRowWindow {
+    scroll_y: f32,
+    max_scroll: f32,
+    first: usize,
+    visible: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TheatreScrollDrag {
+    pointer_offset_y: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TheatreScrollbarGeometry {
+    track: Rect,
+    thumb: Rect,
+    max_scroll: f32,
+}
+
+fn theatre_keys_for(oob: &Captured<&serde_json::Value>, tag: &str) -> Vec<Option<String>> {
+    let (theatres, _) = oob_list(oob, "theatres");
+    unique_theatre_keys(theatres, tag)
+}
+
+fn unique_theatre_keys(theatres: Option<&[serde_json::Value]>, tag: &str) -> Vec<Option<String>> {
+    let theatres = match theatres {
+        Some(theatres) => theatres,
+        None => return Vec::new(),
+    };
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for theatre in theatres
+        .iter()
+        .filter(|theatre| field_is(theatre, "owner", tag))
+    {
+        if let Some(key) = measured_row_key("theatre", theatre, "id") {
+            let next = match counts.get(&key) {
+                Some(count) => count + 1,
+                None => 1,
+            };
+            counts.insert(key, next);
+        }
+    }
+    theatres
+        .iter()
+        .filter(|theatre| field_is(theatre, "owner", tag))
+        .map(|theatre| match measured_row_key("theatre", theatre, "id") {
+            Some(key) => {
+                if let Some(count) = counts.get(&key) {
+                    if *count == 1 {
+                        Some(key)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            None => None,
+        })
+        .collect()
+}
+
+fn max_theatre_scroll_fallback(viewport: Rect, row_count: usize) -> f32 {
+    (row_count as f32 * THEATRE_SELECTOR_ROW_H - viewport.h).max(0.0)
+}
+
+fn scroll_theatre_offset(current: f32, viewport: Rect, row_count: usize, dy: f32) -> f32 {
+    if dy == 0.0 || !dy.is_finite() {
+        return current;
+    }
+    let rows = dy.abs().ceil().max(1.0);
+    let delta = rows * THEATRE_SELECTOR_ROW_H;
+    let next = if dy < 0.0 {
+        current + delta
+    } else {
+        (current - delta).max(0.0)
+    };
+    next.min(max_theatre_scroll_fallback(viewport, row_count))
+}
+
+fn theatre_scrollbar_geometry(
+    viewport: Rect,
+    row_count: usize,
+    scroll_y: f32,
+) -> Option<TheatreScrollbarGeometry> {
+    let content_h = row_count as f32 * THEATRE_SELECTOR_ROW_H;
+    let max_scroll = gridbox::ScrollBar::max_scroll(viewport.h, content_h);
+    if max_scroll <= 0.0 || viewport.h <= 0.0 {
+        return None;
+    }
+    let track = Rect {
+        x: viewport.x + viewport.w - GUTTER,
+        y: viewport.y,
+        w: GUTTER,
+        h: viewport.h,
+    };
+    let visible_frac = (viewport.h / content_h).clamp(0.05, 1.0);
+    let thumb_h = (track.h * visible_frac).max(16.0).min(track.h);
+    let scroll_frac = (scroll_y.clamp(0.0, max_scroll) / max_scroll).clamp(0.0, 1.0);
+    let thumb_y = track.y + (track.h - thumb_h).max(0.0) * scroll_frac;
+    Some(TheatreScrollbarGeometry {
+        track,
+        thumb: Rect {
+            x: track.x,
+            y: thumb_y,
+            w: track.w,
+            h: thumb_h,
+        },
+        max_scroll,
+    })
+}
+
+fn theatre_scroll_from_thumb_y(geom: TheatreScrollbarGeometry, thumb_y: f32) -> f32 {
+    let travel = (geom.track.h - geom.thumb.h).max(0.0);
+    if travel <= 0.0 {
+        return 0.0;
+    }
+    let y = thumb_y.clamp(geom.track.y, geom.track.y + travel);
+    ((y - geom.track.y) / travel).clamp(0.0, 1.0) * geom.max_scroll
+}
+
+fn pick_theatre_row_key(
+    viewport: Rect,
+    keys: &[Option<String>],
+    scroll_y: f32,
+    x: f32,
+    y: f32,
+) -> Option<String> {
+    if !viewport.contains(x, y) {
+        return None;
+    }
+    let idx = ((y - viewport.y + scroll_y.max(0.0)) / THEATRE_SELECTOR_ROW_H).floor() as usize;
+    keys.get(idx).and_then(|key| key.clone())
+}
+
+fn theatre_grid_window(
+    roots: &[Node],
+    file: &GuiFile,
+    row_count: usize,
+    requested_scroll: f32,
+    fallback_viewport: Rect,
+) -> TheatreRowWindow {
+    let metrics = find_rect(roots, "elements_list")
+        .and_then(|viewport| {
+            find_template(file, "theatre_selection_entry").map(|template| (viewport, template))
+        })
+        .map(|(viewport, template)| {
+            let spec =
+                GridSpec::from_gridbox(&stub_grid("elements_list", viewport), &template, GUTTER);
+            (viewport, spec.cell_h.max(1.0), spec.columns.max(1))
+        });
+    let (viewport_h, cell_h, columns) = match metrics {
+        Some((viewport, cell_h, columns)) => (viewport.h, cell_h, columns),
+        None => (fallback_viewport.h, THEATRE_SELECTOR_ROW_H, 1),
+    };
+    let grid_rows = row_count.div_ceil(columns);
+    let content_h = grid_rows as f32 * cell_h;
+    let max_scroll = gridbox::ScrollBar::max_scroll(viewport_h, content_h);
+    let scroll_y = requested_scroll.clamp(0.0, max_scroll);
+    let first_grid_row = (scroll_y / cell_h).floor() as usize;
+    let visible_grid_rows = (viewport_h / cell_h).ceil().max(1.0) as usize + 1;
+    TheatreRowWindow {
+        scroll_y,
+        max_scroll,
+        first: first_grid_row.saturating_mul(columns),
+        visible: visible_grid_rows.saturating_mul(columns),
+    }
+}
+
+fn visible_theatre_row_digest(rows: &[DataRow], window: TheatreRowWindow) -> String {
+    let visible: Vec<DataRow> = rows
+        .iter()
+        .skip(window.first)
+        .take(window.visible)
+        .cloned()
+        .collect();
+    row_digest(&visible)
+}
+
 struct TheatreSelectorDrawable {
     roots: Vec<Node>,
     file: GuiFile,
     theatre_rows: Vec<DataRow>,
+    theatre_window: TheatreRowWindow,
     section: SectionState,
+    selected_theatre_key: Option<String>,
 }
 
 impl Drawable for TheatreSelectorDrawable {
     fn draw_digest(&self) -> String {
+        let selected_key = match self.selected_theatre_key.as_deref() {
+            Some(key) => key,
+            None => DASH,
+        };
+        let selected_state = match self.selected_theatre_key.as_deref() {
+            Some(key)
+                if self
+                    .theatre_rows
+                    .iter()
+                    .any(|row| row.key.as_deref() == Some(key)) =>
+            {
+                "selected"
+            }
+            Some(_) => "missing_selected",
+            None => "none",
+        };
         format!(
-            "THEATRE sect={} theatres={}",
+            "THEATRE sect={} selected={} selected_key={} selected_row={} scroll={:.0}/{:.0} visible=[{}] theatres={}",
             self.section.tag(),
+            selected_state,
+            selected_key,
+            selected_row_digest(&self.theatre_rows, self.selected_theatre_key.as_deref()),
+            self.theatre_window.scroll_y,
+            self.theatre_window.max_scroll,
+            visible_theatre_row_digest(&self.theatre_rows, self.theatre_window),
             row_digest(&self.theatre_rows)
         )
     }
     fn draw(&self, fd: &mut FrameDraw) {
         fd.draw_nodes(&self.roots);
-        render_rows(
+        render_rows_scrolled(
             fd,
             &self.roots,
             &self.file,
             "elements_list",
             "theatre_selection_entry",
             &self.theatre_rows,
+            self.theatre_window.scroll_y,
+            self.selected_theatre_key.as_deref(),
         );
     }
 }
@@ -3094,6 +3807,101 @@ impl ViewInstance for TheatreSelectorView {
     }
     fn policy(&self) -> HostPolicy {
         HostPolicy::window(ZBand::Panel)
+    }
+    fn rebind(&mut self, ctx: &RebindContext) {
+        self.screen = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: ctx.screen.0 as f32,
+            h: ctx.screen.1 as f32,
+        };
+        let oob = ctx.order_of_battle();
+        self.theatre_keys = theatre_keys_for(&oob, ctx.country);
+        let viewport = theatre_selector_list_fallback(self.screen);
+        self.scroll_y = self.scroll_y.min(max_theatre_scroll_fallback(
+            viewport,
+            self.theatre_keys.len(),
+        ));
+        if theatre_scrollbar_geometry(viewport, self.theatre_keys.len(), self.scroll_y).is_none() {
+            self.scroll_drag = None;
+        }
+    }
+    fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
+        match *ev {
+            ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            } => {
+                let viewport = theatre_selector_list_fallback(self.screen);
+                if let Some(geom) =
+                    theatre_scrollbar_geometry(viewport, self.theatre_keys.len(), self.scroll_y)
+                {
+                    if geom.thumb.contains(x, y) {
+                        self.scroll_drag = Some(TheatreScrollDrag {
+                            pointer_offset_y: y - geom.thumb.y,
+                        });
+                        return army_input_consumed(false);
+                    }
+                    if geom.track.contains(x, y) {
+                        return army_input_consumed(false);
+                    }
+                }
+                let scroll_y = self.scroll_y.min(max_theatre_scroll_fallback(
+                    viewport,
+                    self.theatre_keys.len(),
+                ));
+                if let Some(key) =
+                    pick_theatre_row_key(viewport, &self.theatre_keys, scroll_y, x, y)
+                {
+                    let changed = self.selected_theatre_key.as_deref() != Some(key.as_str());
+                    self.selected_theatre_key = Some(key);
+                    army_input_consumed(changed)
+                } else {
+                    InputOutcome::ignored()
+                }
+            }
+            ViewInput::Wheel { x, y, dy } => {
+                let viewport = theatre_selector_list_fallback(self.screen);
+                if !viewport.contains(x, y) {
+                    return InputOutcome::ignored();
+                }
+                let current = self.scroll_y;
+                let next = scroll_theatre_offset(current, viewport, self.theatre_keys.len(), dy);
+                self.scroll_y = next;
+                army_input_consumed(next != current)
+            }
+            ViewInput::PointerMove { x: _, y, drag } if drag => {
+                let drag = match self.scroll_drag {
+                    Some(drag) => drag,
+                    None => return InputOutcome::ignored(),
+                };
+                let viewport = theatre_selector_list_fallback(self.screen);
+                let geom = match theatre_scrollbar_geometry(
+                    viewport,
+                    self.theatre_keys.len(),
+                    self.scroll_y,
+                ) {
+                    Some(geom) => geom,
+                    None => return InputOutcome::ignored(),
+                };
+                let current = self.scroll_y;
+                let next = theatre_scroll_from_thumb_y(geom, y - drag.pointer_offset_y);
+                self.scroll_y = next;
+                army_input_consumed((next - current).abs() > f32::EPSILON)
+            }
+            ViewInput::PointerUp {
+                button: PointerButton::Left,
+                ..
+            } => {
+                if self.scroll_drag.take().is_some() {
+                    army_input_consumed(false)
+                } else {
+                    InputOutcome::ignored()
+                }
+            }
+            _ => InputOutcome::ignored(),
+        }
     }
     fn bind(&self, ctx: &BindContext) -> BoundView {
         let tag = ctx.country;
@@ -3106,11 +3914,20 @@ impl ViewInstance for TheatreSelectorView {
         section.record(&mut fidelity);
 
         let roots = build_root(ctx, &file, THEATRE_SELECTOR_ROOT, &[]);
+        let theatre_window = theatre_grid_window(
+            &roots,
+            &file,
+            theatre_rows.len(),
+            self.scroll_y,
+            theatre_selector_list_fallback(self.screen),
+        );
         let drawable = TheatreSelectorDrawable {
             roots: roots.clone(),
             file,
             theatre_rows,
+            theatre_window,
             section,
+            selected_theatre_key: self.selected_theatre_key.clone(),
         };
         BoundView {
             instance: InstanceId(0),
@@ -3138,9 +3955,15 @@ fn build_theatre_rows(
         Some(t) => t,
         None => return Vec::new(),
     };
+    let keys = unique_theatre_keys(Some(theatres), tag);
     let mut rows = Vec::new();
-    for t in theatres.iter().filter(|t| field_is(t, "owner", tag)) {
+    for (t, key) in theatres
+        .iter()
+        .filter(|t| field_is(t, "owner", tag))
+        .zip(keys.into_iter())
+    {
         let mut row = DataRow::new();
+        row.key = key;
         row.bind(
             fidelity,
             "name",
@@ -4067,6 +4890,15 @@ mod tests {
         });
     }
 
+    fn rebind_theatre(v: &mut TheatreSelectorView, snap: &snapshot::Snapshot) {
+        v.rebind(&RebindContext {
+            snapshot: snap,
+            country: "GER",
+            screen: (1600, 900),
+            refit: false,
+        });
+    }
+
     fn army_tab_center(bar: &TabBar, panel: Rect, id: &str) -> (f32, f32) {
         let rect = bar
             .layout(panel)
@@ -4087,6 +4919,78 @@ mod tests {
         })
     }
 
+    fn click_army_visible_row(v: &mut ArmyView, visible_index: usize) -> InputOutcome {
+        let viewport = army_roster_fallback(v.screen, selected_army_tab_id(&v.tabs));
+        v.on_input(&ViewInput::PointerDown {
+            x: viewport.x + 8.0,
+            y: viewport.y + visible_index as f32 * ARMY_ROSTER_ROW_H + ARMY_ROSTER_ROW_H * 0.5,
+            button: PointerButton::Left,
+        })
+    }
+
+    fn wheel_army_roster(v: &mut ArmyView, dy: f32) -> InputOutcome {
+        let viewport = army_roster_fallback(v.screen, selected_army_tab_id(&v.tabs));
+        v.on_input(&ViewInput::Wheel {
+            x: viewport.x + 8.0,
+            y: viewport.y + ARMY_ROSTER_ROW_H * 0.5,
+            dy,
+        })
+    }
+
+    fn click_theatre_visible_row(
+        v: &mut TheatreSelectorView,
+        visible_index: usize,
+    ) -> InputOutcome {
+        let viewport = theatre_selector_list_fallback(v.screen);
+        v.on_input(&ViewInput::PointerDown {
+            x: viewport.x + 8.0,
+            y: viewport.y
+                + visible_index as f32 * THEATRE_SELECTOR_ROW_H
+                + THEATRE_SELECTOR_ROW_H * 0.5,
+            button: PointerButton::Left,
+        })
+    }
+
+    fn wheel_theatre_rows(v: &mut TheatreSelectorView, dy: f32) -> InputOutcome {
+        let viewport = theatre_selector_list_fallback(v.screen);
+        v.on_input(&ViewInput::Wheel {
+            x: viewport.x + 8.0,
+            y: viewport.y + THEATRE_SELECTOR_ROW_H * 0.5,
+            dy,
+        })
+    }
+
+    fn theatre_scrollbar(v: &TheatreSelectorView) -> TheatreScrollbarGeometry {
+        let viewport = theatre_selector_list_fallback(v.screen);
+        theatre_scrollbar_geometry(viewport, v.theatre_keys.len(), v.scroll_y)
+            .expect("theatre list should overflow and expose a scrollbar")
+    }
+
+    fn pointer_down_theatre_thumb(v: &mut TheatreSelectorView) -> InputOutcome {
+        let geom = theatre_scrollbar(v);
+        v.on_input(&ViewInput::PointerDown {
+            x: geom.thumb.x + geom.thumb.w * 0.5,
+            y: geom.thumb.y + geom.thumb.h * 0.5,
+            button: PointerButton::Left,
+        })
+    }
+
+    fn army_scrollbar(v: &ArmyView) -> ArmyScrollbarGeometry {
+        let tab = selected_army_tab_id(&v.tabs);
+        let viewport = army_roster_fallback(v.screen, tab);
+        army_scrollbar_geometry(viewport, v.row_keys.get(tab).len(), v.scroll.get(tab))
+            .expect("army roster should overflow and expose a scrollbar")
+    }
+
+    fn pointer_down_army_thumb(v: &mut ArmyView) -> InputOutcome {
+        let geom = army_scrollbar(v);
+        v.on_input(&ViewInput::PointerDown {
+            x: geom.thumb.x + geom.thumb.w * 0.5,
+            y: geom.thumb.y + geom.thumb.h * 0.5,
+            button: PointerButton::Left,
+        })
+    }
+
     fn visible_army_chunk(d: &str) -> &str {
         let marker = "visible=[";
         let start = d
@@ -4098,6 +5002,249 @@ mod tests {
             .find("] army=")
             .unwrap_or_else(|| panic!("missing visible terminator in digest: {d}"));
         &rest[..end]
+    }
+
+    fn army_scroll_pair(d: &str) -> (i64, i64) {
+        let marker = " scroll=";
+        let start = d
+            .find(marker)
+            .unwrap_or_else(|| panic!("missing army scroll marker in digest: {d}"))
+            + marker.len();
+        let rest = &d[start..];
+        let end = rest
+            .find(" visible=[")
+            .unwrap_or_else(|| panic!("missing army visible marker after scroll in digest: {d}"));
+        let (cur, max) = rest[..end]
+            .split_once('/')
+            .unwrap_or_else(|| panic!("bad army scroll pair in digest: {d}"));
+        (
+            cur.parse().expect("scroll current is int"),
+            max.parse().expect("scroll max is int"),
+        )
+    }
+
+    fn visible_theatre_chunk(d: &str) -> &str {
+        let marker = " visible=[";
+        let start = d
+            .find(marker)
+            .unwrap_or_else(|| panic!("missing theatre visible marker in digest: {d}"))
+            + marker.len();
+        let rest = &d[start..];
+        let end = rest
+            .find("] theatres=")
+            .unwrap_or_else(|| panic!("missing theatre visible terminator in digest: {d}"));
+        &rest[..end]
+    }
+
+    fn theatre_scroll_pair(d: &str) -> (i64, i64) {
+        let marker = " scroll=";
+        let start = d
+            .find(marker)
+            .unwrap_or_else(|| panic!("missing theatre scroll marker in digest: {d}"))
+            + marker.len();
+        let rest = &d[start..];
+        let end = rest.find(" visible=[").unwrap_or_else(|| {
+            panic!("missing theatre visible marker after scroll in digest: {d}")
+        });
+        let (cur, max) = rest[..end]
+            .split_once('/')
+            .unwrap_or_else(|| panic!("bad theatre scroll pair in digest: {d}"));
+        (
+            cur.parse().expect("scroll current is int"),
+            max.parse().expect("scroll max is int"),
+        )
+    }
+
+    fn many_armies_snap(count: usize, prefix: &str) -> snapshot::Snapshot {
+        let armies: Vec<_> = (1..=count)
+            .map(|i| {
+                serde_json::json!({
+                    "id": i,
+                    "owner": "GER",
+                    "name": format!("{prefix} {i:02}"),
+                    "member_count": i
+                })
+            })
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "date": "1941.1.1.12",
+            "hour_index": 100,
+            "countries": { "GER": { "military": { "division_count": count } } },
+            "states": {},
+            "order_of_battle": {
+                "armies": armies,
+                "army_groups": [],
+                "fleets": [],
+                "air_wings": [],
+                "theatres": [],
+                "battle_plan_orders": [],
+                "by_country": {}
+            },
+            "divisions": [],
+            "designs": { "division_templates": [], "equipment_variants": {} }
+        }))
+        .unwrap()
+    }
+
+    fn many_rosters_snap(count: usize, prefix: &str) -> snapshot::Snapshot {
+        let armies: Vec<_> = (1..=count)
+            .map(|i| {
+                serde_json::json!({
+                    "id": i,
+                    "owner": "GER",
+                    "name": format!("{prefix} Army {i:02}"),
+                    "member_count": i
+                })
+            })
+            .collect();
+        let fleets: Vec<_> = (1..=count)
+            .map(|i| {
+                serde_json::json!({
+                    "id": 1000 + i,
+                    "owner": "GER",
+                    "name": format!("{prefix} Fleet {i:02}"),
+                    "task_forces": [
+                        {"id": 2000 + i, "name": format!("TF {i:02}"), "ships": [
+                            {"id": 3000 + i, "name": format!("Ship {i:02}")}
+                        ]}
+                    ]
+                })
+            })
+            .collect();
+        let air_wings: Vec<_> = (1..=count)
+            .map(|i| {
+                serde_json::json!({
+                    "id": 4000 + i,
+                    "owner": "GER",
+                    "name": format!("{prefix} Wing {i:02}"),
+                    "count": 100 + i,
+                    "strategic_region": 10 + i,
+                    "state_id": 60 + i
+                })
+            })
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "date": "1941.1.1.12",
+            "hour_index": 100,
+            "countries": { "GER": { "military": { "division_count": count } } },
+            "states": {},
+            "order_of_battle": {
+                "armies": armies,
+                "army_groups": [],
+                "fleets": fleets,
+                "air_wings": air_wings,
+                "theatres": [],
+                "battle_plan_orders": [],
+                "by_country": {}
+            },
+            "divisions": [],
+            "designs": { "division_templates": [], "equipment_variants": {} }
+        }))
+        .unwrap()
+    }
+
+    fn many_theatres_snap(count: usize, prefix: &str) -> snapshot::Snapshot {
+        let theatres: Vec<_> = (1..=count)
+            .map(|i| {
+                serde_json::json!({
+                    "id": i,
+                    "owner": "GER",
+                    "name": format!("{prefix} Theatre {i:02}"),
+                    "n_armies": i
+                })
+            })
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "date": "1941.1.1.12",
+            "hour_index": 100,
+            "countries": { "GER": { "military": { "division_count": count } } },
+            "states": {},
+            "order_of_battle": {
+                "armies": [],
+                "army_groups": [],
+                "fleets": [],
+                "air_wings": [],
+                "theatres": theatres,
+                "battle_plan_orders": [],
+                "by_country": {}
+            },
+            "divisions": [],
+            "designs": { "division_templates": [], "equipment_variants": {} }
+        }))
+        .unwrap()
+    }
+
+    fn theatre_missing_first_identity_snap() -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1941.1.1.12",
+            "hour_index": 100,
+            "countries": { "GER": { "military": { "division_count": 2 } } },
+            "states": {},
+            "order_of_battle": {
+                "armies": [],
+                "army_groups": [],
+                "fleets": [],
+                "air_wings": [],
+                "theatres": [
+                    {"owner": "GER", "name": "No Id Theatre", "n_armies": 1},
+                    {"id": 202, "owner": "GER", "name": "Keyed Theatre", "n_armies": 2}
+                ],
+                "battle_plan_orders": [],
+                "by_country": {}
+            },
+            "divisions": [],
+            "designs": { "division_templates": [], "equipment_variants": {} }
+        }))
+        .unwrap()
+    }
+
+    fn theatre_duplicate_id_snap() -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1941.1.1.12",
+            "hour_index": 100,
+            "countries": { "GER": { "military": { "division_count": 3 } } },
+            "states": {},
+            "order_of_battle": {
+                "armies": [],
+                "army_groups": [],
+                "fleets": [],
+                "air_wings": [],
+                "theatres": [
+                    {"id": 77, "owner": "GER", "name": "Duplicate Theatre A", "n_armies": 1},
+                    {"id": 77, "owner": "GER", "name": "Duplicate Theatre B", "n_armies": 2},
+                    {"id": 88, "owner": "GER", "name": "Unique Theatre", "n_armies": 3}
+                ],
+                "battle_plan_orders": [],
+                "by_country": {}
+            },
+            "divisions": [],
+            "designs": { "division_templates": [], "equipment_variants": {} }
+        }))
+        .unwrap()
+    }
+
+    fn theatre_missing_selected_snap() -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1941.1.1.13",
+            "hour_index": 101,
+            "countries": { "GER": { "military": { "division_count": 2 } } },
+            "states": {},
+            "order_of_battle": {
+                "armies": [],
+                "army_groups": [],
+                "fleets": [],
+                "air_wings": [],
+                "theatres": [
+                    {"id": 1, "owner": "GER", "name": "Remaining Theatre", "n_armies": 1},
+                    {"id": 202, "owner": "ENG", "name": "Foreign Theatre", "n_armies": 2}
+                ],
+                "battle_plan_orders": [],
+                "by_country": {}
+            },
+            "divisions": [],
+            "designs": { "division_templates": [], "equipment_variants": {} }
+        }))
+        .unwrap()
     }
 
     /// Snapshot A: a SAVE/LIVE-backed GER OOB with armies/fleets/air_wings/theatres/divisions/
@@ -4757,6 +5904,686 @@ mod tests {
         assert!(
             !da2.contains("Hochseeflotte"),
             "A-after-scrub must not carry the B-only Navy row: {da2}"
+        );
+    }
+
+    #[test]
+    fn army_roster_row_click_selects_keyed_row() {
+        let stage = stage_with_manifest(HashMap::new());
+        let snap = snap_a();
+        let mut v = ArmyView::new();
+        rebind_army(&mut v, &snap, true);
+
+        let out = click_army_visible_row(&mut v, 0);
+        assert!(out.consumed);
+        assert!(out.needs_redraw);
+        assert!(out.commands.is_empty());
+
+        let d = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert!(
+            d.contains("row_selected=r0[key=army:11;name=1. Armee(E);"),
+            "clicking the first Army row must select its measured army id, got:\n{d}"
+        );
+    }
+
+    #[test]
+    fn army_roster_wheel_scroll_changes_visible_rows_and_clamps() {
+        let stage = stage_with_manifest(HashMap::new());
+        let snap = many_armies_snap(60, "A");
+        let mut v = ArmyView::new();
+        rebind_army(&mut v, &snap, true);
+
+        let before = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert_eq!(army_scroll_pair(&before).0, 0);
+        assert!(
+            visible_army_chunk(&before).contains("key=army:1;name=A 01(E);"),
+            "{before}"
+        );
+
+        let out = wheel_army_roster(&mut v, -3.0);
+        assert!(out.consumed);
+        assert!(out.needs_redraw);
+        let after = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert_eq!(army_scroll_pair(&after).0, 105);
+        assert!(
+            visible_army_chunk(&after).contains("key=army:4;name=A 04(E);"),
+            "{after}"
+        );
+        assert!(
+            !visible_army_chunk(&after).contains("key=army:1;name=A 01(E);"),
+            "scrolled visible slice must not keep top rows: {after}"
+        );
+
+        let out = wheel_army_roster(&mut v, -500.0);
+        assert!(out.consumed);
+        let clamped = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        let (cur, max) = army_scroll_pair(&clamped);
+        assert_eq!(cur, max, "huge wheel-down must clamp to max: {clamped}");
+
+        let out = wheel_army_roster(&mut v, 500.0);
+        assert!(out.consumed);
+        let reset = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert_eq!(army_scroll_pair(&reset).0, 0);
+    }
+
+    #[test]
+    fn army_roster_wheel_scroll_covers_army_navy_air_tabs() {
+        let stage = stage_with_manifest(HashMap::new());
+        let snap = many_rosters_snap(45, "A");
+        let mut v = ArmyView::new();
+        rebind_army(&mut v, &snap, true);
+
+        for (tab, expected_top, expected_after) in [
+            (
+                "army",
+                "key=army:1;name=A Army 01(E);",
+                "key=army:4;name=A Army 04(E);",
+            ),
+            (
+                "navy",
+                "key=navy:1001;unit_name=A Fleet 01(E);",
+                "key=navy:1004;unit_name=A Fleet 04(E);",
+            ),
+            (
+                "air",
+                "key=air:4001;unit_name=A Wing 01(E);",
+                "key=air:4004;unit_name=A Wing 04(E);",
+            ),
+        ] {
+            if tab != "army" {
+                let out = click_army_tab_center(&mut v, tab);
+                assert!(out.consumed, "{tab} tab click should be consumed");
+            }
+            let before = bound_digest(&v.bind(&ctx(&stage, &snap)));
+            assert!(before.contains(&format!("visible_tab={tab}")), "{before}");
+            assert!(
+                visible_army_chunk(&before).contains(expected_top),
+                "{tab} top row proof missing: {before}"
+            );
+            let out = wheel_army_roster(&mut v, -3.0);
+            assert!(
+                out.consumed && out.needs_redraw,
+                "{tab} wheel should scroll"
+            );
+            let after = bound_digest(&v.bind(&ctx(&stage, &snap)));
+            assert!(
+                visible_army_chunk(&after).contains(expected_after),
+                "{tab} wheel-scroll should advance three backing rows: {after}"
+            );
+        }
+    }
+
+    #[test]
+    fn army_scrollbar_drag_changes_visible_rows_and_clamps() {
+        let stage = stage_with_manifest(HashMap::new());
+        let snap = many_rosters_snap(60, "A");
+        let mut v = ArmyView::new();
+        rebind_army(&mut v, &snap, true);
+
+        let down = pointer_down_army_thumb(&mut v);
+        assert!(
+            down.consumed && !down.needs_redraw && down.commands.is_empty(),
+            "thumb pointer-down should consume to capture drag without changing scroll"
+        );
+
+        let geom = army_scrollbar(&v);
+        let drag = v.on_input(&ViewInput::PointerMove {
+            x: geom.track.x - 250.0,
+            y: geom.track.y + geom.track.h + 500.0,
+            drag: true,
+        });
+        assert!(drag.consumed && drag.needs_redraw);
+        let bottom = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        let (cur, max) = army_scroll_pair(&bottom);
+        assert_eq!(cur, max, "drag past the track bottom must clamp: {bottom}");
+        assert!(
+            !visible_army_chunk(&bottom).contains("key=army:1;name=A Army 01(E);"),
+            "bottom-dragged visible slice must not keep top rows: {bottom}"
+        );
+
+        let geom = army_scrollbar(&v);
+        let reset = v.on_input(&ViewInput::PointerMove {
+            x: geom.track.x - 250.0,
+            y: geom.track.y - 500.0,
+            drag: true,
+        });
+        assert!(reset.consumed && reset.needs_redraw);
+        let top = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert_eq!(army_scroll_pair(&top).0, 0);
+        assert!(
+            visible_army_chunk(&top).contains("key=army:1;name=A Army 01(E);"),
+            "drag back above the track must clamp to the first row: {top}"
+        );
+    }
+
+    #[test]
+    fn army_scrollbar_drag_capture_continues_outside_and_clears_on_up() {
+        let snap = many_rosters_snap(60, "A");
+        let mut v = ArmyView::new();
+        rebind_army(&mut v, &snap, true);
+
+        let down = pointer_down_army_thumb(&mut v);
+        assert!(down.consumed);
+
+        let geom = army_scrollbar(&v);
+        let drag = v.on_input(&ViewInput::PointerMove {
+            x: geom.track.x + geom.track.w + 300.0,
+            y: geom.track.y + geom.track.h,
+            drag: true,
+        });
+        assert!(
+            drag.consumed && drag.needs_redraw,
+            "captured scrollbar drag should continue even outside the list"
+        );
+        assert!(
+            v.scroll.get("army") > 0.0,
+            "outside captured drag should move the Army scroll offset"
+        );
+
+        let up = v.on_input(&ViewInput::PointerUp {
+            x: geom.track.x + geom.track.w + 300.0,
+            y: geom.track.y + geom.track.h,
+            button: PointerButton::Left,
+        });
+        assert!(up.consumed && !up.needs_redraw);
+        let after_up = v.scroll.get("army");
+        let ignored = v.on_input(&ViewInput::PointerMove {
+            x: geom.track.x + geom.track.w + 300.0,
+            y: geom.track.y,
+            drag: true,
+        });
+        assert!(
+            !ignored.consumed && !ignored.needs_redraw && ignored.commands.is_empty(),
+            "pointer move after thumb release must not keep a stale scrollbar capture"
+        );
+        assert_eq!(v.scroll.get("army"), after_up);
+    }
+
+    #[test]
+    fn army_scrollbar_track_click_does_not_select_row() {
+        let stage = stage_with_manifest(HashMap::new());
+        let snap = many_rosters_snap(60, "A");
+        let mut v = ArmyView::new();
+        rebind_army(&mut v, &snap, true);
+
+        let geom = army_scrollbar(&v);
+        let track_y = (geom.thumb.y + geom.thumb.h + 10.0).min(geom.track.y + geom.track.h - 1.0);
+        let track_click = v.on_input(&ViewInput::PointerDown {
+            x: geom.track.x + geom.track.w * 0.5,
+            y: track_y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            track_click.consumed && !track_click.needs_redraw && track_click.commands.is_empty(),
+            "clicking the scrollbar track outside the thumb should be an inert consumed UI hit"
+        );
+        assert!(
+            v.selected_rows.get("army").is_none(),
+            "scrollbar track click must not select an underlying Army row"
+        );
+        let d = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert!(
+            d.contains("row_selected=none"),
+            "track click must not alter selected-row digest, got: {d}"
+        );
+
+        let row = click_army_visible_row(&mut v, 0);
+        assert!(row.consumed && row.needs_redraw);
+        assert_eq!(v.selected_rows.get("army"), Some("army:1"));
+    }
+
+    #[test]
+    fn army_outside_wheel_is_inert() {
+        let snap = many_rosters_snap(60, "A");
+        let mut v = ArmyView::new();
+        rebind_army(&mut v, &snap, true);
+
+        let viewport = army_roster_fallback(v.screen, selected_army_tab_id(&v.tabs));
+        let outside = v.on_input(&ViewInput::Wheel {
+            x: viewport.x + viewport.w + 20.0,
+            y: viewport.y + ARMY_ROSTER_ROW_H,
+            dy: -5.0,
+        });
+        assert!(
+            !outside.consumed && !outside.needs_redraw && outside.commands.is_empty(),
+            "wheel outside the Army roster must be inert"
+        );
+        assert_eq!(v.scroll.get("army"), 0.0);
+    }
+
+    #[test]
+    fn army_scrollbar_drag_is_isolated_to_captured_tab() {
+        let snap = many_rosters_snap(60, "A");
+        let mut v = ArmyView::new();
+        rebind_army(&mut v, &snap, true);
+
+        let out = click_army_tab_center(&mut v, "navy");
+        assert!(out.consumed && out.needs_redraw);
+        let down = pointer_down_army_thumb(&mut v);
+        assert!(down.consumed);
+
+        let geom = army_scrollbar(&v);
+        let drag = v.on_input(&ViewInput::PointerMove {
+            x: geom.track.x + geom.track.w + 200.0,
+            y: geom.track.y + geom.track.h,
+            drag: true,
+        });
+        assert!(drag.consumed && drag.needs_redraw);
+        assert!(v.scroll.get("navy") > 0.0, "Navy drag should move Navy");
+        assert_eq!(v.scroll.get("army"), 0.0, "Navy drag must not move Army");
+        assert_eq!(v.scroll.get("air"), 0.0, "Navy drag must not move Air");
+
+        let up = v.on_input(&ViewInput::PointerUp {
+            x: geom.track.x + geom.track.w + 200.0,
+            y: geom.track.y + geom.track.h,
+            button: PointerButton::Left,
+        });
+        assert!(up.consumed);
+        let out = click_army_tab_center(&mut v, "air");
+        assert!(out.consumed && out.needs_redraw);
+        assert_eq!(
+            v.scroll.get("air"),
+            0.0,
+            "Air tab must retain its independent scroll offset"
+        );
+    }
+
+    #[test]
+    fn army_scrolled_row_click_selects_correct_backing_row() {
+        let stage = stage_with_manifest(HashMap::new());
+        let snap = many_armies_snap(40, "A");
+        let mut v = ArmyView::new();
+        rebind_army(&mut v, &snap, true);
+
+        wheel_army_roster(&mut v, -5.0);
+        let out = click_army_visible_row(&mut v, 0);
+        assert!(out.consumed);
+        let d = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert!(
+            d.contains("row_selected=r0[key=army:6;name=A 06(E);"),
+            "after five-row scroll, visible row 0 must select backing row 6, got:\n{d}"
+        );
+    }
+
+    #[test]
+    fn army_row_selection_and_scroll_survive_scrub_a_b_a_without_b_rows() {
+        let stage = stage_with_manifest(HashMap::new());
+        let a = many_armies_snap(40, "A");
+        let b = many_armies_snap(45, "B");
+        let mut v = ArmyView::new();
+        rebind_army(&mut v, &a, true);
+
+        wheel_army_roster(&mut v, -5.0);
+        click_army_visible_row(&mut v, 0);
+        let da1 = bound_digest(&v.bind(&ctx(&stage, &a)));
+
+        rebind_army(&mut v, &b, false);
+        let db = bound_digest(&v.bind(&ctx(&stage, &b)));
+        assert!(
+            db.contains("row_selected=r0[key=army:6;name=B 06(E);"),
+            "selected measured id should rebind to B's row data, got:\n{db}"
+        );
+
+        rebind_army(&mut v, &a, false);
+        let da2 = bound_digest(&v.bind(&ctx(&stage, &a)));
+        assert_eq!(
+            da1, da2,
+            "army row selection + scroll must be byte-identical across A->B->A"
+        );
+        assert!(
+            !da2.contains("B 06"),
+            "A-after-scrub must not carry B-only row text: {da2}"
+        );
+    }
+
+    #[test]
+    fn theatre_selector_row_click_selects_keyed_row() {
+        let stage = stage_with_manifest(HashMap::new());
+        let snap = snap_a();
+        let mut v = TheatreSelectorView::new();
+        rebind_theatre(&mut v, &snap);
+
+        let out = click_theatre_visible_row(&mut v, 0);
+        assert!(out.consumed);
+        assert!(out.needs_redraw);
+        assert!(out.commands.is_empty());
+
+        let d = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert!(
+            d.contains("selected=selected"),
+            "clicking a theatre row must set selected status, got:\n{d}"
+        );
+        assert!(
+            d.contains("selected_row=r0[key=theatre:61;name=Western Theatre(D);"),
+            "clicking the first theatre row must select measured theatre id, got:\n{d}"
+        );
+    }
+
+    #[test]
+    fn theatre_selector_wheel_scroll_changes_visible_rows_and_clamps() {
+        let stage = stage_all();
+        let snap = many_theatres_snap(30, "A");
+        let mut v = TheatreSelectorView::new();
+        rebind_theatre(&mut v, &snap);
+
+        let before = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert_eq!(theatre_scroll_pair(&before).0, 0);
+        assert!(
+            visible_theatre_chunk(&before).contains("key=theatre:1;name=A Theatre 01(D);"),
+            "{before}"
+        );
+
+        let out = wheel_theatre_rows(&mut v, -3.0);
+        assert!(out.consumed);
+        assert!(out.needs_redraw);
+        let after = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert_eq!(theatre_scroll_pair(&after).0, 195);
+        assert!(
+            visible_theatre_chunk(&after).contains("key=theatre:4;name=A Theatre 04(D);"),
+            "after three-row wheel scroll, visible rows must advance: {after}"
+        );
+        assert!(
+            !visible_theatre_chunk(&after).contains("key=theatre:1;name=A Theatre 01(D);"),
+            "scrolled visible slice must not keep top rows: {after}"
+        );
+
+        let out = wheel_theatre_rows(&mut v, -500.0);
+        assert!(out.consumed);
+        let clamped = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        let (cur, max) = theatre_scroll_pair(&clamped);
+        assert_eq!(cur, max, "huge wheel-down must clamp to max: {clamped}");
+
+        let out = wheel_theatre_rows(&mut v, 500.0);
+        assert!(out.consumed);
+        let reset = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert_eq!(theatre_scroll_pair(&reset).0, 0);
+    }
+
+    #[test]
+    fn theatre_selector_scrollbar_drag_changes_visible_rows_and_clamps() {
+        let stage = stage_all();
+        let snap = many_theatres_snap(30, "A");
+        let mut v = TheatreSelectorView::new();
+        rebind_theatre(&mut v, &snap);
+
+        let down = pointer_down_theatre_thumb(&mut v);
+        assert!(
+            down.consumed && !down.needs_redraw && down.commands.is_empty(),
+            "thumb pointer-down should consume to capture drag without changing scroll"
+        );
+
+        let geom = theatre_scrollbar(&v);
+        let target_y = geom.track.y + geom.track.h + 500.0;
+        let drag = v.on_input(&ViewInput::PointerMove {
+            x: geom.track.x - 250.0,
+            y: target_y,
+            drag: true,
+        });
+        assert!(drag.consumed && drag.needs_redraw);
+        let bottom = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        let (cur, max) = theatre_scroll_pair(&bottom);
+        assert_eq!(cur, max, "drag past the track bottom must clamp: {bottom}");
+        assert!(
+            !visible_theatre_chunk(&bottom).contains("key=theatre:1;name=A Theatre 01(D);"),
+            "bottom-dragged visible slice must not keep top rows: {bottom}"
+        );
+
+        let geom = theatre_scrollbar(&v);
+        let reset = v.on_input(&ViewInput::PointerMove {
+            x: geom.track.x - 250.0,
+            y: geom.track.y - 500.0,
+            drag: true,
+        });
+        assert!(reset.consumed && reset.needs_redraw);
+        let top = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert_eq!(theatre_scroll_pair(&top).0, 0);
+        assert!(
+            visible_theatre_chunk(&top).contains("key=theatre:1;name=A Theatre 01(D);"),
+            "drag back above the track must clamp to the first row: {top}"
+        );
+    }
+
+    #[test]
+    fn theatre_selector_scrollbar_drag_capture_continues_outside_and_clears_on_up() {
+        let stage = stage_all();
+        let snap = many_theatres_snap(30, "A");
+        let mut v = TheatreSelectorView::new();
+        rebind_theatre(&mut v, &snap);
+
+        let down = pointer_down_theatre_thumb(&mut v);
+        assert!(down.consumed);
+
+        let geom = theatre_scrollbar(&v);
+        let drag = v.on_input(&ViewInput::PointerMove {
+            x: geom.track.x + geom.track.w + 300.0,
+            y: geom.track.y + geom.track.h,
+            drag: true,
+        });
+        assert!(
+            drag.consumed && drag.needs_redraw,
+            "captured scrollbar drag should continue even outside the list"
+        );
+        let dragged = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert!(
+            theatre_scroll_pair(&dragged).0 > 0,
+            "outside captured drag should move scroll, got: {dragged}"
+        );
+
+        let up = v.on_input(&ViewInput::PointerUp {
+            x: geom.track.x + geom.track.w + 300.0,
+            y: geom.track.y + geom.track.h,
+            button: PointerButton::Left,
+        });
+        assert!(up.consumed && !up.needs_redraw);
+        let after_up = v.scroll_y;
+        let ignored = v.on_input(&ViewInput::PointerMove {
+            x: geom.track.x + geom.track.w + 300.0,
+            y: geom.track.y,
+            drag: true,
+        });
+        assert!(
+            !ignored.consumed && !ignored.needs_redraw && ignored.commands.is_empty(),
+            "pointer move after thumb release must not keep a stale scrollbar capture"
+        );
+        assert_eq!(v.scroll_y, after_up);
+    }
+
+    #[test]
+    fn theatre_selector_scrollbar_track_click_does_not_select_row() {
+        let stage = stage_all();
+        let snap = many_theatres_snap(30, "A");
+        let mut v = TheatreSelectorView::new();
+        rebind_theatre(&mut v, &snap);
+
+        let geom = theatre_scrollbar(&v);
+        let track_y = (geom.thumb.y + geom.thumb.h + 10.0).min(geom.track.y + geom.track.h - 1.0);
+        let track_click = v.on_input(&ViewInput::PointerDown {
+            x: geom.track.x + geom.track.w * 0.5,
+            y: track_y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            track_click.consumed && !track_click.needs_redraw && track_click.commands.is_empty(),
+            "clicking the scrollbar track outside the thumb should be an inert consumed UI hit"
+        );
+        assert!(
+            v.selected_theatre_key.is_none(),
+            "scrollbar track click must not select an underlying theatre row"
+        );
+        let d = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert!(
+            d.contains("selected=none"),
+            "track click must not alter selected-row digest, got: {d}"
+        );
+
+        let row = click_theatre_visible_row(&mut v, 0);
+        assert!(row.consumed && row.needs_redraw);
+        assert_eq!(v.selected_theatre_key.as_deref(), Some("theatre:1"));
+    }
+
+    #[test]
+    fn theatre_selector_scrolled_row_click_selects_correct_backing_row() {
+        let stage = stage_with_manifest(HashMap::new());
+        let snap = many_theatres_snap(30, "A");
+        let mut v = TheatreSelectorView::new();
+        rebind_theatre(&mut v, &snap);
+
+        wheel_theatre_rows(&mut v, -5.0);
+        let out = click_theatre_visible_row(&mut v, 0);
+        assert!(out.consumed && out.needs_redraw);
+        let d = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert!(
+            d.contains("selected_key=theatre:6"),
+            "after five-row scroll, visible row 0 must select backing theatre 6, got:\n{d}"
+        );
+        assert!(
+            d.contains("selected_row=r0[key=theatre:6;name=A Theatre 06(D);"),
+            "selected row digest must point at backing theatre 6, got:\n{d}"
+        );
+    }
+
+    #[test]
+    fn theatre_selector_selection_and_scroll_survive_scrub_a_b_a_without_b_rows() {
+        let stage = stage_with_manifest(HashMap::new());
+        let a = many_theatres_snap(30, "A");
+        let b = many_theatres_snap(35, "B");
+        let mut v = TheatreSelectorView::new();
+        rebind_theatre(&mut v, &a);
+
+        wheel_theatre_rows(&mut v, -5.0);
+        click_theatre_visible_row(&mut v, 0);
+        let a1 = bound_digest(&v.bind(&ctx(&stage, &a)));
+        assert!(a1.contains("selected_key=theatre:6"));
+        assert!(visible_theatre_chunk(&a1).contains("name=A Theatre 06(D);"));
+
+        rebind_theatre(&mut v, &b);
+        let b_digest = bound_digest(&v.bind(&ctx(&stage, &b)));
+        assert!(
+            b_digest.contains("selected_row=r0[key=theatre:6;name=B Theatre 06(D);"),
+            "selected measured id should rebind to B's row data, got:\n{b_digest}"
+        );
+        assert!(
+            !visible_theatre_chunk(&b_digest).contains("name=A Theatre 06(D);"),
+            "B visible chunk must not carry A-only row text, got:\n{b_digest}"
+        );
+
+        rebind_theatre(&mut v, &a);
+        let a2 = bound_digest(&v.bind(&ctx(&stage, &a)));
+        assert_eq!(
+            a1, a2,
+            "theatre row selection + scroll must be byte-identical across A->B->A"
+        );
+        assert!(
+            !a2.contains("B Theatre 06"),
+            "A-after-scrub must not carry B-only row text: {a2}"
+        );
+    }
+
+    #[test]
+    fn theatre_selector_missing_identity_and_outside_input_are_inert() {
+        let snap = theatre_missing_first_identity_snap();
+        let mut v = TheatreSelectorView::new();
+        rebind_theatre(&mut v, &snap);
+
+        let missing_id = click_theatre_visible_row(&mut v, 0);
+        assert!(
+            !missing_id.consumed && !missing_id.needs_redraw && missing_id.commands.is_empty(),
+            "row without measured theatre id must not be selectable by index/name"
+        );
+        assert!(v.selected_theatre_key.is_none());
+
+        let viewport = theatre_selector_list_fallback(v.screen);
+        let outside = v.on_input(&ViewInput::Wheel {
+            x: viewport.x + viewport.w + 20.0,
+            y: viewport.y + THEATRE_SELECTOR_ROW_H,
+            dy: -5.0,
+        });
+        assert!(
+            !outside.consumed && !outside.needs_redraw && outside.commands.is_empty(),
+            "wheel outside the theatre list must be inert"
+        );
+
+        let keyed = click_theatre_visible_row(&mut v, 1);
+        assert!(keyed.consumed && keyed.needs_redraw);
+        assert_eq!(v.selected_theatre_key.as_deref(), Some("theatre:202"));
+    }
+
+    #[test]
+    fn theatre_selector_duplicate_ids_are_unselectable_without_index_fallback() {
+        let stage = stage_with_manifest(HashMap::new());
+        let snap = theatre_duplicate_id_snap();
+        let mut v = TheatreSelectorView::new();
+        rebind_theatre(&mut v, &snap);
+
+        let d = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert!(
+            d.contains("name=Duplicate Theatre A(D);")
+                && d.contains("name=Duplicate Theatre B(D);"),
+            "duplicate-id rows should still render their measured data, got: {d}"
+        );
+        assert!(
+            !d.contains("key=theatre:77;"),
+            "duplicate measured theatre id must not become a selectable ambiguous key, got: {d}"
+        );
+
+        let first = click_theatre_visible_row(&mut v, 0);
+        assert!(
+            !first.consumed && !first.needs_redraw && first.commands.is_empty(),
+            "first duplicate-id theatre row must be inert"
+        );
+        let second = click_theatre_visible_row(&mut v, 1);
+        assert!(
+            !second.consumed && !second.needs_redraw && second.commands.is_empty(),
+            "second duplicate-id theatre row must be inert"
+        );
+        assert!(v.selected_theatre_key.is_none());
+
+        let unique = click_theatre_visible_row(&mut v, 2);
+        assert!(unique.consumed && unique.needs_redraw);
+        let selected = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert!(
+            selected.contains("selected_row=r0[key=theatre:88;name=Unique Theatre(D);"),
+            "unique theatre id should remain selectable, got: {selected}"
+        );
+    }
+
+    #[test]
+    fn theatre_selector_missing_selected_row_fails_closed_without_row_fallback() {
+        let stage = stage_with_manifest(HashMap::new());
+        let a = theatre_missing_first_identity_snap();
+        let b = theatre_missing_selected_snap();
+        let mut v = TheatreSelectorView::new();
+
+        rebind_theatre(&mut v, &a);
+        let out = click_theatre_visible_row(&mut v, 1);
+        assert!(out.consumed && out.needs_redraw);
+        let a1 = bound_digest(&v.bind(&ctx(&stage, &a)));
+        assert!(a1.contains("selected_key=theatre:202"));
+
+        rebind_theatre(&mut v, &b);
+        let missing = bound_digest(&v.bind(&ctx(&stage, &b)));
+        assert!(
+            missing.contains("selected=missing_selected"),
+            "foreign-owned/missing selected theatre id must fail closed, got: {missing}"
+        );
+        assert!(
+            missing.contains("selected_key=theatre:202"),
+            "missing digest must retain the requested theatre key, got: {missing}"
+        );
+        assert!(
+            missing.contains("selected_row=none"),
+            "missing selected theatre must not fall back to another row, got: {missing}"
+        );
+        assert!(
+            !missing.contains("selected_row=r0[key=theatre:1;"),
+            "missing selected theatre must not highlight the remaining first row, got: {missing}"
+        );
+
+        rebind_theatre(&mut v, &a);
+        let restored = bound_digest(&v.bind(&ctx(&stage, &a)));
+        assert_eq!(
+            a1, restored,
+            "returning to A must restore the selected theatre row exactly"
         );
     }
 

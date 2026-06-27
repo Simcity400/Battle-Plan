@@ -7,7 +7,7 @@
 
 use std::cell::RefCell;
 
-use crate::focus::FocusShell;
+use crate::focus::{FocusSelectedDetail, FocusShell};
 use crate::host::context::BindContext;
 use crate::host::draw::FrameDraw;
 use crate::host::input::{PointerButton, ViewInput};
@@ -28,6 +28,7 @@ pub struct FocusView {
     white: &'static render::Texture,
     country: String,
     last_cursor: Option<(f32, f32)>,
+    click_origin: Option<(f32, f32)>,
     screen: (u32, u32),
 }
 
@@ -50,6 +51,7 @@ impl FocusView {
             white,
             country,
             last_cursor: None,
+            click_origin: None,
             screen,
         }
     }
@@ -75,6 +77,8 @@ struct OwnedFocusOverlay {
     tag: String,
     date: String,
     hover: Option<String>,
+    selected: Option<String>,
+    selected_detail: Option<FocusSelectedDetail>,
 }
 
 impl Drawable for FocusDrawable {
@@ -88,7 +92,7 @@ impl Drawable for FocusDrawable {
             None => return "FOCUS closed".into(),
         };
         let mut s = format!(
-            "FOCUS tree={} tag={} date={} cam={:.3},{:.2},{:.2},vp{:?} hover={:?} nodes=[",
+            "FOCUS tree={} tag={} date={} cam={:.3},{:.2},{:.2},vp{:?} hover={:?} selected={} selected_key={} selected_detail={} nodes=[",
             ov.tree.id,
             ov.tag,
             ov.date,
@@ -96,7 +100,10 @@ impl Drawable for FocusDrawable {
             ov.camera.ox,
             ov.camera.oy,
             ov.camera.viewport,
-            ov.hover
+            ov.hover,
+            focus_selection_state(ov),
+            ov.selected.as_deref().unwrap_or("none"),
+            focus_detail_digest(ov.selected_detail.as_ref())
         );
         for n in &ov.tree.nodes {
             // include the prereq/exclusive edges + icon — they drive LINK draw + node
@@ -155,14 +162,23 @@ impl ViewInstance for FocusView {
             } => {
                 if self.shell.captures(x, y) {
                     self.last_cursor = Some((x, y));
+                    self.click_origin = Some((x, y));
+                    self.shell.begin_click(x, y);
                     return InputOutcome::consumed();
                 }
+                self.click_origin = None;
                 InputOutcome::ignored()
             }
             ViewInput::PointerMove { x, y, drag } => {
                 let mut out = InputOutcome::ignored();
                 if drag {
                     if let Some((ax, ay)) = self.last_cursor {
+                        if self
+                            .click_origin
+                            .is_some_and(|(ox, oy)| (x - ox).abs() > 0.5 || (y - oy).abs() > 0.5)
+                        {
+                            self.shell.cancel_click_for_drag();
+                        }
                         self.shell.pan(x - ax, y - ay);
                         self.last_cursor = Some((x, y));
                         out = InputOutcome::consumed();
@@ -172,9 +188,19 @@ impl ViewInstance for FocusView {
                 out.needs_redraw = true;
                 out
             }
-            ViewInput::PointerUp { .. } => {
+            ViewInput::PointerUp { x, y, .. } => {
                 self.last_cursor = None;
-                InputOutcome::ignored()
+                self.click_origin = None;
+                let changed = self.shell.commit_click(x, y);
+                if changed {
+                    InputOutcome {
+                        consumed: true,
+                        commands: Vec::new(),
+                        needs_redraw: true,
+                    }
+                } else {
+                    InputOutcome::ignored()
+                }
             }
             ViewInput::Wheel { x, y, dy } => {
                 if self.shell.captures(x, y) {
@@ -208,6 +234,8 @@ impl ViewInstance for FocusView {
             tag: ov.tag,
             date: ov.date,
             hover: ov.hover,
+            selected: ov.selected,
+            selected_detail: ov.selected_detail,
         });
         // a modal overlay: it captures everything while open (no GUI leaves; the host's
         // modal policy consumes clicks). Empty hit model.
@@ -231,6 +259,21 @@ impl ViewInstance for FocusView {
     }
 
     crate::impl_view_any!();
+}
+
+fn focus_selection_state(ov: &OwnedFocusOverlay) -> &'static str {
+    match ov.selected.as_deref() {
+        None => "none",
+        Some(id) if ov.tree.node(id).is_some() => "selected",
+        Some(_) => "missing_selected",
+    }
+}
+
+fn focus_detail_digest(detail: Option<&FocusSelectedDetail>) -> String {
+    match detail {
+        Some(detail) => detail.digest(),
+        None => "none".to_string(),
+    }
 }
 
 /// A STABLE digest of the bound `FocusDomain` (the per-node STATE colour driver):
@@ -327,7 +370,156 @@ fn draw_focus_overlay(fd: &mut FrameDraw, ov: &OwnedFocusOverlay) {
                     .draw_text(&font, pages, &tt, 14.0, ty, [0.95, 0.95, 0.85, 1.0]);
             }
         }
+        if let Some(id) = &ov.selected {
+            if let Some(node) = ov.tree.node(id) {
+                draw_focus_selection_outline(fd.renderer, ov.white, &ov.camera, node, full);
+            }
+        }
+        if let Some(detail) = &ov.selected_detail {
+            draw_focus_detail_panel(fd.renderer, ov.white, &font, pages, detail, full);
+        }
     }
+}
+
+fn draw_focus_selection_outline(
+    renderer: &mut render::Renderer,
+    white: &render::Texture,
+    camera: &focus_tree::Camera,
+    node: &focus_tree::PlacedNode,
+    clip: [f32; 4],
+) {
+    let (cx, cy) = camera.to_screen(
+        node.px + focus_tree::view::NODE_W / 2.0,
+        node.py + focus_tree::view::NODE_H / 2.0,
+    );
+    let w = (focus_tree::view::NODE_W * camera.scale).max(1.0) + 8.0;
+    let h = (focus_tree::view::NODE_H * camera.scale).max(1.0) + 8.0;
+    stroke_focus_rect(
+        renderer,
+        white,
+        cx - w / 2.0,
+        cy - h / 2.0,
+        w,
+        h,
+        3.0,
+        [0.95, 0.84, 0.40, 0.95],
+        clip,
+    );
+}
+
+fn draw_focus_detail_panel(
+    renderer: &mut render::Renderer,
+    white: &render::Texture,
+    font: &assets::BmFont,
+    pages: &[render::Texture],
+    detail: &FocusSelectedDetail,
+    full: [f32; 4],
+) {
+    let panel_w = (full[2] - 24.0).max(120.0).min(380.0);
+    let desired_h = 48.0 + detail.rows.len() as f32 * 22.0;
+    let panel_h = desired_h.min((full[3] - 96.0).max(80.0));
+    let x = full[2] - panel_w - 12.0;
+    let y = 68.0;
+    let clip = [x, y, panel_w, panel_h];
+    fill_focus_rect(
+        renderer,
+        white,
+        x,
+        y,
+        panel_w,
+        panel_h,
+        [0.05, 0.06, 0.09, 0.92],
+        full,
+    );
+    stroke_focus_rect(
+        renderer,
+        white,
+        x,
+        y,
+        panel_w,
+        panel_h,
+        1.0,
+        [0.55, 0.50, 0.38, 0.95],
+        full,
+    );
+    renderer.draw_text_clipped(
+        font,
+        pages,
+        &detail.title,
+        x + 12.0,
+        y + 12.0,
+        [0.95, 0.95, 0.86, 1.0],
+        Some(clip),
+    );
+    let mut row_y = y + 38.0;
+    for row in &detail.rows {
+        if row_y + 16.0 > y + panel_h {
+            break;
+        }
+        renderer.draw_text_clipped(
+            font,
+            pages,
+            row.label,
+            x + 12.0,
+            row_y,
+            [0.64, 0.66, 0.68, 1.0],
+            Some(clip),
+        );
+        renderer.draw_text_clipped(
+            font,
+            pages,
+            &row.text,
+            x + 128.0,
+            row_y,
+            focus_detail_text_tint(row.fidelity),
+            Some(clip),
+        );
+        row_y += 22.0;
+    }
+}
+
+fn focus_detail_text_tint(fidelity: crate::focus::FocusDetailFidelity) -> [f32; 4] {
+    match fidelity {
+        crate::focus::FocusDetailFidelity::Exact => [0.93, 0.93, 0.90, 1.0],
+        crate::focus::FocusDetailFidelity::Derived => [0.78, 0.74, 0.52, 1.0],
+        crate::focus::FocusDetailFidelity::Unavailable => [0.55, 0.45, 0.40, 1.0],
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stroke_focus_rect(
+    renderer: &mut render::Renderer,
+    white: &render::Texture,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    thick: f32,
+    c: [f32; 4],
+    clip: [f32; 4],
+) {
+    let t = thick.max(1.0);
+    fill_focus_rect(renderer, white, x, y, w, t, c, clip);
+    fill_focus_rect(renderer, white, x, y + h - t, w, t, c, clip);
+    fill_focus_rect(renderer, white, x, y, t, h, c, clip);
+    fill_focus_rect(renderer, white, x + w - t, y, t, h, c, clip);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fill_focus_rect(
+    renderer: &mut render::Renderer,
+    white: &render::Texture,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    c: [f32; 4],
+    clip: [f32; 4],
+) {
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+    renderer.draw_sprite_frame_clipped(white, x, y, w, h, 0, 1, c, Some(clip));
 }
 
 /// The focus view is SEEDED by the binary (it needs the loaded shell + the white

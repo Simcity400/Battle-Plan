@@ -418,6 +418,16 @@ detail needs `order_of_battle` (absent).
 > (`army_division_stats_view` + `template_tab` / `equipment` / `info` stat grids), and the **ship stats
 > panel** (`ship_stats_window`).
 
+> **Interaction proof.** Native UnitView now has executable read-only proof for the stats-panel
+> Stats/History/Template tabs and wheel-scroll plus scrollbar-thumb drag for both the measured-`div_id`
+> division list and the selected-division `equipment_list`: tab state survives A->B->A, non-stats tabs hide
+> the equipment body without fabricating rows, visible scroll windows change/clamp, captured thumb drags
+> continue outside the pane until pointer-up, track clicks are consumed without selecting underlying rows,
+> stale drag captures clear on rebind when geometry disappears, scrolled division clicks select the correct
+> backing row, equipment scroll resets on explicit selection changes, missing selected divisions fail closed
+> to an empty equipment pane, and A->B->A scrub does not carry stale row text. Exact scrollbar art and
+> broader unit-detail visual parity remain open.
+
 ## 6a. Unit view — army_division_view ROW (the per-division list row) — the EXACT core
 
 One `army_division_view` is instantiated per division. Source = a `divisions[]` entry for `<VIEWER>`.
@@ -569,6 +579,11 @@ Source `interface/eventwindow.gui`. Four event-window variants (`EventWindow`, `
   `event_picture_overlay`, `paper_clip_2`, `leader_frame`, `event_option_background`.
 - **Navigation / mutation (inert):** `btn_minimize` (×4), the `options_grid` option buttons (pick = mutation),
   `leader` portrait buttons (open leader = nav).
+  Native replay now has executable disabled-mutation proof for the displayed static event-definition
+  preview option actions: clicks on the displayed N5 option action are consumed as replay-disabled
+  no-ops, emit no commands, request no redraw, and leave the bound digest unchanged. This does not
+  claim fired-event option history, full event modal blocking outside option actions, per-button GUI
+  leaf routing, disabled visual treatment, or popup-window button parity.
 - **Structural containers:** `EventWindow`/`_Operative`/`_leader`/`_News`, `top_Window`/`midsection`/
   `bottom_Window`/`bottom_window_end`, `leader_picture_container`/`leader_details_container`,
   `event_option_entry` (row root).
@@ -610,6 +625,11 @@ seizure list not stored). `equipment_lend_lease_entry` / `popup_lend_lease_info_
 
 Every popup whose buttons PERFORM an action or whose existence is a live-session artifact is inert. The
 title/message would be scripted loc (unavailable) even if shown.
+Native replay now has executable disabled-mutation proof for the displayed generic popup-library action
+area: a click on the first displayed popup root's real `accept_button` area is consumed as a replay-modal
+disabled no-op, emits no commands, requests no redraw, and leaves the bound digest unchanged. This does
+not claim per-root popup button leaf routing, disabled visual treatment, scripted popup text, or broader
+popup mutation parity.
 
 | popup (containerWindowType) | why deferred / inert |
 |---|---|
@@ -710,13 +730,13 @@ playback/scrubber UI; the in-game pause menu's verbs (save/load/resign/quit/sett
 
 | gui element (name + type) | snapshot source path | formatter | fidelity | notes |
 |---|---|---|---|---|
-| `savegame_item` ROW → `player_shield` (iconType, `GFX_flag_small2_not_masked`) | the save's player TAG | flag-shield | **derived** | One row per save file in `games_grid`. In a replay this list is the host filesystem's saves, NOT snapshot data → effectively **out-of-scope** (real OS save dir). Listed for completeness. |
+| `savegame_item` ROW → `player_shield` (iconType, `GFX_flag_small2_not_masked`) | the save's player TAG | flag-shield | **derived** | One row per save file in `games_grid`. In a replay this list is host-filesystem save/recording data, not snapshot data. It remains tracked as host-runtime UI work, not silently bound from replay state. |
 | `savegame_item` → `name` / `date` (instantTextBox) | save file name / save date | loc / date | **derived** | From the save-file metadata (filesystem), not the snapshot. |
 | `disk_quota` / `saves_dirs` (instantTextBox) | storage usage / save directory | loc | **derived** (OS) | Filesystem, not snapshot. |
 
-> All of these read the **host filesystem**, not the replay snapshot — so within the replay-binding model
-> they are **deferred/out-of-scope** (the replay would either hide this menu or repurpose it as a "load
-> different recording" picker). No snapshot field binds here.
+> All of these read the **host filesystem**, not the replay snapshot. They are not snapshot-bound rows:
+> replay parity must either implement them as host-runtime save/recording browser data or render them as
+> disabled/inert replay controls. No snapshot field binds here.
 
 ## 11b. Ingame menu — STATIC / decoration / navigation / mutation (everything else)
 
@@ -724,6 +744,10 @@ playback/scrubber UI; the in-game pause menu's verbs (save/load/resign/quit/sett
   `menu_gamesettings_button`, `menu_playthrough_stats_button` (+ `..._star`), `menu_wiki_button`,
   `menu_resign_button`, `menu_quit_button`, `menu_close_button`, `achievements_button`, and the social-link
   buttons `homepage`/`forum`/`discord`/`privacy`/`bluesky`/`x`/`facebook`/`instagram`/`youtube` (open URL).
+  Native replay now has executable disabled-mutation proof for the save/load/resign/quit class of
+  ingame-menu verbs: clicks are consumed as modal no-ops, emit no commands, request no redraw, and leave
+  the bound digest unchanged. Per-button leaf routing, disabled visual treatment, social-link policy, and
+  host-runtime save-list browsing remain tracked parity work.
 - **Save/load sub-screens (`ingamemenu_load` / `ingamemenu_save`):** `localgames_tab`/`remotegames_tab`
   (checkbox tabs), `load`/`save`/`cancel`/`delete` (mutation verbs), `game_name` editBox, `localgames_label`/
   `cloudgames_label`/`filename_label` (loc), `menu`/`menu_bottom` chrome, `cloud_file`/`ironman_icon`/

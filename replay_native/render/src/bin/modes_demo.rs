@@ -108,6 +108,7 @@ fn main() {
     let mode_data =
         ModeData::from_snapshot(states, snap.domain("map"), snap.domain("diplomacy_world"))
             .with_provinces(snap.domain("provinces"))
+            .with_countries(snap.countries())
             .with_weather(snap.domain("weather"))
             .with_naval_air(snap.domain("naval_air"))
             .with_front_adjacency(&raster);

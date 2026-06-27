@@ -230,7 +230,10 @@ class CaptureLoop:
     # -- one capture ----------------------------------------------------
     def capture_once(self, *, date_info: Optional[DateInfo] = None,
                      prev_snapshot: Optional[Dict[str, Any]] = None,
-                     proc: Optional[Any] = None) -> CaptureResult:
+                     proc: Optional[Any] = None,
+                     pre_write_check: Optional[
+                         Callable[[Dict[str, Any]], Optional[str]]] = None
+                     ) -> CaptureResult:
         """Capture a single snapshot end to end and write it durably.
 
         ``proc`` lets a caller (or the interval loop) reuse one open handle for
@@ -274,7 +277,7 @@ class CaptureLoop:
             )
             results = _registry.read_all(ctx, self.plugs)
             return self._finish_capture(results, identity, date_info,
-                                        prev_snapshot)
+                                        prev_snapshot, pre_write_check)
         finally:
             if own_proc:
                 _safe_close(proc)
@@ -282,15 +285,19 @@ class CaptureLoop:
     def capture_from_results(self, results: Dict[str, Any], *,
                              identity: Any,
                              date_info: Optional[DateInfo] = None,
-                             prev_snapshot: Optional[Dict[str, Any]] = None
+                             prev_snapshot: Optional[Dict[str, Any]] = None,
+                             pre_write_check: Optional[
+                                 Callable[[Dict[str, Any]], Optional[str]]] = None
                              ) -> CaptureResult:
         """Assemble+tag+derive+write from PRE-RUN plug results (test/offline seam).
 
         Lets the dry-run test feed canned DomainResults without a live process.
         """
-        return self._finish_capture(results, identity, date_info, prev_snapshot)
+        return self._finish_capture(results, identity, date_info, prev_snapshot,
+                                    pre_write_check)
 
-    def _finish_capture(self, results, identity, date_info, prev_snapshot):
+    def _finish_capture(self, results, identity, date_info, prev_snapshot,
+                        pre_write_check=None):
         date_info = date_info or DateInfo(None, trusted=False, source="none")
         canonical_date = date_info.date if date_info.trusted else None
 
@@ -336,6 +343,20 @@ class CaptureLoop:
             _restore_measured_zero_division_count(snap)
 
         canonical = bool(date_info.trusted and snap.get("hour_index") is not None)
+        if pre_write_check is not None:
+            reject_reason = pre_write_check(snap)
+            if reject_reason:
+                domains = (
+                    (snap.get("provenance", {}).get("memory", {}) or {})
+                    .get("domains", []))
+                return CaptureResult(
+                    written_path=None,
+                    snapshot=snap,
+                    domains_captured=list(domains),
+                    tags=tags.to_dict(),
+                    canonical=False,
+                    error=str(reject_reason),
+                )
         # write the snapshot FIRST; only on success commit + persist continuity.
         path = self.store.write_snapshot(snap, allow_unknown_hour=False)
         self.tracker.commit(proposal)

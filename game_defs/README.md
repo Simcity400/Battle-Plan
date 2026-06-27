@@ -30,7 +30,7 @@ file-level override by relpath + `replace_path`) and the tolerant
 | `parse_scripted_gui` | `common/scripted_guis/*` | gui → element/variable/effect map (reads/writes, `visible_vars`, `[GET_X]` ↔ scripted_localisation) |
 | `parse_tech` | `common/technologies/*` | tech → resolved render `position` (own folder xy `@var`-resolved, or variant sub-tech inheriting parent xy + slot offset; non-tree/hidden techs proven & flagged), `research_cost`, prereq/XOR + `leads_to` edges w/ coeff, `dependencies`, effect rows |
 | `parse_doctrines` | `common/doctrines/*` | folder/grand/track/subdoctrine → derived grid `position` (track column + in-track row), explicit `xor`/`mutually_exclusive`/`replaces` + implicit grand-doctrine one-of groups, effects + rewards |
-| `parse_catalogs` | many | occupation laws, leader traits, tactics, aces, operations, opinion mods, equipment modules/archetypes/upgrades, state categories, ideas/advisors/spirits |
+| `parse_catalogs` | many | occupation laws, leader traits, tactics, aces, operations, opinion mods, equipment modules/archetypes/upgrades, state categories, ideas/advisors/spirits, power-balance side/range thresholds |
 | `parse_focus_def` | `common/national_focus/*` | focus → xy geometry, PP cost, prereq OR-groups, mutual-exclusion, loc |
 | `parse_templates` | `history/units/*` | division/garrison templates + subunit stat table + derived equipment/manpower cost |
 | `parse_world_defs` | loc + `common/{terrain,wargoals,military_industrial_organization}` | state/VP NAMES, terrain modifiers, casus-belli, MIO catalog |

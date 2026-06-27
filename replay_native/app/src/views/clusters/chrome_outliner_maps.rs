@@ -17,8 +17,8 @@
 //!   4. **find_view** (`find_view.json` ROOT `find_view`) — the search panel chrome + the
 //!      **N2** category tab/list (states / countries / victory-points). The rows are a
 //!      BROWSABLE CATALOG derived from the live snapshot (`states.*` ids+owner, the
-//!      observed `countries.<TAG>`), NOT live search results — the search TERM is
-//!      replay-local UI input with no value at bind time (digest carries `query=none`).
+//!      observed `countries.<TAG>`), with replay-local text filtering over those honest
+//!      row tokens. The search TERM is local UI state, not game memory.
 //!      State labels are `#id (owner)` tokens (a localized state name needs loc/game_defs
 //!      a cluster does not load); the countries catalog is the observed country only
 //!      (whole-world country enumeration needs the top-level domain seam).
@@ -28,8 +28,8 @@
 //!   6. **mapmodes** (`mapmodes.json` ROOT `MapmodesInterface_Ingame`) — the map-mode
 //!      rail chrome; the binding is PER-MAP-MODE (each `mapmode_button_*` slot is a
 //!      recolor function over the province raster). The 14 modes' fidelity (per §B.9) is
-//!      documented in the draw digest; the active-mode datum lives in the binary's map
-//!      view (unreachable here) so the active indicator is badged.
+//!      documented in the draw digest; the active-mode echo is synced from the binary's
+//!      seeded map view and is badged only when that map state has not been supplied.
 //!   7. **mapicons** (`mapicons.json` ROOT `mapicons_container`) — the on-map icon layer.
 //!      The PER-STATE icons reachable via the no-fabrication seam are bound EXACT and
 //!      PLACED on the map at a real province centroid: **victory_point_mapicon** +
@@ -61,9 +61,10 @@ use gui_runtime::{build_scene, layout, GuiFile, ManifestContent, Rect};
 use bind::Fidelity;
 use render::modes::{BuildingKind, MapMode as CoreMapMode};
 
+use crate::camera::MapCamera;
 use crate::host::context::{BindContext, Captured, DisplayAtom, FidelityReport, UnavailableReason};
 use crate::host::draw::FrameDraw;
-use crate::host::input::{PointerButton, ViewInput};
+use crate::host::input::{PointerButton, ViewInput, ViewKey};
 use crate::host::registry::{GuiSymbolRef, MenuCluster, MenuRoute, ViewDescriptor, ViewId};
 use crate::host::view::{
     BoundView, Drawable, HitModel, HostPolicy, InputOutcome, InstanceId, RebindContext,
@@ -71,10 +72,15 @@ use crate::host::view::{
 };
 use crate::register_view;
 
-use widgets::common::{Atom as WAtom, DrawAssets, Fidelity as WFidelity, Reason as WReason};
+use widgets::common::{
+    Atom as WAtom, DrawAssets, Fidelity as WFidelity, Reason as WReason, DERIVED_TINT, DIM_TINT,
+    TEXT_TINT, UNAVAIL_TINT,
+};
 use widgets::map_overlay::{self, IconAnchor, MapIcon};
 use widgets::minimap::{self, Minimap, WorldRect};
+use widgets::plan::{Cmd, Plan};
 use widgets::tabs::{self, Tab, TabBar};
+use widgets::{plan_tooltip, Tooltip, TooltipPlan};
 
 use std::sync::OnceLock;
 
@@ -131,10 +137,11 @@ fn province_centroids(map_dir: &std::path::Path) -> Option<&'static CentroidSet>
 /// `map_dir`) — correct because the app's `map_dir` is process-invariant (set once in
 /// `main.rs`). The first init wins.
 struct StateGeo {
-    /// state id → the province carrying the most VP, FALLING BACK to the representative
-    /// province when the state has no VP entry (so a VP/capital icon still places).
+    /// state id -> the province carrying the most VP. States with no explicit VP entry
+    /// are deliberately absent; a VP/capital icon must not fall back to a generic state
+    /// province and pretend it is the real VP location.
     vp_province: std::collections::HashMap<u32, u32>,
-    /// state id → a representative province (first in the state) for per-state icons.
+    /// state id -> a representative province (first in the state) for per-state icons.
     rep_province: std::collections::HashMap<u32, u32>,
 }
 
@@ -146,49 +153,49 @@ fn state_geo(map_dir: &std::path::Path) -> Option<&'static StateGeo> {
         .get_or_init(|| {
             let raw = std::fs::read_to_string(map_dir.join("state_meta.json")).ok()?;
             let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
-            let obj = v.as_object()?;
-            let mut vp_province = std::collections::HashMap::new();
-            let mut rep_province = std::collections::HashMap::new();
-            for (sid_s, meta) in obj {
-                let sid: u32 = match sid_s.parse() {
-                    Ok(n) => n,
-                    Err(_) => continue,
-                };
-                // representative province = first in the `provinces` array.
-                let first_prov = meta
-                    .get("provinces")
-                    .and_then(|a| a.as_array())
-                    .and_then(|a| a.first())
-                    .and_then(|p| p.as_u64())
-                    .map(|p| p as u32);
-                if let Some(first) = first_prov {
-                    rep_province.insert(sid, first);
-                }
-                // VP province = the highest-VP entry in `victory_points{pid:vp}`; SKIP
-                // entries whose vp is not a number (no fabricated default).
-                let best_vp = meta
-                    .get("victory_points")
-                    .and_then(|m| m.as_object())
-                    .and_then(|vps| {
-                        vps.iter()
-                            .filter_map(|(pid, vp)| Some((pid.parse::<u32>().ok()?, vp.as_f64()?)))
-                            .max_by(|a, b| {
-                                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
-                            })
-                            .map(|(pid, _)| pid)
-                    });
-                // VP province, FALLING BACK to the representative province when the state
-                // carries no VP entry (so a VP/capital icon still places honestly).
-                if let Some(pid) = best_vp.or(first_prov) {
-                    vp_province.insert(sid, pid);
-                }
-            }
-            Some(StateGeo {
-                vp_province,
-                rep_province,
-            })
+            state_geo_from_value(&v)
         })
         .as_ref()
+}
+
+fn state_geo_from_value(v: &serde_json::Value) -> Option<StateGeo> {
+    let obj = v.as_object()?;
+    let mut vp_province = std::collections::HashMap::new();
+    let mut rep_province = std::collections::HashMap::new();
+    for (sid_s, meta) in obj {
+        let sid: u32 = match sid_s.parse() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        // representative province = first in the `provinces` array.
+        let first_prov = meta
+            .get("provinces")
+            .and_then(|a| a.as_array())
+            .and_then(|a| a.first())
+            .and_then(|p| p.as_u64())
+            .map(|p| p as u32);
+        if let Some(first) = first_prov {
+            rep_province.insert(sid, first);
+        }
+        // VP province = the highest-VP entry in `victory_points{pid:vp}`; SKIP
+        // entries whose vp is not a number and never fall back to `first_prov`.
+        let best_vp = meta
+            .get("victory_points")
+            .and_then(|m| m.as_object())
+            .and_then(|vps| {
+                vps.iter()
+                    .filter_map(|(pid, vp)| Some((pid.parse::<u32>().ok()?, vp.as_f64()?)))
+                    .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                    .map(|(pid, _)| pid)
+            });
+        if let Some(pid) = best_vp {
+            vp_province.insert(sid, pid);
+        }
+    }
+    Some(StateGeo {
+        vp_province,
+        rep_province,
+    })
 }
 
 /// Project a province centroid (in its source-raster pixel space) to a SCREEN pixel
@@ -199,12 +206,7 @@ fn state_geo(map_dir: &std::path::Path) -> Option<&'static StateGeo> {
 /// (this fn additionally sanitizes a degenerate `scale`, which the camera method does
 /// not). The centroid is normalized by its OWN raster size (which may be half-res), so a
 /// half-res raster projects to the same UV the full-res camera uses.
-fn project_centroid(
-    cam: &crate::camera::MapCamera,
-    set: &CentroidSet,
-    cx: f32,
-    cy: f32,
-) -> (f32, f32) {
+fn project_centroid(cam: &MapCamera, set: &CentroidSet, cx: f32, cy: f32) -> (f32, f32) {
     let map_u = cx / set.raster_w;
     let map_v = cy / set.raster_h;
     let s = if cam.scale.is_finite() && cam.scale > 0.0 {
@@ -215,6 +217,57 @@ fn project_centroid(
     let out_u = (map_u - cam.offset[0]) * s;
     let out_v = (map_v - cam.offset[1]) * s;
     (out_u * cam.screen_w, out_v * cam.screen_h)
+}
+
+fn centroid_to_camera_raster(
+    cam: &MapCamera,
+    set: &CentroidSet,
+    cx: f32,
+    cy: f32,
+) -> Option<(f32, f32)> {
+    if !(cx.is_finite()
+        && cy.is_finite()
+        && set.raster_w.is_finite()
+        && set.raster_h.is_finite()
+        && set.raster_w > 0.0
+        && set.raster_h > 0.0
+        && cam.raster_w.is_finite()
+        && cam.raster_h.is_finite()
+        && cam.raster_w > 0.0
+        && cam.raster_h > 0.0)
+    {
+        return None;
+    }
+    let rx = (cx / set.raster_w) * cam.raster_w;
+    let ry = (cy / set.raster_h) * cam.raster_h;
+    if rx.is_finite() && ry.is_finite() {
+        Some((rx, ry))
+    } else {
+        None
+    }
+}
+
+fn province_raster_point(province: u32, set: &CentroidSet, cam: &MapCamera) -> Option<(f32, f32)> {
+    let (cx, cy) = set.centroids.get(province)?;
+    centroid_to_camera_raster(cam, set, cx, cy)
+}
+
+fn state_raster_point(
+    sid: u32,
+    geo: &StateGeo,
+    set: &CentroidSet,
+    cam: &MapCamera,
+    require_vp: bool,
+) -> Option<(f32, f32)> {
+    let province = if require_vp {
+        geo.vp_province.get(&sid).copied()?
+    } else {
+        geo.vp_province
+            .get(&sid)
+            .or_else(|| geo.rep_province.get(&sid))
+            .copied()?
+    };
+    province_raster_point(province, set, cam)
 }
 
 // =====================================================================================
@@ -472,10 +525,14 @@ struct MinimapInputState {
 
 pub struct MinimapView {
     input: Option<MinimapInputState>,
+    dragging_map: bool,
 }
 impl MinimapView {
     pub fn new() -> MinimapView {
-        MinimapView { input: None }
+        MinimapView {
+            input: None,
+            dragging_map: false,
+        }
     }
 
     /// Sync the latest live map camera into the minimap's input hit-test state. The
@@ -484,6 +541,9 @@ impl MinimapView {
     pub fn set_camera(&mut self, camera: Option<crate::camera::MapCamera>) {
         let panel = self.input.map(|input| input.panel);
         self.input = camera.map(|cam| minimap_input_from_camera(cam, panel));
+        if self.input.is_none() {
+            self.dragging_map = false;
+        }
     }
 
     /// Sync the event-time hit-test panel from the same bound rect the draw path uses.
@@ -565,32 +625,65 @@ impl ViewInstance for MinimapView {
         HostPolicy::window(ZBand::Chrome)
     }
     fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
-        let ViewInput::PointerDown {
-            x,
-            y,
-            button: PointerButton::Left,
-        } = *ev
-        else {
-            return InputOutcome::ignored();
-        };
-        let Some(input) = self.input else {
-            return InputOutcome::ignored();
-        };
-        let mm = Minimap::new(input.panel, input.world.0, input.world.1);
-        if let Some(p) = mm.pick(input.camera_view, x, y) {
-            return InputOutcome::consumed().with_command(ViewCommand::RecenterMap {
-                raster_x: p.x,
-                raster_y: p.y,
-            });
+        match *ev {
+            ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            } => {
+                self.dragging_map = false;
+                let Some(input) = self.input else {
+                    return InputOutcome::ignored();
+                };
+                let mm = Minimap::new(input.panel, input.world.0, input.world.1);
+                if let Some(p) = mm.pick(input.camera_view, x, y) {
+                    self.dragging_map = true;
+                    return InputOutcome::consumed().with_command(ViewCommand::RecenterMap {
+                        raster_x: p.x,
+                        raster_y: p.y,
+                    });
+                }
+                if input.panel.contains(x, y) {
+                    return InputOutcome {
+                        consumed: true,
+                        commands: Vec::new(),
+                        needs_redraw: false,
+                    };
+                }
+                InputOutcome::ignored()
+            }
+            ViewInput::PointerMove { x, y, drag: true } if self.dragging_map => {
+                let Some(input) = self.input else {
+                    self.dragging_map = false;
+                    return InputOutcome::ignored();
+                };
+                let mm = Minimap::new(input.panel, input.world.0, input.world.1);
+                if let Some(p) = mm.pick(input.camera_view, x, y) {
+                    return InputOutcome::consumed().with_command(ViewCommand::RecenterMap {
+                        raster_x: p.x,
+                        raster_y: p.y,
+                    });
+                }
+                InputOutcome {
+                    consumed: true,
+                    commands: Vec::new(),
+                    needs_redraw: false,
+                }
+            }
+            ViewInput::PointerUp {
+                button: PointerButton::Left,
+                ..
+            } => {
+                let was_dragging = self.dragging_map;
+                self.dragging_map = false;
+                InputOutcome {
+                    consumed: was_dragging,
+                    commands: Vec::new(),
+                    needs_redraw: false,
+                }
+            }
+            _ => InputOutcome::ignored(),
         }
-        if input.panel.contains(x, y) {
-            return InputOutcome {
-                consumed: true,
-                commands: Vec::new(),
-                needs_redraw: false,
-            };
-        }
-        InputOutcome::ignored()
     }
     fn bind(&self, ctx: &BindContext) -> BoundView {
         let mut fidelity = FidelityReport::default();
@@ -818,23 +911,176 @@ register_view!(ViewDescriptor {
 // VIEW 4 — FIND VIEW  [N2 tab/list]
 // =====================================================================================
 
-const FIND_VIEW_ID: ViewId = ViewId("chrome.find");
+pub const FIND_VIEW_ID: ViewId = ViewId("chrome.find");
 const FIND_FILE: &str = "find_view.json";
 const FIND_ROOT: &str = "find_view";
+const FIND_QUERY_BOX: &str = "to_find_text";
+const FIND_RESULTS_WINDOW: &str = "results_window";
+const FIND_BUTTON: &str = "find_button";
+const FIND_GOTO_HOME_BUTTON: &str = "goto_home_button";
+const FIND_QUERY_MAX_CHARS: usize = 64;
+const FIND_SCROLLBAR_W: f32 = 16.0;
 
 pub struct FindView {
     bar: TabBar,
     screen: Rect,
+    input_panel: Option<Rect>,
+    query_rect: Option<Rect>,
+    find_button_rect: Option<Rect>,
+    home_button_rect: Option<Rect>,
+    query_focused: bool,
+    query: String,
     catalog: FindCatalog,
     selected_row: Option<String>,
+    scroll: FindScrollState,
+    scroll_drag: Option<FindScrollDrag>,
+    state_recenter: std::collections::HashMap<u32, (f32, f32)>,
+    vp_recenter: std::collections::HashMap<u32, (f32, f32)>,
+    home_state_id: Option<u32>,
+    home_recenter: Option<(f32, f32)>,
 }
 impl FindView {
     pub fn new() -> FindView {
         FindView {
             bar: find_tabs(),
             screen: default_find_screen(),
+            input_panel: None,
+            query_rect: None,
+            find_button_rect: None,
+            home_button_rect: None,
+            query_focused: false,
+            query: String::new(),
             catalog: FindCatalog::default(),
             selected_row: None,
+            scroll: FindScrollState::default(),
+            scroll_drag: None,
+            state_recenter: std::collections::HashMap::new(),
+            vp_recenter: std::collections::HashMap::new(),
+            home_state_id: None,
+            home_recenter: None,
+        }
+    }
+
+    pub fn set_input_panel(&mut self, panel: Rect) {
+        self.set_input_regions(panel, None, None, None);
+    }
+
+    pub fn set_input_regions(
+        &mut self,
+        panel: Rect,
+        query_rect: Option<Rect>,
+        find_button_rect: Option<Rect>,
+        home_button_rect: Option<Rect>,
+    ) {
+        self.input_panel = Some(panel);
+        self.query_rect = query_rect;
+        self.find_button_rect = find_button_rect;
+        self.home_button_rect = home_button_rect;
+        self.clamp_scrolls();
+    }
+
+    pub fn set_navigation_geometry(&mut self, map_dir: &std::path::Path, cam: MapCamera) {
+        self.state_recenter.clear();
+        self.vp_recenter.clear();
+        self.home_recenter = None;
+
+        let (Some(geo), Some(set)) = (state_geo(map_dir), province_centroids(map_dir)) else {
+            return;
+        };
+
+        for row in self.catalog.states.iter().chain(self.catalog.vps.iter()) {
+            let FindRowTarget::State(sid) = row.target else {
+                continue;
+            };
+            if row.key.starts_with("vp:") {
+                if let Some(point) = state_raster_point(sid, geo, set, &cam, true) {
+                    self.vp_recenter.insert(sid, point);
+                }
+            } else if let Some(point) = state_raster_point(sid, geo, set, &cam, false) {
+                self.state_recenter.insert(sid, point);
+            }
+        }
+
+        if let Some(sid) = self.home_state_id {
+            self.home_recenter = state_raster_point(sid, geo, set, &cam, true);
+        }
+    }
+
+    pub fn clear_query_focus(&mut self) -> bool {
+        let was_focused = self.query_focused;
+        self.query_focused = false;
+        was_focused
+    }
+
+    fn panel(&self) -> Rect {
+        self.input_panel
+            .unwrap_or_else(|| find_panel_fallback(self.screen))
+    }
+
+    fn query_rect(&self) -> Rect {
+        self.query_rect
+            .unwrap_or_else(|| find_query_fallback(self.panel()))
+    }
+
+    fn find_button_hit_rect(&self) -> Option<Rect> {
+        self.find_button_rect.or_else(|| {
+            self.input_panel
+                .is_none()
+                .then(|| find_button_fallback(self.panel()))
+        })
+    }
+
+    fn home_button_hit_rect(&self) -> Option<Rect> {
+        self.home_button_rect.or_else(|| {
+            self.input_panel
+                .is_none()
+                .then(|| find_home_button_fallback(self.panel()))
+        })
+    }
+
+    fn results_panel(&self) -> Rect {
+        find_results_fallback(self.panel())
+    }
+
+    fn clamp_scrolls(&mut self) {
+        let panel = self.results_panel();
+        self.scroll
+            .clamp_all(&self.bar, panel, &self.catalog, &self.query);
+    }
+
+    fn clear_scroll_drag_if_unavailable(&mut self) {
+        let tab = selected_find_tab(&self.bar);
+        let rows = self.catalog.filtered_rows(tab, &self.query);
+        if find_scrollbar_geometry(
+            &self.bar,
+            self.results_panel(),
+            rows.len(),
+            self.scroll.get(tab),
+        )
+        .is_none()
+        {
+            self.scroll_drag = None;
+        }
+    }
+
+    fn active_recenter_point(&self) -> Option<(f32, f32)> {
+        let tab = selected_find_tab(&self.bar);
+        let rows = self.catalog.filtered_rows(tab, &self.query);
+        if let Some(selected) = self.selected_row.as_deref() {
+            if let Some(row) = rows.iter().find(|row| row.key == selected) {
+                return self.row_recenter_point(row);
+            }
+        }
+        rows.first().and_then(|row| self.row_recenter_point(row))
+    }
+
+    fn row_recenter_point(&self, row: &FindRow) -> Option<(f32, f32)> {
+        match row.target {
+            FindRowTarget::State(sid) if row.key.starts_with("vp:") => {
+                self.vp_recenter.get(&sid).copied()
+            }
+            FindRowTarget::State(sid) => self.state_recenter.get(&sid).copied(),
+            FindRowTarget::Country => self.home_recenter,
         }
     }
 }
@@ -881,6 +1127,55 @@ impl FindCatalog {
             FindTab::VictoryPoints => &self.vps,
         }
     }
+
+    fn filtered_rows(&self, tab: FindTab, query: &str) -> Vec<FindRow> {
+        filter_find_rows(self.rows(tab), query)
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct FindScrollState {
+    states: usize,
+    countries: usize,
+    vps: usize,
+}
+
+impl FindScrollState {
+    fn get(&self, tab: FindTab) -> usize {
+        match tab {
+            FindTab::States => self.states,
+            FindTab::Countries => self.countries,
+            FindTab::VictoryPoints => self.vps,
+        }
+    }
+
+    fn set(&mut self, tab: FindTab, value: usize) {
+        match tab {
+            FindTab::States => self.states = value,
+            FindTab::Countries => self.countries = value,
+            FindTab::VictoryPoints => self.vps = value,
+        }
+    }
+
+    fn clamp_all(&mut self, bar: &TabBar, panel: Rect, catalog: &FindCatalog, query: &str) {
+        for tab in [FindTab::States, FindTab::Countries, FindTab::VictoryPoints] {
+            let row_count = catalog.filtered_rows(tab, query).len();
+            let clamped = clamp_find_scroll(self.get(tab), bar, panel, row_count);
+            self.set(tab, clamped);
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct FindScrollDrag {
+    pointer_offset_y: f32,
+}
+
+#[derive(Clone, Copy)]
+struct FindScrollbarGeometry {
+    track: Rect,
+    thumb: Rect,
+    max_scroll: usize,
 }
 
 /// Which catalog the find tab is showing (replay-supported: states / countries / VPs).
@@ -903,16 +1198,24 @@ struct FindDrawable {
     roots: Vec<Node>,
     bar: TabBar,
     panel: Rect,
+    query_rect: Rect,
+    query: String,
+    query_focused: bool,
     rows: Vec<FindRow>,
+    scroll_offset: usize,
+    total_rows: usize,
     selected_row: Option<String>,
 }
 impl Drawable for FindDrawable {
     fn draw_digest(&self) -> String {
-        // NOTE: query=none — these rows are the BROWSABLE CATALOG, not live search
-        // results (the search term is replay-local UI input with no value at bind).
+        // Query is replay-local UI state. Filtering only narrows honest catalog rows.
         let mut s = format!(
-            "FIND query=none tab={:?} selected={} rows=[",
+            "FIND query={:?} focus={} tab={:?} scroll={}/{} selected={} rows=[",
+            self.query,
+            self.query_focused,
             self.bar.selected(),
+            self.scroll_offset,
+            self.total_rows,
             find_selected_digest(self.selected_row.as_deref(), &self.rows)
         );
         for r in &self.rows {
@@ -942,6 +1245,35 @@ impl Drawable for FindDrawable {
             font_pages: pages,
         };
         tabs::plan_tabs(&self.bar, self.panel).execute(fd.renderer, &assets, |_, _| false);
+        let query_clip = Some([
+            self.query_rect.x,
+            self.query_rect.y,
+            self.query_rect.w,
+            self.query_rect.h,
+        ]);
+        if self.query_focused {
+            widgets::common::fill_rect(
+                fd.renderer,
+                &white,
+                self.query_rect.x,
+                self.query_rect.y,
+                self.query_rect.w,
+                self.query_rect.h,
+                [0.20, 0.30, 0.42, 0.45],
+                query_clip,
+            );
+        }
+        if !self.query.is_empty() {
+            widgets::common::draw_atom(
+                fd.renderer,
+                &assets,
+                &WAtom::exact(self.query.clone()),
+                self.query_rect.x + 4.0,
+                self.query_rect.y + 5.0,
+                widgets::common::TEXT_TINT,
+                query_clip,
+            );
+        }
         // result rows below the tab bar.
         let content = self.bar.content_rect(self.panel);
         for (i, r) in self.rows.iter().enumerate() {
@@ -970,6 +1302,31 @@ impl Drawable for FindDrawable {
                 content.x + 6.0,
                 y + 4.0,
                 widgets::common::TEXT_TINT,
+                clip,
+            );
+        }
+        if let Some(geom) =
+            find_scrollbar_geometry(&self.bar, self.panel, self.total_rows, self.scroll_offset)
+        {
+            let clip = Some([content.x, content.y, content.w, content.h]);
+            widgets::common::fill_rect(
+                fd.renderer,
+                &white,
+                geom.track.x,
+                geom.track.y,
+                geom.track.w,
+                geom.track.h,
+                [0.04, 0.05, 0.06, 0.55],
+                clip,
+            );
+            widgets::common::fill_rect(
+                fd.renderer,
+                &white,
+                geom.thumb.x + 2.0,
+                geom.thumb.y + 1.0,
+                (geom.thumb.w - 4.0).max(1.0),
+                (geom.thumb.h - 2.0).max(1.0),
+                [0.52, 0.57, 0.60, 0.85],
                 clip,
             );
         }
@@ -1035,8 +1392,94 @@ fn find_panel_fallback(screen: Rect) -> Rect {
     }
 }
 
+fn find_query_fallback(panel: Rect) -> Rect {
+    // Mirrors find_view.gui: `to_find_text` at (60,20), size 164x25 inside `find_view`.
+    Rect {
+        x: panel.x + 60.0,
+        y: panel.y + 20.0,
+        w: 164.0,
+        h: 25.0,
+    }
+}
+
+fn find_button_fallback(panel: Rect) -> Rect {
+    // Mirrors find_view.gui: `find_button` at (14,-43), LOWER_LEFT, GFX_button_123x34.
+    Rect {
+        x: panel.x + 14.0,
+        y: panel.y + panel.h - 43.0,
+        w: 123.0,
+        h: 34.0,
+    }
+}
+
+fn find_home_button_fallback(panel: Rect) -> Rect {
+    // Mirrors find_view.gui: `goto_home_button` at (150,-43), LOWER_LEFT, GFX_button_123x34.
+    Rect {
+        x: panel.x + 150.0,
+        y: panel.y + panel.h - 43.0,
+        w: 123.0,
+        h: 34.0,
+    }
+}
+
+fn find_results_fallback(panel: Rect) -> Rect {
+    // Mirrors find_view.gui: `results_window` at (12,54), size 258x208.
+    Rect {
+        x: panel.x + 12.0,
+        y: panel.y + 54.0,
+        w: 258.0,
+        h: 208.0,
+    }
+}
+
 fn find_panel_rect(screen: Rect, roots: &[Node]) -> Rect {
     root_rect(roots, FIND_ROOT).unwrap_or_else(|| find_panel_fallback(screen))
+}
+
+fn find_results_rect(panel: Rect, roots: &[Node]) -> Rect {
+    roots
+        .iter()
+        .find_map(|root| find_node_rect(root, FIND_RESULTS_WINDOW))
+        .unwrap_or_else(|| find_results_fallback(panel))
+}
+
+pub fn find_view_panel_rect_from_roots(screen: Rect, roots: &[Node]) -> Rect {
+    find_panel_rect(screen, roots)
+}
+
+pub fn find_view_query_rect_from_roots(screen: Rect, roots: &[Node]) -> Option<Rect> {
+    roots
+        .iter()
+        .find_map(|root| find_node_rect(root, FIND_QUERY_BOX))
+        .or_else(|| Some(find_query_fallback(find_panel_rect(screen, roots))))
+}
+
+pub fn find_view_button_rects_from_roots(
+    screen: Rect,
+    roots: &[Node],
+) -> (Option<Rect>, Option<Rect>) {
+    let panel = find_panel_rect(screen, roots);
+    let find_button = roots
+        .iter()
+        .find_map(|root| find_node_rect(root, FIND_BUTTON))
+        .or_else(|| {
+            (roots.is_empty()
+                || roots
+                    .iter()
+                    .any(|root| contains_node_name(root, FIND_BUTTON)))
+            .then(|| find_button_fallback(panel))
+        });
+    let home_button = roots
+        .iter()
+        .find_map(|root| find_node_rect(root, FIND_GOTO_HOME_BUTTON))
+        .or_else(|| {
+            (roots.is_empty()
+                || roots
+                    .iter()
+                    .any(|root| contains_node_name(root, FIND_GOTO_HOME_BUTTON)))
+            .then(|| find_home_button_fallback(panel))
+        });
+    (find_button, home_button)
 }
 
 fn click_find_tab(bar: &mut TabBar, panel: Rect, x: f32, y: f32) -> FindTabClick {
@@ -1058,6 +1501,7 @@ fn pick_find_row_index(
     bar: &TabBar,
     panel: Rect,
     rows: &[FindRow],
+    scroll_offset: usize,
     x: f32,
     y: f32,
 ) -> Option<usize> {
@@ -1065,15 +1509,160 @@ fn pick_find_row_index(
     if !content.contains(x, y) {
         return None;
     }
-    let idx = ((y - content.y) / FIND_ROW_H).floor() as usize;
+    let visible_idx = ((y - content.y) / FIND_ROW_H).floor() as usize;
+    let idx = scroll_offset.checked_add(visible_idx)?;
     if idx >= rows.len() {
         return None;
     }
-    let row_y = content.y + idx as f32 * FIND_ROW_H;
+    let row_y = content.y + visible_idx as f32 * FIND_ROW_H;
     if row_y + FIND_ROW_H > content.y + content.h {
         return None;
     }
     Some(idx)
+}
+
+fn filter_find_rows(rows: &[FindRow], query: &str) -> Vec<FindRow> {
+    let terms: Vec<String> = query
+        .split_whitespace()
+        .map(|term| term.to_ascii_lowercase())
+        .filter(|term| !term.is_empty())
+        .collect();
+    if terms.is_empty() {
+        return rows.to_vec();
+    }
+    rows.iter()
+        .filter(|row| find_row_matches(row, &terms))
+        .cloned()
+        .collect()
+}
+
+fn find_row_matches(row: &FindRow, terms: &[String]) -> bool {
+    let key = row.key.to_ascii_lowercase();
+    let label = row.name.as_str().to_ascii_lowercase();
+    terms
+        .iter()
+        .all(|term| key.contains(term) || label.contains(term))
+}
+
+fn find_query_push(query: &mut String, ch: char) -> bool {
+    if ch.is_control() || query.chars().count() >= FIND_QUERY_MAX_CHARS {
+        return false;
+    }
+    query.push(ch);
+    true
+}
+
+fn find_query_backspace(query: &mut String) -> bool {
+    query.pop().is_some()
+}
+
+fn find_recenter_command(point: Option<(f32, f32)>) -> Option<ViewCommand> {
+    let (raster_x, raster_y) = point?;
+    Some(ViewCommand::RecenterMap { raster_x, raster_y })
+}
+
+fn find_visible_row_count(bar: &TabBar, panel: Rect) -> usize {
+    let content = bar.content_rect(panel);
+    if content.h <= 0.0 {
+        0
+    } else {
+        (content.h / FIND_ROW_H).floor().max(0.0) as usize
+    }
+}
+
+fn clamp_find_scroll(offset: usize, bar: &TabBar, panel: Rect, row_count: usize) -> usize {
+    let visible = find_visible_row_count(bar, panel);
+    if visible == 0 {
+        0
+    } else {
+        offset.min(row_count.saturating_sub(visible))
+    }
+}
+
+fn find_scrollbar_geometry(
+    bar: &TabBar,
+    panel: Rect,
+    row_count: usize,
+    scroll_offset: usize,
+) -> Option<FindScrollbarGeometry> {
+    let visible = find_visible_row_count(bar, panel);
+    if visible == 0 || row_count <= visible {
+        return None;
+    }
+    let content = bar.content_rect(panel);
+    if content.w <= FIND_SCROLLBAR_W || content.h <= 0.0 {
+        return None;
+    }
+    let track = Rect {
+        x: content.x + content.w - FIND_SCROLLBAR_W,
+        y: content.y,
+        w: FIND_SCROLLBAR_W,
+        h: content.h,
+    };
+    let max_scroll = row_count.saturating_sub(visible);
+    if max_scroll == 0 {
+        return None;
+    }
+    let visible_frac = (visible as f32 / row_count as f32).clamp(0.05, 1.0);
+    let thumb_h = (track.h * visible_frac).max(16.0).min(track.h);
+    let scroll_frac = (scroll_offset.min(max_scroll) as f32 / max_scroll as f32).clamp(0.0, 1.0);
+    let thumb_y = track.y + (track.h - thumb_h).max(0.0) * scroll_frac;
+    Some(FindScrollbarGeometry {
+        track,
+        thumb: Rect {
+            x: track.x,
+            y: thumb_y,
+            w: track.w,
+            h: thumb_h,
+        },
+        max_scroll,
+    })
+}
+
+fn find_scroll_from_thumb_y(geom: FindScrollbarGeometry, thumb_y: f32) -> usize {
+    let travel = (geom.track.h - geom.thumb.h).max(0.0);
+    if travel <= 0.0 || geom.max_scroll == 0 {
+        return 0;
+    }
+    let y = thumb_y.clamp(geom.track.y, geom.track.y + travel);
+    (((y - geom.track.y) / travel) * geom.max_scroll as f32).round() as usize
+}
+
+fn find_visible_rows(
+    rows: &[FindRow],
+    bar: &TabBar,
+    panel: Rect,
+    scroll_offset: usize,
+) -> Vec<FindRow> {
+    let visible = find_visible_row_count(bar, panel);
+    if visible == 0 {
+        Vec::new()
+    } else {
+        rows.iter()
+            .skip(scroll_offset)
+            .take(visible)
+            .cloned()
+            .collect()
+    }
+}
+
+fn scroll_find_offset(
+    current: usize,
+    bar: &TabBar,
+    panel: Rect,
+    row_count: usize,
+    dy: f32,
+) -> usize {
+    if dy == 0.0 || !dy.is_finite() {
+        return current;
+    }
+    let rows = dy.abs().ceil().max(1.0) as usize;
+    let next = if dy < 0.0 {
+        current.saturating_add(rows)
+    } else {
+        current.saturating_sub(rows)
+    };
+    clamp_find_scroll(next, bar, panel, row_count)
 }
 
 fn find_row_command(row: &FindRow) -> Option<ViewCommand> {
@@ -1138,6 +1727,17 @@ fn find_rows_without_fidelity(ctx: &RebindContext, tab: FindTab) -> Vec<FindRow>
     find_rows_from(ctx, tab, &mut fidelity)
 }
 
+fn find_home_state_id<'a, C: FindCatalogSource<'a>>(ctx: &C) -> Option<u32> {
+    let value = match ctx.find_country_field(ctx.find_country(), "politics.capital_state") {
+        Captured::Measured(v) => v,
+        _ => return None,
+    };
+    value
+        .as_u64()
+        .and_then(|n| u32::try_from(n).ok())
+        .or_else(|| value.as_str()?.parse::<u32>().ok())
+}
+
 fn record_find_atom(fidelity: &mut Option<&mut FidelityReport>, atom: &DisplayAtom) {
     if let Some(report) = fidelity.as_deref_mut() {
         report.record(atom);
@@ -1145,16 +1745,15 @@ fn record_find_atom(fidelity: &mut Option<&mut FidelityReport>, atom: &DisplayAt
 }
 
 /// Build the BROWSABLE CATALOG rows for a category tab from the LIVE snapshot's named
-/// entities (DERIVED — the names are joined from the snapshot). The find search TERM is
-/// replay-local UI input with NO value at bind time, so these are NOT live search results
-/// — they are the catalog the search would filter (Codex (f): never pretend a catalog is
-/// a query result). Capped so the panel stays bounded; each row is no-fabrication.
+/// entities (DERIVED — the names are joined from the snapshot). These are the unfiltered
+/// honest catalog rows; the replay-local query narrows them later without inventing
+/// localized names or live-only search categories. The catalog is not capped; the view
+/// draws a scroll-window over it.
 fn find_rows_from<'a, C: FindCatalogSource<'a>>(
     ctx: &C,
     tab: FindTab,
     fidelity: &mut Option<&mut FidelityReport>,
 ) -> Vec<FindRow> {
-    const CAP: usize = 64;
     let mut rows = Vec::new();
     match tab {
         FindTab::Countries => {
@@ -1202,10 +1801,10 @@ fn find_rows_from<'a, C: FindCatalogSource<'a>>(
             });
         }
         FindTab::States => {
-            // states are keyed by id in the snapshot; surface the first CAP state ids
-            // with their owner as a derived "name" (a localized state name needs loc/
+            // states are keyed by id in the snapshot; surface every probed present state
+            // with its owner as a derived "name" (a localized state name needs loc/
             // game_defs which a cluster does not load — so id+owner is the honest token).
-            for sid in state_ids(ctx).into_iter().take(CAP) {
+            for sid in state_ids(ctx) {
                 let target_id = match sid.parse::<u32>() {
                     Ok(id) => id,
                     Err(_) => continue,
@@ -1224,7 +1823,7 @@ fn find_rows_from<'a, C: FindCatalogSource<'a>>(
         }
         FindTab::VictoryPoints => {
             // VP entities = states carrying a victory_points_total > 0 (exact field).
-            for sid in state_ids(ctx).into_iter().take(CAP) {
+            for sid in state_ids(ctx) {
                 let target_id = match sid.parse::<u32>() {
                     Ok(id) => id,
                     Err(_) => continue,
@@ -1295,6 +1894,9 @@ impl ViewInstance for FindView {
             h: ctx.screen.1 as f32,
         };
         self.catalog = FindCatalog::for_rebind(ctx);
+        self.home_state_id = find_home_state_id(ctx);
+        self.clamp_scrolls();
+        self.clear_scroll_drag_if_unavailable();
     }
     fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
         match *ev {
@@ -1302,27 +1904,157 @@ impl ViewInstance for FindView {
                 x,
                 y,
                 button: PointerButton::Left,
-            } => match click_find_tab(&mut self.bar, find_panel_fallback(self.screen), x, y) {
-                FindTabClick::Changed => find_input_consumed(true),
-                FindTabClick::Unchanged | FindTabClick::Inert => find_input_consumed(false),
-                FindTabClick::Miss => {
-                    let tab = selected_find_tab(&self.bar);
-                    let rows = self.catalog.rows(tab);
-                    if let Some(idx) =
-                        pick_find_row_index(&self.bar, find_panel_fallback(self.screen), rows, x, y)
-                    {
-                        let row = rows[idx].clone();
-                        self.selected_row = Some(row.key.clone());
-                        let mut out = find_input_consumed(true);
-                        if let Some(cmd) = find_row_command(&row) {
-                            out.commands.push(cmd);
+            } => {
+                let panel = self.results_panel();
+                let query_rect = self.query_rect();
+                if query_rect.contains(x, y) {
+                    let was_focused = self.query_focused;
+                    self.query_focused = true;
+                    return find_input_consumed(!was_focused);
+                }
+                let was_query_focused = self.query_focused;
+                self.query_focused = false;
+                if self
+                    .find_button_hit_rect()
+                    .is_some_and(|rect| rect.contains(x, y))
+                {
+                    let mut out = find_input_consumed(was_query_focused);
+                    if let Some(cmd) = find_recenter_command(self.active_recenter_point()) {
+                        out.commands.push(cmd);
+                    }
+                    return out;
+                }
+                if self
+                    .home_button_hit_rect()
+                    .is_some_and(|rect| rect.contains(x, y))
+                {
+                    let mut out = find_input_consumed(was_query_focused);
+                    if let Some(cmd) = find_recenter_command(self.home_recenter) {
+                        out.commands.push(cmd);
+                    }
+                    return out;
+                }
+                match click_find_tab(&mut self.bar, panel, x, y) {
+                    FindTabClick::Changed => find_input_consumed(true),
+                    FindTabClick::Unchanged | FindTabClick::Inert => {
+                        find_input_consumed(was_query_focused)
+                    }
+                    FindTabClick::Miss => {
+                        let tab = selected_find_tab(&self.bar);
+                        let rows = self.catalog.filtered_rows(tab, &self.query);
+                        let scroll_offset = self.scroll.get(tab);
+                        if let Some(geom) =
+                            find_scrollbar_geometry(&self.bar, panel, rows.len(), scroll_offset)
+                        {
+                            if geom.thumb.contains(x, y) {
+                                self.scroll_drag = Some(FindScrollDrag {
+                                    pointer_offset_y: y - geom.thumb.y,
+                                });
+                                return find_input_consumed(was_query_focused);
+                            }
+                            if geom.track.contains(x, y) {
+                                return find_input_consumed(was_query_focused);
+                            }
                         }
-                        out
-                    } else {
-                        InputOutcome::ignored()
+                        if let Some(idx) =
+                            pick_find_row_index(&self.bar, panel, &rows, scroll_offset, x, y)
+                        {
+                            let row = rows[idx].clone();
+                            self.selected_row = Some(row.key.clone());
+                            let mut out = find_input_consumed(true);
+                            if let Some(cmd) = find_row_command(&row) {
+                                out.commands.push(cmd);
+                            }
+                            out
+                        } else {
+                            InputOutcome {
+                                consumed: false,
+                                commands: Vec::new(),
+                                needs_redraw: was_query_focused,
+                            }
+                        }
                     }
                 }
-            },
+            }
+            ViewInput::Wheel { x, y, dy } => {
+                let panel = self.results_panel();
+                let content = self.bar.content_rect(panel);
+                if !content.contains(x, y) {
+                    return InputOutcome::ignored();
+                }
+                let tab = selected_find_tab(&self.bar);
+                let rows = self.catalog.filtered_rows(tab, &self.query);
+                let current = self.scroll.get(tab);
+                let next = scroll_find_offset(current, &self.bar, panel, rows.len(), dy);
+                self.scroll.set(tab, next);
+                InputOutcome {
+                    consumed: true,
+                    commands: Vec::new(),
+                    needs_redraw: next != current,
+                }
+            }
+            ViewInput::PointerMove { x: _, y, drag } if drag => {
+                let drag = match self.scroll_drag {
+                    Some(drag) => drag,
+                    None => return InputOutcome::ignored(),
+                };
+                let tab = selected_find_tab(&self.bar);
+                let panel = self.results_panel();
+                let rows = self.catalog.filtered_rows(tab, &self.query);
+                let current = self.scroll.get(tab);
+                let geom = match find_scrollbar_geometry(&self.bar, panel, rows.len(), current) {
+                    Some(geom) => geom,
+                    None => return InputOutcome::ignored(),
+                };
+                let next = find_scroll_from_thumb_y(geom, y - drag.pointer_offset_y);
+                self.scroll.set(tab, next);
+                find_input_consumed(next != current)
+            }
+            ViewInput::PointerUp {
+                button: PointerButton::Left,
+                ..
+            } => {
+                if self.scroll_drag.take().is_some() {
+                    find_input_consumed(false)
+                } else {
+                    InputOutcome::ignored()
+                }
+            }
+            ViewInput::Key { key } => {
+                if !self.query_focused {
+                    return InputOutcome::ignored();
+                }
+                match key {
+                    ViewKey::Escape => {
+                        self.query_focused = false;
+                        find_input_consumed(true)
+                    }
+                    ViewKey::Enter => {
+                        self.query_focused = false;
+                        find_input_consumed(true)
+                    }
+                    ViewKey::Backspace => {
+                        let changed = find_query_backspace(&mut self.query);
+                        if changed {
+                            let tab = selected_find_tab(&self.bar);
+                            self.scroll.set(tab, 0);
+                            self.clamp_scrolls();
+                            self.clear_scroll_drag_if_unavailable();
+                        }
+                        find_input_consumed(changed)
+                    }
+                    ViewKey::Char(ch) => {
+                        let changed = find_query_push(&mut self.query, ch);
+                        if changed {
+                            let tab = selected_find_tab(&self.bar);
+                            self.scroll.set(tab, 0);
+                            self.clamp_scrolls();
+                            self.clear_scroll_drag_if_unavailable();
+                        }
+                        find_input_consumed(changed)
+                    }
+                }
+            }
             _ => InputOutcome::ignored(),
         }
     }
@@ -1333,21 +2065,33 @@ impl ViewInstance for FindView {
         let bar = self.bar.clone();
         let tab = selected_find_tab(&bar);
         let rows = find_rows(ctx, tab, &mut fidelity);
+        let filtered_rows = filter_find_rows(&rows, &self.query);
 
         let roots = build_root(ctx, &file, FIND_ROOT, &[]);
         // the results panel = the find_view shell rect (or a default in the lower-right).
-        let panel = find_panel_rect(ctx.screen, &roots);
+        let window_panel = find_panel_rect(ctx.screen, &roots);
+        let panel = find_results_rect(window_panel, &roots);
+        let query_rect = find_view_query_rect_from_roots(ctx.screen, &roots)
+            .unwrap_or_else(|| find_query_fallback(window_panel));
+        let scroll_offset =
+            clamp_find_scroll(self.scroll.get(tab), &bar, panel, filtered_rows.len());
+        let visible_rows = find_visible_rows(&filtered_rows, &bar, panel, scroll_offset);
 
         BoundView {
             instance: InstanceId(0),
             view_id: FIND_VIEW_ID,
             policy: self.policy(),
-            hit: HitModel::from_roots(roots.clone()).with_block_rect(panel),
+            hit: HitModel::from_roots(roots.clone()).with_block_rect(window_panel),
             drawable: Box::new(FindDrawable {
                 roots,
                 bar,
                 panel,
-                rows,
+                query_rect,
+                query: self.query.clone(),
+                query_focused: self.query_focused,
+                rows: visible_rows,
+                scroll_offset,
+                total_rows: filtered_rows.len(),
                 selected_row: self.selected_row.clone(),
             }),
             fidelity,
@@ -1479,16 +2223,33 @@ register_view!(ViewDescriptor {
 pub const MAPMODES_VIEW_ID: ViewId = ViewId("chrome.mapmodes");
 const MAPMODES_FILE: &str = "mapmodes.json";
 const MAPMODES_ROOT: &str = "MapmodesInterface_Ingame";
+const MAPMODES_ALL_BUTTON: &str = "mapmodes_all";
+const MAPMODES_ALL_WINDOW: &str = "WindowWithAllMapModes";
+const MAPMODES_ALL_GRID: &str = "slots";
 
 pub struct MapModesView {
     screen: Rect,
     input_panel: Option<Rect>,
+    input_targets: Vec<MapModeHitTarget>,
+    all_button_rect: Option<Rect>,
+    all_mode_targets: Vec<MapModeHitTarget>,
+    all_modes_open: bool,
+    active_mode: Option<CoreMapMode>,
+    hover_index: Option<usize>,
+    hover_cursor: Option<(f32, f32)>,
 }
 impl MapModesView {
     pub fn new() -> MapModesView {
         MapModesView {
             screen: default_chrome_screen(),
             input_panel: None,
+            input_targets: Vec::new(),
+            all_button_rect: None,
+            all_mode_targets: Vec::new(),
+            all_modes_open: false,
+            active_mode: None,
+            hover_index: None,
+            hover_cursor: None,
         }
     }
 
@@ -1496,6 +2257,50 @@ impl MapModesView {
     /// If this has not run yet, input falls back to the known rail footprint.
     pub fn set_input_panel(&mut self, panel: Rect) {
         self.input_panel = Some(panel);
+        self.input_targets = mapmode_targets_from_panel(panel);
+        self.all_button_rect = None;
+        self.all_mode_targets.clear();
+    }
+
+    /// Sync the event-time hit targets from the real laid-out `.gui` button slots.
+    pub fn set_input_targets(&mut self, targets: Vec<(usize, Rect)>) {
+        self.set_input_targets_with_all(targets, None, None);
+    }
+
+    /// Sync event-time hit targets from the real laid-out `.gui` rail, the real
+    /// `mapmodes_all` button, and the real all-modes grid if that popup is visible.
+    pub fn set_input_targets_with_all(
+        &mut self,
+        targets: Vec<(usize, Rect)>,
+        all_button_rect: Option<Rect>,
+        all_grid_rect: Option<Rect>,
+    ) {
+        let mut hit_rects: Vec<Rect> = targets.iter().map(|(_, rect)| *rect).collect();
+        if let Some(rect) = all_button_rect {
+            hit_rects.push(rect);
+        }
+        if let Some(rect) = all_grid_rect {
+            hit_rects.push(rect);
+        }
+        self.input_panel = union_target_rects(hit_rects);
+        self.input_targets = targets
+            .into_iter()
+            .filter_map(|(index, rect)| {
+                (index < MAP_MODES.len() && rect.w > 0.0 && rect.h > 0.0)
+                    .then_some(MapModeHitTarget { index, rect })
+            })
+            .collect();
+        self.all_button_rect = all_button_rect;
+        self.all_mode_targets = match all_grid_rect {
+            Some(grid) => mapmode_all_targets_from_grid(grid),
+            None => Vec::new(),
+        };
+    }
+
+    /// Sync the selected/active echo from the seeded `core.map` view. Registry-only
+    /// binds leave this as `None`, which honestly badges the active indicator.
+    pub fn set_active_mode(&mut self, mode: CoreMapMode) {
+        self.active_mode = Some(mode);
     }
 }
 impl Default for MapModesView {
@@ -1528,6 +2333,8 @@ enum DataDrivenMode {
     /// Weather mode — recolors from the `weather` domain (closed by the live reader);
     /// Derived (a proxy of the game's particle look) when present, else Unavailable.
     Weather,
+    /// Intel mode -- country-granularity agency/counter-intel signal when measured.
+    Intel,
 }
 
 impl MapModeRailEntry {
@@ -1588,6 +2395,32 @@ impl MapModeRailEntry {
                     Some(_) => self.fidelity,
                 }
             }
+            Some(DataDrivenMode::Intel) => {
+                let present = ctx
+                    .snapshot
+                    .countries()
+                    .map(|countries| {
+                        countries.keys().any(|tag| {
+                            [
+                                "intel.agency.capacity.defense",
+                                "intel.agency.capacity.usable_slots",
+                                "intel.agency.capacity.max_operatives",
+                                "intel.operatives_live",
+                                "intel.operatives",
+                            ]
+                            .iter()
+                            .any(|path| {
+                                matches!(ctx.country_field(tag, path), Captured::Measured(_))
+                            })
+                        })
+                    })
+                    .unwrap_or(false);
+                if present {
+                    self.fidelity
+                } else {
+                    Fidelity::Unavailable
+                }
+            }
         }
     }
 }
@@ -1634,10 +2467,21 @@ const MAP_MODES: &[MapModeRailEntry] = &[
     MapModeRailEntry::stat("AirSuperiority", Fidelity::Derived, Some(CoreMapMode::Air)), // region proxy
     MapModeRailEntry::stat("Naval", Fidelity::Derived, Some(CoreMapMode::Naval)), // region proxy
     MapModeRailEntry::stat("Supply", Fidelity::Derived, Some(CoreMapMode::Supply)), // division-province proxy
-    MapModeRailEntry::stat("Intel", Fidelity::Derived, None),
+    MapModeRailEntry::driven(
+        "Intel",
+        Fidelity::Derived,
+        DataDrivenMode::Intel,
+        Some(CoreMapMode::Intel),
+    ),
 ];
 
 const MAPMODE_ROW_H: f32 = 24.0;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct MapModeHitTarget {
+    index: usize,
+    rect: Rect,
+}
 
 fn default_chrome_screen() -> Rect {
     Rect {
@@ -1657,11 +2501,19 @@ fn mapmodes_panel_fallback(screen: Rect) -> Rect {
     }
 }
 
+fn mapmode_targets_from_panel(panel: Rect) -> Vec<MapModeHitTarget> {
+    (0..MAP_MODES.len())
+        .map(|index| MapModeHitTarget {
+            index,
+            rect: mapmode_row_rect(panel, index),
+        })
+        .collect()
+}
+
 fn mapmode_row_height(panel: Rect) -> f32 {
     (panel.h / MAP_MODES.len() as f32).max(1.0)
 }
 
-#[cfg(test)]
 fn mapmode_row_rect(panel: Rect, index: usize) -> Rect {
     let row_h = mapmode_row_height(panel);
     Rect {
@@ -1672,17 +2524,252 @@ fn mapmode_row_rect(panel: Rect, index: usize) -> Rect {
     }
 }
 
-fn pick_mapmode_index(panel: Rect, x: f32, y: f32) -> Option<usize> {
-    if !panel.contains(x, y) {
+fn mapmode_all_targets_from_grid(grid: Rect) -> Vec<MapModeHitTarget> {
+    (0..MAP_MODES.len())
+        .map(|index| MapModeHitTarget {
+            index,
+            rect: mapmode_row_rect(grid, index),
+        })
+        .collect()
+}
+
+fn pick_mapmode_target(targets: &[MapModeHitTarget], x: f32, y: f32) -> Option<usize> {
+    targets
+        .iter()
+        .rev()
+        .find(|target| target.rect.contains(x, y))
+        .map(|target| target.index)
+}
+
+fn union_target_rects<I>(rects: I) -> Option<Rect>
+where
+    I: IntoIterator<Item = Rect>,
+{
+    let mut iter = rects
+        .into_iter()
+        .filter(|rect| rect.w > 0.0 && rect.h > 0.0);
+    let first = iter.next()?;
+    Some(iter.fold(first, |acc, rect| {
+        let x0 = acc.x.min(rect.x);
+        let y0 = acc.y.min(rect.y);
+        let x1 = (acc.x + acc.w).max(rect.x + rect.w);
+        let y1 = (acc.y + acc.h).max(rect.y + rect.h);
+        Rect {
+            x: x0,
+            y: y0,
+            w: x1 - x0,
+            h: y1 - y0,
+        }
+    }))
+}
+
+fn parse_mapmode_button_index(name: &str) -> Option<usize> {
+    let rest = name.strip_prefix("mapmode_button_")?;
+    let digits = rest
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    if digits.is_empty() {
         return None;
     }
-    let row_h = mapmode_row_height(panel);
-    let index = ((y - panel.y) / row_h).floor() as usize;
-    (index < MAP_MODES.len()).then_some(index)
+    let suffix = &rest[digits.len()..];
+    if !(suffix.is_empty() || suffix == "_s") {
+        return None;
+    }
+    let slot = digits.parse::<usize>().ok()?;
+    slot.checked_sub(1).filter(|index| *index < MAP_MODES.len())
+}
+
+fn collect_mapmode_button_targets(node: &Node, out: &mut Vec<(usize, Rect)>) {
+    if matches!(node.kind, gui_runtime::scene::ElementKind::Button { .. }) {
+        if let Some(index) = parse_mapmode_button_index(&node.name) {
+            if node.rect.w > 0.0 && node.rect.h > 0.0 {
+                out.push((index, node.rect));
+            }
+        }
+    }
+    for child in &node.children {
+        collect_mapmode_button_targets(child, out);
+    }
+}
+
+pub fn mapmode_button_targets_from_roots(roots: &[Node]) -> Vec<(usize, Rect)> {
+    let mut out = Vec::new();
+    for root in roots {
+        collect_mapmode_button_targets(root, &mut out);
+    }
+    out
+}
+
+fn find_node_rect(node: &Node, name: &str) -> Option<Rect> {
+    if node.name == name && node.rect.w > 0.0 && node.rect.h > 0.0 {
+        return Some(node.rect);
+    }
+    node.children
+        .iter()
+        .find_map(|child| find_node_rect(child, name))
+}
+
+fn contains_node_name(node: &Node, name: &str) -> bool {
+    node.name == name
+        || node
+            .children
+            .iter()
+            .any(|child| contains_node_name(child, name))
+}
+
+pub fn mapmodes_all_button_rect_from_roots(roots: &[Node]) -> Option<Rect> {
+    roots
+        .iter()
+        .find_map(|root| find_node_rect(root, MAPMODES_ALL_BUTTON))
+}
+
+pub fn mapmodes_all_grid_rect_from_roots(roots: &[Node]) -> Option<Rect> {
+    roots
+        .iter()
+        .filter(|root| root.name == MAPMODES_ALL_WINDOW)
+        .find_map(|root| find_node_rect(root, MAPMODES_ALL_GRID))
 }
 
 fn mapmode_command(entry: &MapModeRailEntry) -> Option<ViewCommand> {
     entry.core_mode.map(|mode| ViewCommand::SetMapMode { mode })
+}
+
+fn mapmode_active_digest(mode: Option<CoreMapMode>) -> String {
+    match mode {
+        Some(active) => MAP_MODES
+            .iter()
+            .find(|entry| entry.core_mode == Some(active))
+            .map(|entry| entry.name.to_string())
+            .unwrap_or_else(|| active.label()),
+        None => "—".to_string(),
+    }
+}
+
+fn mapmode_fidelity_code(fidelity: Fidelity) -> &'static str {
+    match fidelity {
+        Fidelity::Exact => "exact",
+        Fidelity::Derived => "derived",
+        Fidelity::Unavailable => "unavailable",
+    }
+}
+
+fn mapmode_source_text(entry: &MapModeRailEntry, fidelity: Fidelity) -> WAtom {
+    if matches!(fidelity, Fidelity::Unavailable) {
+        return WAtom::unavailable_because(WReason::Blocked);
+    }
+    let text = match entry.data_driven {
+        Some(DataDrivenMode::StateResources) => "states.*.resources",
+        Some(DataDrivenMode::Weather) => "weather domain",
+        Some(DataDrivenMode::Intel) => "countries.*.intel",
+        None => match entry.core_mode {
+            Some(CoreMapMode::Political) => "states.*.owner",
+            Some(CoreMapMode::Control) => "states.*.controller",
+            Some(CoreMapMode::Resistance) => "states.*.occupation.resistance",
+            Some(CoreMapMode::Compliance) => "states.*.occupation.compliance",
+            Some(CoreMapMode::VictoryPoints) => "states.*.victory_points_total",
+            Some(CoreMapMode::Buildings(_)) => "states.*.buildings",
+            Some(CoreMapMode::FrontLines) => "map.control_by_province",
+            Some(CoreMapMode::Diplomacy) => "diplomacy_world",
+            Some(CoreMapMode::Air) => "naval_air.air_superiority",
+            Some(CoreMapMode::Naval) => "naval_air.region_control",
+            Some(CoreMapMode::Supply) => "provinces.*.supply proxy",
+            Some(CoreMapMode::Intel) => "countries.*.intel",
+            None => "unmapped",
+            Some(CoreMapMode::Resources) | Some(CoreMapMode::Weather) => "snapshot domain",
+        },
+    };
+    match fidelity {
+        Fidelity::Exact => WAtom::exact(text),
+        Fidelity::Derived => WAtom::derived(text),
+        Fidelity::Unavailable => WAtom::unavailable_because(WReason::Blocked),
+    }
+}
+
+fn mapmode_hover_tooltip(
+    ctx: &BindContext,
+    entry: &MapModeRailEntry,
+    fidelity: Fidelity,
+    active: Option<CoreMapMode>,
+    cursor: (f32, f32),
+) -> TooltipPlan {
+    let active_text = match (entry.core_mode, active) {
+        (Some(mode), Some(active)) if mode == active => "active",
+        _ => "inactive",
+    };
+    let title = WAtom::exact(format!("Map mode: {}", entry.name));
+    let fidelity_atom = match fidelity {
+        Fidelity::Exact => WAtom::exact(mapmode_fidelity_code(fidelity)),
+        Fidelity::Derived => WAtom::derived(mapmode_fidelity_code(fidelity)),
+        Fidelity::Unavailable => WAtom::unavailable_because(WReason::Blocked),
+    };
+    let tooltip = Tooltip::new(title)
+        .with_row("Mode", WAtom::exact(entry.name))
+        .with_row("State", WAtom::exact(active_text))
+        .with_row("Fidelity", fidelity_atom)
+        .with_row("Source", mapmode_source_text(entry, fidelity));
+    plan_tooltip(&tooltip, cursor, ctx.screen)
+}
+
+#[derive(Clone, Debug)]
+struct MapModePopupRow {
+    name: &'static str,
+    fidelity: Fidelity,
+    active: bool,
+}
+
+fn mapmode_popup_fidelity_tag(fidelity: Fidelity) -> &'static str {
+    match fidelity {
+        Fidelity::Exact => "E",
+        Fidelity::Derived => "D",
+        Fidelity::Unavailable => "U",
+    }
+}
+
+fn mapmode_popup_text_tint(fidelity: Fidelity) -> [f32; 4] {
+    match fidelity {
+        Fidelity::Exact => TEXT_TINT,
+        Fidelity::Derived => DERIVED_TINT,
+        Fidelity::Unavailable => UNAVAIL_TINT,
+    }
+}
+
+fn mapmode_popup_plan(grid: Rect, rows: &[MapModePopupRow], hover_index: Option<usize>) -> Plan {
+    let mut p = Plan::new();
+    let clip = Some([grid.x, grid.y, grid.w, grid.h]);
+    for (index, row) in rows.iter().enumerate() {
+        let rect = mapmode_row_rect(grid, index);
+        let bg = if row.active {
+            [0.28, 0.34, 0.42, 0.82]
+        } else if Some(index) == hover_index {
+            [0.24, 0.24, 0.23, 0.78]
+        } else {
+            [0.08, 0.08, 0.08, 0.36]
+        };
+        p.push(Cmd::Rect {
+            x: rect.x + 2.0,
+            y: rect.y + 1.0,
+            w: (rect.w - 4.0).max(1.0),
+            h: (rect.h - 2.0).max(1.0),
+            tint: bg,
+            clip,
+        });
+        p.push(Cmd::Text {
+            x: rect.x + 8.0,
+            y: rect.y + 2.0,
+            text: row.name.to_string(),
+            tint: mapmode_popup_text_tint(row.fidelity),
+            clip,
+        });
+        p.push(Cmd::Text {
+            x: rect.x + rect.w - 24.0,
+            y: rect.y + 2.0,
+            text: mapmode_popup_fidelity_tag(row.fidelity).to_string(),
+            tint: DIM_TINT,
+            clip,
+        });
+    }
+    p
 }
 
 fn mapmodes_input_consumed(needs_redraw: bool) -> InputOutcome {
@@ -1696,16 +2783,49 @@ fn mapmodes_input_consumed(needs_redraw: bool) -> InputOutcome {
 struct MapModesDrawable {
     roots: Vec<Node>,
     /// the per-mode fidelity digest (the datum of this view: the recolor LUT each slot
-    /// instantiates). The ACTIVE mode lives in the binary's map view (unreachable from a
-    /// registry view) → the active indicator is badged, not fabricated.
+    /// instantiates). Active-mode echo is synced from `core.map`; if no shell sync has
+    /// occurred, it remains badged rather than guessed.
     mode_digest: String,
+    active_digest: String,
+    tooltip: Option<TooltipPlan>,
+    popup_plan: Option<Plan>,
 }
 impl Drawable for MapModesDrawable {
+    fn tooltip_plan(&self) -> Option<&TooltipPlan> {
+        self.tooltip.as_ref()
+    }
+
     fn draw_digest(&self) -> String {
-        format!("MAPMODES active=— {}", self.mode_digest)
+        format!(
+            "MAPMODES active={} {} hover={} all={}",
+            self.active_digest,
+            self.mode_digest,
+            self.tooltip
+                .as_ref()
+                .map(|tt| tt.digest())
+                .unwrap_or_else(|| "-".to_string()),
+            self.popup_plan
+                .as_ref()
+                .map(|p| p.digest())
+                .unwrap_or_else(|| "-".to_string())
+        )
     }
     fn draw(&self, fd: &mut FrameDraw) {
         fd.draw_nodes(&self.roots);
+        if let Some(plan) = &self.popup_plan {
+            let white = frame_white(fd);
+            let loaded = fd.fonts.get(fd.renderer, "hoi_16mbs");
+            let (font, pages): (Option<&assets::BmFont>, &[render::Texture]) = match &loaded {
+                Some(l) => (Some(&l.font), &l.pages),
+                None => (None, &[]),
+            };
+            let assets = DrawAssets {
+                white: &white,
+                font,
+                font_pages: pages,
+            };
+            plan.execute(fd.renderer, &assets, |_, _| false);
+        }
     }
 }
 
@@ -1717,23 +2837,91 @@ impl ViewInstance for MapModesView {
         HostPolicy::window(ZBand::Chrome)
     }
     fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
-        let ViewInput::PointerDown {
-            x,
-            y,
-            button: PointerButton::Left,
-        } = *ev
-        else {
-            return InputOutcome::ignored();
+        let fallback_targets;
+        let rail_targets = if self.input_targets.is_empty() {
+            let panel = self
+                .input_panel
+                .unwrap_or_else(|| mapmodes_panel_fallback(self.screen));
+            fallback_targets = mapmode_targets_from_panel(panel);
+            fallback_targets.as_slice()
+        } else {
+            self.input_targets.as_slice()
         };
-        let panel = self
-            .input_panel
-            .unwrap_or_else(|| mapmodes_panel_fallback(self.screen));
-        let Some(index) = pick_mapmode_index(panel, x, y) else {
-            return InputOutcome::ignored();
-        };
-        match mapmode_command(&MAP_MODES[index]) {
-            Some(command) => InputOutcome::consumed().with_command(command),
-            None => mapmodes_input_consumed(false),
+        match *ev {
+            ViewInput::PointerMove { x, y, drag } => {
+                let next = if drag {
+                    None
+                } else {
+                    let popup = if self.all_modes_open {
+                        pick_mapmode_target(&self.all_mode_targets, x, y)
+                    } else {
+                        None
+                    };
+                    popup.or_else(|| pick_mapmode_target(rail_targets, x, y))
+                };
+                let next_cursor = next.map(|_| (x, y));
+                let changed = self.hover_index != next || self.hover_cursor != next_cursor;
+                self.hover_index = next;
+                self.hover_cursor = next_cursor;
+                if changed {
+                    InputOutcome {
+                        consumed: false,
+                        commands: Vec::new(),
+                        needs_redraw: true,
+                    }
+                } else {
+                    InputOutcome::ignored()
+                }
+            }
+            ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            } => {
+                if self
+                    .all_button_rect
+                    .map(|rect| rect.contains(x, y))
+                    .unwrap_or(false)
+                {
+                    self.all_modes_open = !self.all_modes_open;
+                    if !self.all_modes_open {
+                        self.hover_index = None;
+                        self.hover_cursor = None;
+                    }
+                    return mapmodes_input_consumed(true);
+                }
+
+                let popup_hit = if self.all_modes_open {
+                    pick_mapmode_target(&self.all_mode_targets, x, y)
+                } else {
+                    None
+                };
+                let Some(index) = popup_hit.or_else(|| pick_mapmode_target(rail_targets, x, y))
+                else {
+                    return InputOutcome::ignored();
+                };
+                self.hover_index = Some(index);
+                self.hover_cursor = Some((x, y));
+                if popup_hit.is_some() {
+                    self.all_modes_open = false;
+                }
+                match mapmode_command(&MAP_MODES[index]) {
+                    Some(command) => InputOutcome::consumed().with_command(command),
+                    None => mapmodes_input_consumed(false),
+                }
+            }
+            ViewInput::PointerUp { x, y, .. } => {
+                let next = if self.all_modes_open {
+                    pick_mapmode_target(&self.all_mode_targets, x, y)
+                        .or_else(|| pick_mapmode_target(rail_targets, x, y))
+                } else {
+                    pick_mapmode_target(rail_targets, x, y)
+                };
+                self.hover_index = next;
+                self.hover_cursor = next.map(|_| (x, y));
+                InputOutcome::ignored()
+            }
+            _ => InputOutcome::ignored(),
         }
     }
     fn rebind(&mut self, ctx: &RebindContext) {
@@ -1750,9 +2938,10 @@ impl ViewInstance for MapModesView {
 
         // The binding is PER-MAP-MODE: each mode is a recolor LUT carrying its §B.9
         // fidelity. Tally each mode's badge (so the per-view honesty report reflects the
-        // 14 modes), and digest them. The active-mode indicator is unavailable here (the
-        // datum lives in the binary's map view) → recorded as one unavailable.
+        // 14 modes), and digest them. The active-mode indicator is exact only after the
+        // app shell syncs it from the seeded map view; registry-only binds stay unavailable.
         let mut digest = String::from("modes=[");
+        let mut popup_rows = Vec::with_capacity(MAP_MODES.len());
         for m in MAP_MODES {
             // data-driven modes (Resources/Weather) resolve their fidelity from the now-
             // recorded snapshot domain; static modes use their frozen label.
@@ -1765,6 +2954,11 @@ impl ViewInstance for MapModesView {
                 }
             };
             fidelity.record(&atom);
+            popup_rows.push(MapModePopupRow {
+                name: m.name,
+                fidelity: mode_fid,
+                active: self.active_mode == m.core_mode,
+            });
             let b = match mode_fid {
                 Fidelity::Exact => "E",
                 Fidelity::Derived => "D",
@@ -1773,12 +2967,49 @@ impl ViewInstance for MapModesView {
             digest.push_str(&format!("{}({b});", m.name));
         }
         digest.push(']');
-        // the active-mode datum (unreachable) → one honest unavailable.
-        let active = DisplayAtom::unavailable_because(UnavailableReason::Blocked);
+        let active = match self.active_mode {
+            Some(mode) => DisplayAtom::text(mapmode_active_digest(Some(mode)), Fidelity::Exact),
+            None => DisplayAtom::unavailable_because(UnavailableReason::Blocked),
+        };
         fidelity.record(&active);
+        let active_digest = mapmode_active_digest(self.active_mode);
+        let tooltip = match (self.hover_index, self.hover_cursor) {
+            (Some(index), Some(cursor)) => MAP_MODES.get(index).map(|entry| {
+                mapmode_hover_tooltip(
+                    ctx,
+                    entry,
+                    entry.fidelity_for(ctx),
+                    self.active_mode,
+                    cursor,
+                )
+            }),
+            _ => None,
+        };
+        if tooltip.is_some() {
+            fidelity.derived += 1;
+        }
 
-        let roots = build_root(ctx, &file, MAPMODES_ROOT, &[]);
-        let panel = root_rect(&roots, MAPMODES_ROOT);
+        let mut roots = build_root(ctx, &file, MAPMODES_ROOT, &[]);
+        if self.all_modes_open {
+            roots.extend(build_root(ctx, &file, MAPMODES_ALL_WINDOW, &[]));
+        }
+        let button_targets = mapmode_button_targets_from_roots(&roots);
+        let all_button_rect = mapmodes_all_button_rect_from_roots(&roots);
+        let all_grid_rect = if self.all_modes_open {
+            mapmodes_all_grid_rect_from_roots(&roots)
+        } else {
+            None
+        };
+        let popup_plan =
+            all_grid_rect.map(|grid| mapmode_popup_plan(grid, &popup_rows, self.hover_index));
+        let mut hit_rects: Vec<Rect> = button_targets.iter().map(|(_, rect)| *rect).collect();
+        if let Some(rect) = all_button_rect {
+            hit_rects.push(rect);
+        }
+        if let Some(rect) = all_grid_rect {
+            hit_rects.push(rect);
+        }
+        let panel = union_target_rects(hit_rects).or_else(|| root_rect(&roots, MAPMODES_ROOT));
         let hit = match panel {
             Some(p) => HitModel::from_roots(roots.clone()).with_block_rect(p),
             None => HitModel::from_roots(roots.clone()),
@@ -1791,6 +3022,9 @@ impl ViewInstance for MapModesView {
             drawable: Box::new(MapModesDrawable {
                 roots,
                 mode_digest: digest,
+                active_digest,
+                tooltip,
+                popup_plan,
             }),
             fidelity,
             commands: Vec::<ViewCommand>::new(),
@@ -1806,7 +3040,7 @@ fn open_mapmodes(_arg: Option<i64>) -> Box<dyn ViewInstance> {
 register_view!(ViewDescriptor {
     id: MAPMODES_VIEW_ID,
     gui_root: Some(GuiSymbolRef::root(MAPMODES_FILE, MAPMODES_ROOT)),
-    required_domains: &["states", "map"],
+    required_domains: &["states", "map", "countries", "weather"],
     route: Some(MenuRoute {
         cluster: MenuCluster::ChromeOutlinerMaps,
         label: "Map Modes",
@@ -3545,6 +4779,14 @@ mod tests {
         }
     }
 
+    fn sprite_entry_sized(name: &str, width: u32, height: u32) -> assets::SpriteEntry {
+        assets::SpriteEntry {
+            width: Some(width),
+            height: Some(height),
+            ..sprite_entry(name, None, 1)
+        }
+    }
+
     fn sprite_manifest(entries: &[(&str, &str, u32)]) -> HashMap<String, assets::SpriteEntry> {
         entries
             .iter()
@@ -3594,7 +4836,7 @@ mod tests {
     }
 
     fn click_find_tab_center(v: &mut FindView, id: &str) -> InputOutcome {
-        let panel = find_panel_fallback(v.screen);
+        let panel = v.results_panel();
         let (x, y) = find_tab_center(&v.bar, panel, id);
         v.on_input(&ViewInput::PointerDown {
             x,
@@ -3613,14 +4855,19 @@ mod tests {
 
     fn click_find_row_key(v: &mut FindView, key: &str) -> InputOutcome {
         let tab = selected_find_tab(&v.bar);
-        let panel = find_panel_fallback(v.screen);
-        let index = v
-            .catalog
-            .rows(tab)
+        let panel = v.results_panel();
+        let rows = v.catalog.filtered_rows(tab, &v.query);
+        let index = rows
             .iter()
             .position(|r| r.key == key)
             .unwrap_or_else(|| panic!("missing cached find row {key}"));
-        let (x, y) = find_row_center(&v.bar, panel, index);
+        let scroll = v.scroll.get(tab);
+        assert!(
+            index >= scroll,
+            "cached find row {key} is above the visible scroll window"
+        );
+        let visible_index = index - scroll;
+        let (x, y) = find_row_center(&v.bar, panel, visible_index);
         v.on_input(&ViewInput::PointerDown {
             x,
             y,
@@ -3628,16 +4875,130 @@ mod tests {
         })
     }
 
+    fn click_find_visible_row(v: &mut FindView, visible_index: usize) -> InputOutcome {
+        let panel = v.results_panel();
+        let (x, y) = find_row_center(&v.bar, panel, visible_index);
+        v.on_input(&ViewInput::PointerDown {
+            x,
+            y,
+            button: PointerButton::Left,
+        })
+    }
+
+    fn wheel_find_content(v: &mut FindView, dy: f32) -> InputOutcome {
+        let panel = v.results_panel();
+        let content = v.bar.content_rect(panel);
+        v.on_input(&ViewInput::Wheel {
+            x: content.x + content.w * 0.5,
+            y: content.y + content.h * 0.5,
+            dy,
+        })
+    }
+
+    fn find_scrollbar(v: &FindView) -> FindScrollbarGeometry {
+        let tab = selected_find_tab(&v.bar);
+        let rows = v.catalog.filtered_rows(tab, &v.query);
+        find_scrollbar_geometry(&v.bar, v.results_panel(), rows.len(), v.scroll.get(tab))
+            .expect("find results should overflow and expose a scrollbar")
+    }
+
+    fn pointer_down_find_thumb(v: &mut FindView) -> InputOutcome {
+        let geom = find_scrollbar(v);
+        v.on_input(&ViewInput::PointerDown {
+            x: geom.thumb.x + geom.thumb.w * 0.5,
+            y: geom.thumb.y + geom.thumb.h * 0.5,
+            button: PointerButton::Left,
+        })
+    }
+
+    fn click_find_query(v: &mut FindView) -> InputOutcome {
+        let rect = v.query_rect();
+        v.on_input(&ViewInput::PointerDown {
+            x: rect.x + rect.w * 0.5,
+            y: rect.y + rect.h * 0.5,
+            button: PointerButton::Left,
+        })
+    }
+
+    fn click_find_button(v: &mut FindView) -> InputOutcome {
+        let rect = v
+            .find_button_hit_rect()
+            .expect("test find button fallback should be active before host sync");
+        v.on_input(&ViewInput::PointerDown {
+            x: rect.x + rect.w * 0.5,
+            y: rect.y + rect.h * 0.5,
+            button: PointerButton::Left,
+        })
+    }
+
+    fn click_find_home_button(v: &mut FindView) -> InputOutcome {
+        let rect = v
+            .home_button_hit_rect()
+            .expect("test home button fallback should be active before host sync");
+        v.on_input(&ViewInput::PointerDown {
+            x: rect.x + rect.w * 0.5,
+            y: rect.y + rect.h * 0.5,
+            button: PointerButton::Left,
+        })
+    }
+
+    fn assert_rect_close(actual: Rect, expected: Rect) {
+        assert!(
+            (actual.x - expected.x).abs() < 0.01
+                && (actual.y - expected.y).abs() < 0.01
+                && (actual.w - expected.w).abs() < 0.01
+                && (actual.h - expected.h).abs() < 0.01,
+            "rect mismatch: actual={actual:?} expected={expected:?}"
+        );
+    }
+
+    fn type_find_char(v: &mut FindView, ch: char) -> InputOutcome {
+        v.on_input(&ViewInput::Key {
+            key: ViewKey::Char(ch),
+        })
+    }
+
+    fn press_find_key(v: &mut FindView, key: ViewKey) -> InputOutcome {
+        v.on_input(&ViewInput::Key { key })
+    }
+
     fn click_find_content_after_rows(v: &mut FindView) -> InputOutcome {
         let tab = selected_find_tab(&v.bar);
-        let panel = find_panel_fallback(v.screen);
+        let panel = v.results_panel();
         let content = v.bar.content_rect(panel);
-        let index = v.catalog.rows(tab).len();
+        let index = v.catalog.filtered_rows(tab, &v.query).len();
         v.on_input(&ViewInput::PointerDown {
             x: content.x + content.w * 0.5,
             y: content.y + index as f32 * FIND_ROW_H + FIND_ROW_H * 0.5,
             button: PointerButton::Left,
         })
+    }
+
+    fn many_states_snap(count: u32, owner: &str) -> snapshot::Snapshot {
+        let mut states = serde_json::Map::new();
+        for sid in 1..=count {
+            states.insert(
+                sid.to_string(),
+                serde_json::json!({
+                    "owner": owner,
+                    "controller": owner,
+                    "category": "rural",
+                    "victory_points_total": if sid % 10 == 0 { 5 } else { 0 },
+                }),
+            );
+        }
+        let mut countries = serde_json::Map::new();
+        countries.insert(
+            "GER".to_string(),
+            serde_json::json!({"politics": {"capital_state": 1, "ruling_party": "fascism"}}),
+        );
+        serde_json::from_value(serde_json::json!({
+            "date": "1941.4.13.11",
+            "hour_index": 100,
+            "countries": serde_json::Value::Object(countries),
+            "states": serde_json::Value::Object(states),
+        }))
+        .unwrap()
     }
 
     fn mapmode_panel_for_tests() -> Rect {
@@ -3661,6 +5022,19 @@ mod tests {
         (rect.x + rect.w * 0.5, rect.y + rect.h * 0.5)
     }
 
+    fn mapmode_target_center(targets: &[MapModeHitTarget], name: &str) -> (f32, f32) {
+        let index = mapmode_index(name);
+        let target = targets
+            .iter()
+            .rev()
+            .find(|target| target.index == index)
+            .unwrap_or_else(|| panic!("missing real mapmode target for {name}"));
+        (
+            target.rect.x + target.rect.w * 0.5,
+            target.rect.y + target.rect.h * 0.5,
+        )
+    }
+
     fn click_mapmode_row(v: &mut MapModesView, panel: Rect, name: &str) -> InputOutcome {
         let (x, y) = mapmode_row_center(panel, name);
         v.on_input(&ViewInput::PointerDown {
@@ -3668,6 +5042,11 @@ mod tests {
             y,
             button: PointerButton::Left,
         })
+    }
+
+    fn hover_mapmode_row(v: &mut MapModesView, panel: Rect, name: &str) -> InputOutcome {
+        let (x, y) = mapmode_row_center(panel, name);
+        v.on_input(&ViewInput::PointerMove { x, y, drag: false })
     }
 
     /// A snapshot with a couple of VP/occupied states + a country (the data the icon /
@@ -3834,6 +5213,61 @@ mod tests {
     }
 
     #[test]
+    fn minimap_drag_inside_fitted_map_emits_recenter_until_pointer_up() {
+        let cam = crate::camera::MapCamera::new(1600, 900, 5632, 2048);
+        let mut v = MinimapView::new();
+        v.set_camera(Some(cam));
+        let input = v
+            .input
+            .expect("minimap input cache should sync from live camera");
+        let mm = Minimap::new(input.panel, input.world.0, input.world.1);
+        let fitted = mm.fitted().expect("fallback minimap must be usable");
+
+        let down = v.on_input(&ViewInput::PointerDown {
+            x: fitted.x + fitted.w * 0.20,
+            y: fitted.y + fitted.h * 0.30,
+            button: PointerButton::Left,
+        });
+        assert!(down.consumed);
+        assert_eq!(down.commands.len(), 1);
+
+        let moved = v.on_input(&ViewInput::PointerMove {
+            x: fitted.x + fitted.w * 0.75,
+            y: fitted.y + fitted.h * 0.25,
+            drag: true,
+        });
+        assert!(moved.consumed);
+        assert!(moved.needs_redraw);
+        assert_eq!(moved.commands.len(), 1);
+        let (raster_x, raster_y) = match moved.commands[0] {
+            ViewCommand::RecenterMap { raster_x, raster_y } => (raster_x, raster_y),
+            ref other => panic!("expected RecenterMap command, got {other:?}"),
+        };
+        assert!((raster_x - 4224.0).abs() < 0.01, "raster_x={raster_x}");
+        assert!((raster_y - 512.0).abs() < 0.01, "raster_y={raster_y}");
+
+        let up = v.on_input(&ViewInput::PointerUp {
+            x: fitted.x + fitted.w * 0.75,
+            y: fitted.y + fitted.h * 0.25,
+            button: PointerButton::Left,
+        });
+        assert!(up.consumed);
+        assert!(!up.needs_redraw);
+        assert!(up.commands.is_empty());
+
+        let after_up = v.on_input(&ViewInput::PointerMove {
+            x: fitted.x + fitted.w * 0.50,
+            y: fitted.y + fitted.h * 0.50,
+            drag: true,
+        });
+        assert!(
+            !after_up.consumed,
+            "pointer-up must clear minimap drag capture state"
+        );
+        assert!(after_up.commands.is_empty());
+    }
+
+    #[test]
     fn minimap_letterbox_click_is_explicit_noop_and_outside_is_ignored() {
         let cam = crate::camera::MapCamera::new(1600, 900, 5632, 2048);
         let mut v = MinimapView::new();
@@ -3852,6 +5286,17 @@ mod tests {
         assert!(letterbox.consumed);
         assert!(!letterbox.needs_redraw);
         assert!(letterbox.commands.is_empty());
+
+        let letterbox_drag = v.on_input(&ViewInput::PointerMove {
+            x: fitted.x + fitted.w * 0.75,
+            y: fitted.y + fitted.h * 0.25,
+            drag: true,
+        });
+        assert!(
+            !letterbox_drag.consumed,
+            "a drag started in the letterbox must not become a fabricated map recenter"
+        );
+        assert!(letterbox_drag.commands.is_empty());
 
         let outside = v.on_input(&ViewInput::PointerDown {
             x: input.panel.x - 5.0,
@@ -3902,6 +5347,41 @@ mod tests {
     }
 
     #[test]
+    fn find_query_and_button_rects_match_extracted_gui_geometry() {
+        if !assets_present() {
+            return;
+        }
+        let stage = stage_with(&["find_view.json"]);
+        let snap = snap_a();
+        let v = FindView::new();
+        let screen = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 1600.0,
+            h: 900.0,
+        };
+        let bound = v.bind(&ctx(&stage, &snap, "1941.4.13.11"));
+        let panel = find_view_panel_rect_from_roots(screen, &bound.hit.roots);
+        assert_rect_close(panel, find_panel_fallback(screen));
+
+        assert_rect_close(
+            find_view_query_rect_from_roots(screen, &bound.hit.roots)
+                .expect("to_find_text must resolve from extracted find_view gui"),
+            find_query_fallback(panel),
+        );
+        let (find_button, home_button) =
+            find_view_button_rects_from_roots(screen, &bound.hit.roots);
+        assert_rect_close(
+            find_button.expect("find_button must resolve from extracted find_view gui"),
+            find_button_fallback(panel),
+        );
+        assert_rect_close(
+            home_button.expect("goto_home_button must resolve from extracted find_view gui"),
+            find_home_button_fallback(panel),
+        );
+    }
+
+    #[test]
     fn find_tab_click_switches_digest_and_visible_catalog() {
         let stage = stage_with(&[]);
         let snap = snap_a();
@@ -3947,7 +5427,7 @@ mod tests {
             "chrome.find currently has no disabled or unavailable catalog tabs"
         );
 
-        let panel = find_panel_fallback(default_find_screen());
+        let panel = find_results_fallback(find_panel_fallback(default_find_screen()));
         let mut blocked = TabBar::horizontal(vec![
             Tab::enabled("states", WAtom::exact("States")),
             Tab::disabled("countries", WAtom::exact("Countries")),
@@ -3990,6 +5470,569 @@ mod tests {
         assert_eq!(
             da1, da2,
             "scrub A->B->A must preserve the selected find tab without carrying B rows"
+        );
+    }
+
+    #[test]
+    fn find_wheel_scroll_changes_visible_rows_and_clamps() {
+        let stage = stage_with(&[]);
+        let snap = many_states_snap(40, "GER");
+        let mut v = FindView::new();
+        rebind_find(&mut v, &snap, true);
+        let cx = ctx(&stage, &snap, "1941.4.13.11");
+
+        let before = bound_digest(&v.bind(&cx));
+        assert!(before.contains("scroll=0/40"), "{before}");
+        assert!(before.contains("state:1=#1 (GER)(D)"), "{before}");
+
+        let out = wheel_find_content(&mut v, -5.0);
+        assert!(out.consumed);
+        assert!(out.needs_redraw);
+        let scrolled = bound_digest(&v.bind(&cx));
+        assert!(scrolled.contains("scroll=5/40"), "{scrolled}");
+        assert!(scrolled.contains("state:6=#6 (GER)(D)"), "{scrolled}");
+        assert!(
+            !scrolled.contains("state:1=#1 (GER)(D)"),
+            "row 1 should be outside the visible scroll window: {scrolled}"
+        );
+
+        let out = wheel_find_content(&mut v, -999.0);
+        assert!(out.consumed);
+        let visible = find_visible_row_count(&v.bar, v.results_panel());
+        let max_scroll = 40usize.saturating_sub(visible);
+        let clamped = bound_digest(&v.bind(&cx));
+        assert!(
+            clamped.contains(&format!("scroll={max_scroll}/40")),
+            "{clamped}"
+        );
+        assert!(
+            clamped.contains(&format!(
+                "state:{}=#{} (GER)(D)",
+                max_scroll + 1,
+                max_scroll + 1
+            )),
+            "clamped scroll should show the first row in the final window: {clamped}"
+        );
+
+        let out = wheel_find_content(&mut v, 999.0);
+        assert!(out.consumed);
+        let reset = bound_digest(&v.bind(&cx));
+        assert!(reset.contains("scroll=0/40"), "{reset}");
+    }
+
+    #[test]
+    fn find_scrollbar_drag_changes_visible_rows_and_clamps() {
+        let stage = stage_with(&[]);
+        let snap = many_states_snap(40, "GER");
+        let mut v = FindView::new();
+        rebind_find(&mut v, &snap, true);
+        let cx = ctx(&stage, &snap, "1941.4.13.11");
+
+        let before = bound_digest(&v.bind(&cx));
+        assert!(before.contains("scroll=0/40"), "{before}");
+
+        let down = pointer_down_find_thumb(&mut v);
+        assert!(
+            down.consumed && !down.needs_redraw && down.commands.is_empty(),
+            "thumb pointer-down should consume to capture find drag without changing scroll"
+        );
+        let geom = find_scrollbar(&v);
+        let drag = v.on_input(&ViewInput::PointerMove {
+            x: geom.thumb.x + geom.thumb.w * 0.5,
+            y: geom.track.y + geom.track.h + 500.0,
+            drag: true,
+        });
+        assert!(drag.consumed && drag.needs_redraw);
+        let visible = find_visible_row_count(&v.bar, v.results_panel());
+        let max_scroll = 40usize.saturating_sub(visible);
+        let bottom = bound_digest(&v.bind(&cx));
+        assert!(
+            bottom.contains(&format!("scroll={max_scroll}/40")),
+            "{bottom}"
+        );
+        assert!(
+            !bottom.contains("state:1=#1 (GER)(D)"),
+            "bottom-dragged find results must not keep top rows: {bottom}"
+        );
+
+        let reset = v.on_input(&ViewInput::PointerMove {
+            x: geom.thumb.x + geom.thumb.w * 0.5,
+            y: geom.track.y - 500.0,
+            drag: true,
+        });
+        assert!(reset.consumed && reset.needs_redraw);
+        let top = bound_digest(&v.bind(&cx));
+        assert!(top.contains("scroll=0/40"), "{top}");
+        assert!(
+            top.contains("state:1=#1 (GER)(D)"),
+            "dragging above the track should clamp back to top rows: {top}"
+        );
+    }
+
+    #[test]
+    fn find_scrollbar_drag_capture_continues_outside_and_clears_on_up() {
+        let snap = many_states_snap(40, "GER");
+        let mut v = FindView::new();
+        rebind_find(&mut v, &snap, true);
+        let geom = find_scrollbar(&v);
+
+        let down = pointer_down_find_thumb(&mut v);
+        assert!(down.consumed && !down.needs_redraw);
+
+        let drag = v.on_input(&ViewInput::PointerMove {
+            x: geom.track.x - 300.0,
+            y: geom.track.y + geom.track.h,
+            drag: true,
+        });
+        assert!(
+            drag.consumed && drag.needs_redraw,
+            "captured find scrollbar drag should continue even outside the result list"
+        );
+        assert!(v.scroll.get(selected_find_tab(&v.bar)) > 0);
+
+        let up = v.on_input(&ViewInput::PointerUp {
+            x: geom.track.x - 300.0,
+            y: geom.track.y + geom.track.h,
+            button: PointerButton::Left,
+        });
+        assert!(
+            up.consumed && !up.needs_redraw,
+            "pointer-up should consume solely to clear find scrollbar capture"
+        );
+        let after_up = v.scroll.get(selected_find_tab(&v.bar));
+        let ignored = v.on_input(&ViewInput::PointerMove {
+            x: geom.track.x - 300.0,
+            y: geom.track.y,
+            drag: true,
+        });
+        assert!(
+            !ignored.consumed && !ignored.needs_redraw,
+            "pointer move after thumb release must not keep stale find scrollbar capture"
+        );
+        assert_eq!(v.scroll.get(selected_find_tab(&v.bar)), after_up);
+    }
+
+    #[test]
+    fn find_scrollbar_track_click_does_not_select_row_or_drill() {
+        let stage = stage_with(&[]);
+        let snap = many_states_snap(40, "GER");
+        let mut v = FindView::new();
+        rebind_find(&mut v, &snap, true);
+        let cx = ctx(&stage, &snap, "1941.4.13.11");
+        let before = bound_digest(&v.bind(&cx));
+        let geom = find_scrollbar(&v);
+        let track_y = (geom.thumb.y + geom.thumb.h + 10.0).min(geom.track.y + geom.track.h - 1.0);
+
+        let out = v.on_input(&ViewInput::PointerDown {
+            x: geom.track.x + geom.track.w * 0.5,
+            y: track_y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            out.consumed && !out.needs_redraw && out.commands.is_empty(),
+            "clicking the find scrollbar track outside the thumb should be an inert consumed UI hit"
+        );
+        assert!(
+            v.selected_row.is_none(),
+            "find scrollbar track click must not select an underlying result row"
+        );
+        let after = bound_digest(&v.bind(&cx));
+        assert_eq!(
+            before, after,
+            "find track click must not alter selection or visible row digest, got: {after}"
+        );
+    }
+
+    #[test]
+    fn find_scrolled_row_click_selects_correct_backing_row() {
+        let stage = stage_with(&[]);
+        let snap = many_states_snap(30, "GER");
+        let mut v = FindView::new();
+        rebind_find(&mut v, &snap, true);
+        let cx = ctx(&stage, &snap, "1941.4.13.11");
+
+        let out = wheel_find_content(&mut v, -5.0);
+        assert!(out.consumed && out.needs_redraw);
+        let out = click_find_visible_row(&mut v, 0);
+        assert!(out.consumed);
+        assert!(out.needs_redraw);
+        assert_eq!(
+            out.commands,
+            vec![ViewCommand::OpenView {
+                view_id: crate::views::state_panel::STATE_PANEL_VIEW_ID,
+                arg: Some(6),
+            }]
+        );
+        let after = bound_digest(&v.bind(&cx));
+        assert!(
+            after.contains("selected=state:6=#6 (GER)(D)"),
+            "visible row 0 after scroll=5 must select backing state 6: {after}"
+        );
+    }
+
+    #[test]
+    fn find_scroll_survives_scrub_a_b_a_without_rendering_b_only_rows() {
+        let stage = stage_with(&[]);
+        let a = many_states_snap(35, "GER");
+        let b = many_states_snap(38, "SOV");
+        let mut v = FindView::new();
+        rebind_find(&mut v, &a, true);
+        let out = wheel_find_content(&mut v, -10.0);
+        assert!(out.consumed && out.needs_redraw);
+
+        let da1 = bound_digest(&v.bind(&ctx(&stage, &a, "1941.4.13.11")));
+        rebind_find(&mut v, &b, false);
+        let db = bound_digest(&v.bind(&ctx(&stage, &b, "1942.7.1.18")));
+        rebind_find(&mut v, &a, false);
+        let da2 = bound_digest(&v.bind(&ctx(&stage, &a, "1941.4.13.11")));
+
+        assert!(da1.contains("scroll=10/35"), "{da1}");
+        assert!(db.contains("scroll=10/38"), "{db}");
+        assert!(
+            db.contains("state:11=#11 (SOV)(D)"),
+            "B should use the same scroll offset over B's rows: {db}"
+        );
+        assert_eq!(
+            da1, da2,
+            "scrub A->B->A must preserve find scroll offset without carrying B-only rows"
+        );
+        assert!(
+            !da2.contains("state:36="),
+            "A replay after returning must not surface B-only rows: {da2}"
+        );
+    }
+
+    #[test]
+    fn find_query_filters_visible_catalog_and_backspace_restores() {
+        let stage = stage_with(&[]);
+        let snap = many_states_snap(40, "GER");
+        let mut v = FindView::new();
+        rebind_find(&mut v, &snap, true);
+        let cx = ctx(&stage, &snap, "1941.4.13.11");
+
+        let focus = click_find_query(&mut v);
+        assert!(focus.consumed);
+        assert!(focus.needs_redraw);
+        let typed = type_find_char(&mut v, '6');
+        assert!(typed.consumed);
+        assert!(typed.needs_redraw);
+
+        let filtered = bound_digest(&v.bind(&cx));
+        assert!(filtered.contains("query=\"6\" focus=true"), "{filtered}");
+        assert!(filtered.contains("scroll=0/4"), "{filtered}");
+        assert!(filtered.contains("state:6=#6 (GER)(D)"), "{filtered}");
+        assert!(filtered.contains("state:16=#16 (GER)(D)"), "{filtered}");
+        assert!(
+            !filtered.contains("state:1=#1 (GER)(D)"),
+            "filtered query must not keep non-matching row 1 visible: {filtered}"
+        );
+
+        let out = click_find_row_key(&mut v, "state:16");
+        assert!(out.consumed);
+        assert_eq!(
+            out.commands,
+            vec![ViewCommand::OpenView {
+                view_id: crate::views::state_panel::STATE_PANEL_VIEW_ID,
+                arg: Some(16),
+            }]
+        );
+
+        let backspace = press_find_key(&mut v, ViewKey::Backspace);
+        assert!(
+            !backspace.consumed,
+            "row click should blur the query box before backspace reaches it"
+        );
+        let focus_again = click_find_query(&mut v);
+        assert!(focus_again.consumed);
+        let backspace = press_find_key(&mut v, ViewKey::Backspace);
+        assert!(backspace.consumed);
+        assert!(backspace.needs_redraw);
+        let restored = bound_digest(&v.bind(&cx));
+        assert!(restored.contains("query=\"\" focus=true"), "{restored}");
+        assert!(restored.contains("scroll=0/40"), "{restored}");
+        assert!(restored.contains("state:1=#1 (GER)(D)"), "{restored}");
+    }
+
+    #[test]
+    fn find_query_resets_and_clamps_existing_scroll() {
+        let stage = stage_with(&[]);
+        let snap = many_states_snap(40, "GER");
+        let mut v = FindView::new();
+        rebind_find(&mut v, &snap, true);
+        let cx = ctx(&stage, &snap, "1941.4.13.11");
+
+        let scrolled = wheel_find_content(&mut v, -10.0);
+        assert!(scrolled.consumed && scrolled.needs_redraw);
+        let before = bound_digest(&v.bind(&cx));
+        assert!(before.contains("scroll=10/40"), "{before}");
+
+        let focus = click_find_query(&mut v);
+        assert!(focus.consumed);
+        let typed = type_find_char(&mut v, '3');
+        assert!(typed.consumed && typed.needs_redraw);
+
+        let filtered = bound_digest(&v.bind(&cx));
+        assert!(filtered.contains("query=\"3\""), "{filtered}");
+        assert!(
+            filtered.contains("scroll=0/13"),
+            "query changes should reset/clamp old scroll to the top of filtered rows: {filtered}"
+        );
+        assert!(filtered.contains("state:3=#3 (GER)(D)"), "{filtered}");
+        assert!(
+            !filtered.contains("state:1=#1 (GER)(D)"),
+            "filtered query must not render non-matching row 1: {filtered}"
+        );
+    }
+
+    #[test]
+    fn find_query_persists_across_scrub_without_carrying_rows() {
+        let stage = stage_with(&[]);
+        let a = many_states_snap(20, "GER");
+        let b = many_states_snap(24, "SOV");
+        let mut v = FindView::new();
+        rebind_find(&mut v, &a, true);
+        assert!(click_find_query(&mut v).consumed);
+        assert!(type_find_char(&mut v, 'G').consumed);
+        assert!(type_find_char(&mut v, 'E').consumed);
+        assert!(type_find_char(&mut v, 'R').consumed);
+
+        let da1 = bound_digest(&v.bind(&ctx(&stage, &a, "1941.4.13.11")));
+        rebind_find(&mut v, &b, false);
+        let db = bound_digest(&v.bind(&ctx(&stage, &b, "1942.7.1.18")));
+        rebind_find(&mut v, &a, false);
+        let da2 = bound_digest(&v.bind(&ctx(&stage, &a, "1941.4.13.11")));
+
+        assert!(da1.contains("query=\"GER\""), "{da1}");
+        assert!(da1.contains("scroll=0/20"), "{da1}");
+        assert!(db.contains("query=\"GER\""), "{db}");
+        assert!(db.contains("scroll=0/0"), "{db}");
+        assert!(
+            !db.contains("(GER)(D)"),
+            "B has SOV-owned rows and must not carry A's matching rows: {db}"
+        );
+        assert_eq!(
+            da1, da2,
+            "find query must survive A->B->A without carrying B row data"
+        );
+    }
+
+    #[test]
+    fn find_text_keys_are_ignored_until_query_is_focused_and_escape_blurs() {
+        let stage = stage_with(&[]);
+        let snap = many_states_snap(12, "GER");
+        let mut v = FindView::new();
+        rebind_find(&mut v, &snap, true);
+        let cx = ctx(&stage, &snap, "1941.4.13.11");
+
+        let before = bound_digest(&v.bind(&cx));
+        let ignored = type_find_char(&mut v, '6');
+        assert!(!ignored.consumed);
+        assert!(!ignored.needs_redraw);
+        assert_eq!(before, bound_digest(&v.bind(&cx)));
+
+        assert!(click_find_query(&mut v).consumed);
+        assert!(type_find_char(&mut v, '6').consumed);
+        let focused = bound_digest(&v.bind(&cx));
+        assert!(focused.contains("query=\"6\" focus=true"), "{focused}");
+
+        let escape = press_find_key(&mut v, ViewKey::Escape);
+        assert!(escape.consumed);
+        assert!(escape.needs_redraw);
+        let blurred = bound_digest(&v.bind(&cx));
+        assert!(blurred.contains("query=\"6\" focus=false"), "{blurred}");
+
+        let ignored_after_blur = type_find_char(&mut v, '4');
+        assert!(!ignored_after_blur.consumed);
+        let after = bound_digest(&v.bind(&cx));
+        assert!(
+            after.contains("query=\"6\""),
+            "typing while blurred must not mutate query: {after}"
+        );
+    }
+
+    #[test]
+    fn find_query_focus_can_be_cleared_by_shell_ui_paths() {
+        let stage = stage_with(&[]);
+        let snap = many_states_snap(12, "GER");
+        let mut v = FindView::new();
+        rebind_find(&mut v, &snap, true);
+        assert!(click_find_query(&mut v).consumed);
+        assert!(type_find_char(&mut v, '6').consumed);
+        let focused = bound_digest(&v.bind(&ctx(&stage, &snap, "1941.4.13.11")));
+        assert!(focused.contains("query=\"6\" focus=true"), "{focused}");
+
+        assert!(
+            v.clear_query_focus(),
+            "shell UI should be able to clear focused find input before it handles its own click"
+        );
+        let ignored = type_find_char(&mut v, '4');
+        assert!(!ignored.consumed);
+        let blurred = bound_digest(&v.bind(&ctx(&stage, &snap, "1941.4.13.11")));
+        assert!(blurred.contains("query=\"6\" focus=false"), "{blurred}");
+        assert!(
+            !blurred.contains("query=\"64\""),
+            "typed key after shell blur must not keep mutating find query: {blurred}"
+        );
+        assert!(
+            !v.clear_query_focus(),
+            "clearing an already blurred find query should report no redraw-needed change"
+        );
+    }
+
+    #[test]
+    fn find_button_recenters_selected_state_row_when_geometry_known() {
+        let snap = snap_a();
+        let mut v = FindView::new();
+        rebind_find(&mut v, &snap, true);
+        v.state_recenter.insert(64, (640.0, 128.0));
+
+        let select = click_find_row_key(&mut v, "state:64");
+        assert!(select.consumed);
+        assert_eq!(
+            select.commands,
+            vec![ViewCommand::OpenView {
+                view_id: crate::views::state_panel::STATE_PANEL_VIEW_ID,
+                arg: Some(64),
+            }]
+        );
+
+        let out = click_find_button(&mut v);
+        assert!(out.consumed);
+        assert_eq!(
+            out.commands,
+            vec![ViewCommand::RecenterMap {
+                raster_x: 640.0,
+                raster_y: 128.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn find_button_recenters_first_filtered_row_when_nothing_is_selected() {
+        let snap = many_states_snap(20, "GER");
+        let mut v = FindView::new();
+        rebind_find(&mut v, &snap, true);
+        v.state_recenter.insert(16, (1600.0, 160.0));
+
+        assert!(click_find_query(&mut v).consumed);
+        assert!(type_find_char(&mut v, '1').consumed);
+        assert!(type_find_char(&mut v, '6').consumed);
+        assert_eq!(v.selected_row, None);
+
+        let out = click_find_button(&mut v);
+        assert!(out.consumed);
+        assert!(out.needs_redraw);
+        assert_eq!(
+            out.commands,
+            vec![ViewCommand::RecenterMap {
+                raster_x: 1600.0,
+                raster_y: 160.0,
+            }]
+        );
+        let ignored_after_blur = type_find_char(&mut v, '4');
+        assert!(
+            !ignored_after_blur.consumed,
+            "find button click should blur focused find text after running the search"
+        );
+    }
+
+    #[test]
+    fn find_button_recenters_selected_vp_row_when_geometry_known() {
+        let snap = snap_a();
+        let mut v = FindView::new();
+        rebind_find(&mut v, &snap, true);
+        v.vp_recenter.insert(75, (750.0, 256.0));
+
+        assert!(click_find_tab_center(&mut v, "vps").consumed);
+        let select = click_find_row_key(&mut v, "vp:75");
+        assert!(select.consumed);
+        assert_eq!(
+            select.commands,
+            vec![ViewCommand::OpenView {
+                view_id: crate::views::state_panel::STATE_PANEL_VIEW_ID,
+                arg: Some(75),
+            }]
+        );
+
+        let out = click_find_button(&mut v);
+        assert!(out.consumed);
+        assert_eq!(
+            out.commands,
+            vec![ViewCommand::RecenterMap {
+                raster_x: 750.0,
+                raster_y: 256.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn find_button_recenters_selected_country_to_measured_home_when_known() {
+        let snap = snap_a();
+        let mut v = FindView::new();
+        rebind_find(&mut v, &snap, true);
+        v.home_recenter = Some((1000.0, 300.0));
+
+        assert!(click_find_tab_center(&mut v, "countries").consumed);
+        let select = click_find_row_key(&mut v, "GER");
+        assert!(select.consumed);
+        assert!(select.commands.is_empty());
+
+        let out = click_find_button(&mut v);
+        assert!(out.consumed);
+        assert_eq!(
+            out.commands,
+            vec![ViewCommand::RecenterMap {
+                raster_x: 1000.0,
+                raster_y: 300.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn find_home_button_recenters_measured_capital_state_when_geometry_known() {
+        let snap = snap_a();
+        let mut v = FindView::new();
+        rebind_find(&mut v, &snap, true);
+        assert_eq!(v.home_state_id, Some(64));
+        v.home_recenter = Some((222.0, 333.0));
+
+        let out = click_find_home_button(&mut v);
+        assert!(out.consumed);
+        assert_eq!(
+            out.commands,
+            vec![ViewCommand::RecenterMap {
+                raster_x: 222.0,
+                raster_y: 333.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn find_recenter_buttons_fail_closed_without_selected_or_geometry() {
+        let snap = snap_a();
+        let mut v = FindView::new();
+        rebind_find(&mut v, &snap, true);
+
+        let no_selection = click_find_button(&mut v);
+        assert!(no_selection.consumed);
+        assert!(no_selection.commands.is_empty());
+
+        let select = click_find_row_key(&mut v, "state:64");
+        assert!(select.consumed);
+        let no_geometry = click_find_button(&mut v);
+        assert!(no_geometry.consumed);
+        assert!(no_geometry.commands.is_empty());
+
+        assert!(click_find_query(&mut v).consumed);
+        assert!(type_find_char(&mut v, '6').consumed);
+        let blur = click_find_home_button(&mut v);
+        assert!(blur.consumed);
+        assert!(blur.needs_redraw);
+        assert!(blur.commands.is_empty());
+        let ignored_after_blur = type_find_char(&mut v, '4');
+        assert!(
+            !ignored_after_blur.consumed,
+            "button clicks should blur the focused find text input"
         );
     }
 
@@ -4104,7 +6147,11 @@ mod tests {
         let a = snap_a();
         let b_extra: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
             "date": "1942.7.1.18", "hour_index": 200,
-            "countries": { "GER": { "politics": { "capital_state": 64 } } },
+            "countries": {
+                "GER": {
+                    "politics": { "capital_state": 64 }
+                }
+            },
             "states": {
                 "64": { "owner": "SOV", "controller": "SOV", "category": "city",
                     "victory_points_total": 50 },
@@ -4923,7 +6970,12 @@ mod tests {
         let stage = stage_with(&["mapmodes.json"]);
         let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
             "date": "1941.4.13.11", "hour_index": 100,
-            "countries": { "GER": { "politics": { "capital_state": 64 } } },
+            "countries": {
+                "GER": {
+                    "politics": { "capital_state": 64 },
+                    "intel": { "agency": { "capacity": { "defense": 6.0 } } }
+                }
+            },
             "states": {
                 "64": { "owner": "GER", "controller": "GER",
                     "resources": { "steel": 12.0, "coal": 8.0 } },
@@ -4942,6 +6994,33 @@ mod tests {
         assert!(
             d.contains("Weather(D)"),
             "weather mode Derived when weather domain present: {d}"
+        );
+        assert!(
+            d.contains("Intel(D)"),
+            "intel mode Derived when measured country intel is present: {d}"
+        );
+    }
+
+    #[test]
+    fn mapmode_active_echo_uses_synced_core_mode_only() {
+        if !assets_present() {
+            return;
+        }
+        let stage = stage_with(&["mapmodes.json"]);
+        let snap = snap_a();
+
+        let unsynced = bound_digest(&MapModesView::new().bind(&ctx(&stage, &snap, "1941.4.13.11")));
+        assert!(
+            unsynced.contains("MAPMODES active=— "),
+            "registry-only binds must not fabricate an active mode: {unsynced}"
+        );
+
+        let mut synced = MapModesView::new();
+        synced.set_active_mode(CoreMapMode::Control);
+        let d = bound_digest(&synced.bind(&ctx(&stage, &snap, "1941.4.13.11")));
+        assert!(
+            d.contains("MAPMODES active=Control "),
+            "synced map mode should echo the active rail row: {d}"
         );
     }
 
@@ -4977,6 +7056,10 @@ mod tests {
             d.contains("FrontLines(U)"),
             "front-lines rail badge remains unavailable in this chrome view: {d}"
         );
+        assert!(
+            d.contains("Intel(U)"),
+            "intel remains unavailable when no measured country intel exists: {d}"
+        );
 
         let panel = mapmode_panel_for_tests();
         let mut v = MapModesView::new();
@@ -5002,7 +7085,7 @@ mod tests {
     }
 
     #[test]
-    fn mapmode_intel_row_remains_visible_but_has_no_fabricated_core_target() {
+    fn mapmode_intel_logical_fallback_emits_set_core_map_mode_command() {
         let panel = mapmode_panel_for_tests();
         let mut v = MapModesView::new();
         v.set_input_panel(panel);
@@ -5013,11 +7096,315 @@ mod tests {
             out.consumed,
             "rail-owned Intel clicks must not leak to map pick"
         );
-        assert!(!out.needs_redraw);
-        assert!(
-            out.commands.is_empty(),
-            "render::modes::MapMode has no Intel variant, so the rail must not alias it"
+        assert!(out.needs_redraw);
+        assert_eq!(
+            out.commands,
+            vec![ViewCommand::SetMapMode {
+                mode: CoreMapMode::Intel,
+            }],
+            "Intel has a real render::modes::MapMode target now"
         );
+    }
+
+    #[test]
+    fn mapmode_real_gui_button_rects_drive_click_and_hover() {
+        if !assets_present() {
+            return;
+        }
+        let stage = stage_with_manifest(
+            &["mapmodes.json"],
+            HashMap::from([
+                (
+                    "GFX_mapmode_buttons_deselected_big".to_string(),
+                    sprite_entry_sized("GFX_mapmode_buttons_deselected_big", 40, 40),
+                ),
+                (
+                    "GFX_mapmode_buttons_selected_big".to_string(),
+                    sprite_entry_sized("GFX_mapmode_buttons_selected_big", 40, 40),
+                ),
+                (
+                    "GFX_mapmode_buttons_deselected_small".to_string(),
+                    sprite_entry_sized("GFX_mapmode_buttons_deselected_small", 20, 20),
+                ),
+                (
+                    "GFX_mapmode_buttons_selected_small".to_string(),
+                    sprite_entry_sized("GFX_mapmode_buttons_selected_small", 20, 20),
+                ),
+            ]),
+        );
+        let snap = snap_a();
+        let mut v = MapModesView::new();
+        let bv = v.bind(&ctx(&stage, &snap, "1941.4.13.11"));
+        let targets: Vec<MapModeHitTarget> = mapmode_button_targets_from_roots(&bv.hit.roots)
+            .into_iter()
+            .map(|(index, rect)| MapModeHitTarget { index, rect })
+            .collect();
+        let unique: std::collections::BTreeSet<_> =
+            targets.iter().map(|target| target.index).collect();
+        assert_eq!(
+            unique.len(),
+            12,
+            "the real mapmodes .gui exposes 12 numbered rail slots; extra logical modes are reached through mapmodes_all"
+        );
+        assert!(
+            !unique.contains(&mapmode_index("Supply")) && !unique.contains(&mapmode_index("Intel")),
+            "Supply/Intel must not be counted as real numbered rail slots; their mouse access is through mapmodes_all"
+        );
+        v.set_input_targets(
+            targets
+                .iter()
+                .map(|target| (target.index, target.rect))
+                .collect(),
+        );
+
+        let (x, y) = mapmode_target_center(&targets, "Control");
+        let out = v.on_input(&ViewInput::PointerDown {
+            x,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(out.consumed);
+        assert_eq!(
+            out.commands,
+            vec![ViewCommand::SetMapMode {
+                mode: CoreMapMode::Control,
+            }]
+        );
+
+        let (x, y) = mapmode_target_center(&targets, "Political");
+        let out = v.on_input(&ViewInput::PointerMove { x, y, drag: false });
+        assert!(!out.consumed);
+        assert!(out.needs_redraw);
+        let digest = bound_digest(&v.bind(&ctx(&stage, &snap, "1941.4.13.11")));
+        assert!(digest.contains("Map mode: Political"), "{digest}");
+    }
+
+    #[test]
+    fn mapmode_all_popup_uses_real_gui_window_and_selects_supply_intel() {
+        if !assets_present() {
+            return;
+        }
+        let stage = stage_with_manifest(
+            &["mapmodes.json"],
+            HashMap::from([
+                (
+                    "GFX_mapmode_button_all".to_string(),
+                    sprite_entry_sized("GFX_mapmode_button_all", 28, 28),
+                ),
+                (
+                    "GFX_mapmode_buttons_deselected_big".to_string(),
+                    sprite_entry_sized("GFX_mapmode_buttons_deselected_big", 40, 40),
+                ),
+                (
+                    "GFX_mapmode_buttons_selected_big".to_string(),
+                    sprite_entry_sized("GFX_mapmode_buttons_selected_big", 40, 40),
+                ),
+                (
+                    "GFX_mapmode_buttons_deselected_small".to_string(),
+                    sprite_entry_sized("GFX_mapmode_buttons_deselected_small", 20, 20),
+                ),
+                (
+                    "GFX_mapmode_buttons_selected_small".to_string(),
+                    sprite_entry_sized("GFX_mapmode_buttons_selected_small", 20, 20),
+                ),
+            ]),
+        );
+        let snap = snap_a();
+        let mut v = MapModesView::new();
+
+        let closed = v.bind(&ctx(&stage, &snap, "1941.4.13.11"));
+        let all_button = mapmodes_all_button_rect_from_roots(&closed.hit.roots)
+            .expect("real mapmodes_all button must lay out from the extracted gui");
+        assert!(
+            mapmodes_all_grid_rect_from_roots(&closed.hit.roots).is_none(),
+            "all-modes popup grid must not be present before the real all button is clicked"
+        );
+        v.set_input_targets_with_all(
+            mapmode_button_targets_from_roots(&closed.hit.roots),
+            Some(all_button),
+            None,
+        );
+        let open = v.on_input(&ViewInput::PointerDown {
+            x: all_button.x + all_button.w * 0.5,
+            y: all_button.y + all_button.h * 0.5,
+            button: PointerButton::Left,
+        });
+        assert!(open.consumed);
+        assert!(open.needs_redraw);
+        assert!(
+            v.all_modes_open,
+            "clicking the real all button opens the popup"
+        );
+
+        let opened = v.bind(&ctx(&stage, &snap, "1941.4.13.11"));
+        let grid = mapmodes_all_grid_rect_from_roots(&opened.hit.roots)
+            .expect("WindowWithAllMapModes slots grid must lay out when popup is open");
+        let digest = bound_digest(&opened);
+        assert!(
+            digest.contains("WindowWithAllMapModes") || digest.contains("Supply"),
+            "popup bind must include the real all-modes window and rendered logical rows: {digest}"
+        );
+        v.set_input_targets_with_all(
+            mapmode_button_targets_from_roots(&opened.hit.roots),
+            mapmodes_all_button_rect_from_roots(&opened.hit.roots),
+            Some(grid),
+        );
+        let supply_rect = mapmode_row_rect(grid, mapmode_index("Supply"));
+        let hover_supply = v.on_input(&ViewInput::PointerMove {
+            x: supply_rect.x + supply_rect.w * 0.5,
+            y: supply_rect.y + supply_rect.h * 0.5,
+            drag: false,
+        });
+        assert!(!hover_supply.consumed);
+        assert!(hover_supply.needs_redraw);
+        let popup_hover_digest = bound_digest(&v.bind(&ctx(&stage, &snap, "1941.4.13.11")));
+        assert!(
+            popup_hover_digest.contains("Map mode: Supply"),
+            "all-modes popup rows must use the same factual tooltip path as rail rows: {popup_hover_digest}"
+        );
+        let supply = v.on_input(&ViewInput::PointerDown {
+            x: supply_rect.x + supply_rect.w * 0.5,
+            y: supply_rect.y + supply_rect.h * 0.5,
+            button: PointerButton::Left,
+        });
+        assert!(supply.consumed);
+        assert_eq!(
+            supply.commands,
+            vec![ViewCommand::SetMapMode {
+                mode: CoreMapMode::Supply,
+            }],
+            "Supply is not a real numbered rail slot, but is selectable through the real all-modes popup"
+        );
+        assert!(
+            !v.all_modes_open,
+            "selecting from the all-modes popup closes the popup"
+        );
+
+        v.all_modes_open = true;
+        v.set_input_targets_with_all(
+            mapmode_button_targets_from_roots(&opened.hit.roots),
+            mapmodes_all_button_rect_from_roots(&opened.hit.roots),
+            Some(grid),
+        );
+        let intel_rect = mapmode_row_rect(grid, mapmode_index("Intel"));
+        let intel = v.on_input(&ViewInput::PointerDown {
+            x: intel_rect.x + intel_rect.w * 0.5,
+            y: intel_rect.y + intel_rect.h * 0.5,
+            button: PointerButton::Left,
+        });
+        assert!(intel.consumed);
+        assert_eq!(
+            intel.commands,
+            vec![ViewCommand::SetMapMode {
+                mode: CoreMapMode::Intel,
+            }],
+            "Intel is selectable through the real all-modes popup"
+        );
+    }
+
+    #[test]
+    fn mapmode_hover_intel_emits_unavailable_tooltip_without_measured_intel() {
+        let stage = stage_with(&["mapmodes.json"]);
+        let snap = snap_a();
+        let panel = mapmode_panel_for_tests();
+        let mut v = MapModesView::new();
+        v.set_input_panel(panel);
+
+        let out = hover_mapmode_row(&mut v, panel, "Intel");
+        assert!(!out.consumed, "hover must not consume mapmode input");
+        assert!(out.commands.is_empty(), "hover must not emit commands");
+        assert!(out.needs_redraw, "new hover target should redraw tooltip");
+
+        let bv = v.bind(&ctx(&stage, &snap, "1941.4.13.11"));
+        let tip = bv.tooltip_plan().expect("hovered Intel row emits tooltip");
+        let digest = tip.digest();
+        assert!(digest.contains("Intel"), "{digest}");
+        assert!(digest.contains("Fidelity"), "{digest}");
+        assert!(
+            digest.contains("unfed"),
+            "no measured country intel should badge unavailable in tooltip: {digest}"
+        );
+        assert!(
+            bound_digest(&bv).contains("Intel(U)"),
+            "rail badge and tooltip must agree on no-data Intel"
+        );
+    }
+
+    #[test]
+    fn mapmode_intel_badges_unavailable_for_chrome_only_agency() {
+        if !assets_present() {
+            return;
+        }
+        let stage = stage_with(&["mapmodes.json"]);
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "date": "1941.4.13.11", "hour_index": 100,
+            "countries": {
+                "GER": {
+                    "politics": { "capital_state": 64 },
+                    "intel": { "agency": { "name": "Abwehr" } }
+                }
+            },
+            "states": { "64": { "owner": "GER", "controller": "GER" } }
+        }))
+        .unwrap();
+        let d = bound_digest(&MapModesView::new().bind(&ctx(&stage, &snap, "1941.4.13.11")));
+        assert!(
+            d.contains("Intel(U)"),
+            "non-empty agency chrome without measured capacity/operative signal must not fabricate Intel(D): {d}"
+        );
+    }
+
+    #[test]
+    fn mapmode_hover_measured_intel_tooltip_is_derived_and_clears_off_panel() {
+        let stage = stage_with(&["mapmodes.json"]);
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "date": "1941.4.13.11", "hour_index": 100,
+            "countries": {
+                "GER": {
+                    "politics": { "capital_state": 64 },
+                    "intel": { "agency": { "capacity": { "defense": 6.0 } } }
+                }
+            },
+            "states": { "64": { "owner": "GER", "controller": "GER" } }
+        }))
+        .unwrap();
+        let panel = mapmode_panel_for_tests();
+        let mut v = MapModesView::new();
+        v.set_input_panel(panel);
+
+        let out = hover_mapmode_row(&mut v, panel, "Intel");
+        assert!(!out.consumed);
+        assert!(out.needs_redraw);
+        let bv = v.bind(&ctx(&stage, &snap, "1941.4.13.11"));
+        let digest = bv.tooltip_plan().expect("tooltip").digest();
+        assert!(digest.contains("Intel"), "{digest}");
+        assert!(digest.contains("derived"), "{digest}");
+        assert!(digest.contains("countries.*.intel"), "{digest}");
+        assert!(bound_digest(&bv).contains("Intel(D)"), "{digest}");
+
+        let out = v.on_input(&ViewInput::PointerMove {
+            x: panel.x - 5.0,
+            y: panel.y + panel.h * 0.5,
+            drag: false,
+        });
+        assert!(!out.consumed);
+        assert!(out.needs_redraw, "moving off hovered row clears tooltip");
+        let bv = v.bind(&ctx(&stage, &snap, "1941.4.13.11"));
+        assert!(bv.tooltip_plan().is_none());
+    }
+
+    #[test]
+    fn mapmodes_descriptor_lists_domains_used_by_data_driven_badges() {
+        let reg = crate::host::registry::ViewRegistry::from_inventory();
+        let desc = reg
+            .view(MAPMODES_VIEW_ID)
+            .expect("mapmodes view is registered");
+        for domain in ["states", "map", "countries", "weather"] {
+            assert!(
+                desc.required_domains.contains(&domain),
+                "chrome.mapmodes descriptor must list {domain}"
+            );
+        }
     }
 
     #[test]
@@ -5079,6 +7466,51 @@ mod tests {
     /// resolves to a PROVINCE id (NOT itself) — the exact fix for the state-id-as-province
     /// bug. Parsed inline (independent of the process-global OnceLock loader).
     #[test]
+    fn state_raster_point_uses_state_meta_province_geometry_not_state_id() {
+        let cam = crate::camera::MapCamera::new(800, 400, 500, 250);
+        let set = CentroidSet {
+            centroids: map_overlay::ProvinceCentroids::from_map(HashMap::from([
+                (100, (5.0, 5.0)),
+                (201, (25.0, 10.0)),
+            ])),
+            raster_w: 50.0,
+            raster_h: 25.0,
+        };
+        let meta = serde_json::json!({
+            "10": {
+                "provinces": [100],
+                "victory_points": {}
+            },
+            "20": {
+                "provinces": [200, 201],
+                "victory_points": {"201": 5, "200": 1}
+            }
+        });
+        let geo = state_geo_from_value(&meta).expect("synthetic state meta parses");
+
+        assert_eq!(
+            state_raster_point(10, &geo, &set, &cam, true),
+            None,
+            "VP/capital recenter must not fabricate a VP location from a representative province"
+        );
+        assert_eq!(
+            state_raster_point(10, &geo, &set, &cam, false),
+            Some((50.0, 50.0)),
+            "state recenter may use the representative province when no VP exists"
+        );
+        assert_eq!(
+            state_raster_point(20, &geo, &set, &cam, true),
+            Some((250.0, 100.0)),
+            "VP/capital recenter must use the highest-VP province centroid, scaled to camera raster"
+        );
+        assert_eq!(
+            state_raster_point(20, &geo, &set, &cam, false),
+            Some((250.0, 100.0)),
+            "state recenter should prefer the VP anchor when one exists"
+        );
+    }
+
+    #[test]
     fn state_meta_resolves_state_to_vp_province() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -5116,6 +7548,32 @@ mod tests {
         assert!(
             proved,
             "state_meta must map a state id to a DIFFERENT province id (not itself)"
+        );
+    }
+
+    #[test]
+    fn state_geo_does_not_fabricate_vp_location_from_representative_province() {
+        let meta = serde_json::json!({
+            "10": {
+                "provinces": [100, 101],
+                "victory_points": {}
+            },
+            "20": {
+                "provinces": [200, 201],
+                "victory_points": {"201": 5, "200": 1}
+            }
+        });
+        let geo = state_geo_from_value(&meta).expect("synthetic state meta parses");
+        assert_eq!(geo.rep_province.get(&10), Some(&100));
+        assert_eq!(
+            geo.vp_province.get(&10),
+            None,
+            "state without VP geometry must not place a VP icon at its representative province"
+        );
+        assert_eq!(
+            geo.vp_province.get(&20),
+            Some(&201),
+            "highest-VP province is the exact icon anchor"
         );
     }
 

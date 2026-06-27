@@ -81,6 +81,26 @@ observed country `<TAG>`. Formatters: `int`, `int-triple`, `factory-split` (`n/m
 
 ## 1a. Production — dynamic (data-bound) elements
 
+Interaction proof: `ProductionView` has measured production-line row selection
+and wheel-scroll/thumb-drag coverage. Tests prove live `id` row identity,
+save-backed `line_id` row identity, military/naval line identity preservation,
+selected-row highlight, scrolled row clicks, A->B->A row rebuilds, unkeyed and
+duplicate rows inert without index fallback, missing selected rows fail closed,
+outside-grid wheel input is inert, thumb drags clamp and continue outside the
+grid until pointer-up, and track clicks do not select underlying rows. Line
+`close_production_line` buttons on visible rows are also proven
+replay-disabled no-ops with unchanged selection/scroll/digest and neighboring
+row-body clicks still selecting normally. Factory add/sub row buttons are now
+proven replay-disabled no-ops using the preserved `@prod_*` GUI defines. Visible
+priority/amount row buttons are also proven replay-disabled no-ops for military
+and naval line templates. The six primary production category filters now toggle
+replay-local row visibility from catalog-derived equipment categories. The six
+secondary/status filter checkboxes now have geometry-anchored disabled no-op
+proof so clicks cannot bleed into row selection; true status filtering still
+needs backing per-line flags. Line detail drilldowns, scrollbar art,
+convert/deploy/refit/obsolete controls, disabled visuals, and side-by-side proof
+remain open.
+
 ### Top summary bar (`countryproductionlineview > military_tab > production_win_top`)
 
 | gui element (name + type) | snapshot source path | formatter | fidelity | notes |
@@ -164,9 +184,10 @@ Listed by name so the map is provably exhaustive. None carry a datum.
 - **Backgrounds / chrome / frames:** every `background` (`GFX_tiled_plain_bg`, `GFX_production_win_top`, `GFX_tiled_window2_1b_border`, `GFX_tiled_generic_overlay_bg1`, `GFX_tiled_bg_1_scrollbar`, `GFX_production_item`, `GFX_production_item_collapsed`, `GFX_naval_production_item_bg_strip`, `GFX_factory_bg`, `GFX_name_list_item_bg`, `GFX_repair_queue_*_bg`, `GFX_mini_bg`, `GFX_generic_bg2`, `GFX_tiled_window`, …), `production_header_bg`, `header_bg`, `MIO_bg`, `generic_text_bg_203`, `role_icon_bg`, `bg`, `production_line_selected`(+`_collapsed`), `priority_frame`, `efficiency_progressbar_frame`, `prod_line_glow`, `new_glow`/`tutorial_glow`/`tutorial_glow_2`/`infantry_button_glow`/`tank_button_glow`/`aircraft_button_glow`/`naval_button_glow` (animated cosmetics), `equipment_designer`/`equipment_designer_can_upgrade`/`outdated_equipment_overlay`(+collapsed variants)/`blueprint_icon`/`design_invalid`/`new_glow` overlays, `icon`/`icon_overlay`/`icon_header_bg` chrome, `need_state_icon`, `deploy_icon`.
 - **Static label texts (loc, no datum):** `production_title` (`PRODUCTION_PRODUCTION_LABEL`), `title` (repair/deploy/name-list headers), `operational_factories` / `operational_naval_factories` (label text — their *values* are in §1a), `from_trade`, `goods`/`factories` placeholders on consumer-goods/static entries.
 - **Static icons:** `military_factory_icon`, `naval_factory_icon`, `naval_factory_repair_icon`, `dockyard_icon`(`_with_wrench`), `production_output_icon`, `efficiency_cap_icon`, `efficiency_growth_icon`(`efficiency_icon`), `production_efficiency_loss_icon`, `factory_bombing_defence_icon`, `docyards_output_icon`, `MIO_icon`, `oil_icon`/`rubber_icon`/`steel_icon`/`aluminium_icon`/`tungsten_icon`/`chromium_icon`/`coal_icon` (resource-filter icon row), `resource_icon`, `ship_icon`, `add_name`.
-- **Mutation controls — INERT in replay (read-only, PLAN §D):** the add-line buttons `infantry_button`/`tank_button`/`aircraft_button`/`naval_button`/`naval_repair_button`; per-line `factories_add_1x/5x/10x`, `factories_sub_1x/5x/10x`, `increase_priority`/`decrease_priority`, `increase_amount`/`decrease_amount`, `btn_x5`/`btn_x10`, `attach_manufacturer`/`change_manufacturer`, `convert`, `close_production_line`, `expand`, `variant`, `obsolete`, `carrier_air_wing_composition`, `deploy_location`, `name_list_btn`, `equipment_button` (drag/drop). The 13 filter `checkBoxType` toggles (`show_equipment`/`show_armor`/`show_air`/`show_capital_ships`/`show_screen_ships`/`show_other_ships`/`show_resources`/`show_outdated`/`show_stockpiling`/`show_reinforcing`/`show_upgrading`/`show_refitting`) + the 7 resource checkboxes (`oil_checkbox`…`coal_checkbox`) + `show_*`/`checkbox`/`oil_checkbox` are UI-state toggles (their associated count values ARE bound in §1a, but the checkbox widget itself binds no snapshot datum).
+- **Mutation controls — INERT in replay (read-only, PLAN §D):** the root add-line buttons `infantry_button`/`tank_button`/`aircraft_button`/`naval_button`/`naval_repair_button` have executable no-op proof from real `production.json` offsets plus measured 81x41 button frames: pointer-down/up are consumed with no commands, no redraw, unchanged selected row/scroll/visible rows/bind digest, and empty space between aircraft and naval groups remains unclaimed. `close_production_line` on visible rows has executable no-op proof: pointer-down/up are consumed with no commands, no redraw, unchanged selected row/scroll/bind digest, and neighboring row-body clicks still selecting normally. The per-line `factories_add_1x/5x/10x` and `factories_sub_1x/5x/10x` controls now use the preserved `@prod_*` GUI defines (`prod_sub_pos_x=379`, `prod_add_pos_x=453`) and also have executable no-op proof with unchanged selected row/scroll/bind digest and neighboring row-body clicks still selecting normally. The visible row priority/amount controls `increase_priority`/`decrease_priority`, military `btn_x5`/`btn_x10`, and naval `increase_amount`/`decrease_amount` also have executable no-op proof with unchanged selected row/scroll/bind digest and neighboring row-body clicks still selecting normally. `attach_manufacturer`/`change_manufacturer`, `convert`, `expand`, `variant`, `obsolete`, `carrier_air_wing_composition`, `deploy_location`, `name_list_btn`, and `equipment_button` (drag/drop) remain unproven mutation surfaces. Primary filter `checkBoxType` toggles (`show_equipment`/`show_armor`/`show_air`/`show_capital_ships`/`show_screen_ships`/`show_other_ships`) are replay-local row filters, not mutations: they classify via `game_defs/out/catalogs.json` `equipment_archetypes`, follow `archetype` links, use unique live-id to save-`line_id` joins when live rows lack `archetype`, and leave unknown/ambiguous rows visible. The secondary filters (`show_resources`/`show_outdated`/`show_stockpiling`/`show_reinforcing`/`show_upgrading`/`show_refitting`) plus the 7 resource checkboxes (`oil_checkbox`…`coal_checkbox`) still need backing per-line flags or disabled visual/no-op treatment.
+- **Secondary/status filter controls:** `show_resources`/`show_outdated`/`show_stockpiling`/`show_reinforcing`/`show_upgrading`/`show_refitting` now have executable disabled no-op proof from real checkbox rects: clicks are consumed with no commands, no redraw, unchanged selected row/scroll/bind digest, and no bleed into row selection. True status filtering still needs backing per-line flags or faithful recompute; the 7 detail-resource checkboxes remain tied to the unimplemented line-detail surface.
 - **Navigation / window controls:** `close_button` / `close` / `btn_close` (open/close view), `minimize`/`expand` window arrows, `btn_role`, `btn_select`.
-- **positionType anchors (no visual):** the 6 `positionType` slots (`@prod_icon_pos_x` etc. anchors the adapter targets).
+- **positionType anchors (no visual):** the 6 `positionType` slots use the preserved `@prod_*` define table from `countryproductionlineview.gui` (`prod_icon_pos_x=358`, `prod_sub_pos_x=379`, `prod_add_pos_x=453`, `prod_nof_pos_x=403`) so row-control geometry resolves before hit-testing.
 
 ---
 
@@ -189,6 +210,21 @@ of `GFX_buildings_strip`), `resource-icon`, `progressbar-fraction`, `flag`, `cat
 > owner tag is stored; the location_state→owner join is possible but not wired).
 
 ## 2a. Construction — dynamic (data-bound) elements
+
+Interaction proof: `ConstructionView` has measured construction-queue row
+selection and wheel-scroll/thumb-drag coverage. Tests prove live `line_id` row
+identity, save-backed `template`/`location_state`/`created_date` row identity,
+selected-row highlight, scrolled row clicks, A->B->A row rebuilds, unkeyed rows
+inert without index fallback, missing selected rows fail closed, outside-grid
+wheel input is inert, thumb drags clamp and continue outside the grid until
+pointer-up, and track clicks do not select underlying rows. The top
+`count_container` factory add/sub buttons are also proven replay-disabled
+no-ops with unchanged selection/scroll/digest and neighboring clicks unclaimed.
+The rendered queue row priority/amount/close buttons are also proven
+replay-disabled no-ops with unchanged selection/scroll/digest and neighboring
+row-body clicks still selecting normally. Building drilldowns, scrollbar art,
+build-picker actions, market/debug controls, disabled visuals, and broader
+construction mutation parity remain open.
 
 ### Top summary (`countryconstructionsview > production_win_top` + `count_container`)
 
@@ -243,7 +279,7 @@ the construction grid emits for fixed factory-allotment categories.
 - **Backgrounds / chrome:** `Background` (`GFX_tiled_window_thin_border`), `construction_screen_top_bg`, `production_header_bg` (`GFX_construction_header_bg`), `bg` (`GFX_generic_box_80`), `Background`(`GFX_tiled_window2_1b_border` ×2 + `GFX_tiled_generic_overlay_bg1_small`), `Construction_Background` (×2), the 4 `*_buildings_background` (`GFX_diplo_details_header`), entry-template `Background`s (`GFX_construction_entry_bg`, `GFX_construction_special_entry_bg`), `new_glow`, `tutorial_glow`, `ongoing_contruction_anim` (animated), `overlay` (`GFX_building_status_overlay`), `repair` (`GFX_building_repair`), `scorched_icon`, `start_construction_overlay`/`convert_ic_overlay`.
 - **Static label texts (loc):** `construction_title` (`CONSTRUCTION_VIEW_LABLE`), `location` (`CONSTRUCTION_LOCATION_LABEL` — column header), `task` (`CONSTRUCTION_TASK_LABEL`), `factories_amount` (`CONSTRUCTION_FACTORIES_LABEL`), `priority` (`CONSTRUCTION_PRIORITY_LABEL` — column header), `from_trade`, `local_factories` (`owned`), `state_constructions_text` (`STATE_BUILDINGS`), `shared_constructions_text` (`SHARED_BUILDINGS`), `province_constructions_text` (`PROVINCE_BUILDINGS`), `facility_constructions_text` (`FACILITY_BUILDINGS`), the `static_*` entry `name` labels. (Note: the column-header `location`/`priority` are distinct from the per-row `location` value bound in §2a.)
 - **Static icons:** `civilian_factory_icon` (`GFX_non_available_factory_icon`), `factories` (`GFX_non_available_factory_icon`), `factories_used` (`GFX_factory_icon_with_wrench`), `cic_bank_icon`, `construction_speed_icon`, `state_constructions`/`shared_constructions`/`province_constructions`/`facility_constructions` header icons, `picture` (on static entries).
-- **Mutation controls — INERT (read-only):** `factories_add_1x/5x/10x`, `factories_sub_1x/5x/10x` (top count_container); per-line `increase_priority`/`decrease_priority`, `increase_amount`/`decrease_amount`, `close_production_line`, `temp` (backhoe debug button), `open_market_view_btn`.
+- **Mutation controls — INERT (read-only):** `factories_add_1x/5x/10x`, `factories_sub_1x/5x/10x` (top count_container) have executable no-op proof: pointer-down/up are consumed with no commands, no redraw, unchanged selected row/scroll/bind digest, and neighboring count-container clicks unclaimed. The rendered `production_building_line_entry` row controls `increase_priority`/`decrease_priority`, `increase_amount`/`decrease_amount`, and `close_production_line` also have executable no-op proof with unchanged selected row/scroll/bind digest and neighboring row-body clicks still selecting normally. `temp` (backhoe debug button), `open_market_view_btn`, build-picker actions, and non-rendered queue templates remain unproven mutation surfaces.
 - **Navigation / window controls:** `minimize`, `expand`, `close_button`.
 - **positionType anchors:** the 1 `positionType` slot.
 
@@ -266,6 +302,15 @@ conditional CATEGORY HEADERS → grouping adapter** (PLAN §C.2/§C.4). Formatte
 > stored** (SCHEMA §3.6 note: one-shot clicks not recoverable) → those rows are badged unavailable.
 > The decisions GROUPING (which category a timed decision sits under) is the imperative grouping
 > adapter (§C.2); category id is derivable from the decision id via a static decisions DB map.
+
+Interaction proof: `production.decisions` now has executable timed-decision row selection and
+wheel-scroll/thumb-drag coverage for the active `timed_live[]` rows. Selection keys use measured
+`decision` plus measured `state` when present, scrolled clicks select the backing row rather
+than a visible index, scroll/selection scrub A->B->A rebuilds current-hour rows, unkeyed rows
+are inert, missing selected rows fail closed, outside-grid wheel input is inert, thumb drags
+clamp and continue outside the grid until pointer-up, and track clicks do not select underlying
+rows. This is not a claim for one-shot decision availability/click mutation, category collapse,
+tracking checkboxes, or scrollbar art.
 
 ## 3a. Decisions — dynamic (data-bound) elements
 

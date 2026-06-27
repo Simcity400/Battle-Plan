@@ -153,9 +153,9 @@ class RecorderCadence:
                                     end_date_info: Any) -> bool:
         """Record whether the live clock changed while a capture was running.
 
-        The recorder can read a pre-capture clock and a post-capture clock within
-        its own scope. It cannot reject before write without a capture.py
-        pre-write hook, so this is a durable warning/limitation.
+        The recorder reads a pre-capture clock and a pre-write clock within its
+        own scope. In recorder mode this is called from CaptureLoop's
+        ``pre_write_check`` hook, so a changed hour rejects before durable write.
         """
         if not decision.should_capture or decision.hour_index is None:
             return False
@@ -267,13 +267,13 @@ class RecorderCadence:
                 "skip_ranges": list(self.skip_ranges),
                 "coverage_warnings": coverage_warnings,
                 "capture_clock_sentinel": {
-                    "mode": "post_capture_check_v1",
+                    "mode": "pre_write_check_v1",
                     "checks": int(self.capture_clock_checks),
                     "hour_crossings": int(self.capture_clock_crossings),
                     "end_untrusted_observations": int(
                         self.capture_clock_end_untrusted),
                     "last": self.last_capture_clock_check,
-                    "limitation": "post_capture_diagnostic_only",
+                    "action": "reject_before_durable_write",
                 },
             }
         }

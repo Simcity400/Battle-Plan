@@ -48,8 +48,26 @@ class TestRecorderManifestDiagnostics(unittest.TestCase):
             "last_observed_hour": 17,
             "last_captured_hour": 17,
             "last_capture_reason": "skipped_hours",
+            "timing": {
+                "status": "not_keeping_up",
+                "last_capture_duration_ms": 42000,
+                "observed_game_hour_interval_ms": 30000,
+                "keeping_up": False,
+                "warning_count": 1,
+                "last_warning": {
+                    "code": "capture_slower_than_game_hour",
+                    "capture_seq": 3,
+                    "last_capture_duration_ms": 42000,
+                    "observed_game_hour_interval_ms": 30000,
+                },
+            },
             "skip_ranges": [{"start_hour": 15, "end_hour": 16, "count": 2}],
-            "coverage_warnings": [],
+            "coverage_warnings": [{
+                "code": "capture_slower_than_game_hour",
+                "capture_seq": 3,
+                "last_capture_duration_ms": 42000,
+                "observed_game_hour_interval_ms": 30000,
+            }],
         }}
         self.assertTrue(patch_manifest_diagnostics(self.out, diagnostics))
         self.assertTrue(rw._verify_container(self.out))
@@ -59,6 +77,17 @@ class TestRecorderManifestDiagnostics(unittest.TestCase):
                          "lagging")
         self.assertEqual(man["recording_diagnostics"]["cadence"]["skipped_hours"],
                          2)
+        self.assertEqual(
+            man["recording_diagnostics"]["cadence"]["timing"]["status"],
+            "not_keeping_up")
+        self.assertEqual(
+            man["recording_diagnostics"]["cadence"]["timing"][
+                "last_capture_duration_ms"],
+            42000)
+        self.assertEqual(
+            man["recording_diagnostics"]["cadence"]["coverage_warnings"][0][
+                "code"],
+            "capture_slower_than_game_hour")
 
     def test_patch_manifest_diagnostics_persists_coverage_warning(self):
         self._write_one_snapshot_container()

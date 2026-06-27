@@ -169,10 +169,11 @@ does not carry), **1 static decoration** (`SWOA_focus_background`), **2 dev-tool
 (`horsttool` host tool — mutation buttons inert, 4 occupation/owner readouts bind; `game_check` —
 mod dev). Full list & per-overlay verdict in the doc.
 
-### 1c. OUT OF SCOPE — frontend / lobby / main-menu shell + non-replay dev tools
+### 1c. Non-replay frontend / lobby / main-menu shell + dev tools
 
-Per the user decision (a recorded replay has no lobby/main-menu state to bind) — the **only**
-excluded group. ~31 files: `frontendmainview`, `frontendgamesetupview`, `frontendmultiplayerview`,
+Per the user decision, a recorded replay has no lobby/main-menu state to bind. These are
+not snapshot-bound in-game replay panels, though the runtime can still render them if a
+host-runtime frontend surface is intentionally built. ~31 files: `frontendmainview`, `frontendgamesetupview`, `frontendmultiplayerview`,
 `frontend_friends_view`, `frontendcreditview`, `ingamelobby`, `playerlobby`, `playeraiprefs`,
 `matchmaking`, `matchmaking_chat`, `chat`, `hotjoin`, `pops_login`, `social_view`,
 `subscription_message_view`, `achievements`, `credits`, `settings`, `savedgamerules`,
@@ -252,7 +253,7 @@ Each doc carries its own provably-exhaustive per-view element-count table (walk 
 |---|---|---|
 | `alerts[]` per-country active-alert ledger (type/severity/target) | alerts strip, topbar alert counters | recomputed live per player; needs a live alerts adapter or memory crack |
 | real the game front-line geometry/styling coverage | front-lines map mode, theatre selector | native overlay has derived controller-boundary fallback plus exact `map.front_lines[]` geometry ingestion; real extraction coverage and side-by-side proof remain open |
-| `states.<id>.resources` (per-state raw deposits; null 0/1081) | Resources map mode, state resource rows, topbarresources | `S`, parser-unfed; do NOT substitute country `economy.resources` |
+| `states.<id>.resources` (per-state raw deposits) | Resources map mode, state resource rows, topbarresources | `M`, live-fed; do NOT substitute country `economy.resources` |
 | per-participant **war casualties** & **war score** split | war_overview, diplomacy war cards | `diplomacy_world.wars` carries aggregate; per-side split live-extractable |
 | operative `code_name` / spymaster id | operative, intel_agency | not in `intel.operatives[]` shape; live/save addable |
 | INS revolution **escalation level** (country-scoped var) | ins_revolution | per-country scripted var (see bucket-c note) |
@@ -271,7 +272,7 @@ Each doc carries its own provably-exhaustive per-view element-count table (walk 
 | **Weather** per-region temperature / phenomenon visuals | weather map mode, province panel weather icons | per-region temp reader retracted (`null`); per-province `weather.provinces.*` is M but proxy vs the game's exact visual |
 | `naval_air.{air_superiority,region_control}` exactness | Air/Naval map modes, naval_strategic_region | region-proxy granularity by nature. Hard limit on per-province. |
 | Occupation **resistance-equilibrium / garrison need / occupation yields** | occupation view, state panel garrison | runtime-computed; resistance/compliance VALUES are fed, the targets/needs are not |
-| Power-balance **side thresholds / trend math** | power_balance | `world.power_balances[]` carries value/sides; threshold breakpoints computed |
+| Power-balance **trend/current-marker math** | power_balance | `world.power_balances[]` carries value/sides; trend and exact the game marker/prototype visual parity remain computed/visual |
 | Operation **success-chance / outlook**, intel-ledger **estimate bands**, capitulation % | operation_overview, intel_ledger, war_overview | AI/score computes |
 | Air-wing `effective_planes` efficiency denominators | strategic_air, air views | a captured RUNTIME-cached field (proxy), not the true efficiency model |
 | Research **progress fraction / ETA** | research, tech/doctrine trees | `points_factor`=speed; the fraction denominator + ETA are runtime-computed |
@@ -289,6 +290,7 @@ Each doc carries its own provably-exhaustive per-view element-count table (walk 
 | **Focus PP cost / availability** def | national_focus (already mapped; degrade noted) | parse `common/national_focus/` |
 | **Advisor eligibility** def, **idea/spirit** catalog | advisor_role_selection, politics ideas grid | parse `common/ideas/`, `common/scripted_effects` |
 | **Module / equipment-archetype DEF stats & costs** (what each module contributes) | all designers | parse `common/units/equipment/` modules — distinct from the computed (b) total |
+| **Power-balance side/range thresholds** | power_balance | parse `common/bop` via `parse_catalogs.power_balances` — balance ids, side ids/icons, and range min/max thresholds |
 | **Operation / casus-belli / opinion-modifier / insignia / emblem** catalogs | operation_overview, diplomacy, war_overview, insignia_selection | parse `common/operations`, `common/opinion_modifiers`, `gfx` insignia |
 | **State / province NAMES**, terrain, strategic-location, VP-by-province static | state/province panel, map | `map_pipeline` metadata + `history/states` — static map data, not the snapshot |
 

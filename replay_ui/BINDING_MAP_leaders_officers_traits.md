@@ -441,6 +441,19 @@ Formatters: `loc`, `int`, `portrait-sprite`, `skill-int`, `stat-int`, `progressb
 
 ## 6c. Army trait tree — NODE BINDING (adapter-fed; nodes are NOT in this `.gui`)
 
+**Native status:** the app currently instantiates the surfaced selected-leader
+`traits[]` tokens as owned N3 nodes and now supports read-only click selection,
+factual hover tooltips, and a factual selected-detail panel/digest for those
+owned nodes (trait id, owned state, branch, leader name, leader key). It also
+adds derived static-DEF metadata rows from `game_defs/out/catalogs.json`
+(`common/unit_leader/*` scope, cost, prereq count, mutual-exclusion count,
+modifier-row count, and source file), with null DEF fields still badged
+unavailable. The no-leader/no-traits glyphs are intentionally inert and fail
+closed. The full static trait catalog graph below (pickable/disabled nodes,
+real trait icons, localized/effect-expanded tooltip text, prereq/XOR lines,
+HOI4-style tooltip frames, and DEF `gui_row`/`gui_column` placement) remains
+open adapter work.
+
 Each trait NODE is instantiated by the **trait-tree adapter** into the `regular_traits.tree` /
 `terrain_traits.tree` `drag_scroll` canvases, cloning a **View-8 prototype** per trait. The node's
 RECT comes from the trait DEF's `gui_row`/`gui_column` (`common/unit_leader/*.txt`) and the

@@ -76,5 +76,10 @@ mod unit_leader;
 #[cfg(test)]
 mod tests;
 
+pub use trait_trees::{
+    trait_tree_viewport_from_roots, ArmyTraitTreeView, NavyTraitTreeView, ARMY_TRAIT_TREE_VIEW_ID,
+    NAVY_TRAIT_TREE_VIEW_ID,
+};
+
 // Re-export the shared helpers for the per-view submodules.
 pub(crate) use helpers::*;

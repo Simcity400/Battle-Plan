@@ -54,6 +54,32 @@ pub fn build_scene(file: &GuiFile, manifest: &SpriteManifest, loc: &Loc) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{Coord, RawNode};
+
+    fn unresolved_position_tokens(file: &GuiFile) -> (usize, Vec<String>) {
+        fn walk(node: &RawNode, unresolved_anchors: &mut usize, unknown_raw: &mut Vec<String>) {
+            if let Some(pos) = node.position.as_ref() {
+                for coord in [&pos.x, &pos.y] {
+                    match coord {
+                        Coord::Anchor { resolved: None, .. } => *unresolved_anchors += 1,
+                        Coord::UnknownRaw(raw) => unknown_raw.push(raw.clone()),
+                        _ => {}
+                    }
+                }
+            }
+            for child in &node.children {
+                walk(child, unresolved_anchors, unknown_raw);
+            }
+        }
+
+        let mut unresolved_anchors = 0;
+        let mut unknown_raw = Vec::new();
+        for window in &file.windows {
+            walk(window, &mut unresolved_anchors, &mut unknown_raw);
+        }
+        unknown_raw.sort();
+        (unresolved_anchors, unknown_raw)
+    }
 
     #[test]
     fn build_and_layout_a_tiny_view() {
@@ -161,6 +187,20 @@ mod tests {
             }
             let g = GuiFile::load(&path)
                 .unwrap_or_else(|e| panic!("shared parser rejected {fname}: {e}"));
+            let (unresolved_anchors, unknown_raw) = unresolved_position_tokens(&g);
+            assert_eq!(
+                unresolved_anchors, 0,
+                "{fname} has unresolved @position anchors; rerun game_assets/extract.py so its defines table is regenerated"
+            );
+            let allowed_unknown_raw = if fname == "tech_tree.json" {
+                vec!["275k".to_string()]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(
+                unknown_raw, allowed_unknown_raw,
+                "{fname} has unexpected raw position tokens; investigate before they fall back to chrome 0.0 geometry"
+            );
             let _ = build_scene(&g, &manifest, &loc);
             parsed += 1;
         }

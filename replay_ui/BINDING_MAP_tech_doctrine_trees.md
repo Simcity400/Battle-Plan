@@ -121,6 +121,13 @@ node binding is §1d). The folders also carry static year-axis labels and catego
 variant) bind the **selected/hovered** tech. Most of their content is **tech-DB + loc** (static,
 adapter-fed) or **runtime-computed effect math** (unavailable) — *not* country snapshot state.
 
+Current native status: `TechTreeView` / `DoctrineTreeView` selected nodes emit a first factual
+read-only selected-detail panel/digest subset (title/ID/folder/state plus research cost or XOR-link
+count). That proves selected-node detail output exists, but it is **not** full
+`technology_info_window` / `unlock_tech_info_window` parity: the real game chrome, icon/stat grids,
+generated effect rows, progress/ETA, MIO/design-team affordances, XP unlock/research affordances,
+comparison styling, and side-by-side visual proof remain open.
+
 | gui element (name + type) | snapshot source / origin | formatter | fidelity | notes |
 |---|---|---|---|---|
 | `technology_info_window` / `unlock_tech_info_window` (containerWindowType, roots) + their `Background` (`GFX_tiled_window_thin_border2`), `tech_info_top_win` (`GFX_tech_info_top_win`) | panel chrome | — | **static** | Frames. |
@@ -177,7 +184,7 @@ hosts (§1a), one per tech, each cloning a **node prototype**. The prototypes ar
 | **research bonuses** (folder/category discount) | `countries.<TAG>.research.research_bonuses[]` (`{name, categories[], bonus, kind}`) | percent + category | **exact** (the bonus rows) / **derived** (per-node applicability) | 20 rows. The bonus VALUES are `exact`; mapping a bonus to the specific nodes it covers (the `bonus_icon`/`bonus` tile) is a category/tech join → `derived`. |
 | **link lines** (prereq edges) | tech-DB prereq graph (static, `common/technologies/*.txt`) — rendered via `techtree_line_item` (Up/Down/Left/Right/Center icons) | — | **adapter-fed** | Edges come from the tech definitions, not the snapshot. The completed set decides which edges render "satisfied". Not a declarative bind (PLAN §B.5). |
 | **XOR lines** (mutually-exclusive tech pairs) | tech-DB `XOR`/`mutually_exclusive` (static) — rendered via `techtree_xor_item` (`First`/`Second` icons) | — | **adapter-fed** | Mutual-exclusion routing is tech-DB data; not a snapshot field. |
-| **node rect / position** | the per-tech `gridboxtype` `*_tree` hosts + per-prototype offsets in this `.gui` (static) | — | **adapter-fed** | Positions are static, embedded in the tech-tree `.gui` folders + the catalog. Not a snapshot field. |
+| **node rect / position** | the per-tech `gridboxtype` `*_tree` hosts + per-prototype offsets in this `.gui` (static) | — | **adapter-fed** / **approximate where disambiguated** | Positions are static, embedded in the tech-tree `.gui` folders + the catalog. Not a snapshot field. The current native graph no longer feeds raw mixed coordinates directly: folder-grid techs are laid out in a deterministic folder atlas, sub-techs use their parent plus the parser's canonical slot offset, runtime-positioned techs are parked/badged, and duplicate folder slots are disambiguated/badged so common nodes remain independently pickable. Exact per-folder host extraction and side-by-side geometry proof remain open. |
 
 ---
 

@@ -72,8 +72,8 @@ several SCHEMA.md `S`-only leaves to LIVE-first `M/S` EXACT):**
 | `world.power_balances[]` | **S** | `{template, value, left_side, right_side, countries[]}` (`trending_side` per SCHEMA.md §18, not in the demo) | the power-balance bar view → **exact** (value+sides) / **unavailable** (`trending_side` if absent) |
 
 **Genuinely runtime-computed / scripted-not-recorded (stay `unavailable` by nature, PLAN §G):** the
-power-balance RANGE band names (`active_range_name`, `range_indicator` position) — scripted side/range
-thresholds; per-occupied-country aggregate manpower/IC/resource **gains** (computed occupation yields);
+power-balance trend/current-marker visual parity (`range_indicator` prototype placement) — `active_range_name`
+now derives from static `common/bop` thresholds when the `game_defs` catalog is present; per-occupied-country aggregate manpower/IC/resource **gains** (computed occupation yields);
 garrison TEMPLATE need/strength (computed garrison requirement); the law/garrison/policy CHOICE preview
 modifiers (`+10%` etc. in the select-law modal = static law-DEF values, surfaced only with the
 occupation-law DB); election DATE display (`elections` text — but see the LIVE `last_election` upgrade);
@@ -102,6 +102,16 @@ PICKER (`political_ideas_window` + `idea_group` + `political_idea_entry` + the t
 (`manage_subjects_window`+`subject_item`, `exiles_window`+`exile_item`+`collaboration_item`+
 `occupier_flag_entry`, `manage_occupied_window`+`occupied_territory_entry`+`occupy_policy_entry`).
 Observed country = `<TAG>`.
+
+**Interaction proof.** `PoliticsView` now has executable read-only proof for
+Government/National Spirits/Ideas & Laws/Autonomy tab switching, stable-keyed
+active-tab row selection/highlight, and long National Spirits plus Ideas & Laws
+wheel-scroll plus scrollbar-thumb drag. The tests cover duplicate/unkeyed row
+inert behavior, track-click inertness, captured thumb drags continuing outside
+the list until pointer-up, per-tab scroll isolation, scrolled backing-row
+selection, and A->B->A scrub without carrying B-only rows. Government/Autonomy
+long-list scroll, modal drilldowns, exact scrollbar art, hover tooltips,
+disabled mutation visuals, and side-by-side proof remain open.
 
 Formatters: `int`, `percent` (×100), `loc` (token→localised string), `flag`/`flag-small`,
 `flag-shield`, `pie-chart` (`party_popularities`→arcs), `category` (ideology/idea/law/autonomy
@@ -251,9 +261,9 @@ balance) rendered as a needle on a frame. Source = the `world.power_balances[]` 
 |---|---|---|---|---|
 | `power_balance_value` (iconType, no sprite — the FILL) | `world.power_balances[<i>].value` | progressbar-fraction (−1..1 → bar) | **exact** | The continuous BoP value (`value`, S; e.g. `−0.35`). Drives the bar fill. |
 | `position_marker` (iconType, `GFX_bop_needle`) | `world.power_balances[<i>].value` | progressbar-position (−1..1) | **exact** | The needle position = the same `value` mapped onto the bar (left↔right). |
-| `range_indicator` (iconType, `GFX_bop_indicator`) | active RANGE band of `value` (which side-range it sits in) | category (range→position) | **unavailable** | Which scripted side-RANGE the value currently falls in (and thus where the range marker sits) needs the per-track range thresholds (scripted side-DEF data); only the raw `value` is stored. Badge unavailable. |
+| `range_indicator` (iconType, `GFX_bop_indicator`) | `world.power_balances[<i>].{template,value}` + `game_defs/out/catalogs.json.catalogs.power_balances` | category (range→position) | **partial / unavailable marker** | The active range token is derivable from static `common/bop` thresholds, but the top-level prototype marker's exact the game placement/chrome is still not side-by-side proven. Native badges this marker unavailable rather than drawing a fabricated indicator. |
 | `power_balance_name` (instantTextboxType, `"Left Power vs. Right Power"`) | `world.power_balances[<i>].{left_side,right_side}` → loc | loc | **exact** (sides) / **derived** (loc) | The "X vs Y" header; `left_side`/`right_side` (S) are side tokens (`"DEN_welfare_side"`/`"…warfare_side"`); the localised "vs" string is a lookup. |
-| `active_range_name` (instantTextboxType, `"We Are Very Powerful"`) | active side-range token → loc | category (range→loc) | **unavailable** | The named CURRENT range ("We Are Very Powerful") is the scripted range the value falls in — same gap as `range_indicator` (range thresholds not stored). Badge unavailable. |
+| `active_range_name` (instantTextboxType, `"We Are Very Powerful"`) | `world.power_balances[<i>].{template,value}` + `game_defs/out/catalogs.json.catalogs.power_balances` | category (range token→loc) | **derived / unavailable** | The current range token is derived from the parsed `common/bop` min/max thresholds. Missing catalog, missing template, or unmatched value fails closed as unavailable; no guessed range names. |
 | `left_power_icon` (iconType, no sprite) | `world.power_balances[<i>].left_side` → side icon | category (side→sprite) | **derived** | Left-side emblem from the side token (side-DEF icon lookup). |
 | `right_power_icon` (iconType, no sprite) | `world.power_balances[<i>].right_side` → side icon | category (side→sprite) | **derived** | Right-side emblem. |
 | `decision_grid` (gridboxtype, in `decision_container`) → BoP-decision tiles | the track's side decisions (BoP decision-DEF) | row factory; category | **unavailable** | The per-range BoP DECISIONS (the clickable side-effects) are decision-DEF + scripted availability not stored (the active timed ones could come from `decisions.timed_live` but BoP decisions are one-shot side picks) → grid empty; the tiles are mutations (inert). |
@@ -509,7 +519,7 @@ tables (1a–1d, 2a–2b, 3a–3b, 4a–4b, 5a–5c) enumerate them by name.
 
 | bucket | count | examples |
 |---|---:|---|
-| **Dynamic-bound** (incl. unavailable) | **~7** | `power_balance_value`, `position_marker`, `power_balance_name`, `left_/right_power_icon`, `range_indicator`/`active_range_name` (unavailable), `decision_grid` (unavailable) |
+| **Dynamic-bound** (incl. derived/unavailable) | **~7** | `power_balance_value`, `position_marker`, `power_balance_name`, `left_/right_power_icon`, `active_range_name` (derived/fail-closed), `range_indicator` marker and `decision_grid` (unavailable) |
 | **Static / decoration / navigation** | **~14** | `range_bar`, `background`, `bop_bg`, `power_balance_frame`, header bg, `title`, `close`, 2 containers, margin/slotsize |
 
 ### COMMAND / CHARACTER (`command_character.json`) — type counts: containerWindowType 10, background 6, instantTextboxType 9, margin 3, gridBoxType 2, slotsize 2, buttonType 6, iconType 4 (= **42** elements)
@@ -543,8 +553,9 @@ mios unfed), `collaboration_item`/`exile_item` (exile domain not modeled — scr
 *(`elections` is **derived** via the live `last_election`+`election_frequency` leaves — NOT
 unavailable.)*
 
-**Power balance (3):** `range_indicator` + `active_range_name` (scripted side-range thresholds not
-stored), `decision_grid` (BoP decision-DEF + one-shot availability not stored).
+**Power balance (2 + 1 fail-closed derived):** `range_indicator` marker/prototype visual parity and
+`decision_grid` (BoP decision-DEF + one-shot availability) remain open; `active_range_name` derives
+from parsed `common/bop` thresholds when available and badges unavailable otherwise.
 
 **Command/character (~3):** `icon` portrait (asset + commanders unfed), `cost` (recruit cost not
 stored), and the per-stat army/navy split (SAVE `commanders.*`, unfed in demo). *(`name`, overall
@@ -588,7 +599,8 @@ election_frequency` (must branch on `elections_allowed` — already noted); `aut
 `diplomacy.{overlord,autonomy_state,autonomy_ratio}` (M) exact with `politics.autonomy` (S) fallback;
 command/character grid live-bindable from `commanders.{army_leaders,navy_leaders}`; `states.*.occupation.{resistance,compliance} = M/S`
 → bars/text **exact**; `states.*.occupation_law = S` → exact token when save folded, unavailable live-only;
-`world.power_balances` = `S` with `value`→needle exact and range names/markers unavailable (sub-keys are
+`world.power_balances` = `S` with `value`→needle exact; `active_range_name` is derived from
+`common/bop` thresholds; the range marker/prototype visual parity remains unavailable (sub-keys are
 keys INSIDE the sourced dict, not separate FIELD_SOURCES leaves).
 
 **REFUTED → fixed (4):**
