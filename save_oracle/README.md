@@ -4,10 +4,9 @@ The **monthly oracle**: parses a Hearts of Iron IV save into clean JSON giving
 whole-world ground truth — authoritative per-state **owner**, per-state and
 per-province **controller**, and a cheap per-country snapshot.
 
-This is the cross-check / validation layer ("Architecture A") for the HOI4 MP
-Stats tool. It (a) seeds and validates the live memory-reader, and (b) provides
-the authoritative state→owner map that the dashboard's owner-colored map view
-needs (`DESIGN.md` §3, §5 *Map time-lapse*).
+This is the cross-check / validation layer for the Battle Plan app. It (a) seeds
+and validates the live memory-reader, and (b) provides authoritative world-state
+truth for the replay snapshot store and native map renderer.
 
 Everything here is **offline, stdlib-only**. The only external process is
 `rakaly`, used solely to melt binary saves to plaintext.
@@ -205,8 +204,8 @@ python parse_save.py sample/sample_save.txt --out-dir /tmp/sample_out
   recruitable population, deployed manpower, or losses (those need more data /
   game logic). Field is named to reflect that.
 - **Victory points** captured per state only in the scalar `victory_points=`
-  form; some engine versions use a list form, which is skipped (VP is computed
-  dashboard-side anyway, per `DESIGN.md` §4).
+  form; some engine versions use a list form, which is skipped. Native/replay
+  consumers derive state totals from captured province/state data when needed.
 - **`player_countries`** can list a tag more than once (co-op / multiple human
   slots on one country). `is_human` membership is still correct.
 

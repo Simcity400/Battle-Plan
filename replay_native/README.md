@@ -1,54 +1,75 @@
-# replay_native — native Rust/wgpu replay UI
+# replay_native
 
-The native, read-only, game-faithful replay front-end (see
-`../replay_ui/GAME_UI_REPLICA_PLAN.md` v3 + `../replay_ui/VERTICAL_SLICE_SPEC.md`).
-Pure Rust + `wgpu`; consumes the on-disk snapshot store produced by the Python
-capture/ingest pipeline. **Read-only**: it never reads live memory and never writes the
-game or a save; it only reads `../replay/snapshots/`.
+Native Rust/wgpu replay application for inspecting HOI4 recordings.
 
-## Status — M0 (data contract)
+The app is read-only: it opens snapshot stores or portable `.battleplan`
+recordings and presents captured game state through game-faithful UI surfaces. It
+does not write to HOI4, saves, or process memory.
 
-`snapshot/` — a forward-compatible store reader. It types only the stable top-level
-header (`game_id`/`date`/`hour_index`/...) and keeps every domain payload as raw JSON,
-so it never breaks when the schema grows (old snapshots stay readable). The
-no-fabrication contract is structural: `country_path` returns `None` for an absent key
-and `Some(Null)` for a captured null — measured-zero, null, and absent stay distinct.
+## Status
 
-```
-cargo run -p snapshot --bin m0_demo                 # defaults: ../replay/snapshots, game "replay", GER, state 1
-cargo run -p snapshot --bin m0_demo -- <root> <game> <hour> <tag> <state>
-cargo test -p snapshot                              # golden fixture: null != 0 != absent
-```
+The engineering DoD is complete: 114 registered game views, distributed
+inventory registration, host-level scrub/rebind coverage, no-fabrication guards,
+real `.gui` layout ingestion, native map/weather rendering, and portable replay
+container support.
 
-## Portable recordings — `.battleplan`
+Product parity is still open. See
+`../replay_ui/REPLAY_PARITY_COMPLETION_CHECKLIST.md` for the current checklist.
+The main remaining app-side work is interaction parity, tooltip parity,
+side-by-side visual comparison, map overlay parity, and asset/counter chrome.
 
-`snapshot/` also reads a **portable recording**: a single `.battleplan` file (a ZIP
-container) holding the entire snapshot series + the mod identity + the build hash +
-an integrity manifest, so a recording made on one machine opens on another exactly
-like a save game. Spec: `../replay_ui/HOI4REPLAY_CONTAINER_SPEC.md`.
+## Run
 
-`Store::open(path)` AUTO-DETECTS: a directory → the on-disk store; a regular file →
-a `.battleplan` (integrity-verified, served through the SAME `Store` interface), so
-the app/scrub open a recording with **zero changes elsewhere**. Identity is enforced
-via `Store::open_replay(path, ExpectedIdentity{ build, schema, modset })`.
+From the repository root:
 
-```
-cargo run -p snapshot --bin pack_replay -- pack   ../replay/snapshots campaign out.battleplan
-cargo run -p snapshot --bin pack_replay -- verify out.battleplan ../replay/snapshots campaign   # + byte-identity check
+```powershell
+cargo run --manifest-path replay_native/Cargo.toml --release -p app --bin replay_app
 ```
 
-Integrity (spec §3): per-entry SHA-256 over raw decompressed bytes + a top-level
-`manifest_digest` over canonical JSON (RFC-8785) covering all identity metadata;
-optional Ed25519 signature slot for true tamper-proofing. Hardened against
-path-traversal, duplicate/stowaway entries, zip-bombs, and manifest-less (recovery-
-only) files. Payloads are byte-copied, never re-serialized, so the no-fabrication
-trichotomy + rollback filenames round-trip losslessly. The *writer* is the Python
-hand-off (`../replay_ui/WRITER_INTEGRATION_PLAN.md`); the in-crate `pack` is the
-reference/test packer.
+Useful targeted checks:
 
-## Conventions
+```powershell
+cargo check --manifest-path replay_native/Cargo.toml -p app --bin replay_app
+cargo test --manifest-path replay_native/Cargo.toml -p app --no-fail-fast
+cargo test --manifest-path replay_native/Cargo.toml -p render overlay --lib --no-fail-fast
+cargo test --manifest-path replay_native/Cargo.toml -p assets --no-fail-fast
+cargo fmt --manifest-path replay_native/Cargo.toml --all --check
+```
 
-- No personal paths in committed files — the store root is a relative default or a CLI
-  arg; copyrighted game art stays gitignored under the existing rule.
-- Crates are added per milestone (M1 `assets`/`render`, M0.5 `gui_runtime`, M3 `bind`,
-  M2+ `app`); see `Cargo.toml`.
+## Crates
+
+| Crate | Role |
+| --- | --- |
+| `snapshot` | Snapshot-store and `.battleplan` reader/writer primitives. |
+| `assets` | Game asset, sprite, font, and DDS resolution. |
+| `render` | wgpu map, terrain, weather, overlay, and mode rendering. |
+| `gui_runtime` | Parsed `.gui` layout/runtime primitives. |
+| `bind` | Data binding and no-fabrication display atoms. |
+| `scrub` | Replay timeline/scrub support. |
+| `focus_tree` | Focus tree parsing/layout/render support. |
+| `combat_panel` | Combat model and panel rendering helpers. |
+| `widgets` | Reusable UI widgets and interaction primitives. |
+| `app` | Window host, view registry, native app binary, screenshot harness. |
+
+## Portable Recordings
+
+`.battleplan` files are ZIP containers with snapshots, identity metadata,
+integrity manifests, and optional signature slots. The app-side reader shares the
+same `Store` interface as directory snapshots, so portable recordings and local
+stores open through the same path.
+
+Spec: `../replay_ui/HOI4REPLAY_CONTAINER_SPEC.md`.
+
+Reference pack/verify command:
+
+```powershell
+cargo run --manifest-path replay_native/Cargo.toml -p snapshot --bin pack_replay -- verify out.battleplan replay/snapshots campaign
+```
+
+## Guardrails
+
+- Missing captured data must render unavailable/badged, never fabricated.
+- Mutating HOI4 actions must be inert or disabled in the replay UI.
+- Generated screenshots, output captures, game art, and local recordings stay
+  ignored.
+- Do not add personal paths or machine-specific install paths to tracked files.

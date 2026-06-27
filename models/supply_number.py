@@ -94,7 +94,7 @@ VALIDATION (documented, not an exact match -- the exact number is the wall):
     cut-off / no-hub provinces estimate LOW (see tests).
   * Plausibility: high-infra, big-hub, uncontested core states estimate higher
     than cut-off / hubless / occupied ones.
-  * Codex (Mode A) adversarially reviewed the combination + confidence rules;
+  * Historical adversarial review covered the combination + confidence rules;
     its false-high findings are folded in above (B/C/D/E/F). The headline
     finding -- "hub capacity treated as delivered supply without connectivity"
     -- is mitigated by labelling T2 structural_potential and capping confidence,

@@ -41,7 +41,7 @@ ADJ_CACHE_BASENAME = "province_adjacency.json"
 
 
 # ---------------------------------------------------------------------------
-# raster decode (self-contained; mirrors replay_render.geometry.decode_id_png)
+# Raster decode is self-contained so this package does not depend on old render tools.
 # ---------------------------------------------------------------------------
 def _decode_id_png(path: str) -> np.ndarray:
     """Decode a province-id PNG -> HxW uint32 (id = R + G*256 + B*65536)."""

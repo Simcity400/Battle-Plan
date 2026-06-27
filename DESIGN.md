@@ -9,6 +9,20 @@
 > and the expanded goal: a **full game-replay/review tool**. The original is preserved
 > in git history.
 
+## Current status note
+
+This is the product vision and architecture document, not the current completion
+ledger. Current status lives in:
+
+- `replay_ui/REPLAY_PARITY_COMPLETION_CHECKLIST.md`
+- `replay_ui/SESSION_HANDOFF.md`
+- `coverage_audit/memory_manifest.json`
+- `coverage_audit/COVERAGE_REPORT.md`
+
+As of the current native replay build, the engineering DoD is complete, but
+product parity is still open. Do not treat older build-status tables below as a
+remaining-work list unless they agree with the current checklist and manifest.
+
 ---
 
 ## 1. Purpose & vision
@@ -96,22 +110,27 @@ The one residual in this id-space work is the country-array running_index ↔ ta
 bridge — needed *only* to label live economy scalars with a TAG without the save —
 which is in progress.
 
-### Build status (2026-06-24)
-The offline stack is **built and composes end-to-end** (`build_replay.py`: validate →
-ingest → snapshot store → diff/events → map time-lapse + scrubber):
+### Historical build status (2026-06-24; superseded)
+
+The following snapshot is retained only as historical context. Current status is
+the native replay app state in the checklist, handoff, and coverage manifest
+named above.
+
+The old offline prototype stack once composed end-to-end (validate →
+ingest → snapshot store → diff/events → browser map preview), but that browser
+runtime has been removed. The retained/current pieces are:
 - **save oracle** — owner/controller ground truth, divisions, full province control, +7
   deep parsers (focus/tech/production/economy/diplomacy/state-detail/combats). ✓
-- **`save_oracle/validate.py`** — 23-check replay preflight (source-fingerprint coherence,
-  template/equipment/combat joins, faction bidirectional, redaction). Used as the gate in
-  `build_replay.py`. ✓
+- **`save_oracle/validate.py`** — 23-check replay preflight (source-fingerprint
+  coherence, template/equipment/combat joins, faction bidirectional, redaction). ✓
 - **live memory cracks** — owner/controller, divisions (+org/strength/equipment),
   tag-db-id→TAG, province control, and **land combat incl. exact defenders (13/13)** — all
   validated and save-free. ✓
-- **`replay/`** — schema + store + diff engine (29 event types, no-fabrication gating), 77
-  tests. ✓   **`replay_render/`** — PNG time-lapse + HTML scrubber. ✓
-- **In flight:** the `replay_ui/` 5-screen front-end, the economy→TAG live bridge, and the
-  CODE_REVIEW fixes. **Residual:** naval/air combat (re-anchor when a live sea/air battle
-  exists); a coherent `save_oracle/output` regen (the current dir is a stale 2-save mix).
+- **`replay/`** — schema + store + diff engine (29 event types,
+  no-fabrication gating), 77 tests. ✓
+- **Then in flight, now historical:** the old `replay_ui/` web front-end,
+  economy-to-TAG bridge work, and review fixes. Current native-app status is
+  tracked in the checklist and coverage manifest named above.
 
 > **MP continuity / resilience** — how the replay stays continuous (and honest) across
 > disconnects, hotjoins, rehosts, crashes, desyncs, and rollbacks: see §11.
@@ -162,8 +181,10 @@ layer (memory layers exact-to-the-tick; save-only layers coarser).
   surface confidence/coverage rather than pretend completeness. Pure one-shot
   **decision clicks** are recovered only when they leave persistent state or fire a
   log marker (§8); we mark the rest as not individually attributable.
-- **Hard-impossible (state it, never fake it):** Steam/player real names (no script or
-  data access — identify by tag/country name, humans flagged `is_ai = no` at start);
+- **Hard-impossible (state it, never fake it):** true Steam account identity/name
+  (persona/display names may be available when captured, but verified Steam
+  identity is not a replay datum; identify by tag/country name and captured
+  occupancy when needed);
   any sub-sample-transient micro-event (above); and a handful of pure-UI-derived
   display numbers that exist only in the renderer (reconstructed from raw inputs, not
   read).
@@ -266,27 +287,28 @@ the mod log marks them (§8).
 
 ---
 
-## 7. Dashboard / replay UI
+## 7. Native Replay UI
 
-Offline, `127.0.0.1`, Python stdlib server + vendored JS (Chart.js); fully offline.
-A single **global timeline scrubber drives every view**, and a **game-library browser**
-switches between the live game and any archived game.
+The active UI is the native Rust/wgpu replay app in `replay_native/`, not a
+browser dashboard. A single **global timeline scrubber drives every open
+inspection surface**, and the app opens snapshot stores or portable
+`.battleplan` recordings.
 
 Screens:
 1. **Overview / leaderboard over time** — sortable raw-stats table of all players across
    every metric (IC output, factories, casualties/K-D, controlled VP, …), scrubbable.
 2. **Country deep-dive** — any playable country → its full history: production mix and
    **army composition** over time, focuses/tech timeline, rank vs rivals.
-3. **Map time-lapse** — owner view (state) + control view (province) + a **division
-   layer** (positions, strength/org); play/scrub the whole game; click a state/province
-   for its flip history; computed VP / industry-share overlay (from static state VP).
+3. **Native map** — owner view (state) + control view (province) + weather,
+   resources, units, route/front overlays, and badged proxy layers; scrub the
+   whole game; click a state/province/unit/combat bubble for read-only drilldown.
 4. **Event timeline / feed** — the diff-derived "what everyone did" (conquests, focuses,
    tech, wars, builds/losses), filterable by country/type.
 5. **Combat layer** — the Tier-C inferred combat heatmap + casualty attribution
    (explicitly inferred, not a literal battle log).
 
-The map renderer + scrubber are already snapshot-driven (province-id raster recolored
-per snapshot), so all of the above is the same data model at different cadences.
+The native map renderer + scrubber are snapshot-driven, so all of the above is
+the same data model at different cadences.
 
 ---
 
@@ -377,11 +399,13 @@ this as a normal diff-derived event, the same machinery as everything else:
   transition).
 - **Source-of-truth & honest limit.** The seat layer is **occupancy-by-tag**, observed
   from the per-country human/AI flags (and any save-exposed seat/co-op markers) — *not*
-  player real identity. Steam/real names are a §4 hard-impossible (no script or data
-  access), so a seat is attributed by **TAG**, never by person; a substitution or a co-op
-  partner is visible as *the tag is human-occupied*, not *which human*. Where the engine
-  exposes nothing to distinguish two humans on one tag, that distinction is `null` (not
-  guessed) — the no-fabrication rule, applied to seats.
+  verified Steam account identity. Captured persona/display names can be shown
+  when present, but they are not proof of a Steam account identity. A seat is
+  therefore attributed by **TAG** and captured occupancy metadata, never guessed
+  as a person; a substitution or a co-op partner is visible as *the tag is
+  human-occupied*, not *which verified human*. Where the engine exposes nothing
+  to distinguish two humans on one tag, that distinction is `null` (not guessed)
+  — the no-fabrication rule, applied to seats.
 
 The data stream is uninterrupted across a disconnect because the host never stopped.
 

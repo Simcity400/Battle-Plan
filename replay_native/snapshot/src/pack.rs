@@ -1,8 +1,8 @@
 //! A reference `.battleplan` PACKER (writer side).
 //!
-//! NOTE ON OWNERSHIP: the *production* writer lives in the Python capture loop
-//! (see `replay_ui/WRITER_INTEGRATION_PLAN.md`); this Rust packer is the
-//! REFERENCE implementation + the test fixture builder. It is loss-LESS by
+//! NOTE ON OWNERSHIP: the *production* writer lives in the Python capture loop;
+//! this Rust packer is the REFERENCE implementation + the test fixture builder.
+//! It is loss-LESS by
 //! construction: payload files are stored as RAW BYTES, never re-serialized, so
 //! the Absent/null/0 trichotomy, the rollback filenames, and compact-JSON
 //! formatting all survive unchanged (spec §5).

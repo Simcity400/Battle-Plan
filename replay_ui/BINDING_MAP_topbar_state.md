@@ -110,8 +110,8 @@ the clock binds the snapshot scalar. Formatters referenced: `int`, `int-triple`,
 
 ## 1b. Topbar — deferred (needs imperative adapter; NOT bound in this slice)
 
-Per VERTICAL_SLICE_SPEC §4 ("Outliner, alerts, speed control: rendered chrome, inert/deferred") and
-PLAN §C.2 (outliner = imperative adapter). These render as real chrome but are **inert**; no
+Per the native replay contract and PLAN §C.2 (outliner = imperative adapter),
+outliner, alerts, and speed controls render as real chrome but are **inert**; no
 binding is invented.
 
 | gui element (name + type) | why deferred |
@@ -206,8 +206,8 @@ Formatters: `int`, `level-int`, `percent`, `manpower`, `flag` / `flag-small`, `c
   `temperature_icons`, `impassability_icon`, `flooded_icon`, `unplanned_offensive_icon`,
   `the_great_wall_icon`, `building_modifiers_icon`, `province_required_rule`, `state_modifiers`
   (placeholder `"STATE_MODIFIERS"`). These are **per-province weather/modifier icons** — the
-  replay slice is Political-mode only (VERTICAL_SLICE_SPEC §3); weather/modifier state for a
-  province is **out of slice** and not bound here. (If later bound, they would be `proxy`/
+  original vertical slice was Political-mode only; weather/modifier state for a
+  province was **out of that slice** and not bound here. (If later bound, they would be `proxy`/
   `unavailable` — weather is per-province, schema carries no province weather in these snapshots.)
 - **Positioning anchors (positionType, no visual):** `countrystateview_weathericons_position`,
   `countrystateview_weathericons_offset`, `state_owners_size_when_owner_is_controller`,
@@ -233,8 +233,8 @@ Formatters: `int`, `level-int`, `percent`, `manpower`, `flag` / `flag-small`, `c
 
 ## Notes
 
-**A. No stability/war-support progressbar in this topbar.gui.** The task brief and
-VERTICAL_SLICE_SPEC say "stability (+ its progressbar)" / "war_support (+ bar)", but the parsed
+**A. No stability/war-support progressbar in this topbar.gui.** The early task brief said
+"stability (+ its progressbar)" / "war_support (+ bar)", but the parsed
 `topbar.json` contains **no `progressbartype`** for stability or war support — only an icon
 (`stability_icon`/`war_support_icon`), a value box (`*_value_bg`), and the text. The only
 bar-like icons in the topbar are `industrial_ratio_bar`, `fuel_ratio_bar`, `convoys_ratio_bar`,

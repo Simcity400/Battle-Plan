@@ -58,7 +58,7 @@ def derive_layers(snapshot: Dict[str, Any],
     cis = _layers.controlled_industry_share(snap)
     snap["map"]["controlled_industry_share"] = (
         cis["by_tag"] if cis else None)
-    # keep the richer breakdown alongside (non-schema, useful for the dashboard)
+    # Keep the richer breakdown alongside (non-schema, useful for native diagnostics).
     snap["map"]["controlled_industry_detail"] = cis
     filled["controlled_industry_share"] = (len(cis["by_tag"]) if cis else None)
 

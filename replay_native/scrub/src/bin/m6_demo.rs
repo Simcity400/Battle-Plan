@@ -826,6 +826,7 @@ fn stub_named(name: &str) -> Node {
         alwaystransparent: false,
         rect: Rect::default(),
         clip: None,
+        tooltip: None,
         children: vec![],
     }
 }

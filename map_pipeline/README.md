@@ -1,9 +1,10 @@
 # Map preprocessing pipeline
 
 Offline pipeline that turns a HOI4 mod's raw map + history + country data into
-browser-friendly assets for the multiplayer-stats dashboard. **Pure offline data
-prep — no game, no network.** Run it once whenever the mod's map / states /
-country colours change; the dashboard's canvas renderer then consumes the assets.
+shared static map assets for the native replay app, save oracle, and memory
+readers. **Pure offline data prep — no game, no network.** Run it once whenever
+the mod's map / states / country colours change; native renderers and readers
+then consume the assets.
 
 ## Run
 
@@ -47,24 +48,24 @@ province_id = R + G*256 + B*65536          (R = id & 0xFF, G = (id>>8)&0xFF, B =
 Id `0` is the "no province" sentinel (sea/lake/unassigned colours and any pixel
 whose colour isn't in `definition.csv` all encode as id 0).
 
-This is the standard web map technique: a lossless image whose pixels carry data,
-decoded per pixel. The original `provinces.bmp` colours are arbitrary per-province
-RGB; we replace them with the *encoded id* so the renderer can map pixel→province
-with one `getImageData` read and no colour-lookup table on the client.
+This is a lossless data raster: each pixel carries the province id, not a display
+colour. The original `provinces.bmp` colours are arbitrary per-province RGB; we
+replace them with the *encoded id* so renderers and readers can map
+pixel→province deterministically.
 
-## How the canvas renderer uses these
+## How renderers use these
 
-1. Load `province_ids.png` into an offscreen canvas (or the half-res copy for
-   display/perf). **Disable smoothing** (`ctx.imageSmoothingEnabled = false`) and
-   never scale it with interpolation — interpolation would blend ids into garbage.
-2. For a pixel under the cursor (or for a full repaint, iterate the buffer):
+1. Load `province_ids.png` or the optional half-res copy as a nearest-neighbour
+   data texture/raster. Never scale it with interpolation; interpolation would
+   blend ids into garbage.
+2. For a pixel under the cursor or shader sample, decode:
    ```js
    const px = ctx.getImageData(x, y, 1, 1).data;   // [R,G,B,A]
    const provinceId = px[0] | (px[1] << 8) | (px[2] << 16);
    ```
 3. `state_id = province_to_state[provinceId]` (absent ⇒ unassigned: sea/lake).
 4. `owner = <state owner TAG>` — the **owner is dynamic per-game** and comes from
-   the dashboard's live data source (memory reader / save), *not* from this
+   the replay snapshot/live data source (memory reader / save), *not* from this
    pipeline. (`state_meta` gives static facts: name, VP, category, manpower,
    province list — it deliberately does **not** bake in an owner, because owners
    change during a game.)
@@ -74,8 +75,8 @@ with one `getImageData` read and no colour-lookup table on the client.
    pass.
 
 So the static chain this pipeline provides is **pixel → province → state**; the
-dashboard supplies the live **state → owner**, and `country_colors` closes it with
-**owner → colour**.
+replay data supplies the live **state → owner**, and `country_colors` closes it
+with **owner → colour**.
 
 ## Source data & parsing notes
 

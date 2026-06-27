@@ -104,7 +104,7 @@ self-skip if the snapshots are absent.
 
 ## Boundaries
 
-This package reads `replay/`, `save_oracle/output`, `map_pipeline/assets`, and
-`replay_render` **read-only**. It edits nothing outside `derive/`. The on-disk
-adjacency cache is the only file it writes outside the package, and only next to
-the static map assets.
+This package reads `replay/`, `save_oracle/output`, and `map_pipeline/assets`
+**read-only**. It edits nothing outside `derive/`. The on-disk adjacency cache
+is the only file it writes outside the package, and only next to the static map
+assets.

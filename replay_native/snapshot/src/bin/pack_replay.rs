@@ -2,9 +2,9 @@
 //! `.battleplan`, and to VERIFY a `.battleplan` round-trips byte-identically.
 //!
 //! This is the REFERENCE (and a real, usable) implementation of the finalize
-//! step; the production streaming writer is the Python hand-off
-//! (`replay_ui/WRITER_INTEGRATION_PLAN.md`). It is loss-less by construction:
-//! payload files are read + stored as RAW BYTES, never re-serialized.
+//! step; the production streaming writer lives in the Python capture loop.
+//! It is loss-less by construction: payload files are read + stored as RAW
+//! BYTES, never re-serialized.
 //!
 //! Usage:
 //!   pack_replay pack   <store_root> <game_id> <out.battleplan>

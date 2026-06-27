@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Offline builder: strategic-region <-> province mapping for the dashboard/replay.
+Offline builder: strategic-region <-> province mapping for the native replay app.
 
 Pure offline data prep. Reads a the game mod's map/strategicregions/*.txt (each file =
 one strategic region: `id=N`, `name="..."`, `provinces={ a b c ... }`) and emits
-browser-friendly JSON the replay can use to PAINT weather / naval-region control /
+shared JSON the replay can use to paint weather / naval-region control /
 air-superiority on the map instead of only listing reports.
 
 Effective load set (mod override model):

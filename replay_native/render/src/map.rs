@@ -1,6 +1,6 @@
 //! `map` — the M4 GPU political map pass (integer province-id texture + colour LUT).
 //!
-//! ## Design (Codex-hardened, VERTICAL_SLICE_SPEC §3.1 / §M4)
+//! ## Design
 //!
 //! The province-id raster (`province_ids.png`, 5632×2048, 8-bit RGB, no alpha) is
 //! NOT a display image — each pixel encodes an integer province id via

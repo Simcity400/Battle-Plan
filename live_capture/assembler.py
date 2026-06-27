@@ -1908,9 +1908,10 @@ def _wire_weather(snap: Dict[str, Any], pid: Optional[int]) -> bool:
     temperature + precipitation (`water`) + snow all live in the SAME per-PROVINCE struct
     at province-id index. So the live weather fold is PER-PROVINCE: it populates the
     province-keyed weather.provinces.{pid}.{temp_c,precip,snow} block. weather.regions is
-    left at its null skeleton -- there is NO working per-region reader (its read was
-    retracted), and weather has no save oracle to backfill it, so a null region block means
-    "not measured", never a stale merge (Codex B-confirm).
+    left at its null skeleton because this live fold has NO working per-region reader
+    (its read was retracted). Save-persisted region weather is handled as a separate
+    oracle/parser path; this live fold must not backfill it and claim freshness. A null
+    region block here means "not measured by the live fold", never a stale merge.
 
     precip (`water`) and snow are the SAVE-PERSISTED per-province amounts (validated exact
     vs the save), i32/1e5 floats. The reader collapses a zero/absent slot to None (it cannot

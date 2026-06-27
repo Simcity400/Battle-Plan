@@ -4,9 +4,8 @@ Turns raw **save-oracle** and (future) **memory-reader** outputs into a queryabl
 **replay**: an ordered series of canonical **snapshots** plus a derived **event
 timeline**. Pure offline Python, **stdlib only** — no game, no network, import-clean.
 
-This package is the backbone every other layer writes into (DESIGN §3, §9 build step
-1–2 and 6). The map/time-lapse renderer and the dashboard read the snapshot store and
-the timeline produced here.
+This package is the backbone every capture and replay layer writes into. The
+native app reads the snapshot store and timeline produced here.
 
 ## Files
 
@@ -46,9 +45,9 @@ replay/snapshots/<game_id>/
 ```
 
 Filenames are the zero-padded `hour_index`, so a lexical directory sort is
-chronological. `index.json` is the manifest the dashboard/scrubber iterates; each
-snapshot file is self-contained and schema-valid (`store` refuses to write an invalid
-one). `unknown` is used for a snapshot whose date couldn't be parsed.
+chronological. `index.json` is the manifest the native scrubber iterates; each
+snapshot file is self-contained and schema-valid (`store` refuses to write an
+invalid one). `unknown` is used for a snapshot whose date couldn't be parsed.
 
 ## Usage
 

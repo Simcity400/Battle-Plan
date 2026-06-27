@@ -1,9 +1,10 @@
 # GAME_UI_REPLICA_PLAN — a full generic Clausewitz-GUI runtime that replays recorded the game state
 
-> **Status:** PLAN / design document (v2 — **scope expanded to a FULL generic GUI runtime**).
-> Nothing here is implemented yet. The existing `replay_ui/` 5-screen analytics dashboard keeps
-> working; this is the **next phase**, a parallel "play-it-back-like-the-game" front-end built on
-> the same snapshot store.
+> **Status:** historical design document. The native Rust/wgpu direction below
+> has since been implemented through the engineering DoD: 114 registered views,
+> real `.gui` layout ingestion, map/weather wiring, no-fabrication guardrails, and
+> host/scrub plumbing are in place. Product parity is still open and is tracked
+> in `REPLAY_PARITY_COMPLETION_CHECKLIST.md`.
 >
 > **Decisions now LOCKED** (these supersede the v1 "limited renderer for ~30 curated screens"
 > recommendation; the v1 caution is preserved as the engineering-risk register, not the scope):
@@ -44,7 +45,7 @@
 
 **Decision (user, 2026-06-26): the game-replica front-end is a single native Rust application rendering with `wgpu`.** No web layer, no TypeScript, no loopback server, no browser. Rationale: the replica is a hand-rendered game (GPU map-recolor + sprite/9-slice panels + BMFont glyph quads), *not* an HTML-shaped UI — so the web stack's one advantage (its component/layout ecosystem) buys nothing here, while a webview would impose an IPC boundary, a two-language schema, and a fight to make a browser look like the game. The memory reader is already going Rust (§J), so a Rust UI means **one language, one binary, the snapshot types shared directly with the reader, and zero per-frame data marshalling across a process boundary.**
 
-**Within pure-Rust:** prototype on **Bevy** (free windowing/input/`wgpu` render graph/sprite batching/asset loading, and an ECS that is a natural fit for the retained scene-graph of thousands of UI entities — focus nodes, unit counters, list rows). Fall back to raw `wgpu` + `winit` only if Bevy's abstractions fight pixel-faithful Clausewitz layout. That choice is **settled inside the vertical slice** (`VERTICAL_SLICE_SPEC.md`), not up front.
+**Within pure-Rust:** the early Bevy question was settled by the native slice: stay on raw `wgpu` + `winit`. The retained scene-graph, layout engine, hit testing, and renderer are now owned directly by `replay_native/`.
 
 ### Substrate swap — section by section (everything not listed is unchanged)
 
@@ -53,7 +54,7 @@
 | Locked-decision #2 | TypeScript + Canvas2D retained scene-graph + esbuild/tsc | **Rust** + `wgpu` retained scene-graph; Bevy for plumbing (or raw `wgpu`+`winit`) |
 | §B.2 / assets | `.dds`/`.tga` → ~33k PNG pre-conversion | **load `.dds` directly to GPU textures** (`wgpu` consumes BCn/BC7 natively) — skip the PNG step; higher fidelity, smaller pipeline |
 | §B.6 fonts | glyph quads drawn to canvas, `imageSmoothingEnabled=false` | BMFont glyph quads batched on the GPU; **nearest-neighbour sampler** for crisp bitmap text. `.fnt` parse + `core.gfx` map unchanged |
-| §B.9 map | `map_view/app.js` CPU recolour over `getImageData` | **GPU fragment-shader recolour**: `province_ids.png` → an id-texture; map mode = a per-state/per-province colour LUT texture sampled in-shader. Province pick = sample the id-texture at the cursor. `map_pipeline` products (`province_ids.png`, `province_to_state.json`, `state_meta.json`, `country_colors.json`) reused as-is |
+| §B.9 map | Historical browser prototypes used CPU recolour over `getImageData` | **GPU fragment-shader recolour**: `province_ids.png` → an id-texture; map mode = a per-state/per-province colour LUT texture sampled in-shader. Province pick = sample the id-texture at the cursor. `map_pipeline` products (`province_ids.png`, `province_to_state.json`, `state_meta.json`, `country_colors.json`) reused as-is |
 | §B.10 data binding | snapshot `*.json` fetched from `127.0.0.1` loopback server | the Rust app reads the **on-disk snapshot/delta store directly** (`replay/store.py` format; `hour_index`-keyed series + diff timeline). No server, no HTTP, no JSON-over-the-wire. The global scrubber re-binds in-process |
 | §B.1 charts | vendored Chart.js | a small Rust chart routine (or `egui` for the analytics-side panels only) |
 | §B.11 "why TS" | typed `.gui` AST/binding/scene-graph in TS | same argument, **stronger in Rust**: typed AST/binding-spec/scene-graph + a snapshot crate shared with the reader; enums + match-exhaustiveness kill whole bug classes |
@@ -121,8 +122,9 @@ isomorphic to their `.gui` tree.** That is the whole plan.
 
 ## A. Vision & principles
 
-Today `replay_ui/` is an **analytics dashboard** (charts + tables) over the snapshot series. The
-next phase is a **game replica**: open the same data and have it *look and feel like sitting in a
+Historically `replay_ui/` held browser analytics/dashboard experiments over the
+snapshot series. Those runtime files are now removed; the active product is the
+native **game replica**: open the same data and have it *look and feel like sitting in a
 paused game*, navigable through time. Browse the focus tree, open the research tree, switch
 map modes, click a combat bubble to see who's fighting, select a state/country/unit/leader to open
 its real panel, hover anything for a tooltip — but you can **never change anything**. It is a
@@ -336,9 +338,10 @@ exact in-game modifier-composition engine.
 
 ### B.9 The MAP engine (carried from v1, unchanged scope)
 
-Build directly on `map_pipeline` (province-id raster: pixel→province→state in one decode) +
-`map_view/app.js` (recolor loop, hover, click, legend) + `replay_render` (numpy frames, front
-lines, division markers). The map is the bottom compositor layer; the GUI VM windows stack above it.
+Build directly on `map_pipeline` (province-id raster: pixel→province→state in one decode).
+The old `map_view`/`replay_render` browser prototypes were removed after their
+ideas were absorbed into the native GPU map path. The map is the bottom
+compositor layer; the GUI VM windows stack above it.
 
 - **Map-mode switcher** — each mode is a recolor function over the same decoded id-raster, each
   carrying its fidelity badge:
@@ -384,8 +387,8 @@ the scene-graph — are framework-agnostic canvas work; React/Vue/a game-engine 
 violates the repo's no-heavy-framework ethos. **TypeScript** is now accepted (locked decision #2)
 because a typed `.gui` AST, a typed binding spec, and a typed scene-graph are exactly the kind of
 code where types prevent whole classes of bug; a thin `esbuild`/`tsc` step is acceptable (no
-React/Vue/bundler-zoo). The loopback server (`serve.py`) and the `map_view` serving model are
-extended, not forked.
+React/Vue/bundler-zoo). This paragraph is historical; the active implementation is the native
+Rust/wgpu app with no loopback server.
 
 ---
 
@@ -782,12 +785,9 @@ and is **entirely decoupled** from how they're produced, so this is a pure backe
   division/tank designer, unitview, popupwindow) → re-extracted from the mod, not vanilla.
   **Still TODO for v2 runtime:** parse `gfx/fonts/*.fnt` glyph tables + convert glyph atlases, and
   full `$VAR$`/markup loc resolution (the loc *file set* is already resolved mod-over-vanilla).
-- **Map:** `map_pipeline/` (province-id raster + state/colour meta), `map_view/` (canvas recolor +
-  hover/click/legend), `replay_render/` (numpy frames + front lines + markers + scrubber).
-- **UI shell:** `replay_ui/` (loopback `serve.py`, `series.py`, the no-fabrication discipline, the
-  global-scrubber model) — the analytics dashboard the game-skin view runs **alongside**, sharing
-  the snapshot store and time scrubber. The game-skin runtime is **new TypeScript** served by the
-  same loopback server.
+- **Map:** `map_pipeline/` (province-id raster + state/colour meta) consumed by the native GPU map.
+- **UI shell:** `replay_native/` is the active Rust/wgpu runtime. `replay_ui/`
+  now contains product parity docs and binding maps only.
 
 > **No personal install path is recorded in this document.** Installed content are located through the
 > `game_assets` resolver (vanilla via CLI/default, mod via the mod's `interface/`), and converted

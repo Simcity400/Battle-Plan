@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+import json
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.normpath(os.path.join(_HERE, os.pardir, os.pardir))
@@ -449,54 +450,32 @@ class TestSnowWiring(unittest.TestCase):
 
 
 class TestFrozenAbsenceAndArcticWater(unittest.TestCase):
-    """FROZEN proof: the per-province save block has NO `frozen` token, and the
+    """FROZEN proof: the per-province weather output has NO `frozen` token, and the
     measured frozen-water signal is the per-REGION arctic_water phenomenon flag."""
 
     @classmethod
     def setUpClass(cls):
-        # locate the USA-1936 melt oracle via the GT extractor's ORACLE constant.
-        sys.path.insert(0, os.path.join(_REPO, "re_scratch"))
-        import _w2wx_gt as gtmod
-        cls.gtmod = gtmod
-        cls.have_melt = os.path.isfile(gtmod.ORACLE)
+        # Use tracked save-oracle output. The old raw-melt helper lived in ignored
+        # re_scratch/ and made this test depend on local cleanup state.
+        cls.weather_json = os.path.join(_REPO, "save_oracle", "output", "weather.json")
+        cls.have_weather_json = os.path.isfile(cls.weather_json)
 
     def test_no_per_province_frozen_token_in_melt(self):
-        if not self.have_melt:
-            self.skipTest("usa1936 melt oracle not present")
-        gtmod = self.gtmod
-        text = open(gtmod.ORACLE, "r", encoding="utf-8", errors="replace").read()
-        block = gtmod.find_weather_block(text)
-        self.assertIsNotNone(block)
-        psub = gtmod.split_subblock(block, "provinces")
-        recs = gtmod.parse_entities(psub, "province")
+        if not self.have_weather_json:
+            self.skipTest("save_oracle/output/weather.json not present")
+        with open(self.weather_json, "r", encoding="utf-8") as fh:
+            recs = json.load(fh)
         self.assertGreater(len(recs), 1000)
-        # collect every TOP-LEVEL scalar token directly under each province record.
-        import re as _re
-        toplevel = set()
-        for lines in recs.values():
-            depth = 0
-            for ln in lines:
-                s = ln.strip()
-                if depth > 0:
-                    if s == "}":
-                        depth -= 1
-                    continue
-                m = _re.match(r'^([A-Za-z_]\w*)=', s)
-                if m:
-                    if s.endswith("{"):
-                        depth += 1
-                    else:
-                        toplevel.add(m.group(1))
-        # the per-province block tokens are EXACTLY this set -- NO `frozen`.
+        toplevel = set().union(*(set(v.keys()) for v in recs.values()))
         self.assertNotIn("frozen", toplevel)
-        self.assertTrue({"province", "temperature", "water", "snow"} <= toplevel)
+        self.assertTrue({"temp_c", "water", "snow"} <= toplevel)
 
     def test_frozen_token_absent_whole_melt(self):
-        if not self.have_melt:
-            self.skipTest("usa1936 melt oracle not present")
-        text = open(self.gtmod.ORACLE, "r", encoding="utf-8",
-                    errors="replace").read()
-        self.assertNotIn("frozen", text)
+        if not self.have_weather_json:
+            self.skipTest("save_oracle/output/weather.json not present")
+        with open(self.weather_json, "r", encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertNotIn('"frozen"', text)
 
     def test_arctic_water_is_a_region_phenomenon_the_reader_emits(self):
         # arctic_water IS a per-REGION phenomenon flag (the measured frozen-water signal),

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Offline map-preprocessing pipeline for the game multiplayer-stats dashboard.
+Offline map-preprocessing pipeline for the native Battle Plan app.
 
 Pure offline data prep: reads a the game mod's map + history + country data and emits
-browser-friendly assets that a canvas renderer consumes to colour the map by
-province -> state -> owner. No game, no network.
+shared static assets that renderers/readers consume to resolve
+pixel -> province -> state -> owner. No game, no network.
 
 Inputs (read-only) under <mod>/:
   map/definition.csv          province_id;R;G;B;type;coastal;terrain;continent
@@ -66,7 +66,7 @@ DEFAULT_MOD = os.path.normpath(os.path.join(SCRIPT_DIR, "..", "..", "test"))
 
 
 def parse_args(argv):
-    p = argparse.ArgumentParser(description="Build the game map assets for the dashboard.")
+    p = argparse.ArgumentParser(description="Build the game map assets for the native replay app.")
     p.add_argument("--mod", default=DEFAULT_MOD,
                    help="Path to the game mod dir (default: ../../test sibling).")
     p.add_argument("--out", default=SCRIPT_DIR,

@@ -114,7 +114,6 @@ MESH_COORD_Y = 0x18   # f32 flipped raster Y
 
 # --- map raster (province_ids.png) ---
 _IDS_PNG = os.path.join(_HERE, "..", "map_pipeline", "assets", "province_ids.png")
-_CENTROIDS = os.path.join(_HERE, "..", "replay_game", "output", "centroids.json")
 RASTER_W, RASTER_H = 5632, 2048   # full-res province_ids.png
 
 # Fitted transform PROVEN on the 2026-06-26 frame (overlay currently rendered). full_x = mesh_x+XOFF,

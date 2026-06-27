@@ -197,6 +197,14 @@ surfaces, not here.)
 field named as a capture work-item). Count of in-game views accounted for = 115 (77 core + 38
 overlays). Zero in-game views silently dropped.**
 
+> Count reconciliation: this **115** is the source-coverage universe
+> (`.gui` core files + scripted/mod overlay coverage rows). It is not the native
+> app registry count. The current native registry/product checklist count is
+> **114 registered openable views**, because registry descriptors count
+> menu/openable runtime surfaces rather than every source coverage row. Compare
+> product parity against the 114-view registry and use this file to ensure no
+> in-game source view was silently omitted from binding analysis.
+
 > Reconciliation of the "13 already-parsed slice views" framing: the 4 pre-existing docs cover **12
 > distinct parsed views** (the topbar doc binds two — topbar + province_state). The often-cited "13"
 > counts the GPU political **map** (M4 slice milestone) as a 13th surface; the map is a render layer,
@@ -256,7 +264,7 @@ Each doc carries its own provably-exhaustive per-view element-count table (walk 
 
 | gap | needed by | note |
 |---|---|---|
-| **Exact per-province supply NUMBER** | logistics, supply map modes, unit supply | **proven wall** (`FULL_GAME_COVERAGE §B2`); transient routing-solver output. `supply.by_province` is a PROXY. Hard limit. |
+| **Exact per-province supply NUMBER** | logistics, supply map modes, unit supply | **proven wall** (`replay/SCHEMA.md §13.2`, `memory_reader/supply_solver_offsets.draft.json`, `RESEARCH_logistics_intel.md`); transient routing-solver output. `supply.by_province` is a PROXY. Hard limit. |
 | **Aggregate world-tension scalar** | world_tension_popup, topbar threat | NOT stored — only `world_events.threat[]` contributor ledger + `world.world_tension_inputs`. Hard limit. |
 | Designer **derived combat stats** (soft/hard attack, org, HP, defense, breakthrough, armor, piercing, speed, combat width) | all 5 designers, division/template stat panels | runtime-computed (SCHEMA §11 note, §G). Partial recovery only via the `template_stats`/`equipment_variant_stats` derived models (source **D**). Hard limit on the exact game value. |
 | Combat **battle-detail** (progress bar, combat width, terrain, tactics, modifiers) | land/naval combat, combat results | §G hard limit; `combats[]` domain is M\* (uncracked) |

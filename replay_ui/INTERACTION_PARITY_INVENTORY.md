@@ -14,8 +14,8 @@ interaction works.
 
 ## Evidence Used
 
-- `AGENTS.md` and `CODEX_PROTOCOL.md`: current Codex-native rules; no old CLI
-  review workflow.
+- `AGENTS.md`: current Codex-native rules; legacy Claude/local-CLI review
+  workflow is explicitly retired and must not be used by Codex subagents.
 - `DESIGN.md`: product target is a maximal-depth replay/review tool with no
   fabricated data.
 - `replay_ui/SESSION_HANDOFF.md`: engineering DoD is green, product parity is

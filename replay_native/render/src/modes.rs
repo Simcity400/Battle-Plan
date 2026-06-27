@@ -3,7 +3,7 @@
 //! buffer [`crate::map::PoliticalMap::update_lut`] consumes), so the GPU shader is
 //! mode-agnostic — switching mode is just uploading a different LUT.
 //!
-//! ## Fidelity badges (VERTICAL_SLICE_SPEC §B.9 / plan map table, line 345)
+//! ## Fidelity badges
 //!
 //! Every mode carries a [`Fidelity`] badge describing how faithful its colouring is to
 //! the in-game map mode of the same name:

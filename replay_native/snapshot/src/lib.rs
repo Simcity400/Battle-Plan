@@ -5,8 +5,8 @@
 //!   * `<012 hour_index>.snapshot.json`   — one full-world snapshot per in-game hour
 //!   * `timeline.json`                    — diff/event stream (not read here)
 //!
-//! Design (VERTICAL_SLICE_SPEC §3.1, per Codex): mirror only the STABLE top-level
-//! shape of `replay/SCHEMA.md`; every domain payload (countries, states, provinces,
+//! Design: mirror only the STABLE top-level shape of `replay/SCHEMA.md`; every
+//! domain payload (countries, states, provinces,
 //! divisions, designs, ...) stays a raw `serde_json::Value` so the reader NEVER
 //! breaks when the schema grows — old snapshots stay readable. Strong typing happens
 //! later at the bind layer, per-domain.

@@ -1,18 +1,20 @@
 """weather_reader.py - LIVE weather layer for Battle Plan (build 16022851).
 
-STATUS: CANDIDATE / LOW confidence. Weather is the one layer with NO save
-oracle (weather is dynamic and not persisted in saves), so it cannot be anchored
-the way owner/control/economy/divisions/combat were. This module implements the
-full read-only validation FUNNEL designed for it; it locates a candidate
+STATUS: HISTORICAL candidate scanner. Later coverage work proved that melted
+saves DO persist realized province and region weather, so the old "no save
+oracle exists" assumption below is superseded by COVERAGE_REPORT.md. This
+module still implements the full read-only validation FUNNEL designed for live
+weather; it locates a candidate
 region-indexed weather array and scores it, but it FAILS CLOSED unless the
 candidate clears strong negative controls AND (when the game is running) a
 temporal-drift gate. See RESEARCH_weather.md for the method, the residual, and
 exactly what a ground-truth confirmation still needs.
 
 WHY THIS IS HARD (the honest part):
-  * No save oracle: nothing to diff against. We rely on the static climatology
-    (map/strategicregions/*.txt) as the only ground-truth band, plus internal
-    consistency and temporal drift.
+  * Realized weather is save-anchorable now, but the live generative formula,
+    RNG, and phenomenon-name ordering remain RE work. Static climatology
+    (map/strategicregions/*.txt), internal consistency, and temporal drift are
+    still useful controls for live scans.
   * A single-field temperature-band scan is USELESS here: it produced 4.66M
     candidate offsets in the 7.5 GB arena (only ~8.7 bits of selectivity). The
     static climatology in memory is itself a perfect masquerader.

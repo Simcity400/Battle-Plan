@@ -15,8 +15,8 @@
 //!                   sprite roughly one line tall; for measurement we reserve a
 //!                   fixed icon advance (the glyph stream gets a placeholder).
 //!
-//! The critical Codex requirement (VERTICAL_SLICE_SPEC §3.1): **wrap is computed
-//! from glyph metrics AFTER expansion** — i.e. the wrapper measures the EXPANDED,
+//! Critical invariant: **wrap is computed from glyph metrics AFTER expansion** —
+//! i.e. the wrapper measures the EXPANDED,
 //! markup-stripped text with the real BMFont `measure()`, never the source string.
 //! [`expand`] does the expansion; [`wrap`] does the glyph-measured wrap; the two
 //! are deliberately separate so a test can prove the order.

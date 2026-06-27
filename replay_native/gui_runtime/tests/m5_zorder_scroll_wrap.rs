@@ -84,6 +84,7 @@ fn leaf(name: &str, kind: ElementKind, rect: Rect, transparent: bool) -> Node {
         alwaystransparent: transparent,
         rect,
         clip: None,
+        tooltip: None,
         children: vec![],
     }
 }
@@ -121,6 +122,7 @@ fn building_template() -> Node {
         alwaystransparent: false,
         rect: Rect::default(),
         clip: None,
+        tooltip: None,
         children: vec![],
     };
     let pic = leaf(
@@ -148,6 +150,7 @@ fn building_template() -> Node {
         alwaystransparent: false,
         rect: Rect::default(),
         clip: None,
+        tooltip: None,
         children: vec![pic, level],
     }
 }
@@ -349,6 +352,7 @@ fn map_and_panel() -> (Vec<Node>, Vec<Node>) {
             h: 650.0,
         },
         clip: None,
+        tooltip: None,
         children: vec![painted, transparent],
     };
     panel_root.rect = Rect {

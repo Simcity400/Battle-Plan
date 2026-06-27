@@ -1,39 +1,83 @@
-# Battle Plan
+# Battle Plan / Native Replay App
 
-A Hearts of Iron IV multiplayer statistics suite: an in-game mod that records
-per-country metrics over time, plus a fully-offline local web dashboard for
-deep analysis.
+Private, read-only tooling for the owner's Hearts of Iron IV multiplayer group.
 
-## What's here
+The project started as an in-game stats mod plus browser dashboards. Those legacy
+surfaces have been removed. The active target is a native Rust/wgpu replay
+application that lets a viewer inspect a recorded HOI4 session like the real game
+UI, without any ability to mutate the game.
+
+## Current Status
+
+The narrow engineering definition of done is met: the native app builds, 114 real
+game views are registered and menu-reachable, no-fabrication guardrails are in
+place, the map/weather/rendering stack is wired, the `.battleplan` container
+exists, and the coverage checker passes.
+
+Product parity is not complete. The app is not yet a fully proven 1-to-1
+inspector for every real HOI4 UI interaction and visual surface. The canonical
+remaining-work checklist is:
+
+- [replay_ui/REPLAY_PARITY_COMPLETION_CHECKLIST.md](replay_ui/REPLAY_PARITY_COMPLETION_CHECKLIST.md)
+
+The current high-level blockers are:
+
+- live unpaused recorder proof at the intended multiplayer speed
+- full read-only interaction parity for every registered view
+- tooltip/localization parity beyond the first vertical slice
+- side-by-side game-vs-app screenshot/interaction comparison
+- remaining asset-sprite/counter chrome work
+- remaining map overlay parity for labels, routes, fronts, battle plans, and trade
+- data gaps tracked in `coverage_audit/memory_manifest.json`
+- user-provided mid-war/eventful paused save coverage for wartime-only rows
+
+## Run The Native Replay App
+
+```powershell
+cargo run --manifest-path replay_native/Cargo.toml --release -p app --bin replay_app
 ```
-battle-plan/
-  mod/         the HOI4 mod (loads in-game; draws the line graphs, logs the data)
-  dashboard/   a local-web dashboard that reads the game log (Python, stdlib only)
+
+## Useful Verification Commands
+
+```powershell
+cargo test --manifest-path replay_native/Cargo.toml --workspace --no-fail-fast
+python -m pytest save_oracle game_defs replay live_capture coverage_audit
+python coverage_audit/check_coverage.py
+python live_capture/recorder/recorder_main.py --smoke
 ```
 
-## The mod (`mod/`)
-- **Auto-binds** its graph curves to the human players in the lobby (not hardcoded
-  tags), so it works without per-game setup.
-- Tracks, per month: **military IC output** (gross — measured from
-  `total_equipment_produced_*`, so production efficiency is captured and it's
-  immune to losses / lend-lease / capture), **construction power**, **army
-  manpower**, and **casualties**.
-- Auto-scaling graphs, survives a major being annexed (ticks off an always-alive
-  scope), and writes a `HOI4MPSTAT;` line per country per month to `game.log` for
-  the dashboard.
+Some Python suites are pytest-style; do not rely on a unittest-only run as a
+full-project signal.
 
-Install: point a `.mod` descriptor at `mod/` (an example launcher descriptor lives
-in the HOI4 `mod/` folder), enable it in the launcher, and play. Currently tuned
-for the AMSB multiplayer mod (it ticks off that mod's always-alive `WST` scope).
+## Source Of Truth
 
-## The dashboard (`dashboard/`)
-Double-click **`Open Battle Plan Dashboard.bat`** — it serves a live dashboard
-at `http://127.0.0.1:8077`, fully offline (Chart.js is vendored). It charts any
-metric for any countries, shows each country's per-type production mix, and a
-sortable table. See `dashboard/README.md` for details.
+- `replay_ui/REPLAY_PARITY_COMPLETION_CHECKLIST.md` - product parity checklist
+- `replay_ui/SESSION_HANDOFF.md` - current orchestration state and known caveats
+- `coverage_audit/memory_manifest.json` - data completeness row status
+- `coverage_audit/COVERAGE_REPORT.md` - readable data coverage report
+- `replay_ui/BINDING_MAP_COVERAGE.md` - UI binding inventory
+- `AGENTS.md` - current agent workflow rules
 
-## Lineage
-The in-game graphing engine began as a fork of **Aigle2's Stats Generator**
-(Steam Workshop `2659156021`); internal script identifiers keep its `ASG_` prefix.
-The production metric, auto-binding, auto-scaling, AMSB-safety, the log export, and
-the entire dashboard are new.
+## Repo Map
+
+| Path | Purpose |
+| --- | --- |
+| `replay_native/` | Native Rust/wgpu replay app and rendering/runtime crates. |
+| `live_capture/` | Python live-memory capture, recorder GUI/CLI, and `.battleplan` writer. |
+| `memory_reader/` | Read-only process-memory readers and live extraction modules. |
+| `coverage_audit/` | Completeness manifest, report, and checker. |
+| `game_defs/` | Static HOI4 definition parsers. |
+| `replay/` | Snapshot schema, store, diff engine, and tests. |
+| `replay_ui/` | Product parity docs, binding maps, handoff state, and replay specs; no browser replay runtime remains here. |
+| `save_oracle/` | Save parsing/oracle tooling used for validation and discovery. |
+
+## Safety Rules
+
+- All game access is read-only. Never use `WriteProcessMemory`.
+- The live game should stay paused during scanning unless running an explicit
+  recorder cadence proof.
+- Do not commit personal paths, cloud-sync paths, raw dumps, melted saves, or
+  generated game art.
+- Local probe outputs belong in ignored scratch paths, not in tracked source.
+- Do not use the old local Codex CLI review workflow in Codex-native sessions;
+  use normal native subagents as work partners.

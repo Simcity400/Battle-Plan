@@ -1,8 +1,8 @@
 # Replay snapshot schema (canonical) — v1
 
-> **This is the contract.** The time-lapse renderer, the diff/event engine, and the
-> dashboard all build against the shapes defined here. Field names and nesting are
-> stable; new fields are added optional/null, never renamed in place. The Python
+> **This is the contract.** The native app, recorder/container path, diff/event
+> engine, and validation tools all build against the shapes defined here. Field
+> names and nesting are stable; new fields are added optional/null, never renamed in place. The Python
 > mirror of this document is `replay/schema.py` (dataclasses + validators).
 >
 > **v1 revision log (additive only — no renames):** added the four SAVE-side deep
@@ -593,7 +593,7 @@ Always present; `null`-but-present until a live read folds them.
 ### 13.2 `supply`
 | field | type | source | notes |
 |-------|------|--------|-------|
-| `by_province` | obj\|null | M | `{province_id: {current, capacity, gain, divisions}}` — the validated division-province supply PROXY (where troops are). The exact tooltip supply NUMBER is a documented wall (`FULL_GAME_COVERAGE` §B2). |
+| `by_province` | obj\|null | M | `{province_id: {current, capacity, gain, divisions}}` — the validated division-province supply PROXY (where troops are). The exact tooltip supply NUMBER is a documented wall; see `memory_reader/supply_solver_offsets.draft.json` and `RESEARCH_logistics_intel.md`. |
 | `source` | str\|null | — | `"M"` when a live read filled it, else `null` |
 | `confidence` | str\|null | — | e.g. `"division_province_proxy"` |
 
@@ -665,7 +665,7 @@ Two places events live:
 2. **The replay event timeline** — the chronological, cross-snapshot feed the **diff
    engine** derives from adjacent snapshots and merges with the markers. This is the
    primary product; it is stored alongside snapshots (see README) and is what the
-   dashboard's event feed reads.
+   native event/log views read.
 
 ### 9.1 `Event` record shape (both places use this shape)
 

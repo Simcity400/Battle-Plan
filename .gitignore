@@ -1,10 +1,7 @@
 # Python
 __pycache__/
 *.pyc
-
-# generated dashboards
-dashboard/dashboard.html
-dashboard/offline_demo.html
+.pytest_cache/
 
 # OS / editor cruft
 Thumbs.db
@@ -26,9 +23,6 @@ map_pipeline/assets/*.png
 # --- Generated outputs (melted saves, rendered snapshots) ---
 save_oracle/output*/
 replay/snapshots/
-replay_render/output/
-replay_game/output/
-map_view/output/
 
 # --- Native replay UI rendered PNGs (contain copyrighted game art; regenerable
 #     via the demo/app binaries) — never commit ---
@@ -38,6 +32,33 @@ replay_native/*/out/
 #     scratch scripts; may contain local machine/Ghidra paths -> never commit) ---
 re_scratch/
 re_scratch/crack_archive/
+
+# --- Local memory-reader cracking/probe outputs ---
+# Scratch convention: one-off reverse-engineering probes and generated oracle
+# dumps under memory_reader/ use leading underscores or crack/scratch dirs.
+# Keep durable readers/manifests tracked under explicit non-underscore names.
+capture_perf_probe.py
+memory_reader/_*/
+memory_reader/_*.py
+memory_reader/_*.json
+memory_reader/_*.txt
+memory_reader/_*.out
+memory_reader/_*.err
+memory_reader/*.log
+memory_reader/*.ckpt
+memory_reader/focus_crack/
+memory_reader/re_scratch*
+memory_reader/**/_*.py
+memory_reader/**/_*.json
+memory_reader/**/*.out
+memory_reader/**/*.log
+memory_reader/**/*.err
+memory_reader/**/*.pkl
+
+# Codex/Claude local app state, never project source.
+.agents/
+.claude/
+.codex/
 
 # --- Internal review doc (not for the repo) ---
 CODE_REVIEW.md

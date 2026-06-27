@@ -51,7 +51,7 @@ from a melted save without the live PROXY plug or the `events.json` / `supply.js
 | schema field | state in the inspected snapshot | consequence for the badges below |
 |---|---|---|
 | `countries.<TAG>.economy.logistics` (supply_system_2) | **0 / 143 countries** populated. `economy` union of keys = `{factories, fuel, resources, construction_queue, gross_ic_by_equipment, _production_lines}` only | logistics network readouts → bind paths are correct & schema-present, but **unfed in this demo (ARTIFACT)**. Closure: fold `supply.json`. |
-| top-level `supply.by_province` | **key absent** | per-province supply PROXY → unfed ARTIFACT; AND carries a PERMANENT PROXY badge (the exact tooltip supply NUMBER is a documented WALL — see §G / FULL_GAME_COVERAGE §B2). |
+| top-level `supply.by_province` | **key absent** | per-province supply PROXY → unfed ARTIFACT; AND carries a PERMANENT PROXY badge (the exact tooltip supply NUMBER is a documented WALL — see `replay/SCHEMA.md §13.2`, `memory_reader/supply_solver_offsets.draft.json`, and `RESEARCH_logistics_intel.md`). |
 | top-level `naval_air.{region_control,air_superiority}` | **key absent** | sea-zone dominance / air-superiority PROXY → unfed ARTIFACT; PERMANENT PROXY/region-granularity badge. |
 | top-level `world_events.*` (`fired_events`, `sunk_convoys`, `convoy_losses_by_*`) | **key absent** | event-fired ids + convoy-loss ledgers → unfed ARTIFACT. Closure: fold `events.json`. |
 | `snapshot.events[]` | **`[]`** (0) | marker-event channel empty (expected; mod log not wired). |
@@ -786,7 +786,7 @@ is "—" pending a domain fold (ARTIFACT) or is a permanent PROXY/GAP.
 
 | gap (view) | why | bucket |
 |---|---|---|
-| **EXACT per-province supply NUMBER** (V1/V5 tooltip value) | the `supply.by_province` PROXY gives where-troops-are current/capacity, but the **exact tooltip supply figure is COMPUTED-NOT-STORED** — the documented **B2 wall** (FULL_GAME_COVERAGE §B2) | **(b)** |
+| **EXACT per-province supply NUMBER** (V1/V5 tooltip value) | the `supply.by_province` PROXY gives where-troops-are current/capacity, but the **exact tooltip supply figure is COMPUTED-NOT-STORED** — the documented wall (`replay/SCHEMA.md §13.2`, `memory_reader/supply_solver_offsets.draft.json`, `RESEARCH_logistics_intel.md`) | **(b)** |
 | combat progress bar / combat width / terrain / tactics / modifiers (V3 outcome detail, V6 unit_land_combat bar) | runtime battle-detail (§G) | **(b)** |
 | per-division EFFECTIVE combat stats (soft/hard/defense, V6 info grids) | runtime-computed from equipment+modifiers (§G) — template BASE stats are derivable (c), effective are not | **(b)** |
 | naval region weather / mine coverage / enemy-ship range estimate (V5) | sea-zone weather + fog-of-war estimates — computed/intel-scaled, not stored | **(b)** |

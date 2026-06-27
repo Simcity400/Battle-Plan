@@ -8,8 +8,8 @@ there is no anti-cheat concern.
 
 ## Adversarial review / sub-agent protocol
 
-This repo used to require Claude agents to call the local `codex` CLI through
-`CODEX_PROTOCOL.md`. That rule is obsolete for Codex-native sessions.
+This repo used to require Claude agents to call a local `codex` CLI review
+workflow. That rule is obsolete for Codex-native sessions.
 
 - Codex-native agents and sub-agents **must not** run the old local Codex CLI
   review workflow or any historical Mode A/Mode B invocation.
@@ -30,8 +30,8 @@ This repo used to require Claude agents to call the local `codex` CLI through
   orchestrator to assign one or report the need early. It should not fall back
   to the old local CLI.
 - Do not embed the old CLI command in sub-agent prompts.
-- `CODEX_PROTOCOL.md` is retained only for historical Claude handoffs and must
-  not override this section in Codex-native sessions.
+- Compatibility notes such as `CODEX_PROTOCOL.md` may exist for older handoffs,
+  but they must not tell agents to run the old local CLI workflow.
 
 ## Hard safety rules (these caused a history rewrite once — do not repeat)
 

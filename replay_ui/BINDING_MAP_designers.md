@@ -722,6 +722,5 @@ change needed, but recorded here for completeness.
 **Refuted / corrected:** none material — the schema is unambiguous that designer combat stats are
 runtime-computed (hard limit), so no "unavailable" in the stat panels is a mislabelled overlook.
 
-> If the Codex CLI run returned a non-empty reply, its specific corrections are merged into the tables
-> above and itemised here; if it timed out twice, this section records **"Codex attempted, timed
-> out"** and the map rests on the direct schema verification.
+> Historical note: the legacy review result is fully folded into this section.
+> Current Codex-native sessions use partner sub-agents instead of that old runner.

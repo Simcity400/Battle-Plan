@@ -1,34 +1,45 @@
-# weather/ - live WEATHER / environment layer (build 16022851)
+# weather
 
-> STATUS: **NOT PINNED / LOW confidence.** Weather is the only live layer with NO
-> save oracle (weather is dynamic and not persisted in saves). No specific weather
-> array address is confirmed. See `../../RESEARCH_weather.md` for the full method,
-> dead ends, and residual.
+Live/readback support for HOI4 weather and environment data.
+
+## Current Truth
+
+The older "weather is not saved, no oracle exists" claim is wrong for realized
+weather. The melted save does persist realized weather:
+
+- province weather scalars such as temperature, water, snow, and offsets
+- region weather values such as temperature, next weather change, phenomenon
+  flags, and `arctic_water`
+
+Current authoritative status is in `../../coverage_audit/COVERAGE_REPORT.md`.
+
+## What Is Closed
+
+- Province-level realized weather scalars are parsed/validated and feed dynamic
+  map rendering slices.
+- Snow, mud, and frozen-sea visual data are wired into the native map path.
+- Weather clock/scan lessons and offsets are documented in
+  `weather_offsets.draft.json` and `../../RESEARCH_weather.md`.
+
+## What Remains Open
+
+- Parse and bind the full save-persisted region weather subtree, especially
+  phenomenon flags and `arctic_water`, as first-class overlay drivers.
+- Prove the native weather map overlay against side-by-side HOI4 screenshots.
+- Treat generative weather internals separately: temperature formula, RNG, and
+  phenomenon-name ordering are computed/RE work, not missing save persistence.
 
 ## Files
-- `weather_reader.py` - the read-only validation FUNNEL: build-gate, climatology +
-  live-month, JOINT array-of-structs scan over the 304 strategic regions
-  (temp-in-band AND phenomenon-possible-this-month, with SOFT physical penalties),
-  shuffled-rid + wrong-month negative controls, and a temporal-drift gate
-  (the decisive test - requires the game UNPAUSED; stub). Fails closed.
-- `weather_offsets.draft.json` - semantics, phenomenon enum, method, candidate
-  status, residual. NOT validated to the 1081/1081 standard of the other layers.
-- `weather_climatology.json` - per-region/month temperature band + the set of
-  phenomena climatologically possible that month (the validation ground truth;
-  built from `map/strategicregions/*.txt`).
 
-## Why this layer is different
-The owner/control/economy/division/combat layers were anchored against a
-time-aligned melted save (1081/1081, 1603/1603). Weather is NEVER written to a
-save, so there is no oracle. Validation relies on the static climatology, internal
-consistency, negative controls, and - the only strong discriminator - GAME-TIME-
-COUPLED TEMPORAL DRIFT, which needs the simulation running. This session was
-paused, so the drift gate could not run.
+| File | Role |
+| --- | --- |
+| `weather_reader.py` | Read-only live/weather funnel and guardrails. |
+| `weather_state_reader.py` | State extraction support for realized weather. |
+| `weather_fields_live.py` | Live field extraction helpers. |
+| `weather_offsets.draft.json` | Durable method/offset notes and residuals. |
+| `precip_offsets.draft.json` | Precipitation-specific notes. |
+| `weather_climatology.json` | Static climatology reference from game data. |
+| `region_weather_mod.json`, `prov2region_mod.json` | Static region/province mapping data. |
 
-## Run
-    python weather_reader.py                 # auto: read month, scan, report
-    python weather_reader.py --month 8 --budget 120
-The session this was built in was paused at ~1937.9 (September). A single-field
-temperature scan found 4.66M false positives; the joint+control scan rejects them
-(0 control-beating candidates at stride 16) but a confirmed positive needs an
-unpaused session for the drift gate. READ-ONLY, arena-scoped (0x1F6..0x1FA).
+Generated probes and `_*.json` scan outputs are scratch artifacts and should stay
+ignored/untracked.

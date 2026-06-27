@@ -307,6 +307,7 @@ mod tests {
             alwaystransparent: false,
             rect: Rect::default(),
             clip: None,
+            tooltip: None,
             children: vec![Node {
                 name: "stability".into(),
                 raw_kind: "instantTextBoxType".into(),
@@ -327,6 +328,7 @@ mod tests {
                 alwaystransparent: false,
                 rect: Rect::default(),
                 clip: None,
+                tooltip: None,
                 children: vec![],
             }],
         };

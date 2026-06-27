@@ -5,7 +5,7 @@ You are taking over as the **ORCHESTRATOR** of a large multi-agent build. Read t
 ## 0. YOUR ROLE + STANDING RULES (non-negotiable)
 - **Default to orchestration for large work.** Use subagents for execution and adversarial review where they add leverage; direct repo operations such as validation, staging, commit, and push are fine in a Codex-native session.
 - **/goal is active: "finish the app 100%."** A Stop hook blocks stopping until met. Keep driving.
-- **Adversarial review stays mandatory** for substantive RE findings, offset hypotheses, save-parse logic, and risky changes. In Codex-native sessions, use normal subagents/review agents; the old CLI command in `CODEX_PROTOCOL.md` was for Claude-only handoff compatibility.
+- **Adversarial review stays mandatory** for substantive RE findings, offset hypotheses, save-parse logic, and risky changes. In Codex-native sessions, use normal subagents/review agents; the old local-CLI review workflow was for Claude-only handoff compatibility and must not be used.
 - **NO escape hatches.** Reject any "optional / skippable / out-of-scope / deferred / approximated-and-left" from an agent — on the brief AND on review. The only admissible non-completion is a *proven* physical impossibility.
 - **Output over design.** Only the output matters (correct + vision-aligned). Rip-and-replace prior design freely; never brief "minimal-risk / preserve semantics."
 - **HARD CONSTRAINTS:** READ-ONLY game memory (never WriteProcessMemory); game stays PAUSED during scans; **NO git commits unless asked**; **NEVER put local home-directory, cloud-documents, machine-specific install paths, or attribution trailers in tracked/committed files.**
@@ -16,7 +16,7 @@ A read-only, game-faithful, interactive **replay UI** in pure **Rust + wgpu** (N
 - `replay_native/` — the Rust app. Crates: snapshot, assets, render, gui_runtime, bind, scrub, focus_tree, combat_panel, widgets, app, recorder. Run: `cargo run --release -p app --bin replay_app`.
 - `live_capture/` + `memory_reader/` — the Python external-memory reader (stdlib ctypes, READ-ONLY, build-gated on hoi4.exe sha256).
 - `game_defs/` — 9 static DEF parsers (mod-over-vanilla). `coverage_audit/` — the data completeness manifest. `replay/` — snapshot store/diff/schema. `replay_ui/` — docs.
-- **Master plan: `replay_ui/APP_COMPLETION_ROADMAP.md`** (the batch plan + the 7-criterion Definition of Done in §F). Per-view bindings: `replay_ui/BINDING_MAP_*.md` (COVERAGE.md = master inventory). Data status: `coverage_audit/memory_manifest.json` (status column) + `COVERAGE_REPORT.md` + `check_coverage.py`.
+- **Current product checklist: `replay_ui/REPLAY_PARITY_COMPLETION_CHECKLIST.md`**. Per-view bindings: `replay_ui/BINDING_MAP_*.md` (COVERAGE.md = master inventory). Data status: `coverage_audit/memory_manifest.json` (status column) + `COVERAGE_REPORT.md` + `check_coverage.py`.
 
 ## 2. WHAT'S DONE (historically verified green — 1202 tests: 574 Rust + 628 Python, 0 failed)
 - **Architecture (BATCH 0):** ViewRegistry (distributed via the `inventory` crate — clusters register in their own files, no central edit = conflict-free), generic WindowHost (z-bands/modal/hit-test/branchless rebind_all), BindContext/RenderContext with `Captured<T>`→`DisplayAtom` (type-enforced no-fabrication: no path from Absent to a fabricated 0).
