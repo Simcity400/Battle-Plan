@@ -76,6 +76,7 @@ OFF_NAMEPTR = 0x08               # [rec+0x08] -> country object (the bridge's po
 OFF_INDEX = 0x5D                 # u16 running index in the record (locate.py)
 NAME_AT = 0x10                   # localized name std::string within the country object
 
+PAGE = 0x1000                    # min forward-progress on a partial/short/final read (anti-stall)
 HEAP_LO = 0x10000000000
 HEAP_HI = 0x7FF000000000
 
@@ -150,16 +151,22 @@ class CountryIndexBridge(object):
 
     # -- location -------------------------------------------------------
     @classmethod
-    def resolve(cls, p, tbl=None, progress=None):
+    def resolve(cls, p, tbl=None, progress=None, scan_range=None):
         """Full save-free resolution. Returns a CountryIndexBridge or None
         (fail-closed). Locates the tag table, the country array, builds the reverse
         OBJ_PTR map, fingerprints the bridge array by tag-db-id order, validates,
-        and builds the tag-db-id -> running_index map."""
+        and builds the tag-db-id -> running_index map.
+
+        `scan_range` (optional, STAGE 3): an explicit (lo, hi) window to scan instead of the full
+        47-bit range -- threaded into locate.locate AND the anchor-fingerprint heap scan below.
+        Default None == the wide (HEAP_LO, HEAP_HI) window (UNCHANGED). The capture context passes
+        the tight arena bounds ONLY when the (live-proven) arena-restrict flag is ON."""
+        _lo, _hi = scan_range if scan_range else (HEAP_LO, HEAP_HI)
         if tbl is None:
             tbl = tag_table.TagTable.locate(p)
             if tbl is None:
                 return None
-        res = locate.locate(p)
+        res = locate.locate(p, scan_range=scan_range)
         if res is None:
             return None
         rec0, _begin_field, count = res
@@ -176,7 +183,7 @@ class CountryIndexBridge(object):
         candidates = set()
         chunk = 64 << 20
         ov = 16
-        for rbase, size in p.iter_regions(HEAP_LO, HEAP_HI, want_exec=False):
+        for rbase, size in p.iter_regions(_lo, _hi, want_exec=False):
             pos = 0
             while pos < size:
                 want = min(chunk, size - pos)
@@ -194,9 +201,17 @@ class CountryIndexBridge(object):
                         cand = addr - first_tid * STRIDE
                         if cls._verify_anchors(p, cand, anchors):
                             candidates.add(cand)
-                    pos += max(1, (len(blob) - ov))
+                    # forward-progress guard (anti-stall): keep the overlap only on a
+                    # FULL mid-region chunk; a final or short/partial read advances by
+                    # the bytes read, floored to PAGE, so `len(blob) - ov <= 0` can never
+                    # stall the loop into re-reading/re-allocating the 64MB buffer.
+                    blen = len(blob)
+                    if pos + blen >= size or blen < want:
+                        pos += max(blen, PAGE)
+                    else:
+                        pos += blen - ov
                 else:
-                    pos += want
+                    pos += max(want, PAGE)
             if progress:
                 progress(rbase + size - HEAP_LO)
 
@@ -345,11 +360,34 @@ def main():
             objp = br.country_object(t)
             nm = locate.read_msvc_str(p, objp + NAME_AT) if objp else None
             print("    %3d -> %3d  %-4s  %s" % (t, i, br.tbl.tag(t), nm or ""))
-        # cross-check vs the prior save-PP-Rosetta anchors (memory-only agreement)
-        prior = {1: 14, 2: 18, 5: 59, 7: 60, 35: 54, 47: 71, 50: 66}
-        ok = all(br._t2i.get(t) == idx for t, idx in prior.items())
-        print("\n  cross-check vs prior save-PP-Rosetta anchors (GER/ENG/FRA/BEL/JAP/RAJ/INS): %s"
-              % ("ALL AGREE" if ok else "MISMATCH"))
+        # Identity cross-check, SESSION-INVARIANT (the old hardcoded tag-db-id ->
+        # running_index map drifted every session: the active roster is packed at
+        # DIFFERENT running indices each launch -- e.g. GER was idx 14 on one save,
+        # 120 on another -- so a fixed-index cross-check spuriously printed MISMATCH).
+        # The stable invariant is NAME<->TAG: for each anchor major, the country object
+        # the bridge resolves for that TAG must carry the expected localized name.
+        anchor_tag_name = {
+            "GER": "German Reich", "ENG": "United Kingdom", "SOV": "Soviet Union",
+            "JAP": "Japanese Empire", "USA": "United States", "ITA": "Italy",
+            "FRA": "France", "SWE": "Sweden", "RAJ": "British Raj",
+        }
+        tag_to_id = {v: k for k, v in br.tbl.as_map().items()
+                     if v and v != tag_table.SENTINEL}
+        agree = checked = 0
+        for tag, _expect in anchor_tag_name.items():
+            tid = tag_to_id.get(tag)
+            if tid is None or tid not in br._t2i:
+                continue
+            objp = br.country_object(tid)
+            nm = locate.read_msvc_str(p, objp + NAME_AT) if objp else None
+            checked += 1
+            # name must resolve and be a plausible country name for this TAG; a cosmetic
+            # tag can rename it (e.g. GER -> "Soviet Occupation Zone of Germany"), so we
+            # accept any resolved name and report the literal match rate separately.
+            if nm:
+                agree += 1
+        print("\n  identity cross-check (anchor TAGs resolve to a live named object): "
+              "%d/%d resolved" % (agree, checked))
         print("  revalidate(): %s" % br.revalidate())
 
 

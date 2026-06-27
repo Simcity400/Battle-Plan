@@ -1,0 +1,17 @@
+[package]
+name = "scrub"
+version = "0.1.0"
+edition = "2021"
+description = "M6 the scrubber — a global hour_index that drives in-process re-bind of every open surface (topbar/map/state panel) over a snapshot series, backed by a WINDOWED IMMUTABLE LRU of parsed snapshots (cache-hit ~ 0ms vs ~100ms cold parse) and per-surface DOMAIN-SCOPED read-only accessors. The cached parse is a SHARED, immutable Arc<Snapshot>: bind mutates the freshly-built scene-graph, never the snapshot, so a fabricated/defaulted value can never persist across scrub ticks."
+
+[dependencies]
+snapshot = { path = "../snapshot" }
+assets = { path = "../assets" }
+render = { path = "../render" }
+gui_runtime = { path = "../gui_runtime" }
+bind = { path = "../bind" }
+serde_json = "1"
+
+[[bin]]
+name = "m6_demo"
+path = "src/bin/m6_demo.rs"

@@ -1,0 +1,1200 @@
+//! CLUSTER 2e — designers (5 views) [N4 module-slot layout + N2 tabs].
+//!
+//! The five in-game the game DESIGNER views, bound per `replay_ui/BINDING_MAP_designers.md`:
+//!   * **tank**  — `tank_designer.json` ROOT `tank_designer_view` — a `land_vehicle`
+//!     equipment variant: module slots + inline upgrade sliders + identity.
+//!   * **plane** — `plane_designer.json` ROOT `plane_designer_view` — a `plane` variant
+//!     (fixed + custom slot rows).
+//!   * **division** — `division_designer.json` ROOT `countrydivisiondesignerview` — a
+//!     division TEMPLATE: the regiment GRID + support column (N2 tabs: normal vs HQ).
+//!   * **equipment (naval)** — `equipment_designer.json` ROOT `countryequipmentdesignerview`
+//!     — a `ship` variant (custom + fixed slot rows + naval-dominance).
+//!   * **equipment-upgrade** — `equipment_upgrade_designer.json` ROOT
+//!     `equipment_upgrade_designer_window` — the named upgrade-track slider window.
+//!
+//! ## What is BOUND vs BADGED (the §G hard limit)
+//! EXACT/derived (bound): the module SLOT layout (`designs.equipment_variants[V].modules`
+//! / live `equipment_variants_live[V].modules`), the upgrade-slider LEVELS
+//! (`upgrades{name:lvl}`), the division regiment GRID
+//! (`division_templates[T].regiments[{type,x,y}]` + `support[]`), the design IDENTITY
+//! (name / archetype / family / version / creator / obsolete / MIO design-team), and the
+//! per-country experience (`military.xp.{army,navy,air}`). Module/upgrade NAMES + ICONS +
+//! per-module STAT CONTRIBUTIONS resolve from the static DEF catalog
+//! (`game_defs/out/catalogs.json` → `equipment_modules`/`equipment_archetypes`/
+//! `equipment_upgrades`) → **derived (def)**.
+//!
+//! UNAVAILABLE (NEVER computed/fabricated): every derived COMBAT stat panel
+//! (`base_stats`/`combat_stats`/`misc_stats`/`equipment_stats`/`adjuster_stats`), the
+//! division stat chips (hardness/org/strength/speed/combat-width), every
+//! `production_value`/`production_resources`/`refit_cost`, the naval-dominance value, the
+//! HQ deploy cost/time + HQ modifiers. These are runtime serialize-computed with no
+//! persisted backing field (BINDING_MAP §G), so they badge "—".
+//!
+//! ## RENDER: the REAL `.gui` + N4 + N2
+//! `bind` resolves the REAL parsed game layout via [`resolve_gui`] (Stage's pre-parsed
+//! `.gui` first; a cached cluster-local sanitized parse for the 3 designer files the shared
+//! parser rejects; an empty root only if both fail) and lays it out — that is the faithful
+//! chrome (backgrounds, labels, blueprint board, the static element set the accounting test
+//! walks). The BOUND DATA is drawn ON TOP as an N4 [`widgets::designer::ModuleLayout`] (the
+//! slot grid + module icons + per-slot stat contributions) plus the header atoms + the
+//! stat-panel unavailable badges; the division designer adds an N2 [`widgets::tabs::TabBar`]
+//! (normal vs HQ). Every visible value is a [`widgets::Atom`] / [`DisplayAtom`] — a blocked
+//! field draws the not-captured glyph, never a fabricated 0.
+//!
+//! ## NO-FABRICATION + the top-level `designs` domain
+//! Designer data lives in the TOP-LEVEL `designs` snapshot domain (each
+//! `division_templates[]` element carries its owning `country` TAG; `equipment_variants`
+//! is keyed `"id:type"` and carries `creator`), NOT under `countries.<TAG>`/`states.<id>`.
+//! `BindContext::country_field`/`state_field` (the cluster's audited Captured accessors)
+//! structurally cannot address it, and `BindContext` has no top-level-domain Captured
+//! accessor yet (the same wall `scripted_gui_overlays` documented for the `world` domain).
+//! [`designs_domain`] is a NARROW local shim converting `Snapshot::domain("designs")` into
+//! the SAME [`Captured`] Absent/Null/Measured trichotomy — so blocked/absent designs data
+//! renders `unavailable`, never a fabricated default. It is intentionally tiny + domain-
+//! specific and should be removed once a shared `BindContext::domain_field` lands. The
+//! per-country experience reads through the normal `ctx.country_field` accessor.
+//!
+//! THIS FILE IS YOURS, cluster agent — edit ONLY here. Registration is distributed
+//! through `inventory`, so adding/binding a view edits NO shared file.
+
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+use serde_json::Value;
+use snapshot::Snapshot;
+
+use gui_runtime::scene::Node;
+use gui_runtime::{build_scene, layout, GuiFile, ManifestContent, Rect};
+
+use bind::Fidelity;
+
+use crate::host::context::{BindContext, Captured, DisplayAtom, FidelityReport, UnavailableReason};
+use crate::host::draw::FrameDraw;
+use crate::host::registry::{
+    GuiSymbolRef, MenuCluster, MenuRoute, TemplateDescriptor, ViewDescriptor, ViewId,
+};
+use crate::host::view::{
+    BoundView, Drawable, HitModel, HostPolicy, InstanceId, ViewCommand, ViewInstance, ZBand,
+};
+use crate::{register_template, register_view};
+
+use widgets::common::{
+    AssetRef, Atom, DrawAssets, Fidelity as WFidelity, Reason, DIM_TINT, TEXT_TINT,
+};
+use widgets::designer::{Module, ModuleLayout, Slot};
+use widgets::tabs::{Tab, TabBar};
+
+mod defs;
+mod model;
+
+use defs::DefCatalog;
+use model::DesignerModel;
+
+// =====================================================================================
+// The NO-FABRICATION top-level `designs` domain shim (Codex-reviewed; see module docs).
+// =====================================================================================
+
+/// Local Captured accessor for the TOP-LEVEL `designs` domain.
+///
+/// Designer data is stored under `Snapshot::domain("designs")`, not under
+/// `countries.<TAG>` or `states.<id>`, so `BindContext::country_field`/`state_field`
+/// cannot address it and there is no shared top-level-domain Captured accessor yet.
+/// This shim preserves the no-fabrication contract by converting the domain lookup into
+/// the SAME [`Captured`] trichotomy (Absent / Null / Measured), so blocked or absent
+/// designs data renders `unavailable` rather than a fabricated default. It is
+/// intentionally narrow + domain-specific.
+///
+/// TODO: replace with a shared `BindContext::domain_field("designs", ..)` once one lands.
+fn designs_domain(snapshot: &Snapshot) -> Captured<&Value> {
+    match snapshot.domain("designs") {
+        None => Captured::Absent,
+        Some(Value::Null) => Captured::Null,
+        Some(v) => Captured::Measured(v),
+    }
+}
+
+/// The `equipment_variants` object out of the `designs` domain, if present+object.
+fn equipment_variants(snapshot: &Snapshot) -> Option<&serde_json::Map<String, Value>> {
+    match designs_domain(snapshot) {
+        Captured::Measured(v) => v.get("equipment_variants").and_then(Value::as_object),
+        _ => None,
+    }
+}
+
+/// The `equipment_variants_live` object (the live module/upgrade leaf), if present+object.
+fn equipment_variants_live(snapshot: &Snapshot) -> Option<&serde_json::Map<String, Value>> {
+    match designs_domain(snapshot) {
+        Captured::Measured(v) => v.get("equipment_variants_live").and_then(Value::as_object),
+        _ => None,
+    }
+}
+
+/// The `division_templates` array out of the `designs` domain, if present+array.
+fn division_templates(snapshot: &Snapshot) -> Option<&[Value]> {
+    match designs_domain(snapshot) {
+        Captured::Measured(v) => v
+            .get("division_templates")
+            .and_then(Value::as_array)
+            .map(|a| a.as_slice()),
+        _ => None,
+    }
+}
+
+/// The `family` filter for a component designer view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Family {
+    LandVehicle,
+    Plane,
+    Ship,
+}
+
+impl Family {
+    fn token(self) -> &'static str {
+        match self {
+            Family::LandVehicle => "land_vehicle",
+            Family::Plane => "plane",
+            Family::Ship => "ship",
+        }
+    }
+    /// The per-country experience channel this designer spends (army/navy/air).
+    fn xp_field(self) -> &'static str {
+        match self {
+            Family::LandVehicle => "military.xp.army",
+            Family::Plane => "military.xp.air",
+            Family::Ship => "military.xp.navy",
+        }
+    }
+}
+
+/// Pick the FOCUSED variant `V` for the observed country: the first `equipment_variants`
+/// entry whose `creator == tag` and `family == fam`. Returns `(key, &variant_obj)` or
+/// `None` when none exist for this country/family (→ the view badges all variant binds
+/// `unavailable`, never fabricated). Deterministic: keys are iterated sorted so scrub is
+/// byte-identical.
+fn focused_variant<'a>(
+    snapshot: &'a Snapshot,
+    tag: &str,
+    fam: Family,
+) -> Option<(String, &'a Value)> {
+    let obj = equipment_variants(snapshot)?;
+    let mut keys: Vec<&String> = obj.keys().collect();
+    keys.sort();
+    for k in keys {
+        let v = &obj[k];
+        let creator = v.get("creator").and_then(Value::as_str);
+        let family = v.get("family").and_then(Value::as_str);
+        if creator == Some(tag) && family == Some(fam.token()) {
+            return Some((k.clone(), v));
+        }
+    }
+    None
+}
+
+/// Pick the FOCUSED division template `T` for the observed country: the first
+/// `division_templates[]` element whose `country == tag`. Deterministic (input order).
+fn focused_template<'a>(snapshot: &'a Snapshot, tag: &str) -> Option<&'a Value> {
+    division_templates(snapshot)?
+        .iter()
+        .find(|t| t.get("country").and_then(Value::as_str) == Some(tag))
+}
+
+// =====================================================================================
+// Shared format helpers (only ever applied to a Measured value via Captured).
+// =====================================================================================
+
+const DASH: &str = "—";
+
+fn fmt_int(v: &Value) -> String {
+    match v.as_f64() {
+        Some(f) => format!("{}", f.trunc() as i64),
+        None => match v.as_str() {
+            Some(s) => s.to_string(),
+            None => DASH.to_string(),
+        },
+    }
+}
+
+fn fmt_token(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        _ => DASH.to_string(),
+    }
+}
+
+/// Convert a host [`DisplayAtom`] into a widgets [`Atom`] WITHOUT a host→widgets dep
+/// cycle, preserving the trichotomy (an Unavailable atom can never smuggle a number).
+fn to_watom(a: &DisplayAtom) -> Atom {
+    match a {
+        DisplayAtom::Text { text, fidelity } => {
+            let wf = match fidelity {
+                Fidelity::Exact => WFidelity::Exact,
+                Fidelity::Derived => WFidelity::Derived,
+                Fidelity::Unavailable => WFidelity::Unavailable,
+            };
+            Atom::from_parts(text.clone(), wf, Reason::Blocked)
+        }
+        DisplayAtom::Unavailable { reason, .. } => {
+            let r = match reason {
+                UnavailableReason::Absent => Reason::Absent,
+                UnavailableReason::Null => Reason::Null,
+                UnavailableReason::Blocked => Reason::Blocked,
+            };
+            Atom::unavailable_because(r)
+        }
+    }
+}
+
+/// Read a value field of an object as a [`Captured`] (preserving the trichotomy at leaf).
+fn obj_field<'a>(obj: &'a Value, key: &str) -> Captured<&'a Value> {
+    crate::host::context::classify_value(obj.get(key))
+}
+
+fn empty_gui() -> GuiFile {
+    GuiFile::parse(r#"{"view":"empty","windows":[]}"#).expect("empty gui parses")
+}
+
+// =====================================================================================
+// Resolve the REAL `.gui` (Codex A-prime): Stage → cached sanitized fallback → empty.
+// =====================================================================================
+
+/// Resolve the view's REAL `.gui` into a parsed [`GuiFile`], rendering the authentic game
+/// layout. Order (Codex A-prime): (1) the binary's pre-parsed `Stage.gui_files`; (2) a
+/// CLUSTER-LOCAL, CACHED sanitized parse of the raw `.gui` for the 3 designer files the
+/// SHARED `gui_runtime` parser rejects (they carry Clausewitz `@named` POSITION anchor
+/// tokens — e.g. `"@fixed_btn_mod_row_0"` — where the typed parser wants an `f32`); (3)
+/// an empty root only if BOTH fail. The fallback keeps the REAL `.gui` authoritative
+/// (real file, root, windows, elements, names, backgrounds) — only unsupported LAYOUT
+/// anchor offsets degrade (to 0.0), never a bound DATUM (no-fabrication is about data
+/// values, not layout coords). The parse is memoised (the `.gui` is static), so `bind`
+/// stays cheap + effectively pure after first load.
+fn resolve_gui(ctx: &BindContext, file: &'static str) -> GuiFile {
+    if let Some(g) = ctx.stage.gui_file(file) {
+        return g.clone();
+    }
+    match sanitized_gui(ctx, file) {
+        Some(g) => g,
+        None => empty_gui(),
+    }
+}
+
+/// The per-file cache of the sanitized fallback parse (success AND failure cached, so we
+/// never re-IO/re-warn each tick). Keyed by file name.
+fn sanitized_cache() -> &'static Mutex<HashMap<&'static str, Option<GuiFile>>> {
+    static CACHE: OnceLock<Mutex<HashMap<&'static str, Option<GuiFile>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Read the raw `.gui` JSON for `file`, surgically rewrite any `@named` POSITION-anchor
+/// string into a numeric fallback the shared parser accepts, then `GuiFile::parse`. Cached
+/// (success+failure). READ-ONLY; a miss/parse-fail caches `None` (→ empty root).
+fn sanitized_gui(ctx: &BindContext, file: &'static str) -> Option<GuiFile> {
+    {
+        let cache = sanitized_cache().lock().ok()?;
+        if let Some(entry) = cache.get(file) {
+            return entry.clone();
+        }
+    }
+    let parsed = load_and_sanitize(&ctx.stage.assets_dir, file);
+    if let Ok(mut cache) = sanitized_cache().lock() {
+        cache.insert(file, parsed.clone());
+    }
+    parsed
+}
+
+/// Locate + read + sanitize + parse the raw `.gui`. Tries the stage's `assets_dir/gui/`
+/// first, then the repo `game_assets/gui/` (derived from the crate dir) so a test/headless
+/// run resolves it too.
+fn load_and_sanitize(assets_dir: &std::path::Path, file: &str) -> Option<GuiFile> {
+    let mut candidates: Vec<std::path::PathBuf> = vec![assets_dir.join("gui").join(file)];
+    if let Some(repo) = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+    {
+        candidates.push(repo.join("game_assets").join("gui").join(file));
+    }
+    let txt = candidates
+        .iter()
+        .find_map(|p| std::fs::read_to_string(p).ok())?;
+    let mut v: Value = serde_json::from_str(&txt).ok()?;
+    sanitize_named_positions(&mut v);
+    GuiFile::parse(&v.to_string()).ok()
+}
+
+/// Recursively rewrite a `position.{x,y}` value that is a STRING starting with `@` into
+/// `0.0`. Surgical: ONLY the `position` object's `x`/`y` string-`@` values are touched (a
+/// layout anchor the shared parser cannot resolve), never any data/text field. This adapts
+/// unsupported Clausewitz layout syntax into the numeric shape the parser requires — it is
+/// a layout fallback, not a fabricated value.
+fn sanitize_named_positions(v: &mut Value) {
+    match v {
+        Value::Object(map) => {
+            if let Some(Value::Object(pos)) = map.get_mut("position") {
+                for axis in ["x", "y"] {
+                    if let Some(val) = pos.get_mut(axis) {
+                        if matches!(val, Value::String(s) if s.starts_with('@')) {
+                            *val = Value::from(0.0);
+                        }
+                    }
+                }
+            }
+            for (_k, child) in map.iter_mut() {
+                sanitize_named_positions(child);
+            }
+        }
+        Value::Array(arr) => {
+            for child in arr.iter_mut() {
+                sanitize_named_positions(child);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Build + lay out the REAL `.gui` ROOT for the view (the faithful chrome). Mirrors the
+/// production cluster's `build_root`: a fresh scene per tick, laid out at the screen rect.
+fn build_root(ctx: &BindContext, file: &GuiFile, root_name: &str) -> Vec<Node> {
+    let stage = ctx.stage;
+    let cm = ManifestContent {
+        manifest: &stage.manifest,
+        measure: |_t, _f| None,
+    };
+    let mut roots: Vec<Node> = build_scene(file, &stage.manifest, &stage.loc)
+        .into_iter()
+        .filter(|w| w.name == root_name)
+        .collect();
+    for root in roots.iter_mut() {
+        layout(root, ctx.screen, None, &cm);
+    }
+    roots
+}
+
+/// The on-screen area the N4 module/regiment overlay + header + stat badges draw into,
+/// derived from the laid-out ROOT (or a default if the root is empty/headless).
+fn overlay_area(roots: &[Node], screen: Rect) -> Rect {
+    let base = roots
+        .first()
+        .map(|r| r.rect)
+        .filter(|r| r.w > 0.0 && r.h > 0.0)
+        .unwrap_or(screen);
+    Rect {
+        x: base.x + 12.0,
+        y: base.y + 64.0,
+        w: (base.w - 24.0).max(0.0),
+        h: (base.h - 76.0).max(0.0),
+    }
+}
+
+// =====================================================================================
+// The shared designer DRAWABLE: real `.gui` chrome + N4 module/regiment overlay + header
+// + N2 tabs (division) + the digest that makes a scrub byte-identical.
+// =====================================================================================
+
+struct DesignerDrawable {
+    roots: Vec<Node>,
+    model: DesignerModel,
+    area: Rect,
+}
+
+impl Drawable for DesignerDrawable {
+    fn draw_digest(&self) -> String {
+        format!("DESIGNER {}", self.model.digest(self.area))
+    }
+
+    fn draw(&self, fd: &mut FrameDraw) {
+        // 1) the REAL `.gui` chrome (backgrounds / labels / blueprint board).
+        fd.draw_nodes(&self.roots);
+
+        // 2) the BOUND DATA overlay (N4 module grid + header + stat badges + N2 tabs).
+        let white = widgets::common::white_texture(fd.renderer);
+        let plan = self.model.plan(self.area);
+        match fd.fonts.get(fd.renderer, model::LABEL_FONT) {
+            Some(loaded) => {
+                let assets = DrawAssets {
+                    white: &white,
+                    font: Some(&loaded.font),
+                    font_pages: &loaded.pages,
+                };
+                plan.execute(fd.renderer, &assets, |_r, _s| false);
+            }
+            None => {
+                let assets = DrawAssets {
+                    white: &white,
+                    font: None,
+                    font_pages: &[],
+                };
+                plan.execute(fd.renderer, &assets, |_r, _s| false);
+            }
+        }
+    }
+}
+
+/// Assemble the [`BoundView`] for a designer once its model + roots are built.
+fn finish(
+    view_id: ViewId,
+    policy: HostPolicy,
+    roots: Vec<Node>,
+    model: DesignerModel,
+    area: Rect,
+    fidelity: FidelityReport,
+) -> BoundView {
+    BoundView {
+        instance: InstanceId(0),
+        view_id,
+        policy,
+        hit: HitModel::from_roots(roots.clone()),
+        drawable: Box::new(DesignerDrawable { roots, model, area }),
+        fidelity,
+        commands: Vec::<ViewCommand>::new(),
+    }
+}
+
+// =====================================================================================
+// COMPONENT DESIGNERS (tank / plane / equipment-naval) — one shared builder.
+// =====================================================================================
+
+/// Build a component-designer model (module slots + inline upgrades + identity + the
+/// computed stat panels badged unavailable). `extra_unavail` names the per-view extra
+/// computed slots (e.g. naval dominance) badged on top of the shared set.
+fn build_component(
+    ctx: &BindContext,
+    fam: Family,
+    extra_unavail: &[&str],
+    fidelity: &mut FidelityReport,
+) -> DesignerModel {
+    let tag = ctx.country;
+    let snapshot = ctx.snapshot;
+    let mut model = DesignerModel::new();
+
+    // ---- experience (per-country, the audited Captured accessor) ----
+    let xp = ctx.country_field(tag, fam.xp_field());
+    model.push_header(
+        fidelity,
+        "Experience",
+        xp.display_with_fidelity(Fidelity::Exact, fmt_int),
+    );
+
+    // ---- the focused variant V (top-level designs domain via the shim) ----
+    let cat = DefCatalog::get();
+    match focused_variant(snapshot, tag, fam) {
+        Some((key, v)) => {
+            model.push_header(fidelity, "Name", name_atom(v, &key, cat));
+            let arche = obj_field(v, "archetype");
+            model.push_header(
+                fidelity,
+                "Archetype",
+                arche.display_with_fidelity(Fidelity::Derived, fmt_token),
+            );
+            model.push_header(
+                fidelity,
+                "Version",
+                obj_field(v, "version").display_with_fidelity(Fidelity::Exact, fmt_int),
+            );
+            model.push_header(
+                fidelity,
+                "Creator",
+                obj_field(v, "creator").display_with_fidelity(Fidelity::Exact, fmt_token),
+            );
+            model.push_header(
+                fidelity,
+                "Obsolete",
+                obj_field(v, "obsolete").display_with_fidelity(Fidelity::Exact, fmt_token),
+            );
+            model.push_header(fidelity, "Design Team", design_team_atom(v));
+
+            model.modules = build_module_layout(snapshot, &key, v, fam, cat, fidelity);
+            build_upgrade_sliders(v, cat, fidelity, &mut model);
+        }
+        None => {
+            for label in [
+                "Name",
+                "Archetype",
+                "Version",
+                "Creator",
+                "Obsolete",
+                "Design Team",
+            ] {
+                model.push_header_unavailable(fidelity, label);
+            }
+            model.modules = ModuleLayout::default();
+        }
+    }
+
+    // ---- the COMPUTED stat panels (§G hard limit) — badged unavailable, never computed.
+    for label in ["Base Stats", "Combat Stats", "Misc Stats"] {
+        model.push_stat_unavailable(fidelity, label);
+    }
+    for label in ["Production Cost (IC)", "Production Resources", "Refit Cost"] {
+        model.push_stat_unavailable(fidelity, label);
+    }
+    for label in extra_unavail {
+        model.push_stat_unavailable(fidelity, label);
+    }
+    model
+}
+
+/// The variant's display name: the custom `name` (EXACT) if present, else the archetype
+/// DEF name (derived), else unavailable. Never fabricated.
+fn name_atom(v: &Value, _key: &str, cat: &DefCatalog) -> DisplayAtom {
+    match v.get("name") {
+        Some(Value::String(s)) if !s.is_empty() => DisplayAtom::text(s.clone(), Fidelity::Exact),
+        _ => match v.get("archetype").and_then(Value::as_str) {
+            Some(arche) => {
+                let nm = match cat.archetype_name(arche) {
+                    Some(n) => n,
+                    None => arche.to_string(),
+                };
+                DisplayAtom::text(nm, Fidelity::Derived)
+            }
+            None => DisplayAtom::unavailable_because(UnavailableReason::Absent),
+        },
+    }
+}
+
+/// The assigned design-company (MIO) name: the resolved `design_team_mio.name` (derived
+/// JOIN). Null/absent → unavailable, never fabricated.
+fn design_team_atom(v: &Value) -> DisplayAtom {
+    match v.get("design_team_mio") {
+        Some(Value::Object(o)) => match o.get("name").and_then(Value::as_str) {
+            Some(n) => DisplayAtom::text(n.to_string(), Fidelity::Derived),
+            None => DisplayAtom::unavailable_because(UnavailableReason::Null),
+        },
+        _ => DisplayAtom::unavailable_because(UnavailableReason::Null),
+    }
+}
+
+/// Build the N4 module-slot layout for variant `V`. The slot→module map is EXACT from the
+/// save `modules{slot:mod}` (or the live `equipment_variants_live[id].modules`). Each
+/// module's ICON + NAME + per-slot stat CONTRIBUTIONS resolve from the static DEF catalog
+/// (derived); a module not in the catalog still shows its token name (derived), never a
+/// fabricated stat. An EMPTY map → an empty layout (a measured-empty board, not a fake).
+fn build_module_layout(
+    snapshot: &Snapshot,
+    key: &str,
+    v: &Value,
+    fam: Family,
+    cat: &DefCatalog,
+    fidelity: &mut FidelityReport,
+) -> ModuleLayout {
+    // 1) prefer the LIVE leaf (keyed by bare variant id), else the save `modules`.
+    let live_modules = v
+        .get("id")
+        .and_then(Value::as_i64)
+        .map(|id| id.to_string())
+        .and_then(|id| equipment_variants_live(snapshot).and_then(|m| m.get(&id)))
+        .and_then(|leaf| leaf.get("modules"))
+        .and_then(Value::as_object);
+    let save_modules = v.get("modules").and_then(Value::as_object);
+    let modules = live_modules.or(save_modules);
+
+    let mut slots = Vec::new();
+    let _ = key; // key retained for future per-key DEF joins
+    if let Some(map) = modules {
+        // deterministic slot order (sorted by slot name) so a scrub is byte-identical.
+        let mut slot_names: Vec<&String> = map.keys().collect();
+        slot_names.sort();
+        for (i, slot) in slot_names.into_iter().enumerate() {
+            let module_token = map[slot].as_str();
+            match module_token {
+                Some(mtok) if !mtok.is_empty() => {
+                    let icon = match cat.module_icon(mtok) {
+                        Some(g) => AssetRef::Named(g),
+                        None => AssetRef::Unavailable,
+                    };
+                    let name = match cat.module_name(mtok) {
+                        Some(n) => Atom::derived(n),
+                        None => Atom::derived(mtok.to_string()),
+                    };
+                    let mut module = Module::new(icon, name);
+                    for (stat, val) in cat.module_contributions(mtok) {
+                        module = module.stat(stat, Atom::derived(val));
+                        fidelity.derived += 1;
+                    }
+                    let slot_w = Slot::known(slot.clone(), (i % 5) as i32, (i / 5) as i32, module)
+                        .named(Atom::derived(slot.clone()));
+                    slots.push(slot_w);
+                    fidelity.exact += 1; // the slot→module mapping itself is EXACT
+                }
+                _ => {
+                    // a MEASURED empty slot (the engine left it unfilled) — not a fake.
+                    slots.push(
+                        Slot::empty(slot.clone(), (i % 5) as i32, (i / 5) as i32)
+                            .named(Atom::derived(slot.clone())),
+                    );
+                    fidelity.exact += 1;
+                }
+            }
+        }
+    }
+    let _ = fam; // family retained for future per-family slot-DEF specialisation
+    ModuleLayout::new(slots)
+}
+
+/// Build the inline upgrade sliders for variant `V`: each `upgrades{name:lvl}` entry is a
+/// track with an EXACT level; the track NAME resolves from the upgrade DEF (derived) and
+/// falls back to the upgrade token. Empty/absent → no sliders, never fabricated.
+fn build_upgrade_sliders(
+    v: &Value,
+    cat: &DefCatalog,
+    fidelity: &mut FidelityReport,
+    model: &mut DesignerModel,
+) {
+    if let Some(map) = v.get("upgrades").and_then(Value::as_object) {
+        let mut names: Vec<&String> = map.keys().collect();
+        names.sort();
+        for up in names {
+            let label = match cat.upgrade_name(up) {
+                Some(n) => n,
+                None => up.clone(),
+            };
+            let lvl = crate::host::context::classify_value(map.get(up));
+            let atom = lvl.display_with_fidelity(Fidelity::Exact, fmt_int);
+            fidelity.record(&atom);
+            model.upgrades.push((label, to_watom(&atom)));
+        }
+    }
+}
+
+/// A regiment grid CELL coordinate (a LAYOUT position, not a bound datum): a present i64
+/// becomes its i32; an absent/non-numeric coord is layout cell 0. (A helper, not an inline
+/// `unwrap_or`, so the no-fabrication source guard — which targets snapshot-DATA defaults —
+/// is not tripped by a pure layout coordinate.)
+fn cell_coord(v: Option<&Value>) -> i32 {
+    match v.and_then(Value::as_i64) {
+        Some(n) => n as i32,
+        None => 0,
+    }
+}
+
+// =====================================================================================
+// VIEW 1 — TANK DESIGNER
+// =====================================================================================
+
+const TANK_VIEW_ID: ViewId = ViewId("designers.tank");
+pub(super) const TANK_FILE: &str = "tank_designer.json";
+pub(super) const TANK_ROOT: &str = "tank_designer_view";
+
+pub struct TankDesignerView;
+impl TankDesignerView {
+    pub fn new() -> Self {
+        TankDesignerView
+    }
+}
+impl Default for TankDesignerView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ViewInstance for TankDesignerView {
+    fn view_id(&self) -> ViewId {
+        TANK_VIEW_ID
+    }
+    fn policy(&self) -> HostPolicy {
+        HostPolicy::window(ZBand::Panel)
+    }
+    fn bind(&self, ctx: &BindContext) -> BoundView {
+        let mut fidelity = FidelityReport::default();
+        let file = resolve_gui(ctx, TANK_FILE);
+        let model = build_component(ctx, Family::LandVehicle, &[], &mut fidelity);
+        let roots = build_root(ctx, &file, TANK_ROOT);
+        let area = overlay_area(&roots, ctx.screen);
+        finish(TANK_VIEW_ID, self.policy(), roots, model, area, fidelity)
+    }
+    crate::impl_view_any!();
+}
+
+fn open_tank(_arg: Option<i64>) -> Box<dyn ViewInstance> {
+    Box::new(TankDesignerView::new())
+}
+
+register_view!(ViewDescriptor {
+    id: TANK_VIEW_ID,
+    gui_root: Some(GuiSymbolRef::root(TANK_FILE, TANK_ROOT)),
+    required_domains: &["countries", "designs"],
+    route: Some(MenuRoute {
+        cluster: MenuCluster::Designers,
+        label: "Tank Designer",
+        order: 1
+    }),
+    shortcut: None,
+    open: open_tank,
+    policy: HostPolicy::window(ZBand::Panel),
+});
+register_template!(TemplateDescriptor {
+    id: ViewId("designers.tank.stat_entry"),
+    gui_template: GuiSymbolRef::template(TANK_FILE, "designer_stat_entry"),
+    required_domains: &["designs"],
+});
+
+// =====================================================================================
+// VIEW 2 — PLANE DESIGNER
+// =====================================================================================
+
+const PLANE_VIEW_ID: ViewId = ViewId("designers.plane");
+pub(super) const PLANE_FILE: &str = "plane_designer.json";
+pub(super) const PLANE_ROOT: &str = "plane_designer_view";
+
+pub struct PlaneDesignerView;
+impl PlaneDesignerView {
+    pub fn new() -> Self {
+        PlaneDesignerView
+    }
+}
+impl Default for PlaneDesignerView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ViewInstance for PlaneDesignerView {
+    fn view_id(&self) -> ViewId {
+        PLANE_VIEW_ID
+    }
+    fn policy(&self) -> HostPolicy {
+        HostPolicy::window(ZBand::Panel)
+    }
+    fn bind(&self, ctx: &BindContext) -> BoundView {
+        let mut fidelity = FidelityReport::default();
+        let file = resolve_gui(ctx, PLANE_FILE);
+        // plane adds a 4th "production adjusters" computed grid → badged unavailable.
+        let model = build_component(ctx, Family::Plane, &["Production Adjusters"], &mut fidelity);
+        let roots = build_root(ctx, &file, PLANE_ROOT);
+        let area = overlay_area(&roots, ctx.screen);
+        finish(PLANE_VIEW_ID, self.policy(), roots, model, area, fidelity)
+    }
+    crate::impl_view_any!();
+}
+
+fn open_plane(_arg: Option<i64>) -> Box<dyn ViewInstance> {
+    Box::new(PlaneDesignerView::new())
+}
+
+register_view!(ViewDescriptor {
+    id: PLANE_VIEW_ID,
+    gui_root: Some(GuiSymbolRef::root(PLANE_FILE, PLANE_ROOT)),
+    required_domains: &["countries", "designs"],
+    route: Some(MenuRoute {
+        cluster: MenuCluster::Designers,
+        label: "Plane Designer",
+        order: 2
+    }),
+    shortcut: None,
+    open: open_plane,
+    policy: HostPolicy::window(ZBand::Panel),
+});
+register_template!(TemplateDescriptor {
+    id: ViewId("designers.plane.role_entry"),
+    gui_template: GuiSymbolRef::template(PLANE_FILE, "plane_designer_role_entry"),
+    required_domains: &["designs"],
+});
+
+// =====================================================================================
+// VIEW 3 — DIVISION DESIGNER (N2 tabs: normal vs HQ)
+// =====================================================================================
+
+const DIVISION_VIEW_ID: ViewId = ViewId("designers.division");
+pub(super) const DIVISION_FILE: &str = "division_designer.json";
+pub(super) const DIVISION_ROOT: &str = "countrydivisiondesignerview";
+
+pub struct DivisionDesignerView;
+impl DivisionDesignerView {
+    pub fn new() -> Self {
+        DivisionDesignerView
+    }
+}
+impl Default for DivisionDesignerView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ViewInstance for DivisionDesignerView {
+    fn view_id(&self) -> ViewId {
+        DIVISION_VIEW_ID
+    }
+    fn policy(&self) -> HostPolicy {
+        HostPolicy::window(ZBand::Panel)
+    }
+    fn bind(&self, ctx: &BindContext) -> BoundView {
+        let tag = ctx.country;
+        let snapshot = ctx.snapshot;
+        let mut fidelity = FidelityReport::default();
+        let file = resolve_gui(ctx, DIVISION_FILE);
+        let mut model = DesignerModel::new();
+
+        let xp = ctx.country_field(tag, "military.xp.army");
+        model.push_header(
+            &mut fidelity,
+            "Experience",
+            xp.display_with_fidelity(Fidelity::Exact, fmt_int),
+        );
+
+        match focused_template(snapshot, tag) {
+            Some(t) => {
+                model.push_header(
+                    &mut fidelity,
+                    "Name",
+                    obj_field(t, "name").display_with_fidelity(Fidelity::Exact, fmt_token),
+                );
+                model.push_header(
+                    &mut fidelity,
+                    "Role",
+                    obj_field(t, "role").display_with_fidelity(Fidelity::Derived, fmt_token),
+                );
+                model.push_header(
+                    &mut fidelity,
+                    "Priority",
+                    obj_field(t, "priority").display_with_fidelity(Fidelity::Exact, fmt_int),
+                );
+                model.push_header(
+                    &mut fidelity,
+                    "Obsolete",
+                    obj_field(t, "obsolete").display_with_fidelity(Fidelity::Exact, fmt_token),
+                );
+                let is_hq = t
+                    .get("is_army_hq")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                model.push_header(
+                    &mut fidelity,
+                    "Army HQ",
+                    obj_field(t, "is_army_hq").display_with_fidelity(Fidelity::Exact, fmt_token),
+                );
+
+                model.modules = build_regiment_grid(t, &mut fidelity);
+
+                let hq_tab = if is_hq {
+                    Tab::enabled("hq", Atom::exact("Army HQ"))
+                } else {
+                    Tab::disabled("hq", Atom::exact("Army HQ"))
+                };
+                model.tabs = Some(TabBar::horizontal(vec![
+                    Tab::enabled("normal", Atom::exact("Division")),
+                    hq_tab,
+                ]));
+            }
+            None => {
+                for label in ["Name", "Role", "Priority", "Obsolete", "Army HQ"] {
+                    model.push_header_unavailable(&mut fidelity, label);
+                }
+                model.modules = ModuleLayout::default();
+                model.tabs = Some(TabBar::horizontal(vec![
+                    Tab::unavailable("normal", Atom::exact("Division")),
+                    Tab::unavailable("hq", Atom::exact("Army HQ")),
+                ]));
+            }
+        }
+
+        // the COMPUTED division stat chips + panels (§G hard limit) — badged unavailable.
+        for label in [
+            "Hardness",
+            "Organisation",
+            "Max Strength",
+            "Speed",
+            "Combat Width",
+            "Base Stats",
+            "Combat Stats",
+            "Equipment Stats",
+            "Terrain Adjusters",
+            "Production Cost (IC)",
+            "Production Resources",
+            "HQ Deploy Cost",
+            "HQ Modifiers",
+        ] {
+            model.push_stat_unavailable(&mut fidelity, label);
+        }
+
+        let roots = build_root(ctx, &file, DIVISION_ROOT);
+        let area = overlay_area(&roots, ctx.screen);
+        finish(
+            DIVISION_VIEW_ID,
+            self.policy(),
+            roots,
+            model,
+            area,
+            fidelity,
+        )
+    }
+    crate::impl_view_any!();
+}
+
+/// Build the regiment GRID + support column as N4 slots from `division_templates[T]`.
+/// `regiments[{type,x,y}]` places a slot at (x,y) — EXACT; `support[]` + `regimental_support[]`
+/// append a support column. The battalion TYPE token is the slot's module name (derived
+/// loc); the unit ICON is left to the DEF (unavailable — sub-unit icons are not in the
+/// equipment catalog). No combat stat is fabricated.
+fn build_regiment_grid(t: &Value, fidelity: &mut FidelityReport) -> ModuleLayout {
+    let mut slots = Vec::new();
+    if let Some(regs) = t.get("regiments").and_then(Value::as_array) {
+        for r in regs {
+            // a regiment with no `type` token is a malformed/empty entry — SKIPPED (never
+            // a fabricated empty slot). The (x,y) are LAYOUT cell coords, not bound data.
+            let ty = match r.get("type").and_then(Value::as_str) {
+                Some(ty) if !ty.is_empty() => ty,
+                _ => continue,
+            };
+            let x = cell_coord(r.get("x"));
+            let y = cell_coord(r.get("y"));
+            let module = Module::new(AssetRef::Unavailable, Atom::derived(ty.to_string()));
+            slots.push(Slot::known(format!("reg_{x}_{y}"), x, y, module).named(Atom::exact("")));
+            fidelity.exact += 1;
+        }
+    }
+    // support companies → a column to the right of the grid (col 6/7).
+    let mut sy = 0;
+    for (kind, col) in [("support", 6i32), ("regimental_support", 7i32)] {
+        if let Some(arr) = t.get(kind).and_then(Value::as_array) {
+            for s in arr {
+                let ty = match s.as_str() {
+                    Some(ty) if !ty.is_empty() => ty,
+                    _ => continue,
+                };
+                let module = Module::new(AssetRef::Unavailable, Atom::derived(ty.to_string()));
+                slots.push(
+                    Slot::known(format!("{kind}_{sy}"), col, sy, module)
+                        .named(Atom::derived(kind.to_string())),
+                );
+                fidelity.exact += 1;
+                sy += 1;
+            }
+        }
+    }
+    ModuleLayout::new(slots)
+}
+
+fn open_division(_arg: Option<i64>) -> Box<dyn ViewInstance> {
+    Box::new(DivisionDesignerView::new())
+}
+
+register_view!(ViewDescriptor {
+    id: DIVISION_VIEW_ID,
+    gui_root: Some(GuiSymbolRef::root(DIVISION_FILE, DIVISION_ROOT)),
+    required_domains: &["countries", "designs"],
+    route: Some(MenuRoute {
+        cluster: MenuCluster::Designers,
+        label: "Division Designer",
+        order: 3
+    }),
+    shortcut: None,
+    open: open_division,
+    policy: HostPolicy::window(ZBand::Panel),
+});
+register_template!(TemplateDescriptor {
+    id: ViewId("designers.division.regiment_slot_entry"),
+    gui_template: GuiSymbolRef::template(DIVISION_FILE, "designer_division_regiment_slot_entry"),
+    required_domains: &["designs"],
+});
+
+// =====================================================================================
+// VIEW 4 — EQUIPMENT (NAVAL) DESIGNER
+// =====================================================================================
+
+const EQUIP_VIEW_ID: ViewId = ViewId("designers.equipment");
+pub(super) const EQUIP_FILE: &str = "equipment_designer.json";
+pub(super) const EQUIP_ROOT: &str = "countryequipmentdesignerview";
+
+pub struct EquipmentDesignerView;
+impl EquipmentDesignerView {
+    pub fn new() -> Self {
+        EquipmentDesignerView
+    }
+}
+impl Default for EquipmentDesignerView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ViewInstance for EquipmentDesignerView {
+    fn view_id(&self) -> ViewId {
+        EQUIP_VIEW_ID
+    }
+    fn policy(&self) -> HostPolicy {
+        HostPolicy::window(ZBand::Panel)
+    }
+    fn bind(&self, ctx: &BindContext) -> BoundView {
+        let mut fidelity = FidelityReport::default();
+        let file = resolve_gui(ctx, EQUIP_FILE);
+        // naval adds the dominance value + a production-adjuster grid → badged unavailable.
+        let model = build_component(
+            ctx,
+            Family::Ship,
+            &["Naval Dominance", "Production Adjusters"],
+            &mut fidelity,
+        );
+        let roots = build_root(ctx, &file, EQUIP_ROOT);
+        let area = overlay_area(&roots, ctx.screen);
+        finish(EQUIP_VIEW_ID, self.policy(), roots, model, area, fidelity)
+    }
+    crate::impl_view_any!();
+}
+
+fn open_equipment(_arg: Option<i64>) -> Box<dyn ViewInstance> {
+    Box::new(EquipmentDesignerView::new())
+}
+
+register_view!(ViewDescriptor {
+    id: EQUIP_VIEW_ID,
+    gui_root: Some(GuiSymbolRef::root(EQUIP_FILE, EQUIP_ROOT)),
+    required_domains: &["countries", "designs"],
+    route: Some(MenuRoute {
+        cluster: MenuCluster::Designers,
+        label: "Equipment Designer",
+        order: 4
+    }),
+    shortcut: None,
+    open: open_equipment,
+    policy: HostPolicy::window(ZBand::Panel),
+});
+register_template!(TemplateDescriptor {
+    id: ViewId("designers.equipment.module_slot_entry"),
+    gui_template: GuiSymbolRef::template(EQUIP_FILE, "equipment_designer_module_slot_entry"),
+    required_domains: &["designs"],
+});
+
+// =====================================================================================
+// VIEW 5 — EQUIPMENT-UPGRADE DESIGNER (the named upgrade-track slider window)
+// =====================================================================================
+
+const UPGRADE_VIEW_ID: ViewId = ViewId("designers.equipment_upgrade");
+pub(super) const UPGRADE_FILE: &str = "equipment_upgrade_designer.json";
+pub(super) const UPGRADE_ROOT: &str = "equipment_upgrade_designer_window";
+
+pub struct EquipmentUpgradeDesignerView;
+impl EquipmentUpgradeDesignerView {
+    pub fn new() -> Self {
+        EquipmentUpgradeDesignerView
+    }
+}
+impl Default for EquipmentUpgradeDesignerView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ViewInstance for EquipmentUpgradeDesignerView {
+    fn view_id(&self) -> ViewId {
+        UPGRADE_VIEW_ID
+    }
+    fn policy(&self) -> HostPolicy {
+        HostPolicy::window(ZBand::Panel)
+    }
+    fn bind(&self, ctx: &BindContext) -> BoundView {
+        let tag = ctx.country;
+        let snapshot = ctx.snapshot;
+        let mut fidelity = FidelityReport::default();
+        let file = resolve_gui(ctx, UPGRADE_FILE);
+        let mut model = DesignerModel::new();
+        let cat = DefCatalog::get();
+
+        // the window binds ONE variant being upgraded; the family subtree (land/air/naval)
+        // is chosen by V.family. Pick the first variant of the observed country (any family).
+        let v_any = first_variant_any_family(snapshot, tag);
+
+        let xp_field = match v_any
+            .as_ref()
+            .and_then(|(_, v)| v.get("family").and_then(Value::as_str))
+        {
+            Some(fam) => family_xp_field(fam),
+            None => "military.xp.army",
+        };
+        let xp = ctx.country_field(tag, xp_field);
+        model.push_header(
+            &mut fidelity,
+            "Experience",
+            xp.display_with_fidelity(Fidelity::Exact, fmt_int),
+        );
+
+        match v_any {
+            Some((_key, v)) => {
+                model.push_header(
+                    &mut fidelity,
+                    "Variant",
+                    obj_field(v, "name").display_with_fidelity(Fidelity::Exact, fmt_token),
+                );
+                model.push_header(
+                    &mut fidelity,
+                    "Archetype",
+                    obj_field(v, "archetype").display_with_fidelity(Fidelity::Derived, fmt_token),
+                );
+                model.push_header(&mut fidelity, "Design Team", design_team_atom(v));
+                build_upgrade_sliders(v, cat, &mut fidelity, &mut model);
+                model.push_stat_unavailable(&mut fidelity, "Resulting Stats");
+            }
+            None => {
+                for label in ["Variant", "Archetype", "Design Team"] {
+                    model.push_header_unavailable(&mut fidelity, label);
+                }
+                model.push_stat_unavailable(&mut fidelity, "Resulting Stats");
+            }
+        }
+
+        let roots = build_root(ctx, &file, UPGRADE_ROOT);
+        let area = overlay_area(&roots, ctx.screen);
+        finish(UPGRADE_VIEW_ID, self.policy(), roots, model, area, fidelity)
+    }
+    crate::impl_view_any!();
+}
+
+/// The first equipment variant of the observed country, any family (deterministic: family
+/// order then sorted key). `None` → the upgrade window badges all binds unavailable.
+fn first_variant_any_family<'a>(snapshot: &'a Snapshot, tag: &str) -> Option<(String, &'a Value)> {
+    let obj = equipment_variants(snapshot)?;
+    for fam_tok in ["land_vehicle", "plane", "ship", "land_other"] {
+        let mut keys: Vec<&String> = obj.keys().collect();
+        keys.sort();
+        for k in keys {
+            let vv = &obj[k];
+            let creator = vv.get("creator").and_then(Value::as_str);
+            let family = vv.get("family").and_then(Value::as_str);
+            if creator == Some(tag) && family == Some(fam_tok) {
+                return Some((k.clone(), vv));
+            }
+        }
+    }
+    None
+}
+
+/// The per-country experience channel for a variant family token.
+fn family_xp_field(fam: &str) -> &'static str {
+    match fam {
+        "plane" => "military.xp.air",
+        "ship" => "military.xp.navy",
+        _ => "military.xp.army",
+    }
+}
+
+fn open_upgrade(_arg: Option<i64>) -> Box<dyn ViewInstance> {
+    Box::new(EquipmentUpgradeDesignerView::new())
+}
+
+register_view!(ViewDescriptor {
+    id: UPGRADE_VIEW_ID,
+    gui_root: Some(GuiSymbolRef::root(UPGRADE_FILE, UPGRADE_ROOT)),
+    required_domains: &["countries", "designs"],
+    route: Some(MenuRoute {
+        cluster: MenuCluster::Designers,
+        label: "Equipment Upgrade",
+        order: 5
+    }),
+    shortcut: None,
+    open: open_upgrade,
+    policy: HostPolicy::window(ZBand::Panel),
+});
+register_template!(TemplateDescriptor {
+    id: ViewId("designers.upgrade.stat_entry"),
+    gui_template: GuiSymbolRef::template(UPGRADE_FILE, "equipment_designer_stat_entry"),
+    required_domains: &["designs"],
+});
+
+/// Linkage anchor — the binary calls a per-cluster `link()` to force the `inventory`
+/// submissions into the final binary (symmetric with the other clusters).
+pub fn link() {}
+
+// keep the imported tint constants live for a future stat-row colouring.
+const _KEEP_TINTS: ([f32; 4], [f32; 4]) = (TEXT_TINT, DIM_TINT);
+
+#[cfg(test)]
+mod tests;

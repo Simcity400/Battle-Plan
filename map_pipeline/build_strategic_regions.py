@@ -43,6 +43,16 @@ import os
 import re
 import sys
 
+# Shared Clausewitz text-parsing primitives (sibling module; this script is run
+# from map_pipeline/, so a plain module import resolves).
+from clausewitz_parse import (
+    ID_RE,
+    NAME_RE,
+    extract_brace_block,
+    find_block,
+    strip_comments,
+)
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_MOD = os.path.normpath(os.path.join(SCRIPT_DIR, "..", "..", "test"))
 
@@ -55,42 +65,19 @@ ANCHORS = {
     10167: "Luzon",
 }
 
-_COMMENT_RE = re.compile(r"#.*")
-_ID_RE = re.compile(r"\bid\s*=\s*(\d+)")
-_NAME_RE = re.compile(r'name\s*=\s*"([^"]*)"')
+# Comment/id/name regexes + the brace-block parser are shared with
+# build_map_assets.py; they live in clausewitz_parse.py now.
+_ID_RE = ID_RE
+_NAME_RE = NAME_RE
 
-
-def _strip_comments(text):
-    return _COMMENT_RE.sub("", text)
-
-
-def _extract_brace_block(text, brace_idx):
-    """Given index of the '{' return the substring strictly inside matched braces."""
-    depth = 0
-    inner_start = brace_idx + 1
-    i = brace_idx
-    n = len(text)
-    while i < n:
-        c = text[i]
-        if c == "{":
-            depth += 1
-            if depth == 1:
-                inner_start = i + 1
-        elif c == "}":
-            depth -= 1
-            if depth == 0:
-                return text[inner_start:i]
-        i += 1
-    return text[brace_idx + 1:]  # unbalanced; return the rest
-
-
+_strip_comments = strip_comments
+_extract_brace_block = extract_brace_block
+# Local thin wrapper: this builder wants just the inner text (not the index) and
+# anchors the keyword on a word boundary (historical behaviour).
 def _find_block(text, keyword):
     """Return inner text for `keyword = { ... }`, or None."""
-    m = re.search(r"\b" + keyword + r"\s*=\s*\{", text)
-    if not m:
-        return None
-    brace_idx = m.end() - 1
-    return _extract_brace_block(text, brace_idx)
+    inner, _brace_idx = find_block(text, keyword, word_boundary=True)
+    return inner
 
 
 def parse_region_file(path):

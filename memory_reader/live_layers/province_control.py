@@ -113,7 +113,13 @@ def enumerate_state_controllers(p):
                     ctrl = struct.unpack_from("<I", hdr, STATE_OFF_CTRL)[0]
                     if 1 <= sid <= MAX_STATE_ID and 0 <= ctrl < 200:
                         out[sid] = ctrl
-            pos += max(1, (len(blob) if blob else want) - 16)
+                blen = len(blob)
+                if pos + blen >= size or blen < want:   # final / short read
+                    pos += max(blen, 0x1000)
+                else:
+                    pos += blen - 16                     # full mid-region chunk
+            else:
+                pos += max(want, 0x1000)
     return out
 
 

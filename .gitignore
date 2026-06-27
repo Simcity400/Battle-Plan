@@ -30,8 +30,26 @@ replay_render/output/
 replay_game/output/
 map_view/output/
 
-# --- Scratch / RE scan working dir ---
+# --- Native replay UI rendered PNGs (contain copyrighted game art; regenerable
+#     via the demo/app binaries) — never commit ---
+replay_native/*/out/
+
+# --- Scratch / RE scan working dir (incl. crack_archive/: archived one-shot RE
+#     scratch scripts; may contain local machine/Ghidra paths -> never commit) ---
 re_scratch/
+re_scratch/crack_archive/
 
 # --- Internal review doc (not for the repo) ---
 CODE_REVIEW.md
+
+# --- Distributable recorder (PyInstaller) build outputs: the 19 MB one-file EXE
+#     + the build cache are regenerable via live_capture/recorder/build_recorder.py;
+#     never commit the binary/cache (only the spec + entrypoint + build script). ---
+dist/
+build_pyi/
+*.spec.bak
+# the recorder's machine-local capture store + finalized replays (run outputs)
+**/_recorder_store/
+*.battleplan
+*.hoi4replay
+*.battleplan.part/

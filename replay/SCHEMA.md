@@ -160,8 +160,55 @@ consumer reasons about coverage without per-value tags.
 both `memory.domains` and `save.domains` means every field in that domain is `null` in
 this snapshot — by design, not by error.
 
+### 2.1 `provenance.mod` — the per-replay MOD IDENTITY (additive, §K MOD AWARENESS)
+
+Records the **active mod-set** the snapshot was captured under, read at **capture
+time** from the host's the game **launcher config** (`dlc_load.json` + the `.mod`
+descriptors it enables) — **not** from game memory and **not** from the melted save.
+This is the identity the native replay UI auto-matches against so it loads the correct
+mod skin and warns on a mismatch (vanilla-UI-over-a-mod-replay is structurally
+prevented). Written capture-side by `live_capture/mod_identity.py`; consumed natively by
+`replay_native::assets::modset` (`match_replay`).
+
+```jsonc
+"provenance": {
+  "memory": { ... },
+  "save":   { ... },
+  "mod": {                            // null when NO launcher config was found
+    "modset_id": "e23fc38a4e83b612",  // stable, order-SENSITIVE digest (sha1[:16] of
+                                      // canonical-JSON [[ident,version],...], ident
+                                      // NAMESPACED "workshop:<id>"/"name:<name>");
+                                      // "vanilla" for a measured no-mod run
+    "source": "dlc_load.json",
+    "load_order": ["test.mod"],       // ordered enabled-mod descriptor BASENAMES
+    "mods": [                         // in LOAD ORDER
+      { "name": "AMSB - DEV",         // str|null
+        "workshop_id": null,          // Steam Workshop id (remote_file_id) | null
+        "version": "1.18",            // str|null
+        "supported_version": "1.19.*",// str|null
+        "descriptor": "test.mod" }    // .mod basename | null
+    ]
+  },
+  "notes": []
+}
+```
+
+- **NO FABRICATION.** `mod` is **`null`** whenever no launcher config was read (a
+  vanilla/SP run, or capture without launcher-dir access) — never a guessed mod-set. A
+  launcher config that enables **zero** mods records a *measured* vanilla mod-set
+  (`modset_id="vanilla"`, `mods=[]`), which is **distinguishable** from `null` (not
+  read): "known vanilla" vs "unknown".
+- **NO PERSONAL PATHS.** A `.mod` descriptor's absolute `path="…"` is **dropped**; only
+  the mod name, workshop id, version, and the descriptor **basename** are kept.
+- **Identity is metadata-only** (id + version + load order). Two *local* mods with no
+  workshop id, identical name, and identical version are indistinguishable by
+  `modset_id`; the native matcher therefore also diffs the **full mod list** (add /
+  remove / version / order) to explain a mismatch, and recomputes the digest from
+  content rather than trusting a stored `modset_id`.
+
 **Path redaction rule (HARD):** `source_filename` is a **basename only**. The writer
-never stores an absolute path, a `~`-path, or anything containing a user directory.
+never stores an absolute path, a `~`-path, or anything containing a user directory. The
+same rule applies to every `provenance.mod` string (descriptor basenames only).
 
 ---
 

@@ -41,6 +41,7 @@ TH32CS_SNAPMODULE32 = 0x00000010
 MAX_PATH = 260
 MEM_COMMIT = 0x1000
 PAGE_GUARD = 0x100
+_SCAN_PAGE = 0x1000   # min forward-progress on a partial/short/final chunk read (anti-stall)
 
 # protections that allow reading (low byte of Protect)
 _READABLE = {0x02, 0x04, 0x08, 0x20, 0x40, 0x80}
@@ -435,6 +436,8 @@ class Process(object):
         plen = len(pat)
         chunk = 8 << 20                       # 8 MB windows
         overlap = plen - 1                    # so a match straddling a window survives
+        if overlap >= chunk:                  # guard (Codex): chunk must exceed overlap
+            chunk = overlap + _SCAN_PAGE       # else the full-mid advance goes backward
         out = []
         end = self.module_base + self.module_size
         for rbase, rsize in self.iter_regions(self.module_base, end, want_exec=want_exec):
@@ -448,14 +451,19 @@ class Process(object):
                                          limit=remaining, allow_short=allow_short))
                     if limit and len(out) >= limit:
                         return out[:limit]
-                # advance by bytes ACTUALLY read minus the overlap (H3): a short
-                # read (ERROR_PARTIAL_COPY at a region edge) must not skip the
-                # unread tail by advancing the full requested stride. On a fully
-                # empty read there's nothing to overlap, so skip the dead window.
+                # Advance with a forward-progress guard. Keep the overlap only for a
+                # FULL mid-region chunk; a final or short/partial read (e.g.
+                # ERROR_PARTIAL_COPY at a region edge) advances by the bytes read,
+                # floored to a page, so `len(blob) - overlap <= 0` can never stall the
+                # loop into re-reading/re-allocating the same window (H3).
                 if blob:
-                    pos += max(1, len(blob) - overlap)
+                    blen = len(blob)
+                    if pos + blen >= rsize or blen < want:
+                        pos += max(blen, _SCAN_PAGE)
+                    else:
+                        pos += blen - overlap
                 else:
-                    pos += max(1, want)
+                    pos += max(want, _SCAN_PAGE)
         return out
 
     def rip_target(self, instr_addr, disp_offset, instr_len):

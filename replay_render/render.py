@@ -76,6 +76,44 @@ def _darken(rgb, f: float):
     return (min(255, int(rgb[0] * f)), min(255, int(rgb[1] * f)), min(255, int(rgb[2] * f)))
 
 
+def color_coverage(frame: Frame,
+                   colors: Dict[str, Tuple[int, int, int]]) -> Dict[str, object]:
+    """Diagnostic: which owner/controller TAGs in ``frame`` lack a REAL game colour.
+
+    Purely informational (the render path is unchanged): a TAG not in
+    ``country_colors.json`` -- typically a dynamically released tag (``D76+``)
+    whose colour the map pipeline never emitted -- renders as ``UNKNOWN``. Per
+    the no-fabrication rule we DON'T invent a colour for it; this surfaces the
+    gap so a caller can log it / extend the colour asset, instead of silently
+    showing grey. Literal ``(r,g,b)`` owners (the synthetic demo) are not TAGs
+    and never "unknown".
+
+    Returns ``{unknown_owner_tags, unknown_controller_tags, unknown_division_tags,
+    no_state_controllers}``. ``no_state_controllers`` flags the minimized-snapshot
+    case Codex raised: owner is known (e.g. from ``map.owner_by_state``) but
+    ``states{}`` carried no controller, so only province control (if any) is
+    available.
+    """
+    def _missing(tags) -> list:
+        out = []
+        for t in tags:
+            if isinstance(t, str) and t and t not in colors:
+                out.append(t)
+        return sorted(set(out))
+
+    owner_tags = [v for v in frame.owner.values() if isinstance(v, str)]
+    ctrl_tags = list((frame.controller or {}).values())
+    prov_tags = list((frame.control_by_prov or {}).values())
+    div_tags = [d.owner for d in (frame.divisions or [])]
+    return {
+        "unknown_owner_tags": _missing(owner_tags),
+        "unknown_controller_tags": _missing(ctrl_tags + prov_tags),
+        "unknown_division_tags": _missing(div_tags),
+        # owner known but NO state-level controller captured (Codex weak-point #1)
+        "no_state_controllers": bool(frame.owner) and not frame.controller,
+    }
+
+
 class FrameRenderer:
     """Holds the (immutable) geometry and renders any Frame against it.
 

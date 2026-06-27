@@ -78,7 +78,44 @@ class CaptureResult:
 # resolve becomes None, and the plugs that need it then honestly omit their
 # domains -- no fabrication).
 # --------------------------------------------------------------------------
-def _resolve_live_layers(proc) -> Dict[str, Any]:
+def _arena_scan_range(proc, extras) -> Optional[tuple]:
+    """STAGE 3: the (lo, hi) window the attach-time layer resolves should scan, or None for the
+    wide 47-bit default. Returns the tight fastscan.discover_arena bounds when the arena-restrict
+    flag is configured ON (the DEFAULT as of Stage 3 -- the live coverage-diff proved the SAME
+    accepted roots are found under the tight arena vs the wide 47-bit range: rec0, all 143 bridge
+    entries, all 179 divisions matched, no root lives outside the arena). OFF only when explicitly
+    disabled (extras['arena_restrict'] is falsey OR the CAPTURE_ARENA_RESTRICT env var is a
+    disable token) -> None -> the layers scan the full range. discover_arena failure -> None
+    (fail-OPEN to the wide range: a wider scan only finds MORE roots, never a fabrication). This
+    mirrors CaptureContext.scan_range so the attach path and the per-walk readers select the SAME
+    range from the SAME flag (ON by default)."""
+    import os as _os
+    flag = (extras or {}).get("arena_restrict")
+    if flag is None:
+        ev = _os.environ.get("CAPTURE_ARENA_RESTRICT")
+        if ev is None:
+            flag = True                              # Stage 3: DEFAULT ON (live-proof gated)
+        else:
+            flag = ev.strip().lower() not in ("", "0", "false", "no", "off")
+    if not flag:
+        return None
+    try:
+        import fastscan as _fs
+        pid = getattr(proc, "pid", None)
+        if pid is None:
+            return None
+        ar = _fs.discover_arena(pid)
+        if ar is not None:
+            bounds = (int(ar[0]), int(ar[1]))
+            if isinstance(extras, dict):
+                extras["_arena_bounds"] = bounds   # share with the per-walk readers (one discover)
+            return bounds
+    except Exception:
+        return None
+    return None
+
+
+def _resolve_live_layers(proc, scan_range=None) -> Dict[str, Any]:
     out: Dict[str, Any] = {"tag_table": None, "bridge": None,
                            "province_control": None}
     try:
@@ -88,7 +125,8 @@ def _resolve_live_layers(proc) -> Dict[str, Any]:
         out["tag_table"] = None
     try:
         from live_layers import country_index_bridge as _cib
-        out["bridge"] = _cib.CountryIndexBridge.resolve(proc, tbl=out["tag_table"])
+        out["bridge"] = _cib.CountryIndexBridge.resolve(
+            proc, tbl=out["tag_table"], scan_range=scan_range)
     except Exception:
         out["bridge"] = None
     try:
@@ -126,13 +164,64 @@ class CaptureLoop:
                  open_proc: Optional[Callable[[], Any]] = None,
                  save_seed: Optional[str] = None,
                  user_campaign_id: Optional[str] = None,
-                 force_build: bool = False):
+                 force_build: bool = False,
+                 user_data_dir: Optional[str] = None,
+                 record_to: Optional[str] = None,
+                 finalize_every: int = 6,
+                 extras: Optional[Dict[str, Any]] = None):
         self.game_id = game_id
         self.store = DurableCaptureStore(store_root)
         self.plugs = plugs
         self.open_proc = open_proc or _default_open_proc
         self.force_build = force_build
+        # Caller-supplied per-capture config merged into ctx.extras every walk (e.g.
+        # {"arena_restrict": True} for STAGE 3, or {"resolve_defnames": True}). Defaults to {}
+        # so the base path is unchanged. The env var CAPTURE_ARENA_RESTRICT is an alternative
+        # toggle for the perf probe / harness (read in _arena_scan_range / ctx.arena_restrict_enabled).
+        self._extra_config = dict(extras) if isinstance(extras, dict) else {}
         self._eco_offsets = _load_economy_offsets()
+        # STEADY-STATE resolve cache: a SINGLE pins dict owned by the long-lived loop and
+        # threaded into every per-walk CaptureContext via extras["pins"], so the heap-scan
+        # roots resolved on the FIRST walk are reused on later walks (registry._pin_get).
+        # The cache self-invalidates on a process/build change (its __fp__ epoch) and on
+        # any per-root sanity-check failure, so reusing it across captures is fail-closed.
+        self._pins = {}
+        # The per-replay MOD IDENTITY (§K): read ONCE at construction from the host
+        # launcher config on disk (best-effort; None when no config found -> no
+        # fabrication). A mod-set does not change mid-campaign, so reading it once
+        # and stamping every snapshot is correct + cheap. Never raises into capture.
+        self._modset = None
+        try:
+            from live_capture import mod_identity as _mi
+            self._modset = _mi.capture_modset(user_data_dir)
+        except Exception:
+            self._modset = None
+        # PORTABLE RECORDER (§2.1): an OPTIONAL streaming `.battleplan` writer,
+        # created only when the caller asks for one (record_to=<path>). When off
+        # (None, the default) every existing call path is unchanged. The build
+        # hash is filled per-session on the first capture (set_build, §2.2); the
+        # mod-set is stamped once here (it does not change mid-campaign).
+        self._recorder = None
+        self._recorder_build_set = False
+        self._finalize_every = max(1, int(finalize_every))
+        self._captures_since_finalize = 0
+        # the last finalize error (Codex F5): a finalize failure is swallowed so it
+        # never kills the capture loop OR publishes a lying replay, but we RECORD it
+        # here so the GUI can surface "the replay stopped updating" rather than fail
+        # silently. None = the last finalize succeeded (or none ran yet).
+        self.last_finalize_error = None
+        if record_to:
+            from replay import schema as _schema
+            from live_capture.replay_writer import ReplayRecorder
+            self._recorder = ReplayRecorder(
+                store_root=self.store.root,
+                game_id=game_id,
+                out_path=record_to,
+                modset=self._modset,                   # already redacted upstream
+                build_exe_sha256=None,                 # filled per-capture (§2.2)
+                build_pinned=False,
+                schema_version=_schema.SCHEMA_VERSION,
+            )
         st = _continuity.ContinuityState.from_dict(
             self.store.load_continuity_state(game_id))
         self.tracker = _continuity.ContinuityTracker(
@@ -159,12 +248,29 @@ class CaptureLoop:
                     "results would be UNVERIFIED)."
                     % (identity.exe_sha256, _pi.PINNED_EXE_SHA256))
 
-            layers = _resolve_live_layers(proc)
+            # PORTABLE RECORDER (§2.2): stamp the EXACT build the recording was
+            # gated on, ONCE per session (the build does not change mid-run). Done
+            # only AFTER the gate passes, so the manifest records the verified
+            # build the snapshots were read from (or force_build's UNVERIFIED one).
+            if self._recorder is not None and not self._recorder_build_set:
+                self._recorder.set_build(identity.exe_sha256, identity.build_ok())
+                self._recorder_build_set = True
+
+            extras = {"economy_offsets": self._eco_offsets, "pins": self._pins}
+            extras.update(self._extra_config)        # caller-supplied config (e.g. arena_restrict)
+            # STAGE 3: when arena-restrict is configured ON (extras['arena_restrict'] / env var),
+            # compute the tight arena bounds ONCE and thread them into the attach-time layer
+            # resolves (so locate + the bridge anchor scan use the tight range too, not just the
+            # per-walk readers). OFF (default) -> None -> the layers scan the full range as before.
+            scan_range = _arena_scan_range(proc, extras)
+            layers = _resolve_live_layers(proc, scan_range=scan_range)
             ctx = _registry.CaptureContext(
                 proc=proc, identity=identity,
                 tag_table=layers["tag_table"], bridge=layers["bridge"],
                 province_control=layers["province_control"],
-                extras={"economy_offsets": self._eco_offsets},
+                # pass the loop-owned pins dict so the resolve cache PERSISTS across
+                # capture_once calls (the perf win is per-walk, not per-process).
+                extras=extras,
             )
             results = _registry.read_all(ctx, self.plugs)
             return self._finish_capture(results, identity, date_info,
@@ -192,6 +298,7 @@ class CaptureLoop:
             results, game_id=self.game_id, date=canonical_date,
             exe_sha256=getattr(identity, "exe_sha256", None),
             identity=identity,
+            modset=self._modset,
             extra_notes=([] if date_info.trusted else
                          (["date %r from %s is UNTRUSTED -> capture is "
                            "non-canonical (hour_index withheld)" % (
@@ -234,6 +341,17 @@ class CaptureLoop:
         self.tracker.commit(proposal)
         self.store.save_continuity_state(self.game_id,
                                          self.tracker.state.to_dict())
+
+        # PORTABLE RECORDER (§2.3): stream this hour into the sidecar AFTER the
+        # durable write succeeds, so the sidecar only ever references a file that
+        # is actually on disk. on_snapshot_written records canonical files only
+        # (it skips _noncanonical/ paths); the streaming is crash-safe (append-
+        # only + fsync). Never raises into the capture.
+        if self._recorder is not None and path is not None:
+            try:
+                self._recorder.on_snapshot_written(path)
+            except Exception:
+                pass
 
         domains = (snap.get("provenance", {}).get("memory", {}) or {}).get(
             "domains", [])
@@ -289,6 +407,23 @@ class CaptureLoop:
                     prev = res.snapshot
                     if on_capture:
                         on_capture(res)
+                    # PORTABLE RECORDER (§2.4): publish a complete, valid
+                    # `.battleplan` every N captures, so a crash after the latest
+                    # finalize still yields a valid file of everything captured so
+                    # far. Each finalize re-reads the store -> a complete atomic
+                    # re-publish (never a half-built ZIP). Only after a snapshot
+                    # that actually landed on disk.
+                    if (self._recorder is not None
+                            and res.written_path is not None):
+                        self._captures_since_finalize += 1
+                        if self._captures_since_finalize >= self._finalize_every:
+                            self._captures_since_finalize = 0
+                            try:
+                                self._recorder.finalize()
+                                self.last_finalize_error = None
+                            except Exception as fexc:
+                                # never kill the loop; record so the GUI can warn.
+                                self.last_finalize_error = str(fexc)
                 except Exception as exc:  # one bad capture must not kill the loop
                     results.append(CaptureResult(
                         written_path=None, snapshot={}, domains_captured=[],
@@ -299,7 +434,23 @@ class CaptureLoop:
                 if max_captures is None or n < max_captures:
                     time.sleep(interval_s)
         finally:
-            lock.release()
+            # PORTABLE RECORDER (§2.4): the FINAL finalize -- always publish a
+            # valid file at the end of the run, capturing every hour written.
+            # Runs UNDER the single-writer lock (before release, Codex) so no other
+            # recorder can mutate the store while we package it. A finalize failure
+            # is swallowed and the lock is released unconditionally in the inner
+            # finally, so it can never strand the lock.
+            try:
+                if self._recorder is not None:
+                    try:
+                        self._recorder.finalize()
+                        self.last_finalize_error = None
+                    except Exception as fexc:
+                        # swallow so a torn store never strands the lock OR ships a
+                        # lying replay; record so the caller/GUI can surface it.
+                        self.last_finalize_error = str(fexc)
+            finally:
+                lock.release()
         return results
 
 

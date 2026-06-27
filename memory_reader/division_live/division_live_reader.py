@@ -281,23 +281,14 @@ class DivisionLiveReader(object):
         return prov if 0 < prov < 0x10000 else None
 
     # ---- enumeration ----
-    def enumerate_divisions(self, resolve_owner_tag=None):
-        """Return a list of dicts, one per live division:
-            { id, owner_tag_db_id, owner (optional via resolve_owner_tag),
-              location, move_target_province, movement_source_province, moving,
-              movement_progress, in_combat, combat_ref_count,
-              army_current_supply_ratio, max_supply, supply_gain, fuel,
-              organisation, strength, experience, experience_tier }
-
-        Enumeration: scan committed heap for the CDivision vtable qword
-        (MODULE+0x2933F00), keep bodies with u32[+0x08] == 4713. Each field is read from a
-        single body snapshot, with sane-bounds guards (out-of-range -> field is None).
-
-        resolve_owner_tag: optional callable tag_db_id -> 'TAG' (e.g. tag_table.TagTable.tag).
-        """
+    def locate_division_bodies(self):
+        """Scan committed heap for the CDivision vtable qword (MODULE+0x2933F00) and return the
+        located bodies as an ORDERED {div_id: body_addr} dict (scan order, first-hit-wins dedupe;
+        only bodies whose u32[+0x08]==4713 with a sane span). This is the dominant cost; the
+        pin caches THIS map and re-decodes off it on later walks (see read_divisions_from_bodies).
+        Output identity: enumerate_divisions == read_divisions_from_bodies(locate_division_bodies())."""
         vt_pat = struct.pack("<Q", self.div_vt)
-        seen = {}                       # id -> body_addr (dedupe)
-        out = []
+        seen = {}                       # id -> body_addr (dedupe, scan/insertion order)
         for base, size in self._enum_regions():
             blob = self._rpm(base, size)
             if not blob:
@@ -318,11 +309,44 @@ class DivisionLiveReader(object):
                 if did in seen:
                     continue
                 seen[did] = cand
-                rec = self._decode_body(cand, b, resolve_owner_tag)
-                out.append(rec)
-                if len(out) > MAX_DIVISIONS:
+                if len(seen) > MAX_DIVISIONS:
                     raise RuntimeError("division count exceeds sanity bound (%d) - layout likely broken" % MAX_DIVISIONS)
+        return seen
+
+    def read_divisions_from_bodies(self, bodies, resolve_owner_tag=None):
+        """Decode the per-division records from a pre-located {div_id: body_addr} map (the WARMED
+        path -- NO heap scan). Re-reads each body LIVE (values never frozen) IN THE SAME insertion
+        order as the scan, re-applying the type/span gate so a stale/freed/realloc'd body is
+        DROPPED (fail-closed: a body that no longer reads BODY_SPAN or whose type != 4713 is
+        skipped, exactly as a fresh scan would never have kept it). Output == enumerate_divisions."""
+        out = []
+        for did, cand in bodies.items():
+            b = self._read_clamped(cand, BODY_SPAN)
+            if len(b) < BODY_SPAN:
+                continue
+            if self._u32(b, OFF_TYPE) != DIVISION_TYPE:
+                continue
+            if self._u32(b, OFF_ID) != did:        # ABA: same vtable+type, different division
+                continue
+            out.append(self._decode_body(cand, b, resolve_owner_tag))
         return out
+
+    def enumerate_divisions(self, resolve_owner_tag=None):
+        """Return a list of dicts, one per live division:
+            { id, owner_tag_db_id, owner (optional via resolve_owner_tag),
+              location, move_target_province, movement_source_province, moving,
+              movement_progress, in_combat, combat_ref_count,
+              army_current_supply_ratio, max_supply, supply_gain, fuel,
+              organisation, strength, experience, experience_tier }
+
+        Enumeration: scan committed heap for the CDivision vtable qword
+        (MODULE+0x2933F00), keep bodies with u32[+0x08] == 4713. Each field is read from a
+        single body snapshot, with sane-bounds guards (out-of-range -> field is None).
+
+        resolve_owner_tag: optional callable tag_db_id -> 'TAG' (e.g. tag_table.TagTable.tag).
+        """
+        return self.read_divisions_from_bodies(
+            self.locate_division_bodies(), resolve_owner_tag=resolve_owner_tag)
 
     def _decode_body(self, body_addr, b, resolve_owner_tag):
         mp = self._fixed(b, OFF_MOVE_PROG, "movement_progress")

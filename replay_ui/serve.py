@@ -53,6 +53,42 @@ STORE_ROOTS = {
 }
 
 _series_cache: dict = {}
+_assets_cache: dict = {}
+
+
+def _build_assets() -> dict:
+    """Compact ASSET-FIDELITY index the UI uses to render REAL game art.
+
+    Returns three small maps (cached): the resolved portrait-handle → relative PNG
+    path (so a commander's ``portrait_gfx`` lights up the real extracted portrait),
+    the real per-TAG country colours (mirror of the map renderer's source), and a
+    flag-existence probe is left to the client (it just builds `/game_assets/...`
+    URLs by convention). All paths are repo-relative and the underlying assets are
+    gitignored — we only expose handle→path, never the bytes here.
+    READ-ONLY on game_assets/ and map_pipeline/assets/.
+    """
+    if _assets_cache:
+        return _assets_cache
+    out: dict = {"portraits": {}, "country_colors": {}, "has_assets": False}
+    # portraits.json -> handle: "assets/portraits/<file>.png" (first png)
+    pj = os.path.join(REPO, "game_assets", "portraits.json")
+    try:
+        with open(pj, encoding="utf-8") as fh:
+            pd = (json.load(fh) or {}).get("portraits") or {}
+        out["portraits"] = {k: (v.get("png") or [None])[0]
+                            for k, v in pd.items() if (v.get("png"))}
+        out["has_assets"] = os.path.isdir(os.path.join(REPO, "game_assets", "assets",
+                                                        "portraits"))
+    except (OSError, ValueError):
+        pass
+    cc = os.path.join(REPO, "map_pipeline", "assets", "country_colors.json")
+    try:
+        with open(cc, encoding="utf-8") as fh:
+            out["country_colors"] = json.load(fh) or {}
+    except (OSError, ValueError):
+        pass
+    _assets_cache.update(out)
+    return _assets_cache
 
 
 def _discover_games() -> dict:
@@ -126,6 +162,8 @@ class Handler(SimpleHTTPRequestHandler):
             return super().do_GET()
         if path == "/api/games":
             return self._send_json(_discover_games())
+        if path == "/api/assets":
+            return self._send_json(_build_assets())
         if path.startswith("/api/series/"):
             parts = path[len("/api/series/"):].split("/")
             if len(parts) >= 2 and parts[0] in STORE_ROOTS:
@@ -170,6 +208,17 @@ def main(argv=None):
             print(f"[demo] synthetic store ready ({DEMO_GAME_ID})")
         except Exception as e:
             print(f"[demo] skipped: {e}")
+        # The RICH synthetic store: a schema-valid multi-frame series that exercises
+        # every domain a screen touches (fuel, laws, resolved names, intel agency,
+        # commanders w/ real portraits, special projects, OOB tree, naval_air/supply
+        # PROXY sidecars, human_name, world). Lets the UI demonstrate the new domains
+        # the real `campaign` store predates. Writes only under demo_snapshots/.
+        try:
+            from replay_ui.richdemo import generate as gen_rich, RICH_GAME_ID
+            gen_rich()
+            print(f"[richdemo] schema-valid rich store ready ({RICH_GAME_ID})")
+        except Exception as e:
+            print(f"[richdemo] skipped: {e}")
 
     port = _free_port(args.port)
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)

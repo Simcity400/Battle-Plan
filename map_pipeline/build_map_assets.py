@@ -46,6 +46,16 @@ import zlib
 
 import numpy as np
 
+# Shared Clausewitz text-parsing primitives (sibling module; this script is run
+# from map_pipeline/, so a plain module import resolves).
+from clausewitz_parse import (
+    ID_RE,
+    NAME_RE,
+    extract_brace_block,
+    find_block,
+    strip_comments,
+)
+
 # ---------------------------------------------------------------------------
 # Paths / config
 # ---------------------------------------------------------------------------
@@ -224,45 +234,21 @@ def encode_ids_to_rgb(id_raster):
 # state files
 # ---------------------------------------------------------------------------
 
-# Strip line comments but keep braces/numbers. `#` to end-of-line.
-_COMMENT_RE = re.compile(r"#.*")
-_ID_RE = re.compile(r"\bid\s*=\s*(\d+)")
-_NAME_RE = re.compile(r'name\s*=\s*"([^"]*)"')
+# Comment/id/name regexes + the brace-block parser are shared with
+# build_strategic_regions.py; they live in clausewitz_parse.py now.
+_ID_RE = ID_RE
+_NAME_RE = NAME_RE
+# These two regexes are specific to history/states files (not shared).
 _CATEGORY_RE = re.compile(r"state_category\s*=\s*(\w+)")
 _MANPOWER_RE = re.compile(r"\bmanpower\s*=\s*(\d+)")
 
-
-def _strip_comments(text):
-    return _COMMENT_RE.sub("", text)
-
-
-def _extract_brace_block(text, start_idx):
-    """Given index of the '{' return the substring inside the matched braces."""
-    depth = 0
-    i = start_idx
-    n = len(text)
-    while i < n:
-        c = text[i]
-        if c == "{":
-            depth += 1
-            if depth == 1:
-                inner_start = i + 1
-        elif c == "}":
-            depth -= 1
-            if depth == 0:
-                return text[inner_start:i]
-        i += 1
-    return text[start_idx + 1:]  # unbalanced; return rest
-
-
+_strip_comments = strip_comments
+_extract_brace_block = extract_brace_block
+# Local thin wrapper: this builder's _find_block returns (inner, brace_idx) and
+# matches WITHOUT a leading word boundary (historical behaviour).
 def _find_block(text, keyword):
-    """Return (inner_text, end_index) for `keyword = { ... }`, or (None, -1)."""
-    m = re.search(keyword + r"\s*=\s*\{", text)
-    if not m:
-        return None, -1
-    brace_idx = m.end() - 1
-    inner = _extract_brace_block(text, brace_idx)
-    return inner, brace_idx
+    """Return (inner_text, brace_index) for `keyword = { ... }`, or (None, -1)."""
+    return find_block(text, keyword)
 
 
 def parse_state_file(path):

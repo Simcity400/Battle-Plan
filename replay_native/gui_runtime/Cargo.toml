@@ -1,0 +1,15 @@
+[package]
+name = "gui_runtime"
+version = "0.1.0"
+edition = "2021"
+description = "Generic Clausewitz .gui-JSON runtime: parse -> retained scene-graph -> layout (position/size/orientation/origo/percent/clip) -> hit-test; M2 renders the topbar statically via the render crate."
+
+[dependencies]
+assets = { path = "../assets" }
+render = { path = "../render" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "m2_demo"
+path = "src/bin/m2_demo.rs"

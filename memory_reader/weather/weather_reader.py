@@ -334,7 +334,14 @@ def joint_scan(p, clim, month, slack=6.0, strides_b=(16, 24),
             if want < max_span_bytes:
                 break
             blob = p.try_read(rb + pos, want)
-            advance = max(1, (len(blob) if blob else want) - overlap)
+            if blob:
+                blen = len(blob)
+                if pos + blen >= size or blen < want:   # final / short read
+                    advance = max(blen, 0x1000)
+                else:
+                    advance = blen - overlap             # full mid-region chunk
+            else:
+                advance = max(want, 0x1000)
             if not blob or len(blob) < 4096:
                 pos += advance
                 continue

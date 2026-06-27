@@ -50,14 +50,19 @@
     <div id="countryCards" class="cards"></div>
     <div class="chartsgrid">
       <div class="panel"><h3>Economy over time</h3><canvas id="chEco"></canvas><div class="legendnote" id="ecoCov"></div></div>
+      <div class="panel"><h3>Fuel over time <span class="srcbadge" data-src="S/M*">S/M*</span></h3><canvas id="chFuel"></canvas><div class="legendnote" id="fuelCov"></div></div>
       <div class="panel"><h3>Military over time</h3><canvas id="chMil"></canvas><div class="legendnote" id="milCov"></div></div>
       <div class="panel"><h3>Politics over time <span class="srcbadge" data-src="M">M</span></h3><canvas id="chPol"></canvas><div class="legendnote" id="polCov"></div></div>
       <div class="panel"><h3>Research &amp; focus over time</h3><canvas id="chRes"></canvas><div class="legendnote" id="resCov"></div></div>
     </div>
     <div class="detailgrid">
       <div class="panel"><h3>Laws &amp; ideas <span class="srcbadge" data-src="S">S</span></h3><div id="cLaws"></div></div>
+      <div class="panel"><h3>Leadership &amp; commanders <span class="srcbadge" data-src="S">S</span></h3><div id="cLeaders"></div></div>
       <div class="panel"><h3>Focus <span class="srcbadge" data-src="S/D">S/D</span></h3><div id="cFocus"></div></div>
       <div class="panel"><h3>Research <span class="srcbadge" data-src="S">S</span></h3><div id="cResearch"></div></div>
+      <div class="panel"><h3>Intelligence agency <span class="srcbadge" data-src="S">S</span></h3><div id="cIntel"></div></div>
+      <div class="panel"><h3>Special projects &amp; extras <span class="srcbadge" data-src="S">S</span></h3><div id="cProjects"></div></div>
+      <div class="panel"><h3>Military-industrial orgs <span class="srcbadge" data-src="S">S</span></h3><div id="cMios"></div></div>
       <div class="panel"><h3>Decisions / missions <span class="srcbadge" data-src="S">S</span></h3><div id="cDecisions"></div></div>
       <div class="panel"><h3>Equipment stockpile <span class="srcbadge" data-src="S">S</span></h3><div id="cStock"></div></div>
       <div class="panel"><h3>Diplomacy <span class="srcbadge" data-src="S">S</span></h3><div id="cDiplo"></div></div>
@@ -79,6 +84,10 @@
       <div class="panel"><h3>Organisation distribution</h3><canvas id="chOrg"></canvas></div>
       <div class="panel"><h3>Strength distribution</h3><canvas id="chStr"></canvas></div>
     </div>
+    <div class="panel"><h3>Order of battle — command tree
+      <span class="srcbadge" data-src="M/S">M/S</span></h3>
+      <div id="oobTree" class="oobtree"></div>
+    </div>
     <div class="panel"><h3>Divisions <span id="divTblCount" class="meta"></span></h3>
       <div class="tablewrap"><table id="divTable"><thead></thead><tbody></tbody></table></div>
     </div>
@@ -96,6 +105,10 @@
       <div class="panel"><h3>Battle lifecycle (from timeline)</h3>
         <div id="combatLifecycle"></div>
       </div>
+    </div>
+    <div class="panel"><h3>Live naval / air &amp; supply — PROXY estimates
+      <span class="srcbadge proxy" data-src="region_proxy" title="region/division PROXY — never exact">~proxy</span></h3>
+      <div id="proxyPanel"></div>
     </div>
   </section>
 

@@ -243,11 +243,15 @@ class _Reader(object):
         (no useless overlap re-read into a page that just refused us) -- guaranteeing
         progress and never an infinite loop or re-thrash."""
         overlap = max(0, item_size - 1)
+        # Guard (Codex review): the full-mid advance `pos += got - overlap` only
+        # makes forward progress when chunk > overlap. _CHUNK >> overlap for all real
+        # strides, but enforce it so a pathological item_size >= _CHUNK can't go backward.
+        chunk = _CHUNK if _CHUNK > overlap else overlap + 0x1000
         region_end = base + size
         hits = []
         pos = 0
         while pos < size:
-            want = min(_CHUNK, size - pos)          # CLAMP to region end
+            want = min(chunk, size - pos)           # CLAMP to region end
             blob = self.rpm(base + pos, want)
             got = len(blob)
             if blob:
@@ -255,17 +259,19 @@ class _Reader(object):
                     # a hit's full item must fit inside the region
                     if base <= a <= region_end - item_size:
                         hits.append(a)
-                if got >= want:
-                    # full window: overlap the tail into the next window so a match
-                    # straddling the boundary is found (then deduped by the parent).
-                    pos += max(1, got - overlap)
+                if got >= want and pos + got < size:
+                    # full MID-region window: overlap the tail into the next window so
+                    # a match straddling the boundary is found (deduped by the parent).
+                    pos += got - overlap
                 else:
-                    # short read -> hit an unreadable boundary inside the region;
-                    # advance past everything we read (the refused bytes form their
-                    # own boundary, nothing to straddle into them).
-                    pos += max(1, got)
+                    # short read OR final window: advance past everything we read (the
+                    # refused/region boundary has nothing to straddle into). Floor to a
+                    # PAGE (0x1000) -- the agreed canonical floor: dominates overlap+1
+                    # on both axes (no sub-page crawl for tiny overlaps; no over-skip of
+                    # readable data past a partial-read boundary for large item_size).
+                    pos += max(got, 0x1000)
             else:
-                pos += max(1, want)
+                pos += max(want, 0x1000)
         return hits
 
 

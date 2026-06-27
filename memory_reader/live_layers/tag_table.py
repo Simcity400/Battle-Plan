@@ -159,7 +159,13 @@ class TagTable(object):
                         if cls._is_canonical(tags):
                             candidates.append((cand_base, tags))
                     scanned += len(blob)
-                pos += max(1, (len(blob) if blob else want) - ov)
+                    blen = len(blob)
+                    if pos + blen >= size or blen < want:   # final / short read
+                        pos += max(blen, 0x1000)
+                    else:
+                        pos += blen - ov                     # full mid-region chunk
+                else:
+                    pos += max(want, 0x1000)
             if progress:
                 progress(scanned)
 

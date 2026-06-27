@@ -238,6 +238,30 @@ class TestConfidenceAndMerge(unittest.TestCase):
         his = [e["hour_index"] for e in tl]
         self.assertEqual(his, sorted(his))
 
+    def test_marker_with_literal_none_string_does_not_eat_real_diff(self):
+        # BUG (Codex): _dedupe_key used str(field), so a diff event with a real
+        # `from=None` (owner null -> GER) collided with a marker carrying the literal
+        # STRING "None" -> the marker wrongly superseded a genuinely-distinct diff.
+        # None and the literal "None" must NEVER share a dedupe identity.
+        s1 = _snap("1940.1.1.0")
+        s2 = _snap("1940.1.2.0")
+        _add_state(s1, 1, owner=None)          # state owner truly null at s1
+        _add_state(s2, 1, owner="GER")          # -> diff: from None to GER
+        # a marker at s2 with the SAME (type,key,to,subject) but a literal string
+        # "None" for `from`/`object` (a different, distinct transition). It must NOT
+        # supersede the real None->GER diff.
+        s2["events"] = [schema.make_event(
+            "state_owner_change", key="1", subject="GER", object="None",
+            to="GER", source="marker", confidence="exact",
+            hour_index=s2["hour_index"], date=s2["date"], **{"from": "None"})]
+        tl = diff_engine.build_timeline([s1, s2])
+        owner_evs = [e for e in tl if e["type"] == "state_owner_change" and e["key"] == "1"]
+        # both must survive: the marker ("from"=="None") and the real diff (from=None)
+        self.assertEqual(
+            len(owner_evs), 2,
+            "a literal 'None' marker must not supersede a real None->X diff: %r"
+            % [e.get("from") for e in owner_evs])
+
     def test_all_emitted_events_validate(self):
         a = _snap("1940.1.1.0"); b = _snap("1940.1.2.0")
         ca = _add_country(a, "GER"); cb = _add_country(b, "GER")
@@ -246,6 +270,160 @@ class TestConfidenceAndMerge(unittest.TestCase):
         _add_div(b, 9, "GER", 1, 1)
         for ev in diff_engine.diff_snapshots(a, b):
             self.assertEqual(schema.validate_event(ev), [], ev)
+
+
+class TestLiveAliasGating(unittest.TestCase):
+    """NO-FABRICATION gate (Codex-verified): a `<domain>_live` channel may satisfy a
+    save-shaped canonical gate ONLY when it actually writes that reader's save-shaped
+    leaves. The live channels write DIFFERENT leaves than the save-shaped diff readers
+    consume (tech_live -> counts not technologies[]; diplomacy_live -> at_war[] not
+    wars[]; intel_live -> agency not running ops; ...), so they MUST fail closed — else a
+    pure/mixed live snapshot fabricates tech_lost / peace / operation_completed. Only
+    focus_live -> focus is leaf-compatible + additions-only-safe."""
+
+    def _mem(self, *domains):
+        return {"provenance": {"memory": {"captured": True, "domains": list(domains)},
+                               "save": None}}
+
+    def test_unsafe_live_aliases_do_not_satisfy_gate(self):
+        # Every live channel whose shape differs from its save-shaped reader: the live id
+        # must NOT satisfy the canonical gate (fail closed -> no fabrication).
+        cases = {
+            "tech": "tech_live", "commanders": "commanders_live", "intel": "intel_live",
+            "production": "production_live", "projects": "projects_live",
+            "diplomacy": "diplomacy_live", "designs": "mio",
+            "order_of_battle": "oob_command",
+        }
+        for canon, live_id in cases.items():
+            live = self._mem(live_id)
+            self.assertFalse(diff_engine._domain_is_memory(live, canon),
+                             "%s must not be satisfied by %s" % (canon, live_id))
+            self.assertFalse(diff_engine._domain_present(live, canon), canon)
+            self.assertFalse(diff_engine._both_captured(live, live, canon), canon)
+
+    def test_bare_designs_canonical_id_fails_closed(self):
+        # The live channel ALSO records the BARE "designs" id, but writes only
+        # division_templates (not equipment_variants / country.mios) -> the "designs"
+        # gate (design_created / mio_leveled) must NOT treat memory "designs" as captured.
+        live = self._mem("designs")
+        self.assertFalse(diff_engine._domain_is_memory(live, "designs"))
+        self.assertFalse(diff_engine._both_captured(live, live, "designs"))
+
+    def test_focus_live_is_the_one_safe_alias(self):
+        # focus_live writes focus.completed in the same id namespace; _diff_focus is
+        # additions-only -> safe. It MUST still satisfy the focus gate, memory-exact.
+        live = self._mem("focus_live")
+        self.assertTrue(diff_engine._domain_is_memory(live, "focus"))
+        self.assertTrue(diff_engine._both_captured(live, live, "focus"))
+        self.assertEqual(diff_engine._confidence_for("focus", live, live), "exact")
+        self.assertEqual(diff_engine._source_for("focus", live, live), "M")
+
+    def test_shape_compatible_bare_canonical_ids_still_work(self):
+        # state_control / province_control / divisions write the SAVE-shaped leaves their
+        # readers read, so the bare canonical id must KEEP satisfying the gate.
+        for canon in ("state_control", "province_control", "divisions"):
+            live = self._mem(canon)
+            self.assertTrue(diff_engine._domain_is_memory(live, canon), canon)
+            self.assertTrue(diff_engine._both_captured(live, live, canon), canon)
+
+    def test_save_only_is_present_but_not_memory(self):
+        sv = {"provenance": {"memory": {"captured": True, "domains": []},
+                             "save": {"captured": True, "domains": ["tech"]}}}
+        self.assertFalse(diff_engine._domain_is_memory(sv, "tech"))
+        self.assertTrue(diff_engine._domain_present(sv, "tech"))   # gate still runs via save
+        self.assertEqual(diff_engine._source_for("tech", sv, sv), "S")
+
+    def test_no_false_positive(self):
+        live = self._mem("tech_live")
+        self.assertFalse(diff_engine._domain_is_memory(live, "diplomacy"))
+        self.assertFalse(diff_engine._domain_is_memory(live, "commanders"))
+        self.assertFalse(diff_engine._domain_present(live, "intel"))
+
+
+class TestLiveAliasNoFabrication(unittest.TestCase):
+    """End-to-end no-fabrication proof: on a MIXED save+live snapshot pair, the live
+    channel's presence must NOT fabricate a save-semantic event for data it does not
+    carry — but a GENUINE such event IS still emitted when the real save data is present.
+    """
+
+    def _prov(self, snap, *, save, memory):
+        snap["provenance"]["save"] = {"captured": bool(save), "domains": list(save)}
+        snap["provenance"]["memory"] = {"captured": bool(memory), "domains": list(memory)}
+        return snap
+
+    # ---- tech_lost ----------------------------------------------------------
+    def _tech_country(self, snap, tag, techs):
+        c = schema.empty_country()
+        c["research"]["technologies"] = [{"name": n, "level": l} for n, l in techs]
+        snap["countries"][tag] = c
+        return c
+
+    def test_mixed_tech_live_does_not_fabricate_tech_lost(self):
+        # a = save tech (has techs). b = the live channel reports tech_live (counts only,
+        # technologies[] empty) and did NOT capture save tech. The reader must NOT run ->
+        # no fabricated tech_lost for the techs that "vanished" from the empty live shape.
+        a = _snap("1940.1.1.0"); b = _snap("1940.1.2.0")
+        self._prov(a, save=["tech"], memory=[])
+        self._prov(b, save=[], memory=["tech_live"])  # pure-live tech, save-shape empty
+        self._tech_country(a, "GER", [("infantry_weapons", 2), ("artillery", 1)])
+        self._tech_country(b, "GER", [])  # live shape carries no technologies[]
+        self.assertNotIn("tech_lost", _types(diff_engine.diff_snapshots(a, b)))
+
+    def test_genuine_tech_lost_still_emitted_when_save_present(self):
+        a = _snap("1940.1.1.0"); b = _snap("1940.1.2.0")
+        self._prov(a, save=["tech"], memory=[])
+        self._prov(b, save=["tech"], memory=[])  # both real save tech
+        self._tech_country(a, "GER", [("infantry_weapons", 2), ("artillery", 1)])
+        self._tech_country(b, "GER", [("infantry_weapons", 2)])  # artillery really gone
+        types = _types(diff_engine.diff_snapshots(a, b))
+        self.assertIn("tech_lost", types)
+
+    # ---- peace --------------------------------------------------------------
+    def _war_country(self, snap, tag, enemies):
+        c = schema.empty_country()
+        c["diplomacy"]["wars"] = [{"against": e} for e in enemies]
+        snap["countries"][tag] = c
+        return c
+
+    def test_mixed_diplomacy_live_does_not_fabricate_peace(self):
+        a = _snap("1940.1.1.0"); b = _snap("1940.1.2.0")
+        self._prov(a, save=["diplomacy"], memory=[])
+        self._prov(b, save=[], memory=["diplomacy_live"])  # live writes at_war[], not wars[]
+        self._war_country(a, "GER", ["POL", "FRA"])
+        self._war_country(b, "GER", [])  # live shape has empty wars[]
+        self.assertNotIn("peace", _types(diff_engine.diff_snapshots(a, b)))
+
+    def test_genuine_peace_still_emitted_when_save_present(self):
+        a = _snap("1940.1.1.0"); b = _snap("1940.1.2.0")
+        self._prov(a, save=["diplomacy"], memory=[])
+        self._prov(b, save=["diplomacy"], memory=[])
+        self._war_country(a, "GER", ["POL", "FRA"])
+        self._war_country(b, "GER", ["FRA"])  # POL war really ended
+        self.assertIn("peace", _types(diff_engine.diff_snapshots(a, b)))
+
+    # ---- operation_completed ------------------------------------------------
+    def _ops_country(self, snap, tag, op_ids):
+        c = schema.empty_country()
+        c["intel"]["operations"] = {"running": [{"op_id": i, "type": "t", "target": "X"}
+                                                 for i in op_ids]}
+        snap["countries"][tag] = c
+        return c
+
+    def test_mixed_intel_live_does_not_fabricate_operation_completed(self):
+        a = _snap("1940.1.1.0"); b = _snap("1940.1.2.0")
+        self._prov(a, save=["intel"], memory=[])
+        self._prov(b, save=[], memory=["intel_live"])  # live writes agency.*, not running ops
+        self._ops_country(a, "GER", [11, 22])
+        self._ops_country(b, "GER", [])  # live shape carries no running ops
+        self.assertNotIn("operation_completed", _types(diff_engine.diff_snapshots(a, b)))
+
+    def test_genuine_operation_completed_still_emitted_when_save_present(self):
+        a = _snap("1940.1.1.0"); b = _snap("1940.1.2.0")
+        self._prov(a, save=["intel"], memory=[])
+        self._prov(b, save=["intel"], memory=[])
+        self._ops_country(a, "GER", [11, 22])
+        self._ops_country(b, "GER", [11])  # op 22 really completed
+        self.assertIn("operation_completed", _types(diff_engine.diff_snapshots(a, b)))
 
 
 if __name__ == "__main__":

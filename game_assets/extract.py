@@ -10,9 +10,10 @@ The engine's mod-overrides-vanilla-by-relative-path rule is replicated at the
 FILE level: a mod interface/foo.gfx replaces vanilla interface/foo.gfx whole; a
 mod gfx/.../bar.dds replaces the vanilla texture at the same relative path.
 
-Run `python extract.py --help`. Install paths default to the documented Steam
-location and `../../test`; override with --vanilla / --mod so no personal path
-is baked into committed files.
+Run `python extract.py --help`. The vanilla game path comes from the BATTLE_PLAN_VANILLA
+environment variable (or --vanilla), falling back to a generic documented Steam
+location; the mod overlay defaults to `../../test`. No personal/machine-specific
+path is baked into committed files -- set BATTLE_PLAN_VANILLA or pass --vanilla / --mod.
 
 Copyright: these are the user's own Paradox installed content, extracted for a private
 offline tool. Converted art lives under assets/ and is gitignored -- only this
@@ -31,12 +32,25 @@ from pathlib import Path
 from paradox_parser import Node, parse, parse_xy, coerce_scalar
 
 # --------------------------------------------------------------------------
-# Defaults (documented; no personal home path -- mod default is repo-relative)
+# Defaults (documented; no personal home path -- mod/game paths via CLI/config)
 # --------------------------------------------------------------------------
-DEFAULT_VANILLA = r"X:/SteamLibrary/steamapps/common/Hearts of Iron IV"
-# Mod overlay default: sibling "test" mod next to this repo (../../test).
+# Vanilla game path is ENV/CLI-driven so NO machine-specific drive path is baked
+# into the committed script. Resolution order:
+#   1. --vanilla CLI flag (highest priority; see build_argparser)
+#   2. BATTLE_PLAN_VANILLA environment variable
+#   3. the generic, documented default Steam install location below
+# A Steam library on another drive is selected by setting BATTLE_PLAN_VANILLA or
+# passing --vanilla, never by editing this file.
+_DEFAULT_VANILLA_FALLBACK = (
+    r"C:/Program Files (x86)/Steam/steamapps/common/Hearts of Iron IV"
+)
+DEFAULT_VANILLA = os.environ.get("BATTLE_PLAN_VANILLA", os.environ.get("HOI4_VANILLA")) or _DEFAULT_VANILLA_FALLBACK
 HERE = Path(__file__).resolve().parent          # .../battle-plan/game_assets
 REPO = HERE.parent                              # .../battle-plan
+# The the game user-data dir holds dlc_load.json + the .mod descriptors. It is the
+# grandparent of the mod/ dir this repo lives in: .../the game/.
+DEFAULT_USERDATA = str(REPO.parent.parent.resolve())  # .../the game
+# Single-mod default overlay: sibling "test" mod next to this repo (../../test).
 DEFAULT_MOD = str((REPO.parent / "test").resolve())  # .../mod/test
 
 # Canonical ideology suffixes. Anything else after the last underscore is part
@@ -44,19 +58,106 @@ DEFAULT_MOD = str((REPO.parent / "test").resolve())  # .../mod/test
 IDEOLOGIES = {"fascism", "communism", "democratic", "neutrality"}
 
 # Priority .gui views to parse into layout JSON (filename stem -> output name).
+# Scope = the §C.4 core in-game replay-target views (group 2). EXCLUDES the ~28
+# frontend/lobby files (group 0) and is independent of the ~19 nation-specific
+# *_scripted_gui overlays (group 1, degrade/selective). The parser extends
+# mechanically; adding a stem here parses it on the next run.
 PRIORITY_GUI = {
+    # --- Topbar / clock / minimap / alerts / menu / outliner ---
     "topbar": "topbar",
-    "countrytechnologyview": "research",
-    "countryproductionlineview": "production",
-    "nationalfocusview": "national_focus",
-    "countrydiplomacyview": "diplomacy",
-    "countrydecisionview": "decisions",
+    "menubar": "menubar",
+    "ingameclock": "ingame_clock",
+    "ingamemenu": "ingame_menu",
+    "minimap": "minimap",
+    "alerts": "alerts",
+    "findview": "find_view",
+    "rightclickmenu": "rightclick_menu",
+    # --- Map-mode chrome ---
+    "mapmodes_interface": "mapmodes",
+    "mapicons": "mapicons",
+    # --- State / province / occupation ---
     "countrystateview": "province_state",
+    "countryoccupationview": "occupation",
+    # --- Politics / government ---
+    "countrypoliticsview": "politics",
+    "powerbalanceview": "power_balance",
+    "command_character_view": "command_character",
+    "advisorroleselectionview": "advisor_role_selection",
+    # --- Focus tree ---
+    "nationalfocusview": "national_focus",
+    # --- Research / doctrine (side panel + the two TREE views) ---
+    "countrytechnologyview": "research",
+    "countrytechtreeview": "tech_tree",
+    "countrydoctrinetreeview": "doctrine_tree",
+    # --- Production / construction / deployment / equipment overview ---
+    "countryproductionlineview": "production",
     "countryconstructionsview": "construction",
+    "countrydeploymentview": "deployment",
+    "equipmentoverview": "equipment_overview",
+    # --- Designers ---
+    "tank_designer_view": "tank_designer",
+    "plane_designer_view": "plane_designer",
+    "divisiondesignerview": "division_designer",
+    "equipmentdesignerview": "equipment_designer",
+    "equipmentupgradedesignerwindow": "equipment_upgrade_designer",
+    # --- Decisions / operations ---
+    "countrydecisionview": "decisions",
+    "operationoverview": "operation_overview",
+    # --- Diplomacy / trade / peace / tension ---
+    "countrydiplomacyview": "diplomacy",
+    "countrytradeview": "trade",
+    "peaceconferencewindow": "peace_conference",
+    "worldtensionwindowpopup": "world_tension_popup",
+    # --- Intel / operatives / MIO ---
+    "countryintelligenceagencyview": "intel_agency",
+    "countryintelledger": "intel_ledger",
+    "operative": "operative",
+    "operativeleader": "operative_leader",
+    # --- Officer corps / high command / leaders / traits ---
+    "countryofficercorpview": "officer_corps",
+    "unitleaderwindow": "unit_leader",
+    "navyleaderview": "navy_leader",
+    "leadergroups": "leader_groups",
+    "acesview": "aces",
+    "armytraittreewindow": "army_trait_tree",
+    "navytraittreewindow": "navy_trait_tree",
+    "traittreewindow_common": "trait_tree_common",
+    # --- Army / navy / air mgmt + plans ---
+    "countryarmyview": "army",
+    "naviesview": "navies",
+    "airgroupview": "air_group",
+    "airselectionview": "air_selection",
+    "airwingdetails": "air_wing_details",
+    "airwingreorganization": "air_wing_reorg",
+    "carrierairwingcompositionwindow": "carrier_air_wing",
+    "strategicairview": "strategic_air",
+    "battleplantools": "battle_plan_tools",
+    "abilitylist": "ability_list",
+    "theatreselector": "theatre_selector",
+    "divisions_summary": "divisions_summary",
+    "railway_gun": "railway_gun",
+    # --- Logistics / supply ---
+    "countrylogisticsview": "logistics",
+    "garrisonlogview": "garrison_log",
+    # --- Combat ---
     "landcombat": "land_combat",
     "navalcombat": "naval_combat",
     "combatlogview": "combat_log",
-    "menubar": "menubar",
+    "navalcombatresultswindow": "naval_combat_results",
+    "destroyedshipswindow": "destroyed_ships",
+    "naval_losses": "naval_losses",
+    "naval_strategic_region_view": "naval_strategic_region",
+    # --- Unit / division detail ---
+    "unitview": "unit_view",
+    # --- Events / popups / notifications ---
+    "eventwindow": "event_window",
+    "popupwindow": "popup_window",
+    "detailedwindows": "detailed_windows",
+    "core": "core",
+    # --- War / faction / insignia ---
+    "waroverview": "war_overview",
+    "insigniaselection": "insignia_selection",
+    "insrevolutionwindow": "ins_revolution",
 }
 
 # Sprite-name prefixes that constitute the CORE UI chrome priority set (cat a).
@@ -71,23 +172,182 @@ PNG_DIRS = ("flags", "icons", "frames", "window_chrome", "goals", "ideas", "misc
 
 
 # ==========================================================================
-# File overlay map (mod replaces vanilla by relative path)
+# Active mod-set resolution (Clausewitz mod-over-vanilla, ordered playset)
 # ==========================================================================
-def build_file_map(vanilla: Path, mod: Path, subdir: str, exts) -> dict:
-    """Return {relative_posix_path: absolute Path} with mod overriding vanilla.
+# A Layer is one source in the load order: vanilla (base) or a mod. `root` is the
+# absolute dir to enumerate; `replace_paths` is the mod's list of replace_path
+# directories (each REPLACES one exact directory's lower-layer contents).
+class Layer:
+    __slots__ = ("label", "root", "replace_paths", "meta")
 
-    `subdir` is e.g. "interface" or "gfx"; `exts` a tuple of lowercase suffixes.
+    def __init__(self, label, root: Path, replace_paths=None, meta=None):
+        self.label = label
+        self.root = root
+        self.replace_paths = list(replace_paths or [])
+        self.meta = meta or {}
+
+
+def _norm_reldir(d: str) -> str:
+    """Normalize a replace_path directory: backslashes->/, strip, collapse '//',
+    drop leading/trailing slashes. Returns a clean relative posix dir (no '.')."""
+    s = (d or "").replace("\\", "/").strip().strip('"')
+    while "//" in s:
+        s = s.replace("//", "/")
+    s = s.strip("/")
+    parts = [p for p in s.split("/") if p not in ("", ".")]
+    return "/".join(parts)
+
+
+def parse_mod_descriptor(mod_file: Path) -> dict:
+    """Parse a `.mod` descriptor (Clausewitz key=value) into a dict.
+
+    Returns: {name, path, archive, version, supported_version, replace_path:[...],
+              dependencies:[...], tags:[...], remote_file_id, descriptor: <abs>}.
+    `path` may be absolute or relative; `archive` (zip) mods are flagged, not
+    unzipped. Repeated replace_path lines are all collected.
     """
-    eff: dict[str, Path] = {}
-    for base in (vanilla, mod):
-        root = base / subdir
+    text = mod_file.read_bytes().decode("latin-1")
+    root = parse(text)
+    out: dict = {
+        "descriptor": str(mod_file),
+        "name": None, "path": None, "archive": None,
+        "version": None, "supported_version": None, "remote_file_id": None,
+        "replace_path": [], "dependencies": [], "tags": [],
+    }
+    for k, v in root.entries:
+        kl = k.lower()
+        if kl == "replace_path" and isinstance(v, str):
+            nd = _norm_reldir(v)
+            if nd:
+                out["replace_path"].append(nd)
+        elif kl == "name" and isinstance(v, str):
+            out["name"] = v
+        elif kl == "path" and isinstance(v, str):
+            out["path"] = v
+        elif kl == "archive" and isinstance(v, str):
+            out["archive"] = v
+        elif kl == "version" and isinstance(v, str):
+            out["version"] = v
+        elif kl == "supported_version" and isinstance(v, str):
+            out["supported_version"] = v
+        elif kl == "remote_file_id" and isinstance(v, str):
+            out["remote_file_id"] = v
+        elif kl == "dependencies" and isinstance(v, Node):
+            out["dependencies"] = [s for kk, s in v.entries
+                                   if kk == "" and isinstance(s, str)]
+        elif kl == "tags" and isinstance(v, Node):
+            out["tags"] = [s for kk, s in v.entries
+                           if kk == "" and isinstance(s, str)]
+    return out
+
+
+def resolve_mod_root(descr: dict, userdata: Path) -> Path | None:
+    """Resolve a descriptor's mod root directory. `path` may be absolute or
+    relative to the game user-data dir. Returns None for zip-only / missing."""
+    p = descr.get("path")
+    if p:
+        pp = Path(p.replace("\\", "/"))
+        if not pp.is_absolute():
+            pp = (userdata / pp)
+        if pp.is_dir():
+            return pp.resolve()
+    return None
+
+
+def build_modset_layers(vanilla: Path, mod_files: list[Path],
+                        userdata: Path) -> tuple[list, list]:
+    """Build the ordered [vanilla, mod1, mod2, ...] Layer list from descriptors.
+
+    Returns (layers, warnings). Each mod in `mod_files` is in load order (lowest
+    priority first). Skips zip-only / unresolvable mods with a warning so the
+    extraction is still valid (vanilla + the resolvable mods)."""
+    layers = [Layer("vanilla", vanilla)]
+    warnings: list = []
+    for mf in mod_files:
+        if not mf.is_file():
+            warnings.append(f"mod descriptor not found: {mf}")
+            continue
+        descr = parse_mod_descriptor(mf)
+        root = resolve_mod_root(descr, userdata)
+        if root is None:
+            if descr.get("archive"):
+                warnings.append(
+                    f"archive(zip)-only mod skipped (not unzipped): "
+                    f"{descr.get('name') or mf.name}")
+            else:
+                warnings.append(
+                    f"mod path unresolvable, skipped: "
+                    f"{descr.get('name') or mf.name} (path={descr.get('path')})")
+            continue
+        layers.append(Layer(descr.get("name") or mf.stem, root,
+                            descr.get("replace_path"), descr))
+    return layers, warnings
+
+
+def _immediate_parent(rel: str) -> str:
+    """Immediate parent directory of a relative posix file path ('' for top)."""
+    i = rel.rfind("/")
+    return rel[:i] if i != -1 else ""
+
+
+def build_file_map_layers(layers: list, subdir: str, exts) -> dict:
+    """Resolve {relative_posix_path: abs Path} across an ordered Layer list,
+    honoring Clausewitz mod-over-vanilla rules:
+
+    * file-level override by exact (case-folded) relative path -- later layer wins
+    * replace_path REPLACES one EXACT directory: before adding a mod's files,
+      every accumulated lower-layer file whose IMMEDIATE PARENT dir == a
+      replace_path dir is removed (NON-recursive: `common/units` does NOT touch
+      `common/units/names_divisions`; that needs its own replace_path).
+
+    Keys keep the on-disk RELATIVE path (real casing, so flag tags / source_gfx
+    stay correct); override + replace_path matching are case-INSENSITIVE via a
+    lowercased shadow index (Windows paths are case-insensitive; the game relpaths are
+    ASCII so str.lower() suffices).
+
+    `subdir` restricts enumeration (e.g. "interface", "gfx"); `exts` filters by
+    lowercase suffix. replace_path dirs are matched against the full relpath, so
+    a mod's replace_path="interface" correctly nukes lower interface/*.gfx here.
+    """
+    eff: dict[str, Path] = {}         # real-case relpath -> abs Path
+    fold: dict[str, str] = {}         # case-folded relpath -> real-case relpath
+    for layer in layers:
+        # 1) apply this layer's replace_path: drop lower-layer files whose
+        #    immediate parent dir is exactly one of the replace_path dirs.
+        rps = {rp.lower() for rp in layer.replace_paths}
+        if rps:
+            for fkey in list(fold.keys()):
+                if _immediate_parent(fkey) in rps:
+                    real = fold.pop(fkey)
+                    eff.pop(real, None)
+        # 2) add this layer's own files under `subdir`
+        root = layer.root / subdir
         if not root.is_dir():
             continue
         for p in root.rglob("*"):
             if p.is_file() and p.suffix.lower() in exts:
-                rel = p.relative_to(base).as_posix()
-                eff[rel] = p  # mod parsed second -> overrides
+                rel = p.relative_to(layer.root).as_posix()
+                fkey = rel.lower()
+                # a later layer overriding a differently-cased lower-layer file
+                # must displace the old real-case key, not leave a stale dup.
+                prev_real = fold.get(fkey)
+                if prev_real is not None and prev_real != rel:
+                    eff.pop(prev_real, None)
+                eff[rel] = p
+                fold[fkey] = rel
     return eff
+
+
+def build_file_map(vanilla: Path, mod: Path, subdir: str, exts) -> dict:
+    """Back-compat single-mod overlay (vanilla + one mod, no replace_path).
+
+    Retained for callers/tests that pass two roots directly. The mod-set path
+    (build_file_map_layers) is the general resolver used by run().
+    """
+    layers = [Layer("vanilla", vanilla)]
+    if mod is not None and Path(mod) != Path(vanilla):
+        layers.append(Layer("mod", Path(mod)))
+    return build_file_map_layers(layers, subdir, exts)
 
 
 def _lc_lookup(rel: str, gfx_map: dict):
@@ -442,9 +702,10 @@ def slice_and_save(im, no_of_frames: int, out_base: Path, name: str):
 # ==========================================================================
 # Flag enumeration (no .gfx; loaded by filename convention)
 # ==========================================================================
-def enumerate_flags(vanilla: Path, mod: Path) -> dict:
-    """Return {relative: abs Path} for flag .tga, mod overriding vanilla."""
-    return build_file_map(vanilla, mod, "gfx/flags", (".tga", ".dds"))
+def enumerate_flags(layers: list) -> dict:
+    """Return {relative: abs Path} for flag .tga/.dds, resolved across the
+    ordered mod-set (mod over vanilla, replace_path honored)."""
+    return build_file_map_layers(layers, "gfx/flags", (".tga", ".dds"))
 
 
 def parse_flag_filename(stem: str):
@@ -475,10 +736,193 @@ def categorize_sprite(name: str, texrel: str) -> str:
     return "icons"
 
 
+# ==========================================================================
+# Font map (core.gfx bitmapfont name -> glyph atlas path)
+# ==========================================================================
+def parse_font_map(iface_map: dict) -> dict:
+    """Extract the bitmapfont name->path map from the effective core.gfx.
+
+    `bitmapfonts = { bitmapfont = { name=.. path=.. fontfiles={..} } ... }`. We
+    record name -> {path, fontfiles[], color, language_overrides[]}. Resolved
+    mod-over-vanilla because `iface_map` is already the resolved interface set.
+    """
+    fonts: dict = {}
+    overrides: list = []
+    src = _lc_lookup("interface/core.gfx", iface_map)
+    if src is None:
+        return {"fonts": {}, "overrides": [], "source": None}
+    try:
+        root = parse(src.read_bytes().decode("latin-1"))
+    except Exception:
+        return {"fonts": {}, "overrides": [], "source": str(src)}
+
+    def fontfiles(blk):
+        ff = blk.get("fontfiles")
+        if isinstance(ff, Node):
+            return [s for k, s in ff.entries if k == "" and isinstance(s, str)]
+        return []
+
+    def langs(blk):
+        lg = blk.get("languages")
+        if isinstance(lg, Node):
+            return [s for k, s in lg.entries if k == "" and isinstance(s, str)]
+        return []
+
+    for k, v in root.entries:
+        if not (isinstance(v, Node) and k.lower() == "bitmapfonts"):
+            continue
+        for kk, vv in v.entries:
+            if not isinstance(vv, Node):
+                continue
+            kl = kk.lower()
+            name = vv.get("name")
+            if not isinstance(name, str):
+                continue
+            path = vv.get("path") if isinstance(vv.get("path"), str) else None
+            entry = {
+                "name": name,
+                "path": normalize_texpath(path) if path else None,
+                "fontfiles": [normalize_texpath(f) for f in fontfiles(vv)],
+            }
+            col = vv.get("color")
+            if isinstance(col, str):
+                entry["color"] = col
+            if kl == "bitmapfont":
+                fonts[name] = entry
+            elif kl == "bitmapfont_override":
+                entry["languages"] = langs(vv)
+                overrides.append(entry)
+    return {"fonts": fonts, "overrides": overrides,
+            "source": "interface/core.gfx"}
+
+
+# ==========================================================================
+# Localisation resolution (mod-over-vanilla; resolved file LIST only)
+# ==========================================================================
+def resolve_loc(layers: list, language: str = "english") -> dict:
+    """Resolve the effective localisation/<language>/*.yml set (mod over vanilla).
+
+    Returns {relfile: abs Path}. We record the resolved file set + counts; full
+    $VAR$/markup resolution is the runtime's job (Phase 0 loc layer). Mods rarely
+    replace_path localisation, so file-level override is the norm here too.
+    """
+    return build_file_map_layers(layers, f"localisation/{language}", (".yml",))
+
+
+# ==========================================================================
+# Active mod-set assembly (from CLI: dlc_load.json playset OR explicit mods)
+# ==========================================================================
+def build_active_modset(args, vanilla: Path):
+    """Return (layers, modset_manifest, warnings).
+
+    Resolution sources, in priority:
+      1. --mods A.mod,B.mod : explicit ordered playset (paths or names under
+         the user-data mod/ dir).
+      2. --dlc-load <dlc_load.json> or --userdata <dir> : read enabled_mods in
+         launcher load order (authoritative).
+      3. --mod <dir> : legacy single-mod overlay.
+      4. none : vanilla-only (valid).
+    """
+    userdata = Path(args.userdata) if getattr(args, "userdata", None) else Path(DEFAULT_USERDATA)
+    warnings: list = []
+    mod_files: list[Path] = []
+    source = None
+
+    def as_modfile(token: str) -> Path:
+        t = token.strip().replace("\\", "/")
+        p = Path(t)
+        if not p.is_absolute():
+            p = userdata / p
+        # accept either a .mod descriptor or a "mod/foo.mod" relative token
+        return p
+
+    if getattr(args, "mods", None):
+        source = "explicit --mods playset"
+        for tok in args.mods.split(","):
+            tok = tok.strip()
+            if tok:
+                mod_files.append(as_modfile(tok))
+    elif getattr(args, "dlc_load", None) or getattr(args, "use_dlc_load", False):
+        dlc_path = Path(args.dlc_load) if getattr(args, "dlc_load", None) else (userdata / "dlc_load.json")
+        # do NOT bake the absolute dlc_load path into the committed manifest
+        source = "launcher dlc_load.json"
+        try:
+            dl = json.loads(Path(dlc_path).read_text(encoding="utf-8"))
+            for rel in dl.get("enabled_mods", []):
+                mod_files.append(as_modfile(rel))
+        except Exception as e:
+            warnings.append(f"could not read dlc_load.json {_sanitize_path(dlc_path, userdata)}: {e}")
+    elif args.mod:
+        source = "legacy single --mod overlay"
+        modp = Path(args.mod)
+        # find the descriptor next to the mod dir (mod/<name>.mod) if present
+        descr = modp.parent / f"{modp.name}.mod"
+        if descr.is_file():
+            mod_files.append(descr)
+        else:
+            # no descriptor: synthesize a path-only layer (no replace_path)
+            layers = [Layer("vanilla", vanilla), Layer(modp.name, modp)]
+            manifest = _modset_manifest(layers, source, warnings, userdata)
+            return layers, manifest, warnings
+    else:
+        source = "vanilla-only (no mods)"
+
+    layers, w2 = build_modset_layers(vanilla, mod_files, userdata)
+    warnings.extend(w2)
+    manifest = _modset_manifest(layers, source, warnings, userdata)
+    return layers, manifest, warnings
+
+
+def _sanitize_path(p, userdata: Path):
+    """Return a path RELATIVE to the game user-data dir (e.g. 'mod/test.mod') so
+    no absolute personal home path is baked into the committed manifest. Falls
+    back to just the basename if the path is outside user-data."""
+    if p is None:
+        return None
+    try:
+        pp = Path(str(p).replace("\\", "/"))
+        return pp.relative_to(userdata).as_posix()
+    except (ValueError, TypeError):
+        return Path(str(p).replace("\\", "/")).name
+
+
+def _modset_manifest(layers: list, source: str, warnings: list,
+                     userdata: Path) -> dict:
+    """Serialize the resolved load order for the app (active_modset.json).
+
+    Paths are stored RELATIVE to the user-data dir to keep personal home paths
+    out of the committed file (privacy/copyright rule)."""
+    order = []
+    for i, ly in enumerate(layers):
+        m = ly.meta or {}
+        order.append({
+            "load_index": i,
+            "label": ly.label,
+            "kind": "vanilla" if ly.label == "vanilla" else "mod",
+            "name": m.get("name"),
+            "workshop_id": m.get("remote_file_id"),
+            "version": m.get("version"),
+            "supported_version": m.get("supported_version"),
+            "descriptor": _sanitize_path(m.get("descriptor"), userdata),
+            "replace_path": ly.replace_paths,
+            "dependencies": m.get("dependencies", []),
+        })
+    return {
+        "schema": 1,
+        "selection_source": source,
+        "load_order": order,
+        "mod_count": sum(1 for o in order if o["kind"] == "mod"),
+        "warnings": warnings,
+        "note": ("Ordered vanilla->modN per Clausewitz: file-level override by "
+                 "relpath (later wins); replace_path replaces one EXACT dir's "
+                 "lower-layer files (non-recursive). The app auto-selects the "
+                 "matching set per replay and warns on mismatch (plan §K)."),
+    }
+
+
 def run(args):
     from PIL import Image  # noqa: ensure Pillow present early
     vanilla = Path(args.vanilla)
-    mod = Path(args.mod) if args.mod else None
     out_assets = HERE / "assets"
     out_gui = HERE / "gui"
     out_gui.mkdir(parents=True, exist_ok=True)
@@ -486,15 +930,23 @@ def run(args):
     if not vanilla.is_dir():
         print(f"ERROR: vanilla install not found: {vanilla}")
         return 2
-    if mod and not mod.is_dir():
-        print(f"WARNING: mod overlay not found, using vanilla only: {mod}")
-        mod = None
 
+    # ---- 0. active mod-set (ordered playset over vanilla) ------------------
+    layers, modset_manifest, modset_warnings = build_active_modset(args, vanilla)
     print(f"[*] vanilla = {vanilla}")
-    print(f"[*] mod     = {mod}")
+    print(f"[*] mod-set ({modset_manifest['selection_source']}):")
+    for o in modset_manifest["load_order"]:
+        if o["kind"] == "mod":
+            print(f"      [{o['load_index']}] {o['name'] or o['label']}"
+                  f"  (replace_path x{len(o['replace_path'])}"
+                  f"{', ws='+o['workshop_id'] if o['workshop_id'] else ''})")
+    for w in modset_warnings:
+        print(f"    [!] {w}")
+    (HERE / "active_modset.json").write_text(
+        json.dumps(modset_manifest, indent=1), encoding="utf-8")
 
     # ---- 1. sprite manifest ------------------------------------------------
-    iface_map = build_file_map(vanilla, mod or vanilla, "interface", (".gfx",))
+    iface_map = build_file_map_layers(layers, "interface", (".gfx",))
     sprites, dup_log = build_sprite_manifest(iface_map)
     print(f"[*] parsed {len(iface_map)} effective .gfx files -> "
           f"{len(sprites)} sprites ({len(dup_log)} duplicate-name events)")
@@ -502,10 +954,22 @@ def run(args):
     # texture overlay map (gfx/**). Used to resolve sprite + flag paths.
     # Include .png: some .gfx reference a .png that ships as .dds (engine tries
     # alternate extensions), and some textures ship as real .png.
-    gfx_map = build_file_map(vanilla, mod or vanilla, "gfx", (".dds", ".tga", ".png"))
+    gfx_map = build_file_map_layers(layers, "gfx", (".dds", ".tga", ".png"))
+
+    # ---- 1b. font map + loc set (mod-resolved) -----------------------------
+    font_map = parse_font_map(iface_map)
+    loc_map = resolve_loc(layers, getattr(args, "language", "english"))
+    (HERE / "fonts.json").write_text(
+        json.dumps({"_meta": {"font_count": len(font_map["fonts"]),
+                              "override_count": len(font_map["overrides"]),
+                              "source": font_map["source"]},
+                    **font_map}, indent=1), encoding="utf-8")
+    print(f"[*] font map: {len(font_map['fonts'])} bitmapfonts "
+          f"({len(font_map['overrides'])} language overrides); "
+          f"loc/{getattr(args,'language','english')}: {len(loc_map)} .yml")
 
     # ---- 2. gui layouts ----------------------------------------------------
-    gui_iface = build_file_map(vanilla, mod or vanilla, "interface", (".gui",))
+    gui_iface = build_file_map_layers(layers, "interface", (".gui",))
     gui_index = {}
     gui_parsed = 0
     gui_skipped = []
@@ -634,7 +1098,7 @@ def run(args):
             manifest["sprites"][name] = entry
 
     if do_flags:
-        flag_map = enumerate_flags(vanilla, mod or vanilla)
+        flag_map = enumerate_flags(layers)
         items = sorted(flag_map.items())
         if args.limit:
             items = items[: args.limit]
@@ -678,7 +1142,16 @@ def run(args):
         "failures": len(failures),
         "frame_anomalies": len(frame_anomalies),
         "gui_views": list(gui_index.keys()),
-        "note": "PNG paths are relative to game_assets/; assets/ is gitignored.",
+        "font_count": len(font_map["fonts"]),
+        "loc_yml_count": len(loc_map),
+        "modset": {
+            "selection_source": modset_manifest["selection_source"],
+            "mods": [o["name"] or o["label"] for o in modset_manifest["load_order"]
+                     if o["kind"] == "mod"],
+        },
+        "note": "PNG paths are relative to game_assets/; assets/ is gitignored. "
+                "Asset set is resolved against the active mod-set "
+                "(see active_modset.json).",
     }
     (HERE / "sprites.json").write_text(json.dumps(manifest, indent=1),
                                        encoding="utf-8")
@@ -715,9 +1188,27 @@ def run(args):
 def build_argparser():
     ap = argparse.ArgumentParser(description="Extract the game UI assets for the replay tool.")
     ap.add_argument("--vanilla", default=DEFAULT_VANILLA,
-                    help="Path to the vanilla the game install (default: documented Steam path)")
+                    help="Path to the vanilla the game install. Default comes from the "
+                         "BATTLE_PLAN_VANILLA env var, else the documented generic Steam path. "
+                         "Set BATTLE_PLAN_VANILLA or pass this flag for a non-default drive.")
+    # ---- active mod-set selection (Clausewitz playset over vanilla) --------
     ap.add_argument("--mod", default=DEFAULT_MOD,
-                    help="Path to the mod overlay (default: ../../test). Use '' for vanilla-only.")
+                    help="Legacy single-mod overlay dir (default: ../../test). "
+                         "Use '' for vanilla-only. Superseded by --mods / --use-dlc-load.")
+    ap.add_argument("--mods", default=None,
+                    help="Explicit ORDERED playset: comma list of .mod descriptors "
+                         "(abs paths, or 'mod/foo.mod' relative to --userdata), "
+                         "lowest priority first. Overrides --mod.")
+    ap.add_argument("--use-dlc-load", action="store_true",
+                    help="Resolve the active mod-set from the launcher "
+                         "dlc_load.json under --userdata (authoritative load order).")
+    ap.add_argument("--dlc-load", default=None,
+                    help="Explicit path to a dlc_load.json (implies --use-dlc-load).")
+    ap.add_argument("--userdata", default=DEFAULT_USERDATA,
+                    help="the game user-data dir holding dlc_load.json + mod/*.mod "
+                         "(default: the 'the game' dir above this repo).")
+    ap.add_argument("--language", default="english",
+                    help="Localisation language subdir to resolve (default: english).")
     ap.add_argument("--only", nargs="+", default=["all"],
                     choices=["all", "sprites", "flags"],
                     help="Limit conversion to subsets.")

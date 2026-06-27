@@ -111,3 +111,37 @@ td.na,.na-inline{color:var(--na);font-style:italic}
   background:rgba(16,20,28,.85);color:var(--accent);font-size:16px;z-index:50}
 #loading.hidden{display:none}
 .human{color:var(--accent)}
+
+/* ---- asset fidelity: PROXY badge, swatches, real flags & portraits ---- */
+.srcbadge.proxy{color:#e0b15a;border-color:#5e4c2a;background:#1a1305}
+.chip .swatch{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;
+  vertical-align:middle}
+.chip.humanpersona{border-color:#33597e;color:#9ad0ff}
+.flag{height:18px;border:1px solid var(--border);border-radius:2px;vertical-align:middle;
+  margin-right:4px}
+.flag[style*="none"]{display:none}
+.portrait{width:54px;height:54px;object-fit:cover;border:1px solid var(--border);
+  border-radius:6px;background:var(--panel2)}
+.portrait.broken{display:none}
+.assethandle{font-family:Consolas,monospace;font-size:10px;color:var(--na);
+  word-break:break-all}
+.leaderrow{display:flex;gap:12px;align-items:center;margin-bottom:6px}
+.leadername{font-size:15px;font-weight:600;color:var(--text)}
+.portraitgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));
+  gap:10px;margin-top:6px}
+.pcard{background:var(--panel2);border:1px solid var(--border);border-radius:8px;
+  padding:8px;text-align:center}
+.pcard .portrait{width:64px;height:64px}
+.pname{font-size:12px;font-weight:600;margin-top:5px}
+
+/* ---- OOB command tree ---- */
+.oobtree{display:flex;flex-direction:column;gap:4px;font-size:13px}
+.oobowner{display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap}
+.oobnode{background:var(--panel2);border:1px solid var(--border);border-radius:6px;
+  padding:6px 10px;margin:2px 0}
+.oobnode summary{cursor:pointer;color:var(--text);font-weight:500}
+.oobnode summary::marker{color:var(--accent)}
+.oobleaf{padding:3px 0 3px 18px;color:var(--muted)}
+.oobleaf.indep{padding-left:10px}
+.oobleaf.air{color:#9ad0ff}
+.leadtag{color:var(--accent)}

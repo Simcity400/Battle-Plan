@@ -62,6 +62,21 @@ const FIELD_SOURCES = {
   "divisions.*.in_combat":"M*","combats.*":"M*",
   "map.owner_by_state":"M/D","map.control_by_province":"S/D","map.vp_by_state":"S/D",
   "map.controlled_industry_share":"D","map.front_lines":"D","events.*":"D",
+  // newer schema domains the rich store carries (mirror of schema.FIELD_SOURCES)
+  "countries.*.economy.logistics":"S","countries.*.military.xp.army":"S",
+  "countries.*.intel.agency":"S","countries.*.intel.operatives":"S",
+  "countries.*.commanders.leader":"S","countries.*.commanders.generals":"S",
+  "countries.*.commanders.admirals":"S","countries.*.commanders.advisors":"S",
+  "countries.*.commanders.counts":"S/D","countries.*.mios":"S",
+  "countries.*.extra.special_projects":"S","countries.*.extra.nukes_total":"S",
+  "countries.*.extra.aces":"S","countries.*.extra.convoys_destroyed":"S",
+  "countries.*.human_name":"S","countries.*.faction":"S",
+  "diplomacy_world.wars":"S","diplomacy_world.factions":"S",
+  "order_of_battle.army_groups":"M/S","order_of_battle.armies":"M/S",
+  "order_of_battle.fleets":"M/S","order_of_battle.air_wings":"S",
+  "order_of_battle.by_country":"S/D",
+  "naval_air.region_control":"M","naval_air.air_superiority":"M",
+  "supply.by_province":"M","world.scenario":"S","world_events.fired_events":"S",
 };
 const TAGRE = /^[A-Z]{2,3}$/;
 function srcOf(dotted){
@@ -91,10 +106,54 @@ function fmtNum(v){
 function fmtPct(v){ return isCaptured(v)? (v*100).toFixed(1)+"%" : NA; }
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 function badge(src){ if(!src) return ""; return `<span class="srcbadge${src.indexOf("M*")>=0?" inferred":""}" data-src="${esc(src)}" title="source: ${esc(src)}">${esc(src)}</span>`; }
+// A PROXY confidence travels WITH naval_air/supply data — never "exact" (Codex #4).
+// Render it as a distinct estimate badge so the viewer can't mistake it for a live-exact read.
+function proxyBadge(conf){ if(!conf) return ""; return `<span class="srcbadge proxy" data-src="${esc(conf)}" title="PROXY estimate — confidence: ${esc(conf)} (never exact)">~${esc(conf)}</span>`; }
+
+// ---- asset fidelity (REAL game art where the data supports it) ------------
+// Canonical the game ideology colours (engine constants — presentation styling, not
+// captured data) so politics/party panels match the game's colour language.
+const IDEOLOGY_COLORS = {
+  fascism:"#8a7d39", nazism:"#8a7d39", communism:"#a23b2e", stalinism:"#a23b2e",
+  democratic:"#3a6ea5", conservatism:"#3a6ea5", neutrality:"#5a7a4a",
+  socialism:"#a23b2e", anarchist_communism:"#a23b2e",
+};
+function ideoColor(ide){ return IDEOLOGY_COLORS[(ide||"").toLowerCase()] || "#7a869a"; }
+// token -> readable label WITHOUT inventing a localisation (Codex #2): a
+// deterministic presentation transform of a REAL captured token. Raw token is
+// preserved in the title attribute and the source badge is unchanged.
+function humanizeToken(t){
+  if(t==null) return null;
+  return String(t).replace(/_/g," ")
+    .replace(/([a-z])([0-9])/g,"$1 $2")           // excavation3 -> excavation 3
+    .replace(/\b\w/g,m=>m.toUpperCase()).trim();
+}
+function tokenChip(raw, src){
+  if(raw==null) return "";
+  const h=humanizeToken(raw);
+  return `<span class="chip" title="game token: ${esc(String(raw))}">${esc(h)}</span>`;
+}
+// real PORTRAIT (extracted PNG) for a portrait_gfx handle, else the handle as an
+// honest monospace asset reference (no faked image — Codex #3).
+function portraitImg(gfx, name){
+  const p = gfx && S.assets && S.assets.portraits && S.assets.portraits[gfx];
+  if(p) return `<img class="portrait" loading="lazy" src="/game_assets/${esc(p)}" `+
+    `alt="${esc(name||gfx)}" title="${esc(gfx)}" onerror="this.classList.add('broken')">`;
+  return gfx ? `<span class="assethandle" title="sprite (no extracted image)">${esc(gfx)}</span>` : "";
+}
+// real ruling-party FLAG (TAG_ideology.png) by convention; falls back to nothing.
+function flagImg(tag, ruling){
+  if(!tag) return "";
+  const ide=(ruling||"").toLowerCase();
+  const file = ide ? `${tag}_${ide}__medium.png` : `${tag}__medium.png`;
+  return `<img class="flag" loading="lazy" src="/game_assets/assets/flags/${esc(file)}" `+
+    `alt="${esc(tag)} flag" onerror="this.style.display='none'">`;
+}
 
 // ---- state ----------------------------------------------------------------
 const S = {
   games:null, root:null, gameId:null,
+  assets:null,            // /api/assets: real portrait map + country colors
   series:null,            // compact per-game series (/api/series)
   index:null,             // index.json snapshots[]
   timeline:null,          // timeline.json events[]
@@ -114,6 +173,8 @@ async function jget(url){ const r=await fetch(url); if(!r.ok) throw new Error(ur
 async function boot(){
   try{
     S.games = await jget("/api/games");
+    try{ S.assets = await jget("/api/assets"); }   // real-art index (best-effort)
+    catch(_){ S.assets = {portraits:{}, country_colors:{}, has_assets:false}; }
     buildGameSelector();
     const first = pickDefaultGame();
     if(!first){ $("loading").textContent="No games found in the store. Run build_replay.py or use the demo."; return; }
@@ -287,10 +348,12 @@ async function renderCountry(){
   const humanChip = id.is_human===true ? `<span class="chip human">human player</span>`
     : id.is_human===false ? `<span class="chip">AI</span>`
     : `<span class="chip" title="is_human not captured">human? n/c</span>`;
+  // NOTE: the ruling-party FLAG + ideology swatch are built in renderCountryDeep from
+  // the loaded snapshot's PER-FRAME ruling_party — NOT from series.identity (which is
+  // the last frame and would show a future flag on an earlier frame; Codex review #1).
   $("countryBadges").innerHTML =
     `<span class="chip">${esc(tag)}</span>`+ humanChip +
-    (id.is_major===true?`<span class="chip">major</span>`:"")+
-    (id.ruling_party?`<span class="chip">${esc(id.ruling_party)}</span>`:"");
+    (id.is_major===true?`<span class="chip">major</span>`:"");
 
   // cards from the series at the CURRENT frame (no-fabrication aware)
   const at=k=>S.series.series[tag]?.[k]?.[S.frame];
@@ -301,6 +364,7 @@ async function renderCountry(){
     card("Divisions", fmtNum(at("military.division_count")), srcOf("countries.GER.military.division_count")),
     card("Ships", fmtNum(at("military.num_ships")), srcOf("countries.GER.military.num_ships")),
     card("Manpower (avail)", fmtNum(at("military.manpower.available")), srcOf("countries.GER.military.manpower.available")),
+    card("Fuel", fmtNum(at("economy.fuel.current")), srcOf("countries.GER.economy.fuel.current")),
     card("Stability", fmtPct(at("politics.stability")), srcOf("countries.GER.politics.stability")),
     card("War support", fmtPct(at("politics.war_support")), srcOf("countries.GER.politics.war_support")),
     card("Political power", fmtNum(at("politics.political_power")), srcOf("countries.GER.politics.political_power")),
@@ -315,6 +379,7 @@ async function renderCountry(){
   lineChart("chEco","ecoCov",tag,[
     ["economy.factories.civ","Civ"],["economy.factories.mil","Mil"],
     ["economy.factories.dockyard","Dockyard"],["economy.factories.under_construction","Under constr."]]);
+  lineChart("chFuel","fuelCov",tag,[["economy.fuel.current","Fuel"]]);
   lineChart("chMil","milCov",tag,[
     ["military.division_count","Divisions"],["military.num_ships","Ships"],
     ["military.casualties.killed","Casualties"]]);
@@ -326,14 +391,34 @@ async function renderCountry(){
   // deep panels from the full snapshot (lazy) at the current frame
   const snap=await curSnapshot();
   const c=(snap && snap.countries && snap.countries[tag]) || null;
-  renderCountryDeep(c);
+  renderCountryDeep(c, snap, tag);
 }
 
-function renderCountryDeep(c){
-  const set=(id,html)=>{$(id).innerHTML=html;};
-  if(!c){ ["cLaws","cFocus","cResearch","cDecisions","cStock","cDiplo"]
-      .forEach(id=>set(id,'<div class="empty">snapshot not loaded</div>')); return; }
+function renderCountryDeep(c, snap, tag){
+  const set=(id,html)=>{const el=$(id); if(el) el.innerHTML=html;};
+  const PANELS=["cLaws","cFocus","cResearch","cDecisions","cStock","cDiplo",
+                "cIntel","cLeaders","cProjects","cMios"];
+  if(!c){ PANELS.forEach(id=>set(id,'<div class="empty">snapshot not loaded</div>')); return; }
   const pol=c.politics||{}, fc=c.focus||{}, res=c.research||{}, dip=c.diplomacy||{}, mil=c.military||{};
+  // PER-FRAME ruling-party flag + ideology swatch from THIS frame's snapshot (so an
+  // earlier frame never shows a later government; Codex review #1). Prepend the flag,
+  // append the swatch + human_name to the header that renderCountry already drew.
+  const bd=$("countryBadges");
+  if(bd){
+    const rp=pol.ruling_party;
+    if(rp){
+      const flag = (S.assets&&S.assets.has_assets) ? flagImg(tag, rp) : "";
+      if(flag) bd.insertAdjacentHTML("afterbegin", flag);
+      if(bd.querySelector(".ideoswatch")==null)
+        bd.insertAdjacentHTML("beforeend",
+          `<span class="chip ideoswatch" style="border-color:${ideoColor(rp)}">`+
+          `<span class="swatch" style="background:${ideoColor(rp)}"></span>${esc(rp)}</span>`);
+    }
+    // human_name (MP persona, the new domain) — only when captured
+    if(isCaptured(c.human_name) && bd.querySelector(".humanpersona")==null)
+      bd.insertAdjacentHTML("beforeend",
+        `<span class="chip humanpersona" title="MP lobby persona (human_name) ${esc(srcOf("countries.GER.human_name")||"S")}">👤 ${esc(c.human_name)}</span>`);
+  }
 
   // laws & ideas
   const laws=pol.laws||{};
@@ -369,9 +454,11 @@ function renderCountryDeep(c){
   const techs=res.technologies||[], prog=res.in_progress||[], bon=res.research_bonuses||[];
   let rh='<div class="kv">'+kvRow("Tech count",res.tech_count,"S")+kvRow("Research slots",res.research_slots,"S")+'</div>';
   rh+=`<div class="legendnote" style="margin-top:8px">in progress ${badge("S/M*")} (progress% is M* — ${NA})</div>`;
-  rh+='<div class="taglist">'+(prog.length?prog.map(p=>`<span class="chip">${esc(p.name)}</span>`).join(""):NA)+'</div>';
+  // in_progress carries only a raw token (e.g. "excavation3"); humanize for display,
+  // keep the raw token in the chip title (Codex #2 — presentation transform, not invention).
+  rh+='<div class="taglist">'+(prog.length?prog.map(p=>tokenChip(p.name,"S/M*")).join(""):NA)+'</div>';
   rh+=`<div class="legendnote" style="margin-top:8px">bonuses ${badge("S")}</div><div class="taglist">`+
-    (bon.length?bon.slice(0,20).map(b=>`<span class="chip">${esc(b.name)} ×${esc(String(b.bonus))}</span>`).join(""):NA)+'</div>';
+    (bon.length?bon.slice(0,20).map(b=>`<span class="chip" title="game token: ${esc(String(b.name))}">${esc(humanizeToken(b.name))} ×${esc(String(b.bonus))}</span>`).join(""):NA)+'</div>';
   set("cResearch",rh);
 
   // decisions
@@ -406,7 +493,112 @@ function renderCountryDeep(c){
   const fac=pol.faction;
   dh+=`<div class="kv" style="margin-top:8px">`+kvRow("Faction",fac?fac.name:null,"S")+
       kvRow("Faction leader",fac?(fac.is_leader?"yes":"no"):null,"S")+`</div>`;
+  // world-scoped wars (diplomacy_world.wars) carry CASUALTIES + war score for this
+  // tag's conflicts — surface them (the per-country wars[] only had the opponent set).
+  const dw=(snap&&snap.diplomacy_world)||{}; const wmap=dw.wars||{};
+  const myWars=Object.entries(wmap).filter(([_,w])=>w&&(w.a===tag||w.b===tag));
+  if(myWars.length){
+    dh+=`<div class="legendnote" style="margin-top:10px">wars — casualties &amp; score ${badge("S")}</div>`+
+      '<div class="kv">';
+    for(const [wid,w] of myWars.slice(0,12)){
+      const us=(w.a===tag)?"a":"b", them=(w.a===tag)?w.b:w.a;
+      const ourCas=w[us+"_casualties"], theirCas=w[(us==="a"?"b":"a")+"_casualties"];
+      const score=w["war_score_"+us+"_vs_"+(us==="a"?"b":"a")];
+      dh+=`<div class="key" title="${esc(wid)}">vs ${esc(String(them))} ${badge("S")}</div>`+
+        `<div class="val">${isCaptured(ourCas)?fmtNum(ourCas):"n/c"} lost · `+
+        `${isCaptured(theirCas)?fmtNum(theirCas):"n/c"} infl. · `+
+        `score ${isCaptured(score)?(+score).toFixed(1):"n/c"}</div>`;
+    }
+    dh+='</div>';
+  }
   set("cDiplo",dh);
+
+  // ---- NEW PANEL: Intel agency (S) -------------------------------------
+  const intel=c.intel||{};
+  const ag=intel.agency;
+  if(isCaptured(ag)){
+    const cap=ag.capacity||{};
+    let ih='<div class="kv">'+kvRow("Agency",ag.name,"S")+
+      kvRow("Created",ag.is_created===true?"yes":(ag.is_created===false?"no":null),"S")+
+      kvRow("Upgrade progress",isCaptured(ag.upgrade_progress)?ag.upgrade_progress+"%":null,"S")+
+      kvRow("Current upgrade",ag.current_upgrade?humanizeToken(ag.current_upgrade):null,"S")+
+      kvRow("Max operatives",cap.max_operatives,"S")+
+      kvRow("Usable slots",cap.usable_slots,"S")+
+      kvRow("Counter-intel",cap.defense,"S")+'</div>';
+    const ups=ag.upgrades&&Object.keys(ag.upgrades).length?ag.upgrades:null;
+    if(ups) ih+=`<div class="legendnote" style="margin-top:8px">upgrades ${badge("S")}</div><div class="taglist">`+
+      Object.entries(ups).map(([k,v])=>`<span class="chip" title="game token: ${esc(k)}">${esc(humanizeToken(k))} ${esc(String(v))}</span>`).join("")+'</div>';
+    const ops=(intel.operatives||[]);
+    if(ops.length) ih+=`<div class="legendnote" style="margin-top:8px">operatives ${badge("S")}</div><div class="taglist">`+
+      ops.slice(0,10).map(o=>`<span class="chip">${esc(o.name||("op "+o.op_id))}${isCaptured(o.skill)?(" · skill "+o.skill):""}</span>`).join("")+'</div>';
+    set("cIntel",ih);
+  } else set("cIntel",`<div class="empty">intelligence agency ${badge("S")} ${NA}</div>`);
+
+  // ---- NEW PANEL: Leadership & commanders (S) — real portraits ---------
+  const cmd=c.commanders||{};
+  const lead=cmd.leader;
+  let lh="";
+  if(isCaptured(lead)){
+    lh+=`<div class="leaderrow">${portraitImg(lead.portrait_gfx, lead.name)}`+
+      `<div><div class="leadername">${esc(humanizeToken((lead.name||"").replace(/^[A-Z]{2,3}_/,"")))}</div>`+
+      `<div class="legendnote">leader ${badge("S")}${lead.ideology?` · ${esc(lead.ideology)}`:""}</div>`+
+      (lead.portrait_gfx?`<div class="assethandle" title="portrait sprite">${esc(lead.portrait_gfx)}</div>`:"")+
+      `</div></div>`;
+  } else lh+=`<div class="legendnote">country leader ${badge("S")} ${NA}</div>`;
+  const cn=cmd.counts;
+  if(isCaptured(cn)){
+    lh+='<div class="kv" style="margin-top:8px">'+
+      kvRow("Field marshals",cn.field_marshals,"S/D")+kvRow("Generals",cn.generals,"S/D")+
+      kvRow("Admirals",cn.admirals,"S/D")+kvRow("Advisors",cn.advisors,"S/D")+'</div>';
+  }
+  // a few named commanders w/ portraits + assignment
+  const milLeaders=[].concat(cmd.field_marshals||[],cmd.generals||[],cmd.admirals||[]);
+  if(milLeaders.length){
+    lh+=`<div class="legendnote" style="margin-top:8px">commanders ${badge("S")}</div><div class="portraitgrid">`+
+      milLeaders.slice(0,8).map(g=>{
+        const nm=humanizeToken((g.name||g.token||"").replace(/^[A-Z]{2,3}_/,""));
+        const asn=g.assignment?esc(g.assignment.name||g.assignment.kind):'<span class="na-inline">reserve</span>';
+        return `<div class="pcard">${portraitImg(g.portrait_gfx,g.name)}`+
+          `<div class="pname">${esc(nm)}</div>`+
+          `<div class="legendnote">${esc(g.role||"")}${isCaptured(g.level)?(" · skill "+g.level):""}</div>`+
+          `<div class="legendnote">${asn}</div></div>`;
+      }).join("")+'</div>';
+  }
+  set("cLeaders",lh);
+
+  // ---- NEW PANEL: Special projects / extra (S) — the new domain --------
+  const ex=c.extra;
+  if(isCaptured(ex)){
+    const sp=ex.special_projects||{};
+    let xh='<div class="kv">'+
+      kvRow("Nukes (total)",ex.nukes_total,"S")+
+      kvRow("Nukes ready",ex.nukes_ready_total,"S")+
+      kvRow("Projects started",sp.projects_started,"S")+
+      kvRow("Projects completed",sp.projects_completed,"S")+
+      kvRow("Convoys destroyed",ex.convoys_destroyed,"S")+
+      kvRow("Aces",ex.ace_count,"S")+'</div>';
+    const prog=(sp.active_programs||[]);
+    if(prog.length) xh+=`<div class="legendnote" style="margin-top:8px">active programs ${badge("S")}</div><div class="taglist">`+
+      prog.slice(0,12).map(p=>`<span class="chip">${esc(humanizeToken(p.building||"?"))}${p.province?(" @"+p.province):""}</span>`).join("")+'</div>';
+    const aces=(ex.aces||[]);
+    if(aces.length) xh+=`<div class="legendnote" style="margin-top:8px">aces ${badge("S")}</div><div class="taglist">`+
+      aces.slice(0,10).map(a=>`<span class="chip">${esc(((a.name||"")+" "+(a.surname||"")).trim())}${a.callsign?` "${esc(a.callsign)}"`:""}</span>`).join("")+'</div>';
+    set("cProjects",xh);
+  } else set("cProjects",`<div class="empty">special projects / country extras ${badge("S")} ${NA}<br><span class="legendnote">(this snapshot predates the <code>extra</code> domain)</span></div>`);
+
+  // ---- NEW PANEL: MIOs (S) ---------------------------------------------
+  const mios=c.mios;
+  if(Array.isArray(mios)&&mios.length){
+    let mh=`<div class="legendnote">military-industrial organisations ${badge("S")}</div><div class="kv">`;
+    for(const m of mios.slice(0,12)){
+      mh+=`<div class="key" title="${esc(m.key||"")}">${esc(m.name||humanizeToken(m.key||"MIO"))} ${badge("S")}</div>`+
+        `<div class="val">lvl ${isCaptured(m.level)?m.level:"n/c"}`+
+        `${isCaptured(m.research_bonus)?` · bonus ×${m.research_bonus}`:""}`+
+        `${isCaptured(m.funds)?` · funds ${fmtNum(m.funds)}`:""}</div>`;
+    }
+    mh+='</div>';
+    set("cMios",mh);
+  } else set("cMios",`<div class="empty">MIOs ${badge("S")} ${(Array.isArray(mios)&&!mios.length)?"none":NA}</div>`);
 }
 
 // ---- generic line chart from the compact series ---------------------------
@@ -490,6 +682,84 @@ async function renderMilitary(){
 
   // table
   renderDivTable(set);
+
+  // OOB command tree (order_of_battle): army_groups -> armies -> divisions,
+  // fleets -> task_forces, air_wings -> planes. Scope-aware. (Codew #3 surface)
+  renderOOB(snap, scope);
+}
+
+// ---- OOB command tree ------------------------------------------------------
+function renderOOB(snap, scope){
+  const el=$("oobTree"); if(!el) return;
+  const oob=(snap && snap.order_of_battle)||{};
+  const want = t => scope==="__all__" || t===scope;
+  const ags=(oob.army_groups||[]).filter(a=>want(a.owner));
+  const armies=(oob.armies||[]).filter(a=>want(a.owner));
+  const fleets=(oob.fleets||[]).filter(f=>want(f.owner));
+  const wings=(oob.air_wings||[]).filter(w=>want(w.owner));
+  const byc=oob.by_country||{};
+  if(!ags.length && !armies.length && !fleets.length && !wings.length){
+    el.innerHTML=`<div class="empty">order-of-battle command tree ${badge("M/S")} `+
+      ((snap&&snap.order_of_battle)?"— nothing for this scope/frame":NA)+`</div>`;
+    return;
+  }
+  // resolve unit_leader_id -> commander name from the country's commanders block
+  const cmds={}; const cc=(snap&&snap.countries)||{};
+  for(const [tg,c] of Object.entries(cc)){
+    for(const g of [].concat((c.commanders||{}).field_marshals||[],(c.commanders||{}).generals||[],(c.commanders||{}).admirals||[])){
+      if(g.unit_leader_id!=null) cmds[tg+":"+g.unit_leader_id]=g.name;
+    }
+  }
+  const leaderName=(owner,ref)=>{ // ref like "12:4713"
+    if(!ref) return "";
+    const id=String(ref).split(":")[0];
+    const nm=cmds[owner+":"+id];
+    return nm?` · <span class="leadtag">${esc(humanizeToken(nm.replace(/^[A-Z]{2,3}_/,"")))}</span>`:"";
+  };
+  const armyById={}; armies.forEach(a=>armyById[a.id]=a);
+  let h="";
+  // group army_groups by owner
+  const owners=[...new Set([...ags,...armies,...fleets,...wings].map(x=>x.owner))].sort();
+  for(const owner of owners){
+    const r=byc[owner]||{};
+    h+=`<div class="oobowner"><span class="chip">${esc(owner)}</span>`+
+      `<span class="legendnote">${fmtNum(r.armies)} armies · ${fmtNum(r.divisions_in_armies)} divisions · `+
+      `${fmtNum(r.fleets)} fleets · ${fmtNum(r.ships)} ships · ${fmtNum(r.air_wings)} wings · ${fmtNum(r.planes)} planes ${badge("S/D")}</span></div>`;
+    // army groups for this owner
+    for(const ag of ags.filter(a=>a.owner===owner)){
+      h+=`<details class="oobnode" open><summary>${esc(ag.name||ag.id)}${leaderName(owner,ag.leader)} `+
+        `<span class="legendnote">army group · ${fmtNum(ag.army_refs_resolved)} armies</span></summary>`;
+      for(const ref of (ag.army_refs||[])){ const a=armyById[ref];
+        if(a) h+=`<div class="oobleaf">▸ ${esc(a.name||a.id)}${leaderName(owner,a.leader)} `+
+          `<span class="legendnote">${fmtNum(a.member_count)} divisions</span></div>`;
+      }
+      h+=`</details>`;
+    }
+    // armies NOT under a listed army group
+    const grouped=new Set(); ags.filter(a=>a.owner===owner).forEach(ag=>(ag.army_refs||[]).forEach(r=>grouped.add(r)));
+    const loose=armies.filter(a=>a.owner===owner && !grouped.has(a.id));
+    for(const a of loose){
+      h+=`<div class="oobleaf indep">▸ ${esc(a.name||a.id)}${leaderName(owner,a.leader)} `+
+        `<span class="legendnote">independent army · ${fmtNum(a.member_count)} divisions</span></div>`;
+    }
+    // fleets
+    for(const f of fleets.filter(x=>x.owner===owner)){
+      const tf=(f.task_forces||[]); const ships=tf.reduce((n,t)=>n+((t.ships||[]).length),0);
+      h+=`<details class="oobnode"><summary>${esc(f.name||f.id)}${leaderName(owner,f.leader)} `+
+        `<span class="legendnote">fleet · ${tf.length} task force(s) · ${ships} ships</span></summary>`;
+      for(const t of tf) h+=`<div class="oobleaf">▸ ${esc(t.name||t.id)} `+
+        `<span class="legendnote">${(t.ships||[]).length} ships${t.mission?(" · "+esc(humanizeToken(t.mission))):""}</span></div>`;
+      h+=`</details>`;
+    }
+    // air wings (summary line)
+    const ow=wings.filter(x=>x.owner===owner);
+    if(ow.length){
+      const planes=ow.reduce((n,w)=>n+(w.count||0),0);
+      h+=`<div class="oobleaf air">✈ ${ow.length} air wing(s) · ${fmtNum(planes)} planes `+
+        `<span class="legendnote">${badge("S")}</span></div>`;
+    }
+  }
+  el.innerHTML=h;
 }
 function barOpts(){ return {responsive:true,maintainAspectRatio:false,
   plugins:{legend:{display:false}},
@@ -572,6 +842,10 @@ async function renderCombat(){
   }).join("")+"</tr>").join("")
     : `<tr><td colspan="${cols.length}" class="empty">${captured?"no active combats this snapshot":"combats not captured this snapshot"}</td></tr>`;
 
+  // PROXY sidecars (naval_air region control + air superiority): region-granularity
+  // LIVE estimates that carry their OWN confidence label (never "exact" — Codex #4).
+  renderProxySidecars(snap);
+
   // lifecycle from timeline combat_* events
   const ce=(S.timeline||[]).filter(e=>e.type==="combat_started"||e.type==="combat_ended");
   $("combatLifecycle").innerHTML = ce.length? ce.map(e=>
@@ -581,6 +855,45 @@ async function renderCombat(){
     `<span class="tags">${badge(e.source)}<span class="conf ${esc(e.confidence)}">${esc(e.confidence)}</span></span></div>`).join("")
     : `<div class="empty">No combat lifecycle events in the timeline.<br>`+
       `(Combat start/end are inferred from high-frequency memory sampling — not yet emitted by the diff engine for this replay.)</div>`;
+}
+
+// PROXY estimates (naval_air air-superiority + supply) — strictly badged as
+// region/division PROXY, never "exact". The confidence travels with the data.
+function renderProxySidecars(snap){
+  const el=$("proxyPanel"); if(!el) return;
+  const na=(snap&&snap.naval_air)||{}, sup=(snap&&snap.supply)||{};
+  const haveNA = isCaptured(na.air_superiority)||isCaptured(na.region_control);
+  const haveSup= isCaptured(sup.by_province);
+  if(!haveNA && !haveSup){
+    el.innerHTML=`<div class="empty">live naval/air &amp; supply PROXY sidecars `+
+      `${badge("M")} not captured this snapshot <span class="legendnote">(memory channel absent, or this snapshot predates the sidecars)</span></div>`;
+    return;
+  }
+  let h="";
+  // the PROXY confidence is rendered VERBATIM from the snapshot — never defaulted to a
+  // label the data didn't carry (Codex review #2). Absent confidence => "not captured".
+  const confBadge=conf=> conf ? proxyBadge(conf)
+    : `<span class="srcbadge" title="confidence not captured">~conf n/c</span>`;
+  if(haveNA){
+    const conf=na.confidence;
+    h+=`<div class="legendnote">air superiority / sea-zone control — region granularity ${confBadge(conf)}</div><div class="kv">`;
+    const air=na.air_superiority||{};
+    for(const [rid,v] of Object.entries(air).slice(0,12)){
+      const ctrl=(v&&v.controller)||null;
+      h+=`<div class="key">region ${esc(rid)} ${confBadge(conf)}</div><div class="val${ctrl?"":" na"}">${ctrl?esc(ctrl):"contested / n/c"}</div>`;
+    }
+    h+='</div>';
+  }
+  if(haveSup){
+    const conf=sup.confidence;
+    h+=`<div class="legendnote" style="margin-top:10px">division-province supply ${confBadge(conf)} <b>estimate, not the exact tooltip number</b></div><div class="kv">`;
+    for(const [pid,v] of Object.entries(sup.by_province||{}).slice(0,12)){
+      h+=`<div class="key">prov ${esc(pid)} ${confBadge(conf)}</div>`+
+        `<div class="val">${fmtNum(v.current)} / ${fmtNum(v.capacity)} cap · ${fmtNum(v.divisions)} div</div>`;
+    }
+    h+='</div>';
+  }
+  el.innerHTML=h;
 }
 
 // ===========================================================================

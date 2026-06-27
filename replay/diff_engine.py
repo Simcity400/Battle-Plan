@@ -100,10 +100,92 @@ _EVENT_DOMAIN = {
 }
 
 
+# NO-FABRICATION GATE (Codex-verified 2026-06-27). The LIVE memory channel records
+# DISTINCT provenance ids (live_capture/assembler.py): the `<canonical>_live` suffix
+# convention (tech_live/commanders_live/intel_live/focus_live/production_live/
+# diplomacy_live/projects_live/...) plus a few non-suffix ids (mio, oob_command), and a
+# handful of BARE canonical ids the live reader also emits (state_control / province_
+# control / divisions / designs). A canonical event-GATE may only treat one of these as
+# "captured" when the live channel actually writes THIS reader's SAVE-SHAPED leaves --
+# otherwise the save-shaped reader runs against empty leaves and FABRICATES events
+# (tech_lost / peace / operation_completed / design_created / ...). We therefore FAIL
+# CLOSED: a live id satisfies a save-semantic gate ONLY when it is proven leaf-compatible.
+#
+# Proven SAFE live aliases (audited leaf-by-leaf + reader-direction):
+#   * focus_live -> focus  : writes focus.completed in the same focus-script-id namespace
+#     the save channel uses, and _diff_focus is ADDITIONS-ONLY (n_done - o_done, never
+#     removals) -> a live-empty completed[] can neither fabricate nor drop a focus_completed.
+# Deliberately NOT safe (each writes leaves the reader does NOT read):
+#   * tech_live (writes research.tech_count/slots, NOT research.technologies[] -> tech_lost)
+#   * diplomacy_live (writes diplomacy.at_war[], NOT diplomacy.wars[] -> peace/war_declared;
+#     the `diplomacy` gate also drives _diff_faction_autonomy on politics.* it never writes)
+#   * intel_live (writes intel.agency.*, NOT intel.operations.running[] -> operation_completed)
+#   * production_live (writes production.*, NOT economy.factories/_production_lines)
+#   * commanders_live (writes commanders.army_leaders/navy_leaders, NOT generals/field_marshals/admirals)
+#   * projects_live (writes top-level special_projects, NOT country.projects)
+#   * mio (writes top-level mio_live, NOT designs.equipment_variants / country.mios)
+#   * oob_command (writes order_of_battle.armies, but the army-id namespace vs the save
+#     OOB is unproven AND _diff_order_of_battle emits army_disbanded for a-only ids -> a
+#     mixed save->live-empty pair could fabricate mass disbands; left UNPROVEN -> fail closed)
+_LIVE_DOMAIN_ALIASES = {
+    "focus": ("focus_live",),  # the ONLY leaf-compatible, additions-only-safe live alias
+}
+
+# BARE canonical ids the live channel records that are NOT leaf-compatible with their
+# gated reader, so the MEMORY channel must NOT let them satisfy that gate (the SAVE
+# channel still can, via its own exact-membership check). Today only "designs": the live
+# `designs` reader writes designs.division_templates ONLY -- it explicitly does NOT write
+# designs.equipment_variants (-> design_created) nor country.mios (-> mio_leveled), both
+# of which the "designs" gate drives. (state_control/province_control/divisions ARE
+# leaf-compatible -- they write the controller / divisions[] leaves their readers read.)
+_MEMORY_UNSAFE_CANONICAL = frozenset({"designs"})
+
+
+def _matches_domain(domain_list, domain: str) -> bool:
+    """True if a canonical event-gate `domain` is satisfied by a MEMORY-channel
+    `domain_list`. (Called ONLY from _domain_is_memory; the save channel uses an exact
+    membership check.) No-fabrication gate: a bare canonical id satisfies the gate unless
+    it is a known leaf-INcompatible live id (_MEMORY_UNSAFE_CANONICAL); otherwise only a
+    PROVEN-safe live alias (_LIVE_DOMAIN_ALIASES) counts. Any other `<domain>_live` /
+    live id FAILS CLOSED -- the save-shaped reader runs only where its data really is."""
+    if domain in domain_list:
+        return domain not in _MEMORY_UNSAFE_CANONICAL
+    return any(a in domain_list for a in _LIVE_DOMAIN_ALIASES.get(domain, ()))
+
+
+# ---------------------------------------------------------------------------
+# Provenance / channel-domains helpers (single source of truth)
+#
+# Two channel primitives — `_domain_is_memory` and `_domain_is_save` — answer
+# "did the <memory|save> channel capture <domain> in this snapshot?". Everything
+# else derives from them: `_domain_present` = memory OR save; `_provenance_recorded`
+# = is ANY channel block present at all. Kept as one cluster so the channel logic
+# lives in exactly one place.
+# ---------------------------------------------------------------------------
 def _domain_is_memory(snap: Dict[str, Any], domain: str) -> bool:
+    """True if the MEMORY channel captured `domain` (honors the `<domain>_live`
+    alias + live-id map so a pure-live capture's diff still runs)."""
     prov = (snap or {}).get("provenance") or {}
     mem = prov.get("memory") or {}
-    return bool(mem.get("captured")) and domain in (mem.get("domains") or [])
+    return bool(mem.get("captured")) and _matches_domain(mem.get("domains") or [], domain)
+
+
+def _domain_is_save(snap: Dict[str, Any], domain: str) -> bool:
+    """True if the SAVE channel captured `domain` (canonical ids only)."""
+    prov = (snap or {}).get("provenance") or {}
+    sav = prov.get("save") or {}
+    return bool(sav.get("captured")) and domain in (sav.get("domains") or [])
+
+
+def _domain_present(snap: Dict[str, Any], domain: str) -> bool:
+    """True if EITHER channel captured `domain`."""
+    return _domain_is_memory(snap, domain) or _domain_is_save(snap, domain)
+
+
+def _provenance_recorded(snap: Dict[str, Any]) -> bool:
+    """True if this snapshot states its provenance at all (memory or save block)."""
+    prov = (snap or {}).get("provenance") or {}
+    return prov.get("memory") is not None or prov.get("save") is not None
 
 
 def _confidence_for(domain: str, a: Dict[str, Any], b: Dict[str, Any]) -> str:
@@ -111,12 +193,6 @@ def _confidence_for(domain: str, a: Dict[str, Any], b: Dict[str, Any]) -> str:
     if _domain_is_memory(a, domain) and _domain_is_memory(b, domain):
         return "exact"
     return "interval"
-
-
-def _domain_is_save(snap: Dict[str, Any], domain: str) -> bool:
-    prov = (snap or {}).get("provenance") or {}
-    sav = prov.get("save") or {}
-    return bool(sav.get("captured")) and domain in (sav.get("domains") or [])
 
 
 def _source_for(domain: str, a: Dict[str, Any], b: Dict[str, Any]) -> str:
@@ -201,12 +277,6 @@ def diff_snapshots(a: Dict[str, Any], b: Dict[str, Any],
 
     events.sort(key=_event_sort_key)
     return events
-
-
-def _provenance_recorded(snap: Dict[str, Any]) -> bool:
-    """True if this snapshot states its provenance at all (memory or save block)."""
-    prov = (snap or {}).get("provenance") or {}
-    return prov.get("memory") is not None or prov.get("save") is not None
 
 
 def _both_captured(a: Dict[str, Any], b: Dict[str, Any], domain: str) -> bool:
@@ -434,15 +504,6 @@ def _diff_countries(a: Dict[str, Any], b: Dict[str, Any], emit,
             _diff_market_extra(tag, old, new, emit)
 
 
-def _domain_present(snap: Dict[str, Any], domain: str) -> bool:
-    prov = (snap or {}).get("provenance") or {}
-    for ch in ("memory", "save"):
-        block = prov.get(ch) or {}
-        if block.get("captured") and domain in (block.get("domains") or []):
-            return True
-    return False
-
-
 def _diff_focus(tag, old, new, emit) -> None:
     o_done = set((old.get("focus") or {}).get("completed") or [])
     n_done = set((new.get("focus") or {}).get("completed") or [])
@@ -531,7 +592,11 @@ def _diff_research(tag, old, new, emit) -> None:
                 emit("tech_lost", subject=tag, key=name,
                      **{"from": o_tech[name]}, to=lvl,
                      detail={"note": "level decreased (save rollback / civil war?)"})
-    # tech that disappeared entirely = tech_lost
+    # tech that disappeared entirely = tech_lost.
+    # NOTE: this assumes the captured technologies list is COMPLETE in both
+    # snapshots. A truncated/partial tech list in `new` would make still-known
+    # techs look "lost"; the _both_captured("designs"/tech) provenance gate is
+    # what guarantees we only diff a fully-captured pair.
     for name in set(o_tech) - set(n_tech):
         emit("tech_lost", subject=tag, key=name, **{"from": o_tech[name]}, to=None)
     o_slots, n_slots = o_res.get("research_slots"), n_res.get("research_slots")
@@ -1255,12 +1320,63 @@ def _event_sort_key(ev: Dict[str, Any]) -> Tuple:
             ev.get("type") or "", str(ev.get("key") or ""))
 
 
+# A distinct sentinel for a genuinely-absent/None field so it can never collide
+# with the literal STRING "None" once stringified (Codex: `str(None) == "None"` let
+# a marker carrying the literal "None" supersede a real `from=None` diff).
+_NONE = object()
+
+
+def _dedupe_atom(v: Any) -> Any:
+    """Identity atom for a dedupe field: None maps to a unique sentinel (NOT the
+    string "None"); everything else stringifies as before so a numeric `1` and the
+    string `"1"` still match (the established behavior)."""
+    return _NONE if v is None else str(v)
+
+
 def _dedupe_key(ev: Dict[str, Any]) -> Tuple:
     # Include 'from' so an A->B flip and a B->A flip are NOT collapsed (P2 #8), and
     # 'object' so e.g. two subject_created with different overlords don't collide
-    # (Codex 2nd-pass P2).
-    return (ev.get("type"), str(ev.get("key")), str(ev.get("from")),
-            str(ev.get("to")), str(ev.get("subject")), str(ev.get("object")))
+    # (Codex 2nd-pass P2). None != the literal "None" (Codex: _dedupe_atom sentinel).
+    return (ev.get("type"), _dedupe_atom(ev.get("key")), _dedupe_atom(ev.get("from")),
+            _dedupe_atom(ev.get("to")), _dedupe_atom(ev.get("subject")),
+            _dedupe_atom(ev.get("object")))
+
+
+# Paired inverse event TYPES where the DIRECTION of the change lives in the type name,
+# not in from/to (Codex-verified 2026-06-27). The two members of each pair describe the
+# SAME underlying identity in opposite directions, so for the marker-oscillation
+# "last marker wins" logic they must share ONE identity family — otherwise a later
+# reversing marker of the OPPOSITE type is invisible to the diff and the (now-reversed)
+# earlier marker still supersedes a survivor.
+_PAIR_FAMILIES = {
+    "faction_joined": "faction_membership", "faction_left": "faction_membership",
+    "idea_gained": "idea_presence", "idea_lost": "idea_presence",
+    "tech_researched": "tech_state", "tech_lost": "tech_state",
+    "subject_created": "subject_relation", "subject_freed": "subject_relation",
+    "war_declared": "war_state", "peace": "war_state",
+}
+
+# Event types whose subject/object are DIRECTION-bearing (subject = the NEW owner, object
+# = the OLD owner), so they must be EXCLUDED from the identity — leaving (type, key) — or
+# an A->B and a B->A flip land in different buckets and the oscillation guard fails.
+_DIRECTIONAL_SUBJECT_OBJECT = frozenset({
+    "state_owner_change", "state_controller_change", "province_controller_change",
+})
+
+
+def _dedupe_identity(ev: Dict[str, Any]) -> Tuple:
+    """Direction-AGNOSTIC identity of the changing thing (Codex-verified). Used to group
+    a diff with the markers that touch the SAME identity so the LAST (net) marker decides
+    supersession. Strips the value/direction (from/to is never part of identity); folds
+    paired inverse TYPES into one family; and drops subject/object for the owner/controller
+    types where those fields encode direction. The FULL _dedupe_key (with type + from/to +
+    subject/object) is still what the last marker is COMPARED against."""
+    typ = ev.get("type")
+    fam = _PAIR_FAMILIES.get(typ, typ)
+    if typ in _DIRECTIONAL_SUBJECT_OBJECT:
+        return (fam, _dedupe_atom(ev.get("key")))
+    return (fam, _dedupe_atom(ev.get("key")),
+            _dedupe_atom(ev.get("subject")), _dedupe_atom(ev.get("object")))
 
 
 def build_timeline(snapshots: List[Dict[str, Any]],
@@ -1303,23 +1419,34 @@ def build_timeline(snapshots: List[Dict[str, Any]],
 
 
 def _merge_dedupe(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Sort, then drop a diff-derived event when an exact marker covers the same
-    (type,key,from,to,subject). The dedupe window is INTERVAL-AWARE (Codex P2 #8):
+    """Sort, then drop a diff-derived event when an exact marker reports the SAME net
+    transition over the diff's window. The dedupe window is INTERVAL-AWARE (Codex P2 #8):
 
-      * for an interval diff, a marker supersedes it if the marker hour lies inside
-        the diff's interval (interval_start_hour, hour_index] — exactly the window
-        the change is known to have occurred in (handles monthly saves where the
-        marker can be >24h before the later bound);
+      * for an interval diff, the window is (interval_start_hour, hour_index] — exactly
+        the span the change is known to have occurred in (handles monthly saves where
+        the marker can be >24h before the later bound);
       * for an exact (memory) diff, only a marker at the same tick supersedes it
         (no fuzzy window — hourly memory must not eat a real repeated flip).
+
+    NET-MARKER RULE (Codex-verified 2026-06-27, fixes the oscillation drop): a diff is
+    superseded only when the LAST marker for that diff's IDENTITY in the window agrees
+    with the diff's full (type,from,to,subject,object) key. Identity is direction-
+    agnostic (`_dedupe_identity`: strips from/to, folds paired inverse types into one
+    family, drops the directional subject/object of owner/controller events). So an
+    A->B->A->B oscillation no longer lets an EARLIER, already-reversed A->B marker eat the
+    net A->B endpoint diff — if the last marker reversed the change, the marker's key
+    differs from the diff's and the endpoint diff SURVIVES. Ties at the max hour with
+    >1 distinct key FAIL OPEN (keep the diff): never delete a real endpoint on ambiguity.
     """
     events = sorted(events, key=_event_sort_key)
-    marker_hours: Dict[Tuple, List[int]] = {}
+    # identity -> chronological list of (hour, full_dedupe_key) for exact markers.
+    markers_by_identity: Dict[Tuple, List[Tuple[int, Tuple]]] = {}
     for ev in events:
         if ev.get("source") == "marker" and ev.get("confidence") == "exact":
             hi = ev.get("hour_index")
             if hi is not None:
-                marker_hours.setdefault(_dedupe_key(ev), []).append(hi)
+                markers_by_identity.setdefault(_dedupe_identity(ev), []).append(
+                    (hi, _dedupe_key(ev)))
 
     kept: List[Dict[str, Any]] = []
     for ev in events:
@@ -1329,16 +1456,24 @@ def _merge_dedupe(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         k = _dedupe_key(ev)
         hi = ev.get("hour_index")
         superseded = False
-        if hi is not None and k in marker_hours:
+        marks = markers_by_identity.get(_dedupe_identity(ev)) if hi is not None else None
+        if marks:
             if ev.get("confidence") == "interval":
                 det = ev.get("detail") or {}
                 start = det.get("interval_start_hour")
                 if not isinstance(start, int):
                     start = (det.get("interval") or {}).get("start_hour")
                 lo = start if isinstance(start, int) else hi - 1
-                superseded = any(lo < mh <= hi for mh in marker_hours[k])
+                in_window = [(mh, fk) for mh, fk in marks if lo < mh <= hi]
             else:  # exact: same-tick only
-                superseded = any(mh == hi for mh in marker_hours[k])
+                in_window = [(mh, fk) for mh, fk in marks if mh == hi]
+            if in_window:
+                # The LAST (net) marker for this identity decides. Ties at the latest
+                # hour with conflicting keys are ambiguous -> fail open (keep the diff).
+                max_h = max(mh for mh, _ in in_window)
+                last_fks = [fk for mh, fk in in_window if mh == max_h]
+                if len(set(last_fks)) == 1:
+                    superseded = (last_fks[-1] == k)
         if not superseded:
             kept.append(ev)
     return kept

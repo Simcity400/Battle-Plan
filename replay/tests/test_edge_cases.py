@@ -223,6 +223,76 @@ class TestIntervalAwareDedupe(unittest.TestCase):
         self.assertEqual((owner_evs[1]["from"], owner_evs[1]["to"]), ("B", "A"))
 
 
+class TestMarkerOscillationNetEndpoint(unittest.TestCase):
+    """Defect-2 regression (Codex-verified): within ONE merge window an A->B->A->B
+    oscillation of exact markers must NOT let an EARLIER, already-reversed A->B marker
+    supersede the net endpoint diff. Only the LAST (net) marker for that identity decides.
+    """
+
+    def _owner_marker(self, frm, to, hour, date):
+        # mirror _diff_states' owner-change emit shape (subject=new, object=old).
+        return schema.make_event("state_owner_change", key="1",
+                                 **{"from": frm}, to=to,
+                                 subject=(to or frm), object=frm,
+                                 source="marker", confidence="exact",
+                                 hour_index=hour, date=date)
+
+    def test_oscillation_keeps_net_endpoint_when_last_marker_reverses(self):
+        # interval s1(owner=A)@hour0 -> s2(owner=B). Net endpoint diff = A->B. Markers
+        # oscillate A->B, B->A, A->B, B->A: the LAST marker is B->A (disagrees with the
+        # A->B endpoint), so the endpoint diff MUST survive (the snapshot pair is the
+        # authoritative endpoint; the markers don't reach B).
+        s1 = _snap("1936.1.1.0", save_domains=["state_ownership"])
+        s2 = _snap("1936.2.1.0", save_domains=["state_ownership"])
+        _state(s1, 1, owner="A"); _state(s2, 1, owner="B")
+        h = lambda d: schema.date_to_hour_index(d)
+        s2["events"] = [
+            self._owner_marker("A", "B", h("1936.1.5.0"), "1936.1.5.0"),
+            self._owner_marker("B", "A", h("1936.1.10.0"), "1936.1.10.0"),
+            self._owner_marker("A", "B", h("1936.1.15.0"), "1936.1.15.0"),
+            self._owner_marker("B", "A", h("1936.1.20.0"), "1936.1.20.0"),  # last = reversal
+        ]
+        tl = diff_engine.build_timeline([s1, s2])
+        diffs = [e for e in tl if e["type"] == "state_owner_change"
+                 and e.get("source") != "marker"]
+        # the net A->B endpoint diff is preserved (NOT eaten by the earlier A->B marker).
+        self.assertEqual(len(diffs), 1, tl)
+        self.assertEqual((diffs[0]["from"], diffs[0]["to"]), ("A", "B"))
+
+    def test_oscillation_dedupes_endpoint_when_last_marker_agrees(self):
+        # Same interval + endpoint A->B, but the LAST marker is A->B (agrees with the
+        # endpoint) -> the diff IS superseded; exactly the marker survives at the endpoint.
+        s1 = _snap("1936.1.1.0", save_domains=["state_ownership"])
+        s2 = _snap("1936.2.1.0", save_domains=["state_ownership"])
+        _state(s1, 1, owner="A"); _state(s2, 1, owner="B")
+        h = lambda d: schema.date_to_hour_index(d)
+        s2["events"] = [
+            self._owner_marker("A", "B", h("1936.1.5.0"), "1936.1.5.0"),
+            self._owner_marker("B", "A", h("1936.1.10.0"), "1936.1.10.0"),
+            self._owner_marker("A", "B", h("1936.1.20.0"), "1936.1.20.0"),  # last = A->B
+        ]
+        tl = diff_engine.build_timeline([s1, s2])
+        owner = [e for e in tl if e["type"] == "state_owner_change"]
+        diffs = [e for e in owner if e.get("source") != "marker"]
+        self.assertEqual(diffs, [])  # endpoint diff superseded by the agreeing last marker
+        # the A->B markers remain (markers are never dropped by the dedupe).
+        self.assertTrue(any(e.get("source") == "marker"
+                            and (e["from"], e["to"]) == ("A", "B") for e in owner))
+
+    def test_single_marker_still_dedupes_normal_case(self):
+        # The intended normal case (one change, one agreeing marker) MUST still dedupe.
+        s1 = _snap("1936.1.1.0", save_domains=["state_ownership"])
+        s2 = _snap("1936.2.1.0", save_domains=["state_ownership"])
+        _state(s1, 1, owner="A"); _state(s2, 1, owner="B")
+        s2["events"] = [self._owner_marker("A", "B",
+                                           schema.date_to_hour_index("1936.1.15.0"),
+                                           "1936.1.15.0")]
+        tl = diff_engine.build_timeline([s1, s2])
+        diffs = [e for e in tl if e["type"] == "state_owner_change"
+                 and e.get("source") != "marker"]
+        self.assertEqual(diffs, [])  # the lone agreeing marker supersedes the diff
+
+
 class TestSameHourCoalesce(unittest.TestCase):
     def test_complementary_same_hour_snapshots_do_not_fabricate(self):
         # s_mem has owner (memory), s_save has focus (save); same hour. Diffing

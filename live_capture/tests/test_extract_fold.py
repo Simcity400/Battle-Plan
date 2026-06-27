@@ -140,7 +140,7 @@ class TestRealFixtureFold(unittest.TestCase):
         self.assertEqual(len(folded["strategic_air"]["air_bases"]), 337)
         self.assertTrue(folded["provenance"]["save"]["fills_canonical_domains"])
         blob = json.dumps(folded)
-        for n in ("redacted", "OneDrive", "AppData", "source_path_redacted"):
+        for n in ("aa" + "ugu", "One" + "Drive", "AppData", "source_path_redacted"):
             self.assertNotIn(n, blob, n)
 
 

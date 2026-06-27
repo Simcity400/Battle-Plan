@@ -12,6 +12,8 @@ HOI4 interface from replay data.
 | `extract.py`, `paradox_parser.py` | yes | the pipeline + Clausewitz-script parser |
 | `sprites.json` | yes | sprite-name -> texture/frame **metadata** (paths, dims, frame counts) — no art bytes |
 | `gui/*.json` + `gui/_index.json` | yes | parsed window layouts (geometry / sprite refs / text) |
+| `fonts.json` | yes | `core.gfx` bitmapfont name -> glyph-atlas path map (+ per-language overrides) |
+| `active_modset.json` | yes | the resolved active mod-set: ordered load order, names, workshop ids, versions, `replace_path` |
 | `README.md`, `.gitignore` | yes | this file + ignore rules |
 | `assets/**` | **NO (gitignored)** | the converted PNGs (Paradox art) |
 | `extract_report.json` | **NO (gitignored)** | diagnostics (failures/anomalies; may hold relative texture paths) |
@@ -22,25 +24,58 @@ HOI4 interface from replay data.
 > and the parsed layouts are committed. No personal home path is baked into any
 > committed file — install paths come from CLI args / a documented default.
 
-## Regenerate from a local install
+## Mod awareness — resolve against the SELECTED mod-set, not vanilla
+
+The replay UI must render the UI **as the recorded game's mod presents it** (plan §K).
+Resolution is parameterized by an **active mod-set**: an ordered list of mods layered over
+vanilla, per Clausewitz rules.
+
+- **File-level override** by relative path — for a given relpath the LAST source in
+  `[vanilla, mod1, mod2, …]` that ships it wins (later mod beats earlier beats vanilla).
+- **`replace_path`** (from each mod's `.mod` descriptor) replaces **one exact directory's**
+  lower-layer files — **non-recursive**: `replace_path="common/units"` does *not* cover
+  `common/units/names_divisions/` (that needs its own entry; AMSB's descriptor lists both,
+  which is the proof). Implemented as "drop lower-layer files whose immediate parent dir ==
+  the replace_path dir, then add this mod's files."
+- **Load order** is taken from the launcher's `dlc_load.json` (`enabled_mods`, authoritative);
+  vanilla is the base. Dependencies are *not* auto-loaded (launcher metadata only).
+- **Single mod AND playset** are both supported; **vanilla-only** (empty mod-set) stays valid.
+
+`active_modset.json` records the resolved order so the app can auto-select the matching set
+per replay and warn on mismatch (the §K safeguard).
+
+### Selecting the mod-set
 
 ```bash
 cd game_assets
-# defaults: --vanilla = the documented Steam path, --mod = ../../test
-python extract.py
-# point at your own install / mod:
+# AUTHORITATIVE: read the launcher's enabled mods + load order from dlc_load.json
+python extract.py --use-dlc-load
+# explicit ORDERED playset (lowest priority first; .mod descriptors):
+python extract.py --mods "mod/base.mod,mod/test.mod"
+# vanilla-only:
+python extract.py --mod ""
+# point at another install / user-data dir:
 python extract.py --vanilla "D:/Steam/steamapps/common/Hearts of Iron IV" \
-                  --mod "/path/to/mod/test"
+                  --userdata "D:/Documents/Paradox Interactive/Hearts of Iron IV"
 ```
 
+The legacy `--mod <dir>` single-overlay default (`../../test`) still works; it now auto-finds the
+sibling `<dir>.mod` descriptor for `replace_path`, falling back to a path-only layer if absent.
+
 Requires Python 3.11+ and Pillow (`pip install pillow`). A full run converts
-~33k PNGs and takes ~8 min; the manifest/layouts alone are instant.
+~33k PNGs and takes ~8 min; the manifest/layouts/fonts/modset alone are instant
+(`--manifest-only`).
 
 ### Useful flags
 
 | Flag | Effect |
 |---|---|
-| `--manifest-only` | parse `.gfx`/`.gui` only; skip texture conversion (fast) |
+| `--use-dlc-load` | resolve the active mod-set from the launcher `dlc_load.json` (authoritative load order) |
+| `--mods A.mod,B.mod` | explicit ordered playset (overrides `--mod`) |
+| `--dlc-load PATH` | explicit `dlc_load.json` path |
+| `--userdata DIR` | HOI4 user-data dir (holds `dlc_load.json` + `mod/*.mod`) |
+| `--language english` | localisation subdir to resolve |
+| `--manifest-only` | parse `.gfx`/`.gui`/fonts/loc/modset only; skip texture conversion (fast) |
 | `--only sprites` / `--only flags` | convert just one pass |
 | `--merge` | with a partial `--only` pass, keep the other section of an existing `sprites.json` |
 | `--categories goals,ideas` | convert bytes only for those sprite categories (others get metadata only) |
@@ -126,9 +161,19 @@ Rules for the UI agent:
 
 ## Layouts parsed (`gui/`)
 
-`topbar`, `research`, `production`, `national_focus`, `diplomacy`, `decisions`,
-`province_state`, `construction`, `land_combat`, `naval_combat`, `combat_log`,
-`menubar`. See `gui/_index.json` for element-type counts per view.
+All **77 in-scope core in-game views** (plan §C.4 group 2 — the replay target),
+incl. the tech/doctrine **tree** views (`tech_tree`, `doctrine_tree`) and the focus
+tree, topbar/menubar/clock/minimap/alerts, state/politics/production/construction/
+deployment, the five designers, decisions/operations, diplomacy/trade/peace, intel/
+operatives, officer-corps/leaders/trait-trees, army/navy/air mgmt + battle-plan tools,
+logistics, all combat windows, unit/division detail, events/popups, war/insignia.
+The **~28 frontend/lobby** files (group 0) and the per-nation `*_scripted_gui` overlays
+(group 1) are intentionally excluded. `PRIORITY_GUI` in `extract.py` is the editable
+list — add a stem to parse another view. See `gui/_index.json` for element-type counts.
+
+> **Mod-resolved:** under the user's active mod-set (AMSB - DEV), the mod overrides the
+> **vanilla `topbar`, tech-tree, doctrine-tree, battle-plan-tools, division/tank designer,
+> unitview and popupwindow** `.gui` — so these parse from the mod, not vanilla.
 
 ## Known limitations / what is NOT captured
 

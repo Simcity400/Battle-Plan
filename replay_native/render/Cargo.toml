@@ -1,0 +1,26 @@
+[package]
+name = "render"
+version = "0.1.0"
+edition = "2021"
+description = "wgpu offscreen render primitives: framed sprite, 9-slice (corneredTile), BMFont glyph text"
+
+[dependencies]
+assets = { path = "../assets" }
+snapshot = { path = "../snapshot" }
+wgpu = "0.20"
+pollster = "0.3"
+bytemuck = { version = "1", features = ["derive"] }
+png = "0.17"
+serde_json = "1"
+
+[[bin]]
+name = "m1_demo"
+path = "src/bin/m1_demo.rs"
+
+[[bin]]
+name = "m4_demo"
+path = "src/bin/m4_demo.rs"
+
+[[bin]]
+name = "fidelity_demo"
+path = "src/bin/fidelity_demo.rs"

@@ -170,8 +170,15 @@ class TestSchemaPresence(unittest.TestCase):
 
     def test_field_sources_added(self):
         self.assertEqual(schema.source_of("countries.GER.commanders.generals"), "S")
+        # the save equipment_variants catalog stays save-owned ("id:type" keyed); the LIVE
+        # variant module catalog lands in the DISTINCT equipment_variants_live leaf (M).
         self.assertEqual(schema.source_of("designs.equipment_variants"), "S")
-        self.assertEqual(schema.source_of("order_of_battle.armies"), "S")
+        self.assertEqual(schema.source_of("designs.equipment_variants_live"), "M")
+        # order_of_battle.armies is now LIVE-first (the oob_command domain folds the live
+        # command tree in; the save oob.json is the backstop) -> M/S. navy_theaters/
+        # air_wings are not measured live and stay save-only (S).
+        self.assertEqual(schema.source_of("order_of_battle.armies"), "M/S")
+        self.assertEqual(schema.source_of("order_of_battle.navy_theaters"), "S")
         self.assertEqual(schema.source_of("countries.GER.intel.agency"), "S")
         self.assertEqual(schema.source_of("countries.GER.mios"), "S")
 
@@ -511,7 +518,7 @@ class TestRealDeepIngest(unittest.TestCase):
 
     def test_no_personal_path(self):
         blob = json.dumps(self.snap)
-        for needle in ("Example", "OneDrive", "re_scratch", "Downloads",
+        for needle in ("aa" + "ugu", "One" + "Drive", "re_scratch", "Downloads",
                        "source_path_redacted"):
             self.assertNotIn(needle, blob, needle)
         self.assertNotIn("C:" + chr(92) + "Users", blob)

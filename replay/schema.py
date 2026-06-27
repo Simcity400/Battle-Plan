@@ -49,6 +49,92 @@ DOMAINS = (
     "naval_air",         # naval region control + air superiority (live, proxy/region)
     "supply",            # live supply proxy (where troops are; confidence-badged)
     "weather",           # live per-region temperature + phenomenon (M; no save oracle)
+    "projects_live",     # LIVE special-projects/facilities/scientists pools (M; distinct
+                         # from the SAVE-sourced per-country "projects" domain below)
+    "fuel_live",         # LIVE per-country national fuel -> countries.*.economy.fuel.{current,
+                         # max} (M; shares the save economy.fuel home, tracked under a DISTINCT
+                         # live id). Portable Ghidra pointer chain; max_fuel 71/71 EXACT.
+    "supply_inputs",     # LIVE supply solver INPUTS (per-province efficiency/draw) -> badged
+                         # signals on snap["supply"] (M; NOT the exact per-province supply,
+                         # which is provably not stored — distinct from the "supply" proxy).
+    # LIVE provenance ids the assembler emits for per-entity live domains (Codex
+    # review #7: these are appended to provenance.memory.domains, so they must be
+    # canonical here too):
+    "country_misc",          # convoys_destroyed/accidents/ace_count/cosmetic_tag (M)
+    "mio",                   # LIVE MIO pool -> top-level mio_live (M)
+    "ships",                 # LIVE per-ship OOB -> order_of_battle.ships (M)
+    # LIVE per-country domains that fold into the SAME canonical save HOMES
+    # (research/commanders/intel) but are tracked under DISTINCT *_live provenance
+    # ids so the live memory channel never collides with the save channel's
+    # canonical "tech"/"commanders"/"intel" ids (Codex: distinct-live-id strategy).
+    "tech_live",             # LIVE research counts + active_research -> countries.*.research (M)
+    "commanders_live",       # LIVE unit-leaders -> countries.*.commanders.{army,navy}_leaders (M)
+    "intel_live",            # LIVE agency scalars -> countries.*.intel.agency.* (M)
+    "focus_live",            # LIVE national-focus state -> countries.*.focus.* (M; shares the
+                             # save "focus" home, tracked under a DISTINCT live id)
+    "production_live",       # LIVE stockpile + production lines -> countries.*.production (M;
+                             # a NEW live-only home, distinct from the save "production" domain
+                             # which folds into economy/military)
+    "diplomacy_live",        # LIVE wars/at-war/casualties/faction-group -> countries.*.diplomacy
+                             # (at_war/casualties/faction_group, M) + a top-level live sidecar
+                             # snap["diplomacy_live"] (war_relations + faction_members). Distinct
+                             # from the SAVE "diplomacy" id (which folds diplomacy.wars +
+                             # diplomacy_world).
+    "diplo_relations",       # LIVE bilateral RELATIONS (diplo_relations_live, M) -> countries.*.
+                             # diplomacy.{opinion (live-first onto the save-shared leaf),
+                             # relation_flags, overlord, autonomy_state, autonomy_ratio}.
+                             # Distinct from the diplomacy_live id (wars/factions) -- this is the
+                             # opinion/flags/subjects matrix the save's opinion leaf mirrors.
+    "leader_detail",         # LIVE unit-leader SKILL + assigned-TRAIT set (leader_skill_traits_
+                             # live, M) -- an OPT-IN enrichment that joins skill/traits onto the
+                             # commanders_live army/navy leader records by unit_leader_id. NO new
+                             # home; it adds `skill`/`traits` keys to existing leader dicts.
+    "politics_live",         # LIVE per-country politics -> countries.*.politics (party_popularities
+                             # /ruling_party/ideas/idea_count/election_frequency/party_count/
+                             # low_confidence, M; shares the save politics home, tracked under a
+                             # DISTINCT live id). political_power stays country_scalars-owned.
+    "oob_command",           # LIVE OOB command hierarchy -> order_of_battle.{armies,army_groups,
+                             # fleets,theatres} + membership/leader/owner (M; shares the save
+                             # "order_of_battle" home, tracked under a DISTINCT live id). The
+                             # per-SHIP order_of_battle.ships leaf is owned by the "ships" id.
+    # --- LIVE EXTRACT-residual domains wired from the deep-crack push (all M; each shares a
+    # save home under a DISTINCT live id OR a NEW live-only home/leaf). ---
+    "world_meta",            # LIVE scenario dates (world_extract_live.read_scenario_meta) ->
+                             # world.scenario.{current_date_live,start_date_live} (M; the save
+                             # "world" domain owns scenario, so these are DISTINCT _live keys).
+                             # world_tension is COMPUTED-not-stored -> NEVER folded.
+    "construction_orders",   # LIVE construction queue + battle-plan orders + opinion-modifier
+                             # decomposition (construction_orders_live, M) -> countries.*.
+                             # production.construction_queue (NEW live-only leaf) + order_of_
+                             # battle.battle_plan_orders (NEW live-only list) + countries.*.
+                             # diplomacy.opinion_modifiers (NEW live-only leaf). Order/modifier
+                             # target geometry + token NAMES stay RESISTED (null), never invented.
+    "decisions_market",      # LIVE active timed DECISIONS + global equipment-MARKET contracts
+                             # (decisions_market_live, M) -> countries.*.decisions.timed_live
+                             # (NEW live-only leaf) + the NEW top-level snap["market_live"]
+                             # sidecar (distinct from the SAVE "market" domain).
+    "operative_xp",          # LIVE operative SKILL + XP + tech in-progress UNITS (final_residuals_
+                             # live, M) -> countries.*.intel.operative_skill_xp (NEW live-only leaf)
+                             # + merged onto research.in_progress_live slots (progress_units). The
+                             # tech-completion FRACTION + operations detail stay RESISTED (null).
+    "politics_residuals",    # LIVE election residuals + appointed advisors (politics_residuals_
+                             # live, M) -> countries.*.politics.{last_election,elections_allowed,
+                             # appointed_advisors} (NEW live-only leaves).
+    "intel_deep",            # LIVE operative roster + cryptology (intel_deep_live, M) ->
+                             # countries.*.intel.{operatives_live,cryptology_live} (NEW live-only
+                             # leaves, distinct from the save-shaped intel.operatives).
+    "buildings_live",        # LIVE per-state + per-province BUILDING levels (buildings_live, M) ->
+                             # states.*.buildings + provinces.*.buildings (M; shares the save home,
+                             # tracked under a DISTINCT live id).
+    "designs_variants",      # LIVE equipment-VARIANT module catalog (designs_mio_deep_live, M) ->
+                             # designs.equipment_variants_live (M; a DISTINCT live-only leaf, kept
+                             # separate from the save "id:type"-keyed equipment_variants catalog).
+    "division_equipment",    # LIVE per-division held-equipment inventory (division_equipment_live,
+                             # M) -> divisions[].equipment_live (M; a DISTINCT live-only leaf, kept
+                             # separate from the save-owned equipment list -> no clobber).
+    "land_combats",          # SOLVED land-combat reader -> combats[] kind=land (M)
+    "naval_air_combats",     # naval/air combat detector sidecar (M)
+    "naval_air_combat_stats",  # per-side naval combat stat rows (M/M*)
     # NEW WAVE-2 save deep domains (all save-sourced; folded under provenance.save)
     "abilities",         # aces + commander cooldowns + officer corps (parse_abilities)
     "projects",          # special-projects/facilities/scientists deep (parse_projects)
@@ -77,6 +163,16 @@ BUILDING_KEYS = (
     "fuel_silo", "supply_node", "rail_way",
 )
 
+def valid_tag(v: Any) -> bool:
+    """True iff ``v`` is a real the game country TAG: exactly 3 chars, uppercase
+    alphanumeric, not all-digits (GER/ENG/SOV/D01 pass; '---', '?<id>', '42',
+    '123', lowercase, and any non-TAG string fail). The single source of truth
+    for "a 3-letter TAG or null" so a raw numeric id can never masquerade as
+    identity in an owner/controller/*_tag field (Codex review #5)."""
+    return (isinstance(v, str) and len(v) == 3 and v.isalnum()
+            and v.isupper() and not v.isdigit())
+
+
 # ---------------------------------------------------------------------------
 # Source-tag map: dotted field path -> source tag. Mirrors SCHEMA.md tables.
 # Paths use "*" for the per-entity key (country TAG / state id / list element).
@@ -89,6 +185,11 @@ FIELD_SOURCES: Dict[str, str] = {
     "date": S,
     "hour_index": D,
     "save_version": S,
+    # --- provenance.mod (§2.1, additive MOD IDENTITY). Read from the host LAUNCHER
+    # config on disk at capture time (dlc_load.json + .mod descriptors) -- a disk
+    # oracle, not memory and not the melted save; tagged S (on-disk source). None
+    # when no launcher config was found (no fabrication). ---
+    "provenance.mod": "S",
     # --- country.economy (§3.1) ---
     "countries.*.economy.factories.civ": "S",
     "countries.*.economy.factories.mil": "S",
@@ -100,8 +201,12 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.economy.resources.to_export": "S",
     "countries.*.economy.resources.available_derived": "S/D",
     "countries.*.economy.resources.imported": "S",
-    "countries.*.economy.fuel.current": "S/M*",
-    "countries.*.economy.fuel.max": "S/M*",
+    # fuel is now LIVE-first (fuel_live, M) with the save as the backstop: the live reader
+    # measures the canonical i64 fixed-point store via a portable Ghidra pointer chain
+    # (CCountry+0x1580 fuel_status; /32768). max is the proof field (71/71 EXACT vs save);
+    # current legitimately reads at-or-below the save (live post-clamp + live!=save frame).
+    "countries.*.economy.fuel.current": "M/S",
+    "countries.*.economy.fuel.max": "M/S",
     "countries.*.economy.gross_ic_by_equipment": "S/D",
     "countries.*.economy.market_stockpile": "S",
     "countries.*.economy.market_automation": "S",
@@ -117,6 +222,7 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.military.xp.army": "S",
     "countries.*.military.equipment_stockpile": "S",
     "countries.*.military.convoys": "S",
+    "countries.*.military.convoys_count": "M",       # live country-obj stockpile count
     "countries.*.military.ships_by_hull": "S/D",
     "countries.*.military.casualties.killed": "S/D",
     "countries.*.military.casualties.captured": "S/D",
@@ -126,13 +232,41 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.politics.war_support": "M",
     "countries.*.politics.political_power": "M",
     "countries.*.politics.command_power": "M",
-    "countries.*.politics.ruling_party": "S",
-    "countries.*.politics.party_popularities": "S",
+    # ruling_party + party_popularities are now LIVE-first (politics_live, M) with the save
+    # as the backstop: the live reader measures the ruling ideology-group id (46/46 EXACT)
+    # and the 4-ideology popularity vector (46/46 EXACT vs save). political_power stays
+    # country_scalars-owned (M) — politics_live does NOT re-fold it (single live owner).
+    "countries.*.politics.ruling_party": "M/S",
+    "countries.*.politics.party_popularities": "M/S",
     "countries.*.politics.laws.economy": "S",
     "countries.*.politics.laws.trade": "S",
     "countries.*.politics.laws.conscription": "S",
     "countries.*.politics.ideas_all": "S",
     "countries.*.politics.ideas_other": "S",
+    # LIVE active-ideas list + cadence (politics_live, M). `ideas` is the ordered full
+    # active-ideas/spirits set (incl. law ideas by id; set AND order EXACT vs save);
+    # election_frequency (months, EXACT) + party_count + low_confidence are live-only
+    # read-quality/cadence leaves. LAW sub-typing (economy/trade/mob) stays RESISTED (the
+    # law ideas are present in `ideas` by id but not classified; see laws.* save leaves).
+    "countries.*.politics.ideas": "M",
+    "countries.*.politics.idea_count": "M",
+    "countries.*.politics.election_frequency": "M",
+    "countries.*.politics.party_count": "M",
+    "countries.*.politics.low_confidence": "M",
+    # LIVE typed law triple (politics_live + defnames_live, M). DERIVED from the MEASURED idea
+    # tokens by classifying each law idea into its group (defnames idea_group_map). Keyed by the
+    # defnames law-group names (economy / trade_laws / mobilization_laws); each value is the idea
+    # token. DISTINCT from the save-derived laws.{economy,trade,conscription} above (different
+    # group naming + source). Absent for a country whose law group could not be classified
+    # (no fabrication). Only present when name resolution is enabled.
+    "countries.*.politics.laws": "M",
+    # LIVE election residuals + appointed advisors (politics_residuals_live, M). DISTINCT
+    # live-only leaves: last_election (decoded "Y.M.D.H", 46/46 EXACT vs save), elections_allowed
+    # (u8 bool, 46/46 EXACT), appointed_advisors (the idea-token list of HIRED cabinet advisors,
+    # 46/46 EXACT). All M; absent until a live read folds them (no fabrication).
+    "countries.*.politics.last_election": "M",
+    "countries.*.politics.elections_allowed": "M",
+    "countries.*.politics.appointed_advisors": "M",
     "countries.*.politics.cabinet": "S",
     "countries.*.politics.is_human": "S/M",
     "countries.*.politics.is_major": "S",
@@ -140,24 +274,78 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.politics.autonomy": "S",
     "countries.*.politics.faction": "S",
     # --- country.research (§3.4) ---
-    "countries.*.research.tech_count": "S",
+    # tech_count + research_slots are now LIVE-first (tech_live, M) with the save as
+    # the backstop; the live reader measures the completed-tech VECTOR SIZE and the
+    # current slot capacity exactly (43/43, 45/46 vs save).
+    "countries.*.research.tech_count": "M/S",
     "countries.*.research.technologies": "S/D",
     "countries.*.research.in_progress": "S/M*",
-    "countries.*.research.research_slots": "S",
+    # LIVE active-research rows live in a SEPARATE leaf (raw-handle shape, distinct
+    # from the save's {name, points_factor} in_progress) so the two shapes never mix
+    # (Codex). Carries {slot_index, tech_handle_raw, tech_def_index_raw, progress_raw};
+    # tech NAMES + the progress SCALE are RESISTED (unresolved registry / unvalidated).
+    "countries.*.research.in_progress_live": "M",
+    # resolved tech TOKEN per in-progress slot (tech_live + defnames_live, M-derived). ADDED
+    # ALONGSIDE the raw tech_handle_raw/tech_def_index_raw; absent for an unknown handle (no
+    # fabrication). Only present when name resolution is enabled.
+    "countries.*.research.in_progress_live.*.tech_name": "M",
+    # accumulated research UNITS per in-progress slot (final_residuals_live, M). progress_units
+    # = progress_raw/1000 = accumulated research-points (NOT a completion fraction; the fraction
+    # needs the per-tech cost def + has no save GT this frame -> RESISTED, never fabricated).
+    # ADDED ALONGSIDE the raw progress_raw on each slot dict (merged by slot_index).
+    "countries.*.research.in_progress_live.*.progress_units": "M",
+    "countries.*.research.research_slots": "M/S",
     "countries.*.research.original_research_slots": "S",
     "countries.*.research.research_bonuses": "S",
     # --- country.focus (§3.5) ---
-    "countries.*.focus.focus_tree": "S",
+    # focus_tree / completed / completed_count / current / progress are now LIVE-first
+    # (focus_live, M) with the save as the backstop: the live reader measures the focus
+    # tree id (20/20 EXACT), the completed vector (set AND order, 22/22 EXACT), the
+    # active national focus (9/9), and progress in days (19/19 EXACT, same days-elapsed
+    # semantic as the save `progress`). current_continuous is a NEW live-only leaf (the
+    # save Focus dataclass has no such field). paused stays save-only (open ticket: no
+    # paused=yes ground truth this frame, so the live byte is unpinned -> reader None).
+    "countries.*.focus.focus_tree": "M/S",
     "countries.*.focus.continuous_focus_palette": "S",
-    "countries.*.focus.completed": "S/D",
-    "countries.*.focus.completed_count": "S",
-    "countries.*.focus.current": "S/M*",
-    "countries.*.focus.progress": "S/M*",
+    "countries.*.focus.completed": "M/S",
+    "countries.*.focus.completed_count": "M/S",
+    "countries.*.focus.current": "M/S",
+    "countries.*.focus.current_continuous": "M",   # active CONTINUOUS focus (live-only leaf)
+    "countries.*.focus.progress": "M/S",           # days into the active focus (same unit as save)
     "countries.*.focus.paused": "S",
     # --- country.decisions / diplomacy / intel (§3.6-3.8) ---
     "countries.*.decisions": "S",
+    # LIVE active timed decisions (decisions_market_live, M). DISTINCT live-only leaf from the
+    # save-shaped decisions.{active,timed,missions}: each {decision, days, state, state_name}.
+    "countries.*.decisions.timed_live": "M",
     "countries.*.diplomacy.wars": "S",
-    "countries.*.diplomacy.opinion": "S",
+    # opinion is now LIVE-first (diplo_relations_live, M) with the save as the backstop: the
+    # live reader measures the bilateral cached_sum net opinion (1113/1113 real ordered pairs
+    # EXACT vs save) as a {TGT: value} map, the SAME shape as the save leaf.
+    "countries.*.diplomacy.opinion": "M/S",
+    # LIVE bilateral relation FLAGS (diplo_relations_live, M): {TGT: [flag,...]} of the 12
+    # directed relation-flag types (NAP/military_access/embargo/.../puppet) this country has
+    # toward each target. DISTINCT live-only leaf (no save-shaped home).
+    "countries.*.diplomacy.relation_flags": "M",
+    # LIVE subject/autonomy (diplo_relations_live, M): when THIS country is a subject, its
+    # overlord TAG + autonomy-state name + ratio (read from the CSubjectRelation sub-object,
+    # 17/17 EXACT vs save). DISTINCT live-only leaves (the save models this under politics.
+    # autonomy / diplomacy_world.subjects -- a different shape, so no collision).
+    "countries.*.diplomacy.overlord": "M",
+    "countries.*.diplomacy.autonomy_state": "M",
+    "countries.*.diplomacy.autonomy_ratio": "M",
+    # LIVE opinion-modifier decomposition (construction_orders_live, M). DISTINCT live-only
+    # leaf {TGT: [{token_id, value}, ...]} decomposing the cached_sum net opinion above; the
+    # modifier-token id->NAME registry is RESISTED, so only the raw token_id + value are carried.
+    "countries.*.diplomacy.opinion_modifiers": "M",
+    # LIVE per-country diplomacy (diplomacy_live, M). DISTINCT live-only leaves from the
+    # save-derived `wars` above: `at_war` (live enemy-TAG list from the global war_relation
+    # pool, at-war set 30/30 EXACT vs save), `casualties` (cumulative war casualties, per-
+    # country total 30/30 EXACT), `faction_group` (OPAQUE engine diplomatic-group id — an
+    # int, NOT a TAG; meaningful only via the diplomacy_live sidecar's faction_members).
+    "countries.*.diplomacy.at_war": "M",
+    "countries.*.diplomacy.casualties": "M",
+    "countries.*.diplomacy.faction_group": "M",
     # equipment market / lend-lease (parse_market). Trade contracts attached to
     # both parties under diplomacy.lend_lease; canonical world list in §7b.
     "countries.*.diplomacy.lend_lease": "S",
@@ -166,7 +354,26 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.diplomacy.attaches": "S",
     # --- country.intel (§3.8, deepened from intel.json) ---
     "countries.*.intel.agency": "S",
+    # LIVE-measured agency scalars (intel_live, M): folded onto the SAME nested save
+    # shape (name/icon/upgrade_progress + capacity.{max_operatives,usable_slots,
+    # defense}) so live wins on the measured scalars while save-only sub-keys
+    # (is_created/current_upgrade/upgrades/operatives capacity extras) are preserved.
+    "countries.*.intel.agency.name": "M/S",
+    "countries.*.intel.agency.icon": "M/S",
+    "countries.*.intel.agency.upgrade_progress": "M/S",
+    "countries.*.intel.agency.capacity.max_operatives": "M/S",
+    "countries.*.intel.agency.capacity.usable_slots": "M/S",
+    "countries.*.intel.agency.capacity.defense": "M/S",
     "countries.*.intel.operatives": "S",
+    # LIVE operative roster (intel_deep_live, M): the agency's active-owned operatives, each
+    # {op_id, name, detected}. DISTINCT live-only leaf from the save-shaped intel.operatives.
+    "countries.*.intel.operatives_live": "M",
+    # LIVE cryptology (intel_deep_live, M): {TGT: {amount, decrypting}} decryption progress
+    # toward each target's cipher. DISTINCT live-only leaf.
+    "countries.*.intel.cryptology_live": "M",
+    # LIVE operative SKILL + XP (final_residuals_live, M): {op_id: {name, skill, experience}}.
+    # DISTINCT live-only leaf; the operative body base is L=ident-0x8 (corrected).
+    "countries.*.intel.operative_skill_xp": "M",
     "countries.*.intel.recruitable_operatives": "S",
     "countries.*.intel.operations": "S",
     "countries.*.intel.decryption": "S",
@@ -181,6 +388,26 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.commanders.admirals": "S",
     "countries.*.commanders.advisors": "S",
     "countries.*.commanders.counts": "S/D",
+    # LIVE unit-leaders (commanders_live, M): the live reader CANNOT split generals
+    # vs field-marshals (the role split needs the RESISTED overall level), so it
+    # folds into DISTINCT live leaves rather than clobbering the role-split save
+    # leaves above. Each leader carries char_id/name/skills/experience/trait_xp +
+    # country TAG; overall LEVEL + trait NAMES stay RESISTED (null/absent).
+    "countries.*.commanders.army_leaders": "M",     # generals + field marshals (unsplit)
+    "countries.*.commanders.navy_leaders": "M",     # admirals
+    # OPT-IN leader_detail enrichment (leader_skill_traits_live, M): overall SKILL/level + the
+    # assigned-TRAIT token set joined onto each commanders_live leader record by unit_leader_id
+    # (953/953 EXACT vs save). ADDED ALONGSIDE the existing leader fields; absent when the
+    # enrichment is off or a leader was not measured (overall level was otherwise RESISTED).
+    "countries.*.commanders.army_leaders.*.skill": "M",
+    "countries.*.commanders.army_leaders.*.traits": "M",
+    "countries.*.commanders.navy_leaders.*.skill": "M",
+    "countries.*.commanders.navy_leaders.*.traits": "M",
+    # live count sub-leaves only (the save's richer counts dict is preserved; we
+    # write just these measured sub-keys so save counts are never erased — Codex).
+    "countries.*.commanders.counts.army_leaders": "M/S",
+    "countries.*.commanders.counts.navy_leaders": "M/S",
+    "countries.*.commanders.counts.characters": "M/S",
     # --- country.scalars (§3.13, derived; models/scalars.py). All D. ---
     "countries.*.scalars.capitulation.cap_pct": "D",
     "countries.*.scalars.capitulation.vp_lost_fraction": "D",
@@ -226,9 +453,64 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.mios": "S",
     "countries.*.scheduled_variants": "S",
     "countries.*.mio_policies": "S",
-    # --- top-level designs (§11, from designs.json) ---
-    "designs.division_templates": "S",
+    # --- country.misc (§3.17, live country_misc_live.py). All M. ---
+    "countries.*.misc.convoys_destroyed": "M",
+    "countries.*.misc.accidents_score": "M",
+    "countries.*.misc.ace_count": "M",
+    "countries.*.misc.cosmetic_tag": "M",
+    # --- country.identity (live country_static_live.py). Per-country static scalars
+    # cracked + validated 140/140 vs the content-matched melt; all M. original_tag is
+    # a resolved TAG (None when absent); reserved_dynamic_country / templates_locked are
+    # bools; original_capital is a state id (None when 0/none). ---
+    "countries.*.identity.original_capital": "M",
+    "countries.*.identity.original_tag": "M",
+    "countries.*.identity.reserved_dynamic_country": "M",
+    "countries.*.identity.templates_locked": "M",
+    # country.identity container fields (live country_containers_live). cores/claims are
+    # inverted from the per-state vectors (63/63 + 9/9 EXACT); naval_headquarter_status is
+    # a customizable-building child count (5-country set EXACT). All M.
+    "countries.*.identity.cores": "M",
+    "countries.*.identity.claims": "M",
+    "countries.*.identity.naval_headquarter_status": "M",
+    # country.decisions.status_present (live country_containers_live): which decision-status
+    # keys are non-empty + their counts (29-country presence set EXACT). M (presence only).
+    "countries.*.decisions.status_present": "M",
+    # country.country_reports (live country_containers_live): latest-report scalar header
+    # {days, index, date_raw} (140/140 EXACT). M.
+    "countries.*.country_reports": "M",
+    # --- country.script_variables (live variables_live.py). The per-country script-
+    # variable bag {name: value} (fixed-point /1e5; array vars are name^N keys). M; the
+    # mass closure for the nation scripted-GUI overlays. A measured-empty {} is a real
+    # read of the located, empty container. ---
+    "countries.*.script_variables": "M",
+    # --- country.production (§3.18, live production_live.py). LIVE-only home, distinct
+    # from the save "production" domain (which folds into economy/military). The live
+    # reader measures the equipment STOCKPILE bank ({variant_id: amount}, 459/461 ids
+    # EXACT fixed-point) + the military/naval PRODUCTION LINES ({id, active_factories,
+    # cost, speed, produced, amount}, line count + SUM(active) EXACT) + the active-
+    # factory totals. All M except stockpile_total, which is summed FROM the measured
+    # stockpile in the reader -> derived-from-memory (M/D). ---
+    "countries.*.production.stockpile": "M",
+    "countries.*.production.stockpile_total": "M/D",   # summed from the measured stockpile
+    "countries.*.production.military_lines": "M",
+    "countries.*.production.naval_lines": "M",
+    "countries.*.production.military_factories": "M",
+    "countries.*.production.naval_factories": "M",
+    # LIVE construction queue (construction_orders_live, M). DISTINCT live-only leaf: the
+    # per-country civil/military BUILDING queue in priority order, each {line_id, template_id,
+    # active_factories, cost, produced, priority}. The build target STATE/location is RESISTED
+    # (province handle behind the template def; needs a province->state map) -> never fabricated.
+    "countries.*.production.construction_queue": "M",
+    # --- top-level designs (§11, from designs.json + live designs_live.py) ---
+    # division_templates is now LIVE-first (designs_live, M) with the save as the
+    # backstop; equipment_variants remains save-only until the live variant crack
+    # is exposed.
+    "designs.division_templates": "M/S",
+    # the save equipment_variants catalog stays save-owned (keyed "id:type"); the LIVE variant
+    # module catalog (designs_mio_deep_live) lands in the DISTINCT equipment_variants_live leaf
+    # (keyed by the bare live variant id) so the two key spaces never collide (Codex review #3).
     "designs.equipment_variants": "S",
+    "designs.equipment_variants_live": "M",
     # derived design stats (WAVE-2; models/division_stats + models/equipment_stats).
     # Single prefix entry covers every nested stat (source_of longest-prefix match).
     "designs.template_stats": "D",            # {template_id: DivisionStats}
@@ -236,34 +518,91 @@ FIELD_SOURCES: Dict[str, str] = {
     "designs.equipment_variant_stats.*.archetype": "S",  # echoed straight from variant
     "designs.equipment_variant_stats.*.family": "S",
     # --- top-level order_of_battle (§12, from oob.json) ---
-    "order_of_battle.army_groups": "S",
-    "order_of_battle.armies": "S",
-    "order_of_battle.fleets": "S",
+    # The LIVE oob_command reader (§12c) folds the command TREE into armies/army_groups/
+    # fleets/theatres (membership + leader + owner-consensus), so those are live-first with
+    # the save oob.json as the backstop (M/S). navy_theaters/air_wings are NOT measured live
+    # -> save-only (S). by_country is the per-tag count rollup (S/D). Per-list *_source flags
+    # are "M" when the live read filled the list, else absent (save-sourced).
+    "order_of_battle.army_groups": "M/S",
+    "order_of_battle.armies": "M/S",
+    "order_of_battle.fleets": "M/S",
+    "order_of_battle.theatres": "M/S",
     "order_of_battle.navy_theaters": "S",
     "order_of_battle.air_wings": "S",
-    "order_of_battle.theatres": "S",
     "order_of_battle.by_country": "S/D",
+    # live per-ship roster from the global CShip registry (§12b). All M.
+    "order_of_battle.ships": "M",
+    # LIVE battle-plan orders (construction_orders_live, M). DISTINCT live-only list: per-army
+    # offensive/front orders, each {army_id, order_type, target_states}. target_states is the
+    # exact state-id set for type-5 (offensive) orders ONLY; non-type-5 geometry is RESISTED
+    # (null target_states), never fabricated. army_id + target_states are RAW engine ints.
+    "order_of_battle.battle_plan_orders": "M",
     # --- per-country OOB view (§12, derived rollup) ---
     "countries.*.order_of_battle": "S/D",
+    # --- top-level live MIO catalog (§11b, mio_live.py). All M. ---
+    "mio_live.by_tag": "M",
+    "mio_live.by_id": "M",
+    # resolved allowed-policy ICON tokens per MIO (mio + defnames_live, M-derived). ADDED
+    # ALONGSIDE allowed_policies_count; absent when resolution is off or a handle is unknown
+    # (no fabrication). Icon token (GFX_mio_policy_<suffix>), not the unique script name.
+    "mio_live.by_id.*.policies": "M",
+    "mio_live.by_tag.*.policies": "M",
+    # --- top-level live special-projects catalog (§11c, projects_live.py). All M.
+    # Raw static-def db-id HANDLES (active_project_handle / static_def_handle) are
+    # measured ids, not resolved names (M). project_progress/phase_progress/
+    # current_state are serialize-COMPUTED and intentionally NOT carried. ---
+    "special_projects.facilities": "M",
+    "special_projects.projects": "M",
+    "special_projects.scientists": "M",
+    # resolved scientist TRAIT tokens (projects_live + defnames_live, M-derived). ADDED
+    # ALONGSIDE trait_count via the direct trait def-pointer walk; absent when resolution is
+    # off or the walk fails closed (no fabrication). A measured-empty [] = a traitless scientist.
+    "special_projects.scientists.*.traits": "M",
+    # --- top-level LIVE diplomacy sidecar (§13b, diplomacy_live.py). All M. World-scoped
+    # data that has NO save-shaped home: the pairwise war_relations list (each TAG pair +
+    # per-side casualties) + faction_members keyed by the OPAQUE engine diplomatic-group id
+    # (stringified for JSON; member TAGs valid_tag-checked). Distinct from the SAVE
+    # diplomacy_world (war-id-keyed wars{} + save-faction-id-keyed factions{}) — a DIFFERENT
+    # identity model, so it is NOT folded into diplomacy_world. subtype_warning is the
+    # reader's completeness advisory (nonempty => a possible missed war_relation subtype). ---
+    "diplomacy_live.war_relations": "M",
+    "diplomacy_live.faction_members": "M",
+    # --- top-level LIVE equipment-MARKET sidecar (§7c, decisions_market_live.py). All M. The
+    # global purchase contracts (28/28 EXACT vs save), each {contract_id, seller(TAG), buyer(TAG),
+    # equip_variant_id, amount, price}. Distinct from the SAVE "market" domain (a per-country
+    # diplomacy.lend_lease + §7b world list) — a different identity model + provenance. ---
+    "market_live.contracts": "M",
     # --- state (§4) ---
     "states.*.owner": "M/S",
     "states.*.controller": "M/S",
     "states.*.is_core_of": "S",
-    "states.*.buildings": "S/M*",
+    # building levels are now LIVE-first (buildings_live, M) with the save as the backstop:
+    # the live reader resolves every per-state building level exactly (validated vs the melt).
+    "states.*.buildings": "M/S",
     "states.*.province_buildings": "S",
-    "states.*.victory_points_total": "S",
-    "states.*.victory_points_by_province": "S",
-    "states.*.resources": "S",
-    "states.*.manpower_pool": "S",
+    "states.*.victory_points_total": "M/S",       # live state_vp (state_vp_live, measured 0 kept)
+    "states.*.victory_points_by_province": "M/S",  # live state_vp (per-province int VP map)
+    "states.*.resources": "M/S",          # live state_fields_live (CState def table; live-first)
+    "states.*.dynamic_modifier": "M",      # live state_fields_live (per-state modifier name list)
+    "states.*.extra_shared_slots": "M",    # live state_fields_live (i32 shared-building slot count)
+    "states.*.manpower_pool": "M/S",
     "states.*.category": "M/S",
     "states.*.occupation": "S",
+    # live state_detail measures resistance/compliance; the rest of occupation
+    # (occupied_country_tag, *_speed, …) stays save-sourced (Codex review #6).
+    "states.*.occupation.resistance": "M/S",
+    "states.*.occupation.compliance": "M/S",
     "states.*.occupation_law": "S",
     "states.*.demilitarized": "S",
     "states.*.supply": "S/M*",
     # --- province (§5) ---
-    "provinces.*.controller": "S/D",
+    "provinces.*.controller": "M/S/D",
     "provinces.*.state_id": "D",
     "provinces.*.supply": "S",
+    # LIVE per-province building levels (buildings_live, M): {building_name: level} for the
+    # province-scoped buildings (naval_base/rail_way/supply_node/forts/...). DISTINCT live-only
+    # leaf, validated vs the melt. null until a live read folds it.
+    "provinces.*.buildings": "M",
     # --- division (§6) ---
     "divisions.*.div_id": "M/S",
     "divisions.*.div_type": "M/S",
@@ -277,6 +616,9 @@ FIELD_SOURCES: Dict[str, str] = {
     "divisions.*.organisation": "M",
     "divisions.*.strength": "M/S",
     "divisions.*.equipment": "M/S",
+    # LIVE per-division held-equipment inventory (division_equipment_live, M): {variant_id: count}.
+    # DISTINCT live-only leaf from the save-shaped `equipment` above (no clobber).
+    "divisions.*.equipment_live": "M",
     "divisions.*.experience": "M*",
     "divisions.*.moving": "M*",
     "divisions.*.in_combat": "M*",
@@ -313,6 +655,14 @@ FIELD_SOURCES: Dict[str, str] = {
     "naval_air.region_control": "M",
     "naval_air.air_superiority": "M",
     "supply.by_province": "M",
+    # LIVE supply solver INPUTS (supply_inputs, M). DISTINCTLY-NAMED + SEPARATELY-BADGED from
+    # the division-province proxy above: per-province efficiency/fulfilment + draw/demand are
+    # the PERSISTENT solver inputs that ARE stored, NOT the exact per-province "supply
+    # available" number (which is provably not stored — transient routing-solver output). The
+    # solver_inputs_confidence field self-badges "live_solver_input_not_exact_supply" so a
+    # consumer never reads efficiency/draw as supply available.
+    "supply.solver_efficiency_by_province": "M",
+    "supply.solver_draw_by_province": "M",
     # MODEL air-superiority estimate (WAVE-2, models/air_superiority). Derived
     # (planes x stat); the per-region percent is a W6 display estimate -> D.
     "naval_air.air_superiority_model.*.by_owner.*.score": "D",
@@ -321,10 +671,26 @@ FIELD_SOURCES: Dict[str, str] = {
     "naval_air.air_superiority_model.*.percent": "D",
     "naval_air.air_superiority_model_meta": "D",
     # --- live weather domain (§19, WAVE-2). M live; phenom_name + rollup are D. ---
-    "weather.regions.*.temp_c": "M",          # SWeatherPerRegion+0x138 i64/1e5
+    "weather.regions.*.temp_c": "M",          # SWeatherPerRegion+0x138 i64/1e5 (retracted reader; null)
     "weather.regions.*.phenom": "M",          # +0x78 enum (already pinned)
     "weather.regions.*.phenom_name": "D",     # derived from phenom via file-order map
     "weather.regions.*.active": "M",          # +0x5D intensity flag
+    # re-cracked per-region fields (weather_fields_live, validated 305/305 vs the melt):
+    "weather.regions.*.temperature": "M",                # +0x138 i32/1e5 deg C (region temp)
+    "weather.regions.*.phenomenon": "M",                 # phenom-flag band (u8 names list)
+    "weather.regions.*.next_weather_change_hours": "M",  # +0x150 (abs hours; None == no change)
+    "weather.regions.*.active_modifier_count": "M",      # +0x30 PdxVector size
+    "weather.regions.*.region_id": "M",
+    # live per-PROVINCE weather (weather_temp_model, M). The realized displayed temperature
+    # + precipitation (`water`) + snow share the SAME per-province struct at province-id index.
+    # temp/precip/snow are i32/1e5; None == not realized / zero-or-unmeasured (never a fab 0).
+    "weather.provinces.*.temp_c": "M",        # SWeatherPerProvince+0x118 i32/1e5
+    "weather.provinces.*.temp_change_c": "M", # +0x128 i32/1e5 (signed)
+    "weather.provinces.*.precip": "M",        # +0x38 i32/1e5 `water` amount (save-persisted)
+    "weather.provinces.*.snow": "M",          # +0x40 i32/1e5 snow amount (save-persisted)
+    # re-cracked per-province fields (weather_fields_live, full-array TP/FP/FN validated):
+    "weather.provinces.*.mud": "M",                  # +0x130 u8 bool (146 mud provinces)
+    "weather.provinces.*.custom_modifier_count": "M",  # +0x148 PdxVector size (52 provinces)
     "weather.global_rollup": "D",             # rolled up from the M rows
     # --- naval combat-side stats (§7c, WAVE-2, naval_combat_stats). Live M / M*. ---
     "combats.naval.*.attacker.positioning": "M",       # validated live
@@ -370,6 +736,12 @@ FIELD_SOURCES: Dict[str, str] = {
     "world_events.convoy_losses_by_killer": "S",
     "world_events.convoy_losses_by_owner": "S",
     "world.scenario": "S",
+    # LIVE scenario DATES (world_extract_live, M). DISTINCT live-only keys under the save-shaped
+    # scenario block: current_date_live (the live in-game date, EXACT vs save) + start_date_live
+    # (the scenario start date, EXACT). EXPLICIT M entries so source_of() does NOT fall back to
+    # the parent "world.scenario"=S (which would mislabel a live read as save — Codex review #1).
+    "world.scenario.current_date_live": "M",
+    "world.scenario.start_date_live": "M",
     "world.variables": "S",
     "world.flags": "S",
     "world.tech_sharing_groups": "S",
@@ -379,7 +751,7 @@ FIELD_SOURCES: Dict[str, str] = {
     "world.saved_event_targets": "S",
     # --- map (§8) ---
     "map.owner_by_state": "M/D",
-    "map.control_by_province": "S/D",
+    "map.control_by_province": "M/S/D",
     "map.vp_by_state": "S/D",
     "map.controlled_industry_share": "D",
     "map.front_lines": "D",
@@ -473,6 +845,26 @@ def _none_dict() -> Dict[str, Any]:
 class Provenance:
     memory: Optional[Dict[str, Any]] = None
     save: Optional[Dict[str, Any]] = None
+    # The ACTIVE MOD-SET this snapshot was captured under, read at CAPTURE time from
+    # the host's the game launcher config (`dlc_load.json` + the `.mod` descriptors it
+    # names) — NOT from game memory and NOT from the melted save. This is the
+    # per-replay MOD IDENTITY the native UI auto-matches against, so vanilla chrome
+    # is never rendered over a mod's replay (GAME_UI_REPLICA_PLAN §K).
+    #
+    # NO FABRICATION (the cardinal rule): `mod` is `None` whenever no launcher
+    # config was found (a SP/vanilla run, or capture without launcher-dir access) —
+    # it is NEVER a guessed or default mod-set. A genuinely-vanilla run that DID read
+    # the launcher config records `mod = {modset_id:"vanilla", mods:[], ...}` (a
+    # measured empty mod-set), which is distinguishable from `None` (not read).
+    #
+    # Shape when present (a ModSet, see `empty_modset`):
+    #   { "modset_id":  str,                # stable digest of (id|version|order)
+    #     "source":     str,                # e.g. "dlc_load.json"
+    #     "load_order": [str, ...],         # ordered enabled-mod descriptor refs
+    #     "mods": [ { "name": str|None, "workshop_id": str|None,
+    #                 "version": str|None, "supported_version": str|None,
+    #                 "descriptor": str|None }, ... ] }   # in LOAD ORDER
+    mod: Optional[Dict[str, Any]] = None
     notes: List[str] = field(default_factory=list)
 
 
@@ -501,6 +893,11 @@ class Military:
     xp: Dict[str, Any] = field(default_factory=_none_dict)
     equipment_stockpile: List[Dict[str, Any]] = field(default_factory=list)
     convoys: List[Dict[str, Any]] = field(default_factory=list)
+    # LIVE convoy STOCKPILE count (country_obj +0x1280, M). Distinct from the
+    # save-side `convoys` LIST (per-equipment rows): this is the single integer
+    # total the country object caches. null until a live read folds it; a measured
+    # 0 is a real "no convoys". See economy_offsets.draft.json `convoys`.
+    convoys_count: Optional[int] = None
     ships_by_hull: Optional[Dict[str, Any]] = None
     casualties: Dict[str, Any] = field(default_factory=_none_dict)
     command_power: Optional[float] = None
@@ -521,6 +918,32 @@ class Politics:
     laws: Dict[str, Any] = field(default_factory=_none_dict)
     ideas_all: List[str] = field(default_factory=list)
     ideas_other: List[str] = field(default_factory=list)
+    # LIVE active-ideas list (politics_live, M). DISTINCT live-only leaf, separate from the
+    # save-derived ideas_all / ideas_other above: the ORDERED full active-ideas/spirits set
+    # (incl. the economy/trade/mobilisation LAW ideas, by id) read straight from the live
+    # CPoliticalStatus ideas vector (set AND order EXACT vs save). Defaults None (Optional)
+    # NOT [] so an unmeasured country reads None (skipped by the backstop's `lv is not None`
+    # guard); a measured-empty [] is a real "no active ideas" and is written + protected, so
+    # no _SKELETON_EMPTY_CONTAINER_LEAVES entry is needed (live-only leaf — Codex).
+    ideas: Optional[List[str]] = None
+    idea_count: Optional[int] = None
+    # LIVE election cadence (politics_live, M): months between elections (ps+0xE8, EXACT).
+    election_frequency: Optional[int] = None
+    # LIVE party count (politics_live, M): the size of the parties vector (== 4 normally).
+    party_count: Optional[int] = None
+    # LIVE confidence flag (politics_live): True when the ruling-party-in-vector / party_count
+    # discriminator was not fully satisfied this frame (a read-quality flag, never a value).
+    low_confidence: Optional[bool] = None
+    # LIVE election residuals + appointed advisors (politics_residuals_live, M). DISTINCT
+    # live-only leaves: `last_election` is the decoded "Y.M.D.H" date of the last election
+    # (46/46 EXACT vs save); `elections_allowed` is the u8 election-enabled bool (46/46 EXACT);
+    # `appointed_advisors` is the idea-token list of HIRED cabinet advisors (the advisor roster
+    # idea tokens present in the active ideas; 46/46 EXACT). All default None (unmeasured); a
+    # measured-empty appointed_advisors [] (no advisor hired) is a real value (live-only leaf,
+    # so no _SKELETON_EMPTY_CONTAINER_LEAVES entry needed — Codex).
+    last_election: Optional[str] = None
+    elections_allowed: Optional[bool] = None
+    appointed_advisors: Optional[List[str]] = None
     cabinet: Optional[Dict[str, Any]] = None
     is_human: Optional[bool] = None
     is_major: Optional[bool] = None
@@ -534,6 +957,11 @@ class Research:
     tech_count: Optional[int] = None
     technologies: List[Dict[str, Any]] = field(default_factory=list)
     in_progress: List[Dict[str, Any]] = field(default_factory=list)
+    # LIVE active-research rows (tech_live, M). DISTINCT leaf from the save-shaped
+    # `in_progress` (whose elements are {name, points_factor}); these carry the raw
+    # engine shape {slot_index, tech_handle_raw, tech_def_index_raw, progress_raw}.
+    # null-but-present until a live read folds it (None != a measured-empty []).
+    in_progress_live: Optional[List[Dict[str, Any]]] = None
     research_slots: Optional[int] = None
     original_research_slots: Optional[int] = None
     research_bonuses: List[Dict[str, Any]] = field(default_factory=list)
@@ -546,8 +974,48 @@ class Focus:
     completed: List[str] = field(default_factory=list)
     completed_count: Optional[int] = None
     current: Optional[str] = None
+    # LIVE active CONTINUOUS focus (focus_live, M). DISTINCT live-only leaf: the save
+    # Focus has no such field (it carries only the continuous_focus_palette id). National
+    # `current` and `current_continuous` are mutually exclusive (the live XOR invariant,
+    # matching the save). null-but-present until a live read folds it.
+    current_continuous: Optional[str] = None
     progress: Optional[float] = None
     paused: Optional[bool] = None
+
+
+@dataclass
+class Production:
+    """LIVE per-country production picture (§3.18, production_live.py). M = process
+    memory. NEW live-only home, distinct from the SAVE-sourced "production" domain
+    (which folds into military.equipment_stockpile / military.convoys /
+    economy._production_lines — a different shape AND home), so the save backstop never
+    writes here and the two channels stay independently auditable.
+
+    ``stockpile`` maps a save equipment-VARIANT id (str/int key) to the banked amount
+    (float, i64 fixed-point /100000). ``stockpile_total`` is the sum of those amounts
+    (derived-from-memory, M/D). ``military_lines`` / ``naval_lines`` each carry the
+    measured per-line {id, active_factories, cost, speed, produced, amount}. The factory
+    totals are SUM(active_factories) over the respective line list.
+
+    RESISTED (absent, never fabricated — see production_offsets.draft.json open tickets):
+    per-line priority / requested_factories / equipment_variant_index (not offset-pinned,
+    no distinguishing variance this frame); construction queue (state-derived, owned by
+    the state domain). null-but-present until a live read folds it.
+    """
+    stockpile: Optional[Dict[str, Any]] = None
+    stockpile_total: Optional[float] = None
+    military_lines: Optional[List[Dict[str, Any]]] = None
+    naval_lines: Optional[List[Dict[str, Any]]] = None
+    military_factories: Optional[int] = None
+    naval_factories: Optional[int] = None
+    # LIVE construction queue (construction_orders_live, M). DISTINCT live-only leaf: the
+    # per-country civil/military BUILDING queue in PRIORITY order, each {line_id, template_id,
+    # active_factories, cost, produced, priority}. Defaults None (Optional) NOT [] so an
+    # unmeasured country (created by another live domain) reads None and the backstop's
+    # `lv is not None` guard skips it; a measured-empty [] (empty queue) is written + protected.
+    # The build target STATE/location is RESISTED (province handle; needs a province->state map)
+    # -> never fabricated. null-but-present until a live read folds it.
+    construction_queue: Optional[List[Dict[str, Any]]] = None
 
 
 @dataclass
@@ -555,6 +1023,13 @@ class Decisions:
     active: List[Dict[str, Any]] = field(default_factory=list)
     timed: List[Dict[str, Any]] = field(default_factory=list)
     missions: List[Dict[str, Any]] = field(default_factory=list)
+    # LIVE active timed decisions (decisions_market_live, M). DISTINCT live-only leaf, separate
+    # from the save-shaped `timed` above: each {decision, days, state, state_name} for the
+    # country's currently-active timed decisions. Defaults None (Optional) NOT [] so an
+    # unmeasured country reads None (skipped by the backstop's `lv is not None` guard); a
+    # measured-empty [] (no active timed decision) is a real value (live-only leaf, so no
+    # _SKELETON_EMPTY_CONTAINER_LEAVES entry is needed — Codex). null until a live read folds it.
+    timed_live: Optional[List[Dict[str, Any]]] = None
 
 
 @dataclass
@@ -568,6 +1043,44 @@ class Diplomacy:
     volunteers: List[Dict[str, Any]] = field(default_factory=list)
     attaches: List[Dict[str, Any]] = field(default_factory=list)
     expeditionary: List[Dict[str, Any]] = field(default_factory=list)
+    # LIVE diplomacy (diplomacy_live, M). DISTINCT live-only leaves, separate from the
+    # save-derived `wars` ([{against}]) above. `at_war` is the live enemy-TAG list from
+    # the global war_relation pool; `casualties` is this country's cumulative war
+    # casualties; `faction_group` is the OPAQUE engine diplomatic-group id (NOT a TAG —
+    # an int that is meaningful only via diplomacy_live.faction_members). Each defaults
+    # to None (Optional) NOT [] so an UNMEASURED country (created by another live domain)
+    # reads None and the backstop merge's `lv is not None` guard skips it; a measured-empty
+    # at_war [] (a country genuinely at peace) is written + protected (no skeleton-[]
+    # masquerade, so no _SKELETON_EMPTY_CONTAINER_LEAVES entry is needed — Codex).
+    at_war: Optional[List[str]] = None
+    casualties: Optional[int] = None
+    faction_group: Optional[int] = None
+    # LIVE bilateral RELATIONS (diplo_relations_live, M). DISTINCT live-only leaves that
+    # share the per-country diplomacy home. `opinion` (the save-shared {TGT: net_opinion}
+    # leaf above) is folded LIVE-FIRST here (cached_sum, 1113/1113 real ordered pairs EXACT
+    # vs save); `relation_flags` is {TGT: [flag,...]} of the 12 directed relation-flag types
+    # (NAP/embargo/military_access/.../puppet) the country has toward each target. Both
+    # default None (Optional) NOT {} so an UNMEASURED country (created by another live domain)
+    # reads None and the backstop's `lv is not None` guard skips it; a measured-empty {} is a
+    # real "no relations" and is written + protected (no skeleton-{} masquerade -> no
+    # _SKELETON_EMPTY_CONTAINER_LEAVES entry needed -- Codex).
+    relation_flags: Optional[Dict[str, Any]] = None
+    # SUBJECT/AUTONOMY (diplo_relations_live, M). This country's overlord-or-subject role,
+    # read from the CSubjectRelation sub-object (the save puppet={} block). `overlord` is the
+    # overlord TAG when THIS country is a subject (else None); `autonomy_state` is the named
+    # autonomy level (e.g. "autonomy_puppet"); `autonomy_ratio` the i32/1e5 ratio. All default
+    # None (unmeasured); a country with no subject relation simply carries None on all three.
+    overlord: Optional[str] = None
+    autonomy_state: Optional[str] = None
+    autonomy_ratio: Optional[float] = None
+    # LIVE opinion-modifier decomposition (construction_orders_live, M). DISTINCT live-only leaf
+    # {TGT: [{token_id, value}, ...]} decomposing the cached_sum net `opinion` above into its
+    # individual modifiers (the modifier-vector SIZE + value-SET 178/178 pairs EXACT vs save).
+    # The modifier-token id->NAME registry is RESISTED -> only the raw token_id (int) + value
+    # (float) are carried, never a fabricated name. Defaults None (Optional) NOT {} so an
+    # unmeasured country reads None (skipped by the backstop's `lv is not None` guard); a
+    # measured-empty {} is never emitted by the plug (it only keys a country with measured pairs).
+    opinion_modifiers: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -576,6 +1089,20 @@ class Intel:
     #           upgrades{branch:level}, capacity{max_operatives,usable_slots,defense}}
     agency: Optional[Dict[str, Any]] = None
     operatives: List[Dict[str, Any]] = field(default_factory=list)
+    # LIVE operative roster (intel_deep_live, M). DISTINCT live-only leaf, separate from the
+    # save-shaped `operatives` above (a richer save list): the agency's ACTIVE-OWNED operatives,
+    # each {op_id, name, detected}. operatives 56/56 + per-country owner counts EXACT vs save.
+    # null until a live read folds it (no fabrication; a measured-empty [] is a real "no ops").
+    operatives_live: Optional[List[Dict[str, Any]]] = None
+    # LIVE cryptology (intel_deep_live, M). DISTINCT live-only leaf {TGT: {amount, decrypting}}
+    # of this agency's decryption progress toward each target's cipher (crypto targets 37/37
+    # EXACT vs save). null until a live read folds it.
+    cryptology_live: Optional[Dict[str, Any]] = None
+    # LIVE operative SKILL + XP (final_residuals_live, M). DISTINCT live-only leaf {op_id: {name,
+    # skill, experience}} — the per-operative overall skill (u32) + accumulated experience (i64/
+    # 1e5), read from the CORRECTED operative body base L=ident-0x8 (skill+experience 56/56 EXACT
+    # vs save). null until a live read folds it.
+    operative_skill_xp: Optional[Dict[str, Any]] = None
     recruitable_operatives: List[Dict[str, Any]] = field(default_factory=list)
     intel_networks: List[Dict[str, Any]] = field(default_factory=list)
     # operations = {priority, running[], finished[]}
@@ -608,6 +1135,18 @@ class Commanders:
     admirals: List[Dict[str, Any]] = field(default_factory=list)
     advisors: List[Dict[str, Any]] = field(default_factory=list)  # cabinet/high-command/theorists
     counts: Optional[Dict[str, int]] = None
+    # LIVE unit-leaders (commanders_live, M). DISTINCT from the role-split save
+    # leaves above: the live reader cannot split generals vs field-marshals (needs
+    # the RESISTED overall level), so it carries the UNSPLIT army leaders here +
+    # admirals under navy_leaders. Each element: {char_id, unit_leader_id, name,
+    # country(TAG), skills{attack/defense/...}, experience(float), trait_xp[]}.
+    # When the OPT-IN leader_detail enrichment runs (ctx.extras["resolve_leader_detail"]),
+    # each record additionally carries `skill` (overall level, int, leader_skill_traits_live,
+    # M) + `traits` (assigned-trait token list, M) joined by unit_leader_id; absent when the
+    # enrichment is off or that leader was not measured (overall LEVEL was otherwise RESISTED;
+    # never fabricated). null-but-present until a live read.
+    army_leaders: Optional[List[Dict[str, Any]]] = None   # generals + field marshals (unsplit)
+    navy_leaders: Optional[List[Dict[str, Any]]] = None   # admirals
 
 
 @dataclass
@@ -617,6 +1156,10 @@ class Country:
     politics: Dict[str, Any] = field(default_factory=lambda: asdict(Politics()))
     research: Dict[str, Any] = field(default_factory=lambda: asdict(Research()))
     focus: Dict[str, Any] = field(default_factory=lambda: asdict(Focus()))
+    # LIVE per-country production (§3.18, production_live.py, M). NEW live-only home,
+    # distinct from the SAVE "production" domain (which folds into economy/military).
+    # Always present; every leaf null until a live read folds it (no fabrication).
+    production: Dict[str, Any] = field(default_factory=lambda: asdict(Production()))
     decisions: Dict[str, Any] = field(default_factory=lambda: asdict(Decisions()))
     diplomacy: Dict[str, Any] = field(default_factory=lambda: asdict(Diplomacy()))
     intel: Dict[str, Any] = field(default_factory=lambda: asdict(Intel()))
@@ -638,6 +1181,21 @@ class Country:
     # players.json — human player's lobby/persona display name (NOT a Steam id).
     # Populates in MP only; null for AI and for SP/missing players (§3.12).
     human_name: Optional[str] = None
+    # LIVE per-country MISC scalars (country_misc_live.py, §3.17, M). null until a
+    # live read folds it: {convoys_destroyed, accidents_score, ace_count,
+    # cosmetic_tag}. A measured 0 is a real value; cosmetic_tag is None when unset.
+    misc: Optional[Dict[str, Any]] = None
+    # LIVE per-country STATIC identity scalars (country_static_live.py, M). null until a
+    # live read folds it: {original_capital, original_tag, reserved_dynamic_country,
+    # templates_locked}. original_tag is a resolved TAG or None; the bools are real reads.
+    identity: Optional[Dict[str, Any]] = None
+    # LIVE per-country SCRIPT-VARIABLES bag (variables_live.py, M). null until a live read
+    # folds it: {name: value} (fixed-point; array vars are name^N keys). A measured-empty
+    # {} = the located container is empty. The mass closure for nation scripted-GUI overlays.
+    script_variables: Optional[Dict[str, Any]] = None
+    # LIVE country_reports latest-record scalars (country_containers_live.py, M). null until
+    # folded: {days, index, date_raw}.
+    country_reports: Optional[Dict[str, Any]] = None
     # abilities.json (WAVE-2) — aces + commander cooldowns + officer corps (§3.15).
     # null until ingested; the deep ace/cooldown/officer-corps reach (S, two D tallies).
     abilities: Optional[Dict[str, Any]] = None
@@ -660,6 +1218,11 @@ class State:
     victory_points_total: Optional[int] = None
     victory_points_by_province: Optional[Dict[str, int]] = None
     resources: Optional[Dict[str, float]] = None
+    # LIVE per-state extra fields (state_fields_live.py, M). dynamic_modifier = the list of
+    # active state modifier names (real read; [] = none). extra_shared_slots = i32 shared
+    # building-slot count (real read; incl. a measured 0). null until a live read folds them.
+    dynamic_modifier: Optional[List[str]] = None
+    extra_shared_slots: Optional[int] = None
     # manpower is a pool object {available, locked, total}, not a scalar (Codex P1 #6).
     manpower_pool: Optional[Dict[str, int]] = None
     category: Optional[str] = None
@@ -675,6 +1238,10 @@ class Province:
     controller: Optional[str] = None
     state_id: Optional[int] = None
     supply: Optional[float] = None
+    # LIVE per-province building levels (buildings_live, M): {building_name: level} for the
+    # province-scoped buildings (naval_base/rail_way/supply_node/land_fort/coastal_fort/...).
+    # null-but-present until a live read folds it (validated vs the melt; no fabrication).
+    buildings: Optional[Dict[str, int]] = None
     rail_usage: Optional[float] = None
     route_usage: Optional[float] = None
     naval_base_usage: Optional[float] = None
@@ -695,6 +1262,12 @@ class Division:
     organisation: Optional[float] = None
     strength: Optional[float] = None
     equipment: List[Dict[str, Any]] = field(default_factory=list)
+    # LIVE per-division held-equipment inventory (division_equipment_live, M). DISTINCT live-only
+    # leaf, separate from the save-shaped `equipment` above (which may carry a richer per-item
+    # shape): {variant_id(str): count_held}. null-but-present until a live read folds it; a
+    # measured count is the held amount (validated vs the melt). Kept DISTINCT so the live join
+    # never clobbers the save-owned equipment list (Codex review).
+    equipment_live: Optional[Dict[str, Any]] = None
     experience: Optional[float] = None
     moving: Optional[bool] = None
     move_target_province: Optional[int] = None
@@ -762,6 +1335,14 @@ class Designs:
     """
     division_templates: List[Dict[str, Any]] = field(default_factory=list)
     equipment_variants: Dict[str, Any] = field(default_factory=_none_dict)
+    # LIVE equipment-VARIANT module catalog (designs_mio_deep_live, M). DISTINCT live-only leaf,
+    # keyed by the bare live variant id (str) -> {modules{slot_name: module_name}, upgrade_levels[]}.
+    # Kept SEPARATE from the save `equipment_variants` above (which is keyed "id:type" and carries
+    # the save's richer per-variant record) so the live join never collides the two key spaces or
+    # discards save metadata (Codex review #3). upgrade NAMES are RESISTED (levels only). null
+    # until a live read folds it; `equipment_variants_live_source` self-badges "M".
+    equipment_variants_live: Optional[Dict[str, Any]] = None
+    equipment_variants_live_source: Optional[str] = None
     # NEW (WAVE-2, DERIVED) — never from the save. None until the model runs.
     # template_stats: {str(template_id): DivisionStats.as_dict()} (models/division_stats)
     template_stats: Optional[Dict[str, Any]] = None
@@ -787,14 +1368,40 @@ class WeatherRegion:
 
 
 @dataclass
+class WeatherProvince:
+    """One per-PROVINCE weather row (§19, live). M = process memory.
+
+    The realized DISPLAYED temperature + precipitation (`water`) + snow all live in the
+    SAME per-province weather struct at province-id index (the per-region temperature read
+    was retracted -- it was a climatology base, not the displayed value). ``temp_c`` is None
+    when the temp slot reads exactly 0 (sea/inactive province -- NOT a literal 0 C).
+    ``precip`` / ``snow`` are the save-persisted i32/1e5 amounts; the reader collapses a
+    zero/absent slot to None (a measured 0.0 is indistinguishable from unmeasured), so None
+    here means zero-or-unmeasured and is NEVER fabricated to 0.0. Always source-badged.
+    """
+    province_id: Optional[int] = None
+    temp_c: Optional[float] = None
+    temp_change_c: Optional[float] = None
+    precip: Optional[float] = None       # `water` amount (None == zero-or-unmeasured)
+    snow: Optional[float] = None         # snow amount  (None == zero-or-unmeasured)
+
+
+@dataclass
 class Weather:
     """Live weather domain (§19, from weather_temp_model + weather_state_reader).
 
     NEW first-class domain. There is NO save oracle for weather (never persisted),
     so every row is live-memory (M) except ``phenom_name`` + the rollup (D). Always
-    present; ``regions`` null until a live read folds it. ``source`` self-badges.
+    present; ``regions`` / ``provinces`` null until a live read folds them. ``source``
+    self-badges.
+
+    GRANULARITY: the live temperature/precip/snow read is PER-PROVINCE (``provinces``);
+    the per-REGION temperature field was retracted (climatology base, not displayed value),
+    so ``regions`` has no working live reader and stays null. A consumer reads ``provinces``
+    for live temp/precip/snow.
     """
-    regions: Optional[Dict[str, Any]] = None   # {region_id(str): WeatherRegion dict}
+    regions: Optional[Dict[str, Any]] = None    # {region_id(str): WeatherRegion dict}
+    provinces: Optional[Dict[str, Any]] = None  # {province_id(str): WeatherProvince dict}
     global_rollup: Optional[Dict[str, Any]] = None
     source: Optional[str] = None        # "M" when a live read filled it, else null
 
@@ -835,6 +1442,16 @@ class Supply:
     by_province: Optional[Dict[str, Any]] = None
     source: Optional[str] = None        # "M" when a live read filled it, else null
     confidence: Optional[str] = None    # e.g. "division_province_proxy"
+    # LIVE supply solver INPUTS (supply_inputs, M). DISTINCTLY-NAMED + SEPARATELY-BADGED from
+    # the division-province proxy above: per-province efficiency/fulfilment + draw/demand are
+    # the PERSISTENT solver inputs (NOT the exact per-province "supply available" number,
+    # which is provably not stored). Keyed by raw province id (str). null until a live read
+    # folds them; solver_inputs_confidence self-badges "live_solver_input_not_exact_supply"
+    # so a consumer never reads efficiency/draw as supply available.
+    solver_efficiency_by_province: Optional[Dict[str, Any]] = None
+    solver_draw_by_province: Optional[Dict[str, Any]] = None
+    solver_inputs_source: Optional[str] = None       # "M" when a live read filled them
+    solver_inputs_confidence: Optional[str] = None   # "live_solver_input_not_exact_supply"
 
 
 @dataclass
@@ -930,6 +1547,103 @@ class World:
 
 
 @dataclass
+class MioLive:
+    """Top-level LIVE Military-Industrial-Organisation catalog (§11b, mio_live.py).
+
+    NEW first-class LIVE container, distinct from the save-sourced per-country
+    Country.mios (different shape + provenance). ``by_tag`` maps a TAG to its list
+    of live org records; ``by_id`` maps an org id (str) to the single record.
+    Each record: {id, owner_tag_db_id, owner(TAG|None), level, points, funds,
+    research_bonus, unlocked_traits_count, allowed_policies_count}. null until a
+    live read folds it; ``source`` self-badges. Always present in the skeleton.
+    """
+    by_tag: Optional[Dict[str, Any]] = None
+    by_id: Optional[Dict[str, Any]] = None
+    count: Optional[int] = None
+    source: Optional[str] = None        # "M" when a live read filled it, else null
+
+
+@dataclass
+class MarketLive:
+    """Top-level LIVE equipment-MARKET sidecar (§7c, decisions_market_live.py). M = process
+    memory.
+
+    NEW first-class LIVE container for the global equipment-market purchase contracts, distinct
+    from the SAVE "market" domain (which attaches trade contracts under each country's
+    diplomacy.lend_lease + a §7b world list — a DIFFERENT identity model + provenance, so the
+    save backstop never writes here). ``contracts`` is the world list of CPurchaseContract
+    records (28/28 EXACT vs save), each:
+        {contract_id(int), seller(TAG|None), buyer(TAG|None), equip_variant_id(int|None),
+         amount(float|None), price(float|None)}.
+    The raw seller/buyer tag-db-ids + the buyer country-object pointer are diagnostic and are
+    STRIPPED before folding; seller/buyer are resolved TAGs (re-validated via valid_tag at the
+    assembler boundary). null-but-present until a live read folds it; ``source`` self-badges "M".
+    """
+    contracts: Optional[List[Dict[str, Any]]] = None
+    count: Optional[int] = None
+    source: Optional[str] = None        # "M" when a live read filled it, else null
+
+
+@dataclass
+class SpecialProjects:
+    """Top-level LIVE special-projects / facilities / scientists catalog (§11c,
+    projects_live.py). M = process memory.
+
+    NEW first-class LIVE container, distinct from the SAVE-sourced per-country
+    Country.projects / Country.scientists (§3.16, S) — different shape AND
+    provenance, so the save backstop never writes here. The live reader exposes
+    GLOBAL pools with NO resolvable owner TAG (facilities carry only a province id;
+    scientists carry no country), so the lists are world-scoped and are NOT keyed by
+    TAG — per-country attribution is an open ticket, never fabricated.
+
+    ``facilities`` each: {id, province, building(str|None), active_project_handle
+    (raw static-def db-id handle, NOT a token name), active(bool),
+    scientist_char_id(int|None), unread_prototype_rewards(int)}.
+    ``projects`` each: {id, static_def_handle (raw handle, NOT a token name),
+    iterations(int), worked_at_facility(facility_id|None)}. project_progress /
+    phase_progress / current_state are serialize-time COMPUTED (not stored live) and
+    stay absent — never fabricated.
+    ``scientists`` each: {char_id, name_token(str|None), display_name(str|None),
+    skills{specialization_nuclear/_naval/_air/_land: int}, trait_count(int|None)}.
+    Trait NAMES are unresolved registry handles -> only the count is carried.
+
+    null-but-present until a live read folds it; ``source`` self-badges "M".
+    """
+    facilities: Optional[List[Dict[str, Any]]] = None
+    projects: Optional[List[Dict[str, Any]]] = None
+    scientists: Optional[List[Dict[str, Any]]] = None
+    count: Optional[Dict[str, int]] = None   # {facilities, projects, scientists}
+    source: Optional[str] = None             # "M" when a live read filled it, else null
+
+
+@dataclass
+class DiplomacyLive:
+    """Top-level LIVE diplomacy sidecar (§13b, diplomacy_live.py). M = process memory.
+
+    NEW first-class LIVE container for the world-scoped diplomacy data that has NO
+    save-shaped home. Distinct from the SAVE-sourced snap["diplomacy_world"] (whose
+    `wars` is war-id-keyed and `factions` is save-faction-id-keyed with rich
+    {id,template,members,leader} records) — the live data is a DIFFERENT identity model:
+
+    ``war_relations`` is the pairwise list straight from the global war_relation pool,
+    each {first(TAG), second(TAG), first_casualties(int), second_casualties(int)}; both
+    TAGs are valid_tag-checked. ``faction_members`` maps the OPAQUE engine diplomatic-
+    group id (stringified for JSON; NOT the save faction id) to its member TAG list (each
+    valid_tag-checked). ``subtype_warning`` is the reader's completeness advisory: a
+    nonempty dict means a record that LOOKED like a war_relation carried a foreign type
+    pointer (a possible missed subtype) — surfaced, never silently dropped.
+
+    Forcing this into diplomacy_world would collide the two key spaces and fabricate a
+    unified identity model that does not exist, so it lives here. null-but-present until
+    a live read folds it; ``source`` self-badges "M".
+    """
+    war_relations: Optional[List[Dict[str, Any]]] = None
+    faction_members: Optional[Dict[str, Any]] = None
+    subtype_warning: Optional[Dict[str, Any]] = None
+    source: Optional[str] = None        # "M" when a live read filled it, else null
+
+
+@dataclass
 class OrderOfBattle:
     """Top-level world order-of-battle (from oob.json, §12). Always present.
 
@@ -937,6 +1651,13 @@ class OrderOfBattle:
     sit in another tag's army), so the canonical lists live here; each element carries
     its `owner` TAG. `by_country` is the per-tag count rollup (also mirrored onto
     Country.order_of_battle for convenience).
+
+    LIVE command TREE (§12c, oob_command_live.py, M): armies/army_groups/fleets/theatres are
+    filled live-first by the "oob_command" domain (membership ids + leader_id + owner-consensus
+    TAG; task forces nest under each fleet). The save oob.json is the BACKSTOP for those (M/S);
+    navy_theaters/air_wings stay save-only. Membership/leader ids are RAW engine ints (NOT TAGs);
+    only `owner` is a resolved country TAG. When a live list is filled, the assembler sets a
+    matching `<list>_source = "M"` key (validator-inert) alongside it.
     """
     army_groups: List[Dict[str, Any]] = field(default_factory=list)
     armies: List[Dict[str, Any]] = field(default_factory=list)
@@ -945,6 +1666,19 @@ class OrderOfBattle:
     air_wings: List[Dict[str, Any]] = field(default_factory=list)
     theatres: List[Dict[str, Any]] = field(default_factory=list)
     by_country: Dict[str, Any] = field(default_factory=_none_dict)
+    # LIVE per-SHIP roster from the global CShip registry (oob_full_live.py, §12b,
+    # M). Each item: {instance_id, definition, category, strength_hp, organisation,
+    # experience, sunk_convoys}. owner is NOT carried live (it comes from the save
+    # OOB join), so live ships have no owner. Empty-but-present until a live read
+    # folds it. Validator-inert (a new list key alongside the canonical sub-lists).
+    ships: List[Dict[str, Any]] = field(default_factory=list)
+    # LIVE battle-plan ORDERS (construction_orders_live, §12d, M). DISTINCT live-only list:
+    # per-army offensive/front orders, each {army_id, order_type, target_states}. target_states
+    # is the EXACT state-id set for type-5 (offensive) orders ONLY (107/108 EXACT vs save); non-
+    # type-5 order geometry is RESISTED (null target_states), never fabricated. army_id +
+    # target_states are RAW engine ints (NOT TAGs). Defaults None (Optional) NOT [] so an
+    # unmeasured frame reads None; a measured-empty [] (no battle plans) is written + protected.
+    battle_plan_orders: Optional[List[Dict[str, Any]]] = None
 
 
 # --- Event (§9) ---
@@ -1048,6 +1782,10 @@ def empty_country() -> Dict[str, Any]:
     return asdict(Country())
 
 
+def empty_production() -> Dict[str, Any]:
+    return asdict(Production())
+
+
 def empty_state() -> Dict[str, Any]:
     return asdict(State())
 
@@ -1072,6 +1810,22 @@ def empty_order_of_battle() -> Dict[str, Any]:
     return asdict(OrderOfBattle())
 
 
+def empty_mio_live() -> Dict[str, Any]:
+    return asdict(MioLive())
+
+
+def empty_market_live() -> Dict[str, Any]:
+    return asdict(MarketLive())
+
+
+def empty_diplomacy_live() -> Dict[str, Any]:
+    return asdict(DiplomacyLive())
+
+
+def empty_special_projects() -> Dict[str, Any]:
+    return asdict(SpecialProjects())
+
+
 def empty_naval_air() -> Dict[str, Any]:
     return asdict(NavalAir())
 
@@ -1086,6 +1840,66 @@ def empty_weather() -> Dict[str, Any]:
 
 def empty_models() -> Dict[str, Any]:
     return asdict(ModelsBlock())
+
+
+def modset_id(mods: List[Dict[str, Any]]) -> str:
+    """A stable, order-SENSITIVE digest identifying a mod-set (provenance.mod).
+
+    The identity that two mod-sets must agree on to be "the same skin" is the
+    ORDERED list of (workshop_id-or-name, version) pairs — a different load order,
+    a different version, or a different mod composition all change the digest, so
+    the native auto-matcher catches every one of those as a mismatch.
+
+    `mods` is the per-mod list already in LOAD ORDER. Each mod contributes
+    `workshop_id` (falling back to `name` for a local mod with no workshop id) and
+    `version`; missing parts become the empty string (so a mod with no version is
+    still identified, just by id alone). Returns a short hex digest. The vanilla
+    (empty) mod-set digests to a fixed sentinel so it is stable + recognisable.
+
+    The identity token is NAMESPACED ``workshop:<id>`` vs ``name:<name>`` (Codex
+    review A): so a LOCAL mod named ``12345`` can never collide with a WORKSHOP mod
+    whose ``remote_file_id`` is ``12345``. A mod with neither id nor name tokenises
+    to ``name:`` (empty) -- still order-positioned, but the native matcher diffs the
+    full list to surface such under-identified entries.
+
+    The digest is taken over a CANONICAL JSON encoding of the ordered
+    ``[[ident, version], ...]`` pairs: a JSON list cannot be spoofed by an ``@``/``|``
+    inside a name/version the way a delimiter-joined string could, so two distinct
+    mod-sets can never collide through delimiter ambiguity. NOTE (documented
+    limitation, not a bug): identity is still metadata-only (id + version + order),
+    so two LOCAL mods with the SAME name + version are indistinguishable here; the
+    native matcher therefore also diffs the FULL mod list, not just this digest.
+    """
+    import hashlib
+    import json
+    if not mods:
+        return "vanilla"
+    pairs = []
+    for m in mods:
+        wid = (m.get("workshop_id") or "").strip()
+        if wid:
+            ident = "workshop:" + wid
+        else:
+            ident = "name:" + (m.get("name") or "").strip()
+        ver = (m.get("version") or "").strip()
+        pairs.append([ident, ver])
+    raw = json.dumps(pairs, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def empty_modset() -> Dict[str, Any]:
+    """A measured VANILLA mod-set (launcher config read, found zero enabled mods).
+
+    Distinct from `provenance.mod = None` (launcher config NOT read): this is the
+    honest "I looked and there are no mods" record. `mods` is empty; `modset_id`
+    is the fixed `"vanilla"` sentinel.
+    """
+    return {
+        "modset_id": "vanilla",
+        "source": None,
+        "load_order": [],
+        "mods": [],
+    }
 
 
 def empty_strategic_air() -> Dict[str, Any]:
@@ -1130,6 +1944,23 @@ def empty_snapshot(game_id: str, date: Optional[str] = None) -> Dict[str, Any]:
         # null-but-present lists/dicts until their parser feeds them.
         "designs": empty_designs(),
         "order_of_battle": empty_order_of_battle(),
+        # top-level LIVE MIO catalog (§11b, M). NEW first-class live container,
+        # distinct from the save-sourced per-country Country.mios. Always present;
+        # null-but-present until a live read folds it.
+        "mio_live": empty_mio_live(),
+        # top-level LIVE equipment-MARKET sidecar (§7c, M). NEW first-class live container for
+        # the global purchase contracts; distinct from the SAVE "market" domain (per-country
+        # lend_lease + world list, a different identity model). null-but-present until a live read.
+        "market_live": empty_market_live(),
+        # top-level LIVE diplomacy sidecar (§13b, M). NEW first-class live container for the
+        # world-scoped war_relations list + faction_members map; distinct from the SAVE
+        # diplomacy_world (different identity model). null-but-present until a live read.
+        "diplomacy_live": empty_diplomacy_live(),
+        # top-level LIVE special-projects / facilities / scientists catalog (§11c, M).
+        # NEW first-class live container, distinct from the save-sourced per-country
+        # Country.projects / Country.scientists. null-but-present until a live read
+        # folds it (the lists stay None offline so they never look measured-empty).
+        "special_projects": empty_special_projects(),
         # live PROXY/region sidecars promoted to first-class fields (§13). Always
         # present; null-but-present until a live read folds them. Confidence-badged.
         "naval_air": empty_naval_air(),
@@ -1164,6 +1995,19 @@ _TOP_CONTAINERS = {
     "divisions": list, "combats": list, "events": list, "map": dict,
     "provenance": dict, "diplomacy_world": dict,
     "designs": dict, "order_of_battle": dict,
+    # top-level LIVE catalogs (§11b mio_live, §11c special_projects), source M.
+    # Always present (null-but-present block); validated as a dict so a malformed
+    # payload can't pass as an ignored unknown key (Codex: close the validator
+    # blind spot — mio_live was missing here from a prior pass).
+    "mio_live": dict,
+    # top-level LIVE equipment-MARKET sidecar (§7c, market_live). Always present (null-but-
+    # present block); validated as a dict so a malformed payload can't pass as an ignored key.
+    "market_live": dict,
+    "special_projects": dict,
+    # top-level LIVE diplomacy sidecar (§13b, diplomacy_live). Always present
+    # (null-but-present block); validated as a dict so a malformed payload can't pass
+    # as an ignored unknown key.
+    "diplomacy_live": dict,
     "naval_air": dict, "supply": dict,
     # Tier-1 EXTRACT world-scoped save domains (§14-§18)
     "strategic_air": dict, "strategic_operatives": dict, "raids": dict,
@@ -1202,6 +2046,37 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
         elif not isinstance(snap[key], kind):
             problems.append(f"{key!r} should be {kind.__name__}, got {type(snap[key]).__name__}")
 
+    # provenance.mod (the additive per-replay MOD IDENTITY, §K): None (launcher
+    # config not read — NO FABRICATION) or a ModSet dict. When a dict, the
+    # identity fields must be the right kind so the native auto-matcher (which keys
+    # off modset_id + the per-mod id/version/order) can trust it. A measured-vanilla
+    # mod-set (mods == []) is valid and distinct from None.
+    prov = snap.get("provenance")
+    if isinstance(prov, dict):
+        mod = prov.get("mod")
+        if mod is not None:
+            if not isinstance(mod, dict):
+                problems.append(f"provenance.mod {mod!r} not dict|null")
+            else:
+                if not isinstance(mod.get("modset_id"), str) or not mod.get("modset_id"):
+                    problems.append("provenance.mod.modset_id missing/empty")
+                mods = mod.get("mods")
+                if not isinstance(mods, list):
+                    problems.append(f"provenance.mod.mods {mods!r} not a list")
+                else:
+                    for i, m in enumerate(mods):
+                        if not isinstance(m, dict):
+                            problems.append(f"provenance.mod.mods[{i}] {m!r} not a dict")
+                            continue
+                        for k in ("name", "workshop_id", "version"):
+                            v = m.get(k)
+                            if v is not None and not isinstance(v, str):
+                                problems.append(
+                                    f"provenance.mod.mods[{i}].{k} {v!r} not str|null")
+                lo = mod.get("load_order")
+                if lo is not None and not isinstance(lo, list):
+                    problems.append(f"provenance.mod.load_order {lo!r} not list|null")
+
     # Countries: keys look like TAGs; each has the 8 domains as dicts.
     for tag, c in (snap.get("countries") or {}).items():
         if not (isinstance(tag, str) and 2 <= len(tag) <= 4):
@@ -1210,7 +2085,7 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
             problems.append(f"country {tag!r} not a dict")
             continue
         for dom in ("economy", "military", "politics", "research", "focus",
-                    "decisions", "diplomacy", "intel", "commanders",
+                    "production", "decisions", "diplomacy", "intel", "commanders",
                     "mios", "scheduled_variants"):
             if dom not in c:
                 problems.append(f"country {tag!r} missing domain {dom!r}")
@@ -1219,6 +2094,184 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
             problems.append(f"country {tag!r} missing field 'order_of_battle'")
         if not isinstance(c.get("mios", []), list):
             problems.append(f"country {tag!r}.mios should be a list")
+        # newly-wired live leaves: misc dict|null, military.convoys_count int|null
+        # (Codex review #8 — these were folded but not validated).
+        if c.get("misc") is not None and not isinstance(c.get("misc"), dict):
+            problems.append(f"country {tag!r}.misc {c.get('misc')!r} not dict|null")
+        mil = c.get("military")
+        if isinstance(mil, dict):
+            cc = mil.get("convoys_count")
+            if cc is not None and not isinstance(cc, int):
+                problems.append(
+                    f"country {tag!r}.military.convoys_count {cc!r} not int|null")
+        # newly-wired LIVE leaves (tech_live / commanders_live): list|null shape.
+        rsh = c.get("research")
+        if isinstance(rsh, dict):
+            ipl = rsh.get("in_progress_live")
+            if ipl is not None and not isinstance(ipl, list):
+                problems.append(
+                    f"country {tag!r}.research.in_progress_live {ipl!r} not list|null")
+            tcc = rsh.get("tech_count")
+            if tcc is not None and not isinstance(tcc, int):
+                problems.append(
+                    f"country {tag!r}.research.tech_count {tcc!r} not int|null")
+        cmd = c.get("commanders")
+        if isinstance(cmd, dict):
+            for k in ("army_leaders", "navy_leaders"):
+                v = cmd.get(k)
+                if v is not None and not isinstance(v, list):
+                    problems.append(
+                        f"country {tag!r}.commanders.{k} {v!r} not list|null")
+        # intel_live agency: a dict|null whose live-measured capacity (if present) is
+        # a dict|null (Codex review: validate the newly-wired nested leaf).
+        intl = c.get("intel")
+        if isinstance(intl, dict):
+            ag = intl.get("agency")
+            if ag is not None and not isinstance(ag, dict):
+                problems.append(
+                    f"country {tag!r}.intel.agency {ag!r} not dict|null")
+            elif isinstance(ag, dict):
+                cap = ag.get("capacity")
+                if cap is not None and not isinstance(cap, dict):
+                    problems.append(
+                        f"country {tag!r}.intel.agency.capacity {cap!r} not dict|null")
+        # newly-wired LIVE focus leaf: current_continuous str|null (focus_live, M).
+        fcs = c.get("focus")
+        if isinstance(fcs, dict):
+            cc = fcs.get("current_continuous")
+            if cc is not None and not isinstance(cc, str):
+                problems.append(
+                    f"country {tag!r}.focus.current_continuous {cc!r} not str|null")
+        # newly-wired LIVE production home (production_live, M): a dict whose measured
+        # leaves are the right kind (stockpile dict|null, *_lines list|null, factory
+        # counts int|null). Codex review: validate the new always-present sub-dict so a
+        # malformed live payload can't pass as an ignored key.
+        prod = c.get("production")
+        if "production" in c and not isinstance(prod, dict):
+            problems.append(f"country {tag!r}.production {prod!r} not a dict")
+        elif isinstance(prod, dict):
+            sk = prod.get("stockpile")
+            if sk is not None and not isinstance(sk, dict):
+                problems.append(
+                    f"country {tag!r}.production.stockpile {sk!r} not dict|null")
+            for k in ("military_lines", "naval_lines"):
+                v = prod.get(k)
+                if v is not None and not isinstance(v, list):
+                    problems.append(
+                        f"country {tag!r}.production.{k} {v!r} not list|null")
+            for k in ("military_factories", "naval_factories"):
+                v = prod.get(k)
+                if v is not None and not isinstance(v, int):
+                    problems.append(
+                        f"country {tag!r}.production.{k} {v!r} not int|null")
+            # newly-wired LIVE construction queue (construction_orders_live, M): list|null.
+            cq = prod.get("construction_queue")
+            if cq is not None and not isinstance(cq, list):
+                problems.append(
+                    f"country {tag!r}.production.construction_queue {cq!r} not list|null")
+        # newly-wired LIVE diplomacy leaves (diplomacy_live, M): at_war list|null whose
+        # elements are TAG strings; casualties int|null; faction_group int|null.
+        dip = c.get("diplomacy")
+        if isinstance(dip, dict):
+            aw = dip.get("at_war")
+            if aw is not None and not isinstance(aw, list):
+                problems.append(
+                    f"country {tag!r}.diplomacy.at_war {aw!r} not list|null")
+            elif isinstance(aw, list):
+                for e in aw:
+                    if not (isinstance(e, str) and 2 <= len(e) <= 4):
+                        problems.append(
+                            f"country {tag!r}.diplomacy.at_war entry {e!r} not a TAG")
+            cas = dip.get("casualties")
+            if cas is not None and not isinstance(cas, int):
+                problems.append(
+                    f"country {tag!r}.diplomacy.casualties {cas!r} not int|null")
+            fg = dip.get("faction_group")
+            if fg is not None and not isinstance(fg, int):
+                problems.append(
+                    f"country {tag!r}.diplomacy.faction_group {fg!r} not int|null")
+            # newly-wired LIVE bilateral-relations leaves (diplo_relations_live, M):
+            # opinion + relation_flags are dict|null; overlord/autonomy_state str|null;
+            # autonomy_ratio number|null. A malformed live payload can't slip through.
+            for k in ("opinion", "relation_flags"):
+                v = dip.get(k)
+                if v is not None and not isinstance(v, dict):
+                    problems.append(
+                        f"country {tag!r}.diplomacy.{k} {v!r} not dict|null")
+            for k in ("overlord", "autonomy_state"):
+                v = dip.get(k)
+                if v is not None and not isinstance(v, str):
+                    problems.append(
+                        f"country {tag!r}.diplomacy.{k} {v!r} not str|null")
+            ar = dip.get("autonomy_ratio")
+            if ar is not None and not isinstance(ar, (int, float)):
+                problems.append(
+                    f"country {tag!r}.diplomacy.autonomy_ratio {ar!r} not number|null")
+            # newly-wired LIVE opinion-modifier decomposition (construction_orders_live, M):
+            # dict|null.
+            om = dip.get("opinion_modifiers")
+            if om is not None and not isinstance(om, dict):
+                problems.append(
+                    f"country {tag!r}.diplomacy.opinion_modifiers {om!r} not dict|null")
+        # newly-wired LIVE politics leaves (politics_live, M): party_popularities dict|null,
+        # ideas list|null, idea_count/election_frequency/party_count int|null, low_confidence
+        # bool|null. (political_power stays country_scalars-owned; not re-validated here.)
+        pol = c.get("politics")
+        if isinstance(pol, dict):
+            pp = pol.get("party_popularities")
+            if pp is not None and not isinstance(pp, dict):
+                problems.append(
+                    f"country {tag!r}.politics.party_popularities {pp!r} not dict|null")
+            idl = pol.get("ideas")
+            if idl is not None and not isinstance(idl, list):
+                problems.append(
+                    f"country {tag!r}.politics.ideas {idl!r} not list|null")
+            for k in ("idea_count", "election_frequency", "party_count"):
+                v = pol.get(k)
+                if v is not None and not isinstance(v, int):
+                    problems.append(
+                        f"country {tag!r}.politics.{k} {v!r} not int|null")
+            lc = pol.get("low_confidence")
+            if lc is not None and not isinstance(lc, bool):
+                problems.append(
+                    f"country {tag!r}.politics.low_confidence {lc!r} not bool|null")
+            # newly-wired LIVE election residuals (politics_residuals_live, M): last_election
+            # str|null, elections_allowed bool|null, appointed_advisors list|null.
+            le = pol.get("last_election")
+            if le is not None and not isinstance(le, str):
+                problems.append(
+                    f"country {tag!r}.politics.last_election {le!r} not str|null")
+            ea = pol.get("elections_allowed")
+            if ea is not None and not isinstance(ea, bool):
+                problems.append(
+                    f"country {tag!r}.politics.elections_allowed {ea!r} not bool|null")
+            aa = pol.get("appointed_advisors")
+            if aa is not None and not isinstance(aa, list):
+                problems.append(
+                    f"country {tag!r}.politics.appointed_advisors {aa!r} not list|null")
+        # newly-wired LIVE intel leaves (intel_deep_live + final_residuals_live, M):
+        # operatives_live list|null, cryptology_live dict|null, operative_skill_xp dict|null.
+        intl2 = c.get("intel")
+        if isinstance(intl2, dict):
+            ol = intl2.get("operatives_live")
+            if ol is not None and not isinstance(ol, list):
+                problems.append(
+                    f"country {tag!r}.intel.operatives_live {ol!r} not list|null")
+            cl2 = intl2.get("cryptology_live")
+            if cl2 is not None and not isinstance(cl2, dict):
+                problems.append(
+                    f"country {tag!r}.intel.cryptology_live {cl2!r} not dict|null")
+            osx = intl2.get("operative_skill_xp")
+            if osx is not None and not isinstance(osx, dict):
+                problems.append(
+                    f"country {tag!r}.intel.operative_skill_xp {osx!r} not dict|null")
+        # newly-wired LIVE decisions leaf (decisions_market_live, M): timed_live list|null.
+        dec = c.get("decisions")
+        if isinstance(dec, dict):
+            tlv = dec.get("timed_live")
+            if tlv is not None and not isinstance(tlv, list):
+                problems.append(
+                    f"country {tag!r}.decisions.timed_live {tlv!r} not list|null")
         st = c.get("politics", {}).get("stability")
         if st is not None and not (isinstance(st, (int, float)) and -0.01 <= st <= 1.01):
             problems.append(f"country {tag!r} stability {st!r} out of 0..1")
@@ -1242,6 +2295,10 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
             v = prv.get("controller")
             if v is not None and not isinstance(v, str):
                 problems.append(f"province {pid!r}.controller {v!r} not str|null")
+            # newly-wired LIVE per-province buildings (buildings_live, M): dict|null.
+            pb = prv.get("buildings")
+            if pb is not None and not isinstance(pb, dict):
+                problems.append(f"province {pid!r}.buildings {pb!r} not dict|null")
         else:
             problems.append(f"province {pid!r} not a dict")
 
@@ -1259,6 +2316,11 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
             problems.append(f"duplicate division uid {uid!r}")
         else:
             seen_uids.add(uid)
+        # newly-wired LIVE per-division equipment inventory (division_equipment_live, M):
+        # equipment_live dict|null (DISTINCT from the save-owned equipment list).
+        el = dv.get("equipment_live")
+        if el is not None and not isinstance(el, dict):
+            problems.append(f"division[{i}].equipment_live {el!r} not dict|null")
 
     # Designs: division_templates is a list, equipment_variants a dict — both must be
     # present (always-present-container rule), §11.
@@ -1268,17 +2330,71 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
             problems.append("designs.division_templates missing/not a list")
         if not isinstance(dsg.get("equipment_variants"), dict):
             problems.append("designs.equipment_variants missing/not a dict")
+        # newly-wired LIVE variant module catalog (designs_mio_deep_live, M): dict|null.
+        evl = dsg.get("equipment_variants_live")
+        if evl is not None and not isinstance(evl, dict):
+            problems.append(f"designs.equipment_variants_live {evl!r} not dict|null")
 
     # Order of battle: the canonical sub-lists are lists, by_country a dict — all
     # present (always-present-container rule), §12.
     oob = snap.get("order_of_battle")
     if isinstance(oob, dict):
         for k in ("army_groups", "armies", "fleets", "navy_theaters",
-                  "air_wings", "theatres"):
+                  "air_wings", "theatres", "ships"):  # ships = LIVE per-ship list (#8)
             if not isinstance(oob.get(k), list):
                 problems.append(f"order_of_battle.{k} missing/not a list")
         if not isinstance(oob.get("by_country"), dict):
             problems.append("order_of_battle.by_country missing/not a dict")
+        # newly-wired LIVE battle-plan orders (construction_orders_live, M): list|null.
+        bpo = oob.get("battle_plan_orders")
+        if bpo is not None and not isinstance(bpo, list):
+            problems.append(f"order_of_battle.battle_plan_orders {bpo!r} not list|null")
+
+    # Top-level LIVE catalogs: validate the documented leaves so a malformed
+    # payload can't slip through (Codex review #8). mio_live.by_tag/by_id are
+    # dict|null; special_projects.facilities/projects/scientists are list|null.
+    ml = snap.get("mio_live")
+    if isinstance(ml, dict):
+        for k in ("by_tag", "by_id"):
+            v = ml.get(k)
+            if v is not None and not isinstance(v, dict):
+                problems.append(f"mio_live.{k} {v!r} not dict|null")
+    sp = snap.get("special_projects")
+    if isinstance(sp, dict):
+        for k in ("facilities", "projects", "scientists"):
+            v = sp.get(k)
+            if v is not None and not isinstance(v, list):
+                problems.append(f"special_projects.{k} {v!r} not list|null")
+    # top-level LIVE equipment-MARKET sidecar (market_live): contracts list|null, count int|null,
+    # source str|null. A malformed payload can't slip through as an ignored key.
+    mkl = snap.get("market_live")
+    if isinstance(mkl, dict):
+        ct = mkl.get("contracts")
+        if ct is not None and not isinstance(ct, list):
+            problems.append(f"market_live.contracts {ct!r} not list|null")
+        cn = mkl.get("count")
+        if cn is not None and not isinstance(cn, int):
+            problems.append(f"market_live.count {cn!r} not int|null")
+    # top-level LIVE diplomacy sidecar (diplomacy_live): war_relations list|null,
+    # faction_members/subtype_warning dict|null. A malformed payload can't slip through.
+    dl = snap.get("diplomacy_live")
+    if isinstance(dl, dict):
+        wr = dl.get("war_relations")
+        if wr is not None and not isinstance(wr, list):
+            problems.append(f"diplomacy_live.war_relations {wr!r} not list|null")
+        for k in ("faction_members", "subtype_warning"):
+            v = dl.get(k)
+            if v is not None and not isinstance(v, dict):
+                problems.append(f"diplomacy_live.{k} {v!r} not dict|null")
+
+    # live weather domain (§19): regions/provinces dict|null, source str|null. A malformed
+    # payload can't slip through as an ignored key (mirrors the mio_live/diplomacy_live checks).
+    wx = snap.get("weather")
+    if isinstance(wx, dict):
+        for k in ("regions", "provinces", "global_rollup"):
+            v = wx.get(k)
+            if v is not None and not isinstance(v, dict):
+                problems.append(f"weather.{k} {v!r} not dict|null")
 
     # Events: type/confidence/source from the enums.
     for i, ev in enumerate(snap.get("events") or []):
@@ -1320,15 +2436,20 @@ def _is_intlike(x: Any) -> bool:
 __all__ = [
     "SCHEMA_VERSION", "DOMAINS", "RESOURCE_KEYS", "BUILDING_KEYS",
     "FIELD_SOURCES", "source_of", "date_to_hour_index",
-    "Economy", "Military", "Politics", "Research", "Focus", "Decisions",
+    "Economy", "Military", "Politics", "Research", "Focus", "Production",
+    "Decisions",
     "Diplomacy", "Intel", "Scalars", "Commanders", "Country", "State", "Province",
-    "Division", "Combat", "MapLayers", "Designs", "OrderOfBattle",
-    "NavalAir", "Supply", "Weather", "WeatherRegion", "ModelsBlock",
+    "Division", "Combat", "MapLayers", "Designs", "OrderOfBattle", "MioLive",
+    "DiplomacyLive", "SpecialProjects",
+    "NavalAir", "Supply", "Weather", "WeatherRegion", "WeatherProvince", "ModelsBlock",
     "StrategicAir", "StrategicOperatives", "Raids", "WorldEvents", "World",
     "Provenance", "Event", "make_event",
     "EVENT_TYPES", "CONFIDENCE_LEVELS", "EVENT_SOURCES",
-    "empty_country", "empty_state", "empty_province", "empty_division",
-    "empty_map", "empty_designs", "empty_order_of_battle",
+    "empty_country", "empty_production",
+    "empty_state", "empty_province", "empty_division",
+    "empty_map", "empty_designs", "empty_order_of_battle", "empty_mio_live",
+    "empty_market_live",
+    "empty_diplomacy_live", "empty_special_projects",
     "empty_naval_air", "empty_supply", "empty_weather", "empty_models",
     "empty_snapshot",
     "empty_strategic_air", "empty_strategic_operatives", "empty_raids",

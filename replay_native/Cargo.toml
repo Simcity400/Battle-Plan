@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["snapshot", "assets", "render", "gui_runtime", "bind", "scrub", "focus_tree", "combat_panel", "widgets", "app"]
+
+# The native replay UI (VERTICAL_SLICE_SPEC.md). Crates are added per milestone:
+#   M0  snapshot   — forward-compatible read-only store reader  (this milestone)
+#   M1  assets     — .dds->texture, BMFont, sprite manifest, map artifacts
+#   M1  render     — wgpu sprite / 9-slice / glyph / progressbar / map shader
+#   M0.5 gui_runtime — .gui-json -> scene-graph + layout + hit-test + behavior registry
+#   M3  bind       — declarative binding spec + formatters
+#   M6  scrub      — the scrubber: global hour_index + windowed immutable LRU +
+#                    domain-scoped views; in-process re-bind of all surfaces
+#   M2+ app        — Bevy/winit window + scrubber + selection

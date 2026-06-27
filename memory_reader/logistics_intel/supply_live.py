@@ -168,6 +168,10 @@ def enumerate_supply(p, statistic="median"):
         if gain is not None:
             rec["gain"].append(gain)
 
+    return _reduce_supply(by, statistic)
+
+
+def _reduce_supply(by, statistic):
     def reduce(vals):
         if not vals:
             return 0.0
@@ -189,6 +193,60 @@ def enumerate_supply(p, statistic="median"):
             "divisions": max(len(rec["cur"]), len(rec["cap"])),
         }
     return out
+
+
+def enumerate_supply_bodies(p):
+    """[CDivision body_addr, ...] -- the SCAN half of enumerate_supply, exposed so callers can
+    PIN the located division bodies and re-read the supply proxy later WITHOUT re-scanning the
+    arena (steady-state perf). De-dupes (a vtable scan can yield the same body once)."""
+    if not _verify_build(p):
+        return []
+    out = []
+    seen = set()
+    for body in _enum_divisions(p):
+        if body in seen:
+            continue
+        seen.add(body)
+        out.append(body)
+    return out
+
+
+def enumerate_supply_from_bodies(p, bodies, statistic="median"):
+    """STEADY-STATE no-scan re-read: given a PINNED list of CDivision body addresses (from
+    enumerate_supply_bodies), recompute the per-province supply proxy LIVE WITHOUT scanning.
+    Each body is re-gated (vtable == CDivision vtable AND type==4713) so a moved/freed/reused
+    slot is silently DROPPED (honest absence; the caller's pin-validate should already have
+    forced a re-scan). Returns the SAME {province_id: {current,capacity,gain,divisions}} shape
+    as enumerate_supply."""
+    if not _verify_build(p):
+        return {}
+    div_vt = p.module_base + DIV_VT_OFF
+    by = defaultdict(lambda: {"cur": [], "cap": [], "gain": []})
+    for body in bodies:
+        try:
+            if p.u64(body) != div_vt:                 # moved/freed/different class -> drop
+                continue
+            if p.u32(body + OFF_DIV_TYPE) != DIVISION_TYPE:
+                continue
+            loc = p.u32(body + OFF_DIV_LOC)
+        except OSError:
+            continue
+        if loc is None or loc <= 0 or loc > MAX_PID:
+            continue
+        try:
+            cur = p.u32(body + OFF_DIV_SUPPLY_RATIO)
+            cap = p.u32(body + OFF_DIV_MAX_SUPPLY)
+            gain = p.u32(body + OFF_DIV_SUPPLY_GAIN)
+        except OSError:
+            continue
+        rec = by[loc]
+        if cur is not None:
+            rec["cur"].append(cur)
+        if cap is not None:
+            rec["cap"].append(cap)
+        if gain is not None:
+            rec["gain"].append(gain)
+    return _reduce_supply(by, statistic)
 
 
 # --------------------------------------------------------------------------

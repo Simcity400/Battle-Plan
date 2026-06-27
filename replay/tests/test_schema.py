@@ -50,7 +50,9 @@ class TestSourceMap(unittest.TestCase):
 
     def test_state_and_province(self):
         self.assertEqual(schema.source_of("states.23.owner"), "M/S")
-        self.assertEqual(schema.source_of("provinces.11596.controller"), "S/D")
+        # live province_control measures the province controller (Codex review #6):
+        # M (live) wins, S (save) backstops, D (state-controller fallback) last.
+        self.assertEqual(schema.source_of("provinces.11596.controller"), "M/S/D")
 
     def test_unknown_returns_none(self):
         self.assertIsNone(schema.source_of("countries.GER.nonsense.field"))

@@ -235,16 +235,25 @@ def _ingest_countries(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
             pol["stability"] = c.get("stability")
             pol["war_support"] = c.get("war_support")
             pol["political_power"] = c.get("political_power")
-            pol["command_power"] = c.get("command_power")
+            # command_power is a single source written to BOTH schema-defined keys
+            # (politics.command_power and military.command_power); read it once.
+            command_power = c.get("command_power")
+            pol["command_power"] = command_power
             pol["ruling_party"] = c.get("ruling_party")
             pol["is_human"] = c.get("is_human")
             pol["is_major"] = c.get("major")
             pol["capital_state"] = c.get("capital")
             mil = dst["military"]
             mil["num_ships"] = c.get("num_ships")
-            mil["command_power"] = c.get("command_power")
+            mil["command_power"] = command_power
             mil.setdefault("manpower", {})
-            # manpower_ratio is a raw manpower figure in this oracle file
+            # manpower_ratio is a raw manpower figure in this oracle file.
+            # CONTRACT NOTE: military.manpower.available is written here from
+            # country_snapshot.manpower_ratio AND again in the economy.json pass
+            # below (from economy.available_manpower). Order is last-writer-wins:
+            # the economy pass runs after this one, so economy.available_manpower
+            # silently overrides this value when both are present. Intentional —
+            # economy.json is the authoritative manpower source. NO behaviour change.
             if c.get("manpower_ratio") is not None:
                 mil["manpower"]["available"] = c.get("manpower_ratio")
             eco = dst["economy"]
@@ -283,6 +292,9 @@ def _ingest_countries(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
                     pol[dst_k] = e[src_k]
             mil = dst["military"]
             mil.setdefault("manpower", {})
+            # CONTRACT NOTE: this is the authoritative manpower writer; it runs
+            # AFTER the country_snapshot pass and intentionally last-writer-wins
+            # over military.manpower.available set from manpower_ratio there.
             if e.get("available_manpower") is not None:
                 mil["manpower"]["available"] = e["available_manpower"]
 
@@ -523,8 +535,11 @@ def _ingest_intel(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
             intel["peace_conference"] = peace
 
 
-def _contract_id_str(cid: Any) -> Optional[str]:
-    """Normalize a contract id (a [id, type] pair) to a stable 'id:type' key."""
+def _id_pair_str(cid: Any) -> Optional[str]:
+    """Normalize an engine id (often an [id, type] pair) to a stable 'id:type' key.
+
+    Shared by contract ids and combat ids — both are the same [id, type] shape.
+    """
     if isinstance(cid, list):
         return ":".join(str(x) for x in cid)
     return str(cid) if cid is not None else None
@@ -554,7 +569,7 @@ def _ingest_market(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
         for c in contracts:
             if not isinstance(c, dict):
                 continue
-            cid = _contract_id_str(c.get("contract_id"))
+            cid = _id_pair_str(c.get("contract_id"))
             rec = {
                 "contract_id": cid,
                 "seller": c.get("seller"),
@@ -688,8 +703,9 @@ def _ingest_state_detail(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
         if det.get("victory_points_total") is not None:
             st["victory_points_total"] = det.get("victory_points_total")
         vp = det.get("victory_points")
-        if isinstance(vp, dict):
-            # only treat as a province map if every value is numeric
+        if isinstance(vp, dict) and vp:
+            # only treat as a province map if every value is numeric (and the
+            # map is non-empty: an empty {} is meaningless, not a 0 VP total)
             if all(isinstance(v, (int, float)) for v in vp.values()):
                 st["victory_points_by_province"] = vp
                 if st["victory_points_total"] is None:
@@ -717,7 +733,7 @@ def _ingest_combats(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
         if not isinstance(c, dict):
             continue
         rec = {
-            "combat_id": _combat_id_str(c.get("combat_id")),
+            "combat_id": _id_pair_str(c.get("combat_id")),
             "kind": c.get("kind"),
             "location_province": c.get("location"),
             "attackers": (c.get("attacker") or {}).get("units") or [],
@@ -729,12 +745,6 @@ def _ingest_combats(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
         }
         out.append(rec)
     snap["combats"] = out
-
-
-def _combat_id_str(cid: Any) -> Optional[str]:
-    if isinstance(cid, list):
-        return ":".join(str(x) for x in cid)
-    return str(cid) if cid is not None else None
 
 
 def _merge_owner_controller(snap: Dict[str, Any], src: Any, set_owner: bool,
@@ -1299,11 +1309,13 @@ class SnapshotStore:
                 "divisions": len(snap.get("divisions", [])),
             },
         }
-        # replace any existing entry with the same file/hour, then re-sort
+        # replace any existing entry with the same file/hour, then re-sort.
+        # (Filename is derived solely from hour_index, so hour_index is None iff
+        # file == "unknown.snapshot.json"; the file check already subsumes the
+        # None case, making the old `or entry["hour_index"] is None` clause dead.)
         idx["snapshots"] = [e for e in idx["snapshots"]
                             if e.get("file") != fname and
-                            (e.get("hour_index") != entry["hour_index"]
-                             or entry["hour_index"] is None)]
+                            e.get("hour_index") != entry["hour_index"]]
         idx["snapshots"].append(entry)
         idx["snapshots"].sort(key=lambda e: (e.get("hour_index") is None,
                                              e.get("hour_index") or 0))

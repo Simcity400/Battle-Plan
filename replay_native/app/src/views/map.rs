@@ -1,0 +1,623 @@
+//! CORE SURFACE 1 (migrated) — the MAP + 13 modes, as a registered Background-band
+//! view. It owns the pan/zoom CAMERA (its persistent input state) and a `'static`
+//! reference to the GPU map data + the shared `PoliticalMap` pass (leaked once at
+//! startup, as in the old shell).
+//!
+//! `bind` is PURE: it reads the snapshot and computes the per-hour LUT BYTES + the
+//! fidelity badge (no GPU side-effects). The `Drawable` carries those bytes + the
+//! `'static` map data, then at draw time UPLOADS the LUT and runs the offscreen map
+//! pass + the active-mode HUD. Mirrors the old `rebuild_map_lut` + `draw_mode_badge`
+//! EXACTLY so the map is byte-identical; the stateless→all-neutral rule (no stale-LUT
+//! carry-over) is preserved because the bytes are recomputed every bind.
+//!
+//! The map is the BOTTOM layer: a click no window captures falls through (host `Miss`)
+//! to the app's province pick (kept in `main.rs`: it needs the camera + raster, which
+//! the map view owns and the app reads back).
+
+use std::collections::BTreeMap;
+use std::sync::OnceLock;
+
+use render::dynamic::{pack_province_dynamic_lut, DynamicInputs, DynamicUniforms};
+use render::map::{CountryColors, MapIds, PoliticalMap, ProvinceRaster};
+use render::modes::{MapMode, ModeData};
+use render::overlay::{
+    build_overlay_plan, OverlayDiagnostics, OverlayInputs, OverlayNames, OverlayOptions,
+    OverlayPlan, OverlayProjection, OverlayStatic, ScreenPoint,
+};
+use render::strategic_regions::StrategicRegions;
+
+use crate::camera::MapCamera;
+use crate::host::context::BindContext;
+use crate::host::draw::FrameDraw;
+use crate::host::registry::{ViewDescriptor, ViewId};
+use crate::host::view::{
+    BoundView, Drawable, HitModel, HostPolicy, InstanceId, ViewCommand, ViewInstance, ZBand,
+};
+use crate::host::FidelityReport;
+use crate::register_view;
+
+/// The static (hour-independent) map data — the raster + ids + colours + the GPU pass.
+/// Leaked once at startup to `'static` so the map view (which lives across the
+/// `'static` event loop) can borrow it.
+pub struct MapData {
+    pub raster: ProvinceRaster,
+    pub ids: MapIds,
+    pub colors: CountryColors,
+    pub pmap: PoliticalMap,
+    /// The province→strategic-region join + sea-province set, parsed once at startup from the
+    /// resolved installed content (mod over vanilla). Used SOLELY by the FROZEN-SEAS dynamic branch
+    /// to turn a measured per-region `arctic_water` phenomenon into the right per-province
+    /// `frozen` flags (sea provinces only). `None` when the strategic-region files could not be
+    /// resolved — the dynamic snow/mud feed still works; frozen seas are simply not drawn
+    /// (no fabrication: an unknown region join must not invent frozen water).
+    pub strategic_regions: Option<StrategicRegions>,
+}
+
+/// The id the map view keys on.
+pub const MAP_VIEW_ID: ViewId = ViewId("core.map");
+
+/// The map view instance: owns the camera + the active mode + the `'static` map data.
+pub struct MapView {
+    pub camera: MapCamera,
+    pub mode: MapMode,
+    data: &'static MapData,
+}
+
+impl MapView {
+    pub fn new(camera: MapCamera, mode: MapMode, data: &'static MapData) -> MapView {
+        MapView { camera, mode, data }
+    }
+
+    /// Compute the per-hour LUT bytes + badge for `mode` (pure; the byte-identical
+    /// mirror of the old `rebuild_map_lut`, incl. the front-line adjacency special case
+    /// + the stateless→all-neutral rule via `ModeData::from_snapshot`).
+    fn compute_lut(&self, snap: &snapshot::Snapshot) -> (Vec<u8>, render::modes::Fidelity) {
+        let empty = serde_json::Map::new();
+        let states = snap.states().unwrap_or(&empty);
+        let mut md =
+            ModeData::from_snapshot(states, snap.domain("map"), snap.domain("diplomacy_world"))
+                .with_provinces(snap.domain("provinces"));
+        if matches!(self.mode, MapMode::FrontLines) {
+            md = md.with_front_adjacency(&self.data.raster);
+        }
+        let ml = render::modes::recolor(
+            self.mode,
+            &md,
+            &self.data.ids,
+            &self.data.colors,
+            self.data.raster.max_id,
+        );
+        (ml.lut, ml.fidelity)
+    }
+
+    /// Compute the per-hour DYNAMIC map feed (snow/mud/frozen-seas/season/day-night) from the
+    /// snapshot WEATHER domain. Pure: returns the packed per-province dynamic LUT bytes + the
+    /// GPU uniform, plus a `gate` flag that is true ONLY when at least one province carried a
+    /// MEASURED weather datum:
+    ///   * a per-province `weather.provinces.*.snow` number (incl. a measured 0.0) → winter,
+    ///   * a per-province `weather.provinces.*.mud` bool → mud, or
+    ///   * a SEA province frozen by a measured per-region `weather.regions.*.phenomenon`
+    ///     containing `arctic_water` (via the province→region join in [`MapData`]).
+    /// When the gate is false the draw keeps the neutral/static map (byte-identical to the
+    /// no-weather path) — the dynamic LUT is uploaded only when there is real weather to show
+    /// (no-fabrication: an absent weather domain must not perturb the map). The date drives the
+    /// season/day-night uniform.
+    fn compute_dynamic(&self, snap: &snapshot::Snapshot) -> Option<(Vec<u8>, DynamicUniforms)> {
+        let num_provinces = self.data.raster.max_id as usize + 1;
+        let date = parse_date_ymdh(snap.date.as_deref().unwrap_or(""));
+        let weather = snap.domain("weather");
+
+        // FROZEN SEAS: resolve the per-region `arctic_water` phenomenon to the SEA provinces of
+        // each arctic region (sea-only, via the parsed strategic-region join). Empty when there
+        // is no join, no weather, or no arctic_water region — never a fabricated freeze.
+        let frozen_seas = match (&self.data.strategic_regions, weather) {
+            (Some(sr), Some(w)) => match w.get("regions") {
+                Some(regions) => sr.frozen_sea_provinces(regions),
+                None => std::collections::HashSet::new(),
+            },
+            _ => std::collections::HashSet::new(),
+        };
+
+        let (inp, measured_any, snow_oor) =
+            DynamicInputs::from_weather_snapshot_full(num_provinces, date, weather, &frozen_seas);
+        if snow_oor > 0 {
+            // honesty signal (Codex (a)): measured snow values outside 0..1 were clamped to the
+            // shader range. Surface it rather than let bad data become a plausible visual.
+            eprintln!("[map] note: {snow_oor} measured snow value(s) outside 0..1 were clamped");
+        }
+        if !measured_any {
+            return None; // no measured weather → keep the static/neutral map.
+        }
+        let lut = pack_province_dynamic_lut(&inp.provinces, inp.snow_mud_fade);
+        let uniforms = DynamicUniforms::from_inputs(&inp);
+        Some((lut, uniforms))
+    }
+
+    /// Build the native-map label/vector overlay for this snapshot and camera. The
+    /// planner is pure and accepts only static map definitions plus measured snapshot
+    /// domains; missing route/arrow geometry becomes diagnostics, not drawn guesses.
+    fn compute_overlay(&self, ctx: &BindContext) -> OverlayPlan {
+        let Some(static_data) = overlay_static(&ctx.stage.map_dir, &self.data.raster) else {
+            return OverlayPlan::default();
+        };
+        let projection = OverlayProjection {
+            offset: self.camera.offset,
+            scale: self.camera.scale,
+            screen_w: ctx.screen.w.max(1.0),
+            screen_h: ctx.screen.h.max(1.0),
+            raster_w: self.data.raster.width as f32,
+            raster_h: self.data.raster.height as f32,
+        };
+        let names = overlay_names(ctx, static_data);
+        build_overlay_plan(
+            static_data,
+            OverlayInputs {
+                states: ctx.snapshot().domain("states"),
+                divisions: ctx.snapshot().domain("divisions"),
+                order_of_battle: ctx.snapshot().domain("order_of_battle"),
+                diplomacy_world: ctx.snapshot().domain("diplomacy_world"),
+            },
+            &names,
+            projection,
+            OverlayOptions::default(),
+        )
+    }
+}
+
+/// Parse an `Y.M.D.H` in-game date string to `(year, month, day, hour)` for the dynamic
+/// season/day-night uniform. A missing/garbled component falls back to a neutral summer-noon
+/// component (1936/7/15/12) so the dynamic uniform is well-formed — this is a RENDER cosmetic
+/// default for the season tint, NOT a fabricated DATA value (no snapshot field is invented).
+fn parse_date_ymdh(date: &str) -> (i32, u32, u32, u32) {
+    let mut it = date.split('.');
+    let y = it.next().and_then(|s| s.parse().ok()).unwrap_or(1936);
+    let m = it.next().and_then(|s| s.parse().ok()).unwrap_or(7);
+    let d = it.next().and_then(|s| s.parse().ok()).unwrap_or(15);
+    let h = it.next().and_then(|s| s.parse().ok()).unwrap_or(12);
+    (y, m, d, h)
+}
+
+/// The map's `Drawable`: uploads the (pure-computed) LUT, runs the offscreen
+/// political-map pass (bottom, CLEARS the target), then draws the active-mode HUD.
+pub struct MapDrawable {
+    data: &'static MapData,
+    lut: Vec<u8>,
+    offset: [f32; 2],
+    scale: [f32; 2],
+    mode_label: String,
+    badge: String,
+    /// the screen size at bind time — a draw input (the map fills the screen), so it is
+    /// part of the digest (Codex: the dst rect is `[0,0,w,h]`).
+    screen: (u32, u32),
+    /// the per-hour DYNAMIC feed (snow/mud LUT + season/day-night uniform) from the snapshot
+    /// weather domain, present ONLY when this hour carried a measured weather datum. `None`
+    /// keeps the static/neutral map (the no-weather path stays byte-identical).
+    dynamic: Option<(Vec<u8>, DynamicUniforms)>,
+    /// Text/vector overlays over the native map, already projected for this camera/snapshot.
+    overlay: OverlayPlan,
+}
+
+impl Drawable for MapDrawable {
+    /// The map's pixel inputs: a hash of the per-hour LUT bytes (the colouring) + the
+    /// camera uniforms (the transform) + the mode label/badge. A wrong LUT upload, a
+    /// stale colouring, a changed camera, or a wrong mode all perturb this — so the
+    /// digest detects a silent map-render change that an empty node digest would miss
+    /// (Codex (c) mitigation, headless).
+    fn draw_digest(&self) -> String {
+        let lut_hash = fnv1a(&self.lut);
+        // include the dynamic (weather) feed in the digest so a scrub that changes the
+        // snow/mud LUT (or toggles weather on/off) perturbs the headless render fingerprint.
+        let dyn_hash = match &self.dynamic {
+            Some((lut, _)) => fnv1a(lut),
+            None => 0,
+        };
+        format!(
+            "MAP lut={lut_hash:016x} dyn={dyn_hash:016x} off={:?} scale={:?} screen={:?} mode={} badge={} overlay={}",
+            self.offset, self.scale, self.screen, self.mode_label, self.badge, self.overlay.digest()
+        )
+    }
+
+    fn draw(&self, fd: &mut FrameDraw) {
+        let (w, h) = fd.screen();
+        // upload the per-hour LUT (GPU side-effect lives in DRAW, not bind).
+        self.data.pmap.update_lut(fd.renderer, &self.lut);
+        // upload the per-hour DYNAMIC weather feed ONLY when this hour carried measured
+        // weather (snow/mud + season/day-night). With no weather the dynamic state stays at
+        // the renderer's neutral default → the static map is unchanged (no fabrication).
+        if let Some((dyn_lut, uniforms)) = &self.dynamic {
+            self.data
+                .pmap
+                .update_dynamic(fd.renderer, dyn_lut, uniforms);
+        }
+        self.data.pmap.render_to_offscreen(
+            fd.renderer,
+            [0.0, 0.0, w as f32, h as f32],
+            self.offset,
+            self.scale,
+            [0.05, 0.06, 0.08, 1.0],
+        );
+        draw_map_overlay(fd, &self.overlay);
+        draw_mode_badge(fd, &self.mode_label, &self.badge);
+        draw_overlay_badge(fd, &self.overlay.diagnostics);
+    }
+}
+
+impl ViewInstance for MapView {
+    fn view_id(&self) -> ViewId {
+        MAP_VIEW_ID
+    }
+    fn policy(&self) -> HostPolicy {
+        HostPolicy::window(ZBand::Background)
+    }
+    fn bind(&self, ctx: &BindContext) -> BoundView {
+        let (lut, badge) = self.compute_lut(ctx.snapshot());
+        // the per-hour weather feed (snow/mud + season/day-night), gated to measured weather.
+        let dynamic = self.compute_dynamic(ctx.snapshot());
+        let overlay = self.compute_overlay(ctx);
+        let drawable = MapDrawable {
+            data: self.data,
+            lut,
+            offset: self.camera.uniform_offset(),
+            scale: self.camera.uniform_scale(),
+            mode_label: self.mode.label(),
+            badge: badge.badge().to_string(),
+            screen: (ctx.screen.w as u32, ctx.screen.h as u32),
+            dynamic,
+            overlay: overlay.clone(),
+        };
+        let mut fidelity = FidelityReport::default();
+        match badge {
+            render::modes::Fidelity::Exact => fidelity.exact += 1,
+            render::modes::Fidelity::Derived | render::modes::Fidelity::Proxy => {
+                fidelity.derived += 1
+            }
+            render::modes::Fidelity::Unavailable => fidelity.unavailable += 1,
+        }
+        if !overlay.labels.is_empty() || !overlay.lines.is_empty() {
+            fidelity.derived += 1;
+        }
+        if overlay.diagnostics.unavailable_arrows > 0 || overlay.diagnostics.unavailable_routes > 0
+        {
+            fidelity.unavailable += 1;
+        }
+        BoundView {
+            instance: InstanceId(0),
+            view_id: MAP_VIEW_ID,
+            policy: self.policy(),
+            // the map captures NO GUI leaf — a non-window click falls through to the
+            // app's province pick (host `Miss`). Empty hit model, no block rect.
+            hit: HitModel::none(),
+            drawable: Box::new(drawable),
+            fidelity,
+            commands: Vec::<ViewCommand>::new(),
+        }
+    }
+
+    crate::impl_view_any!();
+}
+
+/// A tiny FNV-1a hash of a byte buffer (for the LUT digest — no crypto needed, just a
+/// stable, cheap fingerprint that changes when any LUT byte changes).
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+/// Draw the active-mode HUD (top-left) — byte-identical to the old `draw_mode_badge`.
+fn draw_mode_badge(fd: &mut FrameDraw, label: &str, badge: &str) {
+    if label.is_empty() {
+        return;
+    }
+    let (bx, by, bw, bh) = (12.0_f32, 64.0_f32, 250.0_f32, 46.0_f32);
+    if let Some(t) = fd.textures.get(fd.renderer, "GFX_generic_box_96") {
+        fd.renderer
+            .draw_sprite_frame(t, bx, by, bw, bh, 0, 1, [0.10, 0.12, 0.16, 0.85]);
+    }
+    if let Some(loaded) = fd.fonts.get(fd.renderer, "hoi_18mbs") {
+        let font = loaded.font.clone();
+        let pages = &loaded.pages;
+        let l1 = format!("MAP: {label}");
+        fd.renderer.draw_text(
+            &font,
+            pages,
+            &l1,
+            bx + 8.0,
+            by + 6.0,
+            [0.92, 0.94, 0.98, 1.0],
+        );
+        let badge_color = match badge {
+            "exact" => [0.45, 0.85, 0.50, 1.0],
+            "derived" => [0.50, 0.70, 0.95, 1.0],
+            "proxy" => [0.95, 0.75, 0.35, 1.0],
+            "unavailable" => [0.95, 0.45, 0.45, 1.0],
+            _ => [0.80, 0.80, 0.80, 1.0],
+        };
+        let l2 = format!("[{badge}]");
+        fd.renderer
+            .draw_text(&font, pages, &l2, bx + 8.0, by + 26.0, badge_color);
+    }
+}
+
+static MAP_OVERLAY_STATIC: OnceLock<OverlayStatic> = OnceLock::new();
+
+fn overlay_static(
+    map_dir: &std::path::Path,
+    raster: &ProvinceRaster,
+) -> Option<&'static OverlayStatic> {
+    if let Some(s) = MAP_OVERLAY_STATIC.get() {
+        return Some(s);
+    }
+    match OverlayStatic::load(map_dir, raster) {
+        Ok(s) => {
+            let _ = MAP_OVERLAY_STATIC.set(s);
+            MAP_OVERLAY_STATIC.get()
+        }
+        Err(e) => {
+            eprintln!("[map-overlay] unavailable: {e}");
+            None
+        }
+    }
+}
+
+fn overlay_names(ctx: &BindContext, static_data: &OverlayStatic) -> OverlayNames {
+    let mut states = BTreeMap::new();
+    for s in &static_data.states {
+        if !s.name_key.is_empty() {
+            states.insert(s.state_id, ctx.stage.loc.resolve(&s.name_key));
+        }
+    }
+    let mut strategic_regions = BTreeMap::new();
+    for r in &static_data.regions {
+        if !r.name_key.is_empty() {
+            strategic_regions.insert(r.region_id, ctx.stage.loc.resolve(&r.name_key));
+        }
+    }
+    let mut countries = BTreeMap::new();
+    if let Some(state_obj) = ctx
+        .snapshot()
+        .domain("states")
+        .and_then(serde_json::Value::as_object)
+    {
+        for state in state_obj.values() {
+            if let Some(tag) = state.get("owner").and_then(serde_json::Value::as_str) {
+                countries
+                    .entry(tag.to_string())
+                    .or_insert_with(|| resolve_country_label(ctx.snapshot(), &ctx.stage.loc, tag));
+            }
+        }
+    }
+    OverlayNames {
+        countries,
+        states,
+        strategic_regions,
+    }
+}
+
+fn resolve_country_label(snap: &snapshot::Snapshot, loc: &gui_runtime::Loc, tag: &str) -> String {
+    if let Some(country) = snap.country(tag) {
+        for field in ["display_name", "localized_name", "name"] {
+            if let Some(name) = country.get(field).and_then(serde_json::Value::as_str) {
+                let resolved = loc.resolve(name);
+                if !resolved.trim().is_empty() {
+                    return resolved;
+                }
+            }
+        }
+    }
+    let resolved = loc.resolve(tag);
+    if resolved.trim().is_empty() {
+        tag.to_string()
+    } else {
+        resolved
+    }
+}
+
+fn draw_map_overlay(fd: &mut FrameDraw, overlay: &OverlayPlan) {
+    if overlay.lines.is_empty() && overlay.labels.is_empty() {
+        return;
+    }
+    let (w, h) = fd.screen();
+    let clip = Some([0.0, 0.0, w as f32, h as f32]);
+    let white = widgets::common::white_texture(fd.renderer);
+    for line in &overlay.lines {
+        for pair in line.points.windows(2) {
+            widgets::common::line_seg(
+                fd.renderer,
+                &white,
+                (pair[0].x, pair[0].y),
+                (pair[1].x, pair[1].y),
+                line.width,
+                line.tint,
+                clip,
+            );
+        }
+        if line.arrow {
+            draw_overlay_arrowhead(fd, &white, line, clip);
+        }
+    }
+
+    if let Some(loaded) = fd.fonts.get(fd.renderer, "hoi_16mbs") {
+        let font = loaded.font.clone();
+        let pages = &loaded.pages;
+        for label in &overlay.labels {
+            let shadow = [0.01, 0.015, 0.02, 0.82];
+            fd.renderer.draw_text_clipped(
+                &font,
+                pages,
+                &label.text,
+                label.x + 1.0,
+                label.y + 1.0,
+                shadow,
+                clip,
+            );
+            fd.renderer.draw_text_clipped(
+                &font,
+                pages,
+                &label.text,
+                label.x,
+                label.y,
+                label.tint,
+                clip,
+            );
+        }
+    }
+}
+
+fn draw_overlay_arrowhead(
+    fd: &mut FrameDraw,
+    white: &render::Texture,
+    line: &render::overlay::OverlayLine,
+    clip: Option<[f32; 4]>,
+) {
+    let Some((prev, end)) = final_segment(&line.points) else {
+        return;
+    };
+    let dx = end.x - prev.x;
+    let dy = end.y - prev.y;
+    let len = (dx * dx + dy * dy).sqrt();
+    if !len.is_finite() || len < 1.0 {
+        return;
+    }
+    let ux = dx / len;
+    let uy = dy / len;
+    let wing = 10.0 + line.width * 1.5;
+    let spread = 0.48_f32;
+    for sign in [-1.0_f32, 1.0_f32] {
+        let rx = ux * spread.cos() - sign * uy * spread.sin();
+        let ry = sign * ux * spread.sin() + uy * spread.cos();
+        let p = ScreenPoint {
+            x: end.x - rx * wing,
+            y: end.y - ry * wing,
+        };
+        widgets::common::line_seg(
+            fd.renderer,
+            white,
+            (end.x, end.y),
+            (p.x, p.y),
+            line.width,
+            line.tint,
+            clip,
+        );
+    }
+}
+
+fn final_segment(points: &[ScreenPoint]) -> Option<(ScreenPoint, ScreenPoint)> {
+    let end = *points.last()?;
+    for prev in points.iter().rev().skip(1) {
+        let dx = end.x - prev.x;
+        let dy = end.y - prev.y;
+        if (dx * dx + dy * dy).sqrt() >= 1.0 {
+            return Some((*prev, end));
+        }
+    }
+    None
+}
+
+fn draw_overlay_badge(fd: &mut FrameDraw, d: &OverlayDiagnostics) {
+    let (bx, by, bw, bh) = (12.0_f32, 116.0_f32, 360.0_f32, 48.0_f32);
+    if let Some(t) = fd.textures.get(fd.renderer, "GFX_generic_box_96") {
+        fd.renderer
+            .draw_sprite_frame(t, bx, by, bw, bh, 0, 1, [0.08, 0.10, 0.13, 0.78]);
+    }
+    if let Some(loaded) = fd.fonts.get(fd.renderer, "hoi_16mbs") {
+        let font = loaded.font.clone();
+        let pages = &loaded.pages;
+        let l1 = format!(
+            "OVR labels C/S/R {}/{}/{}",
+            d.country_labels, d.state_labels, d.strategic_region_labels
+        );
+        let l2 = format!(
+            "lines M/P/T {}/{}/{}  unavail A/R {}/{}",
+            d.movement_arrows,
+            d.battle_plan_arrows,
+            d.trade_route_lines,
+            d.unavailable_arrows,
+            d.unavailable_routes
+        );
+        fd.renderer.draw_text(
+            &font,
+            pages,
+            &l1,
+            bx + 8.0,
+            by + 6.0,
+            [0.88, 0.90, 0.92, 1.0],
+        );
+        let c2 = if d.unavailable_arrows > 0 || d.unavailable_routes > 0 {
+            [0.95, 0.72, 0.35, 1.0]
+        } else {
+            [0.58, 0.84, 0.62, 1.0]
+        };
+        fd.renderer
+            .draw_text(&font, pages, &l2, bx + 8.0, by + 26.0, c2);
+    }
+}
+
+/// The factory is registry-required, but the map view is SEEDED by the binary (it needs
+/// the leaked `'static MapData` + the startup camera). The binary opens it directly via
+/// [`MapView::new`]; this factory is a guard that should not be reached through the menu
+/// (it panics loudly rather than fabricate a 1×1 map).
+fn open(_arg: Option<i64>) -> Box<dyn ViewInstance> {
+    panic!("core.map is seeded by the binary at startup, not opened via the registry");
+}
+
+register_view!(ViewDescriptor {
+    id: MAP_VIEW_ID,
+    gui_root: None,
+    // `weather` joins states/map: the map now drives its dynamic snow/mud layer from the
+    // (optional) weather domain — absent → the static map, present → the per-hour feed.
+    required_domains: &["states", "map", "weather"],
+    route: None, // seeded at startup; the mode switcher is the map's own surface
+    shortcut: None,
+    open,
+    policy: HostPolicy::window(ZBand::Background),
+});
+
+/// Keep the module linked (belt-and-suspenders; `inventory` works without it). No-op.
+pub fn link() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_date_ymdh_components() {
+        assert_eq!(parse_date_ymdh("1940.6.27.18"), (1940, 6, 27, 18));
+        // a garbled/short date falls back to neutral summer-noon components (render cosmetic,
+        // not a fabricated data value).
+        assert_eq!(parse_date_ymdh(""), (1936, 7, 15, 12));
+        assert_eq!(parse_date_ymdh("1942.3"), (1942, 3, 15, 12));
+    }
+
+    /// The map's weather wiring (mirroring `compute_dynamic`): a snapshot WITH measured
+    /// province mud yields a NON-neutral, gated dynamic LUT; a snapshot WITHOUT weather is
+    /// ungated (None) so the static map is preserved (no fabrication). This exercises the
+    /// exact render path `compute_dynamic` uses, without a GPU.
+    #[test]
+    fn weather_feed_drives_dynamic_lut_and_gates_on_measured() {
+        let num_provinces = 6usize;
+        let date = parse_date_ymdh("1941.1.15.12");
+
+        // WITH weather: province 2 is muddy → gated on, and its LUT mud byte (G channel) is 255.
+        let weather = serde_json::json!({
+            "provinces": { "2": { "mud": true }, "3": { "mud": false } }
+        });
+        let (inp, gated) =
+            DynamicInputs::from_weather_snapshot(num_provinces, date, Some(&weather));
+        assert!(gated, "measured province mud must gate the dynamic feed on");
+        let lut = pack_province_dynamic_lut(&inp.provinces, inp.snow_mud_fade);
+        // province 2 G-channel (mud) = 255; province 3 = 0 (measured no-mud).
+        assert_eq!(lut[2 * 4 + 1], 255, "muddy province lights the mud channel");
+        assert_eq!(lut[3 * 4 + 1], 0, "measured no-mud province stays dry");
+
+        // WITHOUT weather: ungated → the map keeps the static path (compute_dynamic returns None).
+        let (_, ungated) = DynamicInputs::from_weather_snapshot(num_provinces, date, None);
+        assert!(
+            !ungated,
+            "absent weather must NOT perturb the map (static path preserved)"
+        );
+    }
+}
