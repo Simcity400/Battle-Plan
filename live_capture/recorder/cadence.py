@@ -67,7 +67,8 @@ class RecorderCadence:
     def __post_init__(self) -> None:
         self.target_step_hours = max(1, int(self.target_step_hours))
 
-    def plan(self, date_info: Any) -> CadenceDecision:
+    def plan(self, date_info: Any, *,
+             force_capture_reason: Optional[str] = None) -> CadenceDecision:
         """Observe a clock value and decide whether a capture should run.
 
         This intentionally does not commit capture state. The recorder calls
@@ -94,6 +95,10 @@ class RecorderCadence:
         if self.last_captured_hour is None:
             return CadenceDecision(True, "first_hour", hour, date, base_hour=None)
 
+        if force_capture_reason and hour == self.last_captured_hour:
+            return CadenceDecision(True, force_capture_reason, hour, date,
+                                   base_hour=self.last_captured_hour)
+
         if hour == self.last_captured_hour:
             self.duplicate_observations += 1
             return CadenceDecision(False, "duplicate_hour", hour, date,
@@ -107,6 +112,9 @@ class RecorderCadence:
 
         gap = hour - self.last_captured_hour
         if gap < self.target_step_hours:
+            if force_capture_reason:
+                return CadenceDecision(True, force_capture_reason, hour, date,
+                                       base_hour=self.last_captured_hour)
             self.cadence_wait_observations += 1
             return CadenceDecision(False, "cadence_not_due", hour, date,
                                    base_hour=self.last_captured_hour)

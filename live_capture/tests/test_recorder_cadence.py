@@ -40,6 +40,23 @@ class TestRecorderCadence(unittest.TestCase):
         self.assertEqual(c.last_captured_hour,
                          schema.date_to_hour_index("1936.1.1.1"))
 
+    def test_hourly_mode_captures_every_observed_hour_across_day_boundary(self):
+        c = RecorderCadence()
+        dates = ["1936.1.1.%d" % h for h in range(24)] + ["1936.1.2.0"]
+        decisions = [
+            c.observe(DateInfo(d, trusted=True, source="clock"))
+            for d in dates
+        ]
+
+        self.assertTrue(all(d.should_capture for d in decisions))
+        self.assertEqual([d.hour_index for d in decisions],
+                         [schema.date_to_hour_index(d) for d in dates])
+        self.assertEqual(c.captures, len(dates))
+        self.assertEqual(c.skipped_hours, 0)
+        self.assertEqual(c.cadence_wait_observations, 0)
+        self.assertEqual(c.duplicate_observations, 0)
+        self.assertEqual(c.to_manifest()["cadence"]["target_step_hours"], 1)
+
     def test_every_two_hours_waits_until_step_is_due(self):
         c = RecorderCadence(target_step_hours=2)
         c.observe(DateInfo("1936.1.1.0", trusted=True, source="clock"))
@@ -111,6 +128,41 @@ class TestRecorderCadence(unittest.TestCase):
         self.assertEqual(c.captures, 0)
         self.assertEqual(c.last_captured_hour, None)
         self.assertEqual(c.duplicate_observations, 0)
+
+    def test_forced_capture_preserves_same_hour_source_change(self):
+        c = RecorderCadence()
+        c.observe(DateInfo("1936.1.1.0", trusted=True, source="clock"))
+        forced = c.plan(
+            DateInfo("1936.1.1.0", trusted=True, source="clock"),
+            force_capture_reason="process_changed")
+
+        self.assertTrue(forced.should_capture)
+        self.assertEqual(forced.reason, "process_changed")
+        self.assertEqual(forced.base_hour,
+                         schema.date_to_hour_index("1936.1.1.0"))
+        c.commit(forced)
+        self.assertEqual(c.captures, 2)
+        self.assertEqual(c.duplicate_observations, 0)
+        self.assertEqual(c.last_capture_reason, "process_changed")
+
+    def test_forced_capture_does_not_hide_missed_scheduled_hours(self):
+        c = RecorderCadence()
+        h0 = schema.date_to_hour_index("1936.1.1.0")
+        c.observe(DateInfo("1936.1.1.0", trusted=True, source="clock"))
+        forced = c.plan(
+            DateInfo("1936.1.1.3", trusted=True, source="clock"),
+            force_capture_reason="process_changed")
+
+        self.assertTrue(forced.should_capture)
+        self.assertEqual(forced.reason, "skipped_hours")
+        self.assertEqual(forced.skipped_delta, 2)
+        c.commit(forced)
+        self.assertEqual(c.skipped_hours, 2)
+        self.assertEqual(c.skip_ranges, [{
+            "start_hour": h0 + 1,
+            "end_hour": h0 + 2,
+            "count": 2,
+        }])
 
     def test_untrusted_clock_waits_without_capture(self):
         c = RecorderCadence()

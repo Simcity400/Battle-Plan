@@ -29,7 +29,8 @@ from replay import schema  # noqa: E402
 
 
 class _FakeProc:
-    def __init__(self):
+    def __init__(self, pid=1):
+        self.pid = pid
         self.closed = False
 
     def close(self):
@@ -66,12 +67,16 @@ class _FakeClock:
 
 
 class _FakeLoop:
-    def __init__(self, worker, root, *, fail_calls=()):
+    def __init__(self, worker, root, *, fail_calls=(), pids=None,
+                 finalize_every=6):
         self.worker = worker
         self.store = _FakeStore(root)
         self._recorder = _FakeRecorder()
+        self._finalize_every = finalize_every
         self.fail_calls = set(fail_calls)
         self.calls = 0
+        self.open_calls = 0
+        self.pids = list(pids or [1])
         self.attempted_dates = []
         self.captured_dates = []
         self.prev_snapshots = []
@@ -79,7 +84,9 @@ class _FakeLoop:
         self.last_finalize_error = None
 
     def open_proc(self):
-        return _FakeProc()
+        idx = min(self.open_calls, len(self.pids) - 1)
+        self.open_calls += 1
+        return _FakeProc(pid=self.pids[idx])
 
     def capture_once(self, *, date_info=None, prev_snapshot=None, proc=None,
                      pre_write_check=None):
@@ -137,13 +144,15 @@ class TestRecorderWorkerCadence(unittest.TestCase):
     def _run_sequence(self, dates, *, fail_calls=(),
                       target_step_hours=DEFAULT_TARGET_STEP_HOURS,
                       cadence_label=CADENCE_MODE_LABEL,
-                      manual_once=False, monotonic_values=None):
+                      manual_once=False, monotonic_values=None, pids=None,
+                      finalize_every=6):
         worker = self._worker(target_step_hours=target_step_hours,
                               cadence_label=cadence_label,
                               manual_once=manual_once)
         if monotonic_values is not None:
             worker._monotonic = _FakeClock(monotonic_values)
-        loop = _FakeLoop(worker, self.tmp, fail_calls=fail_calls)
+        loop = _FakeLoop(worker, self.tmp, fail_calls=fail_calls, pids=pids,
+                         finalize_every=finalize_every)
         worker._loop = loop
         seq = list(dates)
         pos = {"i": 0}
@@ -212,6 +221,78 @@ class TestRecorderWorkerCadence(unittest.TestCase):
             "end_hour": h2,
             "count": 1,
         }])
+
+    def test_hourly_worker_captures_all_observed_hours_across_day_boundary(self):
+        hourly_dates = (["1936.1.1.%d" % h for h in range(24)]
+                        + ["1936.1.2.0"])
+        # Each capture performs a pre-write clock sentinel, so provide the same
+        # trusted hour twice: once for planning and once for the stable sentinel.
+        dates = []
+        for d in hourly_dates:
+            dates.extend([
+                DateInfo(d, trusted=True, source="clock"),
+                DateInfo(d, trusted=True, source="clock"),
+            ])
+        worker, loop = self._run_sequence(dates)
+
+        self.assertEqual(loop.captured_dates, hourly_dates)
+        self.assertEqual(worker.n_captured, len(hourly_dates))
+        self.assertEqual(worker._cadence.captures, len(hourly_dates))
+        self.assertEqual(worker._cadence.skipped_hours, 0)
+        self.assertEqual(worker._cadence.skip_events, 0)
+        self.assertEqual(worker._cadence.capture_clock_crossings, 0)
+        self.assertEqual(
+            worker._diagnostics["cadence"]["target_step_hours"],
+            DEFAULT_TARGET_STEP_HOURS)
+        self.assertEqual(worker._diagnostics["cadence"]["status"], "ok")
+
+    def test_process_change_captures_same_hour_instead_of_deduping(self):
+        h0 = DateInfo("1936.1.1.0", trusted=True, source="clock")
+        worker, loop = self._run_sequence([h0, h0, h0, h0],
+                                          pids=[101, 202])
+
+        self.assertEqual(loop.captured_dates, [
+            "1936.1.1.0",
+            "1936.1.1.0",
+        ])
+        self.assertEqual(worker.n_captured, 2)
+        self.assertEqual(worker._cadence.captures, 2)
+        self.assertEqual(worker._cadence.duplicate_observations, 0)
+        self.assertEqual(worker._cadence.last_capture_reason,
+                         "process_changed")
+
+    def test_process_change_captures_even_when_selected_cadence_not_due(self):
+        h0 = DateInfo("1936.1.1.0", trusted=True, source="clock")
+        h1 = DateInfo("1936.1.1.1", trusted=True, source="clock")
+        worker, loop = self._run_sequence(
+            [h0, h0, h1, h1],
+            target_step_hours=6,
+            cadence_label=CADENCE_EVERY_6_HOURS_LABEL,
+            pids=[101, 202])
+
+        self.assertEqual(loop.captured_dates, [
+            "1936.1.1.0",
+            "1936.1.1.1",
+        ])
+        self.assertEqual(worker.n_captured, 2)
+        self.assertEqual(worker._cadence.cadence_wait_observations, 0)
+        self.assertEqual(worker._cadence.skipped_hours, 0)
+        self.assertEqual(worker._cadence.last_capture_reason,
+                         "process_changed")
+
+    def test_worker_batches_container_finalize_between_captures(self):
+        hourly_dates = ["1936.1.1.%d" % h for h in range(4)]
+        dates = []
+        for d in hourly_dates:
+            dates.extend([
+                DateInfo(d, trusted=True, source="clock"),
+                DateInfo(d, trusted=True, source="clock"),
+            ])
+
+        worker, loop = self._run_sequence(dates, finalize_every=3)
+
+        self.assertEqual(worker.n_captured, 4)
+        self.assertEqual(loop._recorder.finalize_calls, 2)
 
     def test_every_two_worker_waits_and_skips_one_scheduled_target(self):
         dates = [

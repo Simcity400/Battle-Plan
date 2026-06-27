@@ -157,14 +157,18 @@ class TestStreamingFinalize(unittest.TestCase):
     def _write_hours(self, recorder, dates):
         paths = []
         for d in dates:
-            snap = _stub_snapshot(d)
-            # stamp a segment so the continuity-keyed filename is stable.
-            snap["_capture"] = {"segment_id": 0, "campaign_id": "c0",
-                                "capture_seq": len(paths)}
-            p = self.store.write_snapshot(snap, allow_unknown_hour=False)
-            recorder.on_snapshot_written(p)
-            paths.append(p)
+            paths.append(self._write_one(recorder, d, segment_id=0,
+                                         capture_seq=len(paths)))
         return paths
+
+    def _write_one(self, recorder, date, *, segment_id, capture_seq):
+        snap = _stub_snapshot(date)
+        # stamp a segment so the continuity-keyed filename is stable.
+        snap["_capture"] = {"segment_id": segment_id, "campaign_id": "c0",
+                            "capture_seq": capture_seq}
+        p = self.store.write_snapshot(snap, allow_unknown_hour=False)
+        recorder.on_snapshot_written(p)
+        return p
 
     def _recorder(self, modset=None, build="abc123", pinned=True):
         return rw.ReplayRecorder(
@@ -179,6 +183,58 @@ class TestStreamingFinalize(unittest.TestCase):
         self.assertTrue(os.path.isfile(self.out))
         # re-verify directly too.
         self.assertTrue(rw._verify_container(self.out))
+
+    def test_hourly_container_index_and_manifest_entries_are_contiguous(self):
+        dates = ["1936.1.1.%d" % h for h in range(24)] + ["1936.1.2.0"]
+        expected_hours = [schema.date_to_hour_index(d) for d in dates]
+        rec = self._recorder()
+        self._write_hours(rec, dates)
+        rec.finalize()
+
+        by_name = rw._zip_read_all(_read_bytes(self.out))
+        index = json.loads(by_name["payload/rec_test/index.json"].decode("utf-8"))
+        manifest = json.loads(by_name["manifest.json"].decode("utf-8"))
+        index_hours = [s["hour_index"] for s in index["snapshots"]]
+        manifest_hours = sorted(
+            e["hour_index"]
+            for e in manifest["entries"]
+            if e.get("role") == "snapshot"
+        )
+
+        self.assertEqual(index_hours, expected_hours)
+        self.assertEqual(manifest_hours, expected_hours)
+        self.assertEqual(manifest["counts"]["snapshots"], len(dates))
+        self.assertTrue(all(
+            b - a == 1 for a, b in zip(index_hours, index_hours[1:])))
+
+    def test_container_keeps_same_hour_from_distinct_segments(self):
+        rec = self._recorder()
+        h = schema.date_to_hour_index("1936.1.1.12")
+        p1 = self._write_one(rec, "1936.1.1.12", segment_id=1,
+                             capture_seq=1)
+        p2 = self._write_one(rec, "1936.1.1.12", segment_id=2,
+                             capture_seq=2)
+        rec.finalize()
+
+        self.assertNotEqual(os.path.basename(p1), os.path.basename(p2))
+        by_name = rw._zip_read_all(_read_bytes(self.out))
+        index = json.loads(by_name["payload/rec_test/index.json"].decode("utf-8"))
+        manifest = json.loads(by_name["manifest.json"].decode("utf-8"))
+        index_files = [s["file"] for s in index["snapshots"]]
+        manifest_snapshot_entries = [
+            e for e in manifest["entries"] if e.get("role") == "snapshot"
+        ]
+
+        self.assertEqual([s["hour_index"] for s in index["snapshots"]],
+                         [h, h])
+        self.assertEqual(len(set(index_files)), 2)
+        self.assertEqual(manifest["counts"]["snapshots"], 2)
+        self.assertEqual(
+            sorted(e["hour_index"] for e in manifest_snapshot_entries),
+            [h, h])
+        self.assertEqual(
+            sorted(e["path"] for e in manifest_snapshot_entries),
+            sorted("payload/rec_test/%s" % f for f in index_files))
 
     def test_byte_identical_payload_roundtrip(self):
         rec = self._recorder()
@@ -523,6 +579,17 @@ class TestPathSafety(unittest.TestCase):
                      "payload/rec_test/s0000.000000000017.snapshot.json",
                      "manifest.json"):
             self.assertTrue(rw._path_ok(good), "should accept %r" % good)
+
+
+class TestZipCapacity(unittest.TestCase):
+    def test_zip_entry_capacity_fails_closed_before_struct_pack(self):
+        files = [
+            rw._ZipFile("payload/rec_test/%05d.json" % i, b"", False)
+            for i in range(rw.STANDARD_ZIP_MAX_ENTRIES + 1)
+        ]
+
+        with self.assertRaisesRegex(ValueError, "standard-ZIP reader limit"):
+            rw._write_zip(files)
 
 
 if __name__ == "__main__":

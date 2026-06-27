@@ -138,6 +138,8 @@ class _RecorderWorker:
         self._timing_warning_count = 0
         self._last_timing_warning = None
         self._capture_timing_seq = 0
+        self._last_process_key = None
+        self._captures_since_finalize = 0
 
     def start(self):
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -277,10 +279,18 @@ class _RecorderWorker:
                 proc = None
                 try:
                     proc = self._loop.open_proc()
+                    process_key = self._process_key(proc)
+                    process_changed = (
+                        process_key is not None
+                        and self._last_process_key is not None
+                        and process_key != self._last_process_key)
                     observed_at = self._monotonic()
                     di = date_provider(proc)
                     self._note_live_clock_observation(di, observed_at)
-                    decision = self._cadence.plan(di)
+                    decision = self._cadence.plan(
+                        di,
+                        force_capture_reason=(
+                            "process_changed" if process_changed else None))
                     self._set_recorder_diagnostics()
 
                     if not decision.should_capture:
@@ -334,6 +344,8 @@ class _RecorderWorker:
                             self._note_successful_capture_duration(
                                 capture_elapsed_s)
                             self._cadence.commit(decision)
+                            if process_key is not None:
+                                self._last_process_key = process_key
                             prev_snapshot = res.snapshot
                             self._set_recorder_diagnostics()
                             if self.manual_once:
@@ -345,7 +357,7 @@ class _RecorderWorker:
                         elif sentinel["rejected"]:
                             self._publish_cadence_status()
                         if res.written_path is not None:
-                            self._finalize_recording()
+                            self._maybe_finalize_recording()
                 except Exception as exc:
                     # Match CaptureLoop.run's fail-soft polling behavior for a
                     # missing game/transient open failure while keeping the lock
@@ -386,15 +398,42 @@ class _RecorderWorker:
             except Exception:
                 pass
 
+    def _process_key(self, proc):
+        pid = getattr(proc, "pid", None)
+        if pid is None:
+            return None
+        try:
+            from live_capture import process_identity as _pi
+            create_time = _pi._process_create_time_100ns(int(pid))
+        except Exception:
+            create_time = None
+        if create_time is not None:
+            return ("pid_ctime", int(pid), int(create_time))
+        return ("pid", pid)
+
+    def _maybe_finalize_recording(self):
+        self._captures_since_finalize += 1
+        interval = getattr(self._loop, "_finalize_every", 6)
+        try:
+            interval = max(1, int(interval))
+        except Exception:
+            interval = 6
+        if self._captures_since_finalize < interval:
+            return
+        if self._finalize_recording():
+            self._captures_since_finalize = 0
+
     def _finalize_recording(self):
         recorder = getattr(self._loop, "_recorder", None)
         if recorder is None:
-            return
+            return False
         try:
             recorder.finalize()
             self._loop.last_finalize_error = None
+            return True
         except Exception as fexc:
             self._loop.last_finalize_error = str(fexc)
+            return False
 
     def _set_recorder_diagnostics(self):
         if self._cadence is not None:

@@ -51,6 +51,7 @@ from typing import Any, Dict, List, Optional, Tuple
 RECORDER_TOOL = "hoi4replay-recorder"
 RECORDER_TOOL_VERSION = "1.0.0"
 CONTAINER_VERSION = 1
+STANDARD_ZIP_MAX_ENTRIES = 0xFFFF
 
 
 # ==========================================================================
@@ -143,6 +144,12 @@ class _ZipFile:
 def _write_zip(files: List[_ZipFile]) -> bytes:
     """Serialize ``files`` into a deterministic ZIP (mod time/date = 0), STORE or
     DEFLATE per entry. Matches snapshot/src/pack.rs::write_zip byte layout."""
+    if len(files) > STANDARD_ZIP_MAX_ENTRIES:
+        raise ValueError(
+            ".battleplan container has %d ZIP entries, exceeding the "
+            "standard-ZIP reader limit of %d; Zip64 is not supported by "
+            "container_version %d"
+            % (len(files), STANDARD_ZIP_MAX_ENTRIES, CONTAINER_VERSION))
     out = bytearray()
     central = bytearray()
 
@@ -439,11 +446,13 @@ class ReplayRecorder:
 
         entries_meta: List[Dict[str, Any]] = []
         zip_files: List[_ZipFile] = []
+        seen_paths = set()
 
         # index.json
         ipath = "payload/%s/index.json" % self._game_id
         self._add_entry(entries_meta, zip_files, ipath, index_bytes,
-                        role="index", hour_index=None)
+                        role="index", hour_index=None,
+                        seen_paths=seen_paths)
 
         # each snapshot referenced by the index, in raw bytes. FAIL-CLOSED
         # (Codex): the index is the manifest's spine -- the reader cross-checks
@@ -481,7 +490,8 @@ class ReplayRecorder:
             cpath = "payload/%s/%s" % (self._game_id, file)
             self._add_entry(entries_meta, zip_files, cpath, sbytes,
                             role="snapshot",
-                            hour_index=hour if isinstance(hour, int) else None)
+                            hour_index=hour if isinstance(hour, int) else None,
+                            seen_paths=seen_paths)
 
         # optional timeline.json
         tpath = os.path.join(self._gdir, "timeline.json")
@@ -490,7 +500,8 @@ class ReplayRecorder:
                 tbytes = fh.read()
             cpath = "payload/%s/timeline.json" % self._game_id
             self._add_entry(entries_meta, zip_files, cpath, tbytes,
-                            role="timeline", hour_index=None)
+                            role="timeline", hour_index=None,
+                            seen_paths=seen_paths)
 
         # canonical path order so the manifest entry list is stable (pack.rs sorts
         # the same way). The zip-file order is independent (the reader keys off the
@@ -533,14 +544,17 @@ class ReplayRecorder:
         except OSError:
             return
 
-    def _add_entry(self, entries_meta, zip_files, path, data, *, role, hour_index):
+    def _add_entry(self, entries_meta, zip_files, path, data, *, role, hour_index,
+                   seen_paths=None):
         if not _path_ok(path):
             raise ValueError("refusing to pack unsafe container path %r" % path)
         # DUPLICATE-PATH guard (Codex F2 hardening): the reader rejects a zip with
         # two entries at the same path; a snapshot whose `file` is e.g. "index.json"
         # would collide with the real payload index. Reject the collision HERE so we
         # never emit a container the reader would refuse.
-        if any(e["path"] == path for e in entries_meta):
+        if seen_paths is None:
+            seen_paths = {e["path"] for e in entries_meta}
+        if path in seen_paths:
             raise ValueError("refusing to pack a duplicate container path %r "
                              "(snapshot file name collides)" % path)
         ent: Dict[str, Any] = {
@@ -552,6 +566,7 @@ class ReplayRecorder:
         if hour_index is not None:
             ent["hour_index"] = hour_index
         entries_meta.append(ent)
+        seen_paths.add(path)
         # DEFLATE the payload (matches pack_replay's `pack(..., true)`); the reader
         # supports both STORE and DEFLATE.
         zip_files.append(_ZipFile(path, data, deflate=True))
