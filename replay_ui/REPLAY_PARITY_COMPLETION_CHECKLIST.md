@@ -99,9 +99,9 @@ or read-only-badged.
 - [x] First executable view-level interaction-contract scaffold exists for all
   114 registered views (`replay_native/app/src/views/interaction_contract.rs`).
 - [x] Executable interaction coverage report exists and is tested. Current
-  report totals: 114 registered views, 114 contracts, 1,140 category rows, 105
-  target rows, 105 target rows with executable-proof notes, twelve intentionally
-  inert mutation targets, and 977 `not_proven` category rows.
+  report totals: 114 registered views, 114 contracts, 1,140 category rows, 108
+  target rows, 108 target rows with executable-proof notes, fifteen intentionally
+  inert mutation targets, and 975 `not_proven` category rows.
   Implemented/proven target count is intentionally not represented by the
   current `open`/`not_proven` target-status model.
 - [x] First executable `tab_switch` target inventory slice exists for known N2
@@ -177,14 +177,17 @@ or read-only-badged.
   frames/tooltips, disabled read-only behavior, screenshots, and broader topbar
   parity remain open.
 - [x] First real `core.topbar` disabled-mutation slice exists: tests prove the
-  real extracted pause/date and speed-control buttons (`pause_button_date`,
+  real extracted pause/date, speed-control, lobby/menu/help/achievements,
+  playlist, and music-control buttons (`pause_button_date`,
   `pause_button_date_paused`, `button_speeddown`, `button_speedstep1` through
-  `button_speedstep5`, and `button_speedup`) are consumed as replay-disabled
-  no-op pointer-down/up clicks with no commands, no redraw, and unchanged topbar
-  digest; shell tests also prove higher-z panels prevent hidden topbar
-  time-control targets from arming. Faction/alerts, music/menu/help buttons,
-  disabled visual treatment, screenshots, and broader topbar mutation parity
-  remain open.
+  `button_speedstep5`, `button_speedup`, `reopen_ingame_lobby`, `menu_button`,
+  `help_button`, `achievements_button`, `playlist_button`,
+  `music_pause_button`, `music_next_button`, and `musicplayer_button`) are
+  consumed as replay-disabled no-op pointer-down/up clicks with no commands, no
+  redraw, and unchanged topbar digest; shell tests also prove higher-z panels
+  prevent hidden topbar inert targets from arming. `dismissed_alerts_button`,
+  threat/faction controls, disabled visual treatment, screenshots, and broader
+  topbar mutation parity remain open.
 - [x] First real `chrome.minimap` click/drag recenter slice exists: tests prove
   fitted-map clicks and drags emit read-only `RecenterMap` commands, command
   application changes the bounded map-camera offset, pointer-up clears drag
@@ -218,7 +221,9 @@ or read-only-badged.
   `scorched_earth_state_button` clicks are consumed as replay-disabled no-op
   pointer-down/up events with no commands, no redraw, and unchanged digest, while
   neighboring non-control panel space remains unclaimed by the view-specific
-  handler. Shared-slot building remove buttons, disabled visual treatment,
+  handler. A guard now proves `state_shared_slot_building_entry` `remove`
+  remains unrendered/unclaimed even when the GUI defines it; native shared-slot
+  row-factory rendering is the next prerequisite. Disabled visual treatment,
   screenshots, and side-by-side proof remain open.
 - [x] First real `core.focus_tree` focus-node click-selection slice exists:
   tests prove exact focus-id keyed selection/highlight, drag-pan conflict
@@ -369,27 +374,41 @@ or read-only-badged.
   hover-clear behavior. Full the game trait tooltip frames, localized trait
   names/icons/effect-text expansion, prerequisite text, disabled/pickable
   states, and side-by-side proof remain open.
+- [x] First real `leaders.army_trait_tree` / `leaders.navy_trait_tree`
+  disabled-mutation slice exists: tests prove rendered `add_trait_0` through
+  `add_trait_3` trait-pick slots resolve from the real bound `.gui` roots and
+  are consumed as replay-disabled no-op pointer-down/up clicks with no commands,
+  no redraw, and unchanged selected trait/detail bind digest. Trait-pick
+  availability, disabled visuals, tactic/wiki/tab controls, static catalog
+  pickable/disabled nodes, and broader trait-tree mutation parity remain open.
 - [x] First disabled-mutation slices exist: `logistics.ingame_menu`
   save/load/resign/quit verb clicks are consumed as replay-modal no-ops with no
   commands, no redraw, and unchanged digest; `logistics.event_window` displayed
   static event-definition preview option actions are consumed as replay-disabled
-  no-ops with no commands, no redraw, unchanged digest, and outside-option clicks
-  intentionally left unclaimed; `logistics.popup_window` displayed generic
+  no-ops with no commands, no redraw, and unchanged digest; inside-root
+  outside-option chrome clicks are consumed as modal no-ops with no commands,
+  no redraw, and unchanged digest while off-root clicks remain host-modal-policy
+  blocking; `logistics.popup_window` displayed generic
   popup-library action clicks are consumed as replay-modal disabled no-ops with
   no commands, no redraw, and unchanged digest; `core.state_panel` visible
   occupation-law/template and scorched-earth buttons are consumed as
   replay-disabled no-ops with unchanged digest; `core.topbar` pause/date and
-  speed controls are consumed as replay-disabled no-ops with unchanged digest and
-  hidden-target arming protection under higher-z panels; `production.production`
+  speed controls plus lobby/menu/help/achievements/playlist/music controls are
+  consumed as replay-disabled no-ops with unchanged digest and hidden-target
+  arming protection under higher-z panels; `production.production`
   visible root add-line, close-line, factory add/sub, and priority/amount
   buttons, plus `production.construction` top count-container factory add/sub
   buttons and visible queue priority/amount/close buttons, plus
   `production.decisions` visible timed-decision `btn_select` buttons are consumed
-  as replay-disabled no-ops with unchanged digests. Per-button leaf routing,
+  as replay-disabled no-ops with unchanged digests; `leaders.army_trait_tree`
+  and `leaders.navy_trait_tree` rendered `add_trait_0` through `add_trait_3`
+  slots are consumed as replay-disabled no-ops with unchanged selected
+  trait/detail digests. Per-button leaf routing,
   disabled visual treatment, fired-event historical choice parity, full event
-  modal behavior, per-root popup buttons, shared-slot building remove buttons,
-  music/menu/help buttons, one-shot decision actions, and broader mutation parity
-  remain open.
+  complete event modal behavior, per-root popup buttons, native shared-slot
+  row-factory rendering plus building remove buttons, topbar
+  dismissed-alerts/threat/faction controls, one-shot decision actions, and
+  broader mutation parity remain open.
 - [ ] Define an interaction contract for every registered view: tabs, subtabs,
   list row selection, drilldowns, dropdowns, filters, scrollbars, close buttons,
   map picks, graph pan/zoom, and hover targets.
@@ -479,8 +498,10 @@ or read-only-badged.
   numbered rail slots now emit read-only `SetMapMode`; the active rail echo is
   synced from the seeded map view and tested, rail-row hover emits a factual
   source/fidelity tooltip, exposed `core.map` province hover emits factual
-  province/state/owner/raster tooltip rows, and the real `mapmodes_all` popup
-  exposes Supply/Intel without pretending they are numbered rail slots. Custom
+  province/state/owner/raster tooltip rows, Air/Naval map modes now render
+  visible `naval_air` strategic-region proxy colours through the parsed region
+  join with missing/null/unmapped regions neutral, and the real `mapmodes_all`
+  popup exposes Supply/Intel without pretending they are numbered rail slots. Custom
   slot configuration/defaults, full the game tooltip frames, per-mode legend hover,
   screenshots, and broader parity remain open.
 - [ ] Implement read-only disabled state for every mutating the game control; it must
@@ -496,7 +517,7 @@ or read-only-badged.
   category-row count, interactive target count, missing/not-proven category
   count, and per-category target/status counts are executable and tested. The
   report keeps implemented/proven target count unset, and separately counts the
-  twelve first-class intentionally inert mutation targets without treating them as
+  fifteen first-class intentionally inert mutation targets without treating them as
   broad mutation parity.
 
 ## 3. Tooltip And Localization Parity
@@ -659,7 +680,9 @@ a faithful recompute or a reviewed permanent badge:
 - [ ] `weather temperature formula / RNG / phenomenon-name strings`
 - [ ] `combat detail stat rows`
 - [ ] `ui_computed.designer_combat_stats`
-- [ ] `ui_computed.naval_air_per_province_exactness`
+- [ ] `ui_computed.naval_air_per_province_exactness` (native Air/Naval now draw
+  joined `naval_air` strategic-region proxy colours; exact per-province the game
+  parity remains intentionally unclaimed)
 - [ ] `ui_computed.occupation_equilibrium_garrison_need`
 - [ ] `ui_computed.power_balance_trend_marker`
 - [ ] `ui_computed.operation_chance_intel_bands_capit`

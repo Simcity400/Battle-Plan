@@ -38,6 +38,7 @@ pub mod plan;
 pub mod tabs;
 pub mod tooltip;
 pub mod trait_tree;
+pub mod unit_counter;
 
 pub use common::{
     AssetRef, Atom, Canvas, DrawAssets, Fidelity, Reason, CANVAS_MAX_SCALE, CANVAS_MIN_SCALE,

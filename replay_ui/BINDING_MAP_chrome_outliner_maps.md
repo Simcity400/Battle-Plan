@@ -261,8 +261,8 @@ per PLAN §B.9.
 | **Weather (temp / precip / snow)** | `weather.provinces.<pid>.{temp_c,precip,snow}` (M) / `weather.regions.<rid>.{phenom,phenom_name,active}` (M) | province/region weather LUT | **proxy** | §B.9: **exact VALUES, proxy vs the game's exact visual weather mode**. `weather.provinces.*` is `M` (live per-province); `weather.regions.*.temp_c` is a retracted reader (`null`). The recolor reproduces the values, not the game's exact pixel shader → proxy. |
 | **Front lines** | explicit `map.front_lines[]` measured geometry, else controller-boundary derivation from province/state control | front-line overlay | **exact / derived / unavailable** | §B.9: measured `map.front_lines[]` geometry ingests as exact when present. Otherwise the native overlay can derive controller-boundary front segments from measured control data. Missing or malformed explicit geometry badges unavailable; this is still not a side-by-side-proven reproduction of the game's battleplan front rendering. |
 | **Faction / wars / subjects** | `diplomacy_world.{factions,wars,subjects}` | country-granular faction/war LUT | **exact** (country granularity) | §B.9. `diplomacy_world` populated (75 wars / 4 factions / 5 subjects in sample). Colour by faction membership / belligerent side / overlord. |
-| **Air superiority** | `naval_air.air_superiority` (`{strategic_region_id: {controller, …}}`) → region geometry via `[static map meta]` `strategic_region_meta.json` | region-recolor LUT (badged) | **proxy** | §B.9: **strategic-region granularity**. `naval_air.air_superiority` is `M` with `confidence` never `"exact"`. The optional `naval_air.air_superiority_model.*` is a `D` display ESTIMATE. |
-| **Naval (sea-zone dominance)** | `naval_air.region_control` (`{strategic_region_id: [{controller,…}]}`) → region geometry | sea-region-recolor LUT (badged) | **proxy** | §B.9: region only. `naval_air.region_control` is `M`, region-proxy confidence. |
+| **Air superiority** | `naval_air.air_superiority` (`{strategic_region_id: {controller, …}}`) → parsed strategic-region province join | region-recolor LUT (badged) | **proxy** | §B.9: **strategic-region granularity**. Native `MapMode::Air` now colors joined region provinces from the measured controller TAG where present. Missing join/region, `controller:null`, or unknown country color stays neutral; no province-level superiority is fabricated. `confidence` is never `"exact"`. The optional `naval_air.air_superiority_model.*` is a `D` display ESTIMATE and is not used as a controller fallback. |
+| **Naval (sea-zone dominance)** | `naval_air.region_control` (`{strategic_region_id: [{controller,…}]}`) → parsed strategic-region province join + sea-province filter | sea-region-recolor LUT (badged) | **proxy** | §B.9: region only. Native `MapMode::Naval` now colors only joined sea provinces from `region_control[region][0].controller`; land in the same region, missing/unmapped regions, `controller:null`, and unknown colors remain neutral. `naval_air.region_control` is `M`, region-proxy confidence. |
 | **Supply** | `provinces.<pid>.supply` when present | province supply LUT (badged) | **proxy** | §B.9: province supply is a proxy and is usually absent because the **exact per-province supply NUMBER is a proven wall** (`replay/SCHEMA.md §13.2`, `memory_reader/supply_solver_offsets.draft.json` — not stored). Native `MapMode::Supply` only colors numeric `provinces.*.supply`; absent data stays grey/unavailable. |
 | **Intel / counter-intel** (intel map mode) | `countries.<TAG>.intel.agency.capacity.{defense,usable_slots,max_operatives}` + `countries.<TAG>.intel.{operatives,operatives_live}` | intel-recolor LUT | **derived** | Intel map mode shades owner-country provinces only from measured agency capacity or operative-count signals. Native `MapMode::Intel` badges unavailable when those measured fields are absent, and remains derived because the real game has richer fog-of-war semantics than this country-granularity readout. |
 | **(other configurable modes — radar coverage, manpower, etc.)** | the specific driving domain (e.g. `states.<id>.manpower_pool` for a manpower mode) | per-mode LUT | **exact/derived/proxy** by the driving domain | Any configurable mode binds the domain it visualises with that domain's badge. Modes with **no captured domain** (see gap ledger) badge `unavailable`. |
@@ -578,7 +578,8 @@ Every element in each of the seven `.gui` trees falls into exactly one bucket; t
   peace-conference on-map markers (only `{active}` stored).
 
 **`proxy` (region/division-province PROXY by nature — never `exact`):**
-- **Map modes:** Air superiority + Naval (strategic-region granularity, `naval_air.*`), Supply (province
+- **Map modes:** Air superiority + Naval (visible strategic-region proxy colouring from `naval_air.*`,
+  still not province-exact), Supply (province
   proxy, `provinces.*.supply` when present; exact per-province supply is a **proven wall**), Weather (exact values, proxy vs
   the game's exact visual mode).
 - **On-map icons:** every supply value (`supply_node_map_icon.supply`, `supply_mapicon.*`,
@@ -610,7 +611,8 @@ inspected snapshot family). Each is a capture work-item, never a silent hole.
   (`provinces.*.supply` when present) to remain proxy/badged rather than exact the game tooltip values. *Hard
   limit, not a TODO.*
 - **`naval_air.{air_superiority,region_control}` are region-proxy** by nature (strategic-region granularity).
-  Forces Air/Naval map modes to `proxy`. *Hard limit.*
+  Native Air/Naval modes now draw the joined proxy regions where controller data exists, but still force
+  the modes to `proxy`; missing/null/unmapped regions stay neutral. *Hard limit.*
 - **`weather.regions.<rid>.temp_c` is a retracted reader (`null`)** — the per-region temperature is unpinned;
   per-province `weather.provinces.*` is `M` (fed) but the weather map mode is `proxy` vs the game's exact visual.
 - **`commanders` domain not folded in the inspected snapshot** — needed for on-map general portraits + combat

@@ -1,14 +1,17 @@
-//! `strategic_regions` — the province→strategic-region JOIN the FROZEN-SEAS dynamic
-//! branch needs. The runtime weather snapshot carries `weather.regions.<rid>.phenomenon`
-//! (a per-REGION flag list that may contain `arctic_water` = frozen seas), but the map's
-//! dynamic LUT is per-PROVINCE. To set `frozen` on the right provinces we need:
+//! `strategic_regions` — the province→strategic-region JOIN used by the FROZEN-SEAS dynamic
+//! branch and the Air/Naval proxy map modes. The runtime weather snapshot carries
+//! `weather.regions.<rid>.phenomenon` (a per-REGION flag list that may contain
+//! `arctic_water` = frozen seas), while `naval_air` carries air/naval controllers by
+//! strategic region; both map paths ultimately need a per-PROVINCE LUT. To set `frozen`
+//! or proxy region colors on the right provinces we need:
 //!
 //!   * province → strategic region   (which region a sea province belongs to), and
 //!   * which provinces are SEA        (frozen seas must NOT freeze land in the same region).
 //!
 //! Both are parsed from the Installed content via the mod-over-vanilla [`assets::resolver`]
 //! (the mod ships its OWN `map/strategicregions/` + `map/definition.csv`, which override
-//! vanilla). Snow/mud are per-province DIRECT and never need this join — ONLY frozen does.
+//! vanilla). Snow/mud are per-province DIRECT and never need this join; frozen seas and
+//! `naval_air` Air/Naval proxy colors do.
 //!
 //! ## Parsing discipline (Codex-hardened)
 //! A `strategicregions/*.txt` file is a Clausewitz block:

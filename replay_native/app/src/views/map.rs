@@ -46,11 +46,11 @@ pub struct MapData {
     pub colors: CountryColors,
     pub pmap: PoliticalMap,
     /// The province→strategic-region join + sea-province set, parsed once at startup from the
-    /// resolved installed content (mod over vanilla). Used SOLELY by the FROZEN-SEAS dynamic branch
-    /// to turn a measured per-region `arctic_water` phenomenon into the right per-province
-    /// `frozen` flags (sea provinces only). `None` when the strategic-region files could not be
-    /// resolved — the dynamic snow/mud feed still works; frozen seas are simply not drawn
-    /// (no fabrication: an unknown region join must not invent frozen water).
+    /// resolved installed content (mod over vanilla). Used by the FROZEN-SEAS dynamic branch to turn
+    /// a measured per-region `arctic_water` phenomenon into per-province `frozen` flags (sea
+    /// provinces only), and by Air/Naval map modes to turn `naval_air` region controllers into
+    /// visible proxy colors. `None` means those region joins stay neutral rather than inventing
+    /// province coverage.
     pub strategic_regions: Option<StrategicRegions>,
 }
 
@@ -170,10 +170,11 @@ impl MapView {
         if matches!(self.mode, MapMode::FrontLines) {
             md = md.with_front_adjacency(&self.data.raster);
         }
-        let ml = render::modes::recolor(
+        let ml = render::modes::recolor_with_regions(
             self.mode,
             &md,
             &self.data.ids,
+            self.data.strategic_regions.as_ref(),
             &self.data.colors,
             self.data.raster.max_id,
         );

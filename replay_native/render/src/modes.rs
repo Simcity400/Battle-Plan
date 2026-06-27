@@ -32,6 +32,7 @@ use std::collections::HashMap;
 use serde_json::{Map, Value};
 
 use crate::map::{CountryColors, MapIds, NEUTRAL_GREY, NEUTRAL_TERRAIN};
+use crate::strategic_regions::StrategicRegions;
 
 /// How faithful a mode's colouring is to the real in-game map mode. Surfaced as the
 /// on-screen badge next to the active mode name.
@@ -278,6 +279,13 @@ pub struct ModeData {
     pub has_air: bool,
     /// whether any naval region-control data is present (else Unavailable).
     pub has_naval: bool,
+    /// strategic-region id -> air-superiority controller TAG. A present `None` is a
+    /// measured region record with no controller; it must render neutral, not as a
+    /// fabricated fallback country.
+    pub air_region_controller: HashMap<u32, Option<String>>,
+    /// strategic-region id -> naval/sea-zone dominant controller TAG. Same null
+    /// discipline as `air_region_controller`.
+    pub naval_region_controller: HashMap<u32, Option<String>>,
     /// front-line provinces precomputed from TRUE raster adjacency (see
     /// [`ModeData::with_front_adjacency`]). When `None`, the FrontLines mode falls back
     /// to the coarse state-level (owner != controller) frontier.
@@ -392,6 +400,8 @@ impl ModeData {
         let mut subject_of = HashMap::new();
         let mut has_air = false;
         let mut has_naval = false;
+        let mut air_region_controller = HashMap::new();
+        let mut naval_region_controller = HashMap::new();
         if let Some(dw) = diplomacy_world.and_then(Value::as_object) {
             if let Some(factions) = dw.get("factions").and_then(Value::as_object) {
                 for fv in factions.values() {
@@ -430,6 +440,11 @@ impl ModeData {
             // callers should also chain `with_naval_air`.
             has_air = dw.contains_key("air_superiority");
             has_naval = dw.contains_key("region_control");
+            collect_air_region_controllers(dw.get("air_superiority"), &mut air_region_controller);
+            collect_naval_region_controllers(
+                dw.get("region_control"),
+                &mut naval_region_controller,
+            );
         }
 
         ModeData {
@@ -449,6 +464,8 @@ impl ModeData {
             has_weather,
             has_air,
             has_naval,
+            air_region_controller,
+            naval_region_controller,
             front_provinces: None,
         }
     }
@@ -558,6 +575,16 @@ impl ModeData {
                 "air_superiority_model_meta",
             ],
         );
+        if let Some(obj) = naval_air.and_then(Value::as_object) {
+            collect_air_region_controllers(
+                obj.get("air_superiority"),
+                &mut self.air_region_controller,
+            );
+            collect_naval_region_controllers(
+                obj.get("region_control"),
+                &mut self.naval_region_controller,
+            );
+        }
         self
     }
 }
@@ -608,6 +635,41 @@ fn value_has_data(value: Option<&Value>) -> bool {
         Some(Value::Null) | None => false,
         Some(_) => true,
     }
+}
+
+fn collect_air_region_controllers(value: Option<&Value>, out: &mut HashMap<u32, Option<String>>) {
+    let Some(regions) = value.and_then(Value::as_object) else {
+        return;
+    };
+    for (rid_key, record) in regions {
+        let Ok(rid) = rid_key.parse::<u32>() else {
+            continue;
+        };
+        out.insert(rid, controller_tag(record));
+    }
+}
+
+fn collect_naval_region_controllers(value: Option<&Value>, out: &mut HashMap<u32, Option<String>>) {
+    let Some(regions) = value.and_then(Value::as_object) else {
+        return;
+    };
+    for (rid_key, entries) in regions {
+        let Ok(rid) = rid_key.parse::<u32>() else {
+            continue;
+        };
+        let controller = entries
+            .as_array()
+            .and_then(|arr| arr.first())
+            .and_then(controller_tag);
+        out.insert(rid, controller);
+    }
+}
+
+fn controller_tag(record: &Value) -> Option<String> {
+    record
+        .get("controller")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 /// Map a faction ideology to a representative tint (used by the diplomacy mode).
@@ -670,6 +732,21 @@ pub fn recolor(
     mode: MapMode,
     data: &ModeData,
     ids: &MapIds,
+    colors: &CountryColors,
+    max_id: u32,
+) -> ModeLut {
+    recolor_with_regions(mode, data, ids, None, colors, max_id)
+}
+
+/// Region-aware variant of [`recolor`]. Air/naval modes need the strategic-region
+/// province join to turn `naval_air`'s region records into a visible province LUT.
+/// Callers without the join can still use [`recolor`]; those modes stay neutral
+/// rather than inventing a province assignment.
+pub fn recolor_with_regions(
+    mode: MapMode,
+    data: &ModeData,
+    ids: &MapIds,
+    strategic_regions: Option<&StrategicRegions>,
     colors: &CountryColors,
     max_id: u32,
 ) -> ModeLut {
@@ -963,13 +1040,29 @@ pub fn recolor(
         }
         // ----- air (strategic-region proxy) --------------------------------
         MapMode::Air => {
-            // strategic-region granularity is the data we *would* colour; this snapshot
-            // family carries none → unavailable, land grey (never invented superiority).
+            // strategic-region granularity: start with land as no-data grey, then overlay
+            // measured region controllers through the static province join.
             if !data.has_air {
                 fidelity = Fidelity::Unavailable;
             }
             for (pid, _sid) in land {
                 write(&mut lut, pid, grey());
+            }
+            if data.has_air {
+                if let Some(sr) = strategic_regions {
+                    for (&rid, controller) in &data.air_region_controller {
+                        let Some(tag) = controller.as_deref() else {
+                            continue;
+                        };
+                        let Some(c) = colors.get(tag) else {
+                            continue;
+                        };
+                        let rgba = [c[0], c[1], c[2], 255];
+                        for &pid in sr.provinces_in_region(rid) {
+                            write(&mut lut, pid, rgba);
+                        }
+                    }
+                }
             }
         }
         // ----- naval (sea-zone region proxy) -------------------------------
@@ -977,10 +1070,28 @@ pub fn recolor(
             if !data.has_naval {
                 fidelity = Fidelity::Unavailable;
             }
-            // naval is about SEA zones, not land — colour nothing on land; land stays
-            // grey "no data" and sea stays terrain (no fabricated dominance).
+            // naval is about sea zones, not land. Land stays grey "no data"; only joined
+            // sea provinces receive a measured dominant-controller colour.
             for (pid, _sid) in land {
                 write(&mut lut, pid, grey());
+            }
+            if data.has_naval {
+                if let Some(sr) = strategic_regions {
+                    for (&rid, controller) in &data.naval_region_controller {
+                        let Some(tag) = controller.as_deref() else {
+                            continue;
+                        };
+                        let Some(c) = colors.get(tag) else {
+                            continue;
+                        };
+                        let rgba = [c[0], c[1], c[2], 255];
+                        for &pid in sr.provinces_in_region(rid) {
+                            if sr.is_sea(pid) {
+                                write(&mut lut, pid, rgba);
+                            }
+                        }
+                    }
+                }
             }
         }
         // ----- supply (per-province proxy; the proven wall) -----------------
@@ -1066,6 +1177,31 @@ mod tests {
     fn data_from(states_json: serde_json::Value, dw: Option<serde_json::Value>) -> ModeData {
         let states = states_json.as_object().unwrap().clone();
         ModeData::from_snapshot(&states, None, dw.as_ref())
+    }
+
+    fn proxy_regions() -> StrategicRegions {
+        let p2r: HashMap<u32, u32> = [
+            (10, 5),
+            (11, 5),
+            (20, 6),
+            (30, 7),
+            (40, 5),
+            (41, 5),
+            (42, 6),
+            (43, 8),
+        ]
+        .into_iter()
+        .collect();
+        let r2p: HashMap<u32, Vec<u32>> = [
+            (5, vec![10, 11, 40, 41]),
+            (6, vec![20, 42]),
+            (7, vec![30]),
+            (8, vec![43]),
+        ]
+        .into_iter()
+        .collect();
+        let sea: std::collections::HashSet<u32> = [40, 41, 42, 43].into_iter().collect();
+        StrategicRegions::from_parts(p2r, r2p, sea)
     }
 
     /// Political mode: owner colour, null owner → grey, sea untouched (terrain).
@@ -1319,6 +1455,112 @@ mod tests {
         assert_eq!(
             recolor(MapMode::Naval, &empty_data, &ids, &colors2(), 2).fidelity,
             Fidelity::Unavailable
+        );
+    }
+
+    #[test]
+    fn air_region_proxy_colors_joined_regions_only() {
+        let ids = ids_with(&[(10, 1), (11, 1), (20, 2), (30, 3)]);
+        let sr = proxy_regions();
+        let naval_air = serde_json::json!({
+            "air_superiority": {
+                "5": { "controller": "ITA" },
+                "6": { "controller": null },
+                "99": { "controller": "FRA" }
+            },
+            "region_control": null,
+            "source": "M",
+            "confidence": "region_proxy"
+        });
+        let data = data_from(
+            serde_json::json!({
+                "1": {"owner":"FRA"},
+                "2": {"owner":"FRA"},
+                "3": {"owner":"FRA"}
+            }),
+            None,
+        )
+        .with_naval_air(Some(&naval_air));
+
+        let ml = recolor_with_regions(MapMode::Air, &data, &ids, Some(&sr), &colors2(), 43);
+        assert_eq!(ml.fidelity, Fidelity::Proxy);
+        assert_eq!(&ml.lut[10 * 4..10 * 4 + 4], &[200, 30, 30, 255]);
+        assert_eq!(&ml.lut[11 * 4..11 * 4 + 4], &[200, 30, 30, 255]);
+        assert_eq!(
+            &ml.lut[40 * 4..40 * 4 + 4],
+            &[200, 30, 30, 255],
+            "air regions color their joined province geometry, including sea provinces"
+        );
+        assert_eq!(&ml.lut[20 * 4..20 * 4 + 4], &NEUTRAL_GREY);
+        assert_eq!(&ml.lut[30 * 4..30 * 4 + 4], &NEUTRAL_GREY);
+        assert_eq!(
+            &ml.lut[42 * 4..42 * 4 + 4],
+            &NEUTRAL_TERRAIN,
+            "null-controller sea region must not receive a fabricated colour"
+        );
+        assert_eq!(
+            &ml.lut[43 * 4..43 * 4 + 4],
+            &NEUTRAL_TERRAIN,
+            "region with no air record stays neutral"
+        );
+    }
+
+    #[test]
+    fn naval_region_proxy_colors_sea_only_without_fallback() {
+        let ids = ids_with(&[(10, 1), (11, 1), (20, 2), (30, 3)]);
+        let sr = proxy_regions();
+        let naval_air = serde_json::json!({
+            "region_control": {
+                "5": [ { "controller": "FRA", "share": 0.8 } ],
+                "6": [ { "controller": null, "share": 0.2 } ],
+                "7": [ { "controller": "ITA", "share": 0.7 } ],
+                "99": [ { "controller": "ITA", "share": 1.0 } ]
+            },
+            "air_superiority": null,
+            "source": "M",
+            "confidence": "region_proxy"
+        });
+        let data = data_from(
+            serde_json::json!({
+                "1": {"owner":"ITA"},
+                "2": {"owner":"ITA"},
+                "3": {"owner":"ITA"}
+            }),
+            None,
+        )
+        .with_naval_air(Some(&naval_air));
+
+        let ml = recolor_with_regions(MapMode::Naval, &data, &ids, Some(&sr), &colors2(), 43);
+        assert_eq!(ml.fidelity, Fidelity::Proxy);
+        assert_eq!(&ml.lut[40 * 4..40 * 4 + 4], &[30, 30, 200, 255]);
+        assert_eq!(&ml.lut[41 * 4..41 * 4 + 4], &[30, 30, 200, 255]);
+        assert_eq!(
+            &ml.lut[10 * 4..10 * 4 + 4],
+            &NEUTRAL_GREY,
+            "naval mode must not color land provinces in a controlled sea region"
+        );
+        assert_eq!(
+            &ml.lut[30 * 4..30 * 4 + 4],
+            &NEUTRAL_GREY,
+            "land-only strategic region is not a naval fallback"
+        );
+        assert_eq!(
+            &ml.lut[42 * 4..42 * 4 + 4],
+            &NEUTRAL_TERRAIN,
+            "null-controller sea region stays neutral"
+        );
+        assert_eq!(
+            &ml.lut[43 * 4..43 * 4 + 4],
+            &NEUTRAL_TERRAIN,
+            "missing region_control record stays neutral"
+        );
+
+        let no_join = recolor(MapMode::Naval, &data, &ids, &colors2(), 43);
+        assert_eq!(no_join.fidelity, Fidelity::Proxy);
+        assert_eq!(
+            &no_join.lut[40 * 4..40 * 4 + 4],
+            &NEUTRAL_TERRAIN,
+            "without a strategic-region join, the renderer must not invent province coverage"
         );
     }
 

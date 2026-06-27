@@ -804,7 +804,10 @@ fn country_label_anchors(
         let Some(sid) = parse_u32_str(sid_s) else {
             continue;
         };
-        let Some(owner) = state.get("owner").and_then(Value::as_str) else {
+        let Some(owner) = state.get("owner").and_then(Value::as_str).map(str::trim) else {
+            continue;
+        };
+        if owner.is_empty() {
             continue;
         };
         let Some(anchor) = static_data.state_anchors.get(&sid) else {
@@ -947,7 +950,7 @@ fn division_anchors_and_moves(
                 width: 2.0,
                 arrow: true,
                 fidelity: OverlayGeometryFidelity::Derived,
-                style: movement_line_style(),
+                style: movement_line_style(OverlayGeometryFidelity::Derived),
             },
             &[source, target],
             projection,
@@ -1033,7 +1036,7 @@ fn add_front_line_lines(
                 width: 3.2,
                 arrow: false,
                 fidelity: OverlayGeometryFidelity::Derived,
-                style: front_line_style(),
+                style: front_line_style(OverlayGeometryFidelity::Derived),
             },
             &[edge.start, edge.end],
             projection,
@@ -1099,7 +1102,7 @@ fn add_explicit_front_line_lines(
                         width: 3.2,
                         arrow: false,
                         fidelity: OverlayGeometryFidelity::Exact,
-                        style: front_line_style(),
+                        style: front_line_style(OverlayGeometryFidelity::Exact),
                     },
                     &polyline,
                     projection,
@@ -1240,6 +1243,17 @@ fn add_oob_order_lines(
 
     if let Some(orders) = oob.get("battle_plan_orders").and_then(Value::as_array) {
         for (idx, order) in orders.iter().enumerate() {
+            if add_measured_order_path(
+                static_data,
+                order,
+                &format!("battleplan:{idx}:path"),
+                None,
+                projection,
+                options,
+                plan,
+            ) {
+                continue;
+            }
             let order_type = u32_field(order, &["order_type", "type"]);
             if order_type != Some(5) {
                 if order.get("target_states").is_some() {
@@ -1306,41 +1320,16 @@ fn add_explicit_order_path(
     options: &OverlayOptions,
     plan: &mut OverlayPlan,
 ) -> bool {
-    match measured_order_polyline(order) {
-        Some(Ok(route)) => {
-            add_projected_line(
-                plan,
-                OverlayLine {
-                    kind: OverlayLineKind::BattlePlan,
-                    id: id.to_string(),
-                    points: Vec::new(),
-                    tint: [0.98, 0.78, 0.22, 0.96],
-                    width: 3.0,
-                    arrow: true,
-                    fidelity: OverlayGeometryFidelity::Exact,
-                    style: battle_plan_line_style(),
-                },
-                &route,
-                projection,
-                options,
-            );
-            return true;
-        }
-        Some(Err(())) => {
-            plan.diagnostics.unavailable_arrows += 1;
-            add_unavailable_marker(
-                plan,
-                OverlayMarkerKind::UnavailableBattlePlan,
-                id,
-                "battleplan measured path unavailable",
-                first_measured_order_anchor(order)
-                    .or_else(|| battleplan_marker_anchor(static_data, order, army_anchor)),
-                projection,
-                options,
-            );
-            return true;
-        }
-        None => {}
+    if add_measured_order_path(
+        static_data,
+        order,
+        id,
+        army_anchor,
+        projection,
+        options,
+        plan,
+    ) {
+        return true;
     }
 
     let Some(path_value) = order.get("path").filter(|v| !v.is_null()) else {
@@ -1373,13 +1362,61 @@ fn add_explicit_order_path(
             width: 3.0,
             arrow: true,
             fidelity: OverlayGeometryFidelity::Derived,
-            style: battle_plan_line_style(),
+            style: battle_plan_line_style(OverlayGeometryFidelity::Derived),
         },
         &points,
         projection,
         options,
     );
     true
+}
+
+fn add_measured_order_path(
+    static_data: &OverlayStatic,
+    order: &Value,
+    id: &str,
+    army_anchor: Option<MapPoint>,
+    projection: &OverlayProjection,
+    options: &OverlayOptions,
+    plan: &mut OverlayPlan,
+) -> bool {
+    match measured_order_polyline(order) {
+        Some(Ok(route)) => {
+            add_projected_line(
+                plan,
+                OverlayLine {
+                    kind: OverlayLineKind::BattlePlan,
+                    id: id.to_string(),
+                    points: Vec::new(),
+                    tint: [0.98, 0.78, 0.22, 0.96],
+                    width: 3.0,
+                    arrow: true,
+                    fidelity: OverlayGeometryFidelity::Exact,
+                    style: battle_plan_line_style(OverlayGeometryFidelity::Exact),
+                },
+                &route,
+                projection,
+                options,
+            );
+            return true;
+        }
+        Some(Err(())) => {
+            plan.diagnostics.unavailable_arrows += 1;
+            add_unavailable_marker(
+                plan,
+                OverlayMarkerKind::UnavailableBattlePlan,
+                id,
+                "battleplan measured path unavailable",
+                first_measured_order_anchor(order)
+                    .or_else(|| battleplan_marker_anchor(static_data, order, army_anchor)),
+                projection,
+                options,
+            );
+            return true;
+        }
+        None => {}
+    }
+    false
 }
 
 fn add_state_target_lines(
@@ -1410,7 +1447,7 @@ fn add_state_target_lines(
                 width: 2.5,
                 arrow: true,
                 fidelity: OverlayGeometryFidelity::Derived,
-                style: battle_plan_line_style(),
+                style: battle_plan_line_style(OverlayGeometryFidelity::Derived),
             },
             &[origin, target],
             projection,
@@ -1447,7 +1484,7 @@ fn add_trade_route_lines(
                         width: 2.2,
                         arrow: false,
                         fidelity: OverlayGeometryFidelity::Exact,
-                        style: trade_route_line_style(),
+                        style: trade_route_line_style(OverlayGeometryFidelity::Exact),
                     },
                     &route,
                     projection,
@@ -1472,51 +1509,72 @@ fn add_trade_route_lines(
             None => {}
         }
 
-        let provinces = ["route_provinces", "route", "path", "provinces"]
+        if let Some(provinces) = ["route_provinces", "route", "path", "provinces"]
             .iter()
             .find_map(|field| {
                 let p = u32_array(contract.get(*field));
                 (p.len() >= 2).then_some(p)
-            });
-        let Some(provinces) = provinces else {
-            plan.diagnostics.unavailable_routes += 1;
-            add_unavailable_marker(
+            })
+        {
+            let Some(route) = path_anchors(&provinces, &static_data.province_anchors) else {
+                plan.diagnostics.unavailable_routes += 1;
+                add_unavailable_marker(
+                    plan,
+                    OverlayMarkerKind::UnavailableTradeRoute,
+                    format!("trade:{idx}"),
+                    "route anchor unavailable",
+                    trade_marker_anchor(static_data, contract, states),
+                    projection,
+                    options,
+                );
+                continue;
+            };
+            add_projected_line(
                 plan,
-                OverlayMarkerKind::UnavailableTradeRoute,
-                format!("trade:{idx}"),
-                "route unavailable",
-                trade_marker_anchor(static_data, contract, states),
+                OverlayLine {
+                    kind: OverlayLineKind::TradeRoute,
+                    id: format!("trade:{idx}"),
+                    points: Vec::new(),
+                    tint: [0.24, 0.92, 0.70, 0.70],
+                    width: 2.0,
+                    arrow: false,
+                    fidelity: OverlayGeometryFidelity::Derived,
+                    style: trade_route_line_style(OverlayGeometryFidelity::Derived),
+                },
+                &route,
                 projection,
                 options,
             );
             continue;
-        };
-        let Some(route) = path_anchors(&provinces, &static_data.province_anchors) else {
-            plan.diagnostics.unavailable_routes += 1;
-            add_unavailable_marker(
+        }
+
+        if let Some(route) = trade_proxy_route(static_data, contract, states) {
+            add_projected_line(
                 plan,
-                OverlayMarkerKind::UnavailableTradeRoute,
-                format!("trade:{idx}"),
-                "route anchor unavailable",
-                trade_marker_anchor(static_data, contract, states),
+                OverlayLine {
+                    kind: OverlayLineKind::TradeRoute,
+                    id: format!("trade:{idx}:proxy"),
+                    points: Vec::new(),
+                    tint: [0.18, 0.82, 0.66, 0.58],
+                    width: 1.8,
+                    arrow: false,
+                    fidelity: OverlayGeometryFidelity::Derived,
+                    style: trade_route_line_style(OverlayGeometryFidelity::Derived),
+                },
+                &route,
                 projection,
                 options,
             );
             continue;
-        };
-        add_projected_line(
+        }
+
+        plan.diagnostics.unavailable_routes += 1;
+        add_unavailable_marker(
             plan,
-            OverlayLine {
-                kind: OverlayLineKind::TradeRoute,
-                id: format!("trade:{idx}"),
-                points: Vec::new(),
-                tint: [0.24, 0.92, 0.70, 0.70],
-                width: 2.0,
-                arrow: false,
-                fidelity: OverlayGeometryFidelity::Derived,
-                style: trade_route_line_style(),
-            },
-            &route,
+            OverlayMarkerKind::UnavailableTradeRoute,
+            format!("trade:{idx}"),
+            "route unavailable",
+            trade_marker_anchor(static_data, contract, states),
             projection,
             options,
         );
@@ -1621,20 +1679,32 @@ fn marker_priority(kind: &OverlayMarkerKind) -> i32 {
     }
 }
 
-fn movement_line_style() -> OverlayLineStyle {
-    OverlayLineStyle::solid()
+fn movement_line_style(fidelity: OverlayGeometryFidelity) -> OverlayLineStyle {
+    match fidelity {
+        OverlayGeometryFidelity::Exact => OverlayLineStyle::dashed(36.0, 6.0),
+        OverlayGeometryFidelity::Derived => OverlayLineStyle::solid(),
+    }
 }
 
-fn battle_plan_line_style() -> OverlayLineStyle {
-    OverlayLineStyle::dashed(28.0, 10.0)
+fn battle_plan_line_style(fidelity: OverlayGeometryFidelity) -> OverlayLineStyle {
+    match fidelity {
+        OverlayGeometryFidelity::Exact => OverlayLineStyle::dashed(36.0, 8.0),
+        OverlayGeometryFidelity::Derived => OverlayLineStyle::dashed(28.0, 10.0),
+    }
 }
 
-fn trade_route_line_style() -> OverlayLineStyle {
-    OverlayLineStyle::dashed(8.0, 12.0)
+fn trade_route_line_style(fidelity: OverlayGeometryFidelity) -> OverlayLineStyle {
+    match fidelity {
+        OverlayGeometryFidelity::Exact => OverlayLineStyle::dashed(12.0, 8.0),
+        OverlayGeometryFidelity::Derived => OverlayLineStyle::dashed(8.0, 12.0),
+    }
 }
 
-fn front_line_style() -> OverlayLineStyle {
-    OverlayLineStyle::dashed(12.0, 6.0)
+fn front_line_style(fidelity: OverlayGeometryFidelity) -> OverlayLineStyle {
+    match fidelity {
+        OverlayGeometryFidelity::Exact => OverlayLineStyle::dashed(16.0, 4.0),
+        OverlayGeometryFidelity::Derived => OverlayLineStyle::dashed(12.0, 6.0),
+    }
 }
 
 fn measured_route_polyline(contract: &Value) -> Option<Result<Vec<MapPoint>, ()>> {
@@ -1929,7 +1999,7 @@ fn trade_marker_anchor(
         .iter()
         .find_map(|field| first_path_anchor(static_data, contract.get(*field)))
         .or_else(|| {
-            ["source_state", "target_state", "state"]
+            ["delivery_state", "source_state", "target_state", "state"]
                 .iter()
                 .find_map(|field| {
                     u32_field(contract, &[*field])
@@ -1948,6 +2018,48 @@ fn trade_marker_anchor(
                 .and_then(Value::as_str)
                 .and_then(|tag| country_anchor(static_data, states, tag))
         })
+}
+
+fn trade_proxy_route(
+    static_data: &OverlayStatic,
+    contract: &Value,
+    states: Option<&Value>,
+) -> Option<Vec<MapPoint>> {
+    let seller = string_field(contract, &["seller"])
+        .and_then(|tag| country_anchor(static_data, states, tag));
+    let buyer =
+        string_field(contract, &["buyer"]).and_then(|tag| country_anchor(static_data, states, tag));
+    let delivery_country = string_field(contract, &["delivery_country"])
+        .and_then(|tag| country_anchor(static_data, states, tag));
+    let delivery_state = u32_field(
+        contract,
+        &["delivery_state", "source_state", "target_state", "state"],
+    )
+    .and_then(|sid| static_data.state_anchors.get(&sid).copied());
+
+    let mut route = Vec::new();
+    push_distinct_point(&mut route, seller);
+    push_distinct_point(&mut route, delivery_state);
+    if route.len() < 2 {
+        push_distinct_point(&mut route, delivery_country);
+    }
+    if route.len() < 2 {
+        push_distinct_point(&mut route, buyer);
+    }
+    (route.len() >= 2).then_some(route)
+}
+
+fn push_distinct_point(route: &mut Vec<MapPoint>, point: Option<MapPoint>) {
+    let Some(point) = point else {
+        return;
+    };
+    if route
+        .last()
+        .is_some_and(|last| same_map_point(*last, point))
+    {
+        return;
+    }
+    route.push(point);
 }
 
 fn first_path_anchor(static_data: &OverlayStatic, value: Option<&Value>) -> Option<MapPoint> {
@@ -2084,6 +2196,15 @@ fn numeric_key(v: &Value) -> Option<i64> {
 
 fn u32_field(v: &Value, fields: &[&str]) -> Option<u32> {
     fields.iter().find_map(|field| value_to_u32(v.get(*field)?))
+}
+
+fn string_field<'a>(v: &'a Value, fields: &[&str]) -> Option<&'a str> {
+    fields.iter().find_map(|field| {
+        v.get(*field)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    })
 }
 
 fn value_to_u32(v: &Value) -> Option<u32> {
@@ -2315,7 +2436,7 @@ mod tests {
         });
         let diplo = serde_json::json!({
             "trade_contracts": [
-                { "seller": "GER", "buyer": "ITA", "delivery_state": 20 }
+                { "delivery_state": 20 }
             ]
         });
         let plan = build_overlay_plan(
@@ -2407,17 +2528,48 @@ mod tests {
     }
 
     #[test]
+    fn blank_country_owner_does_not_emit_empty_country_label() {
+        let st = test_static();
+        let states = serde_json::json!({
+            "10": { "owner": "" },
+            "20": { "owner": "   " }
+        });
+        let mut options = OverlayOptions::default();
+        options.show_state_labels = false;
+        options.show_strategic_region_labels = false;
+        let plan = build_overlay_plan(
+            &st,
+            OverlayInputs {
+                states: Some(&states),
+                map: None,
+                divisions: None,
+                order_of_battle: None,
+                diplomacy_world: None,
+            },
+            &names(),
+            proj(),
+            options,
+        );
+        assert_eq!(plan.diagnostics.country_labels, 0);
+        assert!(
+            plan.labels.is_empty(),
+            "blank owner fields must stay absent, not become empty deterministic labels"
+        );
+    }
+
+    #[test]
     fn route_with_missing_static_anchor_is_unavailable_not_spliced() {
         let st = test_static();
+        let states = serde_json::json!({ "10": { "owner": "GER" }, "20": { "owner": "ITA" } });
         let diplo = serde_json::json!({
             "trade_contracts": [
-                { "route_provinces": [1, 99, 4] }
+                { "seller": "GER", "buyer": "ITA", "delivery_state": 20, "route_provinces": [1, 99, 4] }
             ]
         });
         let plan = build_overlay_plan(
             &st,
             OverlayInputs {
-                states: None,
+                states: Some(&states),
                 map: None,
                 divisions: None,
                 order_of_battle: None,
@@ -2441,6 +2593,55 @@ mod tests {
             .find(|marker| marker.kind == OverlayMarkerKind::UnavailableTradeRoute)
             .expect("missing route anchor should be visible as an unavailable marker");
         assert_eq!((marker.x, marker.y), (100.0, 100.0));
+    }
+
+    #[test]
+    fn trade_contract_without_route_draws_schematic_proxy_when_anchors_exist() {
+        let st = test_static();
+        let states = serde_json::json!({ "10": { "owner": "GER" }, "20": { "owner": "ITA" } });
+        let diplo = serde_json::json!({
+            "trade_contracts": [
+                { "seller": "GER", "buyer": "ITA", "delivery_state": 20 }
+            ]
+        });
+        let plan = build_overlay_plan(
+            &st,
+            OverlayInputs {
+                states: Some(&states),
+                map: None,
+                divisions: None,
+                order_of_battle: None,
+                diplomacy_world: Some(&diplo),
+            },
+            &names(),
+            proj(),
+            OverlayOptions::default(),
+        );
+
+        assert_eq!(plan.diagnostics.trade_route_lines, 1);
+        assert_eq!(plan.diagnostics.unavailable_routes, 0);
+        let line = plan
+            .lines
+            .iter()
+            .find(|line| line.kind == OverlayLineKind::TradeRoute)
+            .expect("schematic trade route");
+        assert_eq!(line.id, "trade:0:proxy");
+        assert_eq!(line.fidelity, OverlayGeometryFidelity::Derived);
+        assert_eq!(
+            line.style,
+            trade_route_line_style(OverlayGeometryFidelity::Derived)
+        );
+        assert!(
+            line.width < 2.0 && line.tint[3] < 0.70,
+            "schematic trade links must read as proxy geometry, not measured route geometry"
+        );
+        assert_screen_points_close(
+            &line.points,
+            &[
+                ScreenPoint { x: 100.0, y: 100.0 },
+                ScreenPoint { x: 500.0, y: 100.0 },
+            ],
+        );
     }
 
     #[test]
@@ -2501,6 +2702,10 @@ mod tests {
                 ScreenPoint { x: 100.0, y: 100.0 },
                 ScreenPoint { x: 700.0, y: 100.0 },
             ],
+        );
+        assert_ne!(
+            exact.style, derived.style,
+            "measured route geometry must stay visually/digest-distinct from derived province paths"
         );
         assert_eq!(plan.diagnostics.trade_route_lines, 2);
         assert_eq!(plan.diagnostics.unavailable_routes, 0);
@@ -2646,7 +2851,7 @@ mod tests {
         );
         let line = fronts[0];
         assert_eq!(line.fidelity, OverlayGeometryFidelity::Exact);
-        assert_eq!(line.style, front_line_style());
+        assert_eq!(line.style, front_line_style(OverlayGeometryFidelity::Exact));
         assert!(!line.arrow);
         assert_screen_points_close(
             &line.points,
@@ -3317,7 +3522,7 @@ mod tests {
         );
         let line = battle_plan_lines[0];
         assert_eq!(line.fidelity, OverlayGeometryFidelity::Exact);
-        assert_eq!(line.style, OverlayLineStyle::dashed(28.0, 10.0));
+        assert_eq!(line.style, OverlayLineStyle::dashed(36.0, 8.0));
         assert!(line.arrow);
         assert_screen_points_close(
             &line.points,
@@ -3325,6 +3530,69 @@ mod tests {
                 ScreenPoint { x: 130.0, y: 120.0 },
                 ScreenPoint { x: 240.0, y: 180.0 },
                 ScreenPoint { x: 360.0, y: 140.0 },
+            ],
+        );
+        assert_eq!(plan.diagnostics.battle_plan_arrows, 1);
+        assert_eq!(plan.diagnostics.unavailable_arrows, 0);
+    }
+
+    #[test]
+    fn top_level_battle_plan_measured_polyline_draws_exact_path() {
+        let st = test_static();
+        let divisions = serde_json::json!([
+            { "div_id": 1, "location_province": 1 }
+        ]);
+        let oob = serde_json::json!({
+            "armies": [
+                { "id": 9, "member_div_ids": [1] }
+            ],
+            "battle_plan_orders": [
+                {
+                    "army_id": 9,
+                    "order_type": 5,
+                    "target_states": [20],
+                    "order_geometry": {
+                        "fidelity": "exact",
+                        "source": "measured_save_order",
+                        "map_points": [
+                            [140.0, 130.0],
+                            { "x": 260.0, "y": 160.0 }
+                        ]
+                    }
+                }
+            ]
+        });
+        let plan = build_overlay_plan(
+            &st,
+            OverlayInputs {
+                states: None,
+                map: None,
+                divisions: Some(&divisions),
+                order_of_battle: Some(&oob),
+                diplomacy_world: None,
+            },
+            &names(),
+            proj(),
+            OverlayOptions::default(),
+        );
+
+        let lines: Vec<_> = plan
+            .lines
+            .iter()
+            .filter(|line| line.kind == OverlayLineKind::BattlePlan)
+            .collect();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].id, "battleplan:0:path");
+        assert_eq!(lines[0].fidelity, OverlayGeometryFidelity::Exact);
+        assert_eq!(
+            lines[0].style,
+            battle_plan_line_style(OverlayGeometryFidelity::Exact)
+        );
+        assert_screen_points_close(
+            &lines[0].points,
+            &[
+                ScreenPoint { x: 140.0, y: 130.0 },
+                ScreenPoint { x: 260.0, y: 160.0 },
             ],
         );
         assert_eq!(plan.diagnostics.battle_plan_arrows, 1);
