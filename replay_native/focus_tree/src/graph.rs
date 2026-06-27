@@ -57,7 +57,9 @@ impl FocusTree {
 }
 
 fn scalar_i32(v: &Value, key: &str) -> Option<i32> {
-    v.get_scalar(key).and_then(|s| s.parse::<f32>().ok()).map(|f| f as i32)
+    v.get_scalar(key)
+        .and_then(|s| s.parse::<f32>().ok())
+        .map(|f| f as i32)
 }
 
 fn parse_offset(block: &Value) -> Offset {
@@ -99,7 +101,9 @@ fn parse_focus(block: &Value) -> Option<FocusNode> {
         icon: block.get_scalar("icon").map(|s| s.to_string()),
         base_x: scalar_i32(block, "x").unwrap_or(0),
         base_y: scalar_i32(block, "y").unwrap_or(0),
-        relative_to: block.get_scalar("relative_position_id").map(|s| s.to_string()),
+        relative_to: block
+            .get_scalar("relative_position_id")
+            .map(|s| s.to_string()),
         cost: block.get_scalar("cost").and_then(|s| s.parse().ok()),
         offsets,
         prerequisites,
@@ -114,11 +118,7 @@ pub fn trees_from_entries(top: &[Entry]) -> Vec<FocusTree> {
     let mut out = Vec::new();
     for e in top {
         if e.key == "focus_tree" {
-            let id = e
-                .value
-                .get_scalar("id")
-                .unwrap_or("unknown")
-                .to_string();
+            let id = e.value.get_scalar("id").unwrap_or("unknown").to_string();
             let nodes: Vec<FocusNode> = e
                 .value
                 .get_all("focus")
@@ -190,7 +190,10 @@ mod tests {
         let t = &trees_from_entries(&top)[0];
         let x = t.node("X").unwrap();
         assert_eq!(x.prerequisites.len(), 2);
-        assert_eq!(x.prerequisites[0].any_of, vec!["A".to_string(), "B".to_string()]);
+        assert_eq!(
+            x.prerequisites[0].any_of,
+            vec!["A".to_string(), "B".to_string()]
+        );
         assert_eq!(x.prerequisites[1].any_of, vec!["C".to_string()]);
     }
 }

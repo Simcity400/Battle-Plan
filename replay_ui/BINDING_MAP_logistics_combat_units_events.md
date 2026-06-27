@@ -798,13 +798,15 @@ is "—" pending a domain fold (ARTIFACT) or is a permanent PROXY/GAP.
 
 ---
 
-## Codex round (adversarial review — 2026-06-26)
+## Historical review round (adversarial review — 2026-06-26)
 
-Mode-A one-shot, read-only, `model_reasoning_effort=xhigh`, `service_tier=priority`. Asked: (a) the empty
+Historical note: this records a completed adversarial review from the old
+Claude-era workflow. Codex-native sessions must use normal sub-agents/partner
+review and must not run the old local CLI command. Asked: (a) the empty
 `destroyed_ships` handling, (b) field-path correctness, (c) false `unavailable` (over/under-pessimism),
 (d) artifact-vs-gap split + the supply-exact-number-is-a-wall claim, (e) division EXACT badge under
 memory-channel-only comparability. The first call (full prompt, file-reading allowed) **timed out at 5min**
-while Codex was still grepping the schema/doc; the retry (lean prompt, no-file-read, all facts supplied
+while the review was still grepping the schema/doc; the retry (lean prompt, no-file-read, all facts supplied
 inline) returned a verdict in-budget.
 
 | ask | Codex verdict | action |

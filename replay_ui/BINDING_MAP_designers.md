@@ -657,9 +657,13 @@ demo-snapshot artifacts in the stat-panel core** — those are genuine hard limi
 
 ---
 
-## Codex round
+## Historical review round
 
-**Asked** (Mode A, `model_reasoning_effort=xhigh`, `service_tier=priority`, read-only): (a) any missed
+Historical note: this records a completed adversarial review from the old
+Claude-era workflow. Codex-native sessions must use normal sub-agents/partner
+review and must not run the old local CLI command.
+
+**Asked:** (a) any missed
 elements per view; (b) field-path correctness vs `schema.py` (esp. `designs.equipment_variants`
 `modules{slot:mod}`/`upgrades{name:lvl}`, `equipment_variants_live.upgrade_levels[]`,
 `division_templates[].regiments[{type,x,y}]`/`support[]`/`regimental_support[]`,
@@ -668,10 +672,9 @@ elements per view; (b) field-path correctness vs `schema.py` (esp. `designs.equi
 hard limit; (d) is the artifact-vs-true-gap + closure-bucket classification correct (esp. that all
 designer combat stats are (b) COMPUTED-NOT-STORED, module/archetype base stats are (c) STATIC DEF).
 
-**Result:** Codex (gpt-5.5, `model_reasoning_effort=xhigh`, `service_tier=priority`, read-only,
-exit 0, non-empty reply) **confirmed the classification on all four points** with no material
-refutation. (A first run that fed Codex the longer prompt began exploring the real game `.gfx`/`.gui`
-module-icon files and was cut off at the 2-min CLI default; the re-run with a tighter no-file-read
+**Result:** The review **confirmed the classification on all four points** with no material
+refutation. (A first run that used the longer prompt began exploring the real game `.gfx`/`.gui`
+module-icon files and timed out under the older review runner; the re-run with a tighter no-file-read
 prompt returned a clean verdict.) Codex's exact conclusions:
 - **(c)** "designer combat stats are true computed-not-stored per §11. Do not mark as extractable from
   save/memory unless a runtime memory snapshot explicitly captured them. `*_stats (D)` can make them

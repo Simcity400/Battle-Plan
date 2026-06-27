@@ -127,7 +127,9 @@ impl SideRoster {
         if self.refs_present {
             Field::Value(self.refs.len())
         } else {
-            Field::Unavailable { reason: "side ref array absent/null in combats[]" }
+            Field::Unavailable {
+                reason: "side ref array absent/null in combats[]",
+            }
         }
     }
 
@@ -226,13 +228,18 @@ impl CombatVM {
         // REASON keeps the Absent vs Null distinction honest (Codex): a missing key
         // is "absent", an explicit JSON null is "null" — both render "—".
         let combat_width = match entry.get("combat_width") {
-            Some(Json::Number(n)) => n
-                .as_i64()
-                .map(Field::Value)
-                .unwrap_or(Field::Unavailable { reason: "combat_width not integer" }),
-            Some(Json::Null) => Field::Unavailable { reason: "combat_width null" },
-            None => Field::Unavailable { reason: "combat_width absent" },
-            Some(_) => Field::Unavailable { reason: "combat_width non-numeric" },
+            Some(Json::Number(n)) => n.as_i64().map(Field::Value).unwrap_or(Field::Unavailable {
+                reason: "combat_width not integer",
+            }),
+            Some(Json::Null) => Field::Unavailable {
+                reason: "combat_width null",
+            },
+            None => Field::Unavailable {
+                reason: "combat_width absent",
+            },
+            Some(_) => Field::Unavailable {
+                reason: "combat_width non-numeric",
+            },
         };
 
         Some(CombatVM {
@@ -260,16 +267,24 @@ impl CombatVM {
                 },
             },
             combat_width,
-            terrain: Field::Unavailable { reason: "terrain M*-uncracked battle-detail (§G)" },
+            terrain: Field::Unavailable {
+                reason: "terrain M*-uncracked battle-detail (§G)",
+            },
             progress_bar: Field::Unavailable {
                 reason: "progress is a raw positive float, NOT the -1..1 GUI bar",
             },
-            tactics: Field::Unavailable { reason: "tactics not in combats[] (§G)" },
+            tactics: Field::Unavailable {
+                reason: "tactics not in combats[] (§G)",
+            },
             modifiers_vector: Field::Unavailable {
                 reason: "only {day,duration} present, no combat-modifier vector (§G)",
             },
-            air_support: Field::Unavailable { reason: "air support not in combats[] (§G)" },
-            leaders: Field::Unavailable { reason: "commanders domain absent" },
+            air_support: Field::Unavailable {
+                reason: "air support not in combats[] (§G)",
+            },
+            leaders: Field::Unavailable {
+                reason: "commanders domain absent",
+            },
             division_stat_rows: Field::Unavailable {
                 reason: "no division join in combats[]; per-division stats runtime-computed (§G)",
             },
@@ -351,10 +366,18 @@ mod tests {
     }
 
     fn ctrl(p: i64) -> Option<String> {
-        if p == 12740 { Some("ENG".to_string()) } else { None }
+        if p == 12740 {
+            Some("ENG".to_string())
+        } else {
+            None
+        }
     }
     fn pname(p: i64) -> Option<String> {
-        if p == 12740 { Some("Tobruk".to_string()) } else { None }
+        if p == 12740 {
+            Some("Tobruk".to_string())
+        } else {
+            None
+        }
     }
 
     #[test]
@@ -393,9 +416,15 @@ mod tests {
     #[test]
     fn battle_detail_all_unavailable() {
         let vm = CombatVM::from_combat(&sample(), &ctrl, &pname).unwrap();
-        assert!(vm.combat_width.is_unavailable(), "combat_width null -> unavailable");
+        assert!(
+            vm.combat_width.is_unavailable(),
+            "combat_width null -> unavailable"
+        );
         assert!(vm.terrain.is_unavailable(), "terrain M*-uncracked");
-        assert!(vm.progress_bar.is_unavailable(), "progress is not the -1..1 bar");
+        assert!(
+            vm.progress_bar.is_unavailable(),
+            "progress is not the -1..1 bar"
+        );
         assert!(vm.tactics.is_unavailable());
         assert!(vm.modifiers_vector.is_unavailable());
         assert!(vm.air_support.is_unavailable());

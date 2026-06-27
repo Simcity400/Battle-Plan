@@ -58,7 +58,7 @@ note at the end).
 | `order_of_battle.ships[]` (LIVE per-ship, `ships` M) | `{instance_id, definition, category, strength_hp, organisation, experience, sunk_convoys}` — **owner NOT carried live** (save-join only) | **M** | live ship rows: org/str/xp/category EXACT; owner needs the save OOB join |
 | `order_of_battle.navy_theaters[]` / `air_wings[]` | save-only lists | **S** | theatre selector + air management lean on these for fleet/wing membership |
 | `order_of_battle.air_wings[]` | `{id, owner, name, count(planes), experience, manpower, mission/mission_type(cached), strategic_region, plane_definition, air_base(`id:type`), state_id, equipment[[id,type,amount]], effective_planes(RUNTIME)}` | **S** | air-wing rows: count/xp/manpower/mission/base/equipment EXACT (save); **`effective_planes` RUNTIME → proxy** |
-| `order_of_battle.battle_plan_orders[]` (`construction_orders_live` M) | per-army `{army_id, order_type, target_states}` — **`target_states` EXACT for type-5 (offensive) ONLY; non-type-5 geometry RESISTED (null)**; `army_id`+`target_states` are RAW engine ints | **M** | battle-plan tools: order TYPE bindable; ARROW/PATH geometry **unavailable** except offensive target-state SET (§G) |
+| `order_of_battle.battle_plan_orders[]` (`construction_orders_live` M) | per-army `{army_id, order_type, target_states}` — **`target_states` EXACT for type-5 (offensive) ONLY; non-type-5 live geometry RESISTED (null)**; `army_id`+`target_states` are RAW engine ints | **M** | battle-plan tools: order TYPE bindable; live ARROW/PATH geometry unavailable except offensive target-state SET; save-backed `armies[].orders[]` measured geometry can render exact paths when folded |
 | `order_of_battle.by_country` | `{TAG: {armies, army_groups, divisions_in_armies, fleets, task_forces, ships, air_wings, planes}}` | **S/D** | the per-country COUNT rollups (army/navy/air tallies, theatre counts) |
 | `designs.division_templates[]` (`designs_live` M, save backstop → M/S) | `{id, type, name, country, role, regiments[{type,x,y}], support[], priority, division_cap, obsolete, is_locked, is_army_hq, n_regiments, n_support}` | **M/S** | deployment template rows + division-template names; **derived combat stats NOT stored** (runtime, §11 note) |
 | `designs.equipment_variants` (save) / `…_live` (M) | keyed `"id:type"` / bare live id; `{archetype, family, name, version, creator, obsolete, modules, upgrades, design_team…}` | **S / M** | equipment-overview names/icons; per-variant STATS = `designs.equipment_variant_stats` (**D**) |
@@ -73,7 +73,8 @@ note at the end).
 hard-limit class):** air mission `effective_planes`, air superiority/detection/efficiency per region
 (`naval_air.air_superiority` is a REGION PROXY only, badged), per-unit/per-division & per-ship COMBAT
 stat previews (soft/hard attack, defense, org bars in a combat preview), tactics previews, battle-plan
-ARROW/PATH geometry (only offensive `target_states` survive), terrain/fort modifier previews, plane
+live ARROW/PATH geometry (only offensive `target_states` survive unless save-backed measured geometry
+is folded), terrain/fort modifier previews, plane
 fuel-efficiency warnings, screening efficiencies, carrier-capacity penalty numbers, ace-in-wing combat
 contribution, the `cached.{plan_value,our_power,enemy_power}` army-group power estimates (cached
 runtime), deployment ETA/training progressbars (computed). These are serialize-computed UI aggregates
@@ -673,8 +674,9 @@ air-combat damage breakdown. This is a **READ-ONLY display** view (the only muta
 
 A fixed ORDER-DRAWING toolbar `battleplantools_window` (no row factory). Draw-order buttons, execution/
 cohesion/leader-proximity config popouts, and a garrison/area-defense config window. Per PLAN §G the
-battle-plan ORDER **geometry is partial**: only `order_of_battle.battle_plan_orders[].target_states`
-for **type-5 (offensive)** orders is EXACT; all other order arrows/paths are RESISTED.
+battle-plan ORDER **geometry is partial**: live `order_of_battle.battle_plan_orders[].target_states`
+for **type-5 (offensive)** orders is EXACT; other live order arrows/paths are RESISTED unless a
+save-backed `armies[].orders[]` measured geometry channel is folded in.
 
 ## 9a. Battle plan tools — dynamic (data-bound)
 
@@ -686,7 +688,7 @@ for **type-5 (offensive)** orders is EXACT; all other order arrows/paths are RES
 | `selected_order_overlay` (iconType, `GFX_selected_order_overlay`) | the currently-selected order — `order_of_battle.battle_plan_orders[].order_type` (live) / `armies[].orders[]` `order_instance` (save) | category | **derived** | Order identity + type. The SAVE `armies[].orders[]` is the richer source (see geometry note). |
 
 > **Order geometry (PLAN §G, badged) — TWO channels.** The draw-order buttons CREATE orders whose
-> ARROW/PATH geometry is the resisted data. **(1) Live** `order_of_battle.battle_plan_orders[]`
+> live ARROW/PATH geometry is the resisted data. **(1) Live** `order_of_battle.battle_plan_orders[]`
 > (`construction_orders_live`, M) gives `order_type` (EXACT, all orders) + `target_states` (**EXACT for
 > type-5 offensive ONLY**, 107/108 vs save; **null/RESISTED** for blitz/defence/fallback/naval-invasion/
 > paradrop/area-defense). So an offensive order's TARGET STATE SET is bindable (shade target states on
@@ -695,6 +697,13 @@ for **type-5 (offensive)** orders is EXACT; all other order arrows/paths are RES
 > `dates`, `operation`, `path[]`, `states[]`, `scheduled_members[]`, `root_front` — so when the snapshot
 > is SAVE-backed, the order's `path`/`states`/`root_front` ARE available (**derived**, becomes the
 > primary order-geometry source). **[Codex (a): made the save `armies[].orders[]` channel explicit.]**
+> Native map overlays join live `battle_plan_orders[].target_states` to live `oob_command`
+> armies via `member_div_ids` for type-5 offensive target-state arrows. Those arrows are
+> still **derived** centroid-to-state geometry, not exact the game order paths.
+> If save-backed orders carry measured `order_geometry`, `path_geometry`, or measured path fields
+> with real map points, native overlays render that order path as **exact** geometry. Malformed
+> exact/measured order geometry fails closed with an unavailable marker and is not replaced by the
+> derived save `path[]` or target-state fallback.
 > `army_id`/`target_states` (live) are RAW engine ints (not TAGs).
 
 ## 9b. Battle plan tools — deferred (mutation; no row factory)
@@ -718,13 +727,14 @@ for **type-5 (offensive)** orders is EXACT; all other order arrows/paths are RES
 
 | bucket | count | examples |
 |---|---:|---|
-| **Dynamic-bound** (incl. unavailable) | **~4** | operation_name (derived), selected_order_overlay (derived order identity), icon_execute_type (unavailable); offensive target_states bindable from `battle_plan_orders[]` |
+| **Dynamic-bound** (incl. unavailable) | **~4** | operation_name (derived), selected_order_overlay (derived order identity), icon_execute_type (unavailable); offensive target_states bindable from `battle_plan_orders[]`; measured save order geometry exact when folded |
 | **Deferred: mutation** | **~30** | all draw-order buttons, exec/cohesion/proximity popout buttons, garrison config buttons |
 | **Static / decoration / structural** | **~28** | bgs, tutorial glows, title/hint, popout titles, empty ability container, containers |
 
 > **No row factory** — fixed toolbar. The order data this toolbar produces lives in
-> `order_of_battle.battle_plan_orders[]` (type-5 target_states EXACT, rest RESISTED) +
-> `armies[].orders[]` (save battle-plan `order_instance`: type/dates/operation/path/states/root_front).
+> `order_of_battle.battle_plan_orders[]` (type-5 target_states EXACT, rest live geometry RESISTED) +
+> `armies[].orders[]` (save battle-plan `order_instance`: type/dates/operation/path/states/root_front,
+> plus exact measured geometry when folded).
 
 ---
 
@@ -1138,7 +1148,7 @@ unavailable by nature).
 | air (7) | **carrier air-wing composition** (entire `carrier_air_wing_composition_entry` grid + `summary`) | **P** | no ship→air-complement leaf in the per-ship shape; the carrier's plane allocation has no schema home. |
 | strategic_air | per-region **weather** (`weather_*`) | **H** | weather temp/phenomenon is a documented compute wall (FULL_GAME_COVERAGE). |
 | strategic_air | air **detection / efficiency**, air-COMBAT **counts + damage lists + line chart** | **H** | air superiority is a REGION PROXY (`naval_air.air_superiority`, M); detection/efficiency + the combat breakdown are runtime (air combat = continuous attrition, no discrete object). |
-| battle_plan_tools, theatre | battle-plan order **arrow/path GEOMETRY**; per-order execution/cohesion/proximity settings | **R/H** | `battle_plan_orders[].target_states` EXACT for type-5 (offensive) ONLY; all other order geometry RESISTED; per-order settings not stored. |
+| battle_plan_tools, theatre | battle-plan order **arrow/path GEOMETRY**; per-order execution/cohesion/proximity settings | **R/H** | Live `battle_plan_orders[].target_states` exact set for type-5 (offensive) only; native map renders derived anchor-to-target arrows. Save `armies[].orders[]` measured geometry is exact when folded with real map points. Remaining live order geometry and per-order settings are resisted/not stored. |
 | battle_plan_tools | `armies[].orders[]` save **`order_instance`** detail (path/states/scheduled_members) | **P** | save OOB carries it; not folded into the live-primary path — usable when save-backed. |
 | ability_list | **command abilities** + active/cooldown state | **H** | activatable command abilities are sub-sample-transient UI actions (SCHEMA §10); no snapshot leaf. |
 | theatre | per-theatre **alerts, pin, priority**, member **training/no-order** state | **H** | runtime UI alerts + UI-state toggles; not stored. |
@@ -1167,11 +1177,12 @@ many) is **exact**; per-element NAMES are exact (save strings) or **derived** (c
 LEADERS need the unfolded `commanders` join → **unavailable**; combat/efficiency/modifier overlays are
 **runtime → unavailable/proxy**.
 
-**B. Battle-plan partial (PLAN §G).** The single most consequential `unavailable` here is the
+**B. Battle-plan partial (PLAN §G).** The single most consequential `unavailable` here is live
 battle-plan ORDER geometry: only an OFFENSIVE order's `target_states` survives (type-5, EXACT,
 bindable to shade target states); blitz/defence/fallback/naval-invasion/paradrop/area-defense arrows
-are RESISTED. The save `armies[].orders[]` `order_instance` (path/states/root_front) is richer and
-usable when the snapshot is save-backed.
+are RESISTED in the live channel. The save `armies[].orders[]` `order_instance`
+(path/states/root_front) is richer and usable when the snapshot is save-backed; measured save
+geometry renders exact paths when folded with real map points.
 
 **C. Render-mode duplicate templates.** Several views define collapsed/compact/left-right/reserve/
 supply variants of a row entry (`ship_entry_compact`↔`_detailed`; `deploy_entry`↔`supply_deploy_entry`;
@@ -1186,16 +1197,20 @@ render them as estimates.
 
 ---
 
-## Codex round (adversarial review)
+## Historical review round (adversarial review)
 
-**Asked** (Mode-A one-shot, read-only, `-o /tmp/cdx_mil_$$_1.txt`, 300s timeout): (a) any MISSED
+Historical note: this records a completed adversarial review from the old
+Claude-era workflow. Codex-native sessions must use normal sub-agents/partner
+review and must not run the old local CLI command.
+
+**Asked:** (a) any MISSED
 elements / row-factories across the 15 views; (b) FIELD-PATH correctness vs `replay/schema.py`
 FIELD_SOURCES + `SCHEMA.md` (esp. `order_of_battle.{armies,fleets,air_wings,ships,battle_plan_orders}`,
 `military.{equipment_stockpile,deployment_queue}`, `designs.{division_templates,equipment_variants,
 equipment_variant_stats}`, `strategic_air.air_bases`, `naval_air.air_superiority`); (c) any FALSE
 `unavailable` that is actually feedable (a real gap vs a parser-unfed-but-derivable leaf).
 
-**Result** (Codex v0.139.0, gpt-5.5, read-only, exit 0, 4281-byte reply — did NOT time out).
+**Result:** The review returned a concrete verdict and did not time out.
 
 **AGREED / CONFIRMED:** carrier-air-wing composition is **truly absent** from schema (no ship→
 air-complement leaf; the only theoretical path — a reverse join `air_wings[].air_base`→carrier ship id —
@@ -1213,7 +1228,8 @@ NAMES are exact (save) / leaders need the unfolded `commanders` join.
    the %), not a hard gap. (View 4 row fixed; schema-gap ledger keeps the EFFICIENCY-denominator note.)
 3. **Battle-plan geometry: the SAVE `armies[].orders[]` channel made explicit.** `battle_plan_orders[]`
    (live) gives only type-5 `target_states`; but the save `order_instance` carries `path[]`/`states[]`/
-   `root_front`/`operation`/`dates` — so save-backed snapshots DO have fuller order geometry (derived).
+   `root_front`/`operation`/`dates`, and native overlays now accept exact measured order geometry
+   when folded — so save-backed snapshots DO have fuller order geometry (derived or exact measured).
    (View 9 geometry note rewritten to a two-channel form.)
 4. **Navy ship strength: don't conflate `strength` (save TF-ship) with `strength_hp` (live per-ship).**
    They are distinct leaves in distinct channels. (View 2 ship-row str/org bars tightened.)

@@ -27,8 +27,8 @@
 //!   frame size (content size). On a container -> a zero-size group (children
 //!   may still extend outside; only `clipping` rejects them).
 
-use crate::scene::{ElementKind, Node, Rect};
 use crate::model::Scalar;
+use crate::scene::{ElementKind, Node, Rect};
 use assets::SpriteManifest;
 
 /// How a node's intrinsic (content) size is found when size is auto/absent.
@@ -151,12 +151,7 @@ fn px_or_faredge(v: f32, local_ref: f32, parent_extent: f32, content: Option<f32
 /// Lay out a node tree in place. `parent` is the parent's resolved rect; `clip`
 /// is the clip rect inherited from ancestors (None = unclipped). The root call
 /// passes the full screen rect as `parent` and `None` clip.
-pub fn layout<C: ContentSize>(
-    node: &mut Node,
-    parent: Rect,
-    clip: Option<Rect>,
-    content: &C,
-) {
+pub fn layout<C: ContentSize>(node: &mut Node, parent: Rect, clip: Option<Rect>, content: &C) {
     // 1. anchor point inside the parent (orientation).
     let (ofx, ofy) = node.orientation.fractions();
     let anchor_x = parent.x + ofx * parent.w;
@@ -224,6 +219,7 @@ mod tests {
         Node {
             name: "t".into(),
             raw_kind: "containerWindowType".into(),
+            tooltip: None,
             kind,
             pos: (0.0, 0.0),
             size_w: None,
@@ -275,8 +271,16 @@ mod tests {
 
     #[test]
     fn upper_right_negative_x_lands_left_of_right_edge_no_sign_flip() {
-        let parent = Rect { x: 0.0, y: 0.0, w: 1000.0, h: 100.0 };
-        let mut c = n(ElementKind::Icon { sprite: "s".into(), frame: 0 });
+        let parent = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 1000.0,
+            h: 100.0,
+        };
+        let mut c = n(ElementKind::Icon {
+            sprite: "s".into(),
+            frame: 0,
+        });
         c.orientation = Anchor::UpperRight;
         c.pos = (-399.0, -2.0);
         c.size_w = Some(Scalar::Int(50));
@@ -289,8 +293,16 @@ mod tests {
 
     #[test]
     fn origo_center_centers_child_on_anchor() {
-        let parent = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
-        let mut c = n(ElementKind::Icon { sprite: "s".into(), frame: 0 });
+        let parent = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 200.0,
+            h: 200.0,
+        };
+        let mut c = n(ElementKind::Icon {
+            sprite: "s".into(),
+            frame: 0,
+        });
         c.orientation = Anchor::Center; // anchor at (100,100)
         c.origo = Anchor::Center; // child centered on anchor
         c.size_w = Some(Scalar::Int(40));
@@ -302,8 +314,16 @@ mod tests {
 
     #[test]
     fn lower_left_anchors_to_parent_bottom() {
-        let parent = Rect { x: 0.0, y: 0.0, w: 500.0, h: 300.0 };
-        let mut c = n(ElementKind::Icon { sprite: "s".into(), frame: 0 });
+        let parent = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 500.0,
+            h: 300.0,
+        };
+        let mut c = n(ElementKind::Icon {
+            sprite: "s".into(),
+            frame: 0,
+        });
         c.orientation = Anchor::LowerLeft; // anchor (0,300)
         c.pos = (188.0, -22.0);
         c.size_w = Some(Scalar::Int(40));
@@ -315,8 +335,16 @@ mod tests {
 
     #[test]
     fn auto_size_uses_content() {
-        let parent = Rect { x: 0.0, y: 0.0, w: 500.0, h: 300.0 };
-        let mut c = n(ElementKind::Icon { sprite: "s".into(), frame: 0 });
+        let parent = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 500.0,
+            h: 300.0,
+        };
+        let mut c = n(ElementKind::Icon {
+            sprite: "s".into(),
+            frame: 0,
+        });
         // no explicit size -> content size
         layout(&mut c, parent, None, &Fixed(27.0, 27.0));
         assert_eq!((c.rect.w, c.rect.h), (27.0, 27.0));
@@ -324,7 +352,12 @@ mod tests {
 
     #[test]
     fn negative_px_size_fills_to_far_edge() {
-        let parent = Rect { x: 0.0, y: 0.0, w: 1000.0, h: 100.0 };
+        let parent = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 1000.0,
+            h: 100.0,
+        };
         let mut c = n(ElementKind::Container { background: None });
         c.pos = (10.0, 0.0);
         c.size_w = Some(Scalar::Int(-15)); // right edge 15px before parent right
@@ -341,16 +374,35 @@ mod tests {
         // place. A child with pos.x=10 and width="100%%" inside a parent at x=100
         // w=500 must have its RIGHT edge at the parent's right (100+500=600), i.e.
         // width = 600 - (100 + 10) = 490 — NOT the old (500 - 110 = 390).
-        let parent = Rect { x: 100.0, y: 50.0, w: 500.0, h: 300.0 };
+        let parent = Rect {
+            x: 100.0,
+            y: 50.0,
+            w: 500.0,
+            h: 300.0,
+        };
         let mut c = n(ElementKind::Container { background: None });
         c.pos = (10.0, 5.0);
         c.size_w = Some(Scalar::Str("100%%".into()));
         c.size_h = Some(Scalar::Str("100%%".into()));
         layout(&mut c, parent, None, &NoContent);
-        assert_eq!(c.rect.w, 490.0, "100%% width must reach the parent's right edge");
-        assert_eq!(c.rect.x + c.rect.w, 600.0, "right edge lands on the parent right edge");
-        assert_eq!(c.rect.h, 295.0, "100%% height must reach the parent's bottom edge");
-        assert_eq!(c.rect.y + c.rect.h, 350.0, "bottom edge lands on the parent bottom edge");
+        assert_eq!(
+            c.rect.w, 490.0,
+            "100%% width must reach the parent's right edge"
+        );
+        assert_eq!(
+            c.rect.x + c.rect.w,
+            600.0,
+            "right edge lands on the parent right edge"
+        );
+        assert_eq!(
+            c.rect.h, 295.0,
+            "100%% height must reach the parent's bottom edge"
+        );
+        assert_eq!(
+            c.rect.y + c.rect.h,
+            350.0,
+            "bottom edge lands on the parent bottom edge"
+        );
     }
 
     #[test]
@@ -359,13 +411,22 @@ mod tests {
         // means "15px before the parent's RIGHT edge". Parent x=100 w=1000 -> right
         // edge 1100; child pos.x=10 -> ref_x=110; right edge should be 1100-15=1085,
         // so width = 1085 - 110 = 975 (NOT the old 1000-15-110 = 875).
-        let parent = Rect { x: 100.0, y: 0.0, w: 1000.0, h: 100.0 };
+        let parent = Rect {
+            x: 100.0,
+            y: 0.0,
+            w: 1000.0,
+            h: 100.0,
+        };
         let mut c = n(ElementKind::Container { background: None });
         c.pos = (10.0, 0.0);
         c.size_w = Some(Scalar::Int(-15));
         layout(&mut c, parent, None, &NoContent);
         assert_eq!(c.rect.w, 975.0);
-        assert_eq!(c.rect.x + c.rect.w, 1085.0, "right edge = parent right - 15");
+        assert_eq!(
+            c.rect.x + c.rect.w,
+            1085.0,
+            "right edge = parent right - 15"
+        );
     }
 
     #[test]
@@ -374,12 +435,24 @@ mod tests {
         // content size", but a literal 0 was treated as a literal zero extent, so a
         // sprite with size 0 vanished (0x0, un-hittable). A 0 must resolve to the
         // content size, exactly like -1.
-        let parent = Rect { x: 0.0, y: 0.0, w: 500.0, h: 300.0 };
-        let mut c = n(ElementKind::Icon { sprite: "s".into(), frame: 0 });
+        let parent = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 500.0,
+            h: 300.0,
+        };
+        let mut c = n(ElementKind::Icon {
+            sprite: "s".into(),
+            frame: 0,
+        });
         c.size_w = Some(Scalar::Int(0));
         c.size_h = Some(Scalar::Int(0));
         layout(&mut c, parent, None, &Fixed(27.0, 27.0));
-        assert_eq!((c.rect.w, c.rect.h), (27.0, 27.0), "size 0 -> native content size");
+        assert_eq!(
+            (c.rect.w, c.rect.h),
+            (27.0, 27.0),
+            "size 0 -> native content size"
+        );
     }
 
     #[test]

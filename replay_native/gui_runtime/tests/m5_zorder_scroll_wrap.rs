@@ -91,7 +91,10 @@ fn leaf(name: &str, kind: ElementKind, rect: Rect, transparent: bool) -> Node {
 fn icon(name: &str, rect: Rect) -> Node {
     leaf(
         name,
-        ElementKind::Icon { sprite: "s".into(), frame: 0 },
+        ElementKind::Icon {
+            sprite: "s".into(),
+            frame: 0,
+        },
         rect,
         false,
     )
@@ -122,14 +125,20 @@ fn building_template() -> Node {
     };
     let pic = leaf(
         "building_picture",
-        ElementKind::Button { sprite: Some("GFX_buildings_strip".into()), frame: 0, text: None },
+        ElementKind::Button {
+            sprite: Some("GFX_buildings_strip".into()),
+            frame: 0,
+            text: None,
+        },
         Rect::default(),
         false,
     );
     Node {
         name: "state_building_entry".into(),
         raw_kind: "containerWindowType".into(),
-        kind: ElementKind::Container { background: Some("GFX_entry_bg".into()) },
+        kind: ElementKind::Container {
+            background: Some("GFX_entry_bg".into()),
+        },
         pos: (0.0, 0.0),
         size_w: Some(gui_runtime::model::Scalar::Int(140)),
         size_h: Some(gui_runtime::model::Scalar::Int(70)),
@@ -151,7 +160,12 @@ fn building_template() -> Node {
 fn foundation_a_gridbox_row_factory_overflow_clip_scroll() {
     let tmpl = building_template();
     // a 480x105 viewport = 3 columns × 1.5 visible rows (cell 140x70).
-    let viewport = Rect { x: 193.0, y: 155.0, w: 480.0, h: 105.0 };
+    let viewport = Rect {
+        x: 193.0,
+        y: 155.0,
+        w: 480.0,
+        h: 105.0,
+    };
     let mut gb = tmpl.clone();
     gb.rect = viewport;
     let spec = GridSpec::from_gridbox(&gb, &tmpl, 14.0);
@@ -171,7 +185,7 @@ fn foundation_a_gridbox_row_factory_overflow_clip_scroll() {
     assert_eq!(inst0.rows[0].rect.y, viewport.y);
     assert_eq!(inst0.rows[4].rect.x, viewport.x + 140.0); // col1
     assert_eq!(inst0.rows[4].rect.y, viewport.y + 70.0); // grid-row1
-    // every row carries the viewport clip, including the building_picture child.
+                                                         // every row carries the viewport clip, including the building_picture child.
     for r in &inst0.rows {
         assert_eq!(r.clip, Some(viewport));
         assert_eq!(r.children[0].clip, Some(viewport));
@@ -191,8 +205,12 @@ fn foundation_a_gridbox_row_factory_overflow_clip_scroll() {
     assert!(top.rect.y < viewport.y);
     let inside_row_but_above_vp = (top.rect.x + 5.0, top.rect.y + 5.0);
     assert!(
-        hit_test_stack(std::slice::from_ref(top), inside_row_but_above_vp.0, inside_row_but_above_vp.1)
-            .is_none(),
+        hit_test_stack(
+            std::slice::from_ref(top),
+            inside_row_but_above_vp.0,
+            inside_row_but_above_vp.1
+        )
+        .is_none(),
         "a scrolled-out row must be rejected by the viewport clip"
     );
     // a row scrolled INTO view (grid-row1 -> now at the top) IS hittable.
@@ -229,7 +247,11 @@ fn foundation_b_wrap_uses_glyph_metrics_after_markup_expansion() {
     let wrapped = wrap(&exp, &font, 200.0);
     assert!(wrapped.lines.len() >= 2, "text must wrap to multiple lines");
     for l in &wrapped.lines {
-        assert!(l.width <= 200.0 + 0.01, "line width {} exceeds budget", l.width);
+        assert!(
+            l.width <= 200.0 + 0.01,
+            "line width {} exceeds budget",
+            l.width
+        );
     }
     // the measured width of line 0 equals BMFont.measure of its concatenated text
     // (icon placeholder excluded) — i.e. the wrap used glyph metrics post-expansion.
@@ -270,20 +292,43 @@ fn map_and_panel() -> (Vec<Node>, Vec<Node>) {
     // map: a full-screen opaque background surface (a real province fill).
     let map = leaf(
         "map_province",
-        ElementKind::Background { sprite: "GFX_map".into() },
-        Rect { x: 0.0, y: 0.0, w: 1920.0, h: 1080.0 },
+        ElementKind::Background {
+            sprite: "GFX_map".into(),
+        },
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 1920.0,
+            h: 1080.0,
+        },
         false,
     );
 
     // panel root: a pure coordinate-frame container (no background) — by the
     // runtime's is_hit_capable rule it does NOT eat clicks; only its painted
     // children do. This is exactly how the real countrystateview behaves.
-    let painted = icon("state_name", Rect { x: 60.0, y: 140.0, w: 300.0, h: 30.0 });
+    let painted = icon(
+        "state_name",
+        Rect {
+            x: 60.0,
+            y: 140.0,
+            w: 300.0,
+            h: 30.0,
+        },
+    );
     // a transparent overlay covering part of the panel bbox (the "shine" case):
     let transparent = leaf(
         "shine_overlay",
-        ElementKind::Icon { sprite: "GFX_shine".into(), frame: 0 },
-        Rect { x: 40.0, y: 110.0, w: 460.0, h: 650.0 },
+        ElementKind::Icon {
+            sprite: "GFX_shine".into(),
+            frame: 0,
+        },
+        Rect {
+            x: 40.0,
+            y: 110.0,
+            w: 460.0,
+            h: 650.0,
+        },
         true, // alwaystransparent
     );
     let mut panel_root = Node {
@@ -297,11 +342,21 @@ fn map_and_panel() -> (Vec<Node>, Vec<Node>) {
         origo: Anchor::UpperLeft,
         clipping: false,
         alwaystransparent: false,
-        rect: Rect { x: 40.0, y: 110.0, w: 460.0, h: 650.0 },
+        rect: Rect {
+            x: 40.0,
+            y: 110.0,
+            w: 460.0,
+            h: 650.0,
+        },
         clip: None,
         children: vec![painted, transparent],
     };
-    panel_root.rect = Rect { x: 40.0, y: 110.0, w: 460.0, h: 650.0 };
+    panel_root.rect = Rect {
+        x: 40.0,
+        y: 110.0,
+        w: 460.0,
+        h: 650.0,
+    };
 
     (vec![map], vec![panel_root])
 }
@@ -329,7 +384,10 @@ fn foundation_c_zorder_alwaystransparent_fallthrough() {
     // it but NOT over the painted state_name must pass through to the map below.
     let trans_pt = (450.0, 600.0); // inside the transparent overlay, not on state_name
     let through = stack(trans_pt.0, trans_pt.1).expect("falls through to a hit");
-    assert_eq!(through.0, "map", "transparent region must fall through to the map");
+    assert_eq!(
+        through.0, "map",
+        "transparent region must fall through to the map"
+    );
     assert_eq!(through.1, "map_province");
 
     // a point over the panel BBOX but outside every painted child ALSO falls
@@ -357,8 +415,15 @@ fn foundation_c_panel_over_topbar_over_map_front_to_back() {
     // map (bottom): full-screen opaque.
     let map = vec![leaf(
         "map_province",
-        ElementKind::Background { sprite: "GFX_map".into() },
-        Rect { x: 0.0, y: 0.0, w: 1920.0, h: 1080.0 },
+        ElementKind::Background {
+            sprite: "GFX_map".into(),
+        },
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 1920.0,
+            h: 1080.0,
+        },
         false,
     )];
     // topbar (middle): an opaque band across the TOP, with a hit-capable element.
@@ -366,11 +431,24 @@ fn foundation_c_panel_over_topbar_over_map_front_to_back() {
         let mut w = leaf(
             "topbar",
             ElementKind::Container { background: None }, // frame, not hit-capable
-            Rect { x: 0.0, y: 0.0, w: 1920.0, h: 200.0 },
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 1920.0,
+                h: 200.0,
+            },
             false,
         );
         w.raw_kind = "containerWindowType".into();
-        w.children = vec![icon("DateText", Rect { x: 0.0, y: 0.0, w: 1920.0, h: 200.0 })];
+        w.children = vec![icon(
+            "DateText",
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 1920.0,
+                h: 200.0,
+            },
+        )];
         w
     }];
     // panel (top): OVERLAPS the topbar band (its painted element sits at y in
@@ -379,21 +457,42 @@ fn foundation_c_panel_over_topbar_over_map_front_to_back() {
         let mut w = leaf(
             "countrystateview",
             ElementKind::Container { background: None },
-            Rect { x: 40.0, y: 110.0, w: 460.0, h: 650.0 },
+            Rect {
+                x: 40.0,
+                y: 110.0,
+                w: 460.0,
+                h: 650.0,
+            },
             false,
         );
         w.raw_kind = "containerWindowType".into();
-        w.children = vec![icon("state_name", Rect { x: 60.0, y: 120.0, w: 300.0, h: 60.0 })];
+        w.children = vec![icon(
+            "state_name",
+            Rect {
+                x: 60.0,
+                y: 120.0,
+                w: 300.0,
+                h: 60.0,
+            },
+        )];
         w
     }];
 
     // front-to-back resolver over the real 3-window stack.
     let stack = |x: f32, y: f32| -> Option<&'static str> {
         if let Some(h) = hit_test_stack(&panel, x, y) {
-            return Some(if h.leaf() == Some("state_name") { "panel" } else { "panel?" });
+            return Some(if h.leaf() == Some("state_name") {
+                "panel"
+            } else {
+                "panel?"
+            });
         }
         if let Some(h) = hit_test_stack(&topbar, x, y) {
-            return Some(if h.leaf() == Some("DateText") { "topbar" } else { "topbar?" });
+            return Some(if h.leaf() == Some("DateText") {
+                "topbar"
+            } else {
+                "topbar?"
+            });
         }
         if hit_test_stack(&map, x, y).is_some() {
             return Some("map");
@@ -403,9 +502,21 @@ fn foundation_c_panel_over_topbar_over_map_front_to_back() {
 
     // OVERLAP point: covered by BOTH the topbar element AND the panel element.
     // (90,150) is inside state_name (60..360 x, 120..180 y) AND DateText (full band).
-    assert_eq!(stack(90.0, 150.0), Some("panel"), "panel must win over topbar at overlap");
+    assert_eq!(
+        stack(90.0, 150.0),
+        Some("panel"),
+        "panel must win over topbar at overlap"
+    );
     // a point in the topbar band but NOT over the panel element → topbar wins.
-    assert_eq!(stack(1500.0, 100.0), Some("topbar"), "topbar wins where panel absent");
+    assert_eq!(
+        stack(1500.0, 100.0),
+        Some("topbar"),
+        "topbar wins where panel absent"
+    );
     // a point below both bands → the map wins.
-    assert_eq!(stack(1500.0, 900.0), Some("map"), "map wins where neither covers");
+    assert_eq!(
+        stack(1500.0, 900.0),
+        Some("map"),
+        "map wins where neither covers"
+    );
 }

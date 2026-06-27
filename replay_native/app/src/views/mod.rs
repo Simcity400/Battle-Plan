@@ -11,6 +11,7 @@
 
 pub mod clusters;
 pub mod digest;
+pub mod interaction_contract;
 
 // The 5 migrated Core surfaces (BATCH 0 deliverable: migrate existing 5 onto the
 // registry; must render + scrub byte-identical).

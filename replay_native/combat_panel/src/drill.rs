@@ -36,16 +36,18 @@ impl CombatDrill {
     /// Build with the leaf names that CLOSE the panel (the landcombat view's real
     /// `close` button). Passing them in keeps the registry `.gui`-naming-agnostic.
     pub fn new(close_control_names: Vec<String>) -> CombatDrill {
-        CombatDrill { close_names: close_control_names }
+        CombatDrill {
+            close_names: close_control_names,
+        }
     }
 
     /// Dispatch a classified hit to a panel action.
     pub fn dispatch(&self, hit: &CombatHit) -> PanelAction {
         match hit {
             // bubble click -> open the stacked combat panel.
-            CombatHit::Bubble { combat_id } => {
-                PanelAction::OpenCombatPanel { combat_id: combat_id.clone() }
-            }
+            CombatHit::Bubble { combat_id } => PanelAction::OpenCombatPanel {
+                combat_id: combat_id.clone(),
+            },
             // a close control -> close the panel.
             CombatHit::Control { name } if self.close_names.iter().any(|n| n == name) => {
                 PanelAction::CloseCombatPanel
@@ -64,8 +66,12 @@ mod tests {
     fn bubble_click_opens_panel() {
         let d = CombatDrill::new(vec!["close".into()]);
         assert_eq!(
-            d.dispatch(&CombatHit::Bubble { combat_id: "5457:62".into() }),
-            PanelAction::OpenCombatPanel { combat_id: "5457:62".into() }
+            d.dispatch(&CombatHit::Bubble {
+                combat_id: "5457:62".into()
+            }),
+            PanelAction::OpenCombatPanel {
+                combat_id: "5457:62".into()
+            }
         );
     }
 
@@ -73,7 +79,9 @@ mod tests {
     fn close_control_closes_panel() {
         let d = CombatDrill::new(vec!["close".into(), "X".into()]);
         assert_eq!(
-            d.dispatch(&CombatHit::Control { name: "close".into() }),
+            d.dispatch(&CombatHit::Control {
+                name: "close".into()
+            }),
             PanelAction::CloseCombatPanel
         );
         assert_eq!(
@@ -86,7 +94,9 @@ mod tests {
     fn unknown_control_and_other_are_inert() {
         let d = CombatDrill::new(vec!["close".into()]);
         assert_eq!(
-            d.dispatch(&CombatHit::Control { name: "tactics_list_button".into() }),
+            d.dispatch(&CombatHit::Control {
+                name: "tactics_list_button".into()
+            }),
             PanelAction::None,
             "tactics picker is a mutation verb -> inert in replay"
         );

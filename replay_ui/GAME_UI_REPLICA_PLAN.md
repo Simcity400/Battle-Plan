@@ -20,9 +20,10 @@
 > 3. ⚠️ **UPDATED by v3:** Rust is now the language for **both** the reader hot-path **and** the UI (one binary). (Original v2:) **Rust** an approved **separate parallel track** for the reader's scan hot-path only
 >    (§J). It does **not** block the UI.
 >
-> **Adversarially reviewed** by the local Codex CLI (`gpt-5.5`, read-only) **twice** — once on the
-> v1 curated plan, and again specifically pressure-testing this v2 generic-runtime + binding-DSL
-> pivot. The v2 critique is folded throughout and stated verbatim in §H. Its one-line verdict on
+> **Adversarially reviewed** in two historical review rounds — once on the v1 curated plan, and
+> again specifically pressure-testing this v2 generic-runtime + binding-DSL pivot. Codex-native
+> sessions must use normal sub-agents/partner review, not the old CLI workflow. The v2 critique
+> is folded throughout and stated verbatim in §H. Its one-line verdict on
 > the pivot:
 >
 > > *"Generic runtime plus binding DSL is the right backbone for 'render everything', but only if

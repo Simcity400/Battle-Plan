@@ -417,8 +417,9 @@ impl ModeData {
                     }
                 }
             }
-            // air / naval superiority are under a naval_air domain that this snapshot
-            // family does not carry; detect presence honestly.
+            // Back-compat for old/demo snapshots that temporarily nested these under
+            // diplomacy_world. Live snapshots promote them to top-level `naval_air`;
+            // callers should also chain `with_naval_air`.
             has_air = dw.contains_key("air_superiority");
             has_naval = dw.contains_key("region_control");
         }
@@ -510,6 +511,46 @@ impl ModeData {
             }
         }
         self
+    }
+
+    /// Fold the first-class top-level weather domain into map-mode availability.
+    ///
+    /// The dynamic shader path consumes the detailed values elsewhere; the map-mode
+    /// recolor here only needs to know whether the domain is genuinely fed so it
+    /// can badge as a weather proxy instead of "unavailable".
+    pub fn with_weather(mut self, weather: Option<&Value>) -> ModeData {
+        self.has_weather |= domain_has_data(weather, &["regions", "provinces", "global_rollup"]);
+        self
+    }
+
+    /// Fold the first-class top-level naval/air proxy domain into map-mode availability.
+    pub fn with_naval_air(mut self, naval_air: Option<&Value>) -> ModeData {
+        self.has_naval |= domain_has_data(naval_air, &["region_control"]);
+        self.has_air |= domain_has_data(
+            naval_air,
+            &[
+                "air_superiority",
+                "air_superiority_model",
+                "air_superiority_model_meta",
+            ],
+        );
+        self
+    }
+}
+
+fn domain_has_data(domain: Option<&Value>, keys: &[&str]) -> bool {
+    let Some(obj) = domain.and_then(Value::as_object) else {
+        return false;
+    };
+    keys.iter().any(|key| value_has_data(obj.get(*key)))
+}
+
+fn value_has_data(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Object(obj)) => !obj.is_empty(),
+        Some(Value::Array(arr)) => !arr.is_empty(),
+        Some(Value::Null) | None => false,
+        Some(_) => true,
     }
 }
 
@@ -1117,6 +1158,62 @@ mod tests {
             assert_eq!(&ml.lut[1 * 4..1 * 4 + 4], &NEUTRAL_GREY, "{:?}", mode);
             assert_eq!(&ml.lut[2 * 4..2 * 4 + 4], &NEUTRAL_TERRAIN, "{:?}", mode);
         }
+    }
+
+    #[test]
+    fn top_level_weather_and_naval_air_domains_drive_proxy_availability() {
+        let ids = ids_with(&[(1, 10)]);
+        let weather = serde_json::json!({
+            "provinces": { "1": { "snow": 0.25 } },
+            "regions": null,
+            "source": "M"
+        });
+        let weather_data = data_from(serde_json::json!({"10": {"owner":"ITA"}}), None)
+            .with_weather(Some(&weather));
+        let ml = recolor(MapMode::Weather, &weather_data, &ids, &colors2(), 2);
+        assert_eq!(
+            ml.fidelity,
+            Fidelity::Proxy,
+            "fed top-level weather domain must not badge unavailable"
+        );
+        assert_eq!(
+            &ml.lut[1 * 4..1 * 4 + 4],
+            &NEUTRAL_GREY,
+            "availability is not value fabrication; weather recolor still needs its visual pass"
+        );
+
+        let naval_air = serde_json::json!({
+            "region_control": { "5": [ { "controller": "ITA" } ] },
+            "air_superiority": { "5": { "controller": "ITA" } },
+            "source": "M",
+            "confidence": "region_proxy"
+        });
+        let naval_air_data = data_from(serde_json::json!({"10": {"owner":"ITA"}}), None)
+            .with_naval_air(Some(&naval_air));
+        assert_eq!(
+            recolor(MapMode::Air, &naval_air_data, &ids, &colors2(), 2).fidelity,
+            Fidelity::Proxy
+        );
+        assert_eq!(
+            recolor(MapMode::Naval, &naval_air_data, &ids, &colors2(), 2).fidelity,
+            Fidelity::Proxy
+        );
+
+        let empty_naval_air = serde_json::json!({
+            "region_control": null,
+            "air_superiority": null,
+            "source": null
+        });
+        let empty_data = data_from(serde_json::json!({"10": {"owner":"ITA"}}), None)
+            .with_naval_air(Some(&empty_naval_air));
+        assert_eq!(
+            recolor(MapMode::Air, &empty_data, &ids, &colors2(), 2).fidelity,
+            Fidelity::Unavailable
+        );
+        assert_eq!(
+            recolor(MapMode::Naval, &empty_data, &ids, &colors2(), 2).fidelity,
+            Fidelity::Unavailable
+        );
     }
 
     /// Front lines: a contested state's provinces colour hot-red; the badge is Derived.

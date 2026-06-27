@@ -124,10 +124,19 @@ fn main() {
     // 3) Aggregate the land combats into the roster view-model.
     let controller_of = |p: i64| domain.controller_of(p);
     let province_name = |p: i64| names.get(p);
-    let combats = aggregate_combats(&snap_value.get("combats").cloned().unwrap_or(serde_json::Value::Null),
-        Some("land"), &controller_of, &province_name);
+    let combats = aggregate_combats(
+        &snap_value
+            .get("combats")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+        Some("land"),
+        &controller_of,
+        &province_name,
+    );
     if combats.is_empty() {
-        eprintln!("[combat_demo] BLOCKER: no land combats to render (combats[] empty for this frame).");
+        eprintln!(
+            "[combat_demo] BLOCKER: no land combats to render (combats[] empty for this frame)."
+        );
         std::process::exit(2);
     }
     eprintln!("[combat_demo] aggregated {} land combats", combats.len());
@@ -173,7 +182,9 @@ fn main() {
         if let combat_panel::SideTag::HoldingTagDerived(t) = &vm.defender.tag {
             if !flags.contains_key(t) {
                 let ideo = ideology_of(t);
-                if let Some(p) = flag_path(&resolver, extracted_flags.as_deref(), t, ideo.as_deref()) {
+                if let Some(p) =
+                    flag_path(&resolver, extracted_flags.as_deref(), t, ideo.as_deref())
+                {
                     if let Ok(tex) = renderer.load_image(&p) {
                         flags.insert(t.clone(), tex);
                     }
@@ -192,7 +203,17 @@ fn main() {
 
     // background
     let full = [0.0, 0.0, width as f32, height as f32];
-    renderer.draw_sprite_frame_clipped(&white, 0.0, 0.0, width as f32, height as f32, 0, 1, [0.06, 0.07, 0.09, 1.0], Some(full));
+    renderer.draw_sprite_frame_clipped(
+        &white,
+        0.0,
+        0.0,
+        width as f32,
+        height as f32,
+        0,
+        1,
+        [0.06, 0.07, 0.09, 1.0],
+        Some(full),
+    );
 
     // 6) Bubbles laid out over a left "map" strip (fit the combat provinces into it).
     let mut bubbles_drawn = 0;
@@ -208,19 +229,52 @@ fn main() {
         if !pts.is_empty() {
             let (mut minx, mut miny, mut maxx, mut maxy) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
             for (x, y) in &pts {
-                minx = minx.min(*x); miny = miny.min(*y); maxx = maxx.max(*x); maxy = maxy.max(*y);
+                minx = minx.min(*x);
+                miny = miny.min(*y);
+                maxx = maxx.max(*x);
+                maxy = maxy.max(*y);
             }
             let bw = (maxx - minx).max(1.0);
             let bh = (maxy - miny).max(1.0);
             let margin = 60.0;
-            let zoom = ((map_view[2] - 2.0 * margin) / bw).min((map_view[3] - 2.0 * margin) / bh).max(0.001);
-            let cam = MapCamera::new((minx, miny), zoom, (map_view[0] + margin, map_view[1] + margin));
+            let zoom = ((map_view[2] - 2.0 * margin) / bw)
+                .min((map_view[3] - 2.0 * margin) / bh)
+                .max(0.001);
+            let cam = MapCamera::new(
+                (minx, miny),
+                zoom,
+                (map_view[0] + margin, map_view[1] + margin),
+            );
             let bubbles = layout_bubbles(&combats, cent, &cam);
             // a faint map-strip backdrop + label
-            renderer.draw_sprite_frame_clipped(&white, map_view[0], map_view[1], map_view[2], map_view[3], 0, 1, [0.09, 0.12, 0.14, 1.0], Some(map_view));
-            bubbles_drawn = draw_bubbles(&mut renderer, &white, &bubbles, Some(&selected.combat_id), map_view);
+            renderer.draw_sprite_frame_clipped(
+                &white,
+                map_view[0],
+                map_view[1],
+                map_view[2],
+                map_view[3],
+                0,
+                1,
+                [0.09, 0.12, 0.14, 1.0],
+                Some(map_view),
+            );
+            bubbles_drawn = draw_bubbles(
+                &mut renderer,
+                &white,
+                &bubbles,
+                Some(&selected.combat_id),
+                map_view,
+            );
             if let Some(f) = font_ref {
-                renderer.draw_text_clipped(f, pages_ref, &format!("COMBAT BUBBLES  ({} land battles)", bubbles.len()), map_view[0] + 12.0, map_view[1] + 8.0, [0.9, 0.9, 0.85, 1.0], Some(map_view));
+                renderer.draw_text_clipped(
+                    f,
+                    pages_ref,
+                    &format!("COMBAT BUBBLES  ({} land battles)", bubbles.len()),
+                    map_view[0] + 12.0,
+                    map_view[1] + 8.0,
+                    [0.9, 0.9, 0.85, 1.0],
+                    Some(map_view),
+                );
             }
         }
     }
@@ -237,9 +291,27 @@ fn main() {
 
     // top title bar
     if let Some(f) = font_ref {
-        renderer.draw_sprite_frame_clipped(&white, 0.0, 0.0, width as f32, 36.0, 0, 1, [0.04, 0.05, 0.07, 1.0], Some(full));
+        renderer.draw_sprite_frame_clipped(
+            &white,
+            0.0,
+            0.0,
+            width as f32,
+            36.0,
+            0,
+            1,
+            [0.04, 0.05, 0.07, 1.0],
+            Some(full),
+        );
         let t = format!("STAGE 4 COMBAT PANEL   game={game}  {date}   bubble->panel  (read-only)");
-        renderer.draw_text_clipped(f, pages_ref, &t, 12.0, 9.0, [0.95, 0.95, 0.92, 1.0], Some(full));
+        renderer.draw_text_clipped(
+            f,
+            pages_ref,
+            &t,
+            12.0,
+            9.0,
+            [0.95, 0.95, 0.92, 1.0],
+            Some(full),
+        );
     }
 
     let rgba = renderer.finish([0.06, 0.07, 0.09, 1.0]);
@@ -256,7 +328,9 @@ fn main() {
     eprintln!(
         "[combat_demo] opened combat {} | attacker refs={} (TAG {}) | defender refs={} (TAG {})",
         selected.combat_id,
-        selected.attacker.ref_count(), selected.attacker.tag.display(),
-        selected.defender.ref_count(), selected.defender.tag.display(),
+        selected.attacker.ref_count(),
+        selected.attacker.tag.display(),
+        selected.defender.ref_count(),
+        selected.defender.tag.display(),
     );
 }

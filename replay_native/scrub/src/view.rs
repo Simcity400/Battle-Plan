@@ -238,7 +238,10 @@ mod tests {
         let v = DomainView::new(&s);
         let c = v.country("GER");
         assert!(c.exists());
-        assert_eq!(c.politics_path("political_power").and_then(|x| x.as_f64()), Some(247.0));
+        assert_eq!(
+            c.politics_path("political_power").and_then(|x| x.as_f64()),
+            Some(247.0)
+        );
         // an absent country yields None, never a fabricated object.
         let none = v.country("ZZZ");
         assert!(!none.exists());

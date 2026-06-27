@@ -84,8 +84,20 @@ pub struct TraitNode {
 }
 
 impl TraitNode {
-    pub fn cell(id: impl Into<String>, gx: i32, gy: i32, label: Atom, state: TraitState) -> TraitNode {
-        TraitNode { id: id.into(), gx, gy, label, state }
+    pub fn cell(
+        id: impl Into<String>,
+        gx: i32,
+        gy: i32,
+        label: Atom,
+        state: TraitState,
+    ) -> TraitNode {
+        TraitNode {
+            id: id.into(),
+            gx,
+            gy,
+            label,
+            state,
+        }
     }
 }
 
@@ -100,7 +112,11 @@ pub struct TraitTree {
 
 impl TraitTree {
     pub fn new(nodes: Vec<TraitNode>) -> TraitTree {
-        TraitTree { nodes, prereqs: Vec::new(), exclusives: Vec::new() }
+        TraitTree {
+            nodes,
+            prereqs: Vec::new(),
+            exclusives: Vec::new(),
+        }
     }
     /// Add a prerequisite `from → to` (builder-chained).
     pub fn prereq(mut self, from: impl Into<String>, to: impl Into<String>) -> TraitTree {
@@ -126,7 +142,15 @@ impl TraitTree {
             .map(|t| {
                 let x = t.gx as f32 * CELL_W;
                 let y = t.gy as f32 * CELL_H;
-                let mut gn = GraphNode::box_at(t.id.clone(), x, y, NODE_W, NODE_H, t.label.clone(), t.state.color());
+                let mut gn = GraphNode::box_at(
+                    t.id.clone(),
+                    x,
+                    y,
+                    NODE_W,
+                    NODE_H,
+                    t.label.clone(),
+                    t.state.color(),
+                );
                 gn.badge = match t.state {
                     TraitState::Unavailable => {
                         // a blocked trait slot -> hollow `—` node.
@@ -135,7 +159,9 @@ impl TraitTree {
                     // an UNKNOWN trait state gets an explicit honesty badge (a corner tab),
                     // so "we don't know this trait's state" never relies on palette alone
                     // (Codex N3).
-                    TraitState::Unknown => NodeBadge::Approximate { reason: "trait state unknown".into() },
+                    TraitState::Unknown => NodeBadge::Approximate {
+                        reason: "trait state unknown".into(),
+                    },
                     _ => NodeBadge::Exact,
                 };
                 gn
@@ -168,7 +194,10 @@ impl TraitTree {
     /// fabricating a node.
     pub fn dangling_edge_count(&self) -> usize {
         let dangling = |pairs: &[(String, String)]| {
-            pairs.iter().filter(|(a, b)| !self.has(a) || !self.has(b)).count()
+            pairs
+                .iter()
+                .filter(|(a, b)| !self.has(a) || !self.has(b))
+                .count()
         };
         dangling(&self.prereqs) + dangling(&self.exclusives)
     }
@@ -212,7 +241,11 @@ mod tests {
     #[test]
     fn prereq_satisfied_iff_source_owned() {
         let g = tree().to_graph();
-        let dep = g.edges.iter().find(|e| e.from == "a" && e.to == "b").unwrap();
+        let dep = g
+            .edges
+            .iter()
+            .find(|e| e.from == "a" && e.to == "b")
+            .unwrap();
         assert!(dep.satisfied); // "a" is Owned
     }
 
@@ -226,7 +259,13 @@ mod tests {
 
     #[test]
     fn unknown_trait_gets_explicit_badge_not_palette_only() {
-        let t = TraitTree::new(vec![TraitNode::cell("k", 0, 0, Atom::exact("K"), TraitState::Unknown)]);
+        let t = TraitTree::new(vec![TraitNode::cell(
+            "k",
+            0,
+            0,
+            Atom::exact("K"),
+            TraitState::Unknown,
+        )]);
         let g = t.to_graph();
         let n = g.node("k").unwrap();
         // an Unknown state carries an Approximate honesty badge (a corner tab), not Exact.

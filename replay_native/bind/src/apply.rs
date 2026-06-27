@@ -248,7 +248,11 @@ mod tests {
         let snap = ger_snapshot();
         let spec = TopbarSpec::topbar();
         // Every Unavailable binding renders the em dash, NEVER "0".
-        for b in spec.texts.iter().filter(|b| b.fidelity == Fidelity::Unavailable) {
+        for b in spec
+            .texts
+            .iter()
+            .filter(|b| b.fidelity == Fidelity::Unavailable)
+        {
             let (s, nc) = resolve_text(b, &snap, "GER");
             assert_eq!(s, NOT_CAPTURED, "element {} fabricated a value", b.element);
             assert!(nc, "element {} not flagged not-captured", b.element);
@@ -273,8 +277,16 @@ mod tests {
         let j = json!({"date":"1936.1.1.12","countries":{"X":{"politics":{"stability":0.0,"political_power":0.0}}}});
         let snap: Snapshot = serde_json::from_value(j).unwrap();
         let spec = TopbarSpec::topbar();
-        let stab = spec.texts.iter().find(|b| b.element == "stability").unwrap();
-        let pp = spec.texts.iter().find(|b| b.element == "pol_power").unwrap();
+        let stab = spec
+            .texts
+            .iter()
+            .find(|b| b.element == "stability")
+            .unwrap();
+        let pp = spec
+            .texts
+            .iter()
+            .find(|b| b.element == "pol_power")
+            .unwrap();
         assert_eq!(resolve_text(stab, &snap, "X"), ("0%".to_string(), false));
         assert_eq!(resolve_text(pp, &snap, "X"), ("0".to_string(), false));
     }

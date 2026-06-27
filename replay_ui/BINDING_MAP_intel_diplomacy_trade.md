@@ -865,11 +865,13 @@ ARTIFACT-unfed or a TRUE GAP per the ledger.
 
 ---
 
-## Codex round (adversarial review, 2026-06-26)
+## Historical review round (adversarial review, 2026-06-26)
 
-Mode-A one-shot, read-only, `model_reasoning_effort=xhigh`, `service_tier=priority` (exit 0, non-empty
-reply). Codex was given the full demo-snapshot facts, the relevant SCHEMA, and every per-view binding
-decision, and asked the 4 questions: (a) missed elements, (b) field-path correctness, (c) false
+Historical note: this records a completed adversarial review from the old
+Claude-era workflow. Codex-native sessions must use normal sub-agents/partner
+review and must not run the old local CLI command. The review was given the full
+demo-snapshot facts, the relevant SCHEMA, and every per-view binding decision,
+and asked the 4 questions: (a) missed elements, (b) field-path correctness, (c) false
 `unavailable` vs real gap, (d) artifact-vs-gap classification + the world-tension-aggregate claim.
 
 **ASKED / AGREED:**

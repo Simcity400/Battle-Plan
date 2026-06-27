@@ -184,9 +184,7 @@ fn main() {
         let hit = scene.iter().rev().find_map(|w| hit_test(w, x, y));
         eprintln!(
             "[m2] hit ({label} @ {x:.0},{y:.0}) -> {}",
-            hit.as_ref()
-                .and_then(|h| h.leaf())
-                .unwrap_or("<none>")
+            hit.as_ref().and_then(|h| h.leaf()).unwrap_or("<none>")
         );
     }
 

@@ -34,7 +34,7 @@ use std::collections::HashMap;
 
 use render::Renderer;
 
-use crate::common::{Atom, AssetRef, DrawAssets, TEXT_TINT};
+use crate::common::{AssetRef, Atom, DrawAssets, TEXT_TINT};
 use crate::plan::{Cmd, Plan, SpriteDraw};
 
 /// Centroid (mean pixel) of each province id in a raster. Computed once per raster,
@@ -107,8 +107,15 @@ impl MapCamera {
     /// degenerate input safe, including a finite `0.0`/negative zoom). The layout step
     /// then also drops any non-finite result, so a poisoned camera yields no placed icon.
     pub fn to_screen(&self, mx: f32, my: f32) -> (f32, f32) {
-        let z = if self.zoom.is_finite() && self.zoom > 0.0 { self.zoom } else { 1.0 };
-        ((mx - self.pan.0) * z + self.offset.0, (my - self.pan.1) * z + self.offset.1)
+        let z = if self.zoom.is_finite() && self.zoom > 0.0 {
+            self.zoom
+        } else {
+            1.0
+        };
+        (
+            (mx - self.pan.0) * z + self.offset.0,
+            (my - self.pan.1) * z + self.offset.1,
+        )
     }
 }
 
@@ -148,7 +155,15 @@ impl MapIcon {
         Self::at(IconAnchor::Screen { x, y }, sprite)
     }
     fn at(anchor: IconAnchor, sprite: AssetRef) -> MapIcon {
-        MapIcon { id: String::new(), anchor, sprite, tint: [1.0; 4], label: None, priority: 0, size: 18.0 }
+        MapIcon {
+            id: String::new(),
+            anchor,
+            sprite,
+            tint: [1.0; 4],
+            label: None,
+            priority: 0,
+            size: 18.0,
+        }
     }
     pub fn id(mut self, id: impl Into<String>) -> MapIcon {
         self.id = id.into();
@@ -260,7 +275,11 @@ pub fn layout_icons<'a>(
     }
     // stable sort by priority ascending (preserves source order within a priority).
     placed.sort_by_key(|pl| icons[pl.index].priority);
-    IconLayout { placed, skipped, icons }
+    IconLayout {
+        placed,
+        skipped,
+        icons,
+    }
 }
 
 /// Build the render plan for the laid-out icons. Each placed icon draws its sprite (a
@@ -274,22 +293,48 @@ pub fn plan_icons(layout: &IconLayout, clip: Option<[f32; 4]>) -> Plan {
         let half = icon.size * 0.5;
         match &icon.sprite {
             AssetRef::Named(name) => {
-                p.push(Cmd::Sprite { x: pl.sx - half, y: pl.sy - half, w: icon.size, h: icon.size, name: Some(name.clone()), tint: icon.tint, clip });
+                p.push(Cmd::Sprite {
+                    x: pl.sx - half,
+                    y: pl.sy - half,
+                    w: icon.size,
+                    h: icon.size,
+                    name: Some(name.clone()),
+                    tint: icon.tint,
+                    clip,
+                });
             }
             AssetRef::Unavailable => {
                 // a visible no-data marker (a hollow disc), distinct from a real icon.
-                p.push(Cmd::Disc { cx: pl.sx, cy: pl.sy, r: half.max(3.0), tint: crate::common::UNAVAIL_TINT, clip });
+                p.push(Cmd::Disc {
+                    cx: pl.sx,
+                    cy: pl.sy,
+                    r: half.max(3.0),
+                    tint: crate::common::UNAVAIL_TINT,
+                    clip,
+                });
             }
             AssetRef::None => {
                 // a no-sprite icon is a COLOURED MARKER (a combat bubble, a VP dot): always
                 // draw the tinted disc — the tint carries the meaning, the label is optional
                 // decoration. (Codex: drawing only when a label exists left naval bubbles
                 // — which have no label — invisible.)
-                p.push(Cmd::Disc { cx: pl.sx, cy: pl.sy, r: half.max(3.0), tint: icon.tint, clip });
+                p.push(Cmd::Disc {
+                    cx: pl.sx,
+                    cy: pl.sy,
+                    r: half.max(3.0),
+                    tint: icon.tint,
+                    clip,
+                });
             }
         }
         if let Some(lbl) = &icon.label {
-            p.push(Cmd::Text { x: pl.sx + half + 2.0, y: pl.sy - 6.0, text: lbl.as_str().into(), tint: lbl.tint(TEXT_TINT), clip });
+            p.push(Cmd::Text {
+                x: pl.sx + half + 2.0,
+                y: pl.sy - 6.0,
+                text: lbl.as_str().into(),
+                tint: lbl.tint(TEXT_TINT),
+                clip,
+            });
         }
     }
     p
@@ -356,8 +401,16 @@ mod tests {
     fn priority_orders_draw_and_pick() {
         let cam = MapCamera::new((0.0, 0.0), 1.0, (0.0, 0.0));
         let icons = vec![
-            MapIcon::screen(50.0, 50.0, AssetRef::None).id("low").label(Atom::exact("L")).priority(0).size(20.0),
-            MapIcon::screen(50.0, 50.0, AssetRef::None).id("high").label(Atom::exact("H")).priority(5).size(20.0),
+            MapIcon::screen(50.0, 50.0, AssetRef::None)
+                .id("low")
+                .label(Atom::exact("L"))
+                .priority(0)
+                .size(20.0),
+            MapIcon::screen(50.0, 50.0, AssetRef::None)
+                .id("high")
+                .label(Atom::exact("H"))
+                .priority(5)
+                .size(20.0),
         ];
         let laid = layout_icons(&icons, &ProvinceCentroids::default(), &cam);
         // higher priority is last in `placed` (drawn on top) + wins the overlapping pick.
@@ -403,6 +456,12 @@ mod tests {
         let icons = vec![MapIcon::screen(10.0, 10.0, AssetRef::None).tint([0.8, 0.7, 0.25, 1.0])];
         let laid = layout_icons(&icons, &ProvinceCentroids::default(), &cam);
         let p = plan_icons(&laid, None);
-        assert_eq!(p.cmds.iter().filter(|c| matches!(c, Cmd::Disc { .. })).count(), 1);
+        assert_eq!(
+            p.cmds
+                .iter()
+                .filter(|c| matches!(c, Cmd::Disc { .. }))
+                .count(),
+            1
+        );
     }
 }

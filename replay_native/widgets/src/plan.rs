@@ -25,18 +25,57 @@ use crate::common::DrawAssets;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cmd {
     /// A solid filled rect (tinted white texture).
-    Rect { x: f32, y: f32, w: f32, h: f32, tint: [f32; 4], clip: Option<[f32; 4]> },
+    Rect {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        tint: [f32; 4],
+        clip: Option<[f32; 4]>,
+    },
     /// A filled disc (bubble/marker).
-    Disc { cx: f32, cy: f32, r: f32, tint: [f32; 4], clip: Option<[f32; 4]> },
+    Disc {
+        cx: f32,
+        cy: f32,
+        r: f32,
+        tint: [f32; 4],
+        clip: Option<[f32; 4]>,
+    },
     /// An L-shaped step link (focus/tech edge).
-    LinkL { from: (f32, f32), to: (f32, f32), thick: f32, tint: [f32; 4], clip: Option<[f32; 4]> },
+    LinkL {
+        from: (f32, f32),
+        to: (f32, f32),
+        thick: f32,
+        tint: [f32; 4],
+        clip: Option<[f32; 4]>,
+    },
     /// A straight segment (influence/reference edge).
-    Line { from: (f32, f32), to: (f32, f32), thick: f32, tint: [f32; 4], clip: Option<[f32; 4]> },
+    Line {
+        from: (f32, f32),
+        to: (f32, f32),
+        thick: f32,
+        tint: [f32; 4],
+        clip: Option<[f32; 4]>,
+    },
     /// A text run (the literal resolved string + its tint).
-    Text { x: f32, y: f32, text: String, tint: [f32; 4], clip: Option<[f32; 4]> },
+    Text {
+        x: f32,
+        y: f32,
+        text: String,
+        tint: [f32; 4],
+        clip: Option<[f32; 4]>,
+    },
     /// A named sprite to resolve+draw (icon/portrait/flag). `name=None` is a
     /// placeholder fill (a no-asset / unavailable slot) — never silently nothing.
-    Sprite { x: f32, y: f32, w: f32, h: f32, name: Option<String>, tint: [f32; 4], clip: Option<[f32; 4]> },
+    Sprite {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        name: Option<String>,
+        tint: [f32; 4],
+        clip: Option<[f32; 4]>,
+    },
 }
 
 /// An ordered render plan: the exact, replayable command stream a primitive emits.
@@ -84,23 +123,111 @@ impl Plan {
         let mut s = String::with_capacity(self.cmds.len() * 24);
         for c in &self.cmds {
             match c {
-                Cmd::Rect { x, y, w, h, tint, clip } => {
-                    s.push_str(&format!("R{},{},{},{}|{}|{};", q(*x), q(*y), q(*w), q(*h), qt(tint), qc(clip)));
+                Cmd::Rect {
+                    x,
+                    y,
+                    w,
+                    h,
+                    tint,
+                    clip,
+                } => {
+                    s.push_str(&format!(
+                        "R{},{},{},{}|{}|{};",
+                        q(*x),
+                        q(*y),
+                        q(*w),
+                        q(*h),
+                        qt(tint),
+                        qc(clip)
+                    ));
                 }
-                Cmd::Disc { cx, cy, r, tint, clip } => {
-                    s.push_str(&format!("D{},{},{}|{}|{};", q(*cx), q(*cy), q(*r), qt(tint), qc(clip)));
+                Cmd::Disc {
+                    cx,
+                    cy,
+                    r,
+                    tint,
+                    clip,
+                } => {
+                    s.push_str(&format!(
+                        "D{},{},{}|{}|{};",
+                        q(*cx),
+                        q(*cy),
+                        q(*r),
+                        qt(tint),
+                        qc(clip)
+                    ));
                 }
-                Cmd::LinkL { from, to, thick, tint, clip } => {
-                    s.push_str(&format!("L{},{}->{},{}@{}|{}|{};", q(from.0), q(from.1), q(to.0), q(to.1), q(*thick), qt(tint), qc(clip)));
+                Cmd::LinkL {
+                    from,
+                    to,
+                    thick,
+                    tint,
+                    clip,
+                } => {
+                    s.push_str(&format!(
+                        "L{},{}->{},{}@{}|{}|{};",
+                        q(from.0),
+                        q(from.1),
+                        q(to.0),
+                        q(to.1),
+                        q(*thick),
+                        qt(tint),
+                        qc(clip)
+                    ));
                 }
-                Cmd::Line { from, to, thick, tint, clip } => {
-                    s.push_str(&format!("N{},{}->{},{}@{}|{}|{};", q(from.0), q(from.1), q(to.0), q(to.1), q(*thick), qt(tint), qc(clip)));
+                Cmd::Line {
+                    from,
+                    to,
+                    thick,
+                    tint,
+                    clip,
+                } => {
+                    s.push_str(&format!(
+                        "N{},{}->{},{}@{}|{}|{};",
+                        q(from.0),
+                        q(from.1),
+                        q(to.0),
+                        q(to.1),
+                        q(*thick),
+                        qt(tint),
+                        qc(clip)
+                    ));
                 }
-                Cmd::Text { x, y, text, tint, clip } => {
-                    s.push_str(&format!("T{},{}:{:?}|{}|{};", q(*x), q(*y), text, qt(tint), qc(clip)));
+                Cmd::Text {
+                    x,
+                    y,
+                    text,
+                    tint,
+                    clip,
+                } => {
+                    s.push_str(&format!(
+                        "T{},{}:{:?}|{}|{};",
+                        q(*x),
+                        q(*y),
+                        text,
+                        qt(tint),
+                        qc(clip)
+                    ));
                 }
-                Cmd::Sprite { x, y, w, h, name, tint, clip } => {
-                    s.push_str(&format!("S{},{},{},{}:{:?}|{}|{};", q(*x), q(*y), q(*w), q(*h), name, qt(tint), qc(clip)));
+                Cmd::Sprite {
+                    x,
+                    y,
+                    w,
+                    h,
+                    name,
+                    tint,
+                    clip,
+                } => {
+                    s.push_str(&format!(
+                        "S{},{},{},{}:{:?}|{}|{};",
+                        q(*x),
+                        q(*y),
+                        q(*w),
+                        q(*h),
+                        name,
+                        qt(tint),
+                        qc(clip)
+                    ));
                 }
             }
         }
@@ -122,35 +249,101 @@ impl Plan {
     ) {
         for c in &self.cmds {
             match c {
-                Cmd::Rect { x, y, w, h, tint, clip } => {
+                Cmd::Rect {
+                    x,
+                    y,
+                    w,
+                    h,
+                    tint,
+                    clip,
+                } => {
                     crate::common::fill_rect(r, assets.white, *x, *y, *w, *h, *tint, *clip);
                 }
-                Cmd::Disc { cx, cy, r: rad, tint, clip } => {
+                Cmd::Disc {
+                    cx,
+                    cy,
+                    r: rad,
+                    tint,
+                    clip,
+                } => {
                     crate::common::disc(r, assets.white, *cx, *cy, *rad, *tint, *clip);
                 }
-                Cmd::LinkL { from, to, thick, tint, clip } => {
+                Cmd::LinkL {
+                    from,
+                    to,
+                    thick,
+                    tint,
+                    clip,
+                } => {
                     crate::common::link_l(r, assets.white, *from, *to, *thick, *tint, *clip);
                 }
-                Cmd::Line { from, to, thick, tint, clip } => {
+                Cmd::Line {
+                    from,
+                    to,
+                    thick,
+                    tint,
+                    clip,
+                } => {
                     crate::common::line_seg(r, assets.white, *from, *to, *thick, *tint, *clip);
                 }
-                Cmd::Text { x, y, text, tint, clip } => {
+                Cmd::Text {
+                    x,
+                    y,
+                    text,
+                    tint,
+                    clip,
+                } => {
                     if let Some(font) = assets.font {
                         r.draw_text_clipped(font, assets.font_pages, text, *x, *y, *tint, *clip);
                     }
                 }
-                Cmd::Sprite { x, y, w, h, name, tint, clip } => {
+                Cmd::Sprite {
+                    x,
+                    y,
+                    w,
+                    h,
+                    name,
+                    tint,
+                    clip,
+                } => {
                     let drawn = match name {
                         Some(n) => resolve(
                             r,
-                            SpriteDraw { name: n, x: *x, y: *y, w: *w, h: *h, tint: *tint, clip: *clip },
+                            SpriteDraw {
+                                name: n,
+                                x: *x,
+                                y: *y,
+                                w: *w,
+                                h: *h,
+                                tint: *tint,
+                                clip: *clip,
+                            },
                         ),
                         None => false,
                     };
                     if !drawn {
                         // a visible placeholder (no-asset / unavailable) — never blank.
-                        crate::common::fill_rect(r, assets.white, *x, *y, *w, *h, crate::common::PLACEHOLDER_TINT, *clip);
-                        crate::common::stroke_rect(r, assets.white, *x, *y, *w, *h, 1.0, crate::common::DIM_TINT, *clip);
+                        crate::common::fill_rect(
+                            r,
+                            assets.white,
+                            *x,
+                            *y,
+                            *w,
+                            *h,
+                            crate::common::PLACEHOLDER_TINT,
+                            *clip,
+                        );
+                        crate::common::stroke_rect(
+                            r,
+                            assets.white,
+                            *x,
+                            *y,
+                            *w,
+                            *h,
+                            1.0,
+                            crate::common::DIM_TINT,
+                            *clip,
+                        );
                     }
                 }
             }
@@ -196,8 +389,21 @@ mod tests {
     #[test]
     fn digest_is_stable_and_order_sensitive() {
         let mut a = Plan::new();
-        a.push(Cmd::Rect { x: 1.0, y: 2.0, w: 3.0, h: 4.0, tint: [1.0; 4], clip: None });
-        a.push(Cmd::Text { x: 5.0, y: 6.0, text: "hi".into(), tint: [1.0; 4], clip: None });
+        a.push(Cmd::Rect {
+            x: 1.0,
+            y: 2.0,
+            w: 3.0,
+            h: 4.0,
+            tint: [1.0; 4],
+            clip: None,
+        });
+        a.push(Cmd::Text {
+            x: 5.0,
+            y: 6.0,
+            text: "hi".into(),
+            tint: [1.0; 4],
+            clip: None,
+        });
         let mut b = a.clone();
         assert_eq!(a.digest(), b.digest());
         // reorder -> different digest.
@@ -208,9 +414,21 @@ mod tests {
     #[test]
     fn digest_distinguishes_measured_from_unavailable_text() {
         let mut zero = Plan::new();
-        zero.push(Cmd::Text { x: 0.0, y: 0.0, text: "0".into(), tint: [1.0; 4], clip: None });
+        zero.push(Cmd::Text {
+            x: 0.0,
+            y: 0.0,
+            text: "0".into(),
+            tint: [1.0; 4],
+            clip: None,
+        });
         let mut dash = Plan::new();
-        dash.push(Cmd::Text { x: 0.0, y: 0.0, text: "—".into(), tint: [1.0; 4], clip: None });
+        dash.push(Cmd::Text {
+            x: 0.0,
+            y: 0.0,
+            text: "—".into(),
+            tint: [1.0; 4],
+            clip: None,
+        });
         // a measured 0 and a not-captured — never collide.
         assert_ne!(zero.digest(), dash.digest());
         assert_eq!(dash.unavailable_text_count(), 1);
@@ -220,7 +438,14 @@ mod tests {
     #[test]
     fn nonfinite_coord_is_stable_token_not_panic() {
         let mut p = Plan::new();
-        p.push(Cmd::Rect { x: f32::NAN, y: 0.0, w: 1.0, h: 1.0, tint: [1.0; 4], clip: None });
+        p.push(Cmd::Rect {
+            x: f32::NAN,
+            y: 0.0,
+            w: 1.0,
+            h: 1.0,
+            tint: [1.0; 4],
+            clip: None,
+        });
         // digesting a NaN coord does not panic and is deterministic.
         assert_eq!(p.digest(), p.digest());
     }
@@ -228,9 +453,23 @@ mod tests {
     #[test]
     fn quantises_subpixel_jitter() {
         let mut a = Plan::new();
-        a.push(Cmd::Rect { x: 10.000, y: 0.0, w: 1.0, h: 1.0, tint: [1.0; 4], clip: None });
+        a.push(Cmd::Rect {
+            x: 10.000,
+            y: 0.0,
+            w: 1.0,
+            h: 1.0,
+            tint: [1.0; 4],
+            clip: None,
+        });
         let mut b = Plan::new();
-        b.push(Cmd::Rect { x: 10.0001, y: 0.0, w: 1.0, h: 1.0, tint: [1.0; 4], clip: None });
+        b.push(Cmd::Rect {
+            x: 10.0001,
+            y: 0.0,
+            w: 1.0,
+            h: 1.0,
+            tint: [1.0; 4],
+            clip: None,
+        });
         assert_eq!(a.digest(), b.digest()); // <0.01px jitter collapses
     }
 }

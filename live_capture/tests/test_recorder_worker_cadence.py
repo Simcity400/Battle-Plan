@@ -1,0 +1,284 @@
+"""Focused tests for GUI recorder cadence orchestration."""
+from __future__ import annotations
+
+import os
+import shutil
+import sys
+import tempfile
+import unittest
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO = os.path.normpath(os.path.join(_HERE, os.pardir, os.pardir))
+if _REPO not in sys.path:
+    sys.path.insert(0, _REPO)
+
+from live_capture.capture import CaptureResult, DateInfo  # noqa: E402
+from live_capture.recorder.cadence import RecorderCadence  # noqa: E402
+from live_capture.recorder.recorder_main import (  # noqa: E402
+    CADENCE_EVERY_2_HOURS_LABEL,
+    CADENCE_EVERY_6_HOURS_LABEL,
+    CADENCE_MANUAL_LABEL,
+    CADENCE_MODE_LABEL,
+    CADENCE_MODE_LABELS,
+    DEFAULT_POLL_INTERVAL_S,
+    DEFAULT_TARGET_STEP_HOURS,
+    _RecorderWorker,
+    parse_cadence_mode,
+)
+from replay import schema  # noqa: E402
+
+
+class _FakeProc:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeStore:
+    def __init__(self, root):
+        self.root = root
+
+    def lock_path(self, game_id):
+        return os.path.join(self.root, "_continuity", "%s.lock" % game_id)
+
+
+class _FakeRecorder:
+    def __init__(self):
+        self.finalize_calls = 0
+
+    def finalize(self):
+        self.finalize_calls += 1
+
+
+class _FakeLoop:
+    def __init__(self, worker, root, *, fail_calls=()):
+        self.worker = worker
+        self.store = _FakeStore(root)
+        self._recorder = _FakeRecorder()
+        self.fail_calls = set(fail_calls)
+        self.calls = 0
+        self.attempted_dates = []
+        self.captured_dates = []
+        self.prev_snapshots = []
+        self.failed_skipped_hours = []
+        self.last_finalize_error = None
+
+    def open_proc(self):
+        return _FakeProc()
+
+    def capture_once(self, *, date_info=None, prev_snapshot=None, proc=None):
+        del proc
+        call = self.calls
+        self.calls += 1
+        self.attempted_dates.append(date_info.date)
+        self.prev_snapshots.append(prev_snapshot)
+        if call in self.fail_calls:
+            self.failed_skipped_hours.append(
+                self.worker._cadence.skipped_hours)
+            raise RuntimeError("boom")
+
+        res = CaptureResult(
+            written_path="snapshot-%d.json" % call,
+            snapshot={"date": date_info.date, "seq": call},
+            domains_captured=[],
+            tags={},
+            canonical=True,
+        )
+        self.captured_dates.append(date_info.date)
+        return res
+
+
+class TestRecorderWorkerCadence(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="rec_worker_")
+        self.statuses = []
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _worker(self, *, target_step_hours=DEFAULT_TARGET_STEP_HOURS,
+                cadence_label=CADENCE_MODE_LABEL, manual_once=False):
+        worker = _RecorderWorker("worker_cadence", self.tmp, 0.0,
+                                 self.statuses.append,
+                                 target_step_hours=target_step_hours,
+                                 cadence_label=cadence_label,
+                                 manual_once=manual_once)
+        worker._cadence = RecorderCadence(
+            target_step_hours=target_step_hours)
+        return worker
+
+    def _run_sequence(self, dates, *, fail_calls=(),
+                      target_step_hours=DEFAULT_TARGET_STEP_HOURS,
+                      cadence_label=CADENCE_MODE_LABEL,
+                      manual_once=False):
+        worker = self._worker(target_step_hours=target_step_hours,
+                              cadence_label=cadence_label,
+                              manual_once=manual_once)
+        loop = _FakeLoop(worker, self.tmp, fail_calls=fail_calls)
+        worker._loop = loop
+        seq = list(dates)
+        pos = {"i": 0}
+
+        def date_provider(proc):
+            del proc
+            di = seq[pos["i"]]
+            pos["i"] += 1
+            if pos["i"] >= len(seq):
+                worker.stop()
+            return di
+
+        def on_capture(res):
+            if res.error:
+                return
+            if res.written_path is not None and res.canonical:
+                worker.n_captured += 1
+
+        worker._run_until_stop(date_provider, on_capture)
+        return worker, loop
+
+    def test_failed_capture_retries_same_hour_instead_of_duplicate(self):
+        h0 = DateInfo("1936.1.1.0", trusted=True, source="clock")
+        worker, loop = self._run_sequence([h0, h0, h0], fail_calls={0})
+
+        self.assertEqual(loop.attempted_dates, ["1936.1.1.0", "1936.1.1.0"])
+        self.assertEqual(loop.captured_dates, ["1936.1.1.0"])
+        self.assertEqual(worker.n_captured, 1)
+        self.assertEqual(worker._cadence.captures, 1)
+        self.assertEqual(worker._cadence.duplicate_observations, 0)
+
+    def test_skipped_hour_counters_update_only_after_successful_write(self):
+        h0 = DateInfo("1936.1.1.0", trusted=True, source="clock")
+        h3 = DateInfo("1936.1.1.3", trusted=True, source="clock")
+        worker, loop = self._run_sequence([h0, h0, h3, h3, h3],
+                                          fail_calls={1})
+
+        self.assertEqual(loop.failed_skipped_hours, [0])
+        self.assertEqual(loop.captured_dates, ["1936.1.1.0", "1936.1.1.3"])
+        self.assertEqual(worker._cadence.skipped_hours, 2)
+        self.assertEqual(worker._cadence.skip_events, 1)
+
+    def test_sequence_dedups_and_records_one_skipped_hour(self):
+        dates = [
+            DateInfo("1936.1.1.0", trusted=True, source="clock"),
+            DateInfo("1936.1.1.0", trusted=True, source="clock"),
+            DateInfo("1936.1.1.0", trusted=True, source="clock"),
+            DateInfo("1936.1.1.1", trusted=True, source="clock"),
+            DateInfo("1936.1.1.1", trusted=True, source="clock"),
+            DateInfo("1936.1.1.3", trusted=True, source="clock"),
+            DateInfo("1936.1.1.3", trusted=True, source="clock"),
+        ]
+        worker, loop = self._run_sequence(dates)
+
+        h2 = schema.date_to_hour_index("1936.1.1.2")
+        self.assertEqual(loop.captured_dates, [
+            "1936.1.1.0",
+            "1936.1.1.1",
+            "1936.1.1.3",
+        ])
+        self.assertEqual(worker.n_captured, 3)
+        self.assertEqual(worker._cadence.duplicate_observations, 1)
+        self.assertEqual(worker._cadence.skipped_hours, 1)
+        self.assertEqual(worker._cadence.skip_ranges, [{
+            "start_hour": h2,
+            "end_hour": h2,
+            "count": 1,
+        }])
+
+    def test_every_two_worker_waits_and_skips_one_scheduled_target(self):
+        dates = [
+            DateInfo("1936.1.1.0", trusted=True, source="clock"),
+            DateInfo("1936.1.1.0", trusted=True, source="clock"),
+            DateInfo("1936.1.1.1", trusted=True, source="clock"),
+            DateInfo("1936.1.1.4", trusted=True, source="clock"),
+            DateInfo("1936.1.1.4", trusted=True, source="clock"),
+        ]
+        worker, loop = self._run_sequence(
+            dates,
+            target_step_hours=2,
+            cadence_label=CADENCE_EVERY_2_HOURS_LABEL)
+
+        h0 = schema.date_to_hour_index("1936.1.1.0")
+        self.assertEqual(loop.captured_dates, [
+            "1936.1.1.0",
+            "1936.1.1.4",
+        ])
+        self.assertEqual(worker.n_captured, 2)
+        self.assertEqual(worker._cadence.cadence_wait_observations, 1)
+        self.assertEqual(worker._cadence.skipped_hours, 1)
+        self.assertEqual(worker._cadence.skip_ranges, [{
+            "start_hour": h0 + 2,
+            "end_hour": h0 + 2,
+            "count": 1,
+            "step_hours": 2,
+        }])
+        self.assertIn(CADENCE_EVERY_2_HOURS_LABEL,
+                      " ".join(self.statuses))
+
+    def test_manual_mode_captures_one_canonical_snapshot_then_stops(self):
+        h0 = DateInfo("1936.1.1.0", trusted=True, source="clock")
+        h1 = DateInfo("1936.1.1.1", trusted=True, source="clock")
+        worker, loop = self._run_sequence(
+            [h0, h0, h1, h1],
+            cadence_label=CADENCE_MANUAL_LABEL,
+            manual_once=True)
+
+        self.assertTrue(worker._stop.is_set())
+        self.assertEqual(loop.captured_dates, ["1936.1.1.0"])
+        self.assertEqual(worker.n_captured, 1)
+        self.assertTrue(worker._diagnostics["cadence"]["manual_once"])
+        self.assertEqual(
+            worker._diagnostics["cadence"]["recorder_mode_label"],
+            CADENCE_MANUAL_LABEL)
+
+    def test_previous_snapshot_is_kept_between_worker_captures(self):
+        h0 = DateInfo("1936.1.1.0", trusted=True, source="clock")
+        h1 = DateInfo("1936.1.1.1", trusted=True, source="clock")
+        worker, loop = self._run_sequence([h0, h0, h1, h1])
+
+        self.assertEqual(worker.n_captured, 2)
+        self.assertIsNone(loop.prev_snapshots[0])
+        self.assertEqual(loop.prev_snapshots[1], {"date": "1936.1.1.0",
+                                                  "seq": 0})
+
+    def test_capture_hour_crossing_is_diagnosed(self):
+        h0 = DateInfo("1936.1.1.0", trusted=True, source="clock")
+        h1 = DateInfo("1936.1.1.1", trusted=True, source="clock")
+        worker, loop = self._run_sequence([h0, h1])
+
+        cadence = worker._diagnostics["cadence"]
+        self.assertEqual(worker.n_captured, 1)
+        self.assertEqual(loop.captured_dates, ["1936.1.1.0"])
+        self.assertEqual(cadence["capture_clock_sentinel"]["hour_crossings"],
+                         1)
+        self.assertEqual(cadence["coverage_warnings"][0]["code"],
+                         "capture_clock_hour_crossed")
+
+    def test_worker_default_cadence_settings_are_explicit(self):
+        self.assertEqual(CADENCE_MODE_LABEL, "Every in-game hour")
+        self.assertEqual(CADENCE_MODE_LABELS, (
+            CADENCE_MODE_LABEL,
+            CADENCE_EVERY_2_HOURS_LABEL,
+            CADENCE_EVERY_6_HOURS_LABEL,
+            CADENCE_MANUAL_LABEL,
+        ))
+        self.assertEqual(parse_cadence_mode("").label, CADENCE_MODE_LABEL)
+        self.assertEqual(parse_cadence_mode(
+            CADENCE_EVERY_6_HOURS_LABEL).target_step_hours, 6)
+        self.assertFalse(parse_cadence_mode(
+            CADENCE_EVERY_6_HOURS_LABEL).manual_once)
+        self.assertTrue(parse_cadence_mode(CADENCE_MANUAL_LABEL).manual_once)
+        worker = _RecorderWorker(
+            "worker_cadence", self.tmp, DEFAULT_POLL_INTERVAL_S,
+            self.statuses.append,
+            target_step_hours=DEFAULT_TARGET_STEP_HOURS)
+
+        self.assertEqual(worker.interval_s, 1.0)
+        self.assertEqual(worker.target_step_hours, 1)
+        self.assertEqual(worker.cadence_label, CADENCE_MODE_LABEL)
+        self.assertFalse(worker.manual_once)
+
+
+if __name__ == "__main__":
+    unittest.main()

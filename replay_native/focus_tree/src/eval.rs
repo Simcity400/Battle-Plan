@@ -51,7 +51,9 @@ pub enum Eval {
     /// The trigger uses something outside the supported subset (or needs a
     /// capability we did not record). Carries the offending key for logging +
     /// badging. The caller MUST fall back to base position + mark approximate.
-    Unsupported { reason: String },
+    Unsupported {
+        reason: String,
+    },
 }
 
 impl Eval {
@@ -70,7 +72,11 @@ pub fn eval_trigger(block: &Value, ctx: &EvalContext) -> Eval {
     let entries = match block.as_block() {
         Some(e) => e,
         // a scalar trigger is not something we model -> unsupported
-        None => return Eval::Unsupported { reason: "non-block trigger".into() },
+        None => {
+            return Eval::Unsupported {
+                reason: "non-block trigger".into(),
+            }
+        }
     };
     // implicit AND over all entries
     let mut all_true = true;
@@ -78,7 +84,9 @@ pub fn eval_trigger(block: &Value, ctx: &EvalContext) -> Eval {
         // Only `=`/`==` are used by the supported subset. A comparison operator
         // (`>`,`<`,`>=`,`<=`) implies a numeric live predicate -> unsupported.
         if !matches!(e.op, Op::Eq | Op::EqEq) {
-            return Eval::Unsupported { reason: format!("{}{}", e.key, op_str(e.op)) };
+            return Eval::Unsupported {
+                reason: format!("{}{}", e.key, op_str(e.op)),
+            };
         }
         match eval_entry(&e.key, &e.value, ctx) {
             Eval::True => {}
@@ -86,7 +94,11 @@ pub fn eval_trigger(block: &Value, ctx: &EvalContext) -> Eval {
             u @ Eval::Unsupported { .. } => return u,
         }
     }
-    if all_true { Eval::True } else { Eval::False }
+    if all_true {
+        Eval::True
+    } else {
+        Eval::False
+    }
 }
 
 fn op_str(op: Op) -> &'static str {
@@ -106,7 +118,9 @@ fn eval_entry(key: &str, value: &Value, ctx: &EvalContext) -> Eval {
             // is unparseable -> UNSUPPORTED, not a fabricated False (Codex FIX-C
             // consistency: same shape-class as the scalar predicates below).
             Some(s) => boolean(truthy(s)),
-            None => Eval::Unsupported { reason: "always (non-scalar value)".into() },
+            None => Eval::Unsupported {
+                reason: "always (non-scalar value)".into(),
+            },
         },
         // Scalar-expecting predicates: a NON-scalar value (a block) is an
         // unparseable shape -> UNSUPPORTED, never a fabricated definite FALSE
@@ -114,7 +128,9 @@ fn eval_entry(key: &str, value: &Value, ctx: &EvalContext) -> Eval {
         // could wrongly suppress a node).
         "tag" => match value.as_scalar() {
             Some(want) => boolean(want == ctx.tag.as_str()),
-            None => Eval::Unsupported { reason: "tag (non-scalar value)".into() },
+            None => Eval::Unsupported {
+                reason: "tag (non-scalar value)".into(),
+            },
         },
         "original_tag" => match value.as_scalar() {
             Some(want) => {
@@ -123,7 +139,9 @@ fn eval_entry(key: &str, value: &Value, ctx: &EvalContext) -> Eval {
                 let have = ctx.original_tag.as_deref().unwrap_or(ctx.tag.as_str());
                 boolean(want == have)
             }
-            None => Eval::Unsupported { reason: "original_tag (non-scalar value)".into() },
+            None => Eval::Unsupported {
+                reason: "original_tag (non-scalar value)".into(),
+            },
         },
         "has_completed_focus" => match value.as_scalar() {
             Some(id) => boolean(ctx.completed_focuses.contains(id)),
@@ -133,29 +151,41 @@ fn eval_entry(key: &str, value: &Value, ctx: &EvalContext) -> Eval {
         },
         "has_game_rule" => {
             if !ctx.game_rules_known {
-                return Eval::Unsupported { reason: "has_game_rule (rules not recorded)".into() };
+                return Eval::Unsupported {
+                    reason: "has_game_rule (rules not recorded)".into(),
+                };
             }
             // form: has_game_rule = { rule = R option = O }
             let rule = value.get_scalar("rule");
             let option = value.get_scalar("option");
             match (rule, option) {
-                (Some(r), Some(o)) => boolean(ctx.game_rules.get(r).map(|v| v == o).unwrap_or(false)),
+                (Some(r), Some(o)) => {
+                    boolean(ctx.game_rules.get(r).map(|v| v == o).unwrap_or(false))
+                }
                 // scalar form `has_game_rule = R` is not a thing for options
-                _ => Eval::Unsupported { reason: "has_game_rule (unrecognized form)".into() },
+                _ => Eval::Unsupported {
+                    reason: "has_game_rule (unrecognized form)".into(),
+                },
             }
         }
         "has_dlc" => {
             if !ctx.dlc_known {
-                return Eval::Unsupported { reason: "has_dlc (dlc not recorded)".into() };
+                return Eval::Unsupported {
+                    reason: "has_dlc (dlc not recorded)".into(),
+                };
             }
             match value.as_scalar() {
                 Some(name) => boolean(ctx.dlc.contains(name)),
-                None => Eval::Unsupported { reason: "has_dlc (non-scalar value)".into() },
+                None => Eval::Unsupported {
+                    reason: "has_dlc (non-scalar value)".into(),
+                },
             }
         }
         "has_global_flag" => {
             if !ctx.global_flags_known {
-                return Eval::Unsupported { reason: "has_global_flag (flags not recorded)".into() };
+                return Eval::Unsupported {
+                    reason: "has_global_flag (flags not recorded)".into(),
+                };
             }
             // form: has_global_flag = flag  OR  has_global_flag = { flag = F … }
             let flag = value
@@ -164,7 +194,9 @@ fn eval_entry(key: &str, value: &Value, ctx: &EvalContext) -> Eval {
                 .or_else(|| value.get_scalar("flag").map(|s| s.to_string()));
             match flag {
                 Some(f) => boolean(ctx.global_flags.contains(&f)),
-                None => Eval::Unsupported { reason: "has_global_flag (unrecognized form)".into() },
+                None => Eval::Unsupported {
+                    reason: "has_global_flag (unrecognized form)".into(),
+                },
             }
         }
         "AND" => eval_trigger(value, ctx),
@@ -183,17 +215,25 @@ fn eval_entry(key: &str, value: &Value, ctx: &EvalContext) -> Eval {
                 Some(_) => Eval::Unsupported {
                     reason: "NOT with multiple children (ambiguous; use NOR/NAND)".into(),
                 },
-                None => Eval::Unsupported { reason: "non-block NOT".into() },
+                None => Eval::Unsupported {
+                    reason: "non-block NOT".into(),
+                },
             }
         }
-        other => Eval::Unsupported { reason: other.to_string() },
+        other => Eval::Unsupported {
+            reason: other.to_string(),
+        },
     }
 }
 
 fn eval_or(block: &Value, ctx: &EvalContext) -> Eval {
     let entries = match block.as_block() {
         Some(e) => e,
-        None => return Eval::Unsupported { reason: "non-block OR".into() },
+        None => {
+            return Eval::Unsupported {
+                reason: "non-block OR".into(),
+            }
+        }
     };
     let mut any_true = false;
     let mut any_unsupported: Option<String> = None;
@@ -234,7 +274,11 @@ fn negate(e: Eval) -> Eval {
 }
 
 fn boolean(b: bool) -> Eval {
-    if b { Eval::True } else { Eval::False }
+    if b {
+        Eval::True
+    } else {
+        Eval::False
+    }
 }
 
 #[cfg(test)]
@@ -249,7 +293,8 @@ mod tests {
             ..Default::default()
         };
         c.completed_focuses.insert("ENG_a_change_in_course".into());
-        c.game_rules.insert("obsolete_focus_branches_visibility".into(), "HIDE".into());
+        c.game_rules
+            .insert("obsolete_focus_branches_visibility".into(), "HIDE".into());
         c
     }
 
@@ -276,9 +321,7 @@ mod tests {
     fn supported_offset_trigger_false_wrong_tag() {
         let mut c = ctx();
         c.tag = "USA".into();
-        let t = trig(
-            r#"trigger = { tag = ENG has_completed_focus = ENG_a_change_in_course }"#,
-        );
+        let t = trig(r#"trigger = { tag = ENG has_completed_focus = ENG_a_change_in_course }"#);
         assert_eq!(eval_trigger(&t, &c), Eval::False);
     }
 
@@ -316,7 +359,10 @@ mod tests {
         // Codex-confirmed: a multi-child NOT is ambiguous; never assume NOR.
         let c = ctx();
         let r = eval_trigger(&trig(r#"trigger = { NOT = { tag = USA tag = SOV } }"#), &c);
-        assert!(r.is_unsupported(), "multi-child NOT must badge, not guess: {r:?}");
+        assert!(
+            r.is_unsupported(),
+            "multi-child NOT must badge, not guess: {r:?}"
+        );
         // the explicit NOR form IS supported (none-of)
         assert_eq!(
             eval_trigger(&trig(r#"trigger = { NOR = { tag = USA tag = SOV } }"#), &c),
@@ -328,7 +374,10 @@ mod tests {
     fn not_and_or_nesting() {
         let c = ctx();
         // unary NOT: NOT={ tag=USA } -> true (USA not the tag)
-        assert_eq!(eval_trigger(&trig(r#"trigger = { NOT = { tag = USA } }"#), &c), Eval::True);
+        assert_eq!(
+            eval_trigger(&trig(r#"trigger = { NOT = { tag = USA } }"#), &c),
+            Eval::True
+        );
         // OR with one true arm
         assert_eq!(
             eval_trigger(&trig(r#"trigger = { OR = { tag = USA tag = ENG } }"#), &c),
@@ -337,7 +386,9 @@ mod tests {
         // AND both true
         assert_eq!(
             eval_trigger(
-                &trig(r#"trigger = { AND = { tag = ENG has_completed_focus = ENG_a_change_in_course } }"#),
+                &trig(
+                    r#"trigger = { AND = { tag = ENG has_completed_focus = ENG_a_change_in_course } }"#
+                ),
                 &c
             ),
             Eval::True
@@ -359,7 +410,10 @@ mod tests {
             r#"trigger = { always = { a = b } }"#,
         ] {
             let r = eval_trigger(&trig(src), &c);
-            assert!(r.is_unsupported(), "non-scalar predicate must badge, got {r:?} for {src}");
+            assert!(
+                r.is_unsupported(),
+                "non-scalar predicate must badge, got {r:?} for {src}"
+            );
         }
         // a non-scalar has_dlc (after dlc_known) is also unsupported, not false.
         let mut c2 = ctx();

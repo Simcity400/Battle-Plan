@@ -42,7 +42,8 @@
 //!      war-score / casualties / capitulation are TRUE GAPs. Wars / participants /
 //!      factions / callable-allies are row factories over `diplomacy_world`.
 //!  10. **insignia_selection** — `insignia_selection_window` ROOT: a cosmetic formation-
-//!      editor MUTATION modal. The catalog is STATIC DEF; the current value needs
+//!      editor MUTATION modal. The catalog is STATIC DEF; the current value needs an
+//!      explicit selected-formation route arg plus `order_of_battle`; otherwise it badges
 //!      `order_of_battle` (absent) → `unavailable`. Inert in a replay.
 //!  11. **ins_revolution** — `INS_revolution_ui_window` ROOT: a mod-specific war-escalation
 //!      indicator driven by a script variable (`world.variables` absent) → `unavailable`.
@@ -84,11 +85,13 @@ use widgets::tabs::{Tab, TabBar};
 
 use crate::host::context::{BindContext, Captured, DisplayAtom, FidelityReport, UnavailableReason};
 use crate::host::draw::FrameDraw;
+use crate::host::input::{PointerButton, ViewInput};
 use crate::host::registry::{
     GuiSymbolRef, MenuCluster, MenuRoute, TemplateDescriptor, ViewDescriptor, ViewId,
 };
 use crate::host::view::{
-    BoundView, Drawable, HitModel, HostPolicy, InstanceId, ViewCommand, ViewInstance, ZBand,
+    BoundView, Drawable, HitModel, HostPolicy, InputOutcome, InstanceId, RebindContext,
+    ViewCommand, ViewInstance, ZBand,
 };
 use crate::{register_template, register_view};
 
@@ -500,6 +503,7 @@ fn stub_grid(name: &str, rect: Rect) -> Node {
     Node {
         name: name.to_string(),
         raw_kind: "gridBoxType".into(),
+        tooltip: None,
         kind: ElementKind::Container { background: None },
         pos: (0.0, 0.0),
         size_w: None,
@@ -788,28 +792,76 @@ fn agency_insignia_asset(ctx: &BindContext, tag: &str) -> assets::SpriteAsset {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FormationSelection {
+    Army(i64),
+    ArmyGroup(i64),
+}
+
+impl FormationSelection {
+    fn from_arg(arg: Option<i64>) -> Option<FormationSelection> {
+        match arg {
+            Some(id) if id > 0 => Some(FormationSelection::Army(id)),
+            Some(id) if id < 0 => id.checked_neg().map(FormationSelection::ArmyGroup),
+            _ => None,
+        }
+    }
+
+    fn source(self) -> (&'static str, &'static str, i64) {
+        match self {
+            FormationSelection::Army(id) => ("/armies", "GFX_theatre_army_shield", id),
+            FormationSelection::ArmyGroup(id) => {
+                ("/army_groups", "GFX_theatre_army_group_shield", id)
+            }
+        }
+    }
+}
+
 fn selected_formation<'a>(
     ctx: &'a BindContext,
     tag: &str,
+    selection: FormationSelection,
 ) -> Option<(&'a serde_json::Value, &'static str)> {
     let oob = ctx.order_of_battle();
-    for (pointer, base_sprite) in [
-        ("/armies", "GFX_theatre_army_shield"),
-        ("/army_groups", "GFX_theatre_army_group_shield"),
-    ] {
-        let (items, _) = top_domain_array(&oob, pointer);
-        if let Some(items) = items {
-            for item in items {
-                match elem_field(item, "owner") {
-                    Captured::Measured(owner) if owner.as_str() == Some(tag) => {
-                        return Some((item, base_sprite));
-                    }
-                    _ => {}
+    let (pointer, base_sprite, selected_id) = selection.source();
+    let (items, _) = top_domain_array(&oob, pointer);
+    if let Some(items) = items {
+        for item in items {
+            match elem_field(item, "owner") {
+                Captured::Measured(owner)
+                    if owner.as_str() == Some(tag) && formation_id_matches(item, selected_id) =>
+                {
+                    return Some((item, base_sprite));
                 }
+                _ => {}
             }
         }
     }
     None
+}
+
+fn formation_id_matches(formation: &serde_json::Value, selected_id: i64) -> bool {
+    formation
+        .get("id")
+        .and_then(formation_id_value)
+        .map(|id| id == selected_id)
+        .unwrap_or(false)
+}
+
+fn formation_id_value(value: &serde_json::Value) -> Option<i64> {
+    match value {
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .or_else(|| n.as_u64().and_then(|u| i64::try_from(u).ok())),
+        serde_json::Value::String(s) => {
+            let t = s.trim();
+            t.parse::<i64>().ok().or_else(|| {
+                t.split_once(':')
+                    .and_then(|(id, _ty)| id.trim().parse::<i64>().ok())
+            })
+        }
+        _ => None,
+    }
 }
 
 fn formation_icon_asset(
@@ -846,8 +898,13 @@ fn icon_one_based_frame(value: &serde_json::Value) -> Option<u32> {
 fn build_insignia_catalog_rows(
     ctx: &BindContext,
     fidelity: &mut FidelityReport,
+    base_sprite: Option<&str>,
 ) -> (Vec<DataRow>, SectionState) {
-    let frames = assets::catalog_frames(&ctx.stage.manifest, "GFX_theatre_army_shield");
+    let Some(base_sprite) = base_sprite else {
+        SectionState::Absent.record(fidelity);
+        return (Vec::new(), SectionState::Absent);
+    };
+    let frames = assets::catalog_frames(&ctx.stage.manifest, base_sprite);
     if frames.is_empty() {
         SectionState::Absent.record(fidelity);
         return (Vec::new(), SectionState::Absent);
@@ -949,11 +1006,24 @@ const INTEL_AGENCY_VIEW_ID: ViewId = ViewId("intel.intel_agency");
 const INTEL_AGENCY_FILE: &str = "intel_agency.json";
 const INTEL_AGENCY_ROOT: &str = "countryintelligenceagencyview";
 
-pub struct IntelAgencyView;
+const INTEL_AGENCY_TAB_AGENCY: &str = "agency";
+const INTEL_AGENCY_TAB_OPERATIONS: &str = "operations";
+const INTEL_AGENCY_TAB_CRYPTOLOGY: &str = "cryptology";
+
+pub struct IntelAgencyView {
+    selected_tab: Option<String>,
+    tabs: TabBar,
+    screen: Rect,
+}
 
 impl IntelAgencyView {
     pub fn new() -> IntelAgencyView {
-        IntelAgencyView
+        let tabs = intel_agency_tabs_for_flags(true, true, true);
+        IntelAgencyView {
+            selected_tab: tabs.selected().map(str::to_string),
+            tabs,
+            screen: default_intel_agency_screen(),
+        }
     }
 }
 
@@ -972,50 +1042,64 @@ struct IntelAgencyDrawable {
     crypto_section: SectionState,
     /// the N2 tab bar (Agency / Operations / Cryptology).
     tabs: TabBar,
+    tab_panel: Rect,
 }
 
 impl Drawable for IntelAgencyDrawable {
     fn draw_digest(&self) -> String {
-        let view = Rect {
-            x: 0.0,
-            y: 0.0,
-            w: 1600.0,
-            h: 900.0,
+        let (visible_tab, visible_section, visible_rows) = match self.tabs.selected() {
+            Some(INTEL_AGENCY_TAB_OPERATIONS) => (
+                INTEL_AGENCY_TAB_OPERATIONS,
+                self.operation_section.tag(),
+                row_digest(&self.operation_rows),
+            ),
+            Some(INTEL_AGENCY_TAB_CRYPTOLOGY) => (
+                INTEL_AGENCY_TAB_CRYPTOLOGY,
+                self.crypto_section.tag(),
+                row_digest(&self.crypto_rows),
+            ),
+            Some(INTEL_AGENCY_TAB_AGENCY) => (INTEL_AGENCY_TAB_AGENCY, "present", String::new()),
+            _ => ("none", "absent", String::new()),
         };
+        let selected_mode = selected_intel_agency_tab(&self.tabs);
         format!(
-            "INTEL_AGENCY op_sect={} crypto_sect={} ops={} crypto={} TABS {}",
+            "INTEL_AGENCY mode={:?} selected={:?} visible_tab={} visible_sect={} visible=[{}] op_sect={} crypto_sect={} ops={} crypto={} TABS {}",
+            selected_mode,
+            self.tabs.selected(),
+            visible_tab,
+            visible_section,
+            visible_rows,
             self.operation_section.tag(),
             self.crypto_section.tag(),
             row_digest(&self.operation_rows),
             row_digest(&self.crypto_rows),
-            widgets::tabs::plan_tabs(&self.tabs, view).digest(),
+            widgets::tabs::plan_tabs(&self.tabs, self.tab_panel).digest(),
         )
     }
     fn draw(&self, fd: &mut FrameDraw) {
         fd.draw_nodes(&self.roots);
-        render_rows(
-            fd,
-            &self.roots,
-            &self.file,
-            "operations_grid",
-            "operation_view_entry",
-            &self.operation_rows,
-        );
-        render_rows(
-            fd,
-            &self.roots,
-            &self.file,
-            "country_list",
-            "cryptology_country_entry",
-            &self.crypto_rows,
-        );
-        if let Some(tabs_rect) = find_rect(&self.roots, "agency_agents")
-            .or_else(|| find_rect(&self.roots, INTEL_AGENCY_ROOT))
-        {
-            let white = mint_white(fd);
-            let assets = widget_assets(&white);
-            widgets::tabs::draw_tabs(fd.renderer, &self.tabs, tabs_rect, &assets);
+        match self.tabs.selected() {
+            Some(INTEL_AGENCY_TAB_OPERATIONS) => render_rows(
+                fd,
+                &self.roots,
+                &self.file,
+                "operations_grid",
+                "operation_view_entry",
+                &self.operation_rows,
+            ),
+            Some(INTEL_AGENCY_TAB_CRYPTOLOGY) => render_rows(
+                fd,
+                &self.roots,
+                &self.file,
+                "country_list",
+                "cryptology_country_entry",
+                &self.crypto_rows,
+            ),
+            _ => {}
         }
+        let white = mint_white(fd);
+        let assets = widget_assets(&white);
+        widgets::tabs::draw_tabs(fd.renderer, &self.tabs, self.tab_panel, &assets);
     }
 }
 
@@ -1025,6 +1109,44 @@ impl ViewInstance for IntelAgencyView {
     }
     fn policy(&self) -> HostPolicy {
         HostPolicy::window(ZBand::Panel)
+    }
+    fn rebind(&mut self, ctx: &RebindContext) {
+        self.screen = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: ctx.screen.0 as f32,
+            h: ctx.screen.1 as f32,
+        };
+        self.tabs = intel_agency_tabs_with_selection(
+            intel_agency_tabs_from_rebind(ctx, ctx.country),
+            self.selected_tab.as_deref(),
+        );
+    }
+    fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
+        match *ev {
+            ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            } => match click_intel_agency_tab(
+                &mut self.tabs,
+                intel_agency_tab_fallback(self.screen),
+                x,
+                y,
+            ) {
+                IntelAgencyTabClick::Changed => {
+                    self.selected_tab = self.tabs.selected().map(str::to_string);
+                    intel_agency_input_consumed(true)
+                }
+                IntelAgencyTabClick::Unchanged => {
+                    self.selected_tab = self.tabs.selected().map(str::to_string);
+                    intel_agency_input_consumed(false)
+                }
+                IntelAgencyTabClick::Inert => intel_agency_input_consumed(false),
+                IntelAgencyTabClick::Miss => InputOutcome::ignored(),
+            },
+            _ => InputOutcome::ignored(),
+        }
     }
     fn bind(&self, ctx: &BindContext) -> BoundView {
         let tag = ctx.country;
@@ -1059,9 +1181,13 @@ impl ViewInstance for IntelAgencyView {
         let (operation_rows, operation_section) =
             build_intel_operation_rows(ctx, tag, &mut fidelity);
         let (crypto_rows, crypto_section) = build_intel_crypto_rows(ctx, tag, &mut fidelity);
-        let tabs = intel_agency_tabs(ctx, tag);
+        let tabs = intel_agency_tabs_with_selection(
+            intel_agency_tabs(ctx, tag),
+            self.selected_tab.as_deref(),
+        );
 
         let roots = build_root(ctx, &file, INTEL_AGENCY_ROOT, &summary);
+        let tab_panel = intel_agency_tab_panel(&roots, ctx.screen);
         let drawable = IntelAgencyDrawable {
             roots: roots.clone(),
             file,
@@ -1070,12 +1196,13 @@ impl ViewInstance for IntelAgencyView {
             operation_section,
             crypto_section,
             tabs,
+            tab_panel,
         };
         BoundView {
             instance: InstanceId(0),
             view_id: INTEL_AGENCY_VIEW_ID,
             policy: self.policy(),
-            hit: HitModel::from_roots(roots),
+            hit: HitModel::from_roots(roots).with_block_rect(tab_panel),
             drawable: Box::new(drawable),
             fidelity,
             commands: Vec::<ViewCommand>::new(),
@@ -1089,7 +1216,43 @@ impl ViewInstance for IntelAgencyView {
 /// tab BODIES are `intel.operations` / `intel.decryption` (null in the demo) → those tabs
 /// badge `unavailable` (present but blocked), never fabricate a body.
 fn intel_agency_tabs(ctx: &BindContext, tag: &str) -> TabBar {
+    intel_agency_tabs_from_bind(ctx, tag)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IntelAgencyTab {
+    Agency,
+    Operations,
+    Cryptology,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IntelAgencyTabClick {
+    Changed,
+    Unchanged,
+    Inert,
+    Miss,
+}
+
+fn intel_agency_tabs_from_bind(ctx: &BindContext, tag: &str) -> TabBar {
     let has = |path: &str| ctx.country_field(tag, path).is_measured();
+    intel_agency_tabs_for_flags(
+        has("intel.operatives"),
+        has("intel.operations.running"),
+        has("intel.decryption.targets"),
+    )
+}
+
+fn intel_agency_tabs_from_rebind(ctx: &RebindContext, tag: &str) -> TabBar {
+    let has = |path: &str| ctx.country_field(tag, path).is_measured();
+    intel_agency_tabs_for_flags(
+        has("intel.operatives"),
+        has("intel.operations.running"),
+        has("intel.decryption.targets"),
+    )
+}
+
+fn intel_agency_tabs_for_flags(agency: bool, operations: bool, cryptology: bool) -> TabBar {
     let avail = |present: bool, id: &str, label: &str| {
         if present {
             Tab::enabled(id, Atom::exact(label))
@@ -1099,10 +1262,76 @@ fn intel_agency_tabs(ctx: &BindContext, tag: &str) -> TabBar {
     };
     TabBar::horizontal(vec![
         // the agency tab is "present" iff we have any live operative data to show.
-        avail(has("intel.operatives"), "agency", "Agency"),
-        avail(has("intel.operations"), "operations", "Operations"),
-        avail(has("intel.decryption"), "cryptology", "Cryptology"),
+        avail(agency, INTEL_AGENCY_TAB_AGENCY, "Agency"),
+        avail(operations, INTEL_AGENCY_TAB_OPERATIONS, "Operations"),
+        avail(cryptology, INTEL_AGENCY_TAB_CRYPTOLOGY, "Cryptology"),
     ])
+}
+
+fn intel_agency_tabs_with_selection(mut tabs: TabBar, selected: Option<&str>) -> TabBar {
+    if let Some(id) = selected {
+        tabs.select(id);
+    }
+    tabs.reconcile();
+    tabs
+}
+
+fn selected_intel_agency_tab(bar: &TabBar) -> Option<IntelAgencyTab> {
+    match bar.selected() {
+        Some(INTEL_AGENCY_TAB_AGENCY) => Some(IntelAgencyTab::Agency),
+        Some(INTEL_AGENCY_TAB_OPERATIONS) => Some(IntelAgencyTab::Operations),
+        Some(INTEL_AGENCY_TAB_CRYPTOLOGY) => Some(IntelAgencyTab::Cryptology),
+        _ => None,
+    }
+}
+
+fn default_intel_agency_screen() -> Rect {
+    Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 1600.0,
+        h: 900.0,
+    }
+}
+
+fn intel_agency_tab_fallback(screen: Rect) -> Rect {
+    let root_x = screen.x + screen.w - 606.0;
+    let root_y = screen.y + 78.0;
+    Rect {
+        x: root_x,
+        y: root_y + 40.0,
+        w: 550.0,
+        h: (screen.y + screen.h - root_y - 40.0).max(widgets::tabs::BAR_THICK),
+    }
+}
+
+fn intel_agency_tab_panel(roots: &[Node], screen: Rect) -> Rect {
+    find_rect(roots, "agency_agents")
+        .or_else(|| find_rect(roots, INTEL_AGENCY_ROOT))
+        .unwrap_or_else(|| intel_agency_tab_fallback(screen))
+}
+
+fn click_intel_agency_tab(bar: &mut TabBar, panel: Rect, x: f32, y: f32) -> IntelAgencyTabClick {
+    let rects = bar.layout(panel);
+    if let Some(id) = bar.pick(&rects, x, y) {
+        if bar.select(&id) {
+            IntelAgencyTabClick::Changed
+        } else {
+            IntelAgencyTabClick::Unchanged
+        }
+    } else if rects.iter().any(|tr| tr.rect.contains(x, y)) {
+        IntelAgencyTabClick::Inert
+    } else {
+        IntelAgencyTabClick::Miss
+    }
+}
+
+fn intel_agency_input_consumed(needs_redraw: bool) -> InputOutcome {
+    InputOutcome {
+        consumed: true,
+        commands: Vec::new(),
+        needs_redraw,
+    }
 }
 
 /// The operations-tab `operation_view_entry` rows: `intel.operations` is null in the demo
@@ -2790,11 +3019,19 @@ const INSIGNIA_VIEW_ID: ViewId = ViewId("intel.insignia_selection");
 const INSIGNIA_FILE: &str = "insignia_selection.json";
 const INSIGNIA_ROOT: &str = "insignia_selection_window";
 
-pub struct InsigniaSelectionView;
+pub struct InsigniaSelectionView {
+    selected: Option<FormationSelection>,
+}
 
 impl InsigniaSelectionView {
     pub fn new() -> InsigniaSelectionView {
-        InsigniaSelectionView
+        InsigniaSelectionView { selected: None }
+    }
+
+    fn with_selection(selected: FormationSelection) -> InsigniaSelectionView {
+        InsigniaSelectionView {
+            selected: Some(selected),
+        }
     }
 }
 
@@ -2851,8 +3088,11 @@ impl ViewInstance for InsigniaSelectionView {
         // name) needs `order_of_battle.*` (absent in demo) → unavailable. Inert in replay.
         let mut summary: Vec<Cell> = Vec::new();
         let mut summary_sprites: Vec<SpriteCell> = Vec::new();
-        let (current_asset, current_fidelity) =
-            if let Some((formation, base_sprite)) = selected_formation(ctx, ctx.country) {
+        let mut selected_base_sprite = None;
+        let (current_asset, current_fidelity) = if let Some(selection) = self.selected {
+            if let Some((formation, base_sprite)) = selected_formation(ctx, ctx.country, selection)
+            {
+                selected_base_sprite = Some(base_sprite);
                 summary.push(cell_bind(
                     &mut fidelity,
                     "group_name",
@@ -2865,9 +3105,16 @@ impl ViewInstance for InsigniaSelectionView {
                 push_unavailable(&mut fidelity, &mut summary, "group_name");
                 (
                     assets::SpriteAsset::Unavailable(assets::SpriteMiss::NoSpriteName),
-                    Fidelity::Derived,
+                    Fidelity::Unavailable,
                 )
-            };
+            }
+        } else {
+            push_unavailable(&mut fidelity, &mut summary, "group_name");
+            (
+                assets::SpriteAsset::Unavailable(assets::SpriteMiss::NoSpriteName),
+                Fidelity::Unavailable,
+            )
+        };
         let current_icon = SpriteCell {
             element: "group_icon".to_string(),
             asset: current_asset.clone(),
@@ -2880,7 +3127,8 @@ impl ViewInstance for InsigniaSelectionView {
             current_asset,
             current_fidelity,
         );
-        let (catalog_rows, catalog_section) = build_insignia_catalog_rows(ctx, &mut fidelity);
+        let (catalog_rows, catalog_section) =
+            build_insignia_catalog_rows(ctx, &mut fidelity, selected_base_sprite);
         let mut gaps = DataRow::new();
         gaps.badge_gap(&mut fidelity, "color_picker");
 
@@ -2907,8 +3155,11 @@ impl ViewInstance for InsigniaSelectionView {
     crate::impl_view_any!();
 }
 
-fn open_insignia(_arg: Option<i64>) -> Box<dyn ViewInstance> {
-    Box::new(InsigniaSelectionView::new())
+fn open_insignia(arg: Option<i64>) -> Box<dyn ViewInstance> {
+    match FormationSelection::from_arg(arg) {
+        Some(selection) => Box::new(InsigniaSelectionView::with_selection(selection)),
+        None => Box::new(InsigniaSelectionView::new()),
+    }
 }
 
 register_view!(ViewDescriptor {
@@ -3434,6 +3685,10 @@ mod tests {
     }
 
     fn stage_with(files: &[&str]) -> Stage {
+        stage_with_manifest(files, HashMap::new())
+    }
+
+    fn stage_with_manifest(files: &[&str], sprites: HashMap<String, assets::SpriteEntry>) -> Stage {
         let mut gui_files = HashMap::new();
         for f in files {
             if let Some(g) = load_gui_file(f) {
@@ -3442,14 +3697,91 @@ mod tests {
         }
         Stage {
             resolver: assets::resolver::GameResolver::new(None, None),
-            manifest: assets::SpriteManifest {
-                sprites: HashMap::new(),
-            },
+            manifest: assets::SpriteManifest { sprites },
             loc: Loc::new(),
             gui_files,
             map_dir: std::path::PathBuf::from("."),
             assets_dir: gui_dir().parent().unwrap().to_path_buf(),
         }
+    }
+
+    fn stage_with_gui_and_manifest(
+        file: &str,
+        gui: GuiFile,
+        sprites: HashMap<String, assets::SpriteEntry>,
+    ) -> Stage {
+        let mut gui_files = HashMap::new();
+        gui_files.insert(file.to_string(), gui);
+        Stage {
+            resolver: assets::resolver::GameResolver::new(None, None),
+            manifest: assets::SpriteManifest { sprites },
+            loc: Loc::new(),
+            gui_files,
+            map_dir: std::path::PathBuf::from("."),
+            assets_dir: gui_dir().parent().unwrap().to_path_buf(),
+        }
+    }
+
+    fn sprite_entry(name: &str, texturefile: Option<&str>, frames: u32) -> assets::SpriteEntry {
+        assets::SpriteEntry {
+            name: name.to_string(),
+            kind: "spriteType".to_string(),
+            no_of_frames: frames,
+            source_gfx: None,
+            texturefile: texturefile.map(str::to_string),
+            category: None,
+            width: None,
+            height: None,
+            nine_slice: None,
+            size: None,
+            border_size: None,
+        }
+    }
+
+    fn insignia_test_manifest() -> HashMap<String, assets::SpriteEntry> {
+        let mut sprites = HashMap::new();
+        for (name, texture, frames) in [
+            ("GFX_exact_agency", "gfx/interface/agency.dds", 1),
+            ("GFX_exact_formation", "gfx/interface/formation.dds", 1),
+            ("GFX_unknown_agency", "gfx/interface/unknown_agency.dds", 1),
+            (
+                "GFX_theatre_army_shield",
+                "gfx/interface/army_shield.dds",
+                4,
+            ),
+            (
+                "GFX_theatre_army_group_shield",
+                "gfx/interface/army_group_shield.dds",
+                3,
+            ),
+        ] {
+            sprites.insert(name.to_string(), sprite_entry(name, Some(texture), frames));
+        }
+        sprites
+    }
+
+    fn insignia_test_gui() -> GuiFile {
+        GuiFile::parse(
+            r#"{"view":"insignia_test","windows":[
+              {"type":"containerWindowType","name":"insignia_selection_window",
+               "position":{"x":0,"y":0},"size":{"width":360,"height":240},
+               "children":[
+                 {"type":"instantTextBoxType","name":"group_name","position":{"x":8,"y":8},
+                  "text":{"text":"GROUP","font":"hoi_16mbs"}},
+                 {"type":"iconType","name":"group_icon","position":{"x":8,"y":36},
+                  "size":{"width":32,"height":32},"sprite":"GFX_theatre_army_shield"},
+                 {"type":"containerWindowType","name":"item_grid","position":{"x":8,"y":80},
+                  "size":{"width":180,"height":120}}
+               ]},
+              {"type":"buttonType","name":"insignia_list_entry","position":{"x":0,"y":0},
+               "size":{"width":40,"height":40},"sprite":"GFX_button",
+               "children":[
+                 {"type":"iconType","name":"button","position":{"x":4,"y":4},
+                  "size":{"width":32,"height":32},"sprite":"GFX_theatre_army_shield"}
+               ]}
+            ]}"#,
+        )
+        .unwrap()
     }
 
     fn ctx<'a>(stage: &'a Stage, snap: &'a snapshot::Snapshot) -> BindContext<'a> {
@@ -3471,6 +3803,48 @@ mod tests {
 
     /// Snapshot A — the demo-faithful shape: operatives POPULATED, agency/operations/
     /// decryption/peace null, diplomacy_world wars/factions/subjects + top-level divisions.
+    fn rebind_intel_agency(v: &mut IntelAgencyView, snap: &snapshot::Snapshot, refit: bool) {
+        v.rebind(&RebindContext {
+            snapshot: snap,
+            country: "GER",
+            screen: (1600, 900),
+            refit,
+        });
+    }
+
+    fn intel_agency_tab_center(bar: &TabBar, panel: Rect, id: &str) -> (f32, f32) {
+        let rect = bar
+            .layout(panel)
+            .into_iter()
+            .find(|tr| tr.id == id)
+            .unwrap_or_else(|| panic!("missing intel agency tab rect {id}"))
+            .rect;
+        (rect.x + rect.w * 0.5, rect.y + rect.h * 0.5)
+    }
+
+    fn click_intel_agency_tab_center(v: &mut IntelAgencyView, id: &str) -> InputOutcome {
+        let panel = intel_agency_tab_fallback(v.screen);
+        let (x, y) = intel_agency_tab_center(&v.tabs, panel, id);
+        v.on_input(&ViewInput::PointerDown {
+            x,
+            y,
+            button: PointerButton::Left,
+        })
+    }
+
+    fn visible_intel_agency_chunk(d: &str) -> &str {
+        let marker = "visible=[";
+        let start = d
+            .find(marker)
+            .unwrap_or_else(|| panic!("missing visible marker in digest: {d}"))
+            + marker.len();
+        let rest = &d[start..];
+        let end = rest
+            .find("] op_sect=")
+            .unwrap_or_else(|| panic!("missing visible terminator in digest: {d}"));
+        &rest[..end]
+    }
+
     fn snap_a() -> snapshot::Snapshot {
         serde_json::from_value(serde_json::json!({
             "date": "1941.4.13.11", "hour_index": 100,
@@ -3569,6 +3943,58 @@ mod tests {
                 "threat": [
                     {"tag": "GER", "threat": 5.0, "final_threat": 12.0, "daily": 0.1, "date": "1941.6.1", "label": "ANNEXED_AUSTRIA"}
                 ]
+            }
+        }))
+        .unwrap()
+    }
+
+    fn agency_tabs_snap_a() -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1941.4.13.11", "hour_index": 100,
+            "countries": {
+                "GER": {
+                    "intel": {
+                        "operatives": [
+                            {"name": "Johann Hein", "skill": 1, "traits": ["operative_safe_cracker"]}
+                        ],
+                        "operations": {
+                            "running": [
+                                {"type": "steal_blueprints", "target": "POL", "duration": 60}
+                            ]
+                        },
+                        "decryption": {
+                            "targets": [
+                                {"target": "POL", "amount": 31}
+                            ]
+                        }
+                    }
+                }
+            }
+        }))
+        .unwrap()
+    }
+
+    fn agency_tabs_snap_b() -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1942.1.1.11", "hour_index": 200,
+            "countries": {
+                "GER": {
+                    "intel": {
+                        "operatives": [
+                            {"name": "Rolf Adler", "skill": 4, "traits": ["operative_commando"]}
+                        ],
+                        "operations": {
+                            "running": [
+                                {"type": "collaboration_government", "target": "FRA", "duration": 90}
+                            ]
+                        },
+                        "decryption": {
+                            "targets": [
+                                {"target": "FRA", "amount": 55}
+                            ]
+                        }
+                    }
+                }
             }
         }))
         .unwrap()
@@ -3792,6 +4218,522 @@ mod tests {
                 "scrub A→B→A carried a value from the B visit ({file})"
             );
         }
+    }
+
+    #[test]
+    fn intel_agency_tab_click_switches_digest_and_visible_body() {
+        let stage = stage_with(&[]);
+        let snap = agency_tabs_snap_a();
+        let mut v = IntelAgencyView::new();
+        rebind_intel_agency(&mut v, &snap, true);
+
+        let cx = ctx(&stage, &snap);
+        let agency_bv = v.bind(&cx);
+        assert!(agency_bv.commands.is_empty());
+        let agency = bound_digest(&agency_bv);
+        assert!(agency.contains("selected=Some(\"agency\")"), "{agency}");
+        assert!(agency.contains("visible_tab=agency"), "{agency}");
+        assert_eq!(
+            visible_intel_agency_chunk(&agency),
+            "",
+            "Agency summary tab should not draw operation or cryptology rows: {agency}"
+        );
+
+        let out = click_intel_agency_tab_center(&mut v, INTEL_AGENCY_TAB_OPERATIONS);
+        assert!(out.consumed);
+        assert!(out.needs_redraw);
+        assert!(out.commands.is_empty());
+        let operations = bound_digest(&v.bind(&cx));
+        assert_ne!(
+            agency, operations,
+            "selecting Operations must change the digest"
+        );
+        assert!(
+            operations.contains("selected=Some(\"operations\")"),
+            "{operations}"
+        );
+        assert!(
+            operations.contains("visible_tab=operations"),
+            "{operations}"
+        );
+        let op_visible = visible_intel_agency_chunk(&operations);
+        assert!(
+            op_visible.contains("operation_name_text=steal_blueprints(D);"),
+            "{operations}"
+        );
+        assert!(
+            !op_visible.contains("cryptology_state=31(D);"),
+            "Operations visible rows must not carry Cryptology rows: {op_visible}"
+        );
+
+        let out = click_intel_agency_tab_center(&mut v, INTEL_AGENCY_TAB_CRYPTOLOGY);
+        assert!(out.consumed);
+        assert!(out.needs_redraw);
+        assert!(out.commands.is_empty());
+        let cryptology = bound_digest(&v.bind(&cx));
+        assert_ne!(
+            operations, cryptology,
+            "selecting Cryptology must change the digest"
+        );
+        assert!(
+            cryptology.contains("selected=Some(\"cryptology\")"),
+            "{cryptology}"
+        );
+        assert!(
+            cryptology.contains("visible_tab=cryptology"),
+            "{cryptology}"
+        );
+        let crypto_visible = visible_intel_agency_chunk(&cryptology);
+        assert!(crypto_visible.contains("name=POL(E);"), "{cryptology}");
+        assert!(
+            crypto_visible.contains("cryptology_state=31(D);"),
+            "{cryptology}"
+        );
+        assert!(
+            !crypto_visible.contains("operation_name_text=steal_blueprints(D);"),
+            "Cryptology visible rows must not carry Operations rows: {crypto_visible}"
+        );
+    }
+
+    #[test]
+    fn intel_agency_unavailable_tab_click_is_explicitly_inert() {
+        let stage = stage_with(&[]);
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "date": "1941.4.13.11",
+            "countries": {
+                "GER": {
+                    "intel": {
+                        "operatives": [
+                            {"name": "Johann Hein", "skill": 1}
+                        ],
+                        "operations": null,
+                        "decryption": null
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let mut v = IntelAgencyView::new();
+        rebind_intel_agency(&mut v, &snap, true);
+
+        assert_eq!(v.tabs.selected(), Some(INTEL_AGENCY_TAB_AGENCY));
+        assert!(
+            v.tabs
+                .tabs
+                .iter()
+                .any(|t| t.id == INTEL_AGENCY_TAB_OPERATIONS && !t.avail.is_pickable()),
+            "null operations data must make the Operations tab unavailable"
+        );
+
+        let before = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        let out = click_intel_agency_tab_center(&mut v, INTEL_AGENCY_TAB_OPERATIONS);
+        assert!(out.consumed);
+        assert!(!out.needs_redraw);
+        assert!(out.commands.is_empty());
+        assert_eq!(v.tabs.selected(), Some(INTEL_AGENCY_TAB_AGENCY));
+        let after = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert_eq!(
+            before, after,
+            "clicking an unavailable intel agency tab must be an explicit no-op"
+        );
+    }
+
+    #[test]
+    fn intel_agency_selected_tab_persists_across_scrub_a_b_a() {
+        let stage = stage_with(&[]);
+        let (a, b) = (agency_tabs_snap_a(), agency_tabs_snap_b());
+        let mut v = IntelAgencyView::new();
+        rebind_intel_agency(&mut v, &a, true);
+        let out = click_intel_agency_tab_center(&mut v, INTEL_AGENCY_TAB_OPERATIONS);
+        assert!(out.consumed && out.needs_redraw);
+
+        let da1 = bound_digest(&v.bind(&ctx(&stage, &a)));
+        rebind_intel_agency(&mut v, &b, false);
+        let db = bound_digest(&v.bind(&ctx(&stage, &b)));
+        rebind_intel_agency(&mut v, &a, false);
+        let da2 = bound_digest(&v.bind(&ctx(&stage, &a)));
+
+        assert!(da1.contains("selected=Some(\"operations\")"), "{da1}");
+        assert!(db.contains("selected=Some(\"operations\")"), "{db}");
+        assert!(
+            visible_intel_agency_chunk(&db).contains("collaboration_government(D);"),
+            "{db}"
+        );
+        assert_eq!(
+            da1, da2,
+            "scrub A->B->A must preserve selected intel agency tab without carrying B rows"
+        );
+        assert!(
+            !da2.contains("collaboration_government"),
+            "A-after-scrub must not carry the B-only operation row: {da2}"
+        );
+    }
+
+    #[test]
+    fn agency_insignia_exact_fallback_and_no_generic_art() {
+        let stage = stage_with_manifest(&[], insignia_test_manifest());
+
+        let exact_snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "countries": {
+                "GER": {"intel": {"agency": {"insignia_gfx": "GFX_exact_agency"}}}
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            agency_insignia_asset(&ctx(&stage, &exact_snap), "GER"),
+            assets::SpriteAsset::resolved("GFX_exact_agency", 0),
+            "agency insignia must bind the exact agency sprite when present"
+        );
+
+        let fallback_snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "countries": {
+                "GER": {"intel": {"agency": {
+                    "insignia_gfx": "GFX_missing_agency",
+                    "icon_gfx": "GFX_exact_agency"
+                }}}
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            agency_insignia_asset(&ctx(&stage, &fallback_snap), "GER"),
+            assets::SpriteAsset::resolved("GFX_exact_agency", 0),
+            "a missing first agency field must fall through to the next exact sprite field"
+        );
+
+        let generic_snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "countries": {
+                "GER": {"intel": {"agency": {"insignia_gfx": "GFX_unknown_agency"}}}
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            agency_insignia_asset(&ctx(&stage, &generic_snap), "GER"),
+            assets::SpriteAsset::Unavailable(assets::SpriteMiss::GenericPlaceholder(
+                "GFX_unknown_agency".to_string()
+            )),
+            "generic unknown agency art must stay unavailable, not exact fabricated art"
+        );
+
+        let null_snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "countries": {"GER": {"intel": {"agency": null}}}
+        }))
+        .unwrap();
+        assert_eq!(
+            agency_insignia_asset(&ctx(&stage, &null_snap), "GER"),
+            assets::SpriteAsset::Unavailable(assets::SpriteMiss::NoSpriteName),
+            "null agency data must badge missing, not fabricate an insignia"
+        );
+    }
+
+    #[test]
+    fn selected_group_icon_uses_one_based_army_and_army_group_frames() {
+        let stage = stage_with_manifest(&[], insignia_test_manifest());
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "order_of_battle": {
+                "armies": [
+                    {"id": 11, "owner": "GER", "name": "First Army", "icon": 3}
+                ],
+                "army_groups": [
+                    {"id": 22, "owner": "GER", "name": "Heeresgruppe A", "icon": 2}
+                ]
+            }
+        }))
+        .unwrap();
+        let binding = ctx(&stage, &snap);
+        let (formation, base_sprite) =
+            selected_formation(&binding, "GER", FormationSelection::Army(11))
+                .expect("explicit GER army is selected");
+        assert_eq!(base_sprite, "GFX_theatre_army_shield");
+        let (asset, fidelity) = formation_icon_asset(&binding, formation, base_sprite);
+        assert_eq!(fidelity, Fidelity::Derived);
+        assert_eq!(
+            asset,
+            assets::SpriteAsset::resolved("GFX_theatre_army_shield", 2),
+            "formation icon 3 is one-based and must bind shield frame 2"
+        );
+
+        let direct_formation = serde_json::json!({
+            "owner": "GER",
+            "name": "Exact Formation",
+            "insignia_gfx": "GFX_exact_formation",
+            "icon": 3
+        });
+        let (direct_asset, direct_fidelity) =
+            formation_icon_asset(&binding, &direct_formation, "GFX_theatre_army_shield");
+        assert_eq!(direct_fidelity, Fidelity::Exact);
+        assert_eq!(
+            direct_asset,
+            assets::SpriteAsset::resolved("GFX_exact_formation", 0),
+            "an explicit formation sprite is exact and does not derive from the icon frame"
+        );
+
+        let (group, group_base) =
+            selected_formation(&binding, "GER", FormationSelection::ArmyGroup(22))
+                .expect("explicit GER army group is selected");
+        assert_eq!(group_base, "GFX_theatre_army_group_shield");
+        let (group_asset, group_fidelity) = formation_icon_asset(&binding, group, group_base);
+        assert_eq!(group_fidelity, Fidelity::Derived);
+        assert_eq!(
+            group_asset,
+            assets::SpriteAsset::resolved("GFX_theatre_army_group_shield", 1),
+            "army-group icon 2 must bind the army-group shield strip frame 1"
+        );
+
+        assert!(
+            selected_formation(&binding, "GER", FormationSelection::Army(22)).is_none(),
+            "a group id must not resolve through the army selector"
+        );
+    }
+
+    #[test]
+    fn formation_icon_missing_and_out_of_range_badge_unavailable() {
+        let stage = stage_with_manifest(&[], insignia_test_manifest());
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({})).unwrap();
+        let binding = ctx(&stage, &snap);
+
+        let missing_icon = serde_json::json!({"owner": "GER", "name": "No Icon"});
+        let (missing_asset, missing_fidelity) =
+            formation_icon_asset(&binding, &missing_icon, "GFX_theatre_army_shield");
+        assert_eq!(missing_fidelity, Fidelity::Derived);
+        assert_eq!(
+            missing_asset,
+            assets::SpriteAsset::Unavailable(assets::SpriteMiss::NoSpriteName),
+            "a formation with no direct sprite and no icon frame must not fabricate shield art"
+        );
+
+        let zero_icon = serde_json::json!({"owner": "GER", "name": "Zero Icon", "icon": 0});
+        let (zero_asset, zero_fidelity) =
+            formation_icon_asset(&binding, &zero_icon, "GFX_theatre_army_shield");
+        assert_eq!(zero_fidelity, Fidelity::Derived);
+        assert_eq!(
+            zero_asset,
+            assets::SpriteAsset::Unavailable(assets::SpriteMiss::FrameOutOfRange {
+                name: "GFX_theatre_army_shield".to_string(),
+                frame: 0,
+                frames: 4,
+            }),
+            "icon frame 0 is invalid for the one-based save value"
+        );
+
+        let out_of_range = serde_json::json!({"owner": "GER", "name": "Bad Icon", "icon": 5});
+        let (oor_asset, oor_fidelity) =
+            formation_icon_asset(&binding, &out_of_range, "GFX_theatre_army_shield");
+        assert_eq!(oor_fidelity, Fidelity::Derived);
+        assert_eq!(
+            oor_asset,
+            assets::SpriteAsset::Unavailable(assets::SpriteMiss::FrameOutOfRange {
+                name: "GFX_theatre_army_shield".to_string(),
+                frame: 4,
+                frames: 4,
+            }),
+            "one-based icon frame 5 is outside a four-frame army shield strip"
+        );
+    }
+
+    #[test]
+    fn insignia_catalog_row_count_and_modal_is_read_only() {
+        let stage = stage_with_gui_and_manifest(
+            INSIGNIA_FILE,
+            insignia_test_gui(),
+            insignia_test_manifest(),
+        );
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "order_of_battle": {
+                "armies": [
+                    {"id": 11, "owner": "GER", "name": "First Army", "icon": 2}
+                ],
+                "army_groups": []
+            }
+        }))
+        .unwrap();
+        let binding = ctx(&stage, &snap);
+        let mut fidelity = FidelityReport::default();
+        let (rows, section) =
+            build_insignia_catalog_rows(&binding, &mut fidelity, Some("GFX_theatre_army_shield"));
+        assert_eq!(section, SectionState::Present);
+        assert_eq!(
+            rows.len(),
+            4,
+            "catalog rows must match the army shield manifest frame count"
+        );
+
+        let bv = InsigniaSelectionView::with_selection(FormationSelection::Army(11)).bind(&binding);
+        assert_eq!(
+            bv.commands.len(),
+            0,
+            "the cosmetic insignia modal must remain inert/read-only in replay"
+        );
+        let d = bound_digest(&bv);
+        assert!(
+            d.contains("group_name|Text(\"First Army\""),
+            "selected formation name must bind exact into the modal root, got:\n{d}"
+        );
+        assert!(
+            d.contains("current=group_icon:sprite=GFX_theatre_army_shield#1(D);"),
+            "current icon 2 must bind derived one-based frame 1, got:\n{d}"
+        );
+        assert!(
+            d.contains("catalog_sect=present"),
+            "catalog section must be present when the shield strip resolves, got:\n{d}"
+        );
+        assert_eq!(
+            d.matches("button:sprite=GFX_theatre_army_shield#").count(),
+            4,
+            "catalog row digest must contain one row per army shield frame, got:\n{d}"
+        );
+    }
+
+    #[test]
+    fn insignia_without_explicit_selection_does_not_bind_first_owned_formation() {
+        let stage = stage_with_gui_and_manifest(
+            INSIGNIA_FILE,
+            insignia_test_gui(),
+            insignia_test_manifest(),
+        );
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "order_of_battle": {
+                "armies": [
+                    {"id": 11, "owner": "GER", "name": "Current Group", "icon": 2}
+                ],
+                "army_groups": [
+                    {"id": 22, "owner": "GER", "name": "Current Army Group", "icon": 1}
+                ]
+            }
+        }))
+        .unwrap();
+        let bv = InsigniaSelectionView::new().bind(&ctx(&stage, &snap));
+        let d = bound_digest(&bv);
+        assert!(
+            !d.contains("Current Group") && !d.contains("Current Army Group"),
+            "menu-open insignia modal must not bind an arbitrary owned formation, got:\n{d}"
+        );
+        assert!(
+            d.contains(&format!("group_name|Text(\"{DASH}\"")),
+            "missing explicit selection must badge the group name unavailable, got:\n{d}"
+        );
+        assert!(
+            d.contains("current=group_icon:sprite=MISS:no_sprite_name(U);"),
+            "missing explicit selection must badge the current icon unavailable, got:\n{d}"
+        );
+        assert!(
+            d.contains("catalog_sect=absent"),
+            "missing explicit selection must not show a picker catalog, got:\n{d}"
+        );
+        assert_eq!(
+            d.matches("button:sprite=").count(),
+            0,
+            "missing explicit selection must not fabricate catalog button sprites, got:\n{d}"
+        );
+    }
+
+    #[test]
+    fn insignia_army_group_selection_uses_army_group_catalog_frames() {
+        let stage = stage_with_gui_and_manifest(
+            INSIGNIA_FILE,
+            insignia_test_gui(),
+            insignia_test_manifest(),
+        );
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "order_of_battle": {
+                "armies": [
+                    {"id": 11, "owner": "GER", "name": "First Army", "icon": 2}
+                ],
+                "army_groups": [
+                    {"id": 22, "owner": "GER", "name": "Heeresgruppe A", "icon": 2}
+                ]
+            }
+        }))
+        .unwrap();
+        let binding = ctx(&stage, &snap);
+        let bv =
+            InsigniaSelectionView::with_selection(FormationSelection::ArmyGroup(22)).bind(&binding);
+        let d = bound_digest(&bv);
+        assert!(
+            d.contains("group_name|Text(\"Heeresgruppe A\""),
+            "selected army group name must bind exact, got:\n{d}"
+        );
+        assert!(
+            d.contains("current=group_icon:sprite=GFX_theatre_army_group_shield#1(D);"),
+            "selected army group icon must use the army-group shield strip, got:\n{d}"
+        );
+        assert!(
+            d.contains("catalog_sect=present"),
+            "army-group catalog should be present when its strip resolves, got:\n{d}"
+        );
+        assert_eq!(
+            d.matches("button:sprite=GFX_theatre_army_group_shield#")
+                .count(),
+            3,
+            "catalog rows must come from the army-group strip frame count, got:\n{d}"
+        );
+        assert_eq!(
+            d.matches("button:sprite=GFX_theatre_army_shield#").count(),
+            0,
+            "army-group selection must not show army-strip picker rows, got:\n{d}"
+        );
+    }
+
+    #[test]
+    fn insignia_missing_selection_id_fails_closed() {
+        let stage = stage_with_gui_and_manifest(
+            INSIGNIA_FILE,
+            insignia_test_gui(),
+            insignia_test_manifest(),
+        );
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "order_of_battle": {
+                "armies": [
+                    {"id": 11, "owner": "GER", "name": "First Army", "icon": 2}
+                ],
+                "army_groups": []
+            }
+        }))
+        .unwrap();
+        let bv = InsigniaSelectionView::with_selection(FormationSelection::Army(99))
+            .bind(&ctx(&stage, &snap));
+        let d = bound_digest(&bv);
+        assert!(
+            !d.contains("First Army"),
+            "unknown explicit selector must not fall back to the first owned army, got:\n{d}"
+        );
+        assert!(
+            d.contains("current=group_icon:sprite=MISS:no_sprite_name(U);"),
+            "unknown explicit selector must badge the current icon unavailable, got:\n{d}"
+        );
+        assert!(
+            d.contains("catalog_sect=absent"),
+            "unknown explicit selector must badge the catalog unavailable, got:\n{d}"
+        );
+        assert_eq!(
+            d.matches("button:sprite=").count(),
+            0,
+            "unknown explicit selector must not fabricate catalog rows, got:\n{d}"
+        );
+    }
+
+    #[test]
+    fn insignia_missing_catalog_and_current_icon_stay_unavailable() {
+        let stage = stage_with_gui_and_manifest(INSIGNIA_FILE, insignia_test_gui(), HashMap::new());
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "countries": {"GER": {}}
+        }))
+        .unwrap();
+        let bv = InsigniaSelectionView::new().bind(&ctx(&stage, &snap));
+        assert_eq!(bv.commands.len(), 0);
+        let d = bound_digest(&bv);
+        assert!(
+            d.contains("current=group_icon:sprite=MISS:no_sprite_name(U);"),
+            "missing order_of_battle must badge the current icon unavailable, got:\n{d}"
+        );
+        assert!(
+            d.contains("catalog_sect=absent"),
+            "missing army shield manifest entry must make the catalog absent, got:\n{d}"
+        );
+        assert_eq!(
+            d.matches("button:sprite=").count(),
+            0,
+            "an absent catalog must not fabricate catalog button sprites, got:\n{d}"
+        );
     }
 
     // -------- per-view element accounting: scene walk == the .gui's element_type_counts ---

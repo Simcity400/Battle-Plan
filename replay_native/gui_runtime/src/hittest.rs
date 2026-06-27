@@ -52,6 +52,32 @@ pub fn hit_test_stack(windows: &[Node], px: f32, py: f32) -> Option<Hit> {
     None
 }
 
+/// Return the static `.gui` tooltip key under a point, following the exact same
+/// front-to-back, transparency, and clipping rules as [`hit_test`].
+///
+/// If the hit leaf itself has no tooltip, walk back up its ancestry and use the
+/// nearest static tooltip-bearing parent. This matches how many Clausewitz GUI
+/// trees put tooltip keys on a logical container with icon/text children.
+pub fn tooltip_at(root: &Node, px: f32, py: f32) -> Option<&str> {
+    let mut path = Vec::new();
+    if hit_node_path(root, px, py, &mut path) {
+        path.iter().rev().find_map(|n| n.static_tooltip())
+    } else {
+        None
+    }
+}
+
+/// Tooltip lookup over a stack of windows, topmost first.
+pub fn tooltip_at_stack(windows: &[Node], px: f32, py: f32) -> Option<&str> {
+    for w in windows.iter().rev() {
+        let mut path = Vec::new();
+        if hit_node_path(w, px, py, &mut path) {
+            return path.iter().rev().find_map(|n| n.static_tooltip());
+        }
+    }
+    None
+}
+
 /// Recursive helper. Pushes this node's name onto `path` if it (or a descendant)
 /// is the hit; returns true if a hit was recorded in this subtree.
 fn hit_node(node: &Node, px: f32, py: f32, path: &mut Vec<String>) -> bool {
@@ -84,6 +110,27 @@ fn hit_node(node: &Node, px: f32, py: f32, path: &mut Vec<String>) -> bool {
     false
 }
 
+fn hit_node_path<'a>(node: &'a Node, px: f32, py: f32, path: &mut Vec<&'a Node>) -> bool {
+    if let Some(clip) = node.clip {
+        if !clip.contains(px, py) {
+            return false;
+        }
+    }
+
+    path.push(node);
+    for child in node.children.iter().rev() {
+        if hit_node_path(child, px, py, path) {
+            return true;
+        }
+    }
+
+    if !node.alwaystransparent && node.is_hit_capable() && node.rect.contains(px, py) {
+        return true;
+    }
+    path.pop();
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,6 +140,7 @@ mod tests {
         Node {
             name: name.into(),
             raw_kind: "iconType".into(),
+            tooltip: None,
             kind: ElementKind::Icon {
                 sprite: "s".into(),
                 frame: 0,
@@ -108,6 +156,12 @@ mod tests {
             clip: None,
             children: vec![],
         }
+    }
+
+    fn leaf_tt(name: &str, rect: Rect, transparent: bool, tooltip: &str) -> Node {
+        let mut n = leaf(name, rect, transparent);
+        n.tooltip = Some(tooltip.to_string());
+        n
     }
 
     fn container(name: &str, rect: Rect, children: Vec<Node>) -> Node {
@@ -217,5 +271,74 @@ mod tests {
         // children and no background, there is no hit at all.
         let frame = container("topbar", R(0.0, 0.0, 1920.0, 1080.0), vec![]);
         assert!(hit_test(&frame, 960.0, 540.0).is_none());
+    }
+
+    #[test]
+    fn tooltip_at_uses_topmost_hit_leaf_tooltip() {
+        let root = container(
+            "root",
+            R(0.0, 0.0, 100.0, 100.0),
+            vec![
+                leaf_tt("under", R(0.0, 0.0, 100.0, 100.0), false, "UNDER_TT"),
+                leaf_tt("over", R(0.0, 0.0, 100.0, 100.0), false, "OVER_TT"),
+            ],
+        );
+        assert_eq!(tooltip_at(&root, 50.0, 50.0), Some("OVER_TT"));
+    }
+
+    #[test]
+    fn tooltip_at_falls_back_to_nearest_tooltip_parent() {
+        let mut root = container(
+            "root",
+            R(0.0, 0.0, 100.0, 100.0),
+            vec![leaf("child", R(10.0, 10.0, 30.0, 30.0), false)],
+        );
+        root.tooltip = Some("PARENT_TT".into());
+        assert_eq!(tooltip_at(&root, 20.0, 20.0), Some("PARENT_TT"));
+    }
+
+    #[test]
+    fn tooltip_at_respects_transparent_and_clipping_rules() {
+        let root = container(
+            "root",
+            R(0.0, 0.0, 100.0, 100.0),
+            vec![
+                leaf_tt("button", R(0.0, 0.0, 100.0, 100.0), false, "BUTTON_TT"),
+                leaf_tt("shine", R(0.0, 0.0, 100.0, 100.0), true, "SHINE_TT"),
+            ],
+        );
+        assert_eq!(tooltip_at(&root, 50.0, 50.0), Some("BUTTON_TT"));
+
+        let mut clip = container(
+            "clip",
+            R(0.0, 0.0, 100.0, 100.0),
+            vec![leaf_tt(
+                "child",
+                R(200.0, 50.0, 40.0, 40.0),
+                false,
+                "CHILD_TT",
+            )],
+        );
+        clip.clipping = true;
+        clip.clip = Some(R(0.0, 0.0, 100.0, 100.0));
+        clip.children[0].clip = Some(R(0.0, 0.0, 100.0, 100.0));
+        assert_eq!(tooltip_at(&clip, 210.0, 60.0), None);
+    }
+
+    #[test]
+    fn tooltip_at_stack_uses_frontmost_tooltip_window() {
+        let under = leaf_tt("under", R(0.0, 0.0, 100.0, 100.0), false, "UNDER_TT");
+        let over = leaf_tt("over", R(0.0, 0.0, 100.0, 100.0), false, "OVER_TT");
+        assert_eq!(
+            tooltip_at_stack(&[under, over], 50.0, 50.0),
+            Some("OVER_TT")
+        );
+    }
+
+    #[test]
+    fn tooltip_at_stack_does_not_bleed_through_front_hit_without_tooltip() {
+        let under = leaf_tt("under", R(0.0, 0.0, 100.0, 100.0), false, "UNDER_TT");
+        let over = leaf("over", R(0.0, 0.0, 100.0, 100.0), false);
+        assert_eq!(tooltip_at_stack(&[under, over], 50.0, 50.0), None);
     }
 }

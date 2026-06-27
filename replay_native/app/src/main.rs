@@ -24,16 +24,19 @@ use app::compose::{self, FrameChrome, MenubarChrome};
 use app::focus::FocusShell;
 use app::host::context::Stage;
 use app::host::input::{PointerButton, ViewInput, ViewKey};
-use app::host::view::RebindContext;
+use app::host::view::{InstanceId, RebindContext};
 use app::host::window_host::HostHit;
-use app::host::{BindContext, ViewId, ViewRegistry, WindowHost};
+use app::host::{BindContext, ViewCommand, ViewId, ViewRegistry, WindowHost};
 use app::menubar::{MenuBar, MenuClick};
 use app::provenance::Provenance;
 use app::scrubber::{ScrubIntent, Scrubber, TrackRect};
+use app::views::clusters::chrome_outliner_maps::{
+    MapModesView, MinimapView, MAPMODES_VIEW_ID, MINIMAP_VIEW_ID,
+};
 use app::views::combat::{CombatView, COMBAT_VIEW_ID};
 use app::views::focus::{FocusView, FOCUS_VIEW_ID};
 use app::views::map::{MapData, MapView, MAP_VIEW_ID};
-use app::views::state_panel::StatePanelView;
+use app::views::state_panel::{StatePanelView, STATE_PANEL_VIEW_ID};
 use app::views::topbar::TopbarView;
 
 use assets::resolver::GameResolver;
@@ -46,6 +49,7 @@ use render::modes::MapMode;
 use scrub::{Dir, Timeline};
 use snapshot::{Snapshot, Store};
 
+mod shot_harness;
 mod view;
 use view::GpuView;
 
@@ -66,6 +70,196 @@ fn arg_value(flag: &str) -> Option<String> {
 }
 fn has_flag(flag: &str) -> bool {
     std::env::args().any(|a| a == flag)
+}
+
+fn resolve_shot_view(
+    registry: &ViewRegistry,
+    requested: Option<&str>,
+) -> Result<Option<ViewId>, String> {
+    let Some(raw) = requested else {
+        return Ok(None);
+    };
+    if raw.trim().is_empty() {
+        return Err("--shot-view requires a registered view id".to_string());
+    }
+    if raw.trim() != raw {
+        return Err(
+            "--shot-view requires an exact registered view id without surrounding whitespace"
+                .to_string(),
+        );
+    }
+    let id = raw;
+    registry
+        .iter_views()
+        .find(|d| d.id.as_str() == id)
+        .map(|d| Some(d.id))
+        .ok_or_else(|| format!("unknown --shot-view '{id}' (not a registered view id)"))
+}
+
+fn resolve_shot_state(requested: Option<&str>) -> Result<Option<u32>, String> {
+    let Some(raw) = requested else {
+        return Ok(None);
+    };
+    let value = raw.trim();
+    if value.is_empty() || value != raw {
+        return Err("--shot-state requires a positive numeric state id".to_string());
+    }
+    let state = value
+        .parse::<u32>()
+        .map_err(|_| format!("invalid --shot-state '{value}' (expected a positive integer)"))?;
+    if state == 0 {
+        return Err("--shot-state requires a positive numeric state id".to_string());
+    }
+    Ok(Some(state))
+}
+
+fn reject_shot_all_views_mixed_flags(
+    shot_path: Option<&str>,
+    shot_view: Option<&str>,
+    shot_state: Option<&str>,
+    smoke: bool,
+    shot_focus: bool,
+    shot_combat: bool,
+) -> Result<(), String> {
+    let mut flags = Vec::new();
+    if shot_path.is_some() {
+        flags.push("--shot");
+    }
+    if shot_view.is_some() {
+        flags.push("--shot-view");
+    }
+    if shot_state.is_some() {
+        flags.push("--shot-state");
+    }
+    if smoke {
+        flags.push("--smoke");
+    }
+    if shot_focus {
+        flags.push("--shot-focus");
+    }
+    if shot_combat {
+        flags.push("--shot-combat");
+    }
+    if flags.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "--shot-all-views cannot be combined with {}",
+            flags.join(", ")
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use app::host::{HostPolicy, ViewDescriptor, ViewInstance, ZBand};
+
+    const TEST_ALPHA: ViewId = ViewId("test.alpha");
+    const TEST_BETA: ViewId = ViewId("test.beta");
+
+    fn unused_open(_arg: Option<i64>) -> Box<dyn ViewInstance> {
+        panic!("resolver tests must not instantiate views")
+    }
+
+    static ALPHA_DESC: ViewDescriptor = ViewDescriptor {
+        id: TEST_ALPHA,
+        gui_root: None,
+        required_domains: &[],
+        route: None,
+        shortcut: None,
+        open: unused_open,
+        policy: HostPolicy::window(ZBand::Panel),
+    };
+
+    static BETA_DESC: ViewDescriptor = ViewDescriptor {
+        id: TEST_BETA,
+        gui_root: None,
+        required_domains: &[],
+        route: None,
+        shortcut: None,
+        open: unused_open,
+        policy: HostPolicy::window(ZBand::Panel),
+    };
+
+    fn registry() -> ViewRegistry {
+        let mut registry = ViewRegistry::empty();
+        registry.insert_view(&BETA_DESC);
+        registry.insert_view(&ALPHA_DESC);
+        registry
+    }
+
+    #[test]
+    fn shot_view_resolver_returns_none_when_flag_absent() {
+        assert_eq!(resolve_shot_view(&registry(), None), Ok(None));
+    }
+
+    #[test]
+    fn shot_view_resolver_returns_registered_static_id() {
+        assert_eq!(
+            resolve_shot_view(&registry(), Some("test.alpha")),
+            Ok(Some(TEST_ALPHA))
+        );
+    }
+
+    #[test]
+    fn shot_view_resolver_fails_closed_for_unknown_id() {
+        let err = resolve_shot_view(&registry(), Some("test.missing")).unwrap_err();
+        assert!(err.contains("unknown --shot-view 'test.missing'"));
+        assert!(err.contains("not a registered view id"));
+    }
+
+    #[test]
+    fn shot_view_resolver_fails_closed_for_empty_id() {
+        let err = resolve_shot_view(&registry(), Some("  ")).unwrap_err();
+        assert_eq!(err, "--shot-view requires a registered view id");
+    }
+
+    #[test]
+    fn shot_view_resolver_fails_closed_for_padded_id() {
+        let err = resolve_shot_view(&registry(), Some(" test.alpha ")).unwrap_err();
+        assert!(err.contains("without surrounding whitespace"));
+    }
+
+    #[test]
+    fn shot_state_resolver_returns_positive_state_id() {
+        assert_eq!(resolve_shot_state(Some("64")), Ok(Some(64)));
+    }
+
+    #[test]
+    fn shot_state_resolver_returns_none_when_absent() {
+        assert_eq!(resolve_shot_state(None), Ok(None));
+    }
+
+    #[test]
+    fn shot_state_resolver_fails_closed_for_invalid_state_id() {
+        let err = resolve_shot_state(Some("abc")).unwrap_err();
+        assert!(err.contains("invalid --shot-state 'abc'"));
+        let err = resolve_shot_state(Some("0")).unwrap_err();
+        assert_eq!(err, "--shot-state requires a positive numeric state id");
+        let err = resolve_shot_state(Some(" 64 ")).unwrap_err();
+        assert_eq!(err, "--shot-state requires a positive numeric state id");
+    }
+
+    #[test]
+    fn shot_all_views_rejects_ambiguous_shot_flags() {
+        let err = reject_shot_all_views_mixed_flags(
+            Some("one.png"),
+            Some("test.alpha"),
+            Some("64"),
+            true,
+            true,
+            true,
+        )
+        .unwrap_err();
+        assert!(err.contains("--shot-all-views cannot be combined"));
+        assert!(err.contains("--shot"));
+        assert!(err.contains("--shot-view"));
+        assert!(err.contains("--shot-state"));
+        assert!(err.contains("--smoke"));
+        assert!(err.contains("--shot-focus"));
+        assert!(err.contains("--shot-combat"));
+    }
 }
 
 fn mode_from_slug(slug: &str) -> Option<MapMode> {
@@ -136,9 +330,65 @@ fn main() {
     let bundle_arg = arg_value("--bundle");
     let smoke = has_flag("--smoke");
     let shot_path = arg_value("--shot");
-    let shot_state: Option<u32> = arg_value("--shot-state").and_then(|s| s.parse().ok());
+    let shot_view_arg = arg_value("--shot-view");
+    let shot_all_views_dir = arg_value("--shot-all-views");
+    let shot_state_arg = arg_value("--shot-state");
+    let shot_state: Option<u32> =
+        resolve_shot_state(shot_state_arg.as_deref()).unwrap_or_else(|e| {
+            eprintln!("[app] SHOT BLOCKER: {e}");
+            std::process::exit(2);
+        });
     let shot_focus = has_flag("--shot-focus");
     let shot_combat = has_flag("--shot-combat");
+
+    // The registry is pure inventory data, so the manifest-only harness can fail closed
+    // before game assets, snapshots, or GPU setup are required.
+    let registry = ViewRegistry::from_inventory();
+    if let Some(dir) = shot_all_views_dir.as_deref() {
+        reject_shot_all_views_mixed_flags(
+            shot_path.as_deref(),
+            shot_view_arg.as_deref(),
+            shot_state_arg.as_deref(),
+            smoke,
+            shot_focus,
+            shot_combat,
+        )
+        .unwrap_or_else(|e| {
+            eprintln!("[app] SHOT BLOCKER: {e}");
+            std::process::exit(2);
+        });
+        match shot_harness::write_registry_shot_manifest(&registry, Path::new(dir)) {
+            Ok(write) => {
+                eprintln!(
+                    "[app] SHOT: wrote registry-derived manifest {} ({} planned targets; images not captured)",
+                    write.path.display(),
+                    write.target_count
+                );
+                println!(
+                    "OK shot-all-views manifest={} targets={} status=planned_targets_only",
+                    write.path.display(),
+                    write.target_count
+                );
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("[app] SHOT BLOCKER: {e}");
+                std::process::exit(2);
+            }
+        }
+    }
+
+    let shot_view = resolve_shot_view(&registry, shot_view_arg.as_deref()).unwrap_or_else(|e| {
+        eprintln!("[app] SHOT BLOCKER: {e}");
+        std::process::exit(2);
+    });
+    if shot_view == Some(STATE_PANEL_VIEW_ID) && shot_state.is_none() {
+        eprintln!(
+            "[app] SHOT BLOCKER: --shot-view={} requires --shot-state=<positive state id>",
+            STATE_PANEL_VIEW_ID
+        );
+        std::process::exit(2);
+    }
 
     let resolver = GameResolver::new(vanilla.as_deref(), mod_root.as_deref());
 
@@ -207,7 +457,6 @@ fn main() {
     // `.gui` set every registered view needs into `Stage.gui_files` (the BATCH-1 .gui-set
     // loader). A cluster then fetches its real game layout via `BindContext::gui_symbol`
     // and never loads a `.gui` itself.
-    let registry = ViewRegistry::from_inventory();
     eprintln!(
         "[app] registry: {} views, {} templates",
         registry.len(),
@@ -369,19 +618,42 @@ fn main() {
     let mut left_down = false;
     let mut right_down = false;
     let mut map_drag: Option<(f32, f32)> = None; // right-drag pan
-    let mut combat_active = true;
+    let mut combat_active = false;
     let mut needs_redraw = true;
 
     // ----------------------------------------------------------------------
     // SHOT / SMOKE: one headless frame through the SAME host compose path.
     // ----------------------------------------------------------------------
     if shot_path.is_some() || smoke {
-        if let Some(sid) = shot_state {
-            let name = compose::resolve_state_name(&stage.map_dir, &stage.loc, sid)
-                .unwrap_or_else(|| format!("STATE_{sid}"));
-            host.open_instance(Box::new(StatePanelView::new(sid, name)));
+        let mut seed_focus = shot_focus;
+        let mut seed_combat = shot_combat;
+        if let Some(vid) = shot_view {
+            if host.is_open(vid) {
+                eprintln!("[app] SHOT: view {vid} already open; using existing host instance");
+            } else if vid == FOCUS_VIEW_ID {
+                seed_focus = true;
+            } else if vid == COMBAT_VIEW_ID {
+                seed_combat = true;
+            } else if vid == STATE_PANEL_VIEW_ID {
+                open_state_panel(
+                    &mut host,
+                    stage,
+                    &current,
+                    shot_state.expect("state-panel shot state was validated"),
+                );
+            } else if host.open_view(&registry, vid, None).is_some() {
+                eprintln!("[app] SHOT: opened registered view {vid}");
+            } else {
+                eprintln!("[app] SHOT BLOCKER: registered view {vid} could not be opened");
+                std::process::exit(2);
+            }
         }
-        if shot_focus {
+        if let Some(sid) = shot_state {
+            if shot_view != Some(STATE_PANEL_VIEW_ID) {
+                open_state_panel(&mut host, stage, &current, sid);
+            }
+        }
+        if seed_focus {
             let shell = FocusShell::load(&stage.resolver);
             host.open_instance(Box::new(FocusView::new(
                 shell,
@@ -391,7 +663,7 @@ fn main() {
                 gpu.size(),
             )));
         }
-        if shot_combat {
+        if seed_combat {
             let mut shell = CombatShell::new(Some(combat_centroids.clone()), combat_names.clone());
             shell.rebind(&current);
             shell.open_first();
@@ -531,6 +803,7 @@ fn main() {
                     if let Some(mv) = map_view_mut(&mut host) {
                         mv.camera.set_viewport(size.width, size.height);
                     }
+                    sync_combat_camera(&mut host);
                     scrubber.set_track(scrubber_track(size.width, size.height));
                     host.rebind_all(&RebindContext {
                         snapshot: &current,
@@ -550,6 +823,7 @@ fn main() {
                     }
                     // route a move (with drag flag) to the host overlays first.
                     let drag = left_down;
+                    sync_combat_camera(&mut host);
                     let r = host.route_input(&ViewInput::PointerMove {
                         x: cursor.0,
                         y: cursor.1,
@@ -563,6 +837,7 @@ fn main() {
                             if let Some(mv) = map_view_mut(&mut host) {
                                 mv.camera.pan_by_pixels(cursor.0 - ax, cursor.1 - ay);
                             }
+                            sync_combat_camera(&mut host);
                             map_drag = Some(cursor);
                             needs_redraw = true;
                         }
@@ -574,6 +849,7 @@ fn main() {
                         MouseScrollDelta::LineDelta(_, y) => y,
                         MouseScrollDelta::PixelDelta(p) => (p.y as f32) / 40.0,
                     };
+                    sync_combat_camera(&mut host);
                     let r = host.route_input(&ViewInput::Wheel {
                         x: cursor.0,
                         y: cursor.1,
@@ -583,6 +859,7 @@ fn main() {
                         if let Some(mv) = map_view_mut(&mut host) {
                             mv.camera.zoom_at(dy, cursor.0, cursor.1, 16.0);
                         }
+                        sync_combat_camera(&mut host);
                     }
                     needs_redraw = true;
                 }
@@ -612,6 +889,15 @@ fn main() {
                             apply_seek!(idx);
                         } else {
                             // 2) route the click to the host (overlays + windows).
+                            sync_combat_camera(&mut host);
+                            let (w, h) = gpu.size();
+                            let map_camera = current_camera(&host);
+                            sync_minimap_input_panel(
+                                &mut host, stage, &current, &country, cursor, map_camera, w, h,
+                            );
+                            sync_mapmodes_input_panel(
+                                &mut host, stage, &current, &country, cursor, map_camera, w, h,
+                            );
                             let r = host.route_input(&ViewInput::PointerDown {
                                 x: cursor.0,
                                 y: cursor.1,
@@ -620,7 +906,9 @@ fn main() {
                             // run any commands the views emitted (open/close).
                             let emitter = r.emitter;
                             if !r.commands.is_empty() {
-                                let changed = host.execute_commands(&registry, emitter, r.commands);
+                                let changed = execute_view_commands(
+                                    &mut host, &registry, emitter, r.commands,
+                                );
                                 if changed {
                                     needs_redraw = true;
                                 }
@@ -665,6 +953,7 @@ fn main() {
                     (ElementState::Released, MouseButton::Left) => {
                         left_down = false;
                         scrubber.release();
+                        sync_combat_camera(&mut host);
                         let _ = host.route_input(&ViewInput::PointerUp {
                             x: cursor.0,
                             y: cursor.1,
@@ -692,13 +981,36 @@ fn main() {
                             PhysicalKey::Code(KeyCode::Escape) => {
                                 // ESC: close the front-most closeable overlay/panel, else quit.
                                 if let Some(vid) = host.front_closeable() {
-                                    // let the view react (combat ESC closes its sub-panel
-                                    // first), then close the window if still front.
-                                    let _ = host.route_input(&ViewInput::Key {
-                                        key: ViewKey::Escape,
-                                    });
-                                    host.close_view(vid);
-                                    needs_redraw = true;
+                                    let (w, h) = gpu.size();
+                                    let emitter = front_instance_id(
+                                        &host,
+                                        vid,
+                                        stage,
+                                        &current,
+                                        &country,
+                                        cursor,
+                                        current_camera(&host),
+                                        w,
+                                        h,
+                                    );
+                                    let (consumed, route_redraw, commands) =
+                                        if let Some(view) = host.instance_mut(vid) {
+                                            let out = view.on_input(&ViewInput::Key {
+                                                key: ViewKey::Escape,
+                                            });
+                                            (out.consumed, out.needs_redraw, out.commands)
+                                        } else {
+                                            (false, false, Vec::new())
+                                        };
+                                    let changed = execute_view_commands(
+                                        &mut host, &registry, emitter, commands,
+                                    );
+                                    if !consumed {
+                                        host.close_view(vid);
+                                    }
+                                    if route_redraw || changed || !consumed {
+                                        needs_redraw = true;
+                                    }
                                 } else {
                                     elwt.exit();
                                 }
@@ -950,10 +1262,114 @@ fn bind_host(
     host.bind_all(&ctx)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn front_instance_id(
+    host: &WindowHost,
+    view_id: ViewId,
+    stage: &'static Stage,
+    snap: &Snapshot,
+    country: &str,
+    cursor: (f32, f32),
+    map_camera: MapCamera,
+    w: u32,
+    h: u32,
+) -> Option<InstanceId> {
+    bind_host(host, stage, snap, country, cursor, map_camera, w, h)
+        .into_iter()
+        .rev()
+        .find(|bv| bv.view_id == view_id)
+        .map(|bv| bv.instance)
+}
+
+fn execute_view_commands(
+    host: &mut WindowHost,
+    registry: &ViewRegistry,
+    emitter: Option<InstanceId>,
+    commands: Vec<ViewCommand>,
+) -> bool {
+    let mut changed = false;
+    for cmd in commands {
+        match cmd {
+            ViewCommand::RecenterMap { raster_x, raster_y } => {
+                if let Some(mv) = map_view_mut(host) {
+                    changed |= mv.camera.recenter_on_raster(raster_x, raster_y);
+                }
+            }
+            ViewCommand::SetMapMode { mode } => {
+                let command = ViewCommand::SetMapMode { mode };
+                if let Some(mv) = map_view_mut(host) {
+                    if mv.apply_command(&command) {
+                        eprintln!("[app] map mode -> {}", mv.mode.label());
+                        changed = true;
+                    }
+                }
+            }
+            other => {
+                changed |= host.execute_commands(registry, emitter, [other]);
+            }
+        }
+    }
+    if changed {
+        sync_combat_camera(host);
+    }
+    changed
+}
+
 /// The current map camera (read from the seeded MapView instance).
 fn current_camera(host: &WindowHost) -> MapCamera {
     // the map view is always open; read its camera. Fall back to a 1x1 if somehow not.
     host_map_camera(host).unwrap_or_else(|| MapCamera::new(1, 1, 1, 1))
+}
+
+fn sync_combat_camera(host: &mut WindowHost) {
+    let cam = current_camera(host);
+    if let Some(cv) = host.downcast_mut::<CombatView>(COMBAT_VIEW_ID) {
+        cv.set_camera(cam);
+    }
+    let map_cam = host_map_camera(host);
+    if let Some(mm) = host.downcast_mut::<MinimapView>(MINIMAP_VIEW_ID) {
+        mm.set_camera(map_cam);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sync_minimap_input_panel(
+    host: &mut WindowHost,
+    stage: &'static Stage,
+    snap: &Snapshot,
+    country: &str,
+    cursor: (f32, f32),
+    map_camera: MapCamera,
+    w: u32,
+    h: u32,
+) {
+    let panel = bind_host(host, stage, snap, country, cursor, map_camera, w, h)
+        .into_iter()
+        .find(|bv| bv.view_id == MINIMAP_VIEW_ID)
+        .and_then(|bv| bv.hit.block_rect);
+    if let (Some(panel), Some(mm)) = (panel, host.downcast_mut::<MinimapView>(MINIMAP_VIEW_ID)) {
+        mm.set_input_panel(panel);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sync_mapmodes_input_panel(
+    host: &mut WindowHost,
+    stage: &'static Stage,
+    snap: &Snapshot,
+    country: &str,
+    cursor: (f32, f32),
+    map_camera: MapCamera,
+    w: u32,
+    h: u32,
+) {
+    let panel = bind_host(host, stage, snap, country, cursor, map_camera, w, h)
+        .into_iter()
+        .find(|bv| bv.view_id == MAPMODES_VIEW_ID)
+        .and_then(|bv| bv.hit.block_rect);
+    if let (Some(panel), Some(mm)) = (panel, host.downcast_mut::<MapModesView>(MAPMODES_VIEW_ID)) {
+        mm.set_input_panel(panel);
+    }
 }
 
 fn host_map_camera(host: &WindowHost) -> Option<MapCamera> {

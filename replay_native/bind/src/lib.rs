@@ -89,33 +89,116 @@ impl TopbarSpec {
         use Fidelity::*;
         use Formatter::*;
         TopbarSpec {
-            flag: FlagBinding { element: "player_flag", fidelity: Exact },
+            flag: FlagBinding {
+                element: "player_flag",
+                fidelity: Exact,
+            },
             texts: vec![
                 // --- measured, exact ---
-                TextBinding { element: "pol_power", path: Some("politics.political_power"), formatter: UnsignedInt, fidelity: Exact },
-                TextBinding { element: "stability", path: Some("politics.stability"), formatter: Percent, fidelity: Exact },
-                TextBinding { element: "war_support", path: Some("politics.war_support"), formatter: Percent, fidelity: Exact },
-                TextBinding { element: "manpower", path: Some("military.manpower.available"), formatter: Manpower, fidelity: Exact },
-                TextBinding { element: "command_power_value", path: Some("politics.command_power"), formatter: UnsignedInt, fidelity: Exact },
+                TextBinding {
+                    element: "pol_power",
+                    path: Some("politics.political_power"),
+                    formatter: UnsignedInt,
+                    fidelity: Exact,
+                },
+                TextBinding {
+                    element: "stability",
+                    path: Some("politics.stability"),
+                    formatter: Percent,
+                    fidelity: Exact,
+                },
+                TextBinding {
+                    element: "war_support",
+                    path: Some("politics.war_support"),
+                    formatter: Percent,
+                    fidelity: Exact,
+                },
+                TextBinding {
+                    element: "manpower",
+                    path: Some("military.manpower.available"),
+                    formatter: Manpower,
+                    fidelity: Exact,
+                },
+                TextBinding {
+                    element: "command_power_value",
+                    path: Some("politics.command_power"),
+                    formatter: UnsignedInt,
+                    fidelity: Exact,
+                },
                 // Fuel: the stored AMOUNT is exact, but the vanilla slot shows a
                 // days/years DURATION (needs a consumption rate we don't store) —
                 // so binding the amount here is a replay SUBSTITUTE -> Derived.
-                TextBinding { element: "fuel_value", path: Some("economy.fuel.current"), formatter: Fuel, fidelity: Derived },
+                TextBinding {
+                    element: "fuel_value",
+                    path: Some("economy.fuel.current"),
+                    formatter: Fuel,
+                    fidelity: Derived,
+                },
                 // industrial_capacity reads three paths -> special FactoryTriple.
-                TextBinding { element: "industrial_capacity", path: None, formatter: FactoryTriple, fidelity: Exact },
+                TextBinding {
+                    element: "industrial_capacity",
+                    path: None,
+                    formatter: FactoryTriple,
+                    fidelity: Exact,
+                },
                 // DateText reads the top-level snapshot.date -> special Clock.
-                TextBinding { element: "DateText", path: None, formatter: Clock, fidelity: Exact },
+                TextBinding {
+                    element: "DateText",
+                    path: None,
+                    formatter: Clock,
+                    fidelity: Exact,
+                },
                 // --- derived (measured inputs, computed aggregate) ---
-                TextBinding { element: "convoys_count", path: None, formatter: Int, fidelity: Derived },
+                TextBinding {
+                    element: "convoys_count",
+                    path: None,
+                    formatter: Int,
+                    fidelity: Derived,
+                },
                 // --- UNAVAILABLE: schema-present-but-unfed / not-stored. These
                 //     MUST render not-captured ("—"), never a fabricated value. ---
-                TextBinding { element: "experience_value", path: Some("military.xp.army"), formatter: Int, fidelity: Unavailable },
-                TextBinding { element: "navy_experience_value", path: Some("military.xp.navy"), formatter: Int, fidelity: Unavailable },
-                TextBinding { element: "air_experience_value", path: Some("military.xp.air"), formatter: Int, fidelity: Unavailable },
-                TextBinding { element: "nukes_value", path: Some("extra.nukes_total"), formatter: Int, fidelity: Unavailable },
-                TextBinding { element: "supply_value", path: None, formatter: Int, fidelity: Unavailable },
-                TextBinding { element: "threat_value", path: None, formatter: Percent, fidelity: Unavailable },
-                TextBinding { element: "initiative_text", path: None, formatter: Int, fidelity: Unavailable },
+                TextBinding {
+                    element: "experience_value",
+                    path: Some("military.xp.army"),
+                    formatter: Int,
+                    fidelity: Unavailable,
+                },
+                TextBinding {
+                    element: "navy_experience_value",
+                    path: Some("military.xp.navy"),
+                    formatter: Int,
+                    fidelity: Unavailable,
+                },
+                TextBinding {
+                    element: "air_experience_value",
+                    path: Some("military.xp.air"),
+                    formatter: Int,
+                    fidelity: Unavailable,
+                },
+                TextBinding {
+                    element: "nukes_value",
+                    path: Some("extra.nukes_total"),
+                    formatter: Int,
+                    fidelity: Unavailable,
+                },
+                TextBinding {
+                    element: "supply_value",
+                    path: None,
+                    formatter: Int,
+                    fidelity: Unavailable,
+                },
+                TextBinding {
+                    element: "threat_value",
+                    path: None,
+                    formatter: Percent,
+                    fidelity: Unavailable,
+                },
+                TextBinding {
+                    element: "initiative_text",
+                    path: None,
+                    formatter: Int,
+                    fidelity: Unavailable,
+                },
             ],
         }
     }

@@ -54,7 +54,11 @@ fn cmd_pack(args: &[String]) -> i32 {
         }
     };
     let index: Value = serde_json::from_slice(&index_bytes).expect("index json");
-    let snaps = index.get("snapshots").and_then(Value::as_array).cloned().unwrap_or_default();
+    let snaps = index
+        .get("snapshots")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
 
     let mut entries: Vec<PackEntry> = Vec::new();
     entries.push(PackEntry {
@@ -201,7 +205,8 @@ fn cmd_verify(args: &[String]) -> i32 {
                 .get("entries")
                 .and_then(Value::as_array)
                 .and_then(|es| {
-                    es.iter().find(|e| e.get("path").and_then(Value::as_str) == Some(&path))
+                    es.iter()
+                        .find(|e| e.get("path").and_then(Value::as_str) == Some(&path))
                 })
                 .and_then(|e| e.get("sha256").and_then(Value::as_str))
                 .unwrap_or("<none>");
@@ -213,7 +218,10 @@ fn cmd_verify(args: &[String]) -> i32 {
                 return 1;
             }
         }
-        eprintln!("verify: byte-identity OK for all {} snapshots", c.index().snapshots.len());
+        eprintln!(
+            "verify: byte-identity OK for all {} snapshots",
+            c.index().snapshots.len()
+        );
     }
     0
 }

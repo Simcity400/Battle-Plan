@@ -81,7 +81,11 @@ fn main() {
     let root = resolver.vanilla.join(&subdir);
     let mut files = Vec::new();
     walk(&root, &mut files, limit);
-    eprintln!("[audit] scanning {} .dds under {}", files.len(), root.display());
+    eprintln!(
+        "[audit] scanning {} .dds under {}",
+        files.len(),
+        root.display()
+    );
 
     let mut hist: BTreeMap<String, usize> = BTreeMap::new();
     let mut errors = 0usize;

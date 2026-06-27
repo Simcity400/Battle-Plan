@@ -321,6 +321,15 @@ impl WindowHost {
                         changed = true;
                     }
                 }
+                ViewCommand::RecenterMap { .. } => {
+                    // The generic host does not own the seeded native map camera. The
+                    // app shell handles this navigation command when a live `core.map`
+                    // view exists; here it is an explicit no-op.
+                }
+                ViewCommand::SetMapMode { .. } => {
+                    // The generic host does not own the seeded native map mode. The app
+                    // shell handles this command when a live `core.map` view exists.
+                }
                 ViewCommand::CloseSelf => {
                     if let Some(iid) = emitter {
                         self.close_instance(iid);

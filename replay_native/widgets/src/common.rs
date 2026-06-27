@@ -55,15 +55,23 @@ pub enum Atom {
 impl Atom {
     /// A measured-EXACT atom (the common case for a real snapshot read).
     pub fn exact(text: impl Into<String>) -> Atom {
-        Atom::Text { text: text.into(), fidelity: Fidelity::Exact }
+        Atom::Text {
+            text: text.into(),
+            fidelity: Fidelity::Exact,
+        }
     }
     /// A measured-DERIVED atom (computed from measured inputs).
     pub fn derived(text: impl Into<String>) -> Atom {
-        Atom::Text { text: text.into(), fidelity: Fidelity::Derived }
+        Atom::Text {
+            text: text.into(),
+            fidelity: Fidelity::Derived,
+        }
     }
     /// The not-captured atom (Absent reason by default).
     pub fn unavailable() -> Atom {
-        Atom::Unavailable { reason: Reason::Absent }
+        Atom::Unavailable {
+            reason: Reason::Absent,
+        }
     }
     /// The not-captured atom with an explicit reason.
     pub fn unavailable_because(reason: Reason) -> Atom {
@@ -106,7 +114,10 @@ impl Atom {
     /// "unavailable" tint for the glyph (so a `—` never looks like a real `0`).
     pub fn tint(&self, normal: [f32; 4]) -> [f32; 4] {
         match self {
-            Atom::Text { fidelity: Fidelity::Derived, .. } => DERIVED_TINT,
+            Atom::Text {
+                fidelity: Fidelity::Derived,
+                ..
+            } => DERIVED_TINT,
             Atom::Text { .. } => normal,
             Atom::Unavailable { .. } => UNAVAIL_TINT,
         }
@@ -229,7 +240,16 @@ pub fn link_l(
     let (vy0, vy1) = if y0 <= midy { (y0, midy) } else { (midy, y0) };
     fill_rect(r, white, x0 - t / 2.0, vy0, t, (vy1 - vy0).max(t), c, clip);
     let (hx0, hx1) = if x0 <= x1 { (x0, x1) } else { (x1, x0) };
-    fill_rect(r, white, hx0, midy - t / 2.0, (hx1 - hx0).max(t), t, c, clip);
+    fill_rect(
+        r,
+        white,
+        hx0,
+        midy - t / 2.0,
+        (hx1 - hx0).max(t),
+        t,
+        c,
+        clip,
+    );
 }
 
 /// Draw a straight line between two screen points as a thin rect (for non-stepped
@@ -305,7 +325,15 @@ pub fn draw_atom(
     clip: Option<[f32; 4]>,
 ) {
     if let Some(font) = assets.font {
-        r.draw_text_clipped(font, assets.font_pages, atom.as_str(), x, y, atom.tint(normal), clip);
+        r.draw_text_clipped(
+            font,
+            assets.font_pages,
+            atom.as_str(),
+            x,
+            y,
+            atom.tint(normal),
+            clip,
+        );
     }
 }
 
@@ -351,7 +379,12 @@ pub const CANVAS_MAX_SCALE: f32 = 6.0;
 impl Canvas {
     /// An identity canvas over a viewport (no pan, scale 1).
     pub fn new(viewport: [f32; 4]) -> Canvas {
-        Canvas { scale: 1.0, ox: 0.0, oy: 0.0, viewport: sane_viewport(viewport) }
+        Canvas {
+            scale: 1.0,
+            ox: 0.0,
+            oy: 0.0,
+            viewport: sane_viewport(viewport),
+        }
     }
 
     /// Fit a canvas-space bounds `(minx,miny,maxx,maxy)` into `viewport` with a margin.
@@ -373,7 +406,12 @@ impl Canvas {
             scale = 1.0;
         }
         let scale = scale.clamp(CANVAS_MIN_SCALE, CANVAS_MAX_SCALE);
-        Canvas { scale, ox: minx - m / scale, oy: miny - m / scale, viewport }
+        Canvas {
+            scale,
+            ox: minx - m / scale,
+            oy: miny - m / scale,
+            viewport,
+        }
     }
 
     /// The scale to project with — coerced to a safe positive value so a caller that
@@ -390,12 +428,18 @@ impl Canvas {
     /// Canvas space → screen pixels.
     pub fn to_screen(&self, cx: f32, cy: f32) -> (f32, f32) {
         let s = self.safe_scale();
-        (self.viewport[0] + (cx - self.ox) * s, self.viewport[1] + (cy - self.oy) * s)
+        (
+            self.viewport[0] + (cx - self.ox) * s,
+            self.viewport[1] + (cy - self.oy) * s,
+        )
     }
     /// Screen pixels → canvas space.
     pub fn from_screen(&self, sx: f32, sy: f32) -> (f32, f32) {
         let s = self.safe_scale();
-        (self.ox + (sx - self.viewport[0]) / s, self.oy + (sy - self.viewport[1]) / s)
+        (
+            self.ox + (sx - self.viewport[0]) / s,
+            self.oy + (sy - self.viewport[1]) / s,
+        )
     }
     /// The viewport clip rect.
     pub fn clip(&self) -> [f32; 4] {

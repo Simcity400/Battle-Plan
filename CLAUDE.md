@@ -6,23 +6,40 @@ depth replay: economy, military, divisions, provinces, combat, focuses, decision
 "everything you'd see in a save game"). It is the owner's own game, read-only/observational —
 there is no anti-cheat concern.
 
-## Codex is always on — NON-NEGOTIABLE
+## Adversarial review / sub-agent protocol
 
-Read **`CODEX_PROTOCOL.md`** and follow it. Codex (the local CLI) is an adversarial second
-reviewer that is **always on by default** for any substantive RE finding, offset hypothesis,
-save-parse logic, or risky change. **Never ask the user whether to use Codex** — just use it
-and report what it said.
+This repo used to require Claude agents to call the local `codex` CLI through
+`CODEX_PROTOCOL.md`. That rule is obsolete for Codex-native sessions.
 
-**When you spawn ANY sub-agent, embed the Codex instruction in its prompt** (the exact Mode A
-command from `CODEX_PROTOCOL.md` + "read CODEX_PROTOCOL.md, consult Codex adversarially before
-reporting"). This is how the workflow survives across agents with no shared context.
+- Codex-native agents and sub-agents **must not** run the old local Codex CLI
+  review workflow or any historical Mode A/Mode B invocation.
+- Codex-native agents and sub-agents **must not** use fast mode, small/fast
+  model variants, or lower reasoning effort for this project. Omit model,
+  reasoning, and service-tier overrides so sub-agents inherit the orchestrator's
+  current high-effort Codex settings unless the user explicitly requests a
+  different model.
+- Do not select sub-agent roles, prompts, or shortcuts for speed over rigor.
+  Prefer normal `default`/`worker` partner agents for project work; spawn fewer
+  agents if needed, but keep them on the inherited high-effort path.
+- Use normal Codex sub-agents as work partners. For substantial work, bring in a
+  Codex-native partner while the approach is still being shaped so it can
+  clarify assumptions, challenge weak spots, and help work through problems.
+- Do not reduce this to a final verification pass. The partner review should
+  influence the implementation, tests, and gap classification before reporting.
+- If a sub-agent session cannot spawn its own nested partner, it should ask the
+  orchestrator to assign one or report the need early. It should not fall back
+  to the old local CLI.
+- Do not embed the old CLI command in sub-agent prompts.
+- `CODEX_PROTOCOL.md` is retained only for historical Claude handoffs and must
+  not override this section in Codex-native sessions.
 
 ## Hard safety rules (these caused a history rewrite once — do not repeat)
 
-- **NEVER** commit the owner's personal home path (`C:\Users\Example\...` / OneDrive paths) or
-  the gitignored `/tools/` dev-scripts folder. Scan staged content for the username / `OneDrive` /
-  `C:\Users` before every commit.
-- **No Claude attribution** in commits — omit the `Co-Authored-By` trailer.
+- **NEVER** commit owner-specific absolute paths, cloud-sync paths, or the
+  gitignored dev-scripts folder. Before every commit, scan staged content for
+  local usernames, home-directory roots, cloud-sync folder names, and absolute
+  host paths.
+- **No automated attribution** in commits — omit the `Co-Authored-By` trailer.
 - **No commits unless the user explicitly asks.**
 - Keep large binary artifacts (map PNGs, raw/melted saves, reader dumps) out of git — gitignore
   them.

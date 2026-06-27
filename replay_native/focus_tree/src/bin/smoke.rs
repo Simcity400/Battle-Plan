@@ -5,7 +5,9 @@
 use std::path::PathBuf;
 
 use assets::resolver::GameResolver;
-use focus_tree::{bind_node, eval_context, load_catalog, place, FocusDomain, NodeState, PosFidelity};
+use focus_tree::{
+    bind_node, eval_context, load_catalog, place, FocusDomain, NodeState, PosFidelity,
+};
 use snapshot::Store;
 
 fn arg(flag: &str) -> Option<String> {
@@ -44,7 +46,11 @@ fn main() {
     }
 
     let cat = load_catalog(&resolver).expect("load catalog");
-    eprintln!("[smoke] trees: {}  shared: {}", cat.trees.len(), cat.shared.len());
+    eprintln!(
+        "[smoke] trees: {}  shared: {}",
+        cat.trees.len(),
+        cat.shared.len()
+    );
 
     let tree_id = arg("--tree").unwrap_or_else(|| "german_focus".to_string());
     let tree = cat.tree(&tree_id).unwrap_or_else(|| {

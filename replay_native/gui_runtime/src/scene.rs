@@ -153,6 +153,7 @@ impl Rect {
 pub struct Node {
     pub name: String,
     pub raw_kind: String,
+    pub tooltip: Option<String>,
     pub kind: ElementKind,
 
     // --- raw layout inputs (interpreted by layout.rs) ---
@@ -221,6 +222,7 @@ impl Node {
         Node {
             name,
             raw_kind: raw.kind.clone(),
+            tooltip: raw.tooltip.as_ref().map(Scalar::as_text),
             kind,
             pos,
             size_w,
@@ -238,6 +240,11 @@ impl Node {
     /// Count nodes in this subtree (inclusive).
     pub fn count(&self) -> usize {
         1 + self.children.iter().map(|c| c.count()).sum::<usize>()
+    }
+
+    /// Static tooltip key/literal carried by the parsed `.gui` node.
+    pub fn static_tooltip(&self) -> Option<&str> {
+        self.tooltip.as_deref().filter(|t| !t.trim().is_empty())
     }
 
     /// Whether this node SELF-CAPTURES a hit on its own rect. Codex-corrected:
@@ -328,11 +335,12 @@ fn classify(
             frame,
             text: raw.text.as_ref().and_then(|tb| text_spec(tb, loc)),
         },
-        "instanttextboxtype" | "textboxtype" => match raw.text.as_ref().and_then(|tb| text_spec(tb, loc))
-        {
-            Some(t) => ElementKind::Text(t),
-            None => ElementKind::Container { background: None },
-        },
+        "instanttextboxtype" | "textboxtype" => {
+            match raw.text.as_ref().and_then(|tb| text_spec(tb, loc)) {
+                Some(t) => ElementKind::Text(t),
+                None => ElementKind::Container { background: None },
+            }
+        }
         "progressbartype" => match sprite {
             Some(s) => ElementKind::ProgressBar {
                 sprite: s,

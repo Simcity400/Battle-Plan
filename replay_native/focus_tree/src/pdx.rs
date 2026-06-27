@@ -87,7 +87,10 @@ struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     fn new(s: &'a str) -> Self {
-        Lexer { s: s.as_bytes(), i: 0 }
+        Lexer {
+            s: s.as_bytes(),
+            i: 0,
+        }
     }
 
     fn next_tok(&mut self) -> Option<Tok<'a>> {
@@ -202,7 +205,11 @@ pub fn parse_file(src: &str) -> Vec<Entry> {
     while let Some(t) = lex.next_tok() {
         toks.push(t);
     }
-    let mut p = Parser { toks: &toks, i: 0, vars: Default::default() };
+    let mut p = Parser {
+        toks: &toks,
+        i: 0,
+        vars: Default::default(),
+    };
     p.parse_entries(true)
 }
 
@@ -269,7 +276,11 @@ impl<'a> Parser<'a> {
                             self.vars.insert(name.to_string(), s.clone());
                         }
                     }
-                    out.push(Entry { key: w.to_string(), op, value });
+                    out.push(Entry {
+                        key: w.to_string(),
+                        op,
+                        value,
+                    });
                 }
                 Some(Tok::Open) => {
                     // anonymous block (rare) — skip its contents
@@ -364,7 +375,12 @@ mod tests {
         let src = r#"search_filters = { FOCUS_FILTER_POLITICAL FOCUS_FILTER_INDUSTRY }"#;
         let top = parse_file(src);
         let v = &top[0].value;
-        let keys: Vec<_> = v.as_block().unwrap().iter().map(|e| e.key.as_str()).collect();
+        let keys: Vec<_> = v
+            .as_block()
+            .unwrap()
+            .iter()
+            .map(|e| e.key.as_str())
+            .collect();
         assert!(keys.contains(&"FOCUS_FILTER_POLITICAL"));
     }
 }

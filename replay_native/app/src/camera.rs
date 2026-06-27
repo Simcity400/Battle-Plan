@@ -100,6 +100,31 @@ impl MapCamera {
         (out_u * self.screen_w, out_v * self.screen_h)
     }
 
+    /// Recenter the visible map window on a RASTER/world coordinate while preserving
+    /// the current zoom. Returns `false` if the camera/world is not usable or the
+    /// bounded offset is unchanged.
+    pub fn recenter_on_raster(&mut self, rx: f32, ry: f32) -> bool {
+        if !(rx.is_finite()
+            && ry.is_finite()
+            && self.raster_w.is_finite()
+            && self.raster_h.is_finite()
+            && self.raster_w > 0.0
+            && self.raster_h > 0.0
+            && self.scale.is_finite()
+            && self.scale > 0.0)
+        {
+            return false;
+        }
+
+        let before = self.offset;
+        let span = 1.0 / self.scale;
+        self.offset[0] = (rx / self.raster_w).clamp(0.0, 1.0) - span * 0.5;
+        self.offset[1] = (ry / self.raster_h).clamp(0.0, 1.0) - span * 0.5;
+        self.clamp_offset();
+        (self.offset[0] - before[0]).abs() > f32::EPSILON
+            || (self.offset[1] - before[1]).abs() > f32::EPSILON
+    }
+
     /// Pan by a screen-pixel drag delta `(dx,dy)`. Dragging the map RIGHT (positive
     /// dx) moves the world right, i.e. shows content to the LEFT → offset decreases.
     /// The UV delta is `d_px / (screen * scale)`.
@@ -218,5 +243,61 @@ mod tests {
         // a huge rightward drag clamps at max_off 0.5.
         c.pan_by_pixels(-100000.0, -100000.0);
         assert!(c.offset[0] <= 0.5 + 1e-6 && c.offset[1] <= 0.5 + 1e-6);
+    }
+
+    #[test]
+    fn recenter_on_raster_changes_uniform_digest_bounded() {
+        let mut c = cam();
+        c.scale = 4.0; // visible UV span 0.25
+        let before = format!("{:?}:{:?}", c.uniform_offset(), c.uniform_scale());
+
+        assert!(c.recenter_on_raster(3000.0, 1000.0));
+
+        let after = format!("{:?}:{:?}", c.uniform_offset(), c.uniform_scale());
+        assert_ne!(before, after, "camera uniforms must change after recenter");
+        assert!((c.offset[0] - 0.625).abs() < 1e-6, "offset={:?}", c.offset);
+        assert!((c.offset[1] - 0.375).abs() < 1e-6, "offset={:?}", c.offset);
+        let max_off = 1.0 - 1.0 / c.scale;
+        assert!(c.offset[0] >= 0.0 && c.offset[0] <= max_off + 1e-6);
+        assert!(c.offset[1] >= 0.0 && c.offset[1] <= max_off + 1e-6);
+    }
+
+    #[test]
+    fn recenter_on_raster_clamps_to_world_edges() {
+        let mut c = cam();
+        c.scale = 4.0;
+
+        assert!(!c.recenter_on_raster(0.0, 0.0));
+        assert_eq!(c.offset, [0.0, 0.0]);
+
+        assert!(c.recenter_on_raster(999999.0, 999999.0));
+        let max_off = 1.0 - 1.0 / c.scale;
+        assert!(
+            (c.offset[0] - max_off).abs() < 1e-6,
+            "offset={:?}",
+            c.offset
+        );
+        assert!(
+            (c.offset[1] - max_off).abs() < 1e-6,
+            "offset={:?}",
+            c.offset
+        );
+    }
+
+    #[test]
+    fn recenter_without_usable_world_is_noop() {
+        let mut c = cam();
+        c.scale = 4.0;
+        c.offset = [0.25, 0.25];
+        let before = c.offset;
+
+        c.raster_w = 0.0;
+        assert!(!c.recenter_on_raster(100.0, 100.0));
+        assert_eq!(c.offset, before);
+
+        c.raster_w = 4000.0;
+        c.scale = 0.0;
+        assert!(!c.recenter_on_raster(100.0, 100.0));
+        assert_eq!(c.offset, before);
     }
 }

@@ -439,9 +439,11 @@ fabricated; each renders "—" per no-fabrication.
 
 ---
 
-## Codex review
+## Historical review
 
-Reviewed by Codex (`gpt-5.5`, read-only Mode-A one-shot, 2026-06-26) — the six trickiest node-binding
+Historical note: this records a completed adversarial review from the old
+Claude-era workflow. Codex-native sessions must use normal sub-agents/partner
+review and must not run the old local CLI command. The review checked the six trickiest node-binding
 + fidelity claims (in-progress vs completed; focus current/progress; the research-vs-focus progress
 asymmetry; research slots/bonuses; continuous focus). Verdict: **AGREE on 5, PARTIAL-REFUTE on 1**;
 both nuances folded in above.

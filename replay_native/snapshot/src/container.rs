@@ -153,7 +153,9 @@ impl Container {
             total = total.saturating_add(e.uncomp_size);
         }
         if total > MAX_TOTAL_BYTES {
-            return Err(ContainerError::Reject("total uncompressed size exceeds cap".into()));
+            return Err(ContainerError::Reject(
+                "total uncompressed size exceeds cap".into(),
+            ));
         }
 
         // (4) manifest present? absent => recovery-only, refused.
@@ -166,7 +168,9 @@ impl Container {
 
         // (5) format + version
         if manifest.get("format").and_then(Value::as_str) != Some("hoi4replay") {
-            return Err(ContainerError::Reject("manifest.format != \"hoi4replay\"".into()));
+            return Err(ContainerError::Reject(
+                "manifest.format != \"hoi4replay\"".into(),
+            ));
         }
         let cv = manifest
             .get("container_version")
@@ -315,11 +319,17 @@ impl Container {
             if by_path
                 .insert(
                     p.to_string(),
-                    EntryRec { zip: ze.clone(), expected_sha256: sha.to_string(), verified: false },
+                    EntryRec {
+                        zip: ze.clone(),
+                        expected_sha256: sha.to_string(),
+                        verified: false,
+                    },
                 )
                 .is_some()
             {
-                return Err(ContainerError::Reject(format!("duplicate manifest entry {p}")));
+                return Err(ContainerError::Reject(format!(
+                    "duplicate manifest entry {p}"
+                )));
             }
         }
         // every payload/* zip entry must be covered by the manifest (no stowaways)

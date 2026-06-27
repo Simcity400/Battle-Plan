@@ -154,7 +154,12 @@ mod tests {
     // a 4x2 raster: left half province 7, right half province 9.
     fn raster() -> ProvinceRaster {
         let ids = vec![7, 7, 9, 9, 7, 7, 9, 9];
-        ProvinceRaster { width: 4, height: 2, ids, max_id: 9 }
+        ProvinceRaster {
+            width: 4,
+            height: 2,
+            ids,
+            max_id: 9,
+        }
     }
 
     #[test]
@@ -223,8 +228,20 @@ mod tests {
     #[test]
     fn pick_finds_bubble_under_point_and_nearest_on_overlap() {
         let bubbles = vec![
-            Bubble { combat_id: "a".into(), sx: 10.0, sy: 10.0, radius: 8.0, defender_tag: None },
-            Bubble { combat_id: "b".into(), sx: 14.0, sy: 10.0, radius: 8.0, defender_tag: None },
+            Bubble {
+                combat_id: "a".into(),
+                sx: 10.0,
+                sy: 10.0,
+                radius: 8.0,
+                defender_tag: None,
+            },
+            Bubble {
+                combat_id: "b".into(),
+                sx: 14.0,
+                sy: 10.0,
+                radius: 8.0,
+                defender_tag: None,
+            },
         ];
         // exactly on a's centre -> a
         assert_eq!(pick_bubble(&bubbles, 10.0, 10.0).as_deref(), Some("a"));

@@ -287,7 +287,11 @@ pub fn wrap(exp: &Expanded, font: &BmFont, max_width: f32) -> Wrapped {
     for tok in &toks {
         let tok_w = measure_fragment(font, &tok.text, tok.icon.is_some());
         // the separator only exists when the source had a space here.
-        let sep = if !cur.is_empty() && prev_space { space_w } else { 0.0 };
+        let sep = if !cur.is_empty() && prev_space {
+            space_w
+        } else {
+            0.0
+        };
         if !cur.is_empty() && cur_w + sep + tok_w > max_width {
             // wrap before this token (drop the trailing separator at the break).
             flush(&mut cur, &mut cur_w, &mut lines);
@@ -437,7 +441,11 @@ mod tests {
         let wrapped = wrap(&exp, &font, 1000.0);
         assert_eq!(wrapped.lines.len(), 1);
         // concatenated display text across the coloured spans is exactly "abc".
-        let text: String = wrapped.lines[0].spans.iter().map(|s| s.text.as_str()).collect();
+        let text: String = wrapped.lines[0]
+            .spans
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect();
         assert_eq!(text, "abc");
         // width = 3 glyphs * 10px = 30px (NO inserted spaces).
         assert_eq!(wrapped.lines[0].width, font.measure("abc") as f32);
@@ -457,7 +465,11 @@ mod tests {
         let font = sample_font();
         let mut vars = HashMap::new();
         vars.insert("N".to_string(), "Brandenburg".to_string());
-        let exp = expand("§YBrandenburg§! is the capital region here", &vars, [1.0; 4]);
+        let exp = expand(
+            "§YBrandenburg§! is the capital region here",
+            &vars,
+            [1.0; 4],
+        );
         // each non-space glyph = 10px, space = 6px. width budget 120px.
         let wrapped = wrap(&exp, &font, 120.0);
         // every produced line must actually be <= the budget (proves measurement).
@@ -468,7 +480,11 @@ mod tests {
         assert!(wrapped.lines.len() >= 2);
         // the FIRST line's measured width equals the BMFont measure of its text —
         // proving the wrap used glyph metrics, not character counts.
-        let first_text: String = wrapped.lines[0].spans.iter().map(|s| s.text.as_str()).collect();
+        let first_text: String = wrapped.lines[0]
+            .spans
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect();
         assert_eq!(wrapped.lines[0].width, font.measure(&first_text) as f32);
         // colour survived: "Brandenburg" stays yellow somewhere in the output.
         let has_yellow = wrapped
@@ -482,7 +498,11 @@ mod tests {
     #[test]
     fn long_word_hard_breaks_so_it_never_overflows() {
         let font = sample_font();
-        let exp = expand("Supercalifragilisticexpialidocious", &HashMap::new(), [1.0; 4]);
+        let exp = expand(
+            "Supercalifragilisticexpialidocious",
+            &HashMap::new(),
+            [1.0; 4],
+        );
         let wrapped = wrap(&exp, &font, 100.0);
         assert!(wrapped.lines.len() >= 2);
         for l in &wrapped.lines {

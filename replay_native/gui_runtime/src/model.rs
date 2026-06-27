@@ -119,7 +119,11 @@ pub struct Position {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Coord {
     Px(f32),
-    Anchor { name: String, raw: String, resolved: Option<f32> },
+    Anchor {
+        name: String,
+        raw: String,
+        resolved: Option<f32>,
+    },
     EdgeOffset(f32),
     Percent(f32),
     UnknownRaw(String),
@@ -182,7 +186,10 @@ impl Coord {
     /// unresolved `@named` anchor or an unknown token) — used by diagnostics/tests
     /// to assert a known file has zero unresolved anchors once defines are present.
     pub fn is_unresolved(&self) -> bool {
-        matches!(self, Coord::Anchor { resolved: None, .. } | Coord::UnknownRaw(_))
+        matches!(
+            self,
+            Coord::Anchor { resolved: None, .. } | Coord::UnknownRaw(_)
+        )
     }
 
     /// Resolve a `@named` anchor against a define table, in place. A non-anchor (or
@@ -388,8 +395,7 @@ impl YesNo {
 
 impl GuiFile {
     pub fn parse(text: &str) -> Result<GuiFile, String> {
-        let mut file: GuiFile =
-            serde_json::from_str(text).map_err(|e| format!("gui json: {e}"))?;
+        let mut file: GuiFile = serde_json::from_str(text).map_err(|e| format!("gui json: {e}"))?;
         // Fold the file's own `@var = N` define table into every `@named` anchor so
         // it resolves to a real coordinate. Externally-shared defs can be applied
         // afterward via [`GuiFile::resolve_anchors_with`].
@@ -397,8 +403,7 @@ impl GuiFile {
         Ok(file)
     }
     pub fn load(path: &std::path::Path) -> Result<GuiFile, String> {
-        let text =
-            std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         Self::parse(&text)
     }
 
@@ -425,7 +430,10 @@ impl GuiFile {
     /// Count anchors/tokens that remain UNRESOLVED across the whole tree — a
     /// diagnostic for "does this file parse with every anchor resolved?".
     pub fn unresolved_anchor_count(&self) -> usize {
-        self.windows.iter().map(RawNode::unresolved_anchor_count).sum()
+        self.windows
+            .iter()
+            .map(RawNode::unresolved_anchor_count)
+            .sum()
     }
 }
 
@@ -467,7 +475,10 @@ mod tests {
         let g = GuiFile::parse(j).unwrap();
         let n = &g.windows[0];
         assert_eq!(n.kind, "instantTextBoxType");
-        assert_eq!(n.text.as_ref().unwrap().raw_text().unwrap().as_text(), "999");
+        assert_eq!(
+            n.text.as_ref().unwrap().raw_text().unwrap().as_text(),
+            "999"
+        );
         assert_eq!(n.text.as_ref().unwrap().max_w(), Some(50.0));
     }
 
@@ -478,8 +489,13 @@ mod tests {
             {"type":"containerWindowType","name":"b","size":{"x":228,"y":42}}
         ]}"#;
         let g = GuiFile::parse(j).unwrap();
-        assert!(matches!(g.windows[0].size.as_ref().unwrap().w().unwrap(), Scalar::Str(s) if s=="100%%"));
-        assert!(matches!(g.windows[1].size.as_ref().unwrap().w().unwrap(), Scalar::Int(228)));
+        assert!(
+            matches!(g.windows[0].size.as_ref().unwrap().w().unwrap(), Scalar::Str(s) if s=="100%%")
+        );
+        assert!(matches!(
+            g.windows[1].size.as_ref().unwrap().w().unwrap(),
+            Scalar::Int(228)
+        ));
     }
 
     // -------------------------------------------------------------------------------
@@ -500,10 +516,17 @@ mod tests {
     #[test]
     fn coord_parses_named_anchor_keeps_raw_unresolved_by_default() {
         match Coord::parse_str("@fixed_btn_mod_col_0") {
-            Coord::Anchor { name, raw, resolved } => {
+            Coord::Anchor {
+                name,
+                raw,
+                resolved,
+            } => {
                 assert_eq!(name, "fixed_btn_mod_col_0");
                 assert_eq!(raw, "@fixed_btn_mod_col_0");
-                assert_eq!(resolved, None, "no define table -> honestly unresolved, NOT zeroed-as-resolved");
+                assert_eq!(
+                    resolved, None,
+                    "no define table -> honestly unresolved, NOT zeroed-as-resolved"
+                );
             }
             other => panic!("expected Anchor, got {other:?}"),
         }
@@ -540,14 +563,27 @@ mod tests {
     // -------------------------------------------------------------------------------
     #[test]
     fn coord_non_finite_tokens_are_unknown_not_fabricated_coords() {
-        for tok in ["inf", "-inf", "Inf", "infinity", "-infinity", "nan", "NaN", "NAN"] {
+        for tok in [
+            "inf",
+            "-inf",
+            "Inf",
+            "infinity",
+            "-infinity",
+            "nan",
+            "NaN",
+            "NAN",
+        ] {
             let c = Coord::parse_str(tok);
             assert!(
                 matches!(c, Coord::UnknownRaw(_)),
                 "non-finite px token {tok:?} must be UnknownRaw, got {c:?}"
             );
             // the chrome-seam fallback is a FINITE 0.0 (never NaN/Inf reaching layout).
-            assert!(c.px().is_finite(), "{tok:?} px() must be finite, got {}", c.px());
+            assert!(
+                c.px().is_finite(),
+                "{tok:?} px() must be finite, got {}",
+                c.px()
+            );
             assert_eq!(c.px(), 0.0);
         }
         // edge-offset suffix on a non-finite number ("nans"/"infs") must NOT become a
@@ -567,7 +603,10 @@ mod tests {
         // also be rejected as a fabricated coordinate, not become Px(inf).
         for tok in ["1e40", "-1e40", "3.5e38", "1e40s", "1e40%"] {
             let c = Coord::parse_str(tok);
-            assert!(matches!(c, Coord::UnknownRaw(_)), "overflow token {tok:?} -> {c:?}");
+            assert!(
+                matches!(c, Coord::UnknownRaw(_)),
+                "overflow token {tok:?} -> {c:?}"
+            );
             assert!(c.px().is_finite());
         }
         // a normal finite number is unaffected.
@@ -626,7 +665,10 @@ mod tests {
         let slot = &g.windows[0].position.as_ref().unwrap();
         assert!(matches!(slot.x, Coord::Anchor { .. }));
         assert!(matches!(slot.y, Coord::Anchor { .. }));
-        assert_eq!(g.windows[1].position.as_ref().unwrap().y, Coord::EdgeOffset(1.0));
+        assert_eq!(
+            g.windows[1].position.as_ref().unwrap().y,
+            Coord::EdgeOffset(1.0)
+        );
     }
 
     #[test]
@@ -639,7 +681,11 @@ mod tests {
               {"type":"positionType","name":"slot","position":{"x":"@fixed_btn_mod_col_0","y":"@fixed_btn_mod_row_1"}}
             ]}"#;
         let g = GuiFile::parse(j).unwrap();
-        assert_eq!(g.unresolved_anchor_count(), 0, "all anchors resolved against the defines");
+        assert_eq!(
+            g.unresolved_anchor_count(),
+            0,
+            "all anchors resolved against the defines"
+        );
         let slot = g.windows[0].position.as_ref().unwrap();
         assert!(matches!(slot.x, Coord::Anchor { resolved: Some(v), .. } if v == 12.0));
         assert!(matches!(slot.y, Coord::Anchor { resolved: Some(v), .. } if v == 88.0));
@@ -684,7 +730,10 @@ mod tests {
         let g = GuiFile::parse(j).expect("a bool axis stays parse-tolerant");
         let p = g.windows[0].position.as_ref().unwrap();
         assert!(matches!(&p.x, Coord::UnknownRaw(s) if s == "true"));
-        assert!(p.x.is_unresolved(), "a bool coordinate is unresolved, not a measured 0");
+        assert!(
+            p.x.is_unresolved(),
+            "a bool coordinate is unresolved, not a measured 0"
+        );
         assert_eq!(p.x.px(), 0.0, "still falls back to 0.0 at the chrome seam");
     }
 

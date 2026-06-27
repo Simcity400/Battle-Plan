@@ -64,11 +64,13 @@ use widgets::trait_tree::{TraitNode, TraitState, TraitTree};
 
 use crate::host::context::{BindContext, Captured, DisplayAtom, FidelityReport, UnavailableReason};
 use crate::host::draw::FrameDraw;
+use crate::host::input::{PointerButton, ViewInput};
 use crate::host::registry::{
     GuiSymbolRef, MenuCluster, MenuRoute, TemplateDescriptor, ViewDescriptor, ViewId,
 };
 use crate::host::view::{
-    BoundView, Drawable, HitModel, HostPolicy, InstanceId, ViewCommand, ViewInstance, ZBand,
+    BoundView, Drawable, HitModel, HostPolicy, InputOutcome, InstanceId, RebindContext,
+    ViewCommand, ViewInstance, ZBand,
 };
 use crate::{register_template, register_view};
 
@@ -392,6 +394,7 @@ fn stub_grid(name: &str, rect: Rect) -> Node {
     Node {
         name: name.to_string(),
         raw_kind: "gridBoxType".into(),
+        tooltip: None,
         kind: ElementKind::Container { background: None },
         pos: (0.0, 0.0),
         size_w: None,
@@ -541,11 +544,17 @@ const POLITICS_VIEW_ID: ViewId = ViewId("politics.politics");
 const POLITICS_FILE: &str = "politics.json";
 const POLITICS_ROOT: &str = "countrypoliticsview";
 
-pub struct PoliticsView;
+pub struct PoliticsView {
+    tabs: TabBar,
+    screen: Rect,
+}
 
 impl PoliticsView {
     pub fn new() -> PoliticsView {
-        PoliticsView
+        PoliticsView {
+            tabs: politics_tabs_for_flags(true, true, true, true),
+            screen: default_politics_screen(),
+        }
     }
 }
 
@@ -558,74 +567,50 @@ impl Default for PoliticsView {
 struct PoliticsDrawable {
     roots: Vec<Node>,
     file: GuiFile,
-    party_rows: Vec<DataRow>,
-    category_rows: Vec<DataRow>,
-    subject_rows: Vec<DataRow>,
-    occupied_rows: Vec<DataRow>,
-    party_section: SectionState,
-    subject_section: SectionState,
+    tab: Option<PoliticsTab>,
+    tab_rows: Vec<DataRow>,
+    tab_section: SectionState,
     /// the N2 tab bar (the politics sub-window selector) — its plan goes in the digest.
     tabs: TabBar,
+    tab_panel: Rect,
 }
 
 impl Drawable for PoliticsDrawable {
     fn draw_digest(&self) -> String {
-        let view = Rect {
-            x: 0.0,
-            y: 0.0,
-            w: 1600.0,
-            h: 900.0,
-        };
         format!(
-            "POL party_sect={} subj_sect={} party={} cats={} subj={} occ={} TABS {}",
-            self.party_section.tag(),
-            self.subject_section.tag(),
-            row_digest(&self.party_rows),
-            row_digest(&self.category_rows),
-            row_digest(&self.subject_rows),
-            row_digest(&self.occupied_rows),
-            widgets::tabs::plan_tabs(&self.tabs, view).digest(),
+            "POL tab={} sect={} rows={} TABS {}",
+            self.tabs.selected().unwrap_or("none"),
+            self.tab_section.tag(),
+            row_digest(&self.tab_rows),
+            widgets::tabs::plan_tabs(&self.tabs, self.tab_panel).digest(),
         )
     }
     fn draw(&self, fd: &mut FrameDraw) {
         fd.draw_nodes(&self.roots);
-        render_rows(
-            fd,
-            &self.roots,
-            &self.file,
-            "parties_grid",
-            "political_party_info_entry",
-            &self.party_rows,
-        );
-        render_rows(
-            fd,
-            &self.roots,
-            &self.file,
-            "idea_categories_grid",
-            "country_politics_idea_category_entry",
-            &self.category_rows,
-        );
-        render_rows(
-            fd,
-            &self.roots,
-            &self.file,
-            "subjects_grid",
-            "subject_item",
-            &self.subject_rows,
-        );
-        render_rows(
-            fd,
-            &self.roots,
-            &self.file,
-            "occupied_territories_grid",
-            "occupied_territory_entry",
-            &self.occupied_rows,
-        );
-        if let Some(tabs_rect) = find_rect(&self.roots, "ideas") {
-            let white = mint_white(fd);
-            let assets = widget_assets(&white);
-            widgets::tabs::draw_tabs(fd.renderer, &self.tabs, tabs_rect, &assets);
+        match self.tab {
+            Some(PoliticsTab::Government) => render_rows(
+                fd,
+                &self.roots,
+                &self.file,
+                "parties_grid",
+                "political_party_info_entry",
+                &self.tab_rows,
+            ),
+            Some(PoliticsTab::NationalSpirits | PoliticsTab::IdeasLaws | PoliticsTab::Autonomy) => {
+                render_rows(
+                    fd,
+                    &self.roots,
+                    &self.file,
+                    "idea_categories_grid",
+                    "country_politics_idea_category_entry",
+                    &self.tab_rows,
+                );
+            }
+            None => {}
         }
+        let white = mint_white(fd);
+        let assets = widget_assets(&white);
+        widgets::tabs::draw_tabs(fd.renderer, &self.tabs, self.tab_panel, &assets);
     }
 }
 
@@ -635,6 +620,33 @@ impl ViewInstance for PoliticsView {
     }
     fn policy(&self) -> HostPolicy {
         HostPolicy::window(ZBand::Panel)
+    }
+    fn rebind(&mut self, ctx: &RebindContext) {
+        self.screen = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: ctx.screen.0 as f32,
+            h: ctx.screen.1 as f32,
+        };
+        let next = politics_tabs_from_rebind(ctx, ctx.country);
+        reconcile_politics_tabs(&mut self.tabs, next);
+    }
+    fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
+        match *ev {
+            ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            } => match click_politics_tab(&mut self.tabs, politics_tab_fallback(self.screen), x, y)
+            {
+                PoliticsTabClick::Changed => politics_input_consumed(true),
+                PoliticsTabClick::Unchanged | PoliticsTabClick::Inert => {
+                    politics_input_consumed(false)
+                }
+                PoliticsTabClick::Miss => InputOutcome::ignored(),
+            },
+            _ => InputOutcome::ignored(),
+        }
     }
     fn bind(&self, ctx: &BindContext) -> BoundView {
         let tag = ctx.country;
@@ -687,24 +699,25 @@ impl ViewInstance for PoliticsView {
         push_unavailable(&mut fidelity, &mut summary, "focus_cost");
         push_unavailable(&mut fidelity, &mut summary, "power_balance_levels");
 
-        let (party_rows, party_section) = build_party_rows(ctx, tag, &mut fidelity);
-        let category_rows = build_category_rows(ctx, tag, &mut fidelity);
-        let (subject_rows, subject_section) = build_subject_rows(ctx, &mut fidelity);
-        let occupied_rows = build_occupied_country_rows(ctx, tag, &mut fidelity);
-
-        let tabs = politics_tabs(ctx, tag);
+        let mut tabs = politics_tabs(ctx, tag);
+        if let Some(selected) = self.tabs.selected() {
+            tabs.select(selected);
+        }
+        tabs.reconcile();
+        let tab = selected_politics_tab(&tabs);
+        let (tab_rows, tab_section) = build_politics_tab_rows(ctx, tag, tab, &mut fidelity);
 
         let roots = build_root(ctx, &file, POLITICS_ROOT, &summary);
+        let tab_panel =
+            find_rect(&roots, "ideas").unwrap_or_else(|| politics_tab_fallback(ctx.screen));
         let drawable = PoliticsDrawable {
             roots: roots.clone(),
             file,
-            party_rows,
-            category_rows,
-            subject_rows,
-            occupied_rows,
-            party_section,
-            subject_section,
+            tab,
+            tab_rows,
+            tab_section,
             tabs,
+            tab_panel,
         };
         BoundView {
             instance: InstanceId(0),
@@ -724,32 +737,205 @@ impl ViewInstance for PoliticsView {
 /// backing snapshot data is present, so a present-but-blocked sub-window BADGES rather than
 /// fabricates a tab (no-fabrication at the widget boundary).
 fn politics_tabs(ctx: &BindContext, tag: &str) -> TabBar {
+    politics_tabs_from_bind(ctx, tag)
+}
+
+const POLITICS_TAB_GOVERNMENT: &str = "government";
+const POLITICS_TAB_NATIONAL_SPIRITS: &str = "national_spirits";
+const POLITICS_TAB_IDEAS_LAWS: &str = "ideas_laws";
+const POLITICS_TAB_AUTONOMY: &str = "autonomy";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PoliticsTab {
+    Government,
+    NationalSpirits,
+    IdeasLaws,
+    Autonomy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PoliticsTabClick {
+    Changed,
+    Unchanged,
+    Inert,
+    Miss,
+}
+
+fn politics_tabs_from_bind(ctx: &BindContext, tag: &str) -> TabBar {
     let has = |path: &str| ctx.country_field(tag, path).is_measured();
+    politics_tabs_for_flags(
+        has("politics.ruling_party") || has("politics.party_popularities"),
+        has("politics.ideas_other"),
+        has("politics.laws") || has("politics.appointed_advisors") || has("politics.ideas"),
+        has("diplomacy.overlord") || has("politics.autonomy") || has_autonomy_rows_bind(ctx, tag),
+    )
+}
+
+fn politics_tabs_from_rebind(ctx: &RebindContext, tag: &str) -> TabBar {
+    let has = |path: &str| ctx.country_field(tag, path).is_measured();
+    politics_tabs_for_flags(
+        has("politics.ruling_party") || has("politics.party_popularities"),
+        has("politics.ideas_other"),
+        has("politics.laws") || has("politics.appointed_advisors") || has("politics.ideas"),
+        has("diplomacy.overlord") || has("politics.autonomy") || has_autonomy_rows_rebind(ctx, tag),
+    )
+}
+
+fn politics_tabs_for_flags(
+    government: bool,
+    national_spirits: bool,
+    ideas_laws: bool,
+    autonomy: bool,
+) -> TabBar {
     let avail = |present: bool, label: &str| {
         if present {
-            Tab::enabled(label.to_lowercase(), Atom::exact(label))
+            Tab::enabled(politics_tab_id_for_label(label), Atom::exact(label))
         } else {
-            Tab::unavailable(label.to_lowercase(), Atom::exact(label))
+            Tab::unavailable(politics_tab_id_for_label(label), Atom::exact(label))
         }
     };
     TabBar::horizontal(vec![
-        avail(
-            has("politics.ruling_party") || has("politics.party_popularities"),
-            "Government",
-        ),
-        avail(
-            has("politics.ideas_other") || has("politics.ideas"),
-            "National Spirits",
-        ),
-        avail(
-            has("politics.laws") || has("politics.appointed_advisors"),
-            "Ideas & Laws",
-        ),
-        avail(
-            has("diplomacy.overlord") || has("politics.autonomy"),
-            "Autonomy",
-        ),
+        avail(government, "Government"),
+        avail(national_spirits, "National Spirits"),
+        avail(ideas_laws, "Ideas & Laws"),
+        avail(autonomy, "Autonomy"),
     ])
+}
+
+fn politics_tab_id_for_label(label: &str) -> &'static str {
+    match label {
+        "Government" => POLITICS_TAB_GOVERNMENT,
+        "National Spirits" => POLITICS_TAB_NATIONAL_SPIRITS,
+        "Ideas & Laws" => POLITICS_TAB_IDEAS_LAWS,
+        "Autonomy" => POLITICS_TAB_AUTONOMY,
+        _ => POLITICS_TAB_GOVERNMENT,
+    }
+}
+
+fn selected_politics_tab(bar: &TabBar) -> Option<PoliticsTab> {
+    match bar.selected() {
+        Some(POLITICS_TAB_GOVERNMENT) => Some(PoliticsTab::Government),
+        Some(POLITICS_TAB_NATIONAL_SPIRITS) => Some(PoliticsTab::NationalSpirits),
+        Some(POLITICS_TAB_IDEAS_LAWS) => Some(PoliticsTab::IdeasLaws),
+        Some(POLITICS_TAB_AUTONOMY) => Some(PoliticsTab::Autonomy),
+        _ => None,
+    }
+}
+
+fn reconcile_politics_tabs(current: &mut TabBar, next: TabBar) {
+    let selected = current.selected().map(str::to_string);
+    *current = next;
+    if let Some(id) = selected {
+        current.select(&id);
+    }
+    current.reconcile();
+}
+
+fn has_autonomy_rows_bind(ctx: &BindContext, tag: &str) -> bool {
+    if let Some(countries) = ctx.countries() {
+        for (sub_tag, _) in countries {
+            if sub_tag == tag {
+                continue;
+            }
+            let over = ctx.country_field(sub_tag, "diplomacy.overlord");
+            let over = if over.is_measured() {
+                over
+            } else {
+                ctx.country_field(sub_tag, "politics.autonomy.overlord")
+            };
+            if let Captured::Measured(v) = over {
+                if v.as_str() == Some(tag) {
+                    return true;
+                }
+            }
+        }
+    }
+    if let Some(states) = ctx.states() {
+        for (sid, _) in states {
+            let ctrl = ctx.state_field(sid, "controller");
+            let owner = ctx.state_field(sid, "owner");
+            if let (Captured::Measured(c), Captured::Measured(o)) = (ctrl, owner) {
+                if c.as_str() == Some(tag) && o.as_str() != Some(tag) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn has_autonomy_rows_rebind(ctx: &RebindContext, tag: &str) -> bool {
+    if let Some(countries) = ctx.countries() {
+        for (sub_tag, _) in countries {
+            if sub_tag == tag {
+                continue;
+            }
+            let over = ctx.country_field(sub_tag, "diplomacy.overlord");
+            let over = if over.is_measured() {
+                over
+            } else {
+                ctx.country_field(sub_tag, "politics.autonomy.overlord")
+            };
+            if let Captured::Measured(v) = over {
+                if v.as_str() == Some(tag) {
+                    return true;
+                }
+            }
+        }
+    }
+    if let Some(states) = ctx.states() {
+        for (sid, _) in states {
+            let ctrl = ctx.state_field(sid, "controller");
+            let owner = ctx.state_field(sid, "owner");
+            if let (Captured::Measured(c), Captured::Measured(o)) = (ctrl, owner) {
+                if c.as_str() == Some(tag) && o.as_str() != Some(tag) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn default_politics_screen() -> Rect {
+    Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 1600.0,
+        h: 900.0,
+    }
+}
+
+fn politics_tab_fallback(screen: Rect) -> Rect {
+    Rect {
+        x: screen.x + screen.w - 606.0,
+        y: screen.y + 78.0 + 425.0,
+        w: 550.0,
+        h: (screen.h - 78.0 - 425.0).max(widgets::tabs::BAR_THICK),
+    }
+}
+
+fn click_politics_tab(bar: &mut TabBar, panel: Rect, x: f32, y: f32) -> PoliticsTabClick {
+    let rects = bar.layout(panel);
+    if let Some(id) = bar.pick(&rects, x, y) {
+        if bar.select(&id) {
+            PoliticsTabClick::Changed
+        } else {
+            PoliticsTabClick::Unchanged
+        }
+    } else if rects.iter().any(|tr| tr.rect.contains(x, y)) {
+        PoliticsTabClick::Inert
+    } else {
+        PoliticsTabClick::Miss
+    }
+}
+
+fn politics_input_consumed(needs_redraw: bool) -> InputOutcome {
+    InputOutcome {
+        consumed: true,
+        commands: Vec::new(),
+        needs_redraw,
+    }
 }
 
 /// BoP summary % on the politics screen: the matching `world.power_balances[]` track for
@@ -866,155 +1052,203 @@ fn build_party_rows(
     (rows, SectionState::Present)
 }
 
-/// The ideas/laws/advisors grid: one HEADER row per non-empty idea CATEGORY source list.
-/// The token sets are exact; the category id + header sprite are idea-DB lookups (derived).
-fn build_category_rows(
+fn build_politics_tab_rows(
     ctx: &BindContext,
     tag: &str,
-    fidelity: &mut FidelityReport,
-) -> Vec<DataRow> {
-    const SOURCES: [(&str, &str); 3] = [
-        ("National Spirit", "politics.ideas_other"),
-        ("Cabinet", "politics.appointed_advisors"),
-        ("Ideas", "politics.ideas"),
-    ];
-    let mut rows = Vec::new();
-    for (label, path) in SOURCES {
-        let (arr, _state) = country_array(ctx, tag, path);
-        let non_empty = arr.map(|a| !a.is_empty()).unwrap_or(false);
-        if !non_empty {
-            continue;
-        }
-        let mut row = DataRow::new();
-        row.bind(
-            fidelity,
-            "name",
-            Captured::Measured(&serde_json::Value::String(label.to_string())),
-            Fidelity::Derived,
-            fmt_token,
-        );
-        row.badge_unavailable(fidelity, "category_icon");
-        rows.push(row);
-    }
-    rows
-}
-
-/// The subjects management rows: one `subject_item` per country whose live
-/// `diplomacy.overlord == <TAG>` (M, 17/17 EXACT), with the save `politics.autonomy`
-/// fallback. An adapter aggregation over the countries domain (Codex-fixed: there is no
-/// `diplomacy_world.subjects[]` leaf).
-fn build_subject_rows(
-    ctx: &BindContext,
+    tab: Option<PoliticsTab>,
     fidelity: &mut FidelityReport,
 ) -> (Vec<DataRow>, SectionState) {
-    let tag = ctx.country;
-    let snap = &ctx.snapshot;
-    let countries = match snap.countries() {
-        Some(c) => c,
+    match tab {
+        Some(PoliticsTab::Government) => build_party_rows(ctx, tag, fidelity),
+        Some(PoliticsTab::NationalSpirits) => build_token_rows(
+            ctx,
+            tag,
+            &[("National Spirit", "politics.ideas_other")],
+            fidelity,
+        ),
+        Some(PoliticsTab::IdeasLaws) => build_token_rows(
+            ctx,
+            tag,
+            &[
+                ("Law", "politics.laws"),
+                ("Advisor", "politics.appointed_advisors"),
+                ("Idea", "politics.ideas"),
+            ],
+            fidelity,
+        ),
+        Some(PoliticsTab::Autonomy) => build_autonomy_tab_rows(ctx, tag, fidelity),
         None => {
             SectionState::Absent.record(fidelity);
-            return (Vec::new(), SectionState::Absent);
-        }
-    };
-    let mut subj: Vec<&str> = Vec::new();
-    for (sub_tag, _) in countries {
-        let over = ctx.country_field(sub_tag, "diplomacy.overlord");
-        let over = if over.is_measured() {
-            over
-        } else {
-            ctx.country_field(sub_tag, "politics.autonomy.overlord")
-        };
-        if let Captured::Measured(v) = over {
-            if v.as_str() == Some(tag) {
-                subj.push(sub_tag);
-            }
+            (Vec::new(), SectionState::Absent)
         }
     }
-    subj.sort();
-    let mut rows = Vec::new();
-    for sub_tag in &subj {
-        let mut row = DataRow::new();
-        let tagv = serde_json::Value::String((*sub_tag).to_string());
-        row.bind(
-            fidelity,
-            "autonomy_country_flag",
-            Captured::Measured(&tagv),
-            Fidelity::Exact,
-            fmt_token,
-        );
-        row.bind(
-            fidelity,
-            "autonomy_country_name",
-            Captured::Measured(&tagv),
-            Fidelity::Exact,
-            fmt_token,
-        );
-        let level = ctx.country_field(sub_tag, "diplomacy.autonomy_state");
-        let level = if level.is_measured() {
-            level
-        } else {
-            ctx.country_field(sub_tag, "politics.autonomy.level")
-        };
-        row.bind(
-            fidelity,
-            "current_autonomy_name",
-            level,
-            Fidelity::Exact,
-            fmt_token,
-        );
-        rows.push(row);
-    }
-    SectionState::Present.record(fidelity);
-    (rows, SectionState::Present)
 }
 
-/// The occupied-territories rows: one `occupied_territory_entry` per occupied OWNER tag,
-/// aggregated over `states.*` where `controller==<TAG>` ∧ `owner≠<TAG>`. The grouping is an
-/// adapter (membership exact; per-nation cost is computed → unavailable).
-fn build_occupied_country_rows(
+fn build_token_rows(
     ctx: &BindContext,
     tag: &str,
+    sources: &[(&str, &str)],
     fidelity: &mut FidelityReport,
-) -> Vec<DataRow> {
-    let snap = &ctx.snapshot;
-    let states = match snap.states() {
-        Some(s) => s,
-        None => return Vec::new(),
+) -> (Vec<DataRow>, SectionState) {
+    let mut rows = Vec::new();
+    let mut saw_present = false;
+    let mut saw_unusable = false;
+    for (label, path) in sources {
+        match ctx.country_field(tag, path) {
+            Captured::Measured(v) => {
+                saw_present = true;
+                let entries = token_entries(v);
+                for token in entries {
+                    push_category_tab_row(fidelity, &mut rows, &format!("{label}: {token}"));
+                }
+            }
+            Captured::Null => saw_unusable = true,
+            Captured::Absent => {}
+        }
+    }
+    let state = if saw_present {
+        SectionState::Present
+    } else if saw_unusable {
+        SectionState::Null
+    } else {
+        SectionState::Absent
     };
-    let mut owners: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for (sid, _) in states {
-        let ctrl = ctx.state_field(sid, "controller");
-        let owner = ctx.state_field(sid, "owner");
-        if let (Captured::Measured(c), Captured::Measured(o)) = (ctrl, owner) {
-            if c.as_str() == Some(tag) && o.as_str() != Some(tag) {
-                if let Some(os) = o.as_str() {
-                    owners.insert(os.to_string());
+    state.record(fidelity);
+    (rows, state)
+}
+
+fn token_entries(v: &serde_json::Value) -> Vec<String> {
+    let mut out = Vec::new();
+    match v {
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                let token = fmt_token(item);
+                if token != DASH {
+                    out.push(token);
                 }
             }
         }
+        serde_json::Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            for key in keys {
+                if let Some(value) = map.get(key) {
+                    let token = fmt_token(value);
+                    if token != DASH {
+                        out.push(token);
+                    } else {
+                        out.push(key.clone());
+                    }
+                }
+            }
+        }
+        serde_json::Value::String(_) | serde_json::Value::Number(_) => out.push(fmt_token(v)),
+        _ => {}
     }
+    out
+}
+
+fn push_category_tab_row(fidelity: &mut FidelityReport, rows: &mut Vec<DataRow>, label: &str) {
+    let mut row = DataRow::new();
+    let label_value = serde_json::Value::String(label.to_string());
+    row.bind(
+        fidelity,
+        "name",
+        Captured::Measured(&label_value),
+        Fidelity::Derived,
+        fmt_token,
+    );
+    row.badge_unavailable(fidelity, "category_icon");
+    rows.push(row);
+}
+
+fn build_autonomy_tab_rows(
+    ctx: &BindContext,
+    tag: &str,
+    fidelity: &mut FidelityReport,
+) -> (Vec<DataRow>, SectionState) {
     let mut rows = Vec::new();
-    for owner in &owners {
-        let mut row = DataRow::new();
-        let ov = serde_json::Value::String(owner.clone());
-        row.bind(
-            fidelity,
-            "occupied_country_flag",
-            Captured::Measured(&ov),
-            Fidelity::Derived,
-            fmt_token,
-        );
-        row.bind(
-            fidelity,
-            "occupied_country_name",
-            Captured::Measured(&ov),
-            Fidelity::Derived,
-            fmt_token,
-        );
-        row.badge_unavailable(fidelity, "occupied_country_cost");
-        rows.push(row);
+
+    let overlord = ctx.country_field(tag, "diplomacy.overlord");
+    let overlord = if overlord.is_measured() {
+        overlord
+    } else {
+        ctx.country_field(tag, "politics.autonomy.overlord")
+    };
+    if let Captured::Measured(v) = overlord {
+        let token = fmt_token(v);
+        if token != DASH {
+            push_category_tab_row(fidelity, &mut rows, &format!("Overlord: {token}"));
+        }
     }
-    rows
+
+    if let Some(countries) = ctx.countries() {
+        let mut subjects: Vec<(&str, Option<String>)> = Vec::new();
+        for (sub_tag, _) in countries {
+            let over = ctx.country_field(sub_tag, "diplomacy.overlord");
+            let over = if over.is_measured() {
+                over
+            } else {
+                ctx.country_field(sub_tag, "politics.autonomy.overlord")
+            };
+            if let Captured::Measured(v) = over {
+                if v.as_str() == Some(tag) {
+                    let level = ctx.country_field(sub_tag, "diplomacy.autonomy_state");
+                    let level = if level.is_measured() {
+                        level
+                    } else {
+                        ctx.country_field(sub_tag, "politics.autonomy.level")
+                    };
+                    let level = match level {
+                        Captured::Measured(v) => {
+                            let token = fmt_token(v);
+                            if token != DASH {
+                                Some(token)
+                            } else {
+                                None
+                            }
+                        }
+                        Captured::Absent | Captured::Null => None,
+                    };
+                    subjects.push((sub_tag.as_str(), level));
+                }
+            }
+        }
+        subjects.sort_by(|a, b| a.0.cmp(b.0));
+        for (sub_tag, level) in subjects {
+            let label = match level {
+                Some(level) => format!("Subject {sub_tag}: {level}"),
+                None => format!("Subject {sub_tag}"),
+            };
+            push_category_tab_row(fidelity, &mut rows, &label);
+        }
+    }
+
+    if let Some(states) = ctx.states() {
+        let mut owners: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for (sid, _) in states {
+            let ctrl = ctx.state_field(sid, "controller");
+            let owner = ctx.state_field(sid, "owner");
+            if let (Captured::Measured(c), Captured::Measured(o)) = (ctrl, owner) {
+                if c.as_str() == Some(tag) && o.as_str() != Some(tag) {
+                    if let Some(os) = o.as_str() {
+                        owners.insert(os.to_string());
+                    }
+                }
+            }
+        }
+        for owner in owners {
+            push_category_tab_row(fidelity, &mut rows, &format!("Occupied {owner}"));
+        }
+    }
+
+    let state = if rows.is_empty() {
+        SectionState::Absent
+    } else {
+        SectionState::Present
+    };
+    state.record(fidelity);
+    (rows, state)
 }
 
 fn open_politics(_arg: Option<i64>) -> Box<dyn ViewInstance> {
@@ -2144,6 +2378,35 @@ mod tests {
         }
     }
 
+    fn rebind_politics(v: &mut PoliticsView, snap: &snapshot::Snapshot, refit: bool) {
+        v.rebind(&RebindContext {
+            snapshot: snap,
+            country: "GER",
+            screen: (1600, 900),
+            refit,
+        });
+    }
+
+    fn politics_tab_center(bar: &TabBar, panel: Rect, id: &str) -> (f32, f32) {
+        let rect = bar
+            .layout(panel)
+            .into_iter()
+            .find(|tr| tr.id == id)
+            .unwrap_or_else(|| panic!("missing politics tab rect {id}"))
+            .rect;
+        (rect.x + rect.w * 0.5, rect.y + rect.h * 0.5)
+    }
+
+    fn click_politics_tab_center(v: &mut PoliticsView, id: &str) -> InputOutcome {
+        let panel = politics_tab_fallback(v.screen);
+        let (x, y) = politics_tab_center(&v.tabs, panel, id);
+        v.on_input(&ViewInput::PointerDown {
+            x,
+            y,
+            button: PointerButton::Left,
+        })
+    }
+
     fn snap_a() -> snapshot::Snapshot {
         serde_json::from_value(serde_json::json!({
             "date": "1941.1.1.12", "hour_index": 100,
@@ -2261,6 +2524,133 @@ mod tests {
         assert!(
             d.contains("countrypoliticsview"),
             "the real politics ROOT must render, got:\n{d}"
+        );
+    }
+
+    #[test]
+    fn politics_tab_click_switches_digest_and_visible_content() {
+        let stage = stage_with(&[]);
+        let snap = snap_a();
+        let mut v = PoliticsView::new();
+        rebind_politics(&mut v, &snap, true);
+        let cx = ctx(&stage, &snap);
+
+        let government = bound_digest(&v.bind(&cx));
+        assert!(government.contains("tab=government"), "{government}");
+        assert!(government.contains("name=communism(D)"), "{government}");
+        assert!(
+            !government.contains("National Spirit: spirit_of_genius"),
+            "default government tab must not include national-spirit rows: {government}"
+        );
+
+        let out = click_politics_tab_center(&mut v, POLITICS_TAB_NATIONAL_SPIRITS);
+        assert!(out.consumed);
+        assert!(out.needs_redraw);
+        assert!(out.commands.is_empty());
+        let spirits = bound_digest(&v.bind(&cx));
+        assert!(spirits.contains("tab=national_spirits"), "{spirits}");
+        assert!(
+            spirits.contains("National Spirit: spirit_of_genius"),
+            "national-spirit tab must show spirit rows: {spirits}"
+        );
+        assert!(
+            !spirits.contains("name=communism(D)"),
+            "national-spirit tab must not keep government party rows: {spirits}"
+        );
+
+        let out = click_politics_tab_center(&mut v, POLITICS_TAB_IDEAS_LAWS);
+        assert!(out.consumed);
+        assert!(out.needs_redraw);
+        let ideas_laws = bound_digest(&v.bind(&cx));
+        assert!(ideas_laws.contains("tab=ideas_laws"), "{ideas_laws}");
+        assert!(
+            ideas_laws.contains("Advisor: ROOT_high_command_idea"),
+            "ideas/laws tab must show appointed advisor rows: {ideas_laws}"
+        );
+        assert!(
+            !ideas_laws.contains("National Spirit: spirit_of_genius"),
+            "ideas/laws tab must not keep national-spirit rows: {ideas_laws}"
+        );
+
+        let out = click_politics_tab_center(&mut v, POLITICS_TAB_AUTONOMY);
+        assert!(out.consumed);
+        assert!(out.needs_redraw);
+        let autonomy = bound_digest(&v.bind(&cx));
+        assert!(autonomy.contains("tab=autonomy"), "{autonomy}");
+        assert!(
+            autonomy.contains("Subject SLO: autonomy_puppet"),
+            "autonomy tab must show subject rows: {autonomy}"
+        );
+        assert!(
+            autonomy.contains("Occupied FRA"),
+            "autonomy tab must show occupied-country rows: {autonomy}"
+        );
+    }
+
+    #[test]
+    fn politics_unavailable_tab_click_is_explicitly_inert() {
+        let stage = stage_with(&[]);
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "date": "1941.1.1.12", "hour_index": 100,
+            "countries": {
+                "GER": {
+                    "politics": {
+                        "ruling_party": "fascism",
+                        "party_popularities": {"fascism": 1.0}
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let mut v = PoliticsView::new();
+        rebind_politics(&mut v, &snap, true);
+
+        assert_eq!(v.tabs.selected(), Some(POLITICS_TAB_GOVERNMENT));
+        let out = click_politics_tab_center(&mut v, POLITICS_TAB_NATIONAL_SPIRITS);
+        assert!(
+            out.consumed,
+            "unavailable tab cell click is consumed by the panel"
+        );
+        assert!(
+            !out.needs_redraw,
+            "unavailable tab click must not request redraw"
+        );
+        assert_eq!(v.tabs.selected(), Some(POLITICS_TAB_GOVERNMENT));
+
+        let d = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert!(d.contains("tab=government"), "{d}");
+        assert!(
+            !d.contains("tab=national_spirits"),
+            "inert click must not select the unavailable tab: {d}"
+        );
+    }
+
+    #[test]
+    fn politics_selected_tab_persists_across_scrub_a_b_a() {
+        let stage = stage_with(&[]);
+        let (a, b) = (snap_a(), snap_b());
+        let mut v = PoliticsView::new();
+        rebind_politics(&mut v, &a, true);
+        let out = click_politics_tab_center(&mut v, POLITICS_TAB_NATIONAL_SPIRITS);
+        assert!(out.consumed && out.needs_redraw);
+
+        let da1 = bound_digest(&v.bind(&ctx(&stage, &a)));
+        rebind_politics(&mut v, &b, false);
+        let db = bound_digest(&v.bind(&ctx(&stage, &b)));
+        rebind_politics(&mut v, &a, false);
+        let da2 = bound_digest(&v.bind(&ctx(&stage, &a)));
+
+        assert!(da1.contains("tab=national_spirits"), "{da1}");
+        assert!(da1.contains("National Spirit: spirit_of_genius"), "{da1}");
+        assert!(db.contains("tab=national_spirits"), "{db}");
+        assert!(db.contains("National Spirit: war_economy"), "{db}");
+        assert!(
+            !da2.contains("war_economy"),
+            "A after scrub must not carry B-only national-spirit rows: {da2}"
+        );
+        assert_eq!(
+            da1, da2,
+            "scrub A->B->A must preserve selected politics tab without carrying B rows"
         );
     }
 

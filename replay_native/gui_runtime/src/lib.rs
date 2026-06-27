@@ -31,7 +31,7 @@ pub mod model;
 pub mod scene;
 
 pub use gridbox::{instantiate, GridFlow, GridInstances, GridSpec, ScrollBar};
-pub use hittest::{hit_test, hit_test_stack, Hit};
+pub use hittest::{hit_test, hit_test_stack, tooltip_at, tooltip_at_stack, Hit};
 pub use layout::{layout, ContentSize, ManifestContent};
 pub use loc::Loc;
 pub use markup::{expand, wrap, Expanded, Span, Wrapped, WrappedLine};
@@ -123,7 +123,9 @@ mod tests {
             eprintln!("[gui_runtime] skipped: game_assets/gui not extracted");
             return;
         }
-        let manifest = SpriteManifest { sprites: std::collections::HashMap::new() };
+        let manifest = SpriteManifest {
+            sprites: std::collections::HashMap::new(),
+        };
         let loc = Loc::new();
         for f in [
             "politics.json",
@@ -134,7 +136,10 @@ mod tests {
             let path = dir.join(f);
             let g = GuiFile::load(&path)
                 .unwrap_or_else(|e| panic!("{f} must parse via the shared parser now: {e}"));
-            assert!(!g.windows.is_empty(), "{f} parsed to a populated window set");
+            assert!(
+                !g.windows.is_empty(),
+                "{f} parsed to a populated window set"
+            );
             // and build a scene-graph from each (the form classification flows all
             // the way through `from_raw` without panicking).
             let scene = build_scene(&g, &manifest, &loc);
@@ -159,6 +164,9 @@ mod tests {
             let _ = build_scene(&g, &manifest, &loc);
             parsed += 1;
         }
-        assert!(parsed > 50, "expected the full gui corpus, parsed only {parsed}");
+        assert!(
+            parsed > 50,
+            "expected the full gui corpus, parsed only {parsed}"
+        );
     }
 }

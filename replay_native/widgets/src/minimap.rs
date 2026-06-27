@@ -55,7 +55,11 @@ pub struct Minimap {
 
 impl Minimap {
     pub fn new(panel: gui_runtime::Rect, world_w: f32, world_h: f32) -> Minimap {
-        Minimap { panel, world_w, world_h }
+        Minimap {
+            panel,
+            world_w,
+            world_h,
+        }
     }
 
     /// True iff the minimap can draw/pick (finite, positive world + panel dims AND a
@@ -89,7 +93,12 @@ impl Minimap {
         };
         let fx = self.panel.x + (self.panel.w - fw) / 2.0;
         let fy = self.panel.y + (self.panel.h - fh) / 2.0;
-        Some(gui_runtime::Rect { x: fx, y: fy, w: fw, h: fh })
+        Some(gui_runtime::Rect {
+            x: fx,
+            y: fy,
+            w: fw,
+            h: fh,
+        })
     }
 
     /// Project a WORLD point to a SCREEN pixel within the fitted map. `None` if unusable.
@@ -110,7 +119,10 @@ impl Minimap {
         }
         let u = (sx - f.x) / f.w;
         let v = (sy - f.y) / f.h;
-        Some(WorldPoint { x: u * self.world_w, y: v * self.world_h })
+        Some(WorldPoint {
+            x: u * self.world_w,
+            y: v * self.world_h,
+        })
     }
 
     /// The camera-view rect projected to SCREEN px, clipped to the fitted map. The world
@@ -123,11 +135,22 @@ impl Minimap {
             return None;
         }
         let f = self.fitted()?;
-        let p0 = self.world_to_screen(WorldPoint { x: view.x, y: view.y })?;
-        let p1 = self.world_to_screen(WorldPoint { x: view.x + view.w, y: view.y + view.h })?;
+        let p0 = self.world_to_screen(WorldPoint {
+            x: view.x,
+            y: view.y,
+        })?;
+        let p1 = self.world_to_screen(WorldPoint {
+            x: view.x + view.w,
+            y: view.y + view.h,
+        })?;
         // raw projected rect (NOT min-1 padded — an off-world view must be able to clip to
         // empty, not be forced to a 1px sliver).
-        let r = gui_runtime::Rect { x: p0.0, y: p0.1, w: (p1.0 - p0.0).max(0.0), h: (p1.1 - p0.1).max(0.0) };
+        let r = gui_runtime::Rect {
+            x: p0.0,
+            y: p0.1,
+            w: (p1.0 - p0.0).max(0.0),
+            h: (p1.1 - p0.1).max(0.0),
+        };
         let clipped = r.intersect(&f);
         if clipped.is_empty() {
             None // entirely off the fitted map → no outline (no fabrication)
@@ -153,17 +176,59 @@ pub fn plan_minimap(mm: &Minimap, view: WorldRect) -> Plan {
     let clip = Some([panel.x, panel.y, panel.w, panel.h]);
     // letterbox background fills the whole panel, then the fitted map area is a distinct
     // bg (the caller's texture draws over it).
-    p.push(crate::plan::Cmd::Rect { x: panel.x, y: panel.y, w: panel.w, h: panel.h, tint: LETTERBOX_BG, clip });
+    p.push(crate::plan::Cmd::Rect {
+        x: panel.x,
+        y: panel.y,
+        w: panel.w,
+        h: panel.h,
+        tint: LETTERBOX_BG,
+        clip,
+    });
     if let Some(f) = mm.fitted() {
-        p.push(crate::plan::Cmd::Rect { x: f.x, y: f.y, w: f.w, h: f.h, tint: PANEL_BG, clip });
+        p.push(crate::plan::Cmd::Rect {
+            x: f.x,
+            y: f.y,
+            w: f.w,
+            h: f.h,
+            tint: PANEL_BG,
+            clip,
+        });
     }
     if let Some(cr) = mm.camera_screen_rect(view) {
         // a 2px outline rect (4 thin fills via stroke at execute via Rect cmds).
         let t = 2.0;
-        p.push(crate::plan::Cmd::Rect { x: cr.x, y: cr.y, w: cr.w, h: t, tint: CAMERA_OUTLINE, clip });
-        p.push(crate::plan::Cmd::Rect { x: cr.x, y: cr.y + cr.h - t, w: cr.w, h: t, tint: CAMERA_OUTLINE, clip });
-        p.push(crate::plan::Cmd::Rect { x: cr.x, y: cr.y, w: t, h: cr.h, tint: CAMERA_OUTLINE, clip });
-        p.push(crate::plan::Cmd::Rect { x: cr.x + cr.w - t, y: cr.y, w: t, h: cr.h, tint: CAMERA_OUTLINE, clip });
+        p.push(crate::plan::Cmd::Rect {
+            x: cr.x,
+            y: cr.y,
+            w: cr.w,
+            h: t,
+            tint: CAMERA_OUTLINE,
+            clip,
+        });
+        p.push(crate::plan::Cmd::Rect {
+            x: cr.x,
+            y: cr.y + cr.h - t,
+            w: cr.w,
+            h: t,
+            tint: CAMERA_OUTLINE,
+            clip,
+        });
+        p.push(crate::plan::Cmd::Rect {
+            x: cr.x,
+            y: cr.y,
+            w: t,
+            h: cr.h,
+            tint: CAMERA_OUTLINE,
+            clip,
+        });
+        p.push(crate::plan::Cmd::Rect {
+            x: cr.x + cr.w - t,
+            y: cr.y,
+            w: t,
+            h: cr.h,
+            tint: CAMERA_OUTLINE,
+            clip,
+        });
     }
     p
 }
@@ -184,17 +249,38 @@ pub fn draw_minimap(
     let panel = mm.panel;
     let clip = Some([panel.x, panel.y, panel.w, panel.h]);
     // letterbox + fitted bg first.
-    fill_rect(r, assets.white, panel.x, panel.y, panel.w, panel.h, LETTERBOX_BG, clip);
+    fill_rect(
+        r,
+        assets.white,
+        panel.x,
+        panel.y,
+        panel.w,
+        panel.h,
+        LETTERBOX_BG,
+        clip,
+    );
     if let Some(f) = mm.fitted() {
         let fclip = Some([f.x, f.y, f.w, f.h]);
         match map {
-            Some(tex) => r.draw_sprite_frame_clipped(tex, f.x, f.y, f.w, f.h, 0, 1, [1.0; 4], fclip),
+            Some(tex) => {
+                r.draw_sprite_frame_clipped(tex, f.x, f.y, f.w, f.h, 0, 1, [1.0; 4], fclip)
+            }
             None => fill_rect(r, assets.white, f.x, f.y, f.w, f.h, PANEL_BG, fclip), // no fabricated map
         }
     }
     // camera outline on top.
     if let Some(cr) = mm.camera_screen_rect(view) {
-        stroke_rect(r, assets.white, cr.x, cr.y, cr.w, cr.h, 2.0, CAMERA_OUTLINE, clip);
+        stroke_rect(
+            r,
+            assets.white,
+            cr.x,
+            cr.y,
+            cr.w,
+            cr.h,
+            2.0,
+            CAMERA_OUTLINE,
+            clip,
+        );
     }
 }
 
@@ -204,7 +290,16 @@ mod tests {
 
     fn mm() -> Minimap {
         // a 240x100 panel for a 5632x2048 world (≈2.75:1) — letterboxed top/bottom.
-        Minimap::new(gui_runtime::Rect { x: 20.0, y: 600.0, w: 240.0, h: 100.0 }, 5632.0, 2048.0)
+        Minimap::new(
+            gui_runtime::Rect {
+                x: 20.0,
+                y: 600.0,
+                w: 240.0,
+                h: 100.0,
+            },
+            5632.0,
+            2048.0,
+        )
     }
 
     #[test]
@@ -219,11 +314,40 @@ mod tests {
 
     #[test]
     fn unusable_minimap_disables_everything() {
-        let bad = Minimap::new(gui_runtime::Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }, 0.0, -5.0);
+        let bad = Minimap::new(
+            gui_runtime::Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+            },
+            0.0,
+            -5.0,
+        );
         assert!(!bad.is_usable());
         assert!(bad.fitted().is_none());
-        assert!(bad.pick(WorldRect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }, 10.0, 10.0).is_none());
-        assert!(plan_minimap(&bad, WorldRect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }).is_empty());
+        assert!(bad
+            .pick(
+                WorldRect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 1.0,
+                    h: 1.0
+                },
+                10.0,
+                10.0
+            )
+            .is_none());
+        assert!(plan_minimap(
+            &bad,
+            WorldRect {
+                x: 0.0,
+                y: 0.0,
+                w: 1.0,
+                h: 1.0
+            }
+        )
+        .is_empty());
     }
 
     #[test]
@@ -231,7 +355,18 @@ mod tests {
         let m = mm();
         let f = m.fitted().unwrap();
         // centre of the fitted map → world centre.
-        let p = m.pick(WorldRect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }, f.x + f.w / 2.0, f.y + f.h / 2.0).unwrap();
+        let p = m
+            .pick(
+                WorldRect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 1.0,
+                    h: 1.0,
+                },
+                f.x + f.w / 2.0,
+                f.y + f.h / 2.0,
+            )
+            .unwrap();
         assert!((p.x - 5632.0 / 2.0).abs() < 1.0);
         assert!((p.y - 2048.0 / 2.0).abs() < 1.0);
     }
@@ -241,7 +376,18 @@ mod tests {
         let m = mm();
         // a click in the top letterbox margin (above the fitted map) → None.
         let click_y = m.panel.y + 1.0; // inside the panel but above fitted (letterbox)
-        assert!(m.pick(WorldRect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }, m.panel.x + 120.0, click_y).is_none());
+        assert!(m
+            .pick(
+                WorldRect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 1.0,
+                    h: 1.0
+                },
+                m.panel.x + 120.0,
+                click_y
+            )
+            .is_none());
     }
 
     #[test]
@@ -249,17 +395,34 @@ mod tests {
         let m = mm();
         // a camera entirely to the right of the world (x beyond world_w) clamps to the
         // right edge for both corners -> empty intersection -> None (no 1px fabrication).
-        let off = WorldRect { x: 99999.0, y: 99999.0, w: 10.0, h: 10.0 };
+        let off = WorldRect {
+            x: 99999.0,
+            y: 99999.0,
+            w: 10.0,
+            h: 10.0,
+        };
         assert!(m.camera_screen_rect(off).is_none());
         // a non-finite view also yields None.
-        assert!(m.camera_screen_rect(WorldRect { x: f32::NAN, y: 0.0, w: 1.0, h: 1.0 }).is_none());
+        assert!(m
+            .camera_screen_rect(WorldRect {
+                x: f32::NAN,
+                y: 0.0,
+                w: 1.0,
+                h: 1.0
+            })
+            .is_none());
     }
 
     #[test]
     fn camera_rect_clips_to_fitted_map() {
         let m = mm();
         // a camera view larger than the world clamps its screen rect to the fitted map.
-        let huge = WorldRect { x: -1000.0, y: -1000.0, w: 9000.0, h: 9000.0 };
+        let huge = WorldRect {
+            x: -1000.0,
+            y: -1000.0,
+            w: 9000.0,
+            h: 9000.0,
+        };
         let cr = m.camera_screen_rect(huge).unwrap();
         let f = m.fitted().unwrap();
         assert!(cr.x >= f.x - 0.01 && cr.y >= f.y - 0.01);

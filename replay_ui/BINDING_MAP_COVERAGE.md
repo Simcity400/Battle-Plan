@@ -41,8 +41,8 @@
   SAVE-ONLY** — several schema-present LIVE/save domains are unfed in it (the single most important
   calibration below). A field unavailable *only because this demo snapshot did not fold its domain* is
   a **demo-snapshot artifact (FOLD-IN/RECONCILE)**, not a true schema gap.
-- **Codex** adversarially reviewed each doc (read-only, `model_reasoning_effort=xhigh`,
-  `service_tier=priority`) and this consolidation; see §5.
+- Historical adversarial review covered each doc and this consolidation; see §5.
+  Codex-native sessions must use normal sub-agent/partner review, not the old CLI workflow.
 
 ### 0.1 The demo-snapshot artifact calibration (critical — do not inflate the gap count)
 
@@ -243,7 +243,7 @@ Each doc carries its own provably-exhaustive per-view element-count table (walk 
 | gap | needed by | note |
 |---|---|---|
 | `alerts[]` per-country active-alert ledger (type/severity/target) | alerts strip, topbar alert counters | recomputed live per player; needs a live alerts adapter or memory crack |
-| `map.front_lines[]` (compute pass unfed) | front-lines map mode, theatre selector | `D`-derivable from control adjacency; compute pass not run |
+| real the game front-line geometry/styling coverage | front-lines map mode, theatre selector | native overlay has derived controller-boundary fallback plus exact `map.front_lines[]` geometry ingestion; real extraction coverage and side-by-side proof remain open |
 | `states.<id>.resources` (per-state raw deposits; null 0/1081) | Resources map mode, state resource rows, topbarresources | `S`, parser-unfed; do NOT substitute country `economy.resources` |
 | per-participant **war casualties** & **war score** split | war_overview, diplomacy war cards | `diplomacy_world.wars` carries aggregate; per-side split live-extractable |
 | operative `code_name` / spymaster id | operative, intel_agency | not in `intel.operatives[]` shape; live/save addable |
@@ -286,11 +286,11 @@ Each doc carries its own provably-exhaustive per-view element-count table (walk 
 
 ---
 
-## 5. Codex round (consolidation-level)
+## 5. Historical review round (consolidation-level)
 
-**Standing rule applied:** every Codex call in this sweep used Mode A with
-`-c model_reasoning_effort=xhigh -c service_tier=priority`, a unique `-o` file, and an exit-0 +
-non-empty verify (retry-once; proceed-and-note on a double timeout).
+**Historical note:** this records completed reviews from the old Claude-era
+workflow. Codex-native sessions must use normal sub-agents/partner review and
+must not run the old local CLI command.
 
 **Per-doc reviews (folded into each doc's "Codex round"):** notable corrections Codex caught and the
 children fixed — strategic-air per-type plane counts re-badged proxy→**derived** (aggregate

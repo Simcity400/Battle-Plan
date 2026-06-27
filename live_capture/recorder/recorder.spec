@@ -41,6 +41,8 @@ datas = [
 hiddenimports = [
     "live_capture.replay_writer",
     "live_capture.capture",
+    "live_capture.recorder.cadence",
+    "live_capture.recorder.manifest_diagnostics",
     "live_capture.assembler",
     "live_capture.continuity",
     "live_capture.registry",

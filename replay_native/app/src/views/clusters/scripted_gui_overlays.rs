@@ -1365,6 +1365,7 @@ fn container_node(name: &str, rect: Rect, background: Option<String>) -> Node {
     Node {
         name: name.to_string(),
         raw_kind: "containerWindowType".into(),
+        tooltip: None,
         kind: ElementKind::Container { background },
         pos: (rect.x, rect.y),
         size_w: Some(gui_runtime::model::Scalar::Int(rect.w as i64)),
@@ -1391,6 +1392,7 @@ fn text_node(
     Node {
         name: name.to_string(),
         raw_kind: "instantTextBoxType".into(),
+        tooltip: None,
         kind: ElementKind::Text(TextSpec {
             text: text.to_string(),
             raw: text.to_string(),

@@ -46,8 +46,8 @@ against the same real save-backed snapshot family the sibling binding maps used
 (`replay/snapshots/replay/000017005619.snapshot.json`, `schema_version "1"`, date `1941.4.13.11`, GER 1941
 channel), and the `map_pipeline/assets/*.json` static products (`state_meta.json` keyed by state id →
 `{name_key, provinces[], vp_total, victory_points{pid:vp}, state_category, manpower}`; `province_to_state.json`
-flat `{pid: state_id}`; `country_colors.json` `{TAG:[r,g,b]}`). **Adversarially reviewed by Codex** (read-only,
-Mode-A one-shot, 2026-06-26); the asked/agreed/refuted/fixed log is the final section.
+flat `{pid: state_id}`; `country_colors.json` `{TAG:[r,g,b]}`). **Adversarially reviewed** in a
+historical review round on 2026-06-26; the asked/agreed/refuted/fixed log is the final section.
 
 **The decisive facts that drive the badges in these seven views:**
 
@@ -249,7 +249,7 @@ per PLAN §B.9.
 | **Buildings (factories/infra/forts/airbase/…)** | `states.<id>.buildings.{infrastructure,industrial_complex,arms_factory,air_base,…}` (+ `province_buildings` for naval base/forts) | state-recolor level LUT (per selected building) | **exact** | `buildings` is `M/S` (live buildings_live). One sub-mode per building type. |
 | **Resources** | `states.<id>.resources.{steel,oil,aluminium,tungsten,chromium,rubber,coal}` | state-recolor deposit LUT | **unavailable** (current data) | Schema-present (`states.<id>.resources`, "raw deposits") but **always `null` (0/1081)** in the inspected family. Do NOT substitute country-level `economy.resources.produced` (national aggregate ≠ per-state deposit). Becomes `exact` once the per-state resource parser feeds it. |
 | **Weather (temp / precip / snow)** | `weather.provinces.<pid>.{temp_c,precip,snow}` (M) / `weather.regions.<rid>.{phenom,phenom_name,active}` (M) | province/region weather LUT | **proxy** | §B.9: **exact VALUES, proxy vs the game's exact visual weather mode**. `weather.provinces.*` is `M` (live per-province); `weather.regions.*.temp_c` is a retracted reader (`null`). The recolor reproduces the values, not the game's exact pixel shader → proxy. |
-| **Front lines** | `map.front_lines[]` (derived from control adjacency) | front-line overlay | **derived** | §B.9: a derived proxy, **not** the battleplan front. `map.front_lines` is `D` (null until the compute pass runs) → currently `unavailable`, upgrades to `derived` when the front-line pass exists. |
+| **Front lines** | explicit `map.front_lines[]` measured geometry, else controller-boundary derivation from province/state control | front-line overlay | **exact / derived / unavailable** | §B.9: measured `map.front_lines[]` geometry ingests as exact when present. Otherwise the native overlay can derive controller-boundary front segments from measured control data. Missing or malformed explicit geometry badges unavailable; this is still not a side-by-side-proven reproduction of the game's battleplan front rendering. |
 | **Faction / wars / subjects** | `diplomacy_world.{factions,wars,subjects}` | country-granular faction/war LUT | **exact** (country granularity) | §B.9. `diplomacy_world` populated (75 wars / 4 factions / 5 subjects in sample). Colour by faction membership / belligerent side / overlord. |
 | **Air superiority** | `naval_air.air_superiority` (`{strategic_region_id: {controller, …}}`) → region geometry via `[static map meta]` `strategic_region_meta.json` | region-recolor LUT (badged) | **proxy** | §B.9: **strategic-region granularity**. `naval_air.air_superiority` is `M` with `confidence` never `"exact"`. The optional `naval_air.air_superiority_model.*` is a `D` display ESTIMATE. |
 | **Naval (sea-zone dominance)** | `naval_air.region_control` (`{strategic_region_id: [{controller,…}]}`) → region geometry | sea-region-recolor LUT (badged) | **proxy** | §B.9: region only. `naval_air.region_control` is `M`, region-proxy confidence. |
@@ -298,8 +298,9 @@ per PLAN §B.9.
   and the `background`/`gridboxtype`/`slotsize` layout nodes inside the configurable windows.
 
 > **Schema-gap (capture work-items) for map modes:** (1) *per-state `resources`* unfed (resources mode
-> `unavailable`); (2) *`map.front_lines`* compute pass not run (front-lines mode `derived`→currently
-> `unavailable`); (3) *exact per-province supply* is a proven wall (supply mode permanently `proxy`); (4)
+> `unavailable`); (2) *real the game front-line extraction/styling* not proven (the native renderer now has
+> measured `map.front_lines[]` ingestion plus a derived controller-boundary fallback); (3) *exact
+> per-province supply* is a proven wall (supply mode permanently `proxy`); (4)
 > *air-superiority / naval region control* are region-proxy by nature (permanently `proxy`); (5) any
 > configurable mode visualising a domain we don't capture (e.g. *radar coverage* — no per-state radar-range
 > field beyond `buildings.radar_station` level) badges `unavailable`.
@@ -331,16 +332,24 @@ combat/mission detail values are `unavailable`; the enumeration/identity/strengt
 |---|---|---|---|---|
 | `unit_counter.count_txt` (instantTextboxType) | count of `divisions[]` in this stack (filtered by `location_province` + owner) | int | **derived** | The number on the counter = how many divisions are stacked here; the adapter groups `divisions[]` by province. |
 | `unit_counter.bar_org` (iconType, `GFX_mapicon_unit_bar_org`) | aggregate `divisions[].organisation` of the stack | progressbar-fraction | **exact** | `organisation` is `M` (live `/100000`). Stack org bar = mean/sum org fraction. |
-| `unit_counter.bar_str` (iconType, `GFX_mapicon_unit_bar_str`) | aggregate `divisions[].strength` of the stack | progressbar-fraction | **exact** | `strength` is `M/S`. |
+| `unit_counter.bar_str` (iconType, `GFX_mapicon_unit_bar_str`) | aggregate `divisions[].strength` of the stack | progressbar-fraction | **exact / unavailable** | Exact only when every measured stack strength is a fractional save-style value in `0..=1`. Memory-channel strength can be manpower-scaled, so values outside `0..=1` badge unavailable at the real counter anchor instead of fabricating a progressbar percent. |
 | `unit_counter.flag` / `large_flag` (iconType, `GFX_mapicon_unit_flag_stripe` / `_large_flag_stripe`) | the stack owner `divisions[].owner` `<TAG>` | flag-stripe | **exact** | Owner TAG → ideology-striped flag. `large_flag` for the zoomed/HQ counter. |
 | `unit_counter.counter_ideology` (iconType, `GFX_onmap_unit_counter_ideology`) | `countries.<owner>.politics.ruling_party` (ideology) | category (ideology→frame) | **derived** | Ideology tint of the counter. |
 | `unit_counter.type` (iconType, `GFX_tiled_window_transparent` placeholder) | dominant `divisions[].template_role` of the stack (NATO symbol) | category (role→NATO sprite) | **derived** | The unit-type symbol; `template_role` (`infantry`/`armor`/…) is `S`, resolved via the unit-icon map. |
-| `unit_counter.general_portrait` (iconType, `GFX_portrait_GER_oswald_lutz` placeholder) | the commanding general of the stack ← `order_of_battle.armies[].leader` → `commanders.generals[].portrait_gfx` | portrait-sprite | **unavailable** (current data) | Needs `commanders` (not folded in the inspected snapshot) + portrait asset extraction. Generic frame until fed. |
+| `unit_counter.general_portrait` (iconType, `GFX_portrait_GER_oswald_lutz` placeholder) | the commanding general of the stack ← `order_of_battle.armies[].leader` → `commanders.generals[].portrait_gfx` | portrait-sprite | **partial** | Native mapicons now join OOB/division anchors to commander portraits and emit exact art or explicit sprite misses only when a real province anchor exists; unanchored data badges unavailable. Full stack commander selection/visual parity remains open. |
+| `unit_counter.formation_insignia` (logical native mapicon sprite entity) | `order_of_battle.armies[]` / `army_groups[]` insignia fields or one-based `icon` frame + OOB/division province anchor | sprite / frame | **exact / derived / unavailable** | Explicit `insignia_gfx`/`emblem_gfx` is exact; one-based army/army-group shield frame is derived; missing/generic/out-of-range art stays an explicit miss. No anchor → unavailable badge, not a province-less shield. |
 | `unit_counter.low_supply` (iconType, `GFX_unitcounter_supply_status_strip`) | `divisions[].supply_status` (M*) / `supply.by_province[<pid>]` proxy | category (supply band→frame) | **proxy** | `supply_status` is `M*` (unfed); falls back to the `supply.by_province` division-province PROXY → proxy, never exact (exact per-province supply is a wall). |
 | `unit_counter.attrition` (iconType, `GFX_unit_attrition`) | division in attrition terrain (derived from `location_province` terrain + supply) | visibility | **unavailable** | No stored per-division attrition flag (`divisions[]` has no attrition leaf); terrain attrition is a runtime computation. |
 | `unit_counter.onmap_digin_icon` (iconType, `GFX_onmap_digin_icon`) | `divisions[].dig_in` (>0) | visibility | **exact** | `dig_in` is `S` (divisions_full). Shown when entrenched. |
 | `unit_counter.onmap_training_icon` (iconType, `GFX_onmap_training_icon`) | division training state | visibility | **unavailable** | No stored training-state flag on `divisions[]` (training is a deployment-conveyor state; `military.deployment_queue` is `S` but not per-onmap-division). |
 | `unit_counter.hq_badge` / `leader_enroute` (iconType, `GFX_hq_badge_bg` / `GFX_leader_en_route`) | the stack is an HQ (template `is_army_hq`) / leader travelling | visibility | **derived** / **unavailable** | HQ badge derives from `designs.division_templates[].is_army_hq` join; leader-enroute (a moving commander) is not a stored field → unavailable. |
+
+Native status: land `unit_counter.count_txt`, `flag`, `bar_org`, `bar_str`, `type`, and `onmap_digin_icon`
+now emit logical entities only at real owned division counter anchors. Count/type are derived groupings; owner,
+org, fractional save-style strength, and positive dig-in are exact when the source fields are measured. Missing org,
+missing strength, or memory-scaled strength outside `0..=1` badges at the anchored counter; role/dig-in gaps do the
+same. Foreign-owner and target-only/no-anchor divisions do not place counter visuals.
+
 | **`unit_counter_navy.*`** — `count_txt` / `capital_count_txt` (`"99-99"`), `bar_org`, `bar_str`, `flag`/`large_flag`, `counter_ideology`, `capital_ship` (`GFX_capital_ship_icon`), `mission_type` (`GFX_onmap_mission_unit_counter_types`), `pride_of_the_fleet_icon` | the fleet/task-force at this sea province ← `order_of_battle.fleets[].task_forces[].ships[]` (count, org, strength, owner) + `countries.<owner>.extra.pride_of_the_fleet` | int / progressbar / flag / category | **exact** (ship count/org/str/owner — where OOB fed) / **unavailable** (mission_type, pride when `extra` unfed) | `order_of_battle.fleets` is `M/S` (live-first); per-ship org/str exact. `capital_count_txt`=capital-vs-screen split. `mission_type` (the task-force's current mission) is a `cached` runtime field (SCHEMA §12, non-authoritative) → unavailable/proxy. `pride_of_the_fleet` needs `extra` (unfed). |
 | `unit_counter_navy.spotting_bar_fg` (iconType, `GFX_spotting_bar`) | enemy-fleet spotting progress | progressbar-fraction | **unavailable** | Spotting/detection is a live fog-of-war computation, not stored. |
 | `unit_counter_navy.air_base_icon` (buttonType) + `wings_box` (gridbox) → wing rows | carrier air wings ← `order_of_battle.air_wings[]` on this carrier | count | **unavailable** (current data) | `air_wings` is `S` and not folded in the inspected snapshot → "—"; binds when fed. |
@@ -421,6 +430,9 @@ combat/mission detail values are `unavailable`; the enumeration/identity/strengt
   (`GFX_onmap_action_icon`/`_air_action_icon`), `training`/`training_will_stop_at_max_icon`/`no_mission`/
   `no_region` (air-wing order overlays), `spotting_bar_bg` (`GFX_spotting_bar_bg`/`_small`), the
   `spotting_bar_container`/`spotting_bar_fg_container` structural windows.
+  The native replay also emits anchored logical land-counter entities for `count_txt`, `flag`, `bar_org`,
+  `bar_str`, `type`, `onmap_digin_icon`, and `formation_insignia`; that does not close extraction/render parity
+  for the full GUI counter chrome listed here.
 - **Building/facility frames + mutation buttons (inert):** `bg_btn`/`bg_strat_btn`/`background_btn` frames; the
   supply-node interaction buttons `move_capital_supply_node`, `toggle_enable_node_for_allies`,
   `upgrade_railways_to_capital`, `set_hub_motorization_priority` + `add_btn` (all supply MUTATIONS → inert);
@@ -576,7 +588,9 @@ inspected snapshot family). Each is a capture work-item, never a silent hole.
   exists; would need a live alerts adapter or an alerts memory crack.*
 - **`states.<id>.resources` is always `null` (0/1081)** in the inspected family — needed for the Resources map
   mode + `resource_mapicon`. Schema-present (`S`), parser-unfed. (Do NOT substitute country `economy.resources`.)
-- **`map.front_lines[]` is `D` and unfed** (compute pass not run) — needed for the Front-lines map mode.
+- **Front-line geometry** — the native renderer now has a derived controller-boundary fallback and exact
+  `map.front_lines[]` measured-geometry ingestion path. Product parity still needs real the game front extraction
+  coverage and side-by-side styling proof.
 - **Exact per-province supply NUMBER** — a **proven wall** (`FULL_GAME_COVERAGE §B2`; transient routing-solver
   output, not stored). Forces every supply map-mode/icon to `proxy` (`supply.by_province`). *Hard limit, not a
   TODO.*
@@ -616,12 +630,14 @@ inspected snapshot family). Each is a capture work-item, never a silent hole.
 
 ---
 
-## Codex round (adversarial review, 2026-06-26)
+## Historical review round (adversarial review, 2026-06-26)
 
-Mode-A one-shot, read-only, unique `-o` file, run from the mod-stats repo root so Codex could read
-`replay/schema.py` directly. (Two earlier attempts timed out at 5 min while Codex was running a PowerShell
-element-name cross-check of every `.gui` against the doc; a third, tighter attempt — restricted to the seven
-highest-risk binding claims — returned cleanly.) **The prompt asked Codex to refute three things:** (a) any
+Historical note: this records a completed adversarial review from the old
+Claude-era workflow. Codex-native sessions must use normal sub-agents/partner
+review and must not run the old local CLI command. Two earlier attempts timed out
+while running an element-name cross-check of every `.gui` against the doc; a
+third, tighter attempt restricted to the seven highest-risk binding claims
+returned cleanly. **The review asked to refute three things:** (a) any
 `.gui` element MISSED (cross-check each view's `stats.element_type_counts`); (b) field-path bindings + M/S/D
 source tags vs `replay/schema.py` `FIELD_SOURCES`; (c) any "unavailable" badge that is actually a fed field.
 
@@ -631,9 +647,9 @@ cited `schema.py` line:
 | claim Codex checked | verdict | `schema.py` citation |
 |---|---|---|
 | `states.*.resources` = `S` and null/unfed → Resources map mode + `resource_mapicon` `unavailable` | **OK** | line 560 (`S`); field nullable line 1173 |
-| `map.front_lines` = `D` → front-lines mode "currently `unavailable`, upgrades to `derived`" | **OK** | line 721 (`D`, null until computed) |
+| `map.front_lines` = `D` plus derived controller-boundary fallback | **OK with implementation update** | line 721 (`D`, null until computed). Native overlay now renders exact measured `map.front_lines[]` geometry when fed, or derived controller-boundary segments from measured control data; real the game extraction/styling proof remains open. |
 | `order_of_battle.fleets` = `M/S` + `ships` = `M` (live-first → bind) vs `air_wings` = `S` (save-only → unfed/`unavailable`) | **OK** | lines 503 / 509 / 506 — the live-first-vs-save-unfed split is correct |
-| `divisions.*.organisation` = `M`, `.strength` = `M/S` (org/str bars exact); `.dig_in` = `S` (dig-in icon exact) | **OK** | lines 589 / 590 / 607 |
+| `divisions.*.organisation` = `M`, `.strength` = `M/S`; `.dig_in` = `S` | **OK with channel caveat** | lines 589 / 590 / 607. Org bars are exact; strength bars are exact only for fractional save-style values. Memory-scaled strength is not converted into a fake progressbar percent. |
 | `supply.by_province` = `M`; exact per-province supply is a **wall** → all supply icons/modes `proxy` | **OK** | line 630 + solver-input note 631-636 + §13.2 wall 1382-1385 |
 | `intel.agency.capacity.defense` = `M/S` → counter-intel rating `exact` | **OK** | line 366 |
 | binding intel-ledger industry counts to real `economy.factories` is **WRONG** → must be `unavailable` (intel ESTIMATE) | **OK (refute-the-alternative)** | real factories `S` 194-196; `intel_ledger` has only derived confidence/cipher fields 681-687, no intel-scaled industry counts |
@@ -646,6 +662,6 @@ totals (6/18/11/16/9/178) match the parsed `stats` exactly.
 **Net:** Codex confirmed every high-risk binding path + fidelity badge against `FIELD_SOURCES` with no
 refutation; the one error (mapicons 383, not 373) was caught and fixed via my own exhaustiveness check. All
 node/template bindings use exact `FIELD_SOURCES` dotted paths; every `unavailable`/`proxy` is either a named
-schema gap (ledger above) or a §B.9/§G/§10 hard limit. The front-lines mode `unavailable`-until-computed, the
+schema gap (ledger above) or a §B.9/§G/§10 hard limit. The front-lines exact-ingestion/derived-fallback split, the
 supply level-exact/number-proxy split, and the live-first (`fleets`/`ships`) vs save-unfed (`air_wings`/
 `commanders`) OOB distinction are all corroborated.

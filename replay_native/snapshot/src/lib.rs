@@ -156,10 +156,14 @@ pub struct Store {
 
 #[derive(Clone)]
 enum Backend {
-    Dir { root: PathBuf },
+    Dir {
+        root: PathBuf,
+    },
     /// A single opened, verified `.battleplan` (Arc so the `Store: Clone` contract
     /// the app/scrub rely on stays cheap and shares one opened/verified archive).
-    Replay { container: Arc<Container> },
+    Replay {
+        container: Arc<Container>,
+    },
 }
 
 impl std::fmt::Debug for Store {
@@ -188,17 +192,23 @@ impl Store {
             match Container::open(&path, &ExpectedIdentity::default()) {
                 Ok(c) => {
                     return Store {
-                        backend: Backend::Replay { container: Arc::new(c) },
+                        backend: Backend::Replay {
+                            container: Arc::new(c),
+                        },
                     }
                 }
                 Err(_) => {
                     // fall through to a Dir backend so the error is reported on the
                     // first `index`/`load` call (consistent with the old contract).
-                    return Store { backend: Backend::Dir { root: path } };
+                    return Store {
+                        backend: Backend::Dir { root: path },
+                    };
                 }
             }
         }
-        Store { backend: Backend::Dir { root: path } }
+        Store {
+            backend: Backend::Dir { root: path },
+        }
     }
 
     /// Open a `.battleplan` with explicit identity expectations (build/schema/mod).
@@ -209,7 +219,9 @@ impl Store {
     ) -> Result<Self, LoadError> {
         let c = Container::open(path, expected)?;
         Ok(Store {
-            backend: Backend::Replay { container: Arc::new(c) },
+            backend: Backend::Replay {
+                container: Arc::new(c),
+            },
         })
     }
 

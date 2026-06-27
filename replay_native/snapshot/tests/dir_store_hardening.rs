@@ -44,15 +44,21 @@ fn dir_load_file_rejects_traversal_outside_game_dir() {
     // A "secret" file OUTSIDE the game dir (a sibling under the store root) that an
     // attacker-tampered index `file` might try to reach via `..`.
     let secret = tmp.path.join("secret.snapshot.json");
-    fs::write(&secret, serde_json::to_string(&json!({"owner":"LEAKED"})).unwrap()).unwrap();
+    fs::write(
+        &secret,
+        serde_json::to_string(&json!({"owner":"LEAKED"})).unwrap(),
+    )
+    .unwrap();
 
     // a normal game dir with a legitimate snapshot
     let gdir = tmp.path.join("g");
     fs::create_dir_all(&gdir).unwrap();
     fs::write(
         gdir.join("000000000100.snapshot.json"),
-        serde_json::to_string(&json!({"game_id":"g","hour_index":100,"states":{"1":{"owner":"FRA"}}}))
-            .unwrap(),
+        serde_json::to_string(
+            &json!({"game_id":"g","hour_index":100,"states":{"1":{"owner":"FRA"}}}),
+        )
+        .unwrap(),
     )
     .unwrap();
 
@@ -68,7 +74,9 @@ fn dir_load_file_rejects_traversal_outside_game_dir() {
     )
     .unwrap();
     assert!(
-        store.load_file("g", "seg3/000000000200.snapshot.json").is_ok(),
+        store
+            .load_file("g", "seg3/000000000200.snapshot.json")
+            .is_ok(),
         "a legitimate segment-prefixed (sub-dir) file must still load"
     );
 
@@ -99,5 +107,8 @@ fn dir_load_by_hour_rejects_negative_synthesized_name() {
     fs::create_dir_all(&gdir).unwrap();
     let store = Store::open(&tmp.path);
     let r = store.load("g", -1);
-    assert!(r.is_err(), "a missing/negative hour must error, never panic or traverse");
+    assert!(
+        r.is_err(),
+        "a missing/negative hour must error, never panic or traverse"
+    );
 }

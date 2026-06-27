@@ -32,7 +32,7 @@
 
 use render::Renderer;
 
-use crate::common::{Atom, AssetRef, DrawAssets, DIM_TINT, TEXT_TINT, UNAVAIL_TINT};
+use crate::common::{AssetRef, Atom, DrawAssets, DIM_TINT, TEXT_TINT, UNAVAIL_TINT};
 use crate::plan::{Cmd, Plan, SpriteDraw};
 
 /// An action/option button's state (Codex N5: options need semantics beyond a label).
@@ -64,16 +64,32 @@ pub struct Action {
 
 impl Action {
     pub fn enabled(id: impl Into<String>, caption: Atom) -> Action {
-        Action { id: id.into(), caption, state: ActionState::Enabled }
+        Action {
+            id: id.into(),
+            caption,
+            state: ActionState::Enabled,
+        }
     }
     pub fn disabled(id: impl Into<String>, caption: Atom) -> Action {
-        Action { id: id.into(), caption, state: ActionState::Disabled }
+        Action {
+            id: id.into(),
+            caption,
+            state: ActionState::Disabled,
+        }
     }
     pub fn unavailable(id: impl Into<String>, caption: Atom) -> Action {
-        Action { id: id.into(), caption, state: ActionState::Unavailable }
+        Action {
+            id: id.into(),
+            caption,
+            state: ActionState::Unavailable,
+        }
     }
     pub fn already_taken(id: impl Into<String>, caption: Atom) -> Action {
-        Action { id: id.into(), caption, state: ActionState::AlreadyTaken }
+        Action {
+            id: id.into(),
+            caption,
+            state: ActionState::AlreadyTaken,
+        }
     }
 }
 
@@ -89,7 +105,12 @@ pub struct PopupCard {
 
 impl PopupCard {
     pub fn new(title: Atom) -> PopupCard {
-        PopupCard { title, media: AssetRef::None, body: Vec::new(), actions: Vec::new() }
+        PopupCard {
+            title,
+            media: AssetRef::None,
+            body: Vec::new(),
+            actions: Vec::new(),
+        }
     }
     pub fn media(mut self, m: AssetRef) -> PopupCard {
         self.media = m;
@@ -121,20 +142,31 @@ impl PopupCard {
             h: MEDIA_H.min((area.h - header_h - pad * 2.0) * 0.4).max(0.0),
         });
 
-        let body_y0 = media_box.map(|m| m.y + m.h + 8.0).unwrap_or(area.y + header_h + pad);
+        let body_y0 = media_box
+            .map(|m| m.y + m.h + 8.0)
+            .unwrap_or(area.y + header_h + pad);
 
         // headless wrap: a char budget from the panel width (≈ APPROX_CHAR_W px/char).
         let char_budget = ((inner_w / APPROX_CHAR_W) as usize).max(8);
         let mut body_lines = Vec::new();
         for section in &self.body {
             if section.is_unavailable() {
-                body_lines.push(BodyLine { text: crate::common::NOT_CAPTURED.to_string(), unavailable: true });
+                body_lines.push(BodyLine {
+                    text: crate::common::NOT_CAPTURED.to_string(),
+                    unavailable: true,
+                });
             } else {
                 for line in wrap_chars(section.as_str(), char_budget) {
-                    body_lines.push(BodyLine { text: line, unavailable: false });
+                    body_lines.push(BodyLine {
+                        text: line,
+                        unavailable: false,
+                    });
                 }
             }
-            body_lines.push(BodyLine { text: String::new(), unavailable: false }); // blank between sections
+            body_lines.push(BodyLine {
+                text: String::new(),
+                unavailable: false,
+            }); // blank between sections
         }
 
         // action buttons stacked at the bottom.
@@ -157,7 +189,12 @@ impl PopupCard {
 
         LaidCard {
             area,
-            header: gui_runtime::Rect { x: area.x, y: area.y, w: area.w, h: header_h },
+            header: gui_runtime::Rect {
+                x: area.x,
+                y: area.y,
+                w: area.w,
+                h: header_h,
+            },
             title: self.title.clone(),
             media: self.media.clone(),
             media_box,
@@ -204,7 +241,11 @@ impl LaidCard {
     pub fn pick_action(&self, x: f32, y: f32) -> Option<String> {
         for ar in &self.action_rects {
             if ar.rect.contains(x, y) {
-                let pickable = self.actions.get(ar.index).map(|a| a.state.is_pickable()).unwrap_or(false);
+                let pickable = self
+                    .actions
+                    .get(ar.index)
+                    .map(|a| a.state.is_pickable())
+                    .unwrap_or(false);
                 return pickable.then(|| ar.id.clone());
             }
         }
@@ -234,20 +275,63 @@ pub fn plan_card(card: &LaidCard) -> Plan {
     let clip = Some([a.x, a.y, a.w, a.h]);
 
     // panel + header.
-    p.push(Cmd::Rect { x: a.x, y: a.y, w: a.w, h: a.h, tint: CARD_BG, clip });
-    p.push(Cmd::Rect { x: card.header.x, y: card.header.y, w: card.header.w, h: card.header.h, tint: HEADER_BG, clip });
-    p.push(Cmd::Text { x: card.header.x + 10.0, y: card.header.y + 7.0, text: card.title.as_str().into(), tint: card.title.tint(TEXT_TINT), clip });
+    p.push(Cmd::Rect {
+        x: a.x,
+        y: a.y,
+        w: a.w,
+        h: a.h,
+        tint: CARD_BG,
+        clip,
+    });
+    p.push(Cmd::Rect {
+        x: card.header.x,
+        y: card.header.y,
+        w: card.header.w,
+        h: card.header.h,
+        tint: HEADER_BG,
+        clip,
+    });
+    p.push(Cmd::Text {
+        x: card.header.x + 10.0,
+        y: card.header.y + 7.0,
+        text: card.title.as_str().into(),
+        tint: card.title.tint(TEXT_TINT),
+        clip,
+    });
 
     // media.
     if let Some(mb) = card.media_box {
-        p.push(Cmd::Rect { x: mb.x, y: mb.y, w: mb.w, h: mb.h, tint: MEDIA_BG, clip });
+        p.push(Cmd::Rect {
+            x: mb.x,
+            y: mb.y,
+            w: mb.w,
+            h: mb.h,
+            tint: MEDIA_BG,
+            clip,
+        });
         match &card.media {
             AssetRef::Named(name) => {
-                p.push(Cmd::Sprite { x: mb.x, y: mb.y, w: mb.w, h: mb.h, name: Some(name.clone()), tint: [1.0; 4], clip });
+                p.push(Cmd::Sprite {
+                    x: mb.x,
+                    y: mb.y,
+                    w: mb.w,
+                    h: mb.h,
+                    name: Some(name.clone()),
+                    tint: [1.0; 4],
+                    clip,
+                });
             }
             AssetRef::Unavailable => {
                 // a visible no-data media placeholder (distinct from no-media).
-                p.push(Cmd::Sprite { x: mb.x, y: mb.y, w: mb.w, h: mb.h, name: None, tint: [1.0; 4], clip });
+                p.push(Cmd::Sprite {
+                    x: mb.x,
+                    y: mb.y,
+                    w: mb.w,
+                    h: mb.h,
+                    name: None,
+                    tint: [1.0; 4],
+                    clip,
+                });
             }
             AssetRef::None => {}
         }
@@ -257,8 +341,18 @@ pub fn plan_card(card: &LaidCard) -> Plan {
     let (bx, mut by) = card.body_origin;
     for line in &card.body_lines {
         if !line.text.is_empty() {
-            let tint = if line.unavailable { UNAVAIL_TINT } else { TEXT_TINT };
-            p.push(Cmd::Text { x: bx, y: by, text: line.text.clone(), tint, clip });
+            let tint = if line.unavailable {
+                UNAVAIL_TINT
+            } else {
+                TEXT_TINT
+            };
+            p.push(Cmd::Text {
+                x: bx,
+                y: by,
+                text: line.text.clone(),
+                tint,
+                clip,
+            });
         }
         by += LINE_H;
     }
@@ -275,7 +369,14 @@ pub fn plan_card(card: &LaidCard) -> Plan {
             ActionState::Disabled | ActionState::Unavailable => ACTION_DISABLED,
             ActionState::AlreadyTaken => ACTION_TAKEN,
         };
-        p.push(Cmd::Rect { x: r.x, y: r.y, w: r.w, h: r.h, tint: bg, clip });
+        p.push(Cmd::Rect {
+            x: r.x,
+            y: r.y,
+            w: r.w,
+            h: r.h,
+            tint: bg,
+            clip,
+        });
         let normal = match action.state {
             ActionState::Enabled => TEXT_TINT,
             ActionState::AlreadyTaken => DIM_TINT,
@@ -283,7 +384,13 @@ pub fn plan_card(card: &LaidCard) -> Plan {
             ActionState::Unavailable => UNAVAIL_TINT,
         };
         let cell_clip = Some([r.x, r.y, r.w, r.h]);
-        p.push(Cmd::Text { x: r.x + 8.0, y: r.y + 6.0, text: action.caption.as_str().into(), tint: action.caption.tint(normal), clip: cell_clip });
+        p.push(Cmd::Text {
+            x: r.x + 8.0,
+            y: r.y + 6.0,
+            text: action.caption.as_str().into(),
+            tint: action.caption.tint(normal),
+            clip: cell_clip,
+        });
     }
 
     p
@@ -323,7 +430,11 @@ fn wrap_chars(text: &str, budget: usize) -> Vec<String> {
             }
             continue;
         }
-        let need = if cur.is_empty() { word.len() } else { cur.len() + 1 + word.len() };
+        let need = if cur.is_empty() {
+            word.len()
+        } else {
+            cur.len() + 1 + word.len()
+        };
         if need > budget && !cur.is_empty() {
             lines.push(std::mem::take(&mut cur));
         }
@@ -411,7 +522,12 @@ mod tests {
     use super::*;
 
     fn area() -> gui_runtime::Rect {
-        gui_runtime::Rect { x: 0.0, y: 0.0, w: 360.0, h: 400.0 }
+        gui_runtime::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 360.0,
+            h: 400.0,
+        }
     }
 
     #[test]
@@ -477,7 +593,10 @@ mod tests {
         let laid = card.layout(area());
         // the enabled action is pickable; the unavailable is not.
         let ra = &laid.action_rects[0].rect;
-        assert_eq!(laid.pick_action(ra.x + 4.0, ra.y + 4.0).as_deref(), Some("a"));
+        assert_eq!(
+            laid.pick_action(ra.x + 4.0, ra.y + 4.0).as_deref(),
+            Some("a")
+        );
         let rb = &laid.action_rects[1].rect;
         assert_eq!(laid.pick_action(rb.x + 4.0, rb.y + 4.0), None);
     }
@@ -505,7 +624,9 @@ mod tests {
 
     #[test]
     fn plan_is_deterministic() {
-        let card = PopupCard::new(Atom::exact("T")).body(Atom::exact("a b c")).action(Action::enabled("a", Atom::exact("Y")));
+        let card = PopupCard::new(Atom::exact("T"))
+            .body(Atom::exact("a b c"))
+            .action(Action::enabled("a", Atom::exact("Y")));
         let laid = card.layout(area());
         assert_eq!(plan_card(&laid).digest(), plan_card(&laid).digest());
     }

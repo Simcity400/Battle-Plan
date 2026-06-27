@@ -380,10 +380,12 @@ counted under "static/structural"). Every named element falls in exactly one buc
 
 ---
 
-## Codex review
+## Historical review
 
-Reviewed by Codex (read-only, Mode-A one-shot, 2026-06-26) against `replay/schema.py` FIELD_SOURCES +
-dataclass docstrings + `replay/SCHEMA.md`. Verdict: **"Mostly agree, with real refutes."** Codex
+Historical note: this records a completed adversarial review from the old
+Claude-era workflow. Codex-native sessions must use normal sub-agents/partner
+review and must not run the old local CLI command. The review checked `replay/schema.py` FIELD_SOURCES +
+dataclass docstrings + `replay/SCHEMA.md`. Verdict: **"Mostly agree, with real refutes."** It
 independently confirmed the live production-line reader shape against
 `memory_reader/production_live.py` (line shape `{id, active_factories, cost, speed, produced, amount}`;
 per-line priority/requested_factories/variant_index explicitly RESISTED — confirms the unavailable

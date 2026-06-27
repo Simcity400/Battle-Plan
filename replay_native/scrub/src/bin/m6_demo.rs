@@ -32,9 +32,7 @@ use gui_runtime::fonts::{FontCache, FontMap};
 use gui_runtime::gridbox::{self, GridSpec};
 use gui_runtime::scene::{ElementKind, Node};
 use gui_runtime::{build_scene, expand, layout, wrap, GuiFile, Loc, ManifestContent, Rect};
-use render::map::{
-    build_lut, CountryColors, MapIds, PoliticalMap, ProvinceRaster, StateOwners,
-};
+use render::map::{build_lut, CountryColors, MapIds, PoliticalMap, ProvinceRaster, StateOwners};
 use render::{save_png, Renderer};
 use scrub::{Fetch, Frame, Timeline};
 use snapshot::Store;
@@ -137,7 +135,9 @@ fn main() {
     // visibly RE-BINDS across the scrub: at A it is GER-occupied (controller GER,
     // occupation bars shown); at B it is liberated (controller BEL, no occupation).
     // This makes the panel re-bind observable. `--state 64` picks a static state.
-    let target_state: u32 = arg_value("--state").and_then(|s| s.parse().ok()).unwrap_or(6);
+    let target_state: u32 = arg_value("--state")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(6);
 
     let vanilla = arg_value("--vanilla");
     let mod_root = arg_value("--mod");
@@ -153,7 +153,9 @@ fn main() {
     eprintln!("[m6] country={country} game={game} state={target_state}");
     eprintln!("[m6] vanilla = {}", resolver.vanilla.display());
     if !resolver.vanilla_exists() {
-        eprintln!("[m6] BLOCKER: game install not found. Pass --vanilla <path> or set BATTLE_PLAN_VANILLA.");
+        eprintln!(
+            "[m6] BLOCKER: game install not found. Pass --vanilla <path> or set BATTLE_PLAN_VANILLA."
+        );
         std::process::exit(2);
     }
     let assets_dir = find_assets_dir().unwrap_or_else(|| {
@@ -204,7 +206,11 @@ fn main() {
     let t = Instant::now();
     let frame_a = timeline.seek_to(pos_a).expect("seek A");
     let fetch_a_ms = t.elapsed().as_secs_f64() * 1000.0;
-    assert_eq!(frame_a.fetch, Fetch::Cold, "first A touch must be a cold parse");
+    assert_eq!(
+        frame_a.fetch,
+        Fetch::Cold,
+        "first A touch must be a cold parse"
+    );
     eprintln!(
         "[m6] SCRUB -> A hour {} [{:?}] fetch {:.1} ms",
         frame_a.hour_index, frame_a.fetch, fetch_a_ms
@@ -225,7 +231,11 @@ fn main() {
     let t = Instant::now();
     let frame_b = timeline.seek_to(pos_b).expect("seek B");
     let fetch_b_ms = t.elapsed().as_secs_f64() * 1000.0;
-    assert_eq!(frame_b.fetch, Fetch::Cold, "first B touch must be a cold parse");
+    assert_eq!(
+        frame_b.fetch,
+        Fetch::Cold,
+        "first B touch must be a cold parse"
+    );
     eprintln!(
         "[m6] SCRUB -> B hour {} [{:?}] fetch {:.1} ms",
         frame_b.hour_index, frame_b.fetch, fetch_b_ms
@@ -247,7 +257,11 @@ fn main() {
     let t = Instant::now();
     let frame_a2 = timeline.seek_to(pos_a).expect("seek A again");
     let fetch_a_warm_ms = t.elapsed().as_secs_f64() * 1000.0;
-    assert_eq!(frame_a2.fetch, Fetch::Warm, "returning to A must be a cache HIT");
+    assert_eq!(
+        frame_a2.fetch,
+        Fetch::Warm,
+        "returning to A must be a cache HIT"
+    );
     assert!(
         std::sync::Arc::ptr_eq(&frame_a.snapshot, &frame_a2.snapshot),
         "the A revisit must be the SAME shared parse"
@@ -262,14 +276,8 @@ fn main() {
     // the PIXEL level too (Codex (c) caveat: A2 must re-render, not only re-report).
     let a2_png = out_dir().join("m6_scrub_hourA_revisit.png");
     let t = Instant::now();
-    let (rebind_a_warm_ms_full, report_a2) = rebind_and_compose(
-        &stage,
-        &frame_a2,
-        &country,
-        target_state,
-        &a2_png,
-        "A'",
-    );
+    let (rebind_a_warm_ms_full, report_a2) =
+        rebind_and_compose(&stage, &frame_a2, &country, target_state, &a2_png, "A'");
     let _ = t; // (rebind time is reported by rebind_and_compose's internal timer)
     let rebind_a_warm_ms = rebind_a_warm_ms_full;
 
@@ -292,7 +300,11 @@ fn main() {
         "[m6] A->B->A identity: report={} pixels={} -> {}",
         report_identical,
         pixels_identical,
-        if identical { "IDENTICAL (no fabrication across the round trip)" } else { "MISMATCH" }
+        if identical {
+            "IDENTICAL (no fabrication across the round trip)"
+        } else {
+            "MISMATCH"
+        }
     );
     // the revisit PNG is a throwaway proof artifact; remove it so only A + B remain.
     let _ = std::fs::remove_file(&a2_png);
@@ -304,29 +316,60 @@ fn main() {
     eprintln!("[m6] ============ LATENCY ============");
     eprintln!("[m6]   COLD fetch A (read+parse)   : {:.1} ms", fetch_a_ms);
     eprintln!("[m6]   COLD fetch B (read+parse)   : {:.1} ms", fetch_b_ms);
-    eprintln!("[m6]   WARM fetch A (cache hit)     : {:.3} ms  <- ~0", fetch_a_warm_ms);
-    eprintln!("[m6]   COLD re-bind A (all surfaces): {:.2} ms", rebind_a_cold_ms);
-    eprintln!("[m6]   WARM re-bind A (all surfaces): {:.2} ms (pure bind, no fetch/parse)", rebind_a_warm_ms);
+    eprintln!(
+        "[m6]   WARM fetch A (cache hit)     : {:.3} ms  <- ~0",
+        fetch_a_warm_ms
+    );
+    eprintln!(
+        "[m6]   COLD re-bind A (all surfaces): {:.2} ms",
+        rebind_a_cold_ms
+    );
+    eprintln!(
+        "[m6]   WARM re-bind A (all surfaces): {:.2} ms (pure bind, no fetch/parse)",
+        rebind_a_warm_ms
+    );
     eprintln!(
         "[m6]   LRU: window={} resident={:?} hits={} misses={} evictions={}",
-        c.capacity(), c.resident_hours(), c.hits, c.misses, c.evictions
+        c.capacity(),
+        c.resident_hours(),
+        c.hits,
+        c.misses,
+        c.evictions
     );
-    let speedup = if fetch_a_warm_ms > 0.0 { fetch_a_ms / fetch_a_warm_ms } else { f64::INFINITY };
+    let speedup = if fetch_a_warm_ms > 0.0 {
+        fetch_a_ms / fetch_a_warm_ms
+    } else {
+        f64::INFINITY
+    };
     eprintln!("[m6]   warm/cold fetch speedup      : {:.0}x", speedup);
 
     // No-fabrication: every Unavailable field in BOTH the topbar and panel reports
     // (at A and B) must render "—", never a fabricated value.
     let mut fab_bug = false;
     for (label, (tb, sp)) in [("A", &report_a2), ("B", &report_b)] {
-        for f in tb.fields.iter().filter(|f| matches!(f.fidelity, bind::Fidelity::Unavailable)) {
+        for f in tb
+            .fields
+            .iter()
+            .filter(|f| matches!(f.fidelity, bind::Fidelity::Unavailable))
+        {
             if !f.not_captured || f.value != "—" {
-                eprintln!("[m6] FABRICATION BUG @ {label} topbar: {} = {:?}", f.element, f.value);
+                eprintln!(
+                    "[m6] FABRICATION BUG @ {label} topbar: {} = {:?}",
+                    f.element, f.value
+                );
                 fab_bug = true;
             }
         }
-        for f in sp.fields.iter().filter(|f| matches!(f.fidelity, bind::Fidelity::Unavailable)) {
+        for f in sp
+            .fields
+            .iter()
+            .filter(|f| matches!(f.fidelity, bind::Fidelity::Unavailable))
+        {
             if !f.not_captured || f.value != "—" {
-                eprintln!("[m6] FABRICATION BUG @ {label} panel: {} = {:?}", f.element, f.value);
+                eprintln!(
+                    "[m6] FABRICATION BUG @ {label} panel: {} = {:?}",
+                    f.element, f.value
+                );
                 fab_bug = true;
             }
         }
@@ -342,7 +385,9 @@ fn main() {
 
     // -- final gates --
     if !identical {
-        eprintln!("[m6] BLOCKER: the A->B->A round trip was NOT identical (no-fabrication violated)");
+        eprintln!(
+            "[m6] BLOCKER: the A->B->A round trip was NOT identical (no-fabrication violated)"
+        );
         std::process::exit(3);
     }
     if fab_bug {
@@ -455,7 +500,12 @@ fn rebind_and_compose(
     label: &str,
 ) -> (f64, (BindReport, StateBindReport)) {
     let (screen_w, screen_h) = (stage.screen_w, stage.screen_h);
-    let screen = Rect { x: 0.0, y: 0.0, w: screen_w as f32, h: screen_h as f32 };
+    let screen = Rect {
+        x: 0.0,
+        y: 0.0,
+        w: screen_w as f32,
+        h: screen_h as f32,
+    };
     let dv = frame.view();
 
     // Time the pure re-bind (no GPU) — this is the per-tick scrub cost.
@@ -490,7 +540,10 @@ fn rebind_and_compose(
     let mut topbar = build_scene(&stage.topbar_file, &stage.manifest, &stage.loc);
     let spec = TopbarSpec::topbar();
     let tb_report2 = apply_topbar(&mut topbar, &spec, dv.snapshot(), country);
-    let content = ManifestContent { manifest: &stage.manifest, measure: |_t, _f| None };
+    let content = ManifestContent {
+        manifest: &stage.manifest,
+        measure: |_t, _f| None,
+    };
     for root in topbar.iter_mut() {
         layout(root, screen, None, &content);
     }
@@ -591,16 +644,31 @@ fn rebind_and_compose(
 fn digest(tb: &BindReport, sp: &StateBindReport) -> String {
     let mut s = String::new();
     for f in &tb.fields {
-        s.push_str(&format!("TB:{}={}|{}\n", f.element, f.value, f.not_captured));
+        s.push_str(&format!(
+            "TB:{}={}|{}\n",
+            f.element, f.value, f.not_captured
+        ));
     }
     s.push_str(&format!("FLAG:{:?}/{:?}\n", tb.flag_tag, tb.flag_ideology));
     for f in &sp.fields {
-        s.push_str(&format!("SP:{}={}|{}\n", f.element, f.value, f.not_captured));
+        s.push_str(&format!(
+            "SP:{}={}|{}\n",
+            f.element, f.value, f.not_captured
+        ));
     }
-    for b in sp.state_buildings.iter().chain(sp.province_buildings.iter()) {
+    for b in sp
+        .state_buildings
+        .iter()
+        .chain(sp.province_buildings.iter())
+    {
         s.push_str(&format!("BR:{}={}@{}\n", b.key, b.level, b.frame));
     }
-    s.push_str(&format!("OWN:{:?} CTRL:{:?} OCC:{}\n", sp.owner_tag, sp.controller_tag, sp.occupation.is_some()));
+    s.push_str(&format!(
+        "OWN:{:?} CTRL:{:?} OCC:{}\n",
+        sp.owner_tag,
+        sp.controller_tag,
+        sp.occupation.is_some()
+    ));
     s
 }
 
@@ -708,11 +776,17 @@ fn render_buildings_grid(
         return;
     }
     let spec = GridSpec::from_gridbox(
-        &Node { rect: viewport, ..stub_named("state_building_entries") },
+        &Node {
+            rect: viewport,
+            ..stub_named("state_building_entries")
+        },
         &template,
         14.0,
     );
-    let content = ManifestContent { manifest, measure: |_t, _f| None };
+    let content = ManifestContent {
+        manifest,
+        measure: |_t, _f| None,
+    };
     let mut inst = gridbox::instantiate(&template, n, viewport, &spec, scroll_y, &content);
     for (i, row) in inst.rows.iter_mut().enumerate() {
         let b = &rows[i];
@@ -757,7 +831,10 @@ fn stub_named(name: &str) -> Node {
 }
 
 fn find_template(file: &GuiFile, manifest: &SpriteManifest, name: &str) -> Option<Node> {
-    let raw = file.windows.iter().find(|w| w.name.as_deref() == Some(name))?;
+    let raw = file
+        .windows
+        .iter()
+        .find(|w| w.name.as_deref() == Some(name))?;
     let loc = Loc::new();
     Some(Node::from_raw(raw, manifest, &loc))
 }
@@ -773,8 +850,14 @@ fn render_wrapped_description(
     hour: i64,
     date: &str,
 ) {
-    let cat = report.get("category").map(|f| f.value.clone()).unwrap_or_default();
-    let vp = report.get("victory_points").map(|f| f.value.clone()).unwrap_or_default();
+    let cat = report
+        .get("category")
+        .map(|f| f.value.clone())
+        .unwrap_or_default();
+    let vp = report
+        .get("victory_points")
+        .map(|f| f.value.clone())
+        .unwrap_or_default();
     // The description carries the SCRUBBED hour + date so it is visibly re-bound per
     // tick (this is the M6 surface that proves the panel text changed with time).
     let src = "At §Yhour $HOUR$§! (§G$DATE$§!) the state of §Y$STATE$§! is a §G$CAT$§! region holding \
@@ -789,8 +872,12 @@ fn render_wrapped_description(
 
     let default_col = [0.90, 0.90, 0.86, 1.0];
     let exp = expand(src, &vars, default_col);
-    let bbox = find_rect(panel, "countrystateview")
-        .unwrap_or(Rect { x: 40.0, y: 600.0, w: 440.0, h: 200.0 });
+    let bbox = find_rect(panel, "countrystateview").unwrap_or(Rect {
+        x: 40.0,
+        y: 600.0,
+        w: 440.0,
+        h: 200.0,
+    });
     let wrap_x = bbox.x + 22.0;
     let wrap_w = 410.0_f32;
     let wrap_y0 = bbox.y + 470.0;
@@ -841,20 +928,40 @@ fn render_occupation_bars(
         Some(o) => *o,
         None => return,
     };
-    let base = find_rect(panel, "resistance_container")
-        .unwrap_or(Rect { x: 60.0, y: 760.0, w: 519.0, h: 100.0 });
+    let base = find_rect(panel, "resistance_container").unwrap_or(Rect {
+        x: 60.0,
+        y: 760.0,
+        w: 519.0,
+        h: 100.0,
+    });
     let bar_w = 81.0_f32;
     let bar_h = 14.0_f32;
     for (i, (gfx, frac)) in [
-        ("GFX_occupation_state_resistance_bar", (occ.resistance / 100.0) as f32),
-        ("GFX_occupation_state_compliance_bar", (occ.compliance / 100.0) as f32),
+        (
+            "GFX_occupation_state_resistance_bar",
+            (occ.resistance / 100.0) as f32,
+        ),
+        (
+            "GFX_occupation_state_compliance_bar",
+            (occ.compliance / 100.0) as f32,
+        ),
     ]
     .iter()
     .enumerate()
     {
         let y = base.y + 6.0 + i as f32 * 28.0;
         if let Some(t) = textures.get(renderer, gfx) {
-            renderer.draw_progress_bar(t, base.x + 40.0, y, bar_w, bar_h, *frac, 0, 1, [1.0, 1.0, 1.0, 1.0]);
+            renderer.draw_progress_bar(
+                t,
+                base.x + 40.0,
+                y,
+                bar_w,
+                bar_h,
+                *frac,
+                0,
+                1,
+                [1.0, 1.0, 1.0, 1.0],
+            );
         }
     }
 }

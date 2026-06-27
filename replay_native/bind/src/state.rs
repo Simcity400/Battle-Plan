@@ -207,7 +207,12 @@ fn scalar(
 
 /// Resolve a state's `<TAG>` flag field (owner / controller). A measured string
 /// tag → the tag (the demo resolves the flag image); null/absent → "—".
-fn flag_field(snap: &Snapshot, sid: &str, element: &str, path: &str) -> (StateField, Option<String>) {
+fn flag_field(
+    snap: &Snapshot,
+    sid: &str,
+    element: &str,
+    path: &str,
+) -> (StateField, Option<String>) {
     let cell = snap.state_path(sid, path);
     match cell.and_then(Value::as_str) {
         Some(tag) => (
@@ -251,17 +256,32 @@ pub fn bind_state(snap: &Snapshot, sid: &str, state_name: &str) -> StateBindRepo
 
     // --- category (exact). ---
     report.fields.push(scalar(
-        snap, sid, "category", "category", format::category, Fidelity::Exact,
+        snap,
+        sid,
+        "category",
+        "category",
+        format::category,
+        Fidelity::Exact,
     ));
 
     // --- victory points (exact int). ---
     report.fields.push(scalar(
-        snap, sid, "victory_points", "victory_points_total", format::int, Fidelity::Exact,
+        snap,
+        sid,
+        "victory_points",
+        "victory_points_total",
+        format::int,
+        Fidelity::Exact,
     ));
 
     // --- manpower: state population = manpower_pool.total (Codex correction). ---
     report.fields.push(scalar(
-        snap, sid, "manpower", "manpower_pool.total", format::manpower, Fidelity::Exact,
+        snap,
+        sid,
+        "manpower",
+        "manpower_pool.total",
+        format::manpower,
+        Fidelity::Exact,
     ));
 
     // --- owner / controller flags (exact). ---
@@ -281,13 +301,17 @@ pub fn bind_state(snap: &Snapshot, sid: &str, state_name: &str) -> StateBindRepo
             // percent_100 prints a 0..100 value directly with a % sign.
             report.fields.push(StateField {
                 element: "state_resistance_status_container.progress_text".to_string(),
-                value: res.map(format::percent_100).unwrap_or_else(|| NOT_CAPTURED.to_string()),
+                value: res
+                    .map(format::percent_100)
+                    .unwrap_or_else(|| NOT_CAPTURED.to_string()),
                 fidelity: Fidelity::Exact,
                 not_captured: res.is_none(),
             });
             report.fields.push(StateField {
                 element: "state_compliance_status_container.progress_text".to_string(),
-                value: comp.map(format::percent_100).unwrap_or_else(|| NOT_CAPTURED.to_string()),
+                value: comp
+                    .map(format::percent_100)
+                    .unwrap_or_else(|| NOT_CAPTURED.to_string()),
                 fidelity: Fidelity::Exact,
                 not_captured: comp.is_none(),
             });
@@ -317,18 +341,30 @@ pub fn bind_state(snap: &Snapshot, sid: &str, state_name: &str) -> StateBindRepo
 
     // --- occupation_law: always null in current data → unavailable ("—"). ---
     report.fields.push(scalar(
-        snap, sid, "select_law_icon", "occupation_law", format::int, Fidelity::Unavailable,
+        snap,
+        sid,
+        "select_law_icon",
+        "occupation_law",
+        format::int,
+        Fidelity::Unavailable,
     ));
 
     // --- energy_text: no per-state energy field → unavailable. ---
     report.fields.push(scalar(
-        snap, sid, "energy_text", "energy", format::int, Fidelity::Unavailable,
+        snap,
+        sid,
+        "energy_text",
+        "energy",
+        format::int,
+        Fidelity::Unavailable,
     ));
 
     // --- buildings gridboxes (row sources). ---
     report.state_buildings = building_rows(snap.state_path(sid, "buildings"), STATE_BUILDINGS);
-    report.province_buildings =
-        building_rows(snap.state_path(sid, "province_buildings"), PROVINCE_BUILDINGS);
+    report.province_buildings = building_rows(
+        snap.state_path(sid, "province_buildings"),
+        PROVINCE_BUILDINGS,
+    );
 
     // --- resources gridbox: always-null domain → empty + unavailable. ---
     report.resource_rows = resource_rows(snap.state_path(sid, "resources"));
@@ -394,12 +430,16 @@ mod tests {
         assert!(keys.contains(&"industrial_complex"));
         assert!(keys.contains(&"arms_factory"));
         assert!(!keys.contains(&"dockyard")); // level 0 → not built → no row
-        // canonical order: infrastructure before industrial_complex before arms.
+                                              // canonical order: infrastructure before industrial_complex before arms.
         let pos = |k: &str| keys.iter().position(|x| *x == k).unwrap();
         assert!(pos("infrastructure") < pos("industrial_complex"));
         assert!(pos("industrial_complex") < pos("arms_factory"));
         // levels are the measured ints.
-        let ic = r.state_buildings.iter().find(|b| b.key == "industrial_complex").unwrap();
+        let ic = r
+            .state_buildings
+            .iter()
+            .find(|b| b.key == "industrial_complex")
+            .unwrap();
         assert_eq!(ic.level, "11");
         assert_eq!(ic.frame, 1);
         // 7 state buildings overflow a 6-slot box (proves the overflow source).
@@ -416,11 +456,15 @@ mod tests {
         assert!((occ.compliance - 97.06527).abs() < 1e-6);
         // the text fields show the rounded percents.
         assert_eq!(
-            r.get("state_resistance_status_container.progress_text").unwrap().value,
+            r.get("state_resistance_status_container.progress_text")
+                .unwrap()
+                .value,
             "5%"
         );
         assert_eq!(
-            r.get("state_compliance_status_container.progress_text").unwrap().value,
+            r.get("state_compliance_status_container.progress_text")
+                .unwrap()
+                .value,
             "97%"
         );
     }
@@ -440,7 +484,9 @@ mod tests {
         assert!(r.resource_rows.is_empty());
         // a non-occupied state shows "—" for resistance/compliance (not 0%).
         assert_eq!(
-            r.get("state_resistance_status_container.progress_text").unwrap().value,
+            r.get("state_resistance_status_container.progress_text")
+                .unwrap()
+                .value,
             NOT_CAPTURED
         );
     }

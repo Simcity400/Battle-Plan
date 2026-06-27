@@ -357,9 +357,11 @@ no-fabrication.
 
 ---
 
-## Codex review
+## Historical review
 
-Reviewed by Codex (read-only Mode-A one-shot, 2026-06-26; checked the local `.gui` files). Verdict:
+Historical note: this records a completed adversarial review from the old
+Claude-era workflow. Codex-native sessions must use normal sub-agents/partner
+review and must not run the old local CLI command. The review checked the local `.gui` files. Verdict:
 **"Your core mappings are correct."** All node→field mappings were confirmed; four badge refinements
 were folded in.
 

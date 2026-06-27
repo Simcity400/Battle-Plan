@@ -73,14 +73,19 @@ fn walk(n: &Node, depth: usize, s: &mut String) {
 /// same iff this digest is equal — the headless byte-identity proof for ALL 5 surfaces,
 /// including the GPU-side overlays whose node roots are empty (Codex (c) mitigation).
 pub fn bound_digest(bv: &BoundView) -> String {
+    let tooltip = bv
+        .tooltip_plan()
+        .map(|p| p.digest())
+        .unwrap_or_else(|| "-".to_string());
     format!(
-        "VIEW {}\nFID e={} d={} u={}\nNODES\n{}DRAW {}",
+        "VIEW {}\nFID e={} d={} u={}\nNODES\n{}DRAW {}\nTOOLTIP {}",
         bv.view_id,
         bv.fidelity.exact,
         bv.fidelity.derived,
         bv.fidelity.unavailable,
         nodes_digest(&bv.hit.roots),
         bv.drawable.draw_digest(),
+        tooltip,
     )
 }
 

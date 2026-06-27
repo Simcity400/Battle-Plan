@@ -21,8 +21,8 @@ use render::dynamic::{pack_province_dynamic_lut, DynamicInputs, DynamicUniforms}
 use render::map::{CountryColors, MapIds, PoliticalMap, ProvinceRaster};
 use render::modes::{MapMode, ModeData};
 use render::overlay::{
-    build_overlay_plan, OverlayDiagnostics, OverlayInputs, OverlayNames, OverlayOptions,
-    OverlayPlan, OverlayProjection, OverlayStatic, ScreenPoint,
+    build_overlay_plan, OverlayDiagnostics, OverlayInputs, OverlayLinePattern, OverlayLineStyle,
+    OverlayNames, OverlayOptions, OverlayPlan, OverlayProjection, OverlayStatic, ScreenPoint,
 };
 use render::strategic_regions::StrategicRegions;
 
@@ -68,6 +68,10 @@ impl MapView {
         MapView { camera, mode, data }
     }
 
+    pub fn apply_command(&mut self, command: &ViewCommand) -> bool {
+        apply_map_command_to_mode(&mut self.mode, command)
+    }
+
     /// Compute the per-hour LUT bytes + badge for `mode` (pure; the byte-identical
     /// mirror of the old `rebuild_map_lut`, incl. the front-line adjacency special case
     /// + the stateless→all-neutral rule via `ModeData::from_snapshot`).
@@ -76,7 +80,9 @@ impl MapView {
         let states = snap.states().unwrap_or(&empty);
         let mut md =
             ModeData::from_snapshot(states, snap.domain("map"), snap.domain("diplomacy_world"))
-                .with_provinces(snap.domain("provinces"));
+                .with_provinces(snap.domain("provinces"))
+                .with_weather(snap.domain("weather"))
+                .with_naval_air(snap.domain("naval_air"));
         if matches!(self.mode, MapMode::FrontLines) {
             md = md.with_front_adjacency(&self.data.raster);
         }
@@ -149,19 +155,33 @@ impl MapView {
             raster_h: self.data.raster.height as f32,
         };
         let names = overlay_names(ctx, static_data);
+        let mut options = OverlayOptions::default();
+        options.show_front_lines = matches!(self.mode, MapMode::FrontLines);
         build_overlay_plan(
             static_data,
             OverlayInputs {
                 states: ctx.snapshot().domain("states"),
+                map: ctx.snapshot().domain("map"),
                 divisions: ctx.snapshot().domain("divisions"),
                 order_of_battle: ctx.snapshot().domain("order_of_battle"),
                 diplomacy_world: ctx.snapshot().domain("diplomacy_world"),
             },
             &names,
             projection,
-            OverlayOptions::default(),
+            options,
         )
     }
+}
+
+pub fn apply_map_command_to_mode(active: &mut MapMode, command: &ViewCommand) -> bool {
+    let ViewCommand::SetMapMode { mode } = *command else {
+        return false;
+    };
+    if *active == mode {
+        return false;
+    }
+    *active = mode;
+    true
 }
 
 /// Parse an `Y.M.D.H` in-game date string to `(year, month, day, hour)` for the dynamic
@@ -204,16 +224,15 @@ impl Drawable for MapDrawable {
     /// digest detects a silent map-render change that an empty node digest would miss
     /// (Codex (c) mitigation, headless).
     fn draw_digest(&self) -> String {
-        let lut_hash = fnv1a(&self.lut);
-        // include the dynamic (weather) feed in the digest so a scrub that changes the
-        // snow/mud LUT (or toggles weather on/off) perturbs the headless render fingerprint.
-        let dyn_hash = match &self.dynamic {
-            Some((lut, _)) => fnv1a(lut),
-            None => 0,
-        };
-        format!(
-            "MAP lut={lut_hash:016x} dyn={dyn_hash:016x} off={:?} scale={:?} screen={:?} mode={} badge={} overlay={}",
-            self.offset, self.scale, self.screen, self.mode_label, self.badge, self.overlay.digest()
+        map_draw_digest(
+            &self.lut,
+            self.dynamic.as_ref().map(|(lut, _)| lut.as_slice()),
+            self.offset,
+            self.scale,
+            self.screen,
+            &self.mode_label,
+            &self.badge,
+            &self.overlay,
         )
     }
 
@@ -276,7 +295,9 @@ impl ViewInstance for MapView {
         if !overlay.labels.is_empty() || !overlay.lines.is_empty() {
             fidelity.derived += 1;
         }
-        if overlay.diagnostics.unavailable_arrows > 0 || overlay.diagnostics.unavailable_routes > 0
+        if overlay.diagnostics.unavailable_arrows > 0
+            || overlay.diagnostics.unavailable_routes > 0
+            || overlay.diagnostics.unavailable_front_lines > 0
         {
             fidelity.unavailable += 1;
         }
@@ -305,6 +326,31 @@ fn fnv1a(bytes: &[u8]) -> u64 {
         h = h.wrapping_mul(0x100000001b3);
     }
     h
+}
+
+fn map_draw_digest(
+    lut: &[u8],
+    dynamic_lut: Option<&[u8]>,
+    offset: [f32; 2],
+    scale: [f32; 2],
+    screen: (u32, u32),
+    mode_label: &str,
+    badge: &str,
+    overlay: &OverlayPlan,
+) -> String {
+    let lut_hash = fnv1a(lut);
+    // Include the dynamic (weather) feed in the digest so a scrub that changes the
+    // snow/mud LUT (or toggles weather on/off) perturbs the headless render fingerprint.
+    let dyn_hash = dynamic_lut.map(fnv1a).unwrap_or(0);
+    format!(
+        "MAP lut={lut_hash:016x} dyn={dyn_hash:016x} off={:?} scale={:?} screen={:?} mode={} badge={} overlay={}",
+        offset,
+        scale,
+        screen,
+        mode_label,
+        badge,
+        overlay.digest()
+    )
 }
 
 /// Draw the active-mode HUD (top-left) — byte-identical to the old `draw_mode_badge`.
@@ -417,7 +463,7 @@ fn resolve_country_label(snap: &snapshot::Snapshot, loc: &gui_runtime::Loc, tag:
 }
 
 fn draw_map_overlay(fd: &mut FrameDraw, overlay: &OverlayPlan) {
-    if overlay.lines.is_empty() && overlay.labels.is_empty() {
+    if overlay.lines.is_empty() && overlay.labels.is_empty() && overlay.markers.is_empty() {
         return;
     }
     let (w, h) = fd.screen();
@@ -425,13 +471,14 @@ fn draw_map_overlay(fd: &mut FrameDraw, overlay: &OverlayPlan) {
     let white = widgets::common::white_texture(fd.renderer);
     for line in &overlay.lines {
         for pair in line.points.windows(2) {
-            widgets::common::line_seg(
+            draw_overlay_segment(
                 fd.renderer,
                 &white,
-                (pair[0].x, pair[0].y),
-                (pair[1].x, pair[1].y),
+                pair[0],
+                pair[1],
                 line.width,
                 line.tint,
+                line.style,
                 clip,
             );
         }
@@ -440,9 +487,34 @@ fn draw_map_overlay(fd: &mut FrameDraw, overlay: &OverlayPlan) {
         }
     }
 
+    for marker in &overlay.markers {
+        draw_unavailable_marker(fd, &white, marker.x, marker.y, marker.tint, clip);
+    }
+
     if let Some(loaded) = fd.fonts.get(fd.renderer, "hoi_16mbs") {
         let font = loaded.font.clone();
         let pages = &loaded.pages;
+        for marker in &overlay.markers {
+            let shadow = [0.01, 0.015, 0.02, 0.86];
+            fd.renderer.draw_text_clipped(
+                &font,
+                pages,
+                &marker.text,
+                marker.x + 9.0,
+                marker.y - 6.0,
+                shadow,
+                clip,
+            );
+            fd.renderer.draw_text_clipped(
+                &font,
+                pages,
+                &marker.text,
+                marker.x + 8.0,
+                marker.y - 7.0,
+                marker.tint,
+                clip,
+            );
+        }
         for label in &overlay.labels {
             let shadow = [0.01, 0.015, 0.02, 0.82];
             fd.renderer.draw_text_clipped(
@@ -465,6 +537,99 @@ fn draw_map_overlay(fd: &mut FrameDraw, overlay: &OverlayPlan) {
             );
         }
     }
+}
+
+fn draw_overlay_segment(
+    r: &mut render::Renderer,
+    white: &render::Texture,
+    from: ScreenPoint,
+    to: ScreenPoint,
+    width: f32,
+    tint: [f32; 4],
+    style: OverlayLineStyle,
+    clip: Option<[f32; 4]>,
+) {
+    for (a, b) in overlay_segment_spans(from, to, style) {
+        widgets::common::line_seg(r, white, (a.x, a.y), (b.x, b.y), width, tint, clip);
+    }
+}
+
+fn overlay_segment_spans(
+    from: ScreenPoint,
+    to: ScreenPoint,
+    style: OverlayLineStyle,
+) -> Vec<(ScreenPoint, ScreenPoint)> {
+    let dx = to.x - from.x;
+    let dy = to.y - from.y;
+    let len = (dx * dx + dy * dy).sqrt();
+    if !len.is_finite() || len < 0.5 {
+        return Vec::new();
+    }
+    if style.pattern == OverlayLinePattern::Solid {
+        return vec![(from, to)];
+    }
+    let dash = if style.dash_px.is_finite() && style.dash_px > 0.0 {
+        style.dash_px
+    } else {
+        len
+    };
+    let gap = if style.gap_px.is_finite() && style.gap_px >= 0.0 {
+        style.gap_px
+    } else {
+        0.0
+    };
+    let step = dash + gap;
+    if step <= 0.0 || !step.is_finite() {
+        return vec![(from, to)];
+    }
+    let mut start = 0.0_f32;
+    let mut spans = Vec::new();
+    while start < len {
+        let end = (start + dash).min(len);
+        let a = start / len;
+        let b = end / len;
+        spans.push((
+            ScreenPoint {
+                x: from.x + dx * a,
+                y: from.y + dy * a,
+            },
+            ScreenPoint {
+                x: from.x + dx * b,
+                y: from.y + dy * b,
+            },
+        ));
+        start += step;
+    }
+    spans
+}
+
+fn draw_unavailable_marker(
+    fd: &mut FrameDraw,
+    white: &render::Texture,
+    x: f32,
+    y: f32,
+    tint: [f32; 4],
+    clip: Option<[f32; 4]>,
+) {
+    let r = 6.0_f32;
+    widgets::common::line_seg(
+        fd.renderer,
+        white,
+        (x - r, y - r),
+        (x + r, y + r),
+        2.2,
+        tint,
+        clip,
+    );
+    widgets::common::line_seg(
+        fd.renderer,
+        white,
+        (x - r, y + r),
+        (x + r, y - r),
+        2.2,
+        tint,
+        clip,
+    );
 }
 
 fn draw_overlay_arrowhead(
@@ -531,12 +696,14 @@ fn draw_overlay_badge(fd: &mut FrameDraw, d: &OverlayDiagnostics) {
             d.country_labels, d.state_labels, d.strategic_region_labels
         );
         let l2 = format!(
-            "lines M/P/T {}/{}/{}  unavail A/R {}/{}",
+            "lines M/P/T/F {}/{}/{}/{}  unavail A/R/F {}/{}/{}",
             d.movement_arrows,
             d.battle_plan_arrows,
             d.trade_route_lines,
+            d.front_line_lines,
             d.unavailable_arrows,
-            d.unavailable_routes
+            d.unavailable_routes,
+            d.unavailable_front_lines
         );
         fd.renderer.draw_text(
             &font,
@@ -546,7 +713,10 @@ fn draw_overlay_badge(fd: &mut FrameDraw, d: &OverlayDiagnostics) {
             by + 6.0,
             [0.88, 0.90, 0.92, 1.0],
         );
-        let c2 = if d.unavailable_arrows > 0 || d.unavailable_routes > 0 {
+        let c2 = if d.unavailable_arrows > 0
+            || d.unavailable_routes > 0
+            || d.unavailable_front_lines > 0
+        {
             [0.95, 0.72, 0.35, 1.0]
         } else {
             [0.58, 0.84, 0.62, 1.0]
@@ -618,6 +788,98 @@ mod tests {
         assert!(
             !ungated,
             "absent weather must NOT perturb the map (static path preserved)"
+        );
+    }
+
+    #[test]
+    fn set_map_mode_command_changes_digest_label_without_faking_data() {
+        let overlay = OverlayPlan::default();
+        let mut active = MapMode::Political;
+        let before = map_draw_digest(
+            &[0, 1, 2, 3],
+            None,
+            [0.0, 0.0],
+            [1.0, 1.0],
+            (800, 600),
+            &active.label(),
+            "exact",
+            &overlay,
+        );
+
+        let command = ViewCommand::SetMapMode {
+            mode: MapMode::Weather,
+        };
+        assert!(apply_map_command_to_mode(&mut active, &command));
+        let after = map_draw_digest(
+            &[0, 1, 2, 3],
+            None,
+            [0.0, 0.0],
+            [1.0, 1.0],
+            (800, 600),
+            &active.label(),
+            "unavailable",
+            &overlay,
+        );
+
+        assert_ne!(before, after, "active mode changes must perturb map digest");
+        assert!(
+            after.contains("mode=Weather badge=unavailable"),
+            "mode label changes while the unavailable badge remains honest: {after}"
+        );
+        assert!(
+            !apply_map_command_to_mode(&mut active, &command),
+            "reapplying the active mode is a no-op"
+        );
+    }
+
+    #[test]
+    fn overlay_segment_spans_honor_line_style_metadata() {
+        let a = ScreenPoint { x: 0.0, y: 0.0 };
+        let b = ScreenPoint { x: 50.0, y: 0.0 };
+
+        assert_eq!(
+            overlay_segment_spans(a, b, OverlayLineStyle::solid()),
+            vec![(a, b)]
+        );
+
+        let dashed = overlay_segment_spans(a, b, OverlayLineStyle::dashed(10.0, 5.0));
+        let expected = vec![
+            (
+                ScreenPoint { x: 0.0, y: 0.0 },
+                ScreenPoint { x: 10.0, y: 0.0 },
+            ),
+            (
+                ScreenPoint { x: 15.0, y: 0.0 },
+                ScreenPoint { x: 25.0, y: 0.0 },
+            ),
+            (
+                ScreenPoint { x: 30.0, y: 0.0 },
+                ScreenPoint { x: 40.0, y: 0.0 },
+            ),
+            (
+                ScreenPoint { x: 45.0, y: 0.0 },
+                ScreenPoint { x: 50.0, y: 0.0 },
+            ),
+        ];
+        assert_eq!(dashed.len(), expected.len());
+        for (actual, expected) in dashed.iter().zip(expected.iter()) {
+            assert_screen_point_close(actual.0, expected.0);
+            assert_screen_point_close(actual.1, expected.1);
+        }
+        assert_eq!(
+            dashed,
+            overlay_segment_spans(a, b, OverlayLineStyle::dashed(10.0, 5.0))
+        );
+    }
+
+    fn assert_screen_point_close(actual: ScreenPoint, expected: ScreenPoint) {
+        assert!(
+            (actual.x - expected.x).abs() < 0.01,
+            "{actual:?} != {expected:?}"
+        );
+        assert!(
+            (actual.y - expected.y).abs() < 0.01,
+            "{actual:?} != {expected:?}"
         );
     }
 }

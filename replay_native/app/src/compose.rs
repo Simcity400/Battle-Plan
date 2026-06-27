@@ -100,10 +100,33 @@ pub fn compose_offscreen(
     }
 
     // composite the accumulated quads OVER the map, no clear, NO readback.
+    draw_tooltips(renderer, fonts, bound);
     renderer.flush_no_readback(None);
 }
 
 /// Draw the scrubber widget — byte-identical to the old `draw_scrubber`.
+fn draw_tooltips(renderer: &mut Renderer, fonts: &mut FontCache<'static>, bound: &[BoundView]) {
+    if !bound.iter().any(|bv| bv.tooltip_plan().is_some()) {
+        return;
+    }
+    let white = renderer.upload_rgba8_image(1, 1, &[255, 255, 255, 255]);
+    let loaded = fonts.get(renderer, "hoi_16mbs");
+    let (font, font_pages): (Option<&assets::BmFont>, &[render::Texture]) = match &loaded {
+        Some(l) => (Some(&l.font), &l.pages),
+        None => (None, &[]),
+    };
+    let assets = widgets::common::DrawAssets {
+        white: &white,
+        font,
+        font_pages,
+    };
+    for bv in bound {
+        if let Some(tt) = bv.tooltip_plan() {
+            tt.draw(renderer, &assets);
+        }
+    }
+}
+
 fn draw_scrubber(renderer: &mut Renderer, textures: &mut TextureCache, chrome: &FrameChrome) {
     let track = match chrome.scrubber_track {
         Some(t) => t,

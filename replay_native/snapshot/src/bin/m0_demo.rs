@@ -14,7 +14,11 @@ use std::env;
 
 fn main() {
     let a: Vec<String> = env::args().collect();
-    let root = a.get(1).map(String::as_str).unwrap_or("../replay/snapshots").to_string();
+    let root = a
+        .get(1)
+        .map(String::as_str)
+        .unwrap_or("../replay/snapshots")
+        .to_string();
     let game = a.get(2).map(String::as_str).unwrap_or("replay").to_string();
     let hour: i64 = a.get(3).and_then(|s| s.parse().ok()).unwrap_or(17005619);
     let tag = a.get(4).map(String::as_str).unwrap_or("GER").to_string();
@@ -25,7 +29,9 @@ fn main() {
     match store.index(&game) {
         Ok(idx) => println!(
             "index: game={} schema={:?} snapshots={}",
-            idx.game_id, idx.schema_version, idx.snapshots.len()
+            idx.game_id,
+            idx.schema_version,
+            idx.snapshots.len()
         ),
         Err(e) => eprintln!("index error: {e}"),
     }

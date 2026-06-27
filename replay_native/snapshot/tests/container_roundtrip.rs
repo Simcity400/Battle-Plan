@@ -79,8 +79,7 @@ fn build_container(deflate: bool) -> Vec<u8> {
 fn roundtrip_byte_identical_snapshots() {
     for deflate in [false, true] {
         let bytes = build_container(deflate);
-        let c = Container::from_bytes(bytes, &ExpectedIdentity::default())
-            .expect("open container");
+        let c = Container::from_bytes(bytes, &ExpectedIdentity::default()).expect("open container");
 
         // the raw payload bytes the reader serves must equal the originals byte-for-byte.
         let originals = fixture_entries();
@@ -99,7 +98,10 @@ fn roundtrip_byte_identical_snapshots() {
         let idx = c.index();
         let files: Vec<&str> = idx.snapshots.iter().map(|s| s.file.as_str()).collect();
         assert!(files.contains(&"000017000461.snapshot.json"));
-        assert!(files.contains(&"s0003.000017050260.snapshot.json"), "rollback file kept");
+        assert!(
+            files.contains(&"s0003.000017050260.snapshot.json"),
+            "rollback file kept"
+        );
 
         // load by hour resolves through the index (the segment-prefixed file, which
         // a synthesized %012d name would MISS).
@@ -161,9 +163,15 @@ fn trichotomy_survives_at_domain_level_not_just_header() {
     let snap = c.load(17000461).expect("load");
 
     // measured zero stays 0 (NOT null, NOT absent)
-    assert_eq!(snap.country_path("GER", "economy.factories.civ"), Some(&json!(0)));
+    assert_eq!(
+        snap.country_path("GER", "economy.factories.civ"),
+        Some(&json!(0))
+    );
     // captured-but-unobtained stays explicit null (NOT collapsed to absent)
-    assert_eq!(snap.country_path("GER", "economy.factories.mil"), Some(&Value::Null));
+    assert_eq!(
+        snap.country_path("GER", "economy.factories.mil"),
+        Some(&Value::Null)
+    );
     // never-captured stays absent (NOT a 0, NOT a null)
     assert_eq!(snap.country_path("GER", "economy.factories.dockyard"), None);
 
@@ -182,7 +190,10 @@ fn trichotomy_survives_at_domain_level_not_just_header() {
         })
         .and_then(|e| e.get("sha256").and_then(Value::as_str))
         .unwrap();
-    assert_eq!(got, want, "served snapshot bytes are byte-identical to source");
+    assert_eq!(
+        got, want,
+        "served snapshot bytes are byte-identical to source"
+    );
 }
 
 #[test]
@@ -214,8 +225,8 @@ fn byte_identical_via_store_interface() {
 
 #[test]
 fn verify_all_passes_on_clean_container() {
-    let c = Container::from_bytes(build_container(true), &ExpectedIdentity::default())
-        .expect("open");
+    let c =
+        Container::from_bytes(build_container(true), &ExpectedIdentity::default()).expect("open");
     c.verify_all().expect("all entries hash-match");
 }
 
@@ -230,8 +241,11 @@ fn rejects_tampered_first_snapshot_at_open() {
     let pos = find(&bytes, needle).expect("snapshot data present in STORE zip");
     bytes[pos + needle.len() - 1] = b'9'; // 0.0 -> 0.9
     let c = Container::from_bytes(bytes, &ExpectedIdentity::default());
-    assert!(matches!(c.as_ref().err(), Some(ContainerError::Reject(m)) if m.contains("sha256")),
-            "tampered first snapshot must be rejected, got err={:?}", c.err());
+    assert!(
+        matches!(c.as_ref().err(), Some(ContainerError::Reject(m)) if m.contains("sha256")),
+        "tampered first snapshot must be rejected, got err={:?}",
+        c.err()
+    );
 }
 
 #[test]
@@ -248,8 +262,10 @@ fn rejects_tampered_later_snapshot_on_lazy_read() {
     let c = Container::from_bytes(bytes, &ExpectedIdentity::default())
         .expect("opens: first snapshot + index are intact");
     let err = c.load(17050260).unwrap_err();
-    assert!(matches!(&err, ContainerError::Reject(m) if m.contains("sha256")),
-            "tampered later snapshot must fail on lazy read, got {err}");
+    assert!(
+        matches!(&err, ContainerError::Reject(m) if m.contains("sha256")),
+        "tampered later snapshot must fail on lazy read, got {err}"
+    );
     // the untampered first snapshot still loads fine.
     assert!(c.load(17000461).is_ok());
 }
@@ -264,15 +280,20 @@ fn rejects_tampered_manifest_identity() {
             ..Default::default()
         },
     );
-    assert!(matches!(c, Err(ContainerError::Reject(m)) if m.contains("build.exe_sha256")),
-            "wrong build must reject");
+    assert!(
+        matches!(c, Err(ContainerError::Reject(m)) if m.contains("build.exe_sha256")),
+        "wrong build must reject"
+    );
 }
 
 #[test]
 fn rejects_wrong_schema() {
     let c = Container::from_bytes(
         build_container(false),
-        &ExpectedIdentity { schema_version: Some("2".into()), ..Default::default() },
+        &ExpectedIdentity {
+            schema_version: Some("2".into()),
+            ..Default::default()
+        },
     );
     assert!(matches!(c, Err(ContainerError::Reject(m)) if m.contains("schema_version")));
 }
@@ -281,7 +302,10 @@ fn rejects_wrong_schema() {
 fn rejects_wrong_modset() {
     let c = Container::from_bytes(
         build_container(false),
-        &ExpectedIdentity { modset_id: Some("not-the-modset".into()), ..Default::default() },
+        &ExpectedIdentity {
+            modset_id: Some("not-the-modset".into()),
+            ..Default::default()
+        },
     );
     assert!(matches!(c, Err(ContainerError::Reject(m)) if m.contains("modset_id")));
 }
@@ -308,8 +332,10 @@ fn rejects_manifest_digest_corruption() {
     let pos = find(&bytes, needle).expect("created_utc in manifest");
     bytes[pos] = b'1'; // 2026 -> 1026
     let c = Container::from_bytes(bytes, &ExpectedIdentity::default());
-    assert!(matches!(c, Err(ContainerError::Reject(m)) if m.contains("manifest_digest")),
-            "digest mismatch must reject");
+    assert!(
+        matches!(c, Err(ContainerError::Reject(m)) if m.contains("manifest_digest")),
+        "digest mismatch must reject"
+    );
 }
 
 #[test]
@@ -317,11 +343,17 @@ fn rejects_no_manifest_recovery_only() {
     // a zip with payload but NO manifest.json is recovery-only, refused with the
     // dedicated NoManifest error (so a UI can offer recovery instead of a generic
     // failure).
-    let opts = PackOptions { omit_manifest: true, ..Default::default() };
+    let opts = PackOptions {
+        omit_manifest: true,
+        ..Default::default()
+    };
     let bytes = pack_with(GAME, &fixture_entries(), &fixture_identity(), false, &opts).unwrap();
     let c = Container::from_bytes(bytes, &ExpectedIdentity::default());
-    assert!(matches!(c.as_ref().err(), Some(ContainerError::NoManifest)),
-            "payload-only file must be NoManifest (recovery-only), got err={:?}", c.err());
+    assert!(
+        matches!(c.as_ref().err(), Some(ContainerError::NoManifest)),
+        "payload-only file must be NoManifest (recovery-only), got err={:?}",
+        c.err()
+    );
 
     // and an arbitrary non-zip file is also refused (not a panic).
     let garbage = b"PK\x03\x04 not a real central directory".to_vec();
@@ -340,8 +372,11 @@ fn rejects_unknown_required_feature() {
     };
     let bytes = pack_with(GAME, &fixture_entries(), &fixture_identity(), false, &opts).unwrap();
     let c = Container::from_bytes(bytes, &ExpectedIdentity::default());
-    assert!(matches!(c.as_ref().err(), Some(ContainerError::Reject(m)) if m.contains("required feature")),
-            "unknown required feature must reject, got err={:?}", c.err());
+    assert!(
+        matches!(c.as_ref().err(), Some(ContainerError::Reject(m)) if m.contains("required feature")),
+        "unknown required feature must reject, got err={:?}",
+        c.err()
+    );
 }
 
 #[test]

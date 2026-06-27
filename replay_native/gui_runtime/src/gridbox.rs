@@ -260,7 +260,10 @@ pub fn set_row_icon_frame(row: &mut Node, name: &str, frame: u32) -> bool {
                 // a buttonType with a strip sprite — promote it to a framed icon so
                 // the draw pass renders the chosen frame (building_picture is a
                 // buttonType in the template but is really a framed sprite).
-                if let ElementKind::Button { sprite: Some(s), .. } = &n.kind {
+                if let ElementKind::Button {
+                    sprite: Some(s), ..
+                } = &n.kind
+                {
                     let sprite = s.clone();
                     n.kind = ElementKind::Icon { sprite, frame };
                     return true;
@@ -295,6 +298,7 @@ mod tests {
         let mut level = Node {
             name: "level".into(),
             raw_kind: "instantTextBoxType".into(),
+            tooltip: None,
             kind: ElementKind::Text(crate::scene::TextSpec {
                 text: "0".into(),
                 raw: "0".into(),
@@ -318,6 +322,7 @@ mod tests {
         Node {
             name: "state_building_entry".into(),
             raw_kind: "containerWindowType".into(),
+            tooltip: None,
             kind: ElementKind::Container {
                 background: Some("GFX_entry_bg".into()),
             },
@@ -340,7 +345,12 @@ mod tests {
         g.kind = ElementKind::Container { background: None };
         g.size_w = Some(crate::model::Scalar::Int(w as i64));
         g.size_h = Some(crate::model::Scalar::Int(h as i64));
-        g.rect = Rect { x: 153.0, y: 45.0, w, h };
+        g.rect = Rect {
+            x: 153.0,
+            y: 45.0,
+            w,
+            h,
+        };
         g.children.clear();
         g
     }
@@ -361,7 +371,7 @@ mod tests {
         assert_eq!(inst.rows[1].rect.x, vp.x + 140.0);
         assert_eq!(inst.rows[3].rect.x, vp.x); // wrapped
         assert_eq!(inst.rows[3].rect.y, vp.y + 70.0); // second grid-row
-        // 7 elements / 3 cols = 3 grid-rows * 70 = 210 content height > 105 vp.
+                                                      // 7 elements / 3 cols = 3 grid-rows * 70 = 210 content height > 105 vp.
         assert_eq!(inst.content_height, 210.0);
         assert!(inst.overflowing);
         assert!(inst.scrollbar.is_some());
@@ -417,7 +427,12 @@ mod tests {
         // instantiate loop did `i % spec.columns` -> divide-by-zero PANIC for any
         // count > 0. A degenerate spec must be sanitized to >=1 column, never crash.
         let tmpl = template();
-        let vp = Rect { x: 0.0, y: 0.0, w: 480.0, h: 105.0 };
+        let vp = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 480.0,
+            h: 105.0,
+        };
         let bad = GridSpec {
             cell_w: 140.0,
             cell_h: 70.0,
@@ -426,7 +441,11 @@ mod tests {
             scrollbar_w: 0.0,
         };
         let inst = instantiate(&tmpl, 5, vp, &bad, 0.0, &SizedContent);
-        assert_eq!(inst.rows.len(), 5, "must still produce one row per element, no panic");
+        assert_eq!(
+            inst.rows.len(),
+            5,
+            "must still produce one row per element, no panic"
+        );
     }
 
     #[test]
@@ -447,8 +466,14 @@ mod tests {
         for sy in [0.0, max * 0.5, max] {
             let inst = instantiate(&tmpl, 2, vp, &spec, sy, &SizedContent);
             let sb = inst.scrollbar.expect("overflowing -> scrollbar");
-            assert!(sb.thumb.h <= sb.track.h + 0.01, "thumb taller than track: {sb:?}");
-            assert!(sb.thumb.y >= sb.track.y - 0.01, "thumb above track top: {sb:?}");
+            assert!(
+                sb.thumb.h <= sb.track.h + 0.01,
+                "thumb taller than track: {sb:?}"
+            );
+            assert!(
+                sb.thumb.y >= sb.track.y - 0.01,
+                "thumb above track top: {sb:?}"
+            );
             assert!(
                 sb.thumb.y + sb.thumb.h <= sb.track.y + sb.track.h + 0.01,
                 "thumb bottom past track bottom: {sb:?}"

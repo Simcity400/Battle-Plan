@@ -9,6 +9,8 @@
 
 use super::*;
 use crate::host::context::Stage;
+use crate::host::input::{PointerButton, ViewInput};
+use crate::host::view::{InputOutcome, RebindContext};
 use crate::views::digest::bound_digest;
 use gui_runtime::{GuiFile, Loc, Rect};
 use std::collections::HashMap;
@@ -174,7 +176,45 @@ fn snap_live() -> snapshot::Snapshot {
     .unwrap()
 }
 
-/// A snapshot with NO `designs` domain (mirrors the mini demo) — every variant/template
+/// Army-HQ template snapshot A: HQ tab enabled, with A-only normal-tab regiment tokens.
+fn snap_hq_a() -> snapshot::Snapshot {
+    serde_json::from_value(serde_json::json!({
+        "date": "1941.6.1.12", "hour_index": 150,
+        "countries": { "GER": { "military": { "xp": { "army": 55.0 } } } },
+        "designs": {
+            "equipment_variants": {},
+            "division_templates": [
+                {"id": 10, "type": 1, "name": "Stabsdivision", "country": "GER", "role": "hq",
+                 "regiments": [{"type": "infantry", "x": 0, "y": 0}, {"type": "signal_company", "x": 1, "y": 0}],
+                 "support": ["engineer"], "regimental_support": [],
+                 "priority": 3, "division_cap": 0, "obsolete": false, "is_locked": false,
+                 "is_army_hq": true, "n_regiments": 2, "n_support": 1}
+            ]
+        }
+    }))
+    .unwrap()
+}
+
+/// Army-HQ template snapshot B: same tab shape, with B-only identity and regiment tokens.
+fn snap_hq_b() -> snapshot::Snapshot {
+    serde_json::from_value(serde_json::json!({
+        "date": "1942.6.1.12", "hour_index": 250,
+        "countries": { "GER": { "military": { "xp": { "army": 77.0 } } } },
+        "designs": {
+            "equipment_variants": {},
+            "division_templates": [
+                {"id": 10, "type": 1, "name": "Fuehrungsstab Ost", "country": "GER", "role": "hq",
+                 "regiments": [{"type": "rocket_artillery", "x": 0, "y": 0}],
+                 "support": ["field_hospital"], "regimental_support": [],
+                 "priority": 4, "division_cap": 0, "obsolete": false, "is_locked": false,
+                 "is_army_hq": true, "n_regiments": 1, "n_support": 1}
+            ]
+        }
+    }))
+    .unwrap()
+}
+
+/// A snapshot with NO `designs` domain (mirrors the mini demo) - every variant/template
 /// bind must badge unavailable, never fabricate.
 fn snap_no_designs() -> snapshot::Snapshot {
     serde_json::from_value(serde_json::json!({
@@ -338,8 +378,37 @@ fn bind_view(view_id: &str, stage: &Stage, snap: &snapshot::Snapshot) -> String 
     bound_digest(&bv)
 }
 
-/// Each of the 5 designers: bind A (save) and B (live) differ, and a scrub A→B→A rebinds
-/// A byte-identically (the immutable-LRU rule — no value carried from the B visit).
+// Division tab interaction helpers.
+fn rebind_division(v: &mut DivisionDesignerView, snap: &snapshot::Snapshot, refit: bool) {
+    v.rebind(&RebindContext {
+        snapshot: snap,
+        country: "GER",
+        screen: (1600, 900),
+        refit,
+    });
+}
+
+fn division_tab_center(bar: &TabBar, panel: Rect, id: &str) -> (f32, f32) {
+    let rect = bar
+        .layout(panel)
+        .into_iter()
+        .find(|tr| tr.id == id)
+        .unwrap_or_else(|| panic!("missing division tab rect {id}"))
+        .rect;
+    (rect.x + rect.w * 0.5, rect.y + rect.h * 0.5)
+}
+
+fn click_division_tab_center(v: &mut DivisionDesignerView, id: &str) -> InputOutcome {
+    let panel = division_tab_panel_fallback(v.screen);
+    let (x, y) = division_tab_center(&v.tabs, panel, id);
+    v.on_input(&ViewInput::PointerDown {
+        x,
+        y,
+        button: PointerButton::Left,
+    })
+}
+
+/// Each designer rebinds A->B->A byte-identically without carrying B's values.
 #[test]
 fn scrub_a_b_a_byte_identical_all_five() {
     let files = &[
@@ -465,6 +534,118 @@ fn division_regiment_grid_and_tabs_bound() {
     assert!(
         d.contains("Hardness=—") && d.contains("Combat Width=—"),
         "division stat chips badged unavailable"
+    );
+}
+
+// -------------------------------------------------------- division tab interaction parity
+
+/// An HQ-capable template enables the Army HQ tab and switches visible content.
+#[test]
+fn division_hq_tab_click_switches_digest_and_visible_content() {
+    let stage = stage_with(&["division_designer.json"]);
+    let snap = snap_hq_a();
+    let mut v = DivisionDesignerView::new();
+    rebind_division(&mut v, &snap, true);
+
+    assert_eq!(v.tabs.selected(), Some(DIVISION_TAB_NORMAL));
+    assert!(
+        v.tabs
+            .tabs
+            .iter()
+            .any(|t| t.id == DIVISION_TAB_HQ && t.avail.is_pickable()),
+        "Army HQ tab must be enabled for an HQ template"
+    );
+
+    let cx = ctx(&stage, &snap);
+    let normal = bound_digest(&v.bind(&cx));
+    assert!(
+        normal.contains("T[sel=Some(\"normal\")") && normal.contains("occ=0/3/0"),
+        "{normal}"
+    );
+    assert!(
+        normal.contains("infantry") && normal.contains("signal_company"),
+        "normal tab must show the regiment/support grid: {normal}"
+    );
+
+    let out = click_division_tab_center(&mut v, DIVISION_TAB_HQ);
+    assert!(out.consumed);
+    assert!(out.needs_redraw);
+    assert!(out.commands.is_empty());
+
+    let hq = bound_digest(&v.bind(&cx));
+    assert_ne!(normal, hq, "selecting Army HQ must change the digest");
+    assert!(
+        hq.contains("T[sel=Some(\"hq\")") && hq.contains("occ=0/0/0"),
+        "{hq}"
+    );
+    assert!(
+        hq.contains("HQ Deploy Cost=") && hq.contains("HQ Deploy Time="),
+        "HQ tab must show the HQ-only unavailable summary: {hq}"
+    );
+    assert!(
+        !hq.contains("infantry") && !hq.contains("signal_company"),
+        "HQ tab must not carry normal regiment rows: {hq}"
+    );
+    assert!(
+        !hq.contains("Hardness="),
+        "HQ tab must not carry normal division stat chips: {hq}"
+    );
+}
+
+#[test]
+fn division_hq_tab_inert_when_template_is_not_hq() {
+    let stage = stage_with(&["division_designer.json"]);
+    let snap = snap_save();
+    let mut v = DivisionDesignerView::new();
+    rebind_division(&mut v, &snap, true);
+
+    assert_eq!(v.tabs.selected(), Some(DIVISION_TAB_NORMAL));
+    assert!(
+        v.tabs
+            .tabs
+            .iter()
+            .any(|t| t.id == DIVISION_TAB_HQ && !t.avail.is_pickable()),
+        "non-HQ templates keep the Army HQ tab present but inert"
+    );
+
+    let before = bound_digest(&v.bind(&ctx(&stage, &snap)));
+    let out = click_division_tab_center(&mut v, DIVISION_TAB_HQ);
+    assert!(out.consumed);
+    assert!(!out.needs_redraw);
+    assert!(out.commands.is_empty());
+    assert_eq!(v.tabs.selected(), Some(DIVISION_TAB_NORMAL));
+    let after = bound_digest(&v.bind(&ctx(&stage, &snap)));
+    assert_eq!(
+        before, after,
+        "clicking a disabled Army HQ tab must be an explicit no-op"
+    );
+}
+
+#[test]
+fn division_selected_tab_persists_across_scrub_a_b_a() {
+    let stage = stage_with(&[]);
+    let (a, b) = (snap_hq_a(), snap_hq_b());
+    let mut v = DivisionDesignerView::new();
+    rebind_division(&mut v, &a, true);
+    let out = click_division_tab_center(&mut v, DIVISION_TAB_HQ);
+    assert!(out.consumed && out.needs_redraw);
+
+    let da1 = bound_digest(&v.bind(&ctx(&stage, &a)));
+    rebind_division(&mut v, &b, false);
+    let db = bound_digest(&v.bind(&ctx(&stage, &b)));
+    rebind_division(&mut v, &a, false);
+    let da2 = bound_digest(&v.bind(&ctx(&stage, &a)));
+
+    assert!(da1.contains("T[sel=Some(\"hq\")"), "{da1}");
+    assert!(db.contains("T[sel=Some(\"hq\")"), "{db}");
+    assert!(db.contains("Name=Fuehrungsstab Ost"), "{db}");
+    assert_eq!(
+        da1, da2,
+        "scrub A->B->A must preserve the selected division tab"
+    );
+    assert!(
+        !da2.contains("Fuehrungsstab Ost") && !da2.contains("rocket_artillery"),
+        "A after scrub must not carry B-only template data or regiment rows: {da2}"
     );
 }
 
@@ -615,8 +796,6 @@ fn every_data_field_bound_or_badged_per_view() {
         "Terrain Adjusters",
         "Production Cost (IC)",
         "Production Resources",
-        "HQ Deploy Cost",
-        "HQ Modifiers",
     ];
     let up_headers = ["Experience", "Variant", "Archetype", "Design Team"];
     let up_badges = ["Resulting Stats"];

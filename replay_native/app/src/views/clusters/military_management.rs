@@ -67,11 +67,13 @@ use widgets::tabs::{Tab, TabBar};
 
 use crate::host::context::{BindContext, Captured, DisplayAtom, FidelityReport, UnavailableReason};
 use crate::host::draw::FrameDraw;
+use crate::host::input::{PointerButton, ViewInput};
 use crate::host::registry::{
     GuiSymbolRef, MenuCluster, MenuRoute, TemplateDescriptor, ViewDescriptor, ViewId,
 };
 use crate::host::view::{
-    BoundView, Drawable, HitModel, HostPolicy, InstanceId, ViewCommand, ViewInstance, ZBand,
+    BoundView, Drawable, HitModel, HostPolicy, InputOutcome, InstanceId, RebindContext,
+    ViewCommand, ViewInstance, ZBand,
 };
 use crate::{register_template, register_view};
 
@@ -237,12 +239,20 @@ struct Cell {
     atom: DisplayAtom,
 }
 
+#[derive(Clone)]
+struct SpriteCell {
+    element: String,
+    asset: assets::SpriteAsset,
+    fidelity: Fidelity,
+}
+
 /// One instantiated data row: the element→atom cells for its text fields, plus LOGICAL
 /// `gaps` with NO backing `.gui` node (recorded for honesty, never bound). Custom-drawn by
 /// the view's `Drawable` through the template; recorded in the digest so a scrub is exact.
 #[derive(Clone)]
 struct DataRow {
     cells: Vec<Cell>,
+    sprites: Vec<SpriteCell>,
     gaps: Vec<String>,
 }
 
@@ -250,6 +260,7 @@ impl DataRow {
     fn new() -> DataRow {
         DataRow {
             cells: Vec::new(),
+            sprites: Vec::new(),
             gaps: Vec::new(),
         }
     }
@@ -297,6 +308,20 @@ impl DataRow {
             atom,
         });
     }
+    fn bind_sprite(
+        &mut self,
+        report: &mut FidelityReport,
+        element: &str,
+        asset: assets::SpriteAsset,
+        fidelity: Fidelity,
+    ) {
+        record_sprite_asset(report, &asset, fidelity);
+        self.sprites.push(SpriteCell {
+            element: element.to_string(),
+            asset,
+            fidelity,
+        });
+    }
     /// Record an `unavailable` badge for a LOGICAL field with NO backing `.gui` node (an
     /// OPEN gap / a separate prototype window). Tallied, never pushed as a targetable cell.
     fn badge_gap(&mut self, report: &mut FidelityReport, label: &str) {
@@ -335,6 +360,9 @@ fn row_digest(rows: &[DataRow]) -> String {
                 Fidelity::Unavailable => "U",
             };
             s.push_str(&format!("{}={}({badge});", c.element, c.atom.as_str()));
+        }
+        for sprite in &r.sprites {
+            s.push_str(&sprite_digest(sprite));
         }
         for g in &r.gaps {
             s.push_str(&format!("{g}=—(gap);"));
@@ -425,6 +453,184 @@ fn field_is(elem: &serde_json::Value, key: &str, tag: &str) -> bool {
     elem.get(key).and_then(|v| v.as_str()) == Some(tag)
 }
 
+fn portrait_asset(ctx: &BindContext, record: &serde_json::Value) -> assets::SpriteAsset {
+    assets::resolve_portrait_sprite(&ctx.stage.manifest, record)
+}
+
+fn formation_icon_asset(
+    ctx: &BindContext,
+    formation: &serde_json::Value,
+    base_sprite: &str,
+) -> (assets::SpriteAsset, Fidelity) {
+    let resolved = assets::resolve_formation_insignia_sprite_from_base(
+        &ctx.stage.manifest,
+        formation,
+        base_sprite,
+    );
+    let fidelity = match resolved.origin {
+        assets::FormationInsigniaOrigin::ExplicitMetadata => Fidelity::Exact,
+        assets::FormationInsigniaOrigin::IconFrameMetadata => Fidelity::Derived,
+        assets::FormationInsigniaOrigin::Unavailable => Fidelity::Unavailable,
+    };
+    (resolved.asset, fidelity)
+}
+
+fn fleet_leader_portrait_asset(
+    ctx: &BindContext,
+    fleet: &serde_json::Value,
+    commander: Option<&serde_json::Value>,
+) -> assets::SpriteAsset {
+    let direct = portrait_asset(ctx, fleet);
+    if !matches!(
+        direct,
+        assets::SpriteAsset::Unavailable(assets::SpriteMiss::NoSpriteName)
+    ) {
+        return direct;
+    }
+    match commander {
+        Some(commander) => portrait_asset(ctx, commander),
+        None => assets::SpriteAsset::Unavailable(assets::SpriteMiss::NoSpriteName),
+    }
+}
+
+fn find_commander_by_leader_ref<'a>(
+    ctx: &'a BindContext,
+    tag: &str,
+    leader_ref: Option<&serde_json::Value>,
+    sources: &[&str],
+) -> Option<&'a serde_json::Value> {
+    let keys = leader_ref_keys(leader_ref?);
+    if keys.is_empty() {
+        return None;
+    }
+    for source in sources {
+        if let (Some(commanders), SectionState::Present) = country_array(ctx, tag, source) {
+            for commander in commanders {
+                if commander_matches_keys(commander, &keys) {
+                    return Some(commander);
+                }
+            }
+        }
+    }
+    None
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum LeaderRefKey {
+    Token(String),
+    Typed { id: String, kind: String },
+}
+
+fn commander_matches_keys(commander: &serde_json::Value, keys: &[LeaderRefKey]) -> bool {
+    if keys_overlap(&leader_ref_keys(commander), keys) {
+        return true;
+    }
+    for field in [
+        "unit_leader_id",
+        "id",
+        "leader",
+        "token",
+        "char_id",
+        "character",
+    ] {
+        if let Some(v) = commander.get(field) {
+            if keys_overlap(&leader_ref_keys(v), keys) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn keys_overlap(a: &[LeaderRefKey], b: &[LeaderRefKey]) -> bool {
+    a.iter().any(|candidate| b.iter().any(|k| k == candidate))
+}
+
+fn leader_ref_keys(v: &serde_json::Value) -> Vec<LeaderRefKey> {
+    let mut keys = Vec::new();
+    match v {
+        serde_json::Value::String(s) => push_ref_string(&mut keys, s),
+        serde_json::Value::Number(n) => keys.push(LeaderRefKey::Token(n.to_string())),
+        serde_json::Value::Object(map) => {
+            let typed_id = map
+                .get("id")
+                .or_else(|| map.get("unit_leader_id"))
+                .or_else(|| map.get("leader"))
+                .filter(|v| leader_ref_scalars(v).len() == 1);
+            if let (Some(id), Some(kind)) = (typed_id, map.get("type")) {
+                for id_key in leader_ref_scalars(id) {
+                    for kind_key in leader_ref_scalars(kind) {
+                        keys.push(LeaderRefKey::Typed {
+                            id: id_key.clone(),
+                            kind: kind_key,
+                        });
+                    }
+                }
+            }
+            for key in ["token", "char_id", "character"] {
+                if let Some(child) = map.get(key) {
+                    keys.extend(leader_ref_keys(child));
+                }
+            }
+            if typed_id.is_none() {
+                for key in ["id", "unit_leader_id", "leader"] {
+                    if let Some(child) = map.get(key) {
+                        keys.extend(leader_ref_keys(child));
+                    }
+                }
+            } else if let Some(child) = map.get("leader").filter(|v| v.is_string()) {
+                keys.extend(leader_ref_keys(child));
+            }
+        }
+        _ => {}
+    }
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+fn leader_ref_scalars(v: &serde_json::Value) -> Vec<String> {
+    let mut values = Vec::new();
+    match v {
+        serde_json::Value::String(s) => {
+            let s = s.trim();
+            if !s.is_empty() {
+                values.push(s.to_string());
+            }
+        }
+        serde_json::Value::Number(n) => values.push(n.to_string()),
+        serde_json::Value::Object(map) => {
+            for key in ["id", "unit_leader_id", "leader", "type"] {
+                if let Some(child) = map.get(key) {
+                    values.extend(leader_ref_scalars(child));
+                }
+            }
+        }
+        _ => {}
+    }
+    values.sort();
+    values.dedup();
+    values
+}
+
+fn push_ref_string(keys: &mut Vec<LeaderRefKey>, raw: &str) {
+    let s = raw.trim();
+    if s.is_empty() {
+        return;
+    }
+    keys.push(LeaderRefKey::Token(s.to_string()));
+    if let Some((id, kind)) = s.split_once(':') {
+        let id = id.trim();
+        let kind = kind.trim();
+        if !id.is_empty() && !kind.is_empty() {
+            keys.push(LeaderRefKey::Typed {
+                id: id.to_string(),
+                kind: kind.to_string(),
+            });
+        }
+    }
+}
+
 /// Push a single summary cell bound from one observed-country path at a chosen fidelity.
 fn push_country(
     ctx: &BindContext,
@@ -494,6 +700,190 @@ fn build_root(ctx: &BindContext, file: &GuiFile, root_name: &str, summary: &[Cel
     roots
 }
 
+fn record_sprite_asset(
+    report: &mut FidelityReport,
+    asset: &assets::SpriteAsset,
+    fidelity: Fidelity,
+) {
+    let atom = match asset {
+        assets::SpriteAsset::Resolved(sprite) => {
+            DisplayAtom::text(format!("{}#{}", sprite.name, sprite.frame), fidelity)
+        }
+        assets::SpriteAsset::Unavailable(_) => {
+            DisplayAtom::unavailable_because(UnavailableReason::Blocked)
+        }
+    };
+    report.record(&atom);
+}
+
+fn sprite_digest(sprite: &SpriteCell) -> String {
+    match &sprite.asset {
+        assets::SpriteAsset::Resolved(resolved) => {
+            let badge = match sprite.fidelity {
+                Fidelity::Exact => "E",
+                Fidelity::Derived => "D",
+                Fidelity::Unavailable => "U",
+            };
+            format!(
+                "{}:sprite={}#{}({badge});",
+                sprite.element, resolved.name, resolved.frame
+            )
+        }
+        assets::SpriteAsset::Unavailable(miss) => {
+            format!(
+                "{}:sprite=MISS:{}(U);",
+                sprite.element,
+                sprite_miss_digest(miss)
+            )
+        }
+    }
+}
+
+fn sprite_miss_digest(miss: &assets::SpriteMiss) -> String {
+    match miss {
+        assets::SpriteMiss::NoSpriteName => "no_sprite_name".to_string(),
+        assets::SpriteMiss::MissingSprite(name) => format!("missing_sprite:{name}"),
+        assets::SpriteMiss::MissingTexture(name) => format!("missing_texture:{name}"),
+        assets::SpriteMiss::AmbiguousTexturePath(path) => {
+            format!("ambiguous_texture_path:{path}")
+        }
+        assets::SpriteMiss::GenericPlaceholder(name) => format!("generic_placeholder:{name}"),
+        assets::SpriteMiss::FrameOutOfRange {
+            name,
+            frame,
+            frames,
+        } => {
+            format!("frame_out_of_range:{name}:{frame}:{frames}")
+        }
+    }
+}
+
+fn apply_sprite_cell(root: &mut Node, sprite: &SpriteCell) -> bool {
+    match &sprite.asset {
+        assets::SpriteAsset::Resolved(resolved) => {
+            set_element_sprite(root, &sprite.element, &resolved.name, resolved.frame)
+        }
+        assets::SpriteAsset::Unavailable(_) => false,
+    }
+}
+
+fn set_element_sprite(node: &mut Node, name: &str, sprite: &str, frame: u32) -> bool {
+    if node.name == name {
+        match &mut node.kind {
+            ElementKind::Icon {
+                sprite: current,
+                frame: current_frame,
+            } => {
+                *current = sprite.to_string();
+                *current_frame = frame;
+                return true;
+            }
+            ElementKind::Button {
+                sprite: current,
+                frame: current_frame,
+                ..
+            } => {
+                *current = Some(sprite.to_string());
+                *current_frame = frame;
+                return true;
+            }
+            ElementKind::Background { sprite: current }
+            | ElementKind::NineSlice { sprite: current }
+            | ElementKind::ProgressBar {
+                sprite: current, ..
+            } => {
+                if frame == 0 {
+                    *current = sprite.to_string();
+                    return true;
+                }
+            }
+            ElementKind::Container { background } => {
+                if frame == 0 {
+                    *background = Some(sprite.to_string());
+                    return true;
+                }
+            }
+            ElementKind::Text(_) => {}
+        }
+    }
+    for child in node.children.iter_mut() {
+        if set_element_sprite(child, name, sprite, frame) {
+            return true;
+        }
+    }
+    false
+}
+
+fn has_unavailable_sprite(rows: &[DataRow]) -> bool {
+    rows.iter().any(|row| {
+        row.sprites
+            .iter()
+            .any(|sprite| matches!(sprite.asset, assets::SpriteAsset::Unavailable(_)))
+    })
+}
+
+fn draw_unavailable_sprite_markers(
+    renderer: &mut render::Renderer,
+    white: &render::Texture,
+    row: &Node,
+    data: &DataRow,
+) {
+    for sprite in &data.sprites {
+        if !matches!(sprite.asset, assets::SpriteAsset::Unavailable(_)) {
+            continue;
+        }
+        if let Some(rect) = find_rect(std::slice::from_ref(row), &sprite.element) {
+            let clip = row.clip.map(|c| [c.x, c.y, c.w, c.h]);
+            draw_unavailable_sprite_marker(renderer, white, rect, clip);
+        }
+    }
+}
+
+fn draw_unavailable_sprite_marker(
+    renderer: &mut render::Renderer,
+    white: &render::Texture,
+    rect: Rect,
+    clip: Option<[f32; 4]>,
+) {
+    let pad = (rect.w.min(rect.h) * 0.12).clamp(1.0, 4.0);
+    let x = rect.x + pad;
+    let y = rect.y + pad;
+    let w = (rect.w - pad * 2.0).max(1.0);
+    let h = (rect.h - pad * 2.0).max(1.0);
+    widgets::common::fill_rect(
+        renderer,
+        white,
+        x,
+        y,
+        w,
+        h,
+        widgets::common::PLACEHOLDER_TINT,
+        clip,
+    );
+    widgets::common::stroke_rect(
+        renderer,
+        white,
+        x,
+        y,
+        w,
+        h,
+        1.5,
+        widgets::common::UNAVAIL_TINT,
+        clip,
+    );
+    let bar_h = (h * 0.18).clamp(1.0, 3.0);
+    widgets::common::fill_rect(
+        renderer,
+        white,
+        x + w * 0.22,
+        y + (h - bar_h) * 0.5,
+        w * 0.56,
+        bar_h,
+        widgets::common::UNAVAIL_TINT,
+        clip,
+    );
+}
+
 /// The shared per-row custom draw: instantiate the template into the viewport gridbox and
 /// stamp each row's cell atoms into the named children, then draw the rows + scrollbar.
 fn render_rows(
@@ -526,12 +916,23 @@ fn render_rows(
         for cell in &rows[i].cells {
             bind::apply::set_element_text(row, &cell.element, cell.atom.as_str());
         }
+        for sprite in &rows[i].sprites {
+            apply_sprite_cell(row, sprite);
+        }
     }
     let mut stats = DrawStats::default();
+    let unavailable_marker = if has_unavailable_sprite(rows) {
+        Some(mint_white(fd))
+    } else {
+        None
+    };
     let textures: &mut TextureCache = fd.textures;
     let fonts: &mut FontCache = fd.fonts;
-    for row in &inst.rows {
+    for (row, data) in inst.rows.iter().zip(rows.iter()) {
         gui_runtime::draw::draw_window(fd.renderer, row, textures, fonts, &mut stats);
+        if let Some(white) = unavailable_marker.as_ref() {
+            draw_unavailable_sprite_markers(fd.renderer, white, row, data);
+        }
     }
     if let Some(sb) = inst.scrollbar {
         if let Some(t) = textures.get(fd.renderer, "GFX_scrollbar_vertical_bg") {
@@ -554,6 +955,7 @@ fn stub_grid(name: &str, rect: Rect) -> Node {
     Node {
         name: name.to_string(),
         raw_kind: "gridBoxType".into(),
+        tooltip: None,
         kind: ElementKind::Container { background: None },
         pos: (0.0, 0.0),
         size_w: None,
@@ -616,6 +1018,84 @@ fn avail_tab(id: &str, label: &str, present: bool) -> Tab {
     }
 }
 
+fn army_tabs_for_sections(
+    army_section: SectionState,
+    navy_section: SectionState,
+    air_section: SectionState,
+) -> TabBar {
+    TabBar::horizontal(vec![
+        avail_tab("army", "Army", army_section == SectionState::Present),
+        avail_tab("navy", "Navy", navy_section == SectionState::Present),
+        avail_tab("air", "Air", air_section == SectionState::Present),
+    ])
+}
+
+fn army_tabs_for_oob(oob: &Captured<&serde_json::Value>) -> TabBar {
+    let (_, army_section) = oob_list(oob, "armies");
+    let (_, navy_section) = oob_list(oob, "fleets");
+    let (_, air_section) = oob_list(oob, "air_wings");
+    army_tabs_for_sections(army_section, navy_section, air_section)
+}
+
+fn army_tabs_with_selection(mut tabs: TabBar, selected: Option<&str>) -> TabBar {
+    if let Some(id) = selected {
+        tabs.select(id);
+    }
+    tabs.reconcile();
+    tabs
+}
+
+fn default_army_screen() -> Rect {
+    Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 1600.0,
+        h: 900.0,
+    }
+}
+
+fn army_tabs_fallback(screen: Rect) -> Rect {
+    let root_x = screen.x + screen.w - 606.0;
+    let root_y = screen.y + 78.0;
+    Rect {
+        x: root_x,
+        y: root_y + 40.0,
+        w: 550.0,
+        h: (screen.h - 118.0).max(0.0),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArmyTabClick {
+    Changed,
+    Unchanged,
+    Inert,
+    Miss,
+}
+
+fn click_army_tab(bar: &mut TabBar, panel: Rect, x: f32, y: f32) -> ArmyTabClick {
+    let rects = bar.layout(panel);
+    if let Some(id) = bar.pick(&rects, x, y) {
+        if bar.select(&id) {
+            ArmyTabClick::Changed
+        } else {
+            ArmyTabClick::Unchanged
+        }
+    } else if rects.iter().any(|tr| tr.rect.contains(x, y)) {
+        ArmyTabClick::Inert
+    } else {
+        ArmyTabClick::Miss
+    }
+}
+
+fn army_input_consumed(needs_redraw: bool) -> InputOutcome {
+    InputOutcome {
+        consumed: true,
+        commands: Vec::new(),
+        needs_redraw,
+    }
+}
+
 // =====================================================================================
 // VIEW 1 — ARMY  (countryarmyview)  [N2 tabs: Army / Navy / Air]
 // =====================================================================================
@@ -624,11 +1104,24 @@ const ARMY_VIEW_ID: ViewId = ViewId("military.army");
 const ARMY_FILE: &str = "army.json";
 const ARMY_ROOT: &str = "countryarmyview";
 
-pub struct ArmyView;
+pub struct ArmyView {
+    selected_tab: Option<String>,
+    tabs: TabBar,
+    screen: Rect,
+}
 
 impl ArmyView {
     pub fn new() -> ArmyView {
-        ArmyView
+        let tabs = army_tabs_for_sections(
+            SectionState::Present,
+            SectionState::Present,
+            SectionState::Present,
+        );
+        ArmyView {
+            selected_tab: tabs.selected().map(str::to_string),
+            tabs,
+            screen: default_army_screen(),
+        }
     }
 }
 
@@ -653,11 +1146,19 @@ struct ArmyDrawable {
 
 impl Drawable for ArmyDrawable {
     fn draw_digest(&self) -> String {
+        let (visible_tab, visible_rows) = match self.tabs.selected() {
+            Some("navy") => ("navy", &self.navy_rows),
+            Some("air") => ("air", &self.air_rows),
+            _ => ("army", &self.army_rows),
+        };
         format!(
-            "ARMY army_sect={} navy_sect={} air_sect={} army={} navy={} air={} TABS {}",
+            "ARMY army_sect={} navy_sect={} air_sect={} selected={:?} visible_tab={} visible=[{}] army={} navy={} air={} TABS {}",
             self.army_section.tag(),
             self.navy_section.tag(),
             self.air_section.tag(),
+            self.tabs.selected(),
+            visible_tab,
+            row_digest(visible_rows),
             row_digest(&self.army_rows),
             row_digest(&self.navy_rows),
             row_digest(&self.air_rows),
@@ -704,6 +1205,37 @@ impl ViewInstance for ArmyView {
     fn policy(&self) -> HostPolicy {
         HostPolicy::window(ZBand::Panel)
     }
+    fn rebind(&mut self, ctx: &RebindContext) {
+        self.screen = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: ctx.screen.0 as f32,
+            h: ctx.screen.1 as f32,
+        };
+        let oob = ctx.order_of_battle();
+        self.tabs = army_tabs_with_selection(army_tabs_for_oob(&oob), self.selected_tab.as_deref());
+    }
+    fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
+        match *ev {
+            ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            } => match click_army_tab(&mut self.tabs, army_tabs_fallback(self.screen), x, y) {
+                ArmyTabClick::Changed => {
+                    self.selected_tab = self.tabs.selected().map(str::to_string);
+                    army_input_consumed(true)
+                }
+                ArmyTabClick::Unchanged => {
+                    self.selected_tab = self.tabs.selected().map(str::to_string);
+                    army_input_consumed(false)
+                }
+                ArmyTabClick::Inert => army_input_consumed(false),
+                ArmyTabClick::Miss => InputOutcome::ignored(),
+            },
+            _ => InputOutcome::ignored(),
+        }
+    }
     fn bind(&self, ctx: &BindContext) -> BoundView {
         let tag = ctx.country;
         let mut fidelity = FidelityReport::default();
@@ -732,19 +1264,18 @@ impl ViewInstance for ArmyView {
         let (fleets, navy_section) = oob_list(&oob, "fleets");
         let (wings, air_section) = oob_list(&oob, "air_wings");
 
-        let army_rows = build_army_rows(armies, tag, &mut fidelity);
-        let navy_rows = build_armyview_navy_rows(fleets, tag, &mut fidelity);
+        let army_rows = build_army_rows(ctx, armies, tag, &mut fidelity);
+        let navy_rows = build_armyview_navy_rows(ctx, fleets, tag, &mut fidelity);
         let air_rows = build_armyview_air_rows(wings, tag, &mut fidelity);
         army_section.record(&mut fidelity);
         navy_section.record(&mut fidelity);
         air_section.record(&mut fidelity);
 
         // N2 tabs: each tab's availability reflects whether that OOB sub-list is present.
-        let tabs = TabBar::horizontal(vec![
-            avail_tab("army", "Army", army_section == SectionState::Present),
-            avail_tab("navy", "Navy", navy_section == SectionState::Present),
-            avail_tab("air", "Air", air_section == SectionState::Present),
-        ]);
+        let tabs = army_tabs_with_selection(
+            army_tabs_for_sections(army_section, navy_section, air_section),
+            self.selected_tab.as_deref(),
+        );
 
         let roots = build_root(ctx, &file, ARMY_ROOT, &summary);
         let drawable = ArmyDrawable {
@@ -776,6 +1307,7 @@ impl ViewInstance for ArmyView {
 /// a save string (exact); theatre/group/level/org bar need joins/runtime → unavailable;
 /// the strength bar shows the member_count as a derived size proxy.
 fn build_army_rows(
+    ctx: &BindContext,
     armies: Option<&[serde_json::Value]>,
     tag: &str,
     fidelity: &mut FidelityReport,
@@ -796,6 +1328,8 @@ fn build_army_rows(
         );
         row.badge_unavailable(fidelity, "theatre");
         row.badge_unavailable(fidelity, "group");
+        let (icon_asset, icon_fidelity) = formation_icon_asset(ctx, a, "GFX_theatre_army_shield");
+        row.bind_sprite(fidelity, "group_marker", icon_asset, icon_fidelity);
         // army XP level needs the commander join (`leader` is a RAW int) → unavailable.
         row.badge_unavailable(fidelity, "level");
         // strength bar slot: member_count is a derived size proxy; org bar needs the
@@ -817,6 +1351,7 @@ fn build_army_rows(
 /// SUM over the fleet's task forces (exact enumeration); region/mission/leader/org/str
 /// need joins/runtime → unavailable.
 fn build_armyview_navy_rows(
+    ctx: &BindContext,
     fleets: Option<&[serde_json::Value]>,
     tag: &str,
     fidelity: &mut FidelityReport,
@@ -839,8 +1374,14 @@ fn build_armyview_navy_rows(
         row.bind_text(fidelity, "unit_count", n.to_string(), Fidelity::Exact);
         row.badge_unavailable(fidelity, "region");
         row.badge_unavailable(fidelity, "mission_icon");
-        // admiral name/portrait/skill need the commanders join → unavailable.
-        row.badge_unavailable(fidelity, "leader_button");
+        let commander =
+            find_commander_by_leader_ref(ctx, tag, f.get("leader"), &["commanders.admirals"]);
+        row.bind_sprite(
+            fidelity,
+            "leader_button",
+            fleet_leader_portrait_asset(ctx, f, commander),
+            Fidelity::Exact,
+        );
         row.badge_unavailable(fidelity, "organization_progressbar");
         row.badge_unavailable(fidelity, "strength_progressbar");
         rows.push(row);
@@ -1028,7 +1569,7 @@ impl ViewInstance for NaviesView {
         let oob = ctx.order_of_battle();
 
         let (fleets, fleet_section) = oob_list(&oob, "fleets");
-        let (fleet_rows, tf_rows, ship_rows) = build_navies_rows(fleets, tag, &mut fidelity);
+        let (fleet_rows, tf_rows, ship_rows) = build_navies_rows(ctx, fleets, tag, &mut fidelity);
         fleet_section.record(&mut fidelity);
 
         let roots = build_root(ctx, &file, NAVIES_ROOT, &[]);
@@ -1058,6 +1599,7 @@ impl ViewInstance for NaviesView {
 /// ship name/type/org/str/xp EXACT (save strings / measured leaves); home-base/fuel/leader/
 /// activity/dominance/repair are unfolded or runtime → unavailable.
 fn build_navies_rows(
+    ctx: &BindContext,
     fleets: Option<&[serde_json::Value]>,
     tag: &str,
     fidelity: &mut FidelityReport,
@@ -1079,6 +1621,8 @@ fn build_navies_rows(
             Fidelity::Exact,
             fmt_token,
         );
+        let (icon_asset, icon_fidelity) = formation_icon_asset(ctx, f, "GFX_theatre_army_shield");
+        fr.bind_sprite(fidelity, "insigna", icon_asset, icon_fidelity);
         let tf_count = arr_count(f, "task_forces");
         fr.bind_text(
             fidelity,
@@ -1089,9 +1633,36 @@ fn build_navies_rows(
         fr.badge_unavailable(fidelity, "active_in_regions");
         fr.badge_unavailable(fidelity, "home_base_name");
         fr.badge_unavailable(fidelity, "fuel_icon");
-        // admiral name/skill needs the commanders join → unavailable.
-        fr.badge_unavailable(fidelity, "leader_name");
-        fr.badge_unavailable(fidelity, "skill_text");
+        let commander =
+            find_commander_by_leader_ref(ctx, tag, f.get("leader"), &["commanders.admirals"]);
+        fr.bind_sprite(
+            fidelity,
+            "leader_button",
+            fleet_leader_portrait_asset(ctx, f, commander),
+            Fidelity::Exact,
+        );
+        match commander {
+            Some(commander) => {
+                fr.bind(
+                    fidelity,
+                    "leader_name",
+                    elem_field(commander, "name"),
+                    Fidelity::Exact,
+                    fmt_token,
+                );
+                fr.bind(
+                    fidelity,
+                    "skill_text",
+                    elem_field(commander, "level"),
+                    Fidelity::Exact,
+                    fmt_int,
+                );
+            }
+            None => {
+                fr.badge_unavailable(fidelity, "leader_name");
+                fr.badge_unavailable(fidelity, "skill_text");
+            }
+        }
         fleet_rows.push(fr);
 
         // --- task-force cards + ship rows ---
@@ -1112,6 +1683,9 @@ fn build_navies_rows(
                     Fidelity::Derived,
                     fmt_token,
                 );
+                let (icon_asset, icon_fidelity) =
+                    formation_icon_asset(ctx, tf, "GFX_theatre_army_shield");
+                tr.bind_sprite(fidelity, "insigna", icon_asset, icon_fidelity);
                 // TF activity/dominance/fuel/reserve are runtime → unavailable.
                 tr.badge_unavailable(fidelity, "activity_description");
                 tr.badge_unavailable(fidelity, "dominance");
@@ -3423,6 +3997,10 @@ mod tests {
     }
 
     fn stage_all() -> Stage {
+        stage_with_manifest(HashMap::new())
+    }
+
+    fn stage_with_manifest(sprites: HashMap<String, assets::SpriteEntry>) -> Stage {
         let mut gui_files = HashMap::new();
         for f in FILES {
             if let Some(g) = load_gui_file(f) {
@@ -3431,14 +4009,36 @@ mod tests {
         }
         Stage {
             resolver: assets::resolver::GameResolver::new(None, None),
-            manifest: assets::SpriteManifest {
-                sprites: HashMap::new(),
-            },
+            manifest: assets::SpriteManifest { sprites },
             loc: Loc::new(),
             gui_files,
             map_dir: std::path::PathBuf::from("."),
             assets_dir: gui_dir().parent().unwrap().to_path_buf(),
         }
+    }
+
+    fn sprite_entry(name: &str, texturefile: Option<&str>, frames: u32) -> assets::SpriteEntry {
+        assets::SpriteEntry {
+            name: name.to_string(),
+            kind: "spriteType".to_string(),
+            no_of_frames: frames,
+            source_gfx: None,
+            texturefile: texturefile.map(str::to_string),
+            category: None,
+            width: None,
+            height: None,
+            nine_slice: None,
+            size: None,
+            border_size: None,
+        }
+    }
+
+    fn sprite_manifest(entries: &[(&str, &str, u32)]) -> HashMap<String, assets::SpriteEntry> {
+        let mut sprites = HashMap::new();
+        for &(name, texture, frames) in entries {
+            sprites.insert(name.to_string(), sprite_entry(name, Some(texture), frames));
+        }
+        sprites
     }
 
     fn ctx<'a>(stage: &'a Stage, snap: &'a snapshot::Snapshot) -> BindContext<'a> {
@@ -3456,6 +4056,48 @@ mod tests {
             cursor: (0.0, 0.0),
             map_camera: None,
         }
+    }
+
+    fn rebind_army(v: &mut ArmyView, snap: &snapshot::Snapshot, refit: bool) {
+        v.rebind(&RebindContext {
+            snapshot: snap,
+            country: "GER",
+            screen: (1600, 900),
+            refit,
+        });
+    }
+
+    fn army_tab_center(bar: &TabBar, panel: Rect, id: &str) -> (f32, f32) {
+        let rect = bar
+            .layout(panel)
+            .into_iter()
+            .find(|tr| tr.id == id)
+            .unwrap_or_else(|| panic!("missing army tab rect {id}"))
+            .rect;
+        (rect.x + rect.w * 0.5, rect.y + rect.h * 0.5)
+    }
+
+    fn click_army_tab_center(v: &mut ArmyView, id: &str) -> InputOutcome {
+        let panel = army_tabs_fallback(v.screen);
+        let (x, y) = army_tab_center(&v.tabs, panel, id);
+        v.on_input(&ViewInput::PointerDown {
+            x,
+            y,
+            button: PointerButton::Left,
+        })
+    }
+
+    fn visible_army_chunk(d: &str) -> &str {
+        let marker = "visible=[";
+        let start = d
+            .find(marker)
+            .unwrap_or_else(|| panic!("missing visible marker in digest: {d}"))
+            + marker.len();
+        let rest = &d[start..];
+        let end = rest
+            .find("] army=")
+            .unwrap_or_else(|| panic!("missing visible terminator in digest: {d}"));
+        &rest[..end]
     }
 
     /// Snapshot A: a SAVE/LIVE-backed GER OOB with armies/fleets/air_wings/theatres/divisions/
@@ -3628,6 +4270,265 @@ mod tests {
         ]
     }
 
+    fn bind_single_army_row(stage: &Stage, army: serde_json::Value) -> (String, FidelityReport) {
+        let snap = snap_a();
+        let armies = vec![army];
+        let mut fidelity = FidelityReport::default();
+        let rows = build_army_rows(
+            &ctx(stage, &snap),
+            Some(armies.as_slice()),
+            "GER",
+            &mut fidelity,
+        );
+        (row_digest(&rows), fidelity)
+    }
+
+    #[test]
+    fn formation_icon_frame_fallback_binds_derived_sprite() {
+        let stage = stage_with_manifest(sprite_manifest(&[(
+            "GFX_theatre_army_shield",
+            "gfx/interface/army_shield.dds",
+            4,
+        )]));
+        let (d, fidelity) = bind_single_army_row(
+            &stage,
+            serde_json::json!({
+                "owner": "GER",
+                "name": "1. Armee",
+                "member_count": 14,
+                "icon": 2
+            }),
+        );
+        assert!(
+            d.contains("group_marker:sprite=GFX_theatre_army_shield#1(D);"),
+            "valid one-based formation icon frame must bind derived sprite art, got:\n{d}"
+        );
+        assert_eq!(
+            fidelity,
+            FidelityReport {
+                exact: 1,
+                derived: 2,
+                unavailable: 4,
+            },
+            "one-based frame art must be counted as derived, not exact or unavailable"
+        );
+    }
+
+    #[test]
+    fn formation_icon_explicit_sprite_binds_exact_sprite() {
+        let stage = stage_with_manifest(sprite_manifest(&[
+            (
+                "GFX_theatre_army_shield",
+                "gfx/interface/army_shield.dds",
+                4,
+            ),
+            ("GFX_exact_army", "gfx/interface/exact_army.dds", 1),
+        ]));
+        let (d, fidelity) = bind_single_army_row(
+            &stage,
+            serde_json::json!({
+                "owner": "GER",
+                "name": "1. Armee",
+                "member_count": 14,
+                "insignia_gfx": "GFX_exact_army",
+                "icon": 2
+            }),
+        );
+        assert!(
+            d.contains("group_marker:sprite=GFX_exact_army#0(E);"),
+            "explicit formation sprite must bind exact sprite art instead of frame fallback, got:\n{d}"
+        );
+        assert_eq!(
+            fidelity,
+            FidelityReport {
+                exact: 2,
+                derived: 1,
+                unavailable: 4,
+            },
+            "explicit formation art must be counted as exact"
+        );
+    }
+
+    #[test]
+    fn formation_icon_out_of_range_frame_records_miss() {
+        let stage = stage_with_manifest(sprite_manifest(&[(
+            "GFX_theatre_army_shield",
+            "gfx/interface/army_shield.dds",
+            2,
+        )]));
+        let (d, fidelity) = bind_single_army_row(
+            &stage,
+            serde_json::json!({
+                "owner": "GER",
+                "name": "1. Armee",
+                "member_count": 14,
+                "icon": 4
+            }),
+        );
+        assert!(
+            d.contains(
+                "group_marker:sprite=MISS:frame_out_of_range:GFX_theatre_army_shield:3:2(U);"
+            ),
+            "out-of-range formation icon must stay an explicit miss, got:\n{d}"
+        );
+        assert_eq!(
+            fidelity,
+            FidelityReport {
+                exact: 1,
+                derived: 1,
+                unavailable: 5,
+            },
+            "out-of-range frame art must be counted unavailable"
+        );
+    }
+
+    #[test]
+    fn formation_icon_missing_base_sprite_records_unavailable_miss() {
+        let stage = stage_with_manifest(HashMap::new());
+        let (d, fidelity) = bind_single_army_row(
+            &stage,
+            serde_json::json!({
+                "owner": "GER",
+                "name": "1. Armee",
+                "member_count": 14,
+                "icon": 1
+            }),
+        );
+        assert!(
+            d.contains("group_marker:sprite=MISS:missing_sprite:GFX_theatre_army_shield(U);"),
+            "missing base shield strip must stay an explicit unavailable miss, got:\n{d}"
+        );
+        assert_eq!(
+            fidelity,
+            FidelityReport {
+                exact: 1,
+                derived: 1,
+                unavailable: 5,
+            },
+            "missing base shield strip must be counted unavailable"
+        );
+    }
+
+    #[test]
+    fn formation_icon_generic_placeholder_records_unavailable_miss() {
+        let stage = stage_with_manifest(sprite_manifest(&[
+            (
+                "GFX_theatre_army_shield",
+                "gfx/interface/army_shield.dds",
+                4,
+            ),
+            (
+                "GFX_unknown_formation",
+                "gfx/interface/unknown_formation.dds",
+                1,
+            ),
+        ]));
+        let (d, fidelity) = bind_single_army_row(
+            &stage,
+            serde_json::json!({
+                "owner": "GER",
+                "name": "1. Armee",
+                "member_count": 14,
+                "emblem_gfx": "GFX_unknown_formation",
+                "icon": 1
+            }),
+        );
+        assert!(
+            d.contains("group_marker:sprite=MISS:generic_placeholder:GFX_unknown_formation(U);"),
+            "generic placeholder art must stay an explicit unavailable miss, got:\n{d}"
+        );
+        assert!(
+            !d.contains("group_marker:sprite=GFX_unknown_formation#0(E);"),
+            "generic placeholder must not enter the digest as exact default art, got:\n{d}"
+        );
+        assert_eq!(
+            fidelity,
+            FidelityReport {
+                exact: 1,
+                derived: 1,
+                unavailable: 5,
+            },
+            "generic placeholder art must be counted unavailable"
+        );
+    }
+
+    #[test]
+    fn formation_icon_missing_records_unavailable_miss() {
+        let stage = stage_with_manifest(sprite_manifest(&[(
+            "GFX_theatre_army_shield",
+            "gfx/interface/army_shield.dds",
+            4,
+        )]));
+        let (d, fidelity) = bind_single_army_row(
+            &stage,
+            serde_json::json!({
+                "owner": "GER",
+                "name": "1. Armee",
+                "member_count": 14
+            }),
+        );
+        assert!(
+            d.contains("group_marker:sprite=MISS:no_sprite_name(U);"),
+            "missing formation icon must not fall back to a default shield frame, got:\n{d}"
+        );
+        assert_eq!(
+            fidelity,
+            FidelityReport {
+                exact: 1,
+                derived: 1,
+                unavailable: 5,
+            },
+            "missing formation metadata must be counted unavailable"
+        );
+    }
+
+    #[test]
+    fn fleet_leader_join_binds_portrait_name_and_skill() {
+        let stage = stage_with_manifest(sprite_manifest(&[(
+            "GFX_portrait_raeder",
+            "gfx/leaders/GER/Portrait_Germany_Erich_Raeder.dds",
+            1,
+        )]));
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "date": "1941.1.1.12",
+            "countries": { "GER": {
+                "commanders": {
+                    "admirals": [
+                        {
+                            "unit_leader_id": 5001,
+                            "name": "Raeder",
+                            "level": 4,
+                            "portrait_gfx": "GFX_portrait_raeder"
+                        }
+                    ]
+                }
+            } }
+        }))
+        .unwrap();
+        let fleets = vec![serde_json::json!({
+            "owner": "GER",
+            "name": "Kriegsmarine",
+            "leader": 5001,
+            "task_forces": []
+        })];
+        let mut fidelity = FidelityReport::default();
+        let (fleet_rows, _, _) = build_navies_rows(
+            &ctx(&stage, &snap),
+            Some(fleets.as_slice()),
+            "GER",
+            &mut fidelity,
+        );
+        let d = row_digest(&fleet_rows);
+        assert!(
+            d.contains("leader_button:sprite=GFX_portrait_raeder#0(E);"),
+            "joined admiral portrait must bind exact sprite art, got:\n{d}"
+        );
+        assert!(
+            d.contains("leader_name=Raeder(E);") && d.contains("skill_text=4(E);"),
+            "joined admiral name and skill must bind exact text, got:\n{d}"
+        );
+    }
+
     // -------- render-plan digest: scrub A→B→A byte-identical (the immutable-LRU rule) -----
 
     /// EVERY one of the 15 views rebinds A→B→A byte-identically (the scrubber invariant) AND
@@ -3738,6 +4639,124 @@ mod tests {
         assert!(
             d.contains("TABS "),
             "the army view must render the N2 tab bar, got: {d}"
+        );
+    }
+
+    #[test]
+    fn army_tab_click_switches_digest_and_visible_roster() {
+        let stage = stage_with_manifest(HashMap::new());
+        let snap = snap_a();
+        let mut v = ArmyView::new();
+        rebind_army(&mut v, &snap, true);
+
+        let cx = ctx(&stage, &snap);
+        let army = bound_digest(&v.bind(&cx));
+        assert!(army.contains("selected=Some(\"army\")"), "{army}");
+        assert!(army.contains("visible_tab=army"), "{army}");
+        assert!(
+            visible_army_chunk(&army).contains("name=1. Armee(E);"),
+            "{army}"
+        );
+
+        let out = click_army_tab_center(&mut v, "navy");
+        assert!(out.consumed);
+        assert!(out.needs_redraw);
+        assert!(out.commands.is_empty());
+        let navy = bound_digest(&v.bind(&cx));
+        assert_ne!(army, navy, "selecting Navy must change the digest");
+        assert!(navy.contains("selected=Some(\"navy\")"), "{navy}");
+        assert!(navy.contains("visible_tab=navy"), "{navy}");
+        let navy_visible = visible_army_chunk(&navy);
+        assert!(
+            navy_visible.contains("unit_name=Kriegsmarine(E);"),
+            "{navy}"
+        );
+        assert!(
+            !navy_visible.contains("name=1. Armee(E);"),
+            "Navy visible rows must not carry Army rows: {navy_visible}"
+        );
+
+        let out = click_army_tab_center(&mut v, "air");
+        assert!(out.consumed);
+        assert!(out.needs_redraw);
+        let air = bound_digest(&v.bind(&cx));
+        assert_ne!(navy, air, "selecting Air must change the digest");
+        assert!(air.contains("selected=Some(\"air\")"), "{air}");
+        assert!(air.contains("visible_tab=air"), "{air}");
+        let air_visible = visible_army_chunk(&air);
+        assert!(air_visible.contains("name=JG 1(E);"), "{air}");
+        assert!(
+            !air_visible.contains("unit_name=Kriegsmarine(E);"),
+            "Air visible rows must not carry Navy rows: {air_visible}"
+        );
+    }
+
+    #[test]
+    fn army_tab_unavailable_click_is_inert_and_consumed() {
+        let stage = stage_with_manifest(HashMap::new());
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "date": "1941.1.1.12",
+            "countries": { "GER": { "military": { "division_count": 12 } } },
+            "order_of_battle": {
+                "armies": [
+                    {"id": 11, "owner": "GER", "name": "1. Armee", "member_count": 14}
+                ]
+            }
+        }))
+        .unwrap();
+        let mut v = ArmyView::new();
+        rebind_army(&mut v, &snap, true);
+
+        assert_eq!(v.tabs.selected(), Some("army"));
+        assert!(
+            v.tabs
+                .tabs
+                .iter()
+                .any(|t| t.id == "navy" && !t.avail.is_pickable()),
+            "the missing fleets list must make the Navy tab unavailable"
+        );
+
+        let before = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        let out = click_army_tab_center(&mut v, "navy");
+        assert!(out.consumed);
+        assert!(!out.needs_redraw);
+        assert!(out.commands.is_empty());
+        assert_eq!(v.tabs.selected(), Some("army"));
+        let after = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert_eq!(
+            before, after,
+            "clicking an unavailable Army-view tab must be an explicit no-op"
+        );
+    }
+
+    #[test]
+    fn army_selected_tab_persists_across_scrub_a_b_a() {
+        let stage = stage_with_manifest(HashMap::new());
+        let (a, b) = (snap_a(), snap_b());
+        let mut v = ArmyView::new();
+        rebind_army(&mut v, &a, true);
+        let out = click_army_tab_center(&mut v, "navy");
+        assert!(out.consumed && out.needs_redraw);
+
+        let da1 = bound_digest(&v.bind(&ctx(&stage, &a)));
+        rebind_army(&mut v, &b, false);
+        let db = bound_digest(&v.bind(&ctx(&stage, &b)));
+        rebind_army(&mut v, &a, false);
+        let da2 = bound_digest(&v.bind(&ctx(&stage, &a)));
+
+        assert!(da1.contains("selected=Some(\"navy\")"), "{da1}");
+        assert!(db.contains("selected=Some(\"navy\")"), "{db}");
+        assert!(
+            visible_army_chunk(&db).contains("unit_name=Hochseeflotte(E);"),
+            "{db}"
+        );
+        assert_eq!(
+            da1, da2,
+            "scrub A->B->A must preserve the selected army tab without carrying B rows"
+        );
+        assert!(
+            !da2.contains("Hochseeflotte"),
+            "A-after-scrub must not carry the B-only Navy row: {da2}"
         );
     }
 
@@ -3883,6 +4902,7 @@ mod tests {
                     "name",
                     "theatre",
                     "group",
+                    "group_marker",
                     "level",
                     "strength_progressbar",
                     "organization_progressbar",
@@ -3923,6 +4943,8 @@ mod tests {
                     "active_in_regions",
                     "home_base_name",
                     "fuel_icon",
+                    "insigna",
+                    "leader_button",
                     "leader_name",
                     "skill_text",
                 ],
@@ -3933,6 +4955,7 @@ mod tests {
                 &[
                     "unit_name",
                     "current_mission",
+                    "insigna",
                     "activity_description",
                     "dominance",
                     "fuel_stocks_icon",

@@ -26,7 +26,7 @@
 
 use render::Renderer;
 
-use crate::common::{Atom, DrawAssets, AssetRef, DIM_TINT, TEXT_TINT, UNAVAIL_TINT};
+use crate::common::{AssetRef, Atom, DrawAssets, DIM_TINT, TEXT_TINT, UNAVAIL_TINT};
 use crate::map_overlay::{IconAnchor, MapCamera, MapIcon, ProvinceCentroids};
 use crate::plan::{Cmd, Plan};
 
@@ -49,11 +49,18 @@ pub struct SideColumn {
 
 impl SideColumn {
     pub fn new(header: Atom, accent: [f32; 4]) -> SideColumn {
-        SideColumn { header, accent, rows: Vec::new() }
+        SideColumn {
+            header,
+            accent,
+            rows: Vec::new(),
+        }
     }
     /// Add a labelled row (builder-chained).
     pub fn row(mut self, name: impl Into<String>, value: Atom) -> SideColumn {
-        self.rows.push(RosterRow { name: name.into(), value });
+        self.rows.push(RosterRow {
+            name: name.into(),
+            value,
+        });
         self
     }
 }
@@ -67,7 +74,10 @@ pub struct RosterPanel {
 
 impl RosterPanel {
     pub fn new(title: Atom) -> RosterPanel {
-        RosterPanel { title, sides: Vec::new() }
+        RosterPanel {
+            title,
+            sides: Vec::new(),
+        }
     }
     pub fn side(mut self, s: SideColumn) -> RosterPanel {
         self.sides.push(s);
@@ -79,14 +89,35 @@ impl RosterPanel {
         let header_h = 28.0;
         let pad = 10.0;
         let n = self.sides.len().max(1);
-        let body = gui_runtime::Rect { x: area.x + pad, y: area.y + header_h + pad, w: (area.w - 2.0 * pad).max(0.0), h: (area.h - header_h - 2.0 * pad).max(0.0) };
+        let body = gui_runtime::Rect {
+            x: area.x + pad,
+            y: area.y + header_h + pad,
+            w: (area.w - 2.0 * pad).max(0.0),
+            h: (area.h - header_h - 2.0 * pad).max(0.0),
+        };
         let gap = 8.0;
         let col_w = ((body.w - (n as f32 - 1.0) * gap) / n as f32).max(0.0);
         let mut cols = Vec::with_capacity(self.sides.len());
         for i in 0..self.sides.len() {
-            cols.push(gui_runtime::Rect { x: body.x + i as f32 * (col_w + gap), y: body.y, w: col_w, h: body.h });
+            cols.push(gui_runtime::Rect {
+                x: body.x + i as f32 * (col_w + gap),
+                y: body.y,
+                w: col_w,
+                h: body.h,
+            });
         }
-        LaidPanel { area, header: gui_runtime::Rect { x: area.x, y: area.y, w: area.w, h: header_h }, title: self.title.clone(), sides: self.sides.clone(), columns: cols }
+        LaidPanel {
+            area,
+            header: gui_runtime::Rect {
+                x: area.x,
+                y: area.y,
+                w: area.w,
+                h: header_h,
+            },
+            title: self.title.clone(),
+            sides: self.sides.clone(),
+            columns: cols,
+        }
     }
 
     /// Per-side (exact, derived, unavailable) cell counts for the accounting test.
@@ -125,9 +156,29 @@ pub fn plan_panel(panel: &LaidPanel) -> Plan {
     let mut p = Plan::new();
     let a = panel.area;
     let clip = Some([a.x, a.y, a.w, a.h]);
-    p.push(Cmd::Rect { x: a.x, y: a.y, w: a.w, h: a.h, tint: PANEL_BG, clip });
-    p.push(Cmd::Rect { x: panel.header.x, y: panel.header.y, w: panel.header.w, h: panel.header.h, tint: HEADER_BG, clip });
-    p.push(Cmd::Text { x: panel.header.x + 10.0, y: panel.header.y + 7.0, text: panel.title.as_str().into(), tint: panel.title.tint(TEXT_TINT), clip });
+    p.push(Cmd::Rect {
+        x: a.x,
+        y: a.y,
+        w: a.w,
+        h: a.h,
+        tint: PANEL_BG,
+        clip,
+    });
+    p.push(Cmd::Rect {
+        x: panel.header.x,
+        y: panel.header.y,
+        w: panel.header.w,
+        h: panel.header.h,
+        tint: HEADER_BG,
+        clip,
+    });
+    p.push(Cmd::Text {
+        x: panel.header.x + 10.0,
+        y: panel.header.y + 7.0,
+        text: panel.title.as_str().into(),
+        tint: panel.title.tint(TEXT_TINT),
+        clip,
+    });
 
     for (i, col) in panel.columns.iter().enumerate() {
         let side = match panel.sides.get(i) {
@@ -135,19 +186,57 @@ pub fn plan_panel(panel: &LaidPanel) -> Plan {
             None => continue,
         };
         let cclip = Some([col.x, col.y, col.w, col.h]);
-        p.push(Cmd::Rect { x: col.x, y: col.y, w: col.w, h: col.h, tint: COL_BG, clip });
+        p.push(Cmd::Rect {
+            x: col.x,
+            y: col.y,
+            w: col.w,
+            h: col.h,
+            tint: COL_BG,
+            clip,
+        });
         // accent header bar + side name (a `—` for an unknown side).
-        p.push(Cmd::Rect { x: col.x, y: col.y, w: col.w, h: 20.0, tint: side.accent, clip: cclip });
-        p.push(Cmd::Text { x: col.x + 6.0, y: col.y + 3.0, text: side.header.as_str().into(), tint: side.header.tint([0.06, 0.06, 0.08, 1.0]), clip: cclip });
+        p.push(Cmd::Rect {
+            x: col.x,
+            y: col.y,
+            w: col.w,
+            h: 20.0,
+            tint: side.accent,
+            clip: cclip,
+        });
+        p.push(Cmd::Text {
+            x: col.x + 6.0,
+            y: col.y + 3.0,
+            text: side.header.as_str().into(),
+            tint: side.header.tint([0.06, 0.06, 0.08, 1.0]),
+            clip: cclip,
+        });
 
         let mut ry = col.y + 28.0;
         if side.rows.is_empty() {
             // an explicit unknown-roster badge (never fabricated zero rows).
-            p.push(Cmd::Text { x: col.x + 6.0, y: ry, text: format!("{} no roster", crate::common::NOT_CAPTURED), tint: UNAVAIL_TINT, clip: cclip });
+            p.push(Cmd::Text {
+                x: col.x + 6.0,
+                y: ry,
+                text: format!("{} no roster", crate::common::NOT_CAPTURED),
+                tint: UNAVAIL_TINT,
+                clip: cclip,
+            });
         } else {
             for r in &side.rows {
-                p.push(Cmd::Text { x: col.x + 6.0, y: ry, text: r.name.clone(), tint: DIM_TINT, clip: cclip });
-                p.push(Cmd::Text { x: col.x + col.w * 0.55, y: ry, text: r.value.as_str().into(), tint: r.value.tint(TEXT_TINT), clip: cclip });
+                p.push(Cmd::Text {
+                    x: col.x + 6.0,
+                    y: ry,
+                    text: r.name.clone(),
+                    tint: DIM_TINT,
+                    clip: cclip,
+                });
+                p.push(Cmd::Text {
+                    x: col.x + col.w * 0.55,
+                    y: ry,
+                    text: r.value.as_str().into(),
+                    tint: r.value.tint(TEXT_TINT),
+                    clip: cclip,
+                });
                 ry += 18.0;
             }
         }
@@ -190,7 +279,11 @@ pub fn naval_bubble_icons(combats: &[NavalCombat]) -> Vec<MapIcon> {
         .iter()
         .map(|c| {
             let radius = (8.0 + (c.engaged as f32).sqrt() * 3.0).clamp(8.0, 28.0);
-            let tint = if c.controller_tag.is_some() { NAVAL_C } else { CONTESTED_C };
+            let tint = if c.controller_tag.is_some() {
+                NAVAL_C
+            } else {
+                CONTESTED_C
+            };
             MapIcon {
                 id: c.id.clone(),
                 anchor: IconAnchor::Province(c.sea_province),
@@ -225,7 +318,10 @@ mod tests {
                     .row("Capital ships", Atom::exact("3"))
                     .row("Screens", Atom::unavailable()),
             )
-            .side(SideColumn::new(Atom::unavailable(), [0.34, 0.58, 0.86, 1.0]))
+            .side(SideColumn::new(
+                Atom::unavailable(),
+                [0.34, 0.58, 0.86, 1.0],
+            ))
     }
 
     #[test]
@@ -236,19 +332,35 @@ mod tests {
 
     #[test]
     fn empty_side_draws_no_roster_badge_not_fake_zeros() {
-        let laid = panel().layout(gui_runtime::Rect { x: 0.0, y: 0.0, w: 400.0, h: 300.0 });
+        let laid = panel().layout(gui_runtime::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 400.0,
+            h: 300.0,
+        });
         let p = plan_panel(&laid);
         // the empty defender side + the unavailable "Screens" cell + the unknown header
         // -> multiple "—" glyphs; no fabricated "0".
         assert!(p.unavailable_text_count() >= 2);
-        assert!(p.cmds.iter().any(|c| matches!(c, Cmd::Text { text, .. } if text.contains("no roster"))));
+        assert!(p
+            .cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::Text { text, .. } if text.contains("no roster"))));
         // the measured "3" survives (a real value).
-        assert!(p.cmds.iter().any(|c| matches!(c, Cmd::Text { text, .. } if text == "3")));
+        assert!(p
+            .cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::Text { text, .. } if text == "3")));
     }
 
     #[test]
     fn empty_panel_no_panic() {
-        let laid = RosterPanel::new(Atom::unavailable()).layout(gui_runtime::Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 });
+        let laid = RosterPanel::new(Atom::unavailable()).layout(gui_runtime::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 200.0,
+            h: 200.0,
+        });
         let p = plan_panel(&laid);
         assert!(!p.is_empty()); // at least the panel bg + header + title glyph
     }
@@ -259,8 +371,18 @@ mod tests {
         let centroids = ProvinceCentroids::from_raster_ids(&ids, 2);
         let cam = MapCamera::new((0.0, 0.0), 1.0, (0.0, 0.0));
         let combats = vec![
-            NavalCombat { id: "a".into(), sea_province: 5, engaged: 9, controller_tag: Some("ENG".into()) },
-            NavalCombat { id: "b".into(), sea_province: 404, engaged: 4, controller_tag: None },
+            NavalCombat {
+                id: "a".into(),
+                sea_province: 5,
+                engaged: 9,
+                controller_tag: Some("ENG".into()),
+            },
+            NavalCombat {
+                id: "b".into(),
+                sea_province: 404,
+                engaged: 4,
+                controller_tag: None,
+            },
         ];
         let icons = naval_bubble_icons(&combats);
         let laid = layout_naval_bubbles(&icons, &centroids, &cam);
@@ -271,7 +393,12 @@ mod tests {
 
     #[test]
     fn bubble_tint_neutral_when_controller_unknown() {
-        let combats = vec![NavalCombat { id: "x".into(), sea_province: 1, engaged: 0, controller_tag: None }];
+        let combats = vec![NavalCombat {
+            id: "x".into(),
+            sea_province: 1,
+            engaged: 0,
+            controller_tag: None,
+        }];
         let icons = naval_bubble_icons(&combats);
         assert_eq!(icons[0].tint, CONTESTED_C); // never a fabricated owner colour
     }

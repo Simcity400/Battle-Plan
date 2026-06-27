@@ -44,6 +44,7 @@ mod tests {
         Node {
             name: name.into(),
             raw_kind: "containerWindowType".into(),
+            tooltip: None,
             kind,
             pos: (0.0, 0.0),
             size_w: None,

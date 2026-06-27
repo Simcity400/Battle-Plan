@@ -112,17 +112,26 @@ pub fn pack_with(
             "role": e.role,
         });
         if let Some(h) = e.hour_index {
-            ent.as_object_mut().unwrap().insert("hour_index".into(), json!(h));
+            ent.as_object_mut()
+                .unwrap()
+                .insert("hour_index".into(), json!(h));
         }
         if e.role == "snapshot" {
             counts_snapshots += 1;
         }
         manifest_entries.push(ent);
-        zip_files.push(ZipFile { name: e.path.clone(), data: e.bytes.clone(), deflate });
+        zip_files.push(ZipFile {
+            name: e.path.clone(),
+            data: e.bytes.clone(),
+            deflate,
+        });
     }
     // canonical path order so the manifest entry list is stable
     manifest_entries.sort_by(|a, b| {
-        a["path"].as_str().unwrap_or("").cmp(b["path"].as_str().unwrap_or(""))
+        a["path"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["path"].as_str().unwrap_or(""))
     });
 
     // --- the manifest object (digest filled in below) ---
@@ -159,7 +168,11 @@ pub fn pack_with(
     // inject a stowaway (a zip entry the manifest does not list) BEFORE the
     // manifest, so the reader's coverage check sees an uncovered entry.
     if let Some((path, data)) = &opts.inject_stowaway {
-        zip_files.push(ZipFile { name: path.clone(), data: data.clone(), deflate: false });
+        zip_files.push(ZipFile {
+            name: path.clone(),
+            data: data.clone(),
+            deflate: false,
+        });
     }
 
     // manifest.json is written LAST (spec §6). The omit-manifest test fixture

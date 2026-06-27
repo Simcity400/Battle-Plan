@@ -56,7 +56,10 @@ impl CombatDomain {
             }
         }
 
-        CombatDomain { combats, controller }
+        CombatDomain {
+            combats,
+            controller,
+        }
     }
 
     /// Resolve a province id -> its controller TAG (the DEFENDER holding tag).

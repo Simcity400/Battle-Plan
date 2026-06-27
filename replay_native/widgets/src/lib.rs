@@ -36,9 +36,11 @@ pub mod naval_combat;
 pub mod node_graph;
 pub mod plan;
 pub mod tabs;
+pub mod tooltip;
 pub mod trait_tree;
 
 pub use common::{
-    Atom, AssetRef, Canvas, DrawAssets, Fidelity, Reason, CANVAS_MAX_SCALE, CANVAS_MIN_SCALE,
+    AssetRef, Atom, Canvas, DrawAssets, Fidelity, Reason, CANVAS_MAX_SCALE, CANVAS_MIN_SCALE,
 };
 pub use plan::{Cmd, Plan};
+pub use tooltip::{plan_tooltip, Tooltip, TooltipPlan, TooltipRow};

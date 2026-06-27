@@ -505,6 +505,7 @@ fn stub_gridbox(name: &str, rect: gui_runtime::Rect) -> gui_runtime::scene::Node
     gui_runtime::scene::Node {
         name: name.to_string(),
         raw_kind: "gridBoxType".into(),
+        tooltip: None,
         kind: gui_runtime::scene::ElementKind::Container { background: None },
         pos: (0.0, 0.0),
         size_w: None,

@@ -13,29 +13,43 @@ fn real_rgb555_and_rxgb_decode() {
         return;
     }
 
-    if let Some(p) = r.resolve("gfx/interface/portraits/portraits_Africa/Portrait_Africa_Generic_1.dds")
+    if let Some(p) = r
+        .resolve("gfx/interface/portraits/portraits_Africa/Portrait_Africa_Generic_1.dds")
         .or_else(|| find_any(&r, "Portrait_Africa_Generic_1.dds"))
     {
         let b = std::fs::read(&p).unwrap();
         let h = dds::parse_header(&b).unwrap();
-        assert_eq!(h.format, dds::DdsFormat::Rgb555, "expected a 16-bit RGB555 portrait");
+        assert_eq!(
+            h.format,
+            dds::DdsFormat::Rgb555,
+            "expected a 16-bit RGB555 portrait"
+        );
         let img = dds::decode(&b).expect("rgb555 decode");
         assert_eq!((img.width, img.height), (h.width, h.height));
-        let visible = img.rgba.chunks_exact(4).filter(|p| p[0] > 4 || p[1] > 4 || p[2] > 4).count();
+        let visible = img
+            .rgba
+            .chunks_exact(4)
+            .filter(|p| p[0] > 4 || p[1] > 4 || p[2] > 4)
+            .count();
         assert!(visible > 100, "rgb555 portrait decoded blank");
         eprintln!("RGB555 {}x{} visible={}", h.width, h.height, visible);
     } else {
         eprintln!("RGB555 portrait not found; skipping that half");
     }
 
-    if let Some(p) = r.resolve("gfx/interface/swe_rearnament.dds")
+    if let Some(p) = r
+        .resolve("gfx/interface/swe_rearnament.dds")
         .or_else(|| find_any(&r, "swe_rearnament.dds"))
     {
         let b = std::fs::read(&p).unwrap();
         let h = dds::parse_header(&b).unwrap();
         assert_eq!(h.format, dds::DdsFormat::Rxgb);
         let img = dds::decode(&b).expect("rxgb decode");
-        let visible = img.rgba.chunks_exact(4).filter(|p| p[0] > 4 || p[1] > 4 || p[2] > 4).count();
+        let visible = img
+            .rgba
+            .chunks_exact(4)
+            .filter(|p| p[0] > 4 || p[1] > 4 || p[2] > 4)
+            .count();
         assert!(visible > 100, "rxgb decoded blank");
         eprintln!("RXGB {}x{} visible={}", h.width, h.height, visible);
     } else {

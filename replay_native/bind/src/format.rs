@@ -137,7 +137,11 @@ pub fn fuel(v: &Value) -> String {
 /// FACTORIES (int-triple): civ/mil/dockyard -> `"110/131/16"`. Each component is
 /// read independently; an absent/null component renders the not-captured glyph in
 /// its slot (so a partial measure never fabricates a 0 factory).
-pub fn factory_triple(civ: Option<&Value>, mil: Option<&Value>, dockyard: Option<&Value>) -> String {
+pub fn factory_triple(
+    civ: Option<&Value>,
+    mil: Option<&Value>,
+    dockyard: Option<&Value>,
+) -> String {
     let cell = |o: Option<&Value>| match o {
         Some(v) if v.is_number() => int(v),
         _ => NOT_CAPTURED.to_string(),

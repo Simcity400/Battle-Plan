@@ -133,7 +133,9 @@ fn main() {
     eprintln!("[m5] country={country} game={game} hour={hour}");
     eprintln!("[m5] vanilla = {}", resolver.vanilla.display());
     if !resolver.vanilla_exists() {
-        eprintln!("[m5] BLOCKER: game install not found. Pass --vanilla <path> or set BATTLE_PLAN_VANILLA.");
+        eprintln!(
+            "[m5] BLOCKER: game install not found. Pass --vanilla <path> or set BATTLE_PLAN_VANILLA."
+        );
         std::process::exit(2);
     }
     let assets_dir = find_assets_dir().unwrap_or_else(|| {
@@ -173,13 +175,17 @@ fn main() {
     let owners = StateOwners::from_states(states_obj);
 
     // --- Load loc + sprite manifest + parsed gui views. ---------------------
-    let manifest = SpriteManifest::load(&assets_dir.join("sprites.json"))
-        .expect("BLOCKER: load sprites.json");
+    let manifest =
+        SpriteManifest::load(&assets_dir.join("sprites.json")).expect("BLOCKER: load sprites.json");
     let mut loc = Loc::new();
     for base in loc_dirs(&resolver) {
         let _ = loc.add_dir(&base);
     }
-    eprintln!("[m5] loc keys = {} sprites = {}", loc.len(), manifest.sprites.len());
+    eprintln!(
+        "[m5] loc keys = {} sprites = {}",
+        loc.len(),
+        manifest.sprites.len()
+    );
 
     let topbar_file = GuiFile::load(&assets_dir.join("gui").join("topbar.json"))
         .expect("BLOCKER: parse topbar.json");
@@ -192,12 +198,19 @@ fn main() {
     // (cursor → province → state), not just "open state N".
     // ------------------------------------------------------------------------
     let (screen_w, screen_h) = (1920u32, 1080u32);
-    let screen = Rect { x: 0.0, y: 0.0, w: screen_w as f32, h: screen_h as f32 };
+    let screen = Rect {
+        x: 0.0,
+        y: 0.0,
+        w: screen_w as f32,
+        h: screen_h as f32,
+    };
 
     // Map fills the whole screen (bottom layer). Pick coordinate: a known land
     // pixel inside the target state. State 64 (Brandenburg/Berlin) centre province
     // 6521 sits ~ (3115, 820) in the raster; map_uv → screen via the same scale.
-    let target_state: u32 = arg_value("--state").and_then(|s| s.parse().ok()).unwrap_or(64);
+    let target_state: u32 = arg_value("--state")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(64);
     // Find a raster pixel that belongs to the target state (ground-truth pick).
     let (pick_px, pick_py) = find_state_pixel(&raster, &ids, target_state).unwrap_or_else(|| {
         eprintln!("[m5] BLOCKER: no raster pixel resolves to state {target_state}");
@@ -212,8 +225,12 @@ fn main() {
     let sid_str = sid.to_string();
 
     // Resolve the state NAME from static map meta + loc (not in the snapshot).
-    let state_name = resolve_state_name(&map_dir, &loc, sid).unwrap_or_else(|| format!("STATE_{sid}"));
-    eprintln!("[m5] selected state {sid} = \"{state_name}\" owner={:?}", pick.owner);
+    let state_name =
+        resolve_state_name(&map_dir, &loc, sid).unwrap_or_else(|| format!("STATE_{sid}"));
+    eprintln!(
+        "[m5] selected state {sid} = \"{state_name}\" owner={:?}",
+        pick.owner
+    );
 
     // --- Bind the state panel to the picked state's snapshot data. ----------
     let report = bind_state(&snap, &sid_str, &state_name);
@@ -257,7 +274,10 @@ fn main() {
     let mut topbar = build_scene(&topbar_file, &manifest, &loc);
     let tb_spec = TopbarSpec::topbar();
     let tb_report = apply_topbar(&mut topbar, &tb_spec, &snap, &country);
-    let content = ManifestContent { manifest: &manifest, measure: |_t, _f| None };
+    let content = ManifestContent {
+        manifest: &manifest,
+        measure: |_t, _f| None,
+    };
     for root in topbar.iter_mut() {
         layout(root, screen, None, &content);
     }
@@ -317,14 +337,24 @@ fn main() {
     }
 
     // -- Paint owner / controller flags into the panel flag slots. --
-    paint_state_flags(&mut renderer, &panel, &report, &flag_res, &mut textures, &manifest, &resolver);
+    paint_state_flags(
+        &mut renderer,
+        &panel,
+        &report,
+        &flag_res,
+        &mut textures,
+        &manifest,
+        &resolver,
+    );
 
     // ------------------------------------------------------------------------
     // FOUNDATION (a): the buildings GRIDBOX ROW-FACTORY, made to OVERFLOW.
     // We deliberately bind the COMBINED building list (state + province) into the
     // state_building_entries gridbox so it overflows the 480x105 box, then scroll.
     // ------------------------------------------------------------------------
-    let scroll_y: f32 = arg_value("--scroll").and_then(|s| s.parse().ok()).unwrap_or(70.0);
+    let scroll_y: f32 = arg_value("--scroll")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(70.0);
     let grid_info = render_buildings_grid(
         &mut renderer,
         &panel,
@@ -357,8 +387,12 @@ fn main() {
 
     eprintln!(
         "[m5] draws: sprites={} nine={} bars={} text={} (missing tex={}, missing font={})",
-        stats.sprites, stats.nine_slices, stats.progress_bars, stats.text_runs,
-        stats.missing_textures, stats.missing_fonts
+        stats.sprites,
+        stats.nine_slices,
+        stats.progress_bars,
+        stats.text_runs,
+        stats.missing_textures,
+        stats.missing_fonts
     );
 
     // ------------------------------------------------------------------------
@@ -371,7 +405,13 @@ fn main() {
         .chunks_exact(4)
         .filter(|p| !(p[0] < 20 && p[1] < 24 && p[2] < 28))
         .count();
-    eprintln!("[m5] wrote {} ({}x{}, {} non-bg px)", out_path.display(), screen_w, screen_h, drawn);
+    eprintln!(
+        "[m5] wrote {} ({}x{}, {} non-bg px)",
+        out_path.display(),
+        screen_w,
+        screen_h,
+        drawn
+    );
 
     // ------------------------------------------------------------------------
     // STEP 7 + FOUNDATION (c): HIT-TEST verification (z-order, alwaystransparent).
@@ -417,7 +457,9 @@ fn main() {
         hit_fail += 1;
     }
     if map_pid.is_none() {
-        eprintln!("[m5]   NOTE: fall-through point was off the raster (still a valid pass-through)");
+        eprintln!(
+            "[m5]   NOTE: fall-through point was off the raster (still a valid pass-through)"
+        );
     }
 
     // (iii) z-order front-to-back: stack the panel OVER the topbar at a point both
@@ -426,7 +468,10 @@ fn main() {
     // a point inside BOTH the panel bbox and a topbar element resolves to the
     // topmost (panel), because hit_test_stack walks last-window-first.
     let z = verify_z_order(&topbar, &panel);
-    eprintln!("[m5] HITTEST (iii) z-order front-to-back: {}", if z { "OK" } else { "MISMATCH" });
+    eprintln!(
+        "[m5] HITTEST (iii) z-order front-to-back: {}",
+        if z { "OK" } else { "MISMATCH" }
+    );
     if !z {
         hit_fail += 1;
     }
@@ -446,7 +491,11 @@ fn main() {
 
     // No-fabrication gate: every unavailable field rendered "—".
     let mut fab_bug = false;
-    for f in report.fields.iter().filter(|f| matches!(f.fidelity, bind::Fidelity::Unavailable)) {
+    for f in report
+        .fields
+        .iter()
+        .filter(|f| matches!(f.fidelity, bind::Fidelity::Unavailable))
+    {
         if !f.not_captured || f.value != "—" {
             eprintln!("[m5] FABRICATION BUG: {} = {:?}", f.element, f.value);
             fab_bug = true;
@@ -462,11 +511,15 @@ fn main() {
         std::process::exit(3);
     }
     if !grid_info.3 {
-        eprintln!("[m5] BLOCKER: the buildings gridbox did NOT overflow (foundation a not exercised)");
+        eprintln!(
+            "[m5] BLOCKER: the buildings gridbox did NOT overflow (foundation a not exercised)"
+        );
         std::process::exit(3);
     }
     if wrap_info.0 < 2 {
-        eprintln!("[m5] BLOCKER: the description did NOT wrap to >=2 lines (foundation b not exercised)");
+        eprintln!(
+            "[m5] BLOCKER: the description did NOT wrap to >=2 lines (foundation b not exercised)"
+        );
         std::process::exit(3);
     }
     if drawn < 50_000 {
@@ -519,24 +572,42 @@ fn print_bind_report(r: &StateBindReport) {
     eprintln!("[m5] --- bound state panel (state {}) ---", r.state_id);
     for f in &r.fields {
         let badge = if f.not_captured { "NOT-CAPTURED" } else { "" };
-        eprintln!("[m5]   {:48} = {:<16} [{:?}] {badge}", f.element, f.value, f.fidelity);
+        eprintln!(
+            "[m5]   {:48} = {:<16} [{:?}] {badge}",
+            f.element, f.value, f.fidelity
+        );
     }
     eprintln!("[m5]   state buildings ({}):", r.state_buildings.len());
     for b in &r.state_buildings {
-        eprintln!("[m5]      {:22} lvl {:<3} frame {}", b.key, b.level, b.frame);
+        eprintln!(
+            "[m5]      {:22} lvl {:<3} frame {}",
+            b.key, b.level, b.frame
+        );
     }
-    eprintln!("[m5]   province buildings ({}):", r.province_buildings.len());
+    eprintln!(
+        "[m5]   province buildings ({}):",
+        r.province_buildings.len()
+    );
     for b in &r.province_buildings {
-        eprintln!("[m5]      {:22} lvl {:<3} frame {}", b.key, b.level, b.frame);
+        eprintln!(
+            "[m5]      {:22} lvl {:<3} frame {}",
+            b.key, b.level, b.frame
+        );
     }
-    eprintln!("[m5]   resource rows: {} (empty = unavailable, never substituted)", r.resource_rows.len());
+    eprintln!(
+        "[m5]   resource rows: {} (empty = unavailable, never substituted)",
+        r.resource_rows.len()
+    );
 }
 
 /// Substitute the bound scalar values into the panel scene-graph text elements.
 fn apply_state_scalars(roots: &mut [Node], report: &StateBindReport) {
     for f in &report.fields {
         // owner/controller/occupation are painted separately (flags/bars).
-        if f.element.contains("status_container") || f.element == "state_owners" || f.element == "controller_flag" {
+        if f.element.contains("status_container")
+            || f.element == "state_owners"
+            || f.element == "controller_flag"
+        {
             continue;
         }
         for root in roots.iter_mut() {
@@ -605,11 +676,17 @@ fn render_buildings_grid(
     let n = rows.len();
 
     let spec = GridSpec::from_gridbox(
-        &Node { rect: viewport, ..stub_named("state_building_entries") },
+        &Node {
+            rect: viewport,
+            ..stub_named("state_building_entries")
+        },
         &template,
         14.0, // 14px scrollbar gutter
     );
-    let content = ManifestContent { manifest, measure: |_t, _f| None };
+    let content = ManifestContent {
+        manifest,
+        measure: |_t, _f| None,
+    };
     let mut inst = gridbox::instantiate(&template, n, viewport, &spec, scroll_y, &content);
 
     // Bind each row's level text + building icon frame, then draw the (clipped,
@@ -641,7 +718,13 @@ fn render_buildings_grid(
         }
     }
 
-    (n, viewport, inst.content_height, inst.overflowing, inst.scrollbar.is_some())
+    (
+        n,
+        viewport,
+        inst.content_height,
+        inst.overflowing,
+        inst.scrollbar.is_some(),
+    )
 }
 
 /// A minimal stub node with a name (for GridSpec::from_gridbox viewport probing).
@@ -666,7 +749,10 @@ fn stub_named(name: &str) -> Node {
 /// Find an entry-template window (a top-level window in the gui file) by name and
 /// build it into a scene node (templates are separate windows, not children).
 fn find_template(file: &GuiFile, manifest: &SpriteManifest, name: &str) -> Option<Node> {
-    let raw = file.windows.iter().find(|w| w.name.as_deref() == Some(name))?;
+    let raw = file
+        .windows
+        .iter()
+        .find(|w| w.name.as_deref() == Some(name))?;
     let loc = Loc::new();
     Some(Node::from_raw(raw, manifest, &loc))
 }
@@ -688,9 +774,16 @@ fn render_wrapped_description(
     // a faithful HOI4-style marked-up localized string. (Built here as the slice's
     // example "wrapped, marked-up, localized text box"; in-game it would be a loc
     // key, but the wrap path is identical.)
-    let cat = report.get("category").map(|f| f.value.clone()).unwrap_or_default();
-    let vp = report.get("victory_points").map(|f| f.value.clone()).unwrap_or_default();
-    let src = "The state of §Y$STATE$§! is a §G$CAT$§! region holding £victory_points $VP$ victory \
+    let cat = report
+        .get("category")
+        .map(|f| f.value.clone())
+        .unwrap_or_default();
+    let vp = report
+        .get("victory_points")
+        .map(|f| f.value.clone())
+        .unwrap_or_default();
+    let src =
+        "The state of §Y$STATE$§! is a §G$CAT$§! region holding £victory_points $VP$ victory \
                points. Its industry and manpower are bound from the recorded snapshot, with no \
                fabricated values: unavailable fields render as a dash.";
 
@@ -704,7 +797,12 @@ fn render_wrapped_description(
 
     // Wrap inside the panel's lower band (below the building grids). Use the panel
     // bbox to place a sensible text column.
-    let bbox = find_rect(panel, "countrystateview").unwrap_or(Rect { x: 40.0, y: 600.0, w: 440.0, h: 200.0 });
+    let bbox = find_rect(panel, "countrystateview").unwrap_or(Rect {
+        x: 40.0,
+        y: 600.0,
+        w: 440.0,
+        h: 200.0,
+    });
     let wrap_x = bbox.x + 22.0;
     let wrap_w = 410.0_f32;
     let wrap_y0 = bbox.y + 470.0;
@@ -765,20 +863,41 @@ fn render_occupation_bars(
         None => return,
     };
     // place the bars in the resistance_container band.
-    let base = find_rect(panel, "resistance_container").unwrap_or(Rect { x: 60.0, y: 760.0, w: 519.0, h: 100.0 });
+    let base = find_rect(panel, "resistance_container").unwrap_or(Rect {
+        x: 60.0,
+        y: 760.0,
+        w: 519.0,
+        h: 100.0,
+    });
     let bar_w = 81.0_f32;
     let bar_h = 14.0_f32;
     // resistance bar (top) and compliance bar (below).
     for (i, (gfx, frac)) in [
-        ("GFX_occupation_state_resistance_bar", (occ.resistance / 100.0) as f32),
-        ("GFX_occupation_state_compliance_bar", (occ.compliance / 100.0) as f32),
+        (
+            "GFX_occupation_state_resistance_bar",
+            (occ.resistance / 100.0) as f32,
+        ),
+        (
+            "GFX_occupation_state_compliance_bar",
+            (occ.compliance / 100.0) as f32,
+        ),
     ]
     .iter()
     .enumerate()
     {
         let y = base.y + 6.0 + i as f32 * 28.0;
         if let Some(t) = textures.get(renderer, gfx) {
-            renderer.draw_progress_bar(t, base.x + 40.0, y, bar_w, bar_h, *frac, 0, 1, [1.0, 1.0, 1.0, 1.0]);
+            renderer.draw_progress_bar(
+                t,
+                base.x + 40.0,
+                y,
+                bar_w,
+                bar_h,
+                *frac,
+                0,
+                1,
+                [1.0, 1.0, 1.0, 1.0],
+            );
         }
     }
 }
@@ -841,19 +960,28 @@ fn verify_z_order(topbar: &[Node], panel: &[Node]) -> bool {
     //     moved panel), the topbar wins. Pick a topbar element whose centre is NOT
     //     inside the moved-panel bbox so the test is unambiguous.
     let moved_bbox = find_rect(&overlap_panel, "countrystateview").unwrap_or(Rect {
-        x: 0.0, y: 0.0, w: 0.0, h: 0.0,
+        x: 0.0,
+        y: 0.0,
+        w: 0.0,
+        h: 0.0,
     });
-    let topbar_only = ["pol_power", "manpower", "stability", "fuel_value", "DateText"]
-        .iter()
-        .find_map(|name| {
-            let r = find_rect(topbar, name)?;
-            let c = (r.x + r.w * 0.5, r.y + r.h * 0.5);
-            if !moved_bbox.contains(c.0, c.1) {
-                Some(c)
-            } else {
-                None
-            }
-        });
+    let topbar_only = [
+        "pol_power",
+        "manpower",
+        "stability",
+        "fuel_value",
+        "DateText",
+    ]
+    .iter()
+    .find_map(|name| {
+        let r = find_rect(topbar, name)?;
+        let c = (r.x + r.w * 0.5, r.y + r.h * 0.5);
+        if !moved_bbox.contains(c.0, c.1) {
+            Some(c)
+        } else {
+            None
+        }
+    });
     let topbar_wins = match topbar_only {
         Some((x, y)) => resolve(&overlap_panel, x, y) == "topbar",
         // if every topbar element is (improbably) under the moved panel, fall back

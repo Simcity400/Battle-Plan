@@ -162,7 +162,10 @@ mod tests {
             prerequisites: vec![],
             mutually_exclusive: vec![],
         }];
-        let cat = FocusCatalog { trees: vec![base], shared };
+        let cat = FocusCatalog {
+            trees: vec![base],
+            shared,
+        };
         let t = cat.tree("t").unwrap();
         assert_eq!(t.nodes.len(), 2);
         let placed = place(&t, &EvalContext::default());

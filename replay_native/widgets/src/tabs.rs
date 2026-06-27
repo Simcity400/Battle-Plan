@@ -61,14 +61,26 @@ pub struct Tab {
 
 impl Tab {
     pub fn enabled(id: impl Into<String>, label: Atom) -> Tab {
-        Tab { id: id.into(), label, avail: Availability::Enabled }
+        Tab {
+            id: id.into(),
+            label,
+            avail: Availability::Enabled,
+        }
     }
     pub fn disabled(id: impl Into<String>, label: Atom) -> Tab {
-        Tab { id: id.into(), label, avail: Availability::Disabled }
+        Tab {
+            id: id.into(),
+            label,
+            avail: Availability::Disabled,
+        }
     }
     /// A present-but-data-blocked tab (badged, not pickable).
     pub fn unavailable(id: impl Into<String>, label: Atom) -> Tab {
-        Tab { id: id.into(), label, avail: Availability::Unavailable }
+        Tab {
+            id: id.into(),
+            label,
+            avail: Availability::Unavailable,
+        }
     }
 }
 
@@ -105,8 +117,16 @@ impl TabBar {
         Self::build(tabs, Orientation::Vertical, 30.0)
     }
     fn build(tabs: Vec<Tab>, orientation: Orientation, cell_main: f32) -> TabBar {
-        let selected = tabs.iter().find(|t| t.avail.is_pickable()).map(|t| t.id.clone());
-        TabBar { tabs, orientation, selected, cell_main }
+        let selected = tabs
+            .iter()
+            .find(|t| t.avail.is_pickable())
+            .map(|t| t.id.clone());
+        TabBar {
+            tabs,
+            orientation,
+            selected,
+            cell_main,
+        }
     }
 
     /// The selected tab id (if any). `None` for an empty/all-disabled bar.
@@ -121,7 +141,11 @@ impl TabBar {
     /// Select a tab by id IF it exists AND is pickable. Returns true on change. A stale
     /// or disabled/unavailable id is ignored (no fabricated selection).
     pub fn select(&mut self, id: &str) -> bool {
-        if self.tabs.iter().any(|t| t.id == id && t.avail.is_pickable()) {
+        if self
+            .tabs
+            .iter()
+            .any(|t| t.id == id && t.avail.is_pickable())
+        {
             let changed = self.selected.as_deref() != Some(id);
             self.selected = Some(id.to_string());
             changed
@@ -138,10 +162,18 @@ impl TabBar {
         let still_valid = self
             .selected
             .as_ref()
-            .map(|sel| self.tabs.iter().any(|t| &t.id == sel && t.avail.is_pickable()))
+            .map(|sel| {
+                self.tabs
+                    .iter()
+                    .any(|t| &t.id == sel && t.avail.is_pickable())
+            })
             .unwrap_or(false);
         if !still_valid {
-            self.selected = self.tabs.iter().find(|t| t.avail.is_pickable()).map(|t| t.id.clone());
+            self.selected = self
+                .tabs
+                .iter()
+                .find(|t| t.avail.is_pickable())
+                .map(|t| t.id.clone());
         }
     }
 
@@ -199,7 +231,12 @@ impl TabBar {
             },
             Orientation::Vertical => {
                 let cw = SIDE_WIDTH.min(view.w);
-                gui_runtime::Rect { x: view.x + cw, y: view.y, w: (view.w - cw).max(0.0), h: view.h }
+                gui_runtime::Rect {
+                    x: view.x + cw,
+                    y: view.y,
+                    w: (view.w - cw).max(0.0),
+                    h: view.h,
+                }
             }
         }
     }
@@ -210,7 +247,11 @@ impl TabBar {
     pub fn pick(&self, rects: &[TabRect], x: f32, y: f32) -> Option<String> {
         for tr in rects {
             if tr.rect.contains(x, y) {
-                let pickable = self.tabs.get(tr.index).map(|t| t.avail.is_pickable()).unwrap_or(false);
+                let pickable = self
+                    .tabs
+                    .get(tr.index)
+                    .map(|t| t.avail.is_pickable())
+                    .unwrap_or(false);
                 return pickable.then(|| tr.id.clone());
             }
         }
@@ -247,7 +288,14 @@ pub fn plan_tabs(bar: &TabBar, view: gui_runtime::Rect) -> Plan {
         Orientation::Horizontal => [view.x, view.y, view.w, BAR_THICK],
         Orientation::Vertical => [view.x, view.y, SIDE_WIDTH.min(view.w), view.h],
     };
-    p.push(Cmd::Rect { x: bar_rect[0], y: bar_rect[1], w: bar_rect[2], h: bar_rect[3], tint: TAB_BG, clip });
+    p.push(Cmd::Rect {
+        x: bar_rect[0],
+        y: bar_rect[1],
+        w: bar_rect[2],
+        h: bar_rect[3],
+        tint: TAB_BG,
+        clip,
+    });
 
     let sel = bar.selected();
     for tr in &rects {
@@ -263,9 +311,23 @@ pub fn plan_tabs(bar: &TabBar, view: gui_runtime::Rect) -> Plan {
         } else {
             TAB_DISABLED
         };
-        p.push(Cmd::Rect { x: r.x, y: r.y, w: r.w, h: r.h, tint: bg, clip });
+        p.push(Cmd::Rect {
+            x: r.x,
+            y: r.y,
+            w: r.w,
+            h: r.h,
+            tint: bg,
+            clip,
+        });
         // a thin bottom/right border between tabs.
-        p.push(Cmd::Rect { x: r.x, y: r.y + r.h - 1.0, w: r.w, h: 1.0, tint: TAB_BORDER, clip });
+        p.push(Cmd::Rect {
+            x: r.x,
+            y: r.y + r.h - 1.0,
+            w: r.w,
+            h: 1.0,
+            tint: TAB_BORDER,
+            clip,
+        });
         // label tint by availability.
         let normal = match tab.avail {
             Availability::Enabled => TEXT_TINT,
@@ -274,10 +336,23 @@ pub fn plan_tabs(bar: &TabBar, view: gui_runtime::Rect) -> Plan {
         };
         // clip the label to its own tab cell so a long label doesn't spill.
         let cell_clip = Some([r.x, r.y, r.w, r.h]);
-        p.push(Cmd::Text { x: r.x + 8.0, y: r.y + 7.0, text: tab.label.as_str().into(), tint: tab.label.tint(normal), clip: cell_clip });
+        p.push(Cmd::Text {
+            x: r.x + 8.0,
+            y: r.y + 7.0,
+            text: tab.label.as_str().into(),
+            tint: tab.label.tint(normal),
+            clip: cell_clip,
+        });
         // an "unavailable" tab gets a small badge dot so it reads as no-data.
         if matches!(tab.avail, Availability::Unavailable) {
-            p.push(Cmd::Rect { x: r.x + r.w - 8.0, y: r.y + 4.0, w: 4.0, h: 4.0, tint: UNAVAIL_TINT, clip: cell_clip });
+            p.push(Cmd::Rect {
+                x: r.x + r.w - 8.0,
+                y: r.y + 4.0,
+                w: 4.0,
+                h: 4.0,
+                tint: UNAVAIL_TINT,
+                clip: cell_clip,
+            });
         }
     }
     p
@@ -314,7 +389,12 @@ mod tests {
         assert_eq!(b.selected(), None);
         assert_eq!(b.selected_index(), None);
         b.reconcile();
-        let view = gui_runtime::Rect { x: 0.0, y: 0.0, w: 400.0, h: 300.0 };
+        let view = gui_runtime::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 400.0,
+            h: 300.0,
+        };
         assert!(b.layout(view).is_empty());
         assert_eq!(b.pick(&[], 10.0, 10.0), None);
         let _ = plan_tabs(&b, view); // no panic
@@ -333,7 +413,12 @@ mod tests {
     #[test]
     fn pick_ignores_non_pickable_tabs() {
         let b = bar();
-        let view = gui_runtime::Rect { x: 0.0, y: 0.0, w: 400.0, h: 300.0 };
+        let view = gui_runtime::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 400.0,
+            h: 300.0,
+        };
         let rects = b.layout(view);
         // tab 0 (enabled) centre is pickable.
         let r0 = &rects[0].rect;
@@ -347,7 +432,7 @@ mod tests {
     fn reconcile_repoints_stale_selection() {
         let mut b = bar();
         assert_eq!(b.selected(), Some("a")); // "a" auto-selected
-        // the tab set shrinks; "a" is gone.
+                                             // the tab set shrinks; "a" is gone.
         b.tabs.retain(|t| t.id != "a");
         b.reconcile();
         // selection re-points to the first enabled (none left -> None).
@@ -371,7 +456,12 @@ mod tests {
     #[test]
     fn vertical_content_rect_is_right_of_bar() {
         let b = TabBar::vertical(vec![Tab::enabled("a", Atom::exact("A"))]);
-        let view = gui_runtime::Rect { x: 0.0, y: 0.0, w: 400.0, h: 300.0 };
+        let view = gui_runtime::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 400.0,
+            h: 300.0,
+        };
         let c = b.content_rect(view);
         assert!(c.x > view.x); // content sits right of the side column
         assert!((c.w - (view.w - SIDE_WIDTH)).abs() < 0.01);
@@ -380,7 +470,12 @@ mod tests {
     #[test]
     fn plan_unavailable_tab_badges_not_fabricates() {
         let b = bar();
-        let view = gui_runtime::Rect { x: 0.0, y: 0.0, w: 600.0, h: 300.0 };
+        let view = gui_runtime::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 600.0,
+            h: 300.0,
+        };
         let p = plan_tabs(&b, view);
         // deterministic.
         assert_eq!(p.digest(), plan_tabs(&b, view).digest());

@@ -91,7 +91,10 @@ impl<'a> TextureCache<'a> {
                 // `load_dds` already RETRIES transient byte-read errors internally;
                 // reaching here means the read kept failing (still mid-rewrite) or
                 // the bytes don't decode yet. Don't poison-cache: retry next frame.
-                eprintln!("[m2] WARN: load {gfx} ({}) failed (will retry): {e}", path.display());
+                eprintln!(
+                    "[m2] WARN: load {gfx} ({}) failed (will retry): {e}",
+                    path.display()
+                );
                 LoadOutcome::TransientMiss
             }
         }
@@ -164,7 +167,11 @@ fn draw_node(
         ElementKind::ProgressBar { sprite, fraction } => {
             draw_progress_node(renderer, node, sprite, *fraction, textures, stats, clip);
         }
-        ElementKind::Button { sprite, frame, text } => {
+        ElementKind::Button {
+            sprite,
+            frame,
+            text,
+        } => {
             if let Some(gfx) = sprite {
                 draw_sprite_node(renderer, node, gfx, *frame, textures, stats, clip);
             }
@@ -292,7 +299,18 @@ fn draw_progress_node(
         h = tex.height as f32;
     }
     let tex = textures.get(renderer, gfx).unwrap();
-    renderer.draw_progress_bar_clipped(tex, r.x, r.y, w, h, fraction, 0, 1, [1.0, 1.0, 1.0, 1.0], clip);
+    renderer.draw_progress_bar_clipped(
+        tex,
+        r.x,
+        r.y,
+        w,
+        h,
+        fraction,
+        0,
+        1,
+        [1.0, 1.0, 1.0, 1.0],
+        clip,
+    );
     stats.progress_bars += 1;
 }
 
@@ -315,7 +333,9 @@ fn draw_text_node(
 
     // Box width for alignment: maxWidth if present, else the node's rect width,
     // else the measured width (left-aligned).
-    let box_w = spec.max_width.unwrap_or(if rect.w > 0.0 { rect.w } else { measured });
+    let box_w = spec
+        .max_width
+        .unwrap_or(if rect.w > 0.0 { rect.w } else { measured });
 
     // Horizontal alignment WITHIN the box.
     let tx = match spec.align {

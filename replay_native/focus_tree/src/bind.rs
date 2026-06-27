@@ -74,9 +74,15 @@ impl FocusDomain {
             })
             .unwrap_or_default();
         FocusDomain {
-            focus_tree: f.get("focus_tree").and_then(Json::as_str).map(|s| s.to_string()),
+            focus_tree: f
+                .get("focus_tree")
+                .and_then(Json::as_str)
+                .map(|s| s.to_string()),
             completed,
-            current: f.get("current").and_then(Json::as_str).map(|s| s.to_string()),
+            current: f
+                .get("current")
+                .and_then(Json::as_str)
+                .map(|s| s.to_string()),
             progress: f.get("progress").and_then(Json::as_i64),
         }
     }
@@ -104,11 +110,17 @@ pub fn eval_context(tag: &str, domain: &FocusDomain, world: Option<&Json>) -> Ev
         }
         if let Some(dlc) = w.get("dlc").and_then(Json::as_array) {
             ctx.dlc_known = true;
-            ctx.dlc = dlc.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+            ctx.dlc = dlc
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect();
         }
         if let Some(flags) = w.get("global_flags").and_then(Json::as_array) {
             ctx.global_flags_known = true;
-            ctx.global_flags = flags.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+            ctx.global_flags = flags
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect();
         }
     }
     ctx
@@ -123,17 +135,25 @@ pub fn bind_node(id: &str, prereqs: &[Vec<String>], domain: &FocusDomain) -> Nod
         NodeState::Current
     } else {
         // available iff every prereq group has at least one completed member
-        let all_groups_ok = prereqs.iter().all(|group| {
-            group.is_empty() || group.iter().any(|p| domain.completed.contains(p))
-        });
+        let all_groups_ok = prereqs
+            .iter()
+            .all(|group| group.is_empty() || group.iter().any(|p| domain.completed.contains(p)));
         if all_groups_ok {
             NodeState::PrereqsMet
         } else {
             NodeState::PrereqsUnmet
         }
     };
-    let progress_days = if state == NodeState::Current { domain.progress } else { None };
-    NodeBinding { id: id.to_string(), state, progress_days }
+    let progress_days = if state == NodeState::Current {
+        domain.progress
+    } else {
+        None
+    };
+    NodeBinding {
+        id: id.to_string(),
+        state,
+        progress_days,
+    }
 }
 
 #[cfg(test)]
@@ -170,9 +190,15 @@ mod tests {
         assert_eq!(c.state, NodeState::Current);
         assert_eq!(c.progress_days, Some(12));
         // D has prereq A (completed) -> available
-        assert_eq!(bind_node("D", &[vec!["A".into()]], &d).state, NodeState::PrereqsMet);
+        assert_eq!(
+            bind_node("D", &[vec!["A".into()]], &d).state,
+            NodeState::PrereqsMet
+        );
         // E has prereq Z (not completed) -> locked
-        assert_eq!(bind_node("E", &[vec!["Z".into()]], &d).state, NodeState::PrereqsUnmet);
+        assert_eq!(
+            bind_node("E", &[vec!["Z".into()]], &d).state,
+            NodeState::PrereqsUnmet
+        );
         // OR group satisfied by B
         assert_eq!(
             bind_node("F", &[vec!["Z".into(), "B".into()]], &d).state,

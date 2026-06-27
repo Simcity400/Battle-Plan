@@ -76,11 +76,22 @@ impl GraphNode {
         label: Atom,
         state_color: [f32; 4],
     ) -> GraphNode {
-        GraphNode { id: id.into(), x, y, w, h, label, state_color, badge: NodeBadge::Exact }
+        GraphNode {
+            id: id.into(),
+            x,
+            y,
+            w,
+            h,
+            label,
+            state_color,
+            badge: NodeBadge::Exact,
+        }
     }
     /// Mark this node's POSITION approximate (carried through from the placement pass).
     pub fn approximate(mut self, reason: impl Into<String>) -> GraphNode {
-        self.badge = NodeBadge::Approximate { reason: reason.into() };
+        self.badge = NodeBadge::Approximate {
+            reason: reason.into(),
+        };
         self
     }
     /// Mark this node blocked/unavailable (drawn hollow with the not-captured glyph).
@@ -290,8 +301,18 @@ pub fn plan_graph(cam: &Canvas, graph: &NodeGraph) -> (Plan, GraphDrawStats) {
         let thick = (2.0 * cam.scale).max(0.6);
         match e.kind {
             EdgeKind::Dependency => {
-                let c = if e.satisfied { DEP_SATISFIED } else { DEP_UNSATISFIED };
-                p.push(Cmd::LinkL { from, to, thick, tint: c, clip });
+                let c = if e.satisfied {
+                    DEP_SATISFIED
+                } else {
+                    DEP_UNSATISFIED
+                };
+                p.push(Cmd::LinkL {
+                    from,
+                    to,
+                    thick,
+                    tint: c,
+                    clip,
+                });
                 if e.directed {
                     p.push(arrowhead(to, c, cam.scale, clip));
                 }
@@ -300,22 +321,46 @@ pub fn plan_graph(cam: &Canvas, graph: &NodeGraph) -> (Plan, GraphDrawStats) {
                 // draw EVERY edge the caller supplied — dedup is the caller's job (it emits
                 // one edge per pair). An id-order gate here silently dropped a legitimately
                 // ordered pair like ("z","a") while still counting it (Codex).
-                p.push(Cmd::Line { from, to, thick: thick.max(1.0), tint: XOR_C, clip });
+                p.push(Cmd::Line {
+                    from,
+                    to,
+                    thick: thick.max(1.0),
+                    tint: XOR_C,
+                    clip,
+                });
             }
             EdgeKind::Influence => {
-                p.push(Cmd::Line { from, to, thick, tint: INFLUENCE_C, clip });
+                p.push(Cmd::Line {
+                    from,
+                    to,
+                    thick,
+                    tint: INFLUENCE_C,
+                    clip,
+                });
                 if e.directed {
                     p.push(arrowhead(to, INFLUENCE_C, cam.scale, clip));
                 }
             }
             EdgeKind::Reference => {
-                p.push(Cmd::Line { from, to, thick: thick.max(0.8), tint: REFERENCE_C, clip });
+                p.push(Cmd::Line {
+                    from,
+                    to,
+                    thick: thick.max(0.8),
+                    tint: REFERENCE_C,
+                    clip,
+                });
             }
         }
         if let Some(lbl) = &e.label {
             let mx = (from.0 + to.0) / 2.0;
             let my = (from.1 + to.1) / 2.0;
-            p.push(Cmd::Text { x: mx + 2.0, y: my - 6.0, text: lbl.as_str().into(), tint: lbl.tint(DIM_TINT), clip });
+            p.push(Cmd::Text {
+                x: mx + 2.0,
+                y: my - 6.0,
+                text: lbl.as_str().into(),
+                tint: lbl.tint(DIM_TINT),
+                clip,
+            });
         }
         stats.edges_drawn += 1;
     }
@@ -330,20 +375,57 @@ pub fn plan_graph(cam: &Canvas, graph: &NodeGraph) -> (Plan, GraphDrawStats) {
         let y = scy - nh / 2.0;
 
         // body: a dark border ring + the state fill (hollow for an unavailable node).
-        p.push(Cmd::Rect { x: x - 1.0, y: y - 1.0, w: nw + 2.0, h: nh + 2.0, tint: BORDER_C, clip });
+        p.push(Cmd::Rect {
+            x: x - 1.0,
+            y: y - 1.0,
+            w: nw + 2.0,
+            h: nh + 2.0,
+            tint: BORDER_C,
+            clip,
+        });
         if matches!(n.badge, NodeBadge::Unavailable) {
             stats.unavailable_nodes += 1;
-            p.push(Cmd::Rect { x, y, w: nw, h: nh, tint: crate::common::PLACEHOLDER_TINT, clip });
+            p.push(Cmd::Rect {
+                x,
+                y,
+                w: nw,
+                h: nh,
+                tint: crate::common::PLACEHOLDER_TINT,
+                clip,
+            });
             // a dim outline so a blocked node reads as "no data".
-            push_stroke(&mut p, x, y, nw, nh, (2.0 * cam.scale).max(1.0), DIM_TINT, clip);
+            push_stroke(
+                &mut p,
+                x,
+                y,
+                nw,
+                nh,
+                (2.0 * cam.scale).max(1.0),
+                DIM_TINT,
+                clip,
+            );
         } else {
-            p.push(Cmd::Rect { x, y, w: nw, h: nh, tint: n.state_color, clip });
+            p.push(Cmd::Rect {
+                x,
+                y,
+                w: nw,
+                h: nh,
+                tint: n.state_color,
+                clip,
+            });
         }
 
         if let NodeBadge::Approximate { .. } = n.badge {
             stats.approximate_nodes += 1;
             let s = (10.0 * cam.scale).max(4.0);
-            p.push(Cmd::Rect { x: x + nw - s, y, w: s, h: s, tint: APPROX_TAB_C, clip });
+            p.push(Cmd::Rect {
+                x: x + nw - s,
+                y,
+                w: s,
+                h: s,
+                tint: APPROX_TAB_C,
+                clip,
+            });
         }
 
         // label (clipped to the node box) when there is room.
@@ -378,17 +460,60 @@ pub fn draw_graph(
 /// A tiny arrowhead disc at the edge's `to` end (no rotated triangle; a small filled
 /// dot reads as a direction marker at any zoom).
 fn arrowhead(to: (f32, f32), c: [f32; 4], scale: f32, clip: Option<[f32; 4]>) -> Cmd {
-    Cmd::Disc { cx: to.0, cy: to.1, r: (3.0 * scale).clamp(2.0, 6.0), tint: c, clip }
+    Cmd::Disc {
+        cx: to.0,
+        cy: to.1,
+        r: (3.0 * scale).clamp(2.0, 6.0),
+        tint: c,
+        clip,
+    }
 }
 
 /// Push a 4-fill rect outline into a plan.
 #[allow(clippy::too_many_arguments)]
-fn push_stroke(p: &mut Plan, x: f32, y: f32, w: f32, h: f32, t: f32, c: [f32; 4], clip: Option<[f32; 4]>) {
+fn push_stroke(
+    p: &mut Plan,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    t: f32,
+    c: [f32; 4],
+    clip: Option<[f32; 4]>,
+) {
     let t = t.max(1.0);
-    p.push(Cmd::Rect { x, y, w, h: t, tint: c, clip });
-    p.push(Cmd::Rect { x, y: y + h - t, w, h: t, tint: c, clip });
-    p.push(Cmd::Rect { x, y, w: t, h, tint: c, clip });
-    p.push(Cmd::Rect { x: x + w - t, y, w: t, h, tint: c, clip });
+    p.push(Cmd::Rect {
+        x,
+        y,
+        w,
+        h: t,
+        tint: c,
+        clip,
+    });
+    p.push(Cmd::Rect {
+        x,
+        y: y + h - t,
+        w,
+        h: t,
+        tint: c,
+        clip,
+    });
+    p.push(Cmd::Rect {
+        x,
+        y,
+        w: t,
+        h,
+        tint: c,
+        clip,
+    });
+    p.push(Cmd::Rect {
+        x: x + w - t,
+        y,
+        w: t,
+        h,
+        tint: c,
+        clip,
+    });
 }
 
 #[cfg(test)]
@@ -398,8 +523,24 @@ mod tests {
     fn graph() -> NodeGraph {
         NodeGraph::new(
             vec![
-                GraphNode::box_at("A", 0.0, 0.0, 96.0, 96.0, Atom::exact("Alpha"), [0.8, 0.7, 0.2, 1.0]),
-                GraphNode::box_at("B", 0.0, 130.0, 96.0, 96.0, Atom::exact("Beta"), [0.3, 0.5, 0.4, 1.0]),
+                GraphNode::box_at(
+                    "A",
+                    0.0,
+                    0.0,
+                    96.0,
+                    96.0,
+                    Atom::exact("Alpha"),
+                    [0.8, 0.7, 0.2, 1.0],
+                ),
+                GraphNode::box_at(
+                    "B",
+                    0.0,
+                    130.0,
+                    96.0,
+                    96.0,
+                    Atom::exact("Beta"),
+                    [0.3, 0.5, 0.4, 1.0],
+                ),
             ],
             vec![
                 Edge::dependency("A", "B", true),
@@ -453,7 +594,15 @@ mod tests {
     #[test]
     fn nan_node_position_is_ignored_not_drawn() {
         let mut g = graph();
-        g.nodes.push(GraphNode::box_at("N", f32::NAN, 0.0, 10.0, 10.0, Atom::exact("nan"), [1.0; 4]));
+        g.nodes.push(GraphNode::box_at(
+            "N",
+            f32::NAN,
+            0.0,
+            10.0,
+            10.0,
+            Atom::exact("nan"),
+            [1.0; 4],
+        ));
         // bounds ignore the NaN node; pick never returns it.
         let (_, _, maxx, _) = g.bounds();
         assert!(maxx.is_finite());
@@ -461,7 +610,8 @@ mod tests {
 
     #[test]
     fn unavailable_node_badges_glyph_not_fabricated_label() {
-        let n = GraphNode::box_at("U", 0.0, 0.0, 96.0, 96.0, Atom::exact("real"), [1.0; 4]).unavailable();
+        let n = GraphNode::box_at("U", 0.0, 0.0, 96.0, 96.0, Atom::exact("real"), [1.0; 4])
+            .unavailable();
         assert!(n.label.is_unavailable());
         assert_eq!(n.label.as_str(), "—");
     }
@@ -493,13 +643,22 @@ mod tests {
         let cam = Canvas::fit(g.bounds(), [0.0, 0.0, 800.0, 600.0], 24.0);
         let (plan, stats) = plan_graph(&cam, &g);
         assert_eq!(stats.edges_drawn, 1);
-        assert_eq!(plan.cmds.iter().filter(|c| matches!(c, Cmd::Line { .. })).count(), 1);
+        assert_eq!(
+            plan.cmds
+                .iter()
+                .filter(|c| matches!(c, Cmd::Line { .. }))
+                .count(),
+            1
+        );
     }
 
     #[test]
     fn plan_for_unavailable_node_emits_glyph_text() {
         let g = NodeGraph::new(
-            vec![GraphNode::box_at("U", 0.0, 0.0, 200.0, 200.0, Atom::exact("real"), [1.0; 4]).unavailable()],
+            vec![
+                GraphNode::box_at("U", 0.0, 0.0, 200.0, 200.0, Atom::exact("real"), [1.0; 4])
+                    .unavailable(),
+            ],
             vec![],
         );
         let cam = Canvas::fit(g.bounds(), [0.0, 0.0, 800.0, 600.0], 24.0);

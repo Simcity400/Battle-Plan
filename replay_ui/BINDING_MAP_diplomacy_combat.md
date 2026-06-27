@@ -444,9 +444,11 @@ reconstructed from the diff-event timeline (combat-list tab `derived`), value ce
 
 ---
 
-## Codex verdict (adversarial review, 2026-06-26)
+## Historical review verdict (adversarial review, 2026-06-26)
 
-Mode-A one-shot, read-only. **Claim A (combat battle-detail badging): CONFIRMED with one correction** —
+Historical note: this records a completed adversarial review from the old
+Claude-era workflow. Codex-native sessions must use normal sub-agents/partner
+review and must not run the old local CLI command. **Claim A (combat battle-detail badging): CONFIRMED with one correction** —
 terrain/progress/combat_width/modifiers correctly `unavailable` (the raw `terrain`/`progress` are
 present but `progress` must NOT bind the −1..1 bar; the M\* domain is uncracked); `modifiers.duration`
 correctly `derived` (§G allows duration); `location_province` exact (id)/derived (name). **Correction

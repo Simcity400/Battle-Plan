@@ -486,13 +486,25 @@ mod tests {
             "map":{"version":1},
             "divisions":[{"id":1},{"id":2},{"id":3}]
         });
-        fs::write(gdir.join("000000000100.snapshot.json"), serde_json::to_string(&a).unwrap()).unwrap();
-        fs::write(gdir.join("000000000200.snapshot.json"), serde_json::to_string(&b).unwrap()).unwrap();
+        fs::write(
+            gdir.join("000000000100.snapshot.json"),
+            serde_json::to_string(&a).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            gdir.join("000000000200.snapshot.json"),
+            serde_json::to_string(&b).unwrap(),
+        )
+        .unwrap();
         let index = json!({"game_id":"g","schema_version":"1","snapshots":[
             {"hour_index":100,"date":"1940.1.1.12","file":"000000000100.snapshot.json"},
             {"hour_index":200,"date":"1941.1.1.12","file":"000000000200.snapshot.json"}
         ]});
-        fs::write(gdir.join("index.json"), serde_json::to_string(&index).unwrap()).unwrap();
+        fs::write(
+            gdir.join("index.json"),
+            serde_json::to_string(&index).unwrap(),
+        )
+        .unwrap();
         let store = Store::open(&dir.path);
         (dir, store, game)
     }
@@ -506,7 +518,10 @@ mod tests {
         let (a2, f2) = lru.get(100).unwrap();
         assert_eq!(f2, Fetch::Warm, "second touch must be a warm hit");
         // the two Arcs are the SAME shared instance (no re-parse, no copy).
-        assert!(Arc::ptr_eq(&a1, &a2), "a warm hit must return the SAME shared parse");
+        assert!(
+            Arc::ptr_eq(&a1, &a2),
+            "a warm hit must return the SAME shared parse"
+        );
         assert_eq!(lru.misses, 1);
         assert_eq!(lru.hits, 1);
     }
@@ -534,8 +549,10 @@ mod tests {
         let mut lru = SnapshotLru::new(store, game, 4);
         let (mut arc, _) = lru.get(100).unwrap();
         // refcount is 2 (cache + us) -> get_mut MUST be None: unmutable by type.
-        assert!(Arc::get_mut(&mut arc).is_none(),
-            "a cached snapshot must be immutable while the cache retains its clone");
+        assert!(
+            Arc::get_mut(&mut arc).is_none(),
+            "a cached snapshot must be immutable while the cache retains its clone"
+        );
     }
 
     /// THE prime-directive test: scrub A -> B -> A. The A re-bind must be IDENTICAL
@@ -560,12 +577,22 @@ mod tests {
             let sp = bind_state(snap, "64", "Brandenburg");
             let mut s = String::new();
             for f in &tb.fields {
-                s.push_str(&format!("TB:{}={}|{}\n", f.element, f.value, f.not_captured));
+                s.push_str(&format!(
+                    "TB:{}={}|{}\n",
+                    f.element, f.value, f.not_captured
+                ));
             }
             for f in &sp.fields {
-                s.push_str(&format!("SP:{}={}|{}\n", f.element, f.value, f.not_captured));
+                s.push_str(&format!(
+                    "SP:{}={}|{}\n",
+                    f.element, f.value, f.not_captured
+                ));
             }
-            for b in sp.state_buildings.iter().chain(sp.province_buildings.iter()) {
+            for b in sp
+                .state_buildings
+                .iter()
+                .chain(sp.province_buildings.iter())
+            {
                 s.push_str(&format!("BR:{}={}\n", b.key, b.level));
             }
             s.push_str(&format!("OCC:{}\n", sp.occupation.is_some()));
@@ -583,18 +610,25 @@ mod tests {
         let db = digest(&fb);
 
         // B differs from A (sanity: the scrub actually changed something).
-        assert_ne!(da1, db, "A and B must differ (else the test proves nothing)");
+        assert_ne!(
+            da1, db,
+            "A and B must differ (else the test proves nothing)"
+        );
 
         // Back to A (hour 100) — WARM (same cached Arc).
         let fa2 = tl.seek_to(0).unwrap();
         assert_eq!(fa2.fetch, Fetch::Warm, "returning to A must be a cache hit");
-        assert!(Arc::ptr_eq(&fa1.snapshot, &fa2.snapshot),
-            "the A revisit must be the SAME shared parse");
+        assert!(
+            Arc::ptr_eq(&fa1.snapshot, &fa2.snapshot),
+            "the A revisit must be the SAME shared parse"
+        );
         let da2 = digest(&fa2);
 
         // THE assertion: A renders IDENTICALLY before and after the B visit.
-        assert_eq!(da1, da2,
-            "A->B->A: the A re-bind fabricated/carried a value from the B visit");
+        assert_eq!(
+            da1, da2,
+            "A->B->A: the A re-bind fabricated/carried a value from the B visit"
+        );
     }
 
     #[test]
@@ -614,7 +648,10 @@ mod tests {
         tl.play();
         let t = tl.tick().unwrap().unwrap();
         assert_eq!(t.hour_index, 200);
-        assert!(tl.tick().is_none(), "play must pause at the end of the series");
+        assert!(
+            tl.tick().is_none(),
+            "play must pause at the end of the series"
+        );
         assert!(!tl.is_playing());
     }
 
@@ -670,11 +707,18 @@ mod tests {
         // prefetch the other hour; with a 3-window nothing evicts, but the insert
         // goes BEHIND the cursor so 100 is never the victim.
         lru.prefetch(200).unwrap();
-        assert!(lru.contains(100), "prefetch must not evict the cursor frame");
+        assert!(
+            lru.contains(100),
+            "prefetch must not evict the cursor frame"
+        );
         assert!(lru.contains(200), "prefetch must warm the target");
         // the cursor (100) is still the warm MRU: a get is a hit.
         let (_a, f) = lru.get(100).unwrap();
-        assert_eq!(f, Fetch::Warm, "cursor frame must remain a warm hit after prefetch");
+        assert_eq!(
+            f,
+            Fetch::Warm,
+            "cursor frame must remain a warm hit after prefetch"
+        );
     }
 
     /// The LRU honours the index `file` map (Codex-flagged): a NON-canonical file
@@ -688,11 +732,19 @@ mod tests {
         // a NON-canonical file name (not the {:012}.snapshot.json form).
         let a = json!({"game_id":"g","hour_index":100,"date":"1940.1.1.12",
             "states":{"1":{"owner":"FRA"}}});
-        fs::write(gdir.join("weird_name_A.json"), serde_json::to_string(&a).unwrap()).unwrap();
+        fs::write(
+            gdir.join("weird_name_A.json"),
+            serde_json::to_string(&a).unwrap(),
+        )
+        .unwrap();
         let index = json!({"game_id":"g","snapshots":[
             {"hour_index":100,"date":"1940.1.1.12","file":"weird_name_A.json"}
         ]});
-        fs::write(gdir.join("index.json"), serde_json::to_string(&index).unwrap()).unwrap();
+        fs::write(
+            gdir.join("index.json"),
+            serde_json::to_string(&index).unwrap(),
+        )
+        .unwrap();
         let store = Store::open(&dir.path);
         let mut tl = Timeline::open(store, game, 4).unwrap();
         // the canonical name 000000000100.snapshot.json does NOT exist; only the
@@ -716,15 +768,28 @@ mod tests {
         let index = json!({"game_id":"g","snapshots":[
             {"date":"1940.1.1.12","file":"x.json"}
         ]});
-        fs::write(gdir.join("index.json"), serde_json::to_string(&index).unwrap()).unwrap();
+        fs::write(
+            gdir.join("index.json"),
+            serde_json::to_string(&index).unwrap(),
+        )
+        .unwrap();
         let store = Store::open(&dir.path);
         let mut tl = Timeline::open(store, game, 4).unwrap();
-        assert!(tl.is_empty(), "series must be empty when no hour_index is present");
+        assert!(
+            tl.is_empty(),
+            "series must be empty when no hour_index is present"
+        );
         assert_eq!(tl.current_hour(), None);
 
         // None of these may panic; each returns a graceful error / None.
-        assert!(tl.seek_to(0).is_err(), "seek on an empty timeline must error, not panic");
-        assert!(tl.step(Dir::Forward).is_err(), "step on an empty timeline must error, not panic");
+        assert!(
+            tl.seek_to(0).is_err(),
+            "seek on an empty timeline must error, not panic"
+        );
+        assert!(
+            tl.step(Dir::Forward).is_err(),
+            "step on an empty timeline must error, not panic"
+        );
         assert!(tl.step(Dir::Backward).is_err());
         tl.play();
         assert!(tl.tick().is_none(), "tick on an empty timeline yields None");

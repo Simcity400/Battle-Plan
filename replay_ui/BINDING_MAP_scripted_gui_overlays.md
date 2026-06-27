@@ -373,16 +373,19 @@ mod-aware parse**.
 
 ---
 
-## 5. Codex round
+## 5. Historical review round
 
-**Asked** (Mode-A, read-only, `model_reasoning_effort=xhigh`, `service_tier=priority`): (a) is every
+Historical note: this section records a completed adversarial review from the old
+Claude-era workflow. Codex-native sessions must use normal sub-agents/partner
+review and must not run the old local CLI command.
+
+**Asked:** (a) is every
 overlay in the assigned set accounted for with none dropped; (b) is the bind-vs-chrome-only verdict
 correct given that `world.variables`/`world.flags` (GLOBAL) is the only scripted-var channel and there
 is no per-country var bag; (c) is the closure path (parse `common/scripted_guis/` + record
 `world.variables`, extended to a country-scoped var bag) correct.
 
-**Result** (`codex exec`, read-only, `model_reasoning_effort=xhigh`, `service_tier=priority`, exit 0,
-non-empty):
+**Result:**
 
 * **(a) AGREED** — every overlay accounted for; 15 mod + 23 vanilla = 38; buckets sum 32 + 3 + 1 + 2 = 38;
   no dropped item.

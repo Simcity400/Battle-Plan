@@ -658,19 +658,18 @@ No element is badged `unavailable` because of fabrication; every absent datum re
 
 ---
 
-## Codex review
+## Historical review
 
-**Codex round — TIMED OUT (×2), proceeded per protocol.** Two Mode-A one-shot reviews were launched
-(read-only, `model_reasoning_effort=xhigh`, `service_tier=priority`, unique `-o` files), each handing
-Codex the full schema facts, the empirical demo-snapshot finding, all 8 views' element counts, and the
+**Historical review round — TIMED OUT (×2), proceeded with self-audit.** This records
+a completed review attempt from the old Claude-era workflow. Codex-native
+sessions must use normal sub-agents/partner review and must not run the old local
+CLI command. Each attempt was given the full schema facts, the empirical demo-snapshot finding, all 8 views' element counts, and the
 five highest-risk binding claims, asking the four mandated questions: (a) missed elements,
 (b) field-path correctness, (c) false `unavailable`/wrong fidelity, (d) artifact-vs-gap classification.
 **Attempt 1** exceeded the 300 s bash deadline with no `-o` written; **attempt 2** (background, longer
 budget) was still mid-exploration of the repo (it had read the `.gui` walks, `schema.py`, the diff
-event list, and the assembler/snapshot code) past the ~12-minute mark without emitting its reply. Per
-the standing protocol ("Times out twice → proceed + note it"), the doc ships without a folded Codex
-verdict. The background review may still land; if it does, its corrections will be appended in a
-follow-up.
+event list, and the assembler/snapshot code) past the ~12-minute mark without emitting its reply. The doc shipped
+without a folded external verdict and relies on the self-audit below.
 
 **Self-audit of the highest-risk claims (in lieu of the Codex pass), each grounded in a re-read of
 `SCHEMA.md`/`schema.py`/the parsed `.gui`:**

@@ -41,9 +41,7 @@ fn write_object(m: &Map<String, Value>, out: &mut String) {
     // identical to byte order; we sort on the UTF-16 sequence to be correct for
     // any future non-ASCII manifest key.
     let mut keys: Vec<&String> = m.keys().collect();
-    keys.sort_by(|a, b| {
-        a.encode_utf16().cmp(b.encode_utf16())
-    });
+    keys.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
     out.push('{');
     for (i, k) in keys.iter().enumerate() {
         if i > 0 {

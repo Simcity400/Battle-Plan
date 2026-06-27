@@ -26,7 +26,9 @@ pub use manifest::{SpriteEntry, SpriteManifest};
 pub use modset::{match_replay, BundleConfig, MatchOutcome, ModDelta, ModEntry, ModError, ModSet};
 pub use resolver::GameResolver;
 pub use sprites::{
-    catalog_frames, resolve_frame_sprite, resolve_one_based_frame_sprite, resolve_portrait_sprite,
-    resolve_sprite_name, resolve_sprite_value, ResolvedSprite, SpriteAsset, SpriteMiss,
+    catalog_frames, resolve_formation_insignia_sprite, resolve_formation_insignia_sprite_from_base,
+    resolve_frame_sprite, resolve_one_based_frame_sprite, resolve_portrait_sprite,
+    resolve_sprite_fields, resolve_sprite_name, resolve_sprite_value, FormationInsigniaOrigin,
+    FormationInsigniaSprite, FormationKind, ResolvedSprite, SpriteAsset, SpriteMiss,
 };
 pub use tga::{decode as decode_tga, TgaImage};

@@ -15,8 +15,9 @@
 
 use gui_runtime::scene::Node;
 use gui_runtime::{Hit, Rect};
+use render::modes::MapMode;
 
-use crate::host::context::{BindContext, FidelityReport};
+use crate::host::context::{classify_value, BindContext, Captured, FidelityReport};
 use crate::host::draw::FrameDraw;
 use crate::host::registry::ViewId;
 
@@ -33,6 +34,36 @@ pub struct RebindContext<'a> {
     pub screen: (u32, u32),
     /// True only when the surface should re-fit its camera (open / country change).
     pub refit: bool,
+}
+
+impl<'a> RebindContext<'a> {
+    /// Read a dotted country path during the pre-bind refresh, preserving the same
+    /// Absent/Null/Measured trichotomy as [`BindContext::country_field`].
+    pub fn country_field(&self, tag: &str, dotted: &str) -> Captured<&'a serde_json::Value> {
+        classify_value(self.snapshot.country_path(tag, dotted))
+    }
+
+    /// Read a dotted state path during the pre-bind refresh.
+    pub fn state_field(&self, sid: &str, dotted: &str) -> Captured<&'a serde_json::Value> {
+        classify_value(self.snapshot.state_path(sid, dotted))
+    }
+
+    /// The top-level `order_of_battle` domain during the pre-bind refresh.
+    pub fn order_of_battle(&self) -> Captured<&'a serde_json::Value> {
+        classify_value(self.snapshot.domain("order_of_battle"))
+    }
+
+    /// Country ids and payloads for iteration-only accounting. Per-field reads still
+    /// go through [`Self::country_field`].
+    pub fn countries(&self) -> Option<&'a serde_json::Map<String, serde_json::Value>> {
+        self.snapshot.countries()
+    }
+
+    /// State ids and payloads for iteration-only accounting. Per-field reads still
+    /// go through [`Self::state_field`].
+    pub fn states(&self) -> Option<&'a serde_json::Map<String, serde_json::Value>> {
+        self.snapshot.states()
+    }
 }
 
 /// How the window host treats a view: where it sits in the stack, whether it blocks
@@ -97,6 +128,14 @@ pub struct BoundView {
     pub commands: Vec<ViewCommand>,
 }
 
+impl BoundView {
+    /// Passive overlay plan for the current hover, if the drawable exposes one.
+    /// This is deliberately not part of [`HitModel`]: tooltips never consume input.
+    pub fn tooltip_plan(&self) -> Option<&widgets::TooltipPlan> {
+        self.drawable.tooltip_plan()
+    }
+}
+
 /// How the host hit-tests a bound view. Most views are a laid-out `Vec<Node>` scene
 /// graph (front-to-back `hit_test`); a view may ALSO declare a map-blocking rect (a
 /// pure-container panel whose empty interior must consume clicks, not re-pick the map —
@@ -148,6 +187,13 @@ pub enum ViewCommand {
     /// Open (or focus) the view with this id, optionally carrying an integer argument
     /// (e.g. a state id for the state panel) the factory interprets.
     OpenView { view_id: ViewId, arg: Option<i64> },
+    /// Recenter the live native map camera on a raster/world coordinate. This is a
+    /// read-only replay navigation command; the app shell applies it only when the
+    /// seeded `core.map` view is live.
+    RecenterMap { raster_x: f32, raster_y: f32 },
+    /// Switch the seeded native `core.map` instance to an existing render map mode.
+    /// The generic host does not own that seeded map state; the app shell applies it.
+    SetMapMode { mode: MapMode },
     /// Close the view instance that emitted this (or, by id, a named singleton).
     CloseSelf,
     /// Close a named singleton view by id.
@@ -161,6 +207,12 @@ pub enum ViewCommand {
 /// per-frame render context) — matching this app's accumulate-quads compose pass.
 pub trait Drawable {
     fn draw(&self, fd: &mut FrameDraw);
+
+    /// Passive tooltip overlay emitted by this drawable. The host draws it last and
+    /// includes it in the deterministic digest, but never hit-tests it.
+    fn tooltip_plan(&self) -> Option<&widgets::TooltipPlan> {
+        None
+    }
 
     /// A stable digest of the DRAW-DETERMINING DATA this drawable carries — the pixel
     /// inputs `bind` computed (Codex (c)): for a custom GPU overlay (map/focus/combat),

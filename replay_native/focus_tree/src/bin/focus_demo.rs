@@ -56,7 +56,10 @@ fn main() {
     // default mod = the sibling AMSB test mod, if present (where german_focus lives)
     let mod_root = arg("--mod").or_else(|| {
         let p = repo_root().parent()?.join("test");
-        p.join("common").join("national_focus").is_dir().then(|| p.to_string_lossy().into_owned())
+        p.join("common")
+            .join("national_focus")
+            .is_dir()
+            .then(|| p.to_string_lossy().into_owned())
     });
     let resolver = GameResolver::new(vanilla.as_deref(), mod_root.as_deref());
 
@@ -80,11 +83,18 @@ fn main() {
     let tree = match cat.tree(&tree_id) {
         Some(t) => t,
         None => {
-            eprintln!("[focus_demo] BLOCKER: tree `{tree_id}` not found ({} trees loaded).", cat.trees.len());
+            eprintln!(
+                "[focus_demo] BLOCKER: tree `{tree_id}` not found ({} trees loaded).",
+                cat.trees.len()
+            );
             std::process::exit(2);
         }
     };
-    eprintln!("[focus_demo] tree `{}`: {} nodes", tree.id, tree.nodes.len());
+    eprintln!(
+        "[focus_demo] tree `{}`: {} nodes",
+        tree.id,
+        tree.nodes.len()
+    );
 
     // 2) Bind the snapshot focus domain (real completed/current/progress).
     let store_root = arg("--store")
@@ -94,7 +104,8 @@ fn main() {
     let mut domain = FocusDomain::default();
     let mut date = String::new();
     if let Ok(idx) = store.index(&game) {
-        if let Some(hi) = arg("--hour").and_then(|s| s.parse::<i64>().ok())
+        if let Some(hi) = arg("--hour")
+            .and_then(|s| s.parse::<i64>().ok())
             .or_else(|| idx.snapshots.iter().find_map(|e| e.hour_index))
         {
             if let Ok(snap) = store.load(&game, hi) {
@@ -110,15 +121,27 @@ fn main() {
     } else {
         eprintln!(
             "[focus_demo] bound {} {}: completed={} current={:?} progress={:?}",
-            game, date, domain.completed.len(), domain.current, domain.progress
+            game,
+            date,
+            domain.completed.len(),
+            domain.current,
+            domain.progress
         );
     }
 
     // 3) Place the tree (relative chains + offset evaluator).
     let ctx = eval_context(&tag, &domain, None);
     let placed = place(&tree, &ctx);
-    let approx: usize = placed.nodes.iter().filter(|n| matches!(n.fidelity, PosFidelity::Approximate { .. })).count();
-    eprintln!("[focus_demo] placed: {} nodes, {} approximate-position (badged)", placed.nodes.len(), approx);
+    let approx: usize = placed
+        .nodes
+        .iter()
+        .filter(|n| matches!(n.fidelity, PosFidelity::Approximate { .. }))
+        .count();
+    eprintln!(
+        "[focus_demo] placed: {} nodes, {} approximate-position (badged)",
+        placed.nodes.len(),
+        approx
+    );
 
     // 4) Render offscreen.
     let mut renderer = match Renderer::new(width, height) {
@@ -158,7 +181,18 @@ fn main() {
     let stats = draw_tree(&mut renderer, &cam, &placed, &domain, &assets);
 
     // legend strip (state colours + title).
-    draw_legend(&mut renderer, &white, font_ref, pages_ref, width, legend_h, &tree.id, &tag, &date, &stats);
+    draw_legend(
+        &mut renderer,
+        &white,
+        font_ref,
+        pages_ref,
+        width,
+        legend_h,
+        &tree.id,
+        &tag,
+        &date,
+        &stats,
+    );
 
     let rgba = renderer.finish([0.07, 0.08, 0.10, 1.0]);
     let out = out_dir();
@@ -188,22 +222,63 @@ fn draw_legend(
     stats: &focus_tree::FocusDrawStats,
 ) {
     let clip = [0.0, 0.0, width as f32, h];
-    r.draw_sprite_frame_clipped(white, 0.0, 0.0, width as f32, h, 0, 1, [0.04, 0.05, 0.07, 1.0], Some(clip));
+    r.draw_sprite_frame_clipped(
+        white,
+        0.0,
+        0.0,
+        width as f32,
+        h,
+        0,
+        1,
+        [0.04, 0.05, 0.07, 1.0],
+        Some(clip),
+    );
     let chips = [
-        ([0.85, 0.69, 0.22, 1.0], format!("completed {}", stats.completed)),
-        ([0.20, 0.80, 0.95, 1.0], format!("current {}", stats.current)),
-        ([0.35, 0.55, 0.38, 1.0], format!("prereqs-met {}", stats.available)),
-        ([0.28, 0.30, 0.34, 1.0], format!("prereqs-unmet {}", stats.locked)),
-        ([0.95, 0.15, 0.85, 1.0], format!("approx-pos {}", stats.approximate)),
+        (
+            [0.85, 0.69, 0.22, 1.0],
+            format!("completed {}", stats.completed),
+        ),
+        (
+            [0.20, 0.80, 0.95, 1.0],
+            format!("current {}", stats.current),
+        ),
+        (
+            [0.35, 0.55, 0.38, 1.0],
+            format!("prereqs-met {}", stats.available),
+        ),
+        (
+            [0.28, 0.30, 0.34, 1.0],
+            format!("prereqs-unmet {}", stats.locked),
+        ),
+        (
+            [0.95, 0.15, 0.85, 1.0],
+            format!("approx-pos {}", stats.approximate),
+        ),
     ];
     if let Some(f) = font {
         let title = format!("FOCUS TREE  {tree_id}   {tag}   {date}");
-        r.draw_text_clipped(f, pages, &title, 12.0, 8.0, [0.95, 0.95, 0.92, 1.0], Some(clip));
+        r.draw_text_clipped(
+            f,
+            pages,
+            &title,
+            12.0,
+            8.0,
+            [0.95, 0.95, 0.92, 1.0],
+            Some(clip),
+        );
         let mut x = 12.0;
         let y = 36.0;
         for (c, label) in &chips {
             r.draw_sprite_frame_clipped(white, x, y + 2.0, 14.0, 14.0, 0, 1, *c, Some(clip));
-            r.draw_text_clipped(f, pages, label, x + 18.0, y, [0.9, 0.9, 0.88, 1.0], Some(clip));
+            r.draw_text_clipped(
+                f,
+                pages,
+                label,
+                x + 18.0,
+                y,
+                [0.9, 0.9, 0.88, 1.0],
+                Some(clip),
+            );
             x += 18.0 + 11.0 * label.len() as f32 + 16.0;
         }
     } else {

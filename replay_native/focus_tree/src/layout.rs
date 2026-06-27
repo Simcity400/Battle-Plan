@@ -99,7 +99,10 @@ fn resolve_grid(
     let pos = match &node.relative_to {
         None => (node.base_x, node.base_y),
         Some(anchor) => {
-            if anchor == id || visiting.iter().any(|v| v == anchor) || by_id.get(anchor.as_str()).is_none() {
+            if anchor == id
+                || visiting.iter().any(|v| v == anchor)
+                || by_id.get(anchor.as_str()).is_none()
+            {
                 // self-anchor, cycle, or missing anchor → fall back to base
                 (node.base_x, node.base_y)
             } else {
@@ -152,8 +155,7 @@ fn apply_offsets(node: &FocusNode, gx: i32, gy: i32, ctx: &EvalContext) -> (i32,
 
 /// Lay out a tree: resolve relatives, apply offsets, convert to pixels.
 pub fn place(tree: &FocusTree, ctx: &EvalContext) -> PlacedTree {
-    let by_id: HashMap<&str, &FocusNode> =
-        tree.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let by_id: HashMap<&str, &FocusNode> = tree.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
     let mut memo: HashMap<String, (i32, i32)> = HashMap::new();
     let mut placed = Vec::with_capacity(tree.nodes.len());
     let mut approximate_count = 0;
@@ -177,13 +179,21 @@ pub fn place(tree: &FocusTree, ctx: &EvalContext) -> PlacedTree {
             gx: fx,
             gy: fy,
             fidelity,
-            prerequisites: node.prerequisites.iter().map(|g| g.any_of.clone()).collect(),
+            prerequisites: node
+                .prerequisites
+                .iter()
+                .map(|g| g.any_of.clone())
+                .collect(),
             mutually_exclusive: node.mutually_exclusive.clone(),
             cost: node.cost,
         });
     }
 
-    PlacedTree { id: tree.id.clone(), nodes: placed, approximate_count }
+    PlacedTree {
+        id: tree.id.clone(),
+        nodes: placed,
+        approximate_count,
+    }
 }
 
 #[cfg(test)]
@@ -193,7 +203,10 @@ mod tests {
     use crate::pdx::parse_file;
 
     fn tree(src: &str) -> FocusTree {
-        trees_from_entries(&parse_file(src)).into_iter().next().unwrap()
+        trees_from_entries(&parse_file(src))
+            .into_iter()
+            .next()
+            .unwrap()
     }
 
     #[test]
@@ -241,7 +254,10 @@ mod tests {
 
     #[test]
     fn supported_offset_shifts_position() {
-        let mut ctx = EvalContext { tag: "GER".into(), ..Default::default() };
+        let mut ctx = EvalContext {
+            tag: "GER".into(),
+            ..Default::default()
+        };
         ctx.completed_focuses.insert("X".into());
         let t = tree(
             r#"focus_tree = { id = t
@@ -259,7 +275,10 @@ mod tests {
 
     #[test]
     fn unsupported_offset_falls_back_and_badges() {
-        let ctx = EvalContext { tag: "GER".into(), ..Default::default() };
+        let ctx = EvalContext {
+            tag: "GER".into(),
+            ..Default::default()
+        };
         let t = tree(
             r#"focus_tree = { id = t
                 focus = { id = A x = 10 y = 0
@@ -277,7 +296,10 @@ mod tests {
 
     #[test]
     fn false_offset_keeps_base_but_stays_exact() {
-        let ctx = EvalContext { tag: "USA".into(), ..Default::default() };
+        let ctx = EvalContext {
+            tag: "USA".into(),
+            ..Default::default()
+        };
         let t = tree(
             r#"focus_tree = { id = t
                 focus = { id = A x = 10 y = 0

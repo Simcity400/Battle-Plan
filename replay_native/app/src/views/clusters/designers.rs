@@ -70,11 +70,13 @@ use bind::Fidelity;
 
 use crate::host::context::{BindContext, Captured, DisplayAtom, FidelityReport, UnavailableReason};
 use crate::host::draw::FrameDraw;
+use crate::host::input::{PointerButton, ViewInput};
 use crate::host::registry::{
     GuiSymbolRef, MenuCluster, MenuRoute, TemplateDescriptor, ViewDescriptor, ViewId,
 };
 use crate::host::view::{
-    BoundView, Drawable, HitModel, HostPolicy, InstanceId, ViewCommand, ViewInstance, ZBand,
+    BoundView, Drawable, HitModel, HostPolicy, InputOutcome, InstanceId, RebindContext,
+    ViewCommand, ViewInstance, ZBand,
 };
 use crate::{register_template, register_view};
 
@@ -443,7 +445,7 @@ fn finish(
         instance: InstanceId(0),
         view_id,
         policy,
-        hit: HitModel::from_roots(roots.clone()),
+        hit: HitModel::from_roots(roots.clone()).with_block_rect(area),
         drawable: Box::new(DesignerDrawable { roots, model, area }),
         fidelity,
         commands: Vec::<ViewCommand>::new(),
@@ -798,15 +800,156 @@ const DIVISION_VIEW_ID: ViewId = ViewId("designers.division");
 pub(super) const DIVISION_FILE: &str = "division_designer.json";
 pub(super) const DIVISION_ROOT: &str = "countrydivisiondesignerview";
 
-pub struct DivisionDesignerView;
+const DIVISION_TAB_NORMAL: &str = "normal";
+const DIVISION_TAB_HQ: &str = "hq";
+const DIVISION_HEADER_ROWS: usize = 6;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DivisionDesignerTab {
+    Normal,
+    Hq,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DivisionTabClick {
+    Changed,
+    Unchanged,
+    Inert,
+    Miss,
+}
+
+pub struct DivisionDesignerView {
+    selected_tab: Option<String>,
+    tabs: TabBar,
+    screen: Rect,
+}
 impl DivisionDesignerView {
     pub fn new() -> Self {
-        DivisionDesignerView
+        let tabs = division_tabs_for_present_template(false);
+        DivisionDesignerView {
+            selected_tab: tabs.selected().map(str::to_string),
+            tabs,
+            screen: default_division_screen(),
+        }
     }
 }
 impl Default for DivisionDesignerView {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn is_army_hq_template(t: &Value) -> bool {
+    matches!(t.get("is_army_hq").and_then(Value::as_bool), Some(true))
+}
+
+fn division_tabs_for_present_template(is_hq: bool) -> TabBar {
+    let hq_tab = if is_hq {
+        Tab::enabled(DIVISION_TAB_HQ, Atom::exact("Army HQ"))
+    } else {
+        Tab::disabled(DIVISION_TAB_HQ, Atom::exact("Army HQ"))
+    };
+    TabBar::horizontal(vec![
+        Tab::enabled(DIVISION_TAB_NORMAL, Atom::exact("Division")),
+        hq_tab,
+    ])
+}
+
+fn division_tabs_for_template(t: Option<&Value>) -> TabBar {
+    match t {
+        Some(t) => division_tabs_for_present_template(is_army_hq_template(t)),
+        None => TabBar::horizontal(vec![
+            Tab::unavailable(DIVISION_TAB_NORMAL, Atom::exact("Division")),
+            Tab::unavailable(DIVISION_TAB_HQ, Atom::exact("Army HQ")),
+        ]),
+    }
+}
+
+fn division_tabs_with_selection(mut tabs: TabBar, selected: Option<&str>) -> TabBar {
+    if let Some(id) = selected {
+        tabs.select(id);
+    }
+    tabs.reconcile();
+    tabs
+}
+
+fn selected_division_tab(tabs: &TabBar) -> Option<DivisionDesignerTab> {
+    match tabs.selected() {
+        Some(DIVISION_TAB_HQ) => Some(DivisionDesignerTab::Hq),
+        Some(DIVISION_TAB_NORMAL) => Some(DivisionDesignerTab::Normal),
+        _ => None,
+    }
+}
+
+fn default_division_screen() -> Rect {
+    Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 1600.0,
+        h: 900.0,
+    }
+}
+
+fn division_tab_panel_fallback(screen: Rect) -> Rect {
+    let area = Rect {
+        x: screen.x + 12.0,
+        y: screen.y + 64.0,
+        w: (screen.w - 24.0).max(0.0),
+        h: (screen.h - 76.0).max(0.0),
+    };
+    let header_h = DIVISION_HEADER_ROWS as f32 * 18.0 + 8.0;
+    Rect {
+        x: area.x,
+        y: area.y + header_h,
+        w: area.w,
+        h: (area.h - header_h).max(widgets::tabs::BAR_THICK),
+    }
+}
+
+fn click_division_tab(bar: &mut TabBar, panel: Rect, x: f32, y: f32) -> DivisionTabClick {
+    let rects = bar.layout(panel);
+    if let Some(id) = bar.pick(&rects, x, y) {
+        if bar.select(&id) {
+            DivisionTabClick::Changed
+        } else {
+            DivisionTabClick::Unchanged
+        }
+    } else if rects.iter().any(|tr| tr.rect.contains(x, y)) {
+        DivisionTabClick::Inert
+    } else {
+        DivisionTabClick::Miss
+    }
+}
+
+fn division_input_consumed(needs_redraw: bool) -> InputOutcome {
+    InputOutcome {
+        consumed: true,
+        commands: Vec::new(),
+        needs_redraw,
+    }
+}
+
+fn push_normal_division_stat_badges(model: &mut DesignerModel, fidelity: &mut FidelityReport) {
+    for label in [
+        "Hardness",
+        "Organisation",
+        "Max Strength",
+        "Speed",
+        "Combat Width",
+        "Base Stats",
+        "Combat Stats",
+        "Equipment Stats",
+        "Terrain Adjusters",
+        "Production Cost (IC)",
+        "Production Resources",
+    ] {
+        model.push_stat_unavailable(fidelity, label);
+    }
+}
+
+fn push_hq_division_stat_badges(model: &mut DesignerModel, fidelity: &mut FidelityReport) {
+    for label in ["HQ Deploy Cost", "HQ Deploy Time", "HQ Modifiers"] {
+        model.push_stat_unavailable(fidelity, label);
     }
 }
 
@@ -817,12 +960,57 @@ impl ViewInstance for DivisionDesignerView {
     fn policy(&self) -> HostPolicy {
         HostPolicy::window(ZBand::Panel)
     }
+    fn rebind(&mut self, ctx: &RebindContext) {
+        self.screen = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: ctx.screen.0 as f32,
+            h: ctx.screen.1 as f32,
+        };
+        let template = focused_template(ctx.snapshot, ctx.country);
+        self.tabs = division_tabs_with_selection(
+            division_tabs_for_template(template),
+            self.selected_tab.as_deref(),
+        );
+    }
+    fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
+        match *ev {
+            ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            } => match click_division_tab(
+                &mut self.tabs,
+                division_tab_panel_fallback(self.screen),
+                x,
+                y,
+            ) {
+                DivisionTabClick::Changed => {
+                    self.selected_tab = self.tabs.selected().map(str::to_string);
+                    division_input_consumed(true)
+                }
+                DivisionTabClick::Unchanged => {
+                    self.selected_tab = self.tabs.selected().map(str::to_string);
+                    division_input_consumed(false)
+                }
+                DivisionTabClick::Inert => division_input_consumed(false),
+                DivisionTabClick::Miss => InputOutcome::ignored(),
+            },
+            _ => InputOutcome::ignored(),
+        }
+    }
     fn bind(&self, ctx: &BindContext) -> BoundView {
         let tag = ctx.country;
         let snapshot = ctx.snapshot;
         let mut fidelity = FidelityReport::default();
         let file = resolve_gui(ctx, DIVISION_FILE);
         let mut model = DesignerModel::new();
+        let template = focused_template(snapshot, tag);
+        let tabs = division_tabs_with_selection(
+            division_tabs_for_template(template),
+            self.selected_tab.as_deref(),
+        );
+        let active_tab = selected_division_tab(&tabs);
 
         let xp = ctx.country_field(tag, "military.xp.army");
         model.push_header(
@@ -831,7 +1019,7 @@ impl ViewInstance for DivisionDesignerView {
             xp.display_with_fidelity(Fidelity::Exact, fmt_int),
         );
 
-        match focused_template(snapshot, tag) {
+        match template {
             Some(t) => {
                 model.push_header(
                     &mut fidelity,
@@ -853,58 +1041,35 @@ impl ViewInstance for DivisionDesignerView {
                     "Obsolete",
                     obj_field(t, "obsolete").display_with_fidelity(Fidelity::Exact, fmt_token),
                 );
-                let is_hq = t
-                    .get("is_army_hq")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
                 model.push_header(
                     &mut fidelity,
                     "Army HQ",
                     obj_field(t, "is_army_hq").display_with_fidelity(Fidelity::Exact, fmt_token),
                 );
 
-                model.modules = build_regiment_grid(t, &mut fidelity);
-
-                let hq_tab = if is_hq {
-                    Tab::enabled("hq", Atom::exact("Army HQ"))
-                } else {
-                    Tab::disabled("hq", Atom::exact("Army HQ"))
-                };
-                model.tabs = Some(TabBar::horizontal(vec![
-                    Tab::enabled("normal", Atom::exact("Division")),
-                    hq_tab,
-                ]));
+                match active_tab {
+                    Some(DivisionDesignerTab::Hq) => {
+                        model.modules = ModuleLayout::default();
+                        push_hq_division_stat_badges(&mut model, &mut fidelity);
+                    }
+                    _ => {
+                        model.modules = build_regiment_grid(t, &mut fidelity);
+                        push_normal_division_stat_badges(&mut model, &mut fidelity);
+                    }
+                }
             }
             None => {
                 for label in ["Name", "Role", "Priority", "Obsolete", "Army HQ"] {
                     model.push_header_unavailable(&mut fidelity, label);
                 }
                 model.modules = ModuleLayout::default();
-                model.tabs = Some(TabBar::horizontal(vec![
-                    Tab::unavailable("normal", Atom::exact("Division")),
-                    Tab::unavailable("hq", Atom::exact("Army HQ")),
-                ]));
+                push_normal_division_stat_badges(&mut model, &mut fidelity);
+                push_hq_division_stat_badges(&mut model, &mut fidelity);
             }
         }
 
-        // the COMPUTED division stat chips + panels (§G hard limit) — badged unavailable.
-        for label in [
-            "Hardness",
-            "Organisation",
-            "Max Strength",
-            "Speed",
-            "Combat Width",
-            "Base Stats",
-            "Combat Stats",
-            "Equipment Stats",
-            "Terrain Adjusters",
-            "Production Cost (IC)",
-            "Production Resources",
-            "HQ Deploy Cost",
-            "HQ Modifiers",
-        ] {
-            model.push_stat_unavailable(&mut fidelity, label);
-        }
+        // The selected N2 tab is part of the render plan and scrub digest.
+        model.tabs = Some(tabs);
 
         let roots = build_root(ctx, &file, DIVISION_ROOT);
         let area = overlay_area(&roots, ctx.screen);

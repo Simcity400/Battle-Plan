@@ -297,6 +297,7 @@ fn stub_grid(name: &str, rect: Rect) -> Node {
     Node {
         name: name.to_string(),
         raw_kind: "gridBoxType".into(),
+        tooltip: None,
         kind: ElementKind::Container { background: None },
         pos: (0.0, 0.0),
         size_w: None,

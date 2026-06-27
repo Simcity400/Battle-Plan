@@ -105,7 +105,16 @@ pub fn white_texture(renderer: &Renderer) -> Texture {
 }
 
 /// Draw a solid filled rect (screen space), clipped to `clip`.
-fn fill_rect(r: &mut Renderer, white: &Texture, x: f32, y: f32, w: f32, h: f32, c: [f32; 4], clip: [f32; 4]) {
+fn fill_rect(
+    r: &mut Renderer,
+    white: &Texture,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    c: [f32; 4],
+    clip: [f32; 4],
+) {
     r.draw_sprite_frame_clipped(white, x, y, w, h, 0, 1, c, Some(clip));
 }
 
@@ -130,7 +139,16 @@ fn link_line(
     fill_rect(r, white, x0 - t / 2.0, vy0, t, (vy1 - vy0).max(t), c, clip);
     // horizontal segment at midy from x0 to x1
     let (hx0, hx1) = if x0 <= x1 { (x0, x1) } else { (x1, x0) };
-    fill_rect(r, white, hx0, midy - t / 2.0, (hx1 - hx0).max(t), t, c, clip);
+    fill_rect(
+        r,
+        white,
+        hx0,
+        midy - t / 2.0,
+        (hx1 - hx0).max(t),
+        t,
+        c,
+        clip,
+    );
 }
 
 /// Inputs the renderer needs that come from the asset side (resolved per app).
@@ -191,7 +209,15 @@ pub fn draw_tree(
                     } else {
                         [0.45, 0.45, 0.50, 0.55]
                     };
-                    link_line(renderer, assets.white, from, to, 2.0 * cam.scale.max(0.5), c, clip);
+                    link_line(
+                        renderer,
+                        assets.white,
+                        from,
+                        to,
+                        2.0 * cam.scale.max(0.5),
+                        c,
+                        clip,
+                    );
                     stats.links_drawn += 1;
                 }
             }
@@ -225,8 +251,26 @@ pub fn draw_tree(
         let y = cy - nh / 2.0;
 
         // node body (state colour) + a darker border ring for legibility
-        fill_rect(renderer, assets.white, x - 1.0, y - 1.0, nw + 2.0, nh + 2.0, [0.05, 0.05, 0.06, 1.0], clip);
-        fill_rect(renderer, assets.white, x, y, nw, nh, state_color(&b.state), clip);
+        fill_rect(
+            renderer,
+            assets.white,
+            x - 1.0,
+            y - 1.0,
+            nw + 2.0,
+            nh + 2.0,
+            [0.05, 0.05, 0.06, 1.0],
+            clip,
+        );
+        fill_rect(
+            renderer,
+            assets.white,
+            x,
+            y,
+            nw,
+            nh,
+            state_color(&b.state),
+            clip,
+        );
 
         // current-focus glow: a bright inset ring
         if b.state == NodeState::Current {
@@ -242,7 +286,16 @@ pub fn draw_tree(
         if let PosFidelity::Approximate { .. } = n.fidelity {
             stats.approximate += 1;
             let s = (10.0 * cam.scale).max(4.0);
-            fill_rect(renderer, assets.white, x + nw - s, y, s, s, [0.95, 0.15, 0.85, 1.0], clip);
+            fill_rect(
+                renderer,
+                assets.white,
+                x + nw - s,
+                y,
+                s,
+                s,
+                [0.95, 0.15, 0.85, 1.0],
+                clip,
+            );
         }
 
         // label (short focus id) when a font + room is available

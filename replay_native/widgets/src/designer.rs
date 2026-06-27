@@ -27,7 +27,7 @@
 
 use render::Renderer;
 
-use crate::common::{Atom, AssetRef, DrawAssets, DIM_TINT, TEXT_TINT, UNAVAIL_TINT};
+use crate::common::{AssetRef, Atom, DrawAssets, DIM_TINT, TEXT_TINT, UNAVAIL_TINT};
 use crate::plan::{Cmd, Plan, SpriteDraw};
 
 /// The slot cell footprint in screen px (icon box + the stat rows beneath).
@@ -56,7 +56,12 @@ pub struct Module {
 
 impl Module {
     pub fn new(icon: AssetRef, name: Atom) -> Module {
-        Module { icon, name, level: None, contributions: Vec::new() }
+        Module {
+            icon,
+            name,
+            level: None,
+            contributions: Vec::new(),
+        }
     }
     pub fn level(mut self, level: u32) -> Module {
         self.level = Some(level);
@@ -64,7 +69,10 @@ impl Module {
     }
     /// Add a stat contribution (builder-chained).
     pub fn stat(mut self, name: impl Into<String>, value: Atom) -> Module {
-        self.contributions.push(Contribution { name: name.into(), value });
+        self.contributions.push(Contribution {
+            name: name.into(),
+            value,
+        });
         self
     }
 }
@@ -94,10 +102,22 @@ pub struct Slot {
 
 impl Slot {
     pub fn known(id: impl Into<String>, gx: i32, gy: i32, module: Module) -> Slot {
-        Slot { id: id.into(), gx, gy, slot_name: Atom::exact(""), module: SlotModule::Known(module) }
+        Slot {
+            id: id.into(),
+            gx,
+            gy,
+            slot_name: Atom::exact(""),
+            module: SlotModule::Known(module),
+        }
     }
     pub fn empty(id: impl Into<String>, gx: i32, gy: i32) -> Slot {
-        Slot { id: id.into(), gx, gy, slot_name: Atom::exact(""), module: SlotModule::Empty }
+        Slot {
+            id: id.into(),
+            gx,
+            gy,
+            slot_name: Atom::exact(""),
+            module: SlotModule::Empty,
+        }
     }
     pub fn unavailable(id: impl Into<String>, gx: i32, gy: i32, reason: impl Into<String>) -> Slot {
         Slot {
@@ -105,7 +125,9 @@ impl Slot {
             gx,
             gy,
             slot_name: Atom::exact(""),
-            module: SlotModule::Unavailable { reason: reason.into() },
+            module: SlotModule::Unavailable {
+                reason: reason.into(),
+            },
         }
     }
     /// Set the slot's display name (builder-chained).
@@ -175,14 +197,28 @@ pub fn plan_modules(layout: &ModuleLayout, area: gui_runtime::Rect) -> Plan {
         let r = s.rect(area);
         let clip = Some([r.x, r.y, r.w, r.h]);
         // slot frame.
-        p.push(Cmd::Rect { x: r.x, y: r.y, w: r.w, h: r.h, tint: SLOT_BG, clip: area_clip });
+        p.push(Cmd::Rect {
+            x: r.x,
+            y: r.y,
+            w: r.w,
+            h: r.h,
+            tint: SLOT_BG,
+            clip: area_clip,
+        });
         let icon_x = r.x + 6.0;
         let icon_y = r.y + 6.0;
         match &s.module {
             SlotModule::Known(m) => {
                 push_border(&mut p, r, SLOT_BORDER, clip);
                 // icon box backdrop + the module sprite (resolve→placeholder on miss).
-                p.push(Cmd::Rect { x: icon_x, y: icon_y, w: ICON_BOX, h: ICON_BOX, tint: ICON_BG, clip });
+                p.push(Cmd::Rect {
+                    x: icon_x,
+                    y: icon_y,
+                    w: ICON_BOX,
+                    h: ICON_BOX,
+                    tint: ICON_BG,
+                    clip,
+                });
                 p.push(Cmd::Sprite {
                     x: icon_x,
                     y: icon_y,
@@ -194,35 +230,91 @@ pub fn plan_modules(layout: &ModuleLayout, area: gui_runtime::Rect) -> Plan {
                 });
                 // module name (right of icon).
                 let tx = icon_x + ICON_BOX + 6.0;
-                p.push(Cmd::Text { x: tx, y: icon_y, text: m.name.as_str().into(), tint: m.name.tint(TEXT_TINT), clip });
+                p.push(Cmd::Text {
+                    x: tx,
+                    y: icon_y,
+                    text: m.name.as_str().into(),
+                    tint: m.name.tint(TEXT_TINT),
+                    clip,
+                });
                 if let Some(lvl) = m.level {
-                    p.push(Cmd::Text { x: tx, y: icon_y + 16.0, text: format!("Mk {}", roman(lvl)), tint: DIM_TINT, clip });
+                    p.push(Cmd::Text {
+                        x: tx,
+                        y: icon_y + 16.0,
+                        text: format!("Mk {}", roman(lvl)),
+                        tint: DIM_TINT,
+                        clip,
+                    });
                 }
                 // stat contribution rows beneath the icon.
                 let mut sy = icon_y + ICON_BOX + 6.0;
                 for c in &m.contributions {
-                    p.push(Cmd::Text { x: r.x + 6.0, y: sy, text: c.name.clone(), tint: DIM_TINT, clip });
-                    p.push(Cmd::Text { x: r.x + 90.0, y: sy, text: c.value.as_str().into(), tint: c.value.tint(TEXT_TINT), clip });
+                    p.push(Cmd::Text {
+                        x: r.x + 6.0,
+                        y: sy,
+                        text: c.name.clone(),
+                        tint: DIM_TINT,
+                        clip,
+                    });
+                    p.push(Cmd::Text {
+                        x: r.x + 90.0,
+                        y: sy,
+                        text: c.value.as_str().into(),
+                        tint: c.value.tint(TEXT_TINT),
+                        clip,
+                    });
                     sy += 16.0;
                 }
             }
             SlotModule::Empty => {
                 // a measured-empty slot: a dim dashed frame + "Empty" caption.
                 push_border(&mut p, r, EMPTY_BORDER, clip);
-                p.push(Cmd::Rect { x: icon_x, y: icon_y, w: ICON_BOX, h: ICON_BOX, tint: crate::common::PLACEHOLDER_TINT, clip });
-                p.push(Cmd::Text { x: icon_x + ICON_BOX + 6.0, y: icon_y, text: "Empty".into(), tint: DIM_TINT, clip });
+                p.push(Cmd::Rect {
+                    x: icon_x,
+                    y: icon_y,
+                    w: ICON_BOX,
+                    h: ICON_BOX,
+                    tint: crate::common::PLACEHOLDER_TINT,
+                    clip,
+                });
+                p.push(Cmd::Text {
+                    x: icon_x + ICON_BOX + 6.0,
+                    y: icon_y,
+                    text: "Empty".into(),
+                    tint: DIM_TINT,
+                    clip,
+                });
             }
             SlotModule::Unavailable { .. } => {
                 // a blocked slot: a `—` no-data frame (distinct from Empty).
                 push_border(&mut p, r, EMPTY_BORDER, clip);
-                p.push(Cmd::Rect { x: icon_x, y: icon_y, w: ICON_BOX, h: ICON_BOX, tint: crate::common::PLACEHOLDER_TINT, clip });
-                p.push(Cmd::Text { x: icon_x + ICON_BOX + 6.0, y: icon_y, text: crate::common::NOT_CAPTURED.into(), tint: UNAVAIL_TINT, clip });
+                p.push(Cmd::Rect {
+                    x: icon_x,
+                    y: icon_y,
+                    w: ICON_BOX,
+                    h: ICON_BOX,
+                    tint: crate::common::PLACEHOLDER_TINT,
+                    clip,
+                });
+                p.push(Cmd::Text {
+                    x: icon_x + ICON_BOX + 6.0,
+                    y: icon_y,
+                    text: crate::common::NOT_CAPTURED.into(),
+                    tint: UNAVAIL_TINT,
+                    clip,
+                });
             }
         }
         // the slot's own name across the bottom (if any).
         if let Atom::Text { text, .. } = &s.slot_name {
             if !text.is_empty() {
-                p.push(Cmd::Text { x: r.x + 6.0, y: r.y + r.h - 16.0, text: text.clone(), tint: DIM_TINT, clip });
+                p.push(Cmd::Text {
+                    x: r.x + 6.0,
+                    y: r.y + r.h - 16.0,
+                    text: text.clone(),
+                    tint: DIM_TINT,
+                    clip,
+                });
             }
         }
     }
@@ -243,17 +335,53 @@ pub fn draw_modules(
 
 fn push_border(p: &mut Plan, r: gui_runtime::Rect, c: [f32; 4], clip: Option<[f32; 4]>) {
     let t = 1.0;
-    p.push(Cmd::Rect { x: r.x, y: r.y, w: r.w, h: t, tint: c, clip });
-    p.push(Cmd::Rect { x: r.x, y: r.y + r.h - t, w: r.w, h: t, tint: c, clip });
-    p.push(Cmd::Rect { x: r.x, y: r.y, w: t, h: r.h, tint: c, clip });
-    p.push(Cmd::Rect { x: r.x + r.w - t, y: r.y, w: t, h: r.h, tint: c, clip });
+    p.push(Cmd::Rect {
+        x: r.x,
+        y: r.y,
+        w: r.w,
+        h: t,
+        tint: c,
+        clip,
+    });
+    p.push(Cmd::Rect {
+        x: r.x,
+        y: r.y + r.h - t,
+        w: r.w,
+        h: t,
+        tint: c,
+        clip,
+    });
+    p.push(Cmd::Rect {
+        x: r.x,
+        y: r.y,
+        w: t,
+        h: r.h,
+        tint: c,
+        clip,
+    });
+    p.push(Cmd::Rect {
+        x: r.x + r.w - t,
+        y: r.y,
+        w: t,
+        h: r.h,
+        tint: c,
+        clip,
+    });
 }
 
 /// Tiny roman numeral for a module mark (1..=10; >10 falls back to the decimal).
 fn roman(n: u32) -> String {
     match n {
-        1 => "I", 2 => "II", 3 => "III", 4 => "IV", 5 => "V",
-        6 => "VI", 7 => "VII", 8 => "VIII", 9 => "IX", 10 => "X",
+        1 => "I",
+        2 => "II",
+        3 => "III",
+        4 => "IV",
+        5 => "V",
+        6 => "VI",
+        7 => "VII",
+        8 => "VIII",
+        9 => "IX",
+        10 => "X",
         _ => return n.to_string(),
     }
     .to_string()
@@ -269,10 +397,13 @@ mod tests {
                 "main",
                 0,
                 0,
-                Module::new(AssetRef::Named("GFX_battery".into()), Atom::exact("Heavy Battery"))
-                    .level(2)
-                    .stat("Attack", Atom::exact("120"))
-                    .stat("Range", Atom::unavailable()),
+                Module::new(
+                    AssetRef::Named("GFX_battery".into()),
+                    Atom::exact("Heavy Battery"),
+                )
+                .level(2)
+                .stat("Attack", Atom::exact("120"))
+                .stat("Range", Atom::unavailable()),
             ),
             Slot::empty("aux", 1, 0),
             Slot::unavailable("rear", 2, 0, "behind a gfx wall"),
@@ -287,7 +418,12 @@ mod tests {
     #[test]
     fn empty_layout_no_panic() {
         let l = ModuleLayout::default();
-        let area = gui_runtime::Rect { x: 0.0, y: 0.0, w: 400.0, h: 300.0 };
+        let area = gui_runtime::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 400.0,
+            h: 300.0,
+        };
         assert_eq!(l.pick(area, 10.0, 10.0), None);
         assert!(plan_modules(&l, area).is_empty());
     }
@@ -295,7 +431,12 @@ mod tests {
     #[test]
     fn pick_returns_slot_under_point() {
         let l = layout();
-        let area = gui_runtime::Rect { x: 0.0, y: 0.0, w: 600.0, h: 300.0 };
+        let area = gui_runtime::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 600.0,
+            h: 300.0,
+        };
         let r = l.slots[1].rect(area);
         assert_eq!(l.pick(area, r.x + 4.0, r.y + 4.0).as_deref(), Some("aux"));
     }
@@ -303,28 +444,52 @@ mod tests {
     #[test]
     fn known_slot_with_missing_icon_emits_resolvable_sprite() {
         let l = layout();
-        let area = gui_runtime::Rect { x: 0.0, y: 0.0, w: 600.0, h: 300.0 };
+        let area = gui_runtime::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 600.0,
+            h: 300.0,
+        };
         let p = plan_modules(&l, area);
         // the known slot emitted a Sprite cmd (executor resolves -> placeholder on miss).
-        let has_sprite = p.cmds.iter().any(|c| matches!(c, Cmd::Sprite { name: Some(_), .. }));
+        let has_sprite = p
+            .cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::Sprite { name: Some(_), .. }));
         assert!(has_sprite);
     }
 
     #[test]
     fn blocked_stat_draws_glyph_not_zero() {
         let l = layout();
-        let area = gui_runtime::Rect { x: 0.0, y: 0.0, w: 600.0, h: 300.0 };
+        let area = gui_runtime::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 600.0,
+            h: 300.0,
+        };
         let p = plan_modules(&l, area);
         // the "Range" unavailable stat + the unavailable slot caption -> at least 2 "—".
         assert!(p.unavailable_text_count() >= 2);
         // and the measured Attack "120" is present (a real value, not collapsed).
-        assert!(p.cmds.iter().any(|c| matches!(c, Cmd::Text { text, .. } if text == "120")));
+        assert!(p
+            .cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::Text { text, .. } if text == "120")));
     }
 
     #[test]
     fn plan_is_deterministic() {
         let l = layout();
-        let area = gui_runtime::Rect { x: 0.0, y: 0.0, w: 600.0, h: 300.0 };
-        assert_eq!(plan_modules(&l, area).digest(), plan_modules(&l, area).digest());
+        let area = gui_runtime::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 600.0,
+            h: 300.0,
+        };
+        assert_eq!(
+            plan_modules(&l, area).digest(),
+            plan_modules(&l, area).digest()
+        );
     }
 }

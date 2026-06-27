@@ -36,7 +36,11 @@ pub enum ZipError {
     Unsupported(String),
     DuplicateName(String),
     BadPath(String),
-    SizeMismatch { name: String, declared: u64, got: u64 },
+    SizeMismatch {
+        name: String,
+        declared: u64,
+        got: u64,
+    },
     Decompress(String),
 }
 
@@ -48,7 +52,11 @@ impl std::fmt::Display for ZipError {
             ZipError::Unsupported(w) => write!(f, "zip unsupported: {w}"),
             ZipError::DuplicateName(n) => write!(f, "zip duplicate entry name: {n}"),
             ZipError::BadPath(n) => write!(f, "zip unsafe path: {n}"),
-            ZipError::SizeMismatch { name, declared, got } => write!(
+            ZipError::SizeMismatch {
+                name,
+                declared,
+                got,
+            } => write!(
                 f,
                 "zip entry {name}: decompressed {got} bytes != declared {declared}"
             ),
@@ -131,7 +139,9 @@ impl ZipArchive {
             }
             // case-insensitive collision (would clobber on Windows/macOS unpack)
             if !seen_ci.insert(name.to_ascii_lowercase()) {
-                return Err(ZipError::DuplicateName(format!("{name} (case-insensitive)")));
+                return Err(ZipError::DuplicateName(format!(
+                    "{name} (case-insensitive)"
+                )));
             }
 
             entries.push(ZipEntry {
@@ -275,9 +285,8 @@ pub fn validate_path(name: &str) -> Result<(), ZipError> {
         // Windows reserved device names (case-insensitive, with or without ext)
         let stem = comp.split('.').next().unwrap_or(comp).to_ascii_uppercase();
         const RESERVED: &[&str] = &[
-            "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5",
-            "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5",
-            "LPT6", "LPT7", "LPT8", "LPT9",
+            "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+            "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
         ];
         if RESERVED.contains(&stem.as_str()) {
             return bad(name);

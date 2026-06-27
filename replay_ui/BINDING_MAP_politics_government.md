@@ -570,11 +570,12 @@ view's `.gui` tree is provably 100% accounted for.
 
 ---
 
-## Codex round (adversarial review, 2026-06-26)
+## Historical review round (adversarial review, 2026-06-26)
 
-_Mode-A one-shot, read-only (`codex exec --ephemeral -s read-only`, unique `-o` file, exit 0 + non-empty
-verified; the first 300 s attempt timed out, the retry succeeded). Asked Codex to attack (a) missed
-elements, (b) field-path correctness vs `schema.py` FIELD_SOURCES, (c) false `unavailable` vs real gap._
+_Historical note: this records a completed review from the old Claude-era workflow.
+Codex-native sessions must use normal sub-agents/partner review and must not run
+the old local CLI command. The review attacked (a) missed elements, (b) field-path
+correctness vs `schema.py` FIELD_SOURCES, (c) false `unavailable` vs real gap._
 
 **Missed elements:** Codex found **no omitted named element** — it confirmed every named widget in the
 five inventories is bucketed exactly once; the real defects were wrong aggregate paths and over-broad

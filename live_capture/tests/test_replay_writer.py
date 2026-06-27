@@ -347,8 +347,8 @@ class TestCrashSafety(unittest.TestCase):
         self._write(rec, 2)
         # delete one snapshot file the index references (simulate a torn store).
         gdir = os.path.join(self.store_root, "rec_test")
-        idx = json.loads(open(os.path.join(gdir, "index.json"),
-                              encoding="utf-8").read())
+        with open(os.path.join(gdir, "index.json"), encoding="utf-8") as fh:
+            idx = json.load(fh)
         victim = os.path.join(gdir, idx["snapshots"][0]["file"])
         os.remove(victim)
         with self.assertRaises(ValueError):
@@ -360,7 +360,8 @@ class TestCrashSafety(unittest.TestCase):
         self._write(rec, 1)
         gdir = os.path.join(self.store_root, "rec_test")
         ipath = os.path.join(gdir, "index.json")
-        idx = json.loads(open(ipath, encoding="utf-8").read())
+        with open(ipath, encoding="utf-8") as fh:
+            idx = json.load(fh)
         idx["snapshots"][0]["file"] = "../escape.snapshot.json"
         with open(ipath, "w", encoding="utf-8") as fh:
             json.dump(idx, fh)
@@ -374,7 +375,8 @@ class TestCrashSafety(unittest.TestCase):
         self._write(rec, 1)
         gdir = os.path.join(self.store_root, "rec_test")
         ipath = os.path.join(gdir, "index.json")
-        idx = json.loads(open(ipath, encoding="utf-8").read())
+        with open(ipath, encoding="utf-8") as fh:
+            idx = json.load(fh)
         idx["snapshots"].append({"hour_index": 99, "file": None})
         with open(ipath, "w", encoding="utf-8") as fh:
             json.dump(idx, fh)
@@ -388,7 +390,8 @@ class TestCrashSafety(unittest.TestCase):
         self._write(rec, 1)
         gdir = os.path.join(self.store_root, "rec_test")
         ipath = os.path.join(gdir, "index.json")
-        idx = json.loads(open(ipath, encoding="utf-8").read())
+        with open(ipath, encoding="utf-8") as fh:
+            idx = json.load(fh)
         idx["snapshots"][0]["file"] = "index.json"  # collide with the real index
         with open(ipath, "w", encoding="utf-8") as fh:
             json.dump(idx, fh)
@@ -405,7 +408,8 @@ class TestCrashSafety(unittest.TestCase):
         self._write(rec, 2)
         gdir = os.path.join(self.store_root, "rec_test")
         ipath = os.path.join(gdir, "index.json")
-        idx = json.loads(open(ipath, encoding="utf-8").read())
+        with open(ipath, encoding="utf-8") as fh:
+            idx = json.load(fh)
         # simulate a lost index update: drop the last snapshot from the index but
         # keep its file + sidecar line.
         dropped = idx["snapshots"].pop()

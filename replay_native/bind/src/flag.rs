@@ -45,7 +45,10 @@ impl<'a> FlagResolver<'a> {
     pub fn resolve(&self, tag: &str, ideology: Option<&str>) -> Option<ResolvedFlag> {
         let mut candidates: Vec<(String, Option<String>)> = Vec::new();
         if let Some(id) = ideology {
-            candidates.push((format!("gfx/flags/medium/{tag}_{id}.tga"), Some(id.to_string())));
+            candidates.push((
+                format!("gfx/flags/medium/{tag}_{id}.tga"),
+                Some(id.to_string()),
+            ));
         }
         candidates.push((format!("gfx/flags/medium/{tag}.tga"), None));
         if let Some(id) = ideology {

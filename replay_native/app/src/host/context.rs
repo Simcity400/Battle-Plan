@@ -291,6 +291,18 @@ impl<'a> BindContext<'a> {
         classify_value(self.snapshot.state_path(sid, dotted))
     }
 
+    /// Country ids and payloads for iteration-only accounting. Per-field reads still
+    /// go through [`Self::country_field`] so absent/null/measured leaves stay explicit.
+    pub fn countries(&self) -> Option<&'a serde_json::Map<String, serde_json::Value>> {
+        self.snapshot.countries()
+    }
+
+    /// State ids and payloads for iteration-only accounting. Per-field reads still
+    /// go through [`Self::state_field`] so absent/null/measured leaves stay explicit.
+    pub fn states(&self) -> Option<&'a serde_json::Map<String, serde_json::Value>> {
+        self.snapshot.states()
+    }
+
     // =====================================================================================
     // TOP-LEVEL / FOLD-IN DOMAIN ACCESSORS (Codex (a): the no-fabrication seam for the
     // domains that are NOT under `countries.<TAG>` / `states.<id>`).

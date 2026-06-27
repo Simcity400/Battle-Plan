@@ -106,7 +106,9 @@ fn main() {
     let store_root = match find_store_root() {
         Some(d) => d,
         None => {
-            eprintln!("[m3] BLOCKER: snapshot store (replay/snapshots) not found (pass --store <dir>).");
+            eprintln!(
+                "[m3] BLOCKER: snapshot store (replay/snapshots) not found (pass --store <dir>)."
+            );
             std::process::exit(2);
         }
     };
@@ -226,12 +228,19 @@ fn main() {
     // Paint the real flag image into the player_flag slot (over the shield chrome).
     if let Some((r, tex)) = &flag_tex {
         renderer.draw_sprite(tex, r.x, r.y, r.w, r.h);
-        eprintln!("[m3] painted flag at ({:.0},{:.0}) {:.0}x{:.0}", r.x, r.y, r.w, r.h);
+        eprintln!(
+            "[m3] painted flag at ({:.0},{:.0}) {:.0}x{:.0}",
+            r.x, r.y, r.w, r.h
+        );
     }
     eprintln!(
         "[m3] draws: sprites={} nine={} bars={} text={} (missing tex={}, missing font={})",
-        stats.sprites, stats.nine_slices, stats.progress_bars, stats.text_runs,
-        stats.missing_textures, stats.missing_fonts
+        stats.sprites,
+        stats.nine_slices,
+        stats.progress_bars,
+        stats.text_runs,
+        stats.missing_textures,
+        stats.missing_fonts
     );
 
     // --- Render + crop to the topbar band. ----------------------------------
@@ -255,9 +264,11 @@ fn main() {
 
     // --- Verify the no-fabrication invariant in the OUTPUT report. ----------
     let mut nc_ok = true;
-    for f in report.fields.iter().filter(|f| {
-        matches!(f.fidelity, bind::Fidelity::Unavailable)
-    }) {
+    for f in report
+        .fields
+        .iter()
+        .filter(|f| matches!(f.fidelity, bind::Fidelity::Unavailable))
+    {
         if !f.not_captured || f.value != "—" {
             eprintln!(
                 "[m3] FABRICATION BUG: unavailable {} rendered {:?} (expected —)",

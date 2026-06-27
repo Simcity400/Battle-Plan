@@ -14,9 +14,15 @@ fn measured_zero_null_and_absent_are_distinct() {
     let snap = store().load("mini", 100).expect("load mini frame");
 
     // measured zero: present numeric 0.0
-    assert_eq!(snap.country_path("AAA", "politics.stability"), Some(&json!(0.0)));
+    assert_eq!(
+        snap.country_path("AAA", "politics.stability"),
+        Some(&json!(0.0))
+    );
     // captured-but-unobtained: explicit JSON null
-    assert_eq!(snap.country_path("AAA", "politics.war_support"), Some(&Value::Null));
+    assert_eq!(
+        snap.country_path("AAA", "politics.war_support"),
+        Some(&Value::Null)
+    );
     // never captured: key absent along the path
     assert_eq!(snap.country_path("AAA", "politics.command_power"), None);
 
@@ -37,7 +43,10 @@ fn header_and_state_load() {
 
     let st = snap.state("1").expect("state 1 present");
     assert_eq!(st.get("owner"), Some(&json!("AAA")));
-    assert_eq!(snap.state_path("1", "buildings.infrastructure"), Some(&json!(3)));
+    assert_eq!(
+        snap.state_path("1", "buildings.infrastructure"),
+        Some(&json!(3))
+    );
     // a building key that does not exist -> absent, not zero
     assert_eq!(snap.state_path("1", "buildings.dockyard"), None);
 }
