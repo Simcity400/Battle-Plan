@@ -29,8 +29,12 @@ fn gui_dir() -> std::path::PathBuf {
         .join("gui")
 }
 
-fn assets_present() -> bool {
-    gui_dir().join("tank_designer.json").exists()
+fn gui_present(name: &str) -> bool {
+    gui_dir().join(name).exists()
+}
+
+fn gui_files_present(files: &[&str]) -> bool {
+    files.iter().all(|name| gui_present(name))
 }
 
 fn load_gui(name: &str) -> Option<GuiFile> {
@@ -268,7 +272,13 @@ fn declared_counts(name: &str) -> HashMap<String, usize> {
 /// silently dropped. Runs for all 5 files.
 #[test]
 fn element_accounting_all_five() {
-    if !assets_present() {
+    if !gui_files_present(&[
+        super::TANK_FILE,
+        super::PLANE_FILE,
+        super::DIVISION_FILE,
+        super::EQUIP_FILE,
+        super::UPGRADE_FILE,
+    ]) {
         eprintln!("[designers] skipped element_accounting: game_assets/gui not extracted");
         return;
     }
@@ -291,7 +301,13 @@ fn element_accounting_all_five() {
 /// files are 207/187/313/247/285). A guard that the source files have not drifted.
 #[test]
 fn element_accounting_totals_actual() {
-    if !assets_present() {
+    if !gui_files_present(&[
+        super::TANK_FILE,
+        super::PLANE_FILE,
+        super::DIVISION_FILE,
+        super::EQUIP_FILE,
+        super::UPGRADE_FILE,
+    ]) {
         eprintln!("[designers] skipped totals: game_assets/gui not extracted");
         return;
     }
@@ -310,7 +326,13 @@ fn element_accounting_totals_actual() {
 /// also proves the `@named`-position sanitizer recovers the 3 otherwise-unparseable files.
 #[test]
 fn every_root_resolves_to_real_populated_gui() {
-    if !assets_present() {
+    if !gui_files_present(&[
+        super::TANK_FILE,
+        super::PLANE_FILE,
+        super::DIVISION_FILE,
+        super::EQUIP_FILE,
+        super::UPGRADE_FILE,
+    ]) {
         eprintln!("[designers] skipped root-resolves: game_assets/gui not extracted");
         return;
     }
@@ -428,6 +450,18 @@ fn component_disabled_point(interaction: &ComponentInteraction) -> (f32, f32) {
         .expect("component pick model rebound")
         .disabled_area;
     (area.x + 8.0, area.y + 8.0)
+}
+
+fn component_control_center(interaction: &ComponentInteraction, id: &str) -> (f32, f32) {
+    interaction
+        .control_center(id)
+        .unwrap_or_else(|| panic!("missing component disabled control {id}"))
+}
+
+fn component_control_rect(interaction: &ComponentInteraction, id: &str) -> Rect {
+    interaction
+        .control_rect(id)
+        .unwrap_or_else(|| panic!("missing component disabled control {id}"))
 }
 
 fn assert_rect_close(actual: Rect, expected: Rect, label: &str) {
@@ -655,7 +689,7 @@ fn component_slot_hover_is_passive_no_command_and_digest_visible() {
 
 #[test]
 fn component_interaction_geometry_matches_bound_overlay_roots() {
-    if !assets_present() {
+    if !gui_files_present(&[super::TANK_FILE, super::PLANE_FILE, super::EQUIP_FILE]) {
         eprintln!("[designers] skipped component geometry: game_assets/gui not extracted");
         return;
     }
@@ -764,6 +798,122 @@ fn component_non_slot_designer_controls_are_replay_disabled_noops() {
     assert_eq!(
         before, after,
         "replay-disabled designer chrome/control clicks must not alter bound output"
+    );
+}
+
+#[test]
+fn tank_inline_upgrade_controls_use_real_gui_geometry() {
+    if !gui_present(super::TANK_FILE) {
+        eprintln!("[designers] skipped tank upgrade geometry: game_assets/gui not extracted");
+        return;
+    }
+    let snap = snap_save();
+    let mut view = TankDesignerView::new();
+    rebind_tank(&mut view, &snap, true);
+
+    // Real `tank_designer.json` geometry at 1600x900: the centered root starts at
+    // (800,450), `equipment_modules` is at (13,146), and the two inline upgrade
+    // rows sit at (220,297) / (380,297). Button positions are the named child
+    // offsets; with the headless manifest lacking native icon dimensions, hit
+    // extents mirror the real sibling spacing from `btn_dec` to `level`.
+    assert_rect_close(
+        component_control_rect(&view.interaction, "equipment_upgrade_0.btn_dec"),
+        Rect {
+            x: 1123.0,
+            y: 910.0,
+            w: 32.0,
+            h: 33.0,
+        },
+        "equipment_upgrade_0.btn_dec",
+    );
+    assert_rect_close(
+        component_control_rect(&view.interaction, "equipment_upgrade_0.btn_inc"),
+        Rect {
+            x: 1183.0,
+            y: 910.0,
+            w: 32.0,
+            h: 33.0,
+        },
+        "equipment_upgrade_0.btn_inc",
+    );
+    assert_rect_close(
+        component_control_rect(&view.interaction, "equipment_upgrade_1.btn_dec"),
+        Rect {
+            x: 1229.0,
+            y: 910.0,
+            w: 32.0,
+            h: 33.0,
+        },
+        "equipment_upgrade_1.btn_dec",
+    );
+    assert_rect_close(
+        component_control_rect(&view.interaction, "equipment_upgrade_1.btn_inc"),
+        Rect {
+            x: 1289.0,
+            y: 910.0,
+            w: 32.0,
+            h: 33.0,
+        },
+        "equipment_upgrade_1.btn_inc",
+    );
+}
+
+#[test]
+fn tank_inline_upgrade_controls_are_replay_disabled_noops() {
+    if !gui_present(super::TANK_FILE) {
+        eprintln!("[designers] skipped tank upgrade no-op: game_assets/gui not extracted");
+        return;
+    }
+    let stage = stage_with(&[]);
+    let snap = snap_save();
+    let mut view = TankDesignerView::new();
+    rebind_tank(&mut view, &snap, true);
+
+    let before = bound_digest(&view.bind(&ctx(&stage, &snap)));
+    assert!(
+        before.contains("Tank Engine Upgrade=1(E)") || before.contains("tank_engine_upgrade=1(E)"),
+        "the inline tank upgrade level must be bound before disabled input: {before}"
+    );
+
+    let (x, y) = component_control_center(&view.interaction, "equipment_upgrade_0.btn_inc");
+    let down = view.on_input(&left_click(x, y));
+    assert!(down.consumed);
+    assert!(!down.needs_redraw);
+    assert!(down.commands.is_empty());
+
+    let drag = view.on_input(&ViewInput::PointerMove {
+        x: x + 60.0,
+        y,
+        drag: true,
+    });
+    assert!(drag.consumed);
+    assert!(!drag.needs_redraw);
+    assert!(drag.commands.is_empty());
+
+    let up = view.on_input(&ViewInput::PointerUp {
+        x: x + 60.0,
+        y,
+        button: PointerButton::Left,
+    });
+    assert!(up.consumed);
+    assert!(!up.needs_redraw);
+    assert!(up.commands.is_empty());
+
+    assert_eq!(
+        before,
+        bound_digest(&view.bind(&ctx(&stage, &snap))),
+        "disabled inline tank upgrade + control must not mutate replay-bound output"
+    );
+
+    let (x, y) = component_control_center(&view.interaction, "equipment_upgrade_1.btn_dec");
+    let out = view.on_input(&left_click(x, y));
+    assert!(out.consumed);
+    assert!(!out.needs_redraw);
+    assert!(out.commands.is_empty());
+    assert_eq!(
+        before,
+        bound_digest(&view.bind(&ctx(&stage, &snap))),
+        "disabled inline tank upgrade - control must not mutate replay-bound output"
     );
 }
 
@@ -944,6 +1094,10 @@ fn division_selected_tab_persists_across_scrub_a_b_a() {
 
 #[test]
 fn equipment_upgrade_control_hit_geometry_uses_real_gui_rows() {
+    if !gui_present(super::UPGRADE_FILE) {
+        eprintln!("[designers] skipped equipment-upgrade geometry: game_assets/gui not extracted");
+        return;
+    }
     let snap = snap_save();
     let mut v = EquipmentUpgradeDesignerView::new();
     rebind_upgrade(&mut v, &snap, true);
@@ -996,6 +1150,10 @@ fn equipment_upgrade_control_hit_geometry_uses_real_gui_rows() {
 
 #[test]
 fn equipment_upgrade_buttons_are_replay_disabled_noops() {
+    if !gui_present(super::UPGRADE_FILE) {
+        eprintln!("[designers] skipped equipment-upgrade no-op: game_assets/gui not extracted");
+        return;
+    }
     let stage = stage_with(&["equipment_upgrade_designer.json"]);
     let snap = snap_save();
     let mut view = EquipmentUpgradeDesignerView::new();

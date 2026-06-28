@@ -2480,6 +2480,7 @@ const CONSTRUCTION_TEMP_BUTTON_SIZE: f32 = 32.0;
 pub struct ConstructionView {
     selected_queue_key: Option<String>,
     queue_keys: Vec<Option<String>>,
+    queue_drill_targets: Vec<Option<i64>>,
     queue_scroll_y: f32,
     queue_scroll_drag: Option<ConstructionScrollDrag>,
     screen: Rect,
@@ -2490,6 +2491,7 @@ impl ConstructionView {
         ConstructionView {
             selected_queue_key: None,
             queue_keys: Vec::new(),
+            queue_drill_targets: Vec::new(),
             queue_scroll_y: 0.0,
             queue_scroll_drag: None,
             screen: default_construction_screen(),
@@ -2783,39 +2785,67 @@ fn construction_queue_key(line: &serde_json::Value, save_channel: bool) -> Optio
     }
 }
 
-fn construction_queue_keys_from_arrays(
-    live: Captured<&serde_json::Value>,
-    save: Captured<&serde_json::Value>,
-) -> Vec<Option<String>> {
-    let (live_arr, _) = array_from_capture(live);
-    if let Some(arr) = live_arr {
-        return arr
-            .iter()
-            .map(|line| construction_queue_key(line, false))
-            .collect();
+fn construction_state_id(v: &serde_json::Value) -> Option<i64> {
+    let id = v
+        .as_i64()
+        .or_else(|| v.as_u64().and_then(|u| i64::try_from(u).ok()))
+        .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))?;
+    (id > 0).then_some(id)
+}
+
+fn construction_queue_drill_target(line: &serde_json::Value, save_channel: bool) -> Option<i64> {
+    if !save_channel {
+        return None;
     }
-    let (save_arr, _) = array_from_capture(save);
-    match save_arr {
-        Some(arr) => arr
-            .iter()
-            .map(|line| construction_queue_key(line, true))
-            .collect(),
-        None => Vec::new(),
+    match elem_field(line, "location_state") {
+        Captured::Measured(v) => construction_state_id(v),
+        Captured::Null | Captured::Absent => None,
     }
 }
 
-fn pick_construction_row_key(
+fn construction_queue_interactions_from_arrays(
+    live: Captured<&serde_json::Value>,
+    save: Captured<&serde_json::Value>,
+) -> (Vec<Option<String>>, Vec<Option<i64>>) {
+    let (live_arr, _) = array_from_capture(live);
+    if let Some(arr) = live_arr {
+        return (
+            arr.iter()
+                .map(|line| construction_queue_key(line, false))
+                .collect(),
+            arr.iter()
+                .map(|line| construction_queue_drill_target(line, false))
+                .collect(),
+        );
+    }
+    let (save_arr, _) = array_from_capture(save);
+    match save_arr {
+        Some(arr) => (
+            arr.iter()
+                .map(|line| construction_queue_key(line, true))
+                .collect(),
+            arr.iter()
+                .map(|line| construction_queue_drill_target(line, true))
+                .collect(),
+        ),
+        None => (Vec::new(), Vec::new()),
+    }
+}
+
+fn pick_construction_row(
     viewport: Rect,
     keys: &[Option<String>],
     scroll_y: f32,
     x: f32,
     y: f32,
-) -> Option<String> {
+) -> Option<(usize, String)> {
     if !viewport.contains(x, y) {
         return None;
     }
     let idx = ((y - viewport.y + scroll_y.max(0.0)) / CONSTRUCTION_ROW_H).floor() as usize;
-    keys.get(idx).and_then(|key| key.clone())
+    keys.get(idx)
+        .and_then(|key| key.clone())
+        .map(|key| (idx, key))
 }
 
 struct ConstructionDrawable {
@@ -2926,12 +2956,19 @@ impl ViewInstance for ConstructionView {
                 if construction_queue_button_hit(viewport, self.queue_keys.len(), scroll_y, x, y) {
                     return construction_input_consumed(false);
                 }
-                if let Some(key) =
-                    pick_construction_row_key(viewport, &self.queue_keys, scroll_y, x, y)
+                if let Some((idx, key)) =
+                    pick_construction_row(viewport, &self.queue_keys, scroll_y, x, y)
                 {
                     let changed = self.selected_queue_key.as_deref() != Some(key.as_str());
                     self.selected_queue_key = Some(key);
-                    construction_input_consumed(changed)
+                    let mut out = construction_input_consumed(changed);
+                    if let Some(state_id) = self.queue_drill_targets.get(idx).copied().flatten() {
+                        out.commands.push(ViewCommand::OpenView {
+                            view_id: crate::views::state_panel::STATE_PANEL_VIEW_ID,
+                            arg: Some(state_id),
+                        });
+                    }
+                    out
                 } else {
                     InputOutcome::ignored()
                 }
@@ -3005,10 +3042,12 @@ impl ViewInstance for ConstructionView {
             w: ctx.screen.0 as f32,
             h: ctx.screen.1 as f32,
         };
-        self.queue_keys = construction_queue_keys_from_arrays(
+        let (queue_keys, queue_drill_targets) = construction_queue_interactions_from_arrays(
             ctx.country_field(ctx.country, "production.construction_queue"),
             ctx.country_field(ctx.country, "economy.construction_queue"),
         );
+        self.queue_keys = queue_keys;
+        self.queue_drill_targets = queue_drill_targets;
         let viewport = construction_grid_fallback(self.screen);
         self.queue_scroll_y = self.queue_scroll_y.min(max_construction_scroll_fallback(
             viewport,
@@ -3931,6 +3970,10 @@ mod tests {
             .and_then(|s| GuiFile::parse(&s).ok())
     }
 
+    fn assets_present(files: &[&str]) -> bool {
+        files.iter().all(|name| gui_dir().join(name).exists())
+    }
+
     fn find_raw_node<'a>(nodes: &'a [RawNode], name: &str) -> Option<&'a RawNode> {
         fn walk<'a>(node: &'a RawNode, name: &str) -> Option<&'a RawNode> {
             if node.name.as_deref() == Some(name) {
@@ -4815,6 +4858,40 @@ mod tests {
         .unwrap()
     }
 
+    fn snap_construction_save_malformed_location() -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1942.1.1.12", "hour_index": 200,
+            "countries": { "GER": {
+                "economy": {
+                    "factories": {"civ": 120, "civ_from_states": 118},
+                    "construction_queue": [
+                        {"template": "arms_factory", "location_state": "not_a_state",
+                         "active_factories": 10, "produced": 50.0, "cost": 200.0,
+                         "priority": 0, "created_date": "1942.1.1.12"}
+                    ]
+                }
+            } }
+        }))
+        .unwrap()
+    }
+
+    fn snap_construction_save_zero_location() -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1942.1.1.12", "hour_index": 200,
+            "countries": { "GER": {
+                "economy": {
+                    "factories": {"civ": 120, "civ_from_states": 118},
+                    "construction_queue": [
+                        {"template": "arms_factory", "location_state": 0,
+                         "active_factories": 10, "produced": 50.0, "cost": 200.0,
+                         "priority": 0, "created_date": "1942.1.1.12"}
+                    ]
+                }
+            } }
+        }))
+        .unwrap()
+    }
+
     fn many_construction_snap(count: usize, prefix: &str) -> snapshot::Snapshot {
         let rows: Vec<_> = (1..=count)
             .map(|idx| {
@@ -4833,6 +4910,32 @@ mod tests {
             "countries": { "GER": {
                 "economy": { "factories": {"civ": 120, "civ_from_states": 118} },
                 "production": { "construction_queue": rows }
+            } }
+        }))
+        .unwrap()
+    }
+
+    fn many_construction_save_snap(count: usize, prefix: &str) -> snapshot::Snapshot {
+        let rows: Vec<_> = (1..=count)
+            .map(|idx| {
+                serde_json::json!({
+                    "template": format!("{prefix}_factory_{idx:02}"),
+                    "location_state": 100 + idx as i64,
+                    "active_factories": idx,
+                    "produced": idx as f64,
+                    "cost": 100.0,
+                    "priority": idx % 3,
+                    "created_date": format!("1942.1.{idx}.12"),
+                })
+            })
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "date": "1942.1.1.12", "hour_index": 200,
+            "countries": { "GER": {
+                "economy": {
+                    "factories": {"civ": 120, "civ_from_states": 118},
+                    "construction_queue": rows
+                }
             } }
         }))
         .unwrap()
@@ -6491,6 +6594,14 @@ mod tests {
 
         let out = click_construction_row(&mut view, 0);
         assert!(out.consumed && out.needs_redraw);
+        assert_eq!(
+            out.commands,
+            vec![ViewCommand::OpenView {
+                view_id: crate::views::state_panel::STATE_PANEL_VIEW_ID,
+                arg: Some(75),
+            }],
+            "save-backed construction row should drill to its measured target state"
+        );
         let selected = bound_digest(&view.bind(&ctx(&stage, &snap)));
         assert!(
             selected.contains(
@@ -6501,6 +6612,91 @@ mod tests {
         assert!(
             selected.contains("location=#75(D)"),
             "save-backed selected row should still bind its measured location, got: {selected}"
+        );
+    }
+
+    #[test]
+    fn construction_queue_drilldown_fails_closed_without_numeric_location_state() {
+        let stage = stage_with(&[]);
+        let snap = snap_construction_save_malformed_location();
+        let mut view = ConstructionView::new();
+        view.rebind(&rebind_ctx(&snap));
+
+        let out = click_construction_row(&mut view, 0);
+        assert!(
+            out.consumed && out.needs_redraw && out.commands.is_empty(),
+            "malformed save location_state must select the row but not fabricate a state-panel drilldown"
+        );
+        let selected = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert!(
+            selected.contains(
+                "selected_key=construction:template:arms_factory:state:not_a_state:created:1942.1.1.12"
+            ),
+            "row identity may use the measured token, but drill target must fail closed: {selected}"
+        );
+    }
+
+    #[test]
+    fn construction_queue_drilldown_fails_closed_for_zero_location_state() {
+        let stage = stage_with(&[]);
+        let snap = snap_construction_save_zero_location();
+        let mut view = ConstructionView::new();
+        view.rebind(&rebind_ctx(&snap));
+
+        let out = click_construction_row(&mut view, 0);
+        assert!(
+            out.consumed && out.needs_redraw && out.commands.is_empty(),
+            "state id 0 is not a valid state-panel target and must not emit a drilldown"
+        );
+        let selected = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert!(
+            selected.contains(
+                "selected_key=construction:template:arms_factory:state:0:created:1942.1.1.12"
+            ),
+            "zero location token may be part of row identity, but not a drill target: {selected}"
+        );
+    }
+
+    #[test]
+    fn construction_scrolled_save_row_drills_to_backing_state() {
+        let snap = many_construction_save_snap(40, "A");
+        let mut view = ConstructionView::new();
+        view.rebind(&rebind_ctx(&snap));
+
+        wheel_construction(&mut view, -5.0);
+        let out = click_construction_row(&mut view, 0);
+        assert!(out.consumed && out.needs_redraw);
+        assert_eq!(
+            out.commands,
+            vec![ViewCommand::OpenView {
+                view_id: crate::views::state_panel::STATE_PANEL_VIEW_ID,
+                arg: Some(106),
+            }],
+            "after five-row scroll, visible row 0 must drill to backing save row 6 state"
+        );
+    }
+
+    #[test]
+    fn construction_rebind_to_live_rows_clears_stale_save_drill_target() {
+        let save = snap_save();
+        let live = snap_construction_a();
+        let mut view = ConstructionView::new();
+
+        view.rebind(&rebind_ctx(&save));
+        let save_out = click_construction_row(&mut view, 0);
+        assert_eq!(
+            save_out.commands,
+            vec![ViewCommand::OpenView {
+                view_id: crate::views::state_panel::STATE_PANEL_VIEW_ID,
+                arg: Some(75),
+            }]
+        );
+
+        view.rebind(&rebind_ctx(&live));
+        let live_out = click_construction_row(&mut view, 0);
+        assert!(
+            live_out.consumed && live_out.needs_redraw && live_out.commands.is_empty(),
+            "live construction rows have resisted locations and must not carry stale save drill targets"
         );
     }
 
@@ -6850,6 +7046,10 @@ mod tests {
 
     #[test]
     fn construction_count_container_factory_buttons_are_replay_disabled_noops() {
+        if !assets_present(&[CONSTRUCTION_FILE]) {
+            eprintln!("[construction] skipped count-button no-op: game_assets/gui not extracted");
+            return;
+        }
         let stage = stage_with(&[]);
         let snap = many_construction_snap(40, "A");
         let mut view = ConstructionView::new();
@@ -7781,6 +7981,10 @@ mod tests {
     /// — proving every element of each view is accounted (none silently dropped).
     #[test]
     fn element_accounting_production() {
+        if !assets_present(&[PRODUCTION_FILE]) {
+            eprintln!("[production] skipped element accounting: game_assets/gui not extracted");
+            return;
+        }
         assert_eq!(
             raw_type_counts("production.json"),
             declared_counts("production.json")
@@ -7788,6 +7992,10 @@ mod tests {
     }
     #[test]
     fn element_accounting_construction() {
+        if !assets_present(&[CONSTRUCTION_FILE]) {
+            eprintln!("[production] skipped element accounting: game_assets/gui not extracted");
+            return;
+        }
         assert_eq!(
             raw_type_counts("construction.json"),
             declared_counts("construction.json")
@@ -7795,6 +8003,10 @@ mod tests {
     }
     #[test]
     fn element_accounting_decisions() {
+        if !assets_present(&[DECISIONS_FILE]) {
+            eprintln!("[production] skipped element accounting: game_assets/gui not extracted");
+            return;
+        }
         assert_eq!(
             raw_type_counts("decisions.json"),
             declared_counts("decisions.json")
@@ -7805,6 +8017,10 @@ mod tests {
     /// a guard that the source files haven't drifted under the map.
     #[test]
     fn element_accounting_totals_match_binding_map() {
+        if !assets_present(&[PRODUCTION_FILE, CONSTRUCTION_FILE, DECISIONS_FILE]) {
+            eprintln!("[production] skipped element accounting: game_assets/gui not extracted");
+            return;
+        }
         let total = |n: &str| raw_type_counts(n).values().sum::<usize>();
         assert_eq!(total("production.json"), 663);
         assert_eq!(total("construction.json"), 149);
@@ -7846,6 +8062,10 @@ mod tests {
     /// accounting cannot. The (element, window-root) pairs below mirror the `bind` code.
     #[test]
     fn every_bound_element_name_exists_in_its_window() {
+        if !assets_present(&[PRODUCTION_FILE, CONSTRUCTION_FILE, DECISIONS_FILE]) {
+            eprintln!("[production] skipped bound-name proof: game_assets/gui not extracted");
+            return;
+        }
         // (file, root-or-template, [element names bound there])
         let cases: &[(&str, &str, &[&str])] = &[
             // production summary -> the ROOT window.

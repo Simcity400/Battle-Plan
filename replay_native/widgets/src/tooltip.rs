@@ -168,6 +168,15 @@ impl TooltipRowMeta {
         TooltipRowMeta::default()
     }
 
+    pub fn label_source(
+        label_key: impl Into<String>,
+        source_key: impl Into<String>,
+    ) -> TooltipRowMeta {
+        TooltipRowMeta::new()
+            .label_key(label_key)
+            .source_key(source_key)
+    }
+
     pub fn label_key(mut self, key: impl Into<String>) -> TooltipRowMeta {
         self.label_key = Some(key.into());
         self
@@ -1075,5 +1084,34 @@ mod tests {
         assert!(digest.contains("unfed"), "{digest}");
         assert_eq!(plan.plan().unavailable_text_count(), 1);
         assert!(!digest.contains("\"0\""), "{digest}");
+    }
+
+    #[test]
+    fn domain_metadata_snapshot_retains_row_label_value_and_source_keys() {
+        let mut state_name_meta =
+            TooltipRowMeta::label_source("STATE_NAME", "render.map.PickResult.state_name_key");
+        state_name_meta = state_name_meta.value_key("STATE_64");
+
+        let tt = Tooltip::domain_composer(Atom::exact("Province #123"))
+            .tooltip_key("core.map.hover.province")
+            .title_key("PROVINCE")
+            .source_key("render.map.PickResult")
+            .exact_row_with_metadata(
+                "Province",
+                "#123",
+                TooltipRowMeta::label_source("PROVINCE", "render.map.PickResult.province_id"),
+            )
+            .exact_row_with_metadata("State name", "STATE_64", state_name_meta)
+            .build();
+
+        let plan = plan_tooltip(&tt, (50.0, 60.0), vp());
+        let snapshot = r#" meta{tip{tooltip_key="core.map.hover.province";title_key="PROVINCE";source_key="render.map.PickResult"};row0{label_key="PROVINCE";value_key=-;source_key="render.map.PickResult.province_id"};row1{label_key="STATE_NAME";value_key="STATE_64";source_key="render.map.PickResult.state_name_key"}}"#;
+
+        assert_eq!(plan.metadata_digest(), snapshot);
+        assert_eq!(
+            plan.digest(),
+            plan_tooltip(&tt, (50.0, 60.0), vp()).digest(),
+            "metadata snapshots must be stable for parity tests"
+        );
     }
 }

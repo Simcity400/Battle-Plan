@@ -185,6 +185,19 @@ fn resolve_shot_mapmodes_hover(requested: Option<&str>) -> Result<Option<&'stati
     }
 }
 
+fn resolve_shot_production_row(requested: Option<&str>) -> Result<Option<usize>, String> {
+    let Some(raw) = requested else {
+        return Ok(None);
+    };
+    let value = raw.trim();
+    if value.is_empty() || value != raw {
+        return Err("--shot-production-row requires a non-negative visible row index".to_string());
+    }
+    value.parse::<usize>().map(Some).map_err(|_| {
+        format!("invalid --shot-production-row '{value}' (expected a non-negative integer)")
+    })
+}
+
 fn reject_shot_all_views_mixed_flags(
     shot_path: Option<&str>,
     shot_view: Option<&str>,
@@ -193,6 +206,7 @@ fn reject_shot_all_views_mixed_flags(
     shot_find_tab: Option<&str>,
     shot_find_row: Option<&str>,
     shot_mapmodes_hover: Option<&str>,
+    shot_production_row: Option<&str>,
     smoke: bool,
     shot_focus: bool,
     shot_combat: bool,
@@ -218,6 +232,9 @@ fn reject_shot_all_views_mixed_flags(
     }
     if shot_mapmodes_hover.is_some() {
         flags.push("--shot-mapmodes-hover");
+    }
+    if shot_production_row.is_some() {
+        flags.push("--shot-production-row");
     }
     if smoke {
         flags.push("--smoke");
@@ -453,6 +470,34 @@ mod tests {
         GuiFile::parse(&doc.to_string()).unwrap()
     }
 
+    fn synthetic_production_gui() -> GuiFile {
+        let doc = serde_json::json!({
+            "view": "production",
+            "windows": [
+                {
+                    "type": "containerWindowType",
+                    "name": "countryproductionlineview",
+                    "position": { "x": 0, "y": 0 },
+                    "size": { "width": 1600, "height": 900 },
+                    "children": [{
+                        "type": "buttonType",
+                        "name": "item_grid",
+                        "position": { "x": 1008, "y": 336 },
+                        "size": { "width": 536, "height": 300 },
+                        "orientation": "UPPER_LEFT",
+                        "sprite": "GFX_test_production_grid"
+                    }]
+                },
+                {
+                    "type": "containerWindowType",
+                    "name": "production_military_line_entry",
+                    "size": { "width": 536, "height": 52 }
+                }
+            ]
+        });
+        GuiFile::parse(&doc.to_string()).unwrap()
+    }
+
     fn stage_with_gui(gui_files: HashMap<String, GuiFile>) -> Stage {
         Stage {
             resolver: assets::resolver::GameResolver::new(None, None),
@@ -489,6 +534,16 @@ mod tests {
                         "resources": {}
                     },
                     "production": {
+                        "military_lines": [{
+                            "id": "shot_mil_01",
+                            "equipment_archetype": "infantry_equipment",
+                            "factories_assigned": 5,
+                            "efficiency": 0.6,
+                            "daily_output": 12.0
+                        }],
+                        "naval_lines": [],
+                        "military_factories": 5,
+                        "naval_factories": 0,
                         "construction_queue": [{
                             "line_id": "cmd_open_line",
                             "template_id": "arms_factory",
@@ -738,6 +793,21 @@ mod tests {
     }
 
     #[test]
+    fn shot_production_row_resolver_accepts_nonnegative_visible_row_index() {
+        assert_eq!(resolve_shot_production_row(None), Ok(None));
+        assert_eq!(resolve_shot_production_row(Some("0")), Ok(Some(0)));
+        assert_eq!(resolve_shot_production_row(Some("3")), Ok(Some(3)));
+
+        let err = resolve_shot_production_row(Some("first")).unwrap_err();
+        assert!(err.contains("invalid --shot-production-row 'first'"));
+        let err = resolve_shot_production_row(Some(" 0 ")).unwrap_err();
+        assert_eq!(
+            err,
+            "--shot-production-row requires a non-negative visible row index"
+        );
+    }
+
+    #[test]
     fn shot_all_views_rejects_ambiguous_shot_flags() {
         let err = reject_shot_all_views_mixed_flags(
             Some("one.png"),
@@ -747,6 +817,7 @@ mod tests {
             Some("vps"),
             Some("0"),
             Some("supply"),
+            Some("0"),
             true,
             true,
             true,
@@ -760,6 +831,7 @@ mod tests {
         assert!(err.contains("--shot-find-tab"));
         assert!(err.contains("--shot-find-row"));
         assert!(err.contains("--shot-mapmodes-hover"));
+        assert!(err.contains("--shot-production-row"));
         assert!(err.contains("--smoke"));
         assert!(err.contains("--shot-focus"));
         assert!(err.contains("--shot-combat"));
@@ -1215,6 +1287,66 @@ mod tests {
             "row input after command-open must select the measured construction line, got: {digest}"
         );
     }
+
+    #[test]
+    fn shot_production_row_input_selects_first_visible_line_through_host() {
+        let mut gui_files = HashMap::new();
+        gui_files.insert("production.json".to_string(), synthetic_production_gui());
+        let stage = Box::leak(Box::new(stage_with_gui(gui_files)));
+        let snap = snap_with_construction();
+        let registry = ViewRegistry::from_inventory();
+        let production_view_id = ViewId(shot_harness::PRODUCTION_VIEW_ID_STR);
+        let mut host = WindowHost::new();
+        host.open_view(&registry, production_view_id, None)
+            .expect("production view opens from registry");
+        host.rebind_all(&RebindContext {
+            snapshot: &snap,
+            country: "GER",
+            screen: (1600, 900),
+            refit: true,
+        });
+
+        let mut cursor = (0.0, 0.0);
+        apply_shot_view_inputs(
+            &mut host,
+            &registry,
+            stage,
+            &snap,
+            "GER",
+            &mut cursor,
+            None,
+            None,
+            None,
+            Some(0),
+            1600,
+            900,
+        )
+        .expect("shot production row routes through host input");
+
+        let bound = bind_host(
+            &host,
+            stage,
+            &snap,
+            "GER",
+            cursor,
+            MapCamera::new(1600, 900, 5632, 2048),
+            1600,
+            900,
+        );
+        let production = bound
+            .iter()
+            .find(|bv| bv.view_id == production_view_id)
+            .expect("production view remains bound");
+        let digest = bound_digest(production);
+        assert!(
+            digest.contains("selected_key=production:military:id:shot_mil_01"),
+            "shot production row must select the measured visible line through routed input, got: {digest}"
+        );
+        assert!(
+            digest.contains("selected_row=r0<military>r0[key=production:military:id:shot_mil_01;"),
+            "selected row digest must point at the clicked production line, got: {digest}"
+        );
+    }
 }
 
 fn mode_from_slug(slug: &str) -> Option<MapMode> {
@@ -1295,6 +1427,7 @@ fn main() {
     let shot_find_tab_arg = arg_value("--shot-find-tab");
     let shot_find_row_arg = arg_value("--shot-find-row");
     let shot_mapmodes_hover_arg = arg_value("--shot-mapmodes-hover");
+    let shot_production_row_arg = arg_value("--shot-production-row");
     let shot_state: Option<u32> =
         resolve_shot_state(shot_state_arg.as_deref()).unwrap_or_else(|e| {
             eprintln!("[app] SHOT BLOCKER: {e}");
@@ -1309,6 +1442,11 @@ fn main() {
         std::process::exit(2);
     });
     let shot_mapmodes_hover = resolve_shot_mapmodes_hover(shot_mapmodes_hover_arg.as_deref())
+        .unwrap_or_else(|e| {
+            eprintln!("[app] SHOT BLOCKER: {e}");
+            std::process::exit(2);
+        });
+    let shot_production_row = resolve_shot_production_row(shot_production_row_arg.as_deref())
         .unwrap_or_else(|e| {
             eprintln!("[app] SHOT BLOCKER: {e}");
             std::process::exit(2);
@@ -1337,6 +1475,7 @@ fn main() {
             shot_find_tab_arg.as_deref(),
             shot_find_row_arg.as_deref(),
             shot_mapmodes_hover_arg.as_deref(),
+            shot_production_row_arg.as_deref(),
             smoke,
             shot_focus,
             shot_combat,
@@ -1437,12 +1576,24 @@ fn main() {
         );
         std::process::exit(2);
     }
-    if shot_path.is_none()
-        && !smoke
-        && (shot_find_tab.is_some() || shot_find_row.is_some() || shot_mapmodes_hover.is_some())
+    if shot_production_row.is_some()
+        && shot_view != Some(ViewId(shot_harness::PRODUCTION_VIEW_ID_STR))
     {
         eprintln!(
-            "[app] SHOT BLOCKER: --shot-find-tab/--shot-find-row/--shot-mapmodes-hover require --shot or --smoke"
+            "[app] SHOT BLOCKER: --shot-production-row requires --shot-view={}",
+            shot_harness::PRODUCTION_VIEW_ID_STR
+        );
+        std::process::exit(2);
+    }
+    if shot_path.is_none()
+        && !smoke
+        && (shot_find_tab.is_some()
+            || shot_find_row.is_some()
+            || shot_mapmodes_hover.is_some()
+            || shot_production_row.is_some())
+    {
+        eprintln!(
+            "[app] SHOT BLOCKER: --shot-find-tab/--shot-find-row/--shot-mapmodes-hover/--shot-production-row require --shot or --smoke"
         );
         std::process::exit(2);
     }
@@ -1751,6 +1902,7 @@ fn main() {
             shot_find_tab,
             shot_find_row,
             shot_mapmodes_hover,
+            shot_production_row,
             w,
             h,
         )
@@ -2625,6 +2777,7 @@ fn apply_shot_view_inputs(
     shot_find_tab: Option<&str>,
     shot_find_row: Option<usize>,
     shot_mapmodes_hover: Option<&str>,
+    shot_production_row: Option<usize>,
     w: u32,
     h: u32,
 ) -> Result<(), String> {
@@ -2639,6 +2792,10 @@ fn apply_shot_view_inputs(
     }
     if let Some(mode) = shot_mapmodes_hover {
         hover_shot_mapmode(host, registry, stage, snap, country, cursor, mode, w, h)?;
+        sync_shot_input_panels(host, stage, snap, country, *cursor, w, h);
+    }
+    if let Some(row) = shot_production_row {
+        click_shot_production_row(host, registry, stage, snap, country, cursor, row, w, h)?;
         sync_shot_input_panels(host, stage, snap, country, *cursor, w, h);
     }
     Ok(())
@@ -2690,6 +2847,31 @@ fn bound_roots_for_view(
     .ok_or_else(|| format!("shot view {view_id} is not open"))
 }
 
+fn shot_node_rect(roots: &[gui_runtime::scene::Node], name: &str) -> Option<Rect> {
+    fn walk(node: &gui_runtime::scene::Node, name: &str) -> Option<Rect> {
+        if node.name == name && node.rect.w > 0.0 && node.rect.h > 0.0 {
+            return Some(node.rect);
+        }
+        node.children.iter().find_map(|child| walk(child, name))
+    }
+    roots.iter().find_map(|root| walk(root, name))
+}
+
+fn production_visible_row_center_from_roots(
+    roots: &[gui_runtime::scene::Node],
+    row: usize,
+) -> Option<(f32, f32)> {
+    const PRODUCTION_ROW_H_FOR_SHOT: f32 = 52.0;
+    const PRODUCTION_ROW_BODY_X_OFFSET_FOR_SHOT: f32 = 240.0;
+    let grid = shot_node_rect(roots, "item_grid")?;
+    let y = grid.y + PRODUCTION_ROW_H_FOR_SHOT * (row as f32 + 0.5);
+    if y >= grid.y + grid.h {
+        return None;
+    }
+    let x = (grid.x + PRODUCTION_ROW_BODY_X_OFFSET_FOR_SHOT).min(grid.x + grid.w - 8.0);
+    (x >= grid.x).then_some((x, y))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn route_shot_input(
     host: &mut WindowHost,
@@ -2708,6 +2890,39 @@ fn route_shot_input(
     } else {
         Err(format!("shot action {action} was ignored by the open view"))
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn click_shot_production_row(
+    host: &mut WindowHost,
+    registry: &ViewRegistry,
+    stage: &'static Stage,
+    snap: &Snapshot,
+    country: &str,
+    cursor: &mut (f32, f32),
+    row: usize,
+    w: u32,
+    h: u32,
+) -> Result<(), String> {
+    let view_id = ViewId(shot_harness::PRODUCTION_VIEW_ID_STR);
+    let roots = bound_roots_for_view(host, stage, snap, country, *cursor, view_id, w, h)?;
+    let (x, y) = production_visible_row_center_from_roots(&roots, row).ok_or_else(|| {
+        format!("shot production row {row} is outside the visible bound production lines")
+    })?;
+    *cursor = (x, y);
+    route_shot_input(
+        host,
+        registry,
+        ViewInput::PointerDown {
+            x,
+            y,
+            button: PointerButton::Left,
+        },
+        snap,
+        country,
+        (w, h),
+        "--shot-production-row",
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

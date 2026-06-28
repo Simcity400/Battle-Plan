@@ -3511,9 +3511,11 @@ register_view!(ViewDescriptor {
 // VIEW 12 — DIPLOMACY  (countrydiplomacyview)  [BINDING_MAP_diplomacy_combat VIEW 1]
 // =====================================================================================
 //
-// The country-diplomacy card (`diplomacy.json` root `countrydiplomacyview`). `<SEL>` (the
-// selected country whose card is open) and `<VIEWER>` (the observed root country) are BOTH
-// the observed country here — we always show the viewer's own card. Bound EXACT:
+// The country-diplomacy card (`diplomacy.json` root `countrydiplomacyview`). `<VIEWER>` is
+// the observed root country; `<SEL>` is either the default viewer country or a clicked
+// country-list TAG. Selection keys come only from measured `countries` map keys. If a
+// selected TAG disappears on scrub, the detail card fails closed instead of falling back to
+// another country. Bound EXACT:
 //   * country_name / faction_name / party_name / ideology_name  <- politics.*
 //   * our_opinion_value  <- countries.<VIEWER>.diplomacy.opinion.<SEL>.opinion_sum  and
 //     their_opinion_value <- countries.<SEL>.diplomacy.opinion.<VIEWER>.opinion_sum
@@ -3534,16 +3536,57 @@ const DIPLOMACY_VIEW_ID: ViewId = ViewId("intel.diplomacy");
 const DIPLOMACY_FILE: &str = "diplomacy.json";
 const DIPLOMACY_ROOT: &str = "countrydiplomacyview";
 
-pub struct DiplomacyView;
+pub struct DiplomacyView {
+    selected_country_tag: Option<String>,
+    country_row_targets: RefCell<Vec<CountryRowTarget>>,
+    click_candidate: Option<String>,
+}
 
 impl DiplomacyView {
     pub fn new() -> DiplomacyView {
-        DiplomacyView
+        DiplomacyView {
+            selected_country_tag: None,
+            country_row_targets: RefCell::new(Vec::new()),
+            click_candidate: None,
+        }
+    }
+
+    fn country_row_hit(&self, x: f32, y: f32) -> Option<String> {
+        self.country_row_targets
+            .borrow()
+            .iter()
+            .find(|target| target.rect.contains(x, y))
+            .map(|target| target.tag.clone())
     }
 }
 impl Default for DiplomacyView {
     fn default() -> Self {
         DiplomacyView::new()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CountryRowTarget {
+    tag: String,
+    rect: Rect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiplomacySelectionState {
+    Default,
+    Selected,
+    MissingSelected,
+    None,
+}
+
+impl DiplomacySelectionState {
+    fn tag(self) -> &'static str {
+        match self {
+            DiplomacySelectionState::Default => "default",
+            DiplomacySelectionState::Selected => "selected",
+            DiplomacySelectionState::MissingSelected => "missing_selected",
+            DiplomacySelectionState::None => "none",
+        }
     }
 }
 
@@ -3554,14 +3597,20 @@ struct DiplomacyDrawable {
     country_rows: Vec<DataRow>,
     relation_section: SectionState,
     country_section: SectionState,
+    selected_state: DiplomacySelectionState,
+    selected_key: Option<String>,
+    selected_country: Option<String>,
 }
 
 impl Drawable for DiplomacyDrawable {
     fn draw_digest(&self) -> String {
         format!(
-            "DIPLOMACY rel_sect={} list_sect={} relations={} countries={} (trade grid + autonomy = unavailable/gap)",
+            "DIPLOMACY rel_sect={} list_sect={} selected_state={} selected_key={} selected_country={} relations={} countries={} (trade grid + autonomy = unavailable/gap)",
             self.relation_section.tag(),
             self.country_section.tag(),
+            self.selected_state.tag(),
+            self.selected_key.as_deref().unwrap_or("none"),
+            self.selected_country.as_deref().unwrap_or("none"),
             row_digest(&self.relation_rows),
             row_digest(&self.country_rows),
         )
@@ -3594,105 +3643,170 @@ impl ViewInstance for DiplomacyView {
     fn policy(&self) -> HostPolicy {
         HostPolicy::window(ZBand::Panel)
     }
+    fn rebind(&mut self, _ctx: &RebindContext) {
+        self.click_candidate = None;
+    }
+    fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
+        match *ev {
+            ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            } => match self.country_row_hit(x, y) {
+                Some(tag) => {
+                    self.click_candidate = Some(tag);
+                    InputOutcome {
+                        consumed: true,
+                        commands: Vec::new(),
+                        needs_redraw: false,
+                    }
+                }
+                None => InputOutcome::ignored(),
+            },
+            ViewInput::PointerUp {
+                x,
+                y,
+                button: PointerButton::Left,
+            } => match self.click_candidate.take() {
+                Some(armed) => {
+                    let hit = self.country_row_hit(x, y);
+                    let changed = hit.as_deref() == Some(armed.as_str())
+                        && self.selected_country_tag.as_deref() != Some(armed.as_str());
+                    if changed {
+                        self.selected_country_tag = Some(armed);
+                    }
+                    InputOutcome {
+                        consumed: true,
+                        commands: Vec::new(),
+                        needs_redraw: changed,
+                    }
+                }
+                None => InputOutcome::ignored(),
+            },
+            _ => InputOutcome::ignored(),
+        }
+    }
     fn bind(&self, ctx: &BindContext) -> BoundView {
         let mut fidelity = FidelityReport::default();
         let file = load_gui(ctx, DIPLOMACY_FILE);
-        let sel = ctx.country; // SEL == VIEWER == the observed country.
         let viewer = ctx.country;
+        let country_keys = country_tags(ctx);
+        let (selected_country, selected_state) =
+            select_diplomacy_country(&country_keys, viewer, self.selected_country_tag.as_deref());
+        let selected_key = self
+            .selected_country_tag
+            .clone()
+            .or_else(|| selected_country.clone());
 
         let mut summary: Vec<Cell> = Vec::new();
-        // identity + politics (EXACT).
-        push_country(
-            ctx,
-            sel,
-            &mut fidelity,
-            &mut summary,
-            "country_name",
-            "politics.name",
-            Fidelity::Exact,
-            fmt_token,
-        );
-        push_country(
-            ctx,
-            sel,
-            &mut fidelity,
-            &mut summary,
-            "faction_name",
-            "politics.faction.name",
-            Fidelity::Exact,
-            fmt_token,
-        );
-        push_country(
-            ctx,
-            sel,
-            &mut fidelity,
-            &mut summary,
-            "party_name",
-            "politics.ruling_party",
-            Fidelity::Derived,
-            fmt_token,
-        );
-        push_country(
-            ctx,
-            sel,
-            &mut fidelity,
-            &mut summary,
-            "ideology_name",
-            "politics.ruling_party",
-            Fidelity::Derived,
-            fmt_token,
-        );
-        push_country(
-            ctx,
-            sel,
-            &mut fidelity,
-            &mut summary,
-            "stability_value",
-            "politics.stability",
-            Fidelity::Exact,
-            fmt_frac_pct,
-        );
-        push_country(
-            ctx,
-            sel,
-            &mut fidelity,
-            &mut summary,
-            "war_support_value",
-            "politics.war_support",
-            Fidelity::Exact,
-            fmt_frac_pct,
-        );
-        push_country(
-            ctx,
-            sel,
-            &mut fidelity,
-            &mut summary,
-            "national_focus_label",
-            "focus.current",
-            Fidelity::Exact,
-            fmt_token,
-        );
-        // OPINION pair (Codex direction): viewer->sel and sel->viewer net cached sums.
-        push_country(
-            ctx,
-            viewer,
-            &mut fidelity,
-            &mut summary,
-            "our_opinion_value",
-            &format!("diplomacy.opinion.{sel}.opinion_sum"),
-            Fidelity::Exact,
-            fmt_signed,
-        );
-        push_country(
-            ctx,
-            sel,
-            &mut fidelity,
-            &mut summary,
-            "their_opinion_value",
-            &format!("diplomacy.opinion.{viewer}.opinion_sum"),
-            Fidelity::Exact,
-            fmt_signed,
-        );
+        if let Some(sel) = selected_country.as_deref() {
+            // identity + politics (EXACT).
+            push_country(
+                ctx,
+                sel,
+                &mut fidelity,
+                &mut summary,
+                "country_name",
+                "politics.name",
+                Fidelity::Exact,
+                fmt_token,
+            );
+            push_country(
+                ctx,
+                sel,
+                &mut fidelity,
+                &mut summary,
+                "faction_name",
+                "politics.faction.name",
+                Fidelity::Exact,
+                fmt_token,
+            );
+            push_country(
+                ctx,
+                sel,
+                &mut fidelity,
+                &mut summary,
+                "party_name",
+                "politics.ruling_party",
+                Fidelity::Derived,
+                fmt_token,
+            );
+            push_country(
+                ctx,
+                sel,
+                &mut fidelity,
+                &mut summary,
+                "ideology_name",
+                "politics.ruling_party",
+                Fidelity::Derived,
+                fmt_token,
+            );
+            push_country(
+                ctx,
+                sel,
+                &mut fidelity,
+                &mut summary,
+                "stability_value",
+                "politics.stability",
+                Fidelity::Exact,
+                fmt_frac_pct,
+            );
+            push_country(
+                ctx,
+                sel,
+                &mut fidelity,
+                &mut summary,
+                "war_support_value",
+                "politics.war_support",
+                Fidelity::Exact,
+                fmt_frac_pct,
+            );
+            push_country(
+                ctx,
+                sel,
+                &mut fidelity,
+                &mut summary,
+                "national_focus_label",
+                "focus.current",
+                Fidelity::Exact,
+                fmt_token,
+            );
+            // OPINION pair (Codex direction): viewer->sel and sel->viewer net cached sums.
+            push_country(
+                ctx,
+                viewer,
+                &mut fidelity,
+                &mut summary,
+                "our_opinion_value",
+                &format!("diplomacy.opinion.{sel}.opinion_sum"),
+                Fidelity::Exact,
+                fmt_signed,
+            );
+            push_country(
+                ctx,
+                sel,
+                &mut fidelity,
+                &mut summary,
+                "their_opinion_value",
+                &format!("diplomacy.opinion.{viewer}.opinion_sum"),
+                Fidelity::Exact,
+                fmt_signed,
+            );
+        } else {
+            for el in [
+                "country_name",
+                "faction_name",
+                "party_name",
+                "ideology_name",
+                "stability_value",
+                "war_support_value",
+                "national_focus_label",
+                "our_opinion_value",
+                "their_opinion_value",
+            ] {
+                push_unavailable(&mut fidelity, &mut summary, el);
+            }
+        }
         // UNAVAILABLE (real ROOT nodes, never a fabricated 0): commanders + elections unfed.
         push_unavailable(&mut fidelity, &mut summary, "leader_name");
         push_unavailable(&mut fidelity, &mut summary, "elections");
@@ -3705,10 +3819,28 @@ impl ViewInstance for DiplomacyView {
         record_gap(&mut fidelity); // trade_grid rows (market_live / trade_contracts absent)
 
         // ROW FACTORIES: relation strip + country list.
-        let (relation_rows, relation_section) = build_relation_rows(ctx, sel, &mut fidelity);
-        let (country_rows, country_section) = build_country_list_rows(ctx, viewer, &mut fidelity);
+        let (relation_rows, relation_section) = if let Some(sel) = selected_country.as_deref() {
+            build_relation_rows(ctx, sel, &mut fidelity)
+        } else {
+            SectionState::Absent.record(&mut fidelity);
+            (Vec::new(), SectionState::Absent)
+        };
+        let (country_rows, country_section) =
+            build_country_list_rows(ctx, viewer, &country_keys, &mut fidelity);
 
         let roots = build_root(ctx, &file, DIPLOMACY_ROOT, &summary);
+        let mut hit_roots = roots.clone();
+        let country_row_roots = instantiated_row_roots(
+            &roots,
+            &file,
+            "countries_grid",
+            "diplomacy_country_list_country_entry",
+            &country_rows,
+            &ctx.stage.manifest,
+        );
+        *self.country_row_targets.borrow_mut() =
+            collect_country_row_targets(&country_row_roots, &country_keys);
+        hit_roots.extend(country_row_roots);
         let drawable = DiplomacyDrawable {
             roots: roots.clone(),
             file,
@@ -3716,12 +3848,15 @@ impl ViewInstance for DiplomacyView {
             country_rows,
             relation_section,
             country_section,
+            selected_state,
+            selected_key,
+            selected_country,
         };
         BoundView {
             instance: InstanceId(0),
             view_id: DIPLOMACY_VIEW_ID,
             policy: self.policy(),
-            hit: HitModel::from_roots(roots),
+            hit: HitModel::from_roots(hit_roots),
             drawable: Box::new(drawable),
             fidelity,
             commands: Vec::<ViewCommand>::new(),
@@ -3729,6 +3864,47 @@ impl ViewInstance for DiplomacyView {
     }
 
     crate::impl_view_any!();
+}
+
+fn select_diplomacy_country(
+    country_keys: &[String],
+    viewer: &str,
+    selected_key: Option<&str>,
+) -> (Option<String>, DiplomacySelectionState) {
+    if let Some(key) = selected_key {
+        return if country_keys.iter().any(|tag| tag == key) {
+            (Some(key.to_string()), DiplomacySelectionState::Selected)
+        } else {
+            (None, DiplomacySelectionState::MissingSelected)
+        };
+    }
+    if country_keys.iter().any(|tag| tag == viewer) {
+        (Some(viewer.to_string()), DiplomacySelectionState::Default)
+    } else {
+        (None, DiplomacySelectionState::None)
+    }
+}
+
+fn collect_country_row_targets(
+    row_roots: &[Node],
+    country_keys: &[String],
+) -> Vec<CountryRowTarget> {
+    let mut targets = Vec::new();
+    for (row, tag) in row_roots.iter().zip(country_keys.iter()) {
+        if tag.is_empty() {
+            continue;
+        }
+        let rect = find_rect(std::slice::from_ref(row), "button")
+            .or_else(|| (row.rect.w > 0.0 && row.rect.h > 0.0).then_some(row.rect));
+        let Some(rect) = rect else {
+            continue;
+        };
+        targets.push(CountryRowTarget {
+            tag: tag.clone(),
+            rect,
+        });
+    }
+    targets
 }
 
 /// The RELATIONS strip: one `relation_strip_view` row per active relation the SELECTED
@@ -3822,15 +3998,15 @@ fn build_relation_rows(
 fn build_country_list_rows(
     ctx: &BindContext,
     viewer: &str,
+    tags: &[String],
     fidelity: &mut FidelityReport,
 ) -> (Vec<DataRow>, SectionState) {
-    let tags = country_tags(ctx);
     if tags.is_empty() {
         SectionState::Absent.record(fidelity);
         return (Vec::new(), SectionState::Absent);
     }
     let mut rows = Vec::new();
-    for tag in &tags {
+    for tag in tags {
         let mut row = DataRow::new();
         row.bind(
             fidelity,
@@ -4073,6 +4249,64 @@ mod tests {
                   "text":{"text":"CAS","font":"hoi_16mbs"}},
                  {"type":"instantTextBoxType","name":"surrender_progressbar","position":{"x":76,"y":18},
                   "text":{"text":"CAP","font":"hoi_16mbs"}}
+               ]}
+            ]}"#,
+        )
+        .unwrap()
+    }
+
+    fn diplomacy_test_gui() -> GuiFile {
+        GuiFile::parse(
+            r#"{"view":"diplomacy_selection_test","windows":[
+              {"type":"containerWindowType","name":"countrydiplomacyview",
+               "position":{"x":0,"y":0},"size":{"width":640,"height":420},
+               "children":[
+                 {"type":"instantTextBoxType","name":"country_name","position":{"x":16,"y":12},
+                  "text":{"text":"COUNTRY","font":"hoi_16mbs"}},
+                 {"type":"instantTextBoxType","name":"faction_name","position":{"x":16,"y":40},
+                  "text":{"text":"FACTION","font":"hoi_16mbs"}},
+                 {"type":"instantTextBoxType","name":"party_name","position":{"x":16,"y":68},
+                  "text":{"text":"PARTY","font":"hoi_16mbs"}},
+                 {"type":"instantTextBoxType","name":"ideology_name","position":{"x":140,"y":68},
+                  "text":{"text":"IDEOLOGY","font":"hoi_16mbs"}},
+                 {"type":"instantTextBoxType","name":"stability_value","position":{"x":16,"y":96},
+                  "text":{"text":"STAB","font":"hoi_16mbs"}},
+                 {"type":"instantTextBoxType","name":"war_support_value","position":{"x":92,"y":96},
+                  "text":{"text":"WS","font":"hoi_16mbs"}},
+                 {"type":"instantTextBoxType","name":"national_focus_label","position":{"x":16,"y":124},
+                  "text":{"text":"FOCUS","font":"hoi_16mbs"}},
+                 {"type":"instantTextBoxType","name":"our_opinion_value","position":{"x":16,"y":152},
+                  "text":{"text":"OUR","font":"hoi_16mbs"}},
+                 {"type":"instantTextBoxType","name":"their_opinion_value","position":{"x":92,"y":152},
+                  "text":{"text":"THEIR","font":"hoi_16mbs"}},
+                 {"type":"instantTextBoxType","name":"leader_name","position":{"x":220,"y":12},
+                  "text":{"text":"LEADER","font":"hoi_16mbs"}},
+                 {"type":"instantTextBoxType","name":"elections","position":{"x":220,"y":40},
+                  "text":{"text":"ELECTIONS","font":"hoi_16mbs"}},
+                 {"type":"gridBoxType","name":"relations_grid","position":{"x":300,"y":96},
+                  "size":{"width":180,"height":90}},
+                 {"type":"gridBoxType","name":"countries_grid","position":{"x":16,"y":200},
+                  "size":{"width":220,"height":140}}
+               ]},
+              {"type":"containerWindowType","name":"diplomacy_country_list_country_entry",
+               "position":{"x":0,"y":0},"size":{"width":200,"height":28},
+               "children":[
+                 {"type":"buttonType","name":"button","position":{"x":0,"y":0},
+                  "size":{"width":200,"height":28},"sprite":"GFX_button"},
+                 {"type":"instantTextBoxType","name":"name","position":{"x":4,"y":5},
+                  "text":{"text":"NAME","font":"hoi_16mbs"}},
+                 {"type":"instantTextBoxType","name":"our_opinion","position":{"x":92,"y":5},
+                  "text":{"text":"OUR","font":"hoi_16mbs"}},
+                 {"type":"instantTextBoxType","name":"their_opinion","position":{"x":144,"y":5},
+                  "text":{"text":"THEIR","font":"hoi_16mbs"}}
+               ]},
+              {"type":"containerWindowType","name":"relation_strip_view",
+               "position":{"x":0,"y":0},"size":{"width":160,"height":24},
+               "children":[
+                 {"type":"instantTextBoxType","name":"relation_icon","position":{"x":4,"y":4},
+                  "text":{"text":"REL","font":"hoi_16mbs"}},
+                 {"type":"instantTextBoxType","name":"relation_flags","position":{"x":60,"y":4},
+                  "text":{"text":"FLAG","font":"hoi_16mbs"}}
                ]}
             ]}"#,
         )
@@ -4330,6 +4564,70 @@ mod tests {
                 ],
                 "factions": [], "subjects": []
             }
+        }))
+        .unwrap()
+    }
+
+    fn diplomacy_selection_snap_a() -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1941.4.13.11", "hour_index": 500,
+            "countries": {
+                "GER": {
+                    "politics": {
+                        "name": "German Reich", "ruling_party": "fascism",
+                        "stability": 0.72, "war_support": 0.60, "faction": {"name": "axis"}
+                    },
+                    "focus": {"current": "GER_rhineland"},
+                    "diplomacy": {
+                        "guarantees": ["POL"],
+                        "non_aggression": ["SOV"],
+                        "opinion": {
+                            "GER": {"opinion_sum": 0},
+                            "POL": {"opinion_sum": -50},
+                            "SOV": {"opinion_sum": 15}
+                        }
+                    }
+                },
+                "POL": {
+                    "politics": {
+                        "name": "Poland", "ruling_party": "neutrality",
+                        "stability": 0.44, "war_support": 0.22, "faction": {"name": "miedzymorze"}
+                    },
+                    "focus": {"current": "POL_defend"},
+                    "diplomacy": {
+                        "guarantees": [],
+                        "non_aggression": [],
+                        "opinion": {"GER": {"opinion_sum": -200}}
+                    }
+                },
+                "SOV": {
+                    "politics": {"name": "Soviet Union", "ruling_party": "communism"},
+                    "diplomacy": {"opinion": {"GER": {"opinion_sum": -10}}}
+                }
+            },
+            "diplomacy_world": {"wars": [], "factions": [], "subjects": []}
+        }))
+        .unwrap()
+    }
+
+    fn diplomacy_selection_snap_b_missing_selected() -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1942.2.2.11", "hour_index": 600,
+            "countries": {
+                "GER": {
+                    "politics": {
+                        "name": "German Reich After", "ruling_party": "fascism",
+                        "stability": 0.80, "war_support": 0.70, "faction": {"name": "axis"}
+                    },
+                    "focus": {"current": "GER_autarky"},
+                    "diplomacy": {"opinion": {"GER": {"opinion_sum": 0}, "FRA": {"opinion_sum": -25}}}
+                },
+                "FRA": {
+                    "politics": {"name": "France", "ruling_party": "democratic"},
+                    "diplomacy": {"opinion": {"GER": {"opinion_sum": -75}}}
+                }
+            },
+            "diplomacy_world": {"wars": [], "factions": [], "subjects": []}
         }))
         .unwrap()
     }
@@ -4748,6 +5046,205 @@ mod tests {
         assert_eq!(
             before, after,
             "clicking a row without a complete measured key must not change selection"
+        );
+    }
+
+    #[test]
+    fn diplomacy_country_row_click_selects_measured_country_and_updates_card() {
+        let stage =
+            stage_with_gui_and_manifest(DIPLOMACY_FILE, diplomacy_test_gui(), HashMap::new());
+        let snap = diplomacy_selection_snap_a();
+        let binding = ctx(&stage, &snap);
+        let mut view = DiplomacyView::new();
+
+        let before_bv = view.bind(&binding);
+        let before = bound_digest(&before_bv);
+        assert!(
+            before.contains("selected_state=default"),
+            "default diplomacy selection should be the viewer country: {before}"
+        );
+        assert!(
+            before.contains("selected_key=GER") && before.contains("selected_country=GER"),
+            "default selected key must be the measured viewer TAG: {before}"
+        );
+        assert!(
+            before.contains("country_name|Text(\"German Reich\""),
+            "default card must show the viewer country before row selection: {before}"
+        );
+
+        let target = view
+            .country_row_targets
+            .borrow()
+            .iter()
+            .find(|target| target.tag == "POL")
+            .cloned()
+            .expect("POL country row should be targetable from measured countries map");
+        let x = target.rect.x + target.rect.w * 0.5;
+        let y = target.rect.y + target.rect.h * 0.5;
+        let leaf = before_bv
+            .hit
+            .hit_test(x, y)
+            .and_then(|hit| hit.leaf().map(str::to_string));
+        assert_eq!(
+            leaf.as_deref(),
+            Some("button"),
+            "diplomacy country drilldown must use the real instantiated row button"
+        );
+
+        let down = view.on_input(&ViewInput::PointerDown {
+            x,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(down.consumed);
+        assert!(!down.needs_redraw);
+        assert!(down.commands.is_empty());
+
+        let up = view.on_input(&ViewInput::PointerUp {
+            x,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(up.consumed);
+        assert!(up.needs_redraw);
+        assert!(up.commands.is_empty());
+
+        let after = bound_digest(&view.bind(&binding));
+        assert!(
+            after.contains("selected_state=selected"),
+            "explicit country-row click should drive selected detail: {after}"
+        );
+        assert!(
+            after.contains("selected_key=POL") && after.contains("selected_country=POL"),
+            "explicit diplomacy selection must be keyed by the measured TAG: {after}"
+        );
+        assert!(
+            after.contains("country_name|Text(\"Poland\"")
+                && after.contains("national_focus_label|Text(\"POL_defend\""),
+            "selected country card should bind POL detail fields, got:\n{after}"
+        );
+        assert!(
+            after.contains("our_opinion_value|Text(\"-50\"")
+                && after.contains("their_opinion_value|Text(\"-200\""),
+            "selected country opinion pair must keep viewer->SEL and SEL->viewer direction, got:\n{after}"
+        );
+    }
+
+    #[test]
+    fn diplomacy_selected_country_missing_after_scrub_fails_closed() {
+        let stage =
+            stage_with_gui_and_manifest(DIPLOMACY_FILE, diplomacy_test_gui(), HashMap::new());
+        let a = diplomacy_selection_snap_a();
+        let b = diplomacy_selection_snap_b_missing_selected();
+        let mut view = DiplomacyView::new();
+        let binding_a = ctx(&stage, &a);
+
+        let _ = view.bind(&binding_a);
+        let target = view
+            .country_row_targets
+            .borrow()
+            .iter()
+            .find(|target| target.tag == "POL")
+            .cloned()
+            .expect("selected test setup must expose the POL row");
+        let x = target.rect.x + target.rect.w * 0.5;
+        let y = target.rect.y + target.rect.h * 0.5;
+        assert!(
+            view.on_input(&ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            })
+            .consumed
+        );
+        assert!(
+            view.on_input(&ViewInput::PointerUp {
+                x,
+                y,
+                button: PointerButton::Left,
+            })
+            .needs_redraw
+        );
+        let selected_a = bound_digest(&view.bind(&binding_a));
+        assert!(
+            selected_a.contains("country_name|Text(\"Poland\""),
+            "test setup must select POL before the scrub: {selected_a}"
+        );
+
+        view.rebind(&RebindContext {
+            snapshot: &b,
+            country: "GER",
+            screen: (1600, 900),
+            refit: false,
+        });
+        let binding_b = ctx(&stage, &b);
+        let missing = bound_digest(&view.bind(&binding_b));
+        assert!(
+            missing.contains("selected_state=missing_selected"),
+            "stale selected country TAG must not fall back to another country: {missing}"
+        );
+        assert!(
+            missing.contains("selected_key=POL") && missing.contains("selected_country=none"),
+            "stale selected TAG should stay visible for fail-closed diagnostics: {missing}"
+        );
+        assert!(
+            missing.contains(&format!("country_name|Text(\"{DASH}\"")),
+            "missing selected country should badge detail unavailable: {missing}"
+        );
+        assert!(
+            !missing.contains("country_name|Text(\"German Reich After\"")
+                && !missing.contains("country_name|Text(\"France\""),
+            "missing selected country must not fall back to another summary card: {missing}"
+        );
+
+        view.rebind(&RebindContext {
+            snapshot: &a,
+            country: "GER",
+            screen: (1600, 900),
+            refit: false,
+        });
+        let restored = bound_digest(&view.bind(&binding_a));
+        assert_eq!(
+            selected_a, restored,
+            "scrub A->B->A should restore the keyed selected country without carrying B detail"
+        );
+    }
+
+    #[test]
+    fn diplomacy_absent_country_domain_has_no_selectable_rows() {
+        let stage =
+            stage_with_gui_and_manifest(DIPLOMACY_FILE, diplomacy_test_gui(), HashMap::new());
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "date": "1941.4.13.11",
+            "diplomacy_world": {"wars": [], "factions": [], "subjects": []}
+        }))
+        .unwrap();
+        let binding = ctx(&stage, &snap);
+        let view = DiplomacyView::new();
+        let bv = view.bind(&binding);
+        let before = bound_digest(&bv);
+        assert!(
+            before.contains("selected_state=none") && before.contains("selected_key=none"),
+            "absent countries domain should not select a fallback country: {before}"
+        );
+        assert!(
+            view.country_row_targets.borrow().is_empty(),
+            "absent countries domain must not create selectable row targets"
+        );
+
+        let mut view = view;
+        let out = view.on_input(&ViewInput::PointerDown {
+            x: 32.0,
+            y: 212.0,
+            button: PointerButton::Left,
+        });
+        assert!(!out.consumed);
+        assert!(!out.needs_redraw);
+        assert!(out.commands.is_empty());
+        let after = bound_digest(&view.bind(&binding));
+        assert_eq!(
+            before, after,
+            "clicking where rows would be must not mutate absent-country diplomacy state"
         );
     }
 

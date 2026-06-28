@@ -267,9 +267,12 @@ or read-only-badged.
   grid until pointer-up, track clicks do not select underlying rows, scrolled
   clicks select the correct backing construction row, unkeyed rows are inert
   without index fallback, missing selected rows fail closed, outside-grid wheel
-  input is inert, and selection/scroll survive scrub A->B->A. Building
-  drilldowns, scrollbar art, and broader construction mutation parity remain
-  open.
+  input is inert, and selection/scroll survive scrub A->B->A. Save-backed rows
+  with measured numeric `location_state` now emit read-only
+  `OpenView(core.state_panel, state_id)` from the real row-click path, while
+  live rows and malformed save locations fail closed with no command. Broader
+  building details, scrollbar art, and broader construction mutation parity
+  remain open.
 - [x] First real `production.production` disabled-mutation slice exists: tests
   prove visible root add-line buttons
   (`infantry_button`/`tank_button`/`aircraft_button`/`naval_button`/

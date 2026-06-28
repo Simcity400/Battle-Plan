@@ -43,6 +43,12 @@ const STATE_RESOURCE_CELL_H: f32 = 27.0;
 const STATE_RESOURCE_COLUMNS: usize = 5;
 const STATE_OCCUPATION_BUTTON_SIZE: f32 = 34.0;
 const STATE_SCORCHED_EARTH_BUTTON_SIZE: f32 = 34.0;
+const STATE_PANEL_DISABLED_VISUAL_TINT: [f32; 4] = [0.05, 0.06, 0.07, 0.38];
+const STATE_PANEL_MUTATION_CONTROL_NAMES: [&str; 3] = [
+    "select_law_button",
+    "template_garrison_button",
+    "scorched_earth_state_button",
+];
 
 /// The state panel instance: the selected state + its display name (persistent state).
 pub struct StatePanelView {
@@ -156,6 +162,14 @@ impl Drawable for StatePanelDrawable {
             Some(o) => s.push_str(&format!(" occ=r{:.2}/c{:.2}", o.resistance, o.compliance)),
             None => s.push_str(" occ=none"),
         }
+        s.push_str(" disabled_visuals=[");
+        for (name, rect) in state_panel_disabled_visual_rects(&self.roots) {
+            s.push_str(&format!(
+                "{}@{:.0},{:.0},{:.0}x{:.0};",
+                name, rect.x, rect.y, rect.w, rect.h
+            ));
+        }
+        s.push(']');
         s
     }
 
@@ -171,6 +185,7 @@ impl Drawable for StatePanelDrawable {
         );
         render_resources_grid(fd, &self.roots, &self.panel_file, &self.report);
         render_occupation_bars(fd, &self.roots, &self.report);
+        render_disabled_mutation_visuals(fd, &self.roots);
     }
 
     fn tooltip_plan(&self) -> Option<&TooltipPlan> {
@@ -386,7 +401,7 @@ fn state_panel_mutation_control_hit(x: f32, y: f32) -> bool {
 fn state_panel_mutation_control_rects() -> [(&'static str, Rect); 3] {
     [
         (
-            "select_law_button",
+            STATE_PANEL_MUTATION_CONTROL_NAMES[0],
             Rect {
                 x: PANEL_X + 20.0,
                 y: PANEL_Y + 185.0 - 8.0 + 68.0,
@@ -395,7 +410,7 @@ fn state_panel_mutation_control_rects() -> [(&'static str, Rect); 3] {
             },
         ),
         (
-            "template_garrison_button",
+            STATE_PANEL_MUTATION_CONTROL_NAMES[1],
             Rect {
                 x: PANEL_X + 20.0 + 34.0,
                 y: PANEL_Y + 185.0 - 8.0 + 69.0,
@@ -404,7 +419,7 @@ fn state_panel_mutation_control_rects() -> [(&'static str, Rect); 3] {
             },
         ),
         (
-            "scorched_earth_state_button",
+            STATE_PANEL_MUTATION_CONTROL_NAMES[2],
             Rect {
                 x: PANEL_X + 436.0 - 17.0,
                 y: PANEL_Y + 413.0,
@@ -413,6 +428,13 @@ fn state_panel_mutation_control_rects() -> [(&'static str, Rect); 3] {
             },
         ),
     ]
+}
+
+fn state_panel_disabled_visual_rects(roots: &[Node]) -> Vec<(&'static str, Rect)> {
+    STATE_PANEL_MUTATION_CONTROL_NAMES
+        .iter()
+        .filter_map(|&name| find_rect(roots, name).map(|rect| (name, rect)))
+        .collect()
 }
 
 fn state_panel_hover_outcome(needs_redraw: bool) -> InputOutcome {
@@ -987,6 +1009,26 @@ fn render_occupation_bars(fd: &mut FrameDraw, panel: &[Node], report: &StateBind
     }
 }
 
+fn render_disabled_mutation_visuals(fd: &mut FrameDraw, panel: &[Node]) {
+    let rects = state_panel_disabled_visual_rects(panel);
+    if rects.is_empty() {
+        return;
+    }
+    let white = widgets::common::white_texture(fd.renderer);
+    for (_, rect) in rects {
+        widgets::common::fill_rect(
+            fd.renderer,
+            &white,
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h,
+            STATE_PANEL_DISABLED_VISUAL_TINT,
+            None,
+        );
+    }
+}
+
 fn find_rect(roots: &[Node], name: &str) -> Option<Rect> {
     fn walk(n: &Node, name: &str) -> Option<Rect> {
         if n.name == name && n.rect.w > 0.0 && n.rect.h > 0.0 {
@@ -1183,6 +1225,21 @@ mod tests {
         }
     }
 
+    fn stage_with_panel(panel_file: GuiFile) -> Stage {
+        let mut gui_files = HashMap::new();
+        gui_files.insert(PANEL_FILE.to_string(), panel_file);
+        Stage {
+            resolver: GameResolver::new(None, None),
+            manifest: SpriteManifest {
+                sprites: HashMap::new(),
+            },
+            loc: Loc::new(),
+            gui_files,
+            map_dir: std::path::PathBuf::from("."),
+            assets_dir: std::path::PathBuf::from("."),
+        }
+    }
+
     fn snap_with_buildings(
         state_buildings: serde_json::Value,
         province_buildings: serde_json::Value,
@@ -1303,6 +1360,20 @@ mod tests {
         let cur = parts.next().unwrap().parse::<i32>().unwrap();
         let max = parts.next().unwrap().parse::<i32>().unwrap();
         (cur, max)
+    }
+
+    fn assert_rect_near(label: &str, got: Rect, want: Rect) {
+        for (field, got, want) in [
+            ("x", got.x, want.x),
+            ("y", got.y, want.y),
+            ("w", got.w, want.w),
+            ("h", got.h, want.h),
+        ] {
+            assert!(
+                (got - want).abs() <= 0.01,
+                "{label} {field} drifted: got {got}, want {want}"
+            );
+        }
     }
 
     #[test]
@@ -1472,6 +1543,80 @@ mod tests {
                 "{name} disabled click must leave the bound digest unchanged"
             );
         }
+    }
+
+    #[test]
+    fn state_panel_disabled_visuals_are_measured_from_rendered_controls() {
+        let stage = stage();
+        let snap = overflow_snap();
+        let mut view = StatePanelView::new(64, "STATE_64");
+        view.rebind(&rebind_ctx(&snap));
+
+        let bound = view.bind(&ctx(&stage, &snap));
+        let visuals = state_panel_disabled_visual_rects(&bound.hit.roots);
+        assert_eq!(
+            visuals.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+            STATE_PANEL_MUTATION_CONTROL_NAMES,
+            "disabled visual accounting must follow the rendered GUI leaf order"
+        );
+
+        let click_rects = state_panel_mutation_control_rects();
+        for (name, visual_rect) in &visuals {
+            let click_rect = click_rects
+                .iter()
+                .find_map(|(click_name, rect)| (*click_name == *name).then_some(*rect))
+                .expect("visual target has a matching disabled no-op hit rect");
+            let rendered_rect =
+                find_rect(&bound.hit.roots, name).expect("visual target is a rendered leaf");
+            assert_rect_near(name, *visual_rect, rendered_rect);
+            assert_rect_near(name, *visual_rect, click_rect);
+        }
+
+        let digest = bound_digest(&bound);
+        assert!(
+            digest.contains(
+                "disabled_visuals=[select_law_button@60,355,34x34;template_garrison_button@94,356,34x34;scorched_earth_state_button@459,523,34x34;]"
+            ),
+            "state-panel digest must account for real disabled-control visual rects: {digest}"
+        );
+    }
+
+    #[test]
+    fn state_panel_disabled_visuals_do_not_fabricate_missing_controls() {
+        let stage = stage_with_panel(
+            GuiFile::parse(
+                r#"{"view":"p","windows":[
+                  {"type":"containerWindowType","name":"countrystateview","position":{"x":0,"y":0},
+                   "size":{"width":436,"height":496},
+                   "children":[
+                     {"type":"buttonType","name":"select_law_button",
+                      "position":{"x":20,"y":245},"orientation":"UPPER_LEFT",
+                      "size":{"width":34,"height":34},"sprite":"GFX_occupation_state_select_law_button"}
+                   ]}
+                ]}"#,
+            )
+            .expect("minimal panel GUI parses"),
+        );
+        let snap = overflow_snap();
+        let view = StatePanelView::new(64, "STATE_64");
+        let bound = view.bind(&ctx(&stage, &snap));
+
+        let visuals = state_panel_disabled_visual_rects(&bound.hit.roots);
+        assert_eq!(
+            visuals.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+            vec!["select_law_button"],
+            "disabled visuals must come only from rendered leaves"
+        );
+        let digest = bound_digest(&bound);
+        assert!(
+            digest.contains("disabled_visuals=[select_law_button@60,355,34x34;]"),
+            "{digest}"
+        );
+        assert!(
+            !digest.contains("template_garrison_button@")
+                && !digest.contains("scorched_earth_state_button@"),
+            "missing mutation controls must not get fallback visual rects: {digest}"
+        );
     }
 
     #[test]

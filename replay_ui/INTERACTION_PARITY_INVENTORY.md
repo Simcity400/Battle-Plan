@@ -103,8 +103,9 @@ The first native scaffold is now code-backed, not just prose:
   target inventories,
   `production.production` has explicit production-line row and wheel-scroll
   target inventories,
-  `production.construction` has explicit construction-queue row and
-  wheel-scroll/thumb-drag target inventories,
+  `production.construction` has explicit construction-queue row,
+  wheel-scroll/thumb-drag, and save-backed state-panel drilldown target
+  inventories,
   `production.decisions` has explicit timed-decision row and wheel-scroll/thumb-drag
   target inventories plus a disabled-mutation target for visible timed-decision
   `btn_select` actions, `leaders.army_trait_tree` and
@@ -127,8 +128,8 @@ The first native scaffold is now code-backed, not just prose:
   known tab targets remain explicitly tracked as `not_proven` instead of
   disappearing.
 - New report tests lock the current executable counts: 114 registered views, 114
-  contracts, 1,140 category rows (ten per view), 123 target rows, 123 target rows
-  with executable-proof notes, and 965 `not_proven` category rows.
+  contracts, 1,140 category rows (ten per view), 124 target rows, 124 target rows
+  with executable-proof notes, and 964 `not_proven` category rows.
 - The report intentionally exposes no implemented/proven target count, because
   the current target status model only has `open` and `not_proven`. It does now
   separately count twenty intentionally inert mutation targets for the
@@ -270,9 +271,11 @@ The first native scaffold is now code-backed, not just prose:
   clicks do not select underlying rows, and prove scroll/selection survive scrub
   A->B->A. The rendered `production_building_line_entry` queue priority,
   amount, and close controls now have replay-disabled no-op proof with
-  neighboring row-body click protection. Building drilldowns, scrollbar art,
-  build-picker actions, market/debug controls, disabled visuals, and broader
-  construction mutation parity remain open.
+  neighboring row-body click protection. Save-backed rows with measured numeric
+  `location_state` now drill to `core.state_panel`; live/resisted locations
+  fail closed. Broader building details, scrollbar art, build-picker actions,
+  market/debug controls, disabled visuals, and broader construction mutation
+  parity remain open.
 - `production.production` now has executable read-only production-line row
   selection/highlight proof and line-list wheel-scroll/thumb-drag proof: tests
   select by measured live `id` or save `line_id`, preserve military/naval line
@@ -363,11 +366,11 @@ Current executable report totals:
 | Registered views | 114 |
 | Interaction contracts | 114 |
 | Category rows | 1,140 |
-| Target rows | 123 |
-| Target rows with executable-proof notes | 123 |
+| Target rows | 124 |
+| Target rows with executable-proof notes | 124 |
 | Implemented/proven target rows | Not representable yet |
 | Intentionally inert mutation rows | 20 |
-| `not_proven` category rows | 965 |
+| `not_proven` category rows | 964 |
 
 Per-category report totals:
 
@@ -379,7 +382,7 @@ Per-category report totals:
 | `text_input` | 1 | 113 | 1 | 1 | 0 | 1 |
 | `scroll` | 9 | 105 | 13 | 13 | 0 | 13 |
 | `hover_tooltip` | 12 | 102 | 12 | 12 | 0 | 12 |
-| `drilldown` | 3 | 111 | 20 | 20 | 0 | 20 |
+| `drilldown` | 4 | 110 | 21 | 21 | 0 | 21 |
 | `disabled_mutation` | 13 | 101 | 20 | 20 | 0 | 20 |
 | `scrub_state` | 0 | 114 | 0 | 0 | 0 | 0 |
 | `screenshot_proof` | 0 | 114 | 0 | 0 | 0 | 0 |
@@ -685,6 +688,11 @@ Implemented interactions:
   rows use `template`/`location_state`/`created_date`, selected rows rebuild
   across scrub, rows without measured identity are inert, and missing selected
   rows fail closed.
+- [x] `production.construction` save-backed construction-queue row drilldown is
+  executable: rows with measured numeric `location_state` emit read-only
+  `OpenView(core.state_panel, state_id)` from the real row-click path, while
+  live rows with resisted location and malformed save locations fail closed with
+  no fabricated command.
 - [x] `production.construction` construction-queue wheel scroll and
   scrollbar-thumb drag are executable: visible rows change and clamp, captured
   thumb drags keep scrolling outside the grid until pointer-up, track clicks do
@@ -710,11 +718,12 @@ Implemented interactions:
 
 Likely missing interactions:
 
-- [ ] Broader construction building drilldowns, production-line detail
-  drilldowns, decision detail drilldowns, and one-shot availability remain open.
+- [ ] Broader construction building details, production-line detail drilldowns,
+  decision detail drilldowns, and one-shot availability remain open.
 - [ ] Scrollbar art for production lines, timed decisions, and construction
   queue.
-- [ ] Read-only drilldown from rows to equipment/building/decision details.
+- [ ] Read-only drilldown from rows to equipment/production-line/decision
+  details beyond the save-backed construction state-panel path.
 - [x] Secondary production filter hit-testing now consumes the real
   `show_resources`/`show_outdated`/`show_stockpiling`/`show_reinforcing`/
   `show_upgrading`/`show_refitting` checkbox rects as replay-disabled no-ops
@@ -723,8 +732,7 @@ Likely missing interactions:
   shortage/outdated/stockpiling/reinforcing/upgrading/refitting flags or a
   faithful recompute, plus disabled visual treatment.
 - [ ] Disabled/inert proof for remaining hidden production variant/obsolete,
-  unrendered refit-template controls, construction building queue edits,
-  build-picker actions,
+  unrendered refit-template controls, build-picker actions,
   market/debug controls, one-shot decision actions, and broader decision
   mutation controls beyond timed-decision `btn_select`.
 - [ ] Tooltips for resources, efficiency, factory allocation, queue progress,

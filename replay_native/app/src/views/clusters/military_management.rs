@@ -3371,18 +3371,54 @@ register_template!(TemplateDescriptor {
 const BATTLE_PLAN_TOOLS_VIEW_ID: ViewId = ViewId("military.battle_plan_tools");
 const BATTLE_PLAN_TOOLS_FILE: &str = "battle_plan_tools.json";
 const BATTLE_PLAN_TOOLS_ROOT: &str = "battleplantools_window";
+#[cfg(test)]
+const BATTLE_PLAN_OFFENCE_NOOP: &str = "btn_order_draw_offence";
 
-pub struct BattlePlanToolsView;
+pub struct BattlePlanToolsView {
+    screen: Rect,
+    offence_armed: bool,
+}
 
 impl BattlePlanToolsView {
     pub fn new() -> BattlePlanToolsView {
-        BattlePlanToolsView
+        BattlePlanToolsView {
+            screen: default_battle_plan_tools_screen(),
+            offence_armed: false,
+        }
     }
 }
 
 impl Default for BattlePlanToolsView {
     fn default() -> Self {
         BattlePlanToolsView::new()
+    }
+}
+
+fn default_battle_plan_tools_screen() -> Rect {
+    Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 1600.0,
+        h: 900.0,
+    }
+}
+
+fn battle_plan_tools_window_rect(screen: Rect) -> Rect {
+    Rect {
+        x: screen.x + screen.w * 0.5 - 270.0,
+        y: screen.y + screen.h,
+        w: 505.0,
+        h: 60.0,
+    }
+}
+
+fn battle_plan_offence_noop_rect(screen: Rect) -> Rect {
+    let window = battle_plan_tools_window_rect(screen);
+    Rect {
+        x: window.x + 276.0,
+        y: window.y + 33.0,
+        w: 34.0,
+        h: 34.0,
     }
 }
 
@@ -3411,6 +3447,43 @@ impl ViewInstance for BattlePlanToolsView {
     }
     fn policy(&self) -> HostPolicy {
         HostPolicy::window(ZBand::Panel)
+    }
+    fn rebind(&mut self, ctx: &RebindContext) {
+        self.screen = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: ctx.screen.0 as f32,
+            h: ctx.screen.1 as f32,
+        };
+        self.offence_armed = false;
+    }
+    fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
+        match *ev {
+            ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            } => {
+                if battle_plan_offence_noop_rect(self.screen).contains(x, y) {
+                    self.offence_armed = true;
+                    replay_disabled_noop()
+                } else {
+                    self.offence_armed = false;
+                    InputOutcome::ignored()
+                }
+            }
+            ViewInput::PointerUp {
+                x,
+                y,
+                button: PointerButton::Left,
+            } if self.offence_armed
+                || battle_plan_offence_noop_rect(self.screen).contains(x, y) =>
+            {
+                self.offence_armed = false;
+                replay_disabled_noop()
+            }
+            _ => InputOutcome::ignored(),
+        }
     }
     fn bind(&self, ctx: &BindContext) -> BoundView {
         let mut fidelity = FidelityReport::default();
@@ -5132,6 +5205,43 @@ mod tests {
         .expect("synthetic air-wing reorg gui parses")
     }
 
+    fn synthetic_battle_plan_tools_gui() -> GuiFile {
+        GuiFile::parse(
+            r#"{
+              "view": "battle_plan_tools",
+              "windows": [{
+                "type": "containerWindowType",
+                "name": "battleplantools_window",
+                "position": {"x": -270, "y": 0},
+                "size": {"width": 505, "height": 60},
+                "orientation": "center_down",
+                "children": [
+                  {"type": "editBoxType", "name": "operation_name",
+                   "position": {"x": -22, "y": 8},
+                   "size": {"x": 380, "y": 23},
+                   "text": {"text": "", "font": "hoi_18mbs"}},
+                  {"type": "containerWindowType", "name": "content",
+                   "children": [
+                     {"type": "buttonType", "name": "btn_order_draw_offence",
+                      "position": {"x": 276, "y": 33},
+                      "size": {"width": 34, "height": 34},
+                      "sprite": "GFX_BPT_order_draw_offence_btn"},
+                     {"type": "iconType", "name": "icon_execute_type",
+                      "position": {"x": 275, "y": 45},
+                      "size": {"width": 10, "height": 10},
+                      "sprite": "GFX_BPT_execute_strip"}
+                   ]},
+                  {"type": "iconType", "name": "selected_order_overlay",
+                   "position": {"x": 129, "y": 65},
+                   "size": {"width": 12, "height": 12},
+                   "sprite": "GFX_selected_order_overlay"}
+                ]
+              }]
+            }"#,
+        )
+        .expect("synthetic battle-plan-tools gui parses")
+    }
+
     fn sprite_entry(name: &str, texturefile: Option<&str>, frames: u32) -> assets::SpriteEntry {
         assets::SpriteEntry {
             name: name.to_string(),
@@ -5192,6 +5302,15 @@ mod tests {
     }
 
     fn rebind_equipment(v: &mut EquipmentOverviewView, snap: &snapshot::Snapshot) {
+        v.rebind(&RebindContext {
+            snapshot: snap,
+            country: "GER",
+            screen: (1600, 900),
+            refit: false,
+        });
+    }
+
+    fn rebind_battle_plan(v: &mut BattlePlanToolsView, snap: &snapshot::Snapshot) {
         v.rebind(&RebindContext {
             snapshot: snap,
             country: "GER",
@@ -6251,6 +6370,99 @@ mod tests {
     /// EVERY one of the 15 views rebinds A→B→A byte-identically (the scrubber invariant) AND
     /// A differs from B (so the test is not vacuous for the data-bearing views).
     #[test]
+    fn battle_plan_offence_draw_noop_stream_has_assetless_coverage() {
+        let stage = stage_with_gui_file(BATTLE_PLAN_TOOLS_FILE, synthetic_battle_plan_tools_gui());
+        let snap = snap_a();
+        let mut v = BattlePlanToolsView::new();
+        rebind_battle_plan(&mut v, &snap);
+        let cx = ctx(&stage, &snap);
+        let before_bound = v.bind(&cx);
+        let before = bound_digest(&before_bound);
+        let rect = battle_plan_offence_noop_rect(v.screen);
+        let leaf_rect = find_any_rect(&before_bound.hit.roots, BATTLE_PLAN_OFFENCE_NOOP)
+            .expect("synthetic battle-plan toolbar exposes offence draw button");
+        assert_eq!(
+            (
+                leaf_rect.x.round() as i32,
+                leaf_rect.y.round() as i32,
+                leaf_rect.w.round() as i32,
+                leaf_rect.h.round() as i32,
+            ),
+            (
+                rect.x.round() as i32,
+                rect.y.round() as i32,
+                rect.w.round() as i32,
+                rect.h.round() as i32,
+            ),
+            "offensive draw no-op hitbox must mirror the measured battle_plan_tools.gui offsets"
+        );
+        let (x, y) = (rect.x + rect.w * 0.5, rect.y + rect.h * 0.5);
+        let leaf = before_bound
+            .hit
+            .hit_test(x, y)
+            .and_then(|hit| hit.leaf().map(str::to_string));
+        assert_eq!(
+            leaf.as_deref(),
+            Some(BATTLE_PLAN_OFFENCE_NOOP),
+            "assetless no-op proof must click the synthetic real-named offence draw leaf"
+        );
+
+        let down = v.on_input(&ViewInput::PointerDown {
+            x,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            down.consumed && !down.needs_redraw && down.commands.is_empty(),
+            "offensive draw pointer-down must be a replay-disabled no-op"
+        );
+        let up = v.on_input(&ViewInput::PointerUp {
+            x,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            up.consumed && !up.needs_redraw && up.commands.is_empty(),
+            "offensive draw pointer-up must also be a replay-disabled no-op"
+        );
+
+        let down = v.on_input(&ViewInput::PointerDown {
+            x,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            down.consumed && !down.needs_redraw && down.commands.is_empty(),
+            "offensive draw pointer-down must arm the no-op stream"
+        );
+        let release_outside = v.on_input(&ViewInput::PointerUp {
+            x: rect.x + rect.w + 40.0,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            release_outside.consumed
+                && !release_outside.needs_redraw
+                && release_outside.commands.is_empty(),
+            "armed offensive draw pointer-up outside the button must stay consumed"
+        );
+        let neighbor = v.on_input(&ViewInput::PointerDown {
+            x: rect.x + rect.w + 40.0,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            !neighbor.consumed && !neighbor.needs_redraw && neighbor.commands.is_empty(),
+            "neighboring battle-plan toolbar space must not be claimed by the offence handler"
+        );
+        assert_eq!(
+            before,
+            bound_digest(&v.bind(&cx)),
+            "offensive draw no-op stream must leave the battle-plan bind digest unchanged"
+        );
+    }
+
+    #[test]
     fn all_views_scrub_a_b_a_byte_identical() {
         if !assets_extracted() {
             eprintln!("[mil-mgmt] skipped scrub test: game_assets/gui not extracted");
@@ -7170,6 +7382,77 @@ mod tests {
             }
         }
         None
+    }
+
+    #[test]
+    fn battle_plan_offence_real_gui_geometry_matches_interaction_fallback() {
+        if !assets_extracted() {
+            eprintln!("[mil-mgmt] skipped battle-plan geometry: game_assets/gui not extracted");
+            return;
+        }
+        let file = load_gui_file(BATTLE_PLAN_TOOLS_FILE).expect("battle-plan tools gui parses");
+        let root = file
+            .windows
+            .iter()
+            .find(|w| w.name.as_deref() == Some(BATTLE_PLAN_TOOLS_ROOT))
+            .expect("battle-plan tools root exists");
+        assert_eq!(
+            root.orientation.as_deref(),
+            Some("center_down"),
+            "battle-plan toolbar fallback assumes the real center_down root anchor"
+        );
+        let content = raw_named_child(root, "content").expect("content container exists");
+        let offence =
+            raw_named_child(root, BATTLE_PLAN_OFFENCE_NOOP).expect("offence draw button exists");
+        assert_eq!(
+            offence.kind, "buttonType",
+            "offence no-op target must stay on the real draw-order button leaf"
+        );
+
+        let screen = default_battle_plan_tools_screen();
+        let root_pos = root
+            .position
+            .as_ref()
+            .expect("battle-plan root has position");
+        let content_pos = content
+            .position
+            .as_ref()
+            .expect("content container has position");
+        let offence_pos = offence
+            .position
+            .as_ref()
+            .expect("offence button has position");
+        let expected_x =
+            screen.x + screen.w * 0.5 + root_pos.x.px() + content_pos.x.px() + offence_pos.x.px();
+        let expected_y =
+            screen.y + screen.h + root_pos.y.px() + content_pos.y.px() + offence_pos.y.px();
+        let fallback = battle_plan_offence_noop_rect(screen);
+        assert_eq!(
+            (fallback.x.round() as i32, fallback.y.round() as i32),
+            (expected_x.round() as i32, expected_y.round() as i32),
+            "battle-plan offence input rect must stay anchored to real battle_plan_tools.json offsets"
+        );
+
+        if let Some(stage) = stage_with_real_manifest() {
+            let snap = snap_a();
+            let mut v = BattlePlanToolsView::new();
+            rebind_battle_plan(&mut v, &snap);
+            let bound = v.bind(&ctx(&stage, &snap));
+            let leaf_rect = find_any_rect(&bound.hit.roots, BATTLE_PLAN_OFFENCE_NOOP)
+                .expect("real battle_plan_tools.json must expose btn_order_draw_offence");
+            assert_eq!(
+                (leaf_rect.x.round() as i32, leaf_rect.y.round() as i32),
+                (fallback.x.round() as i32, fallback.y.round() as i32),
+                "interaction rect position must match the real laid-out button leaf"
+            );
+            if leaf_rect.w > 0.0 && leaf_rect.h > 0.0 {
+                assert_eq!(
+                    (leaf_rect.w.round() as i32, leaf_rect.h.round() as i32),
+                    (fallback.w.round() as i32, fallback.h.round() as i32),
+                    "nonzero real sprite dimensions must match the scoped no-op hitbox"
+                );
+            }
+        }
     }
 
     #[test]

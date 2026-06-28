@@ -35,7 +35,9 @@ use crate::host::view::{
 };
 use crate::host::FidelityReport;
 use crate::register_view;
-use widgets::{plan_tooltip, Atom as WAtom, Reason as WReason, Tooltip, TooltipPlan};
+use widgets::{
+    plan_tooltip, Atom as WAtom, Reason as WReason, Tooltip, TooltipPlan, TooltipRowMeta,
+};
 
 /// The static (hour-independent) map data — the raster + ids + colours + the GPU pass.
 /// Leaked once at startup to `'static` so the map view (which lives across the
@@ -105,15 +107,38 @@ impl MapHover {
                 }
             })
             .unwrap_or_else(|| WAtom::unavailable_because(WReason::Absent));
-        let tooltip = Tooltip::new(WAtom::exact(format!("Province #{}", self.province_id)))
-            .with_row("Province", WAtom::exact(format!("#{}", self.province_id)))
-            .with_row("State", state_id)
-            .with_row("State name", state_name)
-            .with_row("Owner", owner)
-            .with_row(
-                "Raster",
-                WAtom::exact(format!("{},{}", self.raster.0, self.raster.1)),
-            );
+        let mut state_name_meta =
+            TooltipRowMeta::label_source("STATE_NAME", "render.map.PickResult.state_name_key");
+        if let Some(key) = self.state_name_key.as_deref() {
+            state_name_meta = state_name_meta.value_key(key);
+        }
+        let mut owner_meta = TooltipRowMeta::label_source("OWNER", "render.map.PickResult.owner");
+        if let Some(tag) = self.owner.as_deref() {
+            owner_meta = owner_meta.value_key(tag);
+        }
+        let tooltip =
+            Tooltip::domain_composer(WAtom::exact(format!("Province #{}", self.province_id)))
+                .tooltip_key("core.map.hover.province")
+                .title_key("PROVINCE")
+                .source_key("render.map.PickResult")
+                .exact_row_with_metadata(
+                    "Province",
+                    format!("#{}", self.province_id),
+                    TooltipRowMeta::label_source("PROVINCE", "render.map.PickResult.province_id"),
+                )
+                .row_metadata(
+                    "State",
+                    state_id,
+                    TooltipRowMeta::label_source("STATE", "render.map.PickResult.state_id"),
+                )
+                .row_metadata("State name", state_name, state_name_meta)
+                .row_metadata("Owner", owner, owner_meta)
+                .exact_row_with_metadata(
+                    "Raster",
+                    format!("{},{}", self.raster.0, self.raster.1),
+                    TooltipRowMeta::label_source("RASTER", "MapHover.raster"),
+                )
+                .build();
         plan_tooltip(
             &tooltip,
             (self.cursor.0 as f32, self.cursor.1 as f32),
@@ -939,12 +964,22 @@ mod tests {
             state_name_key: Some("STATE_64".to_string()),
         };
 
-        let digest = hover.tooltip_plan(&ctx).digest();
+        let plan = hover.tooltip_plan(&ctx);
+        let digest = plan.digest();
         assert!(digest.contains("Province #123"), "{digest}");
         assert!(digest.contains("#64"), "{digest}");
         assert!(digest.contains("STATE_64"), "{digest}");
         assert!(digest.contains("GER"), "{digest}");
         assert!(digest.contains("10,11"), "{digest}");
+        assert_eq!(
+            plan.metadata_digest(),
+            r#" meta{tip{tooltip_key="core.map.hover.province";title_key="PROVINCE";source_key="render.map.PickResult"};row0{label_key="PROVINCE";value_key=-;source_key="render.map.PickResult.province_id"};row1{label_key="STATE";value_key=-;source_key="render.map.PickResult.state_id"};row2{label_key="STATE_NAME";value_key="STATE_64";source_key="render.map.PickResult.state_name_key"};row3{label_key="OWNER";value_key="GER";source_key="render.map.PickResult.owner"};row4{label_key="RASTER";value_key=-;source_key="MapHover.raster"}}"#
+        );
+        assert_eq!(
+            digest,
+            hover.tooltip_plan(&ctx).digest(),
+            "same factual map hover must produce a stable tooltip snapshot"
+        );
     }
 
     #[test]
@@ -962,11 +997,25 @@ mod tests {
             state_name_key: None,
         };
 
-        let digest = hover.tooltip_plan(&ctx).digest();
+        let plan = hover.tooltip_plan(&ctx);
+        let digest = plan.digest();
         assert!(digest.contains("Province #999"), "{digest}");
         assert!(digest.contains(widgets::common::NOT_CAPTURED), "{digest}");
         assert!(!digest.contains("STATE_0"), "{digest}");
         assert!(!digest.contains("UNKNOWN"), "{digest}");
+        assert!(
+            plan.metadata_digest()
+                .contains("row2{label_key=\"STATE_NAME\";value_key=-;source_key=\"render.map.PickResult.state_name_key\""),
+            "{}",
+            plan.metadata_digest()
+        );
+        assert!(
+            plan.metadata_digest().contains(
+                "row3{label_key=\"OWNER\";value_key=-;source_key=\"render.map.PickResult.owner\""
+            ),
+            "{}",
+            plan.metadata_digest()
+        );
     }
 
     /// The map's weather wiring (mirroring `compute_dynamic`): a snapshot WITH measured

@@ -2753,24 +2753,68 @@ fn weather_domain_has_overlay_data(domain: &serde_json::Value) -> bool {
     let Some(obj) = domain.as_object() else {
         return false;
     };
-    ["regions", "provinces"]
-        .iter()
-        .any(|key| weather_branch_has_entries(obj.get(*key)))
+    weather_provinces_have_direct_visual_driver(obj.get("provinces"))
+        || weather_regions_have_arctic_water(obj.get("regions"))
 }
 
-fn weather_branch_has_entries(branch: Option<&serde_json::Value>) -> bool {
+fn weather_provinces_have_direct_visual_driver(branch: Option<&serde_json::Value>) -> bool {
     branch
         .and_then(|value| value.as_object())
-        .map(|entries| entries.values().any(weather_entry_has_data))
+        .map(|entries| {
+            entries
+                .values()
+                .any(weather_province_has_direct_visual_driver)
+        })
         .unwrap_or(false)
 }
 
-fn weather_entry_has_data(entry: &serde_json::Value) -> bool {
-    match entry {
-        serde_json::Value::Null => false,
-        serde_json::Value::Object(map) => !map.is_empty(),
-        serde_json::Value::Array(arr) => !arr.is_empty(),
-        _ => true,
+fn weather_province_has_direct_visual_driver(entry: &serde_json::Value) -> bool {
+    let Some(map) = entry.as_object() else {
+        return false;
+    };
+    map.get("snow").and_then(|v| v.as_f64()).is_some()
+        || map.get("mud").and_then(|v| v.as_bool()).is_some()
+}
+
+fn weather_regions_have_arctic_water(branch: Option<&serde_json::Value>) -> bool {
+    branch
+        .and_then(|value| value.as_object())
+        .map(|entries| entries.values().any(weather_region_has_arctic_water))
+        .unwrap_or(false)
+}
+
+fn weather_region_has_arctic_water(entry: &serde_json::Value) -> bool {
+    weather_phenomenon_values(entry)
+        .iter()
+        .any(|p| p == "arctic_water")
+}
+
+fn weather_domain_has_unrendered_phenomena(domain: &serde_json::Value) -> bool {
+    let Some(regions) = domain
+        .as_object()
+        .and_then(|obj| obj.get("regions"))
+        .and_then(|regions| regions.as_object())
+    else {
+        return false;
+    };
+    regions.values().any(|entry| {
+        weather_phenomenon_values(entry)
+            .iter()
+            .any(|p| p != "arctic_water")
+    })
+}
+
+fn weather_phenomenon_values(entry: &serde_json::Value) -> Vec<String> {
+    let Some(value) = entry.get("phenomenon") else {
+        return Vec::new();
+    };
+    match value {
+        serde_json::Value::String(s) => vec![s.to_string()],
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -2944,6 +2988,11 @@ fn mapmode_hover_tooltip(
     } else {
         tooltip
     };
+    let tooltip = if matches!(entry.data_driven, Some(DataDrivenMode::Weather)) {
+        weather_mode_semantics_row(ctx, tooltip)
+    } else {
+        tooltip
+    };
     let tooltip = tooltip
         .with_row("Default rail slot", default_slot)
         .with_row(
@@ -2951,6 +3000,33 @@ fn mapmode_hover_tooltip(
             WAtom::unavailable_because(WReason::Blocked),
         );
     plan_tooltip(&tooltip, cursor, ctx.screen)
+}
+
+fn weather_mode_semantics_row(ctx: &BindContext, tooltip: Tooltip) -> Tooltip {
+    match ctx.domain_field("weather") {
+        Captured::Measured(domain) if weather_domain_has_overlay_data(domain) => {
+            let tooltip = tooltip.with_row(
+                "Rendered weather",
+                WAtom::derived("province snow/mud or sea-only arctic_water"),
+            );
+            if weather_domain_has_unrendered_phenomena(domain) {
+                tooltip.with_row("Captured phenomenon", WAtom::derived("not rendered/proven"))
+            } else {
+                tooltip
+            }
+        }
+        Captured::Measured(domain) if weather_domain_has_unrendered_phenomena(domain) => {
+            tooltip.with_row("Captured phenomenon", WAtom::derived("not rendered/proven"))
+        }
+        Captured::Measured(_) => tooltip.with_row(
+            "Captured phenomenon",
+            WAtom::unavailable_because(WReason::Blocked),
+        ),
+        _ => tooltip.with_row(
+            "Captured phenomenon",
+            WAtom::unavailable_because(WReason::Blocked),
+        ),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -7658,6 +7734,127 @@ mod tests {
                 "{label} must not claim weather proxy fidelity without entries: {d}"
             );
         }
+    }
+
+    #[test]
+    fn weather_direct_province_drivers_badge_derived_with_semantics_readout() {
+        let stage = stage_with(&[]);
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "date": "1941.4.13.11", "hour_index": 100,
+            "countries": { "GER": { "politics": { "capital_state": 64 } } },
+            "states": { "64": { "owner": "GER", "controller": "GER" } },
+            "weather": { "provinces": { "11": { "snow": 0.0 }, "12": { "mud": false } } }
+        }))
+        .unwrap();
+        let d = bound_digest(&MapModesView::new().bind(&ctx(&stage, &snap, "1941.4.13.11")));
+        assert!(
+            d.contains("Weather(D)"),
+            "measured snow=0 and mud=false are direct captured visual drivers: {d}"
+        );
+
+        let panel = mapmode_panel_for_tests();
+        let mut v = MapModesView::new();
+        v.set_input_panel(panel);
+        let hover = hover_mapmode_row(&mut v, panel, "Weather");
+        assert!(!hover.consumed);
+        assert!(hover.needs_redraw);
+        let tip = v
+            .bind(&ctx(&stage, &snap, "1941.4.13.11"))
+            .tooltip_plan()
+            .expect("weather tooltip")
+            .digest();
+        assert!(tip.contains("Rendered weather"), "{tip}");
+        assert!(tip.contains("province snow/mud"), "{tip}");
+        assert!(tip.contains("derived"), "{tip}");
+    }
+
+    #[test]
+    fn weather_region_only_non_arctic_phenomenon_is_captured_but_not_rendered() {
+        let stage = stage_with(&[]);
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "date": "1941.4.13.11", "hour_index": 100,
+            "countries": { "GER": { "politics": { "capital_state": 64 } } },
+            "states": { "64": { "owner": "GER", "controller": "GER" } },
+            "weather": { "regions": { "5": { "phenomenon": ["rain_light", "blizzard"] } } }
+        }))
+        .unwrap();
+        let d = bound_digest(&MapModesView::new().bind(&ctx(&stage, &snap, "1941.4.13.11")));
+        assert!(
+            d.contains("Weather(U)"),
+            "generic region phenomena must not claim a rendered overlay without proven semantics: {d}"
+        );
+        assert!(!d.contains("Weather(D)"), "{d}");
+
+        let panel = mapmode_panel_for_tests();
+        let mut v = MapModesView::new();
+        v.set_input_panel(panel);
+        let hover = hover_mapmode_row(&mut v, panel, "Weather");
+        assert!(!hover.consumed);
+        assert!(hover.needs_redraw);
+        let tip = v
+            .bind(&ctx(&stage, &snap, "1941.4.13.11"))
+            .tooltip_plan()
+            .expect("weather tooltip")
+            .digest();
+        assert!(tip.contains("Captured phenomenon"), "{tip}");
+        assert!(tip.contains("not rendered/proven"), "{tip}");
+        assert!(tip.contains("Expected source"), "{tip}");
+        assert!(
+            tip.contains("weather.regions/weather.provinces"),
+            "tooltip must still name the direct source it needs: {tip}"
+        );
+    }
+
+    #[test]
+    fn weather_rendered_driver_keeps_unrendered_phenomenon_note() {
+        let stage = stage_with(&[]);
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "date": "1941.4.13.11", "hour_index": 100,
+            "countries": { "GER": { "politics": { "capital_state": 64 } } },
+            "states": { "64": { "owner": "GER", "controller": "GER" } },
+            "weather": {
+                "provinces": { "11": { "snow": 0.5 } },
+                "regions": { "5": { "phenomenon": ["rain_light"] } }
+            }
+        }))
+        .unwrap();
+        let d = bound_digest(&MapModesView::new().bind(&ctx(&stage, &snap, "1941.4.13.11")));
+        assert!(
+            d.contains("Weather(D)"),
+            "direct province snow keeps Weather derived even with unrendered region phenomena: {d}"
+        );
+
+        let panel = mapmode_panel_for_tests();
+        let mut v = MapModesView::new();
+        v.set_input_panel(panel);
+        let hover = hover_mapmode_row(&mut v, panel, "Weather");
+        assert!(!hover.consumed);
+        assert!(hover.needs_redraw);
+        let tip = v
+            .bind(&ctx(&stage, &snap, "1941.4.13.11"))
+            .tooltip_plan()
+            .expect("weather tooltip")
+            .digest();
+        assert!(tip.contains("Rendered weather"), "{tip}");
+        assert!(tip.contains("Captured phenomenon"), "{tip}");
+        assert!(tip.contains("not rendered/proven"), "{tip}");
+    }
+
+    #[test]
+    fn weather_arctic_water_remains_sea_only_rendered_driver() {
+        let stage = stage_with(&[]);
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "date": "1941.4.13.11", "hour_index": 100,
+            "countries": { "GER": { "politics": { "capital_state": 64 } } },
+            "states": { "64": { "owner": "GER", "controller": "GER" } },
+            "weather": { "regions": { "46": { "phenomenon": ["arctic_water"] } } }
+        }))
+        .unwrap();
+        let d = bound_digest(&MapModesView::new().bind(&ctx(&stage, &snap, "1941.4.13.11")));
+        assert!(
+            d.contains("Weather(D)"),
+            "arctic_water is the region phenomenon with a proven frozen-sea render path: {d}"
+        );
     }
 
     #[test]

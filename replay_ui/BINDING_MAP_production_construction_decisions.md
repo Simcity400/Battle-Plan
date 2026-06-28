@@ -229,9 +229,12 @@ pointer-up, and track clicks do not select underlying rows. The top
 no-ops with unchanged selection/scroll/digest and neighboring clicks unclaimed.
 The rendered queue row priority/amount/close buttons are also proven
 replay-disabled no-ops with unchanged selection/scroll/digest and neighboring
-row-body clicks still selecting normally. Building drilldowns, scrollbar art,
-build-picker actions, market/debug controls, disabled visuals, and broader
-construction mutation parity remain open.
+row-body clicks still selecting normally. Save-backed queue rows with measured
+numeric `location_state` now emit a read-only `OpenView(core.state_panel,
+state_id)` drilldown from the real row-click path; live queue rows (location
+RESISTED) and malformed save locations fail closed with no command. Broader
+building details, scrollbar art, build-picker actions, market/debug controls,
+disabled visuals, and broader construction mutation parity remain open.
 
 ### Top summary (`countryconstructionsview > production_win_top` + `count_container`)
 

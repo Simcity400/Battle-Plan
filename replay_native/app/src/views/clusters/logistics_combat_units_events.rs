@@ -90,9 +90,10 @@ use gui_runtime::{build_scene, layout, GuiFile, Loc, ManifestContent, Rect};
 
 use bind::Fidelity;
 
-use widgets::common::{Atom, DrawAssets};
+use widgets::common::{Atom, DrawAssets, Reason as WReason};
 use widgets::event_card::{EventCard, PopupCard};
 use widgets::naval_combat::{RosterPanel, SideColumn};
+use widgets::{plan_tooltip, Tooltip, TooltipPlan};
 
 use crate::host::context::{BindContext, Captured, DisplayAtom, FidelityReport, UnavailableReason};
 use crate::host::draw::FrameDraw;
@@ -744,12 +745,24 @@ fn panel_digest(panel: &RosterPanel) -> String {
 const LOGISTICS_VIEW_ID: ViewId = ViewId("logistics.logistics");
 const LOGISTICS_FILE: &str = "logistics.json";
 const LOGISTICS_ROOT: &str = "countrylogisticsview";
+const LOGISTICS_RESOURCE_ROW_W: f32 = 70.0;
+const LOGISTICS_RESOURCE_ROW_H: f32 = 30.0;
 
-pub struct LogisticsView;
+pub struct LogisticsView {
+    screen: Rect,
+    resource_input_rows: Vec<LogisticsResourceInputRow>,
+    selected_resource_key: Option<String>,
+    hover: Option<LogisticsResourceHover>,
+}
 
 impl LogisticsView {
     pub fn new() -> LogisticsView {
-        LogisticsView
+        LogisticsView {
+            screen: default_logistics_screen(),
+            resource_input_rows: Vec::new(),
+            selected_resource_key: None,
+            hover: None,
+        }
     }
 }
 impl Default for LogisticsView {
@@ -758,32 +771,205 @@ impl Default for LogisticsView {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LogisticsResourceInputRow {
+    key: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct LogisticsResourceHover {
+    key: String,
+    cursor: (f32, f32),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LogisticsSelectionStatus {
+    None,
+    Selected,
+    MissingSelected,
+}
+
+impl LogisticsSelectionStatus {
+    fn tag(self) -> &'static str {
+        match self {
+            LogisticsSelectionStatus::None => "none",
+            LogisticsSelectionStatus::Selected => "selected",
+            LogisticsSelectionStatus::MissingSelected => "missing_selected",
+        }
+    }
+}
+
+fn default_logistics_screen() -> Rect {
+    Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 1600.0,
+        h: 900.0,
+    }
+}
+
+fn logistics_panel_rect(screen: Rect) -> Rect {
+    Rect {
+        x: screen.x + screen.w - 606.0,
+        y: screen.y + 78.0,
+        w: 550.0,
+        h: (screen.h - 78.0).max(0.0),
+    }
+}
+
+fn logistics_resource_rows_viewport_fallback(screen: Rect) -> Rect {
+    let panel = logistics_panel_rect(screen);
+    Rect {
+        x: panel.x + 20.0,
+        y: panel.y + 46.0,
+        w: LOGISTICS_RESOURCE_ROW_W * 7.0,
+        h: LOGISTICS_RESOURCE_ROW_H,
+    }
+}
+
+fn logistics_resource_rows_viewport(roots: &[Node], screen: Rect) -> Rect {
+    find_rect(roots, "resources_grid")
+        .unwrap_or_else(|| logistics_resource_rows_viewport_fallback(screen))
+}
+
+fn logistics_resource_key(resource: &str) -> String {
+    format!("resource:{resource}")
+}
+
+fn logistics_resource_input_rows(
+    produced: Captured<&serde_json::Value>,
+    derived: Captured<&serde_json::Value>,
+) -> Vec<LogisticsResourceInputRow> {
+    let obj_cap = if produced.is_measured() {
+        produced
+    } else {
+        derived
+    };
+    let obj = match obj_cap {
+        Captured::Measured(v) => match v.as_object() {
+            Some(o) => o,
+            None => return Vec::new(),
+        },
+        Captured::Null | Captured::Absent => return Vec::new(),
+    };
+    let mut keys: Vec<&String> = obj.keys().collect();
+    keys.sort();
+    keys.into_iter()
+        .map(|k| LogisticsResourceInputRow {
+            key: logistics_resource_key(k),
+        })
+        .collect()
+}
+
+fn logistics_resource_key_present(rows: &[LogisticsResourceInputRow], key: Option<&str>) -> bool {
+    match key {
+        Some(key) => rows.iter().any(|row| row.key == key),
+        None => false,
+    }
+}
+
+fn pick_logistics_resource_key(
+    viewport: Rect,
+    rows: &[LogisticsResourceInputRow],
+    x: f32,
+    y: f32,
+) -> Option<(usize, String)> {
+    if !viewport.contains(x, y) {
+        return None;
+    }
+    let idx = ((x - viewport.x) / LOGISTICS_RESOURCE_ROW_W).floor() as usize;
+    if idx >= rows.len() || (idx as f32) * LOGISTICS_RESOURCE_ROW_W >= viewport.w {
+        return None;
+    }
+    rows.get(idx).map(|row| (idx, row.key.clone()))
+}
+
+fn logistics_selection_status(
+    rows: &[DataRow],
+    selected_key: Option<&str>,
+) -> LogisticsSelectionStatus {
+    match selected_key {
+        None => LogisticsSelectionStatus::None,
+        Some(key) if rows.iter().any(|row| row.key.as_deref() == Some(key)) => {
+            LogisticsSelectionStatus::Selected
+        }
+        Some(_) => LogisticsSelectionStatus::MissingSelected,
+    }
+}
+
+fn logistics_resource_tooltip_for_hover(
+    ctx: &BindContext,
+    hover: Option<&LogisticsResourceHover>,
+) -> Option<TooltipPlan> {
+    let hover = hover?;
+    let resource = hover.key.strip_prefix("resource:")?;
+    let amount = logistics_resource_amount_atom(ctx, ctx.country, resource)?;
+    let tooltip = Tooltip::domain_composer(Atom::exact("Logistics resource"))
+        .exact_row("Resource", resource.to_string())
+        .row("Produced", amount)
+        .unavailable_row("Stockpile detail", WReason::Blocked)
+        .unavailable_row("Equipment demand", WReason::Blocked)
+        .unavailable_row("Production history", WReason::Blocked)
+        .build();
+    Some(plan_tooltip(&tooltip, hover.cursor, ctx.screen))
+}
+
+fn logistics_resource_amount_atom(ctx: &BindContext, tag: &str, resource: &str) -> Option<Atom> {
+    let produced = ctx.country_field(tag, "economy.resources.produced");
+    let derived = ctx.country_field(tag, "economy.resources.available_derived");
+    let obj_cap = if produced.is_measured() {
+        produced
+    } else {
+        derived
+    };
+    match obj_cap {
+        Captured::Measured(v) => match v.as_object() {
+            Some(obj) => match crate::host::context::classify_value(obj.get(resource)) {
+                Captured::Measured(value) => Some(Atom::exact(fmt_int(value))),
+                Captured::Null => Some(Atom::unavailable_because(WReason::Null)),
+                Captured::Absent => None,
+            },
+            None => Some(Atom::unavailable_because(WReason::Blocked)),
+        },
+        Captured::Null | Captured::Absent => None,
+    }
+}
+
 struct LogisticsDrawable {
     roots: Vec<Node>,
     file: GuiFile,
     resource_rows: Vec<DataRow>,
     materiel_rows: Vec<DataRow>,
+    resource_viewport: Rect,
     resource_section: SectionState,
+    selected_resource_key: Option<String>,
+    selected_resource_status: LogisticsSelectionStatus,
+    tooltip: Option<TooltipPlan>,
 }
 
 impl Drawable for LogisticsDrawable {
     fn draw_digest(&self) -> String {
         format!(
-            "LOGI res_sect={} res={} mat={}",
+            "LOGI res_sect={} res={} mat={} sel_status={} sel_key={} sel_row={}",
             self.resource_section.tag(),
             row_digest(&self.resource_rows),
             row_digest(&self.materiel_rows),
+            self.selected_resource_status.tag(),
+            self.selected_resource_key.as_deref().unwrap_or("-"),
+            selected_row_digest(&self.resource_rows, self.selected_resource_key.as_deref()),
         )
     }
     fn draw(&self, fd: &mut FrameDraw) {
         fd.draw_nodes(&self.roots);
-        render_rows(
+        render_rows_selected_in_viewport(
             fd,
-            &self.roots,
             &self.file,
             "resources_grid",
             "logistics_overview_resource_item",
             &self.resource_rows,
+            self.resource_viewport,
+            0.0,
+            self.selected_resource_key.as_deref(),
         );
         render_rows(
             fd,
@@ -794,6 +980,10 @@ impl Drawable for LogisticsDrawable {
             &self.materiel_rows,
         );
     }
+
+    fn tooltip_plan(&self) -> Option<&TooltipPlan> {
+        self.tooltip.as_ref()
+    }
 }
 
 impl ViewInstance for LogisticsView {
@@ -802,6 +992,86 @@ impl ViewInstance for LogisticsView {
     }
     fn policy(&self) -> HostPolicy {
         HostPolicy::window(ZBand::Panel)
+    }
+    fn rebind(&mut self, ctx: &RebindContext) {
+        self.screen = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: ctx.screen.0 as f32,
+            h: ctx.screen.1 as f32,
+        };
+        self.resource_input_rows = logistics_resource_input_rows(
+            ctx.country_field(ctx.country, "economy.resources.produced"),
+            ctx.country_field(ctx.country, "economy.resources.available_derived"),
+        );
+        if !logistics_resource_key_present(
+            &self.resource_input_rows,
+            self.hover.as_ref().map(|h| h.key.as_str()),
+        ) {
+            self.hover = None;
+        }
+    }
+    fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
+        match ev {
+            ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            } => match pick_logistics_resource_key(
+                logistics_resource_rows_viewport_fallback(self.screen),
+                &self.resource_input_rows,
+                *x,
+                *y,
+            ) {
+                Some((_idx, key)) => {
+                    let changed = self.selected_resource_key.as_deref() != Some(key.as_str());
+                    self.selected_resource_key = Some(key);
+                    InputOutcome {
+                        consumed: true,
+                        commands: Vec::new(),
+                        needs_redraw: changed,
+                    }
+                }
+                None => InputOutcome::ignored(),
+            },
+            ViewInput::PointerUp {
+                x,
+                y,
+                button: PointerButton::Left,
+            } if pick_logistics_resource_key(
+                logistics_resource_rows_viewport_fallback(self.screen),
+                &self.resource_input_rows,
+                *x,
+                *y,
+            )
+            .is_some() =>
+            {
+                InputOutcome {
+                    consumed: true,
+                    commands: Vec::new(),
+                    needs_redraw: false,
+                }
+            }
+            ViewInput::PointerMove { x, y, drag: false } => {
+                let before = self.hover.clone();
+                self.hover = pick_logistics_resource_key(
+                    logistics_resource_rows_viewport_fallback(self.screen),
+                    &self.resource_input_rows,
+                    *x,
+                    *y,
+                )
+                .map(|(_idx, key)| LogisticsResourceHover {
+                    key,
+                    cursor: (*x, *y),
+                });
+                InputOutcome {
+                    consumed: false,
+                    commands: Vec::new(),
+                    needs_redraw: self.hover != before,
+                }
+            }
+            _ => InputOutcome::ignored(),
+        }
     }
     fn bind(&self, ctx: &BindContext) -> BoundView {
         let tag = ctx.country;
@@ -850,12 +1120,20 @@ impl ViewInstance for LogisticsView {
         let materiel_rows = build_materiel_rows(&mut fidelity);
 
         let roots = build_root(ctx, &file, LOGISTICS_ROOT, &summary);
+        let resource_viewport = logistics_resource_rows_viewport(&roots, self.screen);
+        let selected_resource_status =
+            logistics_selection_status(&resource_rows, self.selected_resource_key.as_deref());
+        let tooltip = logistics_resource_tooltip_for_hover(ctx, self.hover.as_ref());
         let drawable = LogisticsDrawable {
             roots: roots.clone(),
             file,
             resource_rows,
             materiel_rows,
+            resource_viewport,
             resource_section,
+            selected_resource_key: self.selected_resource_key.clone(),
+            selected_resource_status,
+            tooltip,
         };
         BoundView {
             instance: InstanceId(0),
@@ -928,7 +1206,7 @@ fn build_resource_rows(
     keys.sort();
     let mut rows = Vec::new();
     for k in keys {
-        let mut row = DataRow::new();
+        let mut row = DataRow::new().with_key(logistics_resource_key(k));
         let v = &obj[k];
         row.bind(
             fidelity,
@@ -4493,6 +4771,15 @@ mod tests {
         }
     }
 
+    fn logistics_rebind_ctx<'a>(snap: &'a snapshot::Snapshot) -> RebindContext<'a> {
+        RebindContext {
+            snapshot: snap,
+            country: "GER",
+            screen: (1600, 900),
+            refit: false,
+        }
+    }
+
     fn snap_unit_a_multi() -> snapshot::Snapshot {
         serde_json::from_value(serde_json::json!({
             "date": "1941.4.13.11", "hour_index": 100,
@@ -4823,6 +5110,152 @@ mod tests {
         assert!(
             d.contains("mat=") && !d.contains("mat=r0"),
             "materiel grid must be empty (unfed), got: {d}"
+        );
+    }
+
+    #[test]
+    fn logistics_resource_hover_tooltip_uses_exact_amount_and_badges_details() {
+        let stage = stage_with(&[]);
+        let snap = snap_a();
+        let mut view = LogisticsView::new();
+        view.rebind(&logistics_rebind_ctx(&snap));
+
+        // Resource rows are keyed by sorted captured resource names: coal, oil, steel.
+        let viewport = logistics_resource_rows_viewport_fallback(default_logistics_screen());
+        let out = view.on_input(&ViewInput::PointerMove {
+            x: viewport.x + LOGISTICS_RESOURCE_ROW_W * 2.0 + 8.0,
+            y: viewport.y + 8.0,
+            drag: false,
+        });
+        assert!(!out.consumed, "passive hover must not consume input");
+        assert!(out.needs_redraw, "new resource hover should redraw tooltip");
+
+        let bv = view.bind(&ctx(&stage, &snap));
+        let tip = bv.tooltip_plan().expect("steel resource tooltip");
+        let d = tip.digest();
+        assert!(
+            d.contains("steel"),
+            "tooltip must name the resource key: {d}"
+        );
+        assert!(
+            d.contains("1196"),
+            "tooltip must show exact captured steel amount, got: {d}"
+        );
+        assert!(
+            tip.plan().unavailable_text_count() >= 3,
+            "stockpile/demand/history detail rows must badge unavailable, got: {d}"
+        );
+        assert!(
+            !d.contains("Produced 0") && !d.contains("Produced=0"),
+            "tooltip must not fabricate a zero for the exact amount: {d}"
+        );
+    }
+
+    #[test]
+    fn logistics_resource_hover_clears_and_stale_rebind_fails_closed() {
+        let stage = stage_with(&[]);
+        let snap = snap_a();
+        let mut view = LogisticsView::new();
+        view.rebind(&logistics_rebind_ctx(&snap));
+        let viewport = logistics_resource_rows_viewport_fallback(default_logistics_screen());
+
+        let hover = view.on_input(&ViewInput::PointerMove {
+            x: viewport.x + 8.0,
+            y: viewport.y + 8.0,
+            drag: false,
+        });
+        assert!(
+            hover.needs_redraw,
+            "coal hover should publish tooltip state"
+        );
+        assert!(
+            view.bind(&ctx(&stage, &snap)).tooltip_plan().is_some(),
+            "coal hover should bind a tooltip"
+        );
+
+        let clear = view.on_input(&ViewInput::PointerMove {
+            x: viewport.x - 20.0,
+            y: viewport.y + 8.0,
+            drag: false,
+        });
+        assert!(
+            clear.needs_redraw,
+            "leaving resource rows should clear tooltip"
+        );
+        assert!(
+            view.bind(&ctx(&stage, &snap)).tooltip_plan().is_none(),
+            "off-row hover must not keep a stale tooltip"
+        );
+
+        view.on_input(&ViewInput::PointerMove {
+            x: viewport.x + 8.0,
+            y: viewport.y + 8.0,
+            drag: false,
+        });
+        view.rebind(&logistics_rebind_ctx(&snap_b()));
+        assert!(
+            view.hover.is_none(),
+            "hovered coal key must clear when the next scrub hour has no coal row"
+        );
+        assert!(
+            view.bind(&ctx(&stage, &snap_b())).tooltip_plan().is_none(),
+            "missing hovered resource must fail closed instead of falling back to steel"
+        );
+    }
+
+    #[test]
+    fn logistics_resource_click_selects_stable_key_without_fallback() {
+        let stage = stage_with(&[]);
+        let snap = snap_a();
+        let mut view = LogisticsView::new();
+        view.rebind(&logistics_rebind_ctx(&snap));
+        let viewport = logistics_resource_rows_viewport_fallback(default_logistics_screen());
+
+        let click = view.on_input(&ViewInput::PointerDown {
+            x: viewport.x + 8.0,
+            y: viewport.y + 8.0,
+            button: PointerButton::Left,
+        });
+        assert!(click.consumed, "resource row click must be consumed");
+        assert!(
+            click.needs_redraw,
+            "selecting a new resource row should redraw the highlight"
+        );
+
+        let selected = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert!(
+            selected.contains("sel_status=selected"),
+            "resource click must switch to selected status, got: {selected}"
+        );
+        assert!(
+            selected.contains("sel_key=resource:coal"),
+            "selection must use stable resource key, got: {selected}"
+        );
+        assert!(
+            selected.contains("sel_row=r0[key=resource:coal;value=617(E);"),
+            "selected-row digest must point at the clicked coal row, got: {selected}"
+        );
+
+        view.rebind(&logistics_rebind_ctx(&snap_b()));
+        let missing = bound_digest(&view.bind(&ctx(&stage, &snap_b())));
+        assert!(
+            missing.contains("sel_status=missing_selected"),
+            "missing selected resource must be explicit, got: {missing}"
+        );
+        assert!(
+            missing.contains("sel_key=resource:coal") && missing.contains("sel_row=none"),
+            "missing selected key must not fall back to another resource, got: {missing}"
+        );
+        assert!(
+            !missing.contains("sel_row=r0[key=resource:steel"),
+            "missing coal selection must not silently select steel, got: {missing}"
+        );
+
+        view.rebind(&logistics_rebind_ctx(&snap));
+        let restored = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert_eq!(
+            selected, restored,
+            "returning to the original hour must restore the same selected resource row"
         );
     }
 

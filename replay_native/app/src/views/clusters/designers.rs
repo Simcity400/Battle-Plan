@@ -329,6 +329,13 @@ fn load_and_sanitize(assets_dir: &std::path::Path, file: &str) -> Option<GuiFile
     GuiFile::parse(&v.to_string()).ok()
 }
 
+fn repo_game_assets_dir() -> Option<std::path::PathBuf> {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|repo| repo.join("game_assets"))
+}
+
 /// Recursively rewrite a `position.{x,y}` value that is a STRING starting with `@` into
 /// `0.0`. Surgical: ONLY the `position` object's `x`/`y` string-`@` values are touched (a
 /// layout anchor the shared parser cannot resolve), never any data/text field. This adapts
@@ -400,6 +407,14 @@ struct ComponentPickModel {
     modules: ModuleLayout,
     grid_area: Rect,
     disabled_area: Rect,
+    controls: Vec<ComponentControlHit>,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct ComponentControlHit {
+    id: String,
+    rect: Rect,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -407,6 +422,7 @@ struct ComponentInteraction {
     selected_slot: Option<String>,
     hovered_slot: Option<String>,
     pick_model: Option<ComponentPickModel>,
+    pressed_disabled: bool,
 }
 
 impl ComponentInteraction {
@@ -422,7 +438,15 @@ impl ComponentInteraction {
             modules,
             grid_area: model::module_grid_area(disabled_area, COMPONENT_HEADER_ROWS, false),
             disabled_area,
+            controls: build_component_control_hits(snapshot, tag, fam, screen),
         });
+        if self
+            .pick_model
+            .as_ref()
+            .map_or(true, |model| model.controls.is_empty())
+        {
+            self.pressed_disabled = false;
+        }
         if self
             .hovered_slot
             .as_deref()
@@ -448,6 +472,17 @@ impl ComponentInteraction {
                 x,
                 y,
                 button: PointerButton::Left,
+            } if self.hit_control(x, y).is_some() => {
+                self.pressed_disabled = true;
+                component_input_consumed(false)
+            }
+            ViewInput::PointerMove { drag: true, .. } if self.pressed_disabled => {
+                component_input_consumed(false)
+            }
+            ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
             } => match self.pick_slot(x, y) {
                 Some(id) => {
                     let changed = self.selected_slot.as_deref() != Some(id.as_str());
@@ -463,7 +498,10 @@ impl ComponentInteraction {
                 y,
                 button: PointerButton::Left,
             } => {
-                if self.contains_disabled_area(x, y) {
+                if self.pressed_disabled {
+                    self.pressed_disabled = false;
+                    component_input_consumed(false)
+                } else if self.hit_control(x, y).is_some() || self.contains_disabled_area(x, y) {
                     component_input_consumed(false)
                 } else {
                     InputOutcome::ignored()
@@ -488,6 +526,34 @@ impl ComponentInteraction {
         self.pick_model
             .as_ref()
             .is_some_and(|model| model.disabled_area.contains(x, y))
+    }
+
+    fn hit_control(&self, x: f32, y: f32) -> Option<&ComponentControlHit> {
+        self.pick_model
+            .as_ref()?
+            .controls
+            .iter()
+            .find(|hit| hit.rect.contains(x, y))
+    }
+
+    #[cfg(test)]
+    fn control_center(&self, id: &str) -> Option<(f32, f32)> {
+        let hit = self
+            .pick_model
+            .as_ref()?
+            .controls
+            .iter()
+            .find(|hit| hit.id == id)?;
+        Some((hit.rect.x + hit.rect.w * 0.5, hit.rect.y + hit.rect.h * 0.5))
+    }
+
+    #[cfg(test)]
+    fn control_rect(&self, id: &str) -> Option<Rect> {
+        self.pick_model
+            .as_ref()?
+            .controls
+            .iter()
+            .find_map(|hit| (hit.id == id).then_some(hit.rect))
     }
 }
 
@@ -525,6 +591,108 @@ fn component_overlay_area(screen: Rect, fam: Family) -> Rect {
         y: base.y + 64.0,
         w: (base.w - 24.0).max(0.0),
         h: (base.h - 76.0).max(0.0),
+    }
+}
+
+const COMPONENT_BTN_DEC: &str = "btn_dec";
+const COMPONENT_BTN_INC: &str = "btn_inc";
+const COMPONENT_LEVEL: &str = "level";
+const COMPONENT_INLINE_UPGRADE_ROWS: [&str; 2] = ["equipment_upgrade_0", "equipment_upgrade_1"];
+
+fn component_gui_for_family(fam: Family) -> (&'static str, &'static str) {
+    match fam {
+        Family::LandVehicle => (TANK_FILE, TANK_ROOT),
+        Family::Plane => (PLANE_FILE, PLANE_ROOT),
+        Family::Ship => (EQUIP_FILE, EQUIP_ROOT),
+    }
+}
+
+fn build_component_control_hits(
+    snapshot: &Snapshot,
+    tag: &str,
+    fam: Family,
+    screen: Rect,
+) -> Vec<ComponentControlHit> {
+    let Some((_key, v)) = focused_variant(snapshot, tag, fam) else {
+        return Vec::new();
+    };
+    let Some(upgrade_count) = v
+        .get("upgrades")
+        .and_then(Value::as_object)
+        .map(|m| m.len())
+    else {
+        return Vec::new();
+    };
+    if upgrade_count == 0 {
+        return Vec::new();
+    }
+
+    let (file_name, root_name) = component_gui_for_family(fam);
+    let Some(repo_assets) = repo_game_assets_dir() else {
+        return Vec::new();
+    };
+    let Some(file) = load_and_sanitize(&repo_assets, file_name) else {
+        return Vec::new();
+    };
+    let Some(root) = laid_out_gui_window(&file, root_name, screen) else {
+        return Vec::new();
+    };
+
+    let mut controls = Vec::new();
+    for row_name in COMPONENT_INLINE_UPGRADE_ROWS
+        .iter()
+        .take(upgrade_count.min(COMPONENT_INLINE_UPGRADE_ROWS.len()))
+    {
+        let Some(row) = find_node(&root, row_name) else {
+            continue;
+        };
+        for button_name in [COMPONENT_BTN_DEC, COMPONENT_BTN_INC] {
+            if let Some(rect) = component_button_hit_rect(row, button_name) {
+                controls.push(ComponentControlHit {
+                    id: format!("{row_name}.{button_name}"),
+                    rect,
+                });
+            }
+        }
+    }
+    controls
+}
+
+fn component_button_hit_rect(row: &Node, button_name: &str) -> Option<Rect> {
+    let button = direct_child(row, button_name)?;
+    if !button.rect.is_empty() {
+        return Some(button.rect);
+    }
+
+    let h = (row.rect.y + row.rect.h - button.rect.y).max(0.0);
+    let w = match button_name {
+        COMPONENT_BTN_DEC => direct_child(row, COMPONENT_LEVEL)
+            .map(|level| level.rect.x - button.rect.x)
+            .filter(|w| *w > 0.0),
+        COMPONENT_BTN_INC => component_button_fallback_width(row, COMPONENT_BTN_DEC)
+            .or_else(|| Some(row.rect.x + row.rect.w - button.rect.x).filter(|w| *w > 0.0)),
+        _ => None,
+    }?;
+
+    let rect = Rect {
+        x: button.rect.x,
+        y: button.rect.y,
+        w,
+        h,
+    };
+    (!rect.is_empty()).then_some(rect)
+}
+
+fn component_button_fallback_width(row: &Node, button_name: &str) -> Option<f32> {
+    let button = direct_child(row, button_name)?;
+    if !button.rect.is_empty() {
+        return Some(button.rect.w);
+    }
+    match button_name {
+        COMPONENT_BTN_DEC => direct_child(row, COMPONENT_LEVEL)
+            .map(|level| level.rect.x - button.rect.x)
+            .filter(|w| *w > 0.0),
+        _ => None,
     }
 }
 
@@ -1563,7 +1731,12 @@ impl UpgradeInteraction {
 }
 
 fn build_upgrade_pick_model(snapshot: &Snapshot, tag: &str, screen: Rect) -> UpgradePickModel {
-    let file = match load_and_sanitize(std::path::Path::new("."), UPGRADE_FILE) {
+    let Some(repo_assets) = repo_game_assets_dir() else {
+        return UpgradePickModel {
+            controls: Vec::new(),
+        };
+    };
+    let file = match load_and_sanitize(&repo_assets, UPGRADE_FILE) {
         Some(file) => file,
         None => {
             return UpgradePickModel {

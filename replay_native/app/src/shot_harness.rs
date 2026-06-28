@@ -11,6 +11,7 @@ pub const SHOT_ALL_MANIFEST: &str = "shot_manifest.json";
 pub const SHOT_MANIFEST_VERSION: u64 = 2;
 pub const DEFAULT_STATE_PANEL_SHOT_STATE: u32 = 1;
 pub const BASE_SHOT_CASE_ID: &str = "base";
+pub const PRODUCTION_VIEW_ID_STR: &str = "production.production";
 pub const MAP_MODE_SHOT_CASES: &[(&str, &str, &str)] = &[
     ("map_mode_control", "Map mode: Control", "control"),
     ("map_mode_weather", "Map mode: Weather", "weather"),
@@ -56,6 +57,11 @@ pub const MAPMODES_HOVER_SHOT_CASES: &[(&str, &str, &str)] = &[
         "intel",
     ),
 ];
+pub const PRODUCTION_SELECTED_ROW_SHOT_CASES: &[(&str, &str, usize)] = &[(
+    "production_first_row",
+    "Production view: First row selected",
+    0,
+)];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ShotCaseSpec {
@@ -67,6 +73,7 @@ struct ShotCaseSpec {
     find_tab_slug: Option<&'static str>,
     find_visible_row_index: Option<usize>,
     mapmodes_hover_slug: Option<&'static str>,
+    production_visible_row_index: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +150,7 @@ fn target_owned_shot_arg(arg: &str) -> Option<&'static str> {
         "--shot-find-tab",
         "--shot-find-row",
         "--shot-mapmodes-hover",
+        "--shot-production-row",
     ] {
         if arg == flag
             || arg
@@ -235,6 +243,7 @@ fn base_shot_case() -> ShotCaseSpec {
         find_tab_slug: None,
         find_visible_row_index: None,
         mapmodes_hover_slug: None,
+        production_visible_row_index: None,
     }
 }
 
@@ -253,6 +262,7 @@ fn shot_cases_for_view_id(id: &str) -> Vec<ShotCaseSpec> {
                     find_tab_slug: None,
                     find_visible_row_index: None,
                     mapmodes_hover_slug: None,
+                    production_visible_row_index: None,
                 }),
         );
     }
@@ -267,6 +277,7 @@ fn shot_cases_for_view_id(id: &str) -> Vec<ShotCaseSpec> {
                 find_tab_slug: None,
                 find_visible_row_index: None,
                 mapmodes_hover_slug: None,
+                production_visible_row_index: None,
             },
         ));
     }
@@ -283,6 +294,7 @@ fn shot_cases_for_view_id(id: &str) -> Vec<ShotCaseSpec> {
                     find_tab_slug: Some(tab_slug),
                     find_visible_row_index: None,
                     mapmodes_hover_slug: None,
+                    production_visible_row_index: None,
                 }),
         );
         cases.extend(FIND_SELECTED_ROW_SHOT_CASES.iter().map(
@@ -295,6 +307,7 @@ fn shot_cases_for_view_id(id: &str) -> Vec<ShotCaseSpec> {
                 find_tab_slug: Some(tab_slug),
                 find_visible_row_index: Some(row_index),
                 mapmodes_hover_slug: None,
+                production_visible_row_index: None,
             },
         ));
     }
@@ -311,8 +324,24 @@ fn shot_cases_for_view_id(id: &str) -> Vec<ShotCaseSpec> {
                     find_tab_slug: None,
                     find_visible_row_index: None,
                     mapmodes_hover_slug: Some(hover_slug),
+                    production_visible_row_index: None,
                 }),
         );
+    }
+    if id == PRODUCTION_VIEW_ID_STR {
+        cases.extend(PRODUCTION_SELECTED_ROW_SHOT_CASES.iter().map(
+            |&(case_id, label, row_index)| ShotCaseSpec {
+                id: case_id,
+                family: "production_selected_rows",
+                label,
+                map_mode_slug: None,
+                shot_state_id: None,
+                find_tab_slug: None,
+                find_visible_row_index: None,
+                mapmodes_hover_slug: None,
+                production_visible_row_index: Some(row_index),
+            },
+        ));
     }
     cases
 }
@@ -379,6 +408,10 @@ fn native_args_for_shot_case(id: &str, case: ShotCaseSpec, native_filename: &str
     if let Some(slug) = case.mapmodes_hover_slug {
         args.push("--shot-mapmodes-hover".to_string());
         args.push(slug.to_string());
+    }
+    if let Some(row_index) = case.production_visible_row_index {
+        args.push("--shot-production-row".to_string());
+        args.push(row_index.to_string());
     }
     args
 }
@@ -546,6 +579,16 @@ pub fn write_registry_shot_manifest(
                         "case_id": case_id,
                         "case_label": label,
                         "hover_map_mode": hover_slug,
+                    })
+                }).collect::<Vec<_>>(),
+            }, {
+                "family": "production_selected_rows",
+                "view_id": PRODUCTION_VIEW_ID_STR,
+                "cases": PRODUCTION_SELECTED_ROW_SHOT_CASES.iter().map(|&(case_id, label, row_index)| {
+                    serde_json::json!({
+                        "case_id": case_id,
+                        "case_label": label,
+                        "visible_row": row_index,
                     })
                 }).collect::<Vec<_>>(),
             }],
@@ -1123,6 +1166,7 @@ mod tests {
             + FIND_SELECTED_TAB_SHOT_CASES.len()
             + FIND_SELECTED_ROW_SHOT_CASES.len()
             + MAPMODES_HOVER_SHOT_CASES.len()
+            + PRODUCTION_SELECTED_ROW_SHOT_CASES.len()
     }
 
     #[test]
@@ -1352,6 +1396,40 @@ mod tests {
     }
 
     #[test]
+    fn shot_all_views_expands_production_selected_row_case_deterministically() {
+        let registry = ViewRegistry::from_inventory();
+        let matrix = build_registry_shot_matrix(&registry, Path::new("shots")).unwrap();
+        let production_targets: Vec<_> = matrix
+            .iter()
+            .filter(|target| target.view_id == PRODUCTION_VIEW_ID_STR)
+            .collect();
+        let case_ids: Vec<_> = production_targets
+            .iter()
+            .map(|target| target.case_id)
+            .collect();
+        assert_eq!(case_ids, vec![BASE_SHOT_CASE_ID, "production_first_row"]);
+
+        let first_row = production_targets[1];
+        assert_eq!(first_row.case_family, "production_selected_rows");
+        assert_eq!(first_row.case_label, "Production view: First row selected");
+        assert_eq!(
+            first_row.native_filename,
+            "native__production.production__production_first_row.png"
+        );
+        assert_eq!(
+            first_row.native_args,
+            vec![
+                "--shot".to_string(),
+                "native__production.production__production_first_row.png".to_string(),
+                "--shot-view".to_string(),
+                PRODUCTION_VIEW_ID_STR.to_string(),
+                "--shot-production-row".to_string(),
+                "0".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn shot_all_views_rejects_path_unsafe_view_ids() {
         let mut registry = ViewRegistry::empty();
         registry.insert_view(&BAD_DESC);
@@ -1418,6 +1496,10 @@ mod tests {
         assert_eq!(
             manifest["case_expansion"]["families"][4]["family"],
             "mapmodes_hover_tooltips"
+        );
+        assert_eq!(
+            manifest["case_expansion"]["families"][5]["family"],
+            "production_selected_rows"
         );
         assert_eq!(manifest["targets"][0]["view_id"], "test.alpha");
         assert_eq!(manifest["targets"][0]["case_id"], BASE_SHOT_CASE_ID);
@@ -1604,6 +1686,50 @@ mod tests {
     }
 
     #[test]
+    fn shot_all_views_manifest_reader_rejects_incomplete_or_tampered_production_row_cases() {
+        let err = manifest_read_error_after_registry_mutation(
+            "manifest_missing_production_row_case",
+            ViewRegistry::from_inventory(),
+            |manifest| {
+                let targets = manifest["targets"].as_array_mut().unwrap();
+                let index = targets
+                    .iter()
+                    .position(|target| target["case_id"] == "production_first_row")
+                    .expect("production selected-row case");
+                targets.remove(index);
+                manifest["target_count"] = serde_json::json!(targets.len());
+                manifest["extra_case_count"] =
+                    serde_json::json!(deterministic_extra_case_count() - 1);
+            },
+        );
+        assert!(err.contains("missing deterministic case 'production_first_row'"));
+
+        let err = manifest_read_error_after_registry_mutation(
+            "manifest_bad_production_row_args",
+            ViewRegistry::from_inventory(),
+            |manifest| {
+                let target = manifest["targets"]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|target| target["case_id"] == "production_first_row")
+                    .expect("production selected-row case");
+                target["native_shot_args"] = serde_json::json!([
+                    "--shot",
+                    "native__production.production__production_first_row.png",
+                    "--shot-view",
+                    "production.production",
+                    "--shot-production-row",
+                    "1"
+                ]);
+            },
+        );
+        assert!(err.contains(
+            "native_shot_args do not match view id 'production.production' case 'production_first_row'"
+        ));
+    }
+
+    #[test]
     fn shot_all_views_registry_readback_rejects_missing_or_reordered_targets() {
         let err = registry_manifest_read_error_after_mutation(
             "manifest_missing_registered_target",
@@ -1677,6 +1803,16 @@ mod tests {
         assert_eq!(
             err,
             "shot-all-views common args cannot include target-owned --shot-mapmodes-hover"
+        );
+
+        let config = NativeShotBatchConfig {
+            command: PathBuf::from("replay_app"),
+            common_args: vec!["--shot-production-row=0".to_string()],
+        };
+        let err = build_native_shot_invocations(&manifest, &config).unwrap_err();
+        assert_eq!(
+            err,
+            "shot-all-views common args cannot include target-owned --shot-production-row"
         );
 
         std::fs::remove_dir_all(&out).unwrap();

@@ -638,6 +638,12 @@ fn drilldown_contract(view_id: ViewId) -> CategoryContract {
             status: InteractionStatus::Open,
             note: "chrome.minimap has executable click-and-drag recenter proof via RecenterMap; screenshot proof remains open",
         }
+    } else if view_id.0 == "production.construction" {
+        CategoryContract {
+            category: InteractionCategory::Drilldown,
+            status: InteractionStatus::Open,
+            note: "production.construction has executable read-only drilldown proof for save-backed construction-queue rows with measured numeric location_state opening core.state_panel; live rows, malformed save locations, build-picker actions, market/debug controls, and broader construction details remain open",
+        }
     } else {
         not_proven(
             InteractionCategory::Drilldown,
@@ -691,7 +697,7 @@ fn disabled_mutation_contract(view_id: ViewId) -> CategoryContract {
         "core.state_panel" => CategoryContract {
             category: InteractionCategory::DisabledMutation,
             status: InteractionStatus::Open,
-            note: "core.state_panel has executable click-no-op proof for the visible occupation-law, garrison-template, and scorched-earth state controls as replay-disabled no-ops; shared-slot building remove buttons remain unrendered/unclaimed until the native shared-slot row factory exists; disabled visual treatment, province/state drilldowns, and broader state-panel mutation parity remain open",
+            note: "core.state_panel has executable click-no-op proof for the visible occupation-law, garrison-template, and scorched-earth state controls as replay-disabled no-ops, plus measured disabled-visual accounting for those rendered controls; shared-slot building remove buttons remain unrendered/unclaimed until the native shared-slot row factory exists; province/state drilldowns and broader state-panel mutation parity remain open",
         },
         "core.topbar" => CategoryContract {
             category: InteractionCategory::DisabledMutation,
@@ -802,6 +808,7 @@ pub fn known_drilldown_targets(view_id: ViewId) -> &'static [InteractionTargetCo
         "chrome.find" => &CHROME_FIND_DRILLDOWN_TARGETS,
         "core.topbar" => &CORE_TOPBAR_DRILLDOWN_TARGETS,
         "chrome.minimap" => &CHROME_MINIMAP_DRILLDOWN_TARGETS,
+        "production.construction" => &PRODUCTION_CONSTRUCTION_DRILLDOWN_TARGETS,
         _ => &[],
     }
 }
@@ -866,7 +873,7 @@ const CORE_STATE_PANEL_SCROLL_NOTE: &str =
 const CORE_STATE_PANEL_HOVER_NOTE: &str =
     "fixed state-panel hover target; executable StatePanelView tests prove passive factual tooltips for owner flags, scrolled building rows, and resource rows, with hover-clear behavior and stale-row rebind clearing instead of falling back to fabricated rows; full the game tooltip frames, hover chrome, province/state drilldown links, screenshots, and side-by-side proof remain open";
 const CORE_STATE_PANEL_DISABLED_MUTATION_NOTE: &str =
-    "fixed state-panel mutation target; executable StatePanelView tests prove select_law_button, template_garrison_button, and scorched_earth_state_button are consumed as replay-disabled no-op pointer-down/up clicks with no emitted commands, no redraw request, and unchanged bind digest while neighboring panel space remains unclaimed by the view-specific handler; shared-slot building remove buttons are separately proven unrendered/unclaimed because the native renderer still instantiates state_building_entry rows, not the shared-slot row factory; disabled visual treatment, province/state drilldowns, and broader state-panel mutation parity remain open";
+    "fixed state-panel mutation target; executable StatePanelView tests prove select_law_button, template_garrison_button, and scorched_earth_state_button are consumed as replay-disabled no-op pointer-down/up clicks with no emitted commands, no redraw request, and unchanged bind digest while neighboring panel space remains unclaimed by the view-specific handler; measured disabled-visual accounting is bound from those rendered GUI leaves and missing leaves do not get fallback visual rects; shared-slot building remove buttons are separately proven unrendered/unclaimed because the native renderer still instantiates state_building_entry rows, not the shared-slot row factory; province/state drilldowns and broader state-panel mutation parity remain open";
 const CHROME_FIND_STATE_PANEL_DRILLDOWN_NOTE: &str =
     "fixed catalog drill target; executable FindView tests prove state-backed rows emit read-only OpenView(core.state_panel, state_id); country detail panels, province-level VP drill, and full find parity remain open";
 const CHROME_FIND_RECENTER_NOTE: &str =
@@ -911,6 +918,8 @@ const PRODUCTION_CONSTRUCTION_ROW_NOTE: &str =
     "dynamic construction-queue row target; executable ConstructionView tests prove measured live line_id and save template/state/created read-only row selection, scrolled backing-row selection, A->B->A persistence from current-hour rows, unkeyed-row inert behavior, and missing selected-row fail-closed proof; building details, build-picker actions, market/debug controls, and broader construction parity remain open";
 const PRODUCTION_CONSTRUCTION_SCROLL_NOTE: &str =
     "dynamic construction-queue scroll target; executable ConstructionView tests prove wheel scroll and scrollbar-thumb drag change/clamp visible queue rows, captured thumb drags continue outside the grid until pointer-up, track clicks do not select underlying rows, scrolled clicks select the correct backing construction key, scroll+selection survive A->B->A without carrying B-only rows, and outside-grid wheel input is inert; scrollbar art, build-picker actions, market/debug controls, and broader construction parity remain open";
+const PRODUCTION_CONSTRUCTION_DRILLDOWN_NOTE: &str =
+    "dynamic construction-queue state drill target; executable ConstructionView tests prove save-backed rows with measured numeric location_state emit read-only OpenView(core.state_panel, state_id) from the real queue-row click path, while live rows and malformed save locations fail closed with no fabricated drill command; build-picker actions, market/debug controls, disabled visuals, and broader construction details remain open";
 const PRODUCTION_DECISIONS_ROW_NOTE: &str =
     "dynamic timed-decision row target; executable DecisionsView tests prove measured decision/state read-only row selection, duplicate decision id safety, A->B->A scrub persistence from current-hour rows, unkeyed-row inert behavior, and missing selected-row fail-closed proof; decision detail drilldowns, one-shot availability, and mutating decision buttons remain open";
 const PRODUCTION_DECISIONS_SCROLL_NOTE: &str =
@@ -1620,6 +1629,15 @@ const CHROME_FIND_DRILLDOWN_TARGETS: [InteractionTargetContract; 4] = [
         note: CHROME_FIND_RECENTER_NOTE,
     },
 ];
+
+const PRODUCTION_CONSTRUCTION_DRILLDOWN_TARGETS: [InteractionTargetContract; 1] =
+    [InteractionTargetContract {
+        category: InteractionCategory::Drilldown,
+        id: "production.construction.drill.queue_state",
+        label: "Queue row to state panel",
+        status: InteractionStatus::Open,
+        note: PRODUCTION_CONSTRUCTION_DRILLDOWN_NOTE,
+    }];
 
 const CORE_TOPBAR_DRILLDOWN_TARGETS: [InteractionTargetContract; 15] = [
     InteractionTargetContract {
@@ -2686,6 +2704,44 @@ mod tests {
                 .note
                 .contains("outside-grid wheel input is inert"),
             "production.construction scroll target must cite outside-grid inert proof"
+        );
+
+        let drill = construction
+            .category(InteractionCategory::Drilldown)
+            .unwrap();
+        assert_eq!(drill.status, InteractionStatus::Open);
+        assert!(
+            drill.note.contains("save-backed construction-queue rows"),
+            "production.construction drilldown contract must cite save-backed row proof"
+        );
+        assert!(
+            drill.note.contains("malformed save locations")
+                && drill
+                    .note
+                    .contains("broader construction details remain open"),
+            "production.construction drilldown proof must stay fail-closed and scoped"
+        );
+
+        let drill_targets: Vec<_> = construction
+            .targets(InteractionCategory::Drilldown)
+            .collect();
+        assert_eq!(drill_targets.len(), 1);
+        assert_eq!(
+            drill_targets[0].id,
+            "production.construction.drill.queue_state"
+        );
+        assert_eq!(drill_targets[0].label, "Queue row to state panel");
+        assert!(
+            drill_targets[0]
+                .note
+                .contains("OpenView(core.state_panel, state_id)"),
+            "production.construction drill target must cite the emitted read-only command"
+        );
+        assert!(
+            drill_targets[0]
+                .note
+                .contains("live rows and malformed save locations fail closed"),
+            "production.construction drill target must cite fail-closed live/malformed behavior"
         );
     }
 
@@ -3982,6 +4038,12 @@ mod tests {
         assert!(
             disabled
                 .note
+                .contains("measured disabled-visual accounting"),
+            "state-panel disabled-mutation row must cite the disabled visual accounting proof"
+        );
+        assert!(
+            disabled
+                .note
                 .contains("broader state-panel mutation parity remain open"),
             "state-panel proof must not overclaim broad mutation parity"
         );
@@ -4013,6 +4075,12 @@ mod tests {
                 .note
                 .contains("neighboring panel space remains unclaimed"),
             "state-panel target must cite non-broad-hit proof"
+        );
+        assert!(
+            targets[0]
+                .note
+                .contains("missing leaves do not get fallback visual rects"),
+            "state-panel target must cite no-fabricated-disabled-visual proof"
         );
         assert!(
             targets[0]
@@ -4633,18 +4701,18 @@ mod tests {
             114 * INTERACTION_CATEGORY_COUNT,
             "the report must keep ten category rows per registered view"
         );
-        assert_eq!(report.category_status_counts.open, 175);
-        assert_eq!(report.category_status_counts.not_proven, 965);
-        assert_eq!(report.missing_not_proven_category_count, 965);
+        assert_eq!(report.category_status_counts.open, 176);
+        assert_eq!(report.category_status_counts.not_proven, 964);
+        assert_eq!(report.missing_not_proven_category_count, 964);
 
         assert_eq!(
-            report.target_row_count, 123,
-            "current target rows are 18 tab rows, 39 list-selection rows, one text-input row, 13 scroll rows, twelve hover rows, 20 drill/navigation rows, and twenty disabled-mutation rows"
+            report.target_row_count, 124,
+            "current target rows are 18 tab rows, 39 list-selection rows, one text-input row, 13 scroll rows, twelve hover rows, 21 drill/navigation rows, and twenty disabled-mutation rows"
         );
-        assert_eq!(report.target_status_counts.open, 123);
+        assert_eq!(report.target_status_counts.open, 124);
         assert_eq!(report.target_status_counts.not_proven, 0);
         assert_eq!(
-            report.target_rows_with_executable_proof_notes, 123,
+            report.target_rows_with_executable_proof_notes, 124,
             "partial executable-proof notes are accounted separately from implemented status"
         );
     }
@@ -4750,15 +4818,15 @@ mod tests {
             &report,
             InteractionCategory::Drilldown,
             InteractionStatusCounts {
-                open: 3,
-                not_proven: 111,
+                open: 4,
+                not_proven: 110,
             },
-            20,
+            21,
             InteractionStatusCounts {
-                open: 20,
+                open: 21,
                 not_proven: 0,
             },
-            20,
+            21,
         );
         assert_category_report(
             &report,
