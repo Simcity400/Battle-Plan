@@ -106,6 +106,7 @@ mod attach_log {
     const OBJ_TEMPLATES_LOCKED: usize = 0x01B4;
     const OBJ_COMMAND_POWER: usize = 0x01F0;
     const OBJ_MANPOWER_POOL: usize = 0x0338;
+    const OBJ_FUEL_STATUS: usize = 0x1580;
     const OBJ_ORIGINAL_CAPITAL: usize = 0x101C;
     const OBJ_STABILITY: usize = 0x10D0;
     const OBJ_WAR_SUPPORT: usize = 0x10D8;
@@ -113,6 +114,9 @@ mod attach_log {
     const OBJ_ORIGINAL_TAG: usize = 0x130C;
     const OBJ_NUM_SHIPS: usize = 0x1330;
     const OBJ_RESERVED_DYNAMIC_COUNTRY: usize = 0x145D;
+    const FUEL_STATUS_CURRENT: usize = 0x08;
+    const FUEL_STATUS_MAX: usize = 0x10;
+    const FUEL_SCALE: f64 = 32768.0;
     const MAX_COUNTRY_OBJECT_BRIDGE_ROWS: usize = 512;
     const MAX_MAP_CONTROL_STATE_ROOT_ROWS: usize = 4096;
     const MAX_MAP_CONTROL_STATE_ROOT_PAYLOAD_BYTES: usize = 131_072;
@@ -782,10 +786,13 @@ mod attach_log {
     ) -> String {
         let tick = unsafe { GetTickCount64() };
         let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let include_scheduled_map = capture_boundary == Some("scheduled_hour_snapshot");
+        let scheduled_frame = capture_boundary == Some("scheduled_hour_snapshot");
+        let include_scheduled_map = scheduled_frame;
+        let include_scheduled_country_fuel = scheduled_frame;
         let state_rows = scheduled_state_rows_json(state, control, include_scheduled_map);
-        let domains = frame_domains_json(state, state_rows.is_some());
-        let probe = root_probe_json(state, state_rows.as_deref());
+        let domains =
+            frame_domains_json(state, state_rows.is_some(), include_scheduled_country_fuel);
+        let probe = root_probe_json(state, state_rows.as_deref(), include_scheduled_country_fuel);
         let control_meta =
             control_metadata_json(control, session_sequence, elapsed_wall_ms, capture_boundary);
         let quality = if probe.contains("\"status\":\"verified\"") {
@@ -905,14 +912,20 @@ mod attach_log {
         duration.as_millis().min(u128::from(u64::MAX)) as u64
     }
 
-    fn frame_domains_json(state: Option<&CollectorState>, has_state_rows: bool) -> String {
+    fn frame_domains_json(
+        state: Option<&CollectorState>,
+        has_state_rows: bool,
+        include_scheduled_country_fuel: bool,
+    ) -> String {
         let Some(state) = state else {
             return "[]".to_string();
         };
         if state.daily_match && state.long_string_match {
-            state
-                .country_identity
-                .domains_json(state.country_database_ptr as usize, has_state_rows)
+            state.country_identity.domains_json(
+                state.country_database_ptr as usize,
+                has_state_rows,
+                include_scheduled_country_fuel,
+            )
         } else {
             "[]".to_string()
         }
@@ -1017,6 +1030,13 @@ mod attach_log {
         num_ships: Option<i32>,
         manpower_pool: Option<u32>,
         convoys: Option<f64>,
+        fuel: Option<CountryFuelRow>,
+    }
+
+    #[derive(Clone, Copy)]
+    struct CountryFuelRow {
+        current: f64,
+        max: f64,
     }
 
     struct CountryIdentityCache {
@@ -1054,7 +1074,8 @@ mod attach_log {
             let mut rejected_objects = 0u32;
             let mut duplicate_tags = 0u32;
             for object_ptr in scan_qword_hits(country_vtable, HEAP_LO, HEAP_HI) {
-                let Some(row) = country_object_row(object_ptr, country_vtable, tag_table, None)
+                let Some(row) =
+                    country_object_row(object_ptr, country_vtable, tag_table, None, false)
                 else {
                     rejected_objects = rejected_objects.saturating_add(1);
                     continue;
@@ -1106,6 +1127,7 @@ mod attach_log {
                     tag_table,
                     entry.tag_db_id,
                     records_by_tag_id.get(&entry.tag_db_id).copied(),
+                    false,
                 ) else {
                     rejected_objects = rejected_objects.saturating_add(1);
                     continue;
@@ -1138,7 +1160,11 @@ mod attach_log {
                 && !self.rows.is_empty()
         }
 
-        fn current_rows(&self, country_database_ptr: usize) -> Vec<CountryObjectRow> {
+        fn current_rows(
+            &self,
+            country_database_ptr: usize,
+            include_scheduled_country_fuel: bool,
+        ) -> Vec<CountryObjectRow> {
             if !self.has_scalar_source() {
                 return Vec::new();
             }
@@ -1147,19 +1173,32 @@ mod attach_log {
             };
             let mut rows = Vec::new();
             for row in &self.rows {
-                if let Some(fresh) =
-                    revalidated_country_object_row(row, self.country_vtable, tag_table)
-                {
+                if let Some(fresh) = revalidated_country_object_row(
+                    row,
+                    self.country_vtable,
+                    tag_table,
+                    include_scheduled_country_fuel,
+                ) {
                     rows.push(fresh);
                 }
             }
             rows
         }
 
-        fn domains_json(&self, country_database_ptr: usize, has_state_rows: bool) -> String {
+        fn domains_json(
+            &self,
+            country_database_ptr: usize,
+            has_state_rows: bool,
+            include_scheduled_country_fuel: bool,
+        ) -> String {
             let mut domains = vec!["\"clock\"", "\"country_identity\""];
-            if !self.current_rows(country_database_ptr).is_empty() {
+            let current_rows =
+                self.current_rows(country_database_ptr, include_scheduled_country_fuel);
+            if !current_rows.is_empty() {
                 domains.push("\"country_scalars\"");
+            }
+            if include_scheduled_country_fuel && current_rows.iter().any(|row| row.fuel.is_some()) {
+                domains.push("\"fuel_live\"");
             }
             if has_state_rows {
                 domains.push("\"state_ownership\"");
@@ -1185,10 +1224,18 @@ mod attach_log {
             )
         }
 
-        fn countries_json(&self, country_database_ptr: usize) -> String {
-            let current_rows = self.current_rows(country_database_ptr);
+        fn countries_json(
+            &self,
+            country_database_ptr: usize,
+            include_scheduled_country_fuel: bool,
+        ) -> String {
+            let current_rows =
+                self.current_rows(country_database_ptr, include_scheduled_country_fuel);
             if !current_rows.is_empty() {
-                let rows: Vec<String> = current_rows.iter().map(row_json).collect();
+                let rows: Vec<String> = current_rows
+                    .iter()
+                    .map(|row| row_json(row, include_scheduled_country_fuel))
+                    .collect();
                 return format!("{{{}}}", rows.join(","));
             }
             country_rows_from_tag_table_json(country_database_ptr)
@@ -1327,6 +1374,7 @@ mod attach_log {
     fn root_probe_json(
         state: Option<&CollectorState>,
         scheduled_state_rows: Option<&str>,
+        include_scheduled_country_fuel: bool,
     ) -> String {
         let Some(state) = state else {
             return "\"root_probe\":null".to_string();
@@ -1350,13 +1398,15 @@ mod attach_log {
         let date_ptr = state.date_ptr;
         let country_database_ptr = state.country_database_ptr;
         let country_probe = country_database_probe_json(country_database_ptr as usize);
-        let country_rows = state
-            .country_identity
-            .countries_json(country_database_ptr as usize);
+        let country_rows = state.country_identity.countries_json(
+            country_database_ptr as usize,
+            include_scheduled_country_fuel,
+        );
         let identity_probe = state.country_identity.root_json();
         let domains = state.country_identity.domains_json(
             country_database_ptr as usize,
             scheduled_state_rows.is_some(),
+            include_scheduled_country_fuel,
         );
         let clock_probe = clock_probe_json(date_ptr as usize);
         let state_rows = scheduled_state_rows
@@ -1498,6 +1548,7 @@ mod attach_log {
         country_vtable: usize,
         tag_table: usize,
         record_ptr: Option<usize>,
+        include_scheduled_country_fuel: bool,
     ) -> Option<CountryObjectRow> {
         if read_u64(object_ptr)? as usize != country_vtable {
             return None;
@@ -1553,6 +1604,11 @@ mod attach_log {
                 }
             }),
             convoys: read_fixed_nonnegative(object_ptr + OBJ_CONVOYS, 1_000_000.0),
+            fuel: if include_scheduled_country_fuel {
+                read_country_fuel(object_ptr)
+            } else {
+                None
+            },
         })
     }
 
@@ -1562,8 +1618,15 @@ mod attach_log {
         tag_table: usize,
         expected_tag_db_id: u32,
         record_ptr: Option<usize>,
+        include_scheduled_country_fuel: bool,
     ) -> Option<CountryObjectRow> {
-        let row = country_object_row(object_ptr, country_vtable, tag_table, record_ptr)?;
+        let row = country_object_row(
+            object_ptr,
+            country_vtable,
+            tag_table,
+            record_ptr,
+            include_scheduled_country_fuel,
+        )?;
         if row.tag_db_id == expected_tag_db_id {
             Some(row)
         } else {
@@ -1575,6 +1638,7 @@ mod attach_log {
         expected: &CountryObjectRow,
         country_vtable: usize,
         tag_table: usize,
+        include_scheduled_country_fuel: bool,
     ) -> Option<CountryObjectRow> {
         let row = country_object_row_expected(
             expected.object_ptr,
@@ -1582,6 +1646,7 @@ mod attach_log {
             tag_table,
             expected.tag_db_id,
             expected.record_ptr,
+            include_scheduled_country_fuel,
         )?;
         if row.tag == expected.tag && row.name == expected.name {
             Some(row)
@@ -1602,7 +1667,27 @@ mod attach_log {
         }
     }
 
-    fn row_json(row: &CountryObjectRow) -> String {
+    fn read_country_fuel(object_ptr: usize) -> Option<CountryFuelRow> {
+        let fuel_status = read_u64(object_ptr + OBJ_FUEL_STATUS)? as usize;
+        if !is_map_control_heap_pointer(fuel_status) {
+            return None;
+        }
+        let current = read_i64(fuel_status + FUEL_STATUS_CURRENT)? as f64 / FUEL_SCALE;
+        let max = read_i64(fuel_status + FUEL_STATUS_MAX)? as f64 / FUEL_SCALE;
+        if current.is_finite()
+            && max.is_finite()
+            && current >= 0.0
+            && max >= 0.0
+            && current <= 1_000_000_000.0
+            && max <= 1_000_000_000.0
+        {
+            Some(CountryFuelRow { current, max })
+        } else {
+            None
+        }
+    }
+
+    fn row_json(row: &CountryObjectRow, include_scheduled_country_fuel: bool) -> String {
         let original_capital = json_opt_i32(row.original_capital);
         let original_tag = json_opt_str(row.original_tag.as_deref());
         let templates_locked = json_opt_bool(row.templates_locked);
@@ -1614,6 +1699,19 @@ mod attach_log {
         let num_ships = json_opt_i32(row.num_ships);
         let manpower_pool = json_opt_u32(row.manpower_pool);
         let convoys = json_opt_f64(row.convoys);
+        let fuel = if include_scheduled_country_fuel {
+            row.fuel
+                .map(|fuel| {
+                    format!(
+                        ",\"fuel\":{{\"current\":{},\"max\":{}}}",
+                        json_opt_f64(Some(fuel.current)),
+                        json_opt_f64(Some(fuel.max))
+                    )
+                })
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
         format!(
             "\"{}\":{{\"present\":true,\
              \"collector_object\":\"0x{:X}\",\
@@ -1628,7 +1726,7 @@ mod attach_log {
              \"command_power\":{command_power},\
              \"num_ships\":{num_ships},\
              \"manpower_pool\":{manpower_pool},\
-             \"convoys\":{convoys}}}}}",
+             \"convoys\":{convoys}}}{fuel}}}",
             row.tag, row.object_ptr, row.tag_db_id
         )
     }
@@ -1657,6 +1755,13 @@ mod attach_log {
 
     fn read_i32(addr: usize) -> Option<i32> {
         read_u32(addr).map(|v| v as i32)
+    }
+
+    fn read_i64(addr: usize) -> Option<i64> {
+        let bytes = read_bytes(addr, 8)?;
+        let mut arr = [0u8; 8];
+        arr.copy_from_slice(&bytes);
+        Some(i64::from_le_bytes(arr))
     }
 
     fn read_fixed_0_1(addr: usize) -> Option<f64> {
@@ -2269,15 +2374,49 @@ mod attach_log {
                 num_ships: Some(7),
                 manpower_pool: Some(123456),
                 convoys: Some(99.0),
+                fuel: None,
             };
 
-            let json = row_json(&row);
+            let json = row_json(&row, false);
 
             assert!(json.contains("\"POR\""));
             assert!(json.contains("\"tag_db_id\":47"));
             assert!(json.contains("\"stability\":0.61"));
             assert!(json.contains("\"political_power\":7.25"));
             assert!(json.contains("\"manpower_pool\":123456"));
+            assert!(!json.contains("\"fuel\""));
+        }
+
+        #[test]
+        fn country_object_row_json_includes_scheduled_fuel() {
+            let row = CountryObjectRow {
+                tag: "POR".to_string(),
+                tag_db_id: 47,
+                name: "Portugal".to_string(),
+                object_ptr: 0x1234,
+                record_ptr: None,
+                original_capital: None,
+                original_tag: None,
+                templates_locked: None,
+                reserved_dynamic_country: None,
+                stability: None,
+                war_support: None,
+                political_power: None,
+                command_power: None,
+                num_ships: None,
+                manpower_pool: None,
+                convoys: None,
+                fuel: Some(CountryFuelRow {
+                    current: 123.5,
+                    max: 456.25,
+                }),
+            };
+
+            let scheduled = row_json(&row, true);
+            let worker = row_json(&row, false);
+
+            assert!(scheduled.contains("\"fuel\":{\"current\":123.5,\"max\":456.25}"));
+            assert!(!worker.contains("\"fuel\""));
         }
     }
 }

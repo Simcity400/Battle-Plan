@@ -72,6 +72,19 @@ Current country-scalar bridge:
 Political power uses the separate country-record bridge. It is emitted only when
 the record pointer still points at the same validated country object.
 
+Scheduled country fuel:
+
+- scheduled snapshot frames may claim `fuel_live` when the preflighted country
+  object bridge is still valid;
+- fuel reads are rooted at the already validated `CCountry*`, then follow
+  `CCountry+0x1580` to the fuel-status object and decode current/max as signed
+  64-bit fixed point divided by 32768;
+- malformed, non-heap, negative, or implausibly large fuel values are omitted
+  per country instead of guessed;
+- worker-poll frames stay light and must not carry fuel payloads;
+- production, stockpile, and equipment flows are not part of this slice because
+  they require bounded vector traversal and a separate replay contract.
+
 Recorder-side map-control contract:
 
 - collector frames may carry `states` rows for `state_ownership` /

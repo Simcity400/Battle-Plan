@@ -55,7 +55,7 @@ DOMAINS = (
     "projects_live",     # LIVE special-projects/facilities/scientists pools (M; distinct
                          # from the SAVE-sourced per-country "projects" domain below)
     "fuel_live",         # LIVE per-country national fuel -> countries.*.economy.fuel.{current,
-                         # max} (M; shares the save economy.fuel home, tracked under a DISTINCT
+                         # max} (C/M; shares the save economy.fuel home, tracked under a DISTINCT
                          # live id). Portable Ghidra pointer chain; max_fuel 71/71 EXACT.
     "supply_inputs",     # LIVE supply solver INPUTS (per-province efficiency/draw) -> badged
                          # signals on snap["supply"] (M; NOT the exact per-province supply,
@@ -205,12 +205,12 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.economy.resources.to_export": "S",
     "countries.*.economy.resources.available_derived": "S/D",
     "countries.*.economy.resources.imported": "S",
-    # fuel is now LIVE-first (fuel_live, M) with the save as the backstop: the live reader
-    # measures the canonical i64 fixed-point store via a portable Ghidra pointer chain
-    # (CCountry+0x1580 fuel_status; /32768). max is the proof field (71/71 EXACT vs save);
-    # current legitimately reads at-or-below the save (live post-clamp + live!=save frame).
-    "countries.*.economy.fuel.current": "M/S",
-    "countries.*.economy.fuel.max": "M/S",
+    # fuel is LIVE-first via scheduled collector frames (fuel_live, C/M) with the save
+    # as the backstop: the collector reads the canonical i64 fixed-point store from the
+    # validated CCountry object (CCountry+0x1580 fuel_status; /32768). Worker polls stay
+    # light and must not carry fuel payloads.
+    "countries.*.economy.fuel.current": "C/M/S",
+    "countries.*.economy.fuel.max": "C/M/S",
     "countries.*.economy.gross_ic_by_equipment": "S/D",
     "countries.*.economy.market_stockpile": "S",
     "countries.*.economy.market_automation": "S",
@@ -2191,6 +2191,23 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                         problems.append(
                             f"country {tag!r}.extra.strategic_navy.{k} "
                             f"{v!r} not int|null")
+        econ = c.get("economy")
+        if isinstance(econ, dict):
+            fuel = econ.get("fuel")
+            if fuel is not None and not isinstance(fuel, dict):
+                problems.append(f"country {tag!r}.economy.fuel {fuel!r} not dict|null")
+            elif isinstance(fuel, dict):
+                for k in ("current", "max"):
+                    v = fuel.get(k)
+                    if v is not None:
+                        if isinstance(v, bool) or not isinstance(v, (int, float)):
+                            problems.append(
+                                f"country {tag!r}.economy.fuel.{k} {v!r} "
+                                "not number|null")
+                        elif v < 0:
+                            problems.append(
+                                f"country {tag!r}.economy.fuel.{k} {v!r} "
+                                "out of range")
         mil = c.get("military")
         if isinstance(mil, dict):
             cc = mil.get("convoys_count")

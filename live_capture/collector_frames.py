@@ -31,6 +31,7 @@ SUPPORTED_SNAPSHOT_DOMAINS = frozenset({
     "clock",
     "country_identity",
     "country_scalars",
+    "fuel_live",
     "state_ownership",
     "state_control",
     "province_control",
@@ -134,6 +135,8 @@ def validate_collector_frame(frame: Any) -> List[str]:
             problems.extend(_validate_province_rows(provinces))
 
     if frame.get("capture_boundary") == "worker_poll":
+        if _has_country_fuel_rows(countries):
+            problems.append("collector worker_poll frame must not carry fuel payload")
         if _has_payload_rows(states):
             problems.append("collector worker_poll frame must not carry states payload")
         if _has_payload_rows(provinces):
@@ -207,6 +210,8 @@ def snapshot_from_root_probe_frame(frame: Dict[str, Any], game_id: str) -> Dict[
     frame_states = frame.get("states") or {}
     frame_provinces = frame.get("provinces") or {}
     claimed_domains = _explicit_scheduled_domains(frame, root_probe)
+    if "fuel_live" in claimed_domains and _has_country_fuel_rows(frame_countries):
+        domains.append("fuel_live")
     if "state_ownership" in claimed_domains and _has_state_owner_rows(frame_states):
         domains.append("state_ownership")
     if "state_control" in claimed_domains and _has_state_control_rows(frame_states):
@@ -219,6 +224,7 @@ def snapshot_from_root_probe_frame(frame: Dict[str, Any], game_id: str) -> Dict[
     snap["provenance"]["collector"]["root_probe"] = root_probe
     _fold_country_identity(snap, frame_countries)
     _fold_country_scalars(snap, frame_countries)
+    _fold_country_fuel(snap, frame_countries, domains)
     _fold_state_rows(snap, frame_states, domains)
     _fold_province_rows(snap, frame_provinces, domains)
     _fill_map_mirrors(snap)
@@ -261,6 +267,7 @@ def snapshot_from_collector_frame(frame: Dict[str, Any], game_id: str) -> Dict[s
     snap["provenance"]["collector"] = _collector_provenance(frame, domains)
     _fold_country_identity(snap, frame.get("countries") or {})
     _fold_country_scalars(snap, frame.get("countries") or {})
+    _fold_country_fuel(snap, frame.get("countries") or {}, domains)
     _fold_state_rows(snap, frame.get("states") or {}, domains)
     _fold_province_rows(snap, frame.get("provinces") or {}, domains)
     _fill_map_mirrors(snap)
@@ -391,6 +398,28 @@ def _validate_country_rows(countries: Dict[str, Any]) -> List[str]:
                 elif value is not None and value < 0:
                     problems.append(
                         f"collector frame country {tag!r}.scalars.{key} out of range")
+        fuel = row.get("fuel")
+        if fuel is not None:
+            if not isinstance(fuel, dict):
+                problems.append(f"collector frame country {tag!r}.fuel not dict|null")
+            else:
+                if present is not True:
+                    problems.append(
+                        f"collector frame country {tag!r}.fuel requires present=true")
+                if not _has_valid_scalar_identity(row):
+                    problems.append(
+                        f"collector frame country {tag!r}.fuel requires identity.tag_db_id")
+                if collector_object is None or not _valid_hex_pointer(collector_object):
+                    problems.append(
+                        f"collector frame country {tag!r}.fuel requires hex collector_object")
+                for key in ("current", "max"):
+                    value = fuel.get(key)
+                    if value is not None and not isinstance(value, (int, float)):
+                        problems.append(
+                            f"collector frame country {tag!r}.fuel.{key} not number|null")
+                    elif value is not None and float(value) < 0.0:
+                        problems.append(
+                            f"collector frame country {tag!r}.fuel.{key} out of range")
     return problems
 
 
@@ -571,6 +600,38 @@ def _fold_country_scalars(snap: Dict[str, Any], countries: Dict[str, Any]) -> No
             military["convoys_count"] = int(round(convoys))
 
 
+def _fold_country_fuel(
+    snap: Dict[str, Any],
+    countries: Dict[str, Any],
+    domains: Iterable[str],
+) -> None:
+    if "fuel_live" not in set(domains):
+        return
+    for tag, row in countries.items():
+        if not schema.valid_tag(tag) or not isinstance(row, dict):
+            continue
+        if row.get("present") is not True or not _has_valid_scalar_identity(row):
+            continue
+        fuel = row.get("fuel")
+        if not isinstance(fuel, dict):
+            continue
+        clean: Dict[str, float] = {}
+        current = fuel.get("current")
+        if isinstance(current, (int, float)) and float(current) >= 0.0:
+            clean["current"] = float(current)
+        max_fuel = fuel.get("max")
+        if isinstance(max_fuel, (int, float)) and float(max_fuel) >= 0.0:
+            clean["max"] = float(max_fuel)
+        if clean:
+            country = snap["countries"].setdefault(tag, schema.empty_country())
+            economy = country["economy"]
+            existing = economy.get("fuel")
+            if not isinstance(existing, dict):
+                existing = {}
+                economy["fuel"] = existing
+            existing.update(clean)
+
+
 def _fold_state_rows(
     snap: Dict[str, Any],
     states: Dict[str, Any],
@@ -651,6 +712,13 @@ def _has_province_control_rows(provinces: Any) -> bool:
     return isinstance(provinces, dict) and any(
         isinstance(row, dict) and "controller" in row
         for row in provinces.values()
+    )
+
+
+def _has_country_fuel_rows(countries: Any) -> bool:
+    return isinstance(countries, dict) and any(
+        isinstance(row, dict) and isinstance(row.get("fuel"), dict)
+        for row in countries.values()
     )
 
 

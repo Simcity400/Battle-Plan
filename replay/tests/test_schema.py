@@ -55,6 +55,10 @@ class TestSourceMap(unittest.TestCase):
         self.assertEqual(schema.source_of("provinces.11596.controller"), "C/M/S/D")
         self.assertEqual(schema.source_of("map.control_by_province"), "C/M/S/D")
 
+    def test_collector_fuel_source(self):
+        self.assertEqual(schema.source_of("countries.POR.economy.fuel.current"), "C/M/S")
+        self.assertEqual(schema.source_of("countries.POR.economy.fuel.max"), "C/M/S")
+
     def test_unknown_returns_none(self):
         self.assertIsNone(schema.source_of("countries.GER.nonsense.field"))
 
@@ -167,6 +171,26 @@ class TestValidator(unittest.TestCase):
         snap["countries"]["GER"]["extra"] = "bad"
         probs = schema.validate_snapshot(snap)
         self.assertTrue(any("extra" in p and "dict|null" in p for p in probs))
+
+    def test_bad_country_fuel_shape_flagged(self):
+        snap = schema.empty_snapshot("g1", "1940.9.10.13")
+        snap["countries"]["POR"] = schema.empty_country()
+        snap["countries"]["POR"]["economy"]["fuel"] = "bad"
+        probs = schema.validate_snapshot(snap)
+        self.assertTrue(any("economy.fuel" in p and "dict|null" in p for p in probs))
+
+    def test_bad_country_fuel_values_flagged(self):
+        snap = schema.empty_snapshot("g1", "1940.9.10.13")
+        snap["countries"]["POR"] = schema.empty_country()
+        snap["countries"]["POR"]["economy"]["fuel"] = {
+            "current": -1.0,
+            "max": "bad",
+        }
+        probs = schema.validate_snapshot(snap)
+        self.assertTrue(any("economy.fuel.current" in p and "out of range" in p
+                            for p in probs), probs)
+        self.assertTrue(any("economy.fuel.max" in p and "not number|null" in p
+                            for p in probs), probs)
 
     def test_bad_map_control_tags_flagged(self):
         snap = schema.empty_snapshot("g1", "1940.9.10.13")

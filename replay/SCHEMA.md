@@ -263,7 +263,7 @@ are `null`.
 | `resources.to_export.{...}` | float\|null | S | |
 | `resources.available_derived.{...}` | float\|null | S/D | produced − exported |
 | `resources.imported.{...}` | float\|null | S | reserved; null until oracle emits |
-| `fuel.current` / `fuel.max` | float\|null | S / M\* | |
+| `fuel.current` / `fuel.max` | float\|null | C / M / S | scheduled collector `fuel_live` reads validated `CCountry+0x1580` fuel status; saves remain the backstop |
 | `gross_ic_by_equipment` | obj\|null | S/D | `{equip_archetype: produced_delta}`; null until production-delta pass runs |
 | `market_stockpile[]` | list | S | equipment this country placed ON the equipment market (sellable). Each: `equip_id`, `equip_type`, `archetype`, `amount`. From `market.json`. |
 | `market_automation` | obj\|null | S | market-request automation flags (`auto_accept_purchase`, `auto_accept_market_access`, …); null when none set |
