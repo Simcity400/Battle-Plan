@@ -382,9 +382,13 @@ Completed in the first repo/live proof pass:
     The DLL validates the expected vtable and `tag_db_id` before accepting an
     object row, validates record rows by checking they still point at the same
     country object, and re-reads scalar values per emitted frame. This proves the
-    contract for save-free country scalars including political power, but it is
-    still a bridge: the preflight discovery itself still needs a
-    root-anchored/hook-derived replacement before session start is fully
+    contract for save-free country scalars including political power.
+25. Same-process preflight cache added: repeated recordings against the same
+    running `hoi4.exe` validate the cached country-array token with
+    `locate.resolve_cached`, read the tag table from `CountryDataBase`, and avoid
+    heap scans. The live Portugal process resolved cached preflight in about
+    0.05 seconds. Cold discovery for a fresh process still needs a
+    root-anchored/hook-derived replacement before first session start is fully
     speed-five-ready.
 
 Next:

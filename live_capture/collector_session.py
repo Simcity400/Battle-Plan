@@ -370,7 +370,10 @@ def record_collector_session(
         "row_count": 0,
     }
     if country_object_bridge is None and preflight_country_object_bridge:
-        preflight = resolve_country_object_bridge_preflight(pid)
+        preflight = resolve_country_object_bridge_preflight(
+            pid,
+            cache_path=out_root / "_preflight_cache" / "country_array.json",
+        )
         country_object_bridge_preflight = preflight.diagnostics
         country_object_bridge_preflight["enabled"] = True
         if preflight.usable:

@@ -46,6 +46,8 @@ Current country-scalar bridge:
   preflight step before bounded worker recording;
 - the primary preflight path locates the live country array, reads each country
   object's own `tag_db_id`, and avoids the fragile localized-anchor bridge scan;
+- same-process cache hits revalidate the cached country-array token, read the
+  tag table from the `CountryDataBase` root, and avoid heap scans;
 - preflight rows are written only to the temporary `collector_control.json` as a
   compact `tag_db_id:country_object_ptr` string plus a separate
   `tag_db_id:country_record_ptr` string;

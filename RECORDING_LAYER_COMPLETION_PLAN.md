@@ -791,12 +791,20 @@ country vtable and `tag_db_id`, validates each record pointer by checking that i
 still points at the same country object, then re-reads object-backed scalars plus
 record-backed political power per frame before emitting `country_scalars`.
 
+The preflight now has a same-process cache keyed by PID, process creation time,
+exe hash, and module base. Cache hits validate the cached country-array token
+with `locate.resolve_cached`, read the tag table directly from the
+`CountryDataBase` root, and avoid both heap scans. The live Portugal process
+resolved cached preflight in about 0.05 seconds. Cold preflight for a fresh
+process still falls back to structural country-array discovery.
+
 Remaining Phase 2 gaps:
 
 - Make the preflight bridge automatic for the normal session path after a
   speed-five proof with row counts and zero skipped hours.
-- Replace the preflight country-array discovery with a root-anchored or
-  hook-derived bridge so session start is also fast on every supported build.
+- Replace cold preflight country-array discovery with a root-anchored or
+  hook-derived bridge so first session start is also fast on every supported
+  build.
 - Expand country-record-backed fields beyond political power where the live
   record layout proves them.
 - Add longer-run pointer freshness diagnostics: accepted row count, stale row
