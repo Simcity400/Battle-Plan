@@ -44,6 +44,10 @@ def record_probes(
     write_snapshot_artifacts: bool = True,
     country_object_bridge: Any = None,
     country_record_bridge: Any = None,
+    map_control_state_roots: Optional[str] = None,
+    map_control_province_bridge: Optional[str] = None,
+    map_control_controller_bridge: Optional[str] = None,
+    scheduled_snapshot_step_hours: int = 1,
 ) -> Path:
     if repeat < 1:
         raise ValueError("repeat must be >= 1")
@@ -57,6 +61,8 @@ def record_probes(
         raise ValueError("worker_duration_s must be > 0")
     if worker_sample_ms < 10:
         raise ValueError("worker_sample_ms must be >= 10")
+    if scheduled_snapshot_step_hours < 1:
+        raise ValueError("scheduled_snapshot_step_hours must be >= 1")
     encoded_country_object_bridge = (
         encode_country_object_bridge(country_object_bridge)
         if country_object_bridge is not None else None
@@ -73,6 +79,11 @@ def record_probes(
         len(encoded_country_record_bridge.split(";"))
         if encoded_country_record_bridge else 0
     )
+    map_control_state_root_rows = _encoded_row_count(map_control_state_roots)
+    map_control_controller_bridge_rows = _encoded_row_count(
+        map_control_controller_bridge
+    )
+    map_control_province_bridge_supplied = bool(map_control_province_bridge)
 
     run_id = _run_id(pid)
     effective_session_id = session_id or run_id
@@ -120,6 +131,10 @@ def record_probes(
                 session_id=effective_session_id,
                 country_object_bridge=encoded_country_object_bridge,
                 country_record_bridge=encoded_country_record_bridge,
+                map_control_state_roots=map_control_state_roots,
+                map_control_province_bridge=map_control_province_bridge,
+                map_control_controller_bridge=map_control_controller_bridge,
+                scheduled_snapshot_step_hours=scheduled_snapshot_step_hours,
             )
             worker_pipe_tokens.append(pipe_token)
         try:
@@ -250,6 +265,14 @@ def record_probes(
             "country_object_bridge_rows": country_object_bridge_rows,
             "country_record_bridge_supplied": bool(encoded_country_record_bridge),
             "country_record_bridge_rows": country_record_bridge_rows,
+            "map_control_state_roots_supplied": bool(map_control_state_roots),
+            "map_control_state_root_rows": map_control_state_root_rows,
+            "map_control_province_bridge_supplied": map_control_province_bridge_supplied,
+            "map_control_controller_bridge_supplied": bool(map_control_controller_bridge),
+            "map_control_controller_bridge_rows": map_control_controller_bridge_rows,
+            "scheduled_snapshot_step_hours": (
+                scheduled_snapshot_step_hours if worker_duration_s is not None else None
+            ),
             "worker_pipe_tokens": worker_pipe_tokens,
             "attach_errors": attach_errors,
             "partial_session": bool(attach_errors and samples),
@@ -314,6 +337,10 @@ def _write_worker_control(
     session_id: Optional[str] = None,
     country_object_bridge: Optional[str] = None,
     country_record_bridge: Optional[str] = None,
+    map_control_state_roots: Optional[str] = None,
+    map_control_province_bridge: Optional[str] = None,
+    map_control_controller_bridge: Optional[str] = None,
+    scheduled_snapshot_step_hours: int = 1,
 ) -> tuple[Path, str]:
     control_path = Path(dll).resolve().with_name("collector_control.json")
     pipe_token = f"{time.monotonic_ns():x}"
@@ -323,6 +350,7 @@ def _write_worker_control(
         "pipe_token": pipe_token,
         "sample_ms": int(sample_ms),
         "country_object_scan": False,
+        "scheduled_snapshot_step_hours": int(scheduled_snapshot_step_hours),
         "sidecar_log": False,
     }
     if session_id:
@@ -331,6 +359,12 @@ def _write_worker_control(
         payload["country_object_bridge"] = country_object_bridge
     if country_record_bridge:
         payload["country_record_bridge"] = country_record_bridge
+    if map_control_state_roots:
+        payload["map_control_state_roots"] = map_control_state_roots
+    if map_control_province_bridge:
+        payload["map_control_province_bridge"] = map_control_province_bridge
+    if map_control_controller_bridge:
+        payload["map_control_controller_bridge"] = map_control_controller_bridge
     control_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
     return control_path, pipe_token
 
@@ -414,6 +448,12 @@ def _iter_encoded_country_object_bridge(value: str) -> Iterable[Tuple[str, str]]
             raise ValueError("country_object_bridge row missing ':'")
         pairs.append(tuple(raw.split(":", 1)))
     return pairs
+
+
+def _encoded_row_count(value: Optional[str]) -> int:
+    if not value:
+        return 0
+    return len([row for row in value.split(";") if row])
 
 
 def _bridge_item_pair(

@@ -448,7 +448,46 @@ class TestCollectorFrames(unittest.TestCase):
         self.assertEqual(snap["provinces"], {})
         self.assertIsNone(snap["map"]["control_by_province"])
 
-    def test_root_probe_frame_derives_map_control_domains(self):
+    def test_root_probe_frame_requires_scheduled_map_domain_claims(self):
+        frame = {
+            "type": "collector_started",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "process_id": 32440,
+            "tick_ms": 158373765,
+            "capture_boundary": "scheduled_hour_snapshot",
+            "quality_status": "root_probe_verified",
+            "domains": ["clock", "state_control", "province_control"],
+            "states": {"1": {"controller": "GER"}},
+            "provinces": {"11": {"controller": "GER", "state_id": 1}},
+            "root_probe": {
+                "status": "verified",
+                "profile": "vanilla_latest_2026_06_28",
+                "daily_update_sentinel_match": True,
+                "long_string_sentinel_match": True,
+                "current_game_date": "1936.6.15.7",
+                "current_game_date_raw": 60763326,
+                "start_date": "1936.1.1.12",
+                "start_date_raw": 60759371,
+                "country_tag_count": 474,
+                "country_active_count": 440,
+                "tag_sample": ["---", "GER", "ENG"],
+                "domains": ["clock", "state_control", "province_control"],
+            },
+        }
+
+        snap = snapshot_from_root_probe_frame(frame, "collector-test")
+
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        self.assertEqual(
+            snap["provenance"]["collector"]["domains"],
+            ["clock", "state_control", "province_control"],
+        )
+        self.assertEqual(snap["states"]["1"]["controller"], "GER")
+        self.assertEqual(snap["map"]["control_by_province"], {"11": "GER"})
+
+    def test_root_probe_map_payload_without_scheduled_claim_is_not_folded(self):
         frame = {
             "type": "collector_started",
             "backend": "in_process_collector",
@@ -478,12 +517,27 @@ class TestCollectorFrames(unittest.TestCase):
         snap = snapshot_from_root_probe_frame(frame, "collector-test")
 
         self.assertEqual(schema.validate_snapshot(snap), [])
-        self.assertEqual(
-            snap["provenance"]["collector"]["domains"],
-            ["clock", "state_control", "province_control"],
-        )
-        self.assertEqual(snap["states"]["1"]["controller"], "GER")
-        self.assertEqual(snap["map"]["control_by_province"], {"11": "GER"})
+        self.assertEqual(snap["provenance"]["collector"]["domains"], ["clock"])
+        self.assertEqual(snap["states"], {})
+        self.assertEqual(snap["provinces"], {})
+
+    def test_worker_poll_rejects_heavy_map_payloads(self):
+        frame = {
+            "type": "collector_started",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "capture_boundary": "worker_poll",
+            "states": {"1": {"controller": "GER"}},
+            "provinces": {"11": {"controller": "GER", "state_id": 1}},
+        }
+
+        problems = validate_collector_frame(frame)
+
+        self.assertTrue(any("worker_poll frame must not carry states" in p
+                            for p in problems), problems)
+        self.assertTrue(any("worker_poll frame must not carry provinces" in p
+                            for p in problems), problems)
 
     def test_map_control_rejects_raw_ids_and_bad_tags(self):
         frame = {

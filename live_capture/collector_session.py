@@ -30,6 +30,10 @@ from .collector_frames import (
     validate_collector_frame,
 )
 from .collector_country_bridge import resolve_country_object_bridge_preflight
+from .collector_map_bridge import (
+    resolve_province_control_preflight,
+    resolve_state_control_preflight,
+)
 from .collector_probe_record import record_probes
 from .durable_store import CaptureLock, DurableCaptureStore
 from .recorder.cadence import RecorderCadence
@@ -332,6 +336,9 @@ def record_collector_session(
     country_object_bridge: Any = None,
     country_record_bridge: Any = None,
     preflight_country_object_bridge: bool = False,
+    preflight_state_control: bool = False,
+    preflight_province_control: bool = False,
+    allow_province_cold_scan: bool = False,
 ) -> Path:
     """Record one collector-backed session and write session lifecycle metadata.
 
@@ -349,6 +356,8 @@ def record_collector_session(
         raise ValueError("burst_interval_s must be >= 0")
     if max_wall_s is not None and max_wall_s <= 0:
         raise ValueError("max_wall_s must be > 0")
+    if allow_province_cold_scan and not preflight_province_control:
+        raise ValueError("allow_province_cold_scan requires preflight_province_control")
 
     started_utc = datetime.now(timezone.utc).isoformat()
     started_monotonic = time.monotonic()
@@ -379,6 +388,44 @@ def record_collector_session(
         if preflight.usable:
             country_object_bridge = preflight.encoded
             country_record_bridge = preflight.record_encoded
+    map_control_state_roots = None
+    map_control_province_bridge = None
+    map_control_controller_bridge = None
+    state_control_preflight = {
+        "enabled": bool(preflight_state_control),
+        "status": "not_requested",
+        "row_count": 0,
+    }
+    province_control_preflight = {
+        "enabled": bool(preflight_province_control),
+        "status": "not_requested",
+        "row_count": 0,
+    }
+    preflight_cache_root = out_root / "_preflight_cache"
+    if preflight_state_control:
+        preflight = resolve_state_control_preflight(
+            pid,
+            cache_path=preflight_cache_root / "state_roots.json",
+        )
+        state_control_preflight = preflight.diagnostics
+        state_control_preflight["enabled"] = True
+        if preflight.usable:
+            map_control_state_roots = getattr(preflight, "state_roots_encoded", None)
+    if preflight_province_control:
+        preflight = resolve_province_control_preflight(
+            pid,
+            cache_path=preflight_cache_root / "province_control.json",
+            state_cache_path=preflight_cache_root / "state_roots.json",
+            allow_cold_scan=allow_province_cold_scan,
+        )
+        province_control_preflight = preflight.diagnostics
+        province_control_preflight["enabled"] = True
+        province_control_preflight["allow_cold_scan"] = bool(allow_province_cold_scan)
+        if preflight.usable:
+            map_control_province_bridge = getattr(
+                preflight, "province_bridge_encoded", None)
+            map_control_controller_bridge = getattr(
+                preflight, "controller_bridge_encoded", None)
 
     run_dir = record_probes(
         pid,
@@ -398,6 +445,10 @@ def record_collector_session(
         write_snapshot_artifacts=False,
         country_object_bridge=country_object_bridge,
         country_record_bridge=country_record_bridge,
+        map_control_state_roots=map_control_state_roots,
+        map_control_province_bridge=map_control_province_bridge,
+        map_control_controller_bridge=map_control_controller_bridge,
+        scheduled_snapshot_step_hours=1,
     )
 
     probe_manifest_path = run_dir / "manifest.json"
@@ -508,6 +559,18 @@ def record_collector_session(
                 "country_record_bridge_supplied"),
             "country_record_bridge_rows": probe_manifest.get(
                 "country_record_bridge_rows"),
+            "state_control_preflight": state_control_preflight,
+            "province_control_preflight": province_control_preflight,
+            "map_control_state_roots_supplied": probe_manifest.get(
+                "map_control_state_roots_supplied"),
+            "map_control_state_root_rows": probe_manifest.get(
+                "map_control_state_root_rows"),
+            "map_control_province_bridge_supplied": probe_manifest.get(
+                "map_control_province_bridge_supplied"),
+            "map_control_controller_bridge_supplied": probe_manifest.get(
+                "map_control_controller_bridge_supplied"),
+            "map_control_controller_bridge_rows": probe_manifest.get(
+                "map_control_controller_bridge_rows"),
             "proof_compat_manifest": "manifest.json",
             "session_start_frame": "session_start.json",
             "session_stop_frame": "session_stop.json",
@@ -567,7 +630,6 @@ def _frames_from_probe_manifest(
     frames: List[Dict[str, Any]] = []
     errors: List[str] = []
     session_id = _probe_session_id(run_dir, probe_manifest)
-    seen_game_hours: set[int] = set()
     samples = probe_manifest.get("samples")
     if not isinstance(samples, list):
         raise RuntimeError("collector probe manifest samples missing or not list")
@@ -575,11 +637,6 @@ def _frames_from_probe_manifest(
         if not isinstance(sample, dict):
             errors.append(f"samples[{i}] not object")
             continue
-        raw_hour = sample.get("current_game_date_raw")
-        if unique_game_hours_only and isinstance(raw_hour, int):
-            if raw_hour in seen_game_hours:
-                continue
-            seen_game_hours.add(raw_hour)
         frame_name = sample.get("frame")
         if not isinstance(frame_name, str):
             errors.append(f"samples[{i}].frame missing")
@@ -617,7 +674,37 @@ def _frames_from_probe_manifest(
     if errors:
         raise RuntimeError("collector probe frame load failed: "
                            + "; ".join(errors[:8]))
+    if unique_game_hours_only:
+        return _prefer_scheduled_frames_by_game_hour(frames)
     return frames
+
+
+def _prefer_scheduled_frames_by_game_hour(
+    frames: Iterable[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    selected: List[Dict[str, Any]] = []
+    by_raw_hour: Dict[int, int] = {}
+    for frame in frames:
+        root_probe = frame.get("root_probe")
+        raw_hour = (
+            root_probe.get("current_game_date_raw")
+            if isinstance(root_probe, dict) else None
+        )
+        if not isinstance(raw_hour, int):
+            selected.append(frame)
+            continue
+        existing_index = by_raw_hour.get(raw_hour)
+        if existing_index is None:
+            by_raw_hour[raw_hour] = len(selected)
+            selected.append(frame)
+            continue
+        existing = selected[existing_index]
+        if (
+            existing.get("capture_boundary") != "scheduled_hour_snapshot"
+            and frame.get("capture_boundary") == "scheduled_hour_snapshot"
+        ):
+            selected[existing_index] = frame
+    return selected
 
 
 def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
@@ -631,7 +718,14 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     state_control_frames = 0
     province_control_frames = 0
     state_ownership_frames = 0
+    frames_by_capture_boundary: Dict[str, int] = {}
+    heavy_payload_on_lightweight_frames = 0
     for frame in frames:
+        boundary = frame.get("capture_boundary")
+        if isinstance(boundary, str):
+            frames_by_capture_boundary[boundary] = (
+                frames_by_capture_boundary.get(boundary, 0) + 1
+            )
         domains = frame.get("domains")
         if isinstance(domains, list):
             for domain in domains:
@@ -651,12 +745,22 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         if isinstance(states, dict):
             frames_with_states += 1
             max_state_rows = max(max_state_rows, len(states))
+            if states and boundary == "worker_poll":
+                heavy_payload_on_lightweight_frames += 1
         provinces = frame.get("provinces")
         if isinstance(provinces, dict):
             frames_with_provinces += 1
             max_province_rows = max(max_province_rows, len(provinces))
+            if provinces and boundary == "worker_poll":
+                heavy_payload_on_lightweight_frames += 1
     return {
         "domains_seen": sorted(domains_seen),
+        "frames_by_capture_boundary": dict(sorted(frames_by_capture_boundary.items())),
+        "scheduled_snapshot_frame_count": frames_by_capture_boundary.get(
+            "scheduled_hour_snapshot", 0),
+        "lightweight_poll_frame_count": frames_by_capture_boundary.get(
+            "worker_poll", 0),
+        "heavy_payload_on_lightweight_frames": heavy_payload_on_lightweight_frames,
         "frames_with_countries": frames_with_countries,
         "frames_with_states": frames_with_states,
         "frames_with_provinces": frames_with_provinces,
@@ -836,6 +940,21 @@ def _main() -> int:
         help="resolve live country object pointers before recording; no saves required",
     )
     parser.add_argument(
+        "--preflight-state-control",
+        action="store_true",
+        help="resolve/cache live state owner/controller roots before recording",
+    )
+    parser.add_argument(
+        "--preflight-province-control",
+        action="store_true",
+        help="use cached live province-control bridge if available; no cold scan by default",
+    )
+    parser.add_argument(
+        "--allow-province-cold-scan",
+        action="store_true",
+        help="allow the slow province array locator during preflight",
+    )
+    parser.add_argument(
         "--allow-hourly-gaps",
         action="store_true",
         help="write diagnostics but exit 0 even if requested hourly coverage has gaps",
@@ -859,6 +978,9 @@ def _main() -> int:
             not args.allow_hourly_gaps if args.until_game_hours is not None else False
         ),
         preflight_country_object_bridge=args.preflight_country_object_bridge,
+        preflight_state_control=args.preflight_state_control,
+        preflight_province_control=args.preflight_province_control,
+        allow_province_cold_scan=args.allow_province_cold_scan,
     )
     print(run_dir)
     manifest = json.loads((run_dir / "session_manifest.json").read_text(

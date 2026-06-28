@@ -21,6 +21,12 @@ Frames include a monotonic producer sequence id. The Python recorder annotates
 pipe reads with byte count and CRC32 before folding them into replay provenance
 and manifest diagnostics.
 
+Current cadence contract: bounded proof workers sample cheaply at 10 ms, the
+recorder keeps one canonical replay snapshot per unique game hour, and the raw
+`collector_frames.jsonl` stream preserves duplicate same-hour frames for later
+high-frequency domains. Daily update hooks or daily rows are not replay
+coverage.
+
 For hourly proof runs, the recorder writes a short-lived
 `collector_control.json` beside the DLL before attach. The DLL treats that as a
 bounded worker request, samples verified roots at the requested interval, emits
@@ -75,8 +81,14 @@ Recorder-side map-control contract:
 - province control is mirrored into `map.control_by_province` for replay UI use;
 - session manifests summarize maximum country/state/province row counts across
   the raw frame stream;
-- the DLL does not emit live map-control rows yet. That needs a bounded
-  root/preflight source and scheduled-hour gating before it is enabled.
+- the control file may carry `map_control_state_roots`,
+  `map_control_province_bridge`, and `map_control_controller_bridge`;
+- the Rust side parses those control contracts, rejects malformed/duplicate/
+  out-of-range rows, and reports validity/row counts in frame control metadata;
+- scheduled frames can emit state owner/controller rows from validated
+  `map_control_state_roots`; worker-poll frames stay light;
+- province rows still need a bounded dense-array reader/cache before the
+  `province_control` domain is enabled.
 
 State-root preflight:
 
@@ -87,8 +99,9 @@ State-root preflight:
 - diagnostics report row counts and cache status only, never raw addresses;
 - the live Portugal proof resolved 1081 state rows cold in about 28.5s and from
   cache in about 0.2s;
-- this does not yet feed the DLL and does not yet solve the dense province-control
-  array root.
+- cached state roots are scheduled `state_ownership` / `state_control` input;
+- the dense province-control array root remains unresolved/too slow for normal
+  recording until its relocation/cache path is proven.
 
 Runtime rules:
 

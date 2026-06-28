@@ -58,7 +58,9 @@ cadence. The source is documented per-field in the tables below using these tags
 
 `C` is the target runtime source. `S` rows are useful schema evidence and test
 fixtures, but a shipped live replay must not require save input or silently fill
-collector gaps from saves.
+collector gaps from saves. A row counts as `C` only when the snapshot provenance
+claims the corresponding collector domain; preflight/cache success by itself is
+not captured replay state.
 
 A snapshot does **not** repeat the tag on every value at runtime — that would bloat
 every file. Instead each snapshot records, **once**, which domains were populated and
@@ -81,6 +83,10 @@ Aggregates over null members skip them and report a coverage count, never impute
   + hour)`, 365-day years, no leap) — the **canonical sort/diff key**. Two snapshots are
   "adjacent" iff no snapshot exists with an `hour_index` strictly between them. Derived
   from `date` by `schema.date_to_hour_index`; `null` only if `date` is malformed.
+
+Canonical live recordings are hourly-or-better. The recorder may preserve raw
+sub-hour collector samples in a session sidecar, but daily-only rows are rollups,
+not replay coverage.
 
 ### 0.4 Identity keys
 
@@ -155,6 +161,7 @@ consumer reasons about coverage without per-value tags.
     "exe_sha256": "16022851...",
     "mod_checksum": "...",
     "domains": ["clock", "country_identity", "economy"],
+    "capture_boundary": "scheduled_hour_snapshot",
     "quality_status": "complete"
   },
   "memory": {                    // legacy/external research path; optional
@@ -178,6 +185,13 @@ consumer reasons about coverage without per-value tags.
 `domains` values are the canonical domain ids in `schema.DOMAINS`. A domain absent from
 all captured-domain lists means every field in that domain is `null` in
 this snapshot — by design, not by error.
+
+Collector session artifacts live beside the snapshot stream, not inside every
+snapshot. The current recorder writes `collector_frames.jsonl` with every
+validated DLL frame and records manifest counters such as
+`raw_collector_frame_count`, duplicate same-hour frame count, payload row-count
+summaries, transport diagnostics, and preflight bridge status. The canonical
+snapshot stream still stores one selected frame per unique game hour.
 
 ### 2.1 `provenance.mod` — the per-replay MOD IDENTITY (additive, §K MOD AWARENESS)
 
@@ -268,15 +282,15 @@ are `null`.
 | `convoys[]` | list | S | same shape as stockpile entries (convoy archetype) |
 | `ships_by_hull` | obj\|null | S/D | `{hull_type: {count, tonnage}}`; null until parsed |
 | `casualties.killed` / `.captured` | int\|null | S/D | feeds K/D |
-| `command_power` | float\|null | M | duplicated under `politics` for convenience |
+| `command_power` | float\|null | C / M | duplicated under `politics` for convenience |
 
 ### 3.3 `politics`
 | field | type | source | notes |
 |-------|------|--------|-------|
-| `stability` | float\|null | M | 0..1 |
-| `war_support` | float\|null | M | 0..1 |
-| `political_power` | float\|null | M | |
-| `command_power` | float\|null | M | |
+| `stability` | float\|null | C / M | 0..1; `C` through the country-object preflight bridge |
+| `war_support` | float\|null | C / M | 0..1; `C` through the country-object preflight bridge |
+| `political_power` | float\|null | C / M | `C` through the country-record preflight bridge |
+| `command_power` | float\|null | C / M | `C` through the country-object preflight bridge |
 | `ruling_party` | str\|null | S | e.g. `"fascism"` |
 | `party_popularities` | obj\|null | S | `{ideology: fraction}`; null until parsed |
 | `laws.economy` / `.trade` / `.conscription` | str\|null | S | token or null |
@@ -409,8 +423,8 @@ stays `0`, e.g. a nuke RECORD with `amount=0` yields `nukes_total=0`).
 
 | field | type | source | notes |
 |-------|------|--------|-------|
-| `owner` | str\|null | M / S | TAG; `null` = genuinely ownerless |
-| `controller` | str\|null | M / S | TAG |
+| `owner` | str\|null | C / M / S | TAG; `null` = genuinely ownerless. `C` only when a collector `state_ownership` frame/domain supplied it. |
+| `controller` | str\|null | C / M / S | TAG. `C` only when a collector `state_control` frame/domain supplied it. |
 | `is_core_of[]` | list[str] | S | cores; null until parsed → `[]` ok |
 | `is_claimed_by[]` | list[str] | S | |
 | `buildings` | obj\|null | S / M\* | state-scoped levels (`infrastructure, industrial_complex, arms_factory, dockyard, air_base, land_fort, ...`) |
@@ -431,7 +445,7 @@ stays `0`, e.g. a nuke RECORD with `amount=0` yields `nukes_total=0`).
 
 | field | type | source | notes |
 |-------|------|--------|-------|
-| `controller` | str\|null | S/D, M\* | TAG (override→state-controller→owner resolution already applied by oracle) |
+| `controller` | str\|null | C / S/D / M\* | TAG. `C` only when a collector `province_control` frame/domain supplied it; the live dense-array root is still not a closed normal-recording path. |
 | `state_id` | int\|null | D | join from province→state map |
 | `supply` | float\|null | S | |
 | `rail_usage` / `route_usage` | float\|null | S | |
@@ -441,6 +455,11 @@ stays `0`, e.g. a nuke RECORD with `amount=0` yields `nukes_total=0`).
 > writer normalizes each into `{"controller": TAG}` and adds `state_id` if the
 > province→state map is available, else `null`. Provinces absent from the oracle map
 > (sea/lake) are simply omitted — only land provinces with a controller appear.
+>
+> Collector frames may also populate this table directly. In that path the frame
+> must explicitly claim `province_control`, emit normalized TAG controllers (no
+> raw tag-db ids), and the adapter mirrors the result into
+> `map.control_by_province`.
 
 ---
 
@@ -545,8 +564,8 @@ event lifecycle) has a single source of truth. Always present (`{}`-filled).
 
 | field | type | source | notes |
 |-------|------|--------|-------|
-| `owner_by_state` | obj\|null | M/D | `{state_id: TAG}` (mirror of `states[*].owner` for the raster) |
-| `control_by_province` | obj\|null | S/D, M\* | `{province_id: TAG}` (mirror of `provinces[*].controller`) |
+| `owner_by_state` | obj\|null | C / M / S / D | `{state_id: TAG}` (mirror of `states[*].owner` for the raster) |
+| `control_by_province` | obj\|null | C / M / S / D | `{province_id: TAG}` (mirror of `provinces[*].controller`) |
 | `vp_by_state` | obj\|null | S(static)/D | computed VP per state |
 | `controlled_industry_share` | obj\|null | D | `{TAG: fraction}`; null until computed |
 | `front_lines[]` | list | D | derived from control adjacency; null→`[]` until computed |
@@ -702,20 +721,22 @@ Two places events live:
   "key": "23",                    // entity id the event is about (state/province/div/tech/focus), or null
   "from": "POL",                  // prior value (TAG/level/law/...), or null
   "to": "GER",                    // new value, or null
-  "source": "D",                  // M / S / D / marker (where the event was derived)
+  "source": "D",                  // C / M / S / D / marker (where the event was derived)
   "confidence": "exact",          // "exact" | "interval" | "inferred"  (§9.3)
   "detail": { ... }               // type-specific extras (optional)
 }
 ```
 
 `confidence`:
-- **exact** — a marker event, or a diff on an M layer (tick-resolution).
+- **exact** — a marker event, or a diff on a collector/live memory layer
+  (`C`/`M`) at that layer's cadence.
 - **interval** — diff on a coarser (save) layer: the change happened *somewhere between*
   the two snapshots; `hour_index` is the later bound. `detail.interval_start_hour` gives
   the earlier bound.
 - **inferred** — reconstructed (e.g. combat lifecycle, casualty attribution).
 
 `source` is the channel the diff was derived from, computed per event-domain:
+- **C** — both snapshots captured the domain from the in-process collector.
 - **M** — both snapshots captured the domain from **memory** (⇒ `confidence` exact).
 - **S** — both snapshots backed the domain from the **save** channel (a folded save
   backstop) ⇒ honest save-sourced provenance (`confidence` interval, not exact).

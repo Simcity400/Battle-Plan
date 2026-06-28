@@ -142,6 +142,7 @@ class TestCollectorProbeRecord(unittest.TestCase):
         self.assertFalse(payload["country_object_scan"])
         self.assertFalse(payload["sidecar_log"])
         self.assertEqual(payload["sample_ms"], 25)
+        self.assertEqual(payload["scheduled_snapshot_step_hours"], 1)
 
     def test_encode_country_object_bridge_sorts_and_sanitizes_rows(self):
         encoded = encode_country_object_bridge({
@@ -177,11 +178,25 @@ class TestCollectorProbeRecord(unittest.TestCase):
                 session_id="session-1",
                 country_object_bridge="1:0x1000;2:0x2000",
                 country_record_bridge="1:0x1200;2:0x2200",
+                map_control_state_roots="1:0x3000;2:0x4000",
+                map_control_province_bridge=(
+                    "province_array=0x5000;province_count=13232;"
+                    "province_stride=8;controller_ptr_offset=0"
+                ),
+                map_control_controller_bridge="1:0x6000;2:0x7000",
+                scheduled_snapshot_step_hours=1,
             )
             payload = json.loads(control_path.read_text(encoding="utf-8"))
 
         self.assertEqual(payload["country_object_bridge"], "1:0x1000;2:0x2000")
         self.assertEqual(payload["country_record_bridge"], "1:0x1200;2:0x2200")
+        self.assertEqual(payload["map_control_state_roots"], "1:0x3000;2:0x4000")
+        self.assertEqual(
+            payload["map_control_province_bridge"],
+            "province_array=0x5000;province_count=13232;"
+            "province_stride=8;controller_ptr_offset=0",
+        )
+        self.assertEqual(payload["map_control_controller_bridge"], "1:0x6000;2:0x7000")
         self.assertFalse(payload["country_object_scan"])
 
     def test_record_probes_manifest_tracks_worker_session_id(self):
@@ -229,6 +244,12 @@ class TestCollectorProbeRecord(unittest.TestCase):
                     worker_sample_ms=25,
                     country_object_bridge={1: 0x1000, 2: 0x2000},
                     country_record_bridge={1: 0x1200, 2: 0x2200},
+                    map_control_state_roots="1:0x3000;2:0x4000",
+                    map_control_province_bridge=(
+                        "province_array=0x5000;province_count=13232;"
+                        "province_stride=8;controller_ptr_offset=0"
+                    ),
+                    map_control_controller_bridge="1:0x6000;2:0x7000",
                 )
                 manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
         finally:
@@ -238,8 +259,16 @@ class TestCollectorProbeRecord(unittest.TestCase):
         self.assertEqual(manifest["country_object_bridge_rows"], 2)
         self.assertTrue(manifest["country_record_bridge_supplied"])
         self.assertEqual(manifest["country_record_bridge_rows"], 2)
+        self.assertTrue(manifest["map_control_state_roots_supplied"])
+        self.assertEqual(manifest["map_control_state_root_rows"], 2)
+        self.assertTrue(manifest["map_control_province_bridge_supplied"])
+        self.assertTrue(manifest["map_control_controller_bridge_supplied"])
+        self.assertEqual(manifest["map_control_controller_bridge_rows"], 2)
         self.assertNotIn("0x1000", json.dumps(manifest, sort_keys=True))
         self.assertNotIn("0x1200", json.dumps(manifest, sort_keys=True))
+        self.assertNotIn("0x3000", json.dumps(manifest, sort_keys=True))
+        self.assertNotIn("0x5000", json.dumps(manifest, sort_keys=True))
+        self.assertNotIn("0x6000", json.dumps(manifest, sort_keys=True))
 
     def test_record_probes_can_skip_snapshot_sidecar_artifacts(self):
         original_attach = cpr._attach_with_retries

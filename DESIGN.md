@@ -18,6 +18,8 @@
 This is the product vision and architecture document, not the current completion
 ledger. Current status lives in:
 
+- `RECORDING_LAYER_COMPLETION_PLAN.md`
+- `IN_PROCESS_COLLECTOR_PLAN.md`
 - `replay_ui/MASTER_PROGRESS.md`
 - `coverage_audit/memory_manifest.json`
 - `coverage_audit/COVERAGE_REPORT.md`
@@ -101,6 +103,46 @@ The product decision to allow injection/hooking is now explicit for this private
 host-side, observational tool. See `RESEARCH_in_process_collector.md` for the
 HOI4-IC-Graphs evidence and `IN_PROCESS_COLLECTOR_PLAN.md` for the attack plan.
 
+### Current recording-layer checkpoint (2026-06-28)
+
+The recording layer is now a two-channel model:
+
+- **Canonical channel:** hourly-or-better snapshots from the live collector. This
+  is the replay timeline and must survive speed five. Daily rows are auxiliary
+  rollups only and never satisfy replay coverage.
+- **Raw sampled channel:** the recorder preserves every accepted DLL frame in a
+  `collector_frames.jsonl` sidecar, including duplicate same-hour samples. The
+  current snapshot store still dedupes to one canonical snapshot per game hour,
+  but the raw sidecar keeps sub-hour evidence for future combat, movement, and
+  event-stream extraction.
+
+Implemented in the current bridge:
+
+- bounded collector worker proof at 10 ms sampling with speed-five hourly
+  coverage and zero skipped requested hours;
+- session wrapper with lifecycle frames, durable snapshots, `.battleplan`
+  finalization, cadence/transport diagnostics, and raw-frame sidecar retention;
+- live country identity and country-scalar bridge through a preflight
+  `tag_db_id:country_object_ptr` / `tag_db_id:country_record_ptr` control
+  contract, with same-process cache reuse and `country_object_scan = false`;
+- collector-frame adapter contract for `state_ownership`, `state_control`, and
+  `province_control`, including TAG validation and session row-count summaries;
+- state-root map preflight cache: all 1081 state owner/controller rows are slow
+  cold, but fast once cached and revalidated;
+- scheduled DLL emission path for state owner/controller rows from preflighted
+  state roots, gated to canonical hourly frames rather than 10 ms worker polls.
+
+Still open:
+
+- replace repeated bounded-worker attaches with a true long-running collector
+  session;
+- complete live speed-five proof for scheduled state owner/controller rows;
+- solve province-control dense-array relocation/cache well enough for normal
+  recording;
+- promote divisions, economy, production, focus/research, diplomacy, and combat
+  from historical proof/schema coverage to live collector output or explicit
+  unavailable badges.
+
 ### Historical feasibility evidence (memory-reader and save-oracle research snapshot)
 
 All memory offsets in this snapshot were validated 1:1 against a time-aligned
@@ -129,13 +171,14 @@ unavailable.
 | divisions (full: +template/equipment), economy deep, fuel/manpower/factories | save oracle | ✓ |
 | focuses, tech, production, diplomacy, state detail, active combats | save oracle (7 deep parsers) | ✓ DONE |
 
-**Caveat — country id spaces:** owner/controller/division-owner use a 1-based
-**tag-db id** distinct from the country-array running index. The tag-db-id→TAG table
-is now **CRACKED in memory** (1-based std::string array, validated 1603/1603), so
-owner / controller / divisions / province-control / combat are all **fully save-free**.
-At that snapshot, the residual in this id-space work was the country-array
-running_index ↔ tag-db-id bridge — needed *only* to label live economy scalars
-with a TAG without the save.
+**Caveat — country id spaces and collector status:** owner/controller/division-owner
+use a 1-based **tag-db id** distinct from the country-array running index. The
+tag-db-id->TAG table is cracked and the current collector emits live `tag_db_id`
+identity rows without a save. Country scalar capture now uses a bounded
+preflight/cache bridge instead of a normal heap scan. State owner/controller
+roots are preflight-cache proven and scheduled collector emission is wired, with
+live speed-five proof still pending. Dense province-control array relocation
+remains the unresolved map blocker.
 
 ### Historical build status (2026-06-24; superseded)
 
@@ -187,9 +230,12 @@ layer. There is no save-cadence runtime layer.
 
 ## 4. Feasibility tiers (replaces the old "impossible" list)
 
-- **Tier A — in hand:** date, per-country PP/stability/war_support/command_power,
-  state owner+controller, full province control, division enumeration with
-  owner/location/template (org/strength imminent). Map time-lapse + division layer.
+- **Tier A — collector-backed today / bridge-proven:** date/hour, country
+  identity, country scalars through the preflight cache bridge, speed-five
+  hourly proof, raw collector frame preservation, and schema adapters for
+  state/province map-control frames. State owner/controller roots are fast once
+  cached and scheduled DLL emission is wired. Full province control remains open
+  until the dense province array root is fast and validated.
 - **Tier B — proven by save parsing, must become live for runtime:** focuses (and
   completion timeline via diff), tech/research, production lines + gross output by
   equipment, equipment stockpiles, factories (civ/mil/dockyard), fuel/manpower,
@@ -224,12 +270,12 @@ layer. There is no save-cadence runtime layer.
 ## 4b. Data inventory — everything the app captures
 
 The full target set for "all the information a reviewer could need." Historical
-source tags are retained to show current evidence: **M** = live memory already
-cracked externally, **M\*** = live memory/collector crackable, **S** = currently
-proven only by save parser, **D** = derived (diff / join / compute). In v3, `S`
-does **not** mean an acceptable runtime source. It means the row must be promoted
-to the live collector, derived from live collector inputs, or honestly badged as
-unavailable.
+source tags are retained to show current evidence: **C** = collector-fed or
+collector-frame contract exists, **M** = live memory already cracked externally,
+**M\*** = live memory/collector crackable, **S** = currently proven only by save
+parser, **D** = derived (diff / join / compute). In v3, `S` does **not** mean an
+acceptable runtime source. It means the row must be promoted to the live
+collector, derived from live collector inputs, or honestly badged as unavailable.
 
 **Country — economy & industry:** civ / mil / dockyard factories `S/M*`; factories under
 construction + what's queued `S`; construction power `S`; consumer-goods & trade-law
@@ -262,13 +308,16 @@ cooldowns `S`; ongoing missions `S`; one-shot clicks `D` (only when state-persis
 volunteers, attachés, expeditionary forces `S`; operatives, intel networks, decryption
 `S`; peace-conference state `S`.
 
-**State (×1081):** **owner `M`, controller `M`**; core/claim status `S`; buildings at
+**State (×1081):** **owner/controller `C/M/S`** (`C` contract + preflight cache
+proven; scheduled DLL emission path wired and live proof pending); core/claim status `S`; buildings at
 current level (infra, civ/mil/dockyard, forts, AA, radar, naval base, rocket/nuclear)
 `S/M*`; resources `S`; victory points `S(static)`; manpower `S`; state category `M/S`;
 resistance / compliance / occupation law `S`; supply `S/M*`.
 
-**Province (×~13.4k):** **controller** (override→state fallback) `S/D`, `M*` for live;
-supply & rail/route usage `S`; naval-base/port usage `S`.
+**Province (×~13.4k):** **controller** `C/S/D/M*` only when a collector
+`province_control` frame is present; historical save fallback exists for
+fixtures, but live dense-array relocation/cache remains open for normal
+recording. Supply & rail/route usage `S`; naval-base/port usage `S`.
 
 **Division (each, ~1654):** **owner `M`, template `M`, location/province `M`, organisation
 `M`, strength `M`, equipment inventory `M`**; experience `M*`; movement (moving? target
@@ -280,9 +329,10 @@ battles (fleets, ships engaged, sinkings) `M`; **air** engagements / region supe
 `M/S`; per-engagement casualties & outcome `D` (reconstructed from the combat lifecycle +
 strength deltas).
 
-**Map layers:** territory (owner) `M`; province control `S/D`,`M*`; supply areas &
-strategic regions `S(static)`; **front lines** (derived from control adjacency) `D`;
-naval/air region control `M*/S`; computed VP & controlled-industry share `D`.
+**Map layers:** territory (owner) `C/M`; province control `C/S/D/M*` with the
+same province-array caveat above; supply areas & strategic regions `S(static)`;
+**front lines** (derived from control adjacency) `D`; naval/air region control
+`M*/S`; computed VP & controlled-industry share `D`.
 
 **Event timeline (derived + marked):** DOWs, capitulations, faction changes, focus &
 tech completions, state/province captures, peace deals, government changes, nukes, major
@@ -295,9 +345,13 @@ the mod log marks them (§8).
 
 - **Clock and segment sentinels:** captured at every collector boundary and used
   to reject torn snapshots.
+- **Raw collector samples:** preserved in `collector_frames.jsonl` so 10 ms /
+  sub-hour observations survive even when the canonical store dedupes to one row
+  per game hour.
 - **Light state layers** (date, country identity, ownership/control, economy
-  scalars): hourly-or-better snapshots, with millisecond-level collector work as
-  the target. Daily-only capture is insufficient for replay coverage.
+  scalars): canonical hourly-or-better snapshots, with millisecond-level
+  collector work as the target. Daily-only capture is insufficient for replay
+  coverage.
 - **Heavy object graphs** (divisions, production, diplomacy, focus/research,
   buildings, OOB): captured on scheduled hourly boundaries when they affect the
   replay timeline. Daily aggregates may exist only as auxiliary rollups.

@@ -125,6 +125,12 @@ def validate_collector_frame(frame: Any) -> List[str]:
         else:
             problems.extend(_validate_province_rows(provinces))
 
+    if frame.get("capture_boundary") == "worker_poll":
+        if _has_payload_rows(states):
+            problems.append("collector worker_poll frame must not carry states payload")
+        if _has_payload_rows(provinces):
+            problems.append("collector worker_poll frame must not carry provinces payload")
+
     root_probe = frame.get("root_probe")
     if root_probe is not None:
         if not isinstance(root_probe, dict):
@@ -191,12 +197,13 @@ def snapshot_from_root_probe_frame(frame: Dict[str, Any], game_id: str) -> Dict[
     if _has_country_scalar_rows(frame_countries):
         domains.append("country_scalars")
     frame_states = frame.get("states") or {}
-    if _has_state_owner_rows(frame_states):
-        domains.append("state_ownership")
-    if _has_state_control_rows(frame_states):
-        domains.append("state_control")
     frame_provinces = frame.get("provinces") or {}
-    if _has_province_control_rows(frame_provinces):
+    claimed_domains = _explicit_scheduled_domains(frame, root_probe)
+    if "state_ownership" in claimed_domains and _has_state_owner_rows(frame_states):
+        domains.append("state_ownership")
+    if "state_control" in claimed_domains and _has_state_control_rows(frame_states):
+        domains.append("state_control")
+    if "province_control" in claimed_domains and _has_province_control_rows(frame_provinces):
         domains.append("province_control")
 
     snap = schema.empty_snapshot(game_id, date)
@@ -280,6 +287,18 @@ def _collector_provenance(frame: Dict[str, Any], domains: List[str]) -> Dict[str
 
 def _clean_domains(domains: Iterable[Any]) -> List[str]:
     return sorted({d for d in domains if isinstance(d, str) and d in schema.DOMAINS})
+
+
+def _explicit_scheduled_domains(
+    frame: Dict[str, Any],
+    root_probe: Optional[Dict[str, Any]] = None,
+) -> set[str]:
+    if frame.get("capture_boundary") != "scheduled_hour_snapshot":
+        return set()
+    raw_domains = frame.get("domains")
+    if not isinstance(raw_domains, list) and isinstance(root_probe, dict):
+        raw_domains = root_probe.get("domains")
+    return set(_clean_domains(raw_domains or []))
 
 
 def _validate_country_rows(countries: Dict[str, Any]) -> List[str]:
@@ -619,6 +638,10 @@ def _has_province_control_rows(provinces: Any) -> bool:
         isinstance(row, dict) and "controller" in row
         for row in provinces.values()
     )
+
+
+def _has_payload_rows(value: Any) -> bool:
+    return isinstance(value, dict) and bool(value)
 
 
 def _has_present_country_rows(countries: Any) -> bool:

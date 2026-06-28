@@ -99,6 +99,10 @@ mod attach_log {
     const OBJ_NAME: usize = 0x10;
     const COUNTRY_RECORD_OBJECT_PTR: usize = 0x08;
     const COUNTRY_RECORD_POLITICAL_POWER: usize = 0x20;
+    const STATE_VTABLE_RVA: usize = 0x2910920;
+    const STATE_OFF_SID: usize = 0x58;
+    const STATE_OFF_OWNER: usize = 0xC8;
+    const STATE_OFF_CTRL: usize = 0xCC;
     const OBJ_TEMPLATES_LOCKED: usize = 0x01B4;
     const OBJ_COMMAND_POWER: usize = 0x01F0;
     const OBJ_MANPOWER_POOL: usize = 0x0338;
@@ -110,6 +114,15 @@ mod attach_log {
     const OBJ_NUM_SHIPS: usize = 0x1330;
     const OBJ_RESERVED_DYNAMIC_COUNTRY: usize = 0x145D;
     const MAX_COUNTRY_OBJECT_BRIDGE_ROWS: usize = 512;
+    const MAX_MAP_CONTROL_STATE_ROOT_ROWS: usize = 4096;
+    const MAX_MAP_CONTROL_STATE_ROOT_PAYLOAD_BYTES: usize = 131_072;
+    const MAX_MAP_CONTROL_STATE_ID: u32 = 65_535;
+    const MAX_MAP_CONTROL_PROVINCE_BRIDGE_PAYLOAD_BYTES: usize = 512;
+    const MAX_MAP_CONTROL_CONTROLLER_BRIDGE_ROWS: usize = 1024;
+    const MAX_MAP_CONTROL_CONTROLLER_BRIDGE_PAYLOAD_BYTES: usize = 32_768;
+    const MAX_MAP_CONTROL_PROVINCE_COUNT: u32 = 65_536;
+    const MAX_MAP_CONTROL_PROVINCE_STRIDE: u32 = 64;
+    const MAP_CONTROL_POINTER_WIDTH: u32 = 8;
     const FP_SCALE: f64 = 100000.0;
     const DAILY_UPDATE_SENTINEL: [u8; 16] = [
         0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8D,
@@ -233,20 +246,27 @@ mod attach_log {
             let worker_started = Instant::now();
             let deadline = worker_started + Duration::from_millis(control.duration_ms as u64);
             let mut session_sequence = 1u64;
+            let mut last_scheduled_game_hour: Option<i32> = None;
             while Instant::now() <= deadline {
+                let capture_boundary = capture_boundary_for_frame(
+                    state.as_ref(),
+                    &control,
+                    &mut last_scheduled_game_hour,
+                );
                 let line = build_frame_line(
                     pid,
                     state.as_ref(),
                     Some(&control),
                     Some(session_sequence),
                     Some(duration_millis_u64(worker_started.elapsed())),
+                    Some(capture_boundary),
                 );
                 write_sinks(file.as_mut(), pipe, line.as_bytes());
                 session_sequence = session_sequence.saturating_add(1);
                 thread::sleep(Duration::from_millis(control.sample_ms as u64));
             }
         } else {
-            let line = build_frame_line(pid, state.as_ref(), None, None, None);
+            let line = build_frame_line(pid, state.as_ref(), None, None, None, None);
             write_sinks(file.as_mut(), pipe, line.as_bytes());
         }
         if let Some(handle) = pipe.take() {
@@ -264,6 +284,8 @@ mod attach_log {
         country_object_bridge_valid: bool,
         country_record_bridge: Vec<CountryObjectBridgeEntry>,
         country_record_bridge_valid: bool,
+        map_control: MapControlContract,
+        scheduled_snapshot_step_hours: u32,
         pipe_token: Option<String>,
         session_id: Option<String>,
         sidecar_log: bool,
@@ -275,6 +297,102 @@ mod attach_log {
         object_ptr: usize,
     }
 
+    #[derive(Clone)]
+    struct MapControlContract {
+        state_roots: Vec<MapControlStateRootEntry>,
+        state_roots_valid: bool,
+        province_bridge: Option<MapControlProvinceBridge>,
+        province_bridge_valid: bool,
+        controller_bridge: Vec<MapControlControllerBridgeEntry>,
+        controller_bridge_valid: bool,
+    }
+
+    impl MapControlContract {
+        fn empty() -> Self {
+            Self {
+                state_roots: Vec::new(),
+                state_roots_valid: true,
+                province_bridge: None,
+                province_bridge_valid: true,
+                controller_bridge: Vec::new(),
+                controller_bridge_valid: true,
+            }
+        }
+
+        fn state_roots_well_formed(&self) -> bool {
+            if self.state_roots.len() > MAX_MAP_CONTROL_STATE_ROOT_ROWS {
+                return false;
+            }
+            let mut seen_state_ids: BTreeMap<u32, ()> = BTreeMap::new();
+            let mut seen_state_ptrs: BTreeMap<usize, ()> = BTreeMap::new();
+            for row in &self.state_roots {
+                if row.state_id == 0 || row.state_id > MAX_MAP_CONTROL_STATE_ID {
+                    return false;
+                }
+                if !is_map_control_heap_pointer(row.state_ptr) {
+                    return false;
+                }
+                if seen_state_ids.insert(row.state_id, ()).is_some()
+                    || seen_state_ptrs.insert(row.state_ptr, ()).is_some()
+                {
+                    return false;
+                }
+            }
+            true
+        }
+
+        fn province_bridge_well_formed(&self) -> bool {
+            match self.province_bridge.as_ref() {
+                Some(bridge) => validate_map_control_province_bridge(bridge),
+                None => true,
+            }
+        }
+
+        fn controller_bridge_well_formed(&self) -> bool {
+            if self.controller_bridge.len() > MAX_MAP_CONTROL_CONTROLLER_BRIDGE_ROWS {
+                return false;
+            }
+            let mut seen_tag_ids: BTreeMap<u32, ()> = BTreeMap::new();
+            let mut seen_controller_ptrs: BTreeMap<usize, ()> = BTreeMap::new();
+            for row in &self.controller_bridge {
+                if row.tag_db_id == 0 || row.tag_db_id > 1024 {
+                    return false;
+                }
+                if !is_map_control_heap_pointer(row.controller_ptr) {
+                    return false;
+                }
+                if seen_tag_ids.insert(row.tag_db_id, ()).is_some()
+                    || seen_controller_ptrs
+                        .insert(row.controller_ptr, ())
+                        .is_some()
+                {
+                    return false;
+                }
+            }
+            true
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct MapControlStateRootEntry {
+        state_id: u32,
+        state_ptr: usize,
+    }
+
+    #[derive(Clone, Copy)]
+    struct MapControlProvinceBridge {
+        province_array_ptr: usize,
+        province_count: u32,
+        province_stride: u32,
+        controller_ptr_offset: u32,
+    }
+
+    #[derive(Clone, Copy)]
+    struct MapControlControllerBridgeEntry {
+        tag_db_id: u32,
+        controller_ptr: usize,
+    }
+
     fn collector_control(module_path: &PathBuf) -> Option<CollectorControl> {
         let mut path = module_path.clone();
         path.set_file_name("collector_control.json");
@@ -284,6 +402,8 @@ mod attach_log {
         }
         let duration_ms = parse_json_u32(&text, "duration_ms").unwrap_or(5_000);
         let sample_ms = parse_json_u32(&text, "sample_ms").unwrap_or(50);
+        let scheduled_snapshot_step_hours =
+            parse_json_u32(&text, "scheduled_snapshot_step_hours").unwrap_or(1);
         let country_object_scan = parse_json_bool(&text, "country_object_scan").unwrap_or(false);
         let (country_object_bridge, country_object_bridge_valid) =
             match parse_json_string(&text, "country_object_bridge") {
@@ -301,6 +421,7 @@ mod attach_log {
                 },
                 None => (Vec::new(), true),
             };
+        let map_control = parse_map_control_contract(&text);
         let pipe_token = parse_json_string(&text, "pipe_token").and_then(clean_pipe_token);
         let session_id = parse_json_string(&text, "session_id").and_then(clean_session_id);
         let sidecar_log = parse_json_bool(&text, "sidecar_log").unwrap_or(false);
@@ -312,6 +433,8 @@ mod attach_log {
             country_object_bridge_valid,
             country_record_bridge,
             country_record_bridge_valid,
+            map_control,
+            scheduled_snapshot_step_hours: scheduled_snapshot_step_hours.clamp(1, 24),
             pipe_token,
             session_id,
             sidecar_log,
@@ -427,6 +550,217 @@ mod attach_log {
         Some(entries)
     }
 
+    fn parse_map_control_contract(text: &str) -> MapControlContract {
+        let mut contract = MapControlContract::empty();
+        if let Some(value) = parse_json_string(text, "map_control_state_roots") {
+            match parse_map_control_state_roots(&value) {
+                Some(rows) => contract.state_roots = rows,
+                None => contract.state_roots_valid = false,
+            }
+        }
+        if let Some(value) = parse_json_string(text, "map_control_province_bridge") {
+            if !value.trim().is_empty() {
+                match parse_map_control_province_bridge(&value) {
+                    Some(bridge) => contract.province_bridge = Some(bridge),
+                    None => contract.province_bridge_valid = false,
+                }
+            }
+        }
+        if let Some(value) = parse_json_string(text, "map_control_controller_bridge") {
+            match parse_map_control_controller_bridge(&value) {
+                Some(rows) => contract.controller_bridge = rows,
+                None => contract.controller_bridge_valid = false,
+            }
+        }
+        contract
+    }
+
+    fn parse_map_control_state_roots(value: &str) -> Option<Vec<MapControlStateRootEntry>> {
+        if value.trim().is_empty() {
+            return Some(Vec::new());
+        }
+        if value.len() > MAX_MAP_CONTROL_STATE_ROOT_PAYLOAD_BYTES {
+            return None;
+        }
+        let mut entries = Vec::new();
+        let mut seen_state_ids: BTreeMap<u32, ()> = BTreeMap::new();
+        let mut seen_state_ptrs: BTreeMap<usize, ()> = BTreeMap::new();
+        for raw in value.split(';') {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                return None;
+            }
+            let (state_raw, ptr_raw) = raw.split_once(':')?;
+            let state_id = parse_bridge_u32(state_raw.trim())?;
+            if state_id == 0 || state_id > MAX_MAP_CONTROL_STATE_ID {
+                return None;
+            }
+            let state_ptr = parse_bridge_pointer(ptr_raw.trim())?;
+            if !is_map_control_heap_pointer(state_ptr) {
+                return None;
+            }
+            if seen_state_ids.insert(state_id, ()).is_some()
+                || seen_state_ptrs.insert(state_ptr, ()).is_some()
+            {
+                return None;
+            }
+            entries.push(MapControlStateRootEntry {
+                state_id,
+                state_ptr,
+            });
+            if entries.len() > MAX_MAP_CONTROL_STATE_ROOT_ROWS {
+                return None;
+            }
+        }
+        Some(entries)
+    }
+
+    fn parse_map_control_province_bridge(value: &str) -> Option<MapControlProvinceBridge> {
+        if value.len() > MAX_MAP_CONTROL_PROVINCE_BRIDGE_PAYLOAD_BYTES {
+            return None;
+        }
+        let mut province_array_ptr = None;
+        let mut province_count = None;
+        let mut province_stride = None;
+        let mut controller_ptr_offset = None;
+        for raw in value.split(';') {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                return None;
+            }
+            let (key, raw_value) = raw.split_once('=')?;
+            let key = key.trim();
+            let raw_value = raw_value.trim();
+            match key {
+                "province_array" => {
+                    if province_array_ptr.is_some() {
+                        return None;
+                    }
+                    province_array_ptr = Some(parse_bridge_pointer(raw_value)?);
+                }
+                "province_count" => {
+                    if province_count.is_some() {
+                        return None;
+                    }
+                    province_count = Some(parse_bridge_u32(raw_value)?);
+                }
+                "province_stride" => {
+                    if province_stride.is_some() {
+                        return None;
+                    }
+                    province_stride = Some(parse_bridge_u32(raw_value)?);
+                }
+                "controller_ptr_offset" => {
+                    if controller_ptr_offset.is_some() {
+                        return None;
+                    }
+                    controller_ptr_offset = Some(parse_bridge_u32(raw_value)?);
+                }
+                _ => return None,
+            }
+        }
+        let bridge = MapControlProvinceBridge {
+            province_array_ptr: province_array_ptr?,
+            province_count: province_count?,
+            province_stride: province_stride?,
+            controller_ptr_offset: controller_ptr_offset?,
+        };
+        validate_map_control_province_bridge(&bridge).then_some(bridge)
+    }
+
+    fn parse_map_control_controller_bridge(
+        value: &str,
+    ) -> Option<Vec<MapControlControllerBridgeEntry>> {
+        if value.trim().is_empty() {
+            return Some(Vec::new());
+        }
+        if value.len() > MAX_MAP_CONTROL_CONTROLLER_BRIDGE_PAYLOAD_BYTES {
+            return None;
+        }
+        let mut entries = Vec::new();
+        let mut seen_tag_ids: BTreeMap<u32, ()> = BTreeMap::new();
+        let mut seen_controller_ptrs: BTreeMap<usize, ()> = BTreeMap::new();
+        for raw in value.split(';') {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                return None;
+            }
+            let (tag_raw, ptr_raw) = raw.split_once(':')?;
+            let tag_db_id = parse_bridge_u32(tag_raw.trim())?;
+            if tag_db_id == 0 || tag_db_id > 1024 {
+                return None;
+            }
+            let controller_ptr = parse_bridge_pointer(ptr_raw.trim())?;
+            if !is_map_control_heap_pointer(controller_ptr) {
+                return None;
+            }
+            if seen_tag_ids.insert(tag_db_id, ()).is_some()
+                || seen_controller_ptrs.insert(controller_ptr, ()).is_some()
+            {
+                return None;
+            }
+            entries.push(MapControlControllerBridgeEntry {
+                tag_db_id,
+                controller_ptr,
+            });
+            if entries.len() > MAX_MAP_CONTROL_CONTROLLER_BRIDGE_ROWS {
+                return None;
+            }
+        }
+        Some(entries)
+    }
+
+    fn validate_map_control_province_bridge(bridge: &MapControlProvinceBridge) -> bool {
+        if !is_map_control_heap_pointer(bridge.province_array_ptr) {
+            return false;
+        }
+        if bridge.province_count == 0 || bridge.province_count > MAX_MAP_CONTROL_PROVINCE_COUNT {
+            return false;
+        }
+        if bridge.province_stride < MAP_CONTROL_POINTER_WIDTH
+            || bridge.province_stride > MAX_MAP_CONTROL_PROVINCE_STRIDE
+            || bridge.province_stride % MAP_CONTROL_POINTER_WIDTH != 0
+        {
+            return false;
+        }
+        if bridge.controller_ptr_offset % MAP_CONTROL_POINTER_WIDTH != 0 {
+            return false;
+        }
+        let Some(controller_end) = bridge
+            .controller_ptr_offset
+            .checked_add(MAP_CONTROL_POINTER_WIDTH)
+        else {
+            return false;
+        };
+        if controller_end > bridge.province_stride {
+            return false;
+        }
+        let Some(span) =
+            (bridge.province_count as usize).checked_mul(bridge.province_stride as usize)
+        else {
+            return false;
+        };
+        bridge
+            .province_array_ptr
+            .checked_add(span)
+            .is_some_and(|end| end <= HEAP_HI)
+    }
+
+    fn is_map_control_heap_pointer(value: usize) -> bool {
+        value >= HEAP_LO && value < HEAP_HI && value % (MAP_CONTROL_POINTER_WIDTH as usize) == 0
+    }
+
+    fn parse_bridge_u32(value: &str) -> Option<u32> {
+        if let Some(hex) = value
+            .strip_prefix("0x")
+            .or_else(|| value.strip_prefix("0X"))
+        {
+            u32::from_str_radix(hex, 16).ok()
+        } else {
+            value.parse::<u32>().ok()
+        }
+    }
+
     fn parse_bridge_pointer(value: &str) -> Option<usize> {
         if let Some(hex) = value
             .strip_prefix("0x")
@@ -444,12 +778,16 @@ mod attach_log {
         control: Option<&CollectorControl>,
         session_sequence: Option<u64>,
         elapsed_wall_ms: Option<u64>,
+        capture_boundary: Option<&str>,
     ) -> String {
         let tick = unsafe { GetTickCount64() };
         let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let probe = root_probe_json(state);
-        let domains = frame_domains_json(state);
-        let control_meta = control_metadata_json(control, session_sequence, elapsed_wall_ms);
+        let include_scheduled_map = capture_boundary == Some("scheduled_hour_snapshot");
+        let state_rows = scheduled_state_rows_json(state, control, include_scheduled_map);
+        let domains = frame_domains_json(state, state_rows.is_some());
+        let probe = root_probe_json(state, state_rows.as_deref());
+        let control_meta =
+            control_metadata_json(control, session_sequence, elapsed_wall_ms, capture_boundary);
         let quality = if probe.contains("\"status\":\"verified\"") {
             "root_probe_verified"
         } else if probe.contains("\"status\":\"profile_mismatch\"") {
@@ -479,10 +817,12 @@ mod attach_log {
         control: Option<&CollectorControl>,
         session_sequence: Option<u64>,
         elapsed_wall_ms: Option<u64>,
+        capture_boundary: Option<&str>,
     ) -> String {
         let Some(control) = control else {
             return String::new();
         };
+        let capture_boundary = capture_boundary.unwrap_or("worker_poll");
         let session = control
             .session_id
             .as_deref()
@@ -494,34 +834,85 @@ mod attach_log {
         let elapsed_wall_ms = elapsed_wall_ms
             .map(|n| format!("\"elapsed_wall_ms\":{n},"))
             .unwrap_or_default();
+        let map_control_state_roots_valid =
+            control.map_control.state_roots_valid && control.map_control.state_roots_well_formed();
+        let map_control_province_bridge_valid = control.map_control.province_bridge_valid
+            && control.map_control.province_bridge_well_formed();
+        let map_control_controller_bridge_valid = control.map_control.controller_bridge_valid
+            && control.map_control.controller_bridge_well_formed();
         format!(
-            "{session}{session_sequence}{elapsed_wall_ms}\"capture_boundary\":\"worker_poll\",\
+            "{session}{session_sequence}{elapsed_wall_ms}\"capture_boundary\":\"{capture_boundary}\",\
              \"duration_ms\":{},\"sample_ms\":{},\
+             \"scheduled_snapshot_step_hours\":{},\
              \"country_object_bridge_rows\":{},\
              \"country_object_bridge_valid\":{},\
              \"country_record_bridge_rows\":{},\
-             \"country_record_bridge_valid\":{},",
+             \"country_record_bridge_valid\":{},\
+             \"map_control_state_root_rows\":{},\
+             \"map_control_state_roots_valid\":{},\
+             \"map_control_province_bridge_present\":{},\
+             \"map_control_province_bridge_valid\":{},\
+             \"map_control_controller_bridge_rows\":{},\
+             \"map_control_controller_bridge_valid\":{},",
             control.duration_ms,
             control.sample_ms,
+            control.scheduled_snapshot_step_hours,
             control.country_object_bridge.len(),
             control.country_object_bridge_valid,
             control.country_record_bridge.len(),
-            control.country_record_bridge_valid
+            control.country_record_bridge_valid,
+            control.map_control.state_roots.len(),
+            map_control_state_roots_valid,
+            control.map_control.province_bridge.is_some(),
+            map_control_province_bridge_valid,
+            control.map_control.controller_bridge.len(),
+            map_control_controller_bridge_valid
         )
+    }
+
+    fn capture_boundary_for_frame(
+        state: Option<&CollectorState>,
+        control: &CollectorControl,
+        last_scheduled_game_hour: &mut Option<i32>,
+    ) -> &'static str {
+        let Some(current_raw) = current_game_date_raw(state) else {
+            return "worker_poll";
+        };
+        let step = control.scheduled_snapshot_step_hours.max(1) as i32;
+        let should_schedule = match *last_scheduled_game_hour {
+            None => true,
+            Some(previous_raw) => {
+                current_raw != previous_raw && current_raw.saturating_sub(previous_raw) >= step
+            }
+        };
+        if should_schedule {
+            *last_scheduled_game_hour = Some(current_raw);
+            "scheduled_hour_snapshot"
+        } else {
+            "worker_poll"
+        }
+    }
+
+    fn current_game_date_raw(state: Option<&CollectorState>) -> Option<i32> {
+        let state = state?;
+        if !(state.daily_match && state.long_string_match) {
+            return None;
+        }
+        read_i32(state.date_ptr as usize + GS_CURRENT_DATE_OFFSET)
     }
 
     fn duration_millis_u64(duration: Duration) -> u64 {
         duration.as_millis().min(u128::from(u64::MAX)) as u64
     }
 
-    fn frame_domains_json(state: Option<&CollectorState>) -> String {
+    fn frame_domains_json(state: Option<&CollectorState>, has_state_rows: bool) -> String {
         let Some(state) = state else {
             return "[]".to_string();
         };
         if state.daily_match && state.long_string_match {
             state
                 .country_identity
-                .domains_json(state.country_database_ptr as usize)
+                .domains_json(state.country_database_ptr as usize, has_state_rows)
         } else {
             "[]".to_string()
         }
@@ -765,12 +1156,16 @@ mod attach_log {
             rows
         }
 
-        fn domains_json(&self, country_database_ptr: usize) -> String {
+        fn domains_json(&self, country_database_ptr: usize, has_state_rows: bool) -> String {
+            let mut domains = vec!["\"clock\"", "\"country_identity\""];
             if !self.current_rows(country_database_ptr).is_empty() {
-                "[\"clock\",\"country_identity\",\"country_scalars\"]".to_string()
-            } else {
-                "[\"clock\",\"country_identity\"]".to_string()
+                domains.push("\"country_scalars\"");
             }
+            if has_state_rows {
+                domains.push("\"state_ownership\"");
+                domains.push("\"state_control\"");
+            }
+            format!("[{}]", domains.join(","))
         }
 
         fn root_json(&self) -> String {
@@ -872,7 +1267,67 @@ mod attach_log {
         }
     }
 
-    fn root_probe_json(state: Option<&CollectorState>) -> String {
+    fn scheduled_state_rows_json(
+        state: Option<&CollectorState>,
+        control: Option<&CollectorControl>,
+        include_scheduled_map: bool,
+    ) -> Option<String> {
+        if !include_scheduled_map {
+            return None;
+        }
+        let state = state?;
+        if !(state.daily_match && state.long_string_match) {
+            return None;
+        }
+        let control = control?;
+        if !(control.map_control.state_roots_valid && control.map_control.state_roots_well_formed())
+        {
+            return None;
+        }
+        if control.map_control.state_roots.len() < 1000 {
+            return None;
+        }
+        let tag_table = country_tag_table(state.country_database_ptr as usize)?;
+        let state_vtable = state.base + STATE_VTABLE_RVA;
+        let mut rows = Vec::new();
+        for entry in &control.map_control.state_roots {
+            if read_u64(entry.state_ptr)? as usize != state_vtable {
+                return None;
+            }
+            let sid = read_u32(entry.state_ptr + STATE_OFF_SID)?;
+            if sid != entry.state_id {
+                return None;
+            }
+            let owner = read_u32(entry.state_ptr + STATE_OFF_OWNER).unwrap_or(0);
+            let controller = read_u32(entry.state_ptr + STATE_OFF_CTRL).unwrap_or(0);
+            let owner_tag = if owner == 0 {
+                None
+            } else {
+                tag_from_table(tag_table, owner)
+            };
+            let controller_tag = if controller == 0 {
+                None
+            } else {
+                tag_from_table(tag_table, controller)
+            };
+            rows.push(format!(
+                "\"{}\":{{\"owner\":{},\"controller\":{}}}",
+                entry.state_id,
+                json_opt_str(owner_tag.as_deref()),
+                json_opt_str(controller_tag.as_deref())
+            ));
+        }
+        if rows.len() >= 1000 {
+            Some(format!("{{{}}}", rows.join(",")))
+        } else {
+            None
+        }
+    }
+
+    fn root_probe_json(
+        state: Option<&CollectorState>,
+        scheduled_state_rows: Option<&str>,
+    ) -> String {
         let Some(state) = state else {
             return "\"root_probe\":null".to_string();
         };
@@ -899,10 +1354,14 @@ mod attach_log {
             .country_identity
             .countries_json(country_database_ptr as usize);
         let identity_probe = state.country_identity.root_json();
-        let domains = state
-            .country_identity
-            .domains_json(country_database_ptr as usize);
+        let domains = state.country_identity.domains_json(
+            country_database_ptr as usize,
+            scheduled_state_rows.is_some(),
+        );
         let clock_probe = clock_probe_json(date_ptr as usize);
+        let state_rows = scheduled_state_rows
+            .map(|rows| format!(",\"states\":{rows}"))
+            .unwrap_or_default();
         format!(
             "\"root_probe\":{{\"status\":\"verified\",\
              \"profile\":\"{}\",\
@@ -917,7 +1376,7 @@ mod attach_log {
              {country_probe},\
              {identity_probe},\
              \"domains\":{domains}}},\
-             \"countries\":{country_rows}",
+             \"countries\":{country_rows}{state_rows}",
             super::COLLECTOR_PROFILE_ID,
             state.daily_addr,
             state.long_string_addr
@@ -1443,6 +1902,12 @@ mod attach_log {
             assert!(parsed.country_object_bridge_valid);
             assert!(parsed.country_record_bridge.is_empty());
             assert!(parsed.country_record_bridge_valid);
+            assert!(parsed.map_control.state_roots.is_empty());
+            assert!(parsed.map_control.state_roots_valid);
+            assert!(parsed.map_control.province_bridge.is_none());
+            assert!(parsed.map_control.province_bridge_valid);
+            assert!(parsed.map_control.controller_bridge.is_empty());
+            assert!(parsed.map_control.controller_bridge_valid);
             assert!(!parsed.sidecar_log);
             let _ = fs::remove_dir_all(&dir);
         }
@@ -1502,6 +1967,61 @@ mod attach_log {
         }
 
         #[test]
+        fn collector_control_accepts_map_control_contract() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_control_map_control_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            let state_roots = format!("1:0x{:x};1081:0x{:x}", HEAP_LO, HEAP_LO + 0x100);
+            let province_bridge = format!(
+                "province_array=0x{:x};province_count=13232;province_stride=8;controller_ptr_offset=0",
+                HEAP_LO + 0x1000
+            );
+            let controller_bridge =
+                format!("1:0x{:x};2:0x{:x}", HEAP_LO + 0x2000, HEAP_LO + 0x3000);
+            fs::write(
+                &control,
+                format!(
+                    r#"{{"mode":"hourly_poll","duration_ms":8000,"sample_ms":10,"map_control_state_roots":"{}","map_control_province_bridge":"{}","map_control_controller_bridge":"{}"}}"#,
+                    state_roots, province_bridge, controller_bridge
+                ),
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert!(parsed.map_control.state_roots_valid);
+            assert_eq!(parsed.map_control.state_roots.len(), 2);
+            assert_eq!(parsed.map_control.state_roots[0].state_id, 1);
+            assert_eq!(parsed.map_control.state_roots[0].state_ptr, HEAP_LO);
+            assert_eq!(parsed.map_control.state_roots[1].state_id, 1081);
+            assert_eq!(parsed.map_control.state_roots[1].state_ptr, HEAP_LO + 0x100);
+            assert!(parsed.map_control.province_bridge_valid);
+            let bridge = parsed.map_control.province_bridge.unwrap();
+            assert_eq!(bridge.province_array_ptr, HEAP_LO + 0x1000);
+            assert_eq!(bridge.province_count, 13232);
+            assert_eq!(bridge.province_stride, 8);
+            assert_eq!(bridge.controller_ptr_offset, 0);
+            assert!(parsed.map_control.controller_bridge_valid);
+            assert_eq!(parsed.map_control.controller_bridge.len(), 2);
+            assert_eq!(parsed.map_control.controller_bridge[0].tag_db_id, 1);
+            assert_eq!(
+                parsed.map_control.controller_bridge[0].controller_ptr,
+                HEAP_LO + 0x2000
+            );
+            assert_eq!(parsed.map_control.controller_bridge[1].tag_db_id, 2);
+            assert_eq!(
+                parsed.map_control.controller_bridge[1].controller_ptr,
+                HEAP_LO + 0x3000
+            );
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
         fn collector_control_marks_bad_country_object_bridge_invalid() {
             let dir = std::env::temp_dir().join(format!(
                 "hoi4_collector_control_bad_bridge_test_{}",
@@ -1525,9 +2045,142 @@ mod attach_log {
         }
 
         #[test]
+        fn collector_control_marks_bad_map_control_invalid() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_control_bad_map_control_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            let state_roots = format!("1:0x{:x}", HEAP_LO + 1);
+            let province_bridge = format!(
+                "province_array=0x{:x};province_count=13232;province_stride=8;controller_ptr_offset=8",
+                HEAP_LO + 0x1000
+            );
+            let controller_bridge =
+                format!("1:0x{:x};1:0x{:x}", HEAP_LO + 0x2000, HEAP_LO + 0x3000);
+            fs::write(
+                &control,
+                format!(
+                    r#"{{"mode":"hourly_poll","duration_ms":8000,"sample_ms":10,"country_object_bridge":"1:0x1000","map_control_state_roots":"{}","map_control_province_bridge":"{}","map_control_controller_bridge":"{}"}}"#,
+                    state_roots, province_bridge, controller_bridge
+                ),
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert!(parsed.country_object_bridge_valid);
+            assert!(!parsed.country_object_bridge.is_empty());
+            assert!(parsed.map_control.state_roots.is_empty());
+            assert!(!parsed.map_control.state_roots_valid);
+            assert!(parsed.map_control.province_bridge.is_none());
+            assert!(!parsed.map_control.province_bridge_valid);
+            assert!(parsed.map_control.controller_bridge.is_empty());
+            assert!(!parsed.map_control.controller_bridge_valid);
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
         fn country_object_bridge_parser_rejects_duplicates() {
             assert!(parse_country_object_bridge("1:0x1000;1:0x2000").is_none());
             assert!(parse_country_object_bridge("1:0x1000;2:0x1000").is_none());
+        }
+
+        #[test]
+        fn map_control_state_roots_reject_duplicates_ranges_and_size() {
+            assert!(parse_map_control_state_roots(&format!(
+                "1:0x{:x};1:0x{:x}",
+                HEAP_LO,
+                HEAP_LO + 8
+            ))
+            .is_none());
+            assert!(
+                parse_map_control_state_roots(&format!("1:0x{:x};2:0x{:x}", HEAP_LO, HEAP_LO))
+                    .is_none()
+            );
+            assert!(parse_map_control_state_roots("0:0x10000000000").is_none());
+            assert!(parse_map_control_state_roots("1:0x1000").is_none());
+            assert!(parse_map_control_state_roots(
+                &"x".repeat(MAX_MAP_CONTROL_STATE_ROOT_PAYLOAD_BYTES + 1)
+            )
+            .is_none());
+            let too_many = (1..=MAX_MAP_CONTROL_STATE_ROOT_ROWS + 1)
+                .map(|i| format!("{}:0x{:x}", i, HEAP_LO + (i * 8)))
+                .collect::<Vec<_>>()
+                .join(";");
+            assert!(parse_map_control_state_roots(&too_many).is_none());
+        }
+
+        #[test]
+        fn map_control_province_bridge_rejects_bad_fields() {
+            assert!(parse_map_control_province_bridge(&format!(
+                "province_array=0x{:x};province_count=13232;province_stride=8;controller_ptr_offset=0",
+                HEAP_LO
+            ))
+            .is_some());
+            assert!(parse_map_control_province_bridge(&format!(
+                "province_array=0x{:x};province_count=13232;province_count=13233;province_stride=8;controller_ptr_offset=0",
+                HEAP_LO
+            ))
+            .is_none());
+            assert!(parse_map_control_province_bridge(&format!(
+                "province_array=0x{:x};province_count={};province_stride=8;controller_ptr_offset=0",
+                HEAP_LO,
+                MAX_MAP_CONTROL_PROVINCE_COUNT + 1
+            ))
+            .is_none());
+            assert!(parse_map_control_province_bridge(&format!(
+                "province_array=0x{:x};province_count=13232;province_stride=4;controller_ptr_offset=0",
+                HEAP_LO
+            ))
+            .is_none());
+            assert!(parse_map_control_province_bridge(&format!(
+                "province_array=0x{:x};province_count=13232;province_stride=8;controller_ptr_offset=8",
+                HEAP_LO
+            ))
+            .is_none());
+            assert!(parse_map_control_province_bridge(
+                "province_array=0x1000;province_count=13232;province_stride=8;controller_ptr_offset=0"
+            )
+            .is_none());
+            assert!(parse_map_control_province_bridge(&format!(
+                "province_array=0x{:x};province_count=13232;province_stride=8;controller_ptr_offset=0;extra=1",
+                HEAP_LO
+            ))
+            .is_none());
+            assert!(parse_map_control_province_bridge(
+                &"x".repeat(MAX_MAP_CONTROL_PROVINCE_BRIDGE_PAYLOAD_BYTES + 1)
+            )
+            .is_none());
+        }
+
+        #[test]
+        fn map_control_controller_bridge_rejects_duplicates_ranges_and_size() {
+            assert!(parse_map_control_controller_bridge(&format!(
+                "1:0x{:x};1:0x{:x}",
+                HEAP_LO,
+                HEAP_LO + 8
+            ))
+            .is_none());
+            assert!(parse_map_control_controller_bridge(&format!(
+                "1:0x{:x};2:0x{:x}",
+                HEAP_LO, HEAP_LO
+            ))
+            .is_none());
+            assert!(parse_map_control_controller_bridge("0:0x10000000000").is_none());
+            assert!(parse_map_control_controller_bridge("1:0x1000").is_none());
+            assert!(parse_map_control_controller_bridge(
+                &"x".repeat(MAX_MAP_CONTROL_CONTROLLER_BRIDGE_PAYLOAD_BYTES + 1)
+            )
+            .is_none());
+            let too_many = (1..=MAX_MAP_CONTROL_CONTROLLER_BRIDGE_ROWS + 1)
+                .map(|i| format!("{}:0x{:x}", i, HEAP_LO + (i * 8)))
+                .collect::<Vec<_>>()
+                .join(";");
+            assert!(parse_map_control_controller_bridge(&too_many).is_none());
         }
 
         #[test]
@@ -1562,12 +2215,21 @@ mod attach_log {
                 country_object_bridge_valid: true,
                 country_record_bridge: Vec::new(),
                 country_record_bridge_valid: true,
+                map_control: MapControlContract::empty(),
+                scheduled_snapshot_step_hours: 1,
                 pipe_token: Some("abc".to_string()),
                 session_id: Some("run_1".to_string()),
                 sidecar_log: false,
             };
 
-            let frame = build_frame_line(1234, None, Some(&control), Some(7), Some(125));
+            let frame = build_frame_line(
+                1234,
+                None,
+                Some(&control),
+                Some(7),
+                Some(125),
+                Some("worker_poll"),
+            );
 
             assert!(frame.contains("\"type\":\"collector_started\""));
             assert!(frame.contains("\"session_id\":\"run_1\""));
@@ -1576,6 +2238,13 @@ mod attach_log {
             assert!(frame.contains("\"capture_boundary\":\"worker_poll\""));
             assert!(frame.contains("\"duration_ms\":8000"));
             assert!(frame.contains("\"sample_ms\":10"));
+            assert!(frame.contains("\"scheduled_snapshot_step_hours\":1"));
+            assert!(frame.contains("\"map_control_state_root_rows\":0"));
+            assert!(frame.contains("\"map_control_state_roots_valid\":true"));
+            assert!(frame.contains("\"map_control_province_bridge_present\":false"));
+            assert!(frame.contains("\"map_control_province_bridge_valid\":true"));
+            assert!(frame.contains("\"map_control_controller_bridge_rows\":0"));
+            assert!(frame.contains("\"map_control_controller_bridge_valid\":true"));
             assert!(frame.contains("\"profile_id\":\"vanilla_latest_2026_06_28\""));
             assert!(frame.contains("\"domains\":[]"));
             assert!(frame.contains("\"root_probe\":null"));

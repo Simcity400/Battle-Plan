@@ -607,8 +607,8 @@ FIELD_SOURCES: Dict[str, str] = {
     # diplomacy.lend_lease + §7b world list) — a different identity model + provenance. ---
     "market_live.contracts": "M",
     # --- state (§4) ---
-    "states.*.owner": "M/S",
-    "states.*.controller": "M/S",
+    "states.*.owner": "C/M/S",
+    "states.*.controller": "C/M/S",
     "states.*.is_core_of": "S",
     # building levels are now LIVE-first (buildings_live, M) with the save as the backstop:
     # the live reader resolves every per-state building level exactly (validated vs the melt).
@@ -630,7 +630,7 @@ FIELD_SOURCES: Dict[str, str] = {
     "states.*.demilitarized": "S",
     "states.*.supply": "S/M*",
     # --- province (§5) ---
-    "provinces.*.controller": "M/S/D",
+    "provinces.*.controller": "C/M/S/D",
     "provinces.*.state_id": "D",
     "provinces.*.supply": "S",
     # LIVE per-province building levels (buildings_live, M): {building_name: level} for the
@@ -785,8 +785,8 @@ FIELD_SOURCES: Dict[str, str] = {
     "world.world_tension_inputs": "S",
     "world.saved_event_targets": "S",
     # --- map (§8) ---
-    "map.owner_by_state": "M/D",
-    "map.control_by_province": "M/S/D",
+    "map.owner_by_state": "C/M/S/D",
+    "map.control_by_province": "C/M/S/D",
     "map.vp_by_state": "S/D",
     "map.controlled_industry_share": "D",
     "map.front_lines": "D",
@@ -2369,7 +2369,7 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
         if st is not None and not (isinstance(st, (int, float)) and -0.01 <= st <= 1.01):
             problems.append(f"country {tag!r} stability {st!r} out of 0..1")
 
-    # States: keys parse as ints; owner/controller str|null.
+    # States: keys parse as ints; owner/controller TAG|null.
     for sid, stt in (snap.get("states") or {}).items():
         if not _is_intlike(sid):
             problems.append(f"state key {sid!r} not int-like")
@@ -2377,17 +2377,17 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
             problems.append(f"state {sid!r} not a dict"); continue
         for fld in ("owner", "controller"):
             v = stt.get(fld)
-            if v is not None and not isinstance(v, str):
-                problems.append(f"state {sid!r}.{fld} {v!r} not str|null")
+            if v is not None and not valid_tag(v):
+                problems.append(f"state {sid!r}.{fld} {v!r} not TAG|null")
 
-    # Provinces: keys int-like; controller str|null.
+    # Provinces: keys int-like; controller TAG|null.
     for pid, prv in (snap.get("provinces") or {}).items():
         if not _is_intlike(pid):
             problems.append(f"province key {pid!r} not int-like")
         if isinstance(prv, dict):
             v = prv.get("controller")
-            if v is not None and not isinstance(v, str):
-                problems.append(f"province {pid!r}.controller {v!r} not str|null")
+            if v is not None and not valid_tag(v):
+                problems.append(f"province {pid!r}.controller {v!r} not TAG|null")
             # newly-wired LIVE per-province buildings (buildings_live, M): dict|null.
             pb = prv.get("buildings")
             if pb is not None and not isinstance(pb, dict):

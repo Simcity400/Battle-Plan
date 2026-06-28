@@ -70,6 +70,102 @@ class TestCollectorSession(unittest.TestCase):
         self.assertEqual(summary["province_control_frames"], 1)
         self.assertEqual(summary["state_ownership_frames"], 1)
 
+    def test_session_can_record_state_control_preflight_diagnostics(self):
+        original_record_probes = cs.record_probes
+        original_preflight = cs.resolve_state_control_preflight
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+
+                def fake_preflight(pid, *, cache_path):
+                    self.assertEqual(pid, 555)
+                    self.assertEqual(cache_path.name, "state_roots.json")
+                    return _PreflightResult({
+                        "enabled": True,
+                        "status": "resolved",
+                        "row_count": 1081,
+                        "owner_rows": 1081,
+                        "controller_rows": 1081,
+                        "source": "state_roots_cache",
+                        "address_manifest_policy": "omitted",
+                    }, state_roots_encoded="1:0x1000;2:0x2000")
+
+                def fake_record_probes(pid, dll, out_root, **kwargs):
+                    del dll
+                    self.assertIs(kwargs.get("write_snapshot_artifacts"), False)
+                    self.assertEqual(
+                        kwargs.get("map_control_state_roots"),
+                        "1:0x1000;2:0x2000",
+                    )
+                    run_dir = Path(out_root) / ("20260628T030000Z_pid%d" % pid)
+                    run_dir.mkdir(parents=True)
+                    frame = _frame("1936.1.1.1", 100, sequence=1, pid=pid)
+                    frame_name = "collector_started_0000.json"
+                    _write_json(run_dir / frame_name, frame)
+                    _write_json(run_dir / "manifest.json", {
+                        "type": "collector_probe_manifest",
+                        "session_id": run_dir.name,
+                        "pid": pid,
+                        "game_id": "state_preflight",
+                        "stop_reason": "repeat_exhausted",
+                        "sample_count": 1,
+                        "unique_game_date_count": 1,
+                        "game_hours_advanced": 0,
+                        "skipped_game_hours": 0,
+                        "map_control_state_roots_supplied": True,
+                        "map_control_state_root_rows": 2,
+                        "map_control_province_bridge_supplied": False,
+                        "map_control_controller_bridge_supplied": False,
+                        "map_control_controller_bridge_rows": 0,
+                        "worker_pipe_tokens": ["token"],
+                        "monotonic_transport_sequence": True,
+                        "duplicate_transport_sequences": 0,
+                        "first_sequence": 1,
+                        "last_sequence": 1,
+                        "samples": [{
+                            "frame": frame_name,
+                            "current_game_date": frame["root_probe"]["current_game_date"],
+                            "current_game_date_raw": frame["root_probe"]["current_game_date_raw"],
+                            "sequence": frame["sequence"],
+                        }],
+                        "hourly_requirement": {
+                            "required": False,
+                            "requested_game_hours": None,
+                            "met": True,
+                            "problems": [],
+                        },
+                    })
+                    return run_dir
+
+                cs.resolve_state_control_preflight = fake_preflight
+                cs.record_probes = fake_record_probes
+
+                run_dir = record_collector_session(
+                    555,
+                    Path("collector.dll"),
+                    root / "out",
+                    game_id="state_preflight",
+                    duration_s=1.0,
+                    preflight_state_control=True,
+                )
+                session_manifest = _read_json(run_dir / "session_manifest.json")
+        finally:
+            cs.record_probes = original_record_probes
+            cs.resolve_state_control_preflight = original_preflight
+
+        self.assertEqual(
+            session_manifest["state_control_preflight"]["status"],
+            "resolved",
+        )
+        self.assertEqual(session_manifest["state_control_preflight"]["row_count"], 1081)
+        self.assertEqual(
+            session_manifest["state_control_preflight"]["source"],
+            "state_roots_cache",
+        )
+        self.assertNotIn(str(root), json.dumps(session_manifest, sort_keys=True))
+        self.assertTrue(session_manifest["map_control_state_roots_supplied"])
+        self.assertEqual(session_manifest["map_control_state_root_rows"], 2)
+
     def test_session_wraps_probe_manifest_with_lifecycle_frames(self):
         original_record_probes = cs.record_probes
         try:
@@ -534,6 +630,23 @@ class TestCollectorSession(unittest.TestCase):
             self.assertEqual([f["sequence"] for f in unique_frames], [1])
             self.assertEqual([f["sequence"] for f in all_frames], [1, 2])
 
+            _write_json(
+                run_dir / "collector_started_0002.json",
+                _frame(
+                    "1936.1.1.1",
+                    100,
+                    sequence=3,
+                    pid=123,
+                    capture_boundary="scheduled_hour_snapshot",
+                ),
+            )
+            manifest["samples"].append({
+                "frame": "collector_started_0002.json",
+                "current_game_date_raw": 100,
+            })
+            scheduled_preferred = cs._frames_from_probe_manifest(run_dir, manifest)
+            self.assertEqual([f["sequence"] for f in scheduled_preferred], [3])
+
             frame["session_id"] = "other_session"
             _write_json(run_dir / "collector_started_0000.json", frame)
             manifest["session_id"] = "session_x"
@@ -611,8 +724,29 @@ def _read_json(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _frame(date, raw, *, sequence, pid):
-    return {
+class _PreflightResult:
+    def __init__(
+        self,
+        diagnostics,
+        *,
+        state_roots_encoded=None,
+        province_bridge_encoded=None,
+        controller_bridge_encoded=None,
+    ):
+        self.diagnostics = diagnostics
+        self.status = diagnostics.get("status")
+        self.row_count = diagnostics.get("row_count", 0)
+        self.state_roots_encoded = state_roots_encoded
+        self.province_bridge_encoded = province_bridge_encoded
+        self.controller_bridge_encoded = controller_bridge_encoded
+
+    @property
+    def usable(self):
+        return self.status == "resolved" and self.row_count >= 1000
+
+
+def _frame(date, raw, *, sequence, pid, capture_boundary=None):
+    frame = {
         "type": "collector_started",
         "backend": "in_process_collector",
         "collector_version": "0.1.0",
@@ -635,6 +769,11 @@ def _frame(date, raw, *, sequence, pid):
             "tag_sample": ["---", "GER", "ENG"],
             "domains": ["clock"],
         },
+    }
+    if capture_boundary is not None:
+        frame["capture_boundary"] = capture_boundary
+    return {
+        **frame,
     }
 
 

@@ -26,7 +26,9 @@ current product status and acceptance gates, and
 | --- | --- |
 | `capture.py` | Current capture loop, live process attachment hooks, single-shot and interval capture. |
 | `collector_attach.py` | External no-op attach helper for loading the collector DLL into a supported `hoi4.exe` and receiving one pipe frame. |
+| `collector_country_bridge.py` | Save-free country-object/country-record preflight bridge with same-process cache; feeds compact control contracts while keeping heap scans out of recorder runs. |
 | `collector_frames.py` | Synthetic/decoded in-process collector frame validation and snapshot adapter. |
+| `collector_map_bridge.py` | State/province map-control preflight helpers and caches; state roots are fast when cached, province array relocation remains the open blocker. |
 | `collector_profile_check.py` | Profile preflight: running-exe hash match, root-probe sentinel/address/domain validation, and transport diagnostics. |
 | `collector_probe_record.py` | Low-level live collector probe recorder used for bounded cadence proofs and transport debugging. |
 | `collector_session.py` | Recorder-facing collector session wrapper that writes lifecycle frames, durable snapshots, `.battleplan` output, and cadence/transport diagnostics without requiring saves. |
@@ -36,6 +38,36 @@ current product status and acceptance gates, and
 | `continuity.py` | Campaign/segment/capture sequence tagging and rollback/time-jump handling. |
 | `durable_store.py` | Atomic snapshot/index writes and single-writer locking. |
 | `recorder/` | GUI/CLI recorder, cadence scheduling, manifest diagnostics, collector transport adapter, packaging spec. |
+
+## Current Recording Reality
+
+- The live host `hoi4.exe` collector is the only runtime-authoritative source.
+  Save oracle output is validation/development data only.
+- Canonical replay snapshots are hourly-or-better. Daily rows can be rollups,
+  not replay coverage.
+- `collector_session` currently wraps repeated bounded DLL workers as one
+  logical session. That bridge writes lifecycle frames, durable snapshots,
+  manifests, and `.battleplan` output, but the target remains a true
+  long-running collector session.
+- The session writes a validated `collector_frames.jsonl` sidecar containing
+  every accepted DLL frame. The replay store still keeps one canonical snapshot
+  per unique game hour, so the sidecar is where duplicate 10 ms samples survive
+  for future combat, movement, and event extraction.
+- Country identity/scalars use a preflight cache/control-contract path:
+  `tag_db_id:country_object_ptr` plus `tag_db_id:country_record_ptr`, validated
+  by the DLL per frame. `country_object_scan` must stay false for normal and
+  speed-five proof runs.
+- The collector-frame adapter can fold `state_ownership`, `state_control`, and
+  `province_control` rows when a collector frame explicitly claims those
+  domains. Session manifests summarize raw-frame country/state/province row
+  counts.
+- `collector_map_bridge` can preflight and cache all state owner/controller
+  roots; same-process cache hits are fast enough for recording setup. Scheduled
+  DLL emission of those rows is wired and should be proven in live speed-five
+  sessions before treating it as fully accepted.
+- Province-control dense-array relocation/cache is not yet a normal recording
+  source. Do not treat save fallback or slow cold discovery as live replay
+  coverage.
 
 ## Recorder Smoke / Tests
 

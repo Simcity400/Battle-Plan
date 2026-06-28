@@ -107,6 +107,38 @@ class TestIngestSynthetic(unittest.TestCase):
         self.assertEqual(snap["states"]["2"]["owner"], "POL")
         self.assertEqual(snap["states"]["2"]["controller"], "GER")
 
+    def test_store_writes_collector_map_control_snapshot_without_save(self):
+        snap = schema.empty_snapshot("collector-syn", "1937.6.1.13")
+        snap["provenance"]["collector"] = {
+            "captured": True,
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "quality_status": "complete",
+            "domains": ["clock", "state_ownership", "state_control",
+                        "province_control"],
+        }
+        snap["states"]["1"] = schema.empty_state()
+        snap["states"]["1"]["owner"] = "GER"
+        snap["states"]["1"]["controller"] = "GER"
+        snap["provinces"]["10"] = schema.empty_province()
+        snap["provinces"]["10"]["controller"] = "GER"
+        snap["provinces"]["10"]["state_id"] = 1
+        snap["map"]["owner_by_state"] = {"1": "GER"}
+        snap["map"]["control_by_province"] = {"10": "GER"}
+
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        st = store.SnapshotStore(os.path.join(self.scratch, "store"))
+        st.write_snapshot(snap)
+        reloaded = st.load_snapshot("collector-syn", snap["hour_index"])
+
+        self.assertIsNone(reloaded["provenance"]["save"])
+        self.assertIsNone(reloaded["provenance"]["memory"])
+        self.assertEqual(reloaded["provenance"]["collector"]["domains"],
+                         ["clock", "state_ownership", "state_control",
+                          "province_control"])
+        self.assertEqual(reloaded["states"]["1"]["controller"], "GER")
+        self.assertEqual(reloaded["provinces"]["10"]["controller"], "GER")
+
 
 @unittest.skipUnless(HAVE_ORACLE, "real save_oracle/output not present")
 class TestIngestRealOracle(unittest.TestCase):

@@ -44,7 +44,30 @@ class FakeProc:
 
 class FakeTable:
     def tag(self, tag_db_id):
+        return {1: "GER", 2: "ENG", 3: "SOV"}.get(tag_db_id)
+
+    def covers(self, tag_db_ids):
+        return all(self.tag(tag_db_id) for tag_db_id in tag_db_ids)
+
+
+class ShortTable(FakeTable):
+    def tag(self, tag_db_id):
         return {1: "GER", 2: "ENG"}.get(tag_db_id)
+
+
+class HighIdTable(FakeTable):
+    def tag(self, tag_db_id):
+        if tag_db_id == 250:
+            return "HIG"
+        return super().tag(tag_db_id)
+
+
+class FakeProvinceModule:
+    PROV_STRIDE = 8
+    HEAP_LO = 0x7000
+    HEAP_HI = 0xB000
+    MIN_CONTROLLERS = 2
+    MAX_CONTROLLERS = 250
 
 
 class TestCollectorMapBridge(unittest.TestCase):
@@ -132,6 +155,241 @@ class TestCollectorMapBridge(unittest.TestCase):
         self.assertEqual(diag["controller_rows"], 1)
         self.assertEqual(diag["cache"]["status"], "hit")
         self.assertNotIn("0x2000", str(diag))
+
+    def test_map_control_state_roots_encoder_sorts_rows(self):
+        encoded = cmb.encode_map_control_state_roots({2: 0x3000, "1": 0x2000})
+
+        self.assertEqual(encoded, "1:0x2000;2:0x3000")
+
+    def test_state_controller_ids_from_roots_rereads_live_values(self):
+        proc = FakeProc()
+        roots = {1: 0x2000, 2: 0x3000}
+
+        first = cmb.state_controller_ids_from_state_roots(
+            proc,
+            roots,
+            FakeStateModule,
+        )
+        self.assertEqual(first, {1: 1, 2: 0})
+
+        proc.mem[0x2000 + FakeStateModule.OFF_CTRL] = 2
+        second = cmb.state_controller_ids_from_state_roots(
+            proc,
+            roots,
+            FakeStateModule,
+        )
+        self.assertEqual(second, {1: 2, 2: 0})
+
+    def test_state_controller_ids_accept_table_covered_high_tag_ids(self):
+        proc = FakeProc()
+        roots = {1: 0x2000, 2: 0x3000}
+        proc.mem[0x2000 + FakeStateModule.OFF_CTRL] = 250
+
+        self.assertEqual(
+            cmb.state_controller_ids_from_state_roots(
+                proc,
+                roots,
+                FakeStateModule,
+                table=HighIdTable(),
+            ),
+            {1: 250, 2: 0},
+        )
+        self.assertEqual(
+            cmb.state_controller_ids_from_state_roots(
+                proc,
+                roots,
+                FakeStateModule,
+                table=ShortTable(),
+            ),
+            {2: 0},
+        )
+
+    def test_province_rows_from_cached_base_rereads_live_slots(self):
+        proc = FakeProc()
+        base = 0x4000
+        prov_to_state = {11: 1, 12: 2}
+        proc.mem[base + 11 * FakeProvinceModule.PROV_STRIDE] = 0x8000
+        proc.mem[base + 12 * FakeProvinceModule.PROV_STRIDE] = 0x9000
+
+        rows = cmb.province_rows_from_cached_base(
+            proc,
+            FakeTable(),
+            base,
+            20,
+            {0x8000: 1, 0x9000: 2},
+            prov_to_state,
+            FakeProvinceModule,
+        )
+        self.assertEqual(rows["11"], {"controller": "GER", "state_id": 1})
+        self.assertEqual(rows["12"], {"controller": "ENG", "state_id": 2})
+
+        proc.mem[base + 11 * FakeProvinceModule.PROV_STRIDE] = 0x9000
+        rows = cmb.province_rows_from_cached_base(
+            proc,
+            FakeTable(),
+            base,
+            20,
+            {0x8000: 1, 0x9000: 2},
+            prov_to_state,
+            FakeProvinceModule,
+        )
+        self.assertEqual(rows["11"], {"controller": "ENG", "state_id": 1})
+
+    def test_province_ptr_bridge_from_cached_base_uses_state_controller_votes(self):
+        proc = FakeProc()
+        base = 0x4000
+        prov_to_state = {11: 1, 12: 1, 13: 2}
+        state_ctrl = {1: 1, 2: 2}
+        proc.mem[base + 11 * FakeProvinceModule.PROV_STRIDE] = 0x8000
+        proc.mem[base + 12 * FakeProvinceModule.PROV_STRIDE] = 0x8000
+        proc.mem[base + 13 * FakeProvinceModule.PROV_STRIDE] = 0x9000
+
+        bridge = cmb.province_ptr_bridge_from_cached_base(
+            proc,
+            base,
+            20,
+            state_ctrl,
+            prov_to_state,
+            FakeProvinceModule,
+        )
+
+        self.assertEqual(bridge, {0x8000: 1, 0x9000: 2})
+
+    def test_province_array_cache_validation_accepts_cached_override_bridge(self):
+        proc = FakeProc()
+        base = 0x4000
+        prov_to_state = {11: 1, 12: 1, 13: 2}
+        state_ctrl = {1: 1, 2: 2}
+        proc.mem[base + 11 * FakeProvinceModule.PROV_STRIDE] = 0x8000
+        proc.mem[base + 12 * FakeProvinceModule.PROV_STRIDE] = 0x8000
+        proc.mem[base + 13 * FakeProvinceModule.PROV_STRIDE] = 0xA000
+
+        ptr2tagid = {0x8000: 1, 0xA000: 3}
+
+        self.assertIsNone(cmb.province_array_cache_validation_error(
+            proc,
+            base,
+            20,
+            ptr2tagid,
+            FakeTable(),
+            prov_to_state,
+            FakeProvinceModule,
+            state_ctrl=state_ctrl,
+        ))
+        rows = cmb.province_rows_from_cached_base(
+            proc,
+            FakeTable(),
+            base,
+            20,
+            ptr2tagid,
+            prov_to_state,
+            FakeProvinceModule,
+        )
+        self.assertEqual(rows["13"], {"controller": "SOV", "state_id": 2})
+
+    def test_province_array_cache_validation_rejects_short_tag_table(self):
+        proc = FakeProc()
+        base = 0x4000
+        prov_to_state = {11: 1, 12: 2}
+        proc.mem[base + 11 * FakeProvinceModule.PROV_STRIDE] = 0x8000
+        proc.mem[base + 12 * FakeProvinceModule.PROV_STRIDE] = 0xA000
+
+        reason = cmb.province_array_cache_validation_error(
+            proc,
+            base,
+            20,
+            {0x8000: 1, 0xA000: 3},
+            ShortTable(),
+            prov_to_state,
+            FakeProvinceModule,
+        )
+
+        self.assertEqual(reason, "tag_table_uncovered")
+        self.assertFalse(cmb._province_array_cache_valid(
+            proc,
+            base,
+            20,
+            {0x8000: 1, 0xA000: 3},
+            ShortTable(),
+            prov_to_state,
+            FakeProvinceModule,
+        ))
+
+    def test_province_array_cache_loads_only_matching_process_identity(self):
+        identity = SimpleNamespace(
+            pid=111,
+            create_time_100ns=222,
+            exe_sha256="a" * 64,
+            module_base=0x100000,
+        )
+        other_identity = SimpleNamespace(
+            pid=111,
+            create_time_100ns=333,
+            exe_sha256="a" * 64,
+            module_base=0x100000,
+        )
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "province_control.json"
+
+            self.assertTrue(cmb._write_province_array_cache(
+                path,
+                identity,
+                0x4000,
+                20,
+                {0x8000: 1, 0x9000: 2},
+                2,
+            ))
+            loaded = cmb._load_province_array_cache(path, identity)
+
+            self.assertIsNotNone(loaded)
+            self.assertEqual(loaded["slots"], 20)
+            self.assertEqual(cmb._coerce_ptr_bridge(loaded["ptr2tagid"]),
+                             {0x8000: 1, 0x9000: 2})
+            self.assertIsNone(cmb._load_province_array_cache(path, other_identity))
+
+    def test_province_diagnostics_and_errors_omit_addresses(self):
+        diag = cmb._province_diagnostics(
+            "resolved",
+            {
+                "11": {"controller": "GER", "state_id": 1},
+                "12": {"controller": "ENG", "state_id": 2},
+            },
+            source="province_array_cache",
+            cache={
+                "enabled": True,
+                "status": "stale",
+                "validation": "tag_table_uncovered",
+                "tag_table_source": "country_database_root",
+            },
+            state_bridge={"cache_enabled": True, "status": "hit", "row_count": 2},
+            slots=20,
+            pointer_bridge_count=2,
+        )
+        self.assertEqual(diag["row_count"], 2)
+        self.assertEqual(diag["cache"]["validation"], "tag_table_uncovered")
+        self.assertEqual(diag["state_bridge"]["status"], "hit")
+        self.assertNotIn("0x8000", str(diag))
+
+        msg = cmb._safe_error_message(OSError("bad read at 0x8000"))
+        self.assertNotIn("0x8000", msg)
+
+    def test_map_control_province_encoders_match_rust_contract(self):
+        province_bridge = cmb.encode_map_control_province_bridge(
+            0x4000,
+            20,
+            FakeProvinceModule,
+        )
+        controller_bridge = cmb.encode_map_control_controller_bridge({
+            0x9000: 2,
+            0x8000: 1,
+        })
+
+        self.assertEqual(
+            province_bridge,
+            "province_array=0x4000;province_count=20;"
+            "province_stride=8;controller_ptr_offset=0",
+        )
+        self.assertEqual(controller_bridge, "1:0x8000;2:0x9000")
 
 
 if __name__ == "__main__":
