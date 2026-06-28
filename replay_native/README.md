@@ -6,17 +6,12 @@ The app is read-only: it opens snapshot stores or portable `.battleplan`
 recordings and presents captured game state through game-faithful UI surfaces. It
 does not write to HOI4, saves, or process memory.
 
-## Status
+## Role
 
-The engineering DoD is complete: 114 registered game views, distributed
-inventory registration, host-level scrub/rebind coverage, no-fabrication guards,
-real `.gui` layout ingestion, native map/weather rendering, and portable replay
-container support.
-
-Product parity is still open. See
-`../replay_ui/REPLAY_PARITY_COMPLETION_CHECKLIST.md` for the current checklist.
-The main remaining app-side work is interaction parity, tooltip parity,
-side-by-side visual comparison, map overlay parity, and asset/counter chrome.
+This workspace owns the native app, rendering/runtime crates, view registry,
+host/input plumbing, and replay playback. See
+`../replay_ui/MASTER_PROGRESS.md` for current product status and acceptance
+gates.
 
 ## Run
 

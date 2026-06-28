@@ -4,13 +4,12 @@ Status: first-pass inventory plus executable view-level scaffold, executable
 coverage report, and a first tab-target inventory slice. This file does not
 close product parity.
 
-This inventory supports `REPLAY_PARITY_COMPLETION_CHECKLIST.md` section 2:
-every registered replay view still needs an interaction contract, implementation
-where the interaction is read-only, inert/disabled handling where the original
-game control mutates state, and screenshot or side-by-side proof. The existing
-engineering DoD proves registry coverage, real `.gui` binding, no-fabrication,
-and scrub-safe rendering. It does not prove that every visible the game inspection
-interaction works.
+This inventory supports `MASTER_PROGRESS.md`: every registered replay view still
+needs an interaction contract, implementation where the interaction is read-only,
+inert/disabled handling where the original game control mutates state, and
+screenshot or side-by-side proof. The existing engineering DoD proves registry
+coverage, real `.gui` binding, no-fabrication, and scrub-safe rendering. It does
+not prove that every visible the game inspection interaction works.
 
 ## Evidence Used
 
@@ -18,10 +17,8 @@ interaction works.
   workflow is explicitly retired and must not be used by Codex subagents.
 - `DESIGN.md`: product target is a maximal-depth replay/review tool with no
   fabricated data.
-- `replay_ui/SESSION_HANDOFF.md`: engineering DoD is green, product parity is
-  still open.
-- `replay_ui/REPLAY_PARITY_COMPLETION_CHECKLIST.md`: interaction parity,
-  tooltips, visual parity, hourly capture, and data gaps remain blockers.
+- `replay_ui/MASTER_PROGRESS.md`: current product status, remaining work,
+  acceptance gates, and blocker details.
 - `replay_native/app/src/host/{registry.rs,view.rs,window_host.rs,input.rs}`:
   registry, host policy, open/close, z-order, modal/blocking hit tests, input
   routing, and scrub rebind primitives.
@@ -123,13 +120,18 @@ The first native scaffold is now code-backed, not just prose:
   `designers.plane`, and `designers.equipment` have explicit component
   module-slot selection targets, passive module-slot hover-inspection targets,
   and disabled-mutation targets for their shared non-slot chrome/control area.
-  `core.focus_tree` has an explicit focus-node click-selection target inventory.
+  `core.focus_tree` has an explicit focus-node click-selection target inventory,
+  and `intel.war_overview` plus `intel.diplomacy` have explicit measured
+  war-row and country-row selection target inventories. `intel.insignia_selection`
+  now has an explicit disabled-mutation target for rendered catalog buttons.
+  `logistics.logistics` now has explicit resource-row selection and factual
+  resource-hover target inventories.
   Every recorded target has a stable id/label/status/note, and views without
   known tab targets remain explicitly tracked as `not_proven` instead of
   disappearing.
 - New report tests lock the current executable counts: 114 registered views, 114
-  contracts, 1,140 category rows (ten per view), 124 target rows, 124 target rows
-  with executable-proof notes, and 964 `not_proven` category rows.
+  contracts, 1,140 category rows (ten per view), 129 target rows, 129 target rows
+  with executable-proof notes, and 959 `not_proven` category rows.
 - The report intentionally exposes no implemented/proven target count, because
   the current target status model only has `open` and `not_proven`. It does now
   separately count twenty intentionally inert mutation targets for the
@@ -139,12 +141,12 @@ The first native scaffold is now code-backed, not just prose:
   and faction no-op controls, displayed event-definition
   preview option actions, displayed popup action area, construction top factory
   add/sub buttons, construction visible queue priority/amount/close buttons,
-  production visible add-line buttons, production visible close-line buttons,
-  production visible factory add/sub buttons, production visible priority/amount
-  buttons, production visible manufacturer/equipment/convert/deploy/name-list
-  line controls, timed-decision `btn_select` action buttons, and army/navy
-  trait-tree add-trait slot buttons, plus tank/plane/equipment
-  component-designer non-slot control areas,
+  insignia catalog buttons, production visible add-line buttons, production
+  visible close-line buttons, production visible factory add/sub buttons,
+  production visible priority/amount buttons, production visible
+  manufacturer/equipment/convert/deploy/name-list line controls, timed-decision
+  `btn_select` action buttons, and army/navy trait-tree add-trait slot buttons,
+  plus tank/plane/equipment component-designer non-slot control areas,
   without converting those proofs into broad mutation parity.
 - `chrome.find` now has executable read-only tab-switch proof: tests click
   States/Countries/Victory Points, verify the digest-visible catalog changes,
@@ -366,11 +368,11 @@ Current executable report totals:
 | Registered views | 114 |
 | Interaction contracts | 114 |
 | Category rows | 1,140 |
-| Target rows | 124 |
-| Target rows with executable-proof notes | 124 |
+| Target rows | 129 |
+| Target rows with executable-proof notes | 129 |
 | Implemented/proven target rows | Not representable yet |
-| Intentionally inert mutation rows | 20 |
-| `not_proven` category rows | 964 |
+| Intentionally inert mutation rows | 21 |
+| `not_proven` category rows | 959 |
 
 Per-category report totals:
 
@@ -378,12 +380,12 @@ Per-category report totals:
 |---|---:|---:|---:|---:|---:|---:|
 | `open_close` | 114 | 0 | 0 | 0 | 0 | 0 |
 | `tab_switch` | 6 | 108 | 18 | 18 | 0 | 18 |
-| `list_selection` | 18 | 96 | 39 | 39 | 0 | 39 |
+| `list_selection` | 21 | 93 | 42 | 42 | 0 | 42 |
 | `text_input` | 1 | 113 | 1 | 1 | 0 | 1 |
 | `scroll` | 9 | 105 | 13 | 13 | 0 | 13 |
-| `hover_tooltip` | 12 | 102 | 12 | 12 | 0 | 12 |
+| `hover_tooltip` | 12 | 102 | 13 | 13 | 0 | 13 |
 | `drilldown` | 4 | 110 | 21 | 21 | 0 | 21 |
-| `disabled_mutation` | 13 | 101 | 20 | 20 | 0 | 20 |
+| `disabled_mutation` | 14 | 100 | 21 | 21 | 0 | 21 |
 | `scrub_state` | 0 | 114 | 0 | 0 | 0 | 0 |
 | `screenshot_proof` | 0 | 114 | 0 | 0 | 0 | 0 |
 
@@ -981,8 +983,19 @@ Implemented interactions:
   tension, and diplomacy rows render through row factories.
 - [x] Intel agency Agency/Operations/Cryptology tabs switch via read-only click,
   unavailable tabs are inert, and selected-tab state has scrub A->B->A proof.
+- [x] War overview war rows select by measured war key, update the header/detail
+  and participant rows, reject malformed rows without a complete measured key,
+  and fail closed across scrub when the selected war disappears.
+- [x] Diplomacy country rows select by measured country TAG, update the
+  selected-country detail card and opinion direction, expose no fallback rows
+  when the country domain is absent, and fail closed across scrub when the
+  selected country disappears.
 - [x] Insignia selection has tests proving menu-open does not bind an arbitrary
   formation and selected-formation binding is explicit when supplied.
+- [x] Insignia catalog buttons are replay-disabled no-ops when an explicit
+  formation selection is supplied; tests click the real instantiated
+  `insignia_list_entry` button leaf and prove no commands, no redraw, and an
+  unchanged selected-formation/catalog digest.
 - [x] Mutation verbs are documented as inert: start mission, launch operation,
   send trade, vote, pick insignia, and diplomatic actions.
 
@@ -990,17 +1003,18 @@ Likely missing interactions:
 
 - [ ] Operative roster selection and detail-card updates.
 - [ ] Trade partner/resource row selection and country drilldowns.
-- [ ] War row/participant selection, world tension contributor drilldowns, and
-  diplomacy country flag/action drilldowns.
+- [ ] War participant selection, world tension contributor drilldowns, relation
+  row selection, and diplomacy country flag/action drilldowns.
 - [ ] Diplomatic action modal buttons must be visually disabled/inert and tested.
 - [ ] Tooltip coverage for intel estimates, operations, trade, war score,
   casualties, world tension, diplomatic actions, and unavailable computed gaps.
 
 Tests/proof needed:
 
-- [ ] Per-row selection tests for operative, trade, war, and diplomacy rows.
-- [ ] Click-no-op tests for trade/diplomacy/operation/peace/insignia mutation
-  controls.
+- [ ] Per-row selection tests for operative, trade, trade/resource partner rows,
+  war participants, diplomacy relation rows, and other remaining row factories.
+- [ ] Click-no-op tests for trade/diplomacy/operation/peace mutation controls
+  and remaining insignia color-picker/missing-selection controls.
 - [ ] Side-by-side screenshots for diplomacy and war overview selected states.
 
 ### LogisticsCombatUnitsEvents
@@ -1019,6 +1033,13 @@ Implemented interactions:
 - [x] Logistics/resource rows, naval result widgets, unit view, event cards,
   popup cards, ingame menu, naval combat, and combat log surfaces render as
   registered views.
+- [x] `logistics.logistics` resource rows select by stable resource key, expose
+  selected-row highlight/digest proof, and fail closed when the selected
+  resource disappears on scrub.
+- [x] `logistics.logistics` resource hovers emit factual tooltips with the exact
+  captured amount, badge unfed stockpile/demand/history detail rows unavailable,
+  clear on pointer leave, and fail closed when the hovered resource disappears
+  on scrub.
 - [x] Ingame menu save/load/resign/quit verbs have executable disabled-mutation
   proof: clicks are consumed as replay-modal no-ops, emit no commands, request
   no redraw, and leave the bound digest unchanged. Popup mutation verbs and
@@ -1064,6 +1085,8 @@ Likely missing interactions:
 - [ ] Remaining unit/detail interactions: ship rows, column sorts, exact
   scrollbar art, full division stat panes, unit-detail drilldowns, and broader row
   visual parity.
+- [ ] Logistics overview materiel row selection, resource stockpile/demand/history
+  tooltip parity, exact resource tooltip frames, and logistics overview scrollbars.
 - [ ] Combat log row selection into combat details; naval combat/result row
   drilldown into ship/fleet details.
 - [ ] Event option hover/disabled visual treatment, fired-event historical choice
@@ -1223,7 +1246,8 @@ Tests/proof needed:
    wired.
 4. Tooltip parity is mostly open. Focus has a direct hover tooltip and
    mapmode rail rows have a factual source/fidelity tooltip slice; generic
-   HOI4-style tooltip resolution/composition remains a checklist blocker.
+   HOI4-style tooltip resolution/composition remains a `MASTER_PROGRESS.md`
+   product-parity blocker.
 5. Mutating controls are often documented as inert, but there is no per-control
    disabled-state inventory or click-no-op proof across the 114-view surface.
 6. Map and chrome parity still lacks minimap screenshot/side-by-side proof,

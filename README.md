@@ -7,38 +7,11 @@ surfaces have been removed. The active target is a native Rust/wgpu replay
 application that lets a viewer inspect a recorded HOI4 session like the real game
 UI, without any ability to mutate the game.
 
-## Current Status
+## Progress
 
-The narrow engineering definition of done is met: the native app builds, 114 real
-game views are registered and menu-reachable, no-fabrication guardrails are in
-place, the map/weather/rendering stack is wired, the `.battleplan` container
-exists, and the coverage checker passes.
-
-Product parity is not complete. The app is not yet a fully proven 1-to-1
-inspector for every real HOI4 UI interaction and visual surface. Current data
-coverage is 273 manifest rows: 162 closed, 47 closeable/provable rows still open
-including 26 wartime/fixture-gated rows, 6 live/static rows, and 15
-computed/visual rows, plus 2 permanent walls and 62 excluded rows.
-
-The canonical remaining-work checklist is:
-
-- [replay_ui/REPLAY_PARITY_COMPLETION_CHECKLIST.md](replay_ui/REPLAY_PARITY_COMPLETION_CHECKLIST.md)
-
-The current high-level blockers are:
-
-- live unpaused recorder proof at the intended multiplayer speed
-- full read-only interaction parity for every registered view
-- tooltip/localization parity beyond the first vertical slice
-- side-by-side game-vs-app screenshot/interaction comparison
-- remaining asset-sprite/counter chrome work, especially portraits, insignia,
-  and full unit-counter chrome/art parity
-- remaining map overlay parity for labels, routes, fronts, battle plans, trade,
-  weather phenomenon overlays, and exact Air/Naval per-province visual parity
-- data gaps tracked in `coverage_audit/memory_manifest.json`, especially
-  `all_playthrough_data`, `countries.*.logistics`,
-  `countries.*.strategic_navy`, `countries.*.upgrades`, computed values, and
-  visual-semantics rows
-- user-provided mid-war/eventful paused save coverage for wartime-only rows
+Current progress and remaining work are tracked only in
+[replay_ui/MASTER_PROGRESS.md](replay_ui/MASTER_PROGRESS.md). Keep status updates
+there, not in this README.
 
 ## Run The Native Replay App
 
@@ -60,8 +33,7 @@ full-project signal.
 
 ## Source Of Truth
 
-- `replay_ui/REPLAY_PARITY_COMPLETION_CHECKLIST.md` - product parity checklist
-- `replay_ui/SESSION_HANDOFF.md` - current orchestration state and known caveats
+- `replay_ui/MASTER_PROGRESS.md` - product parity status and remaining work
 - `coverage_audit/memory_manifest.json` - data completeness row status
 - `coverage_audit/COVERAGE_REPORT.md` - readable data coverage report
 - `replay_ui/BINDING_MAP_COVERAGE.md` - UI binding inventory
@@ -77,7 +49,7 @@ full-project signal.
 | `coverage_audit/` | Completeness manifest, report, and checker. |
 | `game_defs/` | Static HOI4 definition parsers. |
 | `replay/` | Snapshot schema, store, diff engine, and tests. |
-| `replay_ui/` | Product parity docs, binding maps, handoff state, and replay specs; no browser replay runtime remains here. |
+| `replay_ui/` | Master progress doc, binding maps, interaction inventory, and replay specs; no browser replay runtime remains here. |
 | `save_oracle/` | Save parsing/oracle tooling used for validation and discovery. |
 
 ## Safety Rules

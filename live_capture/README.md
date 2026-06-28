@@ -7,20 +7,12 @@ snapshots and portable `.battleplan` recordings. It never writes to HOI4, saves,
 or process memory. The capture path is build-gated, fail-closed, and designed to
 keep measured zero, captured null, and absent data distinct.
 
-## Current Status
+## Role
 
-- Snapshot assembly, durable store writes, continuity metadata, and `.battleplan`
-  writer integration are implemented.
-- The distributable recorder has selectable cadence modes:
-  every in-game hour, every 2 hours, every 6 hours, and manual/paused one-shot.
-- In-game-hour de-duplication and skipped-hour diagnostics are implemented and
-  tested.
-- Product parity still needs a live unpaused proof at the intended multiplayer
-  speed: either no scheduled capture hours are missed, or skipped hours are
-  explicitly recorded in the manifest.
-
-See `../replay_ui/REPLAY_PARITY_COMPLETION_CHECKLIST.md` for the acceptance
-checklist.
+This package owns capture assembly, durable snapshot writes, continuity
+metadata, recorder UI/CLI entrypoints, and `.battleplan` writer integration. See
+`../replay_ui/MASTER_PROGRESS.md` for current product status and acceptance
+gates.
 
 ## Main Pieces
 

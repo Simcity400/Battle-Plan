@@ -15,4 +15,4 @@ members = [
 
 # Native replay UI workspace. The original milestone labels are historical; the
 # current app has all engineering-DoD crates wired and product-parity work is
-# tracked in ../replay_ui/REPLAY_PARITY_COMPLETION_CHECKLIST.md.
+# tracked in ../replay_ui/MASTER_PROGRESS.md.

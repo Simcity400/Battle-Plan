@@ -74,7 +74,12 @@ def _make_oracle_dir(root):
         "meta": {},
         "countries": {"GER": {"nukes_total": 0, "ace_count": 1,
                               "aces": [{"name": "A", "surname": "B",
-                                        "callsign": "X"}]}}})
+                                        "callsign": "X"}],
+                              "strategic_navy": {
+                                  "max_allowed_dockyards_to_repair": 22,
+                                  "num_used_dockyards": 0,
+                                  "regional_convoys": {
+                                      "12": {"required": 3, "assigned": 5}}}}}})
     _dump(root, "players.json", {
         "meta": {}, "players": {"GER": {"user": "WooooWoooo", "id": 1}}})
     return root
@@ -110,6 +115,11 @@ class TestExtractFold(unittest.TestCase):
         self.assertEqual(ger["extra"]["ace_count"], 1)
         # genuine zero survives the fold
         self.assertEqual(ger["extra"]["nukes_total"], 0)
+        self.assertEqual(
+            ger["extra"]["strategic_navy"]["num_used_dockyards"], 0)
+        self.assertEqual(
+            ger["extra"]["strategic_navy"]["regional_convoys"]["12"]["assigned"],
+            5)
         self.assertEqual(ger["economy"]["logistics"]["truck_count"], 0)
 
     def test_provenance_save_not_memory(self):

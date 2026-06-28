@@ -416,6 +416,12 @@ fn list_selection_contract(view_id: ViewId) -> CategoryContract {
             status: InteractionStatus::Open,
             note: "core.focus_tree has executable focus-node click selection proof keyed by exact focus id, with drag-pan conflict protection, missing-selected fail-closed handling, selected-node A->B->A scrub proof, and a first factual selected-detail panel/digest slice for id, state, cost, current progress days, prereq group count, and position fidelity; full the game national_focus_detail_view parity, filter/shortcut controls, focus mutation controls, and broader focus-tree parity remain open",
         }
+    } else if view_id.0 == "logistics.logistics" {
+        CategoryContract {
+            category: InteractionCategory::ListSelection,
+            status: InteractionStatus::Open,
+            note: "logistics.logistics has executable resource-row selection proof keyed by stable resource id, with selected-row highlight/digest proof and missing-selected fail-closed behavior on scrub; materiel row selection, stockpile/detail drilldowns, scrollbars, and broader logistics parity remain open",
+        }
     } else if view_id.0 == "logistics.unit_view" {
         CategoryContract {
             category: InteractionCategory::ListSelection,
@@ -457,6 +463,18 @@ fn list_selection_contract(view_id: ViewId) -> CategoryContract {
             category: InteractionCategory::ListSelection,
             status: InteractionStatus::Open,
             note: "research.doctrine_tree has executable doctrine-node click selection proof keyed by the exact catalog doctrine id, with drag-pan conflict protection, missing-selected fail-closed handling, selected-node A->B->A scrub proof, and a first factual selected-detail panel/digest slice for id, folder, exact-when-fed/unfed-badged state, and XOR-link count; full the game detail-window parity, doctrine tooltip parity, and broader doctrine-tree parity remain open",
+        }
+    } else if view_id.0 == "intel.war_overview" {
+        CategoryContract {
+            category: InteractionCategory::ListSelection,
+            status: InteractionStatus::Open,
+            note: "intel.war_overview has executable war-row selection proof keyed by measured belligerents/start date, with header/detail/participant rebuild, missing-selected fail-closed handling, malformed-row inert behavior, and selected-war A->B->A scrub proof; participant row selection, drilldowns, per-participant gap fields, and broader war-overview parity remain open",
+        }
+    } else if view_id.0 == "intel.diplomacy" {
+        CategoryContract {
+            category: InteractionCategory::ListSelection,
+            status: InteractionStatus::Open,
+            note: "intel.diplomacy has executable country-row selection proof keyed by measured country TAG, with selected-country detail-card rebuild, missing-selected fail-closed handling, absent-country-domain inert behavior, and selected-country A->B->A scrub proof; relation-row selection, action modals, country drilldowns, and broader diplomacy parity remain open",
         }
     } else if view_id.0 == "leaders.army_trait_tree" {
         CategoryContract {
@@ -587,6 +605,11 @@ fn hover_tooltip_contract(view_id: ViewId) -> CategoryContract {
             status: InteractionStatus::Open,
             note: "chrome.mapmodes has executable hover tooltip proof for real rail rows, including fidelity/source text and hover-clear behavior; all-modes popup rows share the same factual tooltip path, while legend hover, game-style tooltip frame parity, and broader map tooltip coverage remain open",
         },
+        "logistics.logistics" => CategoryContract {
+            category: InteractionCategory::HoverTooltip,
+            status: InteractionStatus::Open,
+            note: "logistics.logistics has executable factual resource-hover tooltip proof with exact captured amount, unavailable badges for unfed stockpile/demand/history detail rows, hover-clear behavior, and stale-hover fail-closed rebind behavior; full the game tooltip frames, localization, stockpile/demand/history detail parity, screenshots, and broader logistics tooltip coverage remain open",
+        },
         "research.tech_tree" => CategoryContract {
             category: InteractionCategory::HoverTooltip,
             status: InteractionStatus::Open,
@@ -694,6 +717,11 @@ fn disabled_mutation_contract(view_id: ViewId) -> CategoryContract {
             status: InteractionStatus::Open,
             note: "leaders.navy_trait_tree has executable click-no-op proof for the rendered add_trait_0 through add_trait_3 trait-pick slots plus traits_tabs as replay-disabled no-ops; trait-pick availability, disabled visual treatment, button-level tab/wiki controls, static catalog pickable/disabled nodes, and broader trait-tree mutation parity remain open",
         },
+        "intel.insignia_selection" => CategoryContract {
+            category: InteractionCategory::DisabledMutation,
+            status: InteractionStatus::Open,
+            note: "intel.insignia_selection has executable click-no-op proof for rendered insignia catalog buttons when an explicit formation selection is supplied; catalog completeness, disabled visual treatment, color picker controls, missing-selection behavior, and broader insignia mutation parity remain open",
+        },
         "core.state_panel" => CategoryContract {
             category: InteractionCategory::DisabledMutation,
             status: InteractionStatus::Open,
@@ -748,6 +776,7 @@ pub fn known_list_selection_targets(view_id: ViewId) -> &'static [InteractionTar
         "military.theatre_selector" => &MILITARY_THEATRE_SELECTOR_ROW_TARGETS,
         "chrome.mapmodes" => &CHROME_MAPMODES_ROW_TARGETS,
         "core.focus_tree" => &CORE_FOCUS_TREE_ROW_TARGETS,
+        "logistics.logistics" => &LOGISTICS_LOGISTICS_ROW_TARGETS,
         "logistics.unit_view" => &LOGISTICS_UNIT_VIEW_ROW_TARGETS,
         "production.production" => &PRODUCTION_PRODUCTION_ROW_TARGETS,
         "production.construction" => &PRODUCTION_CONSTRUCTION_ROW_TARGETS,
@@ -755,6 +784,8 @@ pub fn known_list_selection_targets(view_id: ViewId) -> &'static [InteractionTar
         "research.research" => &RESEARCH_RESEARCH_ROW_TARGETS,
         "research.tech_tree" => &RESEARCH_TECH_TREE_ROW_TARGETS,
         "research.doctrine_tree" => &RESEARCH_DOCTRINE_TREE_ROW_TARGETS,
+        "intel.war_overview" => &INTEL_WAR_OVERVIEW_ROW_TARGETS,
+        "intel.diplomacy" => &INTEL_DIPLOMACY_ROW_TARGETS,
         "leaders.army_trait_tree" => &LEADERS_ARMY_TRAIT_TREE_ROW_TARGETS,
         "leaders.navy_trait_tree" => &LEADERS_NAVY_TRAIT_TREE_ROW_TARGETS,
         "designers.tank" => &DESIGNERS_TANK_ROW_TARGETS,
@@ -792,6 +823,7 @@ pub fn known_hover_tooltip_targets(view_id: ViewId) -> &'static [InteractionTarg
         "core.state_panel" => &CORE_STATE_PANEL_HOVER_TARGETS,
         "core.topbar" => &CORE_TOPBAR_HOVER_TARGETS,
         "chrome.mapmodes" => &CHROME_MAPMODES_HOVER_TARGETS,
+        "logistics.logistics" => &LOGISTICS_LOGISTICS_HOVER_TARGETS,
         "research.tech_tree" => &RESEARCH_TECH_TREE_HOVER_TARGETS,
         "research.doctrine_tree" => &RESEARCH_DOCTRINE_TREE_HOVER_TARGETS,
         "leaders.army_trait_tree" => &LEADERS_ARMY_TRAIT_TREE_HOVER_TARGETS,
@@ -823,6 +855,7 @@ pub fn known_disabled_mutation_targets(view_id: ViewId) -> &'static [Interaction
         "production.decisions" => &PRODUCTION_DECISIONS_DISABLED_MUTATION_TARGETS,
         "leaders.army_trait_tree" => &LEADERS_ARMY_TRAIT_TREE_DISABLED_MUTATION_TARGETS,
         "leaders.navy_trait_tree" => &LEADERS_NAVY_TRAIT_TREE_DISABLED_MUTATION_TARGETS,
+        "intel.insignia_selection" => &INTEL_INSIGNIA_DISABLED_MUTATION_TARGETS,
         "core.state_panel" => &CORE_STATE_PANEL_DISABLED_MUTATION_TARGETS,
         "core.topbar" => &CORE_TOPBAR_DISABLED_MUTATION_TARGETS,
         "designers.tank" => &DESIGNERS_TANK_DISABLED_MUTATION_TARGETS,
@@ -858,6 +891,10 @@ const DESIGNERS_COMPONENT_DISABLED_MUTATION_NOTE: &str =
     "component designer non-slot control target; executable component designer tests prove clicks inside the shared non-slot designer chrome/control area are consumed as replay-disabled no-op pointer-down/up input with no emitted commands, no redraw request, and unchanged bind digest; upgrade sliders, module add/remove, save/duplicate/production controls, disabled visual treatment, screenshots, and broader component-designer mutation parity remain open";
 const INTEL_AGENCY_TAB_NOTE: &str =
     "dynamic widgets::tabs target; executable IntelAgencyView tests prove click switching, unavailable-tab inert handling, and selected-tab A->B->A persistence for this read-only intelligence slice";
+const INTEL_WAR_OVERVIEW_ROW_NOTE: &str =
+    "dynamic war row target; executable WarOverviewView tests prove measured war-key read-only row selection updates header/detail/participant rows, malformed rows without a complete measured key are inert, missing selected wars fail closed across scrub, and selected-war A->B->A persistence restores the keyed detail without carrying B-only rows; participant row selection, drilldowns, per-participant casualties/score/capitulation gap fields, and broader war-overview parity remain open";
+const INTEL_DIPLOMACY_ROW_NOTE: &str =
+    "dynamic diplomacy country row target; executable DiplomacyView tests prove measured TAG read-only row selection updates the selected-country detail card and opinion direction, absent country domains expose no selectable fallback rows, missing selected countries fail closed across scrub, and selected-country A->B->A persistence restores the keyed detail without carrying B-only rows; relation-row selection, action modals, country drilldowns, and broader diplomacy parity remain open";
 const CHROME_FIND_TAB_NOTE: &str =
     "fixed widgets::tabs target; executable FindView tests prove click switching, inert-click handling, and selected-tab A->B->A persistence for this read-only catalog slice";
 const LOGISTICS_UNIT_VIEW_TAB_NOTE: &str =
@@ -900,6 +937,10 @@ const CORE_MAP_HOVER_NOTE: &str =
     "bottom-layer map hover target; executable MapView tests prove exposed-map CPU raster picks emit factual province/state/owner tooltip rows, missing land metadata stays unavailable, and broader the game map tooltip/frame/legend parity remains open";
 const CORE_FOCUS_TREE_ROW_NOTE: &str =
     "dynamic focus-node target; executable FocusShell tests prove exact focus-id read-only node selection/highlight, drag-pan conflict protection, missing-selected fail-closed proof without node fallback, selected-node A->B->A persistence while rebuilding current focus state, and a factual selected-detail panel/digest slice for id/state/cost/current progress-days/prereq-group count/position fidelity with missing cost/progress never fabricated as zero; full the game national_focus_detail_view parity, filter/shortcut controls, focus mutation controls, and broader focus-tree parity remain open";
+const LOGISTICS_LOGISTICS_ROW_NOTE: &str =
+    "dynamic logistics resource row target; executable LogisticsView tests prove stable resource-key read-only row selection/highlight, selected-row digest proof, and missing-selected fail-closed behavior on scrub without falling back to another resource; materiel row selection, stockpile/detail drilldowns, scrollbars, and broader logistics parity remain open";
+const LOGISTICS_LOGISTICS_HOVER_NOTE: &str =
+    "dynamic logistics resource hover target; executable LogisticsView tests prove factual resource hover tooltips with exact captured amount, unavailable badges for unfed stockpile/demand/history detail rows, passive hover-clear behavior, and stale-hover fail-closed rebind behavior; full the game tooltip frames, localization, stockpile/demand/history detail parity, screenshots, and broader logistics tooltip coverage remain open";
 const RESEARCH_TECH_TREE_HOVER_NOTE: &str =
     "tech-tree hover target; executable TechTreeView tests prove factual no-fabrication tooltip rows for tech id, folder, state, and research cost, with missing/null cost unavailable instead of zero; full the game frame/prerequisite/localized/comparison tooltip parity remains open";
 const RESEARCH_DOCTRINE_TREE_HOVER_NOTE: &str =
@@ -942,6 +983,8 @@ const LEADERS_ARMY_TRAIT_TREE_DISABLED_MUTATION_NOTE: &str =
     "fixed trait-tree add-trait/control target; executable ArmyTraitTreeView tests prove add_trait_0, add_trait_1, add_trait_2, add_trait_3, traits_tabs, and preferred_tactic_tiling_container are resolved from the rendered real .gui roots and consumed as replay-disabled no-op pointer-down/up clicks with no emitted commands, no redraw request, and unchanged selected trait/detail bind digest; trait-pick availability, disabled visual treatment, button-level tab/wiki controls, static catalog pickable/disabled nodes, and broader trait-tree mutation parity remain open";
 const LEADERS_NAVY_TRAIT_TREE_DISABLED_MUTATION_NOTE: &str =
     "fixed trait-tree add-trait/control target; executable NavyTraitTreeView tests prove add_trait_0, add_trait_1, add_trait_2, add_trait_3, and traits_tabs are resolved from the rendered real .gui roots and consumed as replay-disabled no-op pointer-down/up clicks with no emitted commands, no redraw request, and unchanged selected trait/detail bind digest; trait-pick availability, disabled visual treatment, button-level tab/wiki controls, static catalog pickable/disabled nodes, and broader trait-tree mutation parity remain open";
+const INTEL_INSIGNIA_DISABLED_MUTATION_NOTE: &str =
+    "dynamic insignia catalog target; executable InsigniaSelectionView tests prove instantiated insignia_list_entry button leaves are consumed as replay-disabled no-op pointer-down/up clicks when an explicit formation selection is supplied, with no emitted commands, no redraw request, and unchanged selected formation/catalog bind digest; catalog completeness, disabled visual treatment, color picker controls, missing-selection behavior, and broader insignia mutation parity remain open";
 const LOGISTICS_INGAME_MENU_DISABLED_MUTATION_NOTE: &str =
     "fixed ingame-menu verb target; executable IngameMenuView/WindowHost tests prove replay-disabled Save/Load/Resign/Quit click streams are consumed as no-op modal input with no emitted commands, no redraw request, and unchanged bind digest; per-button leaf routing, disabled visual treatment, save-list filesystem browsing, and broader mutation parity remain open";
 const LOGISTICS_EVENT_WINDOW_DISABLED_MUTATION_NOTE: &str =
@@ -980,6 +1023,14 @@ const LEADERS_NAVY_TRAIT_TREE_DISABLED_MUTATION_TARGETS: [InteractionTargetContr
         label: "Add-trait slots",
         status: InteractionStatus::Open,
         note: LEADERS_NAVY_TRAIT_TREE_DISABLED_MUTATION_NOTE,
+    }];
+const INTEL_INSIGNIA_DISABLED_MUTATION_TARGETS: [InteractionTargetContract; 1] =
+    [InteractionTargetContract {
+        category: InteractionCategory::DisabledMutation,
+        id: "intel.insignia_selection.mutation.catalog_buttons",
+        label: "Insignia catalog buttons",
+        status: InteractionStatus::Open,
+        note: INTEL_INSIGNIA_DISABLED_MUTATION_NOTE,
     }];
 const LOGISTICS_INGAME_MENU_DISABLED_MUTATION_TARGETS: [InteractionTargetContract; 1] =
     [InteractionTargetContract {
@@ -1380,6 +1431,23 @@ const INTEL_AGENCY_TAB_TARGETS: [InteractionTargetContract; 3] = [
     },
 ];
 
+const INTEL_WAR_OVERVIEW_ROW_TARGETS: [InteractionTargetContract; 1] =
+    [InteractionTargetContract {
+        category: InteractionCategory::ListSelection,
+        id: "intel.war_overview.row.war",
+        label: "War row",
+        status: InteractionStatus::Open,
+        note: INTEL_WAR_OVERVIEW_ROW_NOTE,
+    }];
+
+const INTEL_DIPLOMACY_ROW_TARGETS: [InteractionTargetContract; 1] = [InteractionTargetContract {
+    category: InteractionCategory::ListSelection,
+    id: "intel.diplomacy.row.country",
+    label: "Country row",
+    status: InteractionStatus::Open,
+    note: INTEL_DIPLOMACY_ROW_NOTE,
+}];
+
 const CHROME_FIND_TAB_TARGETS: [InteractionTargetContract; 3] = [
     InteractionTargetContract {
         category: InteractionCategory::TabSwitch,
@@ -1403,6 +1471,24 @@ const CHROME_FIND_TAB_TARGETS: [InteractionTargetContract; 3] = [
         note: CHROME_FIND_TAB_NOTE,
     },
 ];
+
+const LOGISTICS_LOGISTICS_ROW_TARGETS: [InteractionTargetContract; 1] =
+    [InteractionTargetContract {
+        category: InteractionCategory::ListSelection,
+        id: "logistics.logistics.row.resource",
+        label: "Resource row",
+        status: InteractionStatus::Open,
+        note: LOGISTICS_LOGISTICS_ROW_NOTE,
+    }];
+
+const LOGISTICS_LOGISTICS_HOVER_TARGETS: [InteractionTargetContract; 1] =
+    [InteractionTargetContract {
+        category: InteractionCategory::HoverTooltip,
+        id: "logistics.logistics.hover.resource",
+        label: "Resource hover tooltip",
+        status: InteractionStatus::Open,
+        note: LOGISTICS_LOGISTICS_HOVER_NOTE,
+    }];
 
 const CHROME_FIND_ROW_TARGETS: [InteractionTargetContract; 3] = [
     InteractionTargetContract {
@@ -2510,6 +2596,80 @@ mod tests {
     }
 
     #[test]
+    fn logistics_logistics_resource_targets_cite_executable_proof() {
+        let reg = ViewRegistry::from_inventory();
+        assert!(
+            reg.view(ViewId("logistics.logistics")).is_some(),
+            "the Logistics resource inventory must be anchored to a real registered view"
+        );
+        let contracts = interaction_contracts(&reg);
+        let logistics = contract_by_id(&contracts, ViewId("logistics.logistics"));
+
+        let selection = logistics
+            .category(InteractionCategory::ListSelection)
+            .unwrap();
+        assert_eq!(selection.status, InteractionStatus::Open);
+        assert!(
+            selection.note.contains("resource-row selection proof"),
+            "logistics.logistics row contract must cite executable resource-row proof"
+        );
+        assert!(
+            selection
+                .note
+                .contains("broader logistics parity remain open"),
+            "logistics.logistics row proof must keep broad logistics parity open"
+        );
+        let row_targets: Vec<_> = logistics
+            .targets(InteractionCategory::ListSelection)
+            .collect();
+        assert_eq!(row_targets.len(), 1);
+        assert_eq!(row_targets[0].id, "logistics.logistics.row.resource");
+        assert_eq!(row_targets[0].label, "Resource row");
+        assert!(
+            row_targets[0]
+                .note
+                .contains("LogisticsView tests prove stable resource-key"),
+            "logistics.logistics row target must cite stable-key proof"
+        );
+        assert!(
+            row_targets[0]
+                .note
+                .contains("missing-selected fail-closed behavior"),
+            "logistics.logistics row target must cite fail-closed proof"
+        );
+
+        let hover = logistics
+            .category(InteractionCategory::HoverTooltip)
+            .unwrap();
+        assert_eq!(hover.status, InteractionStatus::Open);
+        assert!(
+            hover.note.contains("factual resource-hover tooltip proof"),
+            "logistics.logistics hover contract must cite factual tooltip proof"
+        );
+        assert!(
+            hover
+                .note
+                .contains("stockpile/demand/history detail parity"),
+            "logistics.logistics hover proof must keep detail tooltip parity open"
+        );
+        let hover_targets: Vec<_> = logistics
+            .targets(InteractionCategory::HoverTooltip)
+            .collect();
+        assert_eq!(hover_targets.len(), 1);
+        assert_eq!(hover_targets[0].id, "logistics.logistics.hover.resource");
+        assert_eq!(hover_targets[0].label, "Resource hover tooltip");
+        assert!(
+            hover_targets[0].note.contains("exact captured amount"),
+            "logistics.logistics hover target must cite exact amount proof"
+        );
+        assert!(
+            hover_targets[0].note.contains("unavailable badges")
+                && hover_targets[0].note.contains("stale-hover fail-closed"),
+            "logistics.logistics hover target must cite no-fabrication and stale-hover proof"
+        );
+    }
+
+    #[test]
     fn production_production_row_selection_target_cites_executable_proof() {
         let reg = ViewRegistry::from_inventory();
         assert!(
@@ -3051,6 +3211,147 @@ mod tests {
                 .iter()
                 .all(|t| t.note.contains("IntelAgencyView tests prove")),
             "intel.intel_agency target notes must cite click/scrub proof"
+        );
+    }
+
+    #[test]
+    fn intel_war_overview_row_selection_target_cites_executable_proof() {
+        let reg = ViewRegistry::from_inventory();
+        assert!(
+            reg.view(ViewId("intel.war_overview")).is_some(),
+            "the War Overview row-selection inventory must be anchored to a real registered view"
+        );
+        let contracts = interaction_contracts(&reg);
+        let war = contract_by_id(&contracts, ViewId("intel.war_overview"));
+
+        let selection = war.category(InteractionCategory::ListSelection).unwrap();
+        assert_eq!(selection.status, InteractionStatus::Open);
+        assert!(
+            selection.note.contains("war-row selection proof"),
+            "intel.war_overview contract must cite executable war-row proof"
+        );
+        assert!(
+            selection
+                .note
+                .contains("broader war-overview parity remain open"),
+            "intel.war_overview proof must not overclaim broad war overview parity"
+        );
+
+        let targets: Vec<_> = war.targets(InteractionCategory::ListSelection).collect();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].id, "intel.war_overview.row.war");
+        assert_eq!(targets[0].label, "War row");
+        assert!(
+            targets[0]
+                .note
+                .contains("WarOverviewView tests prove measured war-key"),
+            "intel.war_overview target must cite measured-key executable proof"
+        );
+        assert!(
+            targets[0]
+                .note
+                .contains("malformed rows without a complete measured key are inert")
+                && targets[0]
+                    .note
+                    .contains("missing selected wars fail closed"),
+            "intel.war_overview target must cite inert malformed rows and fail-closed proof"
+        );
+    }
+
+    #[test]
+    fn intel_diplomacy_country_row_selection_target_cites_executable_proof() {
+        let reg = ViewRegistry::from_inventory();
+        assert!(
+            reg.view(ViewId("intel.diplomacy")).is_some(),
+            "the Diplomacy row-selection inventory must be anchored to a real registered view"
+        );
+        let contracts = interaction_contracts(&reg);
+        let diplomacy = contract_by_id(&contracts, ViewId("intel.diplomacy"));
+
+        let selection = diplomacy
+            .category(InteractionCategory::ListSelection)
+            .unwrap();
+        assert_eq!(selection.status, InteractionStatus::Open);
+        assert!(
+            selection.note.contains("country-row selection proof"),
+            "intel.diplomacy contract must cite executable country-row proof"
+        );
+        assert!(
+            selection
+                .note
+                .contains("broader diplomacy parity remain open"),
+            "intel.diplomacy proof must not overclaim broad diplomacy parity"
+        );
+
+        let targets: Vec<_> = diplomacy
+            .targets(InteractionCategory::ListSelection)
+            .collect();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].id, "intel.diplomacy.row.country");
+        assert_eq!(targets[0].label, "Country row");
+        assert!(
+            targets[0]
+                .note
+                .contains("DiplomacyView tests prove measured TAG"),
+            "intel.diplomacy target must cite measured-TAG executable proof"
+        );
+        assert!(
+            targets[0]
+                .note
+                .contains("absent country domains expose no selectable fallback rows")
+                && targets[0]
+                    .note
+                    .contains("missing selected countries fail closed"),
+            "intel.diplomacy target must cite absent-domain and fail-closed proof"
+        );
+    }
+
+    #[test]
+    fn intel_insignia_disabled_mutation_target_cites_executable_noop_proof() {
+        let reg = ViewRegistry::from_inventory();
+        assert!(
+            reg.view(ViewId("intel.insignia_selection")).is_some(),
+            "the Insignia Selection disabled-mutation inventory must be anchored to a real registered view"
+        );
+        let contracts = interaction_contracts(&reg);
+        let insignia = contract_by_id(&contracts, ViewId("intel.insignia_selection"));
+
+        let disabled = insignia
+            .category(InteractionCategory::DisabledMutation)
+            .unwrap();
+        assert_eq!(disabled.status, InteractionStatus::Open);
+        assert!(
+            disabled.note.contains("rendered insignia catalog buttons"),
+            "intel.insignia_selection contract must cite the scoped catalog button proof"
+        );
+        assert!(
+            disabled
+                .note
+                .contains("broader insignia mutation parity remain open"),
+            "intel.insignia_selection proof must not overclaim broad insignia mutation parity"
+        );
+
+        let targets: Vec<_> = insignia
+            .targets(InteractionCategory::DisabledMutation)
+            .collect();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(
+            targets[0].id,
+            "intel.insignia_selection.mutation.catalog_buttons"
+        );
+        assert_eq!(targets[0].label, "Insignia catalog buttons");
+        assert!(
+            targets[0]
+                .note
+                .contains("InsigniaSelectionView tests prove"),
+            "intel.insignia_selection target must cite executable no-op proof"
+        );
+        assert!(
+            targets[0]
+                .note
+                .contains("instantiated insignia_list_entry button leaves")
+                && targets[0].note.contains("unchanged selected formation"),
+            "intel.insignia_selection target must cite real leaf and unchanged digest proof"
         );
     }
 
@@ -4701,18 +5002,18 @@ mod tests {
             114 * INTERACTION_CATEGORY_COUNT,
             "the report must keep ten category rows per registered view"
         );
-        assert_eq!(report.category_status_counts.open, 176);
-        assert_eq!(report.category_status_counts.not_proven, 964);
-        assert_eq!(report.missing_not_proven_category_count, 964);
+        assert_eq!(report.category_status_counts.open, 181);
+        assert_eq!(report.category_status_counts.not_proven, 959);
+        assert_eq!(report.missing_not_proven_category_count, 959);
 
         assert_eq!(
-            report.target_row_count, 124,
-            "current target rows are 18 tab rows, 39 list-selection rows, one text-input row, 13 scroll rows, twelve hover rows, 21 drill/navigation rows, and twenty disabled-mutation rows"
+            report.target_row_count, 129,
+            "current target rows are 18 tab rows, 42 list-selection rows, one text-input row, 13 scroll rows, thirteen hover rows, 21 drill/navigation rows, and twenty-one disabled-mutation rows"
         );
-        assert_eq!(report.target_status_counts.open, 124);
+        assert_eq!(report.target_status_counts.open, 129);
         assert_eq!(report.target_status_counts.not_proven, 0);
         assert_eq!(
-            report.target_rows_with_executable_proof_notes, 124,
+            report.target_rows_with_executable_proof_notes, 129,
             "partial executable-proof notes are accounted separately from implemented status"
         );
     }
@@ -4762,15 +5063,15 @@ mod tests {
             &report,
             InteractionCategory::ListSelection,
             InteractionStatusCounts {
-                open: 18,
-                not_proven: 96,
+                open: 21,
+                not_proven: 93,
             },
-            39,
+            42,
             InteractionStatusCounts {
-                open: 39,
+                open: 42,
                 not_proven: 0,
             },
-            39,
+            42,
         );
         assert_category_report(
             &report,
@@ -4804,15 +5105,15 @@ mod tests {
             &report,
             InteractionCategory::HoverTooltip,
             InteractionStatusCounts {
-                open: 11,
-                not_proven: 103,
-            },
-            12,
-            InteractionStatusCounts {
                 open: 12,
+                not_proven: 102,
+            },
+            13,
+            InteractionStatusCounts {
+                open: 13,
                 not_proven: 0,
             },
-            12,
+            13,
         );
         assert_category_report(
             &report,
@@ -4832,15 +5133,15 @@ mod tests {
             &report,
             InteractionCategory::DisabledMutation,
             InteractionStatusCounts {
-                open: 13,
-                not_proven: 101,
+                open: 14,
+                not_proven: 100,
             },
-            20,
+            21,
             InteractionStatusCounts {
-                open: 20,
+                open: 21,
                 not_proven: 0,
             },
-            20,
+            21,
         );
         assert_category_report(
             &report,
@@ -4877,8 +5178,8 @@ mod tests {
         );
         assert_eq!(
             report.intentionally_inert_mutation_count,
-            Some(20),
-            "only the ingame-menu disabled verb target, state-panel occupation/scorched-earth controls target, topbar time-controls target, topbar lobby/menu/music chrome target, topbar dismissed-alert/faction no-op target, event preview option target, displayed popup action target, construction top factory add/sub target, construction visible queue-controls target, production visible add-line target, production visible close-line target, production visible factory add/sub target, production visible priority/amount target, production visible line-controls target, decisions timed btn_select target, army/navy trait-tree add-trait slot targets, and tank/plane/equipment component-designer non-slot control targets have first-class executable inert proof"
+            Some(21),
+            "only the ingame-menu disabled verb target, state-panel occupation/scorched-earth controls target, topbar time-controls target, topbar lobby/menu/music chrome target, topbar dismissed-alert/faction no-op target, event preview option target, displayed popup action target, insignia catalog button target, construction top factory add/sub target, construction visible queue-controls target, production visible add-line target, production visible close-line target, production visible factory add/sub target, production visible priority/amount target, production visible line-controls target, decisions timed btn_select target, army/navy trait-tree add-trait slot targets, and tank/plane/equipment component-designer non-slot control targets have first-class executable inert proof"
         );
         assert!(
             report.missing_not_proven_category_count > 0,
@@ -4890,8 +5191,8 @@ mod tests {
                 .unwrap()
                 .category_status_counts
                 .not_proven,
-            101,
-            "bounded ingame-menu, state-panel occupation/scorched-earth controls, topbar time controls, topbar lobby/menu/music chrome controls, topbar dismissed-alert/faction controls, event-preview, displayed-popup, construction top factory, construction queue-controls, production add-line, production close-line, production factory add/sub, production priority/amount, production line-controls, decisions timed btn_select, trait-tree add-trait slot, and component-designer non-slot no-op proofs must not convert generic inert/no-op behavior into mutation parity"
+            100,
+            "bounded ingame-menu, state-panel occupation/scorched-earth controls, topbar time controls, topbar lobby/menu/music chrome controls, topbar dismissed-alert/faction controls, event-preview, displayed-popup, insignia catalog button, construction top factory, construction queue-controls, production add-line, production close-line, production factory add/sub, production priority/amount, production line-controls, decisions timed btn_select, trait-tree add-trait slot, and component-designer non-slot no-op proofs must not convert generic inert/no-op behavior into mutation parity"
         );
         assert_eq!(
             report

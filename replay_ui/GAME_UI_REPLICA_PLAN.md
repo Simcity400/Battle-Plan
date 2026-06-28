@@ -1,10 +1,7 @@
 # GAME_UI_REPLICA_PLAN — a full generic Clausewitz-GUI runtime that replays recorded the game state
 
-> **Status:** historical design document. The native Rust/wgpu direction below
-> has since been implemented through the engineering DoD: 114 registered views,
-> real `.gui` layout ingestion, map/weather wiring, no-fabrication guardrails, and
-> host/scrub plumbing are in place. Product parity is still open and is tracked
-> in `REPLAY_PARITY_COMPLETION_CHECKLIST.md`.
+> **Status:** historical design document. Use `MASTER_PROGRESS.md` for current
+> product progress, remaining work, and acceptance gates.
 >
 > **Decisions now LOCKED** (these supersede the v1 "limited renderer for ~30 curated screens"
 > recommendation; the v1 caution is preserved as the engineering-risk register, not the scope):

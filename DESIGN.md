@@ -14,14 +14,12 @@
 This is the product vision and architecture document, not the current completion
 ledger. Current status lives in:
 
-- `replay_ui/REPLAY_PARITY_COMPLETION_CHECKLIST.md`
-- `replay_ui/SESSION_HANDOFF.md`
+- `replay_ui/MASTER_PROGRESS.md`
 - `coverage_audit/memory_manifest.json`
 - `coverage_audit/COVERAGE_REPORT.md`
 
-As of the current native replay build, the engineering DoD is complete, but
-product parity is still open. Do not treat older build-status tables below as a
-remaining-work list unless they agree with the current checklist and manifest.
+Do not treat older build-status tables below as a remaining-work list unless
+they agree with the current master progress document and manifest.
 
 ---
 
@@ -90,8 +88,13 @@ capture and large object-graph traversal, but it requires an explicit product/sa
 decision to allow injection or hooking. Until then, the active contract remains the
 external read-only memory reader plus save oracle described here.
 
-### Proven so far (this build; all memory offsets validated 1:1 against a time-aligned melt)
-| datum | source | status |
+### Historical feasibility evidence (memory-reader research snapshot)
+
+All memory offsets in this snapshot were validated 1:1 against a time-aligned
+melt. Keep the evidence, but treat current progress and remaining work as living
+in `replay_ui/MASTER_PROGRESS.md` and the coverage manifest.
+
+| datum | source | evidence at snapshot |
 |---|---|---|
 | date (hours-since-epoch) | memory | ✓ |
 | political power, stability, war_support, command_power | memory (country object, i32/100000) | ✓ |
@@ -104,8 +107,8 @@ external read-only memory reader plus save oracle described here.
 | live **province control** (final merged) | memory (dense `u64[base + pid*8]` → controller country obj, bridged save-free) | ✓ 10270/10272 (2 = real post-save drift) |
 | province control fallback (override→state-ctrl→owner) | save oracle + province→state map | ✓ all land provinces |
 | **active LAND combats**: enumerate + location + age + attacker + **defender** | memory (combat-sides registry chain; each side = inline small-vec, data @ +0x20 / count @ +0x2C) | ✓ 13/13 atk **and** def |
-| naval / air combats | memory (same registry layout is the re-anchor template) | M\* — none active at snapshot; RE pending a live sea/air battle |
-| economy scalars → TAG live (country running_index ↔ tag-db-id) | memory | M\* — in progress (last save dependency for live economy labeling) |
+| naval / air combats | memory (same registry layout is the re-anchor template) | M\* — none active in that snapshot; required a live sea/air battle fixture |
+| economy scalars → TAG live (country running_index ↔ tag-db-id) | memory | M\* — open in that snapshot (last save dependency for live economy labeling) |
 | divisions (full: +template/equipment), economy deep, fuel/manpower/factories | save oracle | ✓ |
 | focuses, tech, production, diplomacy, state detail, active combats | save oracle (7 deep parsers) | ✓ DONE |
 
@@ -113,15 +116,15 @@ external read-only memory reader plus save oracle described here.
 **tag-db id** distinct from the country-array running index. The tag-db-id→TAG table
 is now **CRACKED in memory** (1-based std::string array, validated 1603/1603), so
 owner / controller / divisions / province-control / combat are all **fully save-free**.
-The one residual in this id-space work is the country-array running_index ↔ tag-db-id
-bridge — needed *only* to label live economy scalars with a TAG without the save —
-which is in progress.
+At that snapshot, the residual in this id-space work was the country-array
+running_index ↔ tag-db-id bridge — needed *only* to label live economy scalars
+with a TAG without the save.
 
 ### Historical build status (2026-06-24; superseded)
 
 The following snapshot is retained only as historical context. Current status is
-the native replay app state in the checklist, handoff, and coverage manifest
-named above.
+the native replay app state in the master progress document and coverage
+manifest named above.
 
 The old offline prototype stack once composed end-to-end (validate →
 ingest → snapshot store → diff/events → browser map preview), but that browser
@@ -137,7 +140,7 @@ runtime has been removed. The retained/current pieces are:
   no-fabrication gating), 77 tests. ✓
 - **Then in flight, now historical:** the old `replay_ui/` web front-end,
   economy-to-TAG bridge work, and review fixes. Current native-app status is
-  tracked in the checklist and coverage manifest named above.
+  tracked in the master progress document and coverage manifest named above.
 
 > **MP continuity / resilience** — how the replay stays continuous (and honest) across
 > disconnects, hotjoins, rehosts, crashes, desyncs, and rollbacks: see §11.

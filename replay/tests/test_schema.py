@@ -121,6 +121,21 @@ class TestValidator(unittest.TestCase):
         probs = schema.validate_snapshot(snap)
         self.assertTrue(any("states" in p for p in probs))
 
+    def test_bad_country_extra_flagged(self):
+        snap = schema.empty_snapshot("g1", "1940.9.10.13")
+        snap["countries"]["GER"] = schema.empty_country()
+        snap["countries"]["GER"]["extra"] = "bad"
+        probs = schema.validate_snapshot(snap)
+        self.assertTrue(any("extra" in p and "dict|null" in p for p in probs))
+
+    def test_bad_strategic_navy_shape_flagged(self):
+        snap = schema.empty_snapshot("g1", "1940.9.10.13")
+        snap["countries"]["GER"] = schema.empty_country()
+        snap["countries"]["GER"]["extra"] = {
+            "strategic_navy": {"max_allowed_dockyards_to_repair": "22"}}
+        probs = schema.validate_snapshot(snap)
+        self.assertTrue(any("strategic_navy.max_allowed" in p for p in probs))
+
     def test_event_validator(self):
         good = schema.make_event("focus_completed", subject="GER", key="X", to="X",
                                  source="D", confidence="interval")

@@ -945,7 +945,7 @@ _EXTRA_FIELDS = (
     "ace_count", "aces", "reinforcement_priority", "deployment_blocks",
     "special_projects", "experience_status", "script_flags", "convoys_destroyed",
     "accidents_score", "cosmetic_tag", "pride_of_the_fleet",
-    "collaboration_present",
+    "collaboration_present", "strategic_navy",
 )
 
 

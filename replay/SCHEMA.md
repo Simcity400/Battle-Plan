@@ -368,6 +368,7 @@ stays `0`, e.g. a nuke RECORD with `amount=0` yields `nukes_total=0`).
 | `special_projects` | obj\|null | S | `{projects_started, projects_completed, active_programs[{building,province,country}], breakthrough{specialization_*:points}}` |
 | `experience_status` | obj\|null | S | `{army_experience, navy_experience, air_experience}` |
 | `script_flags` | obj | S | per-country script flags from `countries.<TAG>.flags`, keyed by flag name with `{value, date}`; omitted when the save has no flags block for that country |
+| `strategic_navy` | obj | S | save-persisted `countries.<TAG>.strategic_navy` block, preserved under `extra` with nested maps/repeated blocks intact; save-backed only, no live memory offset claim |
 | `convoys_destroyed` | int\|null | S | |
 | `accidents_score` | float\|null | S | |
 | `cosmetic_tag` | str\|null | S | active cosmetic tag (`""` when none) |

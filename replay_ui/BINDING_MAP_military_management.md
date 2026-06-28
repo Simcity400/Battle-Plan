@@ -232,7 +232,7 @@ is the **fleet → task-force → ship roster** (`detailed_fleet_box` → `fleet
 |---|---|---|---|---|
 | `fleet_name` (editBoxType, placeholder `FLEET_NAME_HERE`) | `order_of_battle.fleets[].name` | loc | **exact** (display) | Fleet name; the editBox EDIT is a mutation (inert) — render value only. |
 | `taskforce_count` (instantTextboxType, `"99/99"`) | count of `fleets[].task_forces[]` (active/total) | int | **derived** | TF count; the `/total` cap is a UI display. |
-| `insigna` (iconType, `GFX_theatre_army_shield`) | the fleet's insignia/icon | category | **derived** | Insignia frame. |
+| `insigna` (iconType, `GFX_theatre_task_force_shield`) | the fleet's insignia/icon | category | **derived** | Fleet shield frame uses the task-force shield strip; explicit `insignia_gfx` / `emblem_gfx` remains exact and missing art stays an explicit miss. |
 | `active_in_regions` (instantTextboxType, `"Active in Regions: 4"`) | distinct sea regions over the fleet's task forces | int | **derived** | Count of distinct `task_forces[].location_province`→regions. |
 | `home_base_name` (instantTextboxType, placeholder `"Home base"`) | the fleet's home-base province → state name | loc | **unavailable** | Per-fleet home base not stored in OOB; renders "—". |
 | `pride_of_the_fleet_icon` (iconType, tooltip `FLEET_CONTAINS_PRIDE_OF_THE_FLEET`) | `extra.pride_of_the_fleet` ship in this fleet | visibility | **derived** | From `country_extra` (S). |
@@ -246,6 +246,7 @@ is the **fleet → task-force → ship roster** (`detailed_fleet_box` → `fleet
 |---|---|---|---|---|
 | `unit_name` (editBoxType) | `fleets[].task_forces[].name` | loc | **exact** (display) | TF name. |
 | `current_mission` (iconType, `GFX_NV_all_missions`) | `task_forces[].mission` | category (mission→icon) | **derived** | Mission frame from the TF mission token. |
+| `insigna` (iconType, `GFX_theatre_task_force_shield`) | `task_forces[].insignia_gfx` / `.emblem_gfx` / `.icon` | sprite / frame | **exact / derived / unavailable** | Task-force shield frame uses the task-force shield strip; explicit art is exact and a missing strip stays an explicit sprite miss. |
 | `current_activity` (iconType) / `activity_description` (instantTextboxType, `"I DO THAT"`) | TF current activity (moving/training/in-combat) | category/loc | **unavailable** | TF activity state (en-route/training) is a runtime status; not in the OOB TF shape (which carries mission only). |
 | `dominance` (iconType) | naval dominance contribution | category | **unavailable** | Computed naval-dominance stat; not stored. |
 | `fuel_stocks_icon` / `fuel_efficiency_warning_icon` (iconType) | TF fuel level / efficiency warning | fuel | **unavailable** | Per-TF fuel not stored. |

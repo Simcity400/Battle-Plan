@@ -214,6 +214,7 @@ FIELD_SOURCES: Dict[str, str] = {
     # --- country extras + player name (Tier-1 EXTRACT, §3.11/§3.12) ---
     "countries.*.extra": "S",                        # country_extra.json
     "countries.*.extra.script_flags": "S",            # country_extra flags bag
+    "countries.*.extra.strategic_navy": "S",          # country_extra strategic_navy block
     "countries.*.human_name": "S",                   # players.json (persona name)
     # --- country.military (§3.2) ---
     "countries.*.military.num_ships": "M/S",
@@ -2127,6 +2128,22 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
         # (Codex review #8 — these were folded but not validated).
         if c.get("misc") is not None and not isinstance(c.get("misc"), dict):
             problems.append(f"country {tag!r}.misc {c.get('misc')!r} not dict|null")
+        extra = c.get("extra")
+        if extra is not None and not isinstance(extra, dict):
+            problems.append(f"country {tag!r}.extra {extra!r} not dict|null")
+        elif isinstance(extra, dict):
+            sn = extra.get("strategic_navy")
+            if sn is not None and not isinstance(sn, dict):
+                problems.append(
+                    f"country {tag!r}.extra.strategic_navy {sn!r} not dict|null")
+            elif isinstance(sn, dict):
+                for k in ("max_allowed_dockyards_to_repair",
+                          "num_used_dockyards"):
+                    v = sn.get(k)
+                    if v is not None and not isinstance(v, int):
+                        problems.append(
+                            f"country {tag!r}.extra.strategic_navy.{k} "
+                            f"{v!r} not int|null")
         mil = c.get("military")
         if isinstance(mil, dict):
             cc = mil.get("convoys_count")

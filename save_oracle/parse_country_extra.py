@@ -27,6 +27,11 @@ they are plain reads, not models or walls:
                               ``countries.<TAG>.flags`` as
                               {flag: {value, date}}. Only emitted for countries
                               whose save block actually has ``flags``.
+  - ``strategic_navy``      : shape-preserving read of the save-persisted
+                              strategic_navy block (dockyard caps, convoy
+                              region/naval-transport maps, naval-base records).
+                              This is save-backed only; no live offset is
+                              claimed.
   - ``convoys_destroyed`` / ``accidents_score`` / ``cosmetic_tag``.
   - ``pride_of_the_fleet``  : {id,type} reference (Area 14).
   - ``collaboration``       : present/empty flag (exile/collab block, Area 2).
@@ -159,6 +164,82 @@ def _parse_flags(tz):
     return flags
 
 
+def _coerce_raw_atom(value):
+    """Coerce generic Clausewitz atoms without turning the game dates into floats."""
+    if value == "yes":
+        return True
+    if value == "no":
+        return False
+    if value and value.lstrip("-").isdigit():
+        return int(value)
+    try:
+        # Dates like 1940.9.10.13 must remain strings; float() rejects them.
+        return float(value)
+    except (TypeError, ValueError):
+        return value
+
+
+def _put_repeated(out, repeated, key, value):
+    if key not in out:
+        out[key] = value
+        return
+    if key not in repeated:
+        out[key] = [out[key], value]
+        repeated.add(key)
+        return
+    out[key].append(value)
+
+
+def _parse_raw_block(tz):
+    """Shape-preserving reader for mixed Clausewitz blocks.
+
+    ``iter_block_entries`` intentionally skips anonymous child blocks; strategic
+    navy uses keyed/hash-map blocks and can also carry anonymous lists, so read
+    this one with the raw tokenizer and preserve repeated keys as lists.
+    """
+    named = {}
+    repeated = set()
+    items = []
+    while True:
+        tok = tz.next()
+        if tok is None or tok is RBRACE:
+            break
+        if tok is LBRACE:
+            items.append(_parse_raw_block(tz))
+            continue
+        key = atom_value(tok)
+        if key is None:
+            continue
+        if tz.peek() is EQUALS:
+            tz.next()
+            valtok = tz.next()
+            if valtok is LBRACE:
+                value = _parse_raw_block(tz)
+            else:
+                value = _coerce_raw_atom(atom_value(valtok))
+            _put_repeated(named, repeated, key, value)
+        else:
+            items.append(_coerce_raw_atom(key))
+    if named and items:
+        named["_items"] = items
+        return named
+    if named:
+        return named
+    if (items and any(isinstance(item, dict) for item in items)
+            and not all(isinstance(item, dict) for item in items)):
+        return {"_items": items}
+    return items
+
+
+def _parse_strategic_navy(tz):
+    """Read countries.<TAG>.strategic_navy as save-persisted data.
+
+    This intentionally does not infer live memory offsets or recompute dockyard
+    caps. It only exposes what the melted save serialized.
+    """
+    return _parse_raw_block(tz)
+
+
 def _parse_ace(tz):
     rec = {"name": None, "surname": None, "callsign": None,
            "modifier": None, "alive": None, "kill_type": None,
@@ -271,6 +352,7 @@ def _parse_country_block(tz):
         "program_status": None,
         "experience_status": None,
         "script_flags": {}, "_script_flags_present": False,
+        "strategic_navy": None, "_strategic_navy_present": False,
         "convoys_destroyed": None, "accidents_score": None,
         "cosmetic_tag": None, "pride_of_the_fleet": None,
         "collaboration_present": False,
@@ -314,6 +396,9 @@ def _parse_country_block(tz):
             elif key == "flags":
                 rec["script_flags"] = _parse_flags(tz)
                 rec["_script_flags_present"] = True
+            elif key == "strategic_navy":
+                rec["strategic_navy"] = _parse_strategic_navy(tz)
+                rec["_strategic_navy_present"] = True
             elif key == "pride_of_the_fleet":
                 pid, ptype = read_id_block(tz)
                 rec["pride_of_the_fleet"] = {"id": pid, "type": ptype}
@@ -393,6 +478,8 @@ def build(text, source, was_melted):
         }
         if rec["_script_flags_present"]:
             country["script_flags"] = dict(sorted(rec["script_flags"].items()))
+        if rec["_strategic_navy_present"]:
+            country["strategic_navy"] = rec["strategic_navy"]
         countries[tag] = country
 
     base_meta = {
@@ -420,6 +507,8 @@ def build(text, source, was_melted):
                 1 for c in countries.values() if "script_flags" in c),
             "script_flags": sum(
                 len(c.get("script_flags") or {}) for c in countries.values()),
+            "countries_with_strategic_navy": sum(
+                1 for c in countries.values() if "strategic_navy" in c),
         }},
         "countries": countries,
     }
@@ -467,6 +556,9 @@ def build(text, source, was_melted):
     lines.append(f"GER exp       : {ger.get('experience_status')}")
     lines.append(f"GER flags     : {len(ger.get('script_flags', {}))} "
                  f"(e.g. {list(ger.get('script_flags', {}))[:3]})")
+    sn = ger.get("strategic_navy") or {}
+    lines.append(f"GER strat-navy: present={'strategic_navy' in ger} "
+                 f"dockyards={sn.get('max_allowed_dockyards_to_repair')}")
     lines.append(f"GER convoys_destroyed={ger.get('convoys_destroyed')} "
                  f"accidents={ger.get('accidents_score')} "
                  f"pride_of_fleet={ger.get('pride_of_the_fleet')}")

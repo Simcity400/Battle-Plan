@@ -200,7 +200,7 @@ overlays). Zero in-game views silently dropped.**
 
 > Count reconciliation: this **115** is the source-coverage universe
 > (`.gui` core files + scripted/mod overlay coverage rows). It is not the native
-> app registry count. The current native registry/product checklist count is
+> app registry count. The current native registry/master progress count is
 > **114 registered openable views**, because registry descriptors count
 > menu/openable runtime surfaces rather than every source coverage row. Compare
 > product parity against the 114-view registry and use this file to ensure no

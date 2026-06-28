@@ -2,7 +2,7 @@
 
 Live/readback support for HOI4 weather and environment data.
 
-## Current Truth
+## Weather Data Notes
 
 The older "weather is not saved, no oracle exists" claim is wrong for realized
 weather. The melted save does persist realized weather:
@@ -11,9 +11,10 @@ weather. The melted save does persist realized weather:
 - region weather values such as temperature, next weather change, phenomenon
   flags, and `arctic_water`
 
-Current authoritative status is in `../../coverage_audit/COVERAGE_REPORT.md`.
+Current product status is in `../../replay_ui/MASTER_PROGRESS.md`; data evidence
+is in `../../coverage_audit/COVERAGE_REPORT.md`.
 
-## What Is Closed
+## Evidence
 
 - Province-level realized weather scalars are parsed/validated and feed dynamic
   map rendering slices.
@@ -21,11 +22,8 @@ Current authoritative status is in `../../coverage_audit/COVERAGE_REPORT.md`.
 - Weather clock/scan lessons and offsets are documented in
   `weather_offsets.draft.json` and `../../RESEARCH_weather.md`.
 
-## What Remains Open
+## Evidence Boundaries
 
-- Parse and bind the full save-persisted region weather subtree, especially
-  phenomenon flags and `arctic_water`, as first-class overlay drivers.
-- Prove the native weather map overlay against side-by-side HOI4 screenshots.
 - Treat generative weather internals separately: temperature formula, RNG, and
   phenomenon-name ordering are computed/RE work, not missing save persistence.
 

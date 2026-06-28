@@ -80,6 +80,7 @@ use widgets::map_overlay::{self, IconAnchor, MapIcon};
 use widgets::minimap::{self, Minimap, WorldRect};
 use widgets::plan::{Cmd, Plan};
 use widgets::tabs::{self, Tab, TabBar};
+use widgets::unit_counter::{plan_unit_counter, UnitAsset, UnitBar, UnitCounter, UnitCounterPlan};
 use widgets::{plan_tooltip, Tooltip, TooltipPlan};
 
 use std::sync::OnceLock;
@@ -3621,9 +3622,42 @@ fn sprite_miss_digest(miss: &assets::SpriteMiss) -> String {
     }
 }
 
+#[derive(Clone)]
+struct CounterUnitRender {
+    province: u32,
+    counter: UnitCounter,
+    plan: UnitCounterPlan,
+}
+
+impl CounterUnitRender {
+    fn digest(&self) -> String {
+        format!(
+            "unit_counter.plan@Some({}) slots={} owner={} unit={} formation={} leader={} {}",
+            self.province,
+            self.plan.geometry.asset_slots().len(),
+            unit_asset_digest(&self.counter.owner),
+            unit_asset_digest(&self.counter.unit),
+            unit_asset_digest(&self.counter.formation),
+            unit_asset_digest(&self.counter.leader),
+            self.plan.digest()
+        )
+    }
+}
+
+fn unit_asset_digest(asset: &UnitAsset) -> String {
+    match asset {
+        UnitAsset::None => "none".to_string(),
+        UnitAsset::Named(name) => format!("named:{name}"),
+        UnitAsset::Framed { name, frame } => format!("framed:{name}#{frame}"),
+        UnitAsset::Missing(name) => format!("missing:{name}"),
+        UnitAsset::Unavailable => "unavailable".to_string(),
+    }
+}
+
 struct MapIconsDrawable {
     roots: Vec<Node>,
     entities: Vec<IconEntity>,
+    counter_units: Vec<CounterUnitRender>,
     /// per-entity SCREEN position when both the camera AND the centroid raster were
     /// reachable (on-MAP placement, derived); `None` per entity when its province had no
     /// centroid or no camera was present (then it falls into the badged legend column).
@@ -3659,6 +3693,12 @@ impl Drawable for MapIconsDrawable {
                     label.as_str()
                 ));
             }
+        }
+        s.push(']');
+        s.push_str(" counters=[");
+        for counter in &self.counter_units {
+            s.push_str(&counter.digest());
+            s.push(';');
         }
         s.push(']');
         s
@@ -3893,6 +3933,13 @@ fn push_counter_stack_entities(
             ),
             CounterDigIn::Absent => {}
         }
+        push_counter_stack_label(
+            report,
+            entities,
+            "unit_counter.attrition",
+            DisplayAtom::unavailable_because(UnavailableReason::Blocked),
+            Some(stack.province),
+        );
     }
 }
 
@@ -3979,6 +4026,64 @@ fn push_counter_stack_label(
 ) {
     report.record(&atom);
     entities.push(IconEntity::label(template, atom, province));
+}
+
+fn counter_unit_renders(ctx: &BindContext, tag: &str) -> Vec<CounterUnitRender> {
+    let portraits: std::collections::BTreeMap<u32, assets::SpriteAsset> =
+        counter_portrait_assets(ctx, tag).into_iter().collect();
+    let formations: std::collections::BTreeMap<u32, CounterSpriteAsset> =
+        counter_formation_insignia_assets(ctx, tag)
+            .into_iter()
+            .collect();
+
+    counter_division_stacks(ctx, tag)
+        .into_iter()
+        .map(|stack| {
+            let count_atom = DisplayAtom::text(stack.count.to_string(), Fidelity::Derived);
+            let leader = portraits
+                .get(&stack.province)
+                .map(unit_asset_from_sprite)
+                .unwrap_or_else(UnitAsset::unavailable);
+            let formation = formations
+                .get(&stack.province)
+                .map(|sprite| unit_asset_from_sprite(&sprite.asset))
+                .unwrap_or_else(UnitAsset::unavailable);
+            let counter = UnitCounter::new(watom(&count_atom))
+                .owner(UnitAsset::unavailable())
+                .unit(UnitAsset::unavailable())
+                .formation(formation)
+                .leader(leader)
+                .strength(unit_bar_from_fraction(stack.strength))
+                .org(unit_bar_from_fraction(stack.org));
+            let plan = plan_unit_counter(&counter, 0.0, 0.0);
+            CounterUnitRender {
+                province: stack.province,
+                counter,
+                plan,
+            }
+        })
+        .collect()
+}
+
+fn unit_asset_from_sprite(asset: &assets::SpriteAsset) -> UnitAsset {
+    match asset {
+        assets::SpriteAsset::Resolved(sprite) => {
+            UnitAsset::framed(sprite.name.clone(), sprite.frame)
+        }
+        assets::SpriteAsset::Unavailable(assets::SpriteMiss::NoSpriteName) => {
+            UnitAsset::unavailable()
+        }
+        assets::SpriteAsset::Unavailable(miss) => UnitAsset::missing(sprite_miss_digest(miss)),
+    }
+}
+
+fn unit_bar_from_fraction(value: Option<f64>) -> UnitBar {
+    match value {
+        Some(value) if value.is_finite() && (0.0..=1.0).contains(&value) => {
+            UnitBar::exact(value as f32)
+        }
+        _ => UnitBar::unavailable_because(WReason::Blocked),
+    }
 }
 
 #[derive(Clone)]
@@ -5256,6 +5361,7 @@ impl ViewInstance for MapIconsView {
             DisplayAtom::unavailable_because(UnavailableReason::Blocked)
         };
         fidelity.record(&place);
+        let counter_units = counter_unit_renders(ctx, ctx.country);
 
         let roots = build_root(ctx, &file, MAPICONS_ROOT, &[]);
         BoundView {
@@ -5268,6 +5374,7 @@ impl ViewInstance for MapIconsView {
             drawable: Box::new(MapIconsDrawable {
                 roots,
                 entities,
+                counter_units,
                 placements,
                 placement_available,
             }),
@@ -6960,8 +7067,153 @@ mod tests {
             "positive measured dig-in must show the dig-in badge: {d}"
         );
         assert!(
+            d.contains("unit_counter.attrition@Some(790)mapfalse=—(U);"),
+            "attrition is runtime-computed, but must be accounted at the real stack anchor: {d}"
+        );
+        assert!(
             !d.contains("unit_counter.count_txt@Some(791)"),
             "target_province is not a counter anchor and must not place stack metrics: {d}"
+        );
+    }
+
+    #[test]
+    fn mapicon_unit_counter_plan_composes_portrait_and_formation_slots() {
+        let stage = stage_with_manifest(
+            &[],
+            sprite_manifest(&[
+                (
+                    "GFX_portrait_GER_heinz_guderian",
+                    "gfx/leaders/GER/portrait_guderian.dds",
+                    1,
+                ),
+                (
+                    "GFX_theatre_army_shield",
+                    "gfx/interface/army_shield.dds",
+                    4,
+                ),
+            ]),
+        );
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "date": "1942.1.1.12",
+            "countries": { "GER": { "commanders": {
+                "generals": [
+                    { "unit_leader_id": 7, "role": "general",
+                      "portrait_gfx": "GFX_portrait_GER_heinz_guderian" }
+                ],
+                "field_marshals": [],
+                "admirals": []
+            } } },
+            "order_of_battle": {
+                "armies": [
+                    { "owner": "GER", "leader": { "id": "7", "type": "corps_commander" },
+                      "icon": 3, "members": ["101:42"] }
+                ]
+            },
+            "divisions": [
+                { "div_id": 101, "div_type": 42, "owner": "GER", "location_province": 777,
+                  "organisation": 0.70, "strength": 0.85, "template_role": "infantry" }
+            ]
+        }))
+        .unwrap();
+        let cx = ctx(&stage, &snap, "1942.1.1.12");
+        let planned = counter_unit_renders(&cx, "GER");
+        assert_eq!(planned.len(), 1);
+        let planned = &planned[0];
+
+        assert_eq!(planned.province, 777);
+        assert_eq!(planned.plan.geometry.asset_slots().len(), 4);
+        assert_eq!(
+            planned.counter.leader,
+            UnitAsset::framed("GFX_portrait_GER_heinz_guderian", 0)
+        );
+        assert_eq!(
+            planned.counter.formation,
+            UnitAsset::framed("GFX_theatre_army_shield", 2)
+        );
+        assert!(planned.plan.strength_fill.is_some());
+        assert!(planned.plan.org_fill.is_some());
+
+        let d = bound_digest(&MapIconsView::new().bind(&cx));
+        assert!(
+            d.contains("unit_counter.plan@Some(777)"),
+            "fixed-footprint counter plan must be attached to the anchored stack: {d}"
+        );
+        assert!(
+            d.contains("GFX_portrait_GER_heinz_guderian#0"),
+            "leader slot must preserve the resolved portrait frame identity: {d}"
+        );
+        assert!(
+            d.contains("GFX_theatre_army_shield#2"),
+            "formation slot must preserve the resolved shield frame identity: {d}"
+        );
+    }
+
+    #[test]
+    fn mapicon_unit_counter_plan_missing_assets_keep_fixed_slots() {
+        let available_stage = stage_with_manifest(
+            &[],
+            sprite_manifest(&[
+                (
+                    "GFX_portrait_GER_heinz_guderian",
+                    "gfx/leaders/GER/portrait_guderian.dds",
+                    1,
+                ),
+                (
+                    "GFX_theatre_army_shield",
+                    "gfx/interface/army_shield.dds",
+                    4,
+                ),
+            ]),
+        );
+        let missing_stage = stage_with_manifest(&[], HashMap::new());
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "date": "1942.1.1.12",
+            "countries": { "GER": { "commanders": {
+                "generals": [
+                    { "unit_leader_id": 7, "role": "general",
+                      "portrait_gfx": "GFX_portrait_GER_heinz_guderian" }
+                ],
+                "field_marshals": [],
+                "admirals": []
+            } } },
+            "order_of_battle": {
+                "armies": [
+                    { "owner": "GER", "leader_id": 7, "icon": 3, "members": ["101:42"] }
+                ]
+            },
+            "divisions": [
+                { "div_id": 101, "div_type": 42, "owner": "GER", "location_province": 778,
+                  "organisation": 0.50, "strength": 0.75, "template_role": "infantry" }
+            ]
+        }))
+        .unwrap();
+
+        let available_cx = ctx(&available_stage, &snap, "1942.1.1.12");
+        let missing_cx = ctx(&missing_stage, &snap, "1942.1.1.12");
+        let available = counter_unit_renders(&available_cx, "GER")
+            .pop()
+            .expect("available test counter");
+        let missing = counter_unit_renders(&missing_cx, "GER")
+            .pop()
+            .expect("missing test counter");
+
+        assert_eq!(
+            available.plan.geometry.asset_slots(),
+            missing.plan.geometry.asset_slots(),
+            "asset availability must not move the four counter slots"
+        );
+        assert!(matches!(
+            &missing.counter.leader,
+            UnitAsset::Missing(name) if name == "missing_sprite:GFX_portrait_GER_heinz_guderian"
+        ));
+        assert!(matches!(
+            &missing.counter.formation,
+            UnitAsset::Missing(name) if name == "missing_sprite:GFX_theatre_army_shield"
+        ));
+        assert_eq!(
+            missing.plan.plan.placeholder_sprite_count(),
+            available.plan.plan.placeholder_sprite_count() + 2,
+            "missing leader and formation sprites must remain visible placeholders"
         );
     }
 
@@ -7054,6 +7306,12 @@ mod tests {
         assert!(
             !d.contains("unit_counter.count_txt@Some(794)"),
             "target-only GER divisions must not fabricate a counter anchor: {d}"
+        );
+        assert!(
+            !d.contains("unit_counter.attrition@Some(793)")
+                && !d.contains("unit_counter.attrition@Some(794)")
+                && !d.contains("unit_counter.attrition@Nonemapfalse"),
+            "attrition badges must not appear without an eligible owned stack anchor: {d}"
         );
     }
 

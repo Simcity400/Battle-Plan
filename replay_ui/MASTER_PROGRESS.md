@@ -1,0 +1,297 @@
+# Master Progress - Native Battle Plan App
+
+This is the only current progress and remaining-work document for the native
+replay app. It replaces the prior separate checklist and handoff documents.
+
+The target is a read-only Battle Plan app that can be used like the real game UI
+for inspection, with no ability to mutate the game.
+
+## Current Verdict
+
+- Engineering DoD is met: 114 registered/menu-reachable views, scrub-safe host
+  rebinding, no-fabrication guardrails, wired map/weather/render stack,
+  `.battleplan` container support, and passing coverage checks.
+- Product parity is not complete.
+- The app is a replay/inspection surface, not playable HOI4. The standard is
+  still one-to-one inspection: every real read-only interaction, tooltip, visual
+  state, map overlay, and recorded data surface must either work faithfully or be
+  explicitly badged with evidence.
+- Do not split current progress into separate handoff, checklist, or status
+  documents. Update this file when status changes.
+
+## Source Of Truth
+
+- This file: current status, remaining work, acceptance gates, and user
+  dependencies.
+- `coverage_audit/memory_manifest.json`: machine-readable data completeness
+  ledger.
+- `coverage_audit/COVERAGE_REPORT.md`: readable data coverage report and
+  extraction evidence.
+- `replay_ui/INTERACTION_PARITY_INVENTORY.md`: interaction inventory and
+  per-view evidence.
+- `replay_native/app/src/views/interaction_contract.rs`: executable interaction
+  contract scaffold.
+- `replay_ui/BINDING_MAP_COVERAGE.md` and `replay_ui/BINDING_MAP_*.md`: UI
+  binding evidence and no-fabrication notes.
+- `replay_ui/HOI4REPLAY_CONTAINER_SPEC.md`: portable recording container
+  contract.
+- `AGENTS.md`: current workflow and safety rules.
+
+## Current Status Snapshot
+
+- Views: 114 registered/menu-reachable native app views, 86 templates, all
+  engineering-DoD criteria met.
+- Binding coverage: 115 in-game source coverage rows accounted for in
+  `BINDING_MAP_COVERAGE.md`; this is the source-coverage universe, not the
+  openable native registry count.
+- Data manifest: 273 rows total.
+- Data rows closed: 149 `closed-by-reader` plus 14 `closed-by-parser`.
+- Data rows still closeable/provable: 26 `needs-wartime-save`, 5
+  `open-live-extractable`, and 15 `open-computed`.
+- Permanent walls: 2.
+- Excluded rows: 62.
+- Interaction coverage currently has a broad scaffold and many first real
+  slices: 129 target rows with executable-proof notes are inventoried, while
+  959 category rows remain `not_proven`. Product parity is open until every
+  read-only interaction and every mutating-control disabled state is proven.
+
+## Done Or Proven
+
+- Native Rust/wgpu app architecture, distributed view registry, generic window
+  host, scrub/rebind, `Captured<T>` no-fabrication plumbing, and host-level scrub
+  integration.
+- All 114 registered views are menu-reachable and scrub-safe.
+- Real `.gui` ingestion and binding maps exist for the app view universe.
+- Map terrain shader path, borders, snow, mud, frozen seas, season color,
+  animated water/rivers, and dynamic map state are wired.
+- Dynamic weather, mud/snow, and frozen-sea drivers feed the map.
+- `.battleplan` writer/reader/container support exists, with selectable cadence
+  modes, manual/paused one-shot capture, hour de-duplication, hour-crossing
+  rejection, skipped-hour diagnostics, timing diagnostics, and manifest cadence
+  metadata.
+- Static DEF parsers and coverage checker are current.
+- First interaction scaffold and many first slices exist for tab switching, row
+  selection, scroll, map/minimap actions, hover tooltips, read-only navigation,
+  and disabled mutation no-op proof.
+- War overview war-row selection and diplomacy country-row selection now have
+  measured-key/TAG proof, scrub fail-closed tests, and interaction-contract
+  target rows; participant/relation rows and broader diplomacy/war parity remain
+  open.
+- Insignia catalog buttons now have explicit replay-disabled no-op proof and an
+  interaction-contract target row; broader insignia controls and visual parity
+  remain open.
+- Logistics overview resource-row selection and factual resource-hover tooltips
+  now have stable-key/no-fabrication/fail-closed proof and interaction-contract
+  target rows; materiel rows, stockpile/demand/history tooltip detail, and
+  broader logistics parity remain open.
+- The save-persisted `countries.*.strategic_navy` block now folds through
+  `country_extra` into `countries.*.extra.strategic_navy`; live memory offsets
+  for those values remain fail-closed and are not claimed.
+- Anchored land-counter stacks now compose portrait and formation-insignia
+  sprites into the native fixed-footprint `UnitCounter` render plan, preserving
+  four stable asset slots, sprite frame identities, and explicit missing-asset
+  placeholders.
+- Normal land and railway-gun counters now account for attrition as anchored
+  unavailable badges, preserving real stack anchors without claiming the
+  runtime attrition computation.
+- Fleet and task-force insignia frame fallback now uses the native
+  `GFX_theatre_task_force_shield` strip, while explicit art and missing sprite
+  misses remain deterministic.
+- Asset/counter and map-overlay work are partially landed, not complete.
+
+## Remaining Work
+
+### 1. Recorder Proof
+
+- Run a live unpaused recorder proof at intended multiplayer speed for the
+  selected cadence.
+- Prove either no scheduled in-game hours are missed, or that skipped scheduled
+  hours are explicitly recorded in the `.battleplan` manifest.
+- Reopen the resulting `.battleplan` in the native app.
+- Decide whether `land_combats` Stage-4 performance work is required only after
+  the real proof, not from static timing alone.
+
+### 2. Interaction Parity
+
+- Expand `INTERACTION_PARITY_INVENTORY.md` and
+  `replay_native/app/src/views/interaction_contract.rs` beyond the current
+  partial target slices.
+- Implement and test every read-only tab, subtab, row selection, drilldown,
+  detail-pane update, scrollbar, drag-scroll surface, text filter, map mode
+  selector, legend, and hover readout.
+- Prove every mutating the game control is inert or disabled in replay mode, with a
+  visible/badged state and unchanged replay data.
+- Add per-view interaction tests, not only bind/scrub tests.
+
+### 3. Tooltip And Localization Parity
+
+- Expand the passive tooltip resolver to game-style frames, timing, anchoring,
+  localization, and markup behavior.
+- Build per-domain tooltip composers for topbar, map, politics, production,
+  construction, research, military, diplomacy, intel, logistics, state panel,
+  counters, alerts, and event/popup surfaces.
+- Parse or evaluate the non-mutating trigger/effect subset needed for faithful
+  tooltip lines.
+- Badge omitted computed tooltip lines instead of silently dropping them.
+- Add stable tooltip fixtures and side-by-side game comparison cases.
+
+### 4. Visual And Screenshot Parity
+
+- Extend the screenshot harness beyond registry manifest plumbing to actual
+  captures for every registered view, representative tabs, rows, tooltips, and
+  map modes.
+- Capture matching the game reference screenshots for the same states/windows.
+- Add visual diff thresholds and a reviewed exception list.
+- Verify fonts, icon frames, disabled states, hover frames, scrollbars, clipping,
+  modal layers, counters, map modes, and tooltip framing.
+
+### 5. Map Overlay Parity (#26)
+
+- Finish real the game route/front extraction coverage.
+- Finish exact front, battleplan, trade-route, weather-phenomenon, label, and
+  vector-arrow rendering semantics.
+- Prove exact Air/Naval per-province parity beyond the current strategic-region
+  proxy.
+- Capture side-by-side map-mode screenshots and track exceptions.
+
+Current partial state: native labels/vector arrows/trade planning exist; semantic
+line metadata exists; measured route/front/battle-plan polylines can ingest as
+exact; malformed or missing anchored geometry fails closed; and live
+`oob_command.member_div_ids` can anchor type-5 battle-plan arrows.
+
+### 6. Asset And Counter Parity (#50)
+
+- Finish portrait and insignia/emblem extraction and rendering.
+- Render full GUI unit-counter chrome/art.
+- Add commander selection and complete navy, air, rail, transport, HQ, supply,
+  attrition, formation, and strength/org counter indicators.
+- Reject placeholders and account sprite misses deterministically.
+- Capture side-by-side asset/counter visual proof.
+
+Current partial state: portrait/insignia resolution, explicit sprite-miss
+accounting, selected-formation insignia binding, land counter logical entities,
+fixed-slot native `UnitCounter` plans for anchored land stacks, anchored
+unavailable attrition slots, task-force shield-frame binding for fleets/task
+forces, and several owner/anchor-gated joins exist.
+
+### 7. Open Live/Static Data Rows
+
+These are not user-blocked and should be closed or proven unavailable:
+
+- `all_playthrough_data`
+- `countries.*.logistics`
+- `countries.*.upgrades`
+- `mapicon.general_portrait_on_counter`
+- `ui_open.insignia_emblem_assets`
+
+Current blockers:
+
+- `all_playthrough_data`: root-blocked; an instance was value-anchored, but no
+  portable gamestate/root chain is proven.
+- `countries.*.logistics`: root row is distinct from save-parsed
+  `countries.*.economy.logistics`; current evidence says the host-only
+  serializer behavior cannot be emitted without fabricating player identity.
+- `countries.*.upgrades`: do not close from intelligence-agency or
+  equipment/design upgrade maps; the root country container still needs a real
+  allocated-container proof.
+- `mapicon.general_portrait_on_counter`: partial anchored portrait binding and
+  fixed-slot native counter-plan composition exist; full unit-counter placement
+  and side-by-side visual parity remain open.
+- `ui_open.insignia_emblem_assets`: selected-formation binding/fail-closed
+  behavior and fleet/task-force shield-base correctness exist; complete gfx
+  asset extraction/render parity remains open.
+
+### 8. Computed/Visual Rows
+
+These need faithful recomputation, visual proof, or a reviewed permanent badge:
+
+- `map.weather_phenomenon_overlay`
+- `map.front_lines_overlay`
+- `mapicon.attrition_flag`
+- `world_tension`
+- `research ETA / live speed`
+- `weather temperature formula / RNG / phenomenon-name strings`
+- `combat detail stat rows`
+- `ui_computed.designer_combat_stats`
+- `ui_computed.naval_air_per_province_exactness`
+- `ui_computed.occupation_equilibrium_garrison_need`
+- `ui_computed.power_balance_trend_marker`
+- `ui_computed.operation_chance_intel_bands_capit`
+- `ui_computed.airwing_effective_planes_denom`
+- `ui_computed.war_participant_score`
+- `ui_computed.combat_battle_detail`
+
+Current partial state: `mapicon.attrition_flag` is accounted in normal land and
+railway-gun counter rows as an anchored unavailable badge only; faithful
+terrain/supply/weather recomputation or a proven memory field is still open.
+
+### 9. Needs User Fixture Or Wartime State
+
+These rows are empty in the current peacetime USA-1936 fixture and need a
+mid-war/eventful paused save. Content-match by live date and ROOT tag, not
+filename or mtime.
+
+- `peace_conference`
+- `history.sunk_ship`
+- `ships_built`
+- `countries.*.incoming_diplomatic_action`
+- `countries.*.civil_war_target`
+- `countries.*.expeditionaries_sent`
+- `countries.*.invasion_report`
+- `countries.*.dirty_controlled_states`
+- `countries.*.removed_controlled_province`
+- `countries.*.dynamic_revolution_tag`
+- `states.*.active_targeted_modifier`
+- `states.*.previous_owner`
+- `states.*.last_strategic_bombing`
+- `states.*.is_border_conflict`
+- `combat_log`
+- `combat_data_entry`
+- `selection_groups`
+- `countries.*.government_in_exile`
+- `countries.*.collaboration_government`
+- `countries.*.player_settings`
+- `countries.*.strategic_region_data`
+- `ui_live.alerts_ledger`
+- `ui_live.war_participant_casualties`
+- `ui_live.operative_code_name`
+- `ui_live.admiral_fleet_composition`
+- `ui_live.ship_owner_wing_ace_join`
+
+### 10. Hard Walls
+
+Keep these honestly badged unless new evidence changes the classification:
+
+- Exact per-province supply tooltip number.
+- True Steam real names.
+
+## User Help Needed
+
+- A mid-war/eventful paused save, ideally from 1941-1943 or another state with
+  active wars, naval losses, alerts, diplomacy, operatives, exile/collaboration,
+  and civil-war-style data.
+- A real in-game test against a running `hoi4.exe`.
+- Explicit approval and an appropriate running game state for the live unpaused
+  recorder proof.
+
+## Acceptance Gates
+
+The app is product-complete only when all applicable gates pass:
+
+- Full Rust workspace tests pass.
+- Full Python pytest suite passes.
+- `coverage_audit/check_coverage.py` passes.
+- `.battleplan` recorder captures a live session, finalizes, and reopens in the
+  native app.
+- Recorder proves no missing in-game hours for the configured cadence, or
+  records explicit skipped-hour diagnostics.
+- Every registered view opens from the in-app menu.
+- Every registered view has an interaction contract.
+- Every read-only interaction in each contract is implemented and tested.
+- Every mutating game interaction is disabled/inert and visually accounted for.
+- Every major hover target has a tooltip or a tracked tooltip gap.
+- Screenshot harness covers every view, key tabs, tooltips, and map modes.
+- Side-by-side real the game comparison is reviewed for the full first-pass view set.
+- All manifest rows are closed, fixture-blocked, or proven/badged with evidence.
+- The user's real in-game test mismatches are fixed or recorded here with a
+  concrete owner and next action.

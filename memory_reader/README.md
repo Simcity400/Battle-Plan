@@ -18,7 +18,7 @@ The active product status is tracked in:
 
 - `../coverage_audit/memory_manifest.json`
 - `../coverage_audit/COVERAGE_REPORT.md`
-- `../replay_ui/REPLAY_PARITY_COMPLETION_CHECKLIST.md`
+- `../replay_ui/MASTER_PROGRESS.md`
 
 ## Safety Contract
 

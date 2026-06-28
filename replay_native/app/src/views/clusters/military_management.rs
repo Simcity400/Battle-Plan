@@ -479,6 +479,8 @@ fn portrait_asset(ctx: &BindContext, record: &serde_json::Value) -> assets::Spri
     assets::resolve_portrait_sprite(&ctx.stage.manifest, record)
 }
 
+const TASK_FORCE_INSIGNIA_BASE: &str = "GFX_theatre_task_force_shield";
+
 fn formation_icon_asset(
     ctx: &BindContext,
     formation: &serde_json::Value,
@@ -2097,7 +2099,7 @@ fn build_navies_rows(
             Fidelity::Exact,
             fmt_token,
         );
-        let (icon_asset, icon_fidelity) = formation_icon_asset(ctx, f, "GFX_theatre_army_shield");
+        let (icon_asset, icon_fidelity) = formation_icon_asset(ctx, f, TASK_FORCE_INSIGNIA_BASE);
         fr.bind_sprite(fidelity, "insigna", icon_asset, icon_fidelity);
         let tf_count = arr_count(f, "task_forces");
         fr.bind_text(
@@ -2160,7 +2162,7 @@ fn build_navies_rows(
                     fmt_token,
                 );
                 let (icon_asset, icon_fidelity) =
-                    formation_icon_asset(ctx, tf, "GFX_theatre_army_shield");
+                    formation_icon_asset(ctx, tf, TASK_FORCE_INSIGNIA_BASE);
                 tr.bind_sprite(fidelity, "insigna", icon_asset, icon_fidelity);
                 // TF activity/dominance/fuel/reserve are runtime → unavailable.
                 tr.badge_unavailable(fidelity, "activity_description");
@@ -6119,6 +6121,92 @@ mod tests {
                 unavailable: 5,
             },
             "missing formation metadata must be counted unavailable"
+        );
+    }
+
+    #[test]
+    fn fleet_and_task_force_insignia_use_task_force_shield_strip() {
+        let stage = stage_with_manifest(sprite_manifest(&[
+            (
+                "GFX_theatre_army_shield",
+                "gfx/interface/army_shield.dds",
+                4,
+            ),
+            (
+                "GFX_theatre_task_force_shield",
+                "gfx/interface/task_force_shield.dds",
+                31,
+            ),
+        ]));
+        let snap = snap_a();
+        let fleets = vec![serde_json::json!({
+            "owner": "GER",
+            "name": "Kriegsmarine",
+            "icon": 4,
+            "task_forces": [
+                { "name": "TF Nord", "mission": "patrol", "icon": 7, "ships": [] }
+            ]
+        })];
+        let mut fidelity = FidelityReport::default();
+        let (fleet_rows, tf_rows, _) = build_navies_rows(
+            &ctx(&stage, &snap),
+            Some(fleets.as_slice()),
+            "GER",
+            &mut fidelity,
+        );
+        let fleet_digest = row_digest(&fleet_rows);
+        let tf_digest = row_digest(&tf_rows);
+
+        assert!(
+            fleet_digest.contains("insigna:sprite=GFX_theatre_task_force_shield#3(D);"),
+            "fleet icon frame must use the task-force shield strip, got:\n{fleet_digest}"
+        );
+        assert!(
+            tf_digest.contains("insigna:sprite=GFX_theatre_task_force_shield#6(D);"),
+            "task-force icon frame must use the task-force shield strip, got:\n{tf_digest}"
+        );
+        assert!(
+            !fleet_digest.contains("insigna:sprite=GFX_theatre_army_shield")
+                && !tf_digest.contains("insigna:sprite=GFX_theatre_army_shield"),
+            "navy insignia must not fall back to the army shield strip"
+        );
+    }
+
+    #[test]
+    fn fleet_insignia_missing_task_force_base_records_unavailable_miss() {
+        let stage = stage_with_manifest(sprite_manifest(&[(
+            "GFX_theatre_army_shield",
+            "gfx/interface/army_shield.dds",
+            4,
+        )]));
+        let snap = snap_a();
+        let fleets = vec![serde_json::json!({
+            "owner": "GER",
+            "name": "Kriegsmarine",
+            "icon": 1,
+            "task_forces": [
+                { "name": "TF Nord", "mission": "patrol", "icon": 2, "ships": [] }
+            ]
+        })];
+        let mut fidelity = FidelityReport::default();
+        let (fleet_rows, tf_rows, _) = build_navies_rows(
+            &ctx(&stage, &snap),
+            Some(fleets.as_slice()),
+            "GER",
+            &mut fidelity,
+        );
+        let fleet_digest = row_digest(&fleet_rows);
+        let tf_digest = row_digest(&tf_rows);
+
+        assert!(
+            fleet_digest
+                .contains("insigna:sprite=MISS:missing_sprite:GFX_theatre_task_force_shield(U);"),
+            "missing fleet task-force shield strip must stay an explicit miss, got:\n{fleet_digest}"
+        );
+        assert!(
+            tf_digest
+                .contains("insigna:sprite=MISS:missing_sprite:GFX_theatre_task_force_shield(U);"),
+            "missing task-force shield strip must stay an explicit miss, got:\n{tf_digest}"
         );
     }
 

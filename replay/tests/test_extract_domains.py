@@ -180,7 +180,15 @@ def _make_oracle_dir(root, *, with_extract=True):
                         "convoys_destroyed": 57, "accidents_score": 0.84,
                         "cosmetic_tag": "", "pride_of_the_fleet": {"id": 2,
                                                                    "type": 51},
-                        "collaboration_present": False}}})
+                        "collaboration_present": False,
+                        "strategic_navy": {
+                            "max_allowed_dockyards_to_repair": 22,
+                            "num_used_dockyards": 0,
+                            "regional_convoys": {
+                                "12": {"required": 3, "assigned": 5}},
+                            "naval_transport": [
+                                {"id": {"id": 100, "type": 4713},
+                                 "path": [1, 2, 3]}]}}}})
         _dump(root, "players.json", {
             "meta": {},
             "players": {"GER": {"user": "WooooWoooo", "country_leader": True,
@@ -252,6 +260,8 @@ class TestSchemaPresence(unittest.TestCase):
         self.assertEqual(schema.source_of("countries.GER.economy.logistics"), "S")
         self.assertEqual(schema.source_of("countries.GER.extra"), "S")
         self.assertEqual(schema.source_of("countries.GER.extra.script_flags"), "S")
+        self.assertEqual(
+            schema.source_of("countries.GER.extra.strategic_navy"), "S")
         self.assertEqual(schema.source_of("countries.GER.human_name"), "S")
         self.assertEqual(schema.source_of("countries.GER.research.doctrine"), "S/D")
         self.assertEqual(schema.source_of("strategic_air.air_bases"), "S")
@@ -339,6 +349,9 @@ class TestIngestSynthetic(unittest.TestCase):
         self.assertEqual(ext["special_projects"]["projects_completed"], 5)
         self.assertEqual(ext["convoys_destroyed"], 57)
         self.assertEqual(ext["script_flags"]["GER_has_started_war"]["value"], 1)
+        self.assertEqual(ext["strategic_navy"]["num_used_dockyards"], 0)
+        self.assertEqual(
+            ext["strategic_navy"]["regional_convoys"]["12"]["assigned"], 5)
         self.assertIn("dynamic_modifiers", ext)
 
     def test_players_human_name(self):
