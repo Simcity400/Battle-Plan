@@ -159,6 +159,97 @@ fn reject_shot_all_views_mixed_flags(
     }
 }
 
+fn validate_shot_all_views_batch_flags(
+    shot_all_views_dir: Option<&str>,
+    run_native: bool,
+    command: Option<&str>,
+) -> Result<(), String> {
+    if run_native && shot_all_views_dir.is_none() {
+        return Err("--shot-all-views-run-native requires --shot-all-views=<dir>".to_string());
+    }
+    if let Some(command) = command {
+        if command.trim().is_empty() {
+            return Err("--shot-all-views-command requires a command path".to_string());
+        }
+        if !run_native {
+            return Err(
+                "--shot-all-views-command requires --shot-all-views-run-native".to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn child_path_arg(base: &Path, value: &str) -> String {
+    let path = PathBuf::from(value);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        base.join(path)
+    };
+    path.to_string_lossy().into_owned()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn shot_all_views_child_common_args(
+    base: &Path,
+    country: &str,
+    game: &str,
+    vanilla: Option<&str>,
+    mod_root: Option<&str>,
+    bundle: Option<&str>,
+    assets: Option<&str>,
+    map: Option<&str>,
+    store: Option<&str>,
+    map_mode: Option<&str>,
+) -> Vec<String> {
+    let mut args = vec![
+        "--country".to_string(),
+        country.to_string(),
+        "--game".to_string(),
+        game.to_string(),
+    ];
+    for (flag, value) in [
+        ("--vanilla", vanilla),
+        ("--mod", mod_root),
+        ("--bundle", bundle),
+        ("--assets", assets),
+        ("--map", map),
+        ("--store", store),
+    ] {
+        if let Some(value) = value {
+            args.push(flag.to_string());
+            args.push(child_path_arg(base, value));
+        }
+    }
+    if let Some(value) = map_mode {
+        args.push("--map-mode".to_string());
+        args.push(value.to_string());
+    }
+    args
+}
+
+fn shot_all_views_command_path(base: &Path, command: Option<&str>) -> Result<PathBuf, String> {
+    let path = match command {
+        Some(raw) => {
+            if raw.trim().is_empty() {
+                return Err("--shot-all-views-command requires a command path".to_string());
+            }
+            PathBuf::from(raw)
+        }
+        None => std::env::current_exe()
+            .map_err(|e| format!("resolve current replay_app executable failed: {e}"))?,
+    };
+    if path.as_os_str().is_empty() {
+        return Err("--shot-all-views-command requires a command path".to_string());
+    }
+    Ok(if path.is_absolute() {
+        path
+    } else {
+        base.join(path)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,6 +316,22 @@ mod tests {
                         "type": "buttonType",
                         "name": "button_speedup",
                         "position": { "x": 80, "y": 20 },
+                        "size": { "width": 40, "height": 40 },
+                        "orientation": "UPPER_LEFT",
+                        "sprite": "GFX_test_topbar_button"
+                    },
+                    {
+                        "type": "buttonType",
+                        "name": "menu_button",
+                        "position": { "x": 140, "y": 20 },
+                        "size": { "width": 40, "height": 40 },
+                        "orientation": "UPPER_LEFT",
+                        "sprite": "GFX_test_topbar_button"
+                    },
+                    {
+                        "type": "buttonType",
+                        "name": "musicplayer_button",
+                        "position": { "x": 200, "y": 20 },
                         "size": { "width": 40, "height": 40 },
                         "orientation": "UPPER_LEFT",
                         "sprite": "GFX_test_topbar_button"
@@ -372,10 +479,11 @@ mod tests {
         )
     }
 
-    fn topbar_speedup_center(
+    fn topbar_inert_center(
         host: &WindowHost,
         stage: &'static Stage,
         snap: &Snapshot,
+        leaf: &str,
     ) -> (f32, f32) {
         let bound = bind_host(
             host,
@@ -393,12 +501,20 @@ mod tests {
             .expect("topbar is bound");
         let target = topbar_inert_targets_from_roots(&topbar.hit.roots)
             .into_iter()
-            .find(|target| target.leaf == "button_speedup")
-            .expect("synthetic topbar exposes speedup button");
+            .find(|target| target.leaf == leaf)
+            .unwrap_or_else(|| panic!("synthetic topbar exposes inert target {leaf}"));
         (
             target.rect.x + target.rect.w * 0.5,
             target.rect.y + target.rect.h * 0.5,
         )
+    }
+
+    fn topbar_speedup_center(
+        host: &WindowHost,
+        stage: &'static Stage,
+        snap: &Snapshot,
+    ) -> (f32, f32) {
+        topbar_inert_center(host, stage, snap, "button_speedup")
     }
 
     fn node_rect(roots: &[gui_runtime::scene::Node], name: &str) -> Option<Rect> {
@@ -481,6 +597,71 @@ mod tests {
         assert!(err.contains("--smoke"));
         assert!(err.contains("--shot-focus"));
         assert!(err.contains("--shot-combat"));
+    }
+
+    #[test]
+    fn shot_all_views_native_batch_flags_require_manifest_mode() {
+        assert!(
+            validate_shot_all_views_batch_flags(Some("shots"), true, Some("replay_app")).is_ok()
+        );
+
+        let err = validate_shot_all_views_batch_flags(None, true, None).unwrap_err();
+        assert_eq!(
+            err,
+            "--shot-all-views-run-native requires --shot-all-views=<dir>"
+        );
+
+        let err = validate_shot_all_views_batch_flags(Some("shots"), false, Some("replay_app"))
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "--shot-all-views-command requires --shot-all-views-run-native"
+        );
+    }
+
+    #[test]
+    fn shot_all_views_child_args_forward_runtime_config_without_batch_flags() {
+        let base = std::env::current_dir().unwrap();
+        let args = shot_all_views_child_common_args(
+            &base,
+            "USA",
+            "mp_campaign",
+            Some("vanilla"),
+            Some("mod_root"),
+            Some("bundle"),
+            Some("game_assets"),
+            Some("map_assets"),
+            Some("snapshots"),
+            Some("supply"),
+        );
+
+        assert_eq!(
+            args,
+            vec![
+                "--country".to_string(),
+                "USA".to_string(),
+                "--game".to_string(),
+                "mp_campaign".to_string(),
+                "--vanilla".to_string(),
+                child_path_arg(&base, "vanilla"),
+                "--mod".to_string(),
+                child_path_arg(&base, "mod_root"),
+                "--bundle".to_string(),
+                child_path_arg(&base, "bundle"),
+                "--assets".to_string(),
+                child_path_arg(&base, "game_assets"),
+                "--map".to_string(),
+                child_path_arg(&base, "map_assets"),
+                "--store".to_string(),
+                child_path_arg(&base, "snapshots"),
+                "--map-mode".to_string(),
+                "supply".to_string(),
+            ]
+        );
+        assert!(!args.iter().any(|arg| matches!(
+            arg.as_str(),
+            "--shot-all-views" | "--shot-all-views-run-native" | "--shot-all-views-command"
+        )));
     }
 
     #[test]
@@ -625,6 +806,57 @@ mod tests {
             !routed.consumed,
             "the shell's later hit/block pass, not the hidden topbar, should consume this time-control click"
         );
+    }
+
+    #[test]
+    fn topbar_sync_does_not_arm_inert_chrome_controls_under_higher_z_panel() {
+        let stage = Box::leak(Box::new(stage_with_topbar()));
+        let snap = snap_with_construction();
+
+        for leaf in ["menu_button", "musicplayer_button"] {
+            let mut host = WindowHost::new();
+            host.open_instance(Box::new(TopbarView::new("GER")));
+            host.rebind_all(&RebindContext {
+                snapshot: &snap,
+                country: "GER",
+                screen: (1600, 900),
+                refit: true,
+            });
+            let (x, y) = topbar_inert_center(&host, stage, &snap, leaf);
+            host.open_instance(Box::new(BlockingPanel {
+                rect: Rect {
+                    x: x - 5.0,
+                    y: y - 5.0,
+                    w: 10.0,
+                    h: 10.0,
+                },
+            }));
+
+            sync_topbar_input_targets(
+                &mut host,
+                stage,
+                &snap,
+                "GER",
+                (x, y),
+                MapCamera::new(1600, 900, 5632, 2048),
+                1600,
+                900,
+            );
+            let routed = host.route_input(&ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            });
+
+            assert!(
+                routed.commands.is_empty(),
+                "{leaf} under a panel must not emit topbar commands"
+            );
+            assert!(
+                !routed.consumed,
+                "{leaf} under a panel must not be consumed by the hidden topbar target cache"
+            );
+        }
     }
 
     #[test]
@@ -801,6 +1033,8 @@ fn main() {
     let shot_path = arg_value("--shot");
     let shot_view_arg = arg_value("--shot-view");
     let shot_all_views_dir = arg_value("--shot-all-views");
+    let shot_all_views_run_native = has_flag("--shot-all-views-run-native");
+    let shot_all_views_command_arg = arg_value("--shot-all-views-command");
     let shot_state_arg = arg_value("--shot-state");
     let shot_state: Option<u32> =
         resolve_shot_state(shot_state_arg.as_deref()).unwrap_or_else(|e| {
@@ -813,6 +1047,15 @@ fn main() {
     // The registry is pure inventory data, so the manifest-only harness can fail closed
     // before game assets, snapshots, or GPU setup are required.
     let registry = ViewRegistry::from_inventory();
+    validate_shot_all_views_batch_flags(
+        shot_all_views_dir.as_deref(),
+        shot_all_views_run_native,
+        shot_all_views_command_arg.as_deref(),
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("[app] SHOT BLOCKER: {e}");
+        std::process::exit(2);
+    });
     if let Some(dir) = shot_all_views_dir.as_deref() {
         reject_shot_all_views_mixed_flags(
             shot_path.as_deref(),
@@ -828,16 +1071,60 @@ fn main() {
         });
         match shot_harness::write_registry_shot_manifest(&registry, Path::new(dir)) {
             Ok(write) => {
-                eprintln!(
-                    "[app] SHOT: wrote registry-derived manifest {} ({} planned targets; images not captured)",
-                    write.path.display(),
-                    write.target_count
-                );
-                println!(
-                    "OK shot-all-views manifest={} targets={} status=planned_targets_only",
-                    write.path.display(),
-                    write.target_count
-                );
+                if shot_all_views_run_native {
+                    let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                    let command =
+                        shot_all_views_command_path(&base, shot_all_views_command_arg.as_deref())
+                            .unwrap_or_else(|e| {
+                                eprintln!("[app] SHOT BLOCKER: {e}");
+                                std::process::exit(2);
+                            });
+                    let common_args = shot_all_views_child_common_args(
+                        &base,
+                        &country,
+                        &game,
+                        vanilla.as_deref(),
+                        mod_root.as_deref(),
+                        bundle_arg.as_deref(),
+                        arg_value("--assets").as_deref(),
+                        arg_value("--map").as_deref(),
+                        arg_value("--store").as_deref(),
+                        arg_value("--map-mode").as_deref(),
+                    );
+                    let config = shot_harness::NativeShotBatchConfig {
+                        command,
+                        common_args,
+                    };
+                    let run =
+                        shot_harness::run_native_shot_batch_from_manifest(&write.path, &config)
+                            .unwrap_or_else(|e| {
+                                eprintln!("[app] SHOT BLOCKER: {e}");
+                                std::process::exit(3);
+                            });
+                    eprintln!(
+                        "[app] SHOT: wrote {} native screenshots from {} (the game references and diffs pending)",
+                        run.captured_count,
+                        run.manifest_path.display()
+                    );
+                    println!(
+                        "OK shot-all-views manifest={} native_captured={} hoi4_reference_pending={} diff_pending={}",
+                        run.manifest_path.display(),
+                        run.captured_count,
+                        run.pending_hoi4_reference_count,
+                        run.pending_diff_count
+                    );
+                } else {
+                    eprintln!(
+                        "[app] SHOT: wrote registry-derived manifest {} ({} native targets planned; run --shot-all-views-run-native to emit native shots)",
+                        write.path.display(),
+                        write.target_count
+                    );
+                    println!(
+                        "OK shot-all-views manifest={} targets={} status=native_targets_planned",
+                        write.path.display(),
+                        write.target_count
+                    );
+                }
                 std::process::exit(0);
             }
             Err(e) => {
