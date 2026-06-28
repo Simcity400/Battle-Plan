@@ -30,6 +30,7 @@ from .collector_frames import (
     validate_collector_frame,
 )
 from .collector_country_bridge import resolve_country_object_bridge_preflight
+from .collector_division_bridge import resolve_division_body_bridge_preflight
 from .collector_map_bridge import (
     resolve_province_control_preflight,
     resolve_state_control_preflight,
@@ -335,7 +336,9 @@ def record_collector_session(
     require_hourly_cadence: Optional[bool] = None,
     country_object_bridge: Any = None,
     country_record_bridge: Any = None,
+    division_body_bridge: Any = None,
     preflight_country_object_bridge: bool = False,
+    preflight_division_movement: bool = False,
     preflight_state_control: bool = False,
     preflight_province_control: bool = False,
     allow_province_cold_scan: bool = False,
@@ -388,6 +391,17 @@ def record_collector_session(
         if preflight.usable:
             country_object_bridge = preflight.encoded
             country_record_bridge = preflight.record_encoded
+    division_body_bridge_preflight = {
+        "enabled": bool(preflight_division_movement),
+        "status": "not_requested",
+        "row_count": 0,
+    }
+    if division_body_bridge is None and preflight_division_movement:
+        preflight = resolve_division_body_bridge_preflight(pid)
+        division_body_bridge_preflight = preflight.diagnostics
+        division_body_bridge_preflight["enabled"] = True
+        if preflight.usable:
+            division_body_bridge = preflight.encoded
     map_control_state_roots = None
     map_control_province_bridge = None
     map_control_controller_bridge = None
@@ -445,6 +459,7 @@ def record_collector_session(
         write_snapshot_artifacts=False,
         country_object_bridge=country_object_bridge,
         country_record_bridge=country_record_bridge,
+        division_body_bridge=division_body_bridge,
         map_control_state_roots=map_control_state_roots,
         map_control_province_bridge=map_control_province_bridge,
         map_control_controller_bridge=map_control_controller_bridge,
@@ -559,6 +574,11 @@ def record_collector_session(
                 "country_record_bridge_supplied"),
             "country_record_bridge_rows": probe_manifest.get(
                 "country_record_bridge_rows"),
+            "division_body_bridge_preflight": division_body_bridge_preflight,
+            "division_body_bridge_supplied": probe_manifest.get(
+                "division_body_bridge_supplied"),
+            "division_body_bridge_rows": probe_manifest.get(
+                "division_body_bridge_rows"),
             "state_control_preflight": state_control_preflight,
             "province_control_preflight": province_control_preflight,
             "map_control_state_roots_supplied": probe_manifest.get(
@@ -1056,6 +1076,11 @@ def _main() -> int:
         help="resolve live country object pointers before recording; no saves required",
     )
     parser.add_argument(
+        "--preflight-division-movement",
+        action="store_true",
+        help="resolve live division bodies before recording movement deltas",
+    )
+    parser.add_argument(
         "--preflight-state-control",
         action="store_true",
         help="resolve/cache live state owner/controller roots before recording",
@@ -1094,6 +1119,7 @@ def _main() -> int:
             not args.allow_hourly_gaps if args.until_game_hours is not None else False
         ),
         preflight_country_object_bridge=args.preflight_country_object_bridge,
+        preflight_division_movement=args.preflight_division_movement,
         preflight_state_control=args.preflight_state_control,
         preflight_province_control=args.preflight_province_control,
         allow_province_cold_scan=args.allow_province_cold_scan,

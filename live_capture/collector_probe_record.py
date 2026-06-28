@@ -11,6 +11,7 @@ import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .collector_attach import AttachError, attach_noop
+from .collector_division_bridge import encode_division_body_bridge
 from .collector_frames import latest_verified_root_probe, snapshot_from_root_probe_frame
 from .durable_store import DurableCaptureStore
 
@@ -44,6 +45,7 @@ def record_probes(
     write_snapshot_artifacts: bool = True,
     country_object_bridge: Any = None,
     country_record_bridge: Any = None,
+    division_body_bridge: Any = None,
     map_control_state_roots: Optional[str] = None,
     map_control_province_bridge: Optional[str] = None,
     map_control_controller_bridge: Optional[str] = None,
@@ -78,6 +80,14 @@ def record_probes(
     country_record_bridge_rows = (
         len(encoded_country_record_bridge.split(";"))
         if encoded_country_record_bridge else 0
+    )
+    encoded_division_body_bridge = (
+        encode_division_body_bridge(division_body_bridge)
+        if division_body_bridge is not None else None
+    )
+    division_body_bridge_rows = (
+        len(encoded_division_body_bridge.split(";"))
+        if encoded_division_body_bridge else 0
     )
     map_control_state_root_rows = _encoded_row_count(map_control_state_roots)
     map_control_controller_bridge_rows = _encoded_row_count(
@@ -132,6 +142,7 @@ def record_probes(
                 session_id=effective_session_id,
                 country_object_bridge=encoded_country_object_bridge,
                 country_record_bridge=encoded_country_record_bridge,
+                division_body_bridge=encoded_division_body_bridge,
                 map_control_state_roots=map_control_state_roots,
                 map_control_province_bridge=map_control_province_bridge,
                 map_control_controller_bridge=map_control_controller_bridge,
@@ -282,6 +293,8 @@ def record_probes(
             "country_object_bridge_rows": country_object_bridge_rows,
             "country_record_bridge_supplied": bool(encoded_country_record_bridge),
             "country_record_bridge_rows": country_record_bridge_rows,
+            "division_body_bridge_supplied": bool(encoded_division_body_bridge),
+            "division_body_bridge_rows": division_body_bridge_rows,
             "map_control_state_roots_supplied": bool(map_control_state_roots),
             "map_control_state_root_rows": map_control_state_root_rows,
             "map_control_province_bridge_supplied": map_control_province_bridge_supplied,
@@ -356,6 +369,7 @@ def _write_worker_control(
     session_id: Optional[str] = None,
     country_object_bridge: Optional[str] = None,
     country_record_bridge: Optional[str] = None,
+    division_body_bridge: Optional[str] = None,
     map_control_state_roots: Optional[str] = None,
     map_control_province_bridge: Optional[str] = None,
     map_control_controller_bridge: Optional[str] = None,
@@ -378,6 +392,8 @@ def _write_worker_control(
         payload["country_object_bridge"] = country_object_bridge
     if country_record_bridge:
         payload["country_record_bridge"] = country_record_bridge
+    if division_body_bridge:
+        payload["division_body_bridge"] = division_body_bridge
     if map_control_state_roots:
         payload["map_control_state_roots"] = map_control_state_roots
     if map_control_province_bridge:

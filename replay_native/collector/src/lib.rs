@@ -156,6 +156,19 @@ mod attach_log {
     const MAP_CONTROL_POINTER_WIDTH: u32 = 8;
     const MIN_USABLE_STATE_ROWS: usize = 1_000;
     const MIN_USABLE_PROVINCE_ROWS: usize = 10_000;
+    const DIVISION_TYPE: u32 = 4713;
+    const DIVISION_VTABLE_RVA: usize = 0x2933F00;
+    const DIVISION_MOVE_ORDER_VTABLE_RVA: usize = 0x294AE78;
+    const DIVISION_OFF_ID_TYPE: usize = 0x08;
+    const DIVISION_OFF_ID_ID: usize = 0x0C;
+    const DIVISION_OFF_LOCATION: usize = 0x18;
+    const DIVISION_OFF_MOVE_ORDER: usize = 0x1E8;
+    const DIVISION_OFF_MOVE_PROGRESS: usize = 0x230;
+    const DIVISION_MOVE_ORDER_OFF_SOURCE: usize = 0xA4;
+    const MAX_DIVISION_BODY_BRIDGE_ROWS: usize = 20_000;
+    const MAX_DIVISION_BODY_BRIDGE_PAYLOAD_BYTES: usize = 2 * 1024 * 1024;
+    const MAX_DIVISION_BODY_BRIDGE_DIV_ID: u32 = i32::MAX as u32;
+    const MAX_DIVISION_PROVINCE_ID: u32 = 1_000_000;
     const FP_SCALE: f64 = 100000.0;
     const DAILY_UPDATE_SENTINEL: [u8; 16] = [
         0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8D,
@@ -280,6 +293,8 @@ mod attach_log {
             let deadline = worker_started + Duration::from_millis(control.duration_ms as u64);
             let mut session_sequence = 1u64;
             let mut last_scheduled_game_hour: Option<i32> = None;
+            let mut previous_division_movement: BTreeMap<u32, DivisionMovementSample> =
+                BTreeMap::new();
             while Instant::now() <= deadline {
                 let elapsed_wall_ms = duration_millis_u64(worker_started.elapsed());
                 let capture_boundary = capture_boundary_for_frame(
@@ -308,6 +323,18 @@ mod attach_log {
                     write_sinks(file.as_mut(), pipe, line.as_bytes());
                     session_sequence = session_sequence.saturating_add(1);
                 }
+                for line in build_division_raw_domain_delta_lines(
+                    pid,
+                    state.as_ref(),
+                    &control,
+                    &mut previous_division_movement,
+                    session_sequence,
+                    Some(elapsed_wall_ms),
+                    capture_boundary,
+                ) {
+                    write_sinks(file.as_mut(), pipe, line.as_bytes());
+                    session_sequence = session_sequence.saturating_add(1);
+                }
                 thread::sleep(Duration::from_millis(control.sample_ms as u64));
             }
         } else {
@@ -329,6 +356,8 @@ mod attach_log {
         country_object_bridge_valid: bool,
         country_record_bridge: Vec<CountryObjectBridgeEntry>,
         country_record_bridge_valid: bool,
+        division_body_bridge: Vec<DivisionBodyBridgeEntry>,
+        division_body_bridge_valid: bool,
         map_control: MapControlContract,
         scheduled_snapshot_step_hours: u32,
         pipe_token: Option<String>,
@@ -340,6 +369,12 @@ mod attach_log {
     struct CountryObjectBridgeEntry {
         tag_db_id: u32,
         object_ptr: usize,
+    }
+
+    #[derive(Clone, Copy)]
+    struct DivisionBodyBridgeEntry {
+        div_id: u32,
+        body_ptr: usize,
     }
 
     #[derive(Clone)]
@@ -466,6 +501,14 @@ mod attach_log {
                 },
                 None => (Vec::new(), true),
             };
+        let (division_body_bridge, division_body_bridge_valid) =
+            match parse_json_string(&text, "division_body_bridge") {
+                Some(value) => match parse_division_body_bridge(&value) {
+                    Some(rows) => (rows, true),
+                    None => (Vec::new(), false),
+                },
+                None => (Vec::new(), true),
+            };
         let map_control = parse_map_control_contract(&text);
         let pipe_token = parse_json_string(&text, "pipe_token").and_then(clean_pipe_token);
         let session_id = parse_json_string(&text, "session_id").and_then(clean_session_id);
@@ -478,6 +521,8 @@ mod attach_log {
             country_object_bridge_valid,
             country_record_bridge,
             country_record_bridge_valid,
+            division_body_bridge,
+            division_body_bridge_valid,
             map_control,
             scheduled_snapshot_step_hours: scheduled_snapshot_step_hours.clamp(1, 24),
             pipe_token,
@@ -593,6 +638,65 @@ mod attach_log {
             }
         }
         Some(entries)
+    }
+
+    fn parse_division_body_bridge(value: &str) -> Option<Vec<DivisionBodyBridgeEntry>> {
+        if value.trim().is_empty() {
+            return Some(Vec::new());
+        }
+        if value.len() > MAX_DIVISION_BODY_BRIDGE_PAYLOAD_BYTES {
+            return None;
+        }
+        let mut entries = Vec::new();
+        let mut seen_div_ids: BTreeMap<u32, ()> = BTreeMap::new();
+        let mut seen_body_ptrs: BTreeMap<usize, ()> = BTreeMap::new();
+        for raw in value.split(';') {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                return None;
+            }
+            let (div_raw, ptr_raw) = raw.split_once(':')?;
+            let div_id = parse_bridge_u32(div_raw.trim())?;
+            if div_id == 0 || div_id > MAX_DIVISION_BODY_BRIDGE_DIV_ID {
+                return None;
+            }
+            let body_ptr = parse_bridge_pointer(ptr_raw.trim())?;
+            if !is_map_control_heap_pointer(body_ptr) {
+                return None;
+            }
+            if seen_div_ids.insert(div_id, ()).is_some()
+                || seen_body_ptrs.insert(body_ptr, ()).is_some()
+            {
+                return None;
+            }
+            entries.push(DivisionBodyBridgeEntry { div_id, body_ptr });
+            if entries.len() > MAX_DIVISION_BODY_BRIDGE_ROWS {
+                return None;
+            }
+        }
+        Some(entries)
+    }
+
+    fn division_body_bridge_well_formed(rows: &[DivisionBodyBridgeEntry]) -> bool {
+        if rows.len() > MAX_DIVISION_BODY_BRIDGE_ROWS {
+            return false;
+        }
+        let mut seen_div_ids: BTreeMap<u32, ()> = BTreeMap::new();
+        let mut seen_body_ptrs: BTreeMap<usize, ()> = BTreeMap::new();
+        for row in rows {
+            if row.div_id == 0 || row.div_id > MAX_DIVISION_BODY_BRIDGE_DIV_ID {
+                return false;
+            }
+            if !is_map_control_heap_pointer(row.body_ptr) {
+                return false;
+            }
+            if seen_div_ids.insert(row.div_id, ()).is_some()
+                || seen_body_ptrs.insert(row.body_ptr, ()).is_some()
+            {
+                return false;
+            }
+        }
+        true
     }
 
     fn parse_map_control_contract(text: &str) -> MapControlContract {
@@ -870,6 +974,7 @@ mod attach_log {
     const RAW_SOURCE: &str = "C";
     const RAW_CLOCK_DOMAIN: &str = "clock";
     const RAW_CLOCK_ENTITY_KEY: &str = "clock:game_date";
+    const RAW_DIVISIONS_DOMAIN: &str = "divisions";
     const RAW_CONFIDENCE_SAMPLED: &str = "sampled";
     const RAW_SHORT_STRING_MAX_LENGTH: usize = 128;
     const RAW_STRING_MAX_LENGTH: usize = 512;
@@ -879,6 +984,17 @@ mod attach_log {
         date: String,
         hour_index: u64,
         raw_date: i32,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct DivisionMovementSample {
+        div_id: u32,
+        moving: bool,
+        raw_movement_progress: Option<u32>,
+        progress_bucket: Option<u32>,
+        location: u32,
+        move_target_province: Option<u32>,
+        movement_source_province: Option<u32>,
     }
 
     struct RawDomainDeltaFrame<'a> {
@@ -968,6 +1084,215 @@ mod attach_log {
         })
     }
 
+    fn build_division_raw_domain_delta_lines(
+        pid: Dword,
+        state: Option<&CollectorState>,
+        control: &CollectorControl,
+        previous: &mut BTreeMap<u32, DivisionMovementSample>,
+        first_session_sequence: u64,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+    ) -> Vec<String> {
+        if !(control.division_body_bridge_valid
+            && division_body_bridge_well_formed(&control.division_body_bridge))
+        {
+            return Vec::new();
+        }
+        let Some(state) = state else {
+            return Vec::new();
+        };
+        if control.division_body_bridge.is_empty() {
+            return Vec::new();
+        }
+        let Some(clock) = clock_sample_from_state(Some(state)) else {
+            return Vec::new();
+        };
+        let mut lines = Vec::new();
+        let mut session_sequence = first_session_sequence;
+        for entry in &control.division_body_bridge {
+            let Some(sample) = sample_division_movement(state.base, entry) else {
+                continue;
+            };
+            let Some(changed_fields) = track_division_movement_sample(previous, &sample) else {
+                continue;
+            };
+            let tick_ms = unsafe { GetTickCount64() };
+            let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            if let Some(line) = division_raw_domain_delta_frame_line(
+                pid,
+                sequence,
+                Some(session_sequence),
+                tick_ms,
+                control,
+                elapsed_wall_ms,
+                capture_boundary,
+                &clock,
+                &sample,
+                &changed_fields,
+            ) {
+                lines.push(line);
+                session_sequence = session_sequence.saturating_add(1);
+            }
+        }
+        lines
+    }
+
+    fn sample_division_movement(
+        module_base: usize,
+        entry: &DivisionBodyBridgeEntry,
+    ) -> Option<DivisionMovementSample> {
+        let body = entry.body_ptr;
+        if read_u64(body)? as usize != module_base.checked_add(DIVISION_VTABLE_RVA)? {
+            return None;
+        }
+        if read_u32(body.checked_add(DIVISION_OFF_ID_TYPE)?)? != DIVISION_TYPE {
+            return None;
+        }
+        if read_u32(body.checked_add(DIVISION_OFF_ID_ID)?)? != entry.div_id {
+            return None;
+        }
+        let location = read_u32(body.checked_add(DIVISION_OFF_LOCATION)?)?;
+        if !valid_division_province_id(location) {
+            return None;
+        }
+        let raw_progress = read_u32(body.checked_add(DIVISION_OFF_MOVE_PROGRESS)?)?;
+        let moving = raw_progress != 0;
+        let movement_source_province = if moving {
+            read_division_movement_source_province(module_base, body)
+        } else {
+            None
+        };
+        Some(DivisionMovementSample {
+            div_id: entry.div_id,
+            moving,
+            raw_movement_progress: moving.then_some(raw_progress),
+            progress_bucket: moving.then_some(raw_progress / 1000),
+            location,
+            move_target_province: moving.then_some(location),
+            movement_source_province,
+        })
+    }
+
+    fn read_division_movement_source_province(module_base: usize, body: usize) -> Option<u32> {
+        let move_order_ptr = read_u64(body.checked_add(DIVISION_OFF_MOVE_ORDER)?)? as usize;
+        if !is_map_control_heap_pointer(move_order_ptr) {
+            return None;
+        }
+        if read_u64(move_order_ptr)? as usize
+            != module_base.checked_add(DIVISION_MOVE_ORDER_VTABLE_RVA)?
+        {
+            return None;
+        }
+        read_u32(move_order_ptr.checked_add(DIVISION_MOVE_ORDER_OFF_SOURCE)?)
+            .filter(|province| valid_division_province_id(*province))
+    }
+
+    fn valid_division_province_id(value: u32) -> bool {
+        value > 0 && value <= MAX_DIVISION_PROVINCE_ID
+    }
+
+    fn track_division_movement_sample(
+        previous: &mut BTreeMap<u32, DivisionMovementSample>,
+        sample: &DivisionMovementSample,
+    ) -> Option<Vec<&'static str>> {
+        let changed_fields = match previous.get(&sample.div_id) {
+            None if sample.moving => Some(division_movement_all_fields()),
+            None => None,
+            Some(old) => division_movement_changed_fields(old, sample),
+        };
+        previous.insert(sample.div_id, sample.clone());
+        changed_fields
+    }
+
+    fn division_movement_all_fields() -> Vec<&'static str> {
+        vec![
+            "div_uid",
+            "div_id",
+            "div_type",
+            "moving",
+            "movement_progress",
+            "progress_bucket",
+            "location",
+            "move_target_province",
+            "movement_source_province",
+        ]
+    }
+
+    fn division_movement_changed_fields(
+        old: &DivisionMovementSample,
+        new: &DivisionMovementSample,
+    ) -> Option<Vec<&'static str>> {
+        let mut changed = Vec::new();
+        if old.moving != new.moving {
+            changed.push("moving");
+        }
+        if old.progress_bucket != new.progress_bucket {
+            changed.push("movement_progress");
+            changed.push("progress_bucket");
+        }
+        if old.location != new.location {
+            changed.push("location");
+        }
+        if old.move_target_province != new.move_target_province {
+            changed.push("move_target_province");
+        }
+        if old.movement_source_province != new.movement_source_province {
+            changed.push("movement_source_province");
+        }
+        (!changed.is_empty()).then_some(changed)
+    }
+
+    fn division_raw_domain_delta_frame_line(
+        pid: Dword,
+        sequence: u64,
+        session_sequence: Option<u64>,
+        tick_ms: u64,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        sample: &DivisionMovementSample,
+        changed_fields: &[&str],
+    ) -> Option<String> {
+        let movement_progress = sample
+            .raw_movement_progress
+            .map(|raw| raw as f64 / FP_SCALE);
+        let div_uid = format!("{}:{}", sample.div_id, DIVISION_TYPE);
+        let entity_key = format!("division:{div_uid}");
+        let after_json = format!(
+            "{{\"div_uid\":{},\"div_id\":{},\"div_type\":{},\
+             \"moving\":{},\"movement_progress\":{},\"progress_bucket\":{},\
+             \"location\":{},\"move_target_province\":{},\
+             \"movement_source_province\":{}}}",
+            json_str(&div_uid),
+            sample.div_id,
+            DIVISION_TYPE,
+            sample.moving,
+            json_opt_f64(movement_progress),
+            json_opt_u32(sample.progress_bucket),
+            sample.location,
+            json_opt_u32(sample.move_target_province),
+            json_opt_u32(sample.movement_source_province)
+        );
+        raw_domain_delta_frame_line(RawDomainDeltaFrame {
+            pid,
+            sequence,
+            session_sequence,
+            tick_ms,
+            date: &clock.date,
+            hour_index: clock.hour_index,
+            sample_ms: control.sample_ms,
+            duration_ms: Some(control.duration_ms),
+            elapsed_wall_ms,
+            capture_boundary,
+            domain: RAW_DIVISIONS_DOMAIN,
+            entity_key: &entity_key,
+            confidence: RAW_CONFIDENCE_SAMPLED,
+            after_json: &after_json,
+            changed_fields,
+        })
+    }
+
     fn raw_domain_delta_frame_line(frame: RawDomainDeltaFrame<'_>) -> Option<String> {
         if !valid_raw_short_string(frame.date)
             || !valid_raw_short_string(frame.capture_boundary)
@@ -1033,7 +1358,7 @@ mod attach_log {
     }
 
     fn valid_raw_domain(value: &str) -> bool {
-        matches!(value, RAW_CLOCK_DOMAIN)
+        matches!(value, RAW_CLOCK_DOMAIN | RAW_DIVISIONS_DOMAIN)
     }
 
     fn valid_raw_confidence(value: &str) -> bool {
@@ -1097,6 +1422,8 @@ mod attach_log {
         let elapsed_wall_ms = elapsed_wall_ms
             .map(|n| format!("\"elapsed_wall_ms\":{n},"))
             .unwrap_or_default();
+        let division_body_bridge_valid = control.division_body_bridge_valid
+            && division_body_bridge_well_formed(&control.division_body_bridge);
         let map_control_state_roots_valid =
             control.map_control.state_roots_valid && control.map_control.state_roots_well_formed();
         let map_control_province_bridge_valid = control.map_control.province_bridge_valid
@@ -1111,6 +1438,8 @@ mod attach_log {
              \"country_object_bridge_valid\":{},\
              \"country_record_bridge_rows\":{},\
              \"country_record_bridge_valid\":{},\
+             \"division_body_bridge_rows\":{},\
+             \"division_body_bridge_valid\":{},\
              \"map_control_state_root_rows\":{},\
              \"map_control_state_roots_valid\":{},\
              \"map_control_province_bridge_present\":{},\
@@ -1124,6 +1453,8 @@ mod attach_log {
             control.country_object_bridge_valid,
             control.country_record_bridge.len(),
             control.country_record_bridge_valid,
+            control.division_body_bridge.len(),
+            division_body_bridge_valid,
             control.map_control.state_roots.len(),
             map_control_state_roots_valid,
             control.map_control.province_bridge.is_some(),
@@ -2587,6 +2918,8 @@ mod attach_log {
                 country_object_bridge_valid: true,
                 country_record_bridge: Vec::new(),
                 country_record_bridge_valid: true,
+                division_body_bridge: Vec::new(),
+                division_body_bridge_valid: true,
                 map_control: MapControlContract::empty(),
                 scheduled_snapshot_step_hours: 1,
                 pipe_token: Some("abc".to_string()),
@@ -2621,6 +2954,8 @@ mod attach_log {
             assert!(parsed.country_object_bridge_valid);
             assert!(parsed.country_record_bridge.is_empty());
             assert!(parsed.country_record_bridge_valid);
+            assert!(parsed.division_body_bridge.is_empty());
+            assert!(parsed.division_body_bridge_valid);
             assert!(parsed.map_control.state_roots.is_empty());
             assert!(parsed.map_control.state_roots_valid);
             assert!(parsed.map_control.province_bridge.is_none());
@@ -2682,6 +3017,37 @@ mod attach_log {
             assert_eq!(parsed.country_record_bridge.len(), 1);
             assert_eq!(parsed.country_record_bridge[0].tag_db_id, 1);
             assert_eq!(parsed.country_record_bridge[0].object_ptr, 0x3000);
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn collector_control_accepts_division_body_bridge() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_control_division_bridge_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            fs::write(
+                &control,
+                format!(
+                    r#"{{"mode":"hourly_poll","duration_ms":8000,"sample_ms":10,"division_body_bridge":"7:0x{:x};8:{}"}}"#,
+                    HEAP_LO,
+                    HEAP_LO + 0x100
+                ),
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert!(parsed.division_body_bridge_valid);
+            assert_eq!(parsed.division_body_bridge.len(), 2);
+            assert_eq!(parsed.division_body_bridge[0].div_id, 7);
+            assert_eq!(parsed.division_body_bridge[0].body_ptr, HEAP_LO);
+            assert_eq!(parsed.division_body_bridge[1].div_id, 8);
+            assert_eq!(parsed.division_body_bridge[1].body_ptr, HEAP_LO + 0x100);
             let _ = fs::remove_dir_all(&dir);
         }
 
@@ -2764,6 +3130,42 @@ mod attach_log {
         }
 
         #[test]
+        fn collector_control_marks_bad_division_body_bridge_invalid() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_control_bad_division_bridge_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            fs::write(
+                &control,
+                r#"{"mode":"hourly_poll","duration_ms":8000,"sample_ms":10,"country_object_bridge":"1:0x1000","division_body_bridge":"7:0x1001"}"#,
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert!(parsed.country_object_bridge_valid);
+            assert!(!parsed.country_object_bridge.is_empty());
+            assert!(parsed.division_body_bridge.is_empty());
+            assert!(!parsed.division_body_bridge_valid);
+            let frame = build_frame_line(
+                1234,
+                None,
+                Some(&parsed),
+                Some(7),
+                Some(125),
+                Some("worker_poll"),
+            );
+            assert!(frame.contains("\"division_body_bridge_rows\":0"));
+            assert!(frame.contains("\"division_body_bridge_valid\":false"));
+            assert!(!frame.contains("0x1001"));
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
         fn collector_control_marks_bad_map_control_invalid() {
             let dir = std::env::temp_dir().join(format!(
                 "hoi4_collector_control_bad_map_control_test_{}",
@@ -2806,6 +3208,43 @@ mod attach_log {
         fn country_object_bridge_parser_rejects_duplicates() {
             assert!(parse_country_object_bridge("1:0x1000;1:0x2000").is_none());
             assert!(parse_country_object_bridge("1:0x1000;2:0x1000").is_none());
+        }
+
+        #[test]
+        fn division_body_bridge_parser_rejects_duplicates_ranges_and_size() {
+            assert!(parse_division_body_bridge("").unwrap().is_empty());
+            assert!(
+                parse_division_body_bridge(&format!("1:0x{:x};2:{}", HEAP_LO, HEAP_LO + 8))
+                    .is_some()
+            );
+            assert!(parse_division_body_bridge(&format!(
+                "1:0x{:x};1:0x{:x}",
+                HEAP_LO,
+                HEAP_LO + 8
+            ))
+            .is_none());
+            assert!(
+                parse_division_body_bridge(&format!("1:0x{:x};2:0x{:x}", HEAP_LO, HEAP_LO))
+                    .is_none()
+            );
+            assert!(parse_division_body_bridge(&format!("0:0x{:x}", HEAP_LO)).is_none());
+            assert!(parse_division_body_bridge(&format!(
+                "{}:0x{:x}",
+                i32::MAX as u32 + 1,
+                HEAP_LO
+            ))
+            .is_none());
+            assert!(parse_division_body_bridge("1:0x1000").is_none());
+            assert!(parse_division_body_bridge(&format!("1:0x{:x}", HEAP_LO + 1)).is_none());
+            assert!(parse_division_body_bridge(
+                &"x".repeat(MAX_DIVISION_BODY_BRIDGE_PAYLOAD_BYTES + 1)
+            )
+            .is_none());
+            let too_many = (1..=MAX_DIVISION_BODY_BRIDGE_ROWS + 1)
+                .map(|i| format!("{}:0x{:x}", i, HEAP_LO + (i * 8)))
+                .collect::<Vec<_>>()
+                .join(";");
+            assert!(parse_division_body_bridge(&too_many).is_none());
         }
 
         #[test]
@@ -3023,7 +3462,7 @@ mod attach_log {
             });
             assert!(rejected_pointer_key.is_none());
 
-            let rejected_unknown_domain = raw_domain_delta_frame_line(RawDomainDeltaFrame {
+            let accepted_divisions_domain = raw_domain_delta_frame_line(RawDomainDeltaFrame {
                 pid: 1234,
                 sequence: 11,
                 session_sequence: Some(5),
@@ -3035,6 +3474,25 @@ mod attach_log {
                 elapsed_wall_ms: Some(125),
                 capture_boundary: "worker_poll",
                 domain: "divisions",
+                entity_key: "clock:game_date",
+                confidence: "sampled",
+                after_json: "{}",
+                changed_fields: &changed_fields,
+            });
+            assert!(accepted_divisions_domain.is_some());
+
+            let rejected_unknown_domain = raw_domain_delta_frame_line(RawDomainDeltaFrame {
+                pid: 1234,
+                sequence: 11,
+                session_sequence: Some(5),
+                tick_ms: 123456,
+                date: "1936.1.1.12",
+                hour_index: 1,
+                sample_ms: 10,
+                duration_ms: Some(8000),
+                elapsed_wall_ms: Some(125),
+                capture_boundary: "worker_poll",
+                domain: "countries",
                 entity_key: "clock:game_date",
                 confidence: "sampled",
                 after_json: "{}",
@@ -3079,6 +3537,136 @@ mod attach_log {
                 changed_fields: &changed_fields,
             });
             assert!(rejected_after.is_none());
+        }
+
+        #[test]
+        fn division_movement_tracker_emits_only_meaningful_changes() {
+            let mut previous = BTreeMap::new();
+            let stationary = DivisionMovementSample {
+                div_id: 7,
+                moving: false,
+                raw_movement_progress: None,
+                progress_bucket: None,
+                location: 10,
+                move_target_province: None,
+                movement_source_province: None,
+            };
+            assert!(track_division_movement_sample(&mut previous, &stationary).is_none());
+
+            let moving_bucket_one = DivisionMovementSample {
+                div_id: 7,
+                moving: true,
+                raw_movement_progress: Some(1500),
+                progress_bucket: Some(1),
+                location: 10,
+                move_target_province: Some(10),
+                movement_source_province: Some(5),
+            };
+            let start_fields =
+                track_division_movement_sample(&mut previous, &moving_bucket_one).unwrap();
+            assert!(start_fields.contains(&"moving"));
+            assert!(start_fields.contains(&"movement_progress"));
+            assert!(start_fields.contains(&"progress_bucket"));
+            assert!(start_fields.contains(&"move_target_province"));
+            assert!(start_fields.contains(&"movement_source_province"));
+
+            let same_bucket = DivisionMovementSample {
+                raw_movement_progress: Some(1900),
+                ..moving_bucket_one.clone()
+            };
+            assert!(track_division_movement_sample(&mut previous, &same_bucket).is_none());
+
+            let next_bucket = DivisionMovementSample {
+                raw_movement_progress: Some(2500),
+                progress_bucket: Some(2),
+                ..same_bucket.clone()
+            };
+            let bucket_fields =
+                track_division_movement_sample(&mut previous, &next_bucket).unwrap();
+            assert_eq!(bucket_fields, vec!["movement_progress", "progress_bucket"]);
+
+            let moved_location = DivisionMovementSample {
+                location: 11,
+                move_target_province: Some(11),
+                ..next_bucket.clone()
+            };
+            let location_fields =
+                track_division_movement_sample(&mut previous, &moved_location).unwrap();
+            assert_eq!(location_fields, vec!["location", "move_target_province"]);
+
+            let stopped = DivisionMovementSample {
+                moving: false,
+                raw_movement_progress: None,
+                progress_bucket: None,
+                location: 11,
+                move_target_province: None,
+                movement_source_province: None,
+                ..moved_location.clone()
+            };
+            let stop_fields = track_division_movement_sample(&mut previous, &stopped).unwrap();
+            assert!(stop_fields.contains(&"moving"));
+            assert!(stop_fields.contains(&"movement_progress"));
+            assert!(stop_fields.contains(&"progress_bucket"));
+            assert!(stop_fields.contains(&"move_target_province"));
+            assert!(stop_fields.contains(&"movement_source_province"));
+
+            let mut fresh = BTreeMap::new();
+            let first_moving =
+                track_division_movement_sample(&mut fresh, &moving_bucket_one).unwrap();
+            assert_eq!(first_moving, division_movement_all_fields());
+        }
+
+        #[test]
+        fn division_movement_frame_builder_emits_sanitized_raw_delta() {
+            let control = raw_test_control();
+            let clock = ClockSample {
+                date: "1936.1.1.12".to_string(),
+                hour_index: ((1936 * 365) * 24 + 12) as u64,
+                raw_date: DATE_EPOCH_CONST + ((1936 * 365) * 24 + 12),
+            };
+            let sample = DivisionMovementSample {
+                div_id: 7,
+                moving: true,
+                raw_movement_progress: Some(12000),
+                progress_bucket: Some(12),
+                location: 11597,
+                move_target_province: Some(11597),
+                movement_source_province: Some(11333),
+            };
+            let changed_fields = division_movement_all_fields();
+
+            let frame = division_raw_domain_delta_frame_line(
+                1234,
+                11,
+                Some(5),
+                123456,
+                &control,
+                Some(125),
+                "worker_poll",
+                &clock,
+                &sample,
+                &changed_fields,
+            )
+            .unwrap();
+
+            assert!(frame.contains("\"type\":\"domain_delta\""));
+            assert!(frame.contains("\"domain\":\"divisions\""));
+            assert!(frame.contains("\"entity_key\":\"division:7:4713\""));
+            assert!(frame.contains("\"payload\":{\"op\":\"sample\""));
+            assert!(frame.contains("\"div_uid\":\"7:4713\""));
+            assert!(frame.contains("\"div_id\":7"));
+            assert!(frame.contains("\"div_type\":4713"));
+            assert!(frame.contains("\"moving\":true"));
+            assert!(frame.contains("\"movement_progress\":0.12"));
+            assert!(frame.contains("\"progress_bucket\":12"));
+            assert!(frame.contains("\"location\":11597"));
+            assert!(frame.contains("\"move_target_province\":11597"));
+            assert!(frame.contains("\"movement_source_province\":11333"));
+            assert!(!frame.contains("body_ptr"));
+            assert!(!frame.contains("body_addr"));
+            assert!(!frame.contains("tag_db_id"));
+            assert!(!frame.contains("\"owner\""));
+            assert!(!frame.contains("0x"));
         }
 
         #[test]
@@ -3130,6 +3718,8 @@ mod attach_log {
                 country_object_bridge_valid: true,
                 country_record_bridge: Vec::new(),
                 country_record_bridge_valid: true,
+                division_body_bridge: Vec::new(),
+                division_body_bridge_valid: true,
                 map_control: MapControlContract::empty(),
                 scheduled_snapshot_step_hours: 1,
                 pipe_token: Some("abc".to_string()),
@@ -3160,6 +3750,8 @@ mod attach_log {
             assert!(frame.contains("\"map_control_province_bridge_valid\":true"));
             assert!(frame.contains("\"map_control_controller_bridge_rows\":0"));
             assert!(frame.contains("\"map_control_controller_bridge_valid\":true"));
+            assert!(frame.contains("\"division_body_bridge_rows\":0"));
+            assert!(frame.contains("\"division_body_bridge_valid\":true"));
             assert!(frame.contains("\"profile_id\":\"vanilla_latest_2026_06_28\""));
             assert!(frame.contains("\"domains\":[]"));
             assert!(frame.contains("\"root_probe\":null"));

@@ -15,6 +15,9 @@ from live_capture.collector_probe_record import (  # noqa: E402
     record_probes,
     summarize_probe_samples,
 )
+from live_capture.collector_division_bridge import (  # noqa: E402
+    encode_division_body_bridge,
+)
 import live_capture.collector_probe_record as cpr  # noqa: E402
 
 
@@ -160,6 +163,14 @@ class TestCollectorProbeRecord(unittest.TestCase):
 
         self.assertEqual(encoded, "1:0x1200;2:0x2200")
 
+    def test_encode_division_body_bridge_sorts_and_sanitizes_rows(self):
+        encoded = encode_division_body_bridge({
+            18: "0x9000",
+            "17": 0x8000,
+        })
+
+        self.assertEqual(encoded, "17:0x8000;18:0x9000")
+
     def test_encode_country_object_bridge_rejects_bad_rows(self):
         with self.assertRaises(ValueError):
             encode_country_object_bridge([(1, 0x1001)])
@@ -178,6 +189,7 @@ class TestCollectorProbeRecord(unittest.TestCase):
                 session_id="session-1",
                 country_object_bridge="1:0x1000;2:0x2000",
                 country_record_bridge="1:0x1200;2:0x2200",
+                division_body_bridge="17:0x8000;18:0x9000",
                 map_control_state_roots="1:0x3000;2:0x4000",
                 map_control_province_bridge=(
                     "province_array=0x5000;province_count=13232;"
@@ -190,6 +202,7 @@ class TestCollectorProbeRecord(unittest.TestCase):
 
         self.assertEqual(payload["country_object_bridge"], "1:0x1000;2:0x2000")
         self.assertEqual(payload["country_record_bridge"], "1:0x1200;2:0x2200")
+        self.assertEqual(payload["division_body_bridge"], "17:0x8000;18:0x9000")
         self.assertEqual(payload["map_control_state_roots"], "1:0x3000;2:0x4000")
         self.assertEqual(
             payload["map_control_province_bridge"],
@@ -225,6 +238,8 @@ class TestCollectorProbeRecord(unittest.TestCase):
         self.assertEqual(manifest["country_object_bridge_rows"], 0)
         self.assertFalse(manifest["country_record_bridge_supplied"])
         self.assertEqual(manifest["country_record_bridge_rows"], 0)
+        self.assertFalse(manifest["division_body_bridge_supplied"])
+        self.assertEqual(manifest["division_body_bridge_rows"], 0)
         self.assertNotIn(str(Path("collector.dll").resolve().parent),
                          json.dumps(manifest, sort_keys=True))
 
@@ -244,6 +259,7 @@ class TestCollectorProbeRecord(unittest.TestCase):
                     worker_sample_ms=25,
                     country_object_bridge={1: 0x1000, 2: 0x2000},
                     country_record_bridge={1: 0x1200, 2: 0x2200},
+                    division_body_bridge={17: 0x8000, 18: 0x9000},
                     map_control_state_roots="1:0x3000;2:0x4000",
                     map_control_province_bridge=(
                         "province_array=0x5000;province_count=13232;"
@@ -259,6 +275,8 @@ class TestCollectorProbeRecord(unittest.TestCase):
         self.assertEqual(manifest["country_object_bridge_rows"], 2)
         self.assertTrue(manifest["country_record_bridge_supplied"])
         self.assertEqual(manifest["country_record_bridge_rows"], 2)
+        self.assertTrue(manifest["division_body_bridge_supplied"])
+        self.assertEqual(manifest["division_body_bridge_rows"], 2)
         self.assertTrue(manifest["map_control_state_roots_supplied"])
         self.assertEqual(manifest["map_control_state_root_rows"], 2)
         self.assertTrue(manifest["map_control_province_bridge_supplied"])
@@ -266,6 +284,8 @@ class TestCollectorProbeRecord(unittest.TestCase):
         self.assertEqual(manifest["map_control_controller_bridge_rows"], 2)
         self.assertNotIn("0x1000", json.dumps(manifest, sort_keys=True))
         self.assertNotIn("0x1200", json.dumps(manifest, sort_keys=True))
+        self.assertNotIn("0x8000", json.dumps(manifest, sort_keys=True))
+        self.assertNotIn("0x9000", json.dumps(manifest, sort_keys=True))
         self.assertNotIn("0x3000", json.dumps(manifest, sort_keys=True))
         self.assertNotIn("0x5000", json.dumps(manifest, sort_keys=True))
         self.assertNotIn("0x6000", json.dumps(manifest, sort_keys=True))
