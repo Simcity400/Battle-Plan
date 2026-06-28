@@ -58,6 +58,15 @@ fn fixture_entries() -> Vec<PackEntry> {
             role: "timeline",
             hour_index: None,
         },
+        PackEntry {
+            path: format!("payload/{GAME}/collector_raw/collector_frames.jsonl"),
+            bytes: br#"{"type":"domain_delta","sequence":1,"domain":"divisions"}
+{"type":"gap","sequence":2,"domain":"land_combats"}
+"#
+            .to_vec(),
+            role: "collector_raw_stream",
+            hour_index: None,
+        },
     ]
 }
 
@@ -221,6 +230,34 @@ fn byte_identical_via_store_interface() {
         Some(&Value::Null)
     );
     std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn raw_collector_stream_can_be_enumerated_and_read_verified() {
+    let bytes = build_container(true);
+    let c = Container::from_bytes(bytes, &ExpectedIdentity::default()).expect("open");
+    let entries = c.entries_by_role("collector_raw_stream");
+
+    assert_eq!(entries.len(), 1);
+    let entry = &entries[0];
+    assert_eq!(
+        entry.path,
+        format!("payload/{GAME}/collector_raw/collector_frames.jsonl")
+    );
+    assert_eq!(entry.role.as_deref(), Some("collector_raw_stream"));
+    assert_eq!(entry.format, None);
+
+    let raw = c.read_entry_bytes(&entry.path).expect("read raw stream");
+    assert_eq!(
+        raw,
+        br#"{"type":"domain_delta","sequence":1,"domain":"divisions"}
+{"type":"gap","sequence":2,"domain":"land_combats"}
+"#
+    );
+    assert_eq!(entry.bytes as usize, raw.len());
+    assert_eq!(entry.sha256, snapshot::sha256::Sha256::hex(&raw));
+    c.verify_all()
+        .expect("raw stream participates in full verification");
 }
 
 #[test]

@@ -90,6 +90,33 @@ struct EntryRec {
     verified: bool,
 }
 
+/// Public metadata for one manifest-listed payload entry. The bytes are not
+/// included here; callers must use [`Container::read_entry_bytes`] so integrity
+/// verification stays centralized.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerEntry {
+    pub path: String,
+    pub role: Option<String>,
+    pub format: Option<String>,
+    pub bytes: u64,
+    pub sha256: String,
+}
+
+impl ContainerEntry {
+    fn from_manifest(ent: &Value) -> Option<ContainerEntry> {
+        Some(ContainerEntry {
+            path: ent.get("path")?.as_str()?.to_string(),
+            role: ent.get("role").and_then(Value::as_str).map(str::to_string),
+            format: ent
+                .get("format")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            bytes: ent.get("bytes")?.as_u64()?,
+            sha256: ent.get("sha256")?.as_str()?.to_string(),
+        })
+    }
+}
+
 /// An opened, manifest-verified `.battleplan`. Holds the archive in memory and the
 /// per-entry expected hashes; snapshot bytes are verified lazily on read.
 pub struct Container {
@@ -114,6 +141,26 @@ impl Container {
     }
     pub fn index(&self) -> &Index {
         &self.index
+    }
+    /// Manifest-listed payload entries in manifest order.
+    pub fn entries(&self) -> Vec<ContainerEntry> {
+        self.manifest
+            .get("entries")
+            .and_then(Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(ContainerEntry::from_manifest)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+    /// Manifest-listed payload entries with a specific role.
+    pub fn entries_by_role(&self, role: &str) -> Vec<ContainerEntry> {
+        self.entries()
+            .into_iter()
+            .filter(|entry| entry.role.as_deref() == Some(role))
+            .collect()
     }
 
     /// Open + verify a `.battleplan` from a path. `expected` enforces identity
@@ -403,9 +450,16 @@ impl Container {
     /// Verifies the entry's hash lazily; never exposes unverified bytes (Codex d).
     pub fn load_file(&self, file: &str) -> Result<Snapshot, ContainerError> {
         let path = format!("payload/{}/{}", self.game_id, file);
-        let mut guard = self.by_path.lock().expect("container lock");
-        let bytes = verify_and_read(&self.archive, &mut guard, &path)?;
+        let bytes = self.read_entry_bytes(&path)?;
         Ok(serde_json::from_slice(&bytes)?)
+    }
+
+    /// Read any manifest-listed payload entry as verified raw bytes. This is the
+    /// generic path used for optional non-snapshot streams such as
+    /// `collector_raw_stream`.
+    pub fn read_entry_bytes(&self, path: &str) -> Result<Vec<u8>, ContainerError> {
+        let mut guard = self.by_path.lock().expect("container lock");
+        verify_and_read(&self.archive, &mut guard, path)
     }
 
     /// Load a snapshot by hour_index — resolved through the INDEX (`file` field),
