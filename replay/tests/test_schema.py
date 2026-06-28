@@ -65,7 +65,7 @@ class TestSourceMap(unittest.TestCase):
         for v in schema.FIELD_SOURCES.values():
             parts = v.split("/")
             for p in parts:
-                self.assertIn(p, {"M", "M*", "S", "D", "marker"}, v)
+                self.assertIn(p, {"C", "M", "M*", "S", "D", "marker"}, v)
 
 
 class TestEmptySkeletons(unittest.TestCase):
@@ -79,6 +79,45 @@ class TestEmptySkeletons(unittest.TestCase):
         snap = schema.empty_snapshot("g1", "1940.9.10.13")
         self.assertEqual(schema.validate_snapshot(snap), [])
         self.assertEqual(snap["hour_index"], schema.date_to_hour_index("1940.9.10.13"))
+
+    def test_collector_provenance_validates(self):
+        snap = schema.empty_snapshot("g1", "1940.9.10.13")
+        snap["provenance"]["collector"] = {
+            "captured": True,
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "exe_sha256": "0" * 64,
+            "mod_checksum": "vanilla",
+            "profile_id": "hoi4-1.19.1-test",
+            "quality_status": "synthetic",
+            "capture_boundary": "daily_update",
+            "transport": "synthetic",
+            "transport_crc32": "1234abcd",
+            "transport_bytes": 512,
+            "sequence": 1,
+            "domains": ["clock", "country_identity"],
+        }
+        self.assertEqual(schema.validate_snapshot(snap), [])
+
+    def test_bad_collector_transport_metadata_flagged(self):
+        snap = schema.empty_snapshot("g1", "1940.9.10.13")
+        snap["provenance"]["collector"] = {
+            "captured": True,
+            "transport_crc32": 1234,
+            "transport_bytes": "512",
+        }
+        probs = schema.validate_snapshot(snap)
+        self.assertTrue(any("transport_crc32" in p for p in probs), probs)
+        self.assertTrue(any("transport_bytes" in p for p in probs), probs)
+
+    def test_bad_collector_domain_flagged(self):
+        snap = schema.empty_snapshot("g1", "1940.9.10.13")
+        snap["provenance"]["collector"] = {
+            "captured": True,
+            "domains": ["nope"],
+        }
+        probs = schema.validate_snapshot(snap)
+        self.assertTrue(any("provenance.collector.domains" in p for p in probs), probs)
 
     def test_containers_always_present(self):
         snap = schema.empty_snapshot("g1")

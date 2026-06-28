@@ -1,11 +1,15 @@
-# Battle Plan / Replay — design (v2)
+# Battle Plan / Replay — design (v3)
 
 > **v2 supersedes the original log-channel design.** The original DESIGN treated the
 > in-game mod's `log=` channel as the primary data source and listed divisions,
 > division counts, tech, naval tonnage, etc. as "not possible." That was true **only
-> for the log channel**. Since then the data architecture pivoted to a **host-side
-> external memory reader + rakaly-melted save oracle**, and live RE has *proven* most
-> of that old "impossible" list is reachable. This doc reflects the current reality
+> for the log channel**. Since then the data architecture first pivoted to a
+> **host-side external memory reader + rakaly-melted save oracle**, and live RE has
+> *proven* most of that old "impossible" list is reachable. The current product
+> decision is stricter: **runtime replay capture has one authoritative source, the
+> live host `hoi4.exe` process**. Saves may be used as optional development
+> fixtures and validation artifacts, but they are not required to record, replay,
+> bridge, or complete a live session. This doc reflects the current reality
 > and the expanded goal: a **full game-replay/review tool**. The original is preserved
 > in git history.
 
@@ -51,48 +55,61 @@ correct as the game's own data allows," not "looks complete."
 
 ---
 
-## 2. Data architecture — two channels, two jobs
+## 2. Data architecture — one runtime source, optional validators
 
 ```
 Host running hoi4.exe (deterministic lockstep ⇒ the host holds the WHOLE world;
                        fog of war is a render filter, not a data filter)
-  ├─ (A) External MEMORY READER  → live daily/hourly snapshots   [liveness/cadence]
-  └─ (B) SAVE ORACLE (rakaly melt + parse)  → periodic snapshots  [truth/depth/anchor]
-                       │
-         Snapshot store (per game) ──► Diff engine ──► Event timeline
-                       │
-         Dashboard (offline, 127.0.0.1) — scrub state + browse events
+  └─ (A) In-process COLLECTOR DLL → live structured snapshots/events
+                       |
+       External recorder / .battleplan writer → Snapshot store → Diff engine
+                       |
+          Native replay app — scrub state + browse events
+
+Optional development inputs, never required at runtime:
+  - external read-only memory probes for research and comparison
+  - save_oracle parsers for fixtures, historical validation, and RE anchoring
+  - static game/mod definition parsers for names, localisation, and assets
 ```
 
-**(A) Memory reader** — `ReadProcessMemory`, read-only, passive (no desync, any
-cadence), 64-bit Python + ctypes. Sees all ~countries at once. **Role: the live
-daily/hourly tick.** Weakness: offsets change every build → patch-fragile, and reads
-can silently misread.
+**(A) In-process collector DLL** — injected into the host's `hoi4.exe`, gated by
+exact build hash and mod checksum, and limited to direct reads plus small hooks at
+known game boundaries. **Role: the live authoritative replay source.** It captures
+date/hour, country identity, object roots, deltas, and high-cadence domains from
+the same process the group is playing from. It emits structured records through a
+pipe/shared-memory/file queue to an external recorder. It must not mutate game
+state, call unsafe game logic, or run heavy work inside hook callbacks.
 
-**(B) Save oracle** — melt the host's save with rakaly, parse the plaintext (stable
-text keys, patch-tolerant). **Role: truth, not cadence** — (1) validate the memory
-reader (fail-closed on divergence), (2) re-anchor/re-discover memory offsets each
-build, (3) supply deep nested layers that aren't worth cracking in memory, (4)
-durable fallback + retroactive coverage of games where the reader wasn't running.
-**Periodic, not forced-daily** (daily saves stutter an MP session; normal
-autosaves / end-of-session / monthly suffice for these roles).
+**External recorder** — owns durability, segment metadata, `.battleplan` writing,
+schema validation, skipped-hour diagnostics, and native-app compatibility. The
+recorder is outside the game process so storage, compression, UI, and replay
+inspection cannot crash or stall HOI4.
 
-**Neither channel alone.** Memory gives liveness but lies silently and dies on patch;
-the save gives truth and patch-stability but can't be taken often in MP. The hybrid is
-the design: **memory for liveness, save for truth.**
+**Language split** — Rust owns the runtime path that must keep up with the game:
+the injected collector, bounded object reads, transport, backpressure, replay
+packing/reading, and the native UI. Python remains the research, oracle, profile,
+audit, and harness layer while the Rust runtime matures. Runtime speed-five
+capture must not depend on Python doing per-frame heap traversal.
 
-**Greenfield backend note.** A separate research track now evaluates an optional
-in-process collector backend inspired by `HOI4-IC-Graphs`; see
-`RESEARCH_in_process_collector.md`. That path may be stronger for tick-boundary
-capture and large object-graph traversal, but it requires an explicit product/safety
-decision to allow injection or hooking. Until then, the active contract remains the
-external read-only memory reader plus save oracle described here.
+**Optional validators** — the existing external `ReadProcessMemory` readers and
+`save_oracle` parsers remain valuable for research, fixtures, and field validation.
+They are not runtime dependencies and not fallback truth. If the collector cannot
+capture a field on a supported live build, that field is marked unavailable or the
+affected layer stops publishing. It is never silently filled from a save.
 
-### Historical feasibility evidence (memory-reader research snapshot)
+The product decision to allow injection/hooking is now explicit for this private,
+host-side, observational tool. See `RESEARCH_in_process_collector.md` for the
+HOI4-IC-Graphs evidence and `IN_PROCESS_COLLECTOR_PLAN.md` for the attack plan.
+
+### Historical feasibility evidence (memory-reader and save-oracle research snapshot)
 
 All memory offsets in this snapshot were validated 1:1 against a time-aligned
 melt. Keep the evidence, but treat current progress and remaining work as living
-in `replay_ui/MASTER_PROGRESS.md` and the coverage manifest.
+in `replay_ui/MASTER_PROGRESS.md` and the coverage manifest. Save-backed rows
+below are evidence that the field exists and has a known schema; they are not a
+runtime-source commitment. Every replay-critical row must either move to the
+live collector, be derived from live collector inputs, or remain explicitly
+unavailable.
 
 | datum | source | evidence at snapshot |
 |---|---|---|
@@ -129,8 +146,9 @@ manifest named above.
 The old offline prototype stack once composed end-to-end (validate →
 ingest → snapshot store → diff/events → browser map preview), but that browser
 runtime has been removed. The retained/current pieces are:
-- **save oracle** — owner/controller ground truth, divisions, full province control, +7
-  deep parsers (focus/tech/production/economy/diplomacy/state-detail/combats). ✓
+- **save oracle** — historical/dev validation coverage for owner/controller,
+  divisions, full province control, and +7 deep parsers
+  (focus/tech/production/economy/diplomacy/state-detail/combats). ✓
 - **`save_oracle/validate.py`** — 23-check replay preflight (source-fingerprint
   coherence, template/equipment/combat joins, faction bidirectional, redaction). ✓
 - **live memory cracks** — owner/controller, divisions (+org/strength/equipment),
@@ -153,17 +171,17 @@ A replay is two tiers:
 
 - **STATE** — what the world looks like at time T (territory/control, divisions &
   positions & org/strength, production, factories, focus progress, tech, stockpiles,
-  diplomacy). Captured by **sampling** (memory frequently; saves periodically).
+  diplomacy). Captured by **sampling the live host process** through the collector.
 - **EVENTS** — what *happened*. Mostly **computed by diffing adjacent snapshots** — no
   special hooks needed: ownership delta → conquest timeline; division-roster delta →
   builds/losses/merges; focus-tree delta → focuses completed; tech delta → research
   timeline; production/stockpile delta → output; diplomacy delta → wars/factions.
-  Optionally sharpened by **exact-timed event markers** from the in-game mod for the
-  few things the game exposes as `on_actions` (capitulation, war declared, focus complete).
+  Optionally sharpened by **collector hooks or exact-timed event markers** for known
+  engine/update boundaries and cheap script-exposed `on_actions`.
 
 Implementation: a **snapshot store** (time series per game) + a **diff engine** that
-derives the event feed. Event resolution = the sampling interval of the underlying
-layer (memory layers exact-to-the-tick; save-only layers coarser).
+derives the event feed. Event resolution = the collector cadence for the underlying
+layer. There is no save-cadence runtime layer.
 
 ---
 
@@ -172,10 +190,12 @@ layer (memory layers exact-to-the-tick; save-only layers coarser).
 - **Tier A — in hand:** date, per-country PP/stability/war_support/command_power,
   state owner+controller, full province control, division enumeration with
   owner/location/template (org/strength imminent). Map time-lapse + division layer.
-- **Tier B — reachable, save-parseable (stable text keys):** focuses (and completion
-  timeline via diff), tech/research, production lines + gross output by equipment,
-  equipment stockpiles, factories (civ/mil/dockyard), fuel/manpower, diplomacy
-  (wars/factions/opinions), per-division equipment, *active* combats at snapshot time.
+- **Tier B — proven by save parsing, must become live for runtime:** focuses (and
+  completion timeline via diff), tech/research, production lines + gross output by
+  equipment, equipment stockpiles, factories (civ/mil/dockyard), fuel/manpower,
+  diplomacy (wars/factions/opinions), per-division equipment, *active* combats at
+  snapshot time. The save parsers prove structure and fixtures; the shipped recorder
+  must source these from the live collector or badge the gap.
 - **Tier C — transient combat: PURSUED at maximum fidelity (per the maximal-depth
   stance).** Battles aren't stored as *history* — only as *active* combats at the
   snapshot instant — so we capture them by **high-frequency sampling of the live
@@ -203,16 +223,20 @@ layer (memory layers exact-to-the-tick; save-only layers coarser).
 
 ## 4b. Data inventory — everything the app captures
 
-The full target set for "all the information a reviewer could need." Source tags:
-**M** = live memory (cracked), **M\*** = memory (crackable, planned), **S** = save oracle,
-**D** = derived (diff / join / compute). Cadence per §5.
+The full target set for "all the information a reviewer could need." Historical
+source tags are retained to show current evidence: **M** = live memory already
+cracked externally, **M\*** = live memory/collector crackable, **S** = currently
+proven only by save parser, **D** = derived (diff / join / compute). In v3, `S`
+does **not** mean an acceptable runtime source. It means the row must be promoted
+to the live collector, derived from live collector inputs, or honestly badged as
+unavailable.
 
 **Country — economy & industry:** civ / mil / dockyard factories `S/M*`; factories under
 construction + what's queued `S`; construction power `S`; consumer-goods & trade-law
 allocation `S`; **gross IC output by equipment type** `S/D`; equipment stockpiles by
 type & variant `S`; resources produced/consumed/imported/exported per resource (steel,
 oil, aluminium, tungsten, chromium, rubber) `S`; fuel current/max/gain `S/M*`; trade
-agreements & convoys `S` (per-*partner* live totals not script-exposed — save-only).
+agreements & convoys `S` (legacy save-proven; promote to live or badge unavailable).
 
 **Country — military:** total divisions `M/D`; manpower deployed/reserve & army/navy/air
 split `S/M*`; army/navy/air XP `S`; equipment held by type+variant `S`; ships by hull
@@ -267,33 +291,44 @@ the mod log marks them (§8).
 
 ---
 
-## 5. Cadence — a per-layer dial
+## 5. Cadence — collector-owned, per-layer
 
-- **Memory layers** (date, economy scalars, owner/control): hourly is essentially free
-  (relocation is once per session; re-reads are milliseconds). Daily by default,
-  hourly available.
-- **Division layer** (memory): bounded by a ~seconds heap vtable scan per snapshot —
-  daily by default; hourly feasible but **auto-coarsens at high game speed**.
-- **Deep layers** (save-only: focuses/tech/production/diplomacy/combats): resolution =
-  the **save interval** (host autosave / end-of-session). Not forced-daily.
-- Sampling is driven by polling the in-memory date and snapshotting on the chosen
-  hour/day boundary.
+- **Clock and segment sentinels:** captured at every collector boundary and used
+  to reject torn snapshots.
+- **Light state layers** (date, country identity, ownership/control, economy
+  scalars): hourly-or-better snapshots, with millisecond-level collector work as
+  the target. Daily-only capture is insufficient for replay coverage.
+- **Heavy object graphs** (divisions, production, diplomacy, focus/research,
+  buildings, OOB): captured on scheduled hourly boundaries when they affect the
+  replay timeline. Daily aggregates may exist only as auxiliary rollups.
+- **Transient combat and movement:** highest sustainable cadence. Prefer event
+  hooks plus bounded live reads; record explicit coverage/skipped-boundary
+  diagnostics when game speed outruns capture.
+- **No save interval layer.** Host autosaves are not part of normal runtime
+  fidelity. A field that is only save-backed today remains open until the live
+  collector can emit it or the UI badges it unavailable.
 
 ---
 
 ## 6. Correctness & patch-resilience (non-negotiable)
 
-- **exe SHA-256 build gate** — refuse/relocate on an unknown build, never run stale
-  offsets blind.
-- **Re-discover layouts each build from save invariants** (the anchor methods —
-  PP-Rosetta, manpower anchor, division org/strength anchor — all bootstrap off the
-  save).
-- **Validate memory against the latest save** (owner/control/division counts, field
-  agreement). **Fail closed:** on divergence, stop publishing the affected layer and
-  fall back to save snapshots rather than emit guessed data.
-- Read consistency: date-sentinel around each snapshot (read date → read → re-read
-  date); single-RPM array reads; **clamp reads to the VirtualQuery region end** (a
-  fixed-size read straddling a region edge returns 0 for the whole span).
+- **exe SHA-256 build gate** — refuse on an unknown build, never run stale
+  offsets/hooks blind.
+- **Mod checksum / data-def profile** — record the exact mod set and static
+  definition hashes used to decode IDs, names, sprites, localisation, and schema
+  joins.
+- **Live-layout validation** — validate collector roots with sentinels, vtables,
+  object counts, tag tables, and cross-domain invariants. Saves may be used in
+  development to discover or audit a layout, but the runtime collector cannot
+  require them.
+- **Fail closed:** on layout mismatch, torn reads, impossible counts, or hook
+  install failure, stop publishing the affected layer or stop recording. Do not
+  fall back to saves.
+- **Hook discipline:** callbacks do the minimum work needed to identify a safe
+  boundary and enqueue work. Heavy traversal, compression, and disk writes happen
+  outside the game-thread hook path.
+- **Read consistency:** capture boundary sentinel around each snapshot; reject
+  if the in-game hour/tick changes before the snapshot is durably accepted.
 
 ---
 
@@ -330,41 +365,44 @@ the same data model at different cadences.
   old design; for a replay timeline it's worth it. Emit exact-timed `on_actions` markers
   (capitulation, war declared, focus completed, faction join) to `game.log` to sharpen
   the diff-derived event feed. Cheap, optional, complements (does not replace) the
-  snapshot diffs. The mod can NOT export divisions/combat — that's the memory reader's job.
+  snapshot diffs. The mod can NOT export divisions/combat — that's the collector's job.
 
 ---
 
 ## 9. Build order (phased)
 
-1. **Reader productionization + snapshot store** — merge the offset drafts (owner /
-   economy / division) into the per-build layout; per-session relocation; SHA gate;
-   fail-closed validation vs save. Persist the time series per game (the backbone every
-   layer writes into).
-2. **Save-parser breadth backbone** — parse the save EXHAUSTIVELY (focuses, tech,
-   production, diplomacy, laws, equipment, stockpiles, resources, buildings, intel,
-   active combats). This is the fastest route to "all the information": every §4b layer
-   becomes available immediately at save cadence, tractable + patch-stable. Sets the
-   schema the live cracks later fill in at higher cadence.
-3. **Map + division time-lapse** — owner/control + divisions (positions/org/strength/
-   equipment) over time; wire the existing viewer to live + archived snapshots.
-4. **High-frequency COMBAT capture** (the marquee Tier-C work) — RE the live
-   active-combat structures (land/naval/air); sample at max sustainable rate;
-   reconstruct engagements (participants/location/duration/casualties/outcome) from the
-   combat lifecycle + strength deltas; emit confidence/coverage.
-5. **Live-layer cracks for cadence** — promote the slow/deep layers from save-cadence to
-   live where it adds value (province-control overrides, fuel/manpower/factories,
-   research & focus progress) via the proven save-anchored memory discovery; keep the
-   save as validator.
-6. **Diff engine → event timeline**; full **Overview leaderboard**, **Country deep-dive**,
-   **Event feed**, and the **combat layer** in the UI; the (revived) **event-marker mod
-   log** for exact-timed events; game library/archive polish.
+1. **Collector skeleton + transport** — build the smallest injected DLL that
+   proves build gating, safe attach/detach, date/hour capture, country identity,
+   and a pipe/shared-memory stream consumed by the external recorder.
+2. **Schema parity** — write collector output into the existing snapshot schema
+   and `.battleplan` container with `backend = "in_process_collector"` provenance.
+3. **IC-Graphs-class economy proof** — reproduce country MIL/CIV/NAV-style
+   output from live process state, then prove whether it can be sampled hourly
+   for replay rows. Daily output is a validation/rollup aid, not acceptance.
+4. **Light-state live closure** — owner/control, province control, country
+   scalars, buildings/resources/factories, and country identity with no save
+   dependency.
+5. **Division/OOB closure** — divisions, templates, equipment, org/strength,
+   movement, army/fleet/air command graphs, and UI counter anchors.
+6. **Deep-domain promotion** — focus/research, production, stockpiles, diplomacy,
+   intel, decisions/missions, projects, market, and special systems move from
+   save-proven schema to live collector output or explicit unavailable badges.
+7. **High-frequency combat capture** — hook/sample land/naval/air combat
+   lifecycles at the highest sustainable cadence, reconstruct events from live
+   state deltas, and emit coverage confidence.
+8. **Diff engine → event timeline**; full **Overview leaderboard**, **Country
+   deep-dive**, **Event feed**, and the **combat layer** in the UI; game
+   library/archive polish.
 
 ---
 
 ## 10. Open defaults (decide at build time)
 
-- Memory tick: daily default, hourly toggle; division layer auto-coarsen threshold.
-- Save ingest: consume host autosaves; archive + melt + parse + delete raw on import.
+- Collector tick targets: hourly-or-better snapshot mode, combat/movement
+  high-rate mode, optional daily rollups, and explicit overload/coarsening
+  diagnostics.
+- Save ingest: development-only fixture/import path, never required for runtime
+  recording or replay.
 - Map coloring: country map-colors, faction-grouping toggle. Live refresh ~15s.
 - Archive retention: keep everything; manual prune.
 - Combat-inference thresholds (strength-drop / control-flip sensitivity).
@@ -419,29 +457,27 @@ this as a normal diff-derived event, the same machinery as everything else:
 
 The data stream is uninterrupted across a disconnect because the host never stopped.
 
-### 11.3 Downtime gaps (crash / rehost / restart) — bridge with saves, else "no data"
+### 11.3 Downtime gaps (crash / rehost / restart) — live segments, else "no data"
 
 The stream *does* break when the **host process** stops: a crash, a deliberate rehost, a
-machine restart. Two mechanisms cover it:
+machine restart. The live collector handles this as segment discontinuity:
 
-1. **Saves bridge the gap.** Frequent host **autosaves** plus a **save-taken-before any
-   planned rehost** give the save oracle (`S`) coverage across the downtime. The melted
-   save re-anchors the world at its timestamp, so the replay resumes from real state, not
-   a guess.
-2. **The readers auto-reattach and self-relocate.** On the new `hoi4.exe` process the
-   reader re-attaches, re-runs the **exe-SHA build gate**, and **rediscovers offsets from
-   save invariants** for that session (§6). Offsets are per-session, so a rehost — even on
-   a *patched* build — is handled by the normal relocation path, not a manual fix-up.
-3. **Host-machine change is free.** Saves are portable, so a rehost on a **different
-   person's machine** is bridged by the same save mechanism; the reader simply attaches to
-   whoever is now hosting. (The build gate + offset profile is per host/build, recorded
-   per segment — §11.7.)
+1. **The collector/recorder auto-reattach.** On the new `hoi4.exe` process the
+   injector/recorder re-runs the build gate, mod checksum, hook install, and live
+   root validation. A patched build is supported only when its collector profile is
+   known.
+2. **Continuity is explicit.** If the new process continues the same world, the
+   next segment is linked by observed hour/world-hash continuity or by an explicit
+   operator/session lineage decision. If continuity cannot be proven, the timeline
+   records a boundary.
+3. **Host-machine change is operational, not data-magical.** A different host can
+   continue the replay only if a collector is running on that host and uploads the
+   next live segment. The replay model can join segments, but it does not infer
+   missing world state from saves.
 
-**Honest residual:** a span covered by **neither** a memory snapshot **nor** any save is
-marked **`no_data`** — never interpolated. If the host crashed at 1940.3 and the most
-recent autosave was 1940.1, the 1940.1→1940.3 divergence is simply unobserved; the
-replay shows the gap explicitly. Fabricating a smooth bridge would violate the core
-contract.
+**Honest residual:** a span covered by no live collector output is marked
+**`no_data`**. Optional saves may be imported later as comparison artifacts or
+debug fixtures, but they do not fill the canonical runtime timeline.
 
 ### 11.4 Rollbacks — the SEGMENT + SUPERSEDE model
 
@@ -450,12 +486,11 @@ Naive `hour_index` ordering would interleave the discarded future with the new b
 and produce a nonsense timeline. The model:
 
 - **`campaign_id`** identifies one playthrough. It is a **composite fingerprint**, not a
-  single field: the save's `game_unique_id` / `game_unique_seed` (proven to identify a
-  playthrough) **plus** start date, scenario/bookmark, mod-set checksum, and initial
-  country roster. Seed match is **evidence, not identity** — a seed that reappears with
-  *incompatible* start invariants is a collision and splits into a new campaign; a seed
-  that changes but whose save lineage is otherwise clear gets an alias link. We store the
-  **raw components**, not just the hash, so an ambiguous match can be re-decided later.
+  single field: collector session id, start date/hour, scenario/bookmark, mod-set
+  checksum, initial country roster, and any live-exposed unique seed/identity values.
+  A matching seed is evidence, not identity: incompatible start invariants split into
+  a new campaign. We store the **raw components**, not just the hash, so an ambiguous
+  match can be re-decided later.
 - **A SEGMENT = one continuous capture run** of a single authoritative source, bounded by
   a discontinuity (§11.5). Every snapshot is tagged
   **`(campaign_id, segment_id, reader_run_id, hour_index, captured_at, ingest_id,
@@ -463,8 +498,8 @@ and produce a nonsense timeline. The model:
 - **Stitching:** within the canonical branch, order by `hour_index`. Across segments,
   resolve overlaps by **lineage, never by the clock** (§11.6).
 - **Supersede:** when a reload's new segment **demonstrably replaces** an earlier branch's
-  now-discarded future (an explicit save→load lineage edge: "segment B loaded from save X,
-  which came from segment A at hour H"), the **later branch is canonical** and the earlier
+  now-discarded future (an explicit operator/session lineage edge, collector load marker,
+  or other proven continuity signal), the **later branch is canonical** and the earlier
   future is **demoted to an optional side-branch — kept, never deleted.** The rolled-back
   timeline stays browsable ("what would have happened"); it just isn't the main line.
 - **Divergent overlap with no lineage edge = FORK, not supersede.** Same `campaign_id`,
@@ -476,8 +511,8 @@ and produce a nonsense timeline. The model:
 ### 11.5 Detecting a segment boundary (multi-signal, not just "time went back")
 
 `hour_index` **decrease** catches a plain rollback, but a reload can also jump **forward**
-(reader stopped Jan 10 → host crashed → group reloaded a Jan 15 autosave → next memory
-read is Jan 15, `hour_index` *increased* yet continuity is broken). So a boundary is
+(collector stopped Jan 10 → host crashed → group continued from a Jan 15 rehosted
+state → next collector read is Jan 15, `hour_index` *increased* yet continuity is broken). So a boundary is
 declared on **any** of:
 
 - **process change** — new `hoi4.exe` pid / process-start-time, or first read after a
@@ -486,8 +521,7 @@ declared on **any** of:
 - **`world_hash` / checksum discontinuity at equal-or-forward time** — the world changed
   in a way forward simulation can't explain (a load, a console/save edit, manual mutation);
 - **a large wall-clock gap** with missing expected ticks (host was down);
-- **a save-load signal** (a fresh save appearing whose lineage doesn't continue the
-  current segment).
+- **an explicit reload/authority signal** from the recorder/operator workflow.
 
 Each segment records a **`segment_start_reason`** (`new_process`, `hour_decrease`,
 `save_loaded`, `reader_restart`, `gap_after_timeout`, `manual_rehost`, …). A forward jump
@@ -504,8 +538,9 @@ save and plays to 1940.5; the stale host's reader uploads *later wall-clock* dat
 
 1. **Explicit authority** — an operator/session marks the canonical host (the "this is the
    real game" pin).
-2. **Save / reload lineage** — a proven load edge supersedes the branch it replaced
-   (the strongest *automatic* rule).
+2. **Reload / authority lineage** — a proven collector/operator load edge
+   supersedes the branch it replaced (the strongest automatic rule after an
+   explicit authority pin).
 3. **Same-source continuous segment** — within one `reader_run_id`, higher `hour_index`
    wins (normal forward play).
 4. **Identical-state dedupe** — equal `world_hash` at the same `hour_index` collapses.
@@ -525,26 +560,23 @@ later), never a truth rule on its own.
   (`complete` / `torn_rejected` / …); **only `complete` enters the canonical diff stream**
   — a torn read is discarded/retried, never stored as truth. (This extends the §6
   date-sentinel and region-clamp rules.)
-- **Partial / corrupt / truncated save.** A rehost save can be half-written; rakaly can
-  fail, or worse **succeed on incomplete data.** Saves move through an ingest state machine
-  (`pending → stable → parsed_ok | parsed_invalid | quarantined`): **atomically copy + hash
-  the file**, wait until size/mtime are **stable**, only then melt, then **validate
-  invariants** (date/hour present, `game_unique_*` present, plausible country count, key
-  world tables non-empty). A save that fails validation **cannot anchor offsets, cannot
-  create a `campaign_id` / segment / lineage edge, and cannot supersede** — the span it
-  would have bridged stays `no_data`.
+- **Partial / corrupt / truncated save fixture.** Optional saves can still be used
+  during development and offline audits. They must move through an ingest state
+  machine (`pending → stable → parsed_ok | parsed_invalid | quarantined`) before
+  being used as fixtures. A save artifact can never create canonical runtime
+  state, fill a `no_data` span, or supersede a live segment.
 
 ### 11.8 Cadence & fail-closed (continuity knobs)
 
-- **Frequent autosaves** + **save-before-rehost** are the continuity backbone — every save
-  is a re-anchor point and a potential gap-bridge (§5 keeps daily forced saves *off*; these
-  are normal autosave/end-of-session/pre-rehost saves).
-- **Atomic save capture:** copy + content-hash each autosave **immediately** on appearance,
-  because autosaves rotate/overwrite; the hash is the save's identity for lineage.
-- **Fail-closed on patch:** if **offset rediscovery fails** after a build change, the memory
-  layer **stops publishing** and the replay falls back to **save cadence** for that span
-  rather than emit guessed data (§6). Continuity degrades to coarser-but-true, never to
-  fabricated.
+- **Collector uptime** is the continuity backbone. The recorder tracks expected
+  boundaries, missed boundaries, process changes, hook status, and upload/flush
+  health.
+- **No save fallback:** autosaves may be archived for manual review, but they are
+  not a replay bridge and not a lower-cadence truth channel.
+- **Fail-closed on patch:** if build gating, hook install, or live-layout
+  validation fails after a build change, the collector stops publishing the
+  affected layer or stops recording. Continuity degrades to explicit `no_data`,
+  never to fabricated or save-filled data.
 - **Paused ≠ gap:** a long wall-clock stretch at an unchanged `hour_index` is the game
   **paused**, not missing data — distinguished from a true downtime gap by the
   process/sentinel signals (§11.5), so we don't mark a coffee break as `no_data`.
@@ -560,9 +592,10 @@ These are the concrete extensions the model needs (additive to `replay/SCHEMA.md
   snapshot **`quality_status`**. `capture_seq` is **monotonic only within a
   `reader_run_id`** (it resets on reader restart), so it never serves as a cross-restart
   order key — `ingest_id` / `captured_at` do.
-- **Segment record:** `parent_segment_id`, `parent_save_hash`, `segment_start_reason`,
-  `authority_status`, and the per-segment **offset profile** (`exe_sha256` + mod checksum)
-  so a patched rehost is self-describing.
+- **Segment record:** `parent_segment_id`, `parent_lineage_evidence`,
+  `segment_start_reason`, `authority_status`, and the per-segment **collector profile**
+  (`exe_sha256` + mod checksum + hook/layout profile) so a patched rehost is
+  self-describing.
 - **Campaign record:** the **raw fingerprint components** (not just the hash) so a collision
   or alias can be re-adjudicated.
 - **Store / timeline** become **segment-aware**: dedupe identical overlapping ticks by
@@ -571,5 +604,6 @@ These are the concrete extensions the model needs (additive to `replay/SCHEMA.md
   divergent overlaps by the §11.6
   precedence (supersede on lineage, else fork); expose the canonical branch to the scrubber
   while keeping rolled-back side-branches and fork branches **selectable, never dropped**.
-- **`no_data` is first-class:** spans the canonical branch can't cover (no memory, no valid
-  save) are explicit gaps in the timeline, surfaced in the UI — coverage, not silence.
+- **`no_data` is first-class:** spans the canonical branch can't cover with live
+  collector output are explicit gaps in the timeline, surfaced in the UI — coverage,
+  not silence.

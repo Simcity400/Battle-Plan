@@ -1,19 +1,21 @@
 # replay/ — the replay data backbone
 
-Turns raw **save-oracle** and (future) **memory-reader** outputs into a queryable
-**replay**: an ordered series of canonical **snapshots** plus a derived **event
-timeline**. Pure offline Python, **stdlib only** — no game, no network, import-clean.
+Turns captured world-state records into a queryable **replay**: an ordered series
+of canonical **snapshots** plus a derived **event timeline**. Pure offline
+Python, **stdlib only** — no game, no network, import-clean.
 
 This package is the backbone every capture and replay layer writes into. The
-native app reads the snapshot store and timeline produced here.
+native app reads the snapshot store and timeline produced here. Runtime capture
+is moving to in-process collector frames; save-oracle output remains a fixture
+and offline import path, not a live replay requirement.
 
 ## Files
 
 | file | what |
 |------|------|
-| `SCHEMA.md` | **The contract.** Canonical snapshot + event schema, per-field source tags (M/M*/S/D). Read this first. |
+| `SCHEMA.md` | **The contract.** Canonical snapshot + event schema, per-field source tags (C/M/M*/S/D). Read this first. |
 | `schema.py` | Python mirror of SCHEMA.md: dataclasses, `FIELD_SOURCES`, `date_to_hour_index`, empty-skeleton builders, `validate_snapshot`. |
-| `store.py` | Ingests save-oracle output (read-only) into canonical snapshots; the on-disk `SnapshotStore`. |
+| `store.py` | Ingests fixture/capture output into canonical snapshots; the on-disk `SnapshotStore`. |
 | `diff_engine.py` | Derives events from adjacent snapshots; merges a series into one chronological timeline. |
 | `tests/` | `unittest` suite: schema/date math, ingestion vs the real oracle output, every event type, merge/dedupe. |
 | `snapshots/` | The on-disk store (one subdir per game). |
@@ -26,12 +28,15 @@ native app reads the snapshot store and timeline produced here.
 - Per country the snapshot now also carries `commanders` (leader + generals/FM/admirals
   + advisors), `mios`/`scheduled_variants`/`mio_policies`, a deepened `intel` (agency /
   operatives / operations / decryption / peace conference), and an `order_of_battle`
-  count rollup — all save-sourced (**S**), `null` until their parser feeds them.
+  count rollup. Many rows are currently save-fixture-proven (**S**) and stay `null`
+  until a parser or collector feeds them; runtime closure requires collector output
+  or an explicit unavailable badge.
 - **`hour_index`** (int, Clausewitz `((year*365+day_of_year)*24+hour)`, 365-day no-leap)
   is the canonical sort/diff key. `date` is the human `"Y.M.D.H"` string.
 - **Events** are derived by diffing adjacent snapshots, sharpened by exact mod-log
   markers. See `SCHEMA.md §9` for the event record and the full type enum.
-- **Source tags** (M live-memory / M\* memory-planned / S save / D derived) are
+- **Source tags** (C collector / M legacy live-memory / M\* live-planned /
+  S save fixture / D derived) are
   documented per field in `SCHEMA.md` and machine-readable via
   `schema.source_of("countries.GER.politics.stability")`.
 
@@ -65,11 +70,10 @@ timeline = diff_engine.build_timeline(snaps, milestone_steps={"factory": 50,
 st.write_timeline("ger_1941", timeline)
 ```
 
-To ingest a series, run step 1 once per save-oracle output you have (each is one
-timestamp), then step 2 once. The memory reader, when it produces live per-timestamp
-reads, overlays into the same snapshot shape via `build_snapshot_from_oracle`'s
-`memory_dir` hook (today the memory artifacts are offset *drafts* only, so M-source
-fields stay `null` and `provenance.memory` is `null` — honest, not fabricated).
+To ingest a fixture series, run step 1 once per save-oracle output you have
+(each is one timestamp), then step 2 once. Runtime collector frames should be
+adapted into the same snapshot shape and recorded under collector provenance.
+Fields stay `null` until a real source feeds them — honest, not fabricated.
 
 ## Provenance & redaction
 
@@ -92,7 +96,7 @@ repo. The real-oracle tests skip automatically if `save_oracle/output` is absent
 ## Cadence note (per DESIGN §5)
 
 Event `confidence` is **per-domain**: a diff on a domain both snapshots captured from
-**memory** is `"exact"` (tick resolution); a save-backed diff is `"interval"` (the
-change happened in `(a, b]`; `detail.interval_start_hour` gives the earlier bound). The
-engine reads this from each snapshot's `provenance`, so events auto-sharpen from
-interval to exact when the live memory layers come online — no engine change needed.
+the live collector can be `"exact"` at the collector's cadence; a fixture/imported
+diff is `"interval"` (the change happened in `(a, b]`; `detail.interval_start_hour`
+gives the earlier bound). The engine reads this from each snapshot's `provenance`,
+so events sharpen when live collector layers feed the schema.

@@ -28,6 +28,11 @@
 > Every one is save-sourced (**S**), folded under `provenance.save`, schema-present
 > and `null`/`[]`/`{}` until its parser feeds it. New diff events: `event_fired`,
 > `convoy_sunk`, `nuke_count_changed`, `ace_gained`, `project_completed`.
+> **Runtime-source revision:** in-process collector capture is the selected runtime
+> source. Existing save-sourced schema rows remain valid fixtures and development
+> evidence, but `S` is not an acceptable runtime fallback. Collector-fed snapshots
+> should use additive provenance fields; `schema_version` can remain `"1"` while
+> those fields are optional.
 
 A **replay** of one game = an ordered series of **SNAPSHOTS** (full point-in-time
 world state) plus a derived **EVENT timeline** (what changed between snapshots). This
@@ -45,10 +50,15 @@ cadence. The source is documented per-field in the tables below using these tags
 
 | tag | meaning | cadence |
 |-----|---------|---------|
-| **M**  | live memory, already cracked & validated | daily/hourly |
-| **M\*** | memory, crackable but not yet pinned (planned) | daily/hourly (future) |
-| **S**  | save oracle (rakaly melt + parse) | save interval |
+| **C**  | in-process collector live source | collector layer cadence |
+| **M**  | legacy external live memory, already cracked & validated | observed cadence; not runtime-accepted unless hourly-or-better |
+| **M\*** | live memory/collector crackable but not yet pinned | future collector cadence |
+| **S**  | save fixture/oracle parser | development/offline only |
 | **D**  | derived (diff / join / compute) | layer of its inputs |
+
+`C` is the target runtime source. `S` rows are useful schema evidence and test
+fixtures, but a shipped live replay must not require save input or silently fill
+collector gaps from saves.
 
 A snapshot does **not** repeat the tag on every value at runtime — that would bloat
 every file. Instead each snapshot records, **once**, which domains were populated and
@@ -138,26 +148,35 @@ consumer reasons about coverage without per-value tags.
 
 ```jsonc
 "provenance": {
-  "memory": {                    // null if the memory reader was not running
+  "collector": {                 // null for legacy/offline snapshots
+    "captured": true,
+    "backend": "in_process_collector",
+    "collector_version": "0.1.0",
+    "exe_sha256": "16022851...",
+    "mod_checksum": "...",
+    "domains": ["clock", "country_identity", "economy"],
+    "quality_status": "complete"
+  },
+  "memory": {                    // legacy/external research path; optional
     "captured": true,
     "exe_sha256": "16022851...", // build gate (DESIGN §6); null if unknown
     "domains": ["country_scalars", "state_control", "divisions"],
     "save_date_validated_against": "1940.9.10.13"  // last save it was checked vs; null
   },
-  "save": {                      // null if no save backed this snapshot
+  "save": {                      // optional fixture/offline import; never runtime fallback
     "captured": true,
     "source_filename": "GER_1941_melted.txt",   // basename only, never a full path
     "save_date": "1940.9.10.13",
     "domains": ["economy","production","tech","focus","state_ownership",
                 "province_control","divisions","country_snapshot"]
   },
-  "notes": []                    // free-form strings (e.g. "memory diverged on owner,
-                                 // fell back to save for state_control")
+  "notes": []                    // free-form strings (e.g. "collector omitted
+                                 // state_control: layout sentinel failed")
 }
 ```
 
 `domains` values are the canonical domain ids in `schema.DOMAINS`. A domain absent from
-both `memory.domains` and `save.domains` means every field in that domain is `null` in
+all captured-domain lists means every field in that domain is `null` in
 this snapshot — by design, not by error.
 
 ### 2.1 `provenance.mod` — the per-replay MOD IDENTITY (additive, §K MOD AWARENESS)
@@ -815,12 +834,12 @@ The merged timeline is sorted by (`hour_index`, `type`, `key`). The dedupe key i
 B→A flip are **not** collapsed.
 
 Marker events (source `marker`) **supersede** an equivalent diff-derived event, with an
-**interval-aware** window (so monthly-save intervals work, and hourly memory doesn't
-eat real repeated flips):
+**interval-aware** window (so imported fixture intervals work, and collector-hourly
+diffs do not eat real repeated flips):
 - an **interval** diff is superseded iff a matching exact marker's hour lies in
   `(interval_start_hour, hour_index]` — exactly the window the change is known to have
   happened in;
-- an **exact** (memory) diff is superseded only by a marker at the **same tick**.
+- an **exact** (collector/live) diff is superseded only by a marker at the **same tick**.
 
 This is how the cheap mod-log markers "sharpen" the diff feed (DESIGN §3, §8) without
 double-counting.
@@ -828,8 +847,8 @@ double-counting.
 **Same-hour coalescing.** Before diffing, `build_timeline` merges any snapshots that
 share a (non-null) `hour_index` into one canonical snapshot (later wins on scalars;
 domain containers shallow-merged; provenance domains unioned). This prevents a
-memory-snapshot and a save-snapshot at the *same instant* — each carrying complementary
-domains — from being diffed into fabricated null↔value transitions.
+live collector snapshot and an offline fixture import at the *same instant* — each
+carrying complementary domains — from being diffed into fabricated null↔value transitions.
 
 ### 9.4 War events are pairwise (known limitation)
 

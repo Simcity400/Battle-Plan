@@ -1,0 +1,173 @@
+{
+  "profile_version": 1,
+  "status": "hourly_worker_clock_country_identity_verified",
+  "label": "vanilla_latest_2026_06_28",
+  "game": "the game",
+  "game_version": null,
+  "exe_sha256": "16022851EAA571728AA3A0B5FD5F990A56DA57E2249A4C1B9CFB30336F59B120",
+  "observed": {
+    "date": "2026-06-28",
+    "product_version": "1.0",
+    "file_version": "1.0",
+    "mode": "vanilla",
+    "attach": "SetWindowsHookEx no-op heartbeat"
+  },
+  "mod_profile": {
+    "mode": "vanilla",
+    "mod_checksum": "vanilla",
+    "enabled_mods": []
+  },
+  "transport": {
+    "sidecar_log": "collector_attach.jsonl",
+    "live_frame": "named_pipe",
+    "sequence": "producer monotonic tick_ms",
+    "recorder_diagnostics": [
+      "transport_bytes",
+      "transport_crc32",
+      "monotonic_transport_sequence",
+      "duplicate_transport_sequences"
+    ]
+  },
+  "cadence_proofs": [
+    {
+      "kind": "hourly_attach_polling",
+      "date": "2026-06-28",
+      "game_id": "collector_live_portugal_hourly",
+      "first_game_date": "1936.11.4.6",
+      "last_game_date": "1936.11.4.12",
+      "stored_snapshots": 7,
+      "positive_game_hour_deltas": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "skipped_game_hours": 0,
+      "country_rows_per_snapshot": 439,
+      "pack_verify": "byte_identity_ok"
+    },
+    {
+      "kind": "hourly_worker_polling",
+      "date": "2026-06-28",
+      "game_id": "collector_live_portugal_hourly_worker",
+      "first_game_date": "1936.12.16.23",
+      "last_game_date": "1936.12.17.5",
+      "frames_streamed": 30,
+      "stored_snapshots": 7,
+      "positive_game_hour_deltas": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "skipped_game_hours": 0,
+      "country_rows_per_snapshot": 439,
+      "transport": "single named-pipe session",
+      "pack_verify": "byte_identity_ok"
+    },
+    {
+      "kind": "hourly_worker_polling_guarded",
+      "date": "2026-06-28",
+      "game_id": "collector_live_portugal_hourly_worker_guarded",
+      "first_game_date": "1936.12.25.9",
+      "last_game_date": "1936.12.25.12",
+      "frames_streamed": 12,
+      "stored_snapshots": 4,
+      "positive_game_hour_deltas": [
+        1,
+        1,
+        1
+      ],
+      "skipped_game_hours": 0,
+      "country_rows_per_snapshot": 439,
+      "transport": "single named-pipe session",
+      "controller_worker_mode": "disabled",
+      "pack_verify": "byte_identity_ok"
+    },
+    {
+      "kind": "hourly_worker_required_proof",
+      "date": "2026-06-28",
+      "game_id": "collector_live_hourly_required",
+      "first_game_date": "1937.3.22.5",
+      "last_game_date": "1937.3.22.7",
+      "frames_streamed": 11,
+      "stored_snapshots": 3,
+      "positive_game_hour_deltas": [
+        1,
+        1
+      ],
+      "skipped_game_hours": 0,
+      "hourly_requirement": {
+        "required": true,
+        "requested_game_hours": 2,
+        "met": true
+      },
+      "country_rows_per_snapshot": 439,
+      "transport": "single named-pipe session",
+      "pack_verify": "byte_identity_ok"
+    }
+  ],
+  "hooks": {
+    "message_hook_noop": {
+      "export": "Hoi4ReplayGetMsgProc",
+      "status": "attach_verified"
+    },
+    "daily_update": {
+      "status": "offset_verified_layout_unimplemented",
+      "offset": "0x1D4540",
+      "evidence": "HOI4-IC-Graphs DataCollection_1.19.1 exports CGameStateDailyUpdate_offset; read-only process check found an executable prologue at image_base+0x1D4540",
+      "sentinel_bytes": "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC"
+    }
+  },
+  "roots": {
+    "date": {
+      "status": "root_pointer_verified_clock_decoded",
+      "offset": "0x33048C0",
+      "evidence": "HOI4-IC-Graphs DataCollection_1.19.1 exports CGStateDate_offset; in-process root probe decoded the CCurrentGameState clock fields",
+      "clock": {
+        "current_game_date_offset": "0x468",
+        "start_date_offset": "0x4A8",
+        "codec": "i32 Jomini DateHour, stored = Clausewitz absolute hours + 43799999"
+      }
+    },
+    "country_database": {
+      "status": "root_pointer_verified_active_country_rows_decoded",
+      "offset": "0x33063F8",
+      "evidence": "HOI4-IC-Graphs DataCollection_1.19.1 exports CountryDataBase_offset; in-process root probe decoded the bounded country tag-table sample and active country-present rows",
+      "tag_table": {
+        "entry_stride": 32,
+        "inline_text_offset": 0,
+        "length_offset": 16,
+        "observed_active_rows_written": 439,
+        "sample": [
+          "---",
+          "GER",
+          "ENG",
+          "SOV",
+          "SWE",
+          "FRA",
+          "LUX",
+          "BEL",
+          "HOL",
+          "CZE",
+          "POL",
+          "AUS"
+        ]
+      }
+    },
+    "long_string": {
+      "status": "offset_verified_layout_unimplemented",
+      "offset": "0x5269B0",
+      "evidence": "HOI4-IC-Graphs DataCollection_1.19.1 exports GetLongString_offset; read-only process check found an executable prologue at image_base+0x5269B0",
+      "sentinel_bytes": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57"
+    }
+  },
+  "domains_enabled": [
+    "clock",
+    "country_identity"
+  ]
+}

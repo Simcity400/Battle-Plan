@@ -5,7 +5,7 @@ Pure stdlib. No game, no network, no I/O on import. Defines:
   * the SCHEMA_VERSION + canonical domain ids,
   * dataclasses for every layer of a SNAPSHOT (§1-§8 of SCHEMA.md),
   * the EVENT record + the event-type enum (§9),
-  * FIELD_SOURCES: dotted-path -> source tag (M/M*/S/D), the machine-readable
+  * FIELD_SOURCES: dotted-path -> source tag (C/M/M*/S/D), the machine-readable
     mirror of the per-field source tables,
   * helpers: date_to_hour_index, empty_snapshot / empty_country / ...,
   * validate_snapshot(): a lightweight structural validator (no jsonschema dep).
@@ -21,8 +21,11 @@ from typing import Any, Dict, List, Optional
 
 SCHEMA_VERSION = "1"
 
-# Canonical domain ids referenced by provenance.{memory,save}.domains (SCHEMA §2).
+# Canonical domain ids referenced by provenance.{collector,memory,save}.domains (SCHEMA §2).
 DOMAINS = (
+    # collector/runtime session domains
+    "clock",              # trusted live date/hour emitted by the in-process collector
+    "country_identity",   # live country tag/identity rows emitted by the collector
     # country domains
     "country_scalars",   # politics scalars (stability/ws/pp/cp) — memory's bread & butter
     "economy",
@@ -178,7 +181,7 @@ def valid_tag(v: Any) -> bool:
 # Paths use "*" for the per-entity key (country TAG / state id / list element).
 # Looked up by source_of() with prefix-fallback so list-element subfields resolve.
 # ---------------------------------------------------------------------------
-M, MS, S, D = "M", "M*", "S", "D"  # M* spelled "M*" in values below
+C, M, MS, S, D = "C", "M", "M*", "S", "D"  # M* spelled "M*" in values below
 
 FIELD_SOURCES: Dict[str, str] = {
     # --- snapshot scalars ---
@@ -190,6 +193,7 @@ FIELD_SOURCES: Dict[str, str] = {
     # oracle, not memory and not the melted save; tagged S (on-disk source). None
     # when no launcher config was found (no fabrication). ---
     "provenance.mod": "S",
+    "provenance.collector": "C",
     # --- country.economy (§3.1) ---
     "countries.*.economy.factories.civ": "S",
     "countries.*.economy.factories.mil": "S",
@@ -873,6 +877,7 @@ def _none_dict() -> Dict[str, Any]:
 
 @dataclass
 class Provenance:
+    collector: Optional[Dict[str, Any]] = None
     memory: Optional[Dict[str, Any]] = None
     save: Optional[Dict[str, Any]] = None
     # The ACTIVE MOD-SET this snapshot was captured under, read at CAPTURE time from
@@ -1760,7 +1765,7 @@ EVENT_TYPES = (
     "market_subsidy_changed", "market_price_level_changed",
 )
 CONFIDENCE_LEVELS = ("exact", "interval", "inferred")
-EVENT_SOURCES = ("M", "M*", "S", "D", "marker")
+EVENT_SOURCES = ("C", "M", "M*", "S", "D", "marker")
 
 
 @dataclass
@@ -2083,6 +2088,42 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
     # mod-set (mods == []) is valid and distinct from None.
     prov = snap.get("provenance")
     if isinstance(prov, dict):
+        collector = prov.get("collector")
+        if collector is not None:
+            if not isinstance(collector, dict):
+                problems.append(f"provenance.collector {collector!r} not dict|null")
+            else:
+                cap = collector.get("captured")
+                if cap is not None and not isinstance(cap, bool):
+                    problems.append(f"provenance.collector.captured {cap!r} not bool|null")
+                domains = collector.get("domains")
+                if domains is not None:
+                    if not isinstance(domains, list):
+                        problems.append(
+                            f"provenance.collector.domains {domains!r} not list|null")
+                    else:
+                        for i, dom in enumerate(domains):
+                            if not isinstance(dom, str):
+                                problems.append(
+                                    f"provenance.collector.domains[{i}] {dom!r} not str")
+                            elif dom not in DOMAINS:
+                                problems.append(
+                                    f"provenance.collector.domains[{i}] {dom!r} not canonical")
+                for k in ("backend", "collector_version", "exe_sha256", "mod_checksum",
+                          "profile_id", "quality_status", "capture_boundary", "transport",
+                          "transport_crc32"):
+                    v = collector.get(k)
+                    if v is not None and not isinstance(v, str):
+                        problems.append(f"provenance.collector.{k} {v!r} not str|null")
+                seq = collector.get("sequence")
+                if seq is not None and not isinstance(seq, int):
+                    problems.append(f"provenance.collector.sequence {seq!r} not int|null")
+                transport_bytes = collector.get("transport_bytes")
+                if transport_bytes is not None and not isinstance(transport_bytes, int):
+                    problems.append(
+                        f"provenance.collector.transport_bytes {transport_bytes!r} "
+                        "not int|null")
+
         mod = prov.get("mod")
         if mod is not None:
             if not isinstance(mod, dict):

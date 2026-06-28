@@ -212,6 +212,15 @@ class TestConfidenceAndMerge(unittest.TestCase):
         self.assertEqual(ev["confidence"], "exact")
         self.assertEqual(ev["source"], "M")
 
+    def test_collector_backed_diff_is_exact_source_c(self):
+        a = _snap("1940.1.1.0"); b = _snap("1940.1.2.0")
+        a["provenance"]["collector"] = {"captured": True, "domains": ["state_ownership"]}
+        b["provenance"]["collector"] = {"captured": True, "domains": ["state_ownership"]}
+        _add_state(a, 1, owner="POL"); _add_state(b, 1, owner="GER")
+        ev = diff_engine.diff_snapshots(a, b)[0]
+        self.assertEqual(ev["confidence"], "exact")
+        self.assertEqual(ev["source"], "C")
+
     def test_first_snapshot_no_baseline_events(self):
         b = _snap("1940.1.2.0")
         self.assertEqual(diff_engine.diff_snapshots(None, b), [])

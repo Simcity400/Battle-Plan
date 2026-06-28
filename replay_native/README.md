@@ -44,6 +44,7 @@ cargo fmt --manifest-path replay_native/Cargo.toml --all --check
 | `focus_tree` | Focus tree parsing/layout/render support. |
 | `combat_panel` | Combat model and panel rendering helpers. |
 | `widgets` | Reusable UI widgets and interaction primitives. |
+| `collector` | In-process collector DLL, no-op attach ABI, pipe heartbeat, and verified root probe. |
 | `app` | Window host, view registry, native app binary, screenshot harness. |
 
 ## Portable Recordings

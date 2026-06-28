@@ -10,6 +10,7 @@ members = [
     "focus_tree",
     "combat_panel",
     "widgets",
+    "collector",
     "app",
 ]
 

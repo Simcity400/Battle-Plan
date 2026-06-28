@@ -12,6 +12,10 @@ for inspection, with no ability to mutate the game.
   rebinding, no-fabrication guardrails, wired map/weather/render stack,
   `.battleplan` container support, and passing coverage checks.
 - Product parity is not complete.
+- Runtime capture architecture is changing: the replay recorder must use the
+  live host `hoi4.exe` process as its only authoritative runtime source through
+  an in-process collector DLL. Saves are optional development fixtures, not
+  recording or replay requirements.
 - The app is a replay/inspection surface, not playable HOI4. The standard is
   still one-to-one inspection: every real read-only interaction, tooltip, visual
   state, map overlay, and recorded data surface must either work faithfully or be
@@ -35,6 +39,7 @@ for inspection, with no ability to mutate the game.
   binding evidence and no-fabrication notes.
 - `replay_ui/HOI4REPLAY_CONTAINER_SPEC.md`: portable recording container
   contract.
+- `IN_PROCESS_COLLECTOR_PLAN.md`: live-process collector implementation plan.
 - `AGENTS.md`: current workflow and safety rules.
 
 ## Current Status Snapshot
@@ -48,6 +53,9 @@ for inspection, with no ability to mutate the game.
 - Data rows closed: 149 `closed-by-reader` plus 14 `closed-by-parser`.
 - Data rows still closeable/provable: 26 `needs-wartime-save`, 5
   `open-live-extractable`, and 15 `open-computed`.
+- `needs-wartime-save` is now a legacy fixture label: useful for development
+  proof, but not an acceptable runtime dependency. Runtime closure requires live
+  collector output or an explicit unavailable badge.
 - Permanent walls: 2.
 - Excluded rows: 62.
 - Interaction coverage currently has a broad scaffold and many first real
@@ -101,15 +109,22 @@ for inspection, with no ability to mutate the game.
 
 ## Remaining Work
 
-### 1. Recorder Proof
+### 1. In-Process Collector Runtime Source
 
-- Run a live unpaused recorder proof at intended multiplayer speed for the
-  selected cadence.
+- Replace the hourly attach/polling proof with a long-running in-process worker
+  or reviewed hourly-safe hook.
+- Keep build-gated attach/detach, heartbeat transport, recorder ingestion, and
+  `.battleplan` provenance fail-closed.
+- Reproduce live economy rows after the hourly timeline is stable. Daily
+  MIL/CIV/NAV-style output may be useful as a rollup, but it does not satisfy
+  replay cadence.
+- Run a longer live unpaused collector-backed recorder proof at intended
+  multiplayer speed for the hourly cadence.
 - Prove either no scheduled in-game hours are missed, or that skipped scheduled
   hours are explicitly recorded in the `.battleplan` manifest.
 - Reopen the resulting `.battleplan` in the native app.
 - Decide whether `land_combats` Stage-4 performance work is required only after
-  the real proof, not from static timing alone.
+  the real collector proof, not from static timing alone.
 
 ### 2. Interaction Parity
 
@@ -267,12 +282,10 @@ Keep these honestly badged unless new evidence changes the classification:
 
 ## User Help Needed
 
-- A mid-war/eventful paused save, ideally from 1941-1943 or another state with
-  active wars, naval losses, alerts, diplomacy, operatives, exile/collaboration,
-  and civil-war-style data.
-- A real in-game test against a running `hoi4.exe`.
-- Explicit approval and an appropriate running game state for the live unpaused
-  recorder proof.
+- A longer eventful live session when the hourly worker/hook and economy readers
+  are ready to test.
+- Optional: a mid-war/eventful paused save remains useful as a development
+  comparison fixture, but it is no longer a runtime requirement.
 
 ## Acceptance Gates
 
@@ -281,10 +294,29 @@ The app is product-complete only when all applicable gates pass:
 - Full Rust workspace tests pass.
 - Full Python pytest suite passes.
 - `coverage_audit/check_coverage.py` passes.
-- `.battleplan` recorder captures a live session, finalizes, and reopens in the
-  native app.
+- In-process collector attaches only to supported builds, emits heartbeat and
+  live data frames, and detaches cleanly.
+- Collector-backed `.battleplan` recorder captures a live session without save
+  input, finalizes, and reopens in the native app. Narrow clock/root-probe proof
+  passed on 2026-06-28 with four monotonic live snapshots and byte-identity
+  verification; country-identity proof also passed with 439 live country rows
+  per snapshot. Transport proof also passed with monotonic producer sequence,
+  CRC32/byte metadata, zero duplicate sequences, and byte-identity verification.
+- Hourly cadence proof passed on 2026-06-28: seven consecutive live in-game
+  hours, all deltas exactly `1`, zero skipped hours, 439 country rows per
+  snapshot, packed and byte-verified as `.battleplan`.
+- Hourly worker proof passed on 2026-06-28: one bounded in-process worker attach
+  streamed multiple frames over one named pipe, stored seven consecutive hourly
+  snapshots, skipped zero hours, and byte-verified the `.battleplan`.
+- Guarded worker proof passed after restricting worker mode to `hoi4.exe`: four
+  consecutive hourly snapshots, zero skipped hours, byte-identity verification.
+- Collector profile preflight passes against the live observed build: exact
+  executable hash, profile label, root-probe sentinels, expected addresses,
+  domains, 439 country rows, and transport metadata.
 - Recorder proves no missing in-game hours for the configured cadence, or
-  records explicit skipped-hour diagnostics.
+  records explicit skipped-hour diagnostics. For proof runs requested with
+  `--until-game-hours`, missing hourly coverage is command failure unless the
+  run is explicitly marked diagnostic-only.
 - Every registered view opens from the in-app menu.
 - Every registered view has an interaction contract.
 - Every read-only interaction in each contract is implemented and tested.

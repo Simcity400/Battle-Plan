@@ -1,12 +1,15 @@
-# Save Oracle — HOI4 save-file ground truth
+# Save Oracle — development save-file fixtures
 
-The **monthly oracle**: parses a Hearts of Iron IV save into clean JSON giving
-whole-world ground truth — authoritative per-state **owner**, per-state and
-per-province **controller**, and a cheap per-country snapshot.
+The save oracle parses a Hearts of Iron IV save into clean JSON for development
+fixtures, reverse-engineering anchors, and offline validation. It can expose
+whole-world state from a save file — per-state **owner**, per-state and
+per-province **controller**, country snapshots, divisions, and deep domains.
 
-This is the cross-check / validation layer for the Battle Plan app. It (a) seeds
-and validates the live memory-reader, and (b) provides authoritative world-state
-truth for the replay snapshot store and native map renderer.
+Runtime replay capture must not require saves. The live host `hoi4.exe` process,
+via the in-process collector, is the only authoritative runtime source. Outputs
+from this directory may be used to discover layouts, build fixtures, compare
+development runs, and audit parser/schema behavior, but they must not silently
+fill `.battleplan` gaps or substitute for live collector output.
 
 Everything here is **offline, stdlib-only**. The only external process is
 `rakaly`, used solely to melt binary saves to plaintext.
@@ -33,10 +36,8 @@ path is baked into the source.
 
 ### Save discovery (when no path is given)
 Discovered from `Path.home()` (and the `BATTLE_PLAN_SAVE_DIR` env override) — never
-hardcoded:
-- `~/OneDrive/Documents/Paradox Interactive/Hearts of Iron IV/save games/`
-- `~/Documents/Paradox Interactive/Hearts of Iron IV/save games/`
-- `~/Downloads/` (for previously-melted `*_melted.txt` dumps)
+hardcoded. The search covers the standard HOI4 user save directory and a local
+downloads directory for previously-melted `*_melted.txt` dumps.
 
 `*.hoi4` saves and `*_melted.txt` plaintext dumps are considered; the most
 recently modified wins.
@@ -385,11 +386,12 @@ write an explicit `controller=owner`, which would be a non-contested override).
 
 ---
 
-# Deep layers — exhaustive save breadth backbone
+# Deep layers — exhaustive save fixtures
 
-The **monthly oracle** above gives owner / controller / divisions / a cheap
-snapshot. The *deep-layer* modules below parse every remaining data layer a
-replay reviewer could want, into structured JSON under `output/`. They all
+The base parsers above give owner / controller / divisions / a cheap
+snapshot from a save fixture. The *deep-layer* modules below parse every
+remaining data layer a replay reviewer could want, into structured JSON under
+`output/`. They all
 **reuse `parse_save.py`'s tolerant tokenizer** (via `deep_common.py`) and add
 nothing to it; each does a single top-level streaming pass and joins `(id,type)`
 Clausewitz keys.

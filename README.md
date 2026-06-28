@@ -7,6 +7,11 @@ surfaces have been removed. The active target is a native Rust/wgpu replay
 application that lets a viewer inspect a recorded HOI4 session like the real game
 UI, without any ability to mutate the game.
 
+Runtime replay capture is moving to a single authoritative live source: an
+in-process collector DLL inside the host's `hoi4.exe`, with an external recorder
+writing `.battleplan` containers. Saves are development fixtures and validation
+artifacts only; they are not required to record or replay a live session.
+
 ## Progress
 
 Current progress and remaining work are tracked only in
@@ -34,6 +39,7 @@ full-project signal.
 ## Source Of Truth
 
 - `replay_ui/MASTER_PROGRESS.md` - product parity status and remaining work
+- `IN_PROCESS_COLLECTOR_PLAN.md` - live collector implementation plan
 - `coverage_audit/memory_manifest.json` - data completeness row status
 - `coverage_audit/COVERAGE_REPORT.md` - readable data coverage report
 - `replay_ui/BINDING_MAP_COVERAGE.md` - UI binding inventory
@@ -44,19 +50,20 @@ full-project signal.
 | Path | Purpose |
 | --- | --- |
 | `replay_native/` | Native Rust/wgpu replay app and rendering/runtime crates. |
-| `live_capture/` | Python live-memory capture, recorder GUI/CLI, and `.battleplan` writer. |
-| `memory_reader/` | Read-only process-memory readers and live extraction modules. |
+| `live_capture/` | Existing Python recorder GUI/CLI, schema assembly, and `.battleplan` writer; target consumer for collector frames. |
+| `memory_reader/` | Read-only process-memory readers and live extraction modules, now primarily research/validation inputs for the collector. |
 | `coverage_audit/` | Completeness manifest, report, and checker. |
 | `game_defs/` | Static HOI4 definition parsers. |
 | `replay/` | Snapshot schema, store, diff engine, and tests. |
 | `replay_ui/` | Master progress doc, binding maps, interaction inventory, and replay specs; no browser replay runtime remains here. |
-| `save_oracle/` | Save parsing/oracle tooling used for validation and discovery. |
+| `save_oracle/` | Development-only save parsing/oracle tooling used for fixtures, validation, and discovery. |
 
 ## Safety Rules
 
-- All game access is read-only. Never use `WriteProcessMemory`.
-- The live game should stay paused during scanning unless running an explicit
-  recorder cadence proof.
+- Runtime capture may inject a read-only collector DLL, but game state must
+  remain observational. Never use `WriteProcessMemory` or mutating game calls.
+- The live game should stay paused during external scanning unless running an
+  explicit recorder/collector cadence proof.
 - Do not commit personal paths, cloud-sync paths, raw dumps, melted saves, or
   generated game art.
 - Local probe outputs belong in ignored scratch paths, not in tracked source.

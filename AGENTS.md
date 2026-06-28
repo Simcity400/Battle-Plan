@@ -46,8 +46,11 @@ workflow. That rule is obsolete for Codex-native sessions.
 
 ## Architecture (one line)
 
-Two channels: **memory reader** (live, daily/hourly cadence, read-only `ReadProcessMemory` on
-the host's `hoi4.exe`) for liveness, **save oracle** (rakaly-melted binary saves) for truth /
-validation / deep layers. Offsets are **rediscovered per build** from save-derived invariants —
-never hardcoded blindly. Fail closed: if memory rediscovery fails after a patch, fall back to
-saves rather than emit guessed data.
+Runtime replay capture has one cadence floor: **hourly-or-better live frames from
+`hoi4.exe`**. Daily rows are acceptable only as auxiliary rollups; they never
+satisfy replay coverage. The in-process collector is the intended runtime
+source, with the legacy memory reader retained for research/validation and the
+save oracle retained for development fixtures only. Offsets are **rediscovered
+per build** from live and save-derived development invariants, never hardcoded
+blindly. Fail closed: if layout validation fails after a patch, omit/badge the
+affected field rather than emit guessed data.

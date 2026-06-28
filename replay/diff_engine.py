@@ -162,6 +162,13 @@ def _matches_domain(domain_list, domain: str) -> bool:
 # = is ANY channel block present at all. Kept as one cluster so the channel logic
 # lives in exactly one place.
 # ---------------------------------------------------------------------------
+def _domain_is_collector(snap: Dict[str, Any], domain: str) -> bool:
+    """True if the in-process collector captured `domain` as schema-compatible live data."""
+    prov = (snap or {}).get("provenance") or {}
+    col = prov.get("collector") or {}
+    return bool(col.get("captured")) and domain in (col.get("domains") or [])
+
+
 def _domain_is_memory(snap: Dict[str, Any], domain: str) -> bool:
     """True if the MEMORY channel captured `domain` (honors the `<domain>_live`
     alias + live-id map so a pure-live capture's diff still runs)."""
@@ -179,18 +186,23 @@ def _domain_is_save(snap: Dict[str, Any], domain: str) -> bool:
 
 def _domain_present(snap: Dict[str, Any], domain: str) -> bool:
     """True if EITHER channel captured `domain`."""
-    return _domain_is_memory(snap, domain) or _domain_is_save(snap, domain)
+    return (_domain_is_collector(snap, domain)
+            or _domain_is_memory(snap, domain)
+            or _domain_is_save(snap, domain))
 
 
 def _provenance_recorded(snap: Dict[str, Any]) -> bool:
     """True if this snapshot states its provenance at all (memory or save block)."""
     prov = (snap or {}).get("provenance") or {}
-    return prov.get("memory") is not None or prov.get("save") is not None
+    return (prov.get("collector") is not None
+            or prov.get("memory") is not None
+            or prov.get("save") is not None)
 
 
 def _confidence_for(domain: str, a: Dict[str, Any], b: Dict[str, Any]) -> str:
     """exact if BOTH snapshots had the domain from memory (tick resolution)."""
-    if _domain_is_memory(a, domain) and _domain_is_memory(b, domain):
+    if (_domain_is_collector(a, domain) and _domain_is_collector(b, domain)
+            or _domain_is_memory(a, domain) and _domain_is_memory(b, domain)):
         return "exact"
     return "interval"
 
@@ -199,7 +211,9 @@ def _source_for(domain: str, a: Dict[str, Any], b: Dict[str, Any]) -> str:
     """Honest event source (Codex P2): a memory-exact diff is "M"; a diff that BOTH
     snapshots backed with the SAVE channel is "S" (it really IS save-sourced, not a
     generic derivation); everything else (mixed / pure-synthetic) is "D"."""
-    if _confidence_for(domain, a, b) == "exact":
+    if _domain_is_collector(a, domain) and _domain_is_collector(b, domain):
+        return "C"
+    if _domain_is_memory(a, domain) and _domain_is_memory(b, domain):
         return "M"
     if _domain_is_save(a, domain) and _domain_is_save(b, domain):
         return "S"
@@ -1594,7 +1608,7 @@ def _merge_provenance(pa: Any, pb: Any) -> Dict[str, Any]:
         s = p.get("save")
         if s and s.get("captured"):
             save_domains |= set(s.get("domains") or [])
-    for ch in ("memory", "save"):
+    for ch in ("collector", "memory", "save"):
         a_ch, b_ch = pa.get(ch), pb.get(ch)
         if not a_ch and not b_ch:
             out[ch] = None
@@ -1604,8 +1618,8 @@ def _merge_provenance(pa: Any, pb: Any) -> Dict[str, Any]:
         out[ch].update({k: v for k, v in b_ch.items() if k != "domains"})
         out[ch]["captured"] = bool(a_ch.get("captured") or b_ch.get("captured"))
         domains = set(a_ch.get("domains") or []) | set(b_ch.get("domains") or [])
-        if ch == "memory":
-            # a domain that save also covered here is no longer purely memory-exact
+        if ch in ("collector", "memory"):
+            # a domain that save also covered here is no longer purely live-exact
             domains -= save_domains
         out[ch]["domains"] = sorted(domains)
     return out
