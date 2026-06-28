@@ -404,6 +404,16 @@ Completed in the first repo/live proof pass:
     values. Session manifests summarize max country/state/province row counts
     across the raw frame stream. The DLL still needs a bounded root/preflight
     source before live map-control emission is enabled.
+28. State-root map preflight cache added: `live_capture.collector_map_bridge`
+    resolves the live state-object roots once, stores them under the same
+    process-identity cache model as the country bridge, validates vtable +
+    state-id identity on reuse, and re-reads owner/controller tag-db ids live.
+    Live Portugal proof: cold state-root discovery resolved all 1081 states in
+    about 28.5 seconds, then a same-process cache hit resolved all 1081 state
+    owner/controller rows in about 0.2 seconds with raw addresses omitted from
+    diagnostics. This is still a preflight bridge; cold discovery remains too
+    slow for first-session speed-five startup, and province-control array roots
+    still need the same cache/root treatment.
 
 Next:
 
@@ -414,9 +424,12 @@ Next:
    hook-derived country-object identity path. Normal capture must reduce this to
    cached pointer validation plus direct reads; no heap-wide scans in the
    recorder loop.
-3. Feed `state_control` and `province_control` from a bounded DLL/preflight path,
-   emitted on scheduled-hour frames rather than every 10 ms raw clock sample.
-4. Promote the speed-five bounded-worker proof into the normal long-running
+3. Feed `state_ownership` and `state_control` from cached state roots into the
+   DLL/session path, emitted on scheduled-hour frames rather than every 10 ms raw
+   clock sample.
+4. Add province-control array root caching and validation, then feed
+   `province_control` through the same scheduled-hour path.
+5. Promote the speed-five bounded-worker proof into the normal long-running
    recorder path, preserving per-run pipe tokens, sidecar-off worker mode,
    monotonic producer sequence, duplicate snapshot suppression, and manifest
    failure on skipped scheduled hours.

@@ -99,6 +99,12 @@ Current recorder-facing bridge status:
   the map block, and records raw-frame row-count summaries in the session
   manifest. Live DLL emission for these domains is still the next implementation
   step.
+- `live_capture.collector_map_bridge` now preflights and caches live state
+  object roots. A cold live run resolved all 1081 state roots in about 28.5s; a
+  same-process cache hit validated the roots and re-read all owner/controller
+  rows in about 0.2s. This proves state ownership/control can use the same
+  "expensive discovery before recording, cheap validation during recording"
+  pattern as country scalars. It does not yet solve province-control array roots.
 
 ## Definition Of Done
 
@@ -230,6 +236,8 @@ Tasks:
   hook-derived identity resolver.
 - Cache country object pointers before recording and validate them cheaply on
   each frame.
+- Cache state object roots before recording and validate vtable + state id
+  cheaply before scheduled map-control frames.
 - Maintain id-space bridges without requiring a save.
 - Keep true Steam identity as a wall unless new evidence appears; player persona
   name is acceptable only when measured.

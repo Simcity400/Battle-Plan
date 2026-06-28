@@ -78,6 +78,18 @@ Recorder-side map-control contract:
 - the DLL does not emit live map-control rows yet. That needs a bounded
   root/preflight source and scheduled-hour gating before it is enabled.
 
+State-root preflight:
+
+- `live_capture.collector_map_bridge` can resolve state-object roots before a
+  recording session and cache them by process identity;
+- cache hits validate each cached root's vtable and state id, then re-read owner
+  and controller ids live;
+- diagnostics report row counts and cache status only, never raw addresses;
+- the live Portugal proof resolved 1081 state rows cold in about 28.5s and from
+  cache in about 0.2s;
+- this does not yet feed the DLL and does not yet solve the dense province-control
+  array root.
+
 Runtime rules:
 
 - read-only observation only;
