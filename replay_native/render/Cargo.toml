@@ -24,3 +24,7 @@ path = "src/bin/m4_demo.rs"
 [[bin]]
 name = "fidelity_demo"
 path = "src/bin/fidelity_demo.rs"
+
+[[bin]]
+name = "png_visual_diff"
+path = "src/bin/png_visual_diff.rs"

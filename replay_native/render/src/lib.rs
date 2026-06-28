@@ -26,6 +26,7 @@ pub mod modes;
 pub mod overlay;
 pub mod strategic_regions;
 pub mod terrain;
+pub mod visual_diff;
 
 use std::path::Path;
 use std::sync::Arc;
