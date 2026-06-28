@@ -407,7 +407,21 @@ def record_collector_session(
         Path(store_root) / session_id if store_root is not None else run_dir / "store"
     )
     replay_path = run_dir / f"{game_id}.battleplan"
-    frames = _frames_from_probe_manifest(run_dir, probe_manifest)
+    raw_frames = _frames_from_probe_manifest(
+        run_dir,
+        probe_manifest,
+        unique_game_hours_only=False,
+    )
+    frame_stream_path = _write_collector_frame_stream(
+        run_dir,
+        "collector_frames.jsonl",
+        raw_frames,
+    )
+    frames = _frames_from_probe_manifest(
+        run_dir,
+        probe_manifest,
+        unique_game_hours_only=True,
+    )
     build_exe_sha256, modset = _profile_metadata_from_frames(frames)
     frame_session = CollectorFrameSession(
         game_id=game_id,
@@ -496,6 +510,15 @@ def record_collector_session(
             "proof_compat_manifest": "manifest.json",
             "session_start_frame": "session_start.json",
             "session_stop_frame": "session_stop.json",
+            "collector_frame_stream": frame_stream_path.name if frame_stream_path else None,
+            "raw_collector_frame_count": len(raw_frames),
+            "duplicate_game_hour_frame_count": max(0, len(raw_frames) - len(frames)),
+            "canonical_snapshot_step_hours": 1,
+            "frame_stream_granularity": {
+                "sample_ms": sample_ms,
+                "stores_every_valid_collector_frame": True,
+                "canonical_snapshots_unique_game_hours_only": True,
+            },
             "replay_file": replay_path.name,
             "replay_verified": _safe_verify_container(replay_path),
             "probe_stop_reason": probe_manifest.get("stop_reason"),
@@ -536,6 +559,8 @@ def record_collector_session(
 def _frames_from_probe_manifest(
     run_dir: Path,
     probe_manifest: Dict[str, Any],
+    *,
+    unique_game_hours_only: bool = True,
 ) -> List[Dict[str, Any]]:
     frames: List[Dict[str, Any]] = []
     errors: List[str] = []
@@ -549,7 +574,7 @@ def _frames_from_probe_manifest(
             errors.append(f"samples[{i}] not object")
             continue
         raw_hour = sample.get("current_game_date_raw")
-        if isinstance(raw_hour, int):
+        if unique_game_hours_only and isinstance(raw_hour, int):
             if raw_hour in seen_game_hours:
                 continue
             seen_game_hours.add(raw_hour)
@@ -591,6 +616,22 @@ def _frames_from_probe_manifest(
         raise RuntimeError("collector probe frame load failed: "
                            + "; ".join(errors[:8]))
     return frames
+
+
+def _write_collector_frame_stream(
+    run_dir: Path,
+    filename: str,
+    frames: Iterable[Dict[str, Any]],
+) -> Optional[Path]:
+    frame_list = list(frames)
+    if not frame_list:
+        return None
+    path = run_dir / filename
+    with path.open("w", encoding="utf-8", newline="\n") as fh:
+        for frame in frame_list:
+            fh.write(json.dumps(frame, sort_keys=True, separators=(",", ":")))
+            fh.write("\n")
+    return path
 
 
 def _profile_metadata_from_frames(

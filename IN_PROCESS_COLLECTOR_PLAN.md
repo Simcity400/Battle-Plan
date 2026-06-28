@@ -390,6 +390,13 @@ Completed in the first repo/live proof pass:
     0.05 seconds. Cold discovery for a fresh process still needs a
     root-anchored/hook-derived replacement before first session start is fully
     speed-five-ready.
+26. Session raw-frame preservation added: `live_capture.collector_session` now
+    writes `collector_frames.jsonl` with every validated DLL frame from the probe
+    manifest, while the canonical replay writer still folds only unique
+    game-hour snapshots. Session manifests record the raw frame count, duplicate
+    same-hour frame count, and the fact that canonical snapshots are hour-keyed.
+    This keeps 10 ms/sub-hour observations available for later combat, movement,
+    and event-stream extraction.
 
 Next:
 

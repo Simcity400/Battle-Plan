@@ -314,12 +314,30 @@ class TestCollectorSession(unittest.TestCase):
                 session_manifest = _read_json(run_dir / "session_manifest.json")
                 replay_path = run_dir / "session_repeat.battleplan"
                 replay_valid = _verify_container(str(replay_path))
+                stream_path = run_dir / session_manifest["collector_frame_stream"]
+                stream_frames = [
+                    json.loads(line)
+                    for line in stream_path.read_text(encoding="utf-8").splitlines()
+                    if line
+                ]
         finally:
             cs.record_probes = original_record_probes
 
         self.assertEqual(session_manifest["worker_bursts"], 3)
         self.assertEqual(session_manifest["burst_interval_ms"], 500)
         self.assertEqual(session_manifest["sample_count"], 4)
+        self.assertEqual(session_manifest["raw_collector_frame_count"], 4)
+        self.assertEqual(session_manifest["duplicate_game_hour_frame_count"], 1)
+        self.assertEqual(session_manifest["canonical_snapshot_step_hours"], 1)
+        self.assertEqual(
+            session_manifest["frame_stream_granularity"],
+            {
+                "sample_ms": 10,
+                "stores_every_valid_collector_frame": True,
+                "canonical_snapshots_unique_game_hours_only": True,
+            },
+        )
+        self.assertEqual([f["sequence"] for f in stream_frames], [10, 11, 12, 13])
         self.assertEqual(session_manifest["processed_frame_count"], 3)
         self.assertEqual(session_manifest["transport"]["worker_pipe_token_count"], 3)
         self.assertEqual(session_manifest["transport"]["sequence_mode"], "burst_local")
@@ -463,6 +481,23 @@ class TestCollectorSession(unittest.TestCase):
 
             frames = cs._frames_from_probe_manifest(run_dir, manifest)
             self.assertEqual(frames[0]["session_id"], "session_x")
+
+            _write_json(
+                run_dir / "collector_started_0001.json",
+                _frame("1936.1.1.1", 100, sequence=2, pid=123),
+            )
+            manifest["samples"].append({
+                "frame": "collector_started_0001.json",
+                "current_game_date_raw": 100,
+            })
+            unique_frames = cs._frames_from_probe_manifest(run_dir, manifest)
+            all_frames = cs._frames_from_probe_manifest(
+                run_dir,
+                manifest,
+                unique_game_hours_only=False,
+            )
+            self.assertEqual([f["sequence"] for f in unique_frames], [1])
+            self.assertEqual([f["sequence"] for f in all_frames], [1, 2])
 
             frame["session_id"] = "other_session"
             _write_json(run_dir / "collector_started_0000.json", frame)

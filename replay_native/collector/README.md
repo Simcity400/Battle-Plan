@@ -30,6 +30,12 @@ pipe is the authoritative transport. This does not patch HOI4 code. Worker mode
 is honored only inside `hoi4.exe`; the controller-side DLL load remains a
 one-shot attach heartbeat.
 
+The recorder-side session wrapper reassembles those pipe frames into a validated
+`collector_frames.jsonl` stream inside the run directory. The replay snapshot
+store still writes one canonical snapshot per game hour, but the raw stream
+keeps same-hour samples instead of discarding them. That is the bridge for
+sub-hour combat, movement, and event capture.
+
 The root probe is intentionally narrow. It proves attach, transport, build
 sentinels, clock decoding, and country identity row emission before any
 trampoline hook or broad object traversal is added.

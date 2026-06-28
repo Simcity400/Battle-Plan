@@ -77,6 +77,11 @@ Current recorder-facing bridge status:
 - A 3-burst live run processed 800 raw observations into 20 unique hourly replay
   snapshots, advanced 19 in-game hours with zero skipped hours, and verified the
   replay container.
+- The session wrapper writes a validated `collector_frames.jsonl` sidecar with
+  every accepted DLL frame, including duplicate same-hour samples. Canonical
+  replay snapshots still dedupe to one snapshot per game hour, but the raw stream
+  preserves sub-hour observations for future combat, movement, and event
+  extraction.
 - Bounded worker sequence ids restart per worker burst. Manifests now preserve
   the global reset evidence while treating burst-local monotonic sequence as the
   recorder health signal.
@@ -126,6 +131,11 @@ Low-cost root samples used to notice clock changes and transient state. The
 current speed-five proof says 10 ms sampling is enough for the present clock
 worker and 25 ms was not enough for that proof. Keep 10 ms as the conservative
 polling default until a hook or better measured interval replaces it.
+
+The session path preserves these raw samples in `collector_frames.jsonl`. That
+file is the near-term home for sub-hour data while the canonical snapshot store
+remains keyed by game hour. It prevents fast transient observations from being
+lost merely because the current replay snapshot key is hourly.
 
 The proof-mode `collector_control.json` path is not the final runtime contract.
 Normal recording needs an explicit `CollectorSession` with start/stop lifecycle,
