@@ -141,6 +141,11 @@ def validate_collector_frame(frame: Any) -> List[str]:
             problems.append("collector worker_poll frame must not carry states payload")
         if _has_payload_rows(provinces):
             problems.append("collector worker_poll frame must not carry provinces payload")
+    elif (
+        frame.get("capture_boundary") != "scheduled_hour_snapshot"
+        and (_frame_claims_domain(frame, "fuel_live") or _has_country_fuel_rows(countries))
+    ):
+        problems.append("collector fuel_live payload requires scheduled_hour_snapshot")
 
     root_probe = frame.get("root_probe")
     if root_probe is not None:
@@ -258,6 +263,8 @@ def snapshot_from_collector_frame(frame: Dict[str, Any], game_id: str) -> Dict[s
 
     snap = schema.empty_snapshot(game_id, frame.get("date"))
     domains = _clean_domains(frame.get("domains") or [])
+    if frame.get("capture_boundary") != "scheduled_hour_snapshot":
+        domains = [domain for domain in domains if domain != "fuel_live"]
     unsupported = sorted(set(domains) - SUPPORTED_SNAPSHOT_DOMAINS)
     if unsupported:
         raise ValueError(
@@ -720,6 +727,11 @@ def _has_country_fuel_rows(countries: Any) -> bool:
         isinstance(row, dict) and isinstance(row.get("fuel"), dict)
         for row in countries.values()
     )
+
+
+def _frame_claims_domain(frame: Dict[str, Any], domain: str) -> bool:
+    domains = frame.get("domains")
+    return isinstance(domains, list) and domain in domains
 
 
 def _has_payload_rows(value: Any) -> bool:

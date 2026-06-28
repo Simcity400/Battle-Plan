@@ -468,6 +468,7 @@ class TestCollectorFrames(unittest.TestCase):
             "collector_version": "0.1.0",
             "abi_version": 1,
             "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
             "domains": ["clock", "country_identity", "fuel_live"],
             "countries": {
                 "POR": {
@@ -488,6 +489,28 @@ class TestCollectorFrames(unittest.TestCase):
         )
         self.assertEqual(snap["countries"]["POR"]["economy"]["fuel"]["current"], 123.5)
         self.assertEqual(snap["countries"]["POR"]["economy"]["fuel"]["max"], 456.25)
+
+    def test_snapshot_frame_rejects_non_scheduled_fuel_live(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "daily_update",
+            "domains": ["clock", "country_identity", "fuel_live"],
+            "countries": {
+                "POR": {
+                    "present": True,
+                    "collector_object": "0x1000",
+                    "identity": {"tag_db_id": 47},
+                    "fuel": {"current": 123.5, "max": 456.25},
+                },
+            },
+        }
+
+        with self.assertRaisesRegex(ValueError, "fuel_live payload requires scheduled"):
+            snapshot_from_collector_frame(frame, "collector-test")
 
     def test_root_probe_frame_requires_scheduled_map_domain_claims(self):
         frame = {

@@ -790,9 +790,8 @@ mod attach_log {
         let include_scheduled_map = scheduled_frame;
         let include_scheduled_country_fuel = scheduled_frame;
         let state_rows = scheduled_state_rows_json(state, control, include_scheduled_map);
-        let domains =
-            frame_domains_json(state, state_rows.is_some(), include_scheduled_country_fuel);
-        let probe = root_probe_json(state, state_rows.as_deref(), include_scheduled_country_fuel);
+        let (probe, domains) =
+            root_probe_json(state, state_rows.as_deref(), include_scheduled_country_fuel);
         let control_meta =
             control_metadata_json(control, session_sequence, elapsed_wall_ms, capture_boundary);
         let quality = if probe.contains("\"status\":\"verified\"") {
@@ -910,25 +909,6 @@ mod attach_log {
 
     fn duration_millis_u64(duration: Duration) -> u64 {
         duration.as_millis().min(u128::from(u64::MAX)) as u64
-    }
-
-    fn frame_domains_json(
-        state: Option<&CollectorState>,
-        has_state_rows: bool,
-        include_scheduled_country_fuel: bool,
-    ) -> String {
-        let Some(state) = state else {
-            return "[]".to_string();
-        };
-        if state.daily_match && state.long_string_match {
-            state.country_identity.domains_json(
-                state.country_database_ptr as usize,
-                has_state_rows,
-                include_scheduled_country_fuel,
-            )
-        } else {
-            "[]".to_string()
-        }
     }
 
     struct CollectorState {
@@ -1185,15 +1165,13 @@ mod attach_log {
             rows
         }
 
-        fn domains_json(
+        fn domains_json_from_rows(
             &self,
-            country_database_ptr: usize,
+            current_rows: &[CountryObjectRow],
             has_state_rows: bool,
             include_scheduled_country_fuel: bool,
         ) -> String {
             let mut domains = vec!["\"clock\"", "\"country_identity\""];
-            let current_rows =
-                self.current_rows(country_database_ptr, include_scheduled_country_fuel);
             if !current_rows.is_empty() {
                 domains.push("\"country_scalars\"");
             }
@@ -1224,13 +1202,12 @@ mod attach_log {
             )
         }
 
-        fn countries_json(
+        fn countries_json_from_rows(
             &self,
             country_database_ptr: usize,
+            current_rows: &[CountryObjectRow],
             include_scheduled_country_fuel: bool,
         ) -> String {
-            let current_rows =
-                self.current_rows(country_database_ptr, include_scheduled_country_fuel);
             if !current_rows.is_empty() {
                 let rows: Vec<String> = current_rows
                     .iter()
@@ -1375,36 +1352,47 @@ mod attach_log {
         state: Option<&CollectorState>,
         scheduled_state_rows: Option<&str>,
         include_scheduled_country_fuel: bool,
-    ) -> String {
+    ) -> (String, String) {
         let Some(state) = state else {
-            return "\"root_probe\":null".to_string();
+            return ("\"root_probe\":null".to_string(), "[]".to_string());
         };
         let base = state.base;
         if state.base == 0 {
-            return "\"root_probe\":{\"status\":\"profile_mismatch\",\"reason\":\"no_image_base\"}"
-                .to_string();
+            return (
+                "\"root_probe\":{\"status\":\"profile_mismatch\",\"reason\":\"no_image_base\"}"
+                    .to_string(),
+                "[]".to_string(),
+            );
         }
 
         if !(state.daily_match && state.long_string_match) {
-            return format!(
-                "\"root_probe\":{{\"status\":\"profile_mismatch\",\
-                 \"image_base\":\"0x{base:X}\",\
-                 \"daily_update_sentinel_match\":{},\
-                 \"long_string_sentinel_match\":{}}}",
-                state.daily_match, state.long_string_match
+            return (
+                format!(
+                    "\"root_probe\":{{\"status\":\"profile_mismatch\",\
+                     \"image_base\":\"0x{base:X}\",\
+                     \"daily_update_sentinel_match\":{},\
+                     \"long_string_sentinel_match\":{}}}",
+                    state.daily_match, state.long_string_match
+                ),
+                "[]".to_string(),
             );
         }
 
         let date_ptr = state.date_ptr;
         let country_database_ptr = state.country_database_ptr;
         let country_probe = country_database_probe_json(country_database_ptr as usize);
-        let country_rows = state.country_identity.countries_json(
+        let current_rows = state.country_identity.current_rows(
             country_database_ptr as usize,
             include_scheduled_country_fuel,
         );
-        let identity_probe = state.country_identity.root_json();
-        let domains = state.country_identity.domains_json(
+        let country_rows = state.country_identity.countries_json_from_rows(
             country_database_ptr as usize,
+            &current_rows,
+            include_scheduled_country_fuel,
+        );
+        let identity_probe = state.country_identity.root_json();
+        let domains = state.country_identity.domains_json_from_rows(
+            &current_rows,
             scheduled_state_rows.is_some(),
             include_scheduled_country_fuel,
         );
@@ -1412,24 +1400,27 @@ mod attach_log {
         let state_rows = scheduled_state_rows
             .map(|rows| format!(",\"states\":{rows}"))
             .unwrap_or_default();
-        format!(
-            "\"root_probe\":{{\"status\":\"verified\",\
-             \"profile\":\"{}\",\
-             \"image_base\":\"0x{base:X}\",\
-             \"daily_update\":\"0x{:X}\",\
-             \"get_long_string\":\"0x{:X}\",\
-             \"daily_update_sentinel_match\":true,\
-             \"long_string_sentinel_match\":true,\
-             \"date_root_ptr\":\"0x{date_ptr:X}\",\
-             \"country_database_root_ptr\":\"0x{country_database_ptr:X}\",\
-             {clock_probe},\
-             {country_probe},\
-             {identity_probe},\
-             \"domains\":{domains}}},\
-             \"countries\":{country_rows}{state_rows}",
-            super::COLLECTOR_PROFILE_ID,
-            state.daily_addr,
-            state.long_string_addr
+        (
+            format!(
+                "\"root_probe\":{{\"status\":\"verified\",\
+                 \"profile\":\"{}\",\
+                 \"image_base\":\"0x{base:X}\",\
+                 \"daily_update\":\"0x{:X}\",\
+                 \"get_long_string\":\"0x{:X}\",\
+                 \"daily_update_sentinel_match\":true,\
+                 \"long_string_sentinel_match\":true,\
+                 \"date_root_ptr\":\"0x{date_ptr:X}\",\
+                 \"country_database_root_ptr\":\"0x{country_database_ptr:X}\",\
+                 {clock_probe},\
+                 {country_probe},\
+                 {identity_probe},\
+                 \"domains\":{domains}}},\
+                 \"countries\":{country_rows}{state_rows}",
+                super::COLLECTOR_PROFILE_ID,
+                state.daily_addr,
+                state.long_string_addr
+            ),
+            domains,
         )
     }
 
