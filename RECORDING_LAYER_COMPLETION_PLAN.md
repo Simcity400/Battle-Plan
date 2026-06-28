@@ -103,12 +103,25 @@ Current recorder-facing bridge status:
   `map_control_quality` summary and fail closed when scheduled frames omit the
   requested map domains. Live DLL emission still needs the longer speed-five
   proof, especially for province-control cache behavior.
+- First state-control speed-five proof is now green. With cached state roots
+  and 10 ms sampling, `collector_speed5_state_only_probe` advanced 12 game hours
+  in about 9.9 wall seconds, stored 13 hourly snapshots, skipped zero hours,
+  emitted 13 `state_ownership`/`state_control` scheduled frames covering 1081
+  state rows, preserved 1171 raw collector frames, and verified the
+  `.battleplan` with byte-identical raw-stream packaging. This proves the
+  scheduled state map spine can keep up at speed five when preflight roots are
+  warm.
 - `live_capture.collector_map_bridge` now preflights and caches live state
   object roots. A cold live run resolved all 1081 state roots in about 28.5s; a
   same-process cache hit validated the roots and re-read all owner/controller
   rows in about 0.2s. This proves state ownership/control can use the same
   "expensive discovery before recording, cheap validation during recording"
   pattern as country scalars. It does not yet solve province-control array roots.
+- Current blocker found during that proof: country-object bridge preflight can
+  hang before the recorder creates a run directory. State-control cache
+  preflight returned in about 0.08s on the same process, so this is isolated to
+  the country preflight path and must be fixed before country scalars are part
+  of the default speed-five session command.
 - Raw clock deltas are now emitted as durable `domain_delta` frames from the
   DLL worker and merged into `collector_frames.jsonl` without polluting hourly
   snapshot domain claims. A speed-five smoke on 2026-06-28 advanced 4 game hours
@@ -1070,8 +1083,8 @@ These stay out of the replay unless the product scope changes:
 1. Replace the repeated bounded-worker bridge with normal long-running collector
    recorder mode once the DLL can hold an explicit start/stop session.
 2. Add manifest-level backpressure/gap counters for the long-running session.
-3. Replace country-object heap discovery with root-anchored or hook-derived
-   identity resolution.
+3. Fix the country-object bridge preflight hang and replace country-object heap
+   discovery with root-anchored or hook-derived identity resolution.
 4. Promote country identity/scalars into speed-five-safe collector frames.
 5. Add the first non-clock domain tranche. The practical first three are light
    country economy/scalars, state/province map state, and divisions/OOB. The
