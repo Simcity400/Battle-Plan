@@ -83,6 +83,31 @@ RAW_STRING_MAX_LENGTH = 512
 RAW_SHORT_STRING_MAX_LENGTH = 128
 RAW_CONTAINER_MAX_ENTRIES = 256
 RAW_DETAIL_MAX_DEPTH = 5
+RAW_DIVISION_ID_MAX = 2_147_483_647
+RAW_DIVISION_PROVINCE_ID_MAX = 1_000_000
+RAW_DIVISION_PROGRESS_BUCKET_MAX = 1_000_000
+RAW_DIVISION_MOVEMENT_PROGRESS_MAX = 1_000_000.0
+RAW_DIVISION_MOVEMENT_FIELDS = frozenset((
+    "div_uid",
+    "div_id",
+    "div_type",
+    "moving",
+    "movement_source_province",
+    "move_target_province",
+    "location",
+    "movement_progress",
+    "progress_bucket",
+    "owner",
+))
+RAW_FORBIDDEN_KEY_NAMES = frozenset((
+    "addr",
+    "address",
+    "ptr",
+    "pointer",
+    "body_addr",
+    "tag_db_id",
+))
+RAW_FORBIDDEN_KEY_SUFFIXES = ("_addr", "_ptr", "_tag_db_id")
 
 
 def make_heartbeat_frame(
@@ -481,7 +506,7 @@ def _validate_raw_frame(frame_type: str, frame: Dict[str, Any]) -> List[str]:
     if frame_type == "event":
         problems.extend(_validate_raw_event_payload(frame, payload))
     elif frame_type == "domain_delta":
-        problems.extend(_validate_raw_domain_delta_payload(payload))
+        problems.extend(_validate_raw_domain_delta_payload(frame, payload))
     elif frame_type == "gap":
         problems.extend(_validate_raw_gap_payload(frame, payload))
     return problems
@@ -518,7 +543,10 @@ def _validate_raw_event_payload(
     return problems
 
 
-def _validate_raw_domain_delta_payload(payload: Dict[str, Any]) -> List[str]:
+def _validate_raw_domain_delta_payload(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> List[str]:
     problems: List[str] = []
     _validate_payload_keys(
         problems,
@@ -543,6 +571,124 @@ def _validate_raw_domain_delta_payload(payload: Dict[str, Any]) -> List[str]:
                     "collector domain_delta payload "
                     f"changed_fields[{i}] not bounded str"
                 )
+    if _looks_like_division_movement_delta(frame, payload):
+        problems.extend(_validate_raw_division_movement_delta(frame, payload))
+    return problems
+
+
+def _looks_like_division_movement_delta(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> bool:
+    if frame.get("domain") != "divisions":
+        return False
+    after = payload.get("after")
+    return isinstance(after, dict) and any(
+        key in RAW_DIVISION_MOVEMENT_FIELDS for key in after
+    )
+
+
+def _validate_raw_division_movement_delta(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> List[str]:
+    problems: List[str] = []
+    entity_uid = _parse_raw_division_entity_key(frame.get("entity_key"))
+    if entity_uid is None:
+        problems.append(
+            "collector division movement delta entity_key not stable division key"
+        )
+    if _contains_forbidden_raw_key(payload):
+        problems.append(
+            "collector division movement delta payload contains raw pointer/tag-db "
+            "diagnostic key"
+        )
+    changed_fields = payload.get("changed_fields")
+    if isinstance(changed_fields, list):
+        for i, field in enumerate(changed_fields):
+            if _forbidden_raw_key_name(field):
+                problems.append(
+                    "collector division movement delta "
+                    f"changed_fields[{i}] raw pointer/tag-db diagnostic key"
+                )
+    for row_key in ("before", "after"):
+        row = payload.get(row_key)
+        if isinstance(row, dict):
+            problems.extend(_validate_raw_division_movement_row(
+                row,
+                f"collector division movement delta {row_key}",
+                entity_uid,
+            ))
+    return problems
+
+
+def _validate_raw_division_movement_row(
+    row: Dict[str, Any],
+    prefix: str,
+    entity_uid: Optional[tuple[int, int]],
+) -> List[str]:
+    problems: List[str] = []
+    uid = row.get("div_uid")
+    if uid is not None:
+        parsed_uid = _parse_raw_division_uid(uid)
+        if parsed_uid is None:
+            problems.append(f"{prefix}.div_uid not stable id:type str|null")
+        elif entity_uid is not None and parsed_uid != entity_uid:
+            problems.append(f"{prefix}.div_uid != entity_key")
+    for key in ("div_id", "div_type"):
+        value = row.get(key)
+        if value is not None and not _valid_bounded_int(
+            value,
+            minimum=0,
+            maximum=RAW_DIVISION_ID_MAX,
+        ):
+            problems.append(f"{prefix}.{key} not nonnegative int|null")
+    if entity_uid is not None:
+        div_id = row.get("div_id")
+        if (
+            div_id is not None
+            and _valid_bounded_int(div_id, minimum=0, maximum=RAW_DIVISION_ID_MAX)
+            and div_id != entity_uid[0]
+        ):
+            problems.append(f"{prefix}.div_id != entity_key")
+        div_type = row.get("div_type")
+        if (
+            div_type is not None
+            and _valid_bounded_int(div_type, minimum=0, maximum=RAW_DIVISION_ID_MAX)
+            and div_type != entity_uid[1]
+        ):
+            problems.append(f"{prefix}.div_type != entity_key")
+    moving = row.get("moving")
+    if moving is not None and not isinstance(moving, bool):
+        problems.append(f"{prefix}.moving not bool|null")
+    for key in ("movement_source_province", "move_target_province", "location"):
+        value = row.get(key)
+        if value is not None and not _valid_bounded_int(
+            value,
+            minimum=1,
+            maximum=RAW_DIVISION_PROVINCE_ID_MAX,
+        ):
+            problems.append(f"{prefix}.{key} not positive int|null")
+    progress = row.get("movement_progress")
+    if progress is not None:
+        if not (
+            _is_finite_number(progress)
+            and 0.0 <= float(progress) <= RAW_DIVISION_MOVEMENT_PROGRESS_MAX
+        ):
+            problems.append(
+                f"{prefix}.movement_progress not finite nonnegative number|null "
+                "in range"
+            )
+    progress_bucket = row.get("progress_bucket")
+    if progress_bucket is not None and not _valid_bounded_int(
+        progress_bucket,
+        minimum=0,
+        maximum=RAW_DIVISION_PROGRESS_BUCKET_MAX,
+    ):
+        problems.append(f"{prefix}.progress_bucket not nonnegative int|null in range")
+    owner = row.get("owner")
+    if owner is not None and not schema.valid_tag(owner):
+        problems.append(f"{prefix}.owner not TAG|null")
     return problems
 
 
@@ -645,6 +791,49 @@ def _valid_raw_key(value: Any) -> bool:
     )
 
 
+def _parse_raw_division_entity_key(value: Any) -> Optional[tuple[int, int]]:
+    if not isinstance(value, str) or not value.startswith("division:"):
+        return None
+    return _parse_raw_division_uid(value[len("division:"):])
+
+
+def _parse_raw_division_uid(value: Any) -> Optional[tuple[int, int]]:
+    if not _valid_raw_string(value, max_length=RAW_SHORT_STRING_MAX_LENGTH):
+        return None
+    parts = value.split(":")
+    if len(parts) != 2:
+        return None
+    div_id = _parse_raw_nonnegative_int_string(
+        parts[0],
+        maximum=RAW_DIVISION_ID_MAX,
+    )
+    div_type = _parse_raw_nonnegative_int_string(
+        parts[1],
+        maximum=RAW_DIVISION_ID_MAX,
+    )
+    if div_id is None or div_type is None:
+        return None
+    return (div_id, div_type)
+
+
+def _parse_raw_nonnegative_int_string(
+    value: Any,
+    *,
+    maximum: int,
+) -> Optional[int]:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None
+    if str(parsed) != value:
+        return None
+    if not 0 <= parsed <= maximum:
+        return None
+    return parsed
+
+
 def _valid_gap_reason(value: Any) -> bool:
     return (
         _valid_raw_string(value, max_length=RAW_SHORT_STRING_MAX_LENGTH)
@@ -700,6 +889,28 @@ def _validate_bounded_raw_value(
         return problems
     problems.append(f"{prefix} unsupported value type")
     return problems
+
+
+def _contains_forbidden_raw_key(value: Any) -> bool:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if _forbidden_raw_key_name(key):
+                return True
+            if _contains_forbidden_raw_key(child):
+                return True
+    if isinstance(value, list):
+        return any(_contains_forbidden_raw_key(child) for child in value)
+    return False
+
+
+def _forbidden_raw_key_name(key: Any) -> bool:
+    if not isinstance(key, str):
+        return False
+    lowered = key.lower()
+    return (
+        lowered in RAW_FORBIDDEN_KEY_NAMES
+        or lowered.endswith(RAW_FORBIDDEN_KEY_SUFFIXES)
+    )
 
 
 def _explicit_scheduled_domains(

@@ -224,11 +224,133 @@ class TestCollectorFrames(unittest.TestCase):
                 "after": {"province": 42, "progress_bucket": 4},
                 "changed_fields": ["province", "progress_bucket"],
             },
-            entity_key="division:GER:2",
+            domain="combats",
+            entity_key="combat:2",
             confidence="sampled",
         )
 
         self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_division_movement_delta_frame_validates(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": {
+                    "div_uid": "100:4713",
+                    "div_id": 100,
+                    "div_type": 4713,
+                    "moving": False,
+                    "movement_source_province": None,
+                    "move_target_province": None,
+                    "location": 3324,
+                    "movement_progress": 0.0,
+                    "progress_bucket": 0,
+                    "owner": None,
+                },
+                "after": {
+                    "div_uid": "100:4713",
+                    "div_id": 100,
+                    "div_type": 4713,
+                    "moving": True,
+                    "movement_source_province": 3324,
+                    "move_target_province": 3325,
+                    "location": 3325,
+                    "movement_progress": 6.013,
+                    "progress_bucket": 601,
+                    "owner": "GER",
+                },
+                "changed_fields": [
+                    "moving",
+                    "movement_source_province",
+                    "move_target_province",
+                    "location",
+                    "movement_progress",
+                    "progress_bucket",
+                ],
+            },
+            entity_key="division:100:4713",
+            confidence="sampled",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_division_movement_delta_rejects_raw_leakage(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": None,
+                "after": {
+                    "div_uid": "100:4713",
+                    "div_id": 100,
+                    "div_type": 4713,
+                    "moving": True,
+                    "location": 3325,
+                    "body_ptr": "0x1234",
+                    "diagnostic": {"owner_tag_db_id": 1},
+                },
+                "changed_fields": ["location", "body_addr"],
+            },
+            entity_key="division:0x1234",
+            confidence="sampled",
+        )
+
+        problems = validate_collector_frame(frame)
+
+        for needle in (
+            "entity_key not stable division key",
+            "payload contains raw pointer/tag-db diagnostic key",
+            "changed_fields[1] raw pointer/tag-db diagnostic key",
+        ):
+            self.assertTrue(any(needle in p for p in problems), (needle, problems))
+
+    def test_raw_division_movement_delta_rejects_bad_numeric_and_tag_fields(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": None,
+                "after": {
+                    "div_uid": "100:4713",
+                    "div_id": True,
+                    "div_type": 4713,
+                    "moving": 1,
+                    "movement_source_province": False,
+                    "move_target_province": 0,
+                    "location": 1_000_001,
+                    "movement_progress": float("inf"),
+                    "progress_bucket": True,
+                    "owner": "GERM",
+                },
+                "changed_fields": [
+                    "div_id",
+                    "moving",
+                    "movement_source_province",
+                    "move_target_province",
+                    "location",
+                    "movement_progress",
+                    "progress_bucket",
+                    "owner",
+                ],
+            },
+            entity_key="division:100:4713",
+            confidence="sampled",
+        )
+
+        problems = validate_collector_frame(frame)
+
+        for needle in (
+            "after.div_id not nonnegative int|null",
+            "after.moving not bool|null",
+            "after.movement_source_province not positive int|null",
+            "after.move_target_province not positive int|null",
+            "after.location not positive int|null",
+            "after.movement_progress not finite nonnegative number|null in range",
+            "after.progress_bucket not nonnegative int|null in range",
+            "after.owner not TAG|null",
+        ):
+            self.assertTrue(any(needle in p for p in problems), (needle, problems))
 
     def test_raw_domain_delta_frame_rejects_malformed_payload(self):
         frame = self._raw_frame(
