@@ -275,6 +275,36 @@ class TestCollectorFrames(unittest.TestCase):
 
         self.assertEqual(validate_collector_frame(frame), [])
 
+    def test_raw_division_movement_delta_expanded_fields_validate(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": {
+                    "organisation": None,
+                    "strength": None,
+                    "combat_ref_count": None,
+                    "in_combat": None,
+                },
+                "after": {
+                    "organisation": 84.5,
+                    "strength": 9123.25,
+                    "combat_ref_count": 2,
+                    "in_combat": True,
+                },
+                "changed_fields": [
+                    "organisation",
+                    "strength",
+                    "combat_ref_count",
+                    "in_combat",
+                ],
+            },
+            entity_key="division:100:4713",
+            confidence="sampled",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
     def test_raw_division_movement_delta_rejects_raw_leakage(self):
         frame = self._raw_frame(
             "domain_delta",
@@ -351,6 +381,58 @@ class TestCollectorFrames(unittest.TestCase):
             "after.owner not TAG|null",
         ):
             self.assertTrue(any(needle in p for p in problems), (needle, problems))
+
+    def test_raw_division_movement_delta_rejects_bad_expanded_fields(self):
+        cases = [
+            (
+                {"organisation": float("nan")},
+                "after.organisation not finite number|null in range",
+            ),
+            (
+                {"strength": float("inf")},
+                "after.strength not finite number|null in range",
+            ),
+            (
+                {"combat_ref_count": True},
+                "after.combat_ref_count not nonnegative int|null in range",
+            ),
+            (
+                {"in_combat": 1},
+                "after.in_combat not bool|null",
+            ),
+            (
+                {"organisation": 1000.01},
+                "after.organisation not finite number|null in range",
+            ),
+            (
+                {"strength": 10000.01},
+                "after.strength not finite number|null in range",
+            ),
+            (
+                {"combat_ref_count": 1001},
+                "after.combat_ref_count not nonnegative int|null in range",
+            ),
+        ]
+        for after, needle in cases:
+            with self.subTest(after=after):
+                frame = self._raw_frame(
+                    "domain_delta",
+                    {
+                        "op": "sample",
+                        "before": None,
+                        "after": after,
+                        "changed_fields": list(after),
+                    },
+                    entity_key="division:100:4713",
+                    confidence="sampled",
+                )
+
+                problems = validate_collector_frame(frame)
+
+                self.assertTrue(
+                    any(needle in p for p in problems),
+                    (needle, problems),
+                )
 
     def test_raw_domain_delta_frame_rejects_malformed_payload(self):
         frame = self._raw_frame(

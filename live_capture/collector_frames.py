@@ -87,6 +87,9 @@ RAW_DIVISION_ID_MAX = 2_147_483_647
 RAW_DIVISION_PROVINCE_ID_MAX = 1_000_000
 RAW_DIVISION_PROGRESS_BUCKET_MAX = 1_000_000
 RAW_DIVISION_MOVEMENT_PROGRESS_MAX = 1_000_000.0
+RAW_DIVISION_ORGANISATION_MAX = 1_000.0
+RAW_DIVISION_STRENGTH_MAX = 10_000.0
+RAW_DIVISION_COMBAT_REF_COUNT_MAX = 1_000
 RAW_DIVISION_MOVEMENT_FIELDS = frozenset((
     "div_uid",
     "div_id",
@@ -98,6 +101,10 @@ RAW_DIVISION_MOVEMENT_FIELDS = frozenset((
     "movement_progress",
     "progress_bucket",
     "owner",
+    "organisation",
+    "strength",
+    "combat_ref_count",
+    "in_combat",
 ))
 RAW_FORBIDDEN_KEY_NAMES = frozenset((
     "addr",
@@ -689,6 +696,32 @@ def _validate_raw_division_movement_row(
     owner = row.get("owner")
     if owner is not None and not schema.valid_tag(owner):
         problems.append(f"{prefix}.owner not TAG|null")
+    organisation = row.get("organisation")
+    if organisation is not None:
+        if not (
+            _is_finite_number(organisation)
+            and 0.0 <= float(organisation) <= RAW_DIVISION_ORGANISATION_MAX
+        ):
+            problems.append(f"{prefix}.organisation not finite number|null in range")
+    strength = row.get("strength")
+    if strength is not None:
+        if not (
+            _is_finite_number(strength)
+            and 0.0 <= float(strength) <= RAW_DIVISION_STRENGTH_MAX
+        ):
+            problems.append(f"{prefix}.strength not finite number|null in range")
+    combat_ref_count = row.get("combat_ref_count")
+    if combat_ref_count is not None and not _valid_bounded_int(
+        combat_ref_count,
+        minimum=0,
+        maximum=RAW_DIVISION_COMBAT_REF_COUNT_MAX,
+    ):
+        problems.append(
+            f"{prefix}.combat_ref_count not nonnegative int|null in range"
+        )
+    in_combat = row.get("in_combat")
+    if in_combat is not None and not isinstance(in_combat, bool):
+        problems.append(f"{prefix}.in_combat not bool|null")
     return problems
 
 

@@ -136,14 +136,19 @@ Current measured constraint:
   preserved 1816 raw movement frames and 39 clock frames, wrote a verified
   replay, and had zero session errors. The manifests recorded only bridge
   counts/status, not body addresses.
+- Expanded telemetry proof: the same bridge now emits bounded `organisation`,
+  `strength`, `combat_ref_count`, and sampled `in_combat` fields. A 10 ms smoke
+  preserved 3229 division frames with those fields present and no raw-stream
+  sequence gaps. Treat `in_combat` as body-ref telemetry until joined with the
+  combat object stream.
 
 Cadence:
 
 - Start at 10 ms during speed-five proof runs, but treat it as a load target
   requiring explicit backpressure/coalescing counters before long sessions.
 - Emit deltas only on changed movement state, target, source, progress bucket,
-  or location for the first native slice. Combat ref count, org, and strength
-  should be added after movement-only deltas are proven in the pipe stream.
+  location, organisation bucket, strength bucket, combat ref count, or sampled
+  in-combat state.
 - Keep full division snapshots hourly; use deltas for animation and exact order.
 
 Events/deltas:

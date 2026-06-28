@@ -132,6 +132,13 @@ Current recorder-facing bridge status:
   the replay. The remaining work is no longer "can we go below hourly"; it is
   backpressure/coalescing policy and widening the movement slice into combat,
   org/strength, and order semantics.
+- The division stream now also carries bounded organisation, strength,
+  `combat_ref_count`, and sampled `in_combat` telemetry. A 10 ms live run
+  bridged 2042 division bodies, preserved 3229 division frames with all four
+  expanded fields present, verified the replay, and recorded a raw-stream load
+  of about 106 frames per collector tick with no missing or duplicate sequence
+  numbers. This is still telemetry, not full combat truth; the combat replay
+  layer must join it with active combat objects before claiming exact battles.
 
 ## Definition Of Done
 

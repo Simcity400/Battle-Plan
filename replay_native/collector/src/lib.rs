@@ -162,13 +162,20 @@ mod attach_log {
     const DIVISION_OFF_ID_TYPE: usize = 0x08;
     const DIVISION_OFF_ID_ID: usize = 0x0C;
     const DIVISION_OFF_LOCATION: usize = 0x18;
+    const DIVISION_OFF_COMBAT_REF_COUNT: usize = 0x1A4;
     const DIVISION_OFF_MOVE_ORDER: usize = 0x1E8;
     const DIVISION_OFF_MOVE_PROGRESS: usize = 0x230;
+    const DIVISION_OFF_STRENGTH: usize = 0x410;
+    const DIVISION_OFF_ORGANISATION: usize = 0x418;
     const DIVISION_MOVE_ORDER_OFF_SOURCE: usize = 0xA4;
     const MAX_DIVISION_BODY_BRIDGE_ROWS: usize = 20_000;
     const MAX_DIVISION_BODY_BRIDGE_PAYLOAD_BYTES: usize = 2 * 1024 * 1024;
     const MAX_DIVISION_BODY_BRIDGE_DIV_ID: u32 = i32::MAX as u32;
     const MAX_DIVISION_PROVINCE_ID: u32 = 1_000_000;
+    const MAX_DIVISION_COMBAT_REF_COUNT: u32 = 1_000;
+    const MAX_DIVISION_ORGANISATION_RAW: u32 = 100_000_000;
+    const MAX_DIVISION_STRENGTH_RAW: u32 = 1_000_000_000;
+    const DIVISION_DELTA_BUCKET_RAW: u32 = 1_000;
     const FP_SCALE: f64 = 100000.0;
     const DAILY_UPDATE_SENTINEL: [u8; 16] = [
         0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8D,
@@ -995,6 +1002,12 @@ mod attach_log {
         location: u32,
         move_target_province: Option<u32>,
         movement_source_province: Option<u32>,
+        raw_organisation: u32,
+        organisation_bucket: u32,
+        raw_strength: u32,
+        strength_bucket: u32,
+        combat_ref_count: u32,
+        in_combat: bool,
     }
 
     struct RawDomainDeltaFrame<'a> {
@@ -1155,6 +1168,18 @@ mod attach_log {
         if !valid_division_province_id(location) {
             return None;
         }
+        let combat_ref_count = read_u32(body.checked_add(DIVISION_OFF_COMBAT_REF_COUNT)?)?;
+        if combat_ref_count > MAX_DIVISION_COMBAT_REF_COUNT {
+            return None;
+        }
+        let raw_strength = read_division_fixed_raw(
+            body.checked_add(DIVISION_OFF_STRENGTH)?,
+            MAX_DIVISION_STRENGTH_RAW,
+        )?;
+        let raw_organisation = read_division_fixed_raw(
+            body.checked_add(DIVISION_OFF_ORGANISATION)?,
+            MAX_DIVISION_ORGANISATION_RAW,
+        )?;
         let raw_progress = read_u32(body.checked_add(DIVISION_OFF_MOVE_PROGRESS)?)?;
         let moving = raw_progress != 0;
         let movement_source_province = if moving {
@@ -1166,10 +1191,16 @@ mod attach_log {
             div_id: entry.div_id,
             moving,
             raw_movement_progress: moving.then_some(raw_progress),
-            progress_bucket: moving.then_some(raw_progress / 1000),
+            progress_bucket: moving.then_some(division_delta_bucket(raw_progress)),
             location,
             move_target_province: moving.then_some(location),
             movement_source_province,
+            raw_organisation,
+            organisation_bucket: division_delta_bucket(raw_organisation),
+            raw_strength,
+            strength_bucket: division_delta_bucket(raw_strength),
+            combat_ref_count,
+            in_combat: combat_ref_count > 0,
         })
     }
 
@@ -1189,6 +1220,18 @@ mod attach_log {
 
     fn valid_division_province_id(value: u32) -> bool {
         value > 0 && value <= MAX_DIVISION_PROVINCE_ID
+    }
+
+    fn read_division_fixed_raw(addr: usize, max_raw: u32) -> Option<u32> {
+        read_u32(addr).filter(|value| *value <= max_raw)
+    }
+
+    fn division_delta_bucket(raw: u32) -> u32 {
+        raw / DIVISION_DELTA_BUCKET_RAW
+    }
+
+    fn division_fixed_value(raw: u32) -> f64 {
+        raw as f64 / FP_SCALE
     }
 
     fn track_division_movement_sample(
@@ -1215,6 +1258,10 @@ mod attach_log {
             "location",
             "move_target_province",
             "movement_source_province",
+            "organisation",
+            "strength",
+            "combat_ref_count",
+            "in_combat",
         ]
     }
 
@@ -1239,6 +1286,18 @@ mod attach_log {
         if old.movement_source_province != new.movement_source_province {
             changed.push("movement_source_province");
         }
+        if old.organisation_bucket != new.organisation_bucket {
+            changed.push("organisation");
+        }
+        if old.strength_bucket != new.strength_bucket {
+            changed.push("strength");
+        }
+        if old.combat_ref_count != new.combat_ref_count {
+            changed.push("combat_ref_count");
+        }
+        if old.in_combat != new.in_combat {
+            changed.push("in_combat");
+        }
         (!changed.is_empty()).then_some(changed)
     }
 
@@ -1254,16 +1313,17 @@ mod attach_log {
         sample: &DivisionMovementSample,
         changed_fields: &[&str],
     ) -> Option<String> {
-        let movement_progress = sample
-            .raw_movement_progress
-            .map(|raw| raw as f64 / FP_SCALE);
+        let movement_progress = sample.raw_movement_progress.map(division_fixed_value);
+        let organisation = division_fixed_value(sample.raw_organisation);
+        let strength = division_fixed_value(sample.raw_strength);
         let div_uid = format!("{}:{}", sample.div_id, DIVISION_TYPE);
         let entity_key = format!("division:{div_uid}");
         let after_json = format!(
             "{{\"div_uid\":{},\"div_id\":{},\"div_type\":{},\
              \"moving\":{},\"movement_progress\":{},\"progress_bucket\":{},\
              \"location\":{},\"move_target_province\":{},\
-             \"movement_source_province\":{}}}",
+             \"movement_source_province\":{},\"organisation\":{},\
+             \"strength\":{},\"combat_ref_count\":{},\"in_combat\":{}}}",
             json_str(&div_uid),
             sample.div_id,
             DIVISION_TYPE,
@@ -1272,7 +1332,11 @@ mod attach_log {
             json_opt_u32(sample.progress_bucket),
             sample.location,
             json_opt_u32(sample.move_target_province),
-            json_opt_u32(sample.movement_source_province)
+            json_opt_u32(sample.movement_source_province),
+            json_opt_f64(Some(organisation)),
+            json_opt_f64(Some(strength)),
+            sample.combat_ref_count,
+            sample.in_combat
         );
         raw_domain_delta_frame_line(RawDomainDeltaFrame {
             pid,
@@ -2928,6 +2992,26 @@ mod attach_log {
             }
         }
 
+        fn stationary_division_sample() -> DivisionMovementSample {
+            let raw_organisation = 5_000_000;
+            let raw_strength = 100_000;
+            DivisionMovementSample {
+                div_id: 7,
+                moving: false,
+                raw_movement_progress: None,
+                progress_bucket: None,
+                location: 10,
+                move_target_province: None,
+                movement_source_province: None,
+                raw_organisation,
+                organisation_bucket: division_delta_bucket(raw_organisation),
+                raw_strength,
+                strength_bucket: division_delta_bucket(raw_strength),
+                combat_ref_count: 0,
+                in_combat: false,
+            }
+        }
+
         #[test]
         fn collector_control_accepts_sanitized_session_id() {
             let dir = std::env::temp_dir().join(format!(
@@ -3542,25 +3626,62 @@ mod attach_log {
         #[test]
         fn division_movement_tracker_emits_only_meaningful_changes() {
             let mut previous = BTreeMap::new();
-            let stationary = DivisionMovementSample {
-                div_id: 7,
-                moving: false,
-                raw_movement_progress: None,
-                progress_bucket: None,
-                location: 10,
-                move_target_province: None,
-                movement_source_province: None,
-            };
+            let stationary = stationary_division_sample();
             assert!(track_division_movement_sample(&mut previous, &stationary).is_none());
 
+            let same_stationary_bucket = DivisionMovementSample {
+                raw_organisation: 5_000_999,
+                organisation_bucket: division_delta_bucket(5_000_999),
+                raw_strength: 100_999,
+                strength_bucket: division_delta_bucket(100_999),
+                ..stationary.clone()
+            };
+            assert!(
+                track_division_movement_sample(&mut previous, &same_stationary_bucket).is_none()
+            );
+
+            let org_bucket_changed = DivisionMovementSample {
+                raw_organisation: 5_001_000,
+                organisation_bucket: division_delta_bucket(5_001_000),
+                ..same_stationary_bucket.clone()
+            };
+            let org_fields =
+                track_division_movement_sample(&mut previous, &org_bucket_changed).unwrap();
+            assert_eq!(org_fields, vec!["organisation"]);
+
+            let strength_bucket_changed = DivisionMovementSample {
+                raw_strength: 102_000,
+                strength_bucket: division_delta_bucket(102_000),
+                ..org_bucket_changed.clone()
+            };
+            let strength_fields =
+                track_division_movement_sample(&mut previous, &strength_bucket_changed).unwrap();
+            assert_eq!(strength_fields, vec!["strength"]);
+
+            let combat_started = DivisionMovementSample {
+                combat_ref_count: 1,
+                in_combat: true,
+                ..strength_bucket_changed.clone()
+            };
+            let combat_fields =
+                track_division_movement_sample(&mut previous, &combat_started).unwrap();
+            assert_eq!(combat_fields, vec!["combat_ref_count", "in_combat"]);
+
+            let combat_ref_incremented = DivisionMovementSample {
+                combat_ref_count: 2,
+                ..combat_started.clone()
+            };
+            let combat_ref_fields =
+                track_division_movement_sample(&mut previous, &combat_ref_incremented).unwrap();
+            assert_eq!(combat_ref_fields, vec!["combat_ref_count"]);
+
             let moving_bucket_one = DivisionMovementSample {
-                div_id: 7,
                 moving: true,
                 raw_movement_progress: Some(1500),
-                progress_bucket: Some(1),
-                location: 10,
+                progress_bucket: Some(division_delta_bucket(1500)),
                 move_target_province: Some(10),
                 movement_source_province: Some(5),
+                ..combat_ref_incremented.clone()
             };
             let start_fields =
                 track_division_movement_sample(&mut previous, &moving_bucket_one).unwrap();
@@ -3572,13 +3693,14 @@ mod attach_log {
 
             let same_bucket = DivisionMovementSample {
                 raw_movement_progress: Some(1900),
+                progress_bucket: Some(division_delta_bucket(1900)),
                 ..moving_bucket_one.clone()
             };
             assert!(track_division_movement_sample(&mut previous, &same_bucket).is_none());
 
             let next_bucket = DivisionMovementSample {
                 raw_movement_progress: Some(2500),
-                progress_bucket: Some(2),
+                progress_bucket: Some(division_delta_bucket(2500)),
                 ..same_bucket.clone()
             };
             let bucket_fields =
@@ -3628,10 +3750,16 @@ mod attach_log {
                 div_id: 7,
                 moving: true,
                 raw_movement_progress: Some(12000),
-                progress_bucket: Some(12),
+                progress_bucket: Some(division_delta_bucket(12000)),
                 location: 11597,
                 move_target_province: Some(11597),
                 movement_source_province: Some(11333),
+                raw_organisation: 7_654_321,
+                organisation_bucket: division_delta_bucket(7_654_321),
+                raw_strength: 98_765,
+                strength_bucket: division_delta_bucket(98_765),
+                combat_ref_count: 2,
+                in_combat: true,
             };
             let changed_fields = division_movement_all_fields();
 
@@ -3662,6 +3790,11 @@ mod attach_log {
             assert!(frame.contains("\"location\":11597"));
             assert!(frame.contains("\"move_target_province\":11597"));
             assert!(frame.contains("\"movement_source_province\":11333"));
+            assert!(frame.contains("\"organisation\":76.54321"));
+            assert!(frame.contains("\"strength\":0.98765"));
+            assert!(frame.contains("\"combat_ref_count\":2"));
+            assert!(frame.contains("\"in_combat\":true"));
+            assert!(frame.contains("\"changed_fields\":[\"div_uid\",\"div_id\",\"div_type\",\"moving\",\"movement_progress\",\"progress_bucket\",\"location\",\"move_target_province\",\"movement_source_province\",\"organisation\",\"strength\",\"combat_ref_count\",\"in_combat\"]"));
             assert!(!frame.contains("body_ptr"));
             assert!(!frame.contains("body_addr"));
             assert!(!frame.contains("tag_db_id"));
