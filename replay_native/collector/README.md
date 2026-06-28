@@ -82,8 +82,23 @@ Scheduled country fuel:
 - malformed, non-heap, negative, or implausibly large fuel values are omitted
   per country instead of guessed;
 - worker-poll frames stay light and must not carry fuel payloads;
-- production, stockpile, and equipment flows are not part of this slice because
-  they require bounded vector traversal and a separate replay contract.
+
+Scheduled country production:
+
+- scheduled snapshot frames may claim `production_live` when the preflighted
+  country object bridge is still valid;
+- production reads are rooted at the already validated `CCountry*`, then follow
+  `CCountry+0xF68` to the production manager;
+- stockpile reads use the compact vector at manager `+0x220/+0x228/+0x22C`
+  and gate every non-null entry through the equipment-variant vtable
+  `module+0x292B218` plus type `70`;
+- military/naval production lines use the compact pointer vector at
+  manager `+0x58/+0x60/+0x64` and accept line type `56` or `57`;
+- unavailable stockpile or line vectors are omitted, while measured-empty `{}`,
+  `[]`, and `0` survive as measured values;
+- non-null bad-gated stockpile entries, duplicate variant ids, broken vector
+  headers, and implausible fixed-point values fail closed for that sub-vector;
+- worker-poll frames stay light and must not carry production payloads.
 
 Recorder-side map-control contract:
 

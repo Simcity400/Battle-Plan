@@ -328,6 +328,28 @@ class TestLiveAliasGating(unittest.TestCase):
             self.assertFalse(diff_engine._domain_present(live, canon), canon)
             self.assertFalse(diff_engine._both_captured(live, live, canon), canon)
 
+    def test_collector_production_live_does_not_drive_save_shaped_milestones(self):
+        a = schema.empty_snapshot("g", "1940.1.1.0")
+        b = schema.empty_snapshot("g", "1940.1.1.1")
+        for snap in (a, b):
+            snap["provenance"]["collector"] = {
+                "captured": True,
+                "domains": ["clock", "country_identity", "production_live"],
+            }
+            snap["countries"]["GER"] = schema.empty_country()
+        a["countries"]["GER"]["production"]["military_lines"] = [
+            {"id": 349, "active_factories": 3, "cost": 105.0,
+             "speed": 31.05, "produced": 90.0, "amount": -1},
+        ]
+        b["countries"]["GER"]["production"]["military_lines"] = [
+            {"id": 349, "active_factories": 3, "cost": 105.0,
+             "speed": 31.05, "produced": 160.0, "amount": -1},
+        ]
+
+        evs = diff_engine.diff_snapshots(a, b, milestone_steps={"production": 100})
+
+        self.assertNotIn("production_milestone", _types(evs))
+
     def test_bare_designs_canonical_id_fails_closed(self):
         # The live channel ALSO records the BARE "designs" id, but writes only
         # division_templates (not equipment_variants / country.mios) -> the "designs"

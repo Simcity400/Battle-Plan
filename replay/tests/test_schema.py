@@ -59,6 +59,12 @@ class TestSourceMap(unittest.TestCase):
         self.assertEqual(schema.source_of("countries.POR.economy.fuel.current"), "C/M/S")
         self.assertEqual(schema.source_of("countries.POR.economy.fuel.max"), "C/M/S")
 
+    def test_collector_production_source(self):
+        self.assertEqual(schema.source_of("countries.POR.production.stockpile"), "C/M")
+        self.assertEqual(schema.source_of("countries.POR.production.stockpile_total"), "C/M/D")
+        self.assertEqual(schema.source_of("countries.POR.production.military_lines"), "C/M")
+        self.assertEqual(schema.source_of("countries.POR.production.naval_factories"), "C/M")
+
     def test_unknown_returns_none(self):
         self.assertIsNone(schema.source_of("countries.GER.nonsense.field"))
 
@@ -190,6 +196,39 @@ class TestValidator(unittest.TestCase):
         self.assertTrue(any("economy.fuel.current" in p and "out of range" in p
                             for p in probs), probs)
         self.assertTrue(any("economy.fuel.max" in p and "not number|null" in p
+                            for p in probs), probs)
+
+    def test_bad_country_production_values_flagged(self):
+        snap = schema.empty_snapshot("g1", "1940.9.10.13")
+        snap["countries"]["POR"] = schema.empty_country()
+        snap["countries"]["POR"]["production"].update({
+            "stockpile": {"70": float("inf"), "bad": 1.0},
+            "stockpile_total": "bad",
+            "military_lines": [{
+                "id": True,
+                "active_factories": -1,
+                "cost": -1.0,
+                "speed": 1.0,
+                "produced": 2.0,
+                "amount": -2,
+            }],
+            "naval_lines": ["bad"],
+            "military_factories": -1,
+            "naval_factories": True,
+        })
+        probs = schema.validate_snapshot(snap)
+        self.assertTrue(any("production.stockpile['70']" in p for p in probs), probs)
+        self.assertTrue(any("production.stockpile key 'bad'" in p for p in probs), probs)
+        self.assertTrue(any("production.stockpile_total" in p for p in probs), probs)
+        self.assertTrue(any("military_lines[0].id" in p for p in probs), probs)
+        self.assertTrue(any("military_lines[0].active_factories" in p
+                            for p in probs), probs)
+        self.assertTrue(any("military_lines[0].cost" in p for p in probs), probs)
+        self.assertTrue(any("military_lines[0].amount" in p for p in probs), probs)
+        self.assertTrue(any("naval_lines[0] not a dict" in p for p in probs), probs)
+        self.assertTrue(any("military_factories" in p and "nonnegative int" in p
+                            for p in probs), probs)
+        self.assertTrue(any("naval_factories" in p and "nonnegative int" in p
                             for p in probs), probs)
 
     def test_bad_map_control_tags_flagged(self):

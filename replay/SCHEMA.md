@@ -326,7 +326,16 @@ are `null`.
 | `progress` | number\|null | S / M\* | progress on `current` |
 | `paused` | bool\|null | S | |
 
-### 3.6 `decisions`
+### 3.6 `production`
+| field | type | source | notes |
+|-------|------|--------|-------|
+| `stockpile` | obj\|null | C / M | equipment-variant id string -> signed amount; scheduled collector `production_live` reads validated `CCountry+0xF68` production manager |
+| `stockpile_total` | float\|null | C / M / D | sum of measured `stockpile`; absent when stockpile vector was unavailable |
+| `military_lines[]` / `naval_lines[]` | list\|null | C / M | each: `id`, `active_factories`, `cost`, `speed`, `produced`, `amount`; measured-empty `[]` is distinct from null |
+| `military_factories` / `naval_factories` | int\|null | C / M | sum of active factories over measured lines |
+| `construction_queue[]` | list\|null | M | live construction-order slice; not emitted by collector production manager |
+
+### 3.7 `decisions`
 | field | type | source | notes |
 |-------|------|--------|-------|
 | `active[]` | list | S | active decisions/categories; null until parsed → `[]` ok |
@@ -337,7 +346,7 @@ are `null`.
 > they persist state or fire a log marker; surfaced as derived events §9, not country
 > state).
 
-### 3.7 `diplomacy`
+### 3.8 `diplomacy`
 | field | type | source | notes |
 |-------|------|--------|-------|
 | `wars[]` | list | S | each: `against[]`, `war_goal`, `war_score`; null→`[]` until parsed |
@@ -346,7 +355,7 @@ are `null`.
 | `lend_lease[]` | list | S | the game 1.19 **equipment market** = modern lend-lease. Each entry is a directed trade contract attached to **both** parties: `contract_id` (`"id:type"`), `direction` (`"outgoing"` for the seller, `"incoming"` for the buyer), `counterpart`, `seller`, `buyer`, `equipments[]`, `prices[]`, `convoys{assigned,total}`, `delivery_country`, `delivery_efficiency`, `days`, `delivery_state`, `completed`. Canonical world list: `diplomacy_world.trade_contracts`. |
 | `volunteers[]` / `attaches[]` / `expeditionary[]` | list | S | reserved; null→`[]` |
 
-### 3.8 `intel` (deepened from `intel.json`)
+### 3.9 `intel` (deepened from `intel.json`)
 | field | type | source | notes |
 |-------|------|--------|-------|
 | `agency` | obj\|null | S | `{name, icon, is_created, upgrade_progress, current_upgrade, upgrades{branch:level}, capacity{max_operatives,usable_slots,defense}}` |
@@ -361,7 +370,7 @@ are `null`.
 > separate asset-extraction step). `operative_id`s inside `operations.running[].operatives`
 > join back to this country's `operatives[].op_id`.
 
-### 3.9 `commanders` (from `characters.json`)
+### 3.10 `commanders` (from `characters.json`)
 The the game 1.19 unified CHARACTER system, resolved to names + assignments by the parser.
 | field | type | source | notes |
 |-------|------|--------|-------|
@@ -377,7 +386,7 @@ The the game 1.19 unified CHARACTER system, resolved to names + assignments by t
 > army, navy `fleet`→fleet). `assignment=null` = unassigned/reserve. `portrait_gfx` is a
 > sprite name (asset-extraction step, not image data).
 
-### 3.10 `mios` / `scheduled_variants` / `mio_policies` (from `designs.json`)
+### 3.11 `mios` / `scheduled_variants` / `mio_policies` (from `designs.json`)
 Per-country military-industrial picture (the world variant CATALOG is top-level §11).
 | field | type | source | notes |
 |-------|------|--------|-------|
@@ -385,7 +394,7 @@ Per-country military-industrial picture (the world variant CATALOG is top-level 
 | `scheduled_variants[]` | list | S | named designer PRESETS: `{archetype, family, name, icon, obsolete, modules, upgrades, industrial_organisation([id,type]\|null), industrial_organisation_mio}` |
 | `mio_policies` | obj\|null | S | `{policy_name: {cost, cooldown}}` — MIO-policy cost/cooldown state |
 
-### 3.11 `extra` (from `country_extra.json`)
+### 3.12 `extra` (from `country_extra.json`)
 Country-level extras not covered by the other domains. `null`-but-present until ingested;
 when present it carries only the keys the parser emitted (no fabrication; a genuine `0`
 stays `0`, e.g. a nuke RECORD with `amount=0` yields `nukes_total=0`).
@@ -408,7 +417,7 @@ stays `0`, e.g. a nuke RECORD with `amount=0` yields `nukes_total=0`).
 | `pride_of_the_fleet` | obj\|null | S | `{id, type}` of the flagship ship |
 | `collaboration_present` | bool\|null | S | whether a collaboration government exists |
 
-### 3.12 `human_name` (from `players.json`)
+### 3.13 `human_name` (from `players.json`)
 | field | type | source | notes |
 |-------|------|--------|-------|
 | `human_name` | str\|null | S | the human player's lobby/persona DISPLAY name (`player_countries.<TAG>.user`). Populates in MP; `null` for AI and SP. **Not** a Steam id / OS account — those remain a hard wall (§10). |

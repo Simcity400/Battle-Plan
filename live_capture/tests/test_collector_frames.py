@@ -455,7 +455,8 @@ class TestCollectorFrames(unittest.TestCase):
             "collector_version": "0.1.0",
             "abi_version": 1,
             "date": "1936.1.2.1",
-            "domains": ["clock", "divisions"],
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock", "production_live", "divisions"],
         }
 
         with self.assertRaisesRegex(ValueError, "unsupported domains: divisions"):
@@ -510,6 +511,191 @@ class TestCollectorFrames(unittest.TestCase):
         }
 
         with self.assertRaisesRegex(ValueError, "fuel_live payload requires scheduled"):
+            snapshot_from_collector_frame(frame, "collector-test")
+
+    def test_snapshot_frame_folds_scheduled_production_live(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock", "country_identity", "production_live"],
+            "countries": {
+                "GER": {
+                    "present": True,
+                    "collector_object": "0x1000",
+                    "identity": {"tag_db_id": 1},
+                    "production": {
+                        "stockpile": {"70": 123.5, "71": 0.0, "72": -2.5},
+                        "stockpile_total": 121.0,
+                        "military_lines": [{
+                            "id": 349,
+                            "active_factories": 3,
+                            "cost": 105.0,
+                            "speed": 31.05,
+                            "produced": 34.4,
+                            "amount": -1,
+                        }],
+                        "naval_lines": [],
+                        "military_factories": 3,
+                        "naval_factories": 0,
+                    },
+                },
+                "SOV": {
+                    "present": True,
+                    "collector_object": "0x2000",
+                    "identity": {"tag_db_id": 2},
+                    "production": {
+                        "stockpile": {},
+                        "stockpile_total": 0.0,
+                        "military_lines": [],
+                        "naval_lines": [],
+                        "military_factories": 0,
+                        "naval_factories": 0,
+                    },
+                },
+            },
+        }
+
+        snap = snapshot_from_collector_frame(frame, "collector-test")
+
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        self.assertEqual(
+            snap["provenance"]["collector"]["domains"],
+            ["clock", "country_identity", "production_live"],
+        )
+        ger = snap["countries"]["GER"]["production"]
+        self.assertEqual(ger["stockpile"], {"70": 123.5, "71": 0.0, "72": -2.5})
+        self.assertEqual(ger["stockpile_total"], 121.0)
+        self.assertEqual(ger["military_lines"][0]["amount"], -1)
+        self.assertEqual(ger["military_factories"], 3)
+        self.assertEqual(ger["naval_lines"], [])
+        self.assertEqual(ger["naval_factories"], 0)
+        sov = snap["countries"]["SOV"]["production"]
+        self.assertEqual(sov["stockpile"], {})
+        self.assertEqual(sov["stockpile_total"], 0.0)
+        self.assertEqual(sov["military_lines"], [])
+        self.assertEqual(sov["naval_lines"], [])
+        self.assertEqual(sov["military_factories"], 0)
+        self.assertEqual(sov["naval_factories"], 0)
+        self.assertEqual(snap["countries"]["GER"]["military"]["equipment_stockpile"], [])
+
+    def test_snapshot_frame_preserves_unavailable_production_leaves(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock", "country_identity", "production_live"],
+            "countries": {
+                "GER": {
+                    "present": True,
+                    "collector_object": "0x1000",
+                    "identity": {"tag_db_id": 1},
+                    "production": {
+                        "military_lines": [{
+                            "id": 349,
+                            "active_factories": 3,
+                            "cost": 105.0,
+                            "speed": 31.05,
+                            "produced": 34.4,
+                            "amount": -1,
+                        }],
+                        "naval_lines": [],
+                        "military_factories": 3,
+                        "naval_factories": 0,
+                    },
+                },
+            },
+        }
+
+        snap = snapshot_from_collector_frame(frame, "collector-test")
+
+        prod = snap["countries"]["GER"]["production"]
+        self.assertIsNone(prod["stockpile"])
+        self.assertIsNone(prod["stockpile_total"])
+        self.assertEqual(prod["military_lines"][0]["id"], 349)
+        self.assertEqual(prod["military_factories"], 3)
+        self.assertEqual(prod["naval_lines"], [])
+        self.assertEqual(prod["naval_factories"], 0)
+
+    def test_snapshot_frame_rejects_malformed_production_live(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock", "country_identity", "production_live"],
+            "countries": {
+                "GER": {
+                    "present": True,
+                    "collector_object": "0x1000",
+                    "identity": {"tag_db_id": 1},
+                    "production": {
+                        "stockpile": {"70": float("inf")},
+                        "stockpile_total": 0.0,
+                        "military_lines": [{
+                            "id": 349,
+                            "active_factories": -1,
+                            "cost": 105.0,
+                            "speed": 31.05,
+                            "produced": 34.4,
+                            "amount": -2,
+                        }],
+                        "naval_lines": "bad",
+                        "military_factories": 3,
+                        "naval_factories": 0,
+                    },
+                },
+            },
+        }
+
+        problems = validate_collector_frame(frame)
+
+        self.assertTrue(any("production.stockpile['70']" in p
+                            for p in problems), problems)
+        self.assertTrue(any("military_lines[0].active_factories" in p
+                            for p in problems), problems)
+        self.assertTrue(any("military_lines[0].amount" in p
+                            for p in problems), problems)
+        self.assertTrue(any("production.naval_lines not list" in p
+                            for p in problems), problems)
+        with self.assertRaisesRegex(ValueError, "invalid collector frame"):
+            snapshot_from_collector_frame(frame, "collector-test")
+
+    def test_snapshot_frame_rejects_non_scheduled_production_live(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "daily_update",
+            "domains": ["clock", "country_identity", "production_live"],
+            "countries": {
+                "GER": {
+                    "present": True,
+                    "collector_object": "0x1000",
+                    "identity": {"tag_db_id": 1},
+                    "production": {
+                        "stockpile": {},
+                        "stockpile_total": 0.0,
+                        "military_lines": [],
+                        "naval_lines": [],
+                        "military_factories": 0,
+                        "naval_factories": 0,
+                    },
+                },
+            },
+        }
+
+        with self.assertRaisesRegex(ValueError, "production_live payload requires scheduled"):
             snapshot_from_collector_frame(frame, "collector-test")
 
     def test_root_probe_frame_requires_scheduled_map_domain_claims(self):
@@ -598,6 +784,14 @@ class TestCollectorFrames(unittest.TestCase):
                     "collector_object": "0x1000",
                     "identity": {"tag_db_id": 47},
                     "fuel": {"current": 1.0, "max": 2.0},
+                    "production": {
+                        "stockpile": {},
+                        "stockpile_total": 0.0,
+                        "military_lines": [],
+                        "naval_lines": [],
+                        "military_factories": 0,
+                        "naval_factories": 0,
+                    },
                 },
             },
             "states": {"1": {"controller": "GER"}},
@@ -607,6 +801,8 @@ class TestCollectorFrames(unittest.TestCase):
         problems = validate_collector_frame(frame)
 
         self.assertTrue(any("worker_poll frame must not carry fuel" in p
+                            for p in problems), problems)
+        self.assertTrue(any("worker_poll frame must not carry production" in p
                             for p in problems), problems)
         self.assertTrue(any("worker_poll frame must not carry states" in p
                             for p in problems), problems)

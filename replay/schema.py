@@ -15,11 +15,17 @@ unobtained scalar is ``None`` (JSON null), never guessed. ``0`` means measured z
 """
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field, asdict, fields as dataclass_fields
 from typing import Any, Dict, List, Optional
 
 SCHEMA_VERSION = "1"
+PRODUCTION_VARIANT_ID_MAX = 10_000_000
+PRODUCTION_LINE_ID_MAX = 10_000_000
+PRODUCTION_FACTORY_COUNT_MAX = 100_000
+PRODUCTION_LINE_AMOUNT_MAX = 2_147_483_647
+PRODUCTION_FIXED_POINT_ABS_MAX = 1_000_000_000_000.0
 
 # Canonical domain ids referenced by provenance.{collector,memory,save}.domains (SCHEMA §2).
 DOMAINS = (
@@ -75,9 +81,9 @@ DOMAINS = (
     "intel_live",            # LIVE agency scalars -> countries.*.intel.agency.* (M)
     "focus_live",            # LIVE national-focus state -> countries.*.focus.* (M; shares the
                              # save "focus" home, tracked under a DISTINCT live id)
-    "production_live",       # LIVE stockpile + production lines -> countries.*.production (M;
-                             # a NEW live-only home, distinct from the save "production" domain
-                             # which folds into economy/military)
+    "production_live",       # LIVE stockpile + production lines -> countries.*.production
+                             # (C/M; a NEW live-only home, distinct from the save "production"
+                             # domain which folds into economy/military)
     "diplomacy_live",        # LIVE wars/at-war/casualties/faction-group -> countries.*.diplomacy
                              # (at_war/casualties/faction_group, M) + a top-level live sidecar
                              # snap["diplomacy_live"] (war_relations + faction_members). Distinct
@@ -522,14 +528,14 @@ FIELD_SOURCES: Dict[str, str] = {
     # reader measures the equipment STOCKPILE bank ({variant_id: amount}, 459/461 ids
     # EXACT fixed-point) + the military/naval PRODUCTION LINES ({id, active_factories,
     # cost, speed, produced, amount}, line count + SUM(active) EXACT) + the active-
-    # factory totals. All M except stockpile_total, which is summed FROM the measured
-    # stockpile in the reader -> derived-from-memory (M/D). ---
-    "countries.*.production.stockpile": "M",
-    "countries.*.production.stockpile_total": "M/D",   # summed from the measured stockpile
-    "countries.*.production.military_lines": "M",
-    "countries.*.production.naval_lines": "M",
-    "countries.*.production.military_factories": "M",
-    "countries.*.production.naval_factories": "M",
+    # factory totals. Collector DLL and legacy memory paths can both measure this;
+    # stockpile_total is summed FROM the measured stockpile -> derived-from-live (C/M/D). ---
+    "countries.*.production.stockpile": "C/M",
+    "countries.*.production.stockpile_total": "C/M/D",   # summed from measured stockpile
+    "countries.*.production.military_lines": "C/M",
+    "countries.*.production.naval_lines": "C/M",
+    "countries.*.production.military_factories": "C/M",
+    "countries.*.production.naval_factories": "C/M",
     # LIVE construction queue (construction_orders_live, M). DISTINCT live-only leaf: the
     # per-country civil/military BUILDING queue in priority order, each {line_id, template_id,
     # active_factories, cost, produced, priority}. The build target STATE/location is RESISTED
@@ -1021,15 +1027,16 @@ class Focus:
 
 @dataclass
 class Production:
-    """LIVE per-country production picture (§3.18, production_live.py). M = process
-    memory. NEW live-only home, distinct from the SAVE-sourced "production" domain
+    """LIVE per-country production picture (§3.18, production_live.py). C/M = collector
+    DLL or legacy process memory. NEW live-only home, distinct from the SAVE-sourced
+    "production" domain
     (which folds into military.equipment_stockpile / military.convoys /
     economy._production_lines — a different shape AND home), so the save backstop never
     writes here and the two channels stay independently auditable.
 
     ``stockpile`` maps a save equipment-VARIANT id (str/int key) to the banked amount
     (float, i64 fixed-point /100000). ``stockpile_total`` is the sum of those amounts
-    (derived-from-memory, M/D). ``military_lines`` / ``naval_lines`` each carry the
+    (derived-from-live, C/M/D). ``military_lines`` / ``naval_lines`` each carry the
     measured per-line {id, active_factories, cost, speed, produced, amount}. The factory
     totals are SUM(active_factories) over the respective line list.
 
@@ -1192,7 +1199,7 @@ class Country:
     politics: Dict[str, Any] = field(default_factory=lambda: asdict(Politics()))
     research: Dict[str, Any] = field(default_factory=lambda: asdict(Research()))
     focus: Dict[str, Any] = field(default_factory=lambda: asdict(Focus()))
-    # LIVE per-country production (§3.18, production_live.py, M). NEW live-only home,
+    # LIVE per-country production (§3.18, production_live.py, C/M). NEW live-only home,
     # distinct from the SAVE "production" domain (which folds into economy/military).
     # Always present; every leaf null until a live read folds it (no fabrication).
     production: Dict[str, Any] = field(default_factory=lambda: asdict(Production()))
@@ -2252,7 +2259,7 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
             if cc is not None and not isinstance(cc, str):
                 problems.append(
                     f"country {tag!r}.focus.current_continuous {cc!r} not str|null")
-        # newly-wired LIVE production home (production_live, M): a dict whose measured
+        # newly-wired LIVE production home (production_live, C/M): a dict whose measured
         # leaves are the right kind (stockpile dict|null, *_lines list|null, factory
         # counts int|null). Codex review: validate the new always-present sub-dict so a
         # malformed live payload can't pass as an ignored key.
@@ -2264,16 +2271,45 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
             if sk is not None and not isinstance(sk, dict):
                 problems.append(
                     f"country {tag!r}.production.stockpile {sk!r} not dict|null")
+            elif isinstance(sk, dict):
+                if len(sk) > 4096:
+                    problems.append(
+                        f"country {tag!r}.production.stockpile too many entries")
+                for variant_id, amount in sk.items():
+                    if not _valid_positive_int_key(
+                        variant_id, max_value=PRODUCTION_VARIANT_ID_MAX
+                    ):
+                        problems.append(
+                            f"country {tag!r}.production.stockpile key "
+                            f"{variant_id!r} not valid positive id")
+                    if not _valid_signed_measure(amount):
+                        problems.append(
+                            f"country {tag!r}.production.stockpile[{variant_id!r}] "
+                            "not finite number in range")
+            st_total = prod.get("stockpile_total")
+            if st_total is not None and not _valid_signed_measure(st_total):
+                problems.append(
+                    f"country {tag!r}.production.stockpile_total {st_total!r} "
+                    "not number|null")
             for k in ("military_lines", "naval_lines"):
                 v = prod.get(k)
                 if v is not None and not isinstance(v, list):
                     problems.append(
                         f"country {tag!r}.production.{k} {v!r} not list|null")
+                elif isinstance(v, list):
+                    if len(v) > 4096:
+                        problems.append(
+                            f"country {tag!r}.production.{k} too many entries")
+                    for i, line in enumerate(v):
+                        problems.extend(_validate_production_line(tag, k, i, line))
             for k in ("military_factories", "naval_factories"):
                 v = prod.get(k)
-                if v is not None and not isinstance(v, int):
+                if v is not None and not _valid_bounded_int(
+                    v, minimum=0, maximum=PRODUCTION_FACTORY_COUNT_MAX
+                ):
                     problems.append(
-                        f"country {tag!r}.production.{k} {v!r} not int|null")
+                        f"country {tag!r}.production.{k} {v!r} "
+                        "not nonnegative int|null")
             # newly-wired LIVE construction queue (construction_orders_live, M): list|null.
             cq = prod.get("construction_queue")
             if cq is not None and not isinstance(cq, list):
@@ -2541,6 +2577,87 @@ def _is_intlike(x: Any) -> bool:
         except ValueError:
             return False
     return False
+
+
+def _is_finite_number(value: Any) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(float(value))
+    )
+
+
+def _valid_signed_measure(value: Any) -> bool:
+    return (
+        _is_finite_number(value)
+        and abs(float(value)) <= PRODUCTION_FIXED_POINT_ABS_MAX
+    )
+
+
+def _valid_nonnegative_measure(value: Any) -> bool:
+    return (
+        _is_finite_number(value)
+        and 0.0 <= float(value) <= PRODUCTION_FIXED_POINT_ABS_MAX
+    )
+
+
+def _valid_bounded_int(value: Any, *, minimum: int, maximum: int) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, int)
+        and minimum <= value <= maximum
+    )
+
+
+def _valid_positive_int_key(value: Any, *, max_value: int) -> bool:
+    if isinstance(value, bool):
+        return False
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return False
+    return str(parsed) == str(value) and 1 <= parsed <= max_value
+
+
+def _validate_production_line(
+    tag: str,
+    key: str,
+    index: int,
+    line: Any,
+) -> List[str]:
+    prefix = f"country {tag!r}.production.{key}[{index}]"
+    if not isinstance(line, dict):
+        return [f"{prefix} not a dict"]
+    problems: List[str] = []
+    line_id = line.get("id")
+    if line_id is None:
+        problems.append(f"{prefix}.id missing")
+    elif not _valid_bounded_int(line_id, minimum=0, maximum=PRODUCTION_LINE_ID_MAX):
+        problems.append(f"{prefix}.id not int in range")
+    active = line.get("active_factories")
+    if active is None:
+        problems.append(f"{prefix}.active_factories missing")
+    elif not _valid_bounded_int(
+        active, minimum=0, maximum=PRODUCTION_FACTORY_COUNT_MAX
+    ):
+        problems.append(f"{prefix}.active_factories not int in range")
+    for field in ("cost", "speed", "produced"):
+        measured = line.get(field)
+        if measured is None:
+            problems.append(f"{prefix}.{field} missing")
+        elif not _valid_nonnegative_measure(measured):
+            problems.append(f"{prefix}.{field} not finite nonnegative number in range")
+    amount = line.get("amount")
+    if amount is None:
+        problems.append(f"{prefix}.amount missing")
+    elif not (
+        amount == -1
+        or _valid_bounded_int(
+            amount, minimum=0, maximum=PRODUCTION_LINE_AMOUNT_MAX
+        )
+    ):
+        problems.append(f"{prefix}.amount not -1 or nonnegative int in range")
+    return problems
 
 
 __all__ = [

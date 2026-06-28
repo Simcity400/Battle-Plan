@@ -106,6 +106,7 @@ mod attach_log {
     const OBJ_TEMPLATES_LOCKED: usize = 0x01B4;
     const OBJ_COMMAND_POWER: usize = 0x01F0;
     const OBJ_MANPOWER_POOL: usize = 0x0338;
+    const OBJ_PROD_MANAGER: usize = 0x0F68;
     const OBJ_FUEL_STATUS: usize = 0x1580;
     const OBJ_ORIGINAL_CAPITAL: usize = 0x101C;
     const OBJ_STABILITY: usize = 0x10D0;
@@ -117,6 +118,32 @@ mod attach_log {
     const FUEL_STATUS_CURRENT: usize = 0x08;
     const FUEL_STATUS_MAX: usize = 0x10;
     const FUEL_SCALE: f64 = 32768.0;
+    const VARIANT_VTABLE_RVA: usize = 0x292B218;
+    const VARIANT_TYPE: u32 = 70;
+    const STOCK_BEGIN: usize = 0x220;
+    const STOCK_CAP: usize = 0x228;
+    const STOCK_SIZE: usize = 0x22C;
+    const STOCK_STRIDE: usize = 0x10;
+    const STOCK_ENTRY_DEF: usize = 0x00;
+    const STOCK_ENTRY_AMOUNT: usize = 0x08;
+    const VARIANT_DEF_TYPE: usize = 0x08;
+    const VARIANT_DEF_ID: usize = 0x0C;
+    const LINE_BEGIN: usize = 0x58;
+    const LINE_CAP: usize = 0x60;
+    const LINE_SIZE: usize = 0x64;
+    const LINE_STRIDE: usize = 0x08;
+    const LINE_TYPE: usize = 0x08;
+    const LINE_ID: usize = 0x0C;
+    const LINE_ACTIVE_FACTORIES: usize = 0x18;
+    const LINE_COST: usize = 0x28;
+    const LINE_SPEED: usize = 0x30;
+    const LINE_PRODUCED: usize = 0x38;
+    const LINE_AMOUNT: usize = 0x48;
+    const LINE_TYPE_MILITARY: u32 = 56;
+    const LINE_TYPE_NAVAL: u32 = 57;
+    const MAX_PRODUCTION_VECTOR_ENTRIES: u32 = 4096;
+    const MAX_PRODUCTION_STOCKPILE_AMOUNT: f64 = 1_000_000_000_000.0;
+    const MAX_PRODUCTION_LINE_FIXED: f64 = 1_000_000_000.0;
     const MAX_COUNTRY_OBJECT_BRIDGE_ROWS: usize = 512;
     const MAX_MAP_CONTROL_STATE_ROOT_ROWS: usize = 4096;
     const MAX_MAP_CONTROL_STATE_ROOT_PAYLOAD_BYTES: usize = 131_072;
@@ -789,9 +816,14 @@ mod attach_log {
         let scheduled_frame = capture_boundary == Some("scheduled_hour_snapshot");
         let include_scheduled_map = scheduled_frame;
         let include_scheduled_country_fuel = scheduled_frame;
+        let include_scheduled_country_production = scheduled_frame;
         let state_rows = scheduled_state_rows_json(state, control, include_scheduled_map);
-        let (probe, domains) =
-            root_probe_json(state, state_rows.as_deref(), include_scheduled_country_fuel);
+        let (probe, domains) = root_probe_json(
+            state,
+            state_rows.as_deref(),
+            include_scheduled_country_fuel,
+            include_scheduled_country_production,
+        );
         let control_meta =
             control_metadata_json(control, session_sequence, elapsed_wall_ms, capture_boundary);
         let quality = if probe.contains("\"status\":\"verified\"") {
@@ -1011,12 +1043,36 @@ mod attach_log {
         manpower_pool: Option<u32>,
         convoys: Option<f64>,
         fuel: Option<CountryFuelRow>,
+        production: Option<CountryProductionRow>,
     }
 
     #[derive(Clone, Copy)]
     struct CountryFuelRow {
         current: f64,
         max: f64,
+    }
+
+    #[derive(Clone)]
+    struct CountryProductionRow {
+        stockpile: Option<Vec<CountryStockpileRow>>,
+        military_lines: Option<Vec<CountryProductionLineRow>>,
+        naval_lines: Option<Vec<CountryProductionLineRow>>,
+    }
+
+    #[derive(Clone, Copy)]
+    struct CountryStockpileRow {
+        variant_id: u32,
+        amount: f64,
+    }
+
+    #[derive(Clone, Copy)]
+    struct CountryProductionLineRow {
+        id: i32,
+        active_factories: i32,
+        cost: f64,
+        speed: f64,
+        produced: f64,
+        amount: i32,
     }
 
     struct CountryIdentityCache {
@@ -1055,7 +1111,7 @@ mod attach_log {
             let mut duplicate_tags = 0u32;
             for object_ptr in scan_qword_hits(country_vtable, HEAP_LO, HEAP_HI) {
                 let Some(row) =
-                    country_object_row(object_ptr, country_vtable, tag_table, None, false)
+                    country_object_row(object_ptr, country_vtable, tag_table, None, false, false)
                 else {
                     rejected_objects = rejected_objects.saturating_add(1);
                     continue;
@@ -1108,6 +1164,7 @@ mod attach_log {
                     entry.tag_db_id,
                     records_by_tag_id.get(&entry.tag_db_id).copied(),
                     false,
+                    false,
                 ) else {
                     rejected_objects = rejected_objects.saturating_add(1);
                     continue;
@@ -1144,6 +1201,7 @@ mod attach_log {
             &self,
             country_database_ptr: usize,
             include_scheduled_country_fuel: bool,
+            include_scheduled_country_production: bool,
         ) -> Vec<CountryObjectRow> {
             if !self.has_scalar_source() {
                 return Vec::new();
@@ -1158,6 +1216,7 @@ mod attach_log {
                     self.country_vtable,
                     tag_table,
                     include_scheduled_country_fuel,
+                    include_scheduled_country_production,
                 ) {
                     rows.push(fresh);
                 }
@@ -1170,6 +1229,7 @@ mod attach_log {
             current_rows: &[CountryObjectRow],
             has_state_rows: bool,
             include_scheduled_country_fuel: bool,
+            include_scheduled_country_production: bool,
         ) -> String {
             let mut domains = vec!["\"clock\"", "\"country_identity\""];
             if !current_rows.is_empty() {
@@ -1177,6 +1237,11 @@ mod attach_log {
             }
             if include_scheduled_country_fuel && current_rows.iter().any(|row| row.fuel.is_some()) {
                 domains.push("\"fuel_live\"");
+            }
+            if include_scheduled_country_production
+                && current_rows.iter().any(|row| row.production.is_some())
+            {
+                domains.push("\"production_live\"");
             }
             if has_state_rows {
                 domains.push("\"state_ownership\"");
@@ -1207,11 +1272,18 @@ mod attach_log {
             country_database_ptr: usize,
             current_rows: &[CountryObjectRow],
             include_scheduled_country_fuel: bool,
+            include_scheduled_country_production: bool,
         ) -> String {
             if !current_rows.is_empty() {
                 let rows: Vec<String> = current_rows
                     .iter()
-                    .map(|row| row_json(row, include_scheduled_country_fuel))
+                    .map(|row| {
+                        row_json(
+                            row,
+                            include_scheduled_country_fuel,
+                            include_scheduled_country_production,
+                        )
+                    })
                     .collect();
                 return format!("{{{}}}", rows.join(","));
             }
@@ -1352,6 +1424,7 @@ mod attach_log {
         state: Option<&CollectorState>,
         scheduled_state_rows: Option<&str>,
         include_scheduled_country_fuel: bool,
+        include_scheduled_country_production: bool,
     ) -> (String, String) {
         let Some(state) = state else {
             return ("\"root_probe\":null".to_string(), "[]".to_string());
@@ -1384,17 +1457,20 @@ mod attach_log {
         let current_rows = state.country_identity.current_rows(
             country_database_ptr as usize,
             include_scheduled_country_fuel,
+            include_scheduled_country_production,
         );
         let country_rows = state.country_identity.countries_json_from_rows(
             country_database_ptr as usize,
             &current_rows,
             include_scheduled_country_fuel,
+            include_scheduled_country_production,
         );
         let identity_probe = state.country_identity.root_json();
         let domains = state.country_identity.domains_json_from_rows(
             &current_rows,
             scheduled_state_rows.is_some(),
             include_scheduled_country_fuel,
+            include_scheduled_country_production,
         );
         let clock_probe = clock_probe_json(date_ptr as usize);
         let state_rows = scheduled_state_rows
@@ -1540,6 +1616,7 @@ mod attach_log {
         tag_table: usize,
         record_ptr: Option<usize>,
         include_scheduled_country_fuel: bool,
+        include_scheduled_country_production: bool,
     ) -> Option<CountryObjectRow> {
         if read_u64(object_ptr)? as usize != country_vtable {
             return None;
@@ -1600,6 +1677,11 @@ mod attach_log {
             } else {
                 None
             },
+            production: if include_scheduled_country_production {
+                read_country_production(object_ptr, country_vtable)
+            } else {
+                None
+            },
         })
     }
 
@@ -1610,6 +1692,7 @@ mod attach_log {
         expected_tag_db_id: u32,
         record_ptr: Option<usize>,
         include_scheduled_country_fuel: bool,
+        include_scheduled_country_production: bool,
     ) -> Option<CountryObjectRow> {
         let row = country_object_row(
             object_ptr,
@@ -1617,6 +1700,7 @@ mod attach_log {
             tag_table,
             record_ptr,
             include_scheduled_country_fuel,
+            include_scheduled_country_production,
         )?;
         if row.tag_db_id == expected_tag_db_id {
             Some(row)
@@ -1630,6 +1714,7 @@ mod attach_log {
         country_vtable: usize,
         tag_table: usize,
         include_scheduled_country_fuel: bool,
+        include_scheduled_country_production: bool,
     ) -> Option<CountryObjectRow> {
         let row = country_object_row_expected(
             expected.object_ptr,
@@ -1638,6 +1723,7 @@ mod attach_log {
             expected.tag_db_id,
             expected.record_ptr,
             include_scheduled_country_fuel,
+            include_scheduled_country_production,
         )?;
         if row.tag == expected.tag && row.name == expected.name {
             Some(row)
@@ -1678,7 +1764,148 @@ mod attach_log {
         }
     }
 
-    fn row_json(row: &CountryObjectRow, include_scheduled_country_fuel: bool) -> String {
+    fn read_country_production(
+        object_ptr: usize,
+        country_vtable: usize,
+    ) -> Option<CountryProductionRow> {
+        let base = country_vtable.checked_sub(COUNTRY_VTABLE_RVA)?;
+        let variant_vtable = base.checked_add(VARIANT_VTABLE_RVA)?;
+        let manager = read_u64(object_ptr + OBJ_PROD_MANAGER)? as usize;
+        if !is_map_control_heap_pointer(manager) {
+            return None;
+        }
+        let stockpile = read_production_stockpile(manager, variant_vtable);
+        let lines = read_production_lines(manager);
+        if stockpile.is_none() && lines.is_none() {
+            return None;
+        }
+        let (military_lines, naval_lines) = match lines {
+            Some((military_lines, naval_lines)) => (Some(military_lines), Some(naval_lines)),
+            None => (None, None),
+        };
+        Some(CountryProductionRow {
+            stockpile,
+            military_lines,
+            naval_lines,
+        })
+    }
+
+    fn read_production_stockpile(
+        manager: usize,
+        variant_vtable: usize,
+    ) -> Option<Vec<CountryStockpileRow>> {
+        let begin = read_u64(manager + STOCK_BEGIN)? as usize;
+        let cap = read_u32(manager + STOCK_CAP)?;
+        let size = read_u32(manager + STOCK_SIZE)?;
+        if size > cap || cap > MAX_PRODUCTION_VECTOR_ENTRIES {
+            return None;
+        }
+        if size == 0 {
+            return Some(Vec::new());
+        }
+        if !is_map_control_heap_pointer(begin) {
+            return None;
+        }
+        let byte_len = (size as usize).checked_mul(STOCK_STRIDE)?;
+        let raw = read_bytes(begin, byte_len)?;
+        let mut rows_by_variant: BTreeMap<u32, f64> = BTreeMap::new();
+        for k in (0..byte_len).step_by(STOCK_STRIDE) {
+            let def_ptr = read_u64_from_slice(&raw, k + STOCK_ENTRY_DEF)? as usize;
+            let amount_raw = read_i64_from_slice(&raw, k + STOCK_ENTRY_AMOUNT)?;
+            if !is_map_control_heap_pointer(def_ptr) {
+                continue;
+            }
+            let def_vtable = read_u64(def_ptr)? as usize;
+            let def_type = read_u32(def_ptr + VARIANT_DEF_TYPE)?;
+            if def_vtable != variant_vtable || def_type != VARIANT_TYPE {
+                return None;
+            }
+            let variant_id = read_u32(def_ptr + VARIANT_DEF_ID)?;
+            let amount = amount_raw as f64 / FP_SCALE;
+            if !amount.is_finite() || amount.abs() > MAX_PRODUCTION_STOCKPILE_AMOUNT {
+                return None;
+            }
+            if rows_by_variant.insert(variant_id, amount).is_some() {
+                return None;
+            }
+        }
+        Some(
+            rows_by_variant
+                .into_iter()
+                .map(|(variant_id, amount)| CountryStockpileRow { variant_id, amount })
+                .collect(),
+        )
+    }
+
+    fn read_production_lines(
+        manager: usize,
+    ) -> Option<(Vec<CountryProductionLineRow>, Vec<CountryProductionLineRow>)> {
+        let begin = read_u64(manager + LINE_BEGIN)? as usize;
+        let cap = read_u32(manager + LINE_CAP)?;
+        let size = read_u32(manager + LINE_SIZE)?;
+        if size > cap || cap > MAX_PRODUCTION_VECTOR_ENTRIES {
+            return None;
+        }
+        if size == 0 {
+            return Some((Vec::new(), Vec::new()));
+        }
+        if !is_map_control_heap_pointer(begin) {
+            return None;
+        }
+        let byte_len = (size as usize).checked_mul(LINE_STRIDE)?;
+        let raw = read_bytes(begin, byte_len)?;
+        let mut military = Vec::new();
+        let mut naval = Vec::new();
+        for k in (0..byte_len).step_by(LINE_STRIDE) {
+            let line_ptr = read_u64_from_slice(&raw, k)? as usize;
+            if !is_map_control_heap_pointer(line_ptr) {
+                continue;
+            }
+            let line_type = read_u32(line_ptr + LINE_TYPE)?;
+            if line_type != LINE_TYPE_MILITARY && line_type != LINE_TYPE_NAVAL {
+                continue;
+            }
+            let active_factories = read_i32(line_ptr + LINE_ACTIVE_FACTORIES)?;
+            if !(0..=100_000).contains(&active_factories) {
+                continue;
+            }
+            let Some(cost) = read_production_fixed(line_ptr + LINE_COST) else {
+                continue;
+            };
+            let Some(speed) = read_production_fixed(line_ptr + LINE_SPEED) else {
+                continue;
+            };
+            let Some(produced) = read_production_fixed(line_ptr + LINE_PRODUCED) else {
+                continue;
+            };
+            let line = CountryProductionLineRow {
+                id: read_i32(line_ptr + LINE_ID)?,
+                active_factories,
+                cost,
+                speed,
+                produced,
+                amount: read_i32(line_ptr + LINE_AMOUNT)?,
+            };
+            if line_type == LINE_TYPE_MILITARY {
+                military.push(line);
+            } else {
+                naval.push(line);
+            }
+        }
+        Some((military, naval))
+    }
+
+    fn read_production_fixed(addr: usize) -> Option<f64> {
+        read_i32(addr)
+            .map(|v| v as f64 / FP_SCALE)
+            .filter(|v| v.is_finite() && v.abs() <= MAX_PRODUCTION_LINE_FIXED)
+    }
+
+    fn row_json(
+        row: &CountryObjectRow,
+        include_scheduled_country_fuel: bool,
+        include_scheduled_country_production: bool,
+    ) -> String {
         let original_capital = json_opt_i32(row.original_capital);
         let original_tag = json_opt_str(row.original_tag.as_deref());
         let templates_locked = json_opt_bool(row.templates_locked);
@@ -1703,6 +1930,14 @@ mod attach_log {
         } else {
             String::new()
         };
+        let production = if include_scheduled_country_production {
+            row.production
+                .as_ref()
+                .map(country_production_json)
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
         format!(
             "\"{}\":{{\"present\":true,\
              \"collector_object\":\"0x{:X}\",\
@@ -1717,9 +1952,71 @@ mod attach_log {
              \"command_power\":{command_power},\
              \"num_ships\":{num_ships},\
              \"manpower_pool\":{manpower_pool},\
-             \"convoys\":{convoys}}}{fuel}}}",
+             \"convoys\":{convoys}}}{fuel}{production}}}",
             row.tag, row.object_ptr, row.tag_db_id
         )
+    }
+
+    fn country_production_json(production: &CountryProductionRow) -> String {
+        let mut fields = Vec::new();
+        if let Some(stockpile) = production.stockpile.as_deref() {
+            let stockpile_total: f64 = stockpile.iter().map(|row| row.amount).sum();
+            fields.push(format!(
+                "\"stockpile\":{}",
+                production_stockpile_json(stockpile)
+            ));
+            fields.push(format!(
+                "\"stockpile_total\":{}",
+                json_opt_f64(Some(stockpile_total))
+            ));
+        }
+        if let Some(military_lines) = production.military_lines.as_deref() {
+            let military_factories: i32 = military_lines
+                .iter()
+                .map(|line| line.active_factories)
+                .sum();
+            fields.push(format!(
+                "\"military_lines\":{}",
+                production_lines_json(military_lines)
+            ));
+            fields.push(format!("\"military_factories\":{military_factories}"));
+        }
+        if let Some(naval_lines) = production.naval_lines.as_deref() {
+            let naval_factories: i32 = naval_lines.iter().map(|line| line.active_factories).sum();
+            fields.push(format!(
+                "\"naval_lines\":{}",
+                production_lines_json(naval_lines)
+            ));
+            fields.push(format!("\"naval_factories\":{naval_factories}"));
+        }
+        format!(",\"production\":{{{}}}", fields.join(","))
+    }
+
+    fn production_stockpile_json(rows: &[CountryStockpileRow]) -> String {
+        let parts: Vec<String> = rows
+            .iter()
+            .map(|row| format!("\"{}\":{}", row.variant_id, json_opt_f64(Some(row.amount))))
+            .collect();
+        format!("{{{}}}", parts.join(","))
+    }
+
+    fn production_lines_json(rows: &[CountryProductionLineRow]) -> String {
+        let parts: Vec<String> = rows
+            .iter()
+            .map(|line| {
+                format!(
+                    "{{\"id\":{},\"active_factories\":{},\
+                     \"cost\":{},\"speed\":{},\"produced\":{},\"amount\":{}}}",
+                    line.id,
+                    line.active_factories,
+                    json_opt_f64(Some(line.cost)),
+                    json_opt_f64(Some(line.speed)),
+                    json_opt_f64(Some(line.produced)),
+                    line.amount
+                )
+            })
+            .collect();
+        format!("[{}]", parts.join(","))
     }
 
     fn clock_probe_json(gamestate_ptr: usize) -> String {
@@ -1752,6 +2049,22 @@ mod attach_log {
         let bytes = read_bytes(addr, 8)?;
         let mut arr = [0u8; 8];
         arr.copy_from_slice(&bytes);
+        Some(i64::from_le_bytes(arr))
+    }
+
+    fn read_u64_from_slice(bytes: &[u8], offset: usize) -> Option<u64> {
+        let end = offset.checked_add(8)?;
+        let slice = bytes.get(offset..end)?;
+        let mut arr = [0u8; 8];
+        arr.copy_from_slice(slice);
+        Some(u64::from_le_bytes(arr))
+    }
+
+    fn read_i64_from_slice(bytes: &[u8], offset: usize) -> Option<i64> {
+        let end = offset.checked_add(8)?;
+        let slice = bytes.get(offset..end)?;
+        let mut arr = [0u8; 8];
+        arr.copy_from_slice(slice);
         Some(i64::from_le_bytes(arr))
     }
 
@@ -2366,9 +2679,10 @@ mod attach_log {
                 manpower_pool: Some(123456),
                 convoys: Some(99.0),
                 fuel: None,
+                production: None,
             };
 
-            let json = row_json(&row, false);
+            let json = row_json(&row, false, false);
 
             assert!(json.contains("\"POR\""));
             assert!(json.contains("\"tag_db_id\":47"));
@@ -2401,13 +2715,114 @@ mod attach_log {
                     current: 123.5,
                     max: 456.25,
                 }),
+                production: None,
             };
 
-            let scheduled = row_json(&row, true);
-            let worker = row_json(&row, false);
+            let scheduled = row_json(&row, true, false);
+            let worker = row_json(&row, false, false);
 
             assert!(scheduled.contains("\"fuel\":{\"current\":123.5,\"max\":456.25}"));
             assert!(!worker.contains("\"fuel\""));
+        }
+
+        #[test]
+        fn country_object_row_json_includes_scheduled_production() {
+            let row = CountryObjectRow {
+                tag: "POR".to_string(),
+                tag_db_id: 47,
+                name: "Portugal".to_string(),
+                object_ptr: 0x1234,
+                record_ptr: None,
+                original_capital: None,
+                original_tag: None,
+                templates_locked: None,
+                reserved_dynamic_country: None,
+                stability: None,
+                war_support: None,
+                political_power: None,
+                command_power: None,
+                num_ships: None,
+                manpower_pool: None,
+                convoys: None,
+                fuel: None,
+                production: Some(CountryProductionRow {
+                    stockpile: Some(vec![
+                        CountryStockpileRow {
+                            variant_id: 70,
+                            amount: 123.5,
+                        },
+                        CountryStockpileRow {
+                            variant_id: 71,
+                            amount: -0.25,
+                        },
+                    ]),
+                    military_lines: Some(vec![CountryProductionLineRow {
+                        id: 349,
+                        active_factories: 3,
+                        cost: 105.0,
+                        speed: 31.05,
+                        produced: 34.4,
+                        amount: -1,
+                    }]),
+                    naval_lines: Some(Vec::new()),
+                }),
+            };
+
+            let scheduled = row_json(&row, false, true);
+            let worker = row_json(&row, false, false);
+
+            assert!(scheduled.contains("\"production\""));
+            assert!(scheduled.contains("\"stockpile\":{\"70\":123.5,\"71\":-0.25}"));
+            assert!(scheduled.contains("\"stockpile_total\":123.25"));
+            assert!(scheduled.contains("\"military_factories\":3"));
+            assert!(scheduled.contains("\"naval_factories\":0"));
+            assert!(scheduled.contains("\"amount\":-1"));
+            assert!(!worker.contains("\"production\""));
+        }
+
+        #[test]
+        fn country_object_row_json_omits_unavailable_production_leaves() {
+            let row = CountryObjectRow {
+                tag: "POR".to_string(),
+                tag_db_id: 47,
+                name: "Portugal".to_string(),
+                object_ptr: 0x1234,
+                record_ptr: None,
+                original_capital: None,
+                original_tag: None,
+                templates_locked: None,
+                reserved_dynamic_country: None,
+                stability: None,
+                war_support: None,
+                political_power: None,
+                command_power: None,
+                num_ships: None,
+                manpower_pool: None,
+                convoys: None,
+                fuel: None,
+                production: Some(CountryProductionRow {
+                    stockpile: None,
+                    military_lines: Some(vec![CountryProductionLineRow {
+                        id: 349,
+                        active_factories: 3,
+                        cost: 105.0,
+                        speed: 31.05,
+                        produced: 34.4,
+                        amount: -1,
+                    }]),
+                    naval_lines: Some(Vec::new()),
+                }),
+            };
+
+            let scheduled = row_json(&row, false, true);
+
+            assert!(scheduled.contains("\"production\""));
+            assert!(!scheduled.contains("\"stockpile\""));
+            assert!(!scheduled.contains("\"stockpile_total\""));
+            assert!(scheduled.contains("\"military_lines\""));
+            assert!(scheduled.contains("\"military_factories\":3"));
+            assert!(scheduled.contains("\"naval_lines\":[]"));
+            assert!(scheduled.contains("\"naval_factories\":0"));
         }
     }
 }

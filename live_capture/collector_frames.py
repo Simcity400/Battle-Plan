@@ -8,6 +8,7 @@ or requiring saves.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -32,10 +33,26 @@ SUPPORTED_SNAPSHOT_DOMAINS = frozenset({
     "country_identity",
     "country_scalars",
     "fuel_live",
+    "production_live",
     "state_ownership",
     "state_control",
     "province_control",
 })
+PRODUCTION_STOCKPILE_MAX_ENTRIES = 4096
+PRODUCTION_VARIANT_ID_MAX = 10_000_000
+PRODUCTION_LINE_MAX_ENTRIES = 4096
+PRODUCTION_LINE_ID_MAX = 10_000_000
+PRODUCTION_FACTORY_COUNT_MAX = 100_000
+PRODUCTION_LINE_AMOUNT_MAX = 2_147_483_647
+PRODUCTION_FIXED_POINT_ABS_MAX = 1_000_000_000_000.0
+PRODUCTION_PAYLOAD_KEYS = frozenset((
+    "stockpile",
+    "stockpile_total",
+    "military_lines",
+    "naval_lines",
+    "military_factories",
+    "naval_factories",
+))
 
 
 def make_heartbeat_frame(
@@ -137,15 +154,30 @@ def validate_collector_frame(frame: Any) -> List[str]:
     if frame.get("capture_boundary") == "worker_poll":
         if _has_country_fuel_rows(countries):
             problems.append("collector worker_poll frame must not carry fuel payload")
+        if _has_country_production_payload(countries):
+            problems.append(
+                "collector worker_poll frame must not carry production payload")
         if _has_payload_rows(states):
             problems.append("collector worker_poll frame must not carry states payload")
         if _has_payload_rows(provinces):
             problems.append("collector worker_poll frame must not carry provinces payload")
-    elif (
+    if (
+        frame.get("capture_boundary") != "worker_poll"
+        and
         frame.get("capture_boundary") != "scheduled_hour_snapshot"
         and (_frame_claims_domain(frame, "fuel_live") or _has_country_fuel_rows(countries))
     ):
         problems.append("collector fuel_live payload requires scheduled_hour_snapshot")
+    if (
+        frame.get("capture_boundary") != "worker_poll"
+        and
+        frame.get("capture_boundary") != "scheduled_hour_snapshot"
+        and (
+            _frame_claims_domain(frame, "production_live")
+            or _has_country_production_payload(countries)
+        )
+    ):
+        problems.append("collector production_live payload requires scheduled_hour_snapshot")
 
     root_probe = frame.get("root_probe")
     if root_probe is not None:
@@ -217,6 +249,11 @@ def snapshot_from_root_probe_frame(frame: Dict[str, Any], game_id: str) -> Dict[
     claimed_domains = _explicit_scheduled_domains(frame, root_probe)
     if "fuel_live" in claimed_domains and _has_country_fuel_rows(frame_countries):
         domains.append("fuel_live")
+    if (
+        "production_live" in claimed_domains
+        and _has_country_production_rows(frame_countries)
+    ):
+        domains.append("production_live")
     if "state_ownership" in claimed_domains and _has_state_owner_rows(frame_states):
         domains.append("state_ownership")
     if "state_control" in claimed_domains and _has_state_control_rows(frame_states):
@@ -230,6 +267,7 @@ def snapshot_from_root_probe_frame(frame: Dict[str, Any], game_id: str) -> Dict[
     _fold_country_identity(snap, frame_countries)
     _fold_country_scalars(snap, frame_countries)
     _fold_country_fuel(snap, frame_countries, domains)
+    _fold_country_production(snap, frame_countries, domains)
     _fold_state_rows(snap, frame_states, domains)
     _fold_province_rows(snap, frame_provinces, domains)
     _fill_map_mirrors(snap)
@@ -264,7 +302,10 @@ def snapshot_from_collector_frame(frame: Dict[str, Any], game_id: str) -> Dict[s
     snap = schema.empty_snapshot(game_id, frame.get("date"))
     domains = _clean_domains(frame.get("domains") or [])
     if frame.get("capture_boundary") != "scheduled_hour_snapshot":
-        domains = [domain for domain in domains if domain != "fuel_live"]
+        domains = [
+            domain for domain in domains
+            if domain not in {"fuel_live", "production_live"}
+        ]
     unsupported = sorted(set(domains) - SUPPORTED_SNAPSHOT_DOMAINS)
     if unsupported:
         raise ValueError(
@@ -275,6 +316,7 @@ def snapshot_from_collector_frame(frame: Dict[str, Any], game_id: str) -> Dict[s
     _fold_country_identity(snap, frame.get("countries") or {})
     _fold_country_scalars(snap, frame.get("countries") or {})
     _fold_country_fuel(snap, frame.get("countries") or {}, domains)
+    _fold_country_production(snap, frame.get("countries") or {}, domains)
     _fold_state_rows(snap, frame.get("states") or {}, domains)
     _fold_province_rows(snap, frame.get("provinces") or {}, domains)
     _fill_map_mirrors(snap)
@@ -427,6 +469,48 @@ def _validate_country_rows(countries: Dict[str, Any]) -> List[str]:
                     elif value is not None and float(value) < 0.0:
                         problems.append(
                             f"collector frame country {tag!r}.fuel.{key} out of range")
+        production = row.get("production")
+        if production is not None:
+            if not isinstance(production, dict):
+                problems.append(
+                    f"collector frame country {tag!r}.production not dict|null")
+            else:
+                if present is not True:
+                    problems.append(
+                        f"collector frame country {tag!r}.production requires present=true")
+                if not _has_valid_scalar_identity(row):
+                    problems.append(
+                        f"collector frame country {tag!r}.production requires identity.tag_db_id")
+                if collector_object is None or not _valid_hex_pointer(collector_object):
+                    problems.append(
+                        f"collector frame country {tag!r}.production requires hex collector_object")
+                if not any(key in production for key in PRODUCTION_PAYLOAD_KEYS):
+                    problems.append(
+                        f"collector frame country {tag!r}.production has no measured leaves")
+                stockpile = production.get("stockpile")
+                if stockpile is not None:
+                    problems.extend(_validate_production_stockpile(tag, stockpile))
+                stockpile_total = production.get("stockpile_total")
+                if stockpile_total is not None and not _valid_signed_measure(
+                    stockpile_total
+                ):
+                    problems.append(
+                        f"collector frame country {tag!r}.production.stockpile_total "
+                        "not finite number in range|null"
+                    )
+                for key in ("military_lines", "naval_lines"):
+                    value = production.get(key)
+                    if value is not None:
+                        problems.extend(_validate_production_lines(tag, key, value))
+                for key in ("military_factories", "naval_factories"):
+                    value = production.get(key)
+                    if value is not None and not _valid_bounded_int(
+                        value, minimum=0, maximum=PRODUCTION_FACTORY_COUNT_MAX
+                    ):
+                        problems.append(
+                            f"collector frame country {tag!r}.production.{key} "
+                            "not int in range|null"
+                        )
     return problems
 
 
@@ -445,6 +529,102 @@ def _valid_hex_pointer(value: Any) -> bool:
         return int(value[2:], 16) > 0
     except ValueError:
         return False
+
+
+def _is_finite_number(value: Any) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(float(value))
+    )
+
+
+def _valid_signed_measure(value: Any) -> bool:
+    return (
+        _is_finite_number(value)
+        and abs(float(value)) <= PRODUCTION_FIXED_POINT_ABS_MAX
+    )
+
+
+def _valid_nonnegative_measure(value: Any) -> bool:
+    return (
+        _is_finite_number(value)
+        and 0.0 <= float(value) <= PRODUCTION_FIXED_POINT_ABS_MAX
+    )
+
+
+def _valid_bounded_int(value: Any, *, minimum: int, maximum: int) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, int)
+        and minimum <= value <= maximum
+    )
+
+
+def _validate_production_stockpile(tag: str, stockpile: Any) -> List[str]:
+    problems: List[str] = []
+    if not isinstance(stockpile, dict):
+        return [f"collector frame country {tag!r}.production.stockpile not dict|null"]
+    if len(stockpile) > PRODUCTION_STOCKPILE_MAX_ENTRIES:
+        problems.append(
+            f"collector frame country {tag!r}.production.stockpile too many entries")
+    for variant_id, amount in stockpile.items():
+        if not _valid_positive_int_key(variant_id, max_value=PRODUCTION_VARIANT_ID_MAX):
+            problems.append(
+                f"collector frame country {tag!r}.production.stockpile key "
+                f"{variant_id!r} not valid positive id"
+            )
+        if not _valid_signed_measure(amount):
+            problems.append(
+                f"collector frame country {tag!r}.production.stockpile"
+                f"[{variant_id!r}] not finite number in range"
+            )
+    return problems
+
+
+def _validate_production_lines(tag: str, key: str, value: Any) -> List[str]:
+    problems: List[str] = []
+    if not isinstance(value, list):
+        return [f"collector frame country {tag!r}.production.{key} not list|null"]
+    if len(value) > PRODUCTION_LINE_MAX_ENTRIES:
+        problems.append(
+            f"collector frame country {tag!r}.production.{key} too many entries")
+    for i, line in enumerate(value):
+        prefix = f"collector frame country {tag!r}.production.{key}[{i}]"
+        if not isinstance(line, dict):
+            problems.append(f"{prefix} not a dict")
+            continue
+        line_id = line.get("id")
+        if line_id is None:
+            problems.append(f"{prefix}.id missing")
+        elif not _valid_bounded_int(
+            line_id, minimum=0, maximum=PRODUCTION_LINE_ID_MAX
+        ):
+            problems.append(f"{prefix}.id not int in range")
+        active = line.get("active_factories")
+        if active is None:
+            problems.append(f"{prefix}.active_factories missing")
+        elif not _valid_bounded_int(
+            active, minimum=0, maximum=PRODUCTION_FACTORY_COUNT_MAX
+        ):
+            problems.append(f"{prefix}.active_factories not int in range")
+        for field in ("cost", "speed", "produced"):
+            measured = line.get(field)
+            if measured is None:
+                problems.append(f"{prefix}.{field} missing")
+            elif not _valid_nonnegative_measure(measured):
+                problems.append(f"{prefix}.{field} not finite nonnegative number in range")
+        amount = line.get("amount")
+        if amount is None:
+            problems.append(f"{prefix}.amount missing")
+        elif not (
+            amount == -1
+            or _valid_bounded_int(
+                amount, minimum=0, maximum=PRODUCTION_LINE_AMOUNT_MAX
+            )
+        ):
+            problems.append(f"{prefix}.amount not -1 or nonnegative int in range")
+    return problems
 
 
 def _validate_state_rows(states: Dict[str, Any]) -> List[str]:
@@ -639,6 +819,90 @@ def _fold_country_fuel(
             existing.update(clean)
 
 
+def _fold_country_production(
+    snap: Dict[str, Any],
+    countries: Dict[str, Any],
+    domains: Iterable[str],
+) -> None:
+    if "production_live" not in set(domains):
+        return
+    for tag, row in countries.items():
+        if not schema.valid_tag(tag) or not isinstance(row, dict):
+            continue
+        if row.get("present") is not True or not _has_valid_scalar_identity(row):
+            continue
+        production = row.get("production")
+        if not isinstance(production, dict):
+            continue
+        clean: Dict[str, Any] = {}
+        stockpile = production.get("stockpile")
+        if isinstance(stockpile, dict):
+            clean_stockpile: Dict[str, float] = {}
+            for variant_id, amount in stockpile.items():
+                if (
+                    _valid_positive_int_key(
+                        variant_id, max_value=PRODUCTION_VARIANT_ID_MAX
+                    )
+                    and _valid_signed_measure(amount)
+                ):
+                    clean_stockpile[str(int(variant_id))] = float(amount)
+            clean["stockpile"] = clean_stockpile
+        stockpile_total = production.get("stockpile_total")
+        if _valid_signed_measure(stockpile_total):
+            clean["stockpile_total"] = float(stockpile_total)
+        for key in ("military_lines", "naval_lines"):
+            lines = production.get(key)
+            if isinstance(lines, list):
+                clean_lines: List[Dict[str, Any]] = []
+                for line in lines:
+                    if not isinstance(line, dict):
+                        continue
+                    line_id = line.get("id")
+                    active = line.get("active_factories")
+                    cost = line.get("cost")
+                    speed = line.get("speed")
+                    produced = line.get("produced")
+                    amount = line.get("amount")
+                    if not (
+                        _valid_bounded_int(
+                            line_id, minimum=0, maximum=PRODUCTION_LINE_ID_MAX
+                        )
+                        and _valid_bounded_int(
+                            active, minimum=0,
+                            maximum=PRODUCTION_FACTORY_COUNT_MAX
+                        )
+                        and _valid_nonnegative_measure(cost)
+                        and _valid_nonnegative_measure(speed)
+                        and _valid_nonnegative_measure(produced)
+                        and (
+                            amount == -1
+                            or _valid_bounded_int(
+                                amount, minimum=0,
+                                maximum=PRODUCTION_LINE_AMOUNT_MAX
+                            )
+                        )
+                    ):
+                        continue
+                    clean_lines.append({
+                        "id": line_id,
+                        "active_factories": active,
+                        "cost": float(cost),
+                        "speed": float(speed),
+                        "produced": float(produced),
+                        "amount": amount,
+                    })
+                clean[key] = clean_lines
+        for key in ("military_factories", "naval_factories"):
+            factories = production.get(key)
+            if _valid_bounded_int(
+                factories, minimum=0, maximum=PRODUCTION_FACTORY_COUNT_MAX
+            ):
+                clean[key] = factories
+        if clean:
+            country = snap["countries"].setdefault(tag, schema.empty_country())
+            country["production"].update(clean)
+
+
 def _fold_state_rows(
     snap: Dict[str, Any],
     states: Dict[str, Any],
@@ -725,6 +989,20 @@ def _has_province_control_rows(provinces: Any) -> bool:
 def _has_country_fuel_rows(countries: Any) -> bool:
     return isinstance(countries, dict) and any(
         isinstance(row, dict) and isinstance(row.get("fuel"), dict)
+        for row in countries.values()
+    )
+
+
+def _has_country_production_payload(countries: Any) -> bool:
+    return isinstance(countries, dict) and any(
+        isinstance(row, dict) and row.get("production") is not None
+        for row in countries.values()
+    )
+
+
+def _has_country_production_rows(countries: Any) -> bool:
+    return isinstance(countries, dict) and any(
+        isinstance(row, dict) and isinstance(row.get("production"), dict)
         for row in countries.values()
     )
 
