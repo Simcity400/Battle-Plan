@@ -374,6 +374,18 @@ Completed in the first repo/live proof pass:
     required 12 hourly deltas were all exactly `1`, skipped zero hours, completed
     in 11.5 wall seconds under the 15-second proof cap, kept transport sequence
     monotonic, and packed/byte-verified a `.battleplan` container.
+24. Country-object preflight bridge added: the recorder can locate the live
+    country array before recording, read each country object's own `tag_db_id`,
+    pass bounded `tag_db_id:object_ptr` and `tag_db_id:record_ptr` rows through
+    the temporary worker control file, and keep `country_object_scan:false`. The
+    older localized-anchor `CountryIndexBridge` scan remains a fallback only.
+    The DLL validates the expected vtable and `tag_db_id` before accepting an
+    object row, validates record rows by checking they still point at the same
+    country object, and re-reads scalar values per emitted frame. This proves the
+    contract for save-free country scalars including political power, but it is
+    still a bridge: the preflight discovery itself still needs a
+    root-anchored/hook-derived replacement before session start is fully
+    speed-five-ready.
 
 Next:
 

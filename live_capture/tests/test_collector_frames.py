@@ -280,6 +280,7 @@ class TestCollectorFrames(unittest.TestCase):
                     "scalars": {
                         "stability": 0.61,
                         "war_support": 0.42,
+                        "political_power": 7.25,
                         "command_power": 12.5,
                         "num_ships": 7,
                         "manpower_pool": 123456,
@@ -313,6 +314,7 @@ class TestCollectorFrames(unittest.TestCase):
         self.assertEqual(por["identity"]["original_capital"], 112)
         self.assertEqual(por["politics"]["stability"], 0.61)
         self.assertEqual(por["politics"]["war_support"], 0.42)
+        self.assertEqual(por["politics"]["political_power"], 7.25)
         self.assertEqual(por["politics"]["command_power"], 12.5)
         self.assertEqual(por["military"]["command_power"], 12.5)
         self.assertEqual(por["military"]["num_ships"], 7)
@@ -341,6 +343,45 @@ class TestCollectorFrames(unittest.TestCase):
 
         self.assertTrue(any("scalars.stability" in p for p in problems), problems)
         self.assertTrue(any("scalars.num_ships" in p for p in problems), problems)
+
+    def test_country_scalars_require_valid_identity(self):
+        frame = {
+            "type": "snapshot",
+            "date": "1936.1.2.1",
+            "countries": {
+                "GER": {
+                    "present": True,
+                    "collector_object": "0x1234",
+                    "scalars": {"stability": 0.5},
+                }
+            },
+        }
+
+        problems = validate_collector_frame(frame)
+
+        self.assertTrue(any("requires identity.tag_db_id" in p for p in problems),
+                        problems)
+
+    def test_country_scalars_validate_ranges(self):
+        frame = {
+            "type": "snapshot",
+            "date": "1936.1.2.1",
+            "countries": {
+                "GER": {
+                    "present": True,
+                    "collector_object": "0x1234",
+                    "identity": {"tag_db_id": 1},
+                    "scalars": {"stability": 1.5, "manpower_pool": -1},
+                }
+            },
+        }
+
+        problems = validate_collector_frame(frame)
+
+        self.assertTrue(any("scalars.stability out of range" in p for p in problems),
+                        problems)
+        self.assertTrue(any("scalars.manpower_pool out of range" in p for p in problems),
+                        problems)
 
     def test_country_identity_tag_db_id_must_be_int(self):
         frame = {

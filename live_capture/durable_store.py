@@ -37,6 +37,7 @@ from typing import Any, Dict, Optional
 # Combined with os.urandom (below) it is also collision-proof ACROSS a
 # crash/restart (the counter alone resets on restart -- adversarial review #3).
 _NONCANON_SEQ = itertools.count()
+_ATOMIC_TMP_SEQ = itertools.count()
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.normpath(os.path.join(_HERE, os.pardir))
@@ -54,7 +55,14 @@ def atomic_write_json(path: str, obj: Any, *, compact: bool = True) -> None:
     """Durably write ``obj`` as JSON to ``path`` (atomic replace)."""
     d = os.path.dirname(os.path.abspath(path))
     os.makedirs(d, exist_ok=True)
-    tmp = "%s.tmp.%d.%d" % (path, os.getpid(), time.time_ns())
+    tmp = os.path.join(
+        d,
+        ".__tmp_%d_%d_%x.json" % (
+            os.getpid(),
+            next(_ATOMIC_TMP_SEQ),
+            time.time_ns() & 0xFFFFFFFF,
+        ),
+    )
     sep = (",", ":") if compact else (", ", ": ")
     try:
         with open(tmp, "w", encoding="utf-8") as fh:

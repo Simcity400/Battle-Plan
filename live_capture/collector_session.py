@@ -29,6 +29,7 @@ from .collector_frames import (
     snapshot_from_root_probe_frame,
     validate_collector_frame,
 )
+from .collector_country_bridge import resolve_country_object_bridge_preflight
 from .collector_probe_record import record_probes
 from .durable_store import CaptureLock, DurableCaptureStore
 from .recorder.cadence import RecorderCadence
@@ -328,6 +329,9 @@ def record_collector_session(
     until_game_hours: Optional[int] = None,
     max_wall_s: Optional[float] = None,
     require_hourly_cadence: Optional[bool] = None,
+    country_object_bridge: Any = None,
+    country_record_bridge: Any = None,
+    preflight_country_object_bridge: bool = False,
 ) -> Path:
     """Record one collector-backed session and write session lifecycle metadata.
 
@@ -360,6 +364,18 @@ def record_collector_session(
         until_game_hours is not None
         if require_hourly_cadence is None else bool(require_hourly_cadence)
     )
+    country_object_bridge_preflight = {
+        "enabled": bool(preflight_country_object_bridge),
+        "status": "not_requested",
+        "row_count": 0,
+    }
+    if country_object_bridge is None and preflight_country_object_bridge:
+        preflight = resolve_country_object_bridge_preflight(pid)
+        country_object_bridge_preflight = preflight.diagnostics
+        country_object_bridge_preflight["enabled"] = True
+        if preflight.usable:
+            country_object_bridge = preflight.encoded
+            country_record_bridge = preflight.record_encoded
 
     run_dir = record_probes(
         pid,
@@ -377,6 +393,8 @@ def record_collector_session(
         worker_sample_ms=sample_ms,
         require_hourly_cadence=hourly_required,
         write_snapshot_artifacts=False,
+        country_object_bridge=country_object_bridge,
+        country_record_bridge=country_record_bridge,
     )
 
     probe_manifest_path = run_dir / "manifest.json"
@@ -463,6 +481,15 @@ def record_collector_session(
             "until_game_hours": until_game_hours,
             "max_wall_ms": _ms(effective_max_wall_s),
             "require_hourly_cadence": hourly_required,
+            "country_object_bridge_preflight": country_object_bridge_preflight,
+            "country_object_bridge_supplied": probe_manifest.get(
+                "country_object_bridge_supplied"),
+            "country_object_bridge_rows": probe_manifest.get(
+                "country_object_bridge_rows"),
+            "country_record_bridge_supplied": probe_manifest.get(
+                "country_record_bridge_supplied"),
+            "country_record_bridge_rows": probe_manifest.get(
+                "country_record_bridge_rows"),
             "proof_compat_manifest": "manifest.json",
             "session_start_frame": "session_start.json",
             "session_stop_frame": "session_stop.json",
@@ -709,6 +736,11 @@ def _main() -> int:
     parser.add_argument("--until-game-hours", type=int, default=None)
     parser.add_argument("--max-wall-s", type=float, default=None)
     parser.add_argument(
+        "--preflight-country-object-bridge",
+        action="store_true",
+        help="resolve live country object pointers before recording; no saves required",
+    )
+    parser.add_argument(
         "--allow-hourly-gaps",
         action="store_true",
         help="write diagnostics but exit 0 even if requested hourly coverage has gaps",
@@ -731,6 +763,7 @@ def _main() -> int:
         require_hourly_cadence=(
             not args.allow_hourly_gaps if args.until_game_hours is not None else False
         ),
+        preflight_country_object_bridge=args.preflight_country_object_bridge,
     )
     print(run_dir)
     manifest = json.loads((run_dir / "session_manifest.json").read_text(

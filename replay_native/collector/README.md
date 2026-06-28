@@ -40,6 +40,24 @@ defaults off, and is not speed-five safe. Runtime country/economy capture must b
 root-anchored or hook-derived, cached before the hot loop, and reduced to bounded
 pointer validation plus direct reads during recording.
 
+Current country-scalar bridge:
+
+- the Python recorder may run `live_capture.collector_country_bridge` as a
+  preflight step before bounded worker recording;
+- the primary preflight path locates the live country array, reads each country
+  object's own `tag_db_id`, and avoids the fragile localized-anchor bridge scan;
+- preflight rows are written only to the temporary `collector_control.json` as a
+  compact `tag_db_id:country_object_ptr` string plus a separate
+  `tag_db_id:country_record_ptr` string;
+- manifests record bridge status and row count, not raw addresses;
+- the DLL rejects malformed, duplicate, unaligned, or unexpected-tag rows;
+- accepted rows are still revalidated and scalar values are re-read for every
+  emitted frame;
+- `country_object_scan` remains false for this path.
+
+Political power uses the separate country-record bridge. It is emitted only when
+the record pointer still points at the same validated country object.
+
 Runtime rules:
 
 - read-only observation only;

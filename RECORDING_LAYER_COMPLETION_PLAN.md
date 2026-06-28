@@ -779,9 +779,28 @@ Acceptance:
 - Country rows remain stable across a longer speed-five run.
 
 Current status: live `tag_db_id` identity is emitted from the country tag table
-and folded into snapshots. Actual country scalars still require a replacement
-for the heap-scanning country-object resolver or a profile/preflight cache that
-can be revalidated cheaply before the hot loop.
+and folded into snapshots. The recorder now has a save-free country-object
+preflight bridge: `live_capture.collector_country_bridge` locates the live
+country array before recording, reads each country object's own `tag_db_id`,
+writes compact temporary `tag_db_id:country_object_ptr` and
+`tag_db_id:country_record_ptr` control contracts, and keeps
+`country_object_scan` off. The older `CountryIndexBridge` anchor scan remains a
+fallback, not the primary path. The DLL accepts only bounded, aligned,
+duplicate-free bridge rows, validates each object pointer against the expected
+country vtable and `tag_db_id`, validates each record pointer by checking that it
+still points at the same country object, then re-reads object-backed scalars plus
+record-backed political power per frame before emitting `country_scalars`.
+
+Remaining Phase 2 gaps:
+
+- Make the preflight bridge automatic for the normal session path after a
+  speed-five proof with row counts and zero skipped hours.
+- Replace the preflight country-array discovery with a root-anchored or
+  hook-derived bridge so session start is also fast on every supported build.
+- Expand country-record-backed fields beyond political power where the live
+  record layout proves them.
+- Add longer-run pointer freshness diagnostics: accepted row count, stale row
+  drops, and domain omission reasons.
 
 ### Phase 3: Map State Closure
 

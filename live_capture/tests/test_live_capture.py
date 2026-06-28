@@ -2691,7 +2691,7 @@ class TestDurableStore(unittest.TestCase):
         self.assertEqual(idx["snapshots"][0]["campaign_id"], "c1")
         # no leftover temp files
         leftovers = [f for f in os.listdir(os.path.dirname(path))
-                     if ".tmp." in f]
+                     if ".tmp." in f or f.startswith(".__tmp_")]
         self.assertEqual(leftovers, [])
 
     def test_unknown_hour_goes_noncanonical(self):

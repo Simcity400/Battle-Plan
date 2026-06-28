@@ -9,6 +9,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from live_capture.collector_probe_record import (  # noqa: E402
+    encode_country_object_bridge,
+    encode_country_record_bridge,
     hourly_requirement_diagnostics,
     record_probes,
     summarize_probe_samples,
@@ -141,6 +143,47 @@ class TestCollectorProbeRecord(unittest.TestCase):
         self.assertFalse(payload["sidecar_log"])
         self.assertEqual(payload["sample_ms"], 25)
 
+    def test_encode_country_object_bridge_sorts_and_sanitizes_rows(self):
+        encoded = encode_country_object_bridge({
+            2: "0x2000",
+            "1": 0x1000,
+        })
+
+        self.assertEqual(encoded, "1:0x1000;2:0x2000")
+
+    def test_encode_country_record_bridge_uses_record_ptr(self):
+        encoded = encode_country_record_bridge([
+            {"tag_db_id": 2, "record_ptr": "0x2200"},
+            {"tag_db_id": 1, "record_ptr": 0x1200},
+        ])
+
+        self.assertEqual(encoded, "1:0x1200;2:0x2200")
+
+    def test_encode_country_object_bridge_rejects_bad_rows(self):
+        with self.assertRaises(ValueError):
+            encode_country_object_bridge([(1, 0x1001)])
+        with self.assertRaises(ValueError):
+            encode_country_object_bridge([(1, 0x1000), (1, 0x2000)])
+        with self.assertRaises(ValueError):
+            encode_country_object_bridge([(1, 0x1000), (2, 0x1000)])
+
+    def test_worker_control_writes_bridge_without_enabling_heap_scan(self):
+        with tempfile.TemporaryDirectory() as td:
+            dll = Path(td) / "collector.dll"
+            control_path, _pipe_token = cpr._write_worker_control(
+                dll,
+                3.0,
+                25,
+                session_id="session-1",
+                country_object_bridge="1:0x1000;2:0x2000",
+                country_record_bridge="1:0x1200;2:0x2200",
+            )
+            payload = json.loads(control_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["country_object_bridge"], "1:0x1000;2:0x2000")
+        self.assertEqual(payload["country_record_bridge"], "1:0x1200;2:0x2200")
+        self.assertFalse(payload["country_object_scan"])
+
     def test_record_probes_manifest_tracks_worker_session_id(self):
         original_attach = cpr._attach_with_retries
         frames = [_frame("1936.1.1.1", 100, sequence=10)]
@@ -163,8 +206,40 @@ class TestCollectorProbeRecord(unittest.TestCase):
         self.assertEqual(manifest["session_id"], run_dir.name)
         self.assertEqual(manifest["dll"], "collector.dll")
         self.assertFalse(manifest["country_object_scan"])
+        self.assertFalse(manifest["country_object_bridge_supplied"])
+        self.assertEqual(manifest["country_object_bridge_rows"], 0)
+        self.assertFalse(manifest["country_record_bridge_supplied"])
+        self.assertEqual(manifest["country_record_bridge_rows"], 0)
         self.assertNotIn(str(Path("collector.dll").resolve().parent),
                          json.dumps(manifest, sort_keys=True))
+
+    def test_record_probes_manifest_tracks_bridge_count_without_addresses(self):
+        original_attach = cpr._attach_with_retries
+        frames = [_frame("1936.1.1.1", 100, sequence=10)]
+        cpr._attach_with_retries = lambda *a, **kw: SimpleNamespace(
+            pipe_frames=frames, pipe_frame=frames[-1], thread_id=123
+        )
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                run_dir = record_probes(
+                    111,
+                    Path("collector.dll"),
+                    Path(td),
+                    worker_duration_s=1.0,
+                    worker_sample_ms=25,
+                    country_object_bridge={1: 0x1000, 2: 0x2000},
+                    country_record_bridge={1: 0x1200, 2: 0x2200},
+                )
+                manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+        finally:
+            cpr._attach_with_retries = original_attach
+
+        self.assertTrue(manifest["country_object_bridge_supplied"])
+        self.assertEqual(manifest["country_object_bridge_rows"], 2)
+        self.assertTrue(manifest["country_record_bridge_supplied"])
+        self.assertEqual(manifest["country_record_bridge_rows"], 2)
+        self.assertNotIn("0x1000", json.dumps(manifest, sort_keys=True))
+        self.assertNotIn("0x1200", json.dumps(manifest, sort_keys=True))
 
     def test_record_probes_can_skip_snapshot_sidecar_artifacts(self):
         original_attach = cpr._attach_with_retries

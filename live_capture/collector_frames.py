@@ -282,6 +282,9 @@ def _validate_country_rows(countries: Dict[str, Any]) -> List[str]:
             if tag_db_id is not None and not isinstance(tag_db_id, int):
                 problems.append(
                     f"collector frame country {tag!r}.identity.tag_db_id not int|null")
+            elif tag_db_id is not None and not (1 <= tag_db_id <= 1024):
+                problems.append(
+                    f"collector frame country {tag!r}.identity.tag_db_id out of range")
             original_tag = identity.get("original_tag")
             if original_tag is not None and not schema.valid_tag(original_tag):
                 problems.append(
@@ -296,18 +299,55 @@ def _validate_country_rows(countries: Dict[str, Any]) -> List[str]:
             if not isinstance(scalars, dict):
                 problems.append(f"collector frame country {tag!r}.scalars not dict|null")
                 continue
+            if present is not True:
+                problems.append(
+                    f"collector frame country {tag!r}.scalars requires present=true")
+            if not _has_valid_scalar_identity(row):
+                problems.append(
+                    f"collector frame country {tag!r}.scalars requires identity.tag_db_id")
+            if collector_object is None or not _valid_hex_pointer(collector_object):
+                problems.append(
+                    f"collector frame country {tag!r}.scalars requires hex collector_object")
             for key in ("stability", "war_support", "political_power",
                         "command_power", "convoys"):
                 value = scalars.get(key)
                 if value is not None and not isinstance(value, (int, float)):
                     problems.append(
                         f"collector frame country {tag!r}.scalars.{key} not number|null")
+                elif key in ("stability", "war_support") and value is not None:
+                    if not (0.0 <= float(value) <= 1.0):
+                        problems.append(
+                            f"collector frame country {tag!r}.scalars.{key} out of range")
+                elif key in ("command_power", "convoys") and value is not None:
+                    if float(value) < 0.0:
+                        problems.append(
+                            f"collector frame country {tag!r}.scalars.{key} out of range")
             for key in ("num_ships", "manpower_pool"):
                 value = scalars.get(key)
                 if value is not None and not isinstance(value, int):
                     problems.append(
                         f"collector frame country {tag!r}.scalars.{key} not int|null")
+                elif value is not None and value < 0:
+                    problems.append(
+                        f"collector frame country {tag!r}.scalars.{key} out of range")
     return problems
+
+
+def _has_valid_scalar_identity(row: Dict[str, Any]) -> bool:
+    identity = row.get("identity")
+    if not isinstance(identity, dict):
+        return False
+    tag_db_id = identity.get("tag_db_id")
+    return isinstance(tag_db_id, int) and 1 <= tag_db_id <= 1024
+
+
+def _valid_hex_pointer(value: Any) -> bool:
+    if not isinstance(value, str) or not value.startswith("0x"):
+        return False
+    try:
+        return int(value[2:], 16) > 0
+    except ValueError:
+        return False
 
 
 def _validate_root_probe(root_probe: Dict[str, Any]) -> List[str]:
@@ -385,6 +425,8 @@ def _fold_country_identity(snap: Dict[str, Any], countries: Dict[str, Any]) -> N
 def _fold_country_scalars(snap: Dict[str, Any], countries: Dict[str, Any]) -> None:
     for tag, row in countries.items():
         if not schema.valid_tag(tag) or not isinstance(row, dict):
+            continue
+        if row.get("present") is not True or not _has_valid_scalar_identity(row):
             continue
         scalars = row.get("scalars")
         if not isinstance(scalars, dict):

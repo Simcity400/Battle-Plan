@@ -97,6 +97,8 @@ mod attach_log {
     const HEAP_HI: usize = 0x7FF000000000;
     const OBJ_TAG_DB_ID: usize = 0x08;
     const OBJ_NAME: usize = 0x10;
+    const COUNTRY_RECORD_OBJECT_PTR: usize = 0x08;
+    const COUNTRY_RECORD_POLITICAL_POWER: usize = 0x20;
     const OBJ_TEMPLATES_LOCKED: usize = 0x01B4;
     const OBJ_COMMAND_POWER: usize = 0x01F0;
     const OBJ_MANPOWER_POOL: usize = 0x0338;
@@ -107,6 +109,7 @@ mod attach_log {
     const OBJ_ORIGINAL_TAG: usize = 0x130C;
     const OBJ_NUM_SHIPS: usize = 0x1330;
     const OBJ_RESERVED_DYNAMIC_COUNTRY: usize = 0x145D;
+    const MAX_COUNTRY_OBJECT_BRIDGE_ROWS: usize = 512;
     const FP_SCALE: f64 = 100000.0;
     const DAILY_UPDATE_SENTINEL: [u8; 16] = [
         0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8D,
@@ -204,12 +207,8 @@ mod attach_log {
         } else {
             None
         };
-        let enable_country_object_scan = control
-            .as_ref()
-            .map(|control| control.country_object_scan)
-            .unwrap_or(false);
         let state = if is_hoi4_process() {
-            Some(CollectorState::resolve(enable_country_object_scan))
+            Some(CollectorState::resolve(control.as_ref()))
         } else {
             None
         };
@@ -261,9 +260,19 @@ mod attach_log {
         duration_ms: u32,
         sample_ms: u32,
         country_object_scan: bool,
+        country_object_bridge: Vec<CountryObjectBridgeEntry>,
+        country_object_bridge_valid: bool,
+        country_record_bridge: Vec<CountryObjectBridgeEntry>,
+        country_record_bridge_valid: bool,
         pipe_token: Option<String>,
         session_id: Option<String>,
         sidecar_log: bool,
+    }
+
+    #[derive(Clone, Copy)]
+    struct CountryObjectBridgeEntry {
+        tag_db_id: u32,
+        object_ptr: usize,
     }
 
     fn collector_control(module_path: &PathBuf) -> Option<CollectorControl> {
@@ -276,6 +285,22 @@ mod attach_log {
         let duration_ms = parse_json_u32(&text, "duration_ms").unwrap_or(5_000);
         let sample_ms = parse_json_u32(&text, "sample_ms").unwrap_or(50);
         let country_object_scan = parse_json_bool(&text, "country_object_scan").unwrap_or(false);
+        let (country_object_bridge, country_object_bridge_valid) =
+            match parse_json_string(&text, "country_object_bridge") {
+                Some(value) => match parse_country_object_bridge(&value) {
+                    Some(rows) => (rows, true),
+                    None => (Vec::new(), false),
+                },
+                None => (Vec::new(), true),
+            };
+        let (country_record_bridge, country_record_bridge_valid) =
+            match parse_json_string(&text, "country_record_bridge") {
+                Some(value) => match parse_country_object_bridge(&value) {
+                    Some(rows) => (rows, true),
+                    None => (Vec::new(), false),
+                },
+                None => (Vec::new(), true),
+            };
         let pipe_token = parse_json_string(&text, "pipe_token").and_then(clean_pipe_token);
         let session_id = parse_json_string(&text, "session_id").and_then(clean_session_id);
         let sidecar_log = parse_json_bool(&text, "sidecar_log").unwrap_or(false);
@@ -283,6 +308,10 @@ mod attach_log {
             duration_ms: duration_ms.clamp(100, 30_000),
             sample_ms: sample_ms.clamp(10, 5_000),
             country_object_scan,
+            country_object_bridge,
+            country_object_bridge_valid,
+            country_record_bridge,
+            country_record_bridge_valid,
             pipe_token,
             session_id,
             sidecar_log,
@@ -358,6 +387,57 @@ mod attach_log {
         }
     }
 
+    fn parse_country_object_bridge(value: &str) -> Option<Vec<CountryObjectBridgeEntry>> {
+        if value.trim().is_empty() {
+            return Some(Vec::new());
+        }
+        if value.len() > 16_384 {
+            return None;
+        }
+        let mut entries = Vec::new();
+        let mut seen_tag_ids: BTreeMap<u32, ()> = BTreeMap::new();
+        let mut seen_objects: BTreeMap<usize, ()> = BTreeMap::new();
+        for raw in value.split(';') {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                return None;
+            }
+            let (tag_raw, ptr_raw) = raw.split_once(':')?;
+            let tag_db_id = tag_raw.trim().parse::<u32>().ok()?;
+            if tag_db_id == 0 || tag_db_id > 1024 {
+                return None;
+            }
+            let object_ptr = parse_bridge_pointer(ptr_raw.trim())?;
+            if object_ptr == 0 || object_ptr % 8 != 0 {
+                return None;
+            }
+            if seen_tag_ids.insert(tag_db_id, ()).is_some()
+                || seen_objects.insert(object_ptr, ()).is_some()
+            {
+                return None;
+            }
+            entries.push(CountryObjectBridgeEntry {
+                tag_db_id,
+                object_ptr,
+            });
+            if entries.len() > MAX_COUNTRY_OBJECT_BRIDGE_ROWS {
+                return None;
+            }
+        }
+        Some(entries)
+    }
+
+    fn parse_bridge_pointer(value: &str) -> Option<usize> {
+        if let Some(hex) = value
+            .strip_prefix("0x")
+            .or_else(|| value.strip_prefix("0X"))
+        {
+            usize::from_str_radix(hex, 16).ok()
+        } else {
+            value.parse::<usize>().ok()
+        }
+    }
+
     fn build_frame_line(
         pid: Dword,
         state: Option<&CollectorState>,
@@ -416,8 +496,17 @@ mod attach_log {
             .unwrap_or_default();
         format!(
             "{session}{session_sequence}{elapsed_wall_ms}\"capture_boundary\":\"worker_poll\",\
-             \"duration_ms\":{},\"sample_ms\":{},",
-            control.duration_ms, control.sample_ms
+             \"duration_ms\":{},\"sample_ms\":{},\
+             \"country_object_bridge_rows\":{},\
+             \"country_object_bridge_valid\":{},\
+             \"country_record_bridge_rows\":{},\
+             \"country_record_bridge_valid\":{},",
+            control.duration_ms,
+            control.sample_ms,
+            control.country_object_bridge.len(),
+            control.country_object_bridge_valid,
+            control.country_record_bridge.len(),
+            control.country_record_bridge_valid
         )
     }
 
@@ -425,14 +514,16 @@ mod attach_log {
         duration.as_millis().min(u128::from(u64::MAX)) as u64
     }
 
-    fn frame_domains_json(state: Option<&CollectorState>) -> &'static str {
+    fn frame_domains_json(state: Option<&CollectorState>) -> String {
         let Some(state) = state else {
-            return "[]";
+            return "[]".to_string();
         };
         if state.daily_match && state.long_string_match {
-            state.country_identity.domains_json()
+            state
+                .country_identity
+                .domains_json(state.country_database_ptr as usize)
         } else {
-            "[]"
+            "[]".to_string()
         }
     }
 
@@ -448,7 +539,7 @@ mod attach_log {
     }
 
     impl CollectorState {
-        fn resolve(enable_country_object_scan: bool) -> CollectorState {
+        fn resolve(control: Option<&CollectorControl>) -> CollectorState {
             let base = unsafe { GetModuleHandleW(ptr::null()) as usize };
             let daily_addr = base.saturating_add(C_GAME_STATE_DAILY_UPDATE_OFFSET);
             let long_string_addr = base.saturating_add(GET_LONG_STRING_OFFSET);
@@ -465,7 +556,38 @@ mod attach_log {
             } else {
                 0
             };
-            let country_identity = if daily_match && long_string_match && enable_country_object_scan
+            let country_identity = if daily_match
+                && long_string_match
+                && control
+                    .map(|control| {
+                        !control.country_object_bridge_valid || !control.country_record_bridge_valid
+                    })
+                    .unwrap_or(false)
+            {
+                CountryIdentityCache::not_attempted("invalid_control_bridge")
+            } else if daily_match
+                && long_string_match
+                && control
+                    .map(|control| !control.country_object_bridge.is_empty())
+                    .unwrap_or(false)
+            {
+                let bridge = control
+                    .map(|control| control.country_object_bridge.as_slice())
+                    .unwrap_or(&[]);
+                let record_bridge = control
+                    .map(|control| control.country_record_bridge.as_slice())
+                    .unwrap_or(&[]);
+                CountryIdentityCache::from_control_bridge(
+                    base,
+                    country_database_ptr as usize,
+                    bridge,
+                    record_bridge,
+                )
+            } else if daily_match
+                && long_string_match
+                && control
+                    .map(|control| control.country_object_scan)
+                    .unwrap_or(false)
             {
                 CountryIdentityCache::resolve(base, country_database_ptr as usize)
             } else if daily_match && long_string_match {
@@ -490,13 +612,16 @@ mod attach_log {
     struct CountryObjectRow {
         tag: String,
         tag_db_id: u32,
+        name: String,
         object_ptr: usize,
+        record_ptr: Option<usize>,
         original_capital: Option<i32>,
         original_tag: Option<String>,
         templates_locked: Option<bool>,
         reserved_dynamic_country: Option<bool>,
         stability: Option<f64>,
         war_support: Option<f64>,
+        political_power: Option<f64>,
         command_power: Option<f64>,
         num_ships: Option<i32>,
         manpower_pool: Option<u32>,
@@ -506,6 +631,9 @@ mod attach_log {
     struct CountryIdentityCache {
         status: &'static str,
         scan_ms: u64,
+        country_vtable: usize,
+        bridge_rows_supplied: u32,
+        record_rows_supplied: u32,
         rows: Vec<CountryObjectRow>,
         rejected_objects: u32,
         duplicate_tags: u32,
@@ -516,6 +644,9 @@ mod attach_log {
             CountryIdentityCache {
                 status,
                 scan_ms: 0,
+                country_vtable: 0,
+                bridge_rows_supplied: 0,
+                record_rows_supplied: 0,
                 rows: Vec::new(),
                 rejected_objects: 0,
                 duplicate_tags: 0,
@@ -532,7 +663,8 @@ mod attach_log {
             let mut rejected_objects = 0u32;
             let mut duplicate_tags = 0u32;
             for object_ptr in scan_qword_hits(country_vtable, HEAP_LO, HEAP_HI) {
-                let Some(row) = country_object_row(object_ptr, country_vtable, tag_table) else {
+                let Some(row) = country_object_row(object_ptr, country_vtable, tag_table, None)
+                else {
                     rejected_objects = rejected_objects.saturating_add(1);
                     continue;
                 };
@@ -550,27 +682,108 @@ mod attach_log {
             CountryIdentityCache {
                 status,
                 scan_ms,
+                country_vtable,
+                bridge_rows_supplied: 0,
+                record_rows_supplied: 0,
                 rows,
                 rejected_objects,
                 duplicate_tags,
             }
         }
 
-        fn domains_json(&self) -> &'static str {
-            if self.status == "verified" && !self.rows.is_empty() {
-                "[\"clock\",\"country_identity\",\"country_scalars\"]"
+        fn from_control_bridge(
+            base: usize,
+            country_database_ptr: usize,
+            bridge: &[CountryObjectBridgeEntry],
+            record_bridge: &[CountryObjectBridgeEntry],
+        ) -> CountryIdentityCache {
+            let Some(tag_table) = country_tag_table(country_database_ptr) else {
+                return CountryIdentityCache::not_attempted("tag_table_unavailable");
+            };
+            let country_vtable = base + COUNTRY_VTABLE_RVA;
+            let mut records_by_tag_id: BTreeMap<u32, usize> = BTreeMap::new();
+            for entry in record_bridge.iter().take(MAX_COUNTRY_OBJECT_BRIDGE_ROWS) {
+                records_by_tag_id.insert(entry.tag_db_id, entry.object_ptr);
+            }
+            let mut rows_by_tag: BTreeMap<String, CountryObjectRow> = BTreeMap::new();
+            let mut rejected_objects = 0u32;
+            let mut duplicate_tags = 0u32;
+            for entry in bridge.iter().take(MAX_COUNTRY_OBJECT_BRIDGE_ROWS) {
+                let Some(row) = country_object_row_expected(
+                    entry.object_ptr,
+                    country_vtable,
+                    tag_table,
+                    entry.tag_db_id,
+                    records_by_tag_id.get(&entry.tag_db_id).copied(),
+                ) else {
+                    rejected_objects = rejected_objects.saturating_add(1);
+                    continue;
+                };
+                if rows_by_tag.insert(row.tag.clone(), row).is_some() {
+                    duplicate_tags = duplicate_tags.saturating_add(1);
+                }
+            }
+            let rows: Vec<CountryObjectRow> = rows_by_tag.into_values().collect();
+            let status = if rows.len() >= 40 {
+                "control_bridge_verified"
             } else {
-                "[\"clock\",\"country_identity\"]"
+                "insufficient_control_bridge"
+            };
+            CountryIdentityCache {
+                status,
+                scan_ms: 0,
+                country_vtable,
+                bridge_rows_supplied: bridge.len().min(u32::MAX as usize) as u32,
+                record_rows_supplied: record_bridge.len().min(u32::MAX as usize) as u32,
+                rows,
+                rejected_objects,
+                duplicate_tags,
+            }
+        }
+
+        fn has_scalar_source(&self) -> bool {
+            (self.status == "verified" || self.status == "control_bridge_verified")
+                && self.country_vtable != 0
+                && !self.rows.is_empty()
+        }
+
+        fn current_rows(&self, country_database_ptr: usize) -> Vec<CountryObjectRow> {
+            if !self.has_scalar_source() {
+                return Vec::new();
+            }
+            let Some(tag_table) = country_tag_table(country_database_ptr) else {
+                return Vec::new();
+            };
+            let mut rows = Vec::new();
+            for row in &self.rows {
+                if let Some(fresh) =
+                    revalidated_country_object_row(row, self.country_vtable, tag_table)
+                {
+                    rows.push(fresh);
+                }
+            }
+            rows
+        }
+
+        fn domains_json(&self, country_database_ptr: usize) -> String {
+            if !self.current_rows(country_database_ptr).is_empty() {
+                "[\"clock\",\"country_identity\",\"country_scalars\"]".to_string()
+            } else {
+                "[\"clock\",\"country_identity\"]".to_string()
             }
         }
 
         fn root_json(&self) -> String {
             format!(
                 "\"country_object_identity\":{{\"status\":\"{}\",\
-                 \"scan_ms\":{},\"object_count\":{},\"rejected_objects\":{},\
+                 \"scan_ms\":{},\"bridge_rows_supplied\":{},\
+                 \"record_rows_supplied\":{},\
+                 \"object_count\":{},\"rejected_objects\":{},\
                  \"duplicate_tags\":{}}}",
                 self.status,
                 self.scan_ms,
+                self.bridge_rows_supplied,
+                self.record_rows_supplied,
                 self.rows.len(),
                 self.rejected_objects,
                 self.duplicate_tags
@@ -578,14 +791,9 @@ mod attach_log {
         }
 
         fn countries_json(&self, country_database_ptr: usize) -> String {
-            if self.status == "verified" && !self.rows.is_empty() {
-                let mut rows = Vec::new();
-                for row in &self.rows {
-                    if !row_still_valid(row) {
-                        continue;
-                    }
-                    rows.push(row_json(row));
-                }
+            let current_rows = self.current_rows(country_database_ptr);
+            if !current_rows.is_empty() {
+                let rows: Vec<String> = current_rows.iter().map(row_json).collect();
                 return format!("{{{}}}", rows.join(","));
             }
             country_rows_from_tag_table_json(country_database_ptr)
@@ -691,7 +899,9 @@ mod attach_log {
             .country_identity
             .countries_json(country_database_ptr as usize);
         let identity_probe = state.country_identity.root_json();
-        let domains = state.country_identity.domains_json();
+        let domains = state
+            .country_identity
+            .domains_json(country_database_ptr as usize);
         let clock_probe = clock_probe_json(date_ptr as usize);
         format!(
             "\"root_probe\":{{\"status\":\"verified\",\
@@ -828,6 +1038,7 @@ mod attach_log {
         object_ptr: usize,
         country_vtable: usize,
         tag_table: usize,
+        record_ptr: Option<usize>,
     ) -> Option<CountryObjectRow> {
         if read_u64(object_ptr)? as usize != country_vtable {
             return None;
@@ -849,7 +1060,9 @@ mod attach_log {
         Some(CountryObjectRow {
             tag,
             tag_db_id,
+            name,
             object_ptr,
+            record_ptr,
             original_capital: read_i32(object_ptr + OBJ_ORIGINAL_CAPITAL).and_then(|v| {
                 if v > 0 {
                     Some(v)
@@ -863,6 +1076,8 @@ mod attach_log {
                 .map(|v| v == 1),
             stability: read_fixed_0_1(object_ptr + OBJ_STABILITY),
             war_support: read_fixed_0_1(object_ptr + OBJ_WAR_SUPPORT),
+            political_power: record_ptr
+                .and_then(|record_ptr| country_record_political_power(record_ptr, object_ptr)),
             command_power: read_fixed_nonnegative(object_ptr + OBJ_COMMAND_POWER, 1000.0),
             num_ships: read_i32(object_ptr + OBJ_NUM_SHIPS).and_then(|v| {
                 if (0..=100_000).contains(&v) {
@@ -882,11 +1097,50 @@ mod attach_log {
         })
     }
 
-    fn row_still_valid(row: &CountryObjectRow) -> bool {
-        let Some(tag_id) = read_u32(row.object_ptr + OBJ_TAG_DB_ID) else {
-            return false;
-        };
-        tag_id == row.tag_db_id && read_msvc_string(row.object_ptr + OBJ_NAME, 96).is_some()
+    fn country_object_row_expected(
+        object_ptr: usize,
+        country_vtable: usize,
+        tag_table: usize,
+        expected_tag_db_id: u32,
+        record_ptr: Option<usize>,
+    ) -> Option<CountryObjectRow> {
+        let row = country_object_row(object_ptr, country_vtable, tag_table, record_ptr)?;
+        if row.tag_db_id == expected_tag_db_id {
+            Some(row)
+        } else {
+            None
+        }
+    }
+
+    fn revalidated_country_object_row(
+        expected: &CountryObjectRow,
+        country_vtable: usize,
+        tag_table: usize,
+    ) -> Option<CountryObjectRow> {
+        let row = country_object_row_expected(
+            expected.object_ptr,
+            country_vtable,
+            tag_table,
+            expected.tag_db_id,
+            expected.record_ptr,
+        )?;
+        if row.tag == expected.tag && row.name == expected.name {
+            Some(row)
+        } else {
+            None
+        }
+    }
+
+    fn country_record_political_power(record_ptr: usize, object_ptr: usize) -> Option<f64> {
+        if read_u64(record_ptr + COUNTRY_RECORD_OBJECT_PTR)? as usize != object_ptr {
+            return None;
+        }
+        let value = read_i32(record_ptr + COUNTRY_RECORD_POLITICAL_POWER)? as f64 / FP_SCALE;
+        if (-1_000_000.0..=1_000_000.0).contains(&value) {
+            Some(value)
+        } else {
+            None
+        }
     }
 
     fn row_json(row: &CountryObjectRow) -> String {
@@ -896,6 +1150,7 @@ mod attach_log {
         let reserved_dynamic_country = json_opt_bool(row.reserved_dynamic_country);
         let stability = json_opt_f64(row.stability);
         let war_support = json_opt_f64(row.war_support);
+        let political_power = json_opt_f64(row.political_power);
         let command_power = json_opt_f64(row.command_power);
         let num_ships = json_opt_i32(row.num_ships);
         let manpower_pool = json_opt_u32(row.manpower_pool);
@@ -910,6 +1165,7 @@ mod attach_log {
              \"templates_locked\":{templates_locked}}},\
              \"scalars\":{{\"stability\":{stability},\
              \"war_support\":{war_support},\
+             \"political_power\":{political_power},\
              \"command_power\":{command_power},\
              \"num_ships\":{num_ships},\
              \"manpower_pool\":{manpower_pool},\
@@ -1183,8 +1439,95 @@ mod attach_log {
             assert_eq!(parsed.sample_ms, 10);
             assert_eq!(parsed.pipe_token.as_deref(), Some("abc-123"));
             assert_eq!(parsed.session_id.as_deref(), Some("run_1-abc"));
+            assert!(parsed.country_object_bridge.is_empty());
+            assert!(parsed.country_object_bridge_valid);
+            assert!(parsed.country_record_bridge.is_empty());
+            assert!(parsed.country_record_bridge_valid);
             assert!(!parsed.sidecar_log);
             let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn collector_control_accepts_country_object_bridge() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_control_bridge_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            fs::write(
+                &control,
+                r#"{"mode":"hourly_poll","duration_ms":8000,"sample_ms":10,"country_object_scan":false,"country_object_bridge":"1:0x1000;2:8192"}"#,
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert!(!parsed.country_object_scan);
+            assert!(parsed.country_object_bridge_valid);
+            assert_eq!(parsed.country_object_bridge.len(), 2);
+            assert_eq!(parsed.country_object_bridge[0].tag_db_id, 1);
+            assert_eq!(parsed.country_object_bridge[0].object_ptr, 0x1000);
+            assert_eq!(parsed.country_object_bridge[1].tag_db_id, 2);
+            assert_eq!(parsed.country_object_bridge[1].object_ptr, 8192);
+            assert!(parsed.country_record_bridge.is_empty());
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn collector_control_accepts_country_record_bridge() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_control_record_bridge_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            fs::write(
+                &control,
+                r#"{"mode":"hourly_poll","duration_ms":8000,"sample_ms":10,"country_object_bridge":"1:0x1000","country_record_bridge":"1:0x3000"}"#,
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert!(parsed.country_record_bridge_valid);
+            assert_eq!(parsed.country_record_bridge.len(), 1);
+            assert_eq!(parsed.country_record_bridge[0].tag_db_id, 1);
+            assert_eq!(parsed.country_record_bridge[0].object_ptr, 0x3000);
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn collector_control_marks_bad_country_object_bridge_invalid() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_control_bad_bridge_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            fs::write(
+                &control,
+                r#"{"mode":"hourly_poll","duration_ms":8000,"sample_ms":10,"country_object_bridge":"1:0x1001"}"#,
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert!(parsed.country_object_bridge.is_empty());
+            assert!(!parsed.country_object_bridge_valid);
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn country_object_bridge_parser_rejects_duplicates() {
+            assert!(parse_country_object_bridge("1:0x1000;1:0x2000").is_none());
+            assert!(parse_country_object_bridge("1:0x1000;2:0x1000").is_none());
         }
 
         #[test]
@@ -1215,6 +1558,10 @@ mod attach_log {
                 duration_ms: 8000,
                 sample_ms: 10,
                 country_object_scan: false,
+                country_object_bridge: Vec::new(),
+                country_object_bridge_valid: true,
+                country_record_bridge: Vec::new(),
+                country_record_bridge_valid: true,
                 pipe_token: Some("abc".to_string()),
                 session_id: Some("run_1".to_string()),
                 sidecar_log: false,
@@ -1239,13 +1586,16 @@ mod attach_log {
             let row = CountryObjectRow {
                 tag: "POR".to_string(),
                 tag_db_id: 47,
+                name: "Portugal".to_string(),
                 object_ptr: 0x1234,
+                record_ptr: Some(0x5000),
                 original_capital: Some(112),
                 original_tag: None,
                 templates_locked: Some(false),
                 reserved_dynamic_country: Some(false),
                 stability: Some(0.61),
                 war_support: Some(0.42),
+                political_power: Some(7.25),
                 command_power: Some(12.5),
                 num_ships: Some(7),
                 manpower_pool: Some(123456),
@@ -1257,6 +1607,7 @@ mod attach_log {
             assert!(json.contains("\"POR\""));
             assert!(json.contains("\"tag_db_id\":47"));
             assert!(json.contains("\"stability\":0.61"));
+            assert!(json.contains("\"political_power\":7.25"));
             assert!(json.contains("\"manpower_pool\":123456"));
         }
     }

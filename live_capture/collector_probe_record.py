@@ -8,11 +8,14 @@ import json
 from pathlib import Path
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .collector_attach import AttachError, attach_noop
 from .collector_frames import latest_verified_root_probe, snapshot_from_root_probe_frame
 from .durable_store import DurableCaptureStore
+
+
+MAX_COUNTRY_OBJECT_BRIDGE_ROWS = 512
 
 
 def record_probe(pid: int, dll: Path, out_root: Path, *, dwell_s: float = 1.0,
@@ -39,6 +42,8 @@ def record_probes(
     require_hourly_cadence: Optional[bool] = None,
     session_id: Optional[str] = None,
     write_snapshot_artifacts: bool = True,
+    country_object_bridge: Any = None,
+    country_record_bridge: Any = None,
 ) -> Path:
     if repeat < 1:
         raise ValueError("repeat must be >= 1")
@@ -52,6 +57,22 @@ def record_probes(
         raise ValueError("worker_duration_s must be > 0")
     if worker_sample_ms < 10:
         raise ValueError("worker_sample_ms must be >= 10")
+    encoded_country_object_bridge = (
+        encode_country_object_bridge(country_object_bridge)
+        if country_object_bridge is not None else None
+    )
+    country_object_bridge_rows = (
+        len(encoded_country_object_bridge.split(";"))
+        if encoded_country_object_bridge else 0
+    )
+    encoded_country_record_bridge = (
+        encode_country_record_bridge(country_record_bridge)
+        if country_record_bridge is not None else None
+    )
+    country_record_bridge_rows = (
+        len(encoded_country_record_bridge.split(";"))
+        if encoded_country_record_bridge else 0
+    )
 
     run_id = _run_id(pid)
     effective_session_id = session_id or run_id
@@ -97,6 +118,8 @@ def record_probes(
                 worker_duration_s,
                 worker_sample_ms,
                 session_id=effective_session_id,
+                country_object_bridge=encoded_country_object_bridge,
+                country_record_bridge=encoded_country_record_bridge,
             )
             worker_pipe_tokens.append(pipe_token)
         try:
@@ -223,6 +246,10 @@ def record_probes(
             "worker_duration_s": worker_duration_s,
             "worker_sample_ms": worker_sample_ms if worker_duration_s is not None else None,
             "country_object_scan": False,
+            "country_object_bridge_supplied": bool(encoded_country_object_bridge),
+            "country_object_bridge_rows": country_object_bridge_rows,
+            "country_record_bridge_supplied": bool(encoded_country_record_bridge),
+            "country_record_bridge_rows": country_record_bridge_rows,
             "worker_pipe_tokens": worker_pipe_tokens,
             "attach_errors": attach_errors,
             "partial_session": bool(attach_errors and samples),
@@ -285,6 +312,8 @@ def _write_worker_control(
     sample_ms: int,
     *,
     session_id: Optional[str] = None,
+    country_object_bridge: Optional[str] = None,
+    country_record_bridge: Optional[str] = None,
 ) -> tuple[Path, str]:
     control_path = Path(dll).resolve().with_name("collector_control.json")
     pipe_token = f"{time.monotonic_ns():x}"
@@ -298,8 +327,123 @@ def _write_worker_control(
     }
     if session_id:
         payload["session_id"] = session_id
+    if country_object_bridge:
+        payload["country_object_bridge"] = country_object_bridge
+    if country_record_bridge:
+        payload["country_record_bridge"] = country_record_bridge
     control_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
     return control_path, pipe_token
+
+
+def encode_country_object_bridge(rows: Any) -> str:
+    """Encode bounded tag-db-id -> country-object pointers for DLL preflight.
+
+    The control file carries only ephemeral memory addresses. Session manifests
+    record the count, not the address list.
+    """
+    normalized = _normalize_country_object_bridge_rows(rows)
+    return ";".join(f"{tag_db_id}:0x{object_ptr:X}" for tag_db_id, object_ptr in normalized)
+
+
+def encode_country_record_bridge(rows: Any) -> str:
+    """Encode bounded tag-db-id -> country-record pointers for PP reads."""
+    normalized = _normalize_country_record_bridge_rows(rows)
+    return ";".join(f"{tag_db_id}:0x{record_ptr:X}" for tag_db_id, record_ptr in normalized)
+
+
+def _normalize_country_object_bridge_rows(rows: Any) -> List[Tuple[int, int]]:
+    return _normalize_country_pointer_bridge_rows(
+        rows,
+        label="country_object_bridge",
+        pointer_keys=("object_ptr", "country_object"),
+    )
+
+
+def _normalize_country_record_bridge_rows(rows: Any) -> List[Tuple[int, int]]:
+    return _normalize_country_pointer_bridge_rows(
+        rows,
+        label="country_record_bridge",
+        pointer_keys=("record_ptr", "country_record"),
+    )
+
+
+def _normalize_country_pointer_bridge_rows(
+    rows: Any,
+    *,
+    label: str,
+    pointer_keys: Tuple[str, str],
+) -> List[Tuple[int, int]]:
+    if rows is None:
+        return []
+    if isinstance(rows, str):
+        raw_items: Iterable[Any] = _iter_encoded_country_object_bridge(rows)
+    elif isinstance(rows, dict):
+        raw_items = rows.items()
+    else:
+        raw_items = rows
+
+    out: List[Tuple[int, int]] = []
+    seen_tag_ids: set[int] = set()
+    seen_object_ptrs: set[int] = set()
+    for item in raw_items:
+        tag_db_id, object_ptr = _bridge_item_pair(item, pointer_keys=pointer_keys, label=label)
+        if tag_db_id <= 0 or tag_db_id > 1024:
+            raise ValueError(f"{label} tag_db_id out of range")
+        if object_ptr <= 0 or object_ptr % 8:
+            raise ValueError(f"{label} pointer must be nonzero and 8-byte aligned")
+        if tag_db_id in seen_tag_ids:
+            raise ValueError(f"{label} duplicate tag_db_id")
+        if object_ptr in seen_object_ptrs:
+            raise ValueError(f"{label} duplicate pointer")
+        seen_tag_ids.add(tag_db_id)
+        seen_object_ptrs.add(object_ptr)
+        out.append((tag_db_id, object_ptr))
+        if len(out) > MAX_COUNTRY_OBJECT_BRIDGE_ROWS:
+            raise ValueError(f"{label} exceeds max rows")
+    return sorted(out)
+
+
+def _iter_encoded_country_object_bridge(value: str) -> Iterable[Tuple[str, str]]:
+    if not value:
+        return []
+    pairs = []
+    for raw in value.split(";"):
+        if not raw:
+            raise ValueError("country_object_bridge contains empty row")
+        if ":" not in raw:
+            raise ValueError("country_object_bridge row missing ':'")
+        pairs.append(tuple(raw.split(":", 1)))
+    return pairs
+
+
+def _bridge_item_pair(
+    item: Any,
+    *,
+    pointer_keys: Tuple[str, str],
+    label: str,
+) -> Tuple[int, int]:
+    if isinstance(item, dict):
+        tag_raw = item.get("tag_db_id")
+        ptr_raw = item.get(pointer_keys[0], item.get(pointer_keys[1]))
+    else:
+        try:
+            tag_raw, ptr_raw = item
+        except Exception as exc:
+            raise ValueError(f"{label} row must be pair-like") from exc
+    return _bridge_int(tag_raw, "tag_db_id", label), _bridge_int(ptr_raw, "pointer", label)
+
+
+def _bridge_int(value: Any, name: str, label: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{label} {name} must be int-like")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        value = value.strip()
+        if value.lower().startswith("0x"):
+            return int(value, 16)
+        return int(value, 10)
+    raise ValueError(f"{label} {name} must be int-like")
 
 
 def _remove_if_exists(path: Path) -> None:
