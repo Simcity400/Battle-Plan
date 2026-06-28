@@ -53,6 +53,16 @@ impl TopbarView {
     }
 
     fn hover_at(&self, x: f32, y: f32) -> Option<TopbarHover> {
+        if self
+            .drill_targets
+            .iter()
+            .any(|target| is_threat_leaf(target.leaf) && target.rect.contains(x, y))
+        {
+            return Some(TopbarHover {
+                target: TopbarHoverTarget::Threat,
+                cursor: (x, y),
+            });
+        }
         self.inert_targets
             .iter()
             .any(|target| target.leaf == "faction_button" && target.rect.contains(x, y))
@@ -107,6 +117,7 @@ struct TopbarHover {
 #[derive(Debug, Clone, PartialEq)]
 enum TopbarHoverTarget {
     Faction,
+    Threat,
 }
 
 const TOPBAR_DRILL_TARGETS: &[(&str, ViewId)] = &[
@@ -277,8 +288,13 @@ impl ViewInstance for TopbarView {
         }
 
         let flag = flag_rect(&roots, &report, &self.country);
-        let tooltip =
-            topbar_tooltip_for_hover(ctx, &self.country, self.hover.as_ref(), &self.inert_targets);
+        let tooltip = topbar_tooltip_for_hover(
+            ctx,
+            &self.country,
+            self.hover.as_ref(),
+            &self.drill_targets,
+            &self.inert_targets,
+        );
         let fidelity = topbar_fidelity(&report);
 
         BoundView {
@@ -334,45 +350,90 @@ fn topbar_tooltip_for_hover(
     ctx: &BindContext,
     country: &str,
     hover: Option<&TopbarHover>,
+    drill_targets: &[TopbarDrillTarget],
     inert_targets: &[TopbarInertTarget],
 ) -> Option<TooltipPlan> {
     let hover = hover?;
-    let valid_target = inert_targets.iter().any(|target| {
-        target.leaf == "faction_button" && target.rect.contains(hover.cursor.0, hover.cursor.1)
-    });
+    let valid_target = match hover.target {
+        TopbarHoverTarget::Faction => inert_targets.iter().any(|target| {
+            target.leaf == "faction_button" && target.rect.contains(hover.cursor.0, hover.cursor.1)
+        }),
+        TopbarHoverTarget::Threat => drill_targets.iter().any(|target| {
+            is_threat_leaf(target.leaf) && target.rect.contains(hover.cursor.0, hover.cursor.1)
+        }),
+    };
     if !valid_target {
         return None;
     }
     match hover.target {
         TopbarHoverTarget::Faction => {
-            let model = faction_tooltip_model(ctx, country)?;
+            let model = faction_tooltip_model(ctx, country);
+            Some(plan_tooltip(&model, hover.cursor, ctx.screen))
+        }
+        TopbarHoverTarget::Threat => {
+            let model = threat_tooltip_model(ctx);
             Some(plan_tooltip(&model, hover.cursor, ctx.screen))
         }
     }
 }
 
-fn faction_tooltip_model(ctx: &BindContext, country: &str) -> Option<Tooltip> {
-    let faction_name = match ctx.country_field(country, "politics.faction.name") {
-        Captured::Measured(v) => measured_scalar(v)?,
-        Captured::Absent | Captured::Null => return None,
-    };
-    Some(
-        Tooltip::new(WAtom::exact("Faction"))
-            .with_row("Country", WAtom::exact(country.to_string()))
-            .with_row("Name", WAtom::exact(faction_name))
-            .with_row(
-                "Leader",
-                match ctx.country_field(country, "politics.faction.is_leader") {
-                    Captured::Measured(v) => match v.as_bool() {
-                        Some(true) => WAtom::exact("yes"),
-                        Some(false) => WAtom::exact("no"),
-                        None => WAtom::unavailable_because(WReason::Blocked),
-                    },
-                    Captured::Null => WAtom::unavailable_because(WReason::Null),
-                    Captured::Absent => WAtom::unavailable_because(WReason::Absent),
-                },
-            ),
-    )
+fn is_threat_leaf(leaf: &str) -> bool {
+    matches!(leaf, "threat_button" | "threat_value_button")
+}
+
+fn faction_tooltip_model(ctx: &BindContext, country: &str) -> Tooltip {
+    Tooltip::domain_composer(WAtom::exact("Faction"))
+        .exact_row("Country", country.to_string())
+        .row(
+            "Name",
+            captured_scalar_atom(ctx.country_field(country, "politics.faction.name")),
+        )
+        .row(
+            "Leader",
+            captured_bool_atom(ctx.country_field(country, "politics.faction.is_leader")),
+        )
+        .build()
+}
+
+fn captured_scalar_atom(value: Captured<&serde_json::Value>) -> WAtom {
+    match value {
+        Captured::Measured(v) => measured_scalar(v)
+            .map(WAtom::exact)
+            .unwrap_or_else(|| WAtom::unavailable_because(WReason::Blocked)),
+        Captured::Null => WAtom::unavailable_because(WReason::Null),
+        Captured::Absent => WAtom::unavailable_because(WReason::Absent),
+    }
+}
+
+fn captured_bool_atom(value: Captured<&serde_json::Value>) -> WAtom {
+    match value {
+        Captured::Measured(v) => match v.as_bool() {
+            Some(true) => WAtom::exact("yes"),
+            Some(false) => WAtom::exact("no"),
+            None => WAtom::unavailable_because(WReason::Blocked),
+        },
+        Captured::Null => WAtom::unavailable_because(WReason::Null),
+        Captured::Absent => WAtom::unavailable_because(WReason::Absent),
+    }
+}
+
+fn threat_tooltip_model(ctx: &BindContext) -> Tooltip {
+    Tooltip::new(WAtom::exact("World tension"))
+        .with_row("Aggregate", WAtom::unavailable_because(WReason::Blocked))
+        .with_row("Threat entries", threat_entry_count_atom(ctx))
+}
+
+fn threat_entry_count_atom(ctx: &BindContext) -> WAtom {
+    match ctx.world_events() {
+        Captured::Measured(v) => match v.get("threat") {
+            Some(serde_json::Value::Array(rows)) => WAtom::exact(rows.len().to_string()),
+            Some(serde_json::Value::Null) => WAtom::unavailable_because(WReason::Null),
+            Some(_) => WAtom::unavailable_because(WReason::Blocked),
+            None => WAtom::unavailable_because(WReason::Absent),
+        },
+        Captured::Null => WAtom::unavailable_because(WReason::Null),
+        Captured::Absent => WAtom::unavailable_because(WReason::Absent),
+    }
 }
 
 fn measured_scalar(v: &serde_json::Value) -> Option<String> {
@@ -512,6 +573,54 @@ mod tests {
                         "ruling_party": "fascism"
                     }
                 }
+            }
+        }))
+        .unwrap()
+    }
+
+    fn snap_with_null_faction() -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1940.1.1.12",
+            "hour_index": 100,
+            "countries": {
+                "GER": {
+                    "politics": {
+                        "political_power": 10.0,
+                        "stability": 0.5,
+                        "ruling_party": "fascism",
+                        "faction": {
+                            "name": null,
+                            "is_leader": null
+                        }
+                    }
+                }
+            }
+        }))
+        .unwrap()
+    }
+
+    fn snap_with_threat_events() -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1940.1.1.12",
+            "hour_index": 100,
+            "countries": {
+                "GER": {
+                    "politics": {
+                        "political_power": 10.0,
+                        "stability": 0.5,
+                        "ruling_party": "fascism",
+                        "faction": {
+                            "name": "axis",
+                            "is_leader": true
+                        }
+                    }
+                }
+            },
+            "world_events": {
+                "threat": [
+                    {"tag": "GER", "threat": 5.0, "final_threat": 12.0},
+                    {"tag": "ITA", "threat": 2.0, "final_threat": 4.0}
+                ]
             }
         }))
         .unwrap()
@@ -762,7 +871,7 @@ mod tests {
     }
 
     #[test]
-    fn topbar_faction_hover_fails_closed_without_faction_data() {
+    fn topbar_faction_hover_badges_missing_faction_data() {
         let stage = stage_with_topbar(synthetic_topbar_gui(), HashMap::new());
         let snap = snap_without_faction();
         let mut view = TopbarView::new("GER");
@@ -781,10 +890,19 @@ mod tests {
         assert!(out.commands.is_empty());
         assert!(out.needs_redraw);
 
-        let digest = bound_digest(&view.bind(&ctx(&stage, &snap)));
-        assert!(digest.contains("TOOLTIP -"), "{digest}");
-        assert!(!digest.contains("Faction"), "{digest}");
+        let bound = view.bind(&ctx(&stage, &snap));
+        let tooltip = bound
+            .tooltip_plan()
+            .expect("faction hover should stay visible and badge missing data");
+        assert_eq!(tooltip.plan().unavailable_text_count(), 2);
+        let digest = bound_digest(&bound);
+        assert!(digest.contains("TOOLTIP TT"), "{digest}");
+        assert!(digest.contains("Faction"), "{digest}");
+        assert!(digest.contains("Name"), "{digest}");
+        assert!(digest.contains("Leader"), "{digest}");
+        assert!(digest.contains(":\"missing\""), "{digest}");
         assert!(!digest.contains("axis"), "{digest}");
+        assert!(!digest.contains(":\"0\""), "{digest}");
 
         let out = view.on_input(&ViewInput::PointerMove {
             x: 1200.0,
@@ -793,6 +911,104 @@ mod tests {
         });
         assert!(out.needs_redraw, "leaving the stale hover should redraw");
         assert!(bound_digest(&view.bind(&ctx(&stage, &snap))).contains("TOOLTIP -"));
+    }
+
+    #[test]
+    fn topbar_faction_hover_badges_null_faction_data() {
+        let stage = stage_with_topbar(synthetic_topbar_gui(), HashMap::new());
+        let snap = snap_with_null_faction();
+        let mut view = TopbarView::new("GER");
+        let bv = view.bind(&ctx(&stage, &snap));
+        view.set_drill_targets(topbar_drill_targets_from_roots(&bv.hit.roots));
+        let inert_targets = topbar_inert_targets_from_roots(&bv.hit.roots);
+        view.set_inert_targets(inert_targets.clone());
+
+        let faction = inert_targets
+            .iter()
+            .find(|target| target.leaf == "faction_button")
+            .expect("synthetic topbar should expose faction button");
+        let (x, y) = center(faction.rect);
+        let out = view.on_input(&ViewInput::PointerMove { x, y, drag: false });
+        assert!(!out.consumed);
+        assert!(out.commands.is_empty());
+        assert!(out.needs_redraw);
+
+        let bound = view.bind(&ctx(&stage, &snap));
+        let tooltip = bound
+            .tooltip_plan()
+            .expect("faction hover should stay visible and badge null data");
+        assert_eq!(tooltip.plan().unavailable_text_count(), 2);
+        let digest = bound_digest(&bound);
+        assert!(digest.contains("Faction"), "{digest}");
+        assert!(digest.contains("Name"), "{digest}");
+        assert!(digest.contains("Leader"), "{digest}");
+        assert!(digest.contains(":\"null\""), "{digest}");
+        assert!(!digest.contains("axis"), "{digest}");
+        assert!(!digest.contains(":\"0\""), "{digest}");
+    }
+
+    #[test]
+    fn topbar_threat_hover_uses_factual_threat_ledger_count() {
+        let stage = stage_with_topbar(synthetic_topbar_gui(), HashMap::new());
+        let snap = snap_with_threat_events();
+        let mut view = TopbarView::new("GER");
+        let bv = view.bind(&ctx(&stage, &snap));
+        let drill_targets = topbar_drill_targets_from_roots(&bv.hit.roots);
+        view.set_drill_targets(drill_targets.clone());
+        view.set_inert_targets(topbar_inert_targets_from_roots(&bv.hit.roots));
+
+        let threat = drill_targets
+            .iter()
+            .find(|target| target.leaf == "threat_button")
+            .expect("synthetic topbar should expose threat_button");
+        let (x, y) = center(threat.rect);
+        let out = view.on_input(&ViewInput::PointerMove { x, y, drag: false });
+        assert!(!out.consumed);
+        assert!(out.commands.is_empty());
+        assert!(out.needs_redraw, "new threat hover should redraw tooltip");
+
+        let digest = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert!(digest.contains("TOOLTIP TT"), "{digest}");
+        assert!(digest.contains("World tension"), "{digest}");
+        assert!(digest.contains("Aggregate"), "{digest}");
+        assert!(digest.contains("Threat entries"), "{digest}");
+        assert!(digest.contains(":\"2\""), "{digest}");
+        assert!(
+            !digest.contains(":\"0\""),
+            "threat hover must not fabricate a zero aggregate/count: {digest}"
+        );
+    }
+
+    #[test]
+    fn topbar_threat_hover_badges_missing_threat_ledger_unavailable() {
+        let stage = stage_with_topbar(synthetic_topbar_gui(), HashMap::new());
+        let snap = snap();
+        let mut view = TopbarView::new("GER");
+        let bv = view.bind(&ctx(&stage, &snap));
+        let drill_targets = topbar_drill_targets_from_roots(&bv.hit.roots);
+        view.set_drill_targets(drill_targets.clone());
+        view.set_inert_targets(topbar_inert_targets_from_roots(&bv.hit.roots));
+
+        let threat = drill_targets
+            .iter()
+            .find(|target| target.leaf == "threat_value_button")
+            .expect("synthetic topbar should expose threat_value_button");
+        let (x, y) = center(threat.rect);
+        let out = view.on_input(&ViewInput::PointerMove { x, y, drag: false });
+        assert!(!out.consumed);
+        assert!(out.commands.is_empty());
+        assert!(out.needs_redraw);
+
+        let digest = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert!(digest.contains("World tension"), "{digest}");
+        assert!(digest.contains("Aggregate"), "{digest}");
+        assert!(digest.contains("Threat entries"), "{digest}");
+        assert!(digest.contains(":\"unfed\""), "{digest}");
+        assert!(digest.contains(":\"missing\""), "{digest}");
+        assert!(
+            !digest.contains(":\"0\""),
+            "missing threat ledger must not render a fabricated zero: {digest}"
+        );
     }
 
     #[test]

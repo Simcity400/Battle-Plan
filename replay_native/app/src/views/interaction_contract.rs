@@ -470,6 +470,15 @@ fn list_selection_contract(view_id: ViewId) -> CategoryContract {
             status: InteractionStatus::Open,
             note: "leaders.navy_trait_tree has executable click selection proof for current N3 owned trait-token nodes only, with exact navy branch detail rows, derived static DEF catalog rows, and inert unavailable glyph behavior shared with the army trait tree; full static trait catalog graph, disabled/pickable states, real trait icons/effects, leader-roster driven selection, and broader trait-tree parity remain open",
         }
+    } else if matches!(
+        view_id.0,
+        "designers.tank" | "designers.plane" | "designers.equipment"
+    ) {
+        CategoryContract {
+            category: InteractionCategory::ListSelection,
+            status: InteractionStatus::Open,
+            note: "component designer views have executable module-slot click selection proof for tank, plane, and equipment designers with selected-slot scrub/missing-restored no-fallback handling; module-slot detail parity, selector drilldowns, disabled visuals, screenshots, and broader component-designer parity remain open",
+        }
     } else {
         not_proven(
             InteractionCategory::ListSelection,
@@ -593,6 +602,11 @@ fn hover_tooltip_contract(view_id: ViewId) -> CategoryContract {
             status: InteractionStatus::Open,
             note: "leaders.navy_trait_tree shares the executable owned trait-token hover tooltip path with the army tree and proves factual navy trait/leader rows plus derived static DEF catalog rows; full the game trait tooltip frame, localized trait name/icon/effect text, prerequisite text/effect expansion, disabled/pickable states, and side-by-side proof remain open",
         },
+        "designers.tank" | "designers.plane" | "designers.equipment" => CategoryContract {
+            category: InteractionCategory::HoverTooltip,
+            status: InteractionStatus::Open,
+            note: "component designer views have executable passive module-slot hover inspection proof over the shared module-slot grid; full the game module tooltip frames, localized/effect-expanded stat text, hover chrome, screenshots, and broader component tooltip parity remain open",
+        },
         _ => not_proven(
             InteractionCategory::HoverTooltip,
             "no per-view hover/tooltip target proof attached",
@@ -679,6 +693,11 @@ fn disabled_mutation_contract(view_id: ViewId) -> CategoryContract {
             status: InteractionStatus::Open,
             note: "core.topbar has executable click-no-op proof for visible pause/date, speed-control, lobby/menu/help/achievements, playlist, and music-control buttons as replay-disabled no-ops; dismissed alerts, threat/faction controls, disabled visual treatment, and broader topbar mutation parity remain open",
         },
+        "designers.tank" | "designers.plane" | "designers.equipment" => CategoryContract {
+            category: InteractionCategory::DisabledMutation,
+            status: InteractionStatus::Open,
+            note: "component designer views have executable click-no-op proof for the shared non-slot designer chrome/control area as replay-disabled no-op input; upgrade sliders, module add/remove, save/duplicate/production controls, disabled visual treatment, screenshots, and broader component-designer mutation parity remain open",
+        },
         _ => not_proven(
             InteractionCategory::DisabledMutation,
             "no mutating-control disabled/inert target inventory or click-no-op proof attached",
@@ -727,6 +746,9 @@ pub fn known_list_selection_targets(view_id: ViewId) -> &'static [InteractionTar
         "research.doctrine_tree" => &RESEARCH_DOCTRINE_TREE_ROW_TARGETS,
         "leaders.army_trait_tree" => &LEADERS_ARMY_TRAIT_TREE_ROW_TARGETS,
         "leaders.navy_trait_tree" => &LEADERS_NAVY_TRAIT_TREE_ROW_TARGETS,
+        "designers.tank" => &DESIGNERS_TANK_ROW_TARGETS,
+        "designers.plane" => &DESIGNERS_PLANE_ROW_TARGETS,
+        "designers.equipment" => &DESIGNERS_EQUIPMENT_ROW_TARGETS,
         _ => &[],
     }
 }
@@ -762,6 +784,9 @@ pub fn known_hover_tooltip_targets(view_id: ViewId) -> &'static [InteractionTarg
         "research.doctrine_tree" => &RESEARCH_DOCTRINE_TREE_HOVER_TARGETS,
         "leaders.army_trait_tree" => &LEADERS_ARMY_TRAIT_TREE_HOVER_TARGETS,
         "leaders.navy_trait_tree" => &LEADERS_NAVY_TRAIT_TREE_HOVER_TARGETS,
+        "designers.tank" => &DESIGNERS_TANK_HOVER_TARGETS,
+        "designers.plane" => &DESIGNERS_PLANE_HOVER_TARGETS,
+        "designers.equipment" => &DESIGNERS_EQUIPMENT_HOVER_TARGETS,
         _ => &[],
     }
 }
@@ -787,6 +812,9 @@ pub fn known_disabled_mutation_targets(view_id: ViewId) -> &'static [Interaction
         "leaders.navy_trait_tree" => &LEADERS_NAVY_TRAIT_TREE_DISABLED_MUTATION_TARGETS,
         "core.state_panel" => &CORE_STATE_PANEL_DISABLED_MUTATION_TARGETS,
         "core.topbar" => &CORE_TOPBAR_DISABLED_MUTATION_TARGETS,
+        "designers.tank" => &DESIGNERS_TANK_DISABLED_MUTATION_TARGETS,
+        "designers.plane" => &DESIGNERS_PLANE_DISABLED_MUTATION_TARGETS,
+        "designers.equipment" => &DESIGNERS_EQUIPMENT_DISABLED_MUTATION_TARGETS,
         _ => &[],
     }
 }
@@ -809,6 +837,12 @@ const MILITARY_THEATRE_SELECTOR_SCROLL_NOTE: &str =
     "dynamic theatre list scroll target; executable TheatreSelectorView tests prove wheel scroll changes/clamps visible measured theatre rows, scrollbar-thumb drag changes/clamps rows and continues outside the list until pointer-up, scrollbar track clicks do not select underlying rows, scrolled clicks select the correct backing theatre row, scroll+selection survive A->B->A without carrying B-only rows, and outside-list wheel input is inert; scrollbar art, group/member rows, and broader theatre scroll surfaces remain open";
 const DESIGNERS_DIVISION_TAB_NOTE: &str =
     "dynamic widgets::tabs target; executable DivisionDesignerView tests prove Division/Army HQ click switching, non-HQ inert handling, and selected-tab A->B->A persistence for this read-only designer slice";
+const DESIGNERS_COMPONENT_SLOT_ROW_NOTE: &str =
+    "dynamic component module-slot target; executable component designer tests prove read-only module-slot click selection for tank, plane, and equipment designers with no emitted commands, selected-slot digest visibility, repeated-click no-redraw behavior, and selected-slot save->missing->save scrub restoration without falling back to another slot; module-slot detail parity, selector drilldowns, disabled visuals, screenshots, and broader component-designer parity remain open";
+const DESIGNERS_COMPONENT_SLOT_HOVER_NOTE: &str =
+    "dynamic component module-slot hover target; executable component designer tests prove passive hover inspection over the shared module-slot grid with no emitted commands, redraw only when hover changes, digest-visible hovered slot state, and repeat-hover no-redraw behavior; this is factual inspection, not full the game module tooltip frame/effect text parity, and screenshots remain open";
+const DESIGNERS_COMPONENT_DISABLED_MUTATION_NOTE: &str =
+    "component designer non-slot control target; executable component designer tests prove clicks inside the shared non-slot designer chrome/control area are consumed as replay-disabled no-op pointer-down/up input with no emitted commands, no redraw request, and unchanged bind digest; upgrade sliders, module add/remove, save/duplicate/production controls, disabled visual treatment, screenshots, and broader component-designer mutation parity remain open";
 const INTEL_AGENCY_TAB_NOTE: &str =
     "dynamic widgets::tabs target; executable IntelAgencyView tests prove click switching, unavailable-tab inert handling, and selected-tab A->B->A persistence for this read-only intelligence slice";
 const CHROME_FIND_TAB_NOTE: &str =
@@ -1215,6 +1249,77 @@ const DESIGNERS_DIVISION_TAB_TARGETS: [InteractionTargetContract; 2] = [
         note: DESIGNERS_DIVISION_TAB_NOTE,
     },
 ];
+
+const DESIGNERS_TANK_ROW_TARGETS: [InteractionTargetContract; 1] = [InteractionTargetContract {
+    category: InteractionCategory::ListSelection,
+    id: "designers.tank.row.module_slot",
+    label: "Tank module slot selection",
+    status: InteractionStatus::Open,
+    note: DESIGNERS_COMPONENT_SLOT_ROW_NOTE,
+}];
+const DESIGNERS_PLANE_ROW_TARGETS: [InteractionTargetContract; 1] = [InteractionTargetContract {
+    category: InteractionCategory::ListSelection,
+    id: "designers.plane.row.module_slot",
+    label: "Plane module slot selection",
+    status: InteractionStatus::Open,
+    note: DESIGNERS_COMPONENT_SLOT_ROW_NOTE,
+}];
+const DESIGNERS_EQUIPMENT_ROW_TARGETS: [InteractionTargetContract; 1] =
+    [InteractionTargetContract {
+        category: InteractionCategory::ListSelection,
+        id: "designers.equipment.row.module_slot",
+        label: "Equipment module slot selection",
+        status: InteractionStatus::Open,
+        note: DESIGNERS_COMPONENT_SLOT_ROW_NOTE,
+    }];
+
+const DESIGNERS_TANK_HOVER_TARGETS: [InteractionTargetContract; 1] = [InteractionTargetContract {
+    category: InteractionCategory::HoverTooltip,
+    id: "designers.tank.hover.module_slot",
+    label: "Tank module slot hover inspection",
+    status: InteractionStatus::Open,
+    note: DESIGNERS_COMPONENT_SLOT_HOVER_NOTE,
+}];
+const DESIGNERS_PLANE_HOVER_TARGETS: [InteractionTargetContract; 1] = [InteractionTargetContract {
+    category: InteractionCategory::HoverTooltip,
+    id: "designers.plane.hover.module_slot",
+    label: "Plane module slot hover inspection",
+    status: InteractionStatus::Open,
+    note: DESIGNERS_COMPONENT_SLOT_HOVER_NOTE,
+}];
+const DESIGNERS_EQUIPMENT_HOVER_TARGETS: [InteractionTargetContract; 1] =
+    [InteractionTargetContract {
+        category: InteractionCategory::HoverTooltip,
+        id: "designers.equipment.hover.module_slot",
+        label: "Equipment module slot hover inspection",
+        status: InteractionStatus::Open,
+        note: DESIGNERS_COMPONENT_SLOT_HOVER_NOTE,
+    }];
+
+const DESIGNERS_TANK_DISABLED_MUTATION_TARGETS: [InteractionTargetContract; 1] =
+    [InteractionTargetContract {
+        category: InteractionCategory::DisabledMutation,
+        id: "designers.tank.mutation.component_controls",
+        label: "Tank designer non-slot controls",
+        status: InteractionStatus::Open,
+        note: DESIGNERS_COMPONENT_DISABLED_MUTATION_NOTE,
+    }];
+const DESIGNERS_PLANE_DISABLED_MUTATION_TARGETS: [InteractionTargetContract; 1] =
+    [InteractionTargetContract {
+        category: InteractionCategory::DisabledMutation,
+        id: "designers.plane.mutation.component_controls",
+        label: "Plane designer non-slot controls",
+        status: InteractionStatus::Open,
+        note: DESIGNERS_COMPONENT_DISABLED_MUTATION_NOTE,
+    }];
+const DESIGNERS_EQUIPMENT_DISABLED_MUTATION_TARGETS: [InteractionTargetContract; 1] =
+    [InteractionTargetContract {
+        category: InteractionCategory::DisabledMutation,
+        id: "designers.equipment.mutation.component_controls",
+        label: "Equipment designer non-slot controls",
+        status: InteractionStatus::Open,
+        note: DESIGNERS_COMPONENT_DISABLED_MUTATION_NOTE,
+    }];
 
 const INTEL_AGENCY_TAB_TARGETS: [InteractionTargetContract; 3] = [
     InteractionTargetContract {
@@ -2651,6 +2756,151 @@ mod tests {
                 .all(|t| t.note.contains("DivisionDesignerView tests prove")),
             "designers.division target notes must cite click/scrub proof"
         );
+    }
+
+    #[test]
+    fn component_designer_slot_hover_and_disabled_targets_cite_executable_proof() {
+        let reg = ViewRegistry::from_inventory();
+        let cases = [
+            (
+                ViewId("designers.tank"),
+                "designers.tank.row.module_slot",
+                "designers.tank.hover.module_slot",
+                "designers.tank.mutation.component_controls",
+                "Tank module slot selection",
+                "Tank module slot hover inspection",
+                "Tank designer non-slot controls",
+            ),
+            (
+                ViewId("designers.plane"),
+                "designers.plane.row.module_slot",
+                "designers.plane.hover.module_slot",
+                "designers.plane.mutation.component_controls",
+                "Plane module slot selection",
+                "Plane module slot hover inspection",
+                "Plane designer non-slot controls",
+            ),
+            (
+                ViewId("designers.equipment"),
+                "designers.equipment.row.module_slot",
+                "designers.equipment.hover.module_slot",
+                "designers.equipment.mutation.component_controls",
+                "Equipment module slot selection",
+                "Equipment module slot hover inspection",
+                "Equipment designer non-slot controls",
+            ),
+        ];
+
+        let contracts = interaction_contracts(&reg);
+        for (view_id, row_id, hover_id, mutation_id, row_label, hover_label, mutation_label) in
+            cases
+        {
+            assert!(
+                reg.view(view_id).is_some(),
+                "{view_id} component-designer inventory must be anchored to a real registered view"
+            );
+            let contract = contract_by_id(&contracts, view_id);
+
+            let selection = contract
+                .category(InteractionCategory::ListSelection)
+                .unwrap();
+            assert_eq!(selection.status, InteractionStatus::Open);
+            assert!(
+                selection.note.contains("module-slot click selection proof"),
+                "{view_id} selection contract must cite component slot click proof"
+            );
+            assert!(
+                selection
+                    .note
+                    .contains("broader component-designer parity remain open"),
+                "{view_id} selection proof must not overclaim component-designer parity"
+            );
+            let row_targets: Vec<_> = contract
+                .targets(InteractionCategory::ListSelection)
+                .collect();
+            assert_eq!(row_targets.len(), 1);
+            assert_eq!(row_targets[0].id, row_id);
+            assert_eq!(row_targets[0].label, row_label);
+            assert!(
+                row_targets[0].note.contains(
+                    "component designer tests prove read-only module-slot click selection"
+                ),
+                "{view_id} row target must cite executable component-designer click proof"
+            );
+            assert!(
+                row_targets[0]
+                    .note
+                    .contains("without falling back to another slot"),
+                "{view_id} row target must cite missing-restored no-fallback proof"
+            );
+
+            let hover = contract
+                .category(InteractionCategory::HoverTooltip)
+                .unwrap();
+            assert_eq!(hover.status, InteractionStatus::Open);
+            assert!(
+                hover
+                    .note
+                    .contains("passive module-slot hover inspection proof"),
+                "{view_id} hover contract must cite component hover proof"
+            );
+            assert!(
+                hover.note.contains("full the game module tooltip frames"),
+                "{view_id} hover proof must not overclaim full tooltip parity"
+            );
+            let hover_targets: Vec<_> = contract
+                .targets(InteractionCategory::HoverTooltip)
+                .collect();
+            assert_eq!(hover_targets.len(), 1);
+            assert_eq!(hover_targets[0].id, hover_id);
+            assert_eq!(hover_targets[0].label, hover_label);
+            assert!(
+                hover_targets[0]
+                    .note
+                    .contains("component designer tests prove passive hover inspection"),
+                "{view_id} hover target must cite executable component hover proof"
+            );
+            assert!(
+                hover_targets[0]
+                    .note
+                    .contains("not full the game module tooltip frame"),
+                "{view_id} hover target must keep full tooltip parity open"
+            );
+
+            let disabled = contract
+                .category(InteractionCategory::DisabledMutation)
+                .unwrap();
+            assert_eq!(disabled.status, InteractionStatus::Open);
+            assert!(
+                disabled
+                    .note
+                    .contains("shared non-slot designer chrome/control area"),
+                "{view_id} disabled-mutation contract must cite the scoped control area"
+            );
+            assert!(
+                disabled
+                    .note
+                    .contains("broader component-designer mutation parity remain open"),
+                "{view_id} disabled-mutation proof must not overclaim mutation parity"
+            );
+            let mutation_targets: Vec<_> = contract
+                .targets(InteractionCategory::DisabledMutation)
+                .collect();
+            assert_eq!(mutation_targets.len(), 1);
+            assert_eq!(mutation_targets[0].id, mutation_id);
+            assert_eq!(mutation_targets[0].label, mutation_label);
+            assert!(
+                mutation_targets[0]
+                    .note
+                    .contains("component designer tests prove clicks inside the shared non-slot"),
+                "{view_id} disabled target must cite executable no-op proof"
+            );
+            assert!(
+                mutation_targets[0].note.contains("unchanged bind digest")
+                    && mutation_targets[0].note.contains("upgrade sliders"),
+                "{view_id} disabled target must cite unchanged-output proof and remaining gaps"
+            );
+        }
     }
 
     #[test]
@@ -4194,18 +4444,18 @@ mod tests {
             114 * INTERACTION_CATEGORY_COUNT,
             "the report must keep ten category rows per registered view"
         );
-        assert_eq!(report.category_status_counts.open, 165);
-        assert_eq!(report.category_status_counts.not_proven, 975);
-        assert_eq!(report.missing_not_proven_category_count, 975);
+        assert_eq!(report.category_status_counts.open, 174);
+        assert_eq!(report.category_status_counts.not_proven, 966);
+        assert_eq!(report.missing_not_proven_category_count, 966);
 
         assert_eq!(
-            report.target_row_count, 108,
-            "current target rows are 18 tab rows, 36 list-selection rows, one text-input row, 13 scroll rows, seven hover rows, 18 drill/navigation rows, and fifteen disabled-mutation rows"
+            report.target_row_count, 117,
+            "current target rows are 18 tab rows, 39 list-selection rows, one text-input row, 13 scroll rows, ten hover rows, 18 drill/navigation rows, and eighteen disabled-mutation rows"
         );
-        assert_eq!(report.target_status_counts.open, 108);
+        assert_eq!(report.target_status_counts.open, 117);
         assert_eq!(report.target_status_counts.not_proven, 0);
         assert_eq!(
-            report.target_rows_with_executable_proof_notes, 108,
+            report.target_rows_with_executable_proof_notes, 117,
             "partial executable-proof notes are accounted separately from implemented status"
         );
     }
@@ -4255,15 +4505,15 @@ mod tests {
             &report,
             InteractionCategory::ListSelection,
             InteractionStatusCounts {
-                open: 15,
-                not_proven: 99,
+                open: 18,
+                not_proven: 96,
             },
-            36,
+            39,
             InteractionStatusCounts {
-                open: 36,
+                open: 39,
                 not_proven: 0,
             },
-            36,
+            39,
         );
         assert_category_report(
             &report,
@@ -4297,15 +4547,15 @@ mod tests {
             &report,
             InteractionCategory::HoverTooltip,
             InteractionStatusCounts {
-                open: 7,
-                not_proven: 107,
+                open: 10,
+                not_proven: 104,
             },
-            7,
+            10,
             InteractionStatusCounts {
-                open: 7,
+                open: 10,
                 not_proven: 0,
             },
-            7,
+            10,
         );
         assert_category_report(
             &report,
@@ -4325,15 +4575,15 @@ mod tests {
             &report,
             InteractionCategory::DisabledMutation,
             InteractionStatusCounts {
-                open: 10,
-                not_proven: 104,
+                open: 13,
+                not_proven: 101,
             },
-            15,
+            18,
             InteractionStatusCounts {
-                open: 15,
+                open: 18,
                 not_proven: 0,
             },
-            15,
+            18,
         );
         assert_category_report(
             &report,
@@ -4370,8 +4620,8 @@ mod tests {
         );
         assert_eq!(
             report.intentionally_inert_mutation_count,
-            Some(15),
-            "only the ingame-menu disabled verb target, state-panel occupation/scorched-earth controls target, topbar time-controls target, topbar lobby/menu/music chrome target, event preview option target, displayed popup action target, construction top factory add/sub target, construction visible queue-controls target, production visible add-line target, production visible close-line target, production visible factory add/sub target, production visible priority/amount target, decisions timed btn_select target, and army/navy trait-tree add-trait slot targets have first-class executable inert proof"
+            Some(18),
+            "only the ingame-menu disabled verb target, state-panel occupation/scorched-earth controls target, topbar time-controls target, topbar lobby/menu/music chrome target, event preview option target, displayed popup action target, construction top factory add/sub target, construction visible queue-controls target, production visible add-line target, production visible close-line target, production visible factory add/sub target, production visible priority/amount target, decisions timed btn_select target, army/navy trait-tree add-trait slot targets, and tank/plane/equipment component-designer non-slot control targets have first-class executable inert proof"
         );
         assert!(
             report.missing_not_proven_category_count > 0,
@@ -4383,8 +4633,8 @@ mod tests {
                 .unwrap()
                 .category_status_counts
                 .not_proven,
-            104,
-            "bounded ingame-menu, state-panel occupation/scorched-earth controls, topbar time controls, topbar lobby/menu/music chrome controls, event-preview, displayed-popup, construction top factory, construction queue-controls, production add-line, production close-line, production factory add/sub, production priority/amount, decisions timed btn_select, and trait-tree add-trait slot no-op proofs must not convert generic inert/no-op behavior into mutation parity"
+            101,
+            "bounded ingame-menu, state-panel occupation/scorched-earth controls, topbar time controls, topbar lobby/menu/music chrome controls, event-preview, displayed-popup, construction top factory, construction queue-controls, production add-line, production close-line, production factory add/sub, production priority/amount, decisions timed btn_select, trait-tree add-trait slot, and component-designer non-slot no-op proofs must not convert generic inert/no-op behavior into mutation parity"
         );
         assert_eq!(
             report

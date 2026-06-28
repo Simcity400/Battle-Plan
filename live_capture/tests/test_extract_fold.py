@@ -62,7 +62,8 @@ def _make_oracle_dir(root):
         "per_country_region_blocks": {"GER": 4}})
     _dump(root, "world.json", {
         "meta": {},
-        "scenario": {"start_date": "1936.1.1.12", "ideology": "communism"},
+        "scenario": {"start_date": "1936.1.1.12", "ideology": "communism",
+                     "difficulty_settings_empty": True},
         "variables": {"axis_score": 2.0}, "flags": {},
         "tech_sharing_groups": [], "faction_system": [], "power_balances": [],
         "saved_event_targets": []})
@@ -98,6 +99,7 @@ class TestExtractFold(unittest.TestCase):
     def test_world_domains_folded(self):
         f = self._folded()
         self.assertEqual(f["world"]["scenario"]["start_date"], "1936.1.1.12")
+        self.assertTrue(f["world"]["scenario"]["difficulty_settings_empty"])
         self.assertEqual(len(f["strategic_air"]["air_bases"]), 1)
         self.assertEqual(f["world_events"]["fired_events"], ["e1"])
 

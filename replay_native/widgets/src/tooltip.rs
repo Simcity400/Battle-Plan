@@ -28,6 +28,10 @@ impl Tooltip {
         TooltipComposer::new(title)
     }
 
+    pub fn domain_composer(title: Atom) -> DomainTooltipComposer {
+        DomainTooltipComposer::new(title)
+    }
+
     pub fn with_row(mut self, label: impl Into<String>, value: Atom) -> Tooltip {
         self.rows.push(TooltipRow {
             label: label.into(),
@@ -98,6 +102,83 @@ impl TooltipComposer {
     pub fn plan(self, anchor: (f32, f32), viewport: Rect) -> TooltipPlan {
         let tooltip = self.build();
         plan_tooltip(&tooltip, anchor, viewport)
+    }
+}
+
+/// Composer for domain-owned tooltips where each expected field should resolve to a
+/// visible row. Missing fields are supplied as unavailable atoms instead of dropping
+/// the row, which keeps parity gaps visible at the hover site.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DomainTooltipComposer {
+    composer: TooltipComposer,
+}
+
+impl DomainTooltipComposer {
+    pub fn new(title: Atom) -> DomainTooltipComposer {
+        DomainTooltipComposer {
+            composer: TooltipComposer::new(title),
+        }
+    }
+
+    pub fn row(mut self, label: impl Into<String>, value: Atom) -> DomainTooltipComposer {
+        self.composer = self.composer.row(label, value);
+        self
+    }
+
+    pub fn exact_row(
+        self,
+        label: impl Into<String>,
+        value: impl Into<String>,
+    ) -> DomainTooltipComposer {
+        self.row(label, Atom::exact(value))
+    }
+
+    pub fn derived_row(
+        self,
+        label: impl Into<String>,
+        value: impl Into<String>,
+    ) -> DomainTooltipComposer {
+        self.row(label, Atom::derived(value))
+    }
+
+    pub fn unavailable_row(
+        self,
+        label: impl Into<String>,
+        reason: Reason,
+    ) -> DomainTooltipComposer {
+        self.row(label, Atom::unavailable_because(reason))
+    }
+
+    pub fn required_exact_row<T: Into<String>>(
+        self,
+        label: impl Into<String>,
+        value: Option<T>,
+        missing_reason: Reason,
+    ) -> DomainTooltipComposer {
+        match value {
+            Some(value) => self.exact_row(label, value),
+            None => self.unavailable_row(label, missing_reason),
+        }
+    }
+
+    pub fn required_derived_row<T: Into<String>>(
+        self,
+        label: impl Into<String>,
+        value: Option<T>,
+        missing_reason: Reason,
+    ) -> DomainTooltipComposer {
+        match value {
+            Some(value) => self.derived_row(label, value),
+            None => self.unavailable_row(label, missing_reason),
+        }
+    }
+
+    pub fn build(self) -> Tooltip {
+        self.composer.build()
+    }
+
+    pub fn plan(self, anchor: (f32, f32), viewport: Rect) -> TooltipPlan {
+        self.composer.plan(anchor, viewport)
     }
 }
 
@@ -548,6 +629,31 @@ mod tests {
         assert!(digest.contains(crate::common::NOT_CAPTURED), "{digest}");
         assert!(digest.contains("unfed"), "{digest}");
         assert_eq!(plan.plan().unavailable_text_count(), 1);
+        assert!(!digest.contains("\"0\""), "{digest}");
+    }
+
+    #[test]
+    fn domain_composer_badges_required_rows_instead_of_omitting_them() {
+        let tt = Tooltip::domain_composer(Atom::exact("Faction"))
+            .exact_row("Country", "GER")
+            .required_exact_row("Name", Option::<String>::None, Reason::Absent)
+            .required_derived_row("Projected rank", Option::<String>::None, Reason::Blocked)
+            .build();
+
+        assert_eq!(tt.rows.len(), 3);
+        assert_eq!(tt.rows[1].label, "Name");
+        assert_eq!(tt.rows[1].value, Atom::unavailable_because(Reason::Absent));
+        assert_eq!(tt.rows[2].label, "Projected rank");
+        assert_eq!(tt.rows[2].value, Atom::unavailable_because(Reason::Blocked));
+
+        let plan = plan_tooltip(&tt, (20.0, 20.0), vp());
+        let digest = plan.digest();
+        assert!(digest.contains("Name"), "{digest}");
+        assert!(digest.contains("Projected rank"), "{digest}");
+        assert!(digest.contains(crate::common::NOT_CAPTURED), "{digest}");
+        assert!(digest.contains("missing"), "{digest}");
+        assert!(digest.contains("unfed"), "{digest}");
+        assert_eq!(plan.plan().unavailable_text_count(), 2);
         assert!(!digest.contains("\"0\""), "{digest}");
     }
 }

@@ -2344,8 +2344,13 @@ enum DataDrivenMode {
     /// Exact when any state carries a non-null resources block, else Unavailable.
     StateResources,
     /// Weather mode — recolors from the `weather` domain (closed by the live reader);
-    /// Derived (a proxy of the game's particle look) when present, else Unavailable.
+    /// Derived (a proxy of the game's particle look) when region/province entries are
+    /// present, else Unavailable.
     Weather,
+    /// Front-line mode — only exact when explicit measured `map.front_lines[]` geometry
+    /// is present and valid. Malformed explicit geometry stays unavailable here rather
+    /// than falling back to derived controller-boundary lines.
+    FrontLines,
     /// Intel mode -- country-granularity agency/counter-intel signal when measured.
     Intel,
 }
@@ -2385,15 +2390,14 @@ impl MapModeRailEntry {
             None => self.fidelity,
             Some(DataDrivenMode::StateResources) => {
                 // any state with a non-null `resources` block → the Resources recolor binds.
-                let snap = &ctx.snapshot;
-                let present = snap
-                    .states()
-                    .map(|states| {
+                let present = match ctx.domain_field("states") {
+                    Captured::Measured(serde_json::Value::Object(states)) => {
                         states.keys().any(|sid| {
                             matches!(ctx.state_field(sid, "resources"), Captured::Measured(_))
                         })
-                    })
-                    .unwrap_or(false);
+                    }
+                    _ => false,
+                };
                 if present {
                     self.fidelity
                 } else {
@@ -2401,18 +2405,28 @@ impl MapModeRailEntry {
                 }
             }
             Some(DataDrivenMode::Weather) => {
-                // the weather domain (regions/provinces) is captured → the proxy mode binds.
-                let snap = &ctx.snapshot;
-                match snap.domain("weather") {
-                    Some(serde_json::Value::Null) | None => Fidelity::Unavailable,
-                    Some(_) => self.fidelity,
+                // the weather domain must carry at least one region/province entry; an
+                // empty shell is not usable overlay semantics.
+                match ctx.domain_field("weather") {
+                    Captured::Measured(domain) if weather_domain_has_overlay_data(domain) => {
+                        self.fidelity
+                    }
+                    _ => Fidelity::Unavailable,
+                }
+            }
+            Some(DataDrivenMode::FrontLines) => {
+                // Exact only for explicit measured geometry with parseable map points.
+                // Absence/empty/malformed explicit geometry remains unavailable in this
+                // chrome readout; the core map renderer owns any derived fallback pass.
+                if front_lines_domain_has_exact_measured_geometry(ctx.domain_field("map")) {
+                    self.fidelity
+                } else {
+                    Fidelity::Unavailable
                 }
             }
             Some(DataDrivenMode::Intel) => {
-                let present = ctx
-                    .snapshot
-                    .countries()
-                    .map(|countries| {
+                let present = match ctx.domain_field("countries") {
+                    Captured::Measured(serde_json::Value::Object(countries)) => {
                         countries.keys().any(|tag| {
                             [
                                 "intel.agency.capacity.defense",
@@ -2426,8 +2440,9 @@ impl MapModeRailEntry {
                                 matches!(ctx.country_field(tag, path), Captured::Measured(_))
                             })
                         })
-                    })
-                    .unwrap_or(false);
+                    }
+                    _ => false,
+                };
                 if present {
                     self.fidelity
                 } else {
@@ -2471,11 +2486,12 @@ const MAP_MODES: &[MapModeRailEntry] = &[
         DataDrivenMode::Weather,
         Some(CoreMapMode::Weather),
     ),
-    MapModeRailEntry::stat(
+    MapModeRailEntry::driven(
         "FrontLines",
-        Fidelity::Unavailable,
+        Fidelity::Exact,
+        DataDrivenMode::FrontLines,
         Some(CoreMapMode::FrontLines),
-    ), // compute pass not run in this chrome rail
+    ),
     MapModeRailEntry::stat("Faction", Fidelity::Exact, Some(CoreMapMode::Diplomacy)),
     MapModeRailEntry::stat("AirSuperiority", Fidelity::Derived, Some(CoreMapMode::Air)), // region proxy
     MapModeRailEntry::stat("Naval", Fidelity::Derived, Some(CoreMapMode::Naval)), // region proxy
@@ -2667,13 +2683,141 @@ fn mapmode_fidelity_code(fidelity: Fidelity) -> &'static str {
     }
 }
 
-fn mapmode_source_text(entry: &MapModeRailEntry, fidelity: Fidelity) -> WAtom {
-    if matches!(fidelity, Fidelity::Unavailable) {
-        return WAtom::unavailable_because(WReason::Blocked);
+fn weather_domain_has_overlay_data(domain: &serde_json::Value) -> bool {
+    let Some(obj) = domain.as_object() else {
+        return false;
+    };
+    ["regions", "provinces"]
+        .iter()
+        .any(|key| weather_branch_has_entries(obj.get(*key)))
+}
+
+fn weather_branch_has_entries(branch: Option<&serde_json::Value>) -> bool {
+    branch
+        .and_then(|value| value.as_object())
+        .map(|entries| entries.values().any(weather_entry_has_data))
+        .unwrap_or(false)
+}
+
+fn weather_entry_has_data(entry: &serde_json::Value) -> bool {
+    match entry {
+        serde_json::Value::Null => false,
+        serde_json::Value::Object(map) => !map.is_empty(),
+        serde_json::Value::Array(arr) => !arr.is_empty(),
+        _ => true,
     }
-    let text = match entry.data_driven {
+}
+
+fn front_lines_domain_has_exact_measured_geometry(map: Captured<&serde_json::Value>) -> bool {
+    let Captured::Measured(map) = map else {
+        return false;
+    };
+    let Some(lines) = map
+        .get("front_lines")
+        .and_then(|front_lines| front_lines.as_array())
+    else {
+        return false;
+    };
+    !lines.is_empty() && lines.iter().all(front_line_has_valid_measured_polyline)
+}
+
+fn front_line_has_valid_measured_polyline(front_line: &serde_json::Value) -> bool {
+    for field in [
+        "measured_front_polyline",
+        "measured_line_polyline",
+        "measured_map_points",
+    ] {
+        if let Some(value) = front_line.get(field) {
+            return measured_map_points_valid(value);
+        }
+    }
+    for field in ["front_geometry", "line_geometry", "geometry"] {
+        let Some(geometry) = front_line.get(field) else {
+            continue;
+        };
+        if geometry_claims_exact_measurement(geometry) {
+            return measured_map_points_valid(geometry);
+        }
+    }
+    false
+}
+
+fn geometry_claims_exact_measurement(geometry: &serde_json::Value) -> bool {
+    let exact = ["fidelity", "geometry_fidelity", "source_fidelity"]
+        .iter()
+        .any(|field| value_str_eq(geometry.get(*field), "exact"));
+    let measured = ["source", "geometry_source"]
+        .iter()
+        .any(|field| value_str_contains(geometry.get(*field), "measured"));
+    exact || measured
+}
+
+fn value_str_eq(value: Option<&serde_json::Value>, expected: &str) -> bool {
+    value
+        .and_then(|value| value.as_str())
+        .map(|text| text.eq_ignore_ascii_case(expected))
+        .unwrap_or(false)
+}
+
+fn value_str_contains(value: Option<&serde_json::Value>, needle: &str) -> bool {
+    let needle = needle.to_ascii_lowercase();
+    value
+        .and_then(|value| value.as_str())
+        .map(|text| text.to_ascii_lowercase().contains(&needle))
+        .unwrap_or(false)
+}
+
+fn measured_map_points_valid(value: &serde_json::Value) -> bool {
+    let points = match value {
+        serde_json::Value::Array(arr) => arr.as_slice(),
+        serde_json::Value::Object(obj) => {
+            let Some(arr) = ["map_points", "points", "polyline"]
+                .iter()
+                .find_map(|field| obj.get(*field).and_then(|value| value.as_array()))
+            else {
+                return false;
+            };
+            arr.as_slice()
+        }
+        _ => return false,
+    };
+    points.len() >= 2 && points.iter().all(measured_map_point_valid)
+}
+
+fn measured_map_point_valid(value: &serde_json::Value) -> bool {
+    let point = match value {
+        serde_json::Value::Array(pair) if pair.len() == 2 => {
+            Some((value_to_f32(&pair[0]), value_to_f32(&pair[1])))
+        }
+        serde_json::Value::Object(obj) => Some((
+            obj.get("x")
+                .or_else(|| obj.get("map_x"))
+                .and_then(value_to_f32),
+            obj.get("y")
+                .or_else(|| obj.get("map_y"))
+                .and_then(value_to_f32),
+        )),
+        _ => None,
+    };
+    match point {
+        Some((Some(x), Some(y))) => x.is_finite() && y.is_finite(),
+        _ => false,
+    }
+}
+
+fn value_to_f32(value: &serde_json::Value) -> Option<f32> {
+    match value {
+        serde_json::Value::Number(n) => n.as_f64().map(|f| f as f32).filter(|f| f.is_finite()),
+        serde_json::Value::String(s) => s.trim().parse::<f32>().ok().filter(|f| f.is_finite()),
+        _ => None,
+    }
+}
+
+fn mapmode_source_label(entry: &MapModeRailEntry) -> &'static str {
+    match entry.data_driven {
         Some(DataDrivenMode::StateResources) => "states.*.resources",
-        Some(DataDrivenMode::Weather) => "weather domain",
+        Some(DataDrivenMode::Weather) => "weather.regions/weather.provinces",
+        Some(DataDrivenMode::FrontLines) => "map.front_lines[].measured geometry",
         Some(DataDrivenMode::Intel) => "countries.*.intel",
         None => match entry.core_mode {
             Some(CoreMapMode::Political) => "states.*.owner",
@@ -2691,7 +2835,11 @@ fn mapmode_source_text(entry: &MapModeRailEntry, fidelity: Fidelity) -> WAtom {
             None => "unmapped",
             Some(CoreMapMode::Resources) | Some(CoreMapMode::Weather) => "snapshot domain",
         },
-    };
+    }
+}
+
+fn mapmode_source_text(entry: &MapModeRailEntry, fidelity: Fidelity) -> WAtom {
+    let text = mapmode_source_label(entry);
     match fidelity {
         Fidelity::Exact => WAtom::exact(text),
         Fidelity::Derived => WAtom::derived(text),
@@ -2724,7 +2872,13 @@ fn mapmode_hover_tooltip(
         .with_row("Mode", WAtom::exact(entry.name))
         .with_row("State", WAtom::exact(active_text))
         .with_row("Fidelity", fidelity_atom)
-        .with_row("Source", mapmode_source_text(entry, fidelity))
+        .with_row("Source", mapmode_source_text(entry, fidelity));
+    let tooltip = if matches!(fidelity, Fidelity::Unavailable) {
+        tooltip.with_row("Expected source", WAtom::exact(mapmode_source_label(entry)))
+    } else {
+        tooltip
+    };
+    let tooltip = tooltip
         .with_row("Default rail slot", default_slot)
         .with_row(
             "Custom override",
@@ -2806,6 +2960,11 @@ fn mapmode_legend_tooltip(
         .with_row("Fidelity", mapmode_fidelity_atom(fidelity))
         .with_row("Meaning", mapmode_fidelity_meaning(fidelity))
         .with_row("Source", mapmode_source_text(entry, fidelity));
+    let tooltip = if matches!(fidelity, Fidelity::Unavailable) {
+        tooltip.with_row("Expected source", WAtom::exact(mapmode_source_label(entry)))
+    } else {
+        tooltip
+    };
     plan_tooltip(&tooltip, cursor, ctx.screen)
 }
 
@@ -7128,6 +7287,39 @@ mod tests {
     }
 
     #[test]
+    fn weather_empty_or_malformed_domains_fail_closed() {
+        let stage = stage_with(&[]);
+        for (label, weather) in vec![
+            ("empty object", serde_json::json!({})),
+            (
+                "empty region/province maps",
+                serde_json::json!({ "regions": {}, "provinces": {} }),
+            ),
+            (
+                "malformed region branch",
+                serde_json::json!({ "regions": [], "provinces": null }),
+            ),
+        ] {
+            let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+                "date": "1941.4.13.11", "hour_index": 100,
+                "countries": { "GER": { "politics": { "capital_state": 64 } } },
+                "states": { "64": { "owner": "GER", "controller": "GER" } },
+                "weather": weather
+            }))
+            .unwrap();
+            let d = bound_digest(&MapModesView::new().bind(&ctx(&stage, &snap, "1941.4.13.11")));
+            assert!(
+                d.contains("Weather(U)"),
+                "{label} must not badge Weather as derived overlay data: {d}"
+            );
+            assert!(
+                !d.contains("Weather(D)"),
+                "{label} must not claim weather proxy fidelity without entries: {d}"
+            );
+        }
+    }
+
+    #[test]
     fn mapmode_active_echo_uses_synced_core_mode_only() {
         if !assets_present() {
             return;
@@ -7207,6 +7399,94 @@ mod tests {
             vec![ViewCommand::SetMapMode {
                 mode: CoreMapMode::FrontLines,
             }]
+        );
+    }
+
+    #[test]
+    fn front_lines_badge_exact_only_for_valid_measured_geometry() {
+        let stage = stage_with(&[]);
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "date": "1941.4.13.11", "hour_index": 100,
+            "map": {
+                "front_lines": [
+                    {
+                        "id": "front-a",
+                        "front_geometry": {
+                            "fidelity": "exact",
+                            "map_points": [
+                                [100.0, 110.0],
+                                { "x": 160.0, "y": 180.0 },
+                                { "map_x": "240.0", "map_y": "260.0" }
+                            ]
+                        }
+                    }
+                ]
+            }
+        }))
+        .unwrap();
+        let d = bound_digest(&MapModesView::new().bind(&ctx(&stage, &snap, "1941.4.13.11")));
+        assert!(
+            d.contains("FrontLines(E)"),
+            "valid measured front_lines geometry should surface as exact in the rail digest: {d}"
+        );
+
+        let panel = mapmode_panel_for_tests();
+        let mut v = MapModesView::new();
+        v.set_input_panel(panel);
+        let hover = hover_mapmode_row(&mut v, panel, "FrontLines");
+        assert!(!hover.consumed);
+        assert!(hover.needs_redraw);
+        let bv = v.bind(&ctx(&stage, &snap, "1941.4.13.11"));
+        let tip = bv.tooltip_plan().expect("front-lines tooltip").digest();
+        assert!(tip.contains("Map mode: FrontLines"), "{tip}");
+        assert!(tip.contains("exact"), "{tip}");
+        assert!(
+            tip.contains("map.front_lines[].measured geometry"),
+            "tooltip must name the exact measured geometry source: {tip}"
+        );
+    }
+
+    #[test]
+    fn front_lines_malformed_explicit_geometry_fails_closed_with_source_readout() {
+        let stage = stage_with(&[]);
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "date": "1941.4.13.11", "hour_index": 100,
+            "map": {
+                "front_lines": [
+                    {
+                        "id": "front-b",
+                        "front_geometry": { "fidelity": "exact" },
+                        "route_provinces": [1, 2]
+                    }
+                ]
+            }
+        }))
+        .unwrap();
+        let d = bound_digest(&MapModesView::new().bind(&ctx(&stage, &snap, "1941.4.13.11")));
+        assert!(
+            d.contains("FrontLines(U)"),
+            "explicit front_lines geometry without points must fail closed: {d}"
+        );
+        assert!(
+            !d.contains("FrontLines(E)"),
+            "malformed exact geometry must not badge the rail exact or fall back to provinces: {d}"
+        );
+
+        let panel = mapmode_panel_for_tests();
+        let mut v = MapModesView::new();
+        v.set_input_panel(panel);
+        let hover = hover_mapmode_row(&mut v, panel, "FrontLines");
+        assert!(!hover.consumed);
+        assert!(hover.needs_redraw);
+        let bv = v.bind(&ctx(&stage, &snap, "1941.4.13.11"));
+        let tip = bv.tooltip_plan().expect("front-lines tooltip").digest();
+        assert!(
+            tip.contains("Expected source"),
+            "unavailable front-line tooltip should expose the source diagnostic row: {tip}"
+        );
+        assert!(
+            tip.contains("map.front_lines[].measured geometry"),
+            "unavailable front-line tooltip must still name the source it needed: {tip}"
         );
     }
 

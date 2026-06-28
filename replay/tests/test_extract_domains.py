@@ -131,7 +131,8 @@ def _make_oracle_dir(root, *, with_extract=True):
             "meta": {},
             "scenario": {"start_date": "1936.1.1.12", "difficulty": "normal",
                          "dlcs": "257535", "mods": ["AMSB - DEV"],
-                         "ideology": "communism", "game_rules_empty": True},
+                         "ideology": "communism", "game_rules_empty": True,
+                         "difficulty_settings_empty": True},
             "world_tension_inputs": {"average_major_ic": 456.14,
                                      "tension_scaling_base_country": "ENG"},
             "tech_sharing_groups": [{"id": "commonwealth_research",
@@ -258,6 +259,8 @@ class TestSchemaPresence(unittest.TestCase):
         self.assertEqual(schema.source_of("raids.targets"), "S")
         self.assertEqual(schema.source_of("world_events.fired_events"), "S")
         self.assertEqual(schema.source_of("world.scenario"), "S")
+        self.assertEqual(schema.source_of(
+            "world.scenario.difficulty_settings_empty"), "S")
         self.assertEqual(schema.source_of("divisions.5.dig_in"), "S")
         # dynamic released tag resolves too
         self.assertEqual(schema.source_of("countries.D05.extra"), "S")
@@ -318,6 +321,7 @@ class TestIngestSynthetic(unittest.TestCase):
         snap = store.build_snapshot_from_oracle(self.oracle, "syn")
         w = snap["world"]
         self.assertEqual(w["scenario"]["start_date"], "1936.1.1.12")
+        self.assertTrue(w["scenario"]["difficulty_settings_empty"])
         self.assertEqual(w["variables"]["axis_score"], 2.0)
         self.assertEqual(w["flags"]["GER_has_started_war"]["value"], 1)
         self.assertEqual(len(w["tech_sharing_groups"]), 1)

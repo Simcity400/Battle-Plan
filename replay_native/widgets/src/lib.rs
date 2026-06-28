@@ -45,6 +45,6 @@ pub use common::{
 };
 pub use plan::{Cmd, Plan};
 pub use tooltip::{
-    plan_tooltip, plan_tooltip_with_frame, Tooltip, TooltipChrome, TooltipComposer, TooltipFrame,
-    TooltipPlan, TooltipRow,
+    plan_tooltip, plan_tooltip_with_frame, DomainTooltipComposer, Tooltip, TooltipChrome,
+    TooltipComposer, TooltipFrame, TooltipPlan, TooltipRow,
 };

@@ -647,7 +647,7 @@ Persisted ledgers. Drives the `event_fired` / `convoy_sunk` diff events (§9.2).
 
 | field | type | source | notes |
 |-------|------|--------|-------|
-| `scenario` | obj\|null | S | `{start_date, difficulty, historical, tutorial, dlcs, mods[], session, speed, save_version, ideology, gameplaysettings{}, game_rules_empty}` |
+| `scenario` | obj\|null | S | `{start_date, difficulty, historical, tutorial, dlcs, mods[], session, speed, save_version, ideology, gameplaysettings{}, game_rules_empty, difficulty_settings_empty}`. `difficulty_settings_empty` records only the explicit save block's empty/non-empty/absent state; the selected difficulty remains `difficulty`. |
 | `variables` | obj\|null | S | `{name: value}` global script variables (array members keyed `name^i` / `name^num`) |
 | `flags` | obj\|null | S | `{name: {value, date}}` global flags |
 | `tech_sharing_groups[]` | list | S | each: `{id, bonuses[], countries[]}` |

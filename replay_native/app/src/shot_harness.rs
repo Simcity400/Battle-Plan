@@ -15,6 +15,8 @@ pub const MAP_MODE_SHOT_CASES: &[(&str, &str, &str)] = &[
     ("map_mode_weather", "Map mode: Weather", "weather"),
     ("map_mode_supply", "Map mode: Supply", "supply"),
 ];
+pub const STATE_PANEL_SELECTED_STATE_SHOT_CASES: &[(&str, &str, u32)] =
+    &[("state_panel_state_64", "State panel: State 64", 64)];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ShotCaseSpec {
@@ -22,6 +24,7 @@ struct ShotCaseSpec {
     family: &'static str,
     label: &'static str,
     map_mode_slug: Option<&'static str>,
+    shot_state_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,6 +181,7 @@ fn base_shot_case() -> ShotCaseSpec {
         family: "base",
         label: "Base registered view",
         map_mode_slug: None,
+        shot_state_id: None,
     }
 }
 
@@ -192,8 +196,20 @@ fn shot_cases_for_view_id(id: &str) -> Vec<ShotCaseSpec> {
                     family: "map_modes",
                     label,
                     map_mode_slug: Some(slug),
+                    shot_state_id: None,
                 }),
         );
+    }
+    if id == STATE_PANEL_VIEW_ID.as_str() {
+        cases.extend(STATE_PANEL_SELECTED_STATE_SHOT_CASES.iter().map(
+            |&(case_id, label, state_id)| ShotCaseSpec {
+                id: case_id,
+                family: "state_panel_selected_states",
+                label,
+                map_mode_slug: None,
+                shot_state_id: Some(state_id),
+            },
+        ));
     }
     cases
 }
@@ -239,7 +255,11 @@ fn native_args_for_shot_case(id: &str, case: ShotCaseSpec, native_filename: &str
     ];
     if id == STATE_PANEL_VIEW_ID.as_str() {
         args.push("--shot-state".to_string());
-        args.push(DEFAULT_STATE_PANEL_SHOT_STATE.to_string());
+        args.push(
+            case.shot_state_id
+                .unwrap_or(DEFAULT_STATE_PANEL_SHOT_STATE)
+                .to_string(),
+        );
     }
     if let Some(slug) = case.map_mode_slug {
         args.push("--map-mode".to_string());
@@ -370,6 +390,16 @@ pub fn write_registry_shot_manifest(
                         "case_id": case_id,
                         "case_label": label,
                         "map_mode": slug,
+                    })
+                }).collect::<Vec<_>>(),
+            }, {
+                "family": "state_panel_selected_states",
+                "view_id": STATE_PANEL_VIEW_ID.as_str(),
+                "cases": STATE_PANEL_SELECTED_STATE_SHOT_CASES.iter().map(|&(case_id, label, state_id)| {
+                    serde_json::json!({
+                        "case_id": case_id,
+                        "case_label": label,
+                        "shot_state": state_id,
                     })
                 }).collect::<Vec<_>>(),
             }],
@@ -639,6 +669,37 @@ pub fn read_shot_manifest(path: &Path) -> Result<ShotManifestRead, String> {
             path.display()
         ));
     }
+    let target_cases: BTreeSet<(String, String)> = targets
+        .iter()
+        .map(|target| (target.view_id.clone(), target.case_id.clone()))
+        .collect();
+    for target in &targets {
+        if target.case_id != BASE_SHOT_CASE_ID
+            && !target_cases.contains(&(target.view_id.clone(), BASE_SHOT_CASE_ID.to_string()))
+        {
+            return Err(format!(
+                "shot-all-views manifest '{}' expanded case '{}' for view id '{}' is missing its base case",
+                path.display(),
+                target.case_id,
+                target.view_id
+            ));
+        }
+    }
+    for target in targets
+        .iter()
+        .filter(|target| target.case_id == BASE_SHOT_CASE_ID)
+    {
+        for expected_case in shot_cases_for_view_id(&target.view_id) {
+            if !target_cases.contains(&(target.view_id.clone(), expected_case.id.to_string())) {
+                return Err(format!(
+                    "shot-all-views manifest '{}' missing deterministic case '{}' for view id '{}'",
+                    path.display(),
+                    expected_case.id,
+                    target.view_id
+                ));
+            }
+        }
+    }
 
     Ok(ShotManifestRead {
         path: path.to_path_buf(),
@@ -827,13 +888,14 @@ mod tests {
         ))
     }
 
-    fn manifest_read_error_after_mutation(
+    fn manifest_read_error_after_registry_mutation(
         test_name: &str,
+        registry: ViewRegistry,
         mutate: impl FnOnce(&mut serde_json::Value),
     ) -> String {
         let out = unique_temp_dir_name(test_name);
         std::fs::create_dir(&out).unwrap();
-        let write = write_registry_shot_manifest(&test_registry(), &out).unwrap();
+        let write = write_registry_shot_manifest(&registry, &out).unwrap();
         let raw = std::fs::read(&write.path).unwrap();
         let mut manifest: serde_json::Value = serde_json::from_slice(&raw).unwrap();
         mutate(&mut manifest);
@@ -841,6 +903,13 @@ mod tests {
         let err = read_shot_manifest(&write.path).unwrap_err();
         std::fs::remove_dir_all(&out).unwrap();
         err
+    }
+
+    fn manifest_read_error_after_mutation(
+        test_name: &str,
+        mutate: impl FnOnce(&mut serde_json::Value),
+    ) -> String {
+        manifest_read_error_after_registry_mutation(test_name, test_registry(), mutate)
     }
 
     #[test]
@@ -878,7 +947,9 @@ mod tests {
         assert_eq!(matrix_ids, registry_ids);
         assert_eq!(
             matrix.len(),
-            EXPECTED_BASE_REGISTERED_VIEW_COUNT + MAP_MODE_SHOT_CASES.len()
+            EXPECTED_BASE_REGISTERED_VIEW_COUNT
+                + MAP_MODE_SHOT_CASES.len()
+                + STATE_PANEL_SELECTED_STATE_SHOT_CASES.len()
         );
     }
 
@@ -925,6 +996,45 @@ mod tests {
                 MAP_VIEW_ID.as_str().to_string(),
                 "--map-mode".to_string(),
                 "control".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn shot_all_views_expands_state_panel_selected_state_case_deterministically() {
+        let registry = ViewRegistry::from_inventory();
+        let matrix = build_registry_shot_matrix(&registry, Path::new("shots")).unwrap();
+        let state_targets: Vec<_> = matrix
+            .iter()
+            .filter(|target| target.view_id == STATE_PANEL_VIEW_ID.as_str())
+            .collect();
+        let case_ids: Vec<_> = state_targets.iter().map(|target| target.case_id).collect();
+        assert_eq!(case_ids, vec![BASE_SHOT_CASE_ID, "state_panel_state_64"]);
+
+        let selected = state_targets[1];
+        assert_eq!(selected.case_family, "state_panel_selected_states");
+        assert_eq!(selected.case_label, "State panel: State 64");
+        assert_eq!(
+            selected.native_filename,
+            "native__core.state_panel__state_panel_state_64.png"
+        );
+        assert_eq!(
+            selected.hoi4_reference_filename,
+            "hoi4__core.state_panel__state_panel_state_64.png"
+        );
+        assert_eq!(
+            selected.diff_filename,
+            "diff__core.state_panel__state_panel_state_64.png"
+        );
+        assert_eq!(
+            selected.native_args,
+            vec![
+                "--shot".to_string(),
+                "native__core.state_panel__state_panel_state_64.png".to_string(),
+                "--shot-view".to_string(),
+                STATE_PANEL_VIEW_ID.as_str().to_string(),
+                "--shot-state".to_string(),
+                "64".to_string(),
             ]
         );
     }
@@ -980,6 +1090,10 @@ mod tests {
         assert_eq!(
             manifest["case_expansion"]["families"][0]["family"],
             "map_modes"
+        );
+        assert_eq!(
+            manifest["case_expansion"]["families"][1]["family"],
+            "state_panel_selected_states"
         );
         assert_eq!(manifest["targets"][0]["view_id"], "test.alpha");
         assert_eq!(manifest["targets"][0]["case_id"], BASE_SHOT_CASE_ID);
@@ -1070,6 +1184,50 @@ mod tests {
     }
 
     #[test]
+    fn shot_all_views_manifest_reader_rejects_incomplete_or_tampered_state_panel_cases() {
+        let err = manifest_read_error_after_registry_mutation(
+            "manifest_missing_state_panel_case",
+            ViewRegistry::from_inventory(),
+            |manifest| {
+                let targets = manifest["targets"].as_array_mut().unwrap();
+                let index = targets
+                    .iter()
+                    .position(|target| target["case_id"] == "state_panel_state_64")
+                    .expect("state panel selected-state case");
+                targets.remove(index);
+                manifest["target_count"] = serde_json::json!(targets.len());
+                manifest["extra_case_count"] = serde_json::json!(
+                    MAP_MODE_SHOT_CASES.len() + STATE_PANEL_SELECTED_STATE_SHOT_CASES.len() - 1
+                );
+            },
+        );
+        assert!(err.contains("missing deterministic case 'state_panel_state_64'"));
+
+        let err = manifest_read_error_after_registry_mutation(
+            "manifest_bad_state_panel_case_args",
+            ViewRegistry::from_inventory(),
+            |manifest| {
+                let targets = manifest["targets"].as_array_mut().unwrap();
+                let target = targets
+                    .iter_mut()
+                    .find(|target| target["case_id"] == "state_panel_state_64")
+                    .expect("state panel selected-state case");
+                target["native_shot_args"] = serde_json::json!([
+                    "--shot",
+                    "native__core.state_panel__state_panel_state_64.png",
+                    "--shot-view",
+                    "core.state_panel",
+                    "--shot-state",
+                    "1"
+                ]);
+            },
+        );
+        assert!(err.contains(
+            "native_shot_args do not match view id 'core.state_panel' case 'state_panel_state_64'"
+        ));
+    }
+
+    #[test]
     fn shot_all_views_native_batch_rejects_target_owned_common_args() {
         let out = unique_temp_dir_name("batch_conflict");
         std::fs::create_dir(&out).unwrap();
@@ -1084,6 +1242,16 @@ mod tests {
         assert_eq!(
             err,
             "shot-all-views common args cannot include target-owned --map-mode"
+        );
+
+        let config = NativeShotBatchConfig {
+            command: PathBuf::from("replay_app"),
+            common_args: vec!["--shot-state=64".to_string()],
+        };
+        let err = build_native_shot_invocations(&manifest, &config).unwrap_err();
+        assert_eq!(
+            err,
+            "shot-all-views common args cannot include target-owned --shot-state"
         );
 
         std::fs::remove_dir_all(&out).unwrap();

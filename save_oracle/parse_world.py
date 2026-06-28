@@ -5,7 +5,8 @@ Closes a cluster of top-level world/meta domains the older oracle never parsed:
 
   - scenario / session meta : ``start_date``, ``gameplaysettings``
       ({difficulty, historical}), ``difficulty``, ``tutorial``, ``dlcs``,
-      ``mods``, ``session``, ``speed``, ``save_version``, ``ideology``.
+      ``mods``, ``session``, ``speed``, ``save_version``, ``ideology``,
+      explicit empty-block state for ``game_rules`` / ``difficulty_settings``.
       (Area 30: ``game_rules`` is present but EMPTY in this save — recorded as
       such; the populated scenario meta beside it IS readable.)
   - world-tension scaling inputs : ``average_major_ic``,
@@ -249,14 +250,21 @@ def build(text, source, was_melted):
     flags = {}
     saved_targets = []
     game_rules_present = {"empty": None}
+    difficulty_settings_present = {"empty": None}
 
-    def _parse_game_rules(tz):
+    def _parse_empty_block(tz, state):
         n = 0
         for key, opener in iter_block_entries(tz):
             if opener is LBRACE:
                 _skip_block_body(tz)
             n += 1
-        game_rules_present["empty"] = (n == 0)
+        state["empty"] = (n == 0)
+
+    def _parse_game_rules(tz):
+        _parse_empty_block(tz, game_rules_present)
+
+    def _parse_difficulty_settings(tz):
+        _parse_empty_block(tz, difficulty_settings_present)
 
     def _parse_mods(tz):
         meta_extra["mods"] = read_scalar_list(tz)
@@ -283,6 +291,7 @@ def build(text, source, was_melted):
             "saved_event_target":
                 lambda tz: _parse_saved_event_target(tz, saved_targets),
             "game_rules": _parse_game_rules,
+            "difficulty_settings": _parse_difficulty_settings,
             "mods": _parse_mods,
             "gameplaysettings": _parse_gameplaysettings,
         },
@@ -306,6 +315,7 @@ def build(text, source, was_melted):
         "ideology": meta.get("ideology"),
         "gameplaysettings": meta_extra.get("gameplaysettings", {}),
         "game_rules_empty": game_rules_present["empty"],
+        "difficulty_settings_empty": difficulty_settings_present["empty"],
     }
     world_tension_inputs = {
         "average_major_ic": to_float(meta.get("average_major_ic")),
@@ -323,6 +333,9 @@ def build(text, source, was_melted):
             "notes": {
                 "game_rules": "game_rules is present but EMPTY in this save; "
                 "scenario meta beside it is populated and captured.",
+                "difficulty_settings": "difficulty_settings is present but EMPTY "
+                "in this save; the actual selected difficulty is the separate "
+                "top-level difficulty scalar.",
                 "world_tension": "the aggregate world_tension value is not a "
                 "stored top-level key here; these are the scaling INPUTS. The "
                 "per-action threat ledger is in events.json.",
@@ -355,6 +368,8 @@ def build(text, source, was_melted):
                  f"diff={scenario['difficulty']} hist={scenario['historical']} "
                  f"dlcs={scenario['dlcs']} mods={scenario['mods']}")
     lines.append(f"game_rules    : empty={scenario['game_rules_empty']}")
+    lines.append("difficulty_settings: "
+                 f"empty={scenario['difficulty_settings_empty']}")
     lines.append(f"WT inputs     : avg_major_ic="
                  f"{world_tension_inputs['average_major_ic']} "
                  f"base={world_tension_inputs['tension_scaling_base_country']}")

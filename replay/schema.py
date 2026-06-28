@@ -764,6 +764,7 @@ FIELD_SOURCES: Dict[str, str] = {
     "world_events.convoy_losses_by_killer": "S",
     "world_events.convoy_losses_by_owner": "S",
     "world.scenario": "S",
+    "world.scenario.difficulty_settings_empty": "S",
     # LIVE scenario DATES (world_extract_live, M). DISTINCT live-only keys under the save-shaped
     # scenario block: current_date_live (the live in-game date, EXACT vs save) + start_date_live
     # (the scenario start date, EXACT). EXPLICIT M entries so source_of() does NOT fall back to

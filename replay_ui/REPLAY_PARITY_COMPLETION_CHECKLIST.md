@@ -578,14 +578,14 @@ Source of truth: `coverage_audit/memory_manifest.json`.
 Current manifest summary:
 
 - 272 total rows.
-- Authoritative row-level `status`: 146 `closed-by-reader`, 14
-  `closed-by-parser`, 26 `needs-wartime-save`, 7 `open-live-extractable`,
+- Authoritative row-level `status`: 147 `closed-by-reader`, 14
+  `closed-by-parser`, 26 `needs-wartime-save`, 6 `open-live-extractable`,
   15 `open-computed`, 2 `wall`, 62 `excluded`.
-- Legacy `gap`/coverage status: 160 `covered`, 62 `excluded-by-scope`,
-  31 `GAP-save-not-live`, 14 `GAP-computed`, 2 `GAP-uncovered`,
+- Legacy `gap`/coverage status: 161 `covered`, 62 `excluded-by-scope`,
+  30 `GAP-save-not-live`, 14 `GAP-computed`, 2 `GAP-uncovered`,
   1 `GAP-visual`, 2 `WALL`.
-- Closure headline: 160 rows are closed (146 reader/save + 14 parser/static),
-  48 closeable/provable rows remain open (26 fixture-gated + 7 live/static +
+- Closure headline: 161 rows are closed (147 reader/save + 14 parser/static),
+  47 closeable/provable rows remain open (26 fixture-gated + 6 live/static +
   15 computed/visual), and 2 rows are permanent walls. This is not a product
   parity claim.
 
@@ -628,7 +628,9 @@ not filename.
 
 These should be worked down before calling product parity complete:
 
-- [ ] `difficulty_settings`
+- [x] `difficulty_settings` (closed save-side by `parse_world` as explicit
+  `world.scenario.difficulty_settings_empty`; no hidden difficulty payload is
+  invented, and selected difficulty remains `world.scenario.difficulty`)
 - [ ] `all_playthrough_data`
 - [ ] `countries.*.logistics`
 - [ ] `countries.*.strategic_navy`

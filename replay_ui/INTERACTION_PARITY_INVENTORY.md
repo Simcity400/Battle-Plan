@@ -118,17 +118,20 @@ The first native scaffold is now code-backed, not just prose:
   row target inventory, `research.tech_tree` has explicit tech-node click
   selection and factual tech-node hover target inventories, and
   `research.doctrine_tree` has explicit doctrine-node click selection and
-  factual doctrine-node hover target inventories. `core.focus_tree` has an
-  explicit focus-node click-selection target inventory.
+  factual doctrine-node hover target inventories. `designers.tank`,
+  `designers.plane`, and `designers.equipment` have explicit component
+  module-slot selection targets, passive module-slot hover-inspection targets,
+  and disabled-mutation targets for their shared non-slot chrome/control area.
+  `core.focus_tree` has an explicit focus-node click-selection target inventory.
   Every recorded target has a stable id/label/status/note, and views without
   known tab targets remain explicitly tracked as `not_proven` instead of
   disappearing.
 - New report tests lock the current executable counts: 114 registered views, 114
-  contracts, 1,140 category rows (ten per view), 108 target rows, 108 target rows
-  with executable-proof notes, and 975 `not_proven` category rows.
+  contracts, 1,140 category rows (ten per view), 117 target rows, 117 target rows
+  with executable-proof notes, and 966 `not_proven` category rows.
 - The report intentionally exposes no implemented/proven target count, because
   the current target status model only has `open` and `not_proven`. It does now
-  separately count fifteen intentionally inert mutation targets for the
+  separately count eighteen intentionally inert mutation targets for the
   ingame-menu disabled verbs, state-panel occupation-law/template and
   scorched-earth controls, topbar pause/date and speed controls, topbar
   lobby/menu/help/achievements/playlist/music controls, displayed event-definition
@@ -137,7 +140,8 @@ The first native scaffold is now code-backed, not just prose:
   production visible add-line buttons, production visible close-line buttons,
   production visible factory add/sub buttons, production visible priority/amount
   buttons, timed-decision `btn_select` action buttons, and army/navy trait-tree
-  add-trait slot buttons,
+  add-trait slot buttons, plus tank/plane/equipment component-designer non-slot
+  control areas,
   without converting those proofs into broad mutation parity.
 - `chrome.find` now has executable read-only tab-switch proof: tests click
   States/Countries/Victory Points, verify the digest-visible catalog changes,
@@ -352,11 +356,11 @@ Current executable report totals:
 | Registered views | 114 |
 | Interaction contracts | 114 |
 | Category rows | 1,140 |
-| Target rows | 108 |
-| Target rows with executable-proof notes | 108 |
+| Target rows | 117 |
+| Target rows with executable-proof notes | 117 |
 | Implemented/proven target rows | Not representable yet |
-| Intentionally inert mutation rows | 15 |
-| `not_proven` category rows | 975 |
+| Intentionally inert mutation rows | 18 |
+| `not_proven` category rows | 966 |
 
 Per-category report totals:
 
@@ -364,12 +368,12 @@ Per-category report totals:
 |---|---:|---:|---:|---:|---:|---:|
 | `open_close` | 114 | 0 | 0 | 0 | 0 | 0 |
 | `tab_switch` | 6 | 108 | 18 | 18 | 0 | 18 |
-| `list_selection` | 15 | 99 | 36 | 36 | 0 | 36 |
+| `list_selection` | 18 | 96 | 39 | 39 | 0 | 39 |
 | `text_input` | 1 | 113 | 1 | 1 | 0 | 1 |
 | `scroll` | 9 | 105 | 13 | 13 | 0 | 13 |
-| `hover_tooltip` | 7 | 107 | 7 | 7 | 0 | 7 |
+| `hover_tooltip` | 10 | 104 | 10 | 10 | 0 | 10 |
 | `drilldown` | 3 | 111 | 18 | 18 | 0 | 18 |
-| `disabled_mutation` | 10 | 104 | 15 | 15 | 0 | 15 |
+| `disabled_mutation` | 13 | 101 | 18 | 18 | 0 | 18 |
 | `scrub_state` | 0 | 114 | 0 | 0 | 0 | 0 |
 | `screenshot_proof` | 0 | 114 | 0 | 0 | 0 | 0 |
 
@@ -854,6 +858,15 @@ Implemented interactions:
 
 - [x] Menubar open and generic close path.
 - [x] N4 module-slot layout renders equipment/variant/template data.
+- [x] Tank, plane, and equipment designer module slots now have executable
+  read-only click-selection proof and passive hover-inspection proof over the
+  shared component slot grid. Tests prove no commands are emitted, selected or
+  hovered slot state is digest-visible, repeated slot clicks/hover avoid
+  unnecessary redraw, and selected slot state survives save->missing->save scrub
+  without falling back to another slot.
+- [x] Tank, plane, and equipment designer shared non-slot chrome/control areas
+  have executable replay-disabled no-op proof: pointer-down/up clicks are
+  consumed with no commands, no redraw, and unchanged bind digest.
 - [x] Division designer renders the N2 normal/HQ tab bar visually.
 - [x] Division designer normal/HQ tabs switch via read-only click when the
   focused template is an Army HQ template; non-HQ Army HQ clicks are inert, and
@@ -863,18 +876,26 @@ Implemented interactions:
 
 Likely missing interactions:
 
-- [ ] Module-slot hover tooltips and click selection for read-only inspection.
+- [ ] Full module-slot detail/tooltip parity is still open: current proof covers
+  factual selected/hover inspection state, not the game tooltip frames,
+  localized/effect-expanded text, stat-contribution expansion, or screenshots.
 - [ ] Upgrade slider interaction must be disabled/inert but still visually
   accounted for.
 - [ ] Variant/template selector row selection and drilldown are not proven.
+- [ ] Module add/remove, save, duplicate, production, and upgrade-track controls
+  outside the shared non-slot area still need per-control disabled visual/no-op
+  accounting.
 - [ ] Tooltips for modules, stat contributions, upgrade tracks, unavailable
-  computed stats, and production-resource gaps.
+  computed stats, and production-resource gaps beyond the factual slot
+  inspection digest remain open.
 
 Tests/proof needed:
 
-- [ ] Slot pick/hover tests and selected-slot screenshot cases.
-- [ ] Click-no-op tests for upgrade sliders, module add/remove buttons, save,
-  duplicate, and production controls.
+- [x] Slot pick/hover tests for the shared tank/plane/equipment component-slot
+  slice.
+- [ ] Selected-slot screenshot cases.
+- [ ] Per-control click-no-op tests for upgrade sliders, module add/remove
+  buttons, save, duplicate, and production controls.
 - [ ] the game side-by-side for each designer type.
 
 ### LeadersOfficersTraits
