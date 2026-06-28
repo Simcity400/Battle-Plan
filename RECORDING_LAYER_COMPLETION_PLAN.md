@@ -117,11 +117,19 @@ Current recorder-facing bridge status:
   rows in about 0.2s. This proves state ownership/control can use the same
   "expensive discovery before recording, cheap validation during recording"
   pattern as country scalars. It does not yet solve province-control array roots.
-- Current blocker found during that proof: country-object bridge preflight can
-  hang before the recorder creates a run directory. State-control cache
-  preflight returned in about 0.08s on the same process, so this is isolated to
-  the country preflight path and must be fixed before country scalars are part
-  of the default speed-five session command.
+- The country-object preflight startup hang is now bounded out of the normal
+  recorder path. Cache validation and `CountryDataBase` root object rows are
+  allowed during hot session startup; heap-wide record recovery,
+  `locate.locate`, `CountryIndexBridge.resolve`, vtable scans, and tag-table
+  heap fallback are explicit `allow_cold_scan`/`--allow-country-cold-scan`
+  debug paths only. If neither cache nor root rows are usable, the recorder now
+  reports `cold_scan_disabled` instead of hanging before a run directory exists.
+  Live proof: `collector_speed5_country_bounded_probe` ran the previously
+  hanging `--preflight-country-object-bridge --preflight-state-control` path in
+  about 7.5 wall seconds, advanced 4 game hours with zero skipped hours, stored
+  5 verified snapshots, and packaged byte-identically. On the current Portugal
+  process the country preflight still reports `cold_scan_disabled` with zero
+  root rows, so this fixes startup liveness but not country-scalar coverage yet.
 - Raw clock deltas are now emitted as durable `domain_delta` frames from the
   DLL worker and merged into `collector_frames.jsonl` without polluting hourly
   snapshot domain claims. A speed-five smoke on 2026-06-28 advanced 4 game hours
@@ -874,16 +882,19 @@ record-backed political power per frame before emitting `country_scalars`.
 The preflight now has a same-process cache keyed by PID, process creation time,
 exe hash, and module base. Cache hits validate the cached country-array token
 with `locate.resolve_cached`, read the tag table directly from the
-`CountryDataBase` root, and avoid both heap scans. The live Portugal process
-resolved cached preflight in about 0.05 seconds. Cold preflight for a fresh
-process still falls back to structural country-array discovery.
+`CountryDataBase` root, and avoid both heap scans. A cache miss can still return
+bounded `CountryDataBase` root object rows, which is enough for object-backed
+country scalars. Heap-wide record recovery and the older structural discovery
+stack are now opt-in through `allow_cold_scan` / `--allow-country-cold-scan`;
+normal recording startup fails fast with `cold_scan_disabled` when only cold
+discovery could continue.
 
 Remaining Phase 2 gaps:
 
 - Make the preflight bridge automatic for the normal session path after a
   speed-five proof with row counts and zero skipped hours.
-- Replace cold preflight country-array discovery with a root-anchored or
-  hook-derived bridge so first session start is also fast on every supported
+- Replace cold preflight country-record discovery with a root-anchored or
+  hook-derived bridge so record-backed fields can start fast on every supported
   build.
 - Expand country-record-backed fields beyond political power where the live
   record layout proves them.
@@ -1083,9 +1094,11 @@ These stay out of the replay unless the product scope changes:
 1. Replace the repeated bounded-worker bridge with normal long-running collector
    recorder mode once the DLL can hold an explicit start/stop session.
 2. Add manifest-level backpressure/gap counters for the long-running session.
-3. Fix the country-object bridge preflight hang and replace country-object heap
-   discovery with root-anchored or hook-derived identity resolution.
-4. Promote country identity/scalars into speed-five-safe collector frames.
+3. Replace the remaining country-record heap discovery with root-anchored or
+   hook-derived record identity; keep country cold scans as debug/cache-populate
+   tools only.
+4. Promote country identity/scalars into speed-five-safe collector frames using
+   bounded cache/root preflight.
 5. Add the first non-clock domain tranche. The practical first three are light
    country economy/scalars, state/province map state, and divisions/OOB. The
    next implementation slice is root-anchored country identity plus country

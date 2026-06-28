@@ -338,6 +338,7 @@ def record_collector_session(
     country_record_bridge: Any = None,
     division_body_bridge: Any = None,
     preflight_country_object_bridge: bool = False,
+    allow_country_cold_scan: bool = False,
     preflight_division_movement: bool = False,
     preflight_state_control: bool = False,
     preflight_province_control: bool = False,
@@ -361,6 +362,8 @@ def record_collector_session(
         raise ValueError("max_wall_s must be > 0")
     if allow_province_cold_scan and not preflight_province_control:
         raise ValueError("allow_province_cold_scan requires preflight_province_control")
+    if allow_country_cold_scan and not preflight_country_object_bridge:
+        raise ValueError("allow_country_cold_scan requires preflight_country_object_bridge")
 
     started_utc = datetime.now(timezone.utc).isoformat()
     started_monotonic = time.monotonic()
@@ -380,14 +383,17 @@ def record_collector_session(
         "enabled": bool(preflight_country_object_bridge),
         "status": "not_requested",
         "row_count": 0,
+        "allow_cold_scan": bool(allow_country_cold_scan),
     }
     if country_object_bridge is None and preflight_country_object_bridge:
         preflight = resolve_country_object_bridge_preflight(
             pid,
             cache_path=out_root / "_preflight_cache" / "country_array.json",
+            allow_cold_scan=allow_country_cold_scan,
         )
         country_object_bridge_preflight = preflight.diagnostics
         country_object_bridge_preflight["enabled"] = True
+        country_object_bridge_preflight["allow_cold_scan"] = bool(allow_country_cold_scan)
         if preflight.usable:
             country_object_bridge = preflight.encoded
             country_record_bridge = preflight.record_encoded
@@ -1273,6 +1279,11 @@ def _main() -> int:
         help="resolve live country object pointers before recording; no saves required",
     )
     parser.add_argument(
+        "--allow-country-cold-scan",
+        action="store_true",
+        help="allow slow country-array heap locators during preflight",
+    )
+    parser.add_argument(
         "--preflight-division-movement",
         action="store_true",
         help="resolve live division bodies before recording movement deltas",
@@ -1316,6 +1327,7 @@ def _main() -> int:
             not args.allow_hourly_gaps if args.until_game_hours is not None else False
         ),
         preflight_country_object_bridge=args.preflight_country_object_bridge,
+        allow_country_cold_scan=args.allow_country_cold_scan,
         preflight_division_movement=args.preflight_division_movement,
         preflight_state_control=args.preflight_state_control,
         preflight_province_control=args.preflight_province_control,

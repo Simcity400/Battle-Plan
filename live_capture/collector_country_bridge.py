@@ -61,11 +61,15 @@ def resolve_country_object_bridge_preflight(
     min_rows: int = MIN_USABLE_COUNTRY_OBJECT_ROWS,
     scan_range: Optional[tuple[int, int]] = None,
     cache_path: Optional[Path] = None,
+    allow_cold_scan: bool = False,
 ) -> CountryObjectBridgePreflight:
     """Resolve live country-object rows for one recorder session.
 
-    No saves are read. The returned diagnostics intentionally omit raw pointers;
-    the encoded string is ephemeral and should only be written to the temporary
+    No saves are read. Cache hits and country-database-root rows are bounded;
+    heap-wide cold discovery is opt-in because normal speed-five recording
+    startup must report a diagnostic quickly instead of scanning for minutes.
+    The returned diagnostics intentionally omit raw pointers; the encoded string
+    is ephemeral and should only be written to the temporary
     ``collector_control.json`` next to the DLL.
     """
     try:
@@ -79,18 +83,32 @@ def resolve_country_object_bridge_preflight(
     try:
         with winmem.Process(int(pid), "hoi4.exe") as proc:
             identity = _process_identity.identify(proc)
-            table = tag_table_from_country_database_root(proc, tt)
-            tag_table_source = "country_database_root"
-            if table is None:
-                table = tt.TagTable.locate(proc)
-                tag_table_source = "heap_scan"
-            if table is None:
-                return _preflight_status("tag_table_unavailable", [])
             cache_diag: Dict[str, Any] = {
                 "enabled": bool(cache_path),
                 "status": "not_requested" if cache_path is None else "miss",
-                "tag_table_source": tag_table_source,
+                "tag_table_source": "country_database_root",
+                "allow_cold_scan": bool(allow_cold_scan),
             }
+            table = tag_table_from_country_database_root(proc, tt)
+            tag_table_source = "country_database_root"
+            if table is None:
+                if not allow_cold_scan:
+                    return _preflight_status(
+                        "tag_table_unavailable",
+                        [],
+                        source="country_database_root",
+                        cache=cache_diag,
+                    )
+                table = tt.TagTable.locate(proc)
+                tag_table_source = "heap_scan"
+                cache_diag["tag_table_source"] = tag_table_source
+            if table is None:
+                return _preflight_status(
+                    "tag_table_unavailable",
+                    [],
+                    cache=cache_diag,
+                )
+            cache_diag["tag_table_source"] = tag_table_source
             if cache_path is not None:
                 cached = _load_preflight_cache(cache_path, identity)
                 if cached is not None:
@@ -118,6 +136,13 @@ def resolve_country_object_bridge_preflight(
                 min_rows=int(min_rows),
             )
             if len(root_rows) >= int(min_rows):
+                if not allow_cold_scan:
+                    return _encoded_preflight(
+                        "resolved",
+                        root_rows,
+                        source="country_database_root",
+                        cache=cache_diag,
+                    )
                 located = locate_country_array_from_object_rows(
                     proc,
                     table,
@@ -143,6 +168,13 @@ def resolve_country_object_bridge_preflight(
                             source="country_database_root_record_scan",
                             cache=cache_diag,
                         )
+            if not allow_cold_scan:
+                return _preflight_status(
+                    "cold_scan_disabled",
+                    root_rows,
+                    source="country_database_root",
+                    cache=cache_diag,
+                )
             located = locate.locate(proc, scan_range=scan_range)
             if located is not None:
                 rows = country_object_bridge_rows_from_country_array(
@@ -725,6 +757,8 @@ def _diagnostics(
         }
         if cache.get("tag_table_source"):
             diagnostics["cache"]["tag_table_source"] = str(cache["tag_table_source"])
+        if "allow_cold_scan" in cache:
+            diagnostics["allow_cold_scan"] = bool(cache.get("allow_cold_scan"))
     return diagnostics
 
 
@@ -803,9 +837,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--pid", type=int, required=True)
     parser.add_argument("--emit-control-value", action="store_true",
                         help="Print the encoded tag_db_id:pointer string.")
+    parser.add_argument("--allow-cold-scan", action="store_true",
+                        help="Allow slow heap-wide cold discovery.")
     args = parser.parse_args(argv)
 
-    result = resolve_country_object_bridge_preflight(args.pid)
+    result = resolve_country_object_bridge_preflight(
+        args.pid,
+        allow_cold_scan=args.allow_cold_scan,
+    )
     if args.emit_control_value and result.encoded:
         print(result.encoded)
     else:

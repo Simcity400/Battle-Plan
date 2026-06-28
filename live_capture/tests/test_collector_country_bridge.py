@@ -1,13 +1,16 @@
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import sys
 import struct
+import types
 from types import SimpleNamespace
 import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+from live_capture import collector_country_bridge as ccb  # noqa: E402
 from live_capture.collector_country_bridge import (  # noqa: E402
     _encoded_preflight,
     _load_preflight_cache,
@@ -17,6 +20,7 @@ from live_capture.collector_country_bridge import (  # noqa: E402
     country_object_bridge_rows_from_bridge,
     country_object_bridge_rows_from_country_array,
     locate_country_array_from_object_rows,
+    resolve_country_object_bridge_preflight,
     tag_table_from_country_database_root,
 )
 from live_capture.collector_probe_record import (  # noqa: E402
@@ -198,6 +202,93 @@ class FakeTagTableModule:
             return None
 
 
+class FakePreflightProc(FakeMemoryProc):
+    def __init__(self):
+        super().__init__()
+        self.table_base = 0xB000
+        self.tags = ["---", "GER", "ENG", "SOV", "SWE", "FRA", "LUX", "BEL",
+                     "HOL", "CZE", "POL"] + [f"T{i:02d}" for i in range(40)]
+        self._write_u64(self.country_database, self.table_base)
+        self._write_u32(self.country_database + 8, len(self.tags) + 5)
+        self._write_u32(self.country_database + 12, len(self.tags))
+
+
+@contextmanager
+def patched_preflight_environment(
+    proc,
+    *,
+    identity=None,
+    resolve_cached=None,
+    locate=None,
+    tag_table_module=None,
+    bridge_resolve=None,
+):
+    def forbidden_cold_scan(*_args, **_kwargs):
+        raise AssertionError("unexpected cold scan")
+
+    identity = identity or SimpleNamespace(
+        pid=123,
+        create_time_100ns=456,
+        exe_sha256="b" * 64,
+        module_base=getattr(proc, "module_base", None),
+    )
+
+    class ProcessContext:
+        def __enter__(self):
+            return proc
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    winmem_module = types.ModuleType("winmem")
+    winmem_module.Process = lambda _pid, _name: ProcessContext()
+
+    locate_module = types.ModuleType("locate")
+    locate_module.resolve_cached = resolve_cached or (lambda _proc, _token: None)
+    locate_module.locate = locate or forbidden_cold_scan
+
+    tt_source = tag_table_module or FakeTagTableModule
+    tag_table_mod = types.ModuleType("live_layers.tag_table")
+    tag_table_mod.STRIDE = getattr(tt_source, "STRIDE", 0x20)
+    tag_table_mod.TagTable = tt_source.TagTable
+
+    class CountryIndexBridge:
+        resolve = staticmethod(bridge_resolve or forbidden_cold_scan)
+
+    bridge_mod = types.ModuleType("live_layers.country_index_bridge")
+    bridge_mod.CountryIndexBridge = CountryIndexBridge
+
+    live_layers_mod = types.ModuleType("live_layers")
+    live_layers_mod.tag_table = tag_table_mod
+    live_layers_mod.country_index_bridge = bridge_mod
+
+    names = [
+        "winmem",
+        "locate",
+        "live_layers",
+        "live_layers.tag_table",
+        "live_layers.country_index_bridge",
+    ]
+    old_modules = {name: sys.modules.get(name) for name in names}
+    old_identify = ccb._process_identity.identify
+    try:
+        sys.modules["winmem"] = winmem_module
+        sys.modules["locate"] = locate_module
+        sys.modules["live_layers"] = live_layers_mod
+        sys.modules["live_layers.tag_table"] = tag_table_mod
+        sys.modules["live_layers.country_index_bridge"] = bridge_mod
+        ccb._process_identity.identify = lambda _proc: identity
+        yield identity
+    finally:
+        ccb._process_identity.identify = old_identify
+        for name in names:
+            old = old_modules[name]
+            if old is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = old
+
+
 class TestCollectorCountryBridge(unittest.TestCase):
     def test_rows_from_bridge_are_sorted_and_skip_missing_objects(self):
         rows = country_object_bridge_rows_from_bridge(FakeBridge())
@@ -329,6 +420,148 @@ class TestCollectorCountryBridge(unittest.TestCase):
             self.assertIsNotNone(loaded)
             self.assertEqual(loaded["rec0"], 0x1000)
             self.assertIsNone(_load_preflight_cache(path, other_identity))
+
+    def test_preflight_cache_hit_is_bounded(self):
+        proc = FakePreflightProc()
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "country_array.json"
+            with patched_preflight_environment(
+                proc,
+                resolve_cached=lambda _proc, _token: (proc.rec0, 24),
+            ) as identity:
+                self.assertTrue(
+                    _write_preflight_cache(path, identity, (proc.rec0, proc.rec0, 227))
+                )
+                old_scan = ccb._scan_aligned_qword_hits
+                ccb._scan_aligned_qword_hits = lambda *_args, **_kwargs: (
+                    _ for _ in ()
+                ).throw(AssertionError("unexpected reverse scan"))
+                try:
+                    result = resolve_country_object_bridge_preflight(
+                        123,
+                        min_rows=2,
+                        cache_path=path,
+                    )
+                finally:
+                    ccb._scan_aligned_qword_hits = old_scan
+
+        self.assertTrue(result.usable)
+        self.assertEqual(result.diagnostics["source"], "live_country_array_cache")
+        self.assertEqual(result.diagnostics["cache"]["status"], "hit")
+        self.assertFalse(result.diagnostics["allow_cold_scan"])
+
+    def test_preflight_cache_miss_returns_root_rows_without_cold_scan(self):
+        proc = FakePreflightProc()
+        with patched_preflight_environment(proc):
+            old_scan = ccb._scan_aligned_qword_hits
+            ccb._scan_aligned_qword_hits = lambda *_args, **_kwargs: (
+                _ for _ in ()
+            ).throw(AssertionError("unexpected reverse scan"))
+            try:
+                result = resolve_country_object_bridge_preflight(123, min_rows=2)
+            finally:
+                ccb._scan_aligned_qword_hits = old_scan
+
+        self.assertTrue(result.usable)
+        self.assertEqual(result.diagnostics["source"], "country_database_root")
+        self.assertEqual(result.record_encoded, None)
+        self.assertFalse(result.diagnostics["allow_cold_scan"])
+
+    def test_preflight_stale_cache_and_insufficient_roots_is_bounded(self):
+        proc = FakePreflightProc()
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "country_array.json"
+            with patched_preflight_environment(
+                proc,
+                resolve_cached=lambda _proc, _token: None,
+            ) as identity:
+                self.assertTrue(
+                    _write_preflight_cache(path, identity, (proc.rec0, proc.rec0, 227))
+                )
+                result = resolve_country_object_bridge_preflight(
+                    123,
+                    min_rows=3,
+                    cache_path=path,
+                )
+
+        self.assertFalse(result.usable)
+        self.assertEqual(result.status, "cold_scan_disabled")
+        self.assertEqual(result.row_count, 0)
+        self.assertEqual(result.diagnostics["cache"]["status"], "stale")
+
+    def test_preflight_cold_scan_is_explicit(self):
+        proc = FakePreflightProc()
+        scan_hits = []
+
+        def fake_scan(_proc, needle, *, scan_range=None):
+            scan_hits.append((needle, scan_range))
+            if needle == proc.ger_obj:
+                yield proc.rec0 + 0x08
+            elif needle == proc.eng_obj:
+                yield proc.rec0 + 0x120 + 0x08
+
+        with patched_preflight_environment(proc):
+            old_scan = ccb._scan_aligned_qword_hits
+            ccb._scan_aligned_qword_hits = fake_scan
+            try:
+                result = resolve_country_object_bridge_preflight(
+                    123,
+                    min_rows=2,
+                    allow_cold_scan=True,
+                )
+            finally:
+                ccb._scan_aligned_qword_hits = old_scan
+
+        self.assertTrue(scan_hits)
+        self.assertTrue(result.usable)
+        self.assertEqual(result.diagnostics["source"], "country_database_root_record_scan")
+        self.assertTrue(result.diagnostics["allow_cold_scan"])
+        self.assertEqual(result.record_encoded, "1:0xA000;2:0xA120")
+
+    def test_preflight_allow_cold_scan_can_use_locate_after_root_miss(self):
+        proc = FakePreflightProc()
+        locate_calls = []
+
+        def fake_locate(_proc, *, scan_range=None):
+            locate_calls.append(scan_range)
+            return proc.rec0, proc.rec0, 24
+
+        with patched_preflight_environment(proc, locate=fake_locate):
+            old_root = ccb.country_object_bridge_rows_from_country_database_root
+            ccb.country_object_bridge_rows_from_country_database_root = (
+                lambda *_args, **_kwargs: []
+            )
+            try:
+                result = resolve_country_object_bridge_preflight(
+                    123,
+                    min_rows=2,
+                    allow_cold_scan=True,
+                )
+            finally:
+                ccb.country_object_bridge_rows_from_country_database_root = old_root
+
+        self.assertEqual(locate_calls, [None])
+        self.assertTrue(result.usable)
+        self.assertEqual(result.diagnostics["source"], "live_country_array")
+
+    def test_preflight_root_tag_table_unavailable_is_bounded(self):
+        proc = SimpleNamespace(module_base=0)
+
+        class NoHeapTagTableModule:
+            class TagTable:
+                @staticmethod
+                def locate(_proc):
+                    raise AssertionError("unexpected tag table heap scan")
+
+        with patched_preflight_environment(
+            proc,
+            tag_table_module=NoHeapTagTableModule,
+        ):
+            result = resolve_country_object_bridge_preflight(123, min_rows=2)
+
+        self.assertFalse(result.usable)
+        self.assertEqual(result.status, "tag_table_unavailable")
+        self.assertEqual(result.diagnostics["source"], "country_database_root")
 
     def test_encoded_preflight_reports_cache_status_without_addresses(self):
         preflight = _encoded_preflight(
