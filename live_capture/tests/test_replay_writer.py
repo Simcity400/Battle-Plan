@@ -252,6 +252,80 @@ class TestStreamingFinalize(unittest.TestCase):
         # index.json is packed too.
         self.assertIn("payload/rec_test/index.json", by_name)
 
+    def test_collector_raw_stream_is_manifest_covered_payload(self):
+        rec = self._recorder()
+        self._write_hours(rec, ["1936.1.1.12"])
+        stream_path = os.path.join(self.tmp, "collector_frames.jsonl")
+        raw_frames = [
+            {"type": "collector_started", "sequence": 10,
+             "domains": ["clock"],
+             "root_probe": {"debug_object": "0xDEADBEEF"}},
+            {"type": "domain_delta", "sequence": 11,
+             "domain": "divisions", "entity_key": "division:1:4713",
+             "payload": {"changed_fields": ["movement_progress"]}},
+            {"type": "gap", "sequence": 12, "domain": "land_combats",
+             "reason": "bridge_not_ready"},
+        ]
+        with open(stream_path, "w", encoding="utf-8", newline="\n") as fh:
+            for frame in raw_frames:
+                fh.write(json.dumps(frame, sort_keys=True, separators=(",", ":")))
+                fh.write("\n")
+
+        rec.add_collector_raw_stream(stream_path)
+        rec.finalize()
+
+        raw_path = "payload/rec_test/collector_raw/collector_frames.jsonl"
+        by_name = rw._zip_read_all(_read_bytes(self.out))
+        manifest = json.loads(by_name["manifest.json"].decode("utf-8"))
+        raw_entry = next(
+            e for e in manifest["entries"] if e["path"] == raw_path)
+
+        self.assertTrue(rw._verify_container(self.out))
+        self.assertEqual(by_name[raw_path], _read_bytes(stream_path))
+        self.assertEqual(raw_entry["role"], "collector_raw_stream")
+        self.assertEqual(raw_entry["format"], "collector_frames_jsonl_v1")
+        self.assertEqual(raw_entry["frame_count"], 3)
+        self.assertEqual(raw_entry["sequence_count"], 3)
+        self.assertEqual(raw_entry["domains"], ["clock", "divisions", "land_combats"])
+        self.assertEqual(raw_entry["delta_domains"], ["divisions"])
+        self.assertEqual(raw_entry["gap_domains"], ["land_combats"])
+        self.assertEqual(manifest["counts"]["raw_streams"], 1)
+        self.assertEqual(manifest["counts"]["raw_collector_frames"], 3)
+        self.assertEqual(manifest["optional_features"], ["collector_raw_stream_v1"])
+        self.assertEqual(manifest["raw_streams"], [{
+            "path": raw_path,
+            "role": "collector_raw_stream",
+            "format": "collector_frames_jsonl_v1",
+            "frame_count": 3,
+            "frame_types": ["collector_started", "domain_delta", "gap"],
+            "sequence_count": 3,
+            "domains": ["clock", "divisions", "land_combats"],
+            "delta_domains": ["divisions"],
+            "gap_domains": ["land_combats"],
+            "first_sequence": 10,
+            "last_sequence": 12,
+        }])
+        manifest_text = json.dumps(manifest, sort_keys=True)
+        self.assertNotIn(stream_path, manifest_text)
+        self.assertNotIn(stream_path.replace("\\", "\\\\"), manifest_text)
+        self.assertNotIn(os.path.dirname(stream_path), manifest_text)
+        self.assertNotIn("0xDEADBEEF", manifest_text)
+        self.assertIn(b"0xDEADBEEF", by_name[raw_path])
+
+    def test_collector_raw_stream_metadata_rejects_address_like_values(self):
+        stream_path = os.path.join(self.tmp, "bad_collector_frames.jsonl")
+        with open(stream_path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps({
+                "type": "domain_delta",
+                "sequence": 1,
+                "domain": "0xDEADBEEF",
+            }, sort_keys=True, separators=(",", ":")))
+            fh.write("\n")
+
+        rec = self._recorder()
+        with self.assertRaisesRegex(ValueError, "raw process address"):
+            rec.add_collector_raw_stream(stream_path)
+
     def test_no_fabrication_trichotomy_survives(self):
         rec = self._recorder()
         self._write_hours(rec, ["1936.1.1.12"])

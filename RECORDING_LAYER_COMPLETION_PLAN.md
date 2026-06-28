@@ -78,8 +78,10 @@ Current recorder-facing bridge status:
   snapshots, advanced 19 in-game hours with zero skipped hours, and verified the
   replay container.
 - The session wrapper writes a validated `collector_frames.jsonl` sidecar with
-  every accepted DLL frame, including duplicate same-hour samples. Canonical
-  replay snapshots still dedupe to one snapshot per game hour, but the raw stream
+  every accepted DLL frame, including duplicate same-hour samples, and now embeds
+  that same byte stream in finalized `.battleplan` files at
+  `payload/<game>/collector_raw/collector_frames.jsonl`. Canonical replay
+  snapshots still dedupe to one snapshot per game hour, but the raw stream
   preserves sub-hour observations for future combat, movement, and event
   extraction.
 - Bounded worker sequence ids restart per worker burst. Manifests now preserve
@@ -178,8 +180,9 @@ current speed-five proof says 10 ms sampling is enough for the present clock
 worker and 25 ms was not enough for that proof. Keep 10 ms as the conservative
 polling default until a hook or better measured interval replaces it.
 
-The session path preserves these raw samples in `collector_frames.jsonl`. That
-file is the near-term home for sub-hour data while the canonical snapshot store
+The session path preserves these raw samples in `collector_frames.jsonl` and
+packages the same stream as a manifest-covered `.battleplan` payload. That file
+is the near-term home for sub-hour data while the canonical snapshot store
 remains keyed by game hour. It prevents fast transient observations from being
 lost merely because the current replay snapshot key is hourly.
 
@@ -709,7 +712,9 @@ Tasks:
 - Add manifest counters for dropped diagnostics, dropped optional deltas,
   dropped scheduled frames, queue high-water mark, invalid frames, duplicate
   sequence ids, and CRC failures.
-- Make `.battleplan` finalization preserve all gap/quality metadata.
+- Keep `.battleplan` finalization preserving raw stream, gap, and quality
+  metadata; native readers still need a public payload enumeration/read API for
+  `collector_raw_stream`.
 
 ### D. Schema And Provenance
 
@@ -1071,8 +1076,11 @@ These stay out of the replay unless the product scope changes:
    next implementation slice is root-anchored country identity plus country
    scalars; do not extend the heap-scanning `country_object_scan` path into the
    hot loop.
-6. Run a longer speed-five proof and reopen the `.battleplan` in the native app.
-7. Continue domain promotion in this order: first-three tranche, combat/movement,
+6. Add native `snapshot::Container` / `Store` APIs to enumerate and read
+   `collector_raw_stream` payloads from verified `.battleplan` files, then wire
+   scrub/timeline indexing to that raw stream.
+7. Run a longer speed-five proof and reopen the `.battleplan` in the native app.
+8. Continue domain promotion in this order: first-three tranche, combat/movement,
    focus/research/decisions/projects, diplomacy/intel/logistics/weather,
    computed/visual rows.
 

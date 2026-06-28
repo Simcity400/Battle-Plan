@@ -707,6 +707,10 @@ class TestCollectorSession(unittest.TestCase):
                     for line in stream_path.read_text(encoding="utf-8").splitlines()
                     if line
                 ]
+                stream_bytes = stream_path.read_bytes()
+                replay_by_name = _zip_read_all(replay_path.read_bytes())
+                replay_manifest = json.loads(
+                    replay_by_name["manifest.json"].decode("utf-8"))
         finally:
             cs.record_probes = original_record_probes
 
@@ -735,6 +739,28 @@ class TestCollectorSession(unittest.TestCase):
             "burst_local")
         self.assertEqual(session_manifest["stored_snapshot_count"], 3)
         self.assertTrue(replay_valid)
+        raw_path = "payload/session_repeat/collector_raw/collector_frames.jsonl"
+        self.assertEqual(replay_by_name[raw_path], stream_bytes)
+        self.assertEqual(
+            replay_manifest["optional_features"],
+            ["collector_raw_stream_v1"])
+        self.assertEqual(replay_manifest["counts"]["raw_streams"], 1)
+        self.assertEqual(
+            replay_manifest["counts"]["raw_collector_frames"],
+            len(stream_frames))
+        self.assertEqual(replay_manifest["raw_streams"][0]["path"], raw_path)
+        self.assertEqual(
+            replay_manifest["raw_streams"][0]["frame_count"],
+            len(stream_frames))
+        self.assertEqual(
+            replay_manifest["raw_streams"][0]["sequence_count"],
+            len(stream_frames))
+        self.assertEqual(
+            replay_manifest["raw_streams"][0]["domains"],
+            ["clock"])
+        replay_manifest_text = json.dumps(replay_manifest, sort_keys=True)
+        self.assertNotIn(str(root), replay_manifest_text)
+        self.assertNotIn(str(root).replace("\\", "\\\\"), replay_manifest_text)
 
     def test_session_writes_prefix_replay_then_fails_closed_on_later_burst_error(self):
         original_record_probes = cs.record_probes

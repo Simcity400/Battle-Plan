@@ -504,6 +504,8 @@ def record_collector_session(
         build_pinned=build_exe_sha256 is not None,
         finalize_every=6,
     )
+    if frame_stream_path is not None and frame_session.recorder is not None:
+        frame_session.recorder.add_collector_raw_stream(str(frame_stream_path))
     frame_results = frame_session.record_frames(frames)
     stopped_utc = datetime.now(timezone.utc).isoformat()
     elapsed_wall_s = time.monotonic() - started_monotonic

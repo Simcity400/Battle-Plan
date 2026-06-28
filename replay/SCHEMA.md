@@ -188,7 +188,9 @@ this snapshot — by design, not by error.
 
 Collector session artifacts live beside the snapshot stream, not inside every
 snapshot. The current recorder writes `collector_frames.jsonl` with every
-validated DLL frame and records manifest counters such as
+validated DLL frame, embeds that stream in `.battleplan` containers as
+`payload/<game>/collector_raw/collector_frames.jsonl`, and records manifest
+counters such as
 `raw_collector_frame_count`, duplicate same-hour frame count, payload row-count
 summaries, transport diagnostics, and preflight bridge status. The canonical
 snapshot stream still stores one selected frame per unique game hour.

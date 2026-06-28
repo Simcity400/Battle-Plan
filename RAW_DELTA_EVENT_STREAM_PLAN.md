@@ -4,9 +4,10 @@
 
 Hourly canonical snapshots are necessary for durable replay state, but they are
 not sufficient for speed-five combat, movement, order, and control replay. The
-collector already preserves raw frame observations separately from hourly
-snapshot selection; the next layer should make that raw stream first-class for
-bounded `domain_delta`, `event`, and `gap` frames.
+collector preserves raw frame observations separately from hourly snapshot
+selection, and finalized `.battleplan` files now carry that raw stream as a
+manifest-covered optional payload for bounded `domain_delta`, `event`, and `gap`
+frames.
 
 Runtime remains save-free. Save readers stay useful as development fixtures and
 oracle checks only.
@@ -20,6 +21,11 @@ oracle checks only.
   types are skipped as `non_snapshot_frame`.
 - `collector_frames.jsonl` is the raw preserved stream. Canonical snapshots stay
   one frame per unique game hour.
+- `.battleplan` finalization embeds the stream at
+  `payload/<game>/collector_raw/collector_frames.jsonl`, marks it with
+  `entries[*].role == "collector_raw_stream"`, and exposes
+  `manifest.raw_streams[]` metadata. Native readers can open/verify these
+  containers today, but still need a public raw-payload read API.
 - `replay/diff_engine.py::build_timeline` coalesces same-hour snapshots before
   diffing, so sub-hour observations must not be represented only as normal
   snapshots.
@@ -393,14 +399,15 @@ Suggested first patch set:
 
 - `live_capture/collector_frames.py`: common envelope validation and payload
   validation for synthetic `event`, `domain_delta`, and `gap` frames.
-- `live_capture/collector_session.py`: raw-frame summary counters only; do not
-  convert deltas into canonical snapshots.
+- `live_capture/collector_session.py`: raw-frame summary counters and
+  `.battleplan` raw-stream packaging; do not convert deltas into canonical
+  snapshots.
 - `replay/diff_engine.py`: add the sibling raw merge helper while leaving
   `build_timeline()` behavior intact.
 - `live_capture/tests/test_collector_frames.py`: malformed/valid raw frame
   validation cases.
-- `live_capture/tests/test_collector_session.py`: manifest raw-frame summary
-  cases.
+- `live_capture/tests/test_collector_session.py`: manifest raw-frame summary and
+  replay-container raw-stream packaging cases.
 - `replay/tests/test_diff_engine.py`: raw exact province event supersedes
   interval diff, raw movement survives same-hour coalescing, and combat gaps are
   retained.

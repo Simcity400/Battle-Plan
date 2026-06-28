@@ -40,6 +40,7 @@ import binascii
 import hashlib
 import json
 import os
+import re
 import struct
 import time
 import zlib
@@ -52,6 +53,9 @@ RECORDER_TOOL = "hoi4replay-recorder"
 RECORDER_TOOL_VERSION = "1.0.0"
 CONTAINER_VERSION = 1
 STANDARD_ZIP_MAX_ENTRIES = 0xFFFF
+RAW_COLLECTOR_STREAM_ROLE = "collector_raw_stream"
+RAW_COLLECTOR_STREAM_FORMAT = "collector_frames_jsonl_v1"
+COLLECTOR_RAW_STREAM_FEATURE = "collector_raw_stream_v1"
 
 
 # ==========================================================================
@@ -229,6 +233,8 @@ _WIN_RESERVED = frozenset({
     *(f"com{i}" for i in range(1, 10)),
     *(f"lpt{i}" for i in range(1, 10)),
 })
+_RAW_ADDRESS_RE = re.compile(r"\b0x[0-9A-Fa-f]{6,}\b")
+_WINDOWS_ABSOLUTE_RE = re.compile(r"[A-Za-z]:[\\/]")
 
 
 def _safe_basename(name: str) -> bool:
@@ -276,6 +282,30 @@ def _path_ok(path: str) -> bool:
     return True
 
 
+def _assert_no_manifest_leaks(value: Any) -> None:
+    """Reject local-only strings before putting extra payload metadata in the
+    replay manifest. The raw payload may intentionally contain raw collector
+    frames; this guard is only for manifest discovery metadata."""
+    if isinstance(value, str):
+        if value.startswith("payload/"):
+            return
+        if (
+            _WINDOWS_ABSOLUTE_RE.search(value)
+            or value.startswith(("\\\\", "//", "/Users/", "/home/", "/tmp/"))
+            or "\\Users\\" in value
+        ):
+            raise ValueError("extra payload metadata contains a local path")
+        if _RAW_ADDRESS_RE.search(value):
+            raise ValueError("extra payload metadata contains a raw process address")
+        return
+    if isinstance(value, dict):
+        for item in value.values():
+            _assert_no_manifest_leaks(item)
+    elif isinstance(value, list):
+        for item in value:
+            _assert_no_manifest_leaks(item)
+
+
 # ==========================================================================
 # ReplayRecorder
 # ==========================================================================
@@ -312,6 +342,7 @@ class ReplayRecorder:
         # already crash-safe + atomic, and copying would double the I/O).
         self._work_dir = out_path + ".part"
         self._sidecar_path = os.path.join(self._work_dir, "entries.jsonl")
+        self._raw_collector_stream: Optional[Dict[str, Any]] = None
         os.makedirs(self._work_dir, exist_ok=True)
 
     # -- build identity (stamped once, after the gate passes) -----------
@@ -320,6 +351,28 @@ class ReplayRecorder:
         first successful capture (the build does not change mid-session)."""
         self._build_exe_sha256 = exe_sha256
         self._build_pinned = bool(pinned)
+
+    def add_collector_raw_stream(self, stream_path: str) -> None:
+        """Register the validated collector-frame JSONL stream as a first-class
+        replay payload. The source path stays local-only; the manifest records
+        only the stable in-container path and parse-derived discovery metadata."""
+        if not stream_path:
+            return
+        source = os.fspath(stream_path)
+        container_path = (
+            "payload/%s/collector_raw/collector_frames.jsonl" % self._game_id)
+        metadata = _collector_raw_stream_metadata(source)
+        metadata.update({
+            "path": container_path,
+            "role": RAW_COLLECTOR_STREAM_ROLE,
+            "format": RAW_COLLECTOR_STREAM_FORMAT,
+        })
+        _assert_no_manifest_leaks(metadata)
+        self._raw_collector_stream = {
+            "source_path": source,
+            "container_path": container_path,
+            "metadata": metadata,
+        }
 
     # -- streaming sidecar ----------------------------------------------
     def on_snapshot_written(self, written_path: str) -> None:
@@ -503,6 +556,27 @@ class ReplayRecorder:
                             role="timeline", hour_index=None,
                             seen_paths=seen_paths)
 
+        if self._raw_collector_stream is not None:
+            cpath = self._raw_collector_stream["container_path"]
+            source_path = self._raw_collector_stream["source_path"]
+            try:
+                with open(source_path, "rb") as fh:
+                    raw_bytes = fh.read()
+            except OSError as exc:
+                raise ValueError(
+                    "registered collector raw stream is not readable; refusing "
+                    "to publish a replay that advertises missing raw data "
+                    "(%s)" % (exc.__class__.__name__,))
+            extra = {
+                key: value
+                for key, value in self._raw_collector_stream["metadata"].items()
+                if key not in ("path", "role")
+            }
+            self._add_entry(entries_meta, zip_files, cpath, raw_bytes,
+                            role=RAW_COLLECTOR_STREAM_ROLE,
+                            hour_index=None, seen_paths=seen_paths,
+                            extra_fields=extra)
+
         # canonical path order so the manifest entry list is stable (pack.rs sorts
         # the same way). The zip-file order is independent (the reader keys off the
         # manifest), but keep them aligned for determinism.
@@ -545,7 +619,7 @@ class ReplayRecorder:
             return
 
     def _add_entry(self, entries_meta, zip_files, path, data, *, role, hour_index,
-                   seen_paths=None):
+                   seen_paths=None, extra_fields=None):
         if not _path_ok(path):
             raise ValueError("refusing to pack unsafe container path %r" % path)
         # DUPLICATE-PATH guard (Codex F2 hardening): the reader rejects a zip with
@@ -565,6 +639,8 @@ class ReplayRecorder:
         }
         if hour_index is not None:
             ent["hour_index"] = hour_index
+        if extra_fields:
+            ent.update(extra_fields)
         entries_meta.append(ent)
         seen_paths.add(path)
         # DEFLATE the payload (matches pack_replay's `pack(..., true)`); the reader
@@ -577,11 +653,34 @@ class ReplayRecorder:
         digest over the canonical form. ``mod_identity`` / ``build.exe_sha256`` are
         passed through verbatim; ``None`` -> JSON ``null`` (no fabrication)."""
         snapshots = sum(1 for e in entries_meta if e.get("role") == "snapshot")
+        raw_streams = [
+            {
+                "path": e["path"],
+                "role": e["role"],
+                "format": e["format"],
+                "frame_count": e["frame_count"],
+                "frame_types": e["frame_types"],
+                "sequence_count": e["sequence_count"],
+                "domains": e["domains"],
+                "delta_domains": e["delta_domains"],
+                "gap_domains": e["gap_domains"],
+                "first_sequence": e["first_sequence"],
+                "last_sequence": e["last_sequence"],
+            }
+            for e in entries_meta
+            if e.get("role") == RAW_COLLECTOR_STREAM_ROLE
+        ]
+        counts: Dict[str, Any] = {"snapshots": snapshots}
+        if raw_streams:
+            counts["raw_streams"] = len(raw_streams)
+            counts["raw_collector_frames"] = sum(
+                int(s.get("frame_count") or 0) for s in raw_streams)
         manifest: Dict[str, Any] = {
             "format": "hoi4replay",
             "container_version": CONTAINER_VERSION,
             "required_features": [],
-            "optional_features": [],
+            "optional_features": (
+                [COLLECTOR_RAW_STREAM_FEATURE] if raw_streams else []),
             "schema_version": self._schema_version,
             "game_id": self._game_id,
             "build": {
@@ -592,11 +691,13 @@ class ReplayRecorder:
             "created_utc": _now_utc(),
             "recorder": {"tool": RECORDER_TOOL,
                          "tool_version": RECORDER_TOOL_VERSION},
-            "counts": {"snapshots": snapshots},
+            "counts": counts,
             "entries": entries_meta,
             "manifest_digest": None,
             "signature": None,
         }
+        if raw_streams:
+            manifest["raw_streams"] = raw_streams
         manifest["manifest_digest"] = manifest_digest(manifest)
         return manifest
 
@@ -622,6 +723,77 @@ def _fsync_dir(d: str) -> None:
         pass
     finally:
         os.close(fd)
+
+
+def _collector_raw_stream_metadata(path: str) -> Dict[str, Any]:
+    """Parse collector-frame JSONL just enough to make the replay payload
+    discoverable without copying local source paths into the manifest."""
+    frame_count = 0
+    sequences: List[int] = []
+    frame_types = set()
+    domains = set()
+    delta_domains = set()
+    gap_domains = set()
+
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for lineno, line in enumerate(fh, start=1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    frame = json.loads(line)
+                except ValueError as exc:
+                    raise ValueError(
+                        "collector raw stream line %d is not valid JSON: %s"
+                        % (lineno, exc))
+                if not isinstance(frame, dict):
+                    raise ValueError(
+                        "collector raw stream line %d is not a JSON object"
+                        % lineno)
+                frame_count += 1
+                frame_type = frame.get("type")
+                if isinstance(frame_type, str) and frame_type:
+                    frame_types.add(frame_type)
+                sequence = frame.get("sequence")
+                if isinstance(sequence, int) and not isinstance(sequence, bool):
+                    sequences.append(sequence)
+                listed_domains = frame.get("domains")
+                if isinstance(listed_domains, list):
+                    for domain in listed_domains:
+                        if isinstance(domain, str) and domain:
+                            domains.add(domain)
+                root_probe = frame.get("root_probe")
+                if isinstance(root_probe, dict):
+                    root_domains = root_probe.get("domains")
+                    if isinstance(root_domains, list):
+                        for domain in root_domains:
+                            if isinstance(domain, str) and domain:
+                                domains.add(domain)
+                domain = frame.get("domain")
+                if isinstance(domain, str) and domain:
+                    domains.add(domain)
+                    if frame_type == "domain_delta":
+                        delta_domains.add(domain)
+                    elif frame_type == "gap":
+                        gap_domains.add(domain)
+    except OSError as exc:
+        raise ValueError(
+            "collector raw stream is not readable; refusing to publish raw "
+            "stream metadata (%s)" % (exc.__class__.__name__,))
+
+    if frame_count <= 0:
+        raise ValueError("collector raw stream is empty")
+    return {
+        "frame_count": frame_count,
+        "frame_types": sorted(frame_types),
+        "sequence_count": len(sequences),
+        "first_sequence": sequences[0] if sequences else None,
+        "last_sequence": sequences[-1] if sequences else None,
+        "domains": sorted(domains),
+        "delta_domains": sorted(delta_domains),
+        "gap_domains": sorted(gap_domains),
+    }
 
 
 # ==========================================================================

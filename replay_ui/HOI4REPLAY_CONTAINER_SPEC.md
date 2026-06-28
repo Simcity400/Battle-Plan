@@ -39,6 +39,8 @@ normalized** (no `.`/`..`/leading-slash/drive-letter/UNC/backslash component).
         ├── index.json                    ← byte-identical copy of the store index
         ├── <snapshot-file>.snapshot.json  ← byte-identical copies (one per hour)
         │   …                               filename is whatever index.file says
+        ├── collector_raw/
+        │   └── collector_frames.jsonl     ← optional full raw collector stream
         └── timeline.json                 ← byte-identical copy (if present)
 ```
 
@@ -51,6 +53,12 @@ Notes:
   `hour_index`. `[Codex a]`
 * `timeline.json` is optional (older stores may lack it); its presence is recorded
   in the manifest.
+* `collector_raw/collector_frames.jsonl` is optional. When present it is a
+  manifest-covered raw JSONL stream of every validated collector frame, including
+  sub-hour `domain_delta` / `gap` frames that are not folded into the hourly
+  snapshot index. It is discoverable through `manifest.raw_streams` and
+  `entries[*].role == "collector_raw_stream"`; it MUST NOT be put in
+  `required_features` until native readers advertise support for that feature.
 * **Excluded by design** (machine-local / volatile, not portable): the capture
   `*.lock` files, `_continuity/continuity_state.json` (carries PIDs/runtime
   state). The continuity *information the reader needs* already travels inside each
@@ -88,7 +96,7 @@ file). One JSON object:
   "format": "hoi4replay",            // constant tag; reject if absent/wrong
   "container_version": 1,            // integer; reader refuses > its max known
   "required_features": [],           // features a reader MUST understand or REFUSE
-  "optional_features": [],           // features a reader MAY ignore
+  "optional_features": ["collector_raw_stream_v1"], // features a reader MAY ignore
 
   "schema_version": "1",             // replay snapshot SCHEMA_VERSION at capture
   "game_id": "campaign",             // the one game packed in payload/<game_id>/
@@ -108,16 +116,33 @@ file). One JSON object:
   "created_utc": "2026-06-26T21:30:00Z",
   "recorder": { "tool": "hoi4replay-recorder", "tool_version": "1.0.0" },
 
-  "counts": { "snapshots": 412, "countries": 143, "states": 1081 },
+  "counts": { "snapshots": 412, "countries": 143, "states": 1081,
+              "raw_streams": 1, "raw_collector_frames": 4200 },
 
   "entries": [                       // EVERY payload file, in canonical path order
     { "path": "payload/campaign/index.json",
       "sha256": "…", "bytes": 1234, "role": "index" },
     { "path": "payload/campaign/000017000461.snapshot.json",
       "sha256": "…", "bytes": 998877, "role": "snapshot", "hour_index": 17000461 },
+    { "path": "payload/campaign/collector_raw/collector_frames.jsonl",
+      "sha256": "…", "bytes": 65536, "role": "collector_raw_stream",
+      "format": "collector_frames_jsonl_v1", "frame_count": 4200,
+      "frame_types": ["collector_started", "domain_delta", "gap"],
+      "sequence_count": 4200, "domains": ["clock", "divisions"],
+      "delta_domains": ["divisions"], "gap_domains": [],
+      "first_sequence": 10, "last_sequence": 4209 },
     { "path": "payload/campaign/timeline.json",
       "sha256": "…", "bytes": 4096, "role": "timeline" }
-    // roles: "index" | "snapshot" | "timeline"
+    // roles: "index" | "snapshot" | "timeline" | "collector_raw_stream"
+  ],
+
+  "raw_streams": [
+    { "path": "payload/campaign/collector_raw/collector_frames.jsonl",
+      "role": "collector_raw_stream", "format": "collector_frames_jsonl_v1",
+      "frame_count": 4200, "frame_types": ["collector_started", "domain_delta", "gap"],
+      "sequence_count": 4200, "domains": ["clock", "divisions"],
+      "delta_domains": ["divisions"], "gap_domains": [],
+      "first_sequence": 10, "last_sequence": 4209 }
   ],
 
   "manifest_digest": "…",            // sha256 over the CANONICAL manifest (see §3)
@@ -238,13 +263,17 @@ paint.
 | `<root>/<game_id>/index.json`                     | `payload/<game_id>/index.json` (raw bytes)      |
 | `<root>/<game_id>/<file>.snapshot.json`           | `payload/<game_id>/<file>.snapshot.json` (raw)  |
 | `<root>/<game_id>/timeline.json`                  | `payload/<game_id>/timeline.json` (raw)         |
+| `<session-run>/collector_frames.jsonl`            | `payload/<game_id>/collector_raw/collector_frames.jsonl` (raw, optional) |
 | `<root>/<game_id>/_continuity/…`, `*.lock`        | **excluded** (machine-local; §1)                |
 | `<root>/<game_id>/_noncanonical/…`                | **excluded** in v1 (no hour_index; §1)          |
 
 **Pack** = for each file in `index.snapshots[*].file` (+ `index.json` + optional
-`timeline.json`): read its bytes, store them at `payload/<game>/<same-name>`,
-record `sha256`+`bytes`+`role` in `entries`. Then build `manifest_digest`, write
-`manifest.json` last.
+`timeline.json` + optional `collector_frames.jsonl`): read its bytes, store them
+at `payload/<game>/<same-name>` for store files or
+`payload/<game>/collector_raw/collector_frames.jsonl` for the raw stream, record
+`sha256`+`bytes`+`role` in `entries`, and add `raw_streams[]` discovery metadata
+when the raw stream exists. Then build `manifest_digest`, write `manifest.json`
+last.
 
 **Unpack/serve** = §4. To materialize a directory store again (for tools that want
 files on disk), write each entry's verified bytes to `<out>/<game>/<name>` — the

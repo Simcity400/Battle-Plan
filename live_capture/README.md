@@ -50,9 +50,11 @@ current product status and acceptance gates, and
   manifests, and `.battleplan` output, but the target remains a true
   long-running collector session.
 - The session writes a validated `collector_frames.jsonl` sidecar containing
-  every accepted DLL frame. The replay store still keeps one canonical snapshot
-  per unique game hour, so the sidecar is where duplicate 10 ms samples survive
-  for future combat, movement, and event extraction.
+  every accepted DLL frame and embeds the same byte stream into finalized
+  `.battleplan` files at `payload/<game>/collector_raw/collector_frames.jsonl`.
+  The replay store still keeps one canonical snapshot per unique game hour, so
+  the raw stream is where duplicate 10 ms samples survive for future combat,
+  movement, and event extraction.
 - Country identity/scalars use a preflight cache/control-contract path:
   `tag_db_id:country_object_ptr` plus `tag_db_id:country_record_ptr`, validated
   by the DLL per frame. `country_object_scan` must stay false for normal and
@@ -88,9 +90,10 @@ loads are more reliable as separate commands.
 Use `collector_session` for recorder-facing capture work. It wraps the bounded
 collector worker with explicit `session_start`/`session_stop` lifecycle frames,
 feeds decoded collector frames through the durable store, finalizes a
-`.battleplan`, and records cadence plus transport diagnostics in the session
-manifest. Use `collector_probe_record` directly only when proving collector
-timing, reproducing transport behavior, or collecting raw probe fixtures.
+`.battleplan`, packages the raw collector stream, and records cadence plus
+transport diagnostics in the session manifest. Use `collector_probe_record`
+directly only when proving collector timing, reproducing transport behavior, or
+collecting raw probe fixtures.
 
 Repeated bounded workers are one logical recorder session. The raw probe
 manifest keeps every verified observation, but the replay writer processes one
