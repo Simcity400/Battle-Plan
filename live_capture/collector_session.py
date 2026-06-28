@@ -479,6 +479,7 @@ def record_collector_session(
         unique_game_hours_only=False,
     )
     raw_frame_payload_summary = _collector_frame_payload_summary(raw_frames)
+    raw_stream_transport = _collector_stream_transport_summary(raw_frames)
     frame_stream_path = _write_collector_frame_stream(
         run_dir,
         "collector_frames.jsonl",
@@ -632,6 +633,7 @@ def record_collector_session(
                 "bursts": probe_manifest.get("transport_bursts") or [],
                 "first_sequence": probe_manifest.get("first_sequence"),
                 "last_sequence": probe_manifest.get("last_sequence"),
+                "raw_stream": raw_stream_transport,
             },
         },
     )
@@ -906,6 +908,77 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         "max_production_military_line_rows": max_production_military_line_rows,
         "max_production_naval_line_rows": max_production_naval_line_rows,
         "production_on_lightweight_frames": production_on_lightweight_frames,
+    }
+
+
+def _collector_stream_transport_summary(
+    frames: Iterable[Dict[str, Any]],
+) -> Dict[str, Any]:
+    frame_list = list(frames)
+    sequences = [
+        frame.get("sequence") for frame in frame_list
+        if isinstance(frame.get("sequence"), int)
+    ]
+    by_burst: Dict[int, List[int]] = {}
+    for frame in frame_list:
+        burst = frame.get("worker_burst_index")
+        sequence = frame.get("sequence")
+        if isinstance(burst, int) and isinstance(sequence, int):
+            by_burst.setdefault(burst, []).append(sequence)
+    burst_summaries = [
+        {
+            "worker_burst_index": burst,
+            **_sequence_summary(seq),
+        }
+        for burst, seq in sorted(by_burst.items())
+    ]
+    collector_started_count = sum(
+        1 for frame in frame_list if frame.get("type") == "collector_started"
+    )
+    return {
+        "frame_count": len(frame_list),
+        "sequence_count": len(sequences),
+        "mode": "burst_local" if burst_summaries else "global",
+        **_sequence_summary(sequences),
+        "collector_started_frame_count": collector_started_count,
+        "average_frames_per_collector_started": (
+            len(frame_list) / collector_started_count
+            if collector_started_count else None
+        ),
+        "burst_local": burst_summaries,
+        "burst_local_monotonic_sequence": all(
+            item["monotonic_sequence"] for item in burst_summaries
+        ) if burst_summaries else _sequence_summary(sequences)["monotonic_sequence"],
+        "burst_local_duplicate_sequences": sum(
+            int(item["duplicate_sequences"]) for item in burst_summaries
+        ),
+        "burst_local_missing_sequences": sum(
+            int(item["missing_sequences"]) for item in burst_summaries
+        ),
+        "burst_local_max_sequence_gap": max(
+            (int(item["max_sequence_gap"]) for item in burst_summaries),
+            default=_sequence_summary(sequences)["max_sequence_gap"],
+        ),
+    }
+
+
+def _sequence_summary(sequences: List[int]) -> Dict[str, Any]:
+    duplicates = len(sequences) - len(set(sequences))
+    nonmonotonic = sum(
+        1 for a, b in zip(sequences, sequences[1:]) if b <= a
+    )
+    positive_gaps = [
+        max(b - a - 1, 0) for a, b in zip(sequences, sequences[1:]) if b > a
+    ]
+    return {
+        "count": len(sequences),
+        "first_sequence": sequences[0] if sequences else None,
+        "last_sequence": sequences[-1] if sequences else None,
+        "monotonic_sequence": nonmonotonic == 0,
+        "nonmonotonic_pairs": nonmonotonic,
+        "duplicate_sequences": duplicates,
+        "missing_sequences": sum(positive_gaps),
+        "max_sequence_gap": max(positive_gaps, default=0),
     }
 
 

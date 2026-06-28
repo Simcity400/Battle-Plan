@@ -180,6 +180,50 @@ class TestCollectorSession(unittest.TestCase):
         self.assertEqual(summary["lightweight_poll_frame_count"], 3)
         self.assertEqual(summary["heavy_payload_on_lightweight_frames"], 0)
 
+    def test_collector_stream_transport_summary_counts_raw_frame_sequences(self):
+        summary = cs._collector_stream_transport_summary([
+            {
+                "type": "collector_started",
+                "sequence": 1,
+                "worker_burst_index": 0,
+            },
+            {
+                "type": "domain_delta",
+                "sequence": 2,
+                "domain": "clock",
+                "worker_burst_index": 0,
+            },
+            {
+                "type": "domain_delta",
+                "sequence": 4,
+                "domain": "divisions",
+                "worker_burst_index": 0,
+            },
+            {
+                "type": "collector_started",
+                "sequence": 1,
+                "worker_burst_index": 1,
+            },
+            {
+                "type": "domain_delta",
+                "sequence": 2,
+                "domain": "clock",
+                "worker_burst_index": 1,
+            },
+        ])
+
+        self.assertEqual(summary["frame_count"], 5)
+        self.assertEqual(summary["sequence_count"], 5)
+        self.assertEqual(summary["mode"], "burst_local")
+        self.assertFalse(summary["monotonic_sequence"])
+        self.assertEqual(summary["duplicate_sequences"], 2)
+        self.assertEqual(summary["collector_started_frame_count"], 2)
+        self.assertEqual(summary["average_frames_per_collector_started"], 2.5)
+        self.assertTrue(summary["burst_local_monotonic_sequence"])
+        self.assertEqual(summary["burst_local_duplicate_sequences"], 0)
+        self.assertEqual(summary["burst_local_missing_sequences"], 1)
+        self.assertEqual(summary["burst_local_max_sequence_gap"], 1)
+
     def test_session_can_record_state_control_preflight_diagnostics(self):
         original_record_probes = cs.record_probes
         original_preflight = cs.resolve_state_control_preflight
