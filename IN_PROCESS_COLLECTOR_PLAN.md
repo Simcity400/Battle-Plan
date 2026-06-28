@@ -368,12 +368,12 @@ Completed in the first repo/live proof pass:
     runs because late workers can connect to the next recorder. Bounded worker
     controls now include a per-run pipe token and disable sidecar file logging by
     default; profile/one-shot attach keeps the legacy PID pipe.
-23. Speed-five proof: with the game set to max speed, a single 8-second bounded
-    worker at 10 ms cadence recorded 566 pipe frames and 13 unique hourly
-    snapshots (`1937.8.16.9` through `1937.8.16.21`). The required 12 hourly
-    deltas were all exactly `1`, skipped zero hours, completed in 11.844 wall
-    seconds under the 15-second proof cap, kept transport sequence monotonic, and
-    packed/byte-verified a `.battleplan` container.
+23. User-confirmed speed-five proof: with the game explicitly set to speed five,
+    a single 8-second bounded worker at 10 ms cadence recorded 72 pipe frames and
+    13 unique hourly snapshots (`1937.11.30.17` through `1937.12.1.5`). The
+    required 12 hourly deltas were all exactly `1`, skipped zero hours, completed
+    in 11.5 wall seconds under the 15-second proof cap, kept transport sequence
+    monotonic, and packed/byte-verified a `.battleplan` container.
 
 Next:
 
