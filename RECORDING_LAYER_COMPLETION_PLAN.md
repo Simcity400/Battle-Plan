@@ -713,8 +713,8 @@ Tasks:
   dropped scheduled frames, queue high-water mark, invalid frames, duplicate
   sequence ids, and CRC failures.
 - Keep `.battleplan` finalization preserving raw stream, gap, and quality
-  metadata; native readers still need a public payload enumeration/read API for
-  `collector_raw_stream`.
+  metadata; native readers now expose verified raw payload enumeration/read APIs
+  and `scrub::Timeline` owns a sibling gameplay raw-frame index.
 
 ### D. Schema And Provenance
 
@@ -1076,9 +1076,8 @@ These stay out of the replay unless the product scope changes:
    next implementation slice is root-anchored country identity plus country
    scalars; do not extend the heap-scanning `country_object_scan` path into the
    hot loop.
-6. Add native `snapshot::Container` / `Store` APIs to enumerate and read
-   `collector_raw_stream` payloads from verified `.battleplan` files, then wire
-   scrub/timeline indexing to that raw stream.
+6. Surface `scrub::Timeline` raw-frame index in the native app where useful:
+   first as diagnostics/coverage, then as exact movement/combat/event overlays.
 7. Run a longer speed-five proof and reopen the `.battleplan` in the native app.
 8. Continue domain promotion in this order: first-three tranche, combat/movement,
    focus/research/decisions/projects, diplomacy/intel/logistics/weather,

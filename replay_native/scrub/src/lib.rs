@@ -1,7 +1,7 @@
 //! `scrub` — M6, **the scrubber**: the spine that drives the whole replay UI
 //! through time.
 //!
-//! Three pieces, exactly as the spec's M6 audit gate requires:
+//! Four pieces, exactly as the spec's M6 audit gate requires:
 //!
 //! 1. [`Timeline`] — owns the global `hour_index` and the ordered snapshot series
 //!    (read from the store's `index.json`, NEVER reconstructed). `step`/`play`
@@ -21,6 +21,11 @@
 //!    the ~3 MB `divisions` array. It hands out `&Value` / `&Snapshot` references —
 //!    it cannot mutate, by type.
 //!
+//! 4. [`RawFrameIndex`] — an optional sibling index over verified
+//!    `collector_raw_stream` JSONL payloads inside `.battleplan`. It indexes only
+//!    gameplay raw frames (`domain_delta`, `event`, `gap`); lifecycle diagnostics
+//!    stay in the preserved byte stream, not in the app-facing scrub index.
+//!
 //! ## The HARD no-fabrication rule, enforced by construction
 //!
 //! A cached snapshot is a **shared** instance: [`SnapshotLru::get`] returns
@@ -36,9 +41,165 @@
 //! A report is byte-identical to the first A bind. See also the prose in
 //! [`immutable`].
 
+use serde_json::Value;
 use snapshot::{Index, Snapshot, Store};
 use std::collections::VecDeque;
 use std::sync::Arc;
+
+const RAW_COLLECTOR_STREAM_ROLE: &str = "collector_raw_stream";
+
+/// A parsed gameplay raw frame from `collector_frames.jsonl`. This is a sibling
+/// to hourly snapshots: it never becomes a `Frame` and never changes the
+/// authoritative `Timeline::hours()` series.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawFrame {
+    pub kind: String,
+    pub hour_index: Option<i64>,
+    pub date: Option<String>,
+    pub tick_ms: Option<i64>,
+    pub sequence: Option<i64>,
+    pub session_sequence: Option<i64>,
+    pub domain: Option<String>,
+    pub entity_key: Option<String>,
+    pub source: Option<String>,
+    pub confidence: Option<String>,
+    pub reason: Option<String>,
+    pub payload: Option<Value>,
+}
+
+/// Optional raw collector frames indexed beside the hourly snapshot spine.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RawFrameIndex {
+    frames: Vec<RawFrame>,
+    errors: Vec<String>,
+    source_paths: Vec<String>,
+}
+
+impl RawFrameIndex {
+    pub fn empty() -> RawFrameIndex {
+        RawFrameIndex::default()
+    }
+    pub fn frames(&self) -> &[RawFrame] {
+        &self.frames
+    }
+    pub fn errors(&self) -> &[String] {
+        &self.errors
+    }
+    pub fn source_paths(&self) -> &[String] {
+        &self.source_paths
+    }
+    pub fn is_available(&self) -> bool {
+        !self.frames.is_empty() && self.errors.is_empty()
+    }
+    pub fn frames_at_hour(&self, hour_index: i64) -> Vec<&RawFrame> {
+        self.frames
+            .iter()
+            .filter(|frame| frame.hour_index == Some(hour_index))
+            .collect()
+    }
+
+    fn from_store(store: &Store) -> RawFrameIndex {
+        let Some(container) = store.container() else {
+            return RawFrameIndex::empty();
+        };
+        let entries = container.entries_by_role(RAW_COLLECTOR_STREAM_ROLE);
+        if entries.is_empty() {
+            return RawFrameIndex::empty();
+        }
+
+        let mut frames = Vec::new();
+        let mut source_paths = Vec::new();
+        for entry in entries {
+            let bytes = match container.read_entry_bytes(&entry.path) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    return RawFrameIndex::failed(format!(
+                        "raw stream {} failed integrity/read: {err}",
+                        entry.path
+                    ));
+                }
+            };
+            let text = match String::from_utf8(bytes) {
+                Ok(text) => text,
+                Err(err) => {
+                    return RawFrameIndex::failed(format!(
+                        "raw stream {} is not utf-8: {err}",
+                        entry.path
+                    ));
+                }
+            };
+            source_paths.push(entry.path);
+            if let Err(err) = parse_raw_jsonl(&text, &mut frames) {
+                return RawFrameIndex::failed(err);
+            }
+        }
+        frames.sort_by_key(raw_frame_sort_key);
+        RawFrameIndex {
+            frames,
+            errors: Vec::new(),
+            source_paths,
+        }
+    }
+
+    fn failed(message: String) -> RawFrameIndex {
+        RawFrameIndex {
+            frames: Vec::new(),
+            errors: vec![message],
+            source_paths: Vec::new(),
+        }
+    }
+}
+
+fn parse_raw_jsonl(text: &str, frames: &mut Vec<RawFrame>) -> Result<(), String> {
+    for (i, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let value: Value = serde_json::from_str(line)
+            .map_err(|err| format!("raw stream line {} is invalid json: {err}", i + 1))?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| format!("raw stream line {} is not an object", i + 1))?;
+        let Some(kind) = string_field(&value, "type") else {
+            continue;
+        };
+        if !matches!(kind.as_str(), "domain_delta" | "event" | "gap") {
+            continue;
+        }
+        frames.push(RawFrame {
+            kind,
+            hour_index: i64_field(&value, "hour_index"),
+            date: string_field(&value, "date"),
+            tick_ms: i64_field(&value, "tick_ms"),
+            sequence: i64_field(&value, "sequence"),
+            session_sequence: i64_field(&value, "session_sequence"),
+            domain: string_field(&value, "domain"),
+            entity_key: string_field(&value, "entity_key"),
+            source: string_field(&value, "source"),
+            confidence: string_field(&value, "confidence"),
+            reason: string_field(&value, "reason"),
+            payload: object.get("payload").cloned(),
+        });
+    }
+    Ok(())
+}
+
+fn string_field(value: &Value, key: &str) -> Option<String> {
+    value.get(key)?.as_str().map(str::to_string)
+}
+
+fn i64_field(value: &Value, key: &str) -> Option<i64> {
+    value.get(key)?.as_i64()
+}
+
+fn raw_frame_sort_key(frame: &RawFrame) -> (i64, i64, i64) {
+    (
+        frame.hour_index.unwrap_or(i64::MAX),
+        frame.tick_ms.unwrap_or(i64::MAX),
+        frame.sequence.unwrap_or(i64::MAX),
+    )
+}
 
 /// A graceful "empty series" error for the transport controls. An empty timeline is
 /// only reachable from a degenerate/corrupt index (zero snapshots, or every snapshot
@@ -241,6 +402,7 @@ pub struct Timeline {
     /// Auto-advance direction (play walks the series this way).
     dir: Dir,
     cache: SnapshotLru,
+    raw_index: RawFrameIndex,
 }
 
 impl Timeline {
@@ -254,7 +416,10 @@ impl Timeline {
     ) -> Result<Timeline, snapshot::LoadError> {
         let game = game.into();
         let index: Index = store.index(&game)?;
-        Ok(Self::from_index(store, game, index, capacity))
+        let raw_index = RawFrameIndex::from_store(&store);
+        Ok(Self::from_index_with_raw(
+            store, game, index, capacity, raw_index,
+        ))
     }
 
     /// As [`open`](Self::open) but with an already-loaded [`Index`] (avoids a second
@@ -264,6 +429,16 @@ impl Timeline {
         game: impl Into<String>,
         index: Index,
         capacity: usize,
+    ) -> Timeline {
+        Self::from_index_with_raw(store, game, index, capacity, RawFrameIndex::empty())
+    }
+
+    fn from_index_with_raw(
+        store: Store,
+        game: impl Into<String>,
+        index: Index,
+        capacity: usize,
+        raw_index: RawFrameIndex,
     ) -> Timeline {
         let mut hours: Vec<i64> = index
             .snapshots
@@ -288,6 +463,7 @@ impl Timeline {
             playing: false,
             dir: Dir::Forward,
             cache,
+            raw_index,
         }
     }
 
@@ -318,6 +494,10 @@ impl Timeline {
     /// Borrow the LRU (for the latency / window report).
     pub fn cache(&self) -> &SnapshotLru {
         &self.cache
+    }
+    /// Optional gameplay raw frames indexed beside, not inside, the hourly series.
+    pub fn raw_index(&self) -> &RawFrameIndex {
+        &self.raw_index
     }
 
     // -- transport controls -------------------------------------------------
@@ -457,6 +637,7 @@ pub mod immutable {}
 mod tests {
     use super::*;
     use serde_json::json;
+    use snapshot::{pack, PackEntry, PackIdentity};
     use std::fs;
 
     /// Build a tiny on-disk store with two snapshots so the LRU/timeline exercise
@@ -507,6 +688,123 @@ mod tests {
         .unwrap();
         let store = Store::open(&dir.path);
         (dir, store, game)
+    }
+
+    fn replay_store_with_raw(raw_jsonl: &str) -> (tempdir::TempDirLike, Store, String) {
+        let dir = tempdir::TempDirLike::new("scrub_m6_replay");
+        let game = "g".to_string();
+        let snap_a = json!({
+            "schema_version":"1","game_id":"g","date":"1940.1.1.12","hour_index":100,
+            "countries":{"GER":{"politics":{"political_power":10.0}}},
+            "states":{}
+        });
+        let snap_b = json!({
+            "schema_version":"1","game_id":"g","date":"1940.1.1.13","hour_index":200,
+            "countries":{"GER":{"politics":{"political_power":20.0}}},
+            "states":{}
+        });
+        let index = json!({"game_id":"g","schema_version":"1","snapshots":[
+            {"hour_index":100,"date":"1940.1.1.12","file":"000000000100.snapshot.json"},
+            {"hour_index":200,"date":"1940.1.1.13","file":"000000000200.snapshot.json"}
+        ]});
+        let entries = vec![
+            PackEntry {
+                path: format!("payload/{game}/index.json"),
+                bytes: serde_json::to_vec(&index).unwrap(),
+                role: "index",
+                hour_index: None,
+            },
+            PackEntry {
+                path: format!("payload/{game}/000000000100.snapshot.json"),
+                bytes: serde_json::to_vec(&snap_a).unwrap(),
+                role: "snapshot",
+                hour_index: Some(100),
+            },
+            PackEntry {
+                path: format!("payload/{game}/000000000200.snapshot.json"),
+                bytes: serde_json::to_vec(&snap_b).unwrap(),
+                role: "snapshot",
+                hour_index: Some(200),
+            },
+            PackEntry {
+                path: format!("payload/{game}/collector_raw/collector_frames.jsonl"),
+                bytes: raw_jsonl.as_bytes().to_vec(),
+                role: "collector_raw_stream",
+                hour_index: None,
+            },
+        ];
+        let bytes = pack(
+            &game,
+            &entries,
+            &PackIdentity {
+                schema_version: Some("1".into()),
+                ..Default::default()
+            },
+            true,
+        )
+        .unwrap();
+        let path = dir.path.join("raw.battleplan");
+        fs::write(&path, bytes).unwrap();
+        let store = Store::open(&path);
+        (dir, store, game)
+    }
+
+    #[test]
+    fn timeline_indexes_raw_stream_without_changing_hourly_spine() {
+        let raw = r#"{"type":"collector_started","sequence":0,"root_probe":{"date_root_ptr":"0xDEADBEEF"}}
+{"type":"domain_delta","hour_index":100,"date":"1940.1.1.12","tick_ms":20,"sequence":2,"session_sequence":2,"domain":"divisions","entity_key":"division:2:4713","source":"C","confidence":"sampled","payload":{"changed_fields":["moving"]}}
+{"type":"domain_delta","hour_index":100,"date":"1940.1.1.12","tick_ms":10,"sequence":1,"session_sequence":1,"domain":"clock","entity_key":"clock:game_date","source":"C","confidence":"sampled","payload":{"changed_fields":["hour_index"]}}
+{"type":"gap","hour_index":200,"date":"1940.1.1.13","tick_ms":30,"sequence":3,"domain":"land_combats","reason":"bridge_not_ready"}
+"#;
+        let (_dir, store, game) = replay_store_with_raw(raw);
+        let mut tl = Timeline::open(store, game, 4).unwrap();
+
+        assert_eq!(tl.hours(), &[100, 200]);
+        assert_eq!(tl.len(), 2);
+        assert!(tl.raw_index().errors().is_empty());
+        assert_eq!(tl.raw_index().source_paths().len(), 1);
+        assert_eq!(
+            tl.raw_index().source_paths()[0],
+            "payload/g/collector_raw/collector_frames.jsonl"
+        );
+
+        let frames = tl.raw_index().frames();
+        assert_eq!(
+            frames.iter().map(|f| f.sequence).collect::<Vec<_>>(),
+            vec![Some(1), Some(2), Some(3)],
+            "collector_started diagnostics are skipped and gameplay raw frames sort by hour/tick/sequence"
+        );
+        assert_eq!(tl.raw_index().frames_at_hour(100).len(), 2);
+        assert_eq!(tl.raw_index().frames_at_hour(200).len(), 1);
+        assert_eq!(frames[0].kind, "domain_delta");
+        assert_eq!(frames[0].domain.as_deref(), Some("clock"));
+        assert_eq!(frames[1].entity_key.as_deref(), Some("division:2:4713"));
+        assert_eq!(frames[2].kind, "gap");
+        assert_eq!(frames[2].reason.as_deref(), Some("bridge_not_ready"));
+
+        let first = tl.seek_to(0).unwrap();
+        assert_eq!(first.hour_index, 100);
+        let second = tl.step(Dir::Forward).unwrap();
+        assert_eq!(second.hour_index, 200);
+    }
+
+    #[test]
+    fn malformed_raw_stream_fails_closed_but_hourly_scrub_still_opens() {
+        let raw = r#"{"type":"domain_delta","hour_index":100,"tick_ms":10,"sequence":1,"domain":"clock"}
+not-json
+{"type":"domain_delta","hour_index":200,"tick_ms":20,"sequence":2,"domain":"divisions"}
+"#;
+        let (_dir, store, game) = replay_store_with_raw(raw);
+        let mut tl = Timeline::open(store, game, 4).unwrap();
+
+        assert_eq!(tl.hours(), &[100, 200]);
+        assert!(tl.raw_index().frames().is_empty());
+        assert_eq!(tl.raw_index().errors().len(), 1);
+        assert!(
+            tl.raw_index().errors()[0].contains("line 2"),
+            "malformed raw JSONL should be reported precisely"
+        );
+        assert_eq!(tl.seek_to(0).unwrap().hour_index, 100);
     }
 
     #[test]

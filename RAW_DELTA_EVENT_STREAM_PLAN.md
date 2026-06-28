@@ -25,7 +25,8 @@ oracle checks only.
   `payload/<game>/collector_raw/collector_frames.jsonl`, marks it with
   `entries[*].role == "collector_raw_stream"`, and exposes
   `manifest.raw_streams[]` metadata. Native readers can open/verify these
-  containers today, but still need a public raw-payload read API.
+  containers, enumerate/read verified raw payloads, and `scrub::Timeline` now
+  indexes gameplay raw frames as a sibling to the hourly snapshot spine.
 - `replay/diff_engine.py::build_timeline` coalesces same-hour snapshots before
   diffing, so sub-hour observations must not be represented only as normal
   snapshots.
