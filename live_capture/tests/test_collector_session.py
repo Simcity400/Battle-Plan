@@ -144,8 +144,10 @@ class TestCollectorSession(unittest.TestCase):
             {
                 "type": "event",
                 "capture_boundary": "worker_poll",
-                "event_type": "province_controller_change",
                 "domain": "province_control",
+                "payload": {
+                    "event_type": "province_controller_change",
+                },
             },
             {
                 "type": "domain_delta",
@@ -761,6 +763,59 @@ class TestCollectorSession(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "session_id"):
                 cs._frames_from_probe_manifest(run_dir, manifest)
 
+    def test_manifest_loader_preserves_raw_stream_frames_only_in_full_stream(self):
+        with tempfile.TemporaryDirectory() as td:
+            run_dir = Path(td) / "session_x"
+            run_dir.mkdir()
+            _write_json(
+                run_dir / "collector_started_0000.json",
+                _frame("1936.1.1.1", 100, sequence=1, pid=123),
+            )
+            _write_json(
+                run_dir / "collector_raw_0000.json",
+                _raw_clock_delta("1936.1.1.1", sequence=2, pid=123),
+            )
+            _write_json(
+                run_dir / "collector_started_0001.json",
+                _frame("1936.1.1.2", 101, sequence=3, pid=123),
+            )
+            manifest = {
+                "type": "collector_probe_manifest",
+                "samples": [
+                    {
+                        "frame": "collector_started_0000.json",
+                        "current_game_date_raw": 100,
+                        "worker_burst_index": 0,
+                        "burst_sample_index": 0,
+                    },
+                    {
+                        "frame": "collector_started_0001.json",
+                        "current_game_date_raw": 101,
+                        "worker_burst_index": 0,
+                        "burst_sample_index": 2,
+                    },
+                ],
+                "raw_frames": [{
+                    "frame": "collector_raw_0000.json",
+                    "worker_burst_index": 0,
+                    "burst_sample_index": 1,
+                }],
+            }
+
+            unique_frames = cs._frames_from_probe_manifest(run_dir, manifest)
+            all_frames = cs._frames_from_probe_manifest(
+                run_dir,
+                manifest,
+                unique_game_hours_only=False,
+            )
+
+        self.assertEqual([f["sequence"] for f in unique_frames], [1, 3])
+        self.assertEqual([f["sequence"] for f in all_frames], [1, 2, 3])
+        self.assertEqual(all_frames[1]["type"], "domain_delta")
+        self.assertEqual(all_frames[1]["session_id"], "session_x")
+        self.assertEqual(all_frames[1]["worker_burst_index"], 0)
+        self.assertEqual(all_frames[1]["burst_sample_index"], 1)
+
     def test_collector_frame_session_stamps_continuity_and_replay_diagnostics(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -882,6 +937,42 @@ def _frame(date, raw, *, sequence, pid, capture_boundary=None):
         frame["capture_boundary"] = capture_boundary
     return {
         **frame,
+    }
+
+
+def _hour_index(date):
+    year, month, day, hour = [int(part) for part in date.split(".")]
+    month_days = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    return (year * 365 + sum(month_days[:month - 1]) + (day - 1)) * 24 + hour
+
+
+def _raw_clock_delta(date, *, sequence, pid):
+    hour_index = _hour_index(date)
+    return {
+        "type": "domain_delta",
+        "backend": "in_process_collector",
+        "collector_version": "0.1.0",
+        "abi_version": 1,
+        "process_id": pid,
+        "tick_ms": sequence,
+        "sequence": sequence,
+        "date": date,
+        "hour_index": hour_index,
+        "sample_ms": 10,
+        "capture_boundary": "worker_poll",
+        "domain": "clock",
+        "entity_key": "clock:game_date",
+        "source": "C",
+        "confidence": "sampled",
+        "payload": {
+            "op": "sample",
+            "after": {
+                "date": date,
+                "hour_index": hour_index,
+                "raw_date": 100,
+            },
+            "changed_fields": ["date", "hour_index", "raw_date"],
+        },
     }
 
 

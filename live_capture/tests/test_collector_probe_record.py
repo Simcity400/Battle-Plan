@@ -369,6 +369,8 @@ class TestCollectorProbeRecord(unittest.TestCase):
                 )
                 manifest = json.loads(
                     (run_dir / "manifest.json").read_text(encoding="utf-8"))
+                raw_file_exists = (run_dir / "collector_raw_0000.json").exists()
+                second_snapshot_exists = (run_dir / "snapshot_0001.json").exists()
         finally:
             cpr._attach_with_retries = original_attach
 
@@ -377,6 +379,41 @@ class TestCollectorProbeRecord(unittest.TestCase):
         self.assertTrue(manifest["partial_session"])
         self.assertEqual(len(manifest["attach_errors"]), 1)
         self.assertNotIn(str(root), json.dumps(manifest, sort_keys=True))
+
+    def test_record_probes_persists_raw_pipe_frames_without_counting_samples(self):
+        original_attach = cpr._attach_with_retries
+        frames = [
+            _frame("1936.1.1.1", 100, sequence=1),
+            _raw_clock_delta("1936.1.1.1", sequence=2),
+        ]
+        cpr._attach_with_retries = lambda *a, **kw: SimpleNamespace(
+            pipe_frames=frames, pipe_frame=frames[-1], thread_id=123
+        )
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                run_dir = record_probes(
+                    111,
+                    root / "collector.dll",
+                    root / "out",
+                    worker_duration_s=1.0,
+                    worker_sample_ms=10,
+                )
+                manifest = json.loads(
+                    (run_dir / "manifest.json").read_text(encoding="utf-8"))
+                raw_file_exists = (run_dir / "collector_raw_0000.json").exists()
+                second_snapshot_exists = (run_dir / "snapshot_0001.json").exists()
+        finally:
+            cpr._attach_with_retries = original_attach
+
+        self.assertEqual(manifest["sample_count"], 1)
+        self.assertEqual(manifest["raw_pipe_frame_count"], 1)
+        self.assertEqual(manifest["raw_frames"][0]["frame"], "collector_raw_0000.json")
+        self.assertEqual(manifest["raw_frames"][0]["type"], "domain_delta")
+        self.assertEqual(manifest["raw_frames"][0]["domain"], "clock")
+        self.assertEqual(manifest["raw_frames"][0]["sequence"], 2)
+        self.assertTrue(raw_file_exists)
+        self.assertFalse(second_snapshot_exists)
 
 
 def _sample(date, raw, *, sequence, stored=False, skip_reason=None, burst=None):
@@ -415,6 +452,42 @@ def _frame(date, raw, *, sequence):
             "country_active_count": 2,
             "tag_sample": ["---", "GER", "ENG"],
             "domains": ["clock"],
+        },
+    }
+
+
+def _hour_index(date):
+    year, month, day, hour = [int(part) for part in date.split(".")]
+    month_days = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    return (year * 365 + sum(month_days[:month - 1]) + (day - 1)) * 24 + hour
+
+
+def _raw_clock_delta(date, *, sequence):
+    hour_index = _hour_index(date)
+    return {
+        "type": "domain_delta",
+        "backend": "in_process_collector",
+        "collector_version": "0.1.0",
+        "abi_version": 1,
+        "process_id": 111,
+        "tick_ms": sequence,
+        "sequence": sequence,
+        "date": date,
+        "hour_index": hour_index,
+        "sample_ms": 10,
+        "capture_boundary": "worker_poll",
+        "domain": "clock",
+        "entity_key": "clock:game_date",
+        "source": "C",
+        "confidence": "sampled",
+        "payload": {
+            "op": "sample",
+            "after": {
+                "date": date,
+                "hour_index": hour_index,
+                "raw_date": 100,
+            },
+            "changed_fields": ["date", "hour_index", "raw_date"],
         },
     }
 

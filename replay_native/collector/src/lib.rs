@@ -281,6 +281,7 @@ mod attach_log {
             let mut session_sequence = 1u64;
             let mut last_scheduled_game_hour: Option<i32> = None;
             while Instant::now() <= deadline {
+                let elapsed_wall_ms = duration_millis_u64(worker_started.elapsed());
                 let capture_boundary = capture_boundary_for_frame(
                     state.as_ref(),
                     &control,
@@ -291,11 +292,22 @@ mod attach_log {
                     state.as_ref(),
                     Some(&control),
                     Some(session_sequence),
-                    Some(duration_millis_u64(worker_started.elapsed())),
+                    Some(elapsed_wall_ms),
                     Some(capture_boundary),
                 );
                 write_sinks(file.as_mut(), pipe, line.as_bytes());
                 session_sequence = session_sequence.saturating_add(1);
+                if let Some(line) = build_clock_raw_domain_delta_line(
+                    pid,
+                    state.as_ref(),
+                    &control,
+                    Some(session_sequence),
+                    Some(elapsed_wall_ms),
+                    capture_boundary,
+                ) {
+                    write_sinks(file.as_mut(), pipe, line.as_bytes());
+                    session_sequence = session_sequence.saturating_add(1);
+                }
                 thread::sleep(Duration::from_millis(control.sample_ms as u64));
             }
         } else {
@@ -853,6 +865,215 @@ mod attach_log {
             quality,
             probe
         )
+    }
+
+    const RAW_SOURCE: &str = "C";
+    const RAW_CLOCK_DOMAIN: &str = "clock";
+    const RAW_CLOCK_ENTITY_KEY: &str = "clock:game_date";
+    const RAW_CONFIDENCE_SAMPLED: &str = "sampled";
+    const RAW_SHORT_STRING_MAX_LENGTH: usize = 128;
+    const RAW_STRING_MAX_LENGTH: usize = 512;
+    const RAW_JSON_OBJECT_MAX_LENGTH: usize = 4096;
+
+    struct ClockSample {
+        date: String,
+        hour_index: u64,
+        raw_date: i32,
+    }
+
+    struct RawDomainDeltaFrame<'a> {
+        pid: Dword,
+        sequence: u64,
+        session_sequence: Option<u64>,
+        tick_ms: u64,
+        date: &'a str,
+        hour_index: u64,
+        sample_ms: u32,
+        duration_ms: Option<u32>,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &'a str,
+        domain: &'a str,
+        entity_key: &'a str,
+        confidence: &'a str,
+        after_json: &'a str,
+        changed_fields: &'a [&'a str],
+    }
+
+    fn build_clock_raw_domain_delta_line(
+        pid: Dword,
+        state: Option<&CollectorState>,
+        control: &CollectorControl,
+        session_sequence: Option<u64>,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+    ) -> Option<String> {
+        let sample = clock_sample_from_state(state)?;
+        let tick_ms = unsafe { GetTickCount64() };
+        let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        clock_raw_domain_delta_frame_line(
+            pid,
+            sequence,
+            session_sequence,
+            tick_ms,
+            control,
+            elapsed_wall_ms,
+            capture_boundary,
+            &sample,
+        )
+    }
+
+    fn clock_raw_domain_delta_frame_line(
+        pid: Dword,
+        sequence: u64,
+        session_sequence: Option<u64>,
+        tick_ms: u64,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        sample: &ClockSample,
+    ) -> Option<String> {
+        let after_json = format!(
+            "{{\"date\":{},\"hour_index\":{},\"raw_date\":{}}}",
+            json_str(&sample.date),
+            sample.hour_index,
+            sample.raw_date
+        );
+        raw_domain_delta_frame_line(RawDomainDeltaFrame {
+            pid,
+            sequence,
+            session_sequence,
+            tick_ms,
+            date: &sample.date,
+            hour_index: sample.hour_index,
+            sample_ms: control.sample_ms,
+            duration_ms: Some(control.duration_ms),
+            elapsed_wall_ms,
+            capture_boundary,
+            domain: RAW_CLOCK_DOMAIN,
+            entity_key: RAW_CLOCK_ENTITY_KEY,
+            confidence: RAW_CONFIDENCE_SAMPLED,
+            after_json: &after_json,
+            changed_fields: &["date", "hour_index", "raw_date"],
+        })
+    }
+
+    fn clock_sample_from_state(state: Option<&CollectorState>) -> Option<ClockSample> {
+        let raw_date = current_game_date_raw(state)?;
+        let date = decode_datehour(raw_date)?;
+        let hour_index = raw_date.checked_sub(DATE_EPOCH_CONST)? as u64;
+        Some(ClockSample {
+            date,
+            hour_index,
+            raw_date,
+        })
+    }
+
+    fn raw_domain_delta_frame_line(frame: RawDomainDeltaFrame<'_>) -> Option<String> {
+        if !valid_raw_short_string(frame.date)
+            || !valid_raw_short_string(frame.capture_boundary)
+            || !valid_raw_domain(frame.domain)
+            || !valid_raw_key(frame.entity_key)
+            || !valid_raw_confidence(frame.confidence)
+            || !valid_raw_object_json(frame.after_json)
+            || frame.changed_fields.len() > 256
+            || frame
+                .changed_fields
+                .iter()
+                .any(|field| !valid_raw_short_string(field))
+        {
+            return None;
+        }
+
+        let changed_fields = frame
+            .changed_fields
+            .iter()
+            .map(|field| json_str(field))
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut fields = vec![
+            "\"type\":\"domain_delta\"".to_string(),
+            "\"backend\":\"in_process_collector\"".to_string(),
+            format!("\"collector_version\":\"{}\"", super::COLLECTOR_VERSION),
+            format!("\"abi_version\":{}", super::ABI_VERSION),
+            format!("\"process_id\":{}", frame.pid),
+            format!("\"tick_ms\":{}", frame.tick_ms),
+            format!("\"sequence\":{}", frame.sequence),
+            format!("\"profile_id\":\"{}\"", super::COLLECTOR_PROFILE_ID),
+            format!("\"date\":{}", json_str(frame.date)),
+            format!("\"hour_index\":{}", frame.hour_index),
+            format!("\"sample_ms\":{}", frame.sample_ms),
+            format!("\"capture_boundary\":{}", json_str(frame.capture_boundary)),
+            format!("\"domain\":{}", json_str(frame.domain)),
+            format!("\"entity_key\":{}", json_str(frame.entity_key)),
+            format!("\"source\":\"{}\"", RAW_SOURCE),
+            format!("\"confidence\":{}", json_str(frame.confidence)),
+        ];
+        if let Some(session_sequence) = frame.session_sequence {
+            fields.push(format!("\"session_sequence\":{session_sequence}"));
+        }
+        if let Some(duration_ms) = frame.duration_ms {
+            fields.push(format!("\"duration_ms\":{duration_ms}"));
+        }
+        if let Some(elapsed_wall_ms) = frame.elapsed_wall_ms {
+            fields.push(format!("\"elapsed_wall_ms\":{elapsed_wall_ms}"));
+        }
+        fields.push(format!(
+            "\"payload\":{{\"op\":\"sample\",\"after\":{},\"changed_fields\":[{}]}}",
+            frame.after_json, changed_fields
+        ));
+        Some(format!("{{{}}}\n", fields.join(",")))
+    }
+
+    fn valid_raw_short_string(value: &str) -> bool {
+        !value.is_empty() && value.len() <= RAW_SHORT_STRING_MAX_LENGTH
+    }
+
+    fn valid_raw_key(value: &str) -> bool {
+        !value.is_empty() && value.len() <= RAW_STRING_MAX_LENGTH && !looks_like_hex_pointer(value)
+    }
+
+    fn valid_raw_domain(value: &str) -> bool {
+        matches!(value, RAW_CLOCK_DOMAIN)
+    }
+
+    fn valid_raw_confidence(value: &str) -> bool {
+        matches!(value, "exact" | "sampled" | "proxy" | "gap")
+    }
+
+    fn looks_like_hex_pointer(value: &str) -> bool {
+        let Some(hex) = value
+            .strip_prefix("0x")
+            .or_else(|| value.strip_prefix("0X"))
+        else {
+            return false;
+        };
+        !hex.is_empty() && hex.bytes().all(|b| b.is_ascii_hexdigit())
+    }
+
+    fn valid_raw_object_json(value: &str) -> bool {
+        let trimmed = value.trim();
+        !trimmed.is_empty()
+            && trimmed.len() <= RAW_JSON_OBJECT_MAX_LENGTH
+            && trimmed.starts_with('{')
+            && trimmed.ends_with('}')
+    }
+
+    fn json_str(value: &str) -> String {
+        let mut out = String::with_capacity(value.len() + 2);
+        out.push('"');
+        for ch in value.chars() {
+            match ch {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                ch if ch.is_control() => out.push_str(&format!("\\u{:04X}", ch as u32)),
+                ch => out.push(ch),
+            }
+        }
+        out.push('"');
+        out
     }
 
     fn control_metadata_json(
@@ -2357,6 +2578,23 @@ mod attach_log {
         use super::*;
         use std::fs;
 
+        fn raw_test_control() -> CollectorControl {
+            CollectorControl {
+                duration_ms: 8000,
+                sample_ms: 10,
+                country_object_scan: false,
+                country_object_bridge: Vec::new(),
+                country_object_bridge_valid: true,
+                country_record_bridge: Vec::new(),
+                country_record_bridge_valid: true,
+                map_control: MapControlContract::empty(),
+                scheduled_snapshot_step_hours: 1,
+                pipe_token: Some("abc".to_string()),
+                session_id: Some("run_1".to_string()),
+                sidecar_log: false,
+            }
+        }
+
         #[test]
         fn collector_control_accepts_sanitized_session_id() {
             let dir = std::env::temp_dir().join(format!(
@@ -2684,6 +2922,202 @@ mod attach_log {
 
             assert_eq!(parsed.session_id, None);
             let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn raw_clock_delta_frame_includes_bounded_contract_envelope() {
+            let control = raw_test_control();
+            let hour_index = ((1936 * 365) * 24 + 12) as u64;
+            let sample = ClockSample {
+                date: "1936.1.1.12".to_string(),
+                hour_index,
+                raw_date: DATE_EPOCH_CONST + hour_index as i32,
+            };
+
+            let frame = clock_raw_domain_delta_frame_line(
+                1234,
+                11,
+                Some(5),
+                123456,
+                &control,
+                Some(125),
+                "worker_poll",
+                &sample,
+            )
+            .unwrap();
+
+            assert!(frame.ends_with('\n'));
+            assert!(frame.contains("\"type\":\"domain_delta\""));
+            assert!(frame.contains("\"backend\":\"in_process_collector\""));
+            assert!(frame.contains("\"collector_version\":\"0.1.0\""));
+            assert!(frame.contains("\"abi_version\":1"));
+            assert!(frame.contains("\"process_id\":1234"));
+            assert!(frame.contains("\"tick_ms\":123456"));
+            assert!(frame.contains("\"sequence\":11"));
+            assert!(frame.contains("\"profile_id\":\"vanilla_latest_2026_06_28\""));
+            assert!(frame.contains("\"session_sequence\":5"));
+            assert!(frame.contains("\"duration_ms\":8000"));
+            assert!(frame.contains("\"elapsed_wall_ms\":125"));
+            assert!(frame.contains("\"date\":\"1936.1.1.12\""));
+            assert!(frame.contains(&format!("\"hour_index\":{hour_index}")));
+            assert!(frame.contains("\"sample_ms\":10"));
+            assert!(frame.contains("\"capture_boundary\":\"worker_poll\""));
+            assert!(frame.contains("\"domain\":\"clock\""));
+            assert!(frame.contains("\"entity_key\":\"clock:game_date\""));
+            assert!(frame.contains("\"source\":\"C\""));
+            assert!(frame.contains("\"confidence\":\"sampled\""));
+            assert!(frame.contains("\"payload\":{\"op\":\"sample\""));
+            assert!(frame.contains("\"after\":{\"date\":\"1936.1.1.12\""));
+            assert!(frame.contains(&format!(
+                "\"raw_date\":{}",
+                DATE_EPOCH_CONST + hour_index as i32
+            )));
+            assert!(frame.contains("\"changed_fields\":[\"date\",\"hour_index\",\"raw_date\"]"));
+            assert!(!frame.contains("\"domains\""));
+            assert!(!frame.contains("\"countries\""));
+            assert!(!frame.contains("\"states\""));
+            assert!(!frame.contains("\"provinces\""));
+            assert!(!frame.contains("\"divisions\""));
+        }
+
+        #[test]
+        fn raw_domain_delta_builder_rejects_unbounded_envelope_values() {
+            let too_long = "x".repeat(RAW_SHORT_STRING_MAX_LENGTH + 1);
+            let changed_fields = ["date"];
+
+            let rejected_boundary = raw_domain_delta_frame_line(RawDomainDeltaFrame {
+                pid: 1234,
+                sequence: 11,
+                session_sequence: Some(5),
+                tick_ms: 123456,
+                date: "1936.1.1.12",
+                hour_index: 1,
+                sample_ms: 10,
+                duration_ms: Some(8000),
+                elapsed_wall_ms: Some(125),
+                capture_boundary: &too_long,
+                domain: "clock",
+                entity_key: "clock:game_date",
+                confidence: "sampled",
+                after_json: "{}",
+                changed_fields: &changed_fields,
+            });
+            assert!(rejected_boundary.is_none());
+
+            let rejected_pointer_key = raw_domain_delta_frame_line(RawDomainDeltaFrame {
+                pid: 1234,
+                sequence: 11,
+                session_sequence: Some(5),
+                tick_ms: 123456,
+                date: "1936.1.1.12",
+                hour_index: 1,
+                sample_ms: 10,
+                duration_ms: Some(8000),
+                elapsed_wall_ms: Some(125),
+                capture_boundary: "worker_poll",
+                domain: "clock",
+                entity_key: "0x1234",
+                confidence: "sampled",
+                after_json: "{}",
+                changed_fields: &changed_fields,
+            });
+            assert!(rejected_pointer_key.is_none());
+
+            let rejected_unknown_domain = raw_domain_delta_frame_line(RawDomainDeltaFrame {
+                pid: 1234,
+                sequence: 11,
+                session_sequence: Some(5),
+                tick_ms: 123456,
+                date: "1936.1.1.12",
+                hour_index: 1,
+                sample_ms: 10,
+                duration_ms: Some(8000),
+                elapsed_wall_ms: Some(125),
+                capture_boundary: "worker_poll",
+                domain: "divisions",
+                entity_key: "clock:game_date",
+                confidence: "sampled",
+                after_json: "{}",
+                changed_fields: &changed_fields,
+            });
+            assert!(rejected_unknown_domain.is_none());
+
+            let rejected_confidence = raw_domain_delta_frame_line(RawDomainDeltaFrame {
+                pid: 1234,
+                sequence: 11,
+                session_sequence: Some(5),
+                tick_ms: 123456,
+                date: "1936.1.1.12",
+                hour_index: 1,
+                sample_ms: 10,
+                duration_ms: Some(8000),
+                elapsed_wall_ms: Some(125),
+                capture_boundary: "worker_poll",
+                domain: "clock",
+                entity_key: "clock:game_date",
+                confidence: "certain",
+                after_json: "{}",
+                changed_fields: &changed_fields,
+            });
+            assert!(rejected_confidence.is_none());
+
+            let rejected_after = raw_domain_delta_frame_line(RawDomainDeltaFrame {
+                pid: 1234,
+                sequence: 11,
+                session_sequence: Some(5),
+                tick_ms: 123456,
+                date: "1936.1.1.12",
+                hour_index: 1,
+                sample_ms: 10,
+                duration_ms: Some(8000),
+                elapsed_wall_ms: Some(125),
+                capture_boundary: "worker_poll",
+                domain: "clock",
+                entity_key: "clock:game_date",
+                confidence: "sampled",
+                after_json: "[]",
+                changed_fields: &changed_fields,
+            });
+            assert!(rejected_after.is_none());
+        }
+
+        #[test]
+        fn raw_clock_delta_does_not_pollute_snapshot_domain_claims() {
+            let control = raw_test_control();
+            let sample = ClockSample {
+                date: "1936.1.1.12".to_string(),
+                hour_index: ((1936 * 365) * 24 + 12) as u64,
+                raw_date: DATE_EPOCH_CONST + ((1936 * 365) * 24 + 12),
+            };
+
+            let raw = clock_raw_domain_delta_frame_line(
+                1234,
+                11,
+                Some(5),
+                123456,
+                &control,
+                Some(125),
+                "scheduled_hour_snapshot",
+                &sample,
+            )
+            .unwrap();
+            assert!(raw.contains("\"domain\":\"clock\""));
+            assert!(!raw.contains("\"domains\""));
+            assert!(!raw.contains("\"root_probe\""));
+
+            let snapshot = build_frame_line(
+                1234,
+                None,
+                Some(&control),
+                Some(7),
+                Some(125),
+                Some("scheduled_hour_snapshot"),
+            );
+
+            assert!(snapshot.contains("\"type\":\"collector_started\""));
+            assert!(snapshot.contains("\"domains\":[]"));
+            assert!(!snapshot.contains("\"domain\":\"clock\""));
+            assert!(!snapshot.contains("\"payload\""));
         }
 
         #[test]

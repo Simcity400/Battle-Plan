@@ -92,6 +92,7 @@ def record_probes(
     manifest_path = run_dir / "manifest.json"
     store = DurableCaptureStore(str(store_root)) if store_root is not None else None
     samples: List[Dict[str, Any]] = []
+    raw_frames: List[Dict[str, Any]] = []
     worker_pipe_tokens: List[str] = []
     attach_errors: List[str] = []
     first_frame: Optional[Dict[str, Any]] = None
@@ -160,6 +161,22 @@ def record_probes(
         for burst_sample_index, frame in enumerate(frames):
             root_probe = latest_verified_root_probe([frame])
             if root_probe is None:
+                if _is_raw_stream_frame(frame):
+                    raw_index = len(raw_frames)
+                    frame_name = f"collector_raw_{raw_index:04d}.json"
+                    _write_json(run_dir / frame_name, frame)
+                    raw_frames.append(
+                        _raw_frame_manifest(
+                            raw_index=raw_index,
+                            result=result,
+                            frame=frame,
+                            frame_name=frame_name,
+                            worker_burst_index=attach_index,
+                            burst_sample_index=burst_sample_index,
+                            worker_pipe_token=pipe_token,
+                            elapsed_wall_s=time.monotonic() - sample_started,
+                        )
+                    )
                 continue
 
             current_raw = root_probe.get("current_game_date_raw")
@@ -278,6 +295,8 @@ def record_probes(
             "partial_session": bool(attach_errors and samples),
             "stop_reason": stop_reason,
             "elapsed_wall_s": elapsed_wall_s,
+            "raw_pipe_frame_count": len(raw_frames),
+            "raw_frames": raw_frames,
             "first_frame": "collector_started.json",
             "first_snapshot": "snapshot.json" if first_snapshot is not None
             and write_snapshot_artifacts else None,
@@ -533,6 +552,42 @@ def _sample_manifest(
         "snapshot": snapshot_name,
         "store_path": _manifest_store_ref(store_path),
         "store_skipped_reason": store_skipped_reason,
+    }
+
+
+def _raw_frame_manifest(
+    *,
+    raw_index: int,
+    result: Any,
+    frame: Dict[str, Any],
+    frame_name: str,
+    worker_burst_index: int,
+    burst_sample_index: int,
+    worker_pipe_token: Optional[str],
+    elapsed_wall_s: float,
+) -> Dict[str, Any]:
+    return {
+        "raw_index": raw_index,
+        "worker_burst_index": worker_burst_index,
+        "burst_sample_index": burst_sample_index,
+        "worker_pipe_token": worker_pipe_token,
+        "elapsed_wall_s": elapsed_wall_s,
+        "thread_id": result.thread_id,
+        "type": frame.get("type"),
+        "sequence": frame.get("sequence"),
+        "domain": frame.get("domain"),
+        "event_type": frame.get("event_type"),
+        "gap_kind": frame.get("gap_kind"),
+        "capture_boundary": frame.get("capture_boundary"),
+        "frame": frame_name,
+    }
+
+
+def _is_raw_stream_frame(frame: Dict[str, Any]) -> bool:
+    return isinstance(frame, dict) and frame.get("type") in {
+        "domain_delta",
+        "event",
+        "gap",
     }
 
 

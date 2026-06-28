@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 import re
 import time
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from replay import schema
 
@@ -633,33 +633,44 @@ def _frames_from_probe_manifest(
     samples = probe_manifest.get("samples")
     if not isinstance(samples, list):
         raise RuntimeError("collector probe manifest samples missing or not list")
-    for i, sample in enumerate(samples):
+    entries: List[Tuple[str, int, Dict[str, Any]]] = [
+        ("samples", i, sample) for i, sample in enumerate(samples)
+    ]
+    if not unique_game_hours_only:
+        raw_entries = probe_manifest.get("raw_frames") or []
+        if not isinstance(raw_entries, list):
+            raise RuntimeError("collector probe manifest raw_frames not list")
+        entries.extend(
+            ("raw_frames", i, sample) for i, sample in enumerate(raw_entries)
+        )
+        entries.sort(key=lambda item: _manifest_entry_order(item[2]))
+    for label, i, sample in entries:
         if not isinstance(sample, dict):
-            errors.append(f"samples[{i}] not object")
+            errors.append(f"{label}[{i}] not object")
             continue
         frame_name = sample.get("frame")
         if not isinstance(frame_name, str):
-            errors.append(f"samples[{i}].frame missing")
+            errors.append(f"{label}[{i}].frame missing")
             continue
         frame_rel = Path(frame_name)
         if frame_rel.name != frame_name:
-            errors.append(f"samples[{i}].frame unsafe path")
+            errors.append(f"{label}[{i}].frame unsafe path")
             continue
         frame_path = run_dir / frame_rel
         try:
             frame = json.loads(frame_path.read_text(encoding="utf-8"))
         except OSError as exc:
-            errors.append(f"samples[{i}].frame unreadable: {exc}")
+            errors.append(f"{label}[{i}].frame unreadable: {exc}")
             continue
         except ValueError as exc:
-            errors.append(f"samples[{i}].frame invalid json: {exc}")
+            errors.append(f"{label}[{i}].frame invalid json: {exc}")
             continue
         frame_session_id = frame.get("session_id")
         if frame_session_id is None:
             frame["session_id"] = session_id
         elif frame_session_id != session_id:
             errors.append(
-                f"samples[{i}].frame session_id {frame_session_id!r} != "
+                f"{label}[{i}].frame session_id {frame_session_id!r} != "
                 f"{session_id!r}")
             continue
         for key in ("worker_burst_index", "burst_sample_index", "worker_pipe_token"):
@@ -668,7 +679,7 @@ def _frames_from_probe_manifest(
         problems = validate_collector_frame(frame)
         if problems:
             errors.append(
-                f"samples[{i}].frame invalid: {'; '.join(problems)}")
+                f"{label}[{i}].frame invalid: {'; '.join(problems)}")
             continue
         frames.append(frame)
     if errors:
@@ -677,6 +688,17 @@ def _frames_from_probe_manifest(
     if unique_game_hours_only:
         return _prefer_scheduled_frames_by_game_hour(frames)
     return frames
+
+
+def _manifest_entry_order(entry: Dict[str, Any]) -> Tuple[int, int, int]:
+    burst = entry.get("worker_burst_index")
+    burst_sample = entry.get("burst_sample_index")
+    sample_index = entry.get("sample_index", entry.get("raw_index"))
+    return (
+        burst if isinstance(burst, int) else 1 << 30,
+        burst_sample if isinstance(burst_sample, int) else 1 << 30,
+        sample_index if isinstance(sample_index, int) else 1 << 30,
+    )
 
 
 def _prefer_scheduled_frames_by_game_hour(
@@ -738,6 +760,10 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
             frames_by_type[frame_type] = frames_by_type.get(frame_type, 0) + 1
         if frame_type == "event":
             event_type = frame.get("event_type")
+            if not isinstance(event_type, str):
+                payload = frame.get("payload")
+                if isinstance(payload, dict):
+                    event_type = payload.get("event_type")
             if isinstance(event_type, str):
                 raw_event_types_seen.add(event_type)
         elif frame_type == "domain_delta":
