@@ -49,6 +49,62 @@ durable replay schema. If body continuity is required, use an internal
 generation key such as `combat_id + born_sequence + age_start` and surface only
 the stable replay key.
 
+## Event Identity
+
+Raw events need stable dedupe identities so they can supersede interval
+snapshot diffs without erasing distinct repeated changes. Use the existing diff
+engine identity rules as the baseline, then add raw-stream fields only where the
+same event type can occur more than once inside one hour.
+
+Recommended identities:
+
+- Province/state control: `(type, key, from, to)`.
+- Movement lifecycle: `(type, division_uid, from, to, order_generation)`.
+- Movement progress: `(type, division_uid, source, target, progress_bucket)`.
+- Land combat lifecycle: `(type, combat_key, generation)`.
+- Combat participant changes: `(type, combat_key, generation, side,
+  participant_hash)`.
+- Naval ship damage/sinking: `(type, combat_key, ship_instance_id,
+  generation)`.
+- Army order changes: `(type, army_id, order_key, order_generation)`.
+- Air region deltas: `(type, region_id, side_or_owner, mission_mask)`.
+- Gap frames: `(domain, gap_kind, start_sequence, end_sequence)`.
+
+`generation` is collector-local continuity metadata. It should be used to avoid
+collapsing id reuse, but it does not need to be exposed as a permanent gameplay
+identifier in user-facing views.
+
+## Minimal Payload Shapes
+
+The first implementation should validate only a small common envelope plus
+domain-specific payloads needed by tests. Do not try to model every reader field
+up front.
+
+`event` payload:
+
+- `event_type`: replay event type or raw-only event type.
+- `key`: entity key.
+- `from`: optional previous value.
+- `to`: optional new value.
+- `subject`: optional TAG or entity owner.
+- `detail`: optional object.
+
+`domain_delta` payload:
+
+- `op`: `upsert`, `delete`, or `sample`.
+- `before`: optional compact previous value when available.
+- `after`: compact measured value.
+- `changed_fields`: list of changed field names.
+
+`gap` payload:
+
+- `gap_kind`: `dropped_frames`, `validation_failed`, `overload`,
+  `layout_invalid`, `race_detected`, or `unsupported`.
+- `domain`: affected domain.
+- `start_sequence` / `end_sequence`: sequence range when known.
+- `reason`: short machine-readable reason.
+- `detail`: optional bounded diagnostics.
+
 ## Required Domains
 
 ### Movement
@@ -273,6 +329,19 @@ identity:
 5. Same-hour snapshot coalescing must not consume raw deltas. The delta/event
    stream is a sibling timeline input, not another snapshot list.
 
+Merge entry point:
+
+- Keep `build_timeline(snapshots)` unchanged until the raw contract is proven.
+- Add a sibling helper, for example `build_timeline_with_raw_events(snapshots,
+  raw_events)`, that calls the existing snapshot diff path, normalizes raw
+  frames into schema events or gap markers, then applies one merge/dedupe pass.
+- Raw events with `source="C"` and `confidence="exact"` supersede interval
+  diffs only when their identity matches and their timestamp falls inside the
+  diff interval.
+- Raw sampled/proxy events do not supersede exact marker events.
+- Gap frames never delete inferred events. They annotate the interval so the UI
+  can display "inferred with known capture gap" instead of a clean exact event.
+
 ## Bounded First Implementation Slice
 
 The first slice should avoid live reader porting and prove the contract end to
@@ -291,6 +360,30 @@ end with synthetic frames:
    - malformed delta/event frames failing closed.
 5. Only after that, port one live domain: division movement deltas from pinned
    division bodies.
+
+Suggested first patch set:
+
+- `live_capture/collector_frames.py`: common envelope validation and payload
+  validation for synthetic `event`, `domain_delta`, and `gap` frames.
+- `live_capture/collector_session.py`: raw-frame summary counters only; do not
+  convert deltas into canonical snapshots.
+- `replay/diff_engine.py`: add the sibling raw merge helper while leaving
+  `build_timeline()` behavior intact.
+- `live_capture/tests/test_collector_frames.py`: malformed/valid raw frame
+  validation cases.
+- `live_capture/tests/test_collector_session.py`: manifest raw-frame summary
+  cases.
+- `replay/tests/test_diff_engine.py`: raw exact province event supersedes
+  interval diff, raw movement survives same-hour coalescing, and combat gaps are
+  retained.
+
+Files currently outside the first slice:
+
+- `replay_native/collector/src/lib.rs`: no live DLL payload emission until the
+  Python-side contract and tests are green.
+- `memory_reader/*`: no reader port until synthetic raw-frame storage and merge
+  behavior are stable.
+- `memory_reader/fuel_live.py`: unrelated scheduled fuel workstream.
 
 ## Blockers And Risks
 

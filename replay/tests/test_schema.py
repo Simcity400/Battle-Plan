@@ -65,6 +65,19 @@ class TestSourceMap(unittest.TestCase):
         self.assertEqual(schema.source_of("countries.POR.production.military_lines"), "C/M")
         self.assertEqual(schema.source_of("countries.POR.production.naval_factories"), "C/M")
 
+    def test_collector_divisions_contract_source(self):
+        contract = schema.COLLECTOR_DOMAIN_CONTRACTS["divisions"]
+        self.assertEqual(contract["cadence_class"], "scheduled_hourly_snapshot")
+        self.assertIn("move_progress", contract["first_slice_fields"])
+        self.assertEqual(schema.source_of("divisions.0.div_id"), "C/M/S")
+        self.assertEqual(schema.source_of("divisions.0.div_type"), "C/M/S")
+        self.assertEqual(schema.source_of("divisions.0.owner"), "C/M/S")
+        self.assertEqual(schema.source_of("divisions.0.location_province"), "C/M/S")
+        self.assertEqual(schema.source_of("divisions.0.organisation"), "C/M")
+        self.assertEqual(schema.source_of("divisions.0.move_progress"), "C/M*")
+        # Equipment remains separate from the first collector `divisions` slice.
+        self.assertEqual(schema.source_of("divisions.0.equipment"), "M/S")
+
     def test_unknown_returns_none(self):
         self.assertIsNone(schema.source_of("countries.GER.nonsense.field"))
 
@@ -164,6 +177,80 @@ class TestValidator(unittest.TestCase):
         snap["divisions"] = [d1, d2]
         probs = schema.validate_snapshot(snap)
         self.assertTrue(any("duplicate division" in p for p in probs))
+
+    def test_collector_division_contract_accepts_typed_measured_row(self):
+        snap = schema.empty_snapshot("g1", "1940.9.10.13")
+        snap["provenance"]["collector"] = {"captured": True, "domains": ["divisions"]}
+        div = schema.empty_division()
+        div.update({
+            "div_id": 7,
+            "div_type": 4713,
+            "owner": "GER",
+            "location_province": 11596,
+            "state_id": 64,
+            "template_id": 22,
+            "template_type": 52,
+            "template_name": "Infantry",
+            "organisation": 42.5,
+            "strength": 0.97,
+            "experience": 1.0,
+            "moving": True,
+            "move_target_province": 11597,
+            "move_progress": 123.0,
+            "in_combat": False,
+            "supply_status": 0.8,
+        })
+        snap["divisions"] = [div]
+        self.assertEqual(schema.validate_snapshot(snap), [])
+
+    def test_collector_division_contract_rejects_raw_keys_and_bad_types(self):
+        self.assertIn("divisions", schema.COLLECTOR_DOMAIN_CONTRACTS)
+        snap = schema.empty_snapshot("g1", "1940.9.10.13")
+        snap["provenance"]["collector"] = {
+            "captured": True,
+            "domains": ["divisions"],
+        }
+        div = schema.empty_division()
+        div.update({
+            "div_id": 7,
+            "div_type": 1,
+            "owner": "GER",
+            "location_province": 11596,
+            "organisation": 0.8,
+            "strength": 0.9,
+            "moving": False,
+            "body_addr": "0x1234",
+        })
+        snap["divisions"] = [div]
+
+        probs = schema.validate_snapshot(snap)
+
+        self.assertTrue(any("raw pointer/tag-db" in p for p in probs), probs)
+
+        div.pop("body_addr")
+        div["move_progress"] = float("nan")
+        div["moving"] = 1
+        div["owner"] = "Germany"
+        probs = schema.validate_snapshot(snap)
+        self.assertTrue(any("move_progress" in p for p in probs), probs)
+        self.assertTrue(any("moving" in p for p in probs), probs)
+        self.assertTrue(any("owner" in p for p in probs), probs)
+
+    def test_collector_division_contract_requires_div_type(self):
+        snap = schema.empty_snapshot("g1", "1940.9.10.13")
+        snap["provenance"]["collector"] = {"captured": True, "domains": ["divisions"]}
+        div = schema.empty_division()
+        div["div_id"] = 7
+        snap["divisions"] = [div]
+        probs = schema.validate_snapshot(snap)
+        self.assertTrue(any("div_type" in p and "collector" in p for p in probs), probs)
+
+    def test_legacy_division_without_type_still_validates(self):
+        snap = schema.empty_snapshot("g1", "1940.9.10.13")
+        div = schema.empty_division()
+        div["div_id"] = 7
+        snap["divisions"] = [div]
+        self.assertEqual(schema.validate_snapshot(snap), [])
 
     def test_missing_container_flagged(self):
         snap = schema.empty_snapshot("g1", "1940.9.10.13")

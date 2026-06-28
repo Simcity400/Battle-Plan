@@ -321,6 +321,41 @@ class TestCollectorFrames(unittest.TestCase):
         self.assertEqual(por["military"]["manpower"]["available"], 123456)
         self.assertEqual(por["military"]["convoys_count"], 99)
 
+    def test_country_scalars_reject_bool_and_non_finite_numbers(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "domains": ["clock", "country_identity", "country_scalars"],
+            "countries": {
+                "POR": {
+                    "present": True,
+                    "collector_object": "0x1234",
+                    "identity": {"tag_db_id": 47},
+                    "scalars": {
+                        "stability": True,
+                        "political_power": float("nan"),
+                        "command_power": float("inf"),
+                        "num_ships": True,
+                    },
+                },
+            },
+        }
+
+        problems = validate_collector_frame(frame)
+
+        for needle in (
+            "scalars.stability",
+            "scalars.political_power",
+            "scalars.command_power",
+            "scalars.num_ships",
+        ):
+            self.assertTrue(any(needle in p for p in problems), (needle, problems))
+        with self.assertRaisesRegex(ValueError, "scalars.stability"):
+            snapshot_from_collector_frame(frame, "collector-test")
+
     def test_country_present_marker_must_be_bool(self):
         frame = {
             "type": "snapshot",
@@ -401,6 +436,7 @@ class TestCollectorFrames(unittest.TestCase):
             "collector_version": "0.1.0",
             "abi_version": 1,
             "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
             "domains": ["clock", "state_ownership", "state_control",
                         "province_control"],
             "states": {
@@ -436,6 +472,7 @@ class TestCollectorFrames(unittest.TestCase):
             "collector_version": "0.1.0",
             "abi_version": 1,
             "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
             "domains": ["clock"],
             "states": {"1": {"controller": "GER"}},
             "provinces": {"11": {"controller": "GER"}},
@@ -447,6 +484,27 @@ class TestCollectorFrames(unittest.TestCase):
         self.assertEqual(snap["states"], {})
         self.assertEqual(snap["provinces"], {})
         self.assertIsNone(snap["map"]["control_by_province"])
+
+    def test_snapshot_frame_rejects_non_scheduled_map_control_payload(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "daily_update",
+            "domains": ["clock", "state_control", "province_control"],
+            "states": {"1": {"controller": "GER"}},
+            "provinces": {"11": {"controller": "GER"}},
+        }
+
+        problems = validate_collector_frame(frame)
+
+        self.assertTrue(any("map-control payload requires scheduled" in p
+                            for p in problems), problems)
+        with self.assertRaisesRegex(ValueError,
+                                    "map-control payload requires scheduled"):
+            snapshot_from_collector_frame(frame, "collector-test")
 
     def test_snapshot_frame_rejects_unsupported_claimed_domains(self):
         frame = {
@@ -490,6 +548,36 @@ class TestCollectorFrames(unittest.TestCase):
         )
         self.assertEqual(snap["countries"]["POR"]["economy"]["fuel"]["current"], 123.5)
         self.assertEqual(snap["countries"]["POR"]["economy"]["fuel"]["max"], 456.25)
+
+    def test_snapshot_frame_rejects_non_finite_or_bool_fuel_live(self):
+        bad_values = (True, float("nan"), float("inf"))
+        for value in bad_values:
+            frame = {
+                "type": "snapshot",
+                "backend": "in_process_collector",
+                "collector_version": "0.1.0",
+                "abi_version": 1,
+                "date": "1936.1.2.1",
+                "capture_boundary": "scheduled_hour_snapshot",
+                "domains": ["clock", "country_identity", "fuel_live"],
+                "countries": {
+                    "POR": {
+                        "present": True,
+                        "collector_object": "0x1000",
+                        "identity": {"tag_db_id": 47},
+                        "fuel": {"current": value, "max": 456.25},
+                    },
+                },
+            }
+
+            problems = validate_collector_frame(frame)
+
+            self.assertTrue(
+                any("fuel.current" in p and "not number|null" in p for p in problems),
+                (value, problems),
+            )
+            with self.assertRaisesRegex(ValueError, "fuel.current"):
+                snapshot_from_collector_frame(frame, "collector-test")
 
     def test_snapshot_frame_rejects_non_scheduled_fuel_live(self):
         frame = {
@@ -745,6 +833,7 @@ class TestCollectorFrames(unittest.TestCase):
             "abi_version": 1,
             "process_id": 32440,
             "tick_ms": 158373765,
+            "capture_boundary": "scheduled_hour_snapshot",
             "quality_status": "root_probe_verified",
             "states": {"1": {"controller": "GER"}},
             "provinces": {"11": {"controller": "GER", "state_id": 1}},
@@ -760,7 +849,7 @@ class TestCollectorFrames(unittest.TestCase):
                 "country_tag_count": 474,
                 "country_active_count": 440,
                 "tag_sample": ["---", "GER", "ENG"],
-                "domains": ["clock", "state_control", "province_control"],
+                "domains": ["clock"],
             },
         }
 
@@ -770,6 +859,39 @@ class TestCollectorFrames(unittest.TestCase):
         self.assertEqual(snap["provenance"]["collector"]["domains"], ["clock"])
         self.assertEqual(snap["states"], {})
         self.assertEqual(snap["provinces"], {})
+
+    def test_root_probe_rejects_non_scheduled_map_control_claims(self):
+        frame = {
+            "type": "collector_started",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "process_id": 32440,
+            "tick_ms": 158373765,
+            "quality_status": "root_probe_verified",
+            "root_probe": {
+                "status": "verified",
+                "profile": "vanilla_latest_2026_06_28",
+                "daily_update_sentinel_match": True,
+                "long_string_sentinel_match": True,
+                "current_game_date": "1936.6.15.7",
+                "current_game_date_raw": 60763326,
+                "start_date": "1936.1.1.12",
+                "start_date_raw": 60759371,
+                "country_tag_count": 474,
+                "country_active_count": 440,
+                "tag_sample": ["---", "GER", "ENG"],
+                "domains": ["clock", "state_control"],
+            },
+        }
+
+        problems = validate_collector_frame(frame)
+
+        self.assertTrue(any("map-control payload requires scheduled" in p
+                            for p in problems), problems)
+        with self.assertRaisesRegex(ValueError,
+                                    "map-control payload requires scheduled"):
+            snapshot_from_root_probe_frame(frame, "collector-test")
 
     def test_worker_poll_rejects_heavy_map_payloads(self):
         frame = {
@@ -808,6 +930,24 @@ class TestCollectorFrames(unittest.TestCase):
                             for p in problems), problems)
         self.assertTrue(any("worker_poll frame must not carry provinces" in p
                             for p in problems), problems)
+
+    def test_worker_poll_rejects_heavy_domain_claims_without_payload(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "worker_poll",
+            "domains": ["clock", "fuel_live", "production_live", "state_control"],
+        }
+
+        problems = validate_collector_frame(frame)
+
+        self.assertTrue(any("worker_poll frame must not claim scheduled domains"
+                            in p for p in problems), problems)
+        with self.assertRaisesRegex(ValueError, "must not claim scheduled domains"):
+            snapshot_from_collector_frame(frame, "collector-test")
 
     def test_map_control_rejects_raw_ids_and_bad_tags(self):
         frame = {

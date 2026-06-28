@@ -172,6 +172,32 @@ BUILDING_KEYS = (
     "fuel_silo", "supply_node", "rail_way",
 )
 
+# Replay-owned collector-domain contracts. These are schema/validation metadata,
+# not native offsets or live adapter enablement.
+COLLECTOR_DOMAIN_CONTRACTS: Dict[str, Dict[str, Any]] = {
+    "divisions": {
+        "cadence_class": "scheduled_hourly_snapshot",
+        "snapshot_path": "divisions[]",
+        "shape": "active_division_identity_status_rows",
+        "source_marker": (
+            "C only when provenance.collector.domains includes divisions after "
+            "a successful fold; no save fallback may fill collector gaps"
+        ),
+        "event_shape": (
+            "snapshot diffs emit division_created/division_destroyed/"
+            "division_moved/division_template_changed at snapshot cadence; "
+            "sub-hour movement stays in a later raw delta/event stream"
+        ),
+        "required_fields": ("div_id", "div_type"),
+        "first_slice_fields": (
+            "div_id", "div_type", "owner", "location_province", "state_id",
+            "template_id", "template_type", "template_name", "organisation",
+            "strength", "experience", "moving", "move_target_province",
+            "move_progress", "in_combat", "supply_status",
+        ),
+    },
+}
+
 def valid_tag(v: Any) -> bool:
     """True iff ``v`` is a real the game country TAG: exactly 3 chars, uppercase
     alphanumeric, not all-digits (GER/ENG/SOV/D01 pass; '---', '?<id>', '42',
@@ -644,24 +670,27 @@ FIELD_SOURCES: Dict[str, str] = {
     # leaf, validated vs the melt. null until a live read folds it.
     "provinces.*.buildings": "M",
     # --- division (§6) ---
-    "divisions.*.div_id": "M/S",
-    "divisions.*.div_type": "M/S",
-    "divisions.*.owner": "M/S",
-    "divisions.*.location_province": "M/S",
-    "divisions.*.state_id": "M/D",
-    "divisions.*.template_id": "M/S",
-    "divisions.*.template_type": "M/S",
-    "divisions.*.template_name": "M/S",
+    "divisions.*.div_id": "C/M/S",
+    "divisions.*.div_type": "C/M/S",
+    "divisions.*.owner": "C/M/S",
+    "divisions.*.location_province": "C/M/S",
+    "divisions.*.state_id": "C/M/S/D",
+    "divisions.*.template_id": "C/M/S",
+    "divisions.*.template_type": "C/M/S",
+    "divisions.*.template_name": "C/M/S",
     "divisions.*.template_role": "S",
-    "divisions.*.organisation": "M",
-    "divisions.*.strength": "M/S",
+    "divisions.*.organisation": "C/M",
+    "divisions.*.strength": "C/M/S",
     "divisions.*.equipment": "M/S",
     # LIVE per-division held-equipment inventory (division_equipment_live, M): {variant_id: count}.
     # DISTINCT live-only leaf from the save-shaped `equipment` above (no clobber).
     "divisions.*.equipment_live": "M",
-    "divisions.*.experience": "M*",
-    "divisions.*.moving": "M*",
-    "divisions.*.in_combat": "M*",
+    "divisions.*.experience": "C/M*",
+    "divisions.*.moving": "C/M*",
+    "divisions.*.move_target_province": "C/M*",
+    "divisions.*.move_progress": "C/M*",
+    "divisions.*.in_combat": "C/M*",
+    "divisions.*.supply_status": "C/M*",
     # divisions_full.json additive body (Tier-1 EXTRACT). LITERAL save fields (S).
     "divisions.*.script_id": "S",
     "divisions.*.division_name": "S",
@@ -2449,6 +2478,9 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
             problems.append(f"province {pid!r} not a dict")
 
     # Divisions: each needs an int div_id; identity (uid = id:type) must be unique.
+    collector_domains = set(
+        ((snap.get("provenance") or {}).get("collector") or {}).get("domains") or []
+    )
     seen_uids = set()
     for i, dv in enumerate(snap.get("divisions") or []):
         if not isinstance(dv, dict):
@@ -2467,6 +2499,8 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
         el = dv.get("equipment_live")
         if el is not None and not isinstance(el, dict):
             problems.append(f"division[{i}].equipment_live {el!r} not dict|null")
+        if "divisions" in collector_domains:
+            problems.extend(_validate_collector_division(dv, i))
 
     # Designs: division_templates is a list, equipment_variants a dict — both must be
     # present (always-present-container rule), §11.
@@ -2567,6 +2601,62 @@ def validate_event(ev: Dict[str, Any]) -> List[str]:
     return _validate_event(ev, "event")
 
 
+def _validate_collector_division(div: Dict[str, Any], index: int) -> List[str]:
+    prefix = f"division[{index}]"
+    problems: List[str] = []
+    if _contains_forbidden_raw_key(div):
+        problems.append(f"{prefix} contains raw pointer/tag-db diagnostic key")
+    dtype = div.get("div_type")
+    if not _valid_bounded_int(dtype, minimum=0, maximum=2_147_483_647):
+        problems.append(f"{prefix}.div_type {dtype!r} not nonnegative int for collector")
+    owner = div.get("owner")
+    if owner is not None and not valid_tag(owner):
+        problems.append(f"{prefix}.owner {owner!r} not TAG|null")
+    for field_name in (
+        "location_province", "state_id", "template_id", "template_type",
+        "move_target_province", "movement_source_province",
+    ):
+        value = div.get(field_name)
+        if value is not None and not _valid_bounded_int(
+            value, minimum=0, maximum=2_147_483_647
+        ):
+            problems.append(f"{prefix}.{field_name} {value!r} not nonnegative int|null")
+    for field_name in (
+        "organisation", "strength", "experience", "move_progress", "supply_status",
+    ):
+        value = div.get(field_name)
+        if value is not None and not _is_finite_number(value):
+            problems.append(f"{prefix}.{field_name} {value!r} not finite number|null")
+    for field_name in ("moving", "in_combat"):
+        value = div.get(field_name)
+        if value is not None and not isinstance(value, bool):
+            problems.append(f"{prefix}.{field_name} {value!r} not bool|null")
+    template_name = div.get("template_name")
+    if template_name is not None and not isinstance(template_name, str):
+        problems.append(f"{prefix}.template_name {template_name!r} not str|null")
+    return problems
+
+
+def _contains_forbidden_raw_key(value: Any) -> bool:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if isinstance(key, str):
+                lowered = key.lower()
+                if (
+                    lowered in {"addr", "address", "ptr", "pointer", "body_addr",
+                                "tag_db_id"}
+                    or lowered.endswith("_addr")
+                    or lowered.endswith("_ptr")
+                    or lowered.endswith("_tag_db_id")
+                ):
+                    return True
+            if _contains_forbidden_raw_key(child):
+                return True
+    elif isinstance(value, list):
+        return any(_contains_forbidden_raw_key(child) for child in value)
+    return False
+
+
 def _is_intlike(x: Any) -> bool:
     if isinstance(x, int):
         return True
@@ -2662,7 +2752,7 @@ def _validate_production_line(
 
 __all__ = [
     "SCHEMA_VERSION", "DOMAINS", "RESOURCE_KEYS", "BUILDING_KEYS",
-    "FIELD_SOURCES", "source_of", "date_to_hour_index",
+    "COLLECTOR_DOMAIN_CONTRACTS", "FIELD_SOURCES", "source_of", "date_to_hour_index",
     "Economy", "Military", "Politics", "Research", "Focus", "Production",
     "Decisions",
     "Diplomacy", "Intel", "Scalars", "Commanders", "Country", "State", "Province",

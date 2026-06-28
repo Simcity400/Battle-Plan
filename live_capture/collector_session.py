@@ -718,6 +718,14 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     state_control_frames = 0
     province_control_frames = 0
     state_ownership_frames = 0
+    scheduled_production_domain_frames = 0
+    frames_with_production_payloads = 0
+    country_rows_with_production_payloads = 0
+    max_production_country_rows_per_frame = 0
+    max_production_stockpile_entries = 0
+    max_production_military_line_rows = 0
+    max_production_naval_line_rows = 0
+    production_on_lightweight_frames = 0
     frames_by_capture_boundary: Dict[str, int] = {}
     heavy_payload_on_lightweight_frames = 0
     for frame in frames:
@@ -737,22 +745,68 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
                 province_control_frames += 1
             if "state_ownership" in domains:
                 state_ownership_frames += 1
+            production_domain_claimed = "production_live" in domains
+        else:
+            production_domain_claimed = False
+        if (
+            production_domain_claimed
+            and boundary == "scheduled_hour_snapshot"
+        ):
+            scheduled_production_domain_frames += 1
         countries = frame.get("countries")
+        production_rows_in_frame = 0
+        heavy_payload_in_lightweight_frame = False
         if isinstance(countries, dict):
             frames_with_countries += 1
             max_country_rows = max(max_country_rows, len(countries))
+            for row in countries.values():
+                if not isinstance(row, dict):
+                    continue
+                production = row.get("production")
+                if production is None:
+                    continue
+                production_rows_in_frame += 1
+                if not isinstance(production, dict):
+                    continue
+                stockpile = production.get("stockpile")
+                if isinstance(stockpile, dict):
+                    max_production_stockpile_entries = max(
+                        max_production_stockpile_entries, len(stockpile))
+                military_lines = production.get("military_lines")
+                if isinstance(military_lines, list):
+                    max_production_military_line_rows = max(
+                        max_production_military_line_rows, len(military_lines))
+                naval_lines = production.get("naval_lines")
+                if isinstance(naval_lines, list):
+                    max_production_naval_line_rows = max(
+                        max_production_naval_line_rows, len(naval_lines))
+        if production_rows_in_frame:
+            frames_with_production_payloads += 1
+            country_rows_with_production_payloads += production_rows_in_frame
+            max_production_country_rows_per_frame = max(
+                max_production_country_rows_per_frame,
+                production_rows_in_frame,
+            )
+        if (
+            boundary == "worker_poll"
+            and (production_domain_claimed or production_rows_in_frame)
+        ):
+            production_on_lightweight_frames += 1
+            heavy_payload_in_lightweight_frame = True
         states = frame.get("states")
         if isinstance(states, dict):
             frames_with_states += 1
             max_state_rows = max(max_state_rows, len(states))
             if states and boundary == "worker_poll":
-                heavy_payload_on_lightweight_frames += 1
+                heavy_payload_in_lightweight_frame = True
         provinces = frame.get("provinces")
         if isinstance(provinces, dict):
             frames_with_provinces += 1
             max_province_rows = max(max_province_rows, len(provinces))
             if provinces and boundary == "worker_poll":
-                heavy_payload_on_lightweight_frames += 1
+                heavy_payload_in_lightweight_frame = True
+        if boundary == "worker_poll" and heavy_payload_in_lightweight_frame:
+            heavy_payload_on_lightweight_frames += 1
     return {
         "domains_seen": sorted(domains_seen),
         "frames_by_capture_boundary": dict(sorted(frames_by_capture_boundary.items())),
@@ -770,6 +824,16 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         "state_ownership_frames": state_ownership_frames,
         "state_control_frames": state_control_frames,
         "province_control_frames": province_control_frames,
+        "scheduled_production_domain_frames": scheduled_production_domain_frames,
+        "frames_with_production_payloads": frames_with_production_payloads,
+        "country_rows_with_production_payloads": (
+            country_rows_with_production_payloads),
+        "max_production_country_rows_per_frame": (
+            max_production_country_rows_per_frame),
+        "max_production_stockpile_entries": max_production_stockpile_entries,
+        "max_production_military_line_rows": max_production_military_line_rows,
+        "max_production_naval_line_rows": max_production_naval_line_rows,
+        "production_on_lightweight_frames": production_on_lightweight_frames,
     }
 
 

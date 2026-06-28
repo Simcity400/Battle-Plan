@@ -29,6 +29,41 @@ to `SUPPORTED_SNAPSHOT_DOMAINS` until the adapter has all of the following:
 - synthetic tests for accept, reject, and provenance omission;
 - at least one live proof against a current build profile.
 
+## Adapter Provenance Guard Shape
+
+Future division/OOB domains need an accepted-domain guard, not just a claimed-
+domain guard. The safe adapter order is:
+
+1. Clean `frame["domains"]` into `claimed_domains`.
+2. Reject `claimed_domains - SUPPORTED_SNAPSHOT_DOMAINS` before any fold.
+3. Run frame-level validation for payload size, capture boundary, sequence, and
+   common metadata.
+4. Fold each conditional heavy domain through a domain-specific helper that
+   either returns `True` after writing measured schema leaves, returns `False`
+   when the domain was not claimed, or raises/reports a validation failure.
+5. Build `accepted_domains` from folds that actually succeeded.
+6. Write collector provenance with `accepted_domains`, not the original claimed
+   list, once the fold outcome is known.
+
+This avoids a future bug class where `divisions` or `oob_command` appears in
+provenance even though the adapter dropped the payload for a bad row, stale pin,
+join miss, or oversized body. Existing always-on light domains can keep their
+current path only while their frame validator proves the claimed payload is
+complete before provenance is written.
+
+The first implementation should keep helper names private and boring:
+
+- `_validate_collector_divisions_payload(frame) -> list[str]`
+- `_fold_collector_divisions(snap, frame) -> bool`
+- `_validate_collector_division_equipment_payload(frame, snap) -> list[str]`
+- `_fold_collector_division_equipment(snap, frame) -> bool`
+- `_validate_collector_oob_command_payload(frame) -> list[str]`
+- `_fold_collector_oob_command(snap, frame) -> bool`
+
+Validation helpers should not repair data. Fold helpers should not guess missing
+fields. A helper that rejects a claimed domain must prevent that domain from
+being listed in collector provenance.
+
 ## Collector Domain Names
 
 Use the existing replay domain vocabulary where possible, but keep collector
@@ -49,6 +84,13 @@ Cadence floor: scheduled snapshot domains are hourly-or-better. Movement/status
 can later run sub-hour as deltas, but the first safe collector adapter should
 write hourly snapshots only. Worker poll frames at 10 ms may carry timestamps,
 diagnostics, sequence data, and tiny root status, not full division/OOB payloads.
+
+Source marker rule: a replay field counts as collector-sourced (`C`) only when
+`provenance.collector.domains` includes the exact collector domain after that
+domain's validator and fold both succeed. A preflight, cached root, or diagnostic
+payload is not captured replay state. For the first slice this means `divisions`
+can source identity/status leaves in `snapshot["divisions"]`; `division_equipment`,
+`oob_command`, and movement/order deltas must not be implied by that marker.
 
 ## Replay Schema Needs
 
@@ -244,10 +286,12 @@ adapter tests and validators only:
    `divisions`, `division_equipment`, or `oob_command` payloads are rejected.
 3. Add synthetic snapshot tests proving claimed unsupported domains still reject
    before provenance.
-4. Add a private `_validate_collector_divisions_payload()` helper and unit tests
-   without registering the domain.
-5. Only after that helper is strict, add a fold for `divisions` and then add the
-   domain to `SUPPORTED_SNAPSHOT_DOMAINS`.
+4. Add private validation/fold helpers for `divisions` and unit-test both
+   accepted and rejected claimed payloads without registering the domain.
+5. Add an accepted-domain provenance test proving a rejected claimed domain is
+   not listed as captured data.
+6. Only after those helpers are strict, add a fold for `divisions` and then add
+   the domain to `SUPPORTED_SNAPSHOT_DOMAINS`.
 
 The first runtime DLL slice should not discover new offsets. It should emit a
 diagnostic-only root/preflight report for division/OOB candidates:

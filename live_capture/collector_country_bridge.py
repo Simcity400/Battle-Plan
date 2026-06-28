@@ -31,10 +31,15 @@ for _p in (str(_REPO), str(_MR)):
 
 MIN_USABLE_COUNTRY_OBJECT_ROWS = 40
 COUNTRY_DATABASE_OFFSET = 0x33063F8
+COUNTRY_VTABLE_RVA = 0x27C0E80
 REC = 0x120
 OFF_NAMEPTR = 0x08
 OFF_INDEX = 0x5D
 OBJ_TAG_DB_ID = 0x08
+OBJ_NAME = 0x10
+HEAP_LO = 0x10000000000
+HEAP_HI = 0x7FF000000000
+PAGE = 0x1000
 
 
 @dataclass(frozen=True)
@@ -105,8 +110,39 @@ def resolve_country_object_bridge_preflight(
                                 rows,
                                 source="live_country_array_cache",
                                 cache=cache_diag,
-                            )
+                    )
                     cache_diag["status"] = "stale"
+            root_rows = country_object_bridge_rows_from_country_database_root(
+                proc,
+                table,
+                min_rows=int(min_rows),
+            )
+            if len(root_rows) >= int(min_rows):
+                located = locate_country_array_from_object_rows(
+                    proc,
+                    table,
+                    root_rows,
+                    min_rows=int(min_rows),
+                    scan_range=scan_range,
+                )
+                if located is not None:
+                    record_rows = country_object_bridge_rows_from_country_array(
+                        proc,
+                        table,
+                        located,
+                    )
+                    if len(record_rows) >= int(min_rows):
+                        if cache_path is not None:
+                            if _write_preflight_cache(cache_path, identity, located):
+                                cache_diag["status"] = "stored"
+                            elif cache_diag.get("status") not in {"stale"}:
+                                cache_diag["status"] = "store_failed"
+                        return _encoded_preflight(
+                            "resolved",
+                            record_rows,
+                            source="country_database_root_record_scan",
+                            cache=cache_diag,
+                        )
             located = locate.locate(proc, scan_range=scan_range)
             if located is not None:
                 rows = country_object_bridge_rows_from_country_array(
@@ -125,6 +161,46 @@ def resolve_country_object_bridge_preflight(
                     )
             bridge = cib.CountryIndexBridge.resolve(proc, tbl=table, scan_range=scan_range)
             if bridge is None:
+                if len(root_rows) >= int(min_rows):
+                    return _encoded_preflight(
+                        "resolved",
+                        root_rows,
+                        source="country_database_root",
+                        cache=cache_diag,
+                    )
+                vtable_rows = country_object_bridge_rows_from_vtable_scan(
+                    proc,
+                    table,
+                    min_rows=int(min_rows),
+                    scan_range=scan_range,
+                )
+                if len(vtable_rows) >= int(min_rows):
+                    located = locate_country_array_from_object_rows(
+                        proc,
+                        table,
+                        vtable_rows,
+                        min_rows=int(min_rows),
+                        scan_range=scan_range,
+                    )
+                    if located is not None:
+                        record_rows = country_object_bridge_rows_from_country_array(
+                            proc,
+                            table,
+                            located,
+                        )
+                        if len(record_rows) >= int(min_rows):
+                            return _encoded_preflight(
+                                "resolved",
+                                record_rows,
+                                source="country_object_vtable_record_scan",
+                                cache=cache_diag,
+                            )
+                    return _encoded_preflight(
+                        "resolved",
+                        vtable_rows,
+                        source="country_object_vtable_scan",
+                        cache=cache_diag,
+                    )
                 return _preflight_status(
                     "bridge_unavailable",
                     rows if located is not None else [],
@@ -203,6 +279,350 @@ def tag_table_from_country_database_root(proc: Any, tag_table_module: Any) -> Op
     if not tag_table_module.TagTable._is_canonical(tags):
         return None
     return tag_table_module.TagTable(proc, table_base, len(tags), tags)
+
+
+def country_object_bridge_rows_from_country_database_root(
+    proc: Any,
+    table: Any,
+    *,
+    min_rows: int = MIN_USABLE_COUNTRY_OBJECT_ROWS,
+    search_span: int = 0x1000,
+) -> List[Dict[str, Any]]:
+    module_base = int(getattr(proc, "module_base", 0) or 0)
+    if module_base <= 0:
+        return []
+    try:
+        country_database = int(proc.u64(module_base + COUNTRY_DATABASE_OFFSET))
+    except Exception:
+        return []
+    if country_database <= 0:
+        return []
+    country_vtable = module_base + COUNTRY_VTABLE_RVA
+    candidates: Dict[int, List[Dict[str, Any]]] = {}
+    for off in range(0, max(0, int(search_span)), 8):
+        field_addr = country_database + off
+        for base in _candidate_array_bases(proc, field_addr):
+            if base in candidates:
+                continue
+            rows = country_object_bridge_rows_from_tag_indexed_array(
+                proc,
+                table,
+                base,
+                country_vtable,
+                min_rows=int(min_rows),
+            )
+            if len(rows) >= int(min_rows):
+                candidates[base] = rows
+    if not candidates:
+        return []
+    bases = sorted(candidates)
+    ref = _tag_object_map(candidates[bases[0]])
+    for base in bases[1:]:
+        other = _tag_object_map(candidates[base])
+        shared = set(ref) & set(other)
+        if len(shared) < int(min_rows):
+            return []
+        if any(ref[tag_db_id] != other[tag_db_id] for tag_db_id in shared):
+            return []
+    return candidates[bases[0]]
+
+
+def _candidate_array_bases(proc: Any, field_addr: int) -> Iterable[int]:
+    yield int(field_addr)
+    try:
+        ptr = int(proc.u64(field_addr))
+    except Exception:
+        return
+    if ptr > 0 and ptr % 8 == 0:
+        yield ptr
+
+
+def country_object_bridge_rows_from_tag_indexed_array(
+    proc: Any,
+    table: Any,
+    base: int,
+    country_vtable: int,
+    *,
+    min_rows: int = MIN_USABLE_COUNTRY_OBJECT_ROWS,
+) -> List[Dict[str, Any]]:
+    if int(base) <= 0 or int(base) % 8:
+        return []
+    table_count = int(getattr(table, "count", 0) or 0)
+    if table_count <= int(min_rows) or table_count > 1024:
+        return []
+    rows: List[Dict[str, Any]] = []
+    seen_objects = set()
+    holes = 0
+    for tag_db_id in range(1, table_count):
+        try:
+            object_ptr = int(proc.u64(int(base) + tag_db_id * 8))
+        except Exception:
+            object_ptr = 0
+        if object_ptr <= 0:
+            holes += 1
+            if holes >= 16 and tag_db_id > int(min_rows):
+                break
+            continue
+        holes = 0
+        if object_ptr in seen_objects:
+            return []
+        row = country_object_bridge_row_from_object(
+            proc,
+            table,
+            object_ptr,
+            country_vtable,
+        )
+        if row is None or int(row["tag_db_id"]) != tag_db_id:
+            return []
+        seen_objects.add(object_ptr)
+        rows.append(row)
+    return rows if len(rows) >= int(min_rows) else []
+
+
+def _tag_object_map(rows: Iterable[Dict[str, Any]]) -> Dict[int, int]:
+    return {
+        int(row["tag_db_id"]): int(row["object_ptr"])
+        for row in rows
+        if row.get("tag_db_id") is not None and row.get("object_ptr")
+    }
+
+
+def country_object_bridge_rows_from_vtable_scan(
+    proc: Any,
+    table: Any,
+    *,
+    min_rows: int = MIN_USABLE_COUNTRY_OBJECT_ROWS,
+    scan_range: Optional[tuple[int, int]] = None,
+) -> List[Dict[str, Any]]:
+    module_base = int(getattr(proc, "module_base", 0) or 0)
+    if module_base <= 0:
+        return []
+    country_vtable = module_base + COUNTRY_VTABLE_RVA
+    rows_by_tag_id: Dict[int, Dict[str, Any]] = {}
+    ambiguous_tag_ids = set()
+    for object_ptr in _scan_aligned_qword_hits(
+        proc,
+        country_vtable,
+        scan_range=scan_range,
+    ):
+        row = country_object_bridge_row_from_object(
+            proc,
+            table,
+            object_ptr,
+            country_vtable,
+        )
+        if row is None:
+            continue
+        tag_db_id = int(row["tag_db_id"])
+        old = rows_by_tag_id.get(tag_db_id)
+        if old is not None and old.get("object_ptr") != row.get("object_ptr"):
+            ambiguous_tag_ids.add(tag_db_id)
+            rows_by_tag_id.pop(tag_db_id, None)
+            continue
+        if tag_db_id not in ambiguous_tag_ids:
+            rows_by_tag_id[tag_db_id] = row
+    if ambiguous_tag_ids and len(rows_by_tag_id) < int(min_rows):
+        return []
+    return [rows_by_tag_id[k] for k in sorted(rows_by_tag_id)]
+
+
+def country_object_bridge_row_from_object(
+    proc: Any,
+    table: Any,
+    object_ptr: int,
+    country_vtable: int,
+) -> Optional[Dict[str, Any]]:
+    if int(object_ptr) <= 0 or int(object_ptr) % 8:
+        return None
+    try:
+        if int(proc.u64(object_ptr)) != int(country_vtable):
+            return None
+        tag_db_id = int(proc.u32(object_ptr + OBJ_TAG_DB_ID))
+    except Exception:
+        return None
+    tag = table.tag(tag_db_id)
+    if not tag or tag == "---":
+        return None
+    name = _read_stable_msvc_string(proc, object_ptr + OBJ_NAME, max_len=96)
+    if not name:
+        return None
+    return {
+        "tag_db_id": tag_db_id,
+        "tag": str(tag),
+        "object_ptr": int(object_ptr),
+    }
+
+
+def locate_country_array_from_object_rows(
+    proc: Any,
+    table: Any,
+    rows: Iterable[Dict[str, Any]],
+    *,
+    min_rows: int = MIN_USABLE_COUNTRY_OBJECT_ROWS,
+    scan_range: Optional[tuple[int, int]] = None,
+    max_anchors: int = 8,
+) -> Optional[tuple[int, int, int]]:
+    rows = list(rows)
+    if len(rows) < int(min_rows):
+        return None
+    expected_objects = {
+        int(row["tag_db_id"]): int(row["object_ptr"])
+        for row in rows
+        if row.get("tag_db_id") is not None and row.get("object_ptr")
+    }
+    anchors = _record_anchor_rows(rows)[:max(1, int(max_anchors))]
+    seen_rec0 = set()
+    for row in anchors:
+        object_ptr = int(row["object_ptr"])
+        for hit in _scan_aligned_qword_hits(
+            proc,
+            object_ptr,
+            scan_range=scan_range,
+        ):
+            record_ptr = int(hit) - OFF_NAMEPTR
+            try:
+                running_index = int(proc.u16(record_ptr + OFF_INDEX))
+            except Exception:
+                continue
+            if not (0 <= running_index <= 1000):
+                continue
+            rec0 = record_ptr - running_index * REC
+            if rec0 in seen_rec0:
+                continue
+            seen_rec0.add(rec0)
+            if not _record_base_has_clean_index_run(proc, rec0):
+                continue
+            count = _count_records(proc, rec0)
+            if not (int(min_rows) <= count <= 1000):
+                continue
+            record_rows = country_object_bridge_rows_from_country_array(
+                proc,
+                table,
+                (rec0, rec0, count),
+            )
+            if _record_rows_match_expected_objects(
+                record_rows,
+                expected_objects,
+                min_rows=int(min_rows),
+            ):
+                return rec0, rec0, count
+    return None
+
+
+def _record_anchor_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    preferred = {
+        "GER": 0, "ENG": 1, "SOV": 2, "USA": 3, "JAP": 4,
+        "FRA": 5, "ITA": 6, "SWE": 7, "RAJ": 8,
+    }
+    return sorted(
+        rows,
+        key=lambda row: (
+            preferred.get(str(row.get("tag")), 100),
+            int(row.get("tag_db_id") or 0),
+        ),
+    )
+
+
+def _record_rows_match_expected_objects(
+    record_rows: Iterable[Dict[str, Any]],
+    expected_objects: Dict[int, int],
+    *,
+    min_rows: int,
+) -> bool:
+    matched = 0
+    for row in record_rows:
+        tag_db_id = int(row.get("tag_db_id") or 0)
+        object_ptr = int(row.get("object_ptr") or 0)
+        if expected_objects.get(tag_db_id) == object_ptr:
+            matched += 1
+        elif tag_db_id in expected_objects:
+            return False
+    return matched >= int(min_rows)
+
+
+def _record_base_has_clean_index_run(proc: Any, rec0: int, depth: int = 24) -> bool:
+    try:
+        for i in range(depth):
+            if int(proc.u16(rec0 + i * REC + OFF_INDEX)) != i:
+                return False
+    except Exception:
+        return False
+    return True
+
+
+def _count_records(proc: Any, rec0: int, cap: int = 1000) -> int:
+    n = 0
+    try:
+        while n < cap and int(proc.u16(rec0 + n * REC + OFF_INDEX)) == n:
+            n += 1
+    except Exception:
+        return n
+    return n
+
+
+def _scan_aligned_qword_hits(
+    proc: Any,
+    needle: int,
+    *,
+    scan_range: Optional[tuple[int, int]] = None,
+) -> Iterable[int]:
+    lo, hi = scan_range if scan_range else (HEAP_LO, HEAP_HI)
+    needle_bytes = int(needle).to_bytes(8, "little", signed=False)
+    chunk = 64 << 20
+    overlap = 16
+    for base, size in proc.iter_regions(lo, hi, want_exec=False):
+        pos = 0
+        while pos < size:
+            want = min(chunk, size - pos)
+            blob = proc.try_read(base + pos, want)
+            if blob:
+                start = 0
+                while True:
+                    i = blob.find(needle_bytes, start)
+                    if i < 0:
+                        break
+                    start = i + 1
+                    addr = base + pos + i
+                    if addr % 8 == 0:
+                        yield addr
+                blen = len(blob)
+                if pos + blen >= size or blen < want:
+                    pos += max(blen, PAGE)
+                else:
+                    pos += blen - overlap
+            else:
+                pos += max(want, PAGE)
+
+
+def _read_stable_msvc_string(proc: Any, addr: int, max_len: int) -> Optional[str]:
+    first = _read_msvc_string(proc, addr, max_len)
+    if not first:
+        return None
+    second = _read_msvc_string(proc, addr, max_len)
+    if second != first:
+        return None
+    return first
+
+
+def _read_msvc_string(proc: Any, addr: int, max_len: int) -> Optional[str]:
+    try:
+        size = int(proc.u64(addr + 0x10))
+        cap = int(proc.u64(addr + 0x18))
+    except Exception:
+        return None
+    if size <= 0 or size > int(max_len) or cap < size or cap > (1 << 20):
+        return None
+    try:
+        chars_addr = int(addr) if cap < 16 else int(proc.u64(addr))
+        data = proc.read(chars_addr, size + 1)
+    except Exception:
+        return None
+    if len(data) != size + 1 or data[size] != 0:
+        return None
+    raw = data[:size]
+    if not all(32 <= b < 127 for b in raw):
+        return None
+    return raw.decode("latin-1")
 
 
 def country_object_bridge_rows_from_bridge(bridge: Any) -> List[Dict[str, Any]]:

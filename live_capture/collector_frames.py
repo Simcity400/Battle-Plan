@@ -38,6 +38,19 @@ SUPPORTED_SNAPSHOT_DOMAINS = frozenset({
     "state_control",
     "province_control",
 })
+SCHEDULED_ONLY_SNAPSHOT_DOMAINS = frozenset({
+    "fuel_live",
+    "production_live",
+    "state_ownership",
+    "state_control",
+    "province_control",
+})
+MAP_CONTROL_SNAPSHOT_DOMAINS = frozenset({
+    "state_ownership",
+    "state_control",
+    "province_control",
+})
+WORKER_POLL_FORBIDDEN_DOMAINS = SCHEDULED_ONLY_SNAPSHOT_DOMAINS
 PRODUCTION_STOCKPILE_MAX_ENTRIES = 4096
 PRODUCTION_VARIANT_ID_MAX = 10_000_000
 PRODUCTION_LINE_MAX_ENTRIES = 4096
@@ -151,7 +164,17 @@ def validate_collector_frame(frame: Any) -> List[str]:
         else:
             problems.extend(_validate_province_rows(provinces))
 
+    root_probe = frame.get("root_probe")
+    scheduled_domain_claims = _claimed_scheduled_domains(frame, root_probe)
     if frame.get("capture_boundary") == "worker_poll":
+        claimed_worker_heavy = sorted(
+            scheduled_domain_claims & WORKER_POLL_FORBIDDEN_DOMAINS
+        )
+        if claimed_worker_heavy:
+            problems.append(
+                "collector worker_poll frame must not claim scheduled domains: "
+                + ",".join(claimed_worker_heavy)
+            )
         if _has_country_fuel_rows(countries):
             problems.append("collector worker_poll frame must not carry fuel payload")
         if _has_country_production_payload(countries):
@@ -165,7 +188,8 @@ def validate_collector_frame(frame: Any) -> List[str]:
         frame.get("capture_boundary") != "worker_poll"
         and
         frame.get("capture_boundary") != "scheduled_hour_snapshot"
-        and (_frame_claims_domain(frame, "fuel_live") or _has_country_fuel_rows(countries))
+        and ("fuel_live" in scheduled_domain_claims
+             or _has_country_fuel_rows(countries))
     ):
         problems.append("collector fuel_live payload requires scheduled_hour_snapshot")
     if (
@@ -173,13 +197,24 @@ def validate_collector_frame(frame: Any) -> List[str]:
         and
         frame.get("capture_boundary") != "scheduled_hour_snapshot"
         and (
-            _frame_claims_domain(frame, "production_live")
+            "production_live" in scheduled_domain_claims
             or _has_country_production_payload(countries)
         )
     ):
         problems.append("collector production_live payload requires scheduled_hour_snapshot")
+    if (
+        frame.get("capture_boundary") != "worker_poll"
+        and
+        frame.get("capture_boundary") != "scheduled_hour_snapshot"
+        and (
+            scheduled_domain_claims & MAP_CONTROL_SNAPSHOT_DOMAINS
+            or _has_payload_rows(states)
+            or _has_payload_rows(provinces)
+        )
+    ):
+        problems.append(
+            "collector map-control payload requires scheduled_hour_snapshot")
 
-    root_probe = frame.get("root_probe")
     if root_probe is not None:
         if not isinstance(root_probe, dict):
             problems.append(f"collector frame root_probe {root_probe!r} not dict|null")
@@ -304,7 +339,7 @@ def snapshot_from_collector_frame(frame: Dict[str, Any], game_id: str) -> Dict[s
     if frame.get("capture_boundary") != "scheduled_hour_snapshot":
         domains = [
             domain for domain in domains
-            if domain not in {"fuel_live", "production_live"}
+            if domain not in SCHEDULED_ONLY_SNAPSHOT_DOMAINS
         ]
     unsupported = sorted(set(domains) - SUPPORTED_SNAPSHOT_DOMAINS)
     if unsupported:
@@ -428,7 +463,7 @@ def _validate_country_rows(countries: Dict[str, Any]) -> List[str]:
             for key in ("stability", "war_support", "political_power",
                         "command_power", "convoys"):
                 value = scalars.get(key)
-                if value is not None and not isinstance(value, (int, float)):
+                if value is not None and not _is_finite_number(value):
                     problems.append(
                         f"collector frame country {tag!r}.scalars.{key} not number|null")
                 elif key in ("stability", "war_support") and value is not None:
@@ -441,7 +476,8 @@ def _validate_country_rows(countries: Dict[str, Any]) -> List[str]:
                             f"collector frame country {tag!r}.scalars.{key} out of range")
             for key in ("num_ships", "manpower_pool"):
                 value = scalars.get(key)
-                if value is not None and not isinstance(value, int):
+                if value is not None and (isinstance(value, bool)
+                                          or not isinstance(value, int)):
                     problems.append(
                         f"collector frame country {tag!r}.scalars.{key} not int|null")
                 elif value is not None and value < 0:
@@ -463,7 +499,7 @@ def _validate_country_rows(countries: Dict[str, Any]) -> List[str]:
                         f"collector frame country {tag!r}.fuel requires hex collector_object")
                 for key in ("current", "max"):
                     value = fuel.get(key)
-                    if value is not None and not isinstance(value, (int, float)):
+                    if value is not None and not _is_finite_number(value):
                         problems.append(
                             f"collector frame country {tag!r}.fuel.{key} not number|null")
                     elif value is not None and float(value) < 0.0:
@@ -766,24 +802,24 @@ def _fold_country_scalars(snap: Dict[str, Any], countries: Dict[str, Any]) -> No
         politics = country["politics"]
         for key in ("stability", "war_support", "political_power", "command_power"):
             value = clean.get(key)
-            if isinstance(value, (int, float)):
+            if _is_finite_number(value):
                 politics[key] = float(value)
         military = country["military"]
         num_ships = clean.get("num_ships")
-        if isinstance(num_ships, int):
+        if isinstance(num_ships, int) and not isinstance(num_ships, bool):
             military["num_ships"] = num_ships
         command_power = clean.get("command_power")
-        if isinstance(command_power, (int, float)):
+        if _is_finite_number(command_power):
             military["command_power"] = float(command_power)
         manpower_pool = clean.get("manpower_pool")
-        if isinstance(manpower_pool, int):
+        if isinstance(manpower_pool, int) and not isinstance(manpower_pool, bool):
             manpower = military.get("manpower")
             if not isinstance(manpower, dict):
                 manpower = {}
                 military["manpower"] = manpower
             manpower["available"] = manpower_pool
         convoys = clean.get("convoys")
-        if isinstance(convoys, (int, float)):
+        if _is_finite_number(convoys):
             military["convoys_count"] = int(round(convoys))
 
 
@@ -804,10 +840,10 @@ def _fold_country_fuel(
             continue
         clean: Dict[str, float] = {}
         current = fuel.get("current")
-        if isinstance(current, (int, float)) and float(current) >= 0.0:
+        if _is_finite_number(current) and float(current) >= 0.0:
             clean["current"] = float(current)
         max_fuel = fuel.get("max")
-        if isinstance(max_fuel, (int, float)) and float(max_fuel) >= 0.0:
+        if _is_finite_number(max_fuel) and float(max_fuel) >= 0.0:
             clean["max"] = float(max_fuel)
         if clean:
             country = snap["countries"].setdefault(tag, schema.empty_country())
@@ -1007,9 +1043,28 @@ def _has_country_production_rows(countries: Any) -> bool:
     )
 
 
-def _frame_claims_domain(frame: Dict[str, Any], domain: str) -> bool:
+def _claimed_scheduled_domains(
+    frame: Dict[str, Any],
+    root_probe: Any,
+) -> set[str]:
+    claims: set[str] = set()
     domains = frame.get("domains")
-    return isinstance(domains, list) and domain in domains
+    if isinstance(domains, list):
+        claims.update(
+            domain for domain in domains
+            if isinstance(domain, str) and domain in SCHEDULED_ONLY_SNAPSHOT_DOMAINS
+        )
+    if isinstance(root_probe, dict):
+        root_domains = root_probe.get("domains")
+        if isinstance(root_domains, list):
+            claims.update(
+                domain for domain in root_domains
+                if (
+                    isinstance(domain, str)
+                    and domain in SCHEDULED_ONLY_SNAPSHOT_DOMAINS
+                )
+            )
+    return claims
 
 
 def _has_payload_rows(value: Any) -> bool:

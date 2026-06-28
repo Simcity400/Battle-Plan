@@ -154,6 +154,8 @@ mod attach_log {
     const MAX_MAP_CONTROL_PROVINCE_COUNT: u32 = 65_536;
     const MAX_MAP_CONTROL_PROVINCE_STRIDE: u32 = 64;
     const MAP_CONTROL_POINTER_WIDTH: u32 = 8;
+    const MIN_USABLE_STATE_ROWS: usize = 1_000;
+    const MIN_USABLE_PROVINCE_ROWS: usize = 10_000;
     const FP_SCALE: f64 = 100000.0;
     const DAILY_UPDATE_SENTINEL: [u8; 16] = [
         0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8D,
@@ -818,9 +820,11 @@ mod attach_log {
         let include_scheduled_country_fuel = scheduled_frame;
         let include_scheduled_country_production = scheduled_frame;
         let state_rows = scheduled_state_rows_json(state, control, include_scheduled_map);
+        let province_rows = scheduled_province_rows_json(state, control, include_scheduled_map);
         let (probe, domains) = root_probe_json(
             state,
             state_rows.as_deref(),
+            province_rows.as_deref(),
             include_scheduled_country_fuel,
             include_scheduled_country_production,
         );
@@ -1228,6 +1232,7 @@ mod attach_log {
             &self,
             current_rows: &[CountryObjectRow],
             has_state_rows: bool,
+            has_province_rows: bool,
             include_scheduled_country_fuel: bool,
             include_scheduled_country_production: bool,
         ) -> String {
@@ -1246,6 +1251,9 @@ mod attach_log {
             if has_state_rows {
                 domains.push("\"state_ownership\"");
                 domains.push("\"state_control\"");
+            }
+            if has_province_rows {
+                domains.push("\"province_control\"");
             }
             format!("[{}]", domains.join(","))
         }
@@ -1380,7 +1388,7 @@ mod attach_log {
         {
             return None;
         }
-        if control.map_control.state_roots.len() < 1000 {
+        if control.map_control.state_roots.len() < MIN_USABLE_STATE_ROWS {
             return None;
         }
         let tag_table = country_tag_table(state.country_database_ptr as usize)?;
@@ -1413,7 +1421,66 @@ mod attach_log {
                 json_opt_str(controller_tag.as_deref())
             ));
         }
-        if rows.len() >= 1000 {
+        if rows.len() >= MIN_USABLE_STATE_ROWS {
+            Some(format!("{{{}}}", rows.join(",")))
+        } else {
+            None
+        }
+    }
+
+    fn scheduled_province_rows_json(
+        state: Option<&CollectorState>,
+        control: Option<&CollectorControl>,
+        include_scheduled_map: bool,
+    ) -> Option<String> {
+        if !include_scheduled_map {
+            return None;
+        }
+        let state = state?;
+        if !(state.daily_match && state.long_string_match) {
+            return None;
+        }
+        let control = control?;
+        if !(control.map_control.province_bridge_valid
+            && control.map_control.province_bridge_well_formed()
+            && control.map_control.controller_bridge_valid
+            && control.map_control.controller_bridge_well_formed())
+        {
+            return None;
+        }
+        let bridge = control.map_control.province_bridge?;
+        if control.map_control.controller_bridge.is_empty() {
+            return None;
+        }
+        let tag_table = country_tag_table(state.country_database_ptr as usize)?;
+        let mut tags_by_controller_ptr: BTreeMap<usize, String> = BTreeMap::new();
+        for entry in &control.map_control.controller_bridge {
+            tags_by_controller_ptr.insert(
+                entry.controller_ptr,
+                tag_from_table(tag_table, entry.tag_db_id)?,
+            );
+        }
+
+        let mut rows = Vec::new();
+        for province_id in 1..bridge.province_count {
+            let slot_offset =
+                (province_id as usize).checked_mul(bridge.province_stride as usize)?;
+            let entry_addr = bridge
+                .province_array_ptr
+                .checked_add(slot_offset)?
+                .checked_add(bridge.controller_ptr_offset as usize)?;
+            let controller_ptr = read_u64(entry_addr)? as usize;
+            if controller_ptr == 0 {
+                continue;
+            }
+            let controller_tag = tags_by_controller_ptr.get(&controller_ptr)?;
+            rows.push(format!(
+                "\"{}\":{{\"controller\":\"{}\"}}",
+                province_id, controller_tag
+            ));
+        }
+
+        if rows.len() >= MIN_USABLE_PROVINCE_ROWS {
             Some(format!("{{{}}}", rows.join(",")))
         } else {
             None
@@ -1423,6 +1490,7 @@ mod attach_log {
     fn root_probe_json(
         state: Option<&CollectorState>,
         scheduled_state_rows: Option<&str>,
+        scheduled_province_rows: Option<&str>,
         include_scheduled_country_fuel: bool,
         include_scheduled_country_production: bool,
     ) -> (String, String) {
@@ -1469,12 +1537,16 @@ mod attach_log {
         let domains = state.country_identity.domains_json_from_rows(
             &current_rows,
             scheduled_state_rows.is_some(),
+            scheduled_province_rows.is_some(),
             include_scheduled_country_fuel,
             include_scheduled_country_production,
         );
         let clock_probe = clock_probe_json(date_ptr as usize);
         let state_rows = scheduled_state_rows
             .map(|rows| format!(",\"states\":{rows}"))
+            .unwrap_or_default();
+        let province_rows = scheduled_province_rows
+            .map(|rows| format!(",\"provinces\":{rows}"))
             .unwrap_or_default();
         (
             format!(
@@ -1491,7 +1563,7 @@ mod attach_log {
                  {country_probe},\
                  {identity_probe},\
                  \"domains\":{domains}}},\
-                 \"countries\":{country_rows}{state_rows}",
+                 \"countries\":{country_rows}{state_rows}{province_rows}",
                 super::COLLECTOR_PROFILE_ID,
                 state.daily_addr,
                 state.long_string_addr
@@ -2657,6 +2729,20 @@ mod attach_log {
             assert!(frame.contains("\"profile_id\":\"vanilla_latest_2026_06_28\""));
             assert!(frame.contains("\"domains\":[]"));
             assert!(frame.contains("\"root_probe\":null"));
+        }
+
+        #[test]
+        fn domain_list_claims_province_control_only_with_province_rows() {
+            let cache = CountryIdentityCache::not_attempted("test");
+
+            let without_provinces = cache.domains_json_from_rows(&[], true, false, false, false);
+            assert!(without_provinces.contains("\"state_ownership\""));
+            assert!(without_provinces.contains("\"state_control\""));
+            assert!(!without_provinces.contains("\"province_control\""));
+
+            let with_provinces = cache.domains_json_from_rows(&[], false, true, false, false);
+            assert!(!with_provinces.contains("\"state_control\""));
+            assert!(with_provinces.contains("\"province_control\""));
         }
 
         #[test]

@@ -70,6 +70,75 @@ class TestCollectorSession(unittest.TestCase):
         self.assertEqual(summary["province_control_frames"], 1)
         self.assertEqual(summary["state_ownership_frames"], 1)
 
+    def test_collector_frame_payload_summary_counts_production_live_coverage(self):
+        summary = cs._collector_frame_payload_summary([
+            {
+                "capture_boundary": "scheduled_hour_snapshot",
+                "domains": ["clock", "production_live"],
+                "countries": {
+                    "GER": {
+                        "production": {
+                            "stockpile": {"70": 12.0, "71": 0.0},
+                            "military_lines": [{"id": 1}],
+                            "naval_lines": [{"id": 2}, {"id": 3}],
+                        },
+                    },
+                    "ENG": {
+                        "production": {
+                            "stockpile": {},
+                            "military_lines": [],
+                            "naval_lines": [],
+                        },
+                    },
+                    "FRA": {},
+                },
+            },
+            {
+                "capture_boundary": "scheduled_hour_snapshot",
+                "domains": ["clock", "production_live"],
+                "countries": {
+                    "SOV": {
+                        "production": {
+                            "stockpile": {"80": 1.0, "81": 2.0, "82": 3.0},
+                            "military_lines": [{"id": 4}, {"id": 5}],
+                            "naval_lines": [{"id": 6}],
+                        },
+                    },
+                },
+            },
+            {
+                "capture_boundary": "scheduled_hour_snapshot",
+                "domains": ["clock", "production_live"],
+                "countries": {"USA": {}},
+            },
+            {
+                "capture_boundary": "worker_poll",
+                "domains": ["clock"],
+                "countries": {
+                    "ITA": {
+                        "production": {
+                            "stockpile": {"90": 4.0},
+                            "military_lines": [],
+                            "naval_lines": [],
+                        },
+                    },
+                },
+            },
+        ])
+
+        self.assertEqual(summary["domains_seen"], ["clock", "production_live"])
+        self.assertEqual(summary["scheduled_snapshot_frame_count"], 3)
+        self.assertEqual(summary["lightweight_poll_frame_count"], 1)
+        self.assertEqual(summary["scheduled_production_domain_frames"], 3)
+        self.assertEqual(summary["frames_with_production_payloads"], 3)
+        self.assertEqual(summary["country_rows_with_production_payloads"], 4)
+        self.assertEqual(summary["max_production_country_rows_per_frame"], 2)
+        self.assertEqual(summary["max_production_stockpile_entries"], 3)
+        self.assertEqual(summary["max_production_military_line_rows"], 2)
+        self.assertEqual(summary["max_production_naval_line_rows"], 2)
+        self.assertEqual(summary["production_on_lightweight_frames"], 1)
+        self.assertEqual(summary["heavy_payload_on_lightweight_frames"], 1)
+
     def test_session_can_record_state_control_preflight_diagnostics(self):
         original_record_probes = cs.record_probes
         original_preflight = cs.resolve_state_control_preflight

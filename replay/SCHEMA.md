@@ -479,28 +479,39 @@ stays `0`, e.g. a nuke RECORD with `amount=0` yields `nukes_total=0`).
 > `div_type` is absent) so an id **reused after destruction** is a destroy+create, not
 > a spurious move+retemplate. Both snapshots being diffed should carry `div_type` for
 > this to bite; mixing a typed and an untyped channel falls back to bare-id matching.
+>
+> **Collector contract (`divisions`):** the first in-process collector slice for this
+> domain is a scheduled hourly-or-better snapshot of active division identity/status
+> rows. It is not a 10 ms worker-poll payload and it does not include division equipment,
+> command hierarchy, template bodies, or battle-plan orders. The collector must write
+> only measured leaves, require `div_id` + `div_type`, reject raw pointers/tag-db ids,
+> and append `divisions` to `provenance.collector.domains` only after the fold succeeds.
+> `division_created` / `division_destroyed` / `division_moved` /
+> `division_template_changed` remain snapshot-diff events at this cadence; sub-hour
+> movement/order deltas are a later sibling raw delta/event stream, not extra
+> same-hour snapshots.
 
 | field | type | source | notes |
 |-------|------|--------|-------|
-| `div_id` | int | M / S | bare id (matches save `id.id` & memory) |
-| `div_type` | int\|null | M / S | id `type` half; pair with `div_id` for identity |
-| `owner` | str\|null | M / S | TAG |
-| `location_province` | int\|null | M / S | current province |
-| `state_id` | int\|null | M/D / S | province→state join |
-| `template_id` | int\|null | M / S | |
-| `template_type` | int\|null | M / S | template id `type` half |
-| `template_name` | str\|null | M/S | resolved name |
+| `div_id` | int | C / M / S | bare id (matches save `id.id` & memory); required for collector `divisions` |
+| `div_type` | int\|null | C / M / S | id `type` half; pair with `div_id` for identity; required for collector `divisions` |
+| `owner` | str\|null | C / M / S | TAG; raw tag-db ids rejected |
+| `location_province` | int\|null | C / M / S | current province |
+| `state_id` | int\|null | C / M / S / D | province→state join |
+| `template_id` | int\|null | C / M / S | |
+| `template_type` | int\|null | C / M / S | template id `type` half |
+| `template_name` | str\|null | C / M / S | resolved name |
 | `template_role` | str\|null | S | `infantry`/`armor`/`motorized`/… |
-| `organisation` | float\|null | M | exact (memory `/100000`); save also carries it |
-| `strength` | float\|null | M / S | see note |
+| `organisation` | float\|null | C / M | exact live value (memory `/100000`) |
+| `strength` | float\|null | C / M / S | see note |
 | `equipment[]` | list | M / S | each: `archetype`, `equip_id`, `equip_type`, `amount` |
-| `experience` | float\|null | M\* | |
-| `moving` | bool\|null | M\* | |
-| `move_target_province` | int\|null | M\* | |
-| `move_progress` | float\|null | M\* | |
-| `in_combat` | bool\|null | M\* | live combat flag; cross-checked vs §7 |
+| `experience` | float\|null | C / M\* | |
+| `moving` | bool\|null | C / M\* | |
+| `move_target_province` | int\|null | C / M\* | |
+| `move_progress` | float\|null | C / M\* | engine progress metric, not a normalized percentage unless a collector profile proves that |
+| `in_combat` | bool\|null | C / M\* | live combat flag; cross-checked vs §7 |
 | `encircled` | bool\|null | M\* | |
-| `supply_status` | float\|null | M\* | |
+| `supply_status` | float\|null | C / M\* | |
 | `script_id` | int\|null | S | save script id (`-1` = none) — **divisions_full** |
 | `division_name` | obj\|null | S | `{type, name_order}` (name-list ref, not the resolved string) — **divisions_full** |
 | `max_supply` | float\|null | S | division supply capacity — **divisions_full** |
