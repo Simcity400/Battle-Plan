@@ -105,6 +105,25 @@ Current recorder-facing bridge status:
   rows in about 0.2s. This proves state ownership/control can use the same
   "expensive discovery before recording, cheap validation during recording"
   pattern as country scalars. It does not yet solve province-control array roots.
+- Raw clock deltas are now emitted as durable `domain_delta` frames from the
+  DLL worker and merged into `collector_frames.jsonl` without polluting hourly
+  snapshot domain claims. A speed-five smoke on 2026-06-28 advanced 4 game hours
+  in an 8 second run, stored 5 hourly snapshots with zero skipped hours, and
+  preserved 139 raw clock delta frames.
+- Division movement now has a bounded raw-frame contract and Python state
+  machine for decoded live rows. The contract uses stable replay keys
+  (`entity_key = division:<div_id>:<div_type>`, payload `div_uid =
+  <div_id>:<div_type>`) and rejects raw pointer/tag-db leakage. This is not yet
+  wired into the DLL worker.
+- Live division timing evidence is now clear: on the active vanilla build, a
+  cold CDivision body locate took about 26.8s for 1806 divisions, while warmed
+  re-reads from the pinned body map took about 22ms median across 20 samples.
+  That is viable for sub-hour movement deltas at speed five, but only if the
+  cold locate stays out of the hot loop.
+- The next implementation pattern is therefore: Python preflight locates and
+  validates CDivision body roots once, passes a sanitized `division_body_bridge`
+  to the DLL control file, and the DLL performs bounded in-process revalidation
+  plus movement delta emission on the same raw pipe stream as clock frames.
 
 ## Definition Of Done
 

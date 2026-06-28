@@ -115,12 +115,29 @@ Source candidates:
   - `locate_division_bodies()`
   - `read_divisions_from_bodies()`
   - `_decode_body()`
+- `memory_reader/division_live/division_movement_delta.py`
+  - `DivisionMovementDeltaTracker`
+  - bounded raw `domain_delta` payload contract and tests
+
+Current measured constraint:
+
+- Cold CDivision body discovery is not a recording-loop operation. On the live
+  2026-06-28 speed-five session it took about 26.8s to locate 1806 division
+  bodies.
+- Warmed re-reads from the pinned body map took about 22ms median across 20
+  samples. At the observed speed-five rate, that is sub-hour and sub-minute
+  granularity, but not a reason to put heap discovery in the hot path.
+- The runtime target is a `division_body_bridge` supplied before recording:
+  Python preflight does the expensive locate, the DLL revalidates each bridged
+  body in-process every sample, and raw movement deltas are emitted on the same
+  pipe stream as clock deltas.
 
 Cadence:
 
 - Start at 10 ms during speed-five proof runs.
 - Emit deltas only on changed movement state, target, source, progress bucket,
-  location, combat ref count, org, or strength.
+  or location for the first native slice. Combat ref count, org, and strength
+  should be added after movement-only deltas are proven in the pipe stream.
 - Keep full division snapshots hourly; use deltas for animation and exact order.
 
 Events/deltas:
