@@ -173,6 +173,9 @@ def _make_oracle_dir(root, *, with_extract=True):
                         "experience_status": {"army_experience": 999.0,
                                               "navy_experience": 751.79,
                                               "air_experience": 999.0},
+                        "script_flags": {
+                            "GER_has_started_war": {
+                                "value": 1, "date": "1939.9.2.1"}},
                         "convoys_destroyed": 57, "accidents_score": 0.84,
                         "cosmetic_tag": "", "pride_of_the_fleet": {"id": 2,
                                                                    "type": 51},
@@ -247,7 +250,9 @@ class TestSchemaPresence(unittest.TestCase):
     def test_field_sources_all_S(self):
         self.assertEqual(schema.source_of("countries.GER.economy.logistics"), "S")
         self.assertEqual(schema.source_of("countries.GER.extra"), "S")
+        self.assertEqual(schema.source_of("countries.GER.extra.script_flags"), "S")
         self.assertEqual(schema.source_of("countries.GER.human_name"), "S")
+        self.assertEqual(schema.source_of("countries.GER.research.doctrine"), "S/D")
         self.assertEqual(schema.source_of("strategic_air.air_bases"), "S")
         self.assertEqual(schema.source_of("strategic_operatives.pools"), "S")
         self.assertEqual(schema.source_of("raids.targets"), "S")
@@ -329,6 +334,7 @@ class TestIngestSynthetic(unittest.TestCase):
         self.assertEqual(ext["nukes_total"], 0)  # genuine zero
         self.assertEqual(ext["special_projects"]["projects_completed"], 5)
         self.assertEqual(ext["convoys_destroyed"], 57)
+        self.assertEqual(ext["script_flags"]["GER_has_started_war"]["value"], 1)
         self.assertIn("dynamic_modifiers", ext)
 
     def test_players_human_name(self):

@@ -23,6 +23,10 @@ they are plain reads, not models or walls:
                               province), and the per-specialization breakthrough
                               points (Area 8).
   - ``experience_status``   : {army_experience, navy_experience, air_experience}.
+  - ``script_flags``        : per-country script flags from
+                              ``countries.<TAG>.flags`` as
+                              {flag: {value, date}}. Only emitted for countries
+                              whose save block actually has ``flags``.
   - ``convoys_destroyed`` / ``accidents_score`` / ``cosmetic_tag``.
   - ``pride_of_the_fleet``  : {id,type} reference (Area 14).
   - ``collaboration``       : present/empty flag (exile/collab block, Area 2).
@@ -127,6 +131,32 @@ def _parse_dynamic_modifier(tz):
                 rec["enabled"] = (v == "yes")
         out.append(rec)
     return out
+
+
+def _parse_flags(tz):
+    """flags={ <flag>={ value date } ... } -> {flag: {value, date}}.
+
+    Country flags are causal scripted state, so keep only the literal flags that
+    exist in the save. A country with no ``flags`` block does not get an inferred
+    empty bag.
+    """
+    flags = {}
+    for key, opener in iter_block_entries(tz):
+        if opener is LBRACE:
+            value = date = None
+            for k, op in iter_block_entries(tz):
+                if op is LBRACE:
+                    _skip_block_body(tz)
+                    continue
+                vv = atom_value(op)
+                if vv is None:
+                    continue
+                if k == "value":
+                    value = to_int(vv)
+                elif k == "date":
+                    date = vv
+            flags[key] = {"value": value, "date": date}
+    return flags
 
 
 def _parse_ace(tz):
@@ -240,6 +270,7 @@ def _parse_country_block(tz):
         "reinforcement_priority": None, "deployment_blocks": [],
         "program_status": None,
         "experience_status": None,
+        "script_flags": {}, "_script_flags_present": False,
         "convoys_destroyed": None, "accidents_score": None,
         "cosmetic_tag": None, "pride_of_the_fleet": None,
         "collaboration_present": False,
@@ -280,6 +311,9 @@ def _parse_country_block(tz):
                             "air_experience"):
                         es[k] = to_float(v)
                 rec["experience_status"] = es
+            elif key == "flags":
+                rec["script_flags"] = _parse_flags(tz)
+                rec["_script_flags_present"] = True
             elif key == "pride_of_the_fleet":
                 pid, ptype = read_id_block(tz)
                 rec["pride_of_the_fleet"] = {"id": pid, "type": ptype}
@@ -335,7 +369,7 @@ def build(text, source, was_melted):
         nukes_total = sum((n["amount"] or 0) for n in rec["nukes"])
         nukes_ready = sum((n["nukes_ready"] or 0) for n in rec["nukes"])
         ps = rec["program_status"] or {}
-        countries[tag] = {
+        country = {
             "nukes_total": nukes_total,
             "nukes_ready_total": nukes_ready,
             "nukes": rec["nukes"],
@@ -357,6 +391,9 @@ def build(text, source, was_melted):
             "pride_of_the_fleet": rec["pride_of_the_fleet"],
             "collaboration_present": rec["collaboration_present"],
         }
+        if rec["_script_flags_present"]:
+            country["script_flags"] = dict(sorted(rec["script_flags"].items()))
+        countries[tag] = country
 
     base_meta = {
         "source_filename": source.name,
@@ -379,6 +416,10 @@ def build(text, source, was_melted):
             "countries_with_active_programs": sum(
                 1 for c in countries.values()
                 if c["special_projects"]["active_programs"]),
+            "countries_with_script_flags_block": sum(
+                1 for c in countries.values() if "script_flags" in c),
+            "script_flags": sum(
+                len(c.get("script_flags") or {}) for c in countries.values()),
         }},
         "countries": countries,
     }
@@ -424,6 +465,8 @@ def build(text, source, was_melted):
                  f"programs={len(sp.get('active_programs', []))} "
                  f"breakthrough={sp.get('breakthrough')}")
     lines.append(f"GER exp       : {ger.get('experience_status')}")
+    lines.append(f"GER flags     : {len(ger.get('script_flags', {}))} "
+                 f"(e.g. {list(ger.get('script_flags', {}))[:3]})")
     lines.append(f"GER convoys_destroyed={ger.get('convoys_destroyed')} "
                  f"accidents={ger.get('accidents_score')} "
                  f"pride_of_fleet={ger.get('pride_of_the_fleet')}")

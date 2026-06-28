@@ -943,7 +943,7 @@ def _ingest_world(bundle: OracleBundle, snap: Dict[str, Any]) -> None:
 _EXTRA_FIELDS = (
     "nukes_total", "nukes_ready_total", "nukes", "dynamic_modifiers",
     "ace_count", "aces", "reinforcement_priority", "deployment_blocks",
-    "special_projects", "experience_status", "convoys_destroyed",
+    "special_projects", "experience_status", "script_flags", "convoys_destroyed",
     "accidents_score", "cosmetic_tag", "pride_of_the_fleet",
     "collaboration_present",
 )

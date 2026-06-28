@@ -275,7 +275,9 @@ are `null`.
 |-------|------|--------|-------|
 | `tech_count` | int\|null | S | |
 | `technologies[]` | list | S/D | each: `name`, `level`, `date` (completion, Clausewitz), `research_points` |
-| `in_progress[]` | list | S / M\* | each: `name`, `points_factor`; `progress_pct` M\* (null in save) |
+| `in_progress[]` | list | S/D / M\* | each: `name`, `points_factor`; derived fields may include `progress_points`, `required_points_base`, `remaining_points_base`, `progress_pct`, `eta_days`, `progress_basis`, or an unavailable reason when the active progress row / static cost / speed input is absent |
+| `in_progress_live[]` | list\|null | M/D | live raw slots: `slot_index`, raw tech handles, `progress_raw`, optional `tech_name` / `progress_units`; derived `progress_pct` only when live progress + static cost are safe; live ETA requires live `points_factor` and otherwise gets `eta_unavailable_reason` |
+| `doctrine` | obj\|null | S/D | optional save-backed doctrine manager fold from `doctrine.json`; TAG rows expose `{raw, completed[], completed_count, in_progress[], source}` under the country research surface. Numeric/non-TAG save keys stay in top-level `doctrine_save` without an inferred country bridge. No live doctrine-manager root is claimed. |
 | `research_slots` | int\|null | S | |
 | `original_research_slots` | int\|null | S | |
 | `research_bonuses[]` | list | S | each: `name`, `categories[]`, `bonus`, `kind` |
@@ -365,6 +367,7 @@ stays `0`, e.g. a nuke RECORD with `amount=0` yields `nukes_total=0`).
 | `deployment_blocks[]` | list | S | active deployment toggles |
 | `special_projects` | obj\|null | S | `{projects_started, projects_completed, active_programs[{building,province,country}], breakthrough{specialization_*:points}}` |
 | `experience_status` | obj\|null | S | `{army_experience, navy_experience, air_experience}` |
+| `script_flags` | obj | S | per-country script flags from `countries.<TAG>.flags`, keyed by flag name with `{value, date}`; omitted when the save has no flags block for that country |
 | `convoys_destroyed` | int\|null | S | |
 | `accidents_score` | float\|null | S | |
 | `cosmetic_tag` | str\|null | S | active cosmetic tag (`""` when none) |

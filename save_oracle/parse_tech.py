@@ -28,12 +28,13 @@ Key paths (verified against a real 1.19 melt):
   countries.<TAG>.research_slot           = 5
   countries.<TAG>.original_research_slots = 4
 
-REALITY NOTE — research progress: the save stores ONLY a per-slot
-``points_factor`` (a research-speed multiplier for the tech in that slot), NOT a
-cumulative progress fraction or completion percentage. The "how far along is
-this research" number lives in live memory, not the melted save. So
-``in_progress[].points_factor`` is reported as the only available signal, and we
-do NOT invent a progress value.
+REALITY NOTE -- research progress: ``technology.slots`` stores the active tech
+name and ``points_factor`` speed. In current fixtures the same active tech also
+appears in ``technology.technologies`` with ``level = null``, ``date =
+"1.1.1.1"``, and ``research_points`` = accumulated active progress points. This
+parser preserves both raw facts; ``models.research_progress`` performs the
+derived fraction/ETA join against static tech costs and fails closed when any
+input is absent.
 
 stdlib only. Reuses the shared tokenizer via ``deep_common``.
 """
@@ -184,8 +185,10 @@ def build(text, source, was_melted):
             "save_version": meta.get("version"),
             "player": meta.get("player"),
             "notes": {
-                "research_progress": "save stores only per-slot points_factor "
-                "(speed multiplier); cumulative progress is live-memory only.",
+                "research_progress": "active slot points_factor is saved; "
+                "matching technologies[] rows with date 1.1.1.1 can carry "
+                "accumulated research_points. Derived progress is computed "
+                "outside the raw parser.",
             },
             "stats": {
                 "countries_with_tech": len(by_tag),

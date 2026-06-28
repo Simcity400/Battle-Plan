@@ -53,14 +53,14 @@ recorded in the final section.
 | `research.research_slots` / `original_research_slots` | `5` / `4` | parallel-research cap (bounds `in_progress[]`) |
 | `research.research_bonuses[]` | 20 rows `{name, categories[], bonus, kind}` | the per-node `bonus_icon`/`bonus` tile + folder tints |
 
-**Empirically confirmed ABSENT/UNFED (drives the `unavailable` badges):**
+**Empirically confirmed availability caveats (drives the `unavailable` badges):**
 
 | schema field | state in snapshot | consequence |
 |---|---|---|
-| **DOCTRINE techs in `research.technologies[]`** | **ZERO across all 143 countries** — the world's 187 distinct tech names are *all* equipment/industry/support/electronics; not one doctrine root (`mobile_warfare`, `superior_firepower`, `grand_battle_plan`, `mass_assault`, `base_strike`, `trade_interdiction`, `fleet_in_being`, `strategic_destruction`, `battlefield_support`, `operational_integrity`, …) appears | **the entire doctrine NODE binding is `unavailable` for this snapshot/channel** — the parser that fed this save channel does not extract doctrine technologies. The leaf (`technologies[]`) is generic and would carry them **exact-when-present**; it is **unfed** here, not a schema gap (see Schema-gap ledger #1, and the conditional badge in §D.2). |
-| `research.in_progress_live` | **`None`** (save channel; live not folded) | the live active-research progress (`progress_units`) of an in-progress node → `unavailable` (the SAVE `points_factor` is a SPEED multiplier, not progress) |
-| `research.in_progress[].progress_pct` | **not present** (SCHEMA §3.4: `M*`, null in save) | the node / detail-window research-progress BAR fraction → `unavailable` (only `points_factor` is stored) |
-| `technologies[].research_points` | present BUT is the tech's point COST (sometimes `null`), not a date/ETA | the node's spent-points tooltip = `exact` (where non-null); it is NEVER an ETA/`year` source |
+| **DOCTRINE state in `research.doctrine`** | save-backed when `parse_doctrine` sees the top-level `doctrine.countries` manager; absent only means this snapshot/channel did not feed doctrine manager state | doctrine NODE state binds to `research.doctrine.completed[]` / `in_progress[]` when present. Non-TAG save keys stay in `doctrine_save` and must not be mapped to a country by guess. Live doctrine-manager memory root remains unresolved. |
+| `research.in_progress_live` | **`None`** in this save-only snapshot | live active-research progress stays `unavailable` here; live rows can derive `progress_pct` only when `tech_name` + `progress_units` + static cost are present, and live ETA also needs a live `points_factor` |
+| `research.in_progress[].progress_pct` | derived when `models.research_progress` has an active progress row + static cost + safe context; otherwise omitted with an unavailable reason | node / detail-window research-progress BAR fraction → `derived` when present, `unavailable` when the model leaves a blocker reason |
+| `technologies[].research_points` | completed rows carry stored points/cost context; active rows with `date=1.1.1.1` can carry accumulated progress points | completed-node spent-points tooltip = `exact` where non-null; active-slot progress/ETA is derived only through `models.research_progress` |
 | tech catalog geometry + prereq/XOR graph | not a snapshot field (static `common/technologies/*.txt` + the per-folder containers in this `.gui`) | tech/doctrine-node RECTS + link/XOR lines are **adapter-fed** by the tech adapter, not the snapshot |
 | per-tech effect / combat-stat rows (soft/hard attack, org, …) | **not stored by the save** — runtime-computed (SCHEMA §11 note: derived combat stats are a documented hard limit) | every detail-window stat grid / unlock-effect value → `unavailable`/`derived` (tech-DEF + engine math, not country state) |
 | `scalars.research_speed.*` | `D` (derived) and **not in this snapshot** | any net research-speed readout (none in these two `.gui`s) would be `unavailable` until the scalars model runs |
@@ -134,8 +134,8 @@ comparison styling, and side-by-side visual proof remain open.
 | `tech_info_title` (instantTextboxType) | selected tech id → loc | loc | **static / adapter-fed** | The tech's display NAME is a tech-DB + localisation lookup (the adapter supplies the selected id). *Not* a country field → not `unavailable`; it renders the loc string once the adapter loads the tech-DB. **[Codex correction]** |
 | `tech_info_description` (instantTextboxType) | selected tech → loc description | loc | **static / adapter-fed** | Tech-DB description text. Same as title. |
 | `tech_icon` (iconType, `GFX_tiled_window_transparent`) | selected tech icon (tech-DB) | tech-icon | **static / adapter-fed** | The tech's sprite, tech-DB lookup. |
-| `research_progressbar` (iconType, `GFX_prod_progress_bar3`) + `research_progressbar_frame` (`GFX_production_progressbar_frame2`) | selected tech's research progress fraction | progressbar-fraction | **unavailable** | No stored fraction: `points_factor` is a speed multiplier, `in_progress_live=None`, `progress_pct` is `M*`. Frame renders inert / badged. |
-| `researchtime_label` (instantTextboxType) | selected tech remaining-days ETA | int (days) / loc | **unavailable** | ETA = (cost − accumulated)/daily-speed; neither accumulated progress nor an ETA is stored. Badge unavailable. |
+| `research_progressbar` (iconType, `GFX_prod_progress_bar3`) + `research_progressbar_frame` (`GFX_production_progressbar_frame2`) | selected tech's research progress fraction | progressbar-fraction | **derived / unavailable** | Uses `progress_pct` only when `models.research_progress` has enough active progress + static cost context. Otherwise the frame renders inert / badged with `progress_unavailable_reason`. |
+| `researchtime_label` (instantTextboxType) | selected tech remaining-days ETA | int (days) / loc | **derived / unavailable** | ETA is derived only when active progress, static cost, current-year context, and a safe positive speed input are present; otherwise `eta_unavailable_reason` is shown/badged. |
 | `tech_info_special_description` (instantTextboxType, in `statsarea`) | tech special-effect text (tech-DB) | loc | **static / adapter-fed** | Tech-DB special-effect blurb. |
 | `research` / `research_with_xp` / `unlock_with_xp` (buttonType, `GFX_button_*`, text `RESEARCH`/`RESEARCH_WITH_XP`) | — (start-research **mutations**) | — | **static / inert** | Start-research buttons are MUTATIONS → inert in a read-only replay (PLAN §D). No datum; render disabled. |
 | `research_MIO` (containerWindowType) → `research_has_MIO` (buttonType, `GFX_government_button`, `RESEARCH`) + `MIO_icon` (iconType, `GFX_design_team_icon`) | the design-team / MIO assignment affordance for this tech | loc + mio-icon | **unavailable** | The MIO/design-team bonus join needs the `mios` domain (`countries.<TAG>.mios[]`, §3.10) — **not folded in this snapshot** (`designs`-sourced) — AND it is a mutation affordance. Badge unavailable; **not derivable from the `research` domain alone** (Codex). |
@@ -177,8 +177,8 @@ hosts (§1a), one per tech, each cloning a **node prototype**. The prototypes ar
 | **completed level** (researched / leveled) | `countries.<TAG>.research.technologies[]` → match `name`, read `level` | int (level) | **exact** | 122 completed rows in sample; `{name, level, date, research_points}`. `level≥1` ⇒ researched; `level` drives multi-level tech tiers (e.g. `infantry_weapons` levels). |
 | **completion date** (node done timeline) | `technologies[].date` | research-date (Clausewitz→year) | **exact** | e.g. `"1936.1.1.12"`. Feeds the node's done-state + the `tech_researched` diff-event timeline. |
 | **research points spent** (node tooltip) | `technologies[].research_points` | int | **exact** (where non-null) | e.g. `165.0`; **sometimes `null`** (e.g. `smoke_generator`) → renders "—". This is a point COST, **never** an ETA/year. |
-| **in-progress** (node currently researching) | `countries.<TAG>.research.in_progress[]` → match `name` | category (researching frame) | **exact** (membership) / **unavailable** (fraction) | A tech in `in_progress[]` renders the "researching" frame. The PROGRESS FRACTION is `unavailable` (no stored numerator; `in_progress_live=None`; `progress_pct` `M*`). Note `in_progress[].points_factor` is a SPEED multiplier, not progress. |
-| **in-progress (live)** (would carry accumulated points) | `countries.<TAG>.research.in_progress_live[].{tech_name,progress_units}` | int (points) | **unavailable** (current data) | The LIVE leaf carries accumulated research POINTS (`progress_units`, NOT a completion fraction — the cost denominator is runtime-computed). It is `None` in this save snapshot → `unavailable`; would be a renderable accumulated-points readout (still not a fraction) once a live read folds it. |
+| **in-progress** (node currently researching) | `countries.<TAG>.research.in_progress[]` → match `name` | category (researching frame) | **exact** (membership) / **derived / unavailable** (fraction) | A tech in `in_progress[]` renders the "researching" frame. The progress fraction uses derived `progress_pct` only when active progress points + static cost context are safe; otherwise it is badged unavailable. |
+| **in-progress (live)** (would carry accumulated points) | `countries.<TAG>.research.in_progress_live[].{tech_name,progress_units}` | int (points) / progressbar-fraction | **derived / unavailable** | The LIVE leaf carries accumulated research POINTS (`progress_units`). `models.research_progress` can derive a fraction from live points + static cost; live ETA still requires a live speed input and otherwise remains unavailable. |
 | **not-yet-researched** (available vs locked) | absence from both `technologies[]` and `in_progress[]`; available iff prereqs ⊆ completed set | category (available/locked frame) | **derived-gappy** | Absence ⇒ un-researched. The available-vs-locked **frame is only an approximation from prereqs ⊆ completed**: exact clickability ALSO needs allow/potential triggers, XOR state, ahead-of-time date penalties, XP/doctrine rules, country state, DLC/game-rules, and free slots — none modeled. Badge `derived` but **gappy** (Codex). |
 | **research slots** (parallel-research cap) | `countries.<TAG>.research.research_slots` (+ `original_research_slots`) | int | **exact** | `5` (orig `4`). Bounds how many `in_progress[]` rows exist; drives the `research_slot_gained` diff event. |
 | **research bonuses** (folder/category discount) | `countries.<TAG>.research.research_bonuses[]` (`{name, categories[], bonus, kind}`) | percent + category | **exact** (the bonus rows) / **derived** (per-node applicability) | 20 rows. The bonus VALUES are `exact`; mapping a bonus to the specific nodes it covers (the `bonus_icon`/`bonus` tile) is a category/tech join → `derived`. |
@@ -227,34 +227,27 @@ Formatters: `loc`, `int`, `percent`, `tech-state-bg`, `tech-icon`, `category` (m
   Read-only nav verbs; active tab = replay-local UI state. **static/UI.**
 - **`close_button` (buttonType, `GFX_closebutton`, tip `CLOSE`)** — close verb. **static.**
 
-## 2c. Doctrine tree — NODE BINDING (adapter-fed; nodes are NOT declarative `.gui` elements — and UNFED this channel)
+## 2c. Doctrine tree — NODE BINDING (adapter-fed; nodes are NOT declarative `.gui` elements)
 
 Doctrine NODES are instantiated by the **tech adapter** into the doctrine-folder grids (§2a). The
 land/naval/air folders reuse the **View-1 tech node prototypes** (doctrines are techs); the
 special-forces folder uses `techtree_special_forces_doctrine_folder_item` (the lone doctrine-specific
 prototype here — children: `Background` `GFX_technology_unavailable_item_bg`, `Icon`
 `GFX_technology_medium`, `bonus_icon` `GFX_tech_bonus`, `bonus` instantTextBoxType — a stripped
-folder-item with no `Name`/sub-slots). The node DATA binds onto the SAME `research` fields as View-1
-techs — **but with one decisive caveat for this snapshot/channel:**
-
-> **DOCTRINE TECHS ARE ABSENT FROM THE SNAPSHOT.** Empirically (this sample, all 143 countries): the
-> 187 distinct tech names in `research.technologies[]` contain **zero** doctrine roots. The parser that
-> fed this save channel does **not** extract doctrine technologies. Therefore every "completed
-> level / date / in-progress" doctrine node is **`unavailable` (unfed) for this snapshot** — even
-> though the binding TARGET (`research.technologies[]`) is generic and would carry doctrines
-> **exact-when-present**. This is a parser/channel gap, **not** a schema gap, and **not** "not
-> researched" — absence here means *unknown*, not *zero* (no-fabrication). Use the conditional badge
-> **EXACT-when-present; UNAVAILABLE/UNFED for this snapshot/channel** (Codex-confirmed framing, §D.2).
+folder-item with no `Name`/sub-slots). The node DATA is save-backed by `research.doctrine` when
+`parse_doctrine` has folded a real top-level `doctrine.countries` manager row. Absence of
+`research.doctrine` still means *unknown for this snapshot/channel*, not "not researched"; non-TAG
+manager keys are preserved in `doctrine_save` and never bridged to countries by guess.
 
 | node state (per doctrine tech) | snapshot source path | formatter | fidelity | notes |
 |---|---|---|---|---|
-| `Background` STATE (completed / researching / available) | `research.technologies[]` / `in_progress[]` membership (as View 1) | tech-state-bg | **exact-when-present; UNAVAILABLE this channel** | The frame logic is identical to a tech node — but with zero doctrine rows fed, every doctrine node currently resolves to the un-researched frame *by absence*, which would be **fabrication** if rendered as "not researched". Badge `unavailable` until doctrines are parsed. |
+| `Background` STATE (completed / researching / available) | `research.doctrine.completed[]` / `research.doctrine.in_progress[]` membership | tech-state-bg | **exact-when-present; unavailable when absent** | The frame logic is identical to a tech node. If the save-backed doctrine payload is absent, do not render absence as "not researched"; badge unavailable. |
 | `Icon` (`GFX_technology_medium`) | doctrine icon (doctrine-DB) | tech-icon | **static / adapter-fed** | Doctrine sprite, DB lookup; independent of the data gap. |
 | `bonus_icon` / `bonus` | `research_bonuses[]` category-join (doctrine categories, e.g. `SUBDOCTRINE_*` entries seen in `research_bonuses[]`) | category + percent | **derived** | `research_bonuses[]` DOES carry sub-doctrine bonus rows (e.g. `SUBDOCTRINE_MOBILE_INFANTRY` observed) → the bonus tile is derivable even though the doctrine TECH rows are absent. |
-| **completed level** | `research.technologies[]` → doctrine name → `level` | int | **exact-when-present; UNAVAILABLE this channel** | Doctrine progression is leveled (e.g. mobile-warfare tier). Schema-eligible; unfed. |
-| **completion date** | `technologies[].date` for the doctrine | research-date | **exact-when-present; UNAVAILABLE this channel** | Unfed. |
-| **in-progress** | `in_progress[]` ∋ doctrine name | category | **exact-when-present (membership); UNAVAILABLE this channel** | Unfed; fraction also unavailable (same numerator gap as techs). |
-| **mutual exclusion** (the XOR between doctrine PATHS — the defining doctrine UI feature) | doctrine-DB `XOR`/`path` (static) — rendered via the View-1 `techtree_xor_item` prototype the adapter reuses | — | **adapter-fed** | The "pick one doctrine path" exclusivity is doctrine-DB data, not a country field. The CHOSEN side is implied by which doctrine techs are in `technologies[]` (→ also `unavailable` here, since none are fed). |
+| **completed level** | `research.doctrine.completed[]` → doctrine id → `level` | int | **exact-when-present; unavailable when absent** | Doctrine progression is leveled (e.g. mobile-warfare tier). Derived summaries are whitelisted against the static doctrine catalog; unknown raw tokens stay in `raw`. |
+| **completion date** | `research.doctrine.completed[].date` when present | research-date | **exact-when-present; unavailable when absent** | Some save shapes do not carry a date; render blank/badged rather than inventing one. |
+| **in-progress** | `research.doctrine.in_progress[]` ∋ doctrine id | category | **exact-when-present (membership); unavailable when absent** | Derived only from explicit save in-progress containers and known static doctrine ids. Fraction remains subject to the same progress-model blockers as techs. |
+| **mutual exclusion** (the XOR between doctrine PATHS — the defining doctrine UI feature) | doctrine-DB `XOR`/`path` (static) — rendered via the View-1 `techtree_xor_item` prototype the adapter reuses | — | **adapter-fed** | The "pick one doctrine path" exclusivity is doctrine-DB data, not a country field. The chosen side is implied by `research.doctrine.completed[]` when the save-backed payload is present. |
 | **link lines** (doctrine prereq edges) | doctrine-DB prereq graph (static) — View-1 `techtree_line_item` | — | **adapter-fed** | Edges from the doctrine DB. |
 | **node rect / position** | the doctrine-folder grids + catalog offsets (static) | — | **adapter-fed** | Positions static; the land/naval/air folders are empty → 100% adapter-placed. |
 | `technology_air_mission_entry.mission_icon` (`GFX_strategicair_mission_types`) | which air missions an air-doctrine enables (doctrine-DB) | category | **derived** | Static doctrine-DB attribute. |
@@ -271,20 +264,18 @@ folders are *empty* and whose nodes are the same tech-node prototypes from `coun
 only the per-node DATA binds to the snapshot.
 
 **B. The single most important fidelity asymmetry: techs vs doctrines.** TECH nodes bind **exact**
-(122 completed rows present, `{name, level, date}`). DOCTRINE nodes bind to the *same* fields but are
-**`unavailable`/unfed** in this snapshot because the parser feeds **zero** doctrine techs (verified
-across all 143 countries — 187 distinct names, none a doctrine root). This is the load-bearing
-correctness point of this map: do not render an absent doctrine as "not researched" (that is
-fabrication); render "—" and badge unavailable. The fix is a parser change (extract doctrine
-technologies into `research.technologies[]`), after which doctrine nodes become **exact** with no
-schema change.
+(122 completed rows present, `{name, level, date}`). DOCTRINE nodes now bind through the save-backed
+`research.doctrine` payload when `parse_doctrine` has a real top-level doctrine manager row. The
+no-fabrication rule remains load-bearing: absence of `research.doctrine` means *unknown for that
+snapshot/channel*, not "not researched"; render "—" and badge unavailable. The live doctrine-manager
+root is still unresolved.
 
-**C. Progress fraction is unavailable for BOTH (same cause as the research map).** A tech/doctrine is
-COMPLETED via membership in `technologies[]` (`exact`) and IN-PROGRESS via `in_progress[]` (`exact`).
-The PROGRESS FRACTION is `unavailable`: `in_progress[].points_factor` is a SPEED multiplier (not
-progress), `in_progress_live.progress_units` is accumulated POINTS (not a fraction — denominator is
-runtime-computed) and is `None` in this save snapshot, and `progress_pct` is `M*`/null. So every
-research-progress bar (`research_progressbar`) and ETA (`researchtime_label`) is `unavailable`.
+**C. Progress fraction is derived/fail-closed.** A tech/doctrine is COMPLETED via measured membership
+(`technologies[]` for techs, `research.doctrine.completed[]` for doctrines) and IN-PROGRESS via the
+corresponding in-progress list. The progress fraction is derived only when `models.research_progress`
+has active progress points plus static tech cost and safe context; ETA also needs a positive speed
+input. Otherwise the progress bar (`research_progressbar`) and ETA (`researchtime_label`) render an
+unavailable reason.
 
 **D. Detail-window stat math is runtime-computed (a documented hard limit).** The tech info window's
 effect rows (equipment/subunit stats + deltas, terrain modifiers, doctrine bonus math) are computed by
@@ -293,10 +284,11 @@ stats are a hard limit). The *structure* (which unlocks/effects a tech has) is t
 (`derived` once the adapter loads it); the *numbers* are `unavailable`. Tech NAME/description/icon are
 `static`/adapter-fed (tech-DB + loc), **not** `unavailable` (Codex correction).
 
-**E. `unavailable` ≠ "missing forever".** Most `unavailable` badges are (i) the doctrine data gap
-(parser change), (ii) schema-present fields the current snapshot generator does not yet feed
-(`in_progress_live`, the `mios`/`extra.special_projects`/`scalars` domains), or (iii) runtime-computed
-tech effect math that the save fundamentally never stores. All render "—" per no-fabrication.
+**E. `unavailable` ≠ "missing forever".** Most `unavailable` badges are (i) save-backed doctrine
+payload absent for a given snapshot/channel or live doctrine root still unresolved, (ii)
+schema-present fields the current snapshot generator does not yet feed (`in_progress_live`, the
+`mios`/`extra.special_projects`/`scalars` domains), or (iii) runtime-computed tech effect math that the
+save fundamentally never stores. All render "—" per no-fabrication.
 
 ---
 
@@ -321,7 +313,7 @@ tech effect math that the save fundamentally never stores. All render "—" per 
 | **Empty adapter folders (land/naval/air — bare containers, 0 declared children)** | **3** | `land_doctrine_folder`, `naval_doctrine_folder`, `air_doctrine_folder` |
 | **Node-prototype window** (doctrine-specific) | **1** | `techtree_special_forces_doctrine_folder_item` (+ children Background/Icon/bonus_icon/bonus) — land/naval/air reuse View-1 prototypes |
 | **Air-mission entry prototype** | **1** | `technology_air_mission_entry.mission_icon` |
-| **Dynamic-bound** (incl. derived/unavailable) | **~6 distinct binds** | node bg-state (unfed), Icon, bonus_icon, bonus, mission_icon; (completed level/date/in-progress all UNFED this channel) |
+| **Dynamic-bound** (incl. derived/unavailable) | **~6 distinct binds** | node bg-state, Icon, bonus_icon, bonus, mission_icon; completed level/date/in-progress are save-backed through `research.doctrine` when present and unavailable when absent |
 | **Static / decoration / nav** | **~62** | root + margins, the 2 SF folder frames + backgrounds, 4 special-forces branch label/desc/art windows, 4 folder tabs + 4 titles + glow + close, all `borderSize`/`slotsize` layout nodes, `GFX_fullborder_tiled` grid backgrounds |
 
 Every element in each of the two `.gui` trees falls into exactly one bucket above; the per-element
@@ -329,17 +321,16 @@ tables (1a/1b/1c/1d, 2a/2b/2c) enumerate them by name or by repeating-pattern wi
 
 ### `unavailable`-badged binds (with reason)
 
-**Tech tree (7 distinct):** `research_progressbar` + node in-progress FRACTION (no stored numerator;
-`in_progress_live=None`, `progress_pct` `M*`), `researchtime_label` (ETA not stored), `research_MIO` /
-`MIO_icon` / `can_assign_design_team_icon` (mios domain unfed + mutation affordance),
+**Tech tree (7 distinct):** `research_progressbar` + node in-progress fraction when the
+research-progress model leaves an unavailable reason, `researchtime_label` when ETA inputs are absent,
+`research_MIO` / `MIO_icon` / `can_assign_design_team_icon` (mios domain unfed + mutation affordance),
 `special_project_specialization*` (special-projects/tech-DB specialization unfed), the detail-window
-stat NUMBERS (runtime-computed, unstored), `in_progress_live.progress_units` (live leaf None this
-channel).
+stat NUMBERS (runtime-computed, unstored), `in_progress_live.progress_units` when the live leaf is
+absent for this channel.
 
-**Doctrine tree (the whole node-DATA layer):** every doctrine **completed level / date / in-progress**
-node bind — `unavailable`/UNFED because the parser extracts **zero** doctrine techs into
-`research.technologies[]` (conditional badge: EXACT-when-present). Plus the same progress-fraction /
-ETA / MIO gaps inherited from the shared tech engine.
+**Doctrine tree:** doctrine **completed level / date / in-progress** node binds are save-backed through
+`research.doctrine` when present and unavailable when absent. Plus the same progress-fraction / ETA /
+MIO gaps inherited from the shared tech engine.
 
 All are schema-present-but-unfed fields, separate-domain data not folded into THIS snapshot, or
 tech/doctrine-DEF static data / runtime-computed effect math — none fabricated; each renders "—" per
@@ -351,14 +342,14 @@ no-fabrication.
 
 | # | needed for | field / data | status | classification |
 |---|---|---|---|---|
-| 1 | **doctrine node completed-level / date / in-progress** | `research.technologies[]` / `in_progress[]` rows **for doctrine techs** | **schema-present leaf, PARSER-UNFED** — the save-channel parser extracts zero doctrine technologies (verified: 0 of 187 world tech names are doctrines) | **parser gap** (not schema) — fix = extract doctrine techs; then `exact` with no schema change |
-| 2 | research-progress BAR fraction (node + detail window) | a stored progress fraction / numerator for an in-progress tech | `in_progress[].progress_pct` is `M*` (null in save); `in_progress_live.progress_units` is accumulated POINTS (not a fraction) and `None` this channel | **schema-present, unfed** + **runtime denominator** (the cost-to-complete is engine-computed) |
-| 3 | research ETA (`researchtime_label`) | remaining-days-to-complete for an active tech | not stored; needs accumulated-progress + daily-speed | **runtime-computed** (never in the save) |
+| 1 | **doctrine node completed-level / date / in-progress** | `research.doctrine.completed[]` / `research.doctrine.in_progress[]` | **save-backed when parse_doctrine output is present; unavailable when absent; live root unresolved** | **covered for save cadence; open for live doctrine-manager root** |
+| 2 | research-progress BAR fraction (node + detail window) | `progress_pct` from `models.research_progress` | derived when active progress points + static cost + safe context are present; otherwise omitted with a reason | **derived/fail-closed** |
+| 3 | research ETA (`researchtime_label`) | `eta_days` from `models.research_progress` | derived when progress + static cost + positive speed input are safe; otherwise omitted with a reason | **derived/fail-closed** |
 | 4 | per-tech / per-doctrine effect & combat-stat rows (detail window stat grids) | soft/hard attack, org, HP, width, terrain modifiers, doctrine bonus math, per-row deltas | not stored — SCHEMA §11: derived combat stats are a documented hard limit | **runtime-computed** (structure is tech-DB static; numbers unavailable) |
 | 5 | per-tech XP cost / "research with XP" / "unlock with XP" | the army/navy/air XP price of a doctrine/tech step | not a `research` field; tech-DB constant | **tech-DEF static** (adapter-supplied, not country state) |
 | 6 | available-vs-locked node frame (exact clickability) | allow/potential triggers, XOR state, ahead-of-time date penalty, free-slot count, DLC/game-rule gates | only prereqs ⊆ completed is testable; the rest is unmodeled | **derived-gappy** (prereq test exact; full gating needs the trigger evaluator + tech-DB) |
 | 7 | node MIO / design-team assignment (`research_MIO`, `can_assign_design_team_icon`) | which MIO/design-team bonus applies to a tech | `countries.<TAG>.mios[]` (§3.10) not folded in this snapshot | **separate-domain, unfed** (designs/mios channel) |
-| 8 | doctrine mutual-exclusion DISPLAY (which path is chosen / which XOR side is locked) | doctrine-DB `XOR`/`path` graph + the chosen side | XOR graph is doctrine-DB static (adapter); the chosen side is implied by `technologies[]` membership → also unfed (#1) | **tech-DEF static** (graph) + **parser-unfed** (chosen side) |
+| 8 | doctrine mutual-exclusion DISPLAY (which path is chosen / which XOR side is locked) | doctrine-DB `XOR`/`path` graph + the chosen side | XOR graph is doctrine-DB static (adapter); the chosen side is implied by `research.doctrine.completed[]` when save-backed payload is present | **tech-DEF static** (graph) + **save-backed / unavailable when absent** |
 | 9 | special-project specialization tags on a tech | per-tech specialization mapping | `extra.special_projects` (§3.11) not folded; tech-DB mapping | **separate-domain, unfed** + tech-DEF static |
 | 10 | net research-speed readout (not in these `.gui`s but adjacent) | `scalars.research_speed.{pct,multiplier,factor_total}` | `D` (derived) and not in this snapshot | **schema-present, unfed** (scalars model) |
 
@@ -375,12 +366,12 @@ were folded in.
 | claim asked | Codex verdict | folded-in correction |
 |---|---|---|
 | **(a) missed distinct elements/node-types** | flagged 5 groups to classify explicitly | folded: (1) all large/small `techtree_*_folder_item` variants + their `Name`/`Icon`/`bonus`/`sub_technology_slot_*`/`special_project_specialization_list`/`can_assign_design_team_icon` children (§1d); (2) `techtree_line_item` + `techtree_xor_item` graph decorations (§1d); (3) the detail-window generated stat-list rows (§1c); (4) doctrine chrome — empty land/naval/air folders, SF backgrounds, tabs, `techtree_special_forces_doctrine_folder_item`, `technology_air_mission_entry` (§2); (5) the MIO/design-team affordances `research_MIO`/`research_has_MIO`/`can_assign_design_team_icon` — "not derivable from the `research` domain alone" → badged `unavailable` (§1c/§1d). |
-| **(b) node→field correctness vs schema** | **AGREE on all 8 core mappings** | none — confirmed: `technologies[].level/date` exact; `research_points` = COST not ETA; `in_progress[].points_factor` = speed not progress; `in_progress_live.progress_units` = accumulated points not a fraction; `progress_pct`/`in_progress_live=None` ⇒ fraction unavailable. |
+| **(b) node→field correctness vs schema** | **SUPERSEDED for progress rows** | `technologies[].level/date` remain exact. Research progress rows now use `models.research_progress` output when present and unavailable reasons otherwise; raw `points_factor` alone is still not a progress fraction. |
 | **(c) false unavailable vs real gap** | flagged 3 over-/mis-badges | folded: `tech_info_title`/`description` → **STATIC/ADAPTER-FED** (tech-DB + loc), NOT `unavailable`; detail-window unlock/effect rows → split **STATIC/DERIVED structure** vs **runtime-derived/unavailable numbers**; `bonus_icon`/`bonus` → bonuses `exact` in `research_bonuses[]` but node applicability `derived` (category/tech join). |
 | **available-vs-locked badge** | tighten to **DERIVED/GAPPY** | folded (§1d "not-yet-researched"): prereqs ⊆ completed is only one factor — allow/potential triggers, XOR, date penalties, XP, DLC/rules, slots also gate exact clickability. |
-| **(d) doctrine framing** | **AGREE** — "doctrines are technologies → bind to `research.technologies[]`, **exact when present**, but **unavailable/unfed** for this sampled save channel because the parser feeds zero doctrine techs" is the right framing; use a **conditional badge: EXACT when present; UNAVAILABLE/UNFED for this snapshot/channel**; do not interpret absence as "not researched" | folded throughout §2c + Notes B + ledger #1: conditional badge applied to every doctrine node-DATA bind; absence framed as *unknown* not *zero* (no-fabrication). |
+| **(d) doctrine framing** | **SUPERSEDED by parse_doctrine** | Doctrine nodes now bind to `research.doctrine` for save-backed completed/in-progress state when present. The old absence rule still applies when that payload is absent: unknown, not "not researched"; live doctrine-manager root remains unresolved. |
 
 Net: no tech node-binding badge was downgraded (techs remain `exact`); four chrome/detail badges were
 tightened (tech name/desc → static-not-unavailable; effect rows → static-structure-vs-runtime-numbers;
-bonus applicability → derived; available/locked → derived-gappy); and the doctrine layer's conditional
-**EXACT-when-present / UNAVAILABLE-this-channel** badge — the highest-risk call — was confirmed.
+bonus applicability → derived; available/locked → derived-gappy). The historical progress and doctrine
+rows have since been superseded by the derived research-progress model and save-backed doctrine fold.

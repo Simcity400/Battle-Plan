@@ -213,6 +213,7 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.economy.logistics": "S",            # supply.json (§3.1)
     # --- country extras + player name (Tier-1 EXTRACT, §3.11/§3.12) ---
     "countries.*.extra": "S",                        # country_extra.json
+    "countries.*.extra.script_flags": "S",            # country_extra flags bag
     "countries.*.human_name": "S",                   # players.json (persona name)
     # --- country.military (§3.2) ---
     "countries.*.military.num_ships": "M/S",
@@ -280,6 +281,22 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.research.tech_count": "M/S",
     "countries.*.research.technologies": "S/D",
     "countries.*.research.in_progress": "S/M*",
+    # Save-backed doctrine manager fold (parse_doctrine -> doctrine.json, D/S): TAG-keyed
+    # rows are folded additively here. Numeric/non-TAG save keys stay in the top-level
+    # doctrine_save sidecar because there is no safe country bridge.
+    "countries.*.research.doctrine": "S/D",
+    # Derived save active-research progress/ETA (models.research_progress, D): computed by
+    # joining in_progress[].name to the active technologies[] row whose date is 1.1.1.1 and
+    # then to static game_defs research_cost. Absent/reasoned when the active progress row,
+    # static cost, current-year context, or positive points_factor is unavailable.
+    "countries.*.research.in_progress.*.progress_points": "D",
+    "countries.*.research.in_progress.*.required_points_base": "D",
+    "countries.*.research.in_progress.*.remaining_points_base": "D",
+    "countries.*.research.in_progress.*.progress_pct": "D",
+    "countries.*.research.in_progress.*.eta_days": "D",
+    "countries.*.research.in_progress.*.progress_basis": "D",
+    "countries.*.research.in_progress.*.progress_unavailable_reason": "D",
+    "countries.*.research.in_progress.*.eta_unavailable_reason": "D",
     # LIVE active-research rows live in a SEPARATE leaf (raw-handle shape, distinct
     # from the save's {name, points_factor} in_progress) so the two shapes never mix
     # (Codex). Carries {slot_index, tech_handle_raw, tech_def_index_raw, progress_raw};
@@ -294,6 +311,17 @@ FIELD_SOURCES: Dict[str, str] = {
     # needs the per-tech cost def + has no save GT this frame -> RESISTED, never fabricated).
     # ADDED ALONGSIDE the raw progress_raw on each slot dict (merged by slot_index).
     "countries.*.research.in_progress_live.*.progress_units": "M",
+    # Derived active-research progress/ETA (models.research_progress, D): computed only when a
+    # live slot has progress_units + resolved tech_name, generated static tech defs provide a
+    # positive research_cost, and the current year/bonus context is safe. Otherwise the value
+    # stays absent and an *_unavailable_reason explains the blocker.
+    "countries.*.research.in_progress_live.*.required_points_base": "D",
+    "countries.*.research.in_progress_live.*.remaining_points_base": "D",
+    "countries.*.research.in_progress_live.*.progress_pct": "D",
+    "countries.*.research.in_progress_live.*.eta_days": "D",
+    "countries.*.research.in_progress_live.*.progress_basis": "D",
+    "countries.*.research.in_progress_live.*.progress_unavailable_reason": "D",
+    "countries.*.research.in_progress_live.*.eta_unavailable_reason": "D",
     "countries.*.research.research_slots": "M/S",
     "countries.*.research.original_research_slots": "S",
     "countries.*.research.research_bonuses": "S",

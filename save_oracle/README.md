@@ -432,9 +432,10 @@ bonus/ahead_reduction/claim/cost_reduction/uses + categories).
 - Key paths: `countries.<TAG>.technology.technologies.<tech>`, `…technology.slots.<tech>.points_factor`,
   `…technology.limited_use_bonus`, `…technology.limited_use_cost_reduction_bonus`,
   `countries.<TAG>.research_slot` / `original_research_slots`.
-- **Gap:** the save stores only a per-slot `points_factor` (speed multiplier),
-  **no cumulative research progress fraction** — that is live-memory only.
-  (Active techs also appear in `technologies` with `date=1.1.1.1` and no level.)
+- Active techs also appear in `technologies` with `date=1.1.1.1`, no level,
+  and (in current fixtures) accumulated `research_points`. `parse_tech.py`
+  keeps the raw facts; `models.research_progress` computes fraction/ETA by
+  joining them to static tech costs and fails closed when an input is absent.
 
 ## `production.json` — production & equipment (`parse_production.py`)
 Top-level `equipment_archetypes` (the `(id:type) -> {name, creator, obsolete,

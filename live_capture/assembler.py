@@ -23,6 +23,7 @@ so this keeps the canonical contract intact while not throwing the data away.
 from __future__ import annotations
 
 import copy
+import json
 import os
 import sys
 from typing import Any, Dict, Optional
@@ -81,6 +82,59 @@ def _redact_save_payload(payload: Any) -> Any:
             else:
                 out[k] = _redact_path(out[k])
     return out
+
+
+def _load_doctrine_save(output_dir: str) -> Optional[Dict[str, Any]]:
+    """Load save_oracle doctrine.json if present.
+
+    Doctrine is currently an additive save-cadence surface, not a replay/schema.py
+    canonical domain. This helper keeps the fold local to live_capture so the
+    parser can expose truthful save state without claiming a replay-domain enum
+    that does not exist yet.
+    """
+    path = os.path.join(output_dir, "doctrine.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except Exception:
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def _fold_doctrine_save(snap: Dict[str, Any], doc: Optional[Dict[str, Any]]) -> Dict[str, int]:
+    """Fold doctrine.json into additive snapshot homes, fail-closed.
+
+    TAG-keyed rows land under countries.*.research.doctrine. Non-TAG save keys are
+    kept only in snap["doctrine_save"].countries_by_key; no country-id bridge is
+    inferred here.
+    """
+    stats = {"tag_rows": 0, "non_tag_rows": 0}
+    if not isinstance(doc, dict):
+        return stats
+
+    for tag, rec in (doc.get("countries") or {}).items():
+        if not schema.valid_tag(tag) or not isinstance(rec, dict):
+            continue
+        payload = {}
+        for key in ("raw", "completed", "completed_count", "in_progress"):
+            if key in rec:
+                payload[key] = copy.deepcopy(rec[key])
+        if not payload:
+            continue
+        payload["source"] = "S"
+        _ensure_country(snap, tag)["research"]["doctrine"] = payload
+        stats["tag_rows"] += 1
+
+    by_key = doc.get("countries_by_key")
+    if isinstance(by_key, dict) and by_key:
+        side = snap.setdefault("doctrine_save", {})
+        side["countries_by_key"] = copy.deepcopy(by_key)
+        side["source"] = "S"
+        stats["non_tag_rows"] = len(by_key)
+
+    return stats
 
 
 def _scrub_model_meta(meta: Any) -> Any:
@@ -1708,10 +1762,16 @@ def fold_save_bundle(snap: Dict[str, Any], output_dir: str, *,
 
     gid = game_id or snap.get("game_id") or "fold"
     # Build the canonical save snapshot (its own empty skeleton + oracle ingest).
+    doctrine_doc = _load_doctrine_save(output_dir)
+    doctrine_has_payload = (
+        isinstance(doctrine_doc, dict)
+        and (bool(doctrine_doc.get("countries"))
+             or bool(doctrine_doc.get("countries_by_key")))
+    )
     save_snap = _store.build_snapshot_from_oracle(output_dir, gid)
     save_prov = (save_snap.get("provenance") or {}).get("save") or {}
     save_domains = list(save_prov.get("domains") or [])
-    if not save_domains:
+    if not save_domains and not doctrine_has_payload:
         return snap  # nothing to fold (empty/absent oracle) -> no fabrication
 
     # Which exact country LEAVES did the LIVE memory channel measure? Those values
@@ -1770,6 +1830,12 @@ def fold_save_bundle(snap: Dict[str, Any], output_dir: str, *,
     for key, sv in (save_snap.get("provinces") or {}).items():
         lv = live_p.get(key)
         live_p[key] = sv if lv is None else _backstop_merge(lv, sv)
+
+    # --- doctrine manager (top-level doctrine.json): additive save-cadence state.
+    # This is not yet a replay/schema.py canonical domain id, so it is folded as a
+    # save backstop under countries.*.research.doctrine for TAG-keyed rows and as a
+    # top-level sidecar for non-TAG save keys. No TAG bridge is inferred here.
+    doctrine_stats = _fold_doctrine_save(snap, doctrine_doc)
 
     # provenance domains the LIVE memory channel actually captured. Gate the
     # divisions/combats adoption on THIS, not on emptiness: a captured measured-empty
@@ -1869,26 +1935,47 @@ def fold_save_bundle(snap: Dict[str, Any], output_dir: str, *,
     existing = prov.get("save") or {}
     backstops = list(existing.get("backstops") or [])
     src_filenames = dict(existing.get("source_filenames") or {})
-    save_src = _redact_path(save_prov.get("source_filename"))
+    dmeta = doctrine_doc.get("meta") if isinstance(doctrine_doc, dict) else None
+    doctrine_src = None
+    doctrine_date = None
+    if isinstance(dmeta, dict):
+        doctrine_src = _redact_path(dmeta.get("source_filename"))
+        doctrine_date = dmeta.get("save_date")
+    save_src = _redact_path(save_prov.get("source_filename")) or doctrine_src
     new_save = {
         "captured": True,
         "source": "melted_save_on_disk",
         "is_live": False,
-        # the full-bundle fold DOES fill canonical domains (distinct from the
-        # buildings/intel sidecar backstops, which fill none).
-        "fills_canonical_domains": True,
-        "domains": sorted(set(save_domains)),
-        "save_date": save_prov.get("save_date"),
+        # the full-bundle fold fills canonical domains only when replay/store.py
+        # exposed them. Additive doctrine is tracked below as a backstop.
+        "fills_canonical_domains": bool(save_domains),
+        "save_date": save_prov.get("save_date") or doctrine_date,
         "source_filename": save_src,
         "source_filenames": src_filenames,
     }
+    if save_domains:
+        new_save["domains"] = sorted(set(save_domains))
     if backstops:
         new_save["backstops"] = backstops
+    if doctrine_stats.get("tag_rows") or doctrine_stats.get("non_tag_rows"):
+        new_save.setdefault("backstops", [])
+        if "doctrine" not in new_save["backstops"]:
+            new_save["backstops"].append("doctrine")
+        if doctrine_src:
+            src_filenames["doctrine"] = {
+                "source_filename": doctrine_src
+            }
     prov["save"] = new_save
     notes = list(prov.get("notes") or [])
-    notes.append("save backstop folded %d canonical domain(s) from the melted save "
-                 "(live channel wins; save fills gaps; no fabrication)."
-                 % len(new_save["domains"]))
+    if save_domains:
+        notes.append("save backstop folded %d canonical domain(s) from the melted save "
+                     "(live channel wins; save fills gaps; no fabrication)."
+                     % len(new_save["domains"]))
+    if doctrine_stats.get("tag_rows") or doctrine_stats.get("non_tag_rows"):
+        notes.append("save doctrine backstop folded %d TAG row(s) and preserved %d "
+                     "non-TAG row(s) without inferring a country bridge."
+                     % (doctrine_stats.get("tag_rows", 0),
+                        doctrine_stats.get("non_tag_rows", 0)))
     prov["notes"] = notes
     return snap
 
@@ -2206,6 +2293,7 @@ def attach_derived_models(snap: Dict[str, Any], output_dir: Optional[str]) -> Di
         _attach_scalars(snap, output_dir)              # capitulation/research/SF (D)
         _attach_air_superiority_model(snap, output_dir)  # stat-weighted % (D)
         _attach_supply_estimate(snap, output_dir)      # priority-laddered supply (D)
+    _attach_research_progress(snap)                    # live progress units + static tech cost (D)
     return snap
 
 
@@ -2346,6 +2434,27 @@ def _attach_scalars(snap: Dict[str, Any], output_dir: str) -> None:
                     led = None
                 if led is not None:
                     ledger.setdefault(observer, {})[tgt] = led
+
+
+def _attach_research_progress(snap: Dict[str, Any]) -> None:
+    """Add fail-closed progress/ETA fields to active-research slots.
+
+    Save slots are joined through their active ``technologies[]`` progress row;
+    live slots require measured ``progress_units`` plus resolved ``tech_name``.
+    Missing inputs leave raw slots intact or add an unavailable reason.
+    """
+    try:
+        from models import research_progress as RP  # noqa: E402
+    except Exception:
+        return
+    try:
+        tech_defs = RP.load_static_tech_defs()
+    except Exception:
+        tech_defs = None
+    try:
+        RP.enrich_snapshot_research_progress(snap, tech_defs)
+    except Exception:
+        return
 
 
 def _crypto_targets(observer_rec: Any):

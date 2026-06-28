@@ -41,7 +41,7 @@ ALL_FILES = (
     "country_snapshot.json", "state_ownership.json", "state_detail.json",
     "province_control.json", "state_control.json", "divisions.json",
     "diplomacy.json", "economy.json", "focus.json", "tech.json",
-    "production.json", "combats.json", "oob.json", "meta.json", "control_meta.json",
+    "doctrine.json", "production.json", "combats.json", "oob.json", "meta.json", "control_meta.json",
     "market.json", "occupation.json",
     # Tier-2 EXTRACT additions (2026-06-25): new save domains + full record
     # enumerations. These are loaded so source-coherence covers them too.

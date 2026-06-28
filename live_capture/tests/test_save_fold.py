@@ -74,6 +74,12 @@ def _make_oracle_dir(root):
     _dump(root, "focus.json", {
         "countries": {"GER": {"focus_tree": "german_focus",
                               "completed": ["f1", "f2"], "completed_count": 2}}})
+    _dump(root, "country_extra.json", {
+        "countries": {
+            "GER": {
+                "script_flags": {
+                    "GER_has_started_war": {
+                        "value": 1, "date": "1939.9.2.1"}}}}})
     _dump(root, "market.json", {
         "meta": {},
         "contracts": [{"contract_id": [5, 81], "seller": "SOV", "buyer": "GER",
@@ -81,6 +87,36 @@ def _make_oracle_dir(root):
                        "convoys": {"assigned": 1, "total": 1}, "days": 2,
                        "delivery_state": {}, "completed": 0}],
         "countries": {}})
+    return root
+
+
+def _make_doctrine_oracle_dir(root):
+    os.makedirs(root, exist_ok=True)
+    _dump(root, "doctrine.json", {
+        "meta": {
+            "source_filename": "/home/user/secret/SYN_melted.txt",
+            "save_date": "1937.6.1.12",
+            "save_version": "syn",
+        },
+        "countries": {
+            "GER": {
+                "raw": {"completed": ["superior_firepower"]},
+                "completed": [{"id": "superior_firepower", "level": 1,
+                               "date": None, "research_points": None}],
+                "completed_count": 1,
+                "in_progress": [],
+            },
+        },
+        "countries_by_key": {
+            "39": {
+                "raw": {"completed": ["mass_assault"]},
+                "completed": [{"id": "mass_assault", "level": 1,
+                               "date": None, "research_points": None}],
+                "completed_count": 1,
+                "in_progress": [],
+            },
+        },
+    })
     return root
 
 
@@ -113,6 +149,10 @@ class TestSaveFold(unittest.TestCase):
                          "war_economy")
         self.assertEqual(snap["countries"]["GER"]["focus"]["focus_tree"],
                          "german_focus")
+        self.assertEqual(
+            snap["countries"]["GER"]["extra"]["script_flags"]
+            ["GER_has_started_war"]["date"],
+            "1939.9.2.1")
         self.assertEqual(schema.validate_snapshot(snap), [])
 
     def test_measured_zero_from_live_is_kept(self):
@@ -156,6 +196,7 @@ class TestSaveFold(unittest.TestCase):
         self.assertTrue(sav["fills_canonical_domains"])
         self.assertFalse(sav["is_live"])
         self.assertIn("country_snapshot", sav["domains"])
+        self.assertIn("country_extra", sav["domains"])
         self.assertIn("market", sav["domains"])
         # source filename is a BASENAME only
         self.assertEqual(sav["source_filename"], "SYN_melted.txt")
@@ -178,6 +219,33 @@ class TestSaveFold(unittest.TestCase):
         asm.fold_save_bundle(snap, empty)
         # no domains to fold -> provenance.save unchanged, no fabricated save block
         self.assertEqual(snap["provenance"]["save"], before_save)
+
+    def test_doctrine_only_oracle_folds_as_save_backstop_not_canonical_domain(self):
+        doctrine = _make_doctrine_oracle_dir(os.path.join(self.scratch, "doctrine"))
+        snap = asm.assemble_snapshot({}, game_id="g", date="1937.6.1.12",
+                                     identity=FakeIdentity())
+        asm.fold_save_bundle(snap, doctrine)
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        d = snap["countries"]["GER"]["research"]["doctrine"]
+        self.assertEqual(d["source"], "S")
+        self.assertEqual(d["completed"][0]["id"], "superior_firepower")
+        # Numeric/non-TAG save keys are preserved but not mapped onto countries.
+        self.assertNotIn("39", snap["countries"])
+        self.assertEqual(
+            snap["doctrine_save"]["countries_by_key"]["39"]["completed"][0]["id"],
+            "mass_assault")
+        sav = snap["provenance"]["save"]
+        self.assertTrue(sav["captured"])
+        self.assertFalse(sav["fills_canonical_domains"])
+        self.assertNotIn("domains", sav)
+        self.assertIn("doctrine", sav["backstops"])
+        self.assertEqual(sav["save_date"], "1937.6.1.12")
+        self.assertEqual(sav["source_filename"], "SYN_melted.txt")
+        self.assertEqual(sav["source_filenames"]["doctrine"]["source_filename"],
+                         "SYN_melted.txt")
+        blob = json.dumps(snap)
+        for needle in ("/home/user", "secret"):
+            self.assertNotIn(needle, blob, needle)
 
     def test_measured_empty_live_leaf_preserved_over_save(self):
         # Codex P1: a LIVE-measured empty []/{} at a registered live leaf is a

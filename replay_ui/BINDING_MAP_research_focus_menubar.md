@@ -56,13 +56,13 @@ badges):**
 | `focus.continuous_focus_palette` | `"generic_focus"` | continuous-focus list source |
 | `politics.faction.name` | `"faction_template_axis"` | war-overview / endgame faction grouping |
 
-**Empirically confirmed ABSENT/UNFED in the current snapshot (drives the `unavailable` badges):**
+**Empirically confirmed availability caveats in the current snapshot (drives the `unavailable` badges):**
 
 | schema field | state in snapshot | consequence |
 |---|---|---|
-| `research.in_progress_live` | **`None`** (save channel; live not folded) | the `eta`/live-progress fraction of an active-research row → `unavailable` (the SAVE `points_factor` is not an ETA) |
-| `research.in_progress[].progress_pct` | **not present** (SCHEMA §3.4: `M*`, null in save) | research-progress BAR fraction → `unavailable` (only `points_factor` is stored) |
-| `technologies[].research_points` | present BUT is the tech's point COST, not a date/ETA | `year`/`eta` on a completed tech derive from `technologies[].date`, not this |
+| `research.in_progress_live` | **`None`** in this save-only snapshot | live active-research progress stays `unavailable` here; live rows can derive `progress_pct` only when `tech_name` + `progress_units` + static cost are present, and live ETA also needs a live `points_factor` |
+| `research.in_progress[].progress_pct` | derived when `models.research_progress` has an active progress row + static cost + safe context; otherwise omitted with an unavailable reason | research-progress BAR fraction → `derived` when present, `unavailable` when the model leaves a blocker reason |
+| `technologies[].research_points` | completed rows carry stored points/cost context; active rows with `date=1.1.1.1` can carry accumulated progress points | completed-tech `year` derives from `technologies[].date`; active-slot progress/ETA is derived only through `models.research_progress`, not directly from a completed row |
 | top-level `designs` / tech catalog geometry | not a snapshot field (static game data) | tech-node RECTS + link lines are **adapter-fed** from `countrytechtreeview.gui`, not the snapshot |
 | focus node geometry (`x`/`y`/`relative_position_id`/`offset`) | not a snapshot field (lives in `common/national_focus/*.txt`) | focus-node RECTS + link lines are **adapter-fed** from the focus script, not the snapshot |
 | per-focus `cost` (PP) / `available`/`bypass` triggers | not in `countries.*.focus` | focus-node cost text + availability frame → `unavailable` (focus-DEF data, not country state) |
@@ -118,15 +118,15 @@ Formatters: `int`, `percent`, `loc` (token→localised string), `tech-folder-fra
 
 | gui element (name + type) | snapshot source path | formatter | fidelity | notes |
 |---|---|---|---|---|
-| `research_slots_grid` (gridboxType, in `slots_window`) → **N × `research_slot_entry`** | row factory over `countries.<TAG>.research.in_progress[]`, padded to `research.research_slots` empty slots | row factory (see per-row children below) | **exact** (slot count) / **derived** (per-row progress) | One row per active-research slot. Filled rows = `in_progress[]` (5 in sample); empty rows = `research_slots − len(in_progress)` (here 5 slots, 5 active → 0 empty). Slot COUNT is `exact` (`research_slots=5`); per-row progress is `derived`/`unavailable` (no stored fraction — see `research_progressbar`). |
+| `research_slots_grid` (gridboxType, in `slots_window`) → **N × `research_slot_entry`** | row factory over `countries.<TAG>.research.in_progress[]`, padded to `research.research_slots` empty slots | row factory (see per-row children below) | **exact** (slot count) / **derived** (per-row progress) | One row per active-research slot. Filled rows = `in_progress[]` (5 in sample); empty rows = `research_slots − len(in_progress)` (here 5 slots, 5 active → 0 empty). Slot COUNT is `exact` (`research_slots=5`); per-row progress is derived when `models.research_progress` emits it and unavailable with a blocker reason otherwise. |
 | ↳ `research_slot_entry.title` (instantTextboxType, no placeholder) | `in_progress[<i>].name` → loc | loc (tech token→name) | **exact** | The tech being researched (e.g. `"excavation3"`). Token→display name is a static loc lookup. |
 | ↳ `research_slot_entry.technology` (iconType, `GFX_research_folder_strip`) | `in_progress[<i>].name` → the tech's research category/folder | tech-folder-frame | **derived** | Folder icon is chosen from the tech's category (static tech-DB lookup keyed by tech name); the name is `exact`, the frame mapping is a derive. |
 | ↳ `research_slot_entry.equipment` (iconType, `GFX_land_equipment_role_icons`) | `in_progress[<i>].name` → equipment archetype role | equipment-role-icon | **derived** | Role icon for techs that unlock equipment; from the static tech→equipment map. Hidden for non-equipment techs (visibility = has-equipment). |
 | ↳ `research_slot_entry.designer` (iconType, `GFX_research_folder_strip`) | `countries.<TAG>.mios[]` / `scheduled_variants[]` (designer MIO bonus on this tech) | tech-folder-frame | **unavailable** (current data) | The designer/MIO tile needs the designer-bonus join; `mios` domain is **not folded in this snapshot** (`designs`-sourced). Badge unavailable. |
 | ↳ `research_slot_entry.carrier_fighter` (iconType, `GFX_airwing_carrier_icon`) | `in_progress[<i>].name` (carrier-variant tech?) | category (bool→icon) | **derived** | Carrier-fighter overlay; shown only for the specific carrier-air techs (static flag). Visibility-only. |
 | ↳ `research_slot_entry.year` (instantTextboxType) | `in_progress[<i>].name` → the tech's defined year (static tech-DB) | int (year) | **unavailable** (current data) → **derived** once the tech-DB is loaded | The tech's *historical year* is a static tech-DB attribute, not a per-country field; not in `in_progress[]` (only `{name, points_factor}`). **Codex:** badge `derived` IF the adapter supplies tech defs (it's adapter/static data, not snapshot-bound), else `unavailable`; it is `unavailable` now (no tech-DB join folded). (Completed techs DO carry `technologies[].date` — that feeds the tech-tree node, §1c, not this row.) |
-| ↳ `research_slot_entry.eta` (instantTextboxType, format right) | `in_progress[<i>]` remaining-days ETA | int (days) / `loc` | **unavailable** | In-game ETA = (cost − accumulated)/daily-speed. The SAVE channel stores only `points_factor` (a speed multiplier), **not** accumulated progress or an ETA; `in_progress_live` (which carries `progress_units`) is `None` here. Badge unavailable. |
-| ↳ `research_slot_entry.research_progressbar` (iconType, `Gfx_research_progressbar`) | `in_progress[<i>].progress_pct` | progressbar-fraction | **unavailable** | Per-slot progress fraction is `M*` in SCHEMA §3.4 (null in save) and unfed here (`in_progress_live=None`). Render the frame inert / badged. |
+| ↳ `research_slot_entry.eta` (instantTextboxType, format right) | `in_progress[<i>].eta_days` | int (days) / `loc` | **derived / unavailable** | In-game ETA = (cost − accumulated)/daily-speed. `models.research_progress` derives it only when active progress points, static tech cost, current-year context, and positive slot speed are safe; otherwise `eta_unavailable_reason` is shown/badged. |
+| ↳ `research_slot_entry.research_progressbar` (iconType, `Gfx_research_progressbar`) | `in_progress[<i>].progress_pct` | progressbar-fraction | **derived / unavailable** | Per-slot progress fraction is written by `models.research_progress` when active progress points + static cost are safe. If absent, render the frame inert / badged with `progress_unavailable_reason`. |
 | `research_groups_grid` (gridboxType, in `research_win_top`) → research-category tiles | `countries.<TAG>.research.research_bonuses[]` grouped by `categories[]` | row factory; per tile: `bonus`→percent, `categories`→folder frame | **exact** | The focus/research-bonus tiles. `research_bonuses[]` is fully present (20 rows in sample, each `{name, categories[], bonus, kind}`). Tile shows the active bonus per category. |
 | `research_speed_value` (instantTextboxType, placeholder `999`) | `countries.<TAG>.scalars.research_speed.pct` (SCHEMA §3.13, `D`) | percent | **unavailable** (current data) | Net research-speed modifier. `scalars.research_speed` is schema-present but **`D` (derived) and not in this snapshot**. Badge unavailable; once the scalars model runs it becomes `derived`. |
 | `limited_research_bonus_value` (instantTextboxType, placeholder `999`) | best-applicable entry of `research.research_bonuses[]` (the capped "limited" bonus) | percent | **derived** | The "limited research bonus" number is an aggregate the engine computes from the bonus stack; we have the raw `research_bonuses[]` and can derive the displayed value, but it is a compute, not a stored scalar. **Codex caveat:** `derived` ONLY for bonuses represented in `research_bonuses[]` — the category applicability / stacking / display semantics still need adapter logic (it is not a pure field read). |
@@ -169,7 +169,7 @@ section maps each tech NODE's *data* state onto our `research` domain.
 | **completed level** (researched / leveled) | `countries.<TAG>.research.technologies[]` → match `name`, read `level` | int (level) | **exact** | 122 completed rows in sample; `{name, level, date, research_points}`. A tech present with `level≥1` renders as researched; `level` drives multi-level tech tiers (e.g. `infantry_weapons` levels). |
 | **completion date** (node "year" / timeline) | `technologies[].date` | research-date (Clausewitz→year) | **exact** | e.g. `"1936.1.1.12"`. Feeds the node's done-state + the research-completion event timeline (diff `tech_researched`). |
 | **research points spent** (node tooltip) | `technologies[].research_points` | int | **exact** | e.g. `165.0`. The tech's point cost as recorded. |
-| **in-progress** (node currently researching) | `countries.<TAG>.research.in_progress[]` → match `name` | category (researching frame) | **exact** (membership) / **unavailable** (fraction) | A tech in `in_progress[]` renders the "researching" node frame. The PROGRESS FRACTION is `unavailable` (no stored pct; `in_progress_live=None`; SCHEMA §3.4 `progress_pct` is `M*`). |
+| **in-progress** (node currently researching) | `countries.<TAG>.research.in_progress[]` → match `name` | category (researching frame) | **exact** (membership) / **derived / unavailable** (fraction) | A tech in `in_progress[]` renders the "researching" node frame. The progress fraction uses derived `progress_pct` only when the research-progress model emitted it; otherwise the node/detail frame is badged unavailable with the blocker reason. |
 | **not-yet-researched** (available / locked) | measured absence from both `technologies[]` and `in_progress[]` | category (available/locked frame) | **derived** / **unavailable** | A tech is treated as un-researched only when both membership lists are measured and the tech is absent from both. If either array is missing or partial, node state is badged unavailable rather than fabricated as un-researched. available-vs-locked needs the prereq graph (adapter-resolved from the tech-DB) → derive once completed membership is measured. |
 | **research slots** (how many parallel slots) | `countries.<TAG>.research.research_slots` (+ `original_research_slots`) | int | **exact** | `5` (orig `4`) in sample. Bounds how many `in_progress[]` rows can exist; drives the `research_slot_gained` diff event. |
 | **research bonuses** (folder discount) | `countries.<TAG>.research.research_bonuses[]` (`{name, categories[], bonus, kind}`) | percent + category | **exact** | 20 rows. Per-folder/per-category bonus tiles; also tints the tree's folder tabs. |
@@ -395,12 +395,11 @@ research_slots,research_bonuses}` exactly as required; the node RECTS/edges are 
 **B. In-progress vs completed (the trickiest fidelity call).** A tech/focus is COMPLETED via a
 MEMBERSHIP test (`technologies[]` for tech, `focus.completed[]` for focus) — both `exact`. A tech/focus
 is IN-PROGRESS via `in_progress[]` / `focus.current` — membership `exact`. The PROGRESS FRACTION
-differs sharply between the two: focus stores `focus.progress` in DAYS (`exact` raw, `derived` as a
-bar fraction since the denominator is a focus-DEF duration), whereas research stores **no** progress
-fraction in this snapshot (`in_progress[].points_factor` is a SPEED multiplier, not progress;
-`in_progress_live`/`progress_units` is `None`) → research progress bar = `unavailable`. This asymmetry
-is the single most important correctness point and is reflected in 1a/1c (research bar `unavailable`)
-vs 2a/2c (focus bar `derived`).
+differs between the two: focus stores `focus.progress` in DAYS (`exact` raw, `derived` as a bar
+fraction since the denominator is a focus-DEF duration), while research progress is a conservative
+derived model from active progress points + static tech cost + safe speed/context inputs. When those
+inputs are absent, the research bar remains `unavailable` with a blocker reason. This is reflected in
+1a/1c (research bar `derived / unavailable`) vs 2a/2c (focus bar `derived`).
 
 **C. Research slots vs bonuses.** `research_slots` (=5) is `exact` and bounds the `in_progress[]` row
 count (the slot grid pads to it). `research_bonuses[]` (20 rows, `exact`) feeds the folder-bonus tiles
@@ -449,11 +448,10 @@ tables (1a/1b/1c, 2a/2b/2c, 3a/3b/3c) enumerate them by name.
 
 ### `unavailable`-badged elements (with reason)
 
-**Research panel (7):** `designer` (mios domain unfed), `year` (static tech-DB year not joined), `eta`
-(no accumulated-progress/ETA stored; `in_progress_live=None`), `research_progressbar`
-(`progress_pct`=`M*`, unfed), `research_speed_value` (`scalars.research_speed` `D`, unfed),
-`idea_traits` (trait-frame map not folded). *Plus the tech-NODE in-progress FRACTION (adapter-fed
-section, same `in_progress_live=None` cause).*
+**Research panel (7):** `designer` (mios domain unfed), `year` (static tech-DB year not joined),
+`eta` / `research_progressbar` when `models.research_progress` leaves an unavailable reason,
+`research_speed_value` (`scalars.research_speed` `D`, unfed), `idea_traits` (trait-frame map not
+folded). *Plus the tech-NODE in-progress fraction when the same research-progress inputs are absent.*
 
 **Focus tree (7):** `overlay` (focus-DEF overlay not folded), `historical` (focus-DEF flag),
 `viewing_flag` (cross-country focus join), `focus_cost` (focus-DEF PP cost), continuous-focus
@@ -482,14 +480,13 @@ both nuances folded in above.
 
 | claim | Codex verdict | folded-in correction |
 |---|---|---|
-| **1 — research node binding** (completed=membership+level exact; date exact; in-progress=membership exact; progress bar + ETA `unavailable` because no stored numerator) | **AGREE** | none — `points_factor`=speed, `research_points`=completed-tech cost, `in_progress_live=None` ⇒ no active-progress numerator ⇒ `unavailable` confirmed. |
+| **1 — research node binding** (completed=membership+level exact; date exact; in-progress=membership exact; progress bar + ETA derived only when active progress/static-cost/speed context is safe) | **SUPERSEDED** | `models.research_progress` now derives `progress_pct` / `eta_days` from active progress rows when safe and emits unavailable reasons otherwise. Do not repurpose completed rows or raw `points_factor` alone. |
 | **2 — active-row `year`** (`unavailable`; static tech-DB year, not per-country) | **AGREE (wording tweak)** | clarified: badge **`derived` IF the adapter loads tech defs**, else `unavailable`; it is `unavailable` now (no tech-DB join folded). Row updated. |
 | **3 — focus node binding** (completed/current exact; progress bar `derived` = days ÷ def-duration; available/locked `derived` via prereqs ⊆ completed) | **AGREE** | none — confirmed the bar fraction is renderable only when the adapter supplies the focus-duration denominator. |
-| **4 — the asymmetry** (focus progress `derived` [have days numerator], research progress `unavailable` [no numerator]) | **AGREE** | none — explicitly confirmed: do NOT repurpose `points_factor` or completed `research_points` as a research numerator. |
+| **4 — the asymmetry** (focus progress is direct days-over-duration; research progress is derived from active research points plus static cost/speed context) | **SUPERSEDED** | The no-fabrication rule still stands: do not repurpose `points_factor` or completed `research_points` alone as a research numerator. Use the research-progress model output or badge unavailable. |
 | **5 — slots/bonuses** (`research_slots` exact + empty-row padding; `research_bonuses[]` exact; net research-speed `unavailable`; limited-bonus `derived`) | **PARTIAL REFUTE** | slots/padding + bonus-rows + research-speed badges confirmed. Caveat added: limited-research-bonus is `derived` ONLY for bonuses in `research_bonuses[]` — category applicability/stacking/display still need adapter logic (not a pure field read). Row updated. |
 | **6 — continuous focus** (active glow `unavailable` because `current_continuous`=None; tile LIST `derived` from `continuous_focus_palette`) | **AGREE** | none — the unavailable(active)/derived(list) distinction confirmed. |
 
-Net: no badge in the doc was downgraded; two were tightened with Codex's caveats (research `year`
-may upgrade to `derived` once the tech-DB adapter exists; limited-research-bonus `derived` carries an
-adapter-logic caveat). All node-binding correctness claims and the research-vs-focus progress
-asymmetry — the highest-risk calls — were confirmed.
+Net: the historical review remains useful for the no-fabrication principle, but the research progress
+rows have been superseded by the derived progress model. Use derived `progress_pct` / `eta_days` only
+when present; otherwise render the model's unavailable reason.
