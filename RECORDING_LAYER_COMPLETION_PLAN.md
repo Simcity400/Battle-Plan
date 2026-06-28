@@ -124,6 +124,14 @@ Current recorder-facing bridge status:
   validates CDivision body roots once, passes a sanitized `division_body_bridge`
   to the DLL control file, and the DLL performs bounded in-process revalidation
   plus movement delta emission on the same raw pipe stream as clock frames.
+- That pattern now has a live speed-five smoke proof. A 50 ms run bridged 1965
+  division bodies, preserved 2155 raw division movement frames plus 31 clock
+  frames, verified the replay, and leaked no body addresses into manifests. A
+  shorter 10 ms run bridged 1971 division bodies, preserved 1816 division
+  movement frames plus 39 clock frames, had zero session errors, and verified
+  the replay. The remaining work is no longer "can we go below hourly"; it is
+  backpressure/coalescing policy and widening the movement slice into combat,
+  org/strength, and order semantics.
 
 ## Definition Of Done
 

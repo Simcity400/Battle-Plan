@@ -131,10 +131,16 @@ Current measured constraint:
   Python preflight does the expensive locate, the DLL revalidates each bridged
   body in-process every sample, and raw movement deltas are emitted on the same
   pipe stream as clock deltas.
+- First live proof: on 2026-06-28, the bridge ran successfully at speed five.
+  A 50 ms smoke preserved 2155 raw movement frames; a shorter 10 ms smoke
+  preserved 1816 raw movement frames and 39 clock frames, wrote a verified
+  replay, and had zero session errors. The manifests recorded only bridge
+  counts/status, not body addresses.
 
 Cadence:
 
-- Start at 10 ms during speed-five proof runs.
+- Start at 10 ms during speed-five proof runs, but treat it as a load target
+  requiring explicit backpressure/coalescing counters before long sessions.
 - Emit deltas only on changed movement state, target, source, progress bucket,
   or location for the first native slice. Combat ref count, org, and strength
   should be added after movement-only deltas are proven in the pipe stream.
