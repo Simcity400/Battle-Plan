@@ -479,6 +479,12 @@ def record_collector_session(
         unique_game_hours_only=False,
     )
     raw_frame_payload_summary = _collector_frame_payload_summary(raw_frames)
+    map_control_quality = _map_control_quality_summary(
+        state_control_preflight=state_control_preflight,
+        province_control_preflight=province_control_preflight,
+        probe_manifest=probe_manifest,
+        payload_summary=raw_frame_payload_summary,
+    )
     raw_stream_transport = _collector_stream_transport_summary(raw_frames)
     frame_stream_path = _write_collector_frame_stream(
         run_dir,
@@ -514,6 +520,7 @@ def record_collector_session(
         frame_results=frame_results,
         frame_session=frame_session,
         replay_path=replay_path,
+        map_control_quality=map_control_quality,
     )
 
     session_start = _session_frame(
@@ -601,6 +608,7 @@ def record_collector_session(
             "raw_collector_frame_count": len(raw_frames),
             "duplicate_game_hour_frame_count": max(0, len(raw_frames) - len(frames)),
             "collector_frame_payload_summary": raw_frame_payload_summary,
+            "map_control_quality": map_control_quality,
             "canonical_snapshot_step_hours": 1,
             "frame_stream_granularity": {
                 "sample_ms": sample_ms,
@@ -913,6 +921,108 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     }
 
 
+def _map_control_quality_summary(
+    *,
+    state_control_preflight: Dict[str, Any],
+    province_control_preflight: Dict[str, Any],
+    probe_manifest: Dict[str, Any],
+    payload_summary: Dict[str, Any],
+) -> Dict[str, Any]:
+    scheduled_frames = _int_value(
+        payload_summary.get("scheduled_snapshot_frame_count"))
+    requested_domains: List[str] = []
+    captured_domains: List[str] = []
+    omitted_domains: Dict[str, str] = {}
+
+    if state_control_preflight.get("enabled"):
+        requested_domains.extend(["state_ownership", "state_control"])
+        reason = _map_control_request_blocker(
+            state_control_preflight,
+            supplied=bool(probe_manifest.get("map_control_state_roots_supplied")),
+            supplied_label="state_roots_not_supplied",
+            scheduled_frames=scheduled_frames,
+        )
+        if reason is not None:
+            omitted_domains["state_ownership"] = reason
+            omitted_domains["state_control"] = reason
+        else:
+            if _int_value(payload_summary.get("state_ownership_frames")) > 0:
+                captured_domains.append("state_ownership")
+            else:
+                omitted_domains["state_ownership"] = "no_scheduled_domain_frames"
+            if _int_value(payload_summary.get("state_control_frames")) > 0:
+                captured_domains.append("state_control")
+            else:
+                omitted_domains["state_control"] = "no_scheduled_domain_frames"
+
+    if province_control_preflight.get("enabled"):
+        requested_domains.append("province_control")
+        reason = _map_control_request_blocker(
+            province_control_preflight,
+            supplied=(
+                bool(probe_manifest.get("map_control_province_bridge_supplied"))
+                and bool(probe_manifest.get("map_control_controller_bridge_supplied"))
+            ),
+            supplied_label="province_or_controller_bridge_not_supplied",
+            scheduled_frames=scheduled_frames,
+        )
+        if reason is not None:
+            omitted_domains["province_control"] = reason
+        elif _int_value(payload_summary.get("province_control_frames")) > 0:
+            captured_domains.append("province_control")
+        else:
+            omitted_domains["province_control"] = "no_scheduled_domain_frames"
+
+    heavy_payload_on_lightweight_frames = _int_value(
+        payload_summary.get("heavy_payload_on_lightweight_frames"))
+    fail_closed = bool(omitted_domains) or heavy_payload_on_lightweight_frames > 0
+    return {
+        "requested_domains": sorted(set(requested_domains)),
+        "captured_domains": sorted(set(captured_domains)),
+        "omitted_domains": dict(sorted(omitted_domains.items())),
+        "scheduled_snapshot_frame_count": scheduled_frames,
+        "state_control_frames": _int_value(
+            payload_summary.get("state_control_frames")),
+        "state_ownership_frames": _int_value(
+            payload_summary.get("state_ownership_frames")),
+        "province_control_frames": _int_value(
+            payload_summary.get("province_control_frames")),
+        "map_control_state_roots_supplied": bool(
+            probe_manifest.get("map_control_state_roots_supplied")),
+        "map_control_state_root_rows": _int_value(
+            probe_manifest.get("map_control_state_root_rows")),
+        "map_control_province_bridge_supplied": bool(
+            probe_manifest.get("map_control_province_bridge_supplied")),
+        "map_control_controller_bridge_supplied": bool(
+            probe_manifest.get("map_control_controller_bridge_supplied")),
+        "map_control_controller_bridge_rows": _int_value(
+            probe_manifest.get("map_control_controller_bridge_rows")),
+        "heavy_payload_on_lightweight_frames": heavy_payload_on_lightweight_frames,
+        "fail_closed": fail_closed,
+    }
+
+
+def _map_control_request_blocker(
+    preflight: Dict[str, Any],
+    *,
+    supplied: bool,
+    supplied_label: str,
+    scheduled_frames: int,
+) -> Optional[str]:
+    status = preflight.get("status")
+    if status != "resolved":
+        return "preflight_unresolved:%s" % (status or "unknown")
+    if not supplied:
+        return supplied_label
+    if scheduled_frames <= 0:
+        return "no_scheduled_snapshot_frames"
+    return None
+
+
+def _int_value(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
 def _collector_stream_transport_summary(
     frames: Iterable[Dict[str, Any]],
 ) -> Dict[str, Any]:
@@ -1059,6 +1169,7 @@ def _session_failure_errors(
     frame_results: List[CollectorFrameResult],
     frame_session: CollectorFrameSession,
     replay_path: Path,
+    map_control_quality: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     errors: List[str] = []
     attach_errors = probe_manifest.get("attach_errors")
@@ -1080,6 +1191,17 @@ def _session_failure_errors(
     result_errors = [r.error for r in frame_results if r.error]
     if result_errors:
         errors.append("frame_result_errors:" + "|".join(result_errors[:4]))
+    if isinstance(map_control_quality, dict):
+        omitted = map_control_quality.get("omitted_domains")
+        if isinstance(omitted, dict) and omitted:
+            parts = [
+                f"{domain}:{reason}"
+                for domain, reason in sorted(omitted.items())
+            ]
+            errors.append("map_control_omitted:" + "|".join(parts[:4]))
+        heavy_light = map_control_quality.get("heavy_payload_on_lightweight_frames")
+        if isinstance(heavy_light, int) and heavy_light > 0:
+            errors.append(f"map_control_lightweight_payload:{heavy_light}")
     if not replay_path.exists():
         errors.append("replay_file_missing")
     elif not _safe_verify_container(replay_path):

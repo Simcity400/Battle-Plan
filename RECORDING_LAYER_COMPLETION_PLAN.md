@@ -99,8 +99,10 @@ Current recorder-facing bridge status:
   `state_ownership`, `state_control`, and `province_control` payloads. It folds
   valid state/province rows into schema snapshots, mirrors province control into
   the map block, and records raw-frame row-count summaries in the session
-  manifest. Live DLL emission for these domains is still the next implementation
-  step.
+  manifest. Requested map-control preflights now also produce a
+  `map_control_quality` summary and fail closed when scheduled frames omit the
+  requested map domains. Live DLL emission still needs the longer speed-five
+  proof, especially for province-control cache behavior.
 - `live_capture.collector_map_bridge` now preflights and caches live state
   object roots. A cold live run resolved all 1081 state roots in about 28.5s; a
   same-process cache hit validated the roots and re-read all owner/controller
@@ -1076,8 +1078,8 @@ These stay out of the replay unless the product scope changes:
    next implementation slice is root-anchored country identity plus country
    scalars; do not extend the heap-scanning `country_object_scan` path into the
    hot loop.
-6. Surface `scrub::Timeline` raw-frame index in the native app where useful:
-   first as diagnostics/coverage, then as exact movement/combat/event overlays.
+6. Use the native app's raw-frame diagnostics as the entry point for exact
+   movement/combat/event overlays.
 7. Run a longer speed-five proof and reopen the `.battleplan` in the native app.
 8. Continue domain promotion in this order: first-three tranche, combat/movement,
    focus/research/decisions/projects, diplomacy/intel/logistics/weather,

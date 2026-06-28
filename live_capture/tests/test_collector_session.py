@@ -253,7 +253,23 @@ class TestCollectorSession(unittest.TestCase):
                     )
                     run_dir = Path(out_root) / ("20260628T030000Z_pid%d" % pid)
                     run_dir.mkdir(parents=True)
-                    frame = _frame("1936.1.1.1", 100, sequence=1, pid=pid)
+                    frame = _frame(
+                        "1936.1.1.1",
+                        100,
+                        sequence=1,
+                        pid=pid,
+                        capture_boundary="scheduled_hour_snapshot",
+                    )
+                    frame["domains"] = ["clock", "state_ownership", "state_control"]
+                    frame["root_probe"]["domains"] = [
+                        "clock",
+                        "state_ownership",
+                        "state_control",
+                    ]
+                    frame["states"] = {
+                        "1": {"owner": "GER", "controller": "GER"},
+                        "2": {"owner": "ENG", "controller": "ENG"},
+                    }
                     frame_name = "collector_started_0000.json"
                     _write_json(run_dir / frame_name, frame)
                     _write_json(run_dir / "manifest.json", {
@@ -319,6 +335,119 @@ class TestCollectorSession(unittest.TestCase):
         self.assertNotIn(str(root), json.dumps(session_manifest, sort_keys=True))
         self.assertTrue(session_manifest["map_control_state_roots_supplied"])
         self.assertEqual(session_manifest["map_control_state_root_rows"], 2)
+        self.assertEqual(
+            session_manifest["map_control_quality"]["requested_domains"],
+            ["state_control", "state_ownership"],
+        )
+        self.assertEqual(
+            session_manifest["map_control_quality"]["captured_domains"],
+            ["state_control", "state_ownership"],
+        )
+        self.assertEqual(
+            session_manifest["map_control_quality"]["omitted_domains"], {})
+        self.assertFalse(session_manifest["map_control_quality"]["fail_closed"])
+
+    def test_session_fails_closed_when_requested_state_control_is_omitted(self):
+        original_record_probes = cs.record_probes
+        original_preflight = cs.resolve_state_control_preflight
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+
+                def fake_preflight(pid, *, cache_path):
+                    del cache_path
+                    self.assertEqual(pid, 556)
+                    return _PreflightResult({
+                        "enabled": True,
+                        "status": "resolved",
+                        "row_count": 1081,
+                        "source": "state_roots_cache",
+                        "address_manifest_policy": "omitted",
+                    }, state_roots_encoded="1:0x1000;2:0x2000")
+
+                def fake_record_probes(pid, dll, out_root, **kwargs):
+                    del dll
+                    self.assertEqual(
+                        kwargs.get("map_control_state_roots"),
+                        "1:0x1000;2:0x2000",
+                    )
+                    run_dir = Path(out_root) / ("20260628T031500Z_pid%d" % pid)
+                    run_dir.mkdir(parents=True)
+                    frame = _frame(
+                        "1936.1.1.1",
+                        100,
+                        sequence=1,
+                        pid=pid,
+                        capture_boundary="scheduled_hour_snapshot",
+                    )
+                    frame_name = "collector_started_0000.json"
+                    _write_json(run_dir / frame_name, frame)
+                    _write_json(run_dir / "manifest.json", {
+                        "type": "collector_probe_manifest",
+                        "session_id": run_dir.name,
+                        "pid": pid,
+                        "game_id": "state_preflight_omitted",
+                        "stop_reason": "repeat_exhausted",
+                        "sample_count": 1,
+                        "unique_game_date_count": 1,
+                        "game_hours_advanced": 0,
+                        "skipped_game_hours": 0,
+                        "map_control_state_roots_supplied": True,
+                        "map_control_state_root_rows": 2,
+                        "map_control_province_bridge_supplied": False,
+                        "map_control_controller_bridge_supplied": False,
+                        "map_control_controller_bridge_rows": 0,
+                        "worker_pipe_tokens": ["token"],
+                        "monotonic_transport_sequence": True,
+                        "duplicate_transport_sequences": 0,
+                        "first_sequence": 1,
+                        "last_sequence": 1,
+                        "samples": [{
+                            "frame": frame_name,
+                            "current_game_date": frame["root_probe"]["current_game_date"],
+                            "current_game_date_raw": frame["root_probe"]["current_game_date_raw"],
+                            "sequence": frame["sequence"],
+                        }],
+                        "hourly_requirement": {
+                            "required": False,
+                            "requested_game_hours": None,
+                            "met": True,
+                            "problems": [],
+                        },
+                    })
+                    return run_dir
+
+                cs.resolve_state_control_preflight = fake_preflight
+                cs.record_probes = fake_record_probes
+
+                with self.assertRaisesRegex(RuntimeError, "map_control_omitted"):
+                    record_collector_session(
+                        556,
+                        Path("collector.dll"),
+                        root / "out",
+                        game_id="state_preflight_omitted",
+                        duration_s=1.0,
+                        preflight_state_control=True,
+                    )
+                session_manifest = _read_json(
+                    root / "out" / "20260628T031500Z_pid556"
+                    / "session_manifest.json")
+        finally:
+            cs.record_probes = original_record_probes
+            cs.resolve_state_control_preflight = original_preflight
+
+        self.assertEqual(
+            session_manifest["map_control_quality"]["omitted_domains"],
+            {
+                "state_control": "no_scheduled_domain_frames",
+                "state_ownership": "no_scheduled_domain_frames",
+            },
+        )
+        self.assertTrue(session_manifest["map_control_quality"]["fail_closed"])
+        self.assertIn(
+            "map_control_omitted",
+            ";".join(session_manifest["session_errors"]),
+        )
 
     def test_session_can_preflight_division_movement_bridge(self):
         original_record_probes = cs.record_probes
