@@ -2843,18 +2843,62 @@ register_template!(TemplateDescriptor {
 const AIR_WING_REORG_VIEW_ID: ViewId = ViewId("military.air_wing_reorg");
 const AIR_WING_REORG_FILE: &str = "air_wing_reorg.json";
 const AIR_WING_REORG_ROOT: &str = "air_wing_reorganization";
+#[cfg(test)]
+const AIR_WING_REORG_CONFIRM_NOOP: &str = "confirm_btn";
 
-pub struct AirWingReorgView;
+pub struct AirWingReorgView {
+    screen: Rect,
+    confirm_armed: bool,
+}
 
 impl AirWingReorgView {
     pub fn new() -> AirWingReorgView {
-        AirWingReorgView
+        AirWingReorgView {
+            screen: default_air_wing_reorg_screen(),
+            confirm_armed: false,
+        }
     }
 }
 
 impl Default for AirWingReorgView {
     fn default() -> Self {
         AirWingReorgView::new()
+    }
+}
+
+fn default_air_wing_reorg_screen() -> Rect {
+    Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 1600.0,
+        h: 900.0,
+    }
+}
+
+fn air_wing_reorg_window_rect(screen: Rect) -> Rect {
+    Rect {
+        x: screen.x + screen.w * 0.5 - 450.0,
+        y: screen.y + screen.h * 0.5 - 390.0,
+        w: 1000.0,
+        h: 515.0,
+    }
+}
+
+fn air_wing_reorg_confirm_rect(screen: Rect) -> Rect {
+    let window = air_wing_reorg_window_rect(screen);
+    Rect {
+        x: window.x + 390.0,
+        y: window.y + 460.0,
+        w: 221.0,
+        h: 34.0,
+    }
+}
+
+fn replay_disabled_noop() -> InputOutcome {
+    InputOutcome {
+        consumed: true,
+        commands: Vec::new(),
+        needs_redraw: false,
     }
 }
 
@@ -2894,6 +2938,41 @@ impl ViewInstance for AirWingReorgView {
     }
     fn policy(&self) -> HostPolicy {
         HostPolicy::window(ZBand::Panel)
+    }
+    fn rebind(&mut self, ctx: &RebindContext) {
+        self.screen = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: ctx.screen.0 as f32,
+            h: ctx.screen.1 as f32,
+        };
+        self.confirm_armed = false;
+    }
+    fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
+        match *ev {
+            ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            } => {
+                if air_wing_reorg_confirm_rect(self.screen).contains(x, y) {
+                    self.confirm_armed = true;
+                    replay_disabled_noop()
+                } else {
+                    self.confirm_armed = false;
+                    InputOutcome::ignored()
+                }
+            }
+            ViewInput::PointerUp {
+                x,
+                y,
+                button: PointerButton::Left,
+            } if self.confirm_armed || air_wing_reorg_confirm_rect(self.screen).contains(x, y) => {
+                self.confirm_armed = false;
+                replay_disabled_noop()
+            }
+            _ => InputOutcome::ignored(),
+        }
     }
     fn bind(&self, ctx: &BindContext) -> BoundView {
         let tag = ctx.country;
@@ -4808,6 +4887,10 @@ mod tests {
             .join("gui")
     }
 
+    fn sprite_manifest_path() -> std::path::PathBuf {
+        gui_dir().parent().unwrap().join("sprites.json")
+    }
+
     fn load_gui_file(name: &str) -> Option<GuiFile> {
         let p = gui_dir().join(name);
         std::fs::read_to_string(&p)
@@ -4819,11 +4902,36 @@ mod tests {
         gui_dir().join("army.json").exists()
     }
 
+    fn find_any_rect(roots: &[Node], name: &str) -> Option<Rect> {
+        fn walk(node: &Node, name: &str) -> Option<Rect> {
+            if node.name == name {
+                return Some(node.rect);
+            }
+            for child in &node.children {
+                if let Some(rect) = walk(child, name) {
+                    return Some(rect);
+                }
+            }
+            None
+        }
+        roots.iter().find_map(|root| walk(root, name))
+    }
+
     fn stage_all() -> Stage {
         stage_with_manifest(HashMap::new())
     }
 
     fn stage_with_manifest(sprites: HashMap<String, assets::SpriteEntry>) -> Stage {
+        stage_with_sprite_manifest(assets::SpriteManifest { sprites })
+    }
+
+    fn stage_with_real_manifest() -> Option<Stage> {
+        assets::SpriteManifest::load(&sprite_manifest_path())
+            .ok()
+            .map(stage_with_sprite_manifest)
+    }
+
+    fn stage_with_sprite_manifest(manifest: assets::SpriteManifest) -> Stage {
         let mut gui_files = HashMap::new();
         for f in FILES {
             if let Some(g) = load_gui_file(f) {
@@ -4832,12 +4940,59 @@ mod tests {
         }
         Stage {
             resolver: assets::resolver::GameResolver::new(None, None),
-            manifest: assets::SpriteManifest { sprites },
+            manifest,
             loc: Loc::new(),
             gui_files,
             map_dir: std::path::PathBuf::from("."),
             assets_dir: gui_dir().parent().unwrap().to_path_buf(),
         }
+    }
+
+    fn stage_with_gui_file(name: &str, gui: GuiFile) -> Stage {
+        let mut gui_files = HashMap::new();
+        gui_files.insert(name.to_string(), gui);
+        Stage {
+            resolver: assets::resolver::GameResolver::new(None, None),
+            manifest: assets::SpriteManifest {
+                sprites: HashMap::new(),
+            },
+            loc: Loc::new(),
+            gui_files,
+            map_dir: std::path::PathBuf::from("."),
+            assets_dir: std::path::PathBuf::from("."),
+        }
+    }
+
+    fn synthetic_air_wing_reorg_gui() -> GuiFile {
+        GuiFile::parse(
+            r#"{
+              "view": "air_wing_reorg",
+              "windows": [{
+                "type": "containerWindowType",
+                "name": "air_wing_reorganization",
+                "position": {"x": -450, "y": -390},
+                "size": {"width": 1000, "height": 515},
+                "orientation": "center",
+                "children": [
+                  {"type": "instantTextboxType", "name": "current_manpower_left",
+                   "position": {"x": 20, "y": 460},
+                   "text": {"text": "0", "font": "hoi_18mbs", "maxWidth": 60, "maxHeight": 20}},
+                  {"type": "instantTextboxType", "name": "current_manpower_right",
+                   "position": {"x": 795, "y": 469},
+                   "text": {"text": "0", "font": "hoi_18mbs", "maxWidth": 60, "maxHeight": 20}},
+                  {"type": "gridBoxType", "name": "list",
+                   "position": {"x": 15, "y": 150},
+                   "size": {"width": 420, "height": 260}},
+                  {"type": "buttonType", "name": "confirm_btn",
+                   "position": {"x": 390, "y": 460},
+                   "size": {"width": 221, "height": 34},
+                   "sprite": "GFX_button_221x34",
+                   "text": {"text": "BUTTON_OK"}}
+                ]
+              }]
+            }"#,
+        )
+        .expect("synthetic air-wing reorg gui parses")
     }
 
     fn sprite_entry(name: &str, texturefile: Option<&str>, frames: u32) -> assets::SpriteEntry {
@@ -5677,6 +5832,202 @@ mod tests {
     }
 
     // -------- render-plan digest: scrub A→B→A byte-identical (the immutable-LRU rule) -----
+
+    #[test]
+    fn air_wing_reorg_confirm_noop_stream_has_assetless_coverage() {
+        let stage = stage_with_gui_file(AIR_WING_REORG_FILE, synthetic_air_wing_reorg_gui());
+        let snap = snap_a();
+        let mut v = AirWingReorgView::new();
+        v.rebind(&RebindContext {
+            snapshot: &snap,
+            country: "GER",
+            screen: (1600, 900),
+            refit: true,
+        });
+        let cx = ctx(&stage, &snap);
+        let before_bound = v.bind(&cx);
+        let before = bound_digest(&before_bound);
+        let rect = air_wing_reorg_confirm_rect(v.screen);
+        let leaf_rect = find_any_rect(&before_bound.hit.roots, AIR_WING_REORG_CONFIRM_NOOP)
+            .expect("synthetic reorg gui exposes confirm_btn");
+        assert_eq!(
+            (
+                leaf_rect.x.round() as i32,
+                leaf_rect.y.round() as i32,
+                leaf_rect.w.round() as i32,
+                leaf_rect.h.round() as i32,
+            ),
+            (
+                rect.x.round() as i32,
+                rect.y.round() as i32,
+                rect.w.round() as i32,
+                rect.h.round() as i32,
+            ),
+            "synthetic confirm target must mirror the real air_wing_reorganization geometry"
+        );
+        let (x, y) = (rect.x + rect.w * 0.5, rect.y + rect.h * 0.5);
+        let leaf = before_bound
+            .hit
+            .hit_test(x, y)
+            .and_then(|hit| hit.leaf().map(str::to_string));
+        assert_eq!(
+            leaf.as_deref(),
+            Some(AIR_WING_REORG_CONFIRM_NOOP),
+            "assetless no-op proof must click the real synthetic confirm_btn leaf"
+        );
+
+        let down = v.on_input(&ViewInput::PointerDown {
+            x,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            down.consumed && !down.needs_redraw && down.commands.is_empty(),
+            "confirm pointer-down must be a replay-disabled no-op"
+        );
+        let up = v.on_input(&ViewInput::PointerUp {
+            x,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            up.consumed && !up.needs_redraw && up.commands.is_empty(),
+            "confirm pointer-up must also be a replay-disabled no-op"
+        );
+
+        let down = v.on_input(&ViewInput::PointerDown {
+            x,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            down.consumed && !down.needs_redraw && down.commands.is_empty(),
+            "confirm pointer-down must arm the no-op stream"
+        );
+        let release_outside = v.on_input(&ViewInput::PointerUp {
+            x: rect.x + rect.w + 40.0,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            release_outside.consumed
+                && !release_outside.needs_redraw
+                && release_outside.commands.is_empty(),
+            "armed confirm pointer-up outside the button must stay consumed"
+        );
+        let neighbor = v.on_input(&ViewInput::PointerDown {
+            x: rect.x + rect.w + 40.0,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            !neighbor.consumed && !neighbor.needs_redraw && neighbor.commands.is_empty(),
+            "neighboring chrome must not be claimed by the confirm handler"
+        );
+        assert_eq!(
+            before,
+            bound_digest(&v.bind(&cx)),
+            "confirm no-op stream must leave the bind digest unchanged"
+        );
+    }
+
+    #[test]
+    fn air_wing_reorg_confirm_button_click_stream_is_replay_disabled_noop() {
+        if !assets_extracted() || !sprite_manifest_path().exists() {
+            eprintln!("[mil-mgmt] skipped reorg no-op test: GUI/sprite assets not extracted");
+            return;
+        }
+        let Some(stage) = stage_with_real_manifest() else {
+            eprintln!("[mil-mgmt] skipped reorg no-op test: could not load sprites.json");
+            return;
+        };
+        let snap = snap_a();
+        let mut v = AirWingReorgView::new();
+        v.rebind(&RebindContext {
+            snapshot: &snap,
+            country: "GER",
+            screen: (1600, 900),
+            refit: true,
+        });
+        let cx = ctx(&stage, &snap);
+        let before_bound = v.bind(&cx);
+        let before = bound_digest(&before_bound);
+        let leaf_rect = find_any_rect(&before_bound.hit.roots, AIR_WING_REORG_CONFIRM_NOOP)
+            .expect("real air_wing_reorg.json must expose confirm_btn");
+        let rect = air_wing_reorg_confirm_rect(v.screen);
+        assert_eq!(
+            (leaf_rect.x.round() as i32, leaf_rect.y.round() as i32),
+            (rect.x.round() as i32, rect.y.round() as i32),
+            "interaction rect position must be anchored to the real bound GUI leaf"
+        );
+        let (x, y) = (rect.x + rect.w * 0.5, rect.y + rect.h * 0.5);
+
+        let down = v.on_input(&ViewInput::PointerDown {
+            x,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            down.consumed,
+            "reorg OK/apply pointer-down must be consumed"
+        );
+        assert!(
+            down.commands.is_empty(),
+            "reorg OK/apply pointer-down no-op must emit no replay commands"
+        );
+        assert!(
+            !down.needs_redraw,
+            "reorg OK/apply pointer-down no-op must not request redraw"
+        );
+        let up = v.on_input(&ViewInput::PointerUp {
+            x,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(up.consumed, "reorg OK/apply pointer-up must be consumed");
+        assert!(
+            up.commands.is_empty(),
+            "reorg OK/apply pointer-up no-op must emit no replay commands"
+        );
+        assert!(
+            !up.needs_redraw,
+            "reorg OK/apply pointer-up no-op must not request redraw"
+        );
+        let down = v.on_input(&ViewInput::PointerDown {
+            x,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            down.consumed && !down.needs_redraw && down.commands.is_empty(),
+            "second confirm pointer-down must arm the no-op stream"
+        );
+        let release_outside = v.on_input(&ViewInput::PointerUp {
+            x: rect.x + rect.w + 40.0,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            release_outside.consumed
+                && !release_outside.needs_redraw
+                && release_outside.commands.is_empty(),
+            "armed confirm pointer-up outside the button must still be consumed as no-op"
+        );
+        let neighbor = v.on_input(&ViewInput::PointerDown {
+            x: rect.x + rect.w + 40.0,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            !neighbor.consumed && !neighbor.needs_redraw && neighbor.commands.is_empty(),
+            "neighboring air-wing reorg chrome must not be claimed by this confirm handler"
+        );
+        let after = bound_digest(&v.bind(&cx));
+        assert_eq!(
+            before, after,
+            "reorg OK/apply no-op must leave the bound digest unchanged"
+        );
+    }
 
     /// EVERY one of the 15 views rebinds A→B→A byte-identically (the scrubber invariant) AND
     /// A differs from B (so the test is not vacuous for the data-bearing views).

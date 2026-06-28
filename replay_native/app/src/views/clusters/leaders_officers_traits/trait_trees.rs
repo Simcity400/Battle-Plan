@@ -17,6 +17,7 @@
 //! (honesty-badged), never fabricated `Available`.
 
 use gui_runtime::scene::Node;
+use gui_runtime::Rect;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -321,6 +322,12 @@ struct TraitPickModel {
     canvas: Canvas,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DisabledMutationTarget {
+    leaf: &'static str,
+    rect: Rect,
+}
+
 #[derive(Default)]
 struct TraitTreeState {
     selected_key: Option<String>,
@@ -328,6 +335,8 @@ struct TraitTreeState {
     drag_moved: bool,
     hover_cursor: Option<(f32, f32)>,
     pick_model: Option<TraitPickModel>,
+    disabled_mutation_targets: Vec<DisabledMutationTarget>,
+    disabled_mutation_armed: bool,
 }
 
 impl TraitTreeState {
@@ -335,6 +344,7 @@ impl TraitTreeState {
         let tree = build_trait_tree(leader);
         let canvas = trait_tree_canvas(&tree, viewport);
         self.pick_model = Some(TraitPickModel { tree, canvas });
+        self.disabled_mutation_armed = false;
     }
 
     fn set_viewport(&mut self, viewport: [f32; 4]) {
@@ -344,10 +354,21 @@ impl TraitTreeState {
         model.canvas = trait_tree_canvas(&model.tree, viewport);
     }
 
+    fn set_disabled_mutation_targets(&mut self, targets: Vec<DisabledMutationTarget>) {
+        self.disabled_mutation_targets = targets;
+        self.disabled_mutation_armed = false;
+    }
+
     fn pick(&self, x: f32, y: f32) -> Option<String> {
         let model = self.pick_model.as_ref()?;
         let key = model.tree.to_graph().pick(&model.canvas, x, y)?;
         selectable_trait_key(&model.tree, &key).then_some(key)
+    }
+
+    fn disabled_mutation_hit(&self, x: f32, y: f32) -> bool {
+        self.disabled_mutation_targets
+            .iter()
+            .any(|target| target.rect.contains(x, y))
     }
 
     fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
@@ -357,6 +378,13 @@ impl TraitTreeState {
                 y,
                 button: PointerButton::Left,
             } => {
+                if self.disabled_mutation_hit(x, y) {
+                    self.click_candidate = None;
+                    self.drag_moved = false;
+                    self.disabled_mutation_armed = true;
+                    return trait_input_consumed(false);
+                }
+                self.disabled_mutation_armed = false;
                 let Some(model) = &self.pick_model else {
                     self.click_candidate = None;
                     self.drag_moved = false;
@@ -378,6 +406,9 @@ impl TraitTreeState {
                 }
             }
             ViewInput::PointerMove { x: _, y: _, drag } if drag => {
+                if self.disabled_mutation_armed {
+                    return trait_input_consumed(false);
+                }
                 if self.click_candidate.is_some() {
                     self.drag_moved = true;
                     self.click_candidate = None;
@@ -388,6 +419,9 @@ impl TraitTreeState {
                 }
             }
             ViewInput::PointerMove { x, y, drag: false } => {
+                if self.disabled_mutation_hit(x, y) {
+                    return InputOutcome::ignored();
+                }
                 let next = self.pick(x, y).map(|_| (x, y));
                 let changed = self.hover_cursor != next;
                 self.hover_cursor = next;
@@ -406,6 +440,12 @@ impl TraitTreeState {
                 y,
                 button: PointerButton::Left,
             } => {
+                if self.disabled_mutation_armed || self.disabled_mutation_hit(x, y) {
+                    self.disabled_mutation_armed = false;
+                    self.click_candidate = None;
+                    self.drag_moved = false;
+                    return trait_input_consumed(false);
+                }
                 let candidate = if !self.drag_moved {
                     match (self.click_candidate.take(), self.pick(x, y)) {
                         (Some(down), Some(up)) if down == up => Some(down),
@@ -442,6 +482,79 @@ impl TraitTreeState {
         let (cx, cy) = node.center();
         Some(model.canvas.to_screen(cx, cy))
     }
+
+    #[cfg(test)]
+    fn disabled_mutation_targets(&self) -> Vec<(&'static str, Rect)> {
+        self.disabled_mutation_targets
+            .iter()
+            .map(|target| (target.leaf, target.rect))
+            .collect()
+    }
+}
+
+fn trait_input_consumed(needs_redraw: bool) -> InputOutcome {
+    InputOutcome {
+        consumed: true,
+        commands: Vec::new(),
+        needs_redraw,
+    }
+}
+
+const ADD_TRAIT_MUTATION_LEAVES: [&str; 4] =
+    ["add_trait_0", "add_trait_1", "add_trait_2", "add_trait_3"];
+
+fn trait_tree_disabled_mutation_targets(
+    file_name: &str,
+    root_name: &str,
+    screen: (u32, u32),
+) -> Vec<DisabledMutationTarget> {
+    let roots = trait_tree_roots_for_input(file_name, root_name, screen);
+    disabled_mutation_targets_from_roots(&roots)
+}
+
+fn disabled_mutation_targets_from_roots(roots: &[Node]) -> Vec<DisabledMutationTarget> {
+    ADD_TRAIT_MUTATION_LEAVES
+        .iter()
+        .filter_map(|leaf| find_rect(roots, leaf).map(|rect| DisabledMutationTarget { leaf, rect }))
+        .collect()
+}
+
+fn trait_tree_roots_for_input(file_name: &str, root_name: &str, screen: (u32, u32)) -> Vec<Node> {
+    let Some(file) = load_trait_tree_gui_for_input(file_name) else {
+        return Vec::new();
+    };
+    let manifest = assets::SpriteManifest {
+        sprites: HashMap::new(),
+    };
+    let loc = gui_runtime::Loc::new();
+    let content = gui_runtime::ManifestContent {
+        manifest: &manifest,
+        measure: |_t, _f| None,
+    };
+    let mut roots: Vec<Node> = gui_runtime::build_scene(&file, &manifest, &loc)
+        .into_iter()
+        .filter(|w| w.name == root_name)
+        .collect();
+    let screen = Rect {
+        x: 0.0,
+        y: 0.0,
+        w: screen.0 as f32,
+        h: screen.1 as f32,
+    };
+    for root in roots.iter_mut() {
+        gui_runtime::layout(root, screen, None, &content);
+    }
+    roots
+}
+
+fn load_trait_tree_gui_for_input(file_name: &str) -> Option<gui_runtime::GuiFile> {
+    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let replay_native = crate_dir.parent()?;
+    let repo = replay_native.parent()?;
+    let raw = std::fs::read_to_string(repo.join("game_assets").join("gui").join(file_name)).ok()?;
+    let mut json: Value = serde_json::from_str(&raw).ok()?;
+    sanitize_positions(&mut json);
+    gui_runtime::GuiFile::parse(&json.to_string()).ok()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -983,6 +1096,11 @@ impl ArmyTraitTreeView {
     pub(crate) fn debug_set_selected_key(&mut self, key: impl Into<String>) {
         self.state.selected_key = Some(key.into());
     }
+
+    #[cfg(test)]
+    pub(crate) fn debug_disabled_mutation_targets(&self) -> Vec<(&'static str, Rect)> {
+        self.state.disabled_mutation_targets()
+    }
 }
 
 impl ViewInstance for ArmyTraitTreeView {
@@ -1000,6 +1118,10 @@ impl ViewInstance for ArmyTraitTreeView {
         };
         let leader = selected_leader_rebind(ctx, tag, Branch::Army);
         self.state.rebind(leader, [320.0, 200.0, 600.0, 400.0]);
+        self.state
+            .set_disabled_mutation_targets(trait_tree_disabled_mutation_targets(
+                ARMY_FILE, ARMY_ROOT, ctx.screen,
+            ));
     }
     fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
         self.state.on_input(ev)
@@ -1064,6 +1186,11 @@ impl NavyTraitTreeView {
     pub(crate) fn debug_node_center(&self, key: &str) -> Option<(f32, f32)> {
         self.state.node_center(key)
     }
+
+    #[cfg(test)]
+    pub(crate) fn debug_disabled_mutation_targets(&self) -> Vec<(&'static str, Rect)> {
+        self.state.disabled_mutation_targets()
+    }
 }
 
 impl ViewInstance for NavyTraitTreeView {
@@ -1081,6 +1208,10 @@ impl ViewInstance for NavyTraitTreeView {
         };
         let leader = selected_leader_rebind(ctx, tag, Branch::Navy);
         self.state.rebind(leader, [320.0, 200.0, 600.0, 400.0]);
+        self.state
+            .set_disabled_mutation_targets(trait_tree_disabled_mutation_targets(
+                NAVY_FILE, NAVY_ROOT, ctx.screen,
+            ));
     }
     fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
         self.state.on_input(ev)

@@ -841,32 +841,13 @@ fn render_buildings_grid(
         Some(r) => r,
         None => return,
     };
-    let template = match find_template(panel_file, "state_building_entry") {
-        Some(t) => t,
+    let manifest = &fd.stage.manifest;
+    let inst = match instantiate_state_panel_building_grid(
+        panel_file, report, viewport, manifest, scroll_y,
+    ) {
+        Some(inst) => inst,
         None => return,
     };
-    let mut rows = report.state_buildings.clone();
-    rows.extend(report.province_buildings.clone());
-    let n = rows.len();
-    if n == 0 {
-        return;
-    }
-    let manifest = &fd.stage.manifest;
-    let spec = GridSpec::from_gridbox(
-        &stub_named("state_building_entries", viewport),
-        &template,
-        14.0,
-    );
-    let content = ManifestContent {
-        manifest,
-        measure: |_t, _f| None,
-    };
-    let mut inst = gridbox::instantiate(&template, n, viewport, &spec, scroll_y, &content);
-    for (i, row) in inst.rows.iter_mut().enumerate() {
-        let b = &rows[i];
-        bind::apply::set_element_text(row, "level", &b.level);
-        gridbox::set_row_icon_frame(row, "building_picture", b.frame);
-    }
     let mut stats = DrawStats::default();
     let textures: &mut TextureCache = fd.textures;
     let fonts: &mut FontCache = fd.fonts;
@@ -888,6 +869,37 @@ fn render_buildings_grid(
                 .draw_sprite(t, sb.thumb.x, sb.thumb.y, sb.thumb.w, sb.thumb.h);
         }
     }
+}
+
+fn instantiate_state_panel_building_grid(
+    panel_file: &GuiFile,
+    report: &StateBindReport,
+    viewport: Rect,
+    manifest: &assets::SpriteManifest,
+    scroll_y: f32,
+) -> Option<gridbox::GridInstances> {
+    let template = find_template(panel_file, "state_building_entry")?;
+    let rows = state_panel_building_rows(report);
+    let n = rows.len();
+    if n == 0 {
+        return None;
+    }
+    let spec = GridSpec::from_gridbox(
+        &stub_named("state_building_entries", viewport),
+        &template,
+        14.0,
+    );
+    let content = ManifestContent {
+        manifest,
+        measure: |_t, _f| None,
+    };
+    let mut inst = gridbox::instantiate(&template, n, viewport, &spec, scroll_y, &content);
+    for (i, row) in inst.rows.iter_mut().enumerate() {
+        let b = rows[i];
+        bind::apply::set_element_text(row, "level", &b.level);
+        gridbox::set_row_icon_frame(row, "building_picture", b.frame);
+    }
+    Some(inst)
 }
 
 fn render_resources_grid(
@@ -1115,6 +1127,9 @@ mod tests {
                   {"type":"containerWindowType","name":"state_building_entries",
                    "position":{"x":153,"y":45},"orientation":"UPPER_LEFT",
                    "size":{"width":480,"height":105}},
+                  {"type":"containerWindowType","name":"state_shared_slot_building_entries",
+                   "position":{"x":150,"y":170},"orientation":"UPPER_LEFT",
+                   "size":{"width":480,"height":90}},
                  {"type":"containerWindowType","name":"state_resources_entries",
                   "position":{"x":-18,"y":273},"orientation":"UPPER_LEFT",
                   "size":{"width":132,"height":70}}
@@ -1126,6 +1141,18 @@ mod tests {
                   "orientation":"UPPER_LEFT","text":{"text":"0","font":"hoi_16mbs"}},
                  {"type":"iconType","name":"building_picture","position":{"x":20,"y":2},
                   "orientation":"UPPER_LEFT","spriteType":"GFX_buildings_strip"}
+               ]}
+              ,
+              {"type":"containerWindowType","name":"state_shared_slot_building_entry","position":{"x":4,"y":-15},
+               "size":{"width":70,"height":70},
+               "children":[
+                 {"type":"iconType","name":"build_slot_bg","position":{"x":0,"y":0},
+                  "orientation":"UPPER_LEFT","sprite":"GFX_build_slot_bg"},
+                 {"type":"iconType","name":"building_picture","position":{"x":20,"y":2},
+                  "orientation":"UPPER_LEFT","spriteType":"GFX_buildings_strip"},
+                 {"type":"buttonType","name":"remove","position":{"x":40,"y":29},
+                  "orientation":"UPPER_LEFT","size":{"width":24,"height":24},
+                  "sprite":"GFX_cancel_conversion_button"}
                ]}
               ,
               {"type":"containerWindowType","name":"state_resource_entry","position":{"x":0,"y":0},
@@ -1445,6 +1472,99 @@ mod tests {
                 "{name} disabled click must leave the bound digest unchanged"
             );
         }
+    }
+
+    #[test]
+    fn state_panel_shared_slot_remove_buttons_are_not_instantiated_or_claimed_yet() {
+        let stage = stage();
+        let snap = overflow_snap();
+        let mut view = StatePanelView::new(64, "STATE_64");
+        view.rebind(&rebind_ctx(&snap));
+
+        let panel_file = stage
+            .gui_file(PANEL_FILE)
+            .expect("test stage has province_state GUI");
+        assert!(
+            find_template(panel_file, "state_shared_slot_building_entry").is_some(),
+            "test GUI must define the shared-slot template before proving it is unrendered"
+        );
+        let bound = view.bind(&ctx(&stage, &snap));
+        let shared_viewport = find_rect(&bound.hit.roots, "state_shared_slot_building_entries")
+            .expect("test GUI must expose the shared-slot grid viewport");
+        assert!(
+            find_rect(&bound.hit.roots, "remove").is_none(),
+            "bound state-panel roots must not contain uninstantiated template leaves"
+        );
+
+        let report = bind_state(&snap, "64", "STATE_64");
+        let state_viewport = state_building_viewport_from_roots(&bound.hit.roots);
+        let rendered_state_rows = instantiate_state_panel_building_grid(
+            panel_file,
+            &report,
+            state_viewport,
+            &stage.manifest,
+            0.0,
+        )
+        .expect("state-building rows are rendered");
+        assert!(
+            rendered_state_rows
+                .rows
+                .iter()
+                .all(|row| find_rect(std::slice::from_ref(row), "remove").is_none()),
+            "current native building renderer still instantiates state_building_entry rows, not shared-slot rows"
+        );
+
+        let shared_template = find_template(panel_file, "state_shared_slot_building_entry")
+            .expect("shared-slot template exists in the test GUI");
+        let shared_spec = GridSpec::from_gridbox(
+            &stub_named("state_shared_slot_building_entries", shared_viewport),
+            &shared_template,
+            14.0,
+        );
+        let content = ManifestContent {
+            manifest: &stage.manifest,
+            measure: |_t, _f| None,
+        };
+        let would_be_shared_rows = gridbox::instantiate(
+            &shared_template,
+            1,
+            shared_viewport,
+            &shared_spec,
+            0.0,
+            &content,
+        );
+        let remove_rect = find_rect(&would_be_shared_rows.rows, "remove")
+            .expect("the shared-slot template's remove leaf has visible geometry if instantiated");
+        let before = visible_digest(&view, &stage, &snap);
+
+        let down = view.on_input(&ViewInput::PointerDown {
+            x: remove_rect.x + remove_rect.w * 0.5,
+            y: remove_rect.y + remove_rect.h * 0.5,
+            button: PointerButton::Left,
+        });
+        assert!(
+            !down.consumed,
+            "would-be shared-slot remove geometry must stay unclaimed until the row is rendered"
+        );
+        assert!(down.commands.is_empty());
+        assert!(!down.needs_redraw);
+
+        let up = view.on_input(&ViewInput::PointerUp {
+            x: remove_rect.x + remove_rect.w * 0.5,
+            y: remove_rect.y + remove_rect.h * 0.5,
+            button: PointerButton::Left,
+        });
+        assert!(
+            !up.consumed,
+            "pointer-up over would-be remove geometry must also stay unclaimed"
+        );
+        assert!(up.commands.is_empty());
+        assert!(!up.needs_redraw);
+        assert_eq!(
+            before,
+            visible_digest(&view, &stage, &snap),
+            "unrendered shared-slot remove target must not affect state-panel digest"
+        );
     }
 
     #[test]

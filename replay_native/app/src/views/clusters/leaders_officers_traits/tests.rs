@@ -456,6 +456,33 @@ fn hover_at(view: &mut dyn ViewInstance, x: f32, y: f32) -> InputOutcome {
     view.on_input(&ViewInput::PointerMove { x, y, drag: false })
 }
 
+fn rect_center(rect: Rect) -> (f32, f32) {
+    (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0)
+}
+
+fn assert_add_trait_targets_match_roots(
+    targets: &[(&'static str, Rect)],
+    roots: &[gui_runtime::scene::Node],
+) {
+    let expected = ["add_trait_0", "add_trait_1", "add_trait_2", "add_trait_3"];
+    assert_eq!(
+        targets.iter().map(|(leaf, _)| *leaf).collect::<Vec<_>>(),
+        expected,
+        "only the four real add-trait leaves are covered by this disabled-mutation slice"
+    );
+    for (leaf, cached) in targets {
+        let rendered =
+            super::find_rect(roots, leaf).unwrap_or_else(|| panic!("{leaf} rendered rect"));
+        assert!(
+            (cached.x - rendered.x).abs() < 0.01
+                && (cached.y - rendered.y).abs() < 0.01
+                && (cached.w - rendered.w).abs() < 0.01
+                && (cached.h - rendered.h).abs() < 0.01,
+            "{leaf} disabled hit rect must match the bound real .gui rect: cached={cached:?} rendered={rendered:?}"
+        );
+    }
+}
+
 #[test]
 fn scrub_a_b_a_byte_identical_all_seven() {
     if !assets_present() {
@@ -1022,6 +1049,84 @@ fn trait_node_drag_cancels_click_selection() {
     assert!(
         d.contains("selected=none"),
         "drag movement must cancel the pending click: {d}"
+    );
+}
+
+#[test]
+fn trait_tree_add_trait_slots_are_replay_disabled_noops() {
+    if !assets_present() {
+        eprintln!("[leaders] skipped trait-add-slots-noop: game_assets/gui not extracted");
+        return;
+    }
+
+    let snap = snap_live();
+
+    let army_stage = stage_with(&["army_trait_tree.json"]);
+    let mut army = ArmyTraitTreeView::new();
+    sync_army_trait_input(&mut army, &army_stage, &snap);
+    let army_bound = army.bind(&ctx(&army_stage, &snap));
+    let army_targets = army.debug_disabled_mutation_targets();
+    assert_add_trait_targets_match_roots(&army_targets, &army_bound.hit.roots);
+
+    let (x, y) = army
+        .debug_node_center("panzer_leader")
+        .expect("panzer_leader node center");
+    let (_down, select_up) = click_at(&mut army, x, y);
+    assert!(select_up.consumed && select_up.needs_redraw);
+    let army_before = bound_digest(&army.bind(&ctx(&army_stage, &snap)));
+    assert!(army_before.contains("selected_key=panzer_leader"));
+    for (_leaf, rect) in army_targets {
+        let (x, y) = rect_center(rect);
+        let (down, up) = click_at(&mut army, x, y);
+        assert!(
+            down.consumed && !down.needs_redraw,
+            "add-trait pointer-down must be a replay-disabled no-op"
+        );
+        assert!(down.commands.is_empty());
+        assert!(
+            up.consumed && !up.needs_redraw,
+            "add-trait pointer-up must also be a replay-disabled no-op"
+        );
+        assert!(up.commands.is_empty());
+    }
+    let army_after = bound_digest(&army.bind(&ctx(&army_stage, &snap)));
+    assert_eq!(
+        army_after, army_before,
+        "army add-trait no-op clicks must not alter selected trait state or digest"
+    );
+
+    let navy_stage = stage_with(&["navy_trait_tree.json"]);
+    let mut navy = NavyTraitTreeView::new();
+    sync_navy_trait_input(&mut navy, &navy_stage, &snap);
+    let navy_bound = navy.bind(&ctx(&navy_stage, &snap));
+    let navy_targets = navy.debug_disabled_mutation_targets();
+    assert_add_trait_targets_match_roots(&navy_targets, &navy_bound.hit.roots);
+
+    let (x, y) = navy
+        .debug_node_center("seawolf")
+        .expect("seawolf node center");
+    let (_down, select_up) = click_at(&mut navy, x, y);
+    assert!(select_up.consumed && select_up.needs_redraw);
+    let navy_before = bound_digest(&navy.bind(&ctx(&navy_stage, &snap)));
+    assert!(navy_before.contains("selected_key=seawolf"));
+    for (_leaf, rect) in navy_targets {
+        let (x, y) = rect_center(rect);
+        let (down, up) = click_at(&mut navy, x, y);
+        assert!(
+            down.consumed && !down.needs_redraw,
+            "navy add-trait pointer-down must be a replay-disabled no-op"
+        );
+        assert!(down.commands.is_empty());
+        assert!(
+            up.consumed && !up.needs_redraw,
+            "navy add-trait pointer-up must also be a replay-disabled no-op"
+        );
+        assert!(up.commands.is_empty());
+    }
+    let navy_after = bound_digest(&navy.bind(&ctx(&navy_stage, &snap)));
+    assert_eq!(
+        navy_after, navy_before,
+        "navy add-trait no-op clicks must not alter selected trait state or digest"
     );
 }
 

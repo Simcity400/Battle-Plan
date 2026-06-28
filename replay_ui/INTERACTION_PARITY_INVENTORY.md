@@ -107,7 +107,10 @@ The first native scaffold is now code-backed, not just prose:
   wheel-scroll/thumb-drag target inventories,
   `production.decisions` has explicit timed-decision row and wheel-scroll/thumb-drag
   target inventories plus a disabled-mutation target for visible timed-decision
-  `btn_select` actions, and `logistics.unit_view` has explicit division-list and
+  `btn_select` actions, `leaders.army_trait_tree` and
+  `leaders.navy_trait_tree` have explicit disabled-mutation targets for rendered
+  `add_trait_0` through `add_trait_3` trait-pick slots, and
+  `logistics.unit_view` has explicit division-list and
   equipment-pane wheel-scroll/thumb-drag target inventories. `politics.politics`
   now has explicit Government/National Spirits/Ideas & Laws/Autonomy row target
   inventories plus long National Spirits and Ideas & Laws wheel-scroll/thumb-drag
@@ -121,19 +124,20 @@ The first native scaffold is now code-backed, not just prose:
   known tab targets remain explicitly tracked as `not_proven` instead of
   disappearing.
 - New report tests lock the current executable counts: 114 registered views, 114
-  contracts, 1,140 category rows (ten per view), 105 target rows, 105 target rows
-  with executable-proof notes, and 977 `not_proven` category rows.
+  contracts, 1,140 category rows (ten per view), 108 target rows, 108 target rows
+  with executable-proof notes, and 975 `not_proven` category rows.
 - The report intentionally exposes no implemented/proven target count, because
   the current target status model only has `open` and `not_proven`. It does now
-  separately count twelve intentionally inert mutation targets for the
+  separately count fifteen intentionally inert mutation targets for the
   ingame-menu disabled verbs, state-panel occupation-law/template and
-  scorched-earth controls, topbar pause/date and speed controls, displayed
-  event-definition preview option actions, displayed popup action area,
-  construction top factory add/sub buttons, construction visible queue
-  priority/amount/close buttons, production visible add-line buttons,
-  production visible close-line buttons, production visible factory add/sub
-  buttons, production visible priority/amount buttons, and timed-decision
-  `btn_select` action buttons,
+  scorched-earth controls, topbar pause/date and speed controls, topbar
+  lobby/menu/help/achievements/playlist/music controls, displayed event-definition
+  preview option actions, displayed popup action area, construction top factory
+  add/sub buttons, construction visible queue priority/amount/close buttons,
+  production visible add-line buttons, production visible close-line buttons,
+  production visible factory add/sub buttons, production visible priority/amount
+  buttons, timed-decision `btn_select` action buttons, and army/navy trait-tree
+  add-trait slot buttons,
   without converting those proofs into broad mutation parity.
 - `chrome.find` now has executable read-only tab-switch proof: tests click
   States/Countries/Victory Points, verify the digest-visible catalog changes,
@@ -201,14 +205,18 @@ The first native scaffold is now code-backed, not just prose:
   hover frames/tooltips, disabled read-only behavior, screenshots, and broader
   topbar parity remain open.
 - `core.topbar` now has a first disabled-mutation slice: tests prove the real
-  extracted pause/date and speed-control buttons
+  extracted pause/date, speed-control, lobby/menu/help/achievements, playlist,
+  and music-control buttons
   (`pause_button_date`, `pause_button_date_paused`, `button_speeddown`,
-  `button_speedstep1` through `button_speedstep5`, and `button_speedup`) are
-  consumed as replay-disabled no-op pointer-down/up clicks with no commands, no
-  redraw, and unchanged topbar digest; shell tests also prove higher-z panels
-  prevent hidden topbar time-control targets from arming. Faction/alerts,
-  music/menu/help buttons, disabled visual treatment, screenshots, and broader
-  topbar mutation parity remain open.
+  `button_speedstep1` through `button_speedstep5`, `button_speedup`,
+  `reopen_ingame_lobby`, `menu_button`, `help_button`, `achievements_button`,
+  `playlist_button`, `music_pause_button`, `music_next_button`, and
+  `musicplayer_button`) are consumed as replay-disabled no-op pointer-down/up
+  clicks with no commands, no redraw, and unchanged topbar digest; shell tests
+  also prove higher-z panels prevent hidden topbar inert targets from arming.
+  `dismissed_alerts_button`, `threat_button`, `threat_value_button`,
+  `faction_button`, disabled visual treatment, screenshots, and broader topbar
+  mutation parity remain open.
 - `core.state_panel` now has a first executable building-grid scroll slice:
   tests prove wheel scrolling and scrollbar-thumb drag over the real
   `state_building_entries` geometry change/clamp visible building rows,
@@ -230,9 +238,11 @@ The first native scaffold is now code-backed, not just prose:
   `scorched_earth_state_button` are consumed as replay-disabled no-op
   pointer-down/up clicks with no commands, no redraw, and unchanged digest, while
   neighboring non-control panel space remains unclaimed by the view-specific
-  handler. Shared-slot building remove buttons, disabled visual treatment,
-  province/state drilldown links, screenshots, and side-by-side proof remain
-  open.
+  handler. A separate executable guard proves `state_shared_slot_building_entry`
+  `remove` remains unrendered/unclaimed even when the GUI defines that template;
+  the next prerequisite is native shared-slot row-factory rendering. Disabled
+  visual treatment, province/state drilldown links, screenshots, and side-by-side
+  proof remain open.
 - `chrome.find` now has a first executable text-input/filtering slice: tests
   focus the real `to_find_text` edit-box rect, type and backspace replay-local
   query text, filter over honest catalog labels/keys, reset/clamp scroll after
@@ -342,11 +352,11 @@ Current executable report totals:
 | Registered views | 114 |
 | Interaction contracts | 114 |
 | Category rows | 1,140 |
-| Target rows | 105 |
-| Target rows with executable-proof notes | 105 |
+| Target rows | 108 |
+| Target rows with executable-proof notes | 108 |
 | Implemented/proven target rows | Not representable yet |
-| Intentionally inert mutation rows | 12 |
-| `not_proven` category rows | 977 |
+| Intentionally inert mutation rows | 15 |
+| `not_proven` category rows | 975 |
 
 Per-category report totals:
 
@@ -359,7 +369,7 @@ Per-category report totals:
 | `scroll` | 9 | 105 | 13 | 13 | 0 | 13 |
 | `hover_tooltip` | 7 | 107 | 7 | 7 | 0 | 7 |
 | `drilldown` | 3 | 111 | 18 | 18 | 0 | 18 |
-| `disabled_mutation` | 8 | 106 | 12 | 12 | 0 | 12 |
+| `disabled_mutation` | 10 | 104 | 15 | 15 | 0 | 15 |
 | `scrub_state` | 0 | 114 | 0 | 0 | 0 | 0 |
 | `screenshot_proof` | 0 | 114 | 0 | 0 | 0 | 0 |
 
@@ -538,11 +548,11 @@ Likely missing interactions:
   interaction proof.
 - [ ] `core.state_panel`: province/state drilldown links, full the game tooltip
   frame/hover chrome coverage beyond the factual first slice, exact scrollbar
-  art, shared-slot remove-button inert proof, disabled visual treatment, and
-  side-by-side proof.
-- [ ] `core.topbar`: faction/alerts drilldowns, hover frames, topbar tooltips,
-  disabled read-only behavior for remaining game-action buttons, music/menu/help
-  controls, screenshots, and side-by-side proof.
+  art, native shared-slot row-factory rendering plus remove-button inert proof,
+  disabled visual treatment, and side-by-side proof.
+- [ ] `core.topbar`: faction/alerts/threat drilldowns, hover frames, topbar
+  tooltips, disabled read-only behavior for remaining game-action buttons,
+  disabled visual treatment, screenshots, and side-by-side proof.
 
 Tests/proof needed:
 
@@ -890,6 +900,11 @@ Implemented interactions:
   for trait id, owned state, branch, leader name, leader key, and the same
   derived static DEF rows, plus no-leader glyph hover inertness and hover-clear
   proof; navy owned trait nodes share the same factual tooltip path.
+- [x] Army/navy trait-tree rendered `add_trait_0` through `add_trait_3`
+  trait-pick slots have executable disabled-mutation proof: tests resolve the
+  hit rectangles from the real rendered `.gui` roots and prove pointer-down/up
+  clicks are consumed with no commands, no redraw, and unchanged selected
+  trait/detail bind digest.
 
 Likely missing interactions:
 
@@ -901,7 +916,9 @@ Likely missing interactions:
 - [ ] Full static trait catalog graph parity remains open: disabled/pickable
   states, real trait icons, effect text expansion, prereq/XOR lines, and DEF
   geometry.
-- [ ] Trait pick buttons must be disabled/inert, not silently clickable.
+- [ ] Remaining trait-pick parity is still open: availability/disabled visuals,
+  localized/effect-expanded picker content, and non-add-trait controls such as
+  tactic/wiki/tab buttons are not proven.
 - [ ] Scrollbar drag/wheel for large leader, advisor, ace, and trait lists.
 - [ ] Assignment/command group/portrait interactions need read-only drilldown or
   disabled-control classification.
@@ -909,7 +926,8 @@ Likely missing interactions:
 Tests/proof needed:
 
 - [ ] Row-to-detail tests for generals, admirals, aces, and command groups.
-- [ ] Trait hover/disabled-pick tests and tooltip snapshots.
+- [ ] Remaining trait picker availability/disabled-visual tests and tooltip
+  snapshots.
 - [ ] Side-by-side screenshots for selected leader and selected trait state.
 
 ### IntelDiplomacyTrade
@@ -973,8 +991,11 @@ Implemented interactions:
 - [x] Event window displayed static event-definition preview option actions have
   executable disabled-mutation proof: clicks on the displayed N5 option action
   are consumed as replay-disabled no-ops, emit no commands, request no redraw,
-  leave the bound digest unchanged, and outside-option clicks are intentionally
-  left unclaimed so this does not pretend full event modal parity is done.
+  and leave the bound digest unchanged. Inside-root outside-option chrome clicks
+  are now consumed as modal no-op input with no commands, no redraw, and unchanged
+  digest; off-root clicks are not claimed by EventWindowView-specific routing and
+  remain governed by the host modal policy. Fired-event historical choices and
+  complete event modal parity remain open.
 - [x] Popup window displayed generic popup-library action area has executable
   disabled-mutation proof: clicks on the first displayed popup root's real accept
   button area are consumed as replay-modal disabled no-ops, emit no commands,
@@ -1010,7 +1031,7 @@ Likely missing interactions:
 - [ ] Combat log row selection into combat details; naval combat/result row
   drilldown into ship/fleet details.
 - [ ] Event option hover/disabled visual treatment, fired-event historical choice
-  parity, full event modal blocking, and per-root popup button hover/disabled/
+  parity, complete event modal behavior, and per-root popup button hover/disabled/
   inert behavior.
 - [ ] Scrollbar drag/wheel for combat logs, losses, logistics overview rows,
   non-division unit rows, and popup/event lists.

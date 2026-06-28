@@ -2850,6 +2850,10 @@ fn event_window_preview_action_hit(screen: Rect, x: f32, y: f32) -> bool {
         .is_some()
 }
 
+fn event_window_modal_chrome_hit(screen: Rect, x: f32, y: f32) -> bool {
+    event_window_preview_card_area(screen).contains(x, y)
+}
+
 impl Drawable for EventWindowDrawable {
     fn draw_digest(&self) -> String {
         let card = self
@@ -2884,7 +2888,7 @@ impl ViewInstance for EventWindowView {
         EVENT_WINDOW_VIEW_ID
     }
     fn policy(&self) -> HostPolicy {
-        HostPolicy::window(ZBand::Overlay)
+        HostPolicy::modal_overlay(ZBand::Overlay)
     }
     fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
         match *ev {
@@ -2898,6 +2902,20 @@ impl ViewInstance for EventWindowView {
                 y,
                 button: PointerButton::Left,
             } if event_window_preview_action_hit(self.screen, x, y) => InputOutcome {
+                consumed: true,
+                commands: Vec::new(),
+                needs_redraw: false,
+            },
+            ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            }
+            | ViewInput::PointerUp {
+                x,
+                y,
+                button: PointerButton::Left,
+            } if event_window_modal_chrome_hit(self.screen, x, y) => InputOutcome {
                 consumed: true,
                 commands: Vec::new(),
                 needs_redraw: false,
@@ -3005,7 +3023,7 @@ register_view!(ViewDescriptor {
     }),
     shortcut: None,
     open: open_event_window,
-    policy: HostPolicy::window(ZBand::Overlay),
+    policy: HostPolicy::modal_overlay(ZBand::Overlay),
 });
 register_template!(TemplateDescriptor {
     id: ViewId("logistics.event_option_entry"),
@@ -3197,7 +3215,7 @@ register_view!(ViewDescriptor {
     }),
     shortcut: None,
     open: open_popup_window,
-    policy: HostPolicy::window(ZBand::Overlay),
+    policy: HostPolicy::modal_overlay(ZBand::Overlay),
 });
 register_template!(TemplateDescriptor {
     id: ViewId("logistics.equipment_special_item"),
@@ -4042,6 +4060,10 @@ mod tests {
             assert_eq!(bound.len(), 1);
             assert_eq!(bound[0].view_id, EVENT_WINDOW_VIEW_ID);
             assert!(
+                bound[0].policy.modal,
+                "event windows are modal overlays in the host stack"
+            );
+            assert!(
                 bound[0].commands.is_empty(),
                 "binding the replay event preview must not emit option/effect commands"
             );
@@ -4083,17 +4105,6 @@ mod tests {
             );
         }
 
-        let outside = host.route_input(&ViewInput::PointerDown {
-            x: 8.0,
-            y: 8.0,
-            button: PointerButton::Left,
-        });
-        assert!(
-            !outside.consumed,
-            "this slice must not claim broad event-window modal blocking outside option actions"
-        );
-        assert!(outside.commands.is_empty());
-
         let after = {
             let bound = host.bind_all(&ctx(&stage, &snap));
             assert_eq!(bound.len(), 1);
@@ -4102,6 +4113,110 @@ mod tests {
         assert_eq!(
             before, after,
             "disabled event option clicks must not mutate replay-local view state"
+        );
+    }
+
+    #[test]
+    fn event_window_modal_chrome_clicks_are_noops_without_broad_view_claim() {
+        let stage = stage_with(&[]);
+        let snap = snap_a();
+        let mut host = WindowHost::new();
+        let mut view = EventWindowView::new();
+        view.rebind(&RebindContext {
+            snapshot: &snap,
+            country: "GER",
+            screen: (1600, 900),
+            refit: true,
+        });
+        host.open_instance(Box::new(view));
+
+        let before = {
+            let bound = host.bind_all(&ctx(&stage, &snap));
+            assert_eq!(bound.len(), 1);
+            assert_eq!(bound[0].view_id, EVENT_WINDOW_VIEW_ID);
+            assert!(bound[0].policy.modal);
+            bound_digest(&bound[0])
+        };
+
+        let root = event_window_preview_card_area(default_event_window_screen());
+        let chrome_x = root.x + 20.0;
+        let chrome_y = root.y + 20.0;
+        assert!(event_window_modal_chrome_hit(
+            default_event_window_screen(),
+            chrome_x,
+            chrome_y
+        ));
+        assert!(
+            !event_window_preview_action_hit(default_event_window_screen(), chrome_x, chrome_y),
+            "chrome proof point must stay outside displayed option action geometry"
+        );
+
+        for ev in [
+            ViewInput::PointerDown {
+                x: chrome_x,
+                y: chrome_y,
+                button: PointerButton::Left,
+            },
+            ViewInput::PointerUp {
+                x: chrome_x,
+                y: chrome_y,
+                button: PointerButton::Left,
+            },
+        ] {
+            let out = host.route_input(&ev);
+            assert!(
+                out.consumed,
+                "event-window modal chrome click must be consumed as a no-op"
+            );
+            assert!(
+                out.commands.is_empty(),
+                "event-window modal chrome no-op must not emit commands on {ev:?}"
+            );
+            assert!(
+                !out.needs_redraw,
+                "event-window modal chrome no-op must not request redraw on {ev:?}"
+            );
+        }
+
+        let mut direct_view = EventWindowView::new();
+        direct_view.rebind(&RebindContext {
+            snapshot: &snap,
+            country: "GER",
+            screen: (1600, 900),
+            refit: true,
+        });
+        let direct_off_root = direct_view.on_input(&ViewInput::PointerDown {
+            x: 8.0,
+            y: 8.0,
+            button: PointerButton::Left,
+        });
+        assert!(
+            !direct_off_root.consumed
+                && direct_off_root.commands.is_empty()
+                && !direct_off_root.needs_redraw,
+            "off-root clicks must not be claimed by EventWindowView-specific action/chrome routing"
+        );
+
+        let host_off_root = host.route_input(&ViewInput::PointerDown {
+            x: 8.0,
+            y: 8.0,
+            button: PointerButton::Left,
+        });
+        assert!(
+            host_off_root.consumed,
+            "off-root clicks are blocked by the event window's modal host policy"
+        );
+        assert!(host_off_root.commands.is_empty());
+        assert!(!host_off_root.needs_redraw);
+
+        let after = {
+            let bound = host.bind_all(&ctx(&stage, &snap));
+            assert_eq!(bound.len(), 1);
+            bound_digest(&bound[0])
+        };
+        assert_eq!(
+            before, after,
+            "event-window modal no-op clicks must not mutate replay-local view state"
         );
     }
 
@@ -4116,6 +4231,10 @@ mod tests {
             let bound = host.bind_all(&ctx(&stage, &snap));
             assert_eq!(bound.len(), 1);
             assert_eq!(bound[0].view_id, POPUP_WINDOW_VIEW_ID);
+            assert!(
+                bound[0].policy.modal,
+                "popup windows are modal overlays in the host stack"
+            );
             assert!(
                 bound[0].commands.is_empty(),
                 "binding the popup library must not emit popup accept/decline commands"

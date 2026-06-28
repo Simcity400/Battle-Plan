@@ -2448,12 +2448,21 @@ register_view!(ViewDescriptor {
 const COMMAND_CHARACTER_VIEW_ID: ViewId = ViewId("politics.command_character");
 const COMMAND_CHARACTER_FILE: &str = "command_character.json";
 const COMMAND_CHARACTER_ROOT: &str = "command_character_view_window";
+const COMMAND_CHARACTER_ROW_H: f32 = 70.0;
 
-pub struct CommandCharacterView;
+pub struct CommandCharacterView {
+    selected_key: Option<String>,
+    row_keys: Vec<Option<String>>,
+    screen: Rect,
+}
 
 impl CommandCharacterView {
     pub fn new() -> CommandCharacterView {
-        CommandCharacterView
+        CommandCharacterView {
+            selected_key: None,
+            row_keys: Vec::new(),
+            screen: default_politics_screen(),
+        }
     }
 }
 
@@ -2468,12 +2477,18 @@ struct CommandCharacterDrawable {
     file: GuiFile,
     char_rows: Vec<DataRow>,
     section: SectionState,
+    selected_key: Option<String>,
     /// the per-row trait grids (N3). Their plans feed the digest so a scrub is exact.
     trait_trees: Vec<TraitTree>,
 }
 
 impl Drawable for CommandCharacterDrawable {
     fn draw_digest(&self) -> String {
+        let selected_state = match self.selected_key.as_deref() {
+            None => "none",
+            Some(key) if self.char_rows.iter().any(|r| r.key.as_deref() == Some(key)) => "selected",
+            Some(_) => "missing_selected",
+        };
         let mut tdig = String::new();
         for (i, tree) in self.trait_trees.iter().enumerate() {
             let g = tree.to_graph();
@@ -2482,21 +2497,26 @@ impl Drawable for CommandCharacterDrawable {
             tdig.push_str(&format!("t{i}={};", plan.digest()));
         }
         format!(
-            "CMDCHAR sect={} rows={} TRAITS[{}]",
+            "CMDCHAR sect={} selected={} selected_key={} selected_row={} rows={} TRAITS[{}]",
             self.section.tag(),
+            selected_state,
+            self.selected_key.as_deref().unwrap_or("none"),
+            selected_row_digest(&self.char_rows, self.selected_key.as_deref()),
             row_digest(&self.char_rows),
             tdig
         )
     }
     fn draw(&self, fd: &mut FrameDraw) {
         fd.draw_nodes(&self.roots);
-        render_rows(
+        render_rows_selected(
             fd,
             &self.roots,
             &self.file,
             "box_grid",
             "command_character_view_item",
             &self.char_rows,
+            0.0,
+            self.selected_key.as_deref(),
         );
         if let Some(grid) = find_rect(&self.roots, "box_grid") {
             let white = mint_white(fd);
@@ -2518,6 +2538,41 @@ impl ViewInstance for CommandCharacterView {
     fn policy(&self) -> HostPolicy {
         HostPolicy::window(ZBand::Panel)
     }
+    fn rebind(&mut self, ctx: &RebindContext) {
+        self.screen = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: ctx.screen.0 as f32,
+            h: ctx.screen.1 as f32,
+        };
+        self.row_keys = command_character_keys_from_rebind(ctx, ctx.country);
+    }
+    fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
+        match *ev {
+            ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            } => {
+                let viewport = command_character_grid_fallback(self.screen);
+                if let Some(key) = pick_politics_row_key(
+                    viewport,
+                    &self.row_keys,
+                    COMMAND_CHARACTER_ROW_H,
+                    0.0,
+                    x,
+                    y,
+                ) {
+                    let changed = self.selected_key.as_deref() != Some(key.as_str());
+                    self.selected_key = Some(key);
+                    politics_input_consumed(changed)
+                } else {
+                    InputOutcome::ignored()
+                }
+            }
+            _ => InputOutcome::ignored(),
+        }
+    }
     fn bind(&self, ctx: &BindContext) -> BoundView {
         let tag = ctx.country;
         let mut fidelity = FidelityReport::default();
@@ -2531,6 +2586,7 @@ impl ViewInstance for CommandCharacterView {
             file,
             char_rows,
             section,
+            selected_key: self.selected_key.clone(),
             trait_trees,
         };
         BoundView {
@@ -2547,6 +2603,14 @@ impl ViewInstance for CommandCharacterView {
     crate::impl_view_any!();
 }
 
+const COMMAND_CHARACTER_SOURCES: &[(&str, &str)] = &[
+    ("army_leaders", "commanders.army_leaders"),
+    ("navy_leaders", "commanders.navy_leaders"),
+    ("generals", "commanders.generals"),
+    ("field_marshals", "commanders.field_marshals"),
+    ("admirals", "commanders.admirals"),
+];
+
 /// The character roster: `command_character_view_item` rows from the LIVE
 /// `commanders.{army_leaders,navy_leaders}` (M). Per row: name/skill/traits/portrait/cost.
 /// In the SAVE-only demo `commanders` is unfed → 0 rows, section badged absent (NOT a
@@ -2556,27 +2620,24 @@ fn build_character_rows(
     tag: &str,
     fidelity: &mut FidelityReport,
 ) -> (Vec<DataRow>, SectionState, Vec<TraitTree>) {
-    let mut leaders: Vec<&serde_json::Value> = Vec::new();
+    let mut leaders: Vec<(&'static str, &serde_json::Value)> = Vec::new();
     let mut section = SectionState::Absent;
-    for path in [
-        "commanders.army_leaders",
-        "commanders.navy_leaders",
-        "commanders.generals",
-        "commanders.field_marshals",
-        "commanders.admirals",
-    ] {
+    for (bucket, path) in COMMAND_CHARACTER_SOURCES {
         let (arr, st) = country_array(ctx, tag, path);
         if let Some(a) = arr {
             if section == SectionState::Absent {
                 section = st;
             }
-            leaders.extend(a.iter());
+            leaders.extend(a.iter().map(|leader| (*bucket, leader)));
         }
     }
     let mut rows = Vec::new();
     let mut trees = Vec::new();
-    for l in leaders.iter() {
-        let mut row = DataRow::new();
+    for (bucket, l) in leaders.iter() {
+        let mut row = match command_character_row_key(bucket, l) {
+            Some(key) => DataRow::new().with_key(key),
+            None => DataRow::new(),
+        };
         row.bind(
             fidelity,
             "name",
@@ -2603,10 +2664,45 @@ fn build_character_rows(
         rows.push(row);
         trees.push(build_trait_tree(l));
     }
+    suppress_duplicate_row_keys(&mut rows);
     if rows.is_empty() {
         section.record(fidelity);
     }
     (rows, section, trees)
+}
+
+fn command_character_keys_from_rebind(ctx: &RebindContext, tag: &str) -> Vec<Option<String>> {
+    let mut keys = Vec::new();
+    for (bucket, path) in COMMAND_CHARACTER_SOURCES {
+        if let Captured::Measured(v) = ctx.country_field(tag, path) {
+            if let Some(arr) = v.as_array() {
+                keys.extend(
+                    arr.iter()
+                        .map(|leader| command_character_row_key(bucket, leader)),
+                );
+            }
+        }
+    }
+    suppress_duplicate_keys(&mut keys);
+    keys
+}
+
+fn command_character_row_key(bucket: &str, leader: &serde_json::Value) -> Option<String> {
+    for field in ["char_id", "unit_leader_id", "id"] {
+        if let Some(token) = leader.get(field).and_then(row_key_token) {
+            return Some(format!("command_character:{bucket}:{field}:{token}"));
+        }
+    }
+    None
+}
+
+fn command_character_grid_fallback(screen: Rect) -> Rect {
+    Rect {
+        x: screen.x + screen.w - 356.0 + 10.0,
+        y: screen.y + 80.0 + 98.0 + 10.0,
+        w: 490.0,
+        h: (590.0_f32 - 98.0 - 10.0).max(0.0),
+    }
 }
 
 /// Join a leader's `traits[]` tokens into one display atom (exact when present).
@@ -3223,6 +3319,19 @@ mod tests {
         });
     }
 
+    fn rebind_command_character(
+        v: &mut CommandCharacterView,
+        snap: &snapshot::Snapshot,
+        refit: bool,
+    ) {
+        v.rebind(&RebindContext {
+            snapshot: snap,
+            country: "GER",
+            screen: (1600, 900),
+            refit,
+        });
+    }
+
     fn politics_tab_center(bar: &TabBar, panel: Rect, id: &str) -> (f32, f32) {
         let rect = bar
             .layout(panel)
@@ -3253,6 +3362,15 @@ mod tests {
         view.on_input(&ViewInput::PointerDown {
             x: viewport.x + 4.0,
             y: viewport.y + tab.row_h() * row as f32 + 4.0,
+            button: PointerButton::Left,
+        })
+    }
+
+    fn click_command_character_row(view: &mut CommandCharacterView, row: usize) -> InputOutcome {
+        let viewport = command_character_grid_fallback(view.screen);
+        view.on_input(&ViewInput::PointerDown {
+            x: viewport.x + 4.0,
+            y: viewport.y + COMMAND_CHARACTER_ROW_H * row as f32 + 4.0,
             button: PointerButton::Left,
         })
     }
@@ -3403,6 +3521,61 @@ mod tests {
                     {"template": "GER_balance", "value": -0.35, "left_side": "GER_welfare_side",
                      "right_side": "GER_warfare_side", "countries": ["GER"]}
                 ]
+            }
+        }))
+        .unwrap()
+    }
+
+    fn command_character_snap(prefix: &str) -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1942.1.1.12", "hour_index": 200,
+            "countries": {
+                "GER": {
+                    "commanders": {
+                        "army_leaders": [
+                            {"char_id": 11, "unit_leader_id": 101, "name": format!("{prefix}_Guderian"), "skill": 5, "traits": ["panzer_leader"]},
+                            {"char_id": 12, "unit_leader_id": 102, "name": format!("{prefix}_Rommel"), "skill": 6, "traits": ["trickster"]}
+                        ],
+                        "navy_leaders": [
+                            {"unit_leader_id": 201, "name": format!("{prefix}_Doenitz"), "skill": 4, "traits": ["seawolf"]}
+                        ]
+                    }
+                }
+            }
+        }))
+        .unwrap()
+    }
+
+    fn command_character_duplicate_and_unkeyed_snap() -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1942.1.1.12", "hour_index": 200,
+            "countries": {
+                "GER": {
+                    "commanders": {
+                        "army_leaders": [
+                            {"char_id": 11, "name": "Duplicate One", "skill": 5, "traits": ["panzer_leader"]},
+                            {"char_id": 11, "name": "Duplicate Two", "skill": 6, "traits": ["trickster"]},
+                            {"name": "No Id", "skill": 3, "traits": ["defensive_doctrine"]},
+                            {"unit_leader_id": 104, "name": "Unique", "skill": 4, "traits": ["organizer"]}
+                        ]
+                    }
+                }
+            }
+        }))
+        .unwrap()
+    }
+
+    fn command_character_missing_selected_snap() -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1943.1.1.12", "hour_index": 400,
+            "countries": {
+                "GER": {
+                    "commanders": {
+                        "army_leaders": [
+                            {"char_id": 21, "unit_leader_id": 301, "name": "B_Only", "skill": 3, "traits": ["cautious"]}
+                        ]
+                    }
+                }
             }
         }))
         .unwrap()
@@ -4029,6 +4202,96 @@ mod tests {
         assert!(d.contains("stats=5(E)"), "overall skill must bind exact");
         assert!(d.contains("panzer_leader"), "trait tokens must bind");
         assert!(d.contains("icon=—(U)") && d.contains("cost=—(U)"));
+    }
+
+    #[test]
+    fn command_character_row_click_selects_measured_character_key() {
+        let stage = stage_with(&["command_character.json"]);
+        let snap = command_character_snap("A");
+        let mut v = CommandCharacterView::new();
+        rebind_command_character(&mut v, &snap, true);
+
+        let before = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert!(before.contains("selected=none"), "{before}");
+        let out = click_command_character_row(&mut v, 1);
+        assert!(out.consumed && out.needs_redraw && out.commands.is_empty());
+        let selected = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert!(selected.contains("selected=selected"), "{selected}");
+        assert!(
+            selected.contains("selected_key=command_character:army_leaders:char_id:12"),
+            "command-character selection must use measured char_id identity, got:\n{selected}"
+        );
+        assert!(
+            selected.contains(
+                "selected_row=r0[key=command_character:army_leaders:char_id:12;name=A_Rommel(D);"
+            ),
+            "selected row digest must point at Rommel, got:\n{selected}"
+        );
+    }
+
+    #[test]
+    fn command_character_duplicate_and_unkeyed_rows_are_inert() {
+        let stage = stage_with(&["command_character.json"]);
+        let snap = command_character_duplicate_and_unkeyed_snap();
+        let mut v = CommandCharacterView::new();
+        rebind_command_character(&mut v, &snap, true);
+
+        let duplicate = click_command_character_row(&mut v, 0);
+        assert!(
+            !duplicate.consumed && !duplicate.needs_redraw && duplicate.commands.is_empty(),
+            "duplicate measured commander ids must not be selected by index"
+        );
+        let unkeyed = click_command_character_row(&mut v, 2);
+        assert!(
+            !unkeyed.consumed && !unkeyed.needs_redraw && unkeyed.commands.is_empty(),
+            "id-less commander rows must stay inert"
+        );
+        let unique = click_command_character_row(&mut v, 3);
+        assert!(unique.consumed && unique.needs_redraw && unique.commands.is_empty());
+        let selected = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert!(
+            selected.contains("selected_key=command_character:army_leaders:unit_leader_id:104"),
+            "unique measured commander id should remain selectable, got:\n{selected}"
+        );
+    }
+
+    #[test]
+    fn command_character_selected_row_scrub_a_b_a_fails_closed_when_missing() {
+        let stage = stage_with(&["command_character.json"]);
+        let a = command_character_snap("A");
+        let b = command_character_missing_selected_snap();
+        let mut v = CommandCharacterView::new();
+
+        rebind_command_character(&mut v, &a, true);
+        let out = click_command_character_row(&mut v, 1);
+        assert!(out.consumed && out.needs_redraw);
+        let a1 = bound_digest(&v.bind(&ctx(&stage, &a)));
+        assert!(
+            a1.contains("selected_key=command_character:army_leaders:char_id:12"),
+            "{a1}"
+        );
+
+        rebind_command_character(&mut v, &b, false);
+        let missing = bound_digest(&v.bind(&ctx(&stage, &b)));
+        assert!(
+            missing.contains("selected=missing_selected"),
+            "missing selected commander must be explicit, got:\n{missing}"
+        );
+        assert!(
+            missing.contains("selected_key=command_character:army_leaders:char_id:12"),
+            "missing selected commander must keep the measured selected key, got:\n{missing}"
+        );
+        assert!(
+            !missing.contains("selected_row=r0[key=command_character:army_leaders:char_id:21;"),
+            "missing selected commander must not fall back to another row, got:\n{missing}"
+        );
+
+        rebind_command_character(&mut v, &a, false);
+        let a2 = bound_digest(&v.bind(&ctx(&stage, &a)));
+        assert_eq!(
+            a1, a2,
+            "command-character selected row must be byte-identical across A->B->A"
+        );
     }
 
     #[test]

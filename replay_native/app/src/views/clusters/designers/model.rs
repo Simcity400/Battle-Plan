@@ -14,8 +14,8 @@
 
 use gui_runtime::Rect;
 
-use widgets::common::{Atom, DIM_TINT, TEXT_TINT, UNAVAIL_TINT};
-use widgets::designer::{plan_modules, ModuleLayout};
+use widgets::common::{Atom, Reason, DIM_TINT, TEXT_TINT, UNAVAIL_TINT};
+use widgets::designer::{plan_modules, ModuleLayout, Slot, SlotModule};
 use widgets::plan::{Cmd, Plan};
 use widgets::tabs::{plan_tabs, TabBar};
 
@@ -31,6 +31,73 @@ pub struct StatBadge {
     pub label: String,
 }
 
+/// Passive read-only inspection state for a module slot. The selected/hovered slot is
+/// derived from the current [`ModuleLayout`]; a stale selected id is kept as an explicit
+/// missing selection so scrub changes never fall back to another module.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SlotInspection {
+    pub mode: SlotInspectionMode,
+    pub slot_id: String,
+    pub slot_name: Atom,
+    pub module_name: Atom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotInspectionMode {
+    Hover,
+    Selected,
+    MissingSelected,
+}
+
+impl SlotInspection {
+    pub fn hover(slot: &Slot) -> SlotInspection {
+        SlotInspection::from_slot(SlotInspectionMode::Hover, slot)
+    }
+
+    pub fn selected(slot: &Slot) -> SlotInspection {
+        SlotInspection::from_slot(SlotInspectionMode::Selected, slot)
+    }
+
+    pub fn missing_selected(slot_id: impl Into<String>) -> SlotInspection {
+        SlotInspection {
+            mode: SlotInspectionMode::MissingSelected,
+            slot_id: slot_id.into(),
+            slot_name: Atom::unavailable_because(Reason::Absent),
+            module_name: Atom::unavailable_because(Reason::Absent),
+        }
+    }
+
+    fn from_slot(mode: SlotInspectionMode, slot: &Slot) -> SlotInspection {
+        let module_name = match &slot.module {
+            SlotModule::Known(module) => module.name.clone(),
+            SlotModule::Empty => Atom::exact("Empty"),
+            SlotModule::Unavailable { .. } => Atom::unavailable_because(Reason::Blocked),
+        };
+        SlotInspection {
+            mode,
+            slot_id: slot.id.clone(),
+            slot_name: slot.slot_name.clone(),
+            module_name,
+        }
+    }
+
+    fn mode_token(&self) -> &'static str {
+        match self.mode {
+            SlotInspectionMode::Hover => "hover",
+            SlotInspectionMode::Selected => "selected",
+            SlotInspectionMode::MissingSelected => "missing_selected",
+        }
+    }
+
+    fn title(&self) -> &'static str {
+        match self.mode {
+            SlotInspectionMode::Hover => "Hovered Slot",
+            SlotInspectionMode::Selected => "Selected Slot",
+            SlotInspectionMode::MissingSelected => "Selected Slot Missing",
+        }
+    }
+}
+
 /// The bound view-model for ONE designer view.
 #[derive(Debug, Clone, Default)]
 pub struct DesignerModel {
@@ -42,6 +109,8 @@ pub struct DesignerModel {
     pub upgrades: Vec<(String, Atom)>,
     /// the optional N2 tab bar (division designer: normal vs HQ).
     pub tabs: Option<TabBar>,
+    /// Passive read-only module-slot inspection, set by pointer hover/click.
+    pub slot_inspection: Option<SlotInspection>,
     /// the COMPUTED stat panels, badged unavailable (never fabricated).
     pub stat_badges: Vec<StatBadge>,
 }
@@ -91,9 +160,10 @@ impl DesignerModel {
         s.push(']');
         // module / regiment grid: the N4 plan digest IS the geometry+icon+stat stream.
         let (e, k, u) = self.modules.occupancy_counts();
+        let grid_area = module_grid_area(area, self.header.len(), self.tabs.is_some());
         s.push_str(&format!(
             "M[occ={e}/{k}/{u};{}]",
-            plan_modules(&self.modules, area).digest()
+            plan_modules(&self.modules, grid_area).digest()
         ));
         // upgrades.
         s.push_str("U[");
@@ -105,6 +175,19 @@ impl DesignerModel {
         match &self.tabs {
             Some(t) => s.push_str(&format!("T[sel={:?};n={}]", t.selected(), t.tabs.len())),
             None => s.push_str("T[none]"),
+        }
+        // passive module-slot inspection.
+        match &self.slot_inspection {
+            Some(i) => s.push_str(&format!(
+                "I[mode={};id={};slot={}({});module={}({});]",
+                i.mode_token(),
+                i.slot_id,
+                i.slot_name.as_str(),
+                fid(&i.slot_name),
+                i.module_name.as_str(),
+                fid(&i.module_name)
+            )),
+            None => s.push_str("I[none]"),
         }
         // stat badges (all unavailable).
         s.push_str("S[");
@@ -144,7 +227,7 @@ impl DesignerModel {
         y += 8.0;
 
         // 2) the N2 tab bar (division designer) — sits above the grid when present.
-        let grid_top = if let Some(tabs) = &self.tabs {
+        if let Some(tabs) = &self.tabs {
             let tab_view = Rect {
                 x: area.x,
                 y,
@@ -155,26 +238,17 @@ impl DesignerModel {
             for c in tab_plan.cmds {
                 p.push(c);
             }
-            y + widgets::tabs::BAR_THICK + 6.0
-        } else {
-            y
-        };
+        }
 
         // 3) the N4 module / regiment grid.
-        let grid_area = Rect {
-            x: area.x,
-            y: grid_top,
-            w: area.w,
-            h: (area.h - (grid_top - area.y)).max(0.0),
-        };
+        let grid_area = module_grid_area(area, self.header.len(), self.tabs.is_some());
         let module_plan = plan_modules(&self.modules, grid_area);
-        let grid_rows = ((self.modules.slots.len() as f32 / 5.0).ceil()).max(1.0);
         for c in module_plan.cmds {
             p.push(c);
         }
         // advance past the grid for the side columns.
         let after_grid_x = area.x + 5.0 * widgets::designer::SLOT_W + 24.0;
-        let mut uy = grid_top;
+        let mut uy = grid_area.y;
 
         // 4) upgrade tracks (right column).
         if !self.upgrades.is_empty() {
@@ -207,6 +281,35 @@ impl DesignerModel {
         }
 
         // 5) computed stat panels — the §G hard-limit badge column (all "—").
+        if let Some(i) = &self.slot_inspection {
+            p.push(Cmd::Text {
+                x: after_grid_x,
+                y: uy,
+                text: i.title().into(),
+                tint: TEXT_TINT,
+                clip,
+            });
+            uy += 18.0;
+            for (label, atom) in [("Slot", &i.slot_name), ("Module", &i.module_name)] {
+                p.push(Cmd::Text {
+                    x: after_grid_x,
+                    y: uy,
+                    text: label.into(),
+                    tint: DIM_TINT,
+                    clip,
+                });
+                p.push(Cmd::Text {
+                    x: after_grid_x + 160.0,
+                    y: uy,
+                    text: atom.as_str().into(),
+                    tint: atom.tint(TEXT_TINT),
+                    clip,
+                });
+                uy += 16.0;
+            }
+            uy += 8.0;
+        }
+
         if !self.stat_badges.is_empty() {
             p.push(Cmd::Text {
                 x: after_grid_x,
@@ -235,8 +338,22 @@ impl DesignerModel {
             }
         }
 
-        let _ = grid_rows; // grid_rows retained for a future fixed-height grid layout
         p
+    }
+}
+
+/// The module grid rectangle used by both rendering and hit-testing. Header rows are
+/// fixed-height overlay atoms; the optional tab bar consumes one row above the grid.
+pub fn module_grid_area(area: Rect, header_rows: usize, has_tabs: bool) -> Rect {
+    let mut grid_top = area.y + header_rows as f32 * 18.0 + 8.0;
+    if has_tabs {
+        grid_top += widgets::tabs::BAR_THICK + 6.0;
+    }
+    Rect {
+        x: area.x,
+        y: grid_top,
+        w: area.w,
+        h: (area.h - (grid_top - area.y)).max(0.0),
     }
 }
 

@@ -130,14 +130,13 @@ Listed for completeness so the map is provably exhaustive.
 
 - **Backgrounds / chrome:** `background` (icon), `armyoverview_buttons_bg`, `observer_flag_overlay`,
   `toggle_music_commands_win` (+ children `Background`, `music_pause_button`, `music_next_button`,
-  `musicplayer_button`), `cp_bg`/`land_xp_bg`/`navy_xp_bg`/`air_xp_bg`/`nukes_bg` (container
+  `musicplayer_button` — replay-disabled no-op proof), `cp_bg`/`land_xp_bg`/`navy_xp_bg`/`air_xp_bg`/`nukes_bg` (container
   backgrounds), `pause_button_date`/`pause_button_date_paused` (clock chrome — the *paused* frame
   is a replay/scrubber state, not country data), the 5 speed steps `button_speedstep1` /
   `button_speedstep2` / `button_speedstep3` / `button_speedstep4` / `button_speedstep5` +
   `button_speedup` / `button_speeddown` (sim-speed control — **inert in a replay**, the scrubber owns time;
   executable `TopbarView` tests prove these pause/date and speed-control leaves consume pointer-down/up
-  as replay-disabled no-ops with unchanged digest, and shell tests prove higher-z panels prevent hidden
-  time-control targets from arming),
+  as replay-disabled no-ops with unchanged digest),
   `decisionview_amount_*_bg` / `intelview_*_bg` / `*_contract_amount_bg` / `prototype_rewards_aquired_bg`
   (alert-count backgrounds, paired with their deferred counters above).
 - **Navigation buttons (wired to read-only "open view" verbs, no datum bound):**
@@ -147,9 +146,12 @@ Listed for completeness so the map is provably exhaustive.
   `technology_button`, `diplomacy_button`, `trade_button`,
   `construction_button`, `production_button`, `deployment_button`,
   `logistics_button`, `officer_corp_button`, `army_button`, `navy_button`, and
-  `air_button`. `reopen_ingame_lobby` (+ `reopen_ingame_lobby_label` "LOBBY"
-  text — replay: inert), `menu_button`, `help_button`, `achievements_button`,
-  and `playlist_button` remain unproven/inert navigation chrome. Structural
+  `air_button`. `reopen_ingame_lobby`, `menu_button`, `help_button`,
+  `achievements_button`, `playlist_button`, `music_pause_button`,
+  `music_next_button`, and `musicplayer_button` have replay-disabled no-op
+  proof with unchanged digest; shell tests prove higher-z panels prevent hidden
+  inert topbar targets from arming. `dismissed_alerts_button`, `threat_button`,
+  `threat_value_button`, and `faction_button` remain open. Structural
   containers:
   `country_menu_window`, `faction_button_container`, `after_faction_button`, `after_intel_agency_button`,
   `time_control_window`, `land`/`navy`/`air`/`nukes`/`cp` (positioning containers).
@@ -185,7 +187,7 @@ Formatters: `int`, `level-int`, `percent`, `manpower`, `flag` / `flag-small`, `c
 | `manpower` (instantTextboxType, in `state_info_window`) | `states.<id>.manpower_pool.total` | manpower | **exact** | **Codex correction:** state-view population shows the **total** state manpower pool (sample total=322900), NOT `.available` (=667, a separate recruitable concept). `manpower_pool` populated 1081/1081. |
 | `population_icon` (iconType, `GFX_population_icon`) | — | — | static | Population icon for the manpower field. |
 | `state_building_entries` (gridBoxType) → `state_building_entry` rows | `states.<id>.buildings.{infrastructure,industrial_complex,arms_factory,air_base,anti_air_building,radar_station,fuel_silo,synthetic_refinery}` | row factory; per row: `level`→level-int, `building_picture`→building-icon | **exact** | One row per present state-scoped building. Levels are measured ints (populated 951/1081). Building→sprite frame is a static icon map. `dockyard` also appears here when present. Native state-panel wheel/thumb scroll now uses the real `state_building_entries` geometry, clamps to row-factory content height, consumes track clicks without map leakage, and preserves/clamps scroll across scrub rebinds. |
-| `state_shared_slot_building_entries` (gridBoxType) → `state_shared_slot_building_entry` rows | `states.<id>.buildings.*` (shared-slot subset: `dockyard`, large slots) | row factory; `building_picture`→building-icon, `damage_bar`→damage-bar-fraction | **exact** (levels) / **unavailable** (damage) | Shared building slots. Levels exact; **per-building damage is not stored** → `damage_bar` and `building_status_overlay` badged unavailable. `remove` button inert (read-only). |
+| `state_shared_slot_building_entries` (gridBoxType) → `state_shared_slot_building_entry` rows | `states.<id>.buildings.*` (shared-slot subset: `dockyard`, large slots) | row factory; `building_picture`→building-icon, `damage_bar`→damage-bar-fraction | **exact** (levels) / **unavailable** (damage) | Shared building slots. Levels exact; **per-building damage is not stored** → `damage_bar` and `building_status_overlay` badged unavailable. Native state-panel rendering does not yet instantiate this shared-slot row factory, so `remove` is not visible/claimable; next prerequisite is rendering `state_shared_slot_building_entry` rows before adding disabled no-op proof. |
 | `shared_slot_count` (instantTextboxType, placeholder `"SLOTS"`) | derived: used vs max shared building slots | int (`n/m`) | **derived** | In-game = used/total shared slots; we count `buildings.*` shared entries but **max-slots is a state-category/tech computed value** we don't store → derived/approximate. |
 | `state_resources_entries` (gridBoxType, in `state_resources`) -> `state_resource_entry` rows | `states.<id>.resources.{steel,oil,aluminium,tungsten,chromium,rubber}` | row factory; `resource` -> resource-icon, `amount` -> int | **exact** | Live per-state raw deposits. The native panel renders one row per positive measured deposit, accepts float values, omits measured empty `{}` as real no-deposits, and never substitutes country-level `economy.resources.produced` (national aggregate != per-state deposit). A geometry test proves the six known resource rows fit without overflow in the measured resource grid, so no resource scrollbar is required under the current data model. |
 | `state_resistance_status_container.progress` (iconType bar) | `states.<id>.occupation.resistance` / 100 | progressbar-fraction | **exact** | Resistance is a **0..100 percent** (sample 4.525). Bar fraction = value/100. Occupation present 400/1081. |
@@ -237,8 +239,9 @@ Formatters: `int`, `level-int`, `percent`, `manpower`, `flag` / `flag-small`, `c
   `province_building_special_icon_entry`, `state_resource_entry`) when considered as containers
   (their *bound children* are in 2a).
 - **Damage/status overlays (entry templates), not stored → effectively static here:**
-  `damage_bar` (all 4 entry templates), `building_status_overlay`, `remove` (shared-slot, mutation
-  → inert). Per-building damage/status is not in schema → these render at a default (no fraction).
+  `damage_bar` (all 4 entry templates), `building_status_overlay`, `remove` (shared-slot mutation,
+  currently unrendered/open in native state-panel until the shared-slot row factory exists).
+  Per-building damage/status is not in schema → these render at a default (no fraction).
 
 ---
 

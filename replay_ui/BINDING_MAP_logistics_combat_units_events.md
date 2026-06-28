@@ -581,9 +581,11 @@ Source `interface/eventwindow.gui`. Four event-window variants (`EventWindow`, `
   `leader` portrait buttons (open leader = nav).
   Native replay now has executable disabled-mutation proof for the displayed static event-definition
   preview option actions: clicks on the displayed N5 option action are consumed as replay-disabled
-  no-ops, emit no commands, request no redraw, and leave the bound digest unchanged. This does not
-  claim fired-event option history, full event modal blocking outside option actions, per-button GUI
-  leaf routing, disabled visual treatment, or popup-window button parity.
+  no-ops, emit no commands, request no redraw, and leave the bound digest unchanged. It also has
+  bounded modal proof for inside-root outside-option chrome clicks as no-op input; off-root clicks
+  are not claimed by EventWindowView-specific routing and are blocked only by the host modal policy.
+  This does not claim fired-event option history, complete event modal parity, per-button GUI leaf
+  routing, disabled visual treatment, or popup-window button parity.
 - **Structural containers:** `EventWindow`/`_Operative`/`_leader`/`_News`, `top_Window`/`midsection`/
   `bottom_Window`/`bottom_window_end`, `leader_picture_container`/`leader_details_container`,
   `event_option_entry` (row root).

@@ -2372,6 +2372,7 @@ const CONSTRUCTION_ROOT: &str = "countryconstructionsview";
 const CONSTRUCTION_ROW_H: f32 = 52.0;
 const CONSTRUCTION_FACTORY_COUNT_BUTTON_SIZE: f32 = 24.0;
 const CONSTRUCTION_QUEUE_BUTTON_SIZE: f32 = 24.0;
+const CONSTRUCTION_TEMP_BUTTON_SIZE: f32 = 32.0;
 
 pub struct ConstructionView {
     selected_queue_key: Option<String>,
@@ -2450,6 +2451,20 @@ fn construction_factory_count_button_hit(screen: Rect, x: f32, y: f32) -> bool {
     construction_factory_count_button_rects(screen)
         .iter()
         .any(|rect| rect.contains(x, y))
+}
+
+fn construction_temp_button_rect(screen: Rect) -> Rect {
+    let panel = construction_panel_fallback(screen);
+    Rect {
+        x: panel.x - 402.0,
+        y: panel.y + 9.0,
+        w: CONSTRUCTION_TEMP_BUTTON_SIZE,
+        h: CONSTRUCTION_TEMP_BUTTON_SIZE,
+    }
+}
+
+fn construction_temp_button_hit(screen: Rect, x: f32, y: f32) -> bool {
+    construction_temp_button_rect(screen).contains(x, y)
 }
 
 fn construction_queue_button_rects(viewport: Rect, row_y: f32) -> [Rect; 5] {
@@ -2802,6 +2817,9 @@ impl ViewInstance for ConstructionView {
                 if construction_factory_count_button_hit(self.screen, x, y) {
                     return construction_input_consumed(false);
                 }
+                if construction_temp_button_hit(self.screen, x, y) {
+                    return construction_input_consumed(false);
+                }
                 if construction_queue_button_hit(viewport, self.queue_keys.len(), scroll_y, x, y) {
                     return construction_input_consumed(false);
                 }
@@ -2852,6 +2870,8 @@ impl ViewInstance for ConstructionView {
                 if self.queue_scroll_drag.take().is_some() {
                     construction_input_consumed(false)
                 } else if construction_factory_count_button_hit(self.screen, x, y) {
+                    construction_input_consumed(false)
+                } else if construction_temp_button_hit(self.screen, x, y) {
                     construction_input_consumed(false)
                 } else {
                     let viewport = construction_grid_fallback(self.screen);
@@ -3742,6 +3762,7 @@ mod tests {
         "decrease_amount",
         "close_production_line",
     ];
+    const CONSTRUCTION_TEMP_BUTTON_NAME: &str = "temp";
     const PRODUCTION_FACTORY_COUNT_BUTTON_NAMES: &[&str] = CONSTRUCTION_FACTORY_COUNT_BUTTON_NAMES;
     const PRODUCTION_PRIORITY_AMOUNT_BUTTON_NAMES: &[&str] = &[
         "increase_priority",
@@ -4208,6 +4229,45 @@ mod tests {
                 "{node_name} input rect must use the GUI y coordinate"
             );
         }
+    }
+
+    #[test]
+    fn construction_temp_button_rect_matches_gui_position() {
+        let Some(gui) = load_gui(CONSTRUCTION_FILE) else {
+            eprintln!(
+                "[construction] skipped temp-button geometry test: game_assets/gui not extracted"
+            );
+            return;
+        };
+        let screen = default_construction_screen();
+        let panel = construction_panel_fallback(screen);
+        let rect = construction_temp_button_rect(screen);
+        let node = find_raw_node(&gui.windows, CONSTRUCTION_TEMP_BUTTON_NAME)
+            .expect("construction temp/backhoe button exists in root layout");
+        assert_eq!(node.kind, "buttonType");
+        assert_eq!(node.sprite.as_deref(), Some("GFX_backhoe_icon_small"));
+        assert!(
+            node.size.is_none(),
+            "temp button is sprite-sized in the GUI; the fallback rect owns the hit size"
+        );
+        let pos = node
+            .position
+            .as_ref()
+            .expect("temp button carries a real position");
+        assert_eq!(
+            rect.x,
+            panel.x + pos.x.px(),
+            "temp button input rect must use the GUI x coordinate"
+        );
+        assert_eq!(
+            rect.y,
+            panel.y + pos.y.px(),
+            "temp button input rect must use the GUI y coordinate"
+        );
+        assert_eq!(
+            (rect.w, rect.h),
+            (CONSTRUCTION_TEMP_BUTTON_SIZE, CONSTRUCTION_TEMP_BUTTON_SIZE)
+        );
     }
 
     fn ctx<'a>(stage: &'a Stage, snap: &'a snapshot::Snapshot) -> BindContext<'a> {
@@ -4875,6 +4935,11 @@ mod tests {
             (rects[0].x + rects[0].w * 0.5, rects[0].y + rects[0].h * 0.5),
             (rects[1].x + rects[1].w * 0.5, rects[1].y + rects[1].h * 0.5),
         ]
+    }
+
+    fn construction_temp_button_center(view: &ConstructionView) -> (f32, f32) {
+        let rect = construction_temp_button_rect(view.screen);
+        (rect.x + rect.w * 0.5, rect.y + rect.h * 0.5)
     }
 
     fn construction_queue_button_centers(
@@ -6542,6 +6607,62 @@ mod tests {
         assert_eq!(
             before, after,
             "disabled queue buttons must not change scroll, selection, rows, or digest"
+        );
+    }
+
+    #[test]
+    fn construction_temp_button_is_replay_disabled_noop() {
+        let Some(gui) = load_gui(CONSTRUCTION_FILE) else {
+            eprintln!("[construction] skipped temp-button test: game_assets/gui not extracted");
+            return;
+        };
+        let node = find_raw_node(&gui.windows, CONSTRUCTION_TEMP_BUTTON_NAME)
+            .expect("construction temp/backhoe button exists in root layout");
+        assert_eq!(node.kind, "buttonType");
+        assert_eq!(node.sprite.as_deref(), Some("GFX_backhoe_icon_small"));
+
+        let stage = stage_with(&[]);
+        let snap = many_construction_snap(40, "A");
+        let mut view = ConstructionView::new();
+        view.rebind(&rebind_ctx(&snap));
+
+        wheel_construction(&mut view, -4.0);
+        let select = click_construction_row(&mut view, 0);
+        assert!(select.consumed && select.needs_redraw);
+        let before = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert!(before.contains("selected_key=construction:line:A_line_05"));
+        let before_scroll = construction_scroll_pair(&before);
+        let before_selected = view.selected_queue_key.clone();
+        let (x, y) = construction_temp_button_center(&view);
+
+        let down = view.on_input(&ViewInput::PointerDown {
+            x,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            down.consumed && !down.needs_redraw && down.commands.is_empty(),
+            "construction temp/backhoe pointer-down must be a replay-disabled no-op"
+        );
+        let up = view.on_input(&ViewInput::PointerUp {
+            x,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            up.consumed && !up.needs_redraw && up.commands.is_empty(),
+            "construction temp/backhoe pointer-up must be a replay-disabled no-op"
+        );
+
+        assert_eq!(
+            view.selected_queue_key, before_selected,
+            "disabled temp/backhoe button must not change selected construction row"
+        );
+        let after = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert_eq!(construction_scroll_pair(&after), before_scroll);
+        assert_eq!(
+            before, after,
+            "disabled temp/backhoe button must not change scroll, selection, rows, or digest"
         );
     }
 

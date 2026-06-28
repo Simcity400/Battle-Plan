@@ -378,6 +378,85 @@ fn bind_view(view_id: &str, stage: &Stage, snap: &snapshot::Snapshot) -> String 
     bound_digest(&bv)
 }
 
+// Component designer interaction helpers.
+fn rebind_tank(v: &mut TankDesignerView, snap: &snapshot::Snapshot, refit: bool) {
+    v.rebind(&RebindContext {
+        snapshot: snap,
+        country: "GER",
+        screen: (1600, 900),
+        refit,
+    });
+}
+
+fn rebind_plane(v: &mut PlaneDesignerView, snap: &snapshot::Snapshot, refit: bool) {
+    v.rebind(&RebindContext {
+        snapshot: snap,
+        country: "GER",
+        screen: (1600, 900),
+        refit,
+    });
+}
+
+fn rebind_equipment(v: &mut EquipmentDesignerView, snap: &snapshot::Snapshot, refit: bool) {
+    v.rebind(&RebindContext {
+        snapshot: snap,
+        country: "GER",
+        screen: (1600, 900),
+        refit,
+    });
+}
+
+fn component_slot_center(interaction: &ComponentInteraction, slot_id: &str) -> (f32, f32) {
+    let model = interaction
+        .pick_model
+        .as_ref()
+        .expect("component pick model rebound");
+    let slot = model
+        .modules
+        .slots
+        .iter()
+        .find(|slot| slot.id == slot_id)
+        .unwrap_or_else(|| panic!("missing component slot {slot_id}"));
+    let rect = slot.rect(model.grid_area);
+    (rect.x + rect.w * 0.5, rect.y + rect.h * 0.5)
+}
+
+fn component_disabled_point(interaction: &ComponentInteraction) -> (f32, f32) {
+    let area = interaction
+        .pick_model
+        .as_ref()
+        .expect("component pick model rebound")
+        .disabled_area;
+    (area.x + 8.0, area.y + 8.0)
+}
+
+fn assert_rect_close(actual: Rect, expected: Rect, label: &str) {
+    let fields = [
+        ("x", actual.x, expected.x),
+        ("y", actual.y, expected.y),
+        ("w", actual.w, expected.w),
+        ("h", actual.h, expected.h),
+    ];
+    for (field, a, e) in fields {
+        assert!(
+            (a - e).abs() < 0.01,
+            "{label}.{field}: expected {e}, got {a}"
+        );
+    }
+}
+
+fn pointer_move(x: f32, y: f32) -> ViewInput {
+    ViewInput::PointerMove { x, y, drag: false }
+}
+
+fn left_click(x: f32, y: f32) -> ViewInput {
+    ViewInput::PointerDown {
+        x,
+        y,
+        button: PointerButton::Left,
+    }
+}
+
 // Division tab interaction helpers.
 fn rebind_division(v: &mut DivisionDesignerView, snap: &snapshot::Snapshot, refit: bool) {
     v.rebind(&RebindContext {
@@ -511,6 +590,188 @@ fn live_module_leaf_is_preferred() {
     // the live tank has the heavy_cannon + armor_plate modules (2 known slots) vs the save
     // tank's medium_cannon + an empty turret — so the module digests differ.
     assert_ne!(bound_digest(&save), bound_digest(&live));
+}
+
+// ----------------------------------------------------- component slot interaction parity
+
+#[test]
+fn component_slot_hover_is_passive_no_command_and_digest_visible() {
+    let stage = stage_with(&["tank_designer.json"]);
+    let snap = snap_save();
+    let mut view = TankDesignerView::new();
+    rebind_tank(&mut view, &snap, true);
+
+    let before = bound_digest(&view.bind(&ctx(&stage, &snap)));
+    assert!(before.contains("I[none]"), "{before}");
+
+    let (x, y) = component_slot_center(&view.interaction, "main_armament_slot");
+    let out = view.on_input(&pointer_move(x, y));
+    assert!(!out.consumed);
+    assert!(out.needs_redraw);
+    assert!(out.commands.is_empty());
+
+    let hover = bound_digest(&view.bind(&ctx(&stage, &snap)));
+    assert_ne!(before, hover);
+    assert!(
+        hover.contains("I[mode=hover;id=main_armament_slot;slot=main_armament_slot(D);"),
+        "{hover}"
+    );
+
+    let repeat = view.on_input(&pointer_move(x, y));
+    assert!(!repeat.consumed);
+    assert!(!repeat.needs_redraw);
+    assert!(repeat.commands.is_empty());
+}
+
+#[test]
+fn component_interaction_geometry_matches_bound_overlay_roots() {
+    if !assets_present() {
+        eprintln!("[designers] skipped component geometry: game_assets/gui not extracted");
+        return;
+    }
+    let stage = stage_with(&[]);
+    let snap = snap_save();
+    let bctx = ctx(&stage, &snap);
+    for (file, root, fam, label) in [
+        (
+            super::TANK_FILE,
+            super::TANK_ROOT,
+            Family::LandVehicle,
+            "tank",
+        ),
+        (super::PLANE_FILE, super::PLANE_ROOT, Family::Plane, "plane"),
+        (
+            super::EQUIP_FILE,
+            super::EQUIP_ROOT,
+            Family::Ship,
+            "equipment",
+        ),
+    ] {
+        let file = resolve_gui(&bctx, file);
+        let roots = build_root(&bctx, &file, root);
+        assert_rect_close(
+            component_overlay_area(bctx.screen, fam),
+            overlay_area(&roots, bctx.screen),
+            label,
+        );
+    }
+}
+
+#[test]
+fn component_slot_clicks_are_read_only_and_wired_for_all_component_designers() {
+    let stage = stage_with(&[]);
+    let snap = snap_save();
+
+    let mut tank = TankDesignerView::new();
+    rebind_tank(&mut tank, &snap, true);
+    let (x, y) = component_slot_center(&tank.interaction, "main_armament_slot");
+    let out = tank.on_input(&left_click(x, y));
+    assert!(out.consumed);
+    assert!(out.needs_redraw);
+    assert!(out.commands.is_empty());
+    let tank_digest = bound_digest(&tank.bind(&ctx(&stage, &snap)));
+    assert!(
+        tank_digest.contains("I[mode=selected;id=main_armament_slot;slot=main_armament_slot(D);"),
+        "{tank_digest}"
+    );
+
+    let repeat = tank.on_input(&left_click(x, y));
+    assert!(repeat.consumed);
+    assert!(!repeat.needs_redraw);
+    assert!(repeat.commands.is_empty());
+
+    let mut plane = PlaneDesignerView::new();
+    rebind_plane(&mut plane, &snap, true);
+    let (x, y) = component_slot_center(&plane.interaction, "engine_slot");
+    let out = plane.on_input(&left_click(x, y));
+    assert!(out.consumed);
+    assert!(out.needs_redraw);
+    assert!(out.commands.is_empty());
+    let plane_digest = bound_digest(&plane.bind(&ctx(&stage, &snap)));
+    assert!(
+        plane_digest.contains("I[mode=selected;id=engine_slot;slot=engine_slot(D);"),
+        "{plane_digest}"
+    );
+
+    let mut equipment = EquipmentDesignerView::new();
+    rebind_equipment(&mut equipment, &snap, true);
+    let (x, y) = component_slot_center(&equipment.interaction, "fixed_ship_battery_slot");
+    let out = equipment.on_input(&left_click(x, y));
+    assert!(out.consumed);
+    assert!(out.needs_redraw);
+    assert!(out.commands.is_empty());
+    let equipment_digest = bound_digest(&equipment.bind(&ctx(&stage, &snap)));
+    assert!(
+        equipment_digest.contains(
+            "I[mode=selected;id=fixed_ship_battery_slot;slot=fixed_ship_battery_slot(D);"
+        ),
+        "{equipment_digest}"
+    );
+}
+
+#[test]
+fn component_non_slot_designer_controls_are_replay_disabled_noops() {
+    let stage = stage_with(&[]);
+    let snap = snap_save();
+    let mut view = TankDesignerView::new();
+    rebind_tank(&mut view, &snap, true);
+
+    let before = bound_digest(&view.bind(&ctx(&stage, &snap)));
+    let (x, y) = component_disabled_point(&view.interaction);
+    let down = view.on_input(&left_click(x, y));
+    assert!(down.consumed);
+    assert!(!down.needs_redraw);
+    assert!(down.commands.is_empty());
+    let up = view.on_input(&ViewInput::PointerUp {
+        x,
+        y,
+        button: PointerButton::Left,
+    });
+    assert!(up.consumed);
+    assert!(!up.needs_redraw);
+    assert!(up.commands.is_empty());
+    let after = bound_digest(&view.bind(&ctx(&stage, &snap)));
+    assert_eq!(
+        before, after,
+        "replay-disabled designer chrome/control clicks must not alter bound output"
+    );
+}
+
+#[test]
+fn component_selected_slot_survives_scrub_missing_then_restored_without_fallback() {
+    let stage = stage_with(&[]);
+    let save = snap_save();
+    let missing = snap_no_designs();
+    let mut view = TankDesignerView::new();
+    rebind_tank(&mut view, &save, true);
+
+    let (x, y) = component_slot_center(&view.interaction, "turret_slot");
+    let out = view.on_input(&left_click(x, y));
+    assert!(out.consumed && out.needs_redraw);
+    assert!(out.commands.is_empty());
+    let selected_save = bound_digest(&view.bind(&ctx(&stage, &save)));
+    assert!(
+        selected_save.contains("I[mode=selected;id=turret_slot;slot=turret_slot(D);"),
+        "{selected_save}"
+    );
+
+    rebind_tank(&mut view, &missing, false);
+    let selected_missing = bound_digest(&view.bind(&ctx(&stage, &missing)));
+    assert!(
+        selected_missing.contains("I[mode=missing_selected;id=turret_slot;"),
+        "{selected_missing}"
+    );
+    assert!(
+        !selected_missing.contains("id=main_armament_slot"),
+        "missing selected slot must not fall back to another module: {selected_missing}"
+    );
+
+    rebind_tank(&mut view, &save, false);
+    let restored_save = bound_digest(&view.bind(&ctx(&stage, &save)));
+    assert_eq!(
+        selected_save, restored_save,
+        "scrub save->missing->save must restore the exact selected-slot digest"
+    );
 }
 
 /// The division designer binds the regiment GRID (3 regiments + 2 support in the save fix)

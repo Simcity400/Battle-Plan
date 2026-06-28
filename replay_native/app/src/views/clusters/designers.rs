@@ -80,9 +80,7 @@ use crate::host::view::{
 };
 use crate::{register_template, register_view};
 
-use widgets::common::{
-    AssetRef, Atom, DrawAssets, Fidelity as WFidelity, Reason, DIM_TINT, TEXT_TINT,
-};
+use widgets::common::{AssetRef, Atom, DrawAssets, Fidelity as WFidelity, Reason};
 use widgets::designer::{Module, ModuleLayout, Slot};
 use widgets::tabs::{Tab, TabBar};
 
@@ -164,6 +162,12 @@ impl Family {
             Family::LandVehicle => "military.xp.army",
             Family::Plane => "military.xp.air",
             Family::Ship => "military.xp.navy",
+        }
+    }
+    fn component_root_size(self) -> (f32, f32) {
+        match self {
+            Family::LandVehicle | Family::Plane => (1091.0, 542.0),
+            Family::Ship => (1097.0, 542.0),
         }
     }
 }
@@ -388,6 +392,161 @@ fn overlay_area(roots: &[Node], screen: Rect) -> Rect {
     }
 }
 
+const COMPONENT_HEADER_ROWS: usize = 7;
+
+#[derive(Debug, Clone)]
+struct ComponentPickModel {
+    modules: ModuleLayout,
+    grid_area: Rect,
+    disabled_area: Rect,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ComponentInteraction {
+    selected_slot: Option<String>,
+    hovered_slot: Option<String>,
+    pick_model: Option<ComponentPickModel>,
+}
+
+impl ComponentInteraction {
+    fn rebind(&mut self, snapshot: &Snapshot, tag: &str, fam: Family, screen: Rect) {
+        let cat = DefCatalog::get();
+        let mut fidelity = FidelityReport::default();
+        let modules = match focused_variant(snapshot, tag, fam) {
+            Some((_key, v)) => build_module_layout(snapshot, v, cat, &mut fidelity),
+            None => ModuleLayout::new(Vec::new()),
+        };
+        let disabled_area = component_overlay_area(screen, fam);
+        self.pick_model = Some(ComponentPickModel {
+            modules,
+            grid_area: model::module_grid_area(disabled_area, COMPONENT_HEADER_ROWS, false),
+            disabled_area,
+        });
+        if self
+            .hovered_slot
+            .as_deref()
+            .is_some_and(|id| !self.slot_present(id))
+        {
+            self.hovered_slot = None;
+        }
+    }
+
+    fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
+        match *ev {
+            ViewInput::PointerMove { x, y, drag: false } => {
+                let next = self.pick_slot(x, y);
+                let changed = self.hovered_slot != next;
+                self.hovered_slot = next;
+                InputOutcome {
+                    consumed: false,
+                    commands: Vec::new(),
+                    needs_redraw: changed && self.selected_slot.is_none(),
+                }
+            }
+            ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            } => match self.pick_slot(x, y) {
+                Some(id) => {
+                    let changed = self.selected_slot.as_deref() != Some(id.as_str());
+                    self.hovered_slot = Some(id.clone());
+                    self.selected_slot = Some(id);
+                    component_input_consumed(changed)
+                }
+                None if self.contains_disabled_area(x, y) => component_input_consumed(false),
+                None => InputOutcome::ignored(),
+            },
+            ViewInput::PointerUp {
+                x,
+                y,
+                button: PointerButton::Left,
+            } => {
+                if self.contains_disabled_area(x, y) {
+                    component_input_consumed(false)
+                } else {
+                    InputOutcome::ignored()
+                }
+            }
+            _ => InputOutcome::ignored(),
+        }
+    }
+
+    fn pick_slot(&self, x: f32, y: f32) -> Option<String> {
+        let model = self.pick_model.as_ref()?;
+        model.modules.pick(model.grid_area, x, y)
+    }
+
+    fn slot_present(&self, id: &str) -> bool {
+        self.pick_model
+            .as_ref()
+            .is_some_and(|m| m.modules.slots.iter().any(|s| s.id == id))
+    }
+
+    fn contains_disabled_area(&self, x: f32, y: f32) -> bool {
+        self.pick_model
+            .as_ref()
+            .is_some_and(|model| model.disabled_area.contains(x, y))
+    }
+}
+
+fn component_input_consumed(needs_redraw: bool) -> InputOutcome {
+    InputOutcome {
+        consumed: true,
+        commands: Vec::new(),
+        needs_redraw,
+    }
+}
+
+fn screen_rect(size: (u32, u32)) -> Rect {
+    Rect {
+        x: 0.0,
+        y: 0.0,
+        w: size.0 as f32,
+        h: size.1 as f32,
+    }
+}
+
+fn component_root_rect(screen: Rect, fam: Family) -> Rect {
+    let (w, h) = fam.component_root_size();
+    Rect {
+        x: screen.x + screen.w * 0.5,
+        y: screen.y + screen.h * 0.5,
+        w,
+        h,
+    }
+}
+
+fn component_overlay_area(screen: Rect, fam: Family) -> Rect {
+    let base = component_root_rect(screen, fam);
+    Rect {
+        x: base.x + 12.0,
+        y: base.y + 64.0,
+        w: (base.w - 24.0).max(0.0),
+        h: (base.h - 76.0).max(0.0),
+    }
+}
+
+fn component_slot_inspection(
+    layout: &ModuleLayout,
+    selected_slot: Option<&str>,
+    hovered_slot: Option<&str>,
+) -> Option<model::SlotInspection> {
+    if let Some(id) = selected_slot {
+        return match layout.slots.iter().find(|s| s.id == id) {
+            Some(slot) => Some(model::SlotInspection::selected(slot)),
+            None => Some(model::SlotInspection::missing_selected(id)),
+        };
+    }
+    hovered_slot.and_then(|id| {
+        layout
+            .slots
+            .iter()
+            .find(|s| s.id == id)
+            .map(model::SlotInspection::hover)
+    })
+}
+
 // =====================================================================================
 // The shared designer DRAWABLE: real `.gui` chrome + N4 module/regiment overlay + header
 // + N2 tabs (division) + the digest that makes a scrub byte-identical.
@@ -463,6 +622,8 @@ fn build_component(
     ctx: &BindContext,
     fam: Family,
     extra_unavail: &[&str],
+    selected_slot: Option<&str>,
+    hovered_slot: Option<&str>,
     fidelity: &mut FidelityReport,
 ) -> DesignerModel {
     let tag = ctx.country;
@@ -480,8 +641,8 @@ fn build_component(
     // ---- the focused variant V (top-level designs domain via the shim) ----
     let cat = DefCatalog::get();
     match focused_variant(snapshot, tag, fam) {
-        Some((key, v)) => {
-            model.push_header(fidelity, "Name", name_atom(v, &key, cat));
+        Some((_key, v)) => {
+            model.push_header(fidelity, "Name", name_atom(v, cat));
             let arche = obj_field(v, "archetype");
             model.push_header(
                 fidelity,
@@ -505,7 +666,7 @@ fn build_component(
             );
             model.push_header(fidelity, "Design Team", design_team_atom(v));
 
-            model.modules = build_module_layout(snapshot, &key, v, fam, cat, fidelity);
+            model.modules = build_module_layout(snapshot, v, cat, fidelity);
             build_upgrade_sliders(v, cat, fidelity, &mut model);
         }
         None => {
@@ -524,6 +685,8 @@ fn build_component(
     }
 
     // ---- the COMPUTED stat panels (§G hard limit) — badged unavailable, never computed.
+    model.slot_inspection = component_slot_inspection(&model.modules, selected_slot, hovered_slot);
+
     for label in ["Base Stats", "Combat Stats", "Misc Stats"] {
         model.push_stat_unavailable(fidelity, label);
     }
@@ -538,7 +701,7 @@ fn build_component(
 
 /// The variant's display name: the custom `name` (EXACT) if present, else the archetype
 /// DEF name (derived), else unavailable. Never fabricated.
-fn name_atom(v: &Value, _key: &str, cat: &DefCatalog) -> DisplayAtom {
+fn name_atom(v: &Value, cat: &DefCatalog) -> DisplayAtom {
     match v.get("name") {
         Some(Value::String(s)) if !s.is_empty() => DisplayAtom::text(s.clone(), Fidelity::Exact),
         _ => match v.get("archetype").and_then(Value::as_str) {
@@ -573,9 +736,7 @@ fn design_team_atom(v: &Value) -> DisplayAtom {
 /// fabricated stat. An EMPTY map → an empty layout (a measured-empty board, not a fake).
 fn build_module_layout(
     snapshot: &Snapshot,
-    key: &str,
     v: &Value,
-    fam: Family,
     cat: &DefCatalog,
     fidelity: &mut FidelityReport,
 ) -> ModuleLayout {
@@ -591,7 +752,6 @@ fn build_module_layout(
     let modules = live_modules.or(save_modules);
 
     let mut slots = Vec::new();
-    let _ = key; // key retained for future per-key DEF joins
     if let Some(map) = modules {
         // deterministic slot order (sorted by slot name) so a scrub is byte-identical.
         let mut slot_names: Vec<&String> = map.keys().collect();
@@ -629,7 +789,6 @@ fn build_module_layout(
             }
         }
     }
-    let _ = fam; // family retained for future per-family slot-DEF specialisation
     ModuleLayout::new(slots)
 }
 
@@ -677,10 +836,14 @@ const TANK_VIEW_ID: ViewId = ViewId("designers.tank");
 pub(super) const TANK_FILE: &str = "tank_designer.json";
 pub(super) const TANK_ROOT: &str = "tank_designer_view";
 
-pub struct TankDesignerView;
+pub struct TankDesignerView {
+    interaction: ComponentInteraction,
+}
 impl TankDesignerView {
     pub fn new() -> Self {
-        TankDesignerView
+        TankDesignerView {
+            interaction: ComponentInteraction::default(),
+        }
     }
 }
 impl Default for TankDesignerView {
@@ -696,12 +859,30 @@ impl ViewInstance for TankDesignerView {
     fn policy(&self) -> HostPolicy {
         HostPolicy::window(ZBand::Panel)
     }
+    fn rebind(&mut self, ctx: &RebindContext) {
+        self.interaction.rebind(
+            ctx.snapshot,
+            ctx.country,
+            Family::LandVehicle,
+            screen_rect(ctx.screen),
+        );
+    }
+    fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
+        self.interaction.on_input(ev)
+    }
     fn bind(&self, ctx: &BindContext) -> BoundView {
         let mut fidelity = FidelityReport::default();
         let file = resolve_gui(ctx, TANK_FILE);
-        let model = build_component(ctx, Family::LandVehicle, &[], &mut fidelity);
+        let model = build_component(
+            ctx,
+            Family::LandVehicle,
+            &[],
+            self.interaction.selected_slot.as_deref(),
+            self.interaction.hovered_slot.as_deref(),
+            &mut fidelity,
+        );
         let roots = build_root(ctx, &file, TANK_ROOT);
-        let area = overlay_area(&roots, ctx.screen);
+        let area = component_overlay_area(ctx.screen, Family::LandVehicle);
         finish(TANK_VIEW_ID, self.policy(), roots, model, area, fidelity)
     }
     crate::impl_view_any!();
@@ -738,10 +919,14 @@ const PLANE_VIEW_ID: ViewId = ViewId("designers.plane");
 pub(super) const PLANE_FILE: &str = "plane_designer.json";
 pub(super) const PLANE_ROOT: &str = "plane_designer_view";
 
-pub struct PlaneDesignerView;
+pub struct PlaneDesignerView {
+    interaction: ComponentInteraction,
+}
 impl PlaneDesignerView {
     pub fn new() -> Self {
-        PlaneDesignerView
+        PlaneDesignerView {
+            interaction: ComponentInteraction::default(),
+        }
     }
 }
 impl Default for PlaneDesignerView {
@@ -757,13 +942,31 @@ impl ViewInstance for PlaneDesignerView {
     fn policy(&self) -> HostPolicy {
         HostPolicy::window(ZBand::Panel)
     }
+    fn rebind(&mut self, ctx: &RebindContext) {
+        self.interaction.rebind(
+            ctx.snapshot,
+            ctx.country,
+            Family::Plane,
+            screen_rect(ctx.screen),
+        );
+    }
+    fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
+        self.interaction.on_input(ev)
+    }
     fn bind(&self, ctx: &BindContext) -> BoundView {
         let mut fidelity = FidelityReport::default();
         let file = resolve_gui(ctx, PLANE_FILE);
         // plane adds a 4th "production adjusters" computed grid → badged unavailable.
-        let model = build_component(ctx, Family::Plane, &["Production Adjusters"], &mut fidelity);
+        let model = build_component(
+            ctx,
+            Family::Plane,
+            &["Production Adjusters"],
+            self.interaction.selected_slot.as_deref(),
+            self.interaction.hovered_slot.as_deref(),
+            &mut fidelity,
+        );
         let roots = build_root(ctx, &file, PLANE_ROOT);
-        let area = overlay_area(&roots, ctx.screen);
+        let area = component_overlay_area(ctx.screen, Family::Plane);
         finish(PLANE_VIEW_ID, self.policy(), roots, model, area, fidelity)
     }
     crate::impl_view_any!();
@@ -1160,10 +1363,14 @@ const EQUIP_VIEW_ID: ViewId = ViewId("designers.equipment");
 pub(super) const EQUIP_FILE: &str = "equipment_designer.json";
 pub(super) const EQUIP_ROOT: &str = "countryequipmentdesignerview";
 
-pub struct EquipmentDesignerView;
+pub struct EquipmentDesignerView {
+    interaction: ComponentInteraction,
+}
 impl EquipmentDesignerView {
     pub fn new() -> Self {
-        EquipmentDesignerView
+        EquipmentDesignerView {
+            interaction: ComponentInteraction::default(),
+        }
     }
 }
 impl Default for EquipmentDesignerView {
@@ -1179,6 +1386,17 @@ impl ViewInstance for EquipmentDesignerView {
     fn policy(&self) -> HostPolicy {
         HostPolicy::window(ZBand::Panel)
     }
+    fn rebind(&mut self, ctx: &RebindContext) {
+        self.interaction.rebind(
+            ctx.snapshot,
+            ctx.country,
+            Family::Ship,
+            screen_rect(ctx.screen),
+        );
+    }
+    fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
+        self.interaction.on_input(ev)
+    }
     fn bind(&self, ctx: &BindContext) -> BoundView {
         let mut fidelity = FidelityReport::default();
         let file = resolve_gui(ctx, EQUIP_FILE);
@@ -1187,10 +1405,12 @@ impl ViewInstance for EquipmentDesignerView {
             ctx,
             Family::Ship,
             &["Naval Dominance", "Production Adjusters"],
+            self.interaction.selected_slot.as_deref(),
+            self.interaction.hovered_slot.as_deref(),
             &mut fidelity,
         );
         let roots = build_root(ctx, &file, EQUIP_ROOT);
-        let area = overlay_area(&roots, ctx.screen);
+        let area = component_overlay_area(ctx.screen, Family::Ship);
         finish(EQUIP_VIEW_ID, self.policy(), roots, model, area, fidelity)
     }
     crate::impl_view_any!();
@@ -1357,9 +1577,6 @@ register_template!(TemplateDescriptor {
 /// Linkage anchor — the binary calls a per-cluster `link()` to force the `inventory`
 /// submissions into the final binary (symmetric with the other clusters).
 pub fn link() {}
-
-// keep the imported tint constants live for a future stat-row colouring.
-const _KEEP_TINTS: ([f32; 4], [f32; 4]) = (TEXT_TINT, DIM_TINT);
 
 #[cfg(test)]
 mod tests;

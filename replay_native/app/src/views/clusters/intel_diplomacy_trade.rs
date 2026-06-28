@@ -94,6 +94,7 @@ use crate::host::view::{
     ViewCommand, ViewInstance, ZBand,
 };
 use crate::{register_template, register_view};
+use std::cell::RefCell;
 
 // =====================================================================================
 // Shared no-fabrication helpers (read via Captured, render via DisplayAtom — never a 0).
@@ -450,32 +451,11 @@ fn render_rows(
     template_name: &str,
     rows: &[DataRow],
 ) {
-    let viewport = match find_rect(panel, grid_name) {
-        Some(r) => r,
-        None => return,
-    };
-    let template = match find_template(file, template_name) {
-        Some(t) => t,
-        None => return,
-    };
-    if rows.is_empty() {
-        return;
-    }
     let manifest = &fd.stage.manifest;
-    let spec = GridSpec::from_gridbox(&stub_grid(grid_name, viewport), &template, GUTTER);
-    let content = ManifestContent {
-        manifest,
-        measure: |_t, _f| None,
+    let inst = match instantiate_rows(panel, file, grid_name, template_name, rows, manifest) {
+        Some(inst) => inst,
+        None => return,
     };
-    let mut inst = gridbox::instantiate(&template, rows.len(), viewport, &spec, 0.0, &content);
-    for (i, row) in inst.rows.iter_mut().enumerate() {
-        for cell in &rows[i].cells {
-            bind::apply::set_element_text(row, &cell.element, cell.atom.as_str());
-        }
-        for sprite in &rows[i].sprites {
-            apply_sprite_cell(row, sprite);
-        }
-    }
     let mut stats = DrawStats::default();
     let textures: &mut TextureCache = fd.textures;
     let fonts: &mut FontCache = fd.fonts;
@@ -496,6 +476,50 @@ fn render_rows(
             fd.renderer
                 .draw_sprite(t, sb.thumb.x, sb.thumb.y, sb.thumb.w, sb.thumb.h);
         }
+    }
+}
+
+fn instantiate_rows(
+    panel: &[Node],
+    file: &GuiFile,
+    grid_name: &str,
+    template_name: &str,
+    rows: &[DataRow],
+    manifest: &assets::SpriteManifest,
+) -> Option<gridbox::GridInstances> {
+    let viewport = find_rect(panel, grid_name)?;
+    let template = find_template(file, template_name)?;
+    if rows.is_empty() {
+        return None;
+    }
+    let spec = GridSpec::from_gridbox(&stub_grid(grid_name, viewport), &template, GUTTER);
+    let content = ManifestContent {
+        manifest,
+        measure: |_t, _f| None,
+    };
+    let mut inst = gridbox::instantiate(&template, rows.len(), viewport, &spec, 0.0, &content);
+    for (i, row) in inst.rows.iter_mut().enumerate() {
+        for cell in &rows[i].cells {
+            bind::apply::set_element_text(row, &cell.element, cell.atom.as_str());
+        }
+        for sprite in &rows[i].sprites {
+            apply_sprite_cell(row, sprite);
+        }
+    }
+    Some(inst)
+}
+
+fn instantiated_row_roots(
+    panel: &[Node],
+    file: &GuiFile,
+    grid_name: &str,
+    template_name: &str,
+    rows: &[DataRow],
+    manifest: &assets::SpriteManifest,
+) -> Vec<Node> {
+    match instantiate_rows(panel, file, grid_name, template_name, rows, manifest) {
+        Some(inst) => inst.rows,
+        None => Vec::new(),
     }
 }
 
@@ -3021,17 +3045,32 @@ const INSIGNIA_ROOT: &str = "insignia_selection_window";
 
 pub struct InsigniaSelectionView {
     selected: Option<FormationSelection>,
+    disabled_mutation_targets: RefCell<Vec<Rect>>,
+    disabled_mutation_armed: bool,
 }
 
 impl InsigniaSelectionView {
     pub fn new() -> InsigniaSelectionView {
-        InsigniaSelectionView { selected: None }
+        InsigniaSelectionView {
+            selected: None,
+            disabled_mutation_targets: RefCell::new(Vec::new()),
+            disabled_mutation_armed: false,
+        }
     }
 
     fn with_selection(selected: FormationSelection) -> InsigniaSelectionView {
         InsigniaSelectionView {
             selected: Some(selected),
+            disabled_mutation_targets: RefCell::new(Vec::new()),
+            disabled_mutation_armed: false,
         }
+    }
+
+    fn disabled_mutation_hit(&self, x: f32, y: f32) -> bool {
+        self.disabled_mutation_targets
+            .borrow()
+            .iter()
+            .any(|rect| rect.contains(x, y))
     }
 }
 
@@ -3079,6 +3118,32 @@ impl ViewInstance for InsigniaSelectionView {
     }
     fn policy(&self) -> HostPolicy {
         HostPolicy::window(ZBand::Panel)
+    }
+    fn rebind(&mut self, _ctx: &RebindContext) {
+        self.disabled_mutation_armed = false;
+    }
+    fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
+        match *ev {
+            ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            } if self.selected.is_some() && self.disabled_mutation_hit(x, y) => {
+                self.disabled_mutation_armed = true;
+                disabled_mutation_input_consumed()
+            }
+            ViewInput::PointerUp {
+                x,
+                y,
+                button: PointerButton::Left,
+            } if self.disabled_mutation_armed
+                || (self.selected.is_some() && self.disabled_mutation_hit(x, y)) =>
+            {
+                self.disabled_mutation_armed = false;
+                disabled_mutation_input_consumed()
+            }
+            _ => InputOutcome::ignored(),
+        }
     }
     fn bind(&self, ctx: &BindContext) -> BoundView {
         let mut fidelity = FidelityReport::default();
@@ -3133,6 +3198,18 @@ impl ViewInstance for InsigniaSelectionView {
         gaps.badge_gap(&mut fidelity, "color_picker");
 
         let roots = build_root_with_sprites(ctx, &file, INSIGNIA_ROOT, &summary, &summary_sprites);
+        let mut hit_roots = roots.clone();
+        let row_roots = instantiated_row_roots(
+            &roots,
+            &file,
+            "item_grid",
+            "insignia_list_entry",
+            &catalog_rows,
+            &ctx.stage.manifest,
+        );
+        *self.disabled_mutation_targets.borrow_mut() =
+            collect_insignia_disabled_mutation_targets(&row_roots);
+        hit_roots.extend(row_roots);
         let drawable = InsigniaSelectionDrawable {
             roots: roots.clone(),
             file,
@@ -3145,7 +3222,7 @@ impl ViewInstance for InsigniaSelectionView {
             instance: InstanceId(0),
             view_id: INSIGNIA_VIEW_ID,
             policy: self.policy(),
-            hit: HitModel::from_roots(roots),
+            hit: HitModel::from_roots(hit_roots),
             drawable: Box::new(drawable),
             fidelity,
             commands: Vec::<ViewCommand>::new(),
@@ -3153,6 +3230,21 @@ impl ViewInstance for InsigniaSelectionView {
     }
 
     crate::impl_view_any!();
+}
+
+fn collect_insignia_disabled_mutation_targets(row_roots: &[Node]) -> Vec<Rect> {
+    row_roots
+        .iter()
+        .filter_map(|row| find_rect(std::slice::from_ref(row), "button"))
+        .collect()
+}
+
+fn disabled_mutation_input_consumed() -> InputOutcome {
+    InputOutcome {
+        consumed: true,
+        commands: Vec::new(),
+        needs_redraw: false,
+    }
 }
 
 fn open_insignia(arg: Option<i64>) -> Box<dyn ViewInstance> {
@@ -3770,8 +3862,8 @@ mod tests {
                   "text":{"text":"GROUP","font":"hoi_16mbs"}},
                  {"type":"iconType","name":"group_icon","position":{"x":8,"y":36},
                   "size":{"width":32,"height":32},"sprite":"GFX_theatre_army_shield"},
-                 {"type":"containerWindowType","name":"item_grid","position":{"x":8,"y":80},
-                  "size":{"width":180,"height":120}}
+                 {"type":"containerWindowType","name":"item_grid","position":{"x":208,"y":80},
+                  "size":{"width":140,"height":120}}
                ]},
               {"type":"buttonType","name":"insignia_list_entry","position":{"x":0,"y":0},
                "size":{"width":40,"height":40},"sprite":"GFX_button",
@@ -4580,6 +4672,90 @@ mod tests {
             d.matches("button:sprite=GFX_theatre_army_shield#").count(),
             4,
             "catalog row digest must contain one row per army shield frame, got:\n{d}"
+        );
+    }
+
+    #[test]
+    fn insignia_catalog_button_click_is_replay_disabled_noop() {
+        let stage = stage_with_gui_and_manifest(
+            INSIGNIA_FILE,
+            insignia_test_gui(),
+            insignia_test_manifest(),
+        );
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "order_of_battle": {
+                "armies": [
+                    {"id": 11, "owner": "GER", "name": "First Army", "icon": 2}
+                ],
+                "army_groups": []
+            }
+        }))
+        .unwrap();
+        let binding = ctx(&stage, &snap);
+        let mut view = InsigniaSelectionView::with_selection(FormationSelection::Army(11));
+        view.rebind(&RebindContext {
+            snapshot: &snap,
+            country: "GER",
+            screen: (1600, 900),
+            refit: true,
+        });
+
+        let before_bv = view.bind(&binding);
+        assert!(before_bv.commands.is_empty());
+        let before = bound_digest(&before_bv);
+        assert!(
+            before.contains("catalog_sect=present"),
+            "test setup must expose the insignia catalog rows, got:\n{before}"
+        );
+        assert_eq!(
+            before
+                .matches("button:sprite=GFX_theatre_army_shield#")
+                .count(),
+            4,
+            "army shield catalog must expose four derived button rows, got:\n{before}"
+        );
+
+        let button = find_rect(&before_bv.hit.roots, "button")
+            .expect("instantiated insignia_list_entry exposes the real button leaf");
+        let (x, y) = (button.x + button.w * 0.5, button.y + button.h * 0.5);
+        let leaf = before_bv
+            .hit
+            .hit_test(x, y)
+            .and_then(|hit| hit.leaf().map(str::to_string));
+        assert_eq!(
+            leaf.as_deref(),
+            Some("button"),
+            "disabled mutation proof must click the real catalog button leaf"
+        );
+
+        let down = view.on_input(&ViewInput::PointerDown {
+            x,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(down.consumed);
+        assert!(
+            !down.needs_redraw,
+            "insignia catalog pointer-down is a disabled mutation no-op"
+        );
+        assert!(down.commands.is_empty());
+
+        let up = view.on_input(&ViewInput::PointerUp {
+            x,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(up.consumed);
+        assert!(
+            !up.needs_redraw,
+            "insignia catalog pointer-up is also a disabled mutation no-op"
+        );
+        assert!(up.commands.is_empty());
+
+        let after = bound_digest(&view.bind(&binding));
+        assert_eq!(
+            before, after,
+            "disabled insignia catalog clicks must not mutate selected formation or digest"
         );
     }
 

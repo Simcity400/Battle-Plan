@@ -112,6 +112,14 @@ const TOPBAR_INERT_TARGETS: &[&str] = &[
     "button_speedstep4",
     "button_speedstep5",
     "button_speedup",
+    "reopen_ingame_lobby",
+    "menu_button",
+    "help_button",
+    "achievements_button",
+    "playlist_button",
+    "music_pause_button",
+    "music_next_button",
+    "musicplayer_button",
 ];
 
 pub fn topbar_drill_targets_from_roots(roots: &[Node]) -> Vec<TopbarDrillTarget> {
@@ -474,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn topbar_time_controls_are_replay_disabled_noops() {
+    fn topbar_inert_controls_are_replay_disabled_noops() {
         let stage = stage_with_topbar(synthetic_topbar_gui(), HashMap::new());
         let snap = snap();
         let mut view = TopbarView::new("GER");
@@ -483,7 +491,7 @@ mod tests {
         assert_eq!(
             inert_targets.len(),
             TOPBAR_INERT_TARGETS.len(),
-            "synthetic topbar should expose every inert time-control target"
+            "synthetic topbar should expose every registered inert target"
         );
         view.set_drill_targets(topbar_drill_targets_from_roots(&bv.hit.roots));
         view.set_inert_targets(inert_targets.clone());
@@ -581,6 +589,14 @@ mod tests {
             "GFX_zoom_out",
             "GFX_zoom_in",
             "GFX_speed_step",
+            "GFX_reopen_lobby",
+            "GFX_menu_button",
+            "GFX_help_button",
+            "GFX_achievements_button",
+            "GFX_playlist_button",
+            "GFX_music_pause_button",
+            "GFX_music_next_button",
+            "GFX_musicplayer_button",
         ]
         .into_iter()
         .map(|name| (name.to_string(), sprite_entry_sized(name, 40, 40)))
@@ -612,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn real_topbar_gui_exposes_registered_inert_time_controls() {
+    fn real_topbar_gui_exposes_registered_inert_controls() {
         let Some(gui) = load_real_topbar() else {
             return;
         };
@@ -631,7 +647,7 @@ mod tests {
             .collect();
         assert!(
             missing.is_empty(),
-            "real extracted topbar.json lost inert time-control target rects: {missing:?}"
+            "real extracted topbar.json lost registered inert target rects: {missing:?}"
         );
     }
 }
