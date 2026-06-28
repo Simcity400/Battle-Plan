@@ -61,6 +61,7 @@ def resolve_country_object_bridge_preflight(
     min_rows: int = MIN_USABLE_COUNTRY_OBJECT_ROWS,
     scan_range: Optional[tuple[int, int]] = None,
     cache_path: Optional[Path] = None,
+    object_cache_path: Optional[Path] = None,
     allow_cold_scan: bool = False,
 ) -> CountryObjectBridgePreflight:
     """Resolve live country-object rows for one recorder session.
@@ -75,19 +76,25 @@ def resolve_country_object_bridge_preflight(
     try:
         import winmem  # type: ignore
         import locate  # type: ignore
-        from live_layers import country_index_bridge as cib  # type: ignore
         from live_layers import tag_table as tt  # type: ignore
     except Exception as exc:
         return _preflight_error("import_failed", exc)
 
     try:
+        if object_cache_path is None and cache_path is not None:
+            object_cache_path = Path(cache_path).with_name("country_objects.json")
         with winmem.Process(int(pid), "hoi4.exe") as proc:
             identity = _process_identity.identify(proc)
+            object_cache_diag: Dict[str, Any] = {
+                "enabled": bool(object_cache_path),
+                "status": "not_requested" if object_cache_path is None else "miss",
+            }
             cache_diag: Dict[str, Any] = {
                 "enabled": bool(cache_path),
                 "status": "not_requested" if cache_path is None else "miss",
                 "tag_table_source": "country_database_root",
                 "allow_cold_scan": bool(allow_cold_scan),
+                "object_cache": object_cache_diag,
             }
             table = tag_table_from_country_database_root(proc, tt)
             tag_table_source = "country_database_root"
@@ -130,12 +137,42 @@ def resolve_country_object_bridge_preflight(
                                 cache=cache_diag,
                     )
                     cache_diag["status"] = "stale"
+            if object_cache_path is not None:
+                object_cached = _load_country_object_preflight_cache(
+                    object_cache_path,
+                    identity,
+                )
+                if object_cached is not None:
+                    object_cache_diag["status"] = "loaded"
+                    rows = country_object_bridge_rows_from_object_cache(
+                        proc,
+                        table,
+                        object_cached,
+                        min_rows=int(min_rows),
+                    )
+                    if len(rows) >= int(min_rows):
+                        object_cache_diag["status"] = "hit"
+                        return _encoded_preflight(
+                            "resolved",
+                            rows,
+                            source="country_object_cache",
+                            cache=cache_diag,
+                        )
+                    object_cache_diag["status"] = "stale"
             root_rows = country_object_bridge_rows_from_country_database_root(
                 proc,
                 table,
                 min_rows=int(min_rows),
             )
             if len(root_rows) >= int(min_rows):
+                if object_cache_path is not None:
+                    object_cache_diag["status"] = (
+                        "stored" if _write_country_object_preflight_cache(
+                            object_cache_path,
+                            identity,
+                            root_rows,
+                        ) else "store_failed"
+                    )
                 if not allow_cold_scan:
                     return _encoded_preflight(
                         "resolved",
@@ -175,6 +212,27 @@ def resolve_country_object_bridge_preflight(
                     source="country_database_root",
                     cache=cache_diag,
                 )
+            vtable_rows = country_object_bridge_rows_from_vtable_scan(
+                proc,
+                table,
+                min_rows=int(min_rows),
+                scan_range=scan_range,
+            )
+            if len(vtable_rows) >= int(min_rows):
+                if object_cache_path is not None:
+                    object_cache_diag["status"] = (
+                        "stored" if _write_country_object_preflight_cache(
+                            object_cache_path,
+                            identity,
+                            vtable_rows,
+                        ) else "store_failed"
+                    )
+                return _encoded_preflight(
+                    "resolved",
+                    vtable_rows,
+                    source="country_object_vtable_scan",
+                    cache=cache_diag,
+                )
             located = locate.locate(proc, scan_range=scan_range)
             if located is not None:
                 rows = country_object_bridge_rows_from_country_array(
@@ -191,55 +249,12 @@ def resolve_country_object_bridge_preflight(
                         source="live_country_array",
                         cache=cache_diag,
                     )
-            bridge = cib.CountryIndexBridge.resolve(proc, tbl=table, scan_range=scan_range)
-            if bridge is None:
-                if len(root_rows) >= int(min_rows):
-                    return _encoded_preflight(
-                        "resolved",
-                        root_rows,
-                        source="country_database_root",
-                        cache=cache_diag,
-                    )
-                vtable_rows = country_object_bridge_rows_from_vtable_scan(
-                    proc,
-                    table,
-                    min_rows=int(min_rows),
-                    scan_range=scan_range,
-                )
-                if len(vtable_rows) >= int(min_rows):
-                    located = locate_country_array_from_object_rows(
-                        proc,
-                        table,
-                        vtable_rows,
-                        min_rows=int(min_rows),
-                        scan_range=scan_range,
-                    )
-                    if located is not None:
-                        record_rows = country_object_bridge_rows_from_country_array(
-                            proc,
-                            table,
-                            located,
-                        )
-                        if len(record_rows) >= int(min_rows):
-                            return _encoded_preflight(
-                                "resolved",
-                                record_rows,
-                                source="country_object_vtable_record_scan",
-                                cache=cache_diag,
-                            )
-                    return _encoded_preflight(
-                        "resolved",
-                        vtable_rows,
-                        source="country_object_vtable_scan",
-                        cache=cache_diag,
-                    )
-                return _preflight_status(
-                    "bridge_unavailable",
-                    rows if located is not None else [],
-                    source="live_country_array",
-                    cache=cache_diag,
-                )
-            rows = country_object_bridge_rows_from_bridge(bridge)
+            return _preflight_status(
+                "bridge_unavailable",
+                rows if located is not None else [],
+                source="live_country_array",
+                cache=cache_diag,
+            )
     except Exception as exc:
         return _preflight_error("resolve_failed", exc)
 
@@ -277,6 +292,49 @@ def country_object_bridge_rows_from_country_array(
             "running_index": i,
         }
     return [rows_by_tag_id[k] for k in sorted(rows_by_tag_id)]
+
+
+def country_object_bridge_rows_from_object_cache(
+    proc: Any,
+    table: Any,
+    cache: Dict[str, Any],
+    *,
+    min_rows: int = MIN_USABLE_COUNTRY_OBJECT_ROWS,
+) -> List[Dict[str, Any]]:
+    module_base = int(getattr(proc, "module_base", 0) or 0)
+    if module_base <= 0:
+        return []
+    raw_rows = cache.get("rows")
+    if not isinstance(raw_rows, list) or len(raw_rows) < int(min_rows):
+        return []
+    country_vtable = module_base + COUNTRY_VTABLE_RVA
+    rows_by_tag_id: Dict[int, Dict[str, Any]] = {}
+    for item in raw_rows:
+        if not isinstance(item, dict):
+            return []
+        try:
+            expected_tag_id = int(item["tag_db_id"])
+            expected_tag = str(item["tag"])
+            object_ptr = int(item["object_ptr"])
+        except (KeyError, TypeError, ValueError):
+            return []
+        if expected_tag_id <= 0 or object_ptr <= 0:
+            return []
+        row = country_object_bridge_row_from_object(
+            proc,
+            table,
+            object_ptr,
+            country_vtable,
+        )
+        if row is None:
+            return []
+        if int(row["tag_db_id"]) != expected_tag_id or str(row["tag"]) != expected_tag:
+            return []
+        if expected_tag_id in rows_by_tag_id:
+            return []
+        rows_by_tag_id[expected_tag_id] = row
+    rows = [rows_by_tag_id[k] for k in sorted(rows_by_tag_id)]
+    return rows if len(rows) >= int(min_rows) else []
 
 
 def tag_table_from_country_database_root(proc: Any, tag_table_module: Any) -> Optional[Any]:
@@ -759,6 +817,12 @@ def _diagnostics(
             diagnostics["cache"]["tag_table_source"] = str(cache["tag_table_source"])
         if "allow_cold_scan" in cache:
             diagnostics["allow_cold_scan"] = bool(cache.get("allow_cold_scan"))
+        object_cache = cache.get("object_cache")
+        if isinstance(object_cache, dict):
+            diagnostics["object_cache"] = {
+                "enabled": bool(object_cache.get("enabled")),
+                "status": str(object_cache.get("status") or "unknown"),
+            }
     return diagnostics
 
 
@@ -792,6 +856,33 @@ def _load_preflight_cache(
     return payload
 
 
+def _load_country_object_preflight_cache(
+    cache_path: Path,
+    identity: _process_identity.ProcessIdentity,
+) -> Optional[Dict[str, Any]]:
+    try:
+        payload = json.loads(Path(cache_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("type") != "country_object_bridge_preflight_cache_v1":
+        return None
+    if int(payload.get("pid", -1)) != int(identity.pid):
+        return None
+    cached_ctime = payload.get("create_time_100ns")
+    if identity.create_time_100ns is not None and cached_ctime != identity.create_time_100ns:
+        return None
+    if identity.exe_sha256 and payload.get("exe_sha256") != identity.exe_sha256:
+        return None
+    if identity.module_base and payload.get("module_base") != identity.module_base:
+        return None
+    rows = payload.get("rows")
+    if not isinstance(rows, list) or len(rows) < MIN_USABLE_COUNTRY_OBJECT_ROWS:
+        return None
+    return payload
+
+
 def _write_preflight_cache(
     cache_path: Path,
     identity: _process_identity.ProcessIdentity,
@@ -808,6 +899,49 @@ def _write_preflight_cache(
         "rec0": int(rec0),
         "begin_field": int(begin_field or rec0),
         "count": int(count),
+    }
+    try:
+        path = Path(cache_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.tmp")
+        tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        tmp.replace(path)
+        return True
+    except OSError:
+        return False
+
+
+def _write_country_object_preflight_cache(
+    cache_path: Path,
+    identity: _process_identity.ProcessIdentity,
+    rows: Iterable[Dict[str, Any]],
+) -> bool:
+    payload_rows = []
+    for row in rows:
+        try:
+            tag_db_id = int(row["tag_db_id"])
+            tag = str(row["tag"])
+            object_ptr = int(row["object_ptr"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        if tag_db_id <= 0 or object_ptr <= 0 or not tag:
+            return False
+        payload_rows.append({
+            "tag_db_id": tag_db_id,
+            "tag": tag,
+            "object_ptr": object_ptr,
+        })
+    if len(payload_rows) < MIN_USABLE_COUNTRY_OBJECT_ROWS:
+        return False
+    payload = {
+        "type": "country_object_bridge_preflight_cache_v1",
+        "created_utc": datetime.now(timezone.utc).isoformat(),
+        "pid": int(identity.pid),
+        "create_time_100ns": identity.create_time_100ns,
+        "exe_sha256": identity.exe_sha256,
+        "module_base": identity.module_base,
+        "row_count": len(payload_rows),
+        "rows": payload_rows,
     }
     try:
         path = Path(cache_path)

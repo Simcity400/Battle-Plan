@@ -13,12 +13,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from live_capture import collector_country_bridge as ccb  # noqa: E402
 from live_capture.collector_country_bridge import (  # noqa: E402
     _encoded_preflight,
+    _load_country_object_preflight_cache,
     _load_preflight_cache,
+    _write_country_object_preflight_cache,
     _write_preflight_cache,
     country_object_bridge_rows_from_country_database_root,
     country_object_bridge_rows_from_vtable_scan,
     country_object_bridge_rows_from_bridge,
     country_object_bridge_rows_from_country_array,
+    country_object_bridge_rows_from_object_cache,
     locate_country_array_from_object_rows,
     resolve_country_object_bridge_preflight,
     tag_table_from_country_database_root,
@@ -205,12 +208,17 @@ class FakeTagTableModule:
 class FakePreflightProc(FakeMemoryProc):
     def __init__(self):
         super().__init__()
+        self.blob.extend(b"\x00" * 0x8000)
         self.table_base = 0xB000
         self.tags = ["---", "GER", "ENG", "SOV", "SWE", "FRA", "LUX", "BEL",
                      "HOL", "CZE", "POL"] + [f"T{i:02d}" for i in range(40)]
         self._write_u64(self.country_database, self.table_base)
         self._write_u32(self.country_database + 8, len(self.tags) + 5)
         self._write_u32(self.country_database + 12, len(self.tags))
+        for tag_db_id in range(3, 51):
+            object_ptr = 0xD000 + (tag_db_id - 3) * 0x100
+            self._write_country_object(object_ptr, tag_db_id, f"Country {tag_db_id}")
+            self._write_u64(self.object_array + tag_db_id * 8, object_ptr)
 
 
 @contextmanager
@@ -421,6 +429,43 @@ class TestCollectorCountryBridge(unittest.TestCase):
             self.assertEqual(loaded["rec0"], 0x1000)
             self.assertIsNone(_load_preflight_cache(path, other_identity))
 
+    def test_preflight_object_cache_loads_only_matching_process_identity(self):
+        proc = FakePreflightProc()
+        identity = SimpleNamespace(
+            pid=111,
+            create_time_100ns=222,
+            exe_sha256="a" * 64,
+            module_base=proc.module_base,
+        )
+        other_identity = SimpleNamespace(
+            pid=111,
+            create_time_100ns=333,
+            exe_sha256="a" * 64,
+            module_base=proc.module_base,
+        )
+        table = tag_table_from_country_database_root(proc, FakeTagTableModule)
+        rows = country_object_bridge_rows_from_country_database_root(
+            proc,
+            table,
+            min_rows=40,
+        )
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "country_objects.json"
+
+            self.assertTrue(_write_country_object_preflight_cache(path, identity, rows))
+            loaded = _load_country_object_preflight_cache(path, identity)
+
+            self.assertIsNotNone(loaded)
+            self.assertEqual(loaded["row_count"], len(rows))
+            self.assertIsNone(_load_country_object_preflight_cache(path, other_identity))
+            validated = country_object_bridge_rows_from_object_cache(
+                proc,
+                table,
+                loaded,
+                min_rows=40,
+            )
+            self.assertEqual(len(validated), len(rows))
+
     def test_preflight_cache_hit_is_bounded(self):
         proc = FakePreflightProc()
         with tempfile.TemporaryDirectory() as td:
@@ -478,71 +523,109 @@ class TestCollectorCountryBridge(unittest.TestCase):
                 self.assertTrue(
                     _write_preflight_cache(path, identity, (proc.rec0, proc.rec0, 227))
                 )
-                result = resolve_country_object_bridge_preflight(
-                    123,
-                    min_rows=3,
-                    cache_path=path,
+                old_root = ccb.country_object_bridge_rows_from_country_database_root
+                ccb.country_object_bridge_rows_from_country_database_root = (
+                    lambda *_args, **_kwargs: []
                 )
+                try:
+                    result = resolve_country_object_bridge_preflight(
+                        123,
+                        min_rows=3,
+                        cache_path=path,
+                    )
+                finally:
+                    ccb.country_object_bridge_rows_from_country_database_root = old_root
 
         self.assertFalse(result.usable)
         self.assertEqual(result.status, "cold_scan_disabled")
         self.assertEqual(result.row_count, 0)
         self.assertEqual(result.diagnostics["cache"]["status"], "stale")
 
-    def test_preflight_cold_scan_is_explicit(self):
+    def test_preflight_cold_scan_uses_direct_vtable_scan(self):
         proc = FakePreflightProc()
         scan_hits = []
 
         def fake_scan(_proc, needle, *, scan_range=None):
             scan_hits.append((needle, scan_range))
-            if needle == proc.ger_obj:
-                yield proc.rec0 + 0x08
-            elif needle == proc.eng_obj:
-                yield proc.rec0 + 0x120 + 0x08
+            if needle == proc.country_vtable:
+                for tag_db_id in range(1, 51):
+                    yield int(proc.u64(proc.object_array + tag_db_id * 8))
 
         with patched_preflight_environment(proc):
             old_scan = ccb._scan_aligned_qword_hits
-            ccb._scan_aligned_qword_hits = fake_scan
-            try:
-                result = resolve_country_object_bridge_preflight(
-                    123,
-                    min_rows=2,
-                    allow_cold_scan=True,
-                )
-            finally:
-                ccb._scan_aligned_qword_hits = old_scan
-
-        self.assertTrue(scan_hits)
-        self.assertTrue(result.usable)
-        self.assertEqual(result.diagnostics["source"], "country_database_root_record_scan")
-        self.assertTrue(result.diagnostics["allow_cold_scan"])
-        self.assertEqual(result.record_encoded, "1:0xA000;2:0xA120")
-
-    def test_preflight_allow_cold_scan_can_use_locate_after_root_miss(self):
-        proc = FakePreflightProc()
-        locate_calls = []
-
-        def fake_locate(_proc, *, scan_range=None):
-            locate_calls.append(scan_range)
-            return proc.rec0, proc.rec0, 24
-
-        with patched_preflight_environment(proc, locate=fake_locate):
             old_root = ccb.country_object_bridge_rows_from_country_database_root
+            ccb._scan_aligned_qword_hits = fake_scan
             ccb.country_object_bridge_rows_from_country_database_root = (
                 lambda *_args, **_kwargs: []
             )
             try:
                 result = resolve_country_object_bridge_preflight(
                     123,
-                    min_rows=2,
+                    min_rows=40,
                     allow_cold_scan=True,
                 )
             finally:
+                ccb._scan_aligned_qword_hits = old_scan
                 ccb.country_object_bridge_rows_from_country_database_root = old_root
 
-        self.assertEqual(locate_calls, [None])
+        self.assertTrue(scan_hits)
         self.assertTrue(result.usable)
-        self.assertEqual(result.diagnostics["source"], "live_country_array")
+        self.assertEqual(result.diagnostics["source"], "country_object_vtable_scan")
+        self.assertTrue(result.diagnostics["allow_cold_scan"])
+        self.assertIsNone(result.record_encoded)
+
+    def test_preflight_cold_scan_stores_object_cache_for_bounded_reuse(self):
+        proc = FakePreflightProc()
+        scan_hits = []
+
+        def fake_scan(_proc, needle, *, scan_range=None):
+            scan_hits.append((needle, scan_range))
+            if needle == proc.country_vtable:
+                for tag_db_id in range(1, 51):
+                    yield int(proc.u64(proc.object_array + tag_db_id * 8))
+
+        with tempfile.TemporaryDirectory() as td:
+            array_cache = Path(td) / "country_array.json"
+            object_cache = Path(td) / "country_objects.json"
+            with patched_preflight_environment(proc):
+                old_scan = ccb._scan_aligned_qword_hits
+                old_root = ccb.country_object_bridge_rows_from_country_database_root
+                ccb._scan_aligned_qword_hits = fake_scan
+                ccb.country_object_bridge_rows_from_country_database_root = (
+                    lambda *_args, **_kwargs: []
+                )
+                try:
+                    cold = resolve_country_object_bridge_preflight(
+                        123,
+                        min_rows=40,
+                        cache_path=array_cache,
+                        object_cache_path=object_cache,
+                        allow_cold_scan=True,
+                    )
+                finally:
+                    ccb._scan_aligned_qword_hits = old_scan
+                    ccb.country_object_bridge_rows_from_country_database_root = old_root
+
+            with patched_preflight_environment(proc):
+                old_scan = ccb._scan_aligned_qword_hits
+                ccb._scan_aligned_qword_hits = lambda *_args, **_kwargs: (
+                    _ for _ in ()
+                ).throw(AssertionError("unexpected warm scan"))
+                try:
+                    warm = resolve_country_object_bridge_preflight(
+                        123,
+                        min_rows=40,
+                        cache_path=array_cache,
+                        object_cache_path=object_cache,
+                    )
+                finally:
+                    ccb._scan_aligned_qword_hits = old_scan
+
+        self.assertTrue(cold.usable)
+        self.assertEqual(cold.diagnostics["object_cache"]["status"], "stored")
+        self.assertTrue(warm.usable)
+        self.assertEqual(warm.diagnostics["source"], "country_object_cache")
+        self.assertEqual(warm.diagnostics["object_cache"]["status"], "hit")
 
     def test_preflight_root_tag_table_unavailable_is_bounded(self):
         proc = SimpleNamespace(module_base=0)

@@ -130,6 +130,20 @@ Current recorder-facing bridge status:
   5 verified snapshots, and packaged byte-identically. On the current Portugal
   process the country preflight still reports `cold_scan_disabled` with zero
   root rows, so this fixes startup liveness but not country-scalar coverage yet.
+- Country object scalar coverage now has the same cold-bootstrap / warm-record
+  shape as state roots. An explicit `--allow-country-cold-scan` preflight uses
+  the direct country-object vtable scan once and stores
+  `_preflight_cache/country_objects.json`; normal recording then validates that
+  cache against PID, process creation time, exe hash, module base, country
+  vtable, object `tag_db_id`, and tag table before passing
+  `tag_db_id:country_object_ptr` rows to the DLL. Live proof:
+  `collector_speed5_country_scalars_cache_probe` used a warm object cache at
+  speed five with `allow_cold_scan=false`, advanced 8 game hours in about 10.6
+  wall seconds, skipped zero hours, stored 9 verified snapshots, emitted 354
+  country scalar rows plus scheduled fuel/production rows, preserved 467 raw
+  frames, and packaged byte-identically. This covers object-backed country
+  scalars; record-backed political power is still absent until the country
+  record bridge is replaced.
 - Raw clock deltas are now emitted as durable `domain_delta` frames from the
   DLL worker and merged into `collector_frames.jsonl` without polluting hourly
   snapshot domain claims. A speed-five smoke on 2026-06-28 advanced 4 game hours
@@ -879,20 +893,18 @@ country vtable and `tag_db_id`, validates each record pointer by checking that i
 still points at the same country object, then re-reads object-backed scalars plus
 record-backed political power per frame before emitting `country_scalars`.
 
-The preflight now has a same-process cache keyed by PID, process creation time,
-exe hash, and module base. Cache hits validate the cached country-array token
-with `locate.resolve_cached`, read the tag table directly from the
-`CountryDataBase` root, and avoid both heap scans. A cache miss can still return
-bounded `CountryDataBase` root object rows, which is enough for object-backed
-country scalars. Heap-wide record recovery and the older structural discovery
-stack are now opt-in through `allow_cold_scan` / `--allow-country-cold-scan`;
-normal recording startup fails fast with `cold_scan_disabled` when only cold
-discovery could continue.
+The preflight now has two same-process caches keyed by PID, process creation
+time, exe hash, and module base. `country_array.json` remains the country-record
+cache for record-backed political power when the array token is available.
+`country_objects.json` is the speed-five object bridge cache: warm recording
+validates each cached object pointer by vtable, object-owned `tag_db_id`, and
+tag-table match before emitting `tag_db_id:country_object_ptr` control rows.
+Heap-wide record recovery and cold object discovery are opt-in through
+`allow_cold_scan` / `--allow-country-cold-scan`; normal recording startup fails
+fast with `cold_scan_disabled` when only uncached cold discovery could continue.
 
 Remaining Phase 2 gaps:
 
-- Make the preflight bridge automatic for the normal session path after a
-  speed-five proof with row counts and zero skipped hours.
 - Replace cold preflight country-record discovery with a root-anchored or
   hook-derived bridge so record-backed fields can start fast on every supported
   build.

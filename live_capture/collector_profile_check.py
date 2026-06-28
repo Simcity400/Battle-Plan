@@ -97,13 +97,39 @@ def check_running_process(
     result["root_probe_quality_status"] = attach.pipe_frame.get("quality_status")
     result["root_probe_profile"] = root_probe.get("profile")
     result["root_probe_domains"] = root_probe.get("domains") or []
-    result["country_rows"] = len(attach.pipe_frame.get("countries") or {})
+    result.update(country_payload_summary(attach.pipe_frame, root_probe))
     result["transport_crc32"] = attach.pipe_frame.get("transport_crc32")
     result["transport_bytes"] = attach.pipe_frame.get("transport_bytes")
     result["sequence"] = attach.pipe_frame.get("sequence")
     result["problems"].extend(validate_root_probe_against_profile(root_probe, profile))
     result["ok"] = not result["problems"]
     return result
+
+
+def country_payload_summary(
+    frame: Dict[str, Any],
+    root_probe: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    countries = frame.get("countries") if isinstance(frame, dict) else None
+    countries = countries if isinstance(countries, dict) else {}
+    root_probe = root_probe if isinstance(root_probe, dict) else {}
+    domains = root_probe.get("domains")
+    domains = domains if isinstance(domains, list) else []
+    identity = root_probe.get("country_object_identity")
+    identity = identity if isinstance(identity, dict) else {}
+    scalar_rows = 0
+    for row in countries.values():
+        if not isinstance(row, dict):
+            continue
+        scalars = row.get("scalars")
+        if isinstance(scalars, dict) and any(value is not None for value in scalars.values()):
+            scalar_rows += 1
+    return {
+        "country_rows": len(countries),
+        "country_object_identity_status": identity.get("status"),
+        "country_scalar_domain_present": "country_scalars" in domains,
+        "country_scalar_rows": scalar_rows,
+    }
 
 
 def validate_root_probe_against_profile(

@@ -5,6 +5,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from live_capture.collector_profile_check import (  # noqa: E402
+    country_payload_summary,
     validate_profile,
     validate_root_probe_against_profile,
 )
@@ -56,6 +57,52 @@ class TestCollectorProfileCheck(unittest.TestCase):
         self.assertIn("daily_update_sentinel_not_verified", problems)
         self.assertIn("daily_update_address_mismatch", problems)
         self.assertIn("root_probe_missing_domains:country_identity", problems)
+
+    def test_country_payload_summary_distinguishes_identity_from_scalars(self):
+        root_probe = {
+            "domains": ["clock", "country_identity"],
+            "country_object_identity": {"status": "disabled_speed_safe"},
+        }
+        frame = {
+            "countries": {
+                "GER": {"present": True, "identity": {"tag_db_id": 1}},
+                "ENG": {"present": True, "identity": {"tag_db_id": 2}},
+            },
+        }
+
+        summary = country_payload_summary(frame, root_probe)
+
+        self.assertEqual(summary["country_rows"], 2)
+        self.assertEqual(summary["country_object_identity_status"], "disabled_speed_safe")
+        self.assertFalse(summary["country_scalar_domain_present"])
+        self.assertEqual(summary["country_scalar_rows"], 0)
+
+    def test_country_payload_summary_counts_scalar_rows(self):
+        root_probe = {
+            "domains": ["clock", "country_identity", "country_scalars"],
+            "country_object_identity": {"status": "control_bridge_verified"},
+        }
+        frame = {
+            "countries": {
+                "GER": {
+                    "present": True,
+                    "identity": {"tag_db_id": 1},
+                    "scalars": {"stability": 0.8, "political_power": None},
+                },
+                "ENG": {
+                    "present": True,
+                    "identity": {"tag_db_id": 2},
+                    "scalars": {"stability": None, "political_power": None},
+                },
+            },
+        }
+
+        summary = country_payload_summary(frame, root_probe)
+
+        self.assertEqual(summary["country_rows"], 2)
+        self.assertEqual(summary["country_object_identity_status"], "control_bridge_verified")
+        self.assertTrue(summary["country_scalar_domain_present"])
+        self.assertEqual(summary["country_scalar_rows"], 1)
 
 
 def _profile():
