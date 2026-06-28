@@ -100,12 +100,17 @@ pub fn compose_offscreen(
     }
 
     // composite the accumulated quads OVER the map, no clear, NO readback.
-    draw_tooltips(renderer, fonts, bound);
+    draw_tooltips(renderer, stage, textures, fonts, bound);
     renderer.flush_no_readback(None);
 }
 
-/// Draw the scrubber widget — byte-identical to the old `draw_scrubber`.
-fn draw_tooltips(renderer: &mut Renderer, fonts: &mut FontCache<'static>, bound: &[BoundView]) {
+fn draw_tooltips(
+    renderer: &mut Renderer,
+    stage: &Stage,
+    textures: &mut TextureCache<'static>,
+    fonts: &mut FontCache<'static>,
+    bound: &[BoundView],
+) {
     if !bound.iter().any(|bv| bv.tooltip_plan().is_some()) {
         return;
     }
@@ -122,7 +127,31 @@ fn draw_tooltips(renderer: &mut Renderer, fonts: &mut FontCache<'static>, bound:
     };
     for bv in bound {
         if let Some(tt) = bv.tooltip_plan() {
-            tt.draw(renderer, &assets);
+            let chrome = tt.chrome();
+            let drew_game_frame = if let Some(t) = textures.get(renderer, chrome.sprite) {
+                let border = stage
+                    .manifest
+                    .get(chrome.sprite)
+                    .and_then(|entry| entry.border_size)
+                    .map(|border| [border[0] as f32, border[1] as f32])
+                    .unwrap_or(chrome.border);
+                renderer.draw_nine_slice(
+                    t,
+                    tt.bounds.x,
+                    tt.bounds.y,
+                    tt.bounds.w,
+                    tt.bounds.h,
+                    border,
+                );
+                true
+            } else {
+                false
+            };
+            if drew_game_frame {
+                tt.draw_content(renderer, &assets);
+            } else {
+                tt.draw(renderer, &assets);
+            }
         }
     }
 }

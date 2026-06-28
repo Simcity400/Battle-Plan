@@ -122,10 +122,23 @@ fn resolve_shot_state(requested: Option<&str>) -> Result<Option<u32>, String> {
     Ok(Some(state))
 }
 
+fn resolve_map_mode(requested: Option<&str>) -> Result<MapMode, String> {
+    let Some(raw) = requested else {
+        return Ok(MapMode::Political);
+    };
+    let value = raw.trim();
+    if value.is_empty() || value != raw {
+        return Err("--map-mode requires a supported map-mode slug".to_string());
+    }
+    mode_from_slug(value)
+        .ok_or_else(|| format!("invalid --map-mode '{value}' (expected a supported map-mode slug)"))
+}
+
 fn reject_shot_all_views_mixed_flags(
     shot_path: Option<&str>,
     shot_view: Option<&str>,
     shot_state: Option<&str>,
+    map_mode: Option<&str>,
     smoke: bool,
     shot_focus: bool,
     shot_combat: bool,
@@ -139,6 +152,9 @@ fn reject_shot_all_views_mixed_flags(
     }
     if shot_state.is_some() {
         flags.push("--shot-state");
+    }
+    if map_mode.is_some() {
+        flags.push("--map-mode");
     }
     if smoke {
         flags.push("--smoke");
@@ -201,7 +217,6 @@ fn shot_all_views_child_common_args(
     assets: Option<&str>,
     map: Option<&str>,
     store: Option<&str>,
-    map_mode: Option<&str>,
 ) -> Vec<String> {
     let mut args = vec![
         "--country".to_string(),
@@ -221,10 +236,6 @@ fn shot_all_views_child_common_args(
             args.push(flag.to_string());
             args.push(child_path_arg(base, value));
         }
-    }
-    if let Some(value) = map_mode {
-        args.push("--map-mode".to_string());
-        args.push(value.to_string());
     }
     args
 }
@@ -580,11 +591,23 @@ mod tests {
     }
 
     #[test]
+    fn map_mode_resolver_fails_closed_for_unknown_or_padded_slug() {
+        assert_eq!(resolve_map_mode(None), Ok(MapMode::Political));
+        assert_eq!(resolve_map_mode(Some("control")), Ok(MapMode::Control));
+
+        let err = resolve_map_mode(Some("unknown")).unwrap_err();
+        assert!(err.contains("invalid --map-mode 'unknown'"));
+        let err = resolve_map_mode(Some(" control ")).unwrap_err();
+        assert_eq!(err, "--map-mode requires a supported map-mode slug");
+    }
+
+    #[test]
     fn shot_all_views_rejects_ambiguous_shot_flags() {
         let err = reject_shot_all_views_mixed_flags(
             Some("one.png"),
             Some("test.alpha"),
             Some("64"),
+            Some("control"),
             true,
             true,
             true,
@@ -594,6 +617,7 @@ mod tests {
         assert!(err.contains("--shot"));
         assert!(err.contains("--shot-view"));
         assert!(err.contains("--shot-state"));
+        assert!(err.contains("--map-mode"));
         assert!(err.contains("--smoke"));
         assert!(err.contains("--shot-focus"));
         assert!(err.contains("--shot-combat"));
@@ -632,7 +656,6 @@ mod tests {
             Some("game_assets"),
             Some("map_assets"),
             Some("snapshots"),
-            Some("supply"),
         );
 
         assert_eq!(
@@ -654,8 +677,6 @@ mod tests {
                 child_path_arg(&base, "map_assets"),
                 "--store".to_string(),
                 child_path_arg(&base, "snapshots"),
-                "--map-mode".to_string(),
-                "supply".to_string(),
             ]
         );
         assert!(!args.iter().any(|arg| matches!(
@@ -1036,6 +1057,7 @@ fn main() {
     let shot_all_views_run_native = has_flag("--shot-all-views-run-native");
     let shot_all_views_command_arg = arg_value("--shot-all-views-command");
     let shot_state_arg = arg_value("--shot-state");
+    let map_mode_arg = arg_value("--map-mode");
     let shot_state: Option<u32> =
         resolve_shot_state(shot_state_arg.as_deref()).unwrap_or_else(|e| {
             eprintln!("[app] SHOT BLOCKER: {e}");
@@ -1061,6 +1083,7 @@ fn main() {
             shot_path.as_deref(),
             shot_view_arg.as_deref(),
             shot_state_arg.as_deref(),
+            map_mode_arg.as_deref(),
             smoke,
             shot_focus,
             shot_combat,
@@ -1089,7 +1112,6 @@ fn main() {
                         arg_value("--assets").as_deref(),
                         arg_value("--map").as_deref(),
                         arg_value("--store").as_deref(),
-                        arg_value("--map-mode").as_deref(),
                     );
                     let config = shot_harness::NativeShotBatchConfig {
                         command,
@@ -1145,6 +1167,10 @@ fn main() {
         );
         std::process::exit(2);
     }
+    let requested_map_mode = resolve_map_mode(map_mode_arg.as_deref()).unwrap_or_else(|e| {
+        eprintln!("[app] SHOT BLOCKER: {e}");
+        std::process::exit(2);
+    });
 
     let resolver = GameResolver::new(vanilla.as_deref(), mod_root.as_deref());
 
@@ -1331,9 +1357,7 @@ fn main() {
     scrubber.set_track(scrubber_track(init_w, init_h));
 
     // the active map mode (the camera + mode live in the seeded MapView instance).
-    let init_mode: MapMode = arg_value("--map-mode")
-        .and_then(|s| mode_from_slug(&s))
-        .unwrap_or(MapMode::Political);
+    let init_mode: MapMode = requested_map_mode;
     let init_camera = MapCamera::new(
         init_w,
         init_h,

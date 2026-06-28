@@ -83,6 +83,13 @@ autosaves / end-of-session / monthly suffice for these roles).
 the save gives truth and patch-stability but can't be taken often in MP. The hybrid is
 the design: **memory for liveness, save for truth.**
 
+**Greenfield backend note.** A separate research track now evaluates an optional
+in-process collector backend inspired by `HOI4-IC-Graphs`; see
+`RESEARCH_in_process_collector.md`. That path may be stronger for tick-boundary
+capture and large object-graph traversal, but it requires an explicit product/safety
+decision to allow injection or hooking. Until then, the active contract remains the
+external read-only memory reader plus save oracle described here.
+
 ### Proven so far (this build; all memory offsets validated 1:1 against a time-aligned melt)
 | datum | source | status |
 |---|---|---|

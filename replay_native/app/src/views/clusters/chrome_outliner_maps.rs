@@ -2231,11 +2231,15 @@ pub struct MapModesView {
     screen: Rect,
     input_panel: Option<Rect>,
     input_targets: Vec<MapModeHitTarget>,
+    input_targets_synced: bool,
+    input_targets_are_real_gui: bool,
     all_button_rect: Option<Rect>,
     all_mode_targets: Vec<MapModeHitTarget>,
     all_modes_open: bool,
     active_mode: Option<CoreMapMode>,
     hover_index: Option<usize>,
+    hover_rail_slot: Option<usize>,
+    hover_fidelity_badge: bool,
     hover_cursor: Option<(f32, f32)>,
 }
 impl MapModesView {
@@ -2244,11 +2248,15 @@ impl MapModesView {
             screen: default_chrome_screen(),
             input_panel: None,
             input_targets: Vec::new(),
+            input_targets_synced: false,
+            input_targets_are_real_gui: false,
             all_button_rect: None,
             all_mode_targets: Vec::new(),
             all_modes_open: false,
             active_mode: None,
             hover_index: None,
+            hover_rail_slot: None,
+            hover_fidelity_badge: false,
             hover_cursor: None,
         }
     }
@@ -2258,6 +2266,8 @@ impl MapModesView {
     pub fn set_input_panel(&mut self, panel: Rect) {
         self.input_panel = Some(panel);
         self.input_targets = mapmode_targets_from_panel(panel);
+        self.input_targets_synced = true;
+        self.input_targets_are_real_gui = false;
         self.all_button_rect = None;
         self.all_mode_targets.clear();
     }
@@ -2275,7 +2285,14 @@ impl MapModesView {
         all_button_rect: Option<Rect>,
         all_grid_rect: Option<Rect>,
     ) {
-        let mut hit_rects: Vec<Rect> = targets.iter().map(|(_, rect)| *rect).collect();
+        let targets: Vec<MapModeHitTarget> = targets
+            .into_iter()
+            .filter_map(|(index, rect)| {
+                (index < MAP_MODES.len() && rect.w > 0.0 && rect.h > 0.0)
+                    .then_some(MapModeHitTarget { index, rect })
+            })
+            .collect();
+        let mut hit_rects: Vec<Rect> = targets.iter().map(|target| target.rect).collect();
         if let Some(rect) = all_button_rect {
             hit_rects.push(rect);
         }
@@ -2283,13 +2300,9 @@ impl MapModesView {
             hit_rects.push(rect);
         }
         self.input_panel = union_target_rects(hit_rects);
-        self.input_targets = targets
-            .into_iter()
-            .filter_map(|(index, rect)| {
-                (index < MAP_MODES.len() && rect.w > 0.0 && rect.h > 0.0)
-                    .then_some(MapModeHitTarget { index, rect })
-            })
-            .collect();
+        self.input_targets = targets;
+        self.input_targets_synced = true;
+        self.input_targets_are_real_gui = !self.input_targets.is_empty();
         self.all_button_rect = all_button_rect;
         self.all_mode_targets = match all_grid_rect {
             Some(grid) => mapmode_all_targets_from_grid(grid),
@@ -2533,12 +2546,12 @@ fn mapmode_all_targets_from_grid(grid: Rect) -> Vec<MapModeHitTarget> {
         .collect()
 }
 
-fn pick_mapmode_target(targets: &[MapModeHitTarget], x: f32, y: f32) -> Option<usize> {
+fn pick_mapmode_target(targets: &[MapModeHitTarget], x: f32, y: f32) -> Option<MapModeHitTarget> {
     targets
         .iter()
         .rev()
         .find(|target| target.rect.contains(x, y))
-        .map(|target| target.index)
+        .copied()
 }
 
 fn union_target_rects<I>(rects: I) -> Option<Rect>
@@ -2691,6 +2704,7 @@ fn mapmode_hover_tooltip(
     entry: &MapModeRailEntry,
     fidelity: Fidelity,
     active: Option<CoreMapMode>,
+    rail_slot: Option<usize>,
     cursor: (f32, f32),
 ) -> TooltipPlan {
     let active_text = match (entry.core_mode, active) {
@@ -2703,11 +2717,19 @@ fn mapmode_hover_tooltip(
         Fidelity::Derived => WAtom::derived(mapmode_fidelity_code(fidelity)),
         Fidelity::Unavailable => WAtom::unavailable_because(WReason::Blocked),
     };
+    let default_slot = rail_slot
+        .map(|slot| WAtom::exact(format!("#{slot} -> {}", entry.name)))
+        .unwrap_or_else(|| WAtom::unavailable_because(WReason::Blocked));
     let tooltip = Tooltip::new(title)
         .with_row("Mode", WAtom::exact(entry.name))
         .with_row("State", WAtom::exact(active_text))
         .with_row("Fidelity", fidelity_atom)
-        .with_row("Source", mapmode_source_text(entry, fidelity));
+        .with_row("Source", mapmode_source_text(entry, fidelity))
+        .with_row("Default rail slot", default_slot)
+        .with_row(
+            "Custom override",
+            WAtom::unavailable_because(WReason::Blocked),
+        );
     plan_tooltip(&tooltip, cursor, ctx.screen)
 }
 
@@ -2732,6 +2754,59 @@ fn mapmode_popup_text_tint(fidelity: Fidelity) -> [f32; 4] {
         Fidelity::Derived => DERIVED_TINT,
         Fidelity::Unavailable => UNAVAIL_TINT,
     }
+}
+
+fn mapmode_popup_badge_rect(row: Rect) -> Rect {
+    let w = row.w.min(32.0).max(1.0);
+    Rect {
+        x: row.x + row.w - w,
+        y: row.y,
+        w,
+        h: row.h,
+    }
+}
+
+fn pick_mapmode_popup_badge(
+    targets: &[MapModeHitTarget],
+    x: f32,
+    y: f32,
+) -> Option<MapModeHitTarget> {
+    targets
+        .iter()
+        .rev()
+        .find(|target| mapmode_popup_badge_rect(target.rect).contains(x, y))
+        .copied()
+}
+
+fn mapmode_fidelity_atom(fidelity: Fidelity) -> WAtom {
+    match fidelity {
+        Fidelity::Exact => WAtom::exact(mapmode_fidelity_code(fidelity)),
+        Fidelity::Derived => WAtom::derived(mapmode_fidelity_code(fidelity)),
+        Fidelity::Unavailable => WAtom::unavailable_because(WReason::Blocked),
+    }
+}
+
+fn mapmode_fidelity_meaning(fidelity: Fidelity) -> WAtom {
+    match fidelity {
+        Fidelity::Exact => WAtom::exact("captured exact"),
+        Fidelity::Derived => WAtom::derived("derived proxy"),
+        Fidelity::Unavailable => WAtom::unavailable_because(WReason::Blocked),
+    }
+}
+
+fn mapmode_legend_tooltip(
+    ctx: &BindContext,
+    entry: &MapModeRailEntry,
+    fidelity: Fidelity,
+    cursor: (f32, f32),
+) -> TooltipPlan {
+    let tooltip = Tooltip::new(WAtom::exact(format!("Fidelity legend: {}", entry.name)))
+        .with_row("Mode", WAtom::exact(entry.name))
+        .with_row("Badge", WAtom::exact(mapmode_popup_fidelity_tag(fidelity)))
+        .with_row("Fidelity", mapmode_fidelity_atom(fidelity))
+        .with_row("Meaning", mapmode_fidelity_meaning(fidelity))
+        .with_row("Source", mapmode_source_text(entry, fidelity));
+    plan_tooltip(&tooltip, cursor, ctx.screen)
 }
 
 fn mapmode_popup_plan(grid: Rect, rows: &[MapModePopupRow], hover_index: Option<usize>) -> Plan {
@@ -2838,7 +2913,7 @@ impl ViewInstance for MapModesView {
     }
     fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
         let fallback_targets;
-        let rail_targets = if self.input_targets.is_empty() {
+        let rail_targets = if self.input_targets.is_empty() && !self.input_targets_synced {
             let panel = self
                 .input_panel
                 .unwrap_or_else(|| mapmodes_panel_fallback(self.screen));
@@ -2853,15 +2928,33 @@ impl ViewInstance for MapModesView {
                     None
                 } else {
                     let popup = if self.all_modes_open {
-                        pick_mapmode_target(&self.all_mode_targets, x, y)
+                        pick_mapmode_popup_badge(&self.all_mode_targets, x, y)
+                            .map(|target| (target.index, None, true))
+                            .or_else(|| {
+                                pick_mapmode_target(&self.all_mode_targets, x, y)
+                                    .map(|target| (target.index, None, false))
+                            })
                     } else {
                         None
                     };
-                    popup.or_else(|| pick_mapmode_target(rail_targets, x, y))
+                    popup.or_else(|| {
+                        pick_mapmode_target(rail_targets, x, y).map(|target| {
+                            let slot = self.input_targets_are_real_gui.then_some(target.index + 1);
+                            (target.index, slot, false)
+                        })
+                    })
                 };
-                let next_cursor = next.map(|_| (x, y));
-                let changed = self.hover_index != next || self.hover_cursor != next_cursor;
-                self.hover_index = next;
+                let next_index = next.map(|(index, _, _)| index);
+                let next_slot = next.and_then(|(_, slot, _)| slot);
+                let next_badge = next.map(|(_, _, badge)| badge).unwrap_or(false);
+                let next_cursor = next_index.map(|_| (x, y));
+                let changed = self.hover_index != next_index
+                    || self.hover_rail_slot != next_slot
+                    || self.hover_fidelity_badge != next_badge
+                    || self.hover_cursor != next_cursor;
+                self.hover_index = next_index;
+                self.hover_rail_slot = next_slot;
+                self.hover_fidelity_badge = next_badge;
                 self.hover_cursor = next_cursor;
                 if changed {
                     InputOutcome {
@@ -2886,6 +2979,8 @@ impl ViewInstance for MapModesView {
                     self.all_modes_open = !self.all_modes_open;
                     if !self.all_modes_open {
                         self.hover_index = None;
+                        self.hover_rail_slot = None;
+                        self.hover_fidelity_badge = false;
                         self.hover_cursor = None;
                     }
                     return mapmodes_input_consumed(true);
@@ -2896,13 +2991,22 @@ impl ViewInstance for MapModesView {
                 } else {
                     None
                 };
-                let Some(index) = popup_hit.or_else(|| pick_mapmode_target(rail_targets, x, y))
-                else {
+                let hit = popup_hit
+                    .map(|target| (target.index, None, true))
+                    .or_else(|| {
+                        pick_mapmode_target(rail_targets, x, y).map(|target| {
+                            let slot = self.input_targets_are_real_gui.then_some(target.index + 1);
+                            (target.index, slot, false)
+                        })
+                    });
+                let Some((index, rail_slot, from_popup)) = hit else {
                     return InputOutcome::ignored();
                 };
                 self.hover_index = Some(index);
+                self.hover_rail_slot = rail_slot;
+                self.hover_fidelity_badge = false;
                 self.hover_cursor = Some((x, y));
-                if popup_hit.is_some() {
+                if from_popup {
                     self.all_modes_open = false;
                 }
                 match mapmode_command(&MAP_MODES[index]) {
@@ -2912,13 +3016,29 @@ impl ViewInstance for MapModesView {
             }
             ViewInput::PointerUp { x, y, .. } => {
                 let next = if self.all_modes_open {
-                    pick_mapmode_target(&self.all_mode_targets, x, y)
-                        .or_else(|| pick_mapmode_target(rail_targets, x, y))
+                    pick_mapmode_popup_badge(&self.all_mode_targets, x, y)
+                        .map(|target| (target.index, None, true))
+                        .or_else(|| {
+                            pick_mapmode_target(&self.all_mode_targets, x, y)
+                                .map(|target| (target.index, None, false))
+                        })
+                        .or_else(|| {
+                            pick_mapmode_target(rail_targets, x, y).map(|target| {
+                                let slot =
+                                    self.input_targets_are_real_gui.then_some(target.index + 1);
+                                (target.index, slot, false)
+                            })
+                        })
                 } else {
-                    pick_mapmode_target(rail_targets, x, y)
+                    pick_mapmode_target(rail_targets, x, y).map(|target| {
+                        let slot = self.input_targets_are_real_gui.then_some(target.index + 1);
+                        (target.index, slot, false)
+                    })
                 };
-                self.hover_index = next;
-                self.hover_cursor = next.map(|_| (x, y));
+                self.hover_index = next.map(|(index, _, _)| index);
+                self.hover_rail_slot = next.and_then(|(_, slot, _)| slot);
+                self.hover_fidelity_badge = next.map(|(_, _, badge)| badge).unwrap_or(false);
+                self.hover_cursor = self.hover_index.map(|_| (x, y));
                 InputOutcome::ignored()
             }
             _ => InputOutcome::ignored(),
@@ -2975,13 +3095,19 @@ impl ViewInstance for MapModesView {
         let active_digest = mapmode_active_digest(self.active_mode);
         let tooltip = match (self.hover_index, self.hover_cursor) {
             (Some(index), Some(cursor)) => MAP_MODES.get(index).map(|entry| {
-                mapmode_hover_tooltip(
-                    ctx,
-                    entry,
-                    entry.fidelity_for(ctx),
-                    self.active_mode,
-                    cursor,
-                )
+                let mode_fidelity = entry.fidelity_for(ctx);
+                if self.hover_fidelity_badge {
+                    mapmode_legend_tooltip(ctx, entry, mode_fidelity, cursor)
+                } else {
+                    mapmode_hover_tooltip(
+                        ctx,
+                        entry,
+                        mode_fidelity,
+                        self.active_mode,
+                        self.hover_rail_slot,
+                        cursor,
+                    )
+                }
             }),
             _ => None,
         };
@@ -7177,6 +7303,14 @@ mod tests {
         assert!(out.needs_redraw);
         let digest = bound_digest(&v.bind(&ctx(&stage, &snap, "1941.4.13.11")));
         assert!(digest.contains("Map mode: Political"), "{digest}");
+        assert!(
+            digest.contains("Default rail slot") && digest.contains("#1 -> Political"),
+            "real rail hover should expose the deterministic default slot: {digest}"
+        );
+        assert!(
+            digest.contains("Custom override") && digest.contains("unfed"),
+            "custom slot configuration is not captured and must stay badged: {digest}"
+        );
     }
 
     #[test]
@@ -7250,8 +7384,24 @@ mod tests {
             Some(grid),
         );
         let supply_rect = mapmode_row_rect(grid, mapmode_index("Supply"));
+        let supply_badge = mapmode_popup_badge_rect(supply_rect);
+        let hover_supply_badge = v.on_input(&ViewInput::PointerMove {
+            x: supply_badge.x + supply_badge.w * 0.5,
+            y: supply_badge.y + supply_badge.h * 0.5,
+            drag: false,
+        });
+        assert!(!hover_supply_badge.consumed);
+        assert!(hover_supply_badge.commands.is_empty());
+        assert!(hover_supply_badge.needs_redraw);
+        let popup_badge_digest = bound_digest(&v.bind(&ctx(&stage, &snap, "1941.4.13.11")));
+        assert!(
+            popup_badge_digest.contains("Fidelity legend: Supply")
+                && popup_badge_digest.contains("provinces.*.supply proxy"),
+            "all-modes popup badge hover must use the real grid and factual mode source: {popup_badge_digest}"
+        );
+
         let hover_supply = v.on_input(&ViewInput::PointerMove {
-            x: supply_rect.x + supply_rect.w * 0.5,
+            x: supply_rect.x + 8.0,
             y: supply_rect.y + supply_rect.h * 0.5,
             drag: false,
         });
@@ -7424,9 +7574,161 @@ mod tests {
         assert!(out.commands.is_empty());
     }
 
+    // -------- mapmodes popup legend/default-slot hover no-fabrication -----------------
+    #[test]
+    fn mapmode_synced_target_hover_reports_default_slot_without_custom_fabrication() {
+        let stage = stage_with(&[]);
+        let snap = snap_a();
+        let mut v = MapModesView::new();
+        let index = mapmode_index("Political");
+        let rect = Rect {
+            x: 320.0,
+            y: 180.0,
+            w: 44.0,
+            h: 40.0,
+        };
+        v.set_input_targets(vec![(index, rect)]);
+
+        let out = v.on_input(&ViewInput::PointerMove {
+            x: rect.x + rect.w * 0.5,
+            y: rect.y + rect.h * 0.5,
+            drag: false,
+        });
+        assert!(!out.consumed);
+        assert!(out.commands.is_empty());
+        assert!(out.needs_redraw);
+
+        let bv = v.bind(&ctx(&stage, &snap, "1941.4.13.11"));
+        let digest = bv.tooltip_plan().expect("default-slot tooltip").digest();
+        assert!(digest.contains("Map mode: Political"), "{digest}");
+        assert!(digest.contains("Default rail slot"), "{digest}");
+        assert!(
+            digest.contains("#1 -> Political"),
+            "synced rail geometry should expose the deterministic vanilla slot: {digest}"
+        );
+        assert!(digest.contains("Custom override"), "{digest}");
+        assert!(
+            digest.contains("unfed"),
+            "custom slot configuration is not captured and must stay badged: {digest}"
+        );
+        assert!(
+            !digest.contains("custom:Political"),
+            "tooltip must not invent a custom-slot source: {digest}"
+        );
+    }
+
+    #[test]
+    fn mapmode_malformed_synced_targets_fail_closed_without_logical_fallback() {
+        let stage = stage_with(&[]);
+        let snap = snap_a();
+        let mut v = MapModesView::new();
+        let bad_rect = Rect {
+            x: 40.0,
+            y: 60.0,
+            w: 120.0,
+            h: MAPMODE_ROW_H,
+        };
+        v.set_input_targets_with_all(vec![(MAP_MODES.len() + 4, bad_rect)], None, None);
+
+        let hover = v.on_input(&ViewInput::PointerMove {
+            x: bad_rect.x + bad_rect.w * 0.5,
+            y: bad_rect.y + bad_rect.h * 0.5,
+            drag: false,
+        });
+        assert!(!hover.consumed);
+        assert!(
+            !hover.needs_redraw,
+            "filtered-out synced targets must not fall back to logical rows"
+        );
+        assert!(hover.commands.is_empty());
+        assert!(
+            v.bind(&ctx(&stage, &snap, "1941.4.13.11"))
+                .tooltip_plan()
+                .is_none(),
+            "invalid synced targets must not fabricate a hover tooltip"
+        );
+
+        let click = v.on_input(&ViewInput::PointerDown {
+            x: bad_rect.x + bad_rect.w * 0.5,
+            y: bad_rect.y + bad_rect.h * 0.5,
+            button: PointerButton::Left,
+        });
+        assert!(!click.consumed);
+        assert!(click.commands.is_empty());
+    }
+
+    #[test]
+    fn mapmode_all_popup_badge_hover_emits_fidelity_legend_and_clears() {
+        let stage = stage_with(&[]);
+        let snap = snap_a();
+        let grid = Rect {
+            x: 220.0,
+            y: 140.0,
+            w: 240.0,
+            h: MAP_MODES.len() as f32 * MAPMODE_ROW_H,
+        };
+        let mut v = MapModesView::new();
+        v.all_modes_open = true;
+        v.set_input_targets_with_all(Vec::new(), None, Some(grid));
+
+        let supply_row = mapmode_row_rect(grid, mapmode_index("Supply"));
+        let badge = mapmode_popup_badge_rect(supply_row);
+        let hover_badge = v.on_input(&ViewInput::PointerMove {
+            x: badge.x + badge.w * 0.5,
+            y: badge.y + badge.h * 0.5,
+            drag: false,
+        });
+        assert!(!hover_badge.consumed);
+        assert!(hover_badge.commands.is_empty());
+        assert!(hover_badge.needs_redraw);
+
+        let bv = v.bind(&ctx(&stage, &snap, "1941.4.13.11"));
+        let digest = bv.tooltip_plan().expect("badge legend tooltip").digest();
+        assert!(digest.contains("Fidelity legend: Supply"), "{digest}");
+        assert!(digest.contains("Badge"), "{digest}");
+        assert!(digest.contains("D"), "{digest}");
+        assert!(digest.contains("derived proxy"), "{digest}");
+        assert!(
+            digest.contains("provinces.*.supply proxy"),
+            "legend must use the same factual source as row hover: {digest}"
+        );
+
+        let hover_row = v.on_input(&ViewInput::PointerMove {
+            x: supply_row.x + 8.0,
+            y: supply_row.y + supply_row.h * 0.5,
+            drag: false,
+        });
+        assert!(!hover_row.consumed);
+        assert!(hover_row.needs_redraw);
+        let row_digest = v
+            .bind(&ctx(&stage, &snap, "1941.4.13.11"))
+            .tooltip_plan()
+            .expect("row tooltip")
+            .digest();
+        assert!(row_digest.contains("Map mode: Supply"), "{row_digest}");
+        assert!(
+            !row_digest.contains("Fidelity legend"),
+            "leaving the badge but staying in the row must clear the legend readout"
+        );
+
+        let clear = v.on_input(&ViewInput::PointerMove {
+            x: grid.x - 4.0,
+            y: grid.y + grid.h * 0.5,
+            drag: false,
+        });
+        assert!(!clear.consumed);
+        assert!(clear.needs_redraw);
+        assert!(
+            v.bind(&ctx(&stage, &snap, "1941.4.13.11"))
+                .tooltip_plan()
+                .is_none(),
+            "moving off popup geometry must clear hover"
+        );
+    }
+
     // -------- the on-map placement PATH (Codex (b)/state-id-≠-province-id fix) ----------
 
-    /// `project_centroid` is a pure function: a centroid in its source-raster space →
+    /// `project_centroid` is a pure function: a centroid in its source-raster space to
     /// a finite SCREEN pixel through the camera, algebraically matching the app camera.
     #[test]
     fn project_centroid_matches_camera_transform() {

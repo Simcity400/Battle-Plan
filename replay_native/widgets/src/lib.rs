@@ -44,4 +44,7 @@ pub use common::{
     AssetRef, Atom, Canvas, DrawAssets, Fidelity, Reason, CANVAS_MAX_SCALE, CANVAS_MIN_SCALE,
 };
 pub use plan::{Cmd, Plan};
-pub use tooltip::{plan_tooltip, Tooltip, TooltipPlan, TooltipRow};
+pub use tooltip::{
+    plan_tooltip, plan_tooltip_with_frame, Tooltip, TooltipChrome, TooltipComposer, TooltipFrame,
+    TooltipPlan, TooltipRow,
+};

@@ -97,7 +97,15 @@ def test_live_slot_can_compute_eta_when_live_speed_is_present():
 
 def test_save_slot_missing_active_progress_fails_closed():
     research = {
-        "in_progress": [{"name": "basic_machine_tools", "points_factor": 1.0}],
+        "in_progress": [{
+            "name": "basic_machine_tools",
+            "points_factor": 1.0,
+            "progress_pct": 0.5,
+            "eta_days": 44,
+            "required_points_base": 165.0,
+            "remaining_points_base": 82.5,
+            "progress_basis": "stale",
+        }],
         "technologies": [],
     }
 
@@ -106,19 +114,51 @@ def test_save_slot_missing_active_progress_fails_closed():
     slot = research["in_progress"][0]
     assert "progress_pct" not in slot
     assert "eta_days" not in slot
+    assert "required_points_base" not in slot
+    assert "remaining_points_base" not in slot
+    assert "progress_basis" not in slot
     assert slot["progress_unavailable_reason"] == \
         "missing_active_research_points"
 
 
+def test_save_slot_eta_unavailable_clears_stale_eta_only():
+    research = {
+        "in_progress": [{
+            "name": "basic_machine_tools",
+            "points_factor": 0.0,
+            "eta_days": 44,
+        }],
+        "technologies": [{
+            "name": "basic_machine_tools",
+            "level": None,
+            "date": RP.IN_PROGRESS_TECH_DATE,
+            "research_points": 82.5,
+        }],
+    }
+
+    RP.enrich_country_research_progress(research, TECH_DEFS, current_year=1936)
+
+    slot = research["in_progress"][0]
+    assert slot["progress_pct"] == 0.5
+    assert "eta_days" not in slot
+    assert slot["eta_unavailable_reason"] == "missing_positive_points_factor"
+
+
 def test_missing_live_tech_name_fails_closed():
     research = {
-        "in_progress_live": [{"slot_index": 0, "progress_units": 10.0}],
+        "in_progress_live": [{
+            "slot_index": 0,
+            "progress_units": 10.0,
+            "progress_pct": 0.5,
+            "eta_days": 44,
+        }],
     }
 
     RP.enrich_country_research_progress(research, TECH_DEFS, current_year=1936)
 
     slot = research["in_progress_live"][0]
     assert "progress_pct" not in slot
+    assert "eta_days" not in slot
     assert slot["progress_unavailable_reason"] == "missing_tech_name"
 
 

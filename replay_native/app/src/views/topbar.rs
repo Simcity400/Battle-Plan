@@ -10,7 +10,7 @@ use bind::{apply_topbar, BindReport, FlagResolver, TopbarSpec};
 use gui_runtime::scene::Node;
 use gui_runtime::{build_scene, layout, ManifestContent, Rect};
 
-use crate::host::context::BindContext;
+use crate::host::context::{BindContext, Captured};
 use crate::host::draw::FrameDraw;
 use crate::host::input::{PointerButton, ViewInput};
 use crate::host::registry::{ViewDescriptor, ViewId};
@@ -20,17 +20,18 @@ use crate::host::view::{
 };
 use crate::host::FidelityReport;
 use crate::register_view;
+use widgets::{plan_tooltip, Atom as WAtom, Reason as WReason, Tooltip, TooltipPlan};
 
 pub const TOPBAR_VIEW_ID: ViewId = ViewId("core.topbar");
 const TOPBAR_FILE: &str = "topbar.json";
 
-/// The topbar view instance — stateless across ticks (no scroll/camera). It carries
-/// only the observed country tag plus the latest `.gui` button rects synced by the app
-/// shell before routing input.
+/// The topbar view instance carries only the observed country tag, passive hover state,
+/// and the latest `.gui` button rects synced by the app shell before routing input.
 pub struct TopbarView {
     pub country: String,
     drill_targets: Vec<TopbarDrillTarget>,
     inert_targets: Vec<TopbarInertTarget>,
+    hover: Option<TopbarHover>,
 }
 
 impl TopbarView {
@@ -39,6 +40,7 @@ impl TopbarView {
             country: country.into(),
             drill_targets: Vec::new(),
             inert_targets: Vec::new(),
+            hover: None,
         }
     }
 
@@ -48,6 +50,16 @@ impl TopbarView {
 
     pub fn set_inert_targets(&mut self, targets: Vec<TopbarInertTarget>) {
         self.inert_targets = targets;
+    }
+
+    fn hover_at(&self, x: f32, y: f32) -> Option<TopbarHover> {
+        self.inert_targets
+            .iter()
+            .any(|target| target.leaf == "faction_button" && target.rect.contains(x, y))
+            .then_some(TopbarHover {
+                target: TopbarHoverTarget::Faction,
+                cursor: (x, y),
+            })
     }
 
     fn drill_command_at(&self, x: f32, y: f32) -> Option<ViewCommand> {
@@ -86,7 +98,20 @@ pub struct TopbarInertTarget {
     pub rect: Rect,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct TopbarHover {
+    target: TopbarHoverTarget,
+    cursor: (f32, f32),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum TopbarHoverTarget {
+    Faction,
+}
+
 const TOPBAR_DRILL_TARGETS: &[(&str, ViewId)] = &[
+    ("threat_button", ViewId("intel.world_tension_popup")),
+    ("threat_value_button", ViewId("intel.world_tension_popup")),
     ("decisionview_button", ViewId("production.decisions")),
     ("intel_agency_button", ViewId("intel.intel_agency")),
     ("technology_button", ViewId("research.research")),
@@ -116,6 +141,8 @@ const TOPBAR_INERT_TARGETS: &[&str] = &[
     "menu_button",
     "help_button",
     "achievements_button",
+    "dismissed_alerts_button",
+    "faction_button",
     "playlist_button",
     "music_pause_button",
     "music_next_button",
@@ -155,6 +182,7 @@ pub struct TopbarDrawable {
     roots: Vec<Node>,
     /// (rect, tag, ideology) for the flag sprite (resolved per-frame by tag+ideology).
     flag: Option<(Rect, String, Option<String>)>,
+    tooltip: Option<TooltipPlan>,
 }
 
 impl Drawable for TopbarDrawable {
@@ -184,6 +212,10 @@ impl Drawable for TopbarDrawable {
             }
         }
     }
+
+    fn tooltip_plan(&self) -> Option<&TooltipPlan> {
+        self.tooltip.as_ref()
+    }
 }
 
 impl ViewInstance for TopbarView {
@@ -212,6 +244,15 @@ impl ViewInstance for TopbarView {
             } if self.has_drill_target_at(x, y) || self.has_inert_target_at(x, y) => {
                 consumed_no_redraw(Vec::new())
             }
+            ViewInput::PointerMove { x, y, drag: false } => {
+                let before = self.hover.clone();
+                self.hover = self.hover_at(x, y);
+                InputOutcome {
+                    consumed: false,
+                    commands: Vec::new(),
+                    needs_redraw: self.hover != before,
+                }
+            }
             _ => InputOutcome::ignored(),
         }
     }
@@ -236,6 +277,8 @@ impl ViewInstance for TopbarView {
         }
 
         let flag = flag_rect(&roots, &report, &self.country);
+        let tooltip =
+            topbar_tooltip_for_hover(ctx, &self.country, self.hover.as_ref(), &self.inert_targets);
         let fidelity = topbar_fidelity(&report);
 
         BoundView {
@@ -245,7 +288,11 @@ impl ViewInstance for TopbarView {
             // the topbar is a pure full-screen frame: NO block rect — its empty regions
             // fall through to the map; only its real controls capture (via the roots).
             hit: HitModel::from_roots(roots.clone()),
-            drawable: Box::new(TopbarDrawable { roots, flag }),
+            drawable: Box::new(TopbarDrawable {
+                roots,
+                flag,
+                tooltip,
+            }),
             fidelity,
             commands: Vec::<ViewCommand>::new(),
         }
@@ -281,6 +328,60 @@ fn topbar_fidelity(report: &BindReport) -> FidelityReport {
         }
     }
     f
+}
+
+fn topbar_tooltip_for_hover(
+    ctx: &BindContext,
+    country: &str,
+    hover: Option<&TopbarHover>,
+    inert_targets: &[TopbarInertTarget],
+) -> Option<TooltipPlan> {
+    let hover = hover?;
+    let valid_target = inert_targets.iter().any(|target| {
+        target.leaf == "faction_button" && target.rect.contains(hover.cursor.0, hover.cursor.1)
+    });
+    if !valid_target {
+        return None;
+    }
+    match hover.target {
+        TopbarHoverTarget::Faction => {
+            let model = faction_tooltip_model(ctx, country)?;
+            Some(plan_tooltip(&model, hover.cursor, ctx.screen))
+        }
+    }
+}
+
+fn faction_tooltip_model(ctx: &BindContext, country: &str) -> Option<Tooltip> {
+    let faction_name = match ctx.country_field(country, "politics.faction.name") {
+        Captured::Measured(v) => measured_scalar(v)?,
+        Captured::Absent | Captured::Null => return None,
+    };
+    Some(
+        Tooltip::new(WAtom::exact("Faction"))
+            .with_row("Country", WAtom::exact(country.to_string()))
+            .with_row("Name", WAtom::exact(faction_name))
+            .with_row(
+                "Leader",
+                match ctx.country_field(country, "politics.faction.is_leader") {
+                    Captured::Measured(v) => match v.as_bool() {
+                        Some(true) => WAtom::exact("yes"),
+                        Some(false) => WAtom::exact("no"),
+                        None => WAtom::unavailable_because(WReason::Blocked),
+                    },
+                    Captured::Null => WAtom::unavailable_because(WReason::Null),
+                    Captured::Absent => WAtom::unavailable_because(WReason::Absent),
+                },
+            ),
+    )
+}
+
+fn measured_scalar(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
 }
 
 fn find_rect(roots: &[Node], name: &str) -> Option<Rect> {
@@ -379,6 +480,27 @@ mod tests {
     }
 
     fn snap() -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1940.1.1.12",
+            "hour_index": 100,
+            "countries": {
+                "GER": {
+                    "politics": {
+                        "political_power": 10.0,
+                        "stability": 0.5,
+                        "ruling_party": "fascism",
+                        "faction": {
+                            "name": "axis",
+                            "is_leader": true
+                        }
+                    }
+                }
+            }
+        }))
+        .unwrap()
+    }
+
+    fn snap_without_faction() -> snapshot::Snapshot {
         serde_json::from_value(serde_json::json!({
             "date": "1940.1.1.12",
             "hour_index": 100,
@@ -537,6 +659,232 @@ mod tests {
         }
     }
 
+    #[test]
+    fn topbar_alert_threat_faction_slice_routes_only_backed_controls() {
+        let stage = stage_with_topbar(synthetic_topbar_gui(), HashMap::new());
+        let snap = snap();
+        let mut view = TopbarView::new("GER");
+        let bv = view.bind(&ctx(&stage, &snap));
+        let drill_targets = topbar_drill_targets_from_roots(&bv.hit.roots);
+        let inert_targets = topbar_inert_targets_from_roots(&bv.hit.roots);
+        view.set_drill_targets(drill_targets.clone());
+        view.set_inert_targets(inert_targets.clone());
+
+        for (leaf, view_id) in [
+            ("threat_button", ViewId("intel.world_tension_popup")),
+            ("threat_value_button", ViewId("intel.world_tension_popup")),
+        ] {
+            let target = drill_targets
+                .iter()
+                .find(|target| target.leaf == leaf)
+                .unwrap_or_else(|| panic!("synthetic topbar should expose {leaf}"));
+            let before = bound_digest(&view.bind(&ctx(&stage, &snap)));
+            let (x, y) = center(target.rect);
+            let down = view.on_input(&ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            });
+            assert!(down.consumed, "{leaf} click should be captured");
+            assert!(!down.needs_redraw, "{leaf} is read-only navigation");
+            assert_eq!(
+                down.commands,
+                vec![ViewCommand::OpenView { view_id, arg: None }],
+                "{leaf} must open only its backed read-only replay surface"
+            );
+            assert_eq!(
+                before,
+                bound_digest(&view.bind(&ctx(&stage, &snap))),
+                "{leaf} click must leave the topbar digest unchanged"
+            );
+        }
+
+        for leaf in ["dismissed_alerts_button", "faction_button"] {
+            let target = inert_targets
+                .iter()
+                .find(|target| target.leaf == leaf)
+                .unwrap_or_else(|| panic!("synthetic topbar should expose inert {leaf}"));
+            let before = bound_digest(&view.bind(&ctx(&stage, &snap)));
+            let (x, y) = center(target.rect);
+            let down = view.on_input(&ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            });
+            assert!(down.consumed, "{leaf} must consume pointer-down");
+            assert!(
+                down.commands.is_empty(),
+                "{leaf} must not emit a replay command"
+            );
+            assert!(!down.needs_redraw, "{leaf} click is inert");
+            let up = view.on_input(&ViewInput::PointerUp {
+                x,
+                y,
+                button: PointerButton::Left,
+            });
+            assert!(up.consumed, "{leaf} must consume pointer-up");
+            assert!(up.commands.is_empty(), "{leaf} pointer-up is inert");
+            assert!(!up.needs_redraw, "{leaf} pointer-up needs no redraw");
+            assert_eq!(
+                before,
+                bound_digest(&view.bind(&ctx(&stage, &snap))),
+                "{leaf} click must leave the topbar digest unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn topbar_faction_hover_uses_factual_snapshot_data() {
+        let stage = stage_with_topbar(synthetic_topbar_gui(), HashMap::new());
+        let snap = snap();
+        let mut view = TopbarView::new("GER");
+        let bv = view.bind(&ctx(&stage, &snap));
+        view.set_drill_targets(topbar_drill_targets_from_roots(&bv.hit.roots));
+        let inert_targets = topbar_inert_targets_from_roots(&bv.hit.roots);
+        view.set_inert_targets(inert_targets.clone());
+
+        let faction = inert_targets
+            .iter()
+            .find(|target| target.leaf == "faction_button")
+            .expect("synthetic topbar should expose faction button");
+        let (x, y) = center(faction.rect);
+        let out = view.on_input(&ViewInput::PointerMove { x, y, drag: false });
+        assert!(!out.consumed);
+        assert!(out.commands.is_empty());
+        assert!(out.needs_redraw, "new faction hover should redraw tooltip");
+
+        let digest = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert!(digest.contains("TOOLTIP TT"), "{digest}");
+        assert!(digest.contains("Faction"), "{digest}");
+        assert!(digest.contains("axis"), "{digest}");
+        assert!(digest.contains("Leader"), "{digest}");
+        assert!(digest.contains("yes"), "{digest}");
+    }
+
+    #[test]
+    fn topbar_faction_hover_fails_closed_without_faction_data() {
+        let stage = stage_with_topbar(synthetic_topbar_gui(), HashMap::new());
+        let snap = snap_without_faction();
+        let mut view = TopbarView::new("GER");
+        let bv = view.bind(&ctx(&stage, &snap));
+        view.set_drill_targets(topbar_drill_targets_from_roots(&bv.hit.roots));
+        let inert_targets = topbar_inert_targets_from_roots(&bv.hit.roots);
+        view.set_inert_targets(inert_targets.clone());
+
+        let faction = inert_targets
+            .iter()
+            .find(|target| target.leaf == "faction_button")
+            .expect("synthetic topbar should expose faction button");
+        let (x, y) = center(faction.rect);
+        let out = view.on_input(&ViewInput::PointerMove { x, y, drag: false });
+        assert!(!out.consumed);
+        assert!(out.commands.is_empty());
+        assert!(out.needs_redraw);
+
+        let digest = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert!(digest.contains("TOOLTIP -"), "{digest}");
+        assert!(!digest.contains("Faction"), "{digest}");
+        assert!(!digest.contains("axis"), "{digest}");
+
+        let out = view.on_input(&ViewInput::PointerMove {
+            x: 1200.0,
+            y: 800.0,
+            drag: false,
+        });
+        assert!(out.needs_redraw, "leaving the stale hover should redraw");
+        assert!(bound_digest(&view.bind(&ctx(&stage, &snap))).contains("TOOLTIP -"));
+    }
+
+    #[test]
+    fn topbar_dismissed_alerts_click_is_inert_without_alert_ledger() {
+        let stage = stage_with_topbar(synthetic_topbar_gui(), HashMap::new());
+        let snap = snap();
+        let mut view = TopbarView::new("GER");
+        let bv = view.bind(&ctx(&stage, &snap));
+        view.set_drill_targets(topbar_drill_targets_from_roots(&bv.hit.roots));
+        let inert_targets = topbar_inert_targets_from_roots(&bv.hit.roots);
+        view.set_inert_targets(inert_targets.clone());
+
+        let dismissed = inert_targets
+            .iter()
+            .find(|target| target.leaf == "dismissed_alerts_button")
+            .expect("synthetic topbar should expose dismissed alerts button");
+        let before = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        let (x, y) = center(dismissed.rect);
+        let down = view.on_input(&ViewInput::PointerDown {
+            x,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(down.consumed);
+        assert!(down.commands.is_empty());
+        assert!(!down.needs_redraw);
+        let up = view.on_input(&ViewInput::PointerUp {
+            x,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(up.consumed);
+        assert!(up.commands.is_empty());
+        assert!(!up.needs_redraw);
+        assert_eq!(
+            before,
+            bound_digest(&view.bind(&ctx(&stage, &snap))),
+            "dismissed alerts has no replay ledger, so it must stay an inert no-op"
+        );
+    }
+
+    #[test]
+    fn topbar_alert_threat_faction_targets_fail_closed_when_geometry_absent() {
+        let doc = serde_json::json!({
+            "view": "topbar",
+            "windows": [{
+                "type": "containerWindowType",
+                "name": "topbar",
+                "position": { "x": 0, "y": 0 },
+                "size": { "width": "100%%", "height": "100%%" },
+                "children": [{
+                    "type": "buttonType",
+                    "name": "construction_button",
+                    "position": { "x": 20, "y": 20 },
+                    "size": { "width": 30, "height": 30 },
+                    "orientation": "UPPER_LEFT",
+                    "sprite": "GFX_test_topbar_button"
+                }]
+            }]
+        });
+        let stage = stage_with_topbar(GuiFile::parse(&doc.to_string()).unwrap(), HashMap::new());
+        let snap = snap();
+        let mut view = TopbarView::new("GER");
+        let bv = view.bind(&ctx(&stage, &snap));
+        let drill_targets = topbar_drill_targets_from_roots(&bv.hit.roots);
+        let inert_targets = topbar_inert_targets_from_roots(&bv.hit.roots);
+
+        for leaf in ["threat_button", "threat_value_button"] {
+            assert!(
+                drill_targets.iter().all(|target| target.leaf != leaf),
+                "{leaf} must not be targetable without real GUI geometry"
+            );
+        }
+        for leaf in ["dismissed_alerts_button", "faction_button"] {
+            assert!(
+                inert_targets.iter().all(|target| target.leaf != leaf),
+                "{leaf} must not be targetable without real GUI geometry"
+            );
+        }
+        view.set_drill_targets(drill_targets);
+        view.set_inert_targets(inert_targets);
+
+        let out = view.on_input(&ViewInput::PointerDown {
+            x: 900.0,
+            y: 80.0,
+            button: PointerButton::Left,
+        });
+        assert!(!out.consumed);
+        assert!(out.commands.is_empty());
+        assert!(!out.needs_redraw);
+    }
+
     fn gui_dir() -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -584,6 +932,10 @@ mod tests {
             "GFX_armyoverview_button",
             "GFX_navyoverview_button",
             "GFX_airoverview_button",
+            "GFX_world_tension_icon_big_strip",
+            "GFX_WT_anim_strip",
+            "GFX_topbar_faction_empty",
+            "GFX_faction_logo_generic_democratic_miniature",
             "GFX_date_pause_button_bg",
             "GFX_date_pause_button",
             "GFX_zoom_out",
@@ -593,6 +945,7 @@ mod tests {
             "GFX_menu_button",
             "GFX_help_button",
             "GFX_achievements_button",
+            "GFX_show_dismissed_alerts_icon",
             "GFX_playlist_button",
             "GFX_music_pause_button",
             "GFX_music_next_button",
@@ -648,6 +1001,41 @@ mod tests {
         assert!(
             missing.is_empty(),
             "real extracted topbar.json lost registered inert target rects: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn real_topbar_gui_exposes_alert_threat_faction_slice_rects() {
+        let Some(gui) = load_real_topbar() else {
+            return;
+        };
+        let stage = stage_with_topbar(gui, topbar_button_sprites());
+        let snap = snap();
+        let view = TopbarView::new("GER");
+        let bv = view.bind(&ctx(&stage, &snap));
+
+        let drill_found: BTreeSet<&str> = topbar_drill_targets_from_roots(&bv.hit.roots)
+            .iter()
+            .map(|target| target.leaf)
+            .collect();
+        for leaf in ["threat_button", "threat_value_button"] {
+            assert!(
+                drill_found.contains(leaf),
+                "real extracted topbar.json must expose {leaf} before it can be routed"
+            );
+        }
+
+        let inert_found: BTreeSet<&str> = topbar_inert_targets_from_roots(&bv.hit.roots)
+            .iter()
+            .map(|target| target.leaf)
+            .collect();
+        assert!(
+            inert_found.contains("dismissed_alerts_button"),
+            "real extracted topbar.json must expose dismissed_alerts_button before it can be consumed"
+        );
+        assert!(
+            inert_found.contains("faction_button"),
+            "real extracted topbar.json must expose faction_button before it can be hovered or consumed"
         );
     }
 }

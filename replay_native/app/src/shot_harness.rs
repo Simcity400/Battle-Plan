@@ -3,14 +3,33 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use app::host::ViewRegistry;
+use app::views::map::MAP_VIEW_ID;
 use app::views::state_panel::STATE_PANEL_VIEW_ID;
 
 pub const SHOT_ALL_MANIFEST: &str = "shot_manifest.json";
+pub const SHOT_MANIFEST_VERSION: u64 = 2;
 pub const DEFAULT_STATE_PANEL_SHOT_STATE: u32 = 1;
+pub const BASE_SHOT_CASE_ID: &str = "base";
+pub const MAP_MODE_SHOT_CASES: &[(&str, &str, &str)] = &[
+    ("map_mode_control", "Map mode: Control", "control"),
+    ("map_mode_weather", "Map mode: Weather", "weather"),
+    ("map_mode_supply", "Map mode: Supply", "supply"),
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ShotCaseSpec {
+    id: &'static str,
+    family: &'static str,
+    label: &'static str,
+    map_mode_slug: Option<&'static str>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShotTarget {
     pub view_id: &'static str,
+    pub case_id: &'static str,
+    pub case_family: &'static str,
+    pub case_label: &'static str,
     pub native_filename: String,
     pub hoi4_reference_filename: String,
     pub diff_filename: String,
@@ -29,6 +48,9 @@ pub struct ShotManifestWrite {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManifestShotTarget {
     pub view_id: String,
+    pub case_id: String,
+    pub case_family: String,
+    pub case_label: String,
     pub native_filename: String,
     pub hoi4_reference_filename: String,
     pub diff_filename: String,
@@ -65,6 +87,19 @@ pub struct NativeShotBatchRun {
     pub captured_count: usize,
     pub pending_hoi4_reference_count: usize,
     pub pending_diff_count: usize,
+}
+
+fn target_owned_shot_arg(arg: &str) -> Option<&'static str> {
+    for flag in ["--shot", "--shot-view", "--shot-state", "--map-mode"] {
+        if arg == flag
+            || arg
+                .strip_prefix(flag)
+                .is_some_and(|rest| rest.starts_with('='))
+        {
+            return Some(flag);
+        }
+    }
+    None
 }
 
 fn validate_view_id_for_filename(id: &str) -> Result<(), String> {
@@ -122,21 +157,80 @@ fn validate_view_id_for_filename(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_case_id_for_filename(id: &str) -> Result<(), String> {
+    if id.is_empty() || id.trim() != id || id == "." || id == ".." {
+        return Err(format!("invalid screenshot case id '{id}'"));
+    }
+    if !id
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+    {
+        return Err(format!(
+            "invalid screenshot case id '{id}': unsupported path character"
+        ));
+    }
+    Ok(())
+}
+
+fn base_shot_case() -> ShotCaseSpec {
+    ShotCaseSpec {
+        id: BASE_SHOT_CASE_ID,
+        family: "base",
+        label: "Base registered view",
+        map_mode_slug: None,
+    }
+}
+
+fn shot_cases_for_view_id(id: &str) -> Vec<ShotCaseSpec> {
+    let mut cases = vec![base_shot_case()];
+    if id == MAP_VIEW_ID.as_str() {
+        cases.extend(
+            MAP_MODE_SHOT_CASES
+                .iter()
+                .map(|&(case_id, label, slug)| ShotCaseSpec {
+                    id: case_id,
+                    family: "map_modes",
+                    label,
+                    map_mode_slug: Some(slug),
+                }),
+        );
+    }
+    cases
+}
+
+fn shot_case_for_view_id(id: &str, case_id: &str) -> Option<ShotCaseSpec> {
+    shot_cases_for_view_id(id)
+        .into_iter()
+        .find(|case| case.id == case_id)
+}
+
 pub fn shot_filename_for_view_id(id: &str) -> Result<String, String> {
     validate_view_id_for_filename(id)?;
     Ok(format!("native__{id}.png"))
 }
 
-fn paired_filenames_for_view_id(id: &str) -> Result<(String, String, String), String> {
+fn paired_filenames_for_shot_case(
+    id: &str,
+    case_id: &str,
+) -> Result<(String, String, String), String> {
     validate_view_id_for_filename(id)?;
-    Ok((
-        shot_filename_for_view_id(id)?,
-        format!("hoi4__{id}.png"),
-        format!("diff__{id}.png"),
-    ))
+    validate_case_id_for_filename(case_id)?;
+    if case_id == BASE_SHOT_CASE_ID {
+        Ok((
+            shot_filename_for_view_id(id)?,
+            format!("hoi4__{id}.png"),
+            format!("diff__{id}.png"),
+        ))
+    } else {
+        Ok((
+            format!("native__{id}__{case_id}.png"),
+            format!("hoi4__{id}__{case_id}.png"),
+            format!("diff__{id}__{case_id}.png"),
+        ))
+    }
 }
 
-fn native_args_for_view_id(id: &str, native_filename: &str) -> Vec<String> {
+fn native_args_for_shot_case(id: &str, case: ShotCaseSpec, native_filename: &str) -> Vec<String> {
     let mut args = vec![
         "--shot".to_string(),
         native_filename.to_string(),
@@ -146,6 +240,10 @@ fn native_args_for_view_id(id: &str, native_filename: &str) -> Vec<String> {
     if id == STATE_PANEL_VIEW_ID.as_str() {
         args.push("--shot-state".to_string());
         args.push(DEFAULT_STATE_PANEL_SHOT_STATE.to_string());
+    }
+    if let Some(slug) = case.map_mode_slug {
+        args.push("--map-mode".to_string());
+        args.push(slug.to_string());
     }
     args
 }
@@ -158,27 +256,33 @@ pub fn build_registry_shot_matrix(
     let mut targets = Vec::new();
     for descriptor in registry.iter_views() {
         let view_id = descriptor.id.as_str();
-        let (native_filename, hoi4_reference_filename, diff_filename) =
-            paired_filenames_for_view_id(view_id)?;
-        for filename in [&native_filename, &hoi4_reference_filename, &diff_filename] {
-            let collision_key = filename.to_ascii_lowercase();
-            if !seen_filenames.insert(collision_key) {
-                return Err(format!(
-                    "duplicate screenshot target filename '{filename}' from registered view id '{view_id}'"
-                ));
+        for case in shot_cases_for_view_id(view_id) {
+            let (native_filename, hoi4_reference_filename, diff_filename) =
+                paired_filenames_for_shot_case(view_id, case.id)?;
+            for filename in [&native_filename, &hoi4_reference_filename, &diff_filename] {
+                let collision_key = filename.to_ascii_lowercase();
+                if !seen_filenames.insert(collision_key) {
+                    return Err(format!(
+                        "duplicate screenshot target filename '{filename}' from registered view id '{view_id}' case '{}'",
+                        case.id
+                    ));
+                }
             }
+            let native_args = native_args_for_shot_case(view_id, case, &native_filename);
+            targets.push(ShotTarget {
+                view_id,
+                case_id: case.id,
+                case_family: case.family,
+                case_label: case.label,
+                native_path: output_dir.join(&native_filename),
+                hoi4_reference_path: output_dir.join(&hoi4_reference_filename),
+                diff_path: output_dir.join(&diff_filename),
+                native_filename,
+                hoi4_reference_filename,
+                diff_filename,
+                native_args,
+            });
         }
-        let native_args = native_args_for_view_id(view_id, &native_filename);
-        targets.push(ShotTarget {
-            view_id,
-            native_path: output_dir.join(&native_filename),
-            hoi4_reference_path: output_dir.join(&hoi4_reference_filename),
-            diff_path: output_dir.join(&diff_filename),
-            native_filename,
-            hoi4_reference_filename,
-            diff_filename,
-            native_args,
-        });
     }
     if targets.is_empty() {
         return Err("--shot-all-views found no registered views".to_string());
@@ -227,6 +331,9 @@ pub fn write_registry_shot_manifest(
         .map(|target| {
             serde_json::json!({
                 "view_id": target.view_id,
+                "case_id": target.case_id,
+                "case_family": target.case_family,
+                "case_label": target.case_label,
                 "native_shot_file": target.native_filename,
                 "hoi4_reference_file": target.hoi4_reference_filename,
                 "diff_file": target.diff_filename,
@@ -239,16 +346,34 @@ pub fn write_registry_shot_manifest(
             })
         })
         .collect();
+    let base_view_count = registry.len();
+    let extra_case_count = targets.len().saturating_sub(base_view_count);
     let manifest = serde_json::json!({
-        "version": 1,
+        "version": SHOT_MANIFEST_VERSION,
         "kind": "shot_all_views_manifest",
         "status": "native_targets_planned",
-        "note": "--shot-all-views records registry-derived screenshot targets. --shot-all-views-run-native can emit native__ shots from this manifest; the game reference capture and diff review remain external and pending.",
+        "note": "--shot-all-views records registry-derived base screenshot targets plus deterministic native-only case expansions. --shot-all-views-run-native can emit native__ shots from this manifest; the game reference capture and diff review remain external and pending.",
         "path_base": "manifest_dir",
         "native_args_cwd": "manifest_dir",
-        "registry_view_count": targets.len(),
+        "registry_view_count": base_view_count,
+        "target_count": targets.len(),
+        "extra_case_count": extra_case_count,
         "manifest_file": SHOT_ALL_MANIFEST,
         "default_state_panel_shot_state": DEFAULT_STATE_PANEL_SHOT_STATE,
+        "case_expansion": {
+            "status": "deterministic",
+            "families": [{
+                "family": "map_modes",
+                "view_id": MAP_VIEW_ID.as_str(),
+                "cases": MAP_MODE_SHOT_CASES.iter().map(|&(case_id, label, slug)| {
+                    serde_json::json!({
+                        "case_id": case_id,
+                        "case_label": label,
+                        "map_mode": slug,
+                    })
+                }).collect::<Vec<_>>(),
+            }],
+        },
         "native_batch_runner": {
             "status": "available_with_runtime_command",
             "run_flag": "--shot-all-views-run-native",
@@ -304,6 +429,28 @@ fn manifest_string_array_field(
         .collect()
 }
 
+fn manifest_usize_field(
+    object: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+    path: &Path,
+) -> Result<usize, String> {
+    let raw = object
+        .get(field)
+        .and_then(|value| value.as_u64())
+        .ok_or_else(|| {
+            format!(
+                "shot-all-views manifest '{}' missing non-negative integer field '{field}'",
+                path.display()
+            )
+        })?;
+    usize::try_from(raw).map_err(|_| {
+        format!(
+            "shot-all-views manifest '{}' field '{field}' is too large",
+            path.display()
+        )
+    })
+}
+
 pub fn read_shot_manifest(path: &Path) -> Result<ShotManifestRead, String> {
     let raw = std::fs::read(path).map_err(|e| {
         format!(
@@ -323,6 +470,21 @@ pub fn read_shot_manifest(path: &Path) -> Result<ShotManifestRead, String> {
             path.display()
         )
     })?;
+    let version = object
+        .get("version")
+        .and_then(|value| value.as_u64())
+        .ok_or_else(|| {
+            format!(
+                "shot-all-views manifest '{}' missing numeric version",
+                path.display()
+            )
+        })?;
+    if version != SHOT_MANIFEST_VERSION {
+        return Err(format!(
+            "shot-all-views manifest '{}' has unsupported version {version} (expected {SHOT_MANIFEST_VERSION})",
+            path.display()
+        ));
+    }
     if object.get("kind").and_then(|value| value.as_str()) != Some("shot_all_views_manifest") {
         return Err(format!(
             "shot-all-views manifest '{}' has unsupported kind",
@@ -360,6 +522,16 @@ pub fn read_shot_manifest(path: &Path) -> Result<ShotManifestRead, String> {
             path.display()
         ));
     }
+    let declared_target_count = manifest_usize_field(object, "target_count", path)?;
+    if declared_target_count != raw_targets.len() {
+        return Err(format!(
+            "shot-all-views manifest '{}' target_count={declared_target_count} does not match targets array length {}",
+            path.display(),
+            raw_targets.len()
+        ));
+    }
+    let declared_registry_view_count = manifest_usize_field(object, "registry_view_count", path)?;
+    let declared_extra_case_count = manifest_usize_field(object, "extra_case_count", path)?;
 
     let mut seen_filenames = BTreeSet::new();
     let mut targets = Vec::new();
@@ -368,25 +540,38 @@ pub fn read_shot_manifest(path: &Path) -> Result<ShotManifestRead, String> {
             format!("shot-all-views manifest target {index} must be a JSON object")
         })?;
         let view_id = manifest_string_field(target, "view_id", index)?;
+        let case_id = manifest_string_field(target, "case_id", index)?;
+        let case_family = manifest_string_field(target, "case_family", index)?;
+        let case_label = manifest_string_field(target, "case_label", index)?;
         let native_filename = manifest_string_field(target, "native_shot_file", index)?;
         let hoi4_reference_filename = manifest_string_field(target, "hoi4_reference_file", index)?;
         let diff_filename = manifest_string_field(target, "diff_file", index)?;
         let native_args = manifest_string_array_field(target, "native_shot_args", index)?;
 
+        let case = shot_case_for_view_id(&view_id, &case_id).ok_or_else(|| {
+            format!(
+                "shot-all-views manifest target {index} has unsupported case '{case_id}' for view id '{view_id}'"
+            )
+        })?;
+        if case_family != case.family || case_label != case.label {
+            return Err(format!(
+                "shot-all-views manifest target {index} case metadata does not match view id '{view_id}' case '{case_id}'"
+            ));
+        }
         let (expected_native, expected_hoi4, expected_diff) =
-            paired_filenames_for_view_id(&view_id)?;
+            paired_filenames_for_shot_case(&view_id, &case_id)?;
         if native_filename != expected_native
             || hoi4_reference_filename != expected_hoi4
             || diff_filename != expected_diff
         {
             return Err(format!(
-                "shot-all-views manifest target {index} filenames do not match view id '{view_id}'"
+                "shot-all-views manifest target {index} filenames do not match view id '{view_id}' case '{case_id}'"
             ));
         }
-        let expected_args = native_args_for_view_id(&view_id, &native_filename);
+        let expected_args = native_args_for_shot_case(&view_id, case, &native_filename);
         if native_args != expected_args {
             return Err(format!(
-                "shot-all-views manifest target {index} native_shot_args do not match view id '{view_id}'"
+                "shot-all-views manifest target {index} native_shot_args do not match view id '{view_id}' case '{case_id}'"
             ));
         }
         if let Some(alias) = target.get("shot_file").and_then(|value| value.as_str()) {
@@ -428,11 +613,31 @@ pub fn read_shot_manifest(path: &Path) -> Result<ShotManifestRead, String> {
 
         targets.push(ManifestShotTarget {
             view_id,
+            case_id,
+            case_family,
+            case_label,
             native_filename,
             hoi4_reference_filename,
             diff_filename,
             native_args,
         });
+    }
+    let base_case_count = targets
+        .iter()
+        .filter(|target| target.case_id == BASE_SHOT_CASE_ID)
+        .count();
+    let extra_case_count = targets.len().saturating_sub(base_case_count);
+    if declared_registry_view_count != base_case_count {
+        return Err(format!(
+            "shot-all-views manifest '{}' registry_view_count={declared_registry_view_count} does not match base case count {base_case_count}",
+            path.display()
+        ));
+    }
+    if declared_extra_case_count != extra_case_count {
+        return Err(format!(
+            "shot-all-views manifest '{}' extra_case_count={declared_extra_case_count} does not match expanded case count {extra_case_count}",
+            path.display()
+        ));
     }
 
     Ok(ShotManifestRead {
@@ -463,6 +668,15 @@ pub fn build_native_shot_invocations(
     }
     if manifest.targets.is_empty() {
         return Err("shot-all-views native batch has no manifest targets".to_string());
+    }
+    if let Some(flag) = config
+        .common_args
+        .iter()
+        .find_map(|arg| target_owned_shot_arg(arg))
+    {
+        return Err(format!(
+            "shot-all-views common args cannot include target-owned {flag}"
+        ));
     }
 
     Ok(manifest
@@ -548,6 +762,7 @@ mod tests {
     const TEST_BETA: ViewId = ViewId("test.beta");
     const TEST_BAD: ViewId = ViewId("test/bad");
     const TEST_RESERVED: ViewId = ViewId("test.con");
+    const EXPECTED_BASE_REGISTERED_VIEW_COUNT: usize = 114;
 
     fn unused_open(_arg: Option<i64>) -> Box<dyn ViewInstance> {
         panic!("shot harness tests must not instantiate views")
@@ -612,12 +827,30 @@ mod tests {
         ))
     }
 
+    fn manifest_read_error_after_mutation(
+        test_name: &str,
+        mutate: impl FnOnce(&mut serde_json::Value),
+    ) -> String {
+        let out = unique_temp_dir_name(test_name);
+        std::fs::create_dir(&out).unwrap();
+        let write = write_registry_shot_manifest(&test_registry(), &out).unwrap();
+        let raw = std::fs::read(&write.path).unwrap();
+        let mut manifest: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        mutate(&mut manifest);
+        std::fs::write(&write.path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+        let err = read_shot_manifest(&write.path).unwrap_err();
+        std::fs::remove_dir_all(&out).unwrap();
+        err
+    }
+
     #[test]
     fn shot_all_views_matrix_is_registry_derived_and_sorted() {
         let out = Path::new("shots");
         let matrix = build_registry_shot_matrix(&test_registry(), out).unwrap();
         assert_eq!(matrix.len(), 2);
         assert_eq!(matrix[0].view_id, "test.alpha");
+        assert_eq!(matrix[0].case_id, BASE_SHOT_CASE_ID);
+        assert_eq!(matrix[0].case_family, "base");
         assert_eq!(matrix[0].native_filename, "native__test.alpha.png");
         assert_eq!(matrix[0].hoi4_reference_filename, "hoi4__test.alpha.png");
         assert_eq!(matrix[0].diff_filename, "diff__test.alpha.png");
@@ -631,13 +864,69 @@ mod tests {
     fn shot_all_views_matrix_covers_inventory_without_static_view_list() {
         let registry = ViewRegistry::from_inventory();
         let matrix = build_registry_shot_matrix(&registry, Path::new("shots")).unwrap();
-        let matrix_ids: Vec<_> = matrix.iter().map(|target| target.view_id).collect();
+        let base_targets: Vec<_> = matrix
+            .iter()
+            .filter(|target| target.case_id == BASE_SHOT_CASE_ID)
+            .collect();
+        let matrix_ids: Vec<_> = base_targets.iter().map(|target| target.view_id).collect();
         let registry_ids: Vec<_> = registry
             .iter_views()
             .map(|descriptor| descriptor.id.as_str())
             .collect();
-        assert!(!registry_ids.is_empty());
+        assert_eq!(registry.len(), EXPECTED_BASE_REGISTERED_VIEW_COUNT);
+        assert_eq!(base_targets.len(), EXPECTED_BASE_REGISTERED_VIEW_COUNT);
         assert_eq!(matrix_ids, registry_ids);
+        assert_eq!(
+            matrix.len(),
+            EXPECTED_BASE_REGISTERED_VIEW_COUNT + MAP_MODE_SHOT_CASES.len()
+        );
+    }
+
+    #[test]
+    fn shot_all_views_expands_named_map_mode_cases_deterministically() {
+        let registry = ViewRegistry::from_inventory();
+        let matrix = build_registry_shot_matrix(&registry, Path::new("shots")).unwrap();
+        let map_targets: Vec<_> = matrix
+            .iter()
+            .filter(|target| target.view_id == MAP_VIEW_ID.as_str())
+            .collect();
+        let case_ids: Vec<_> = map_targets.iter().map(|target| target.case_id).collect();
+        assert_eq!(
+            case_ids,
+            vec![
+                BASE_SHOT_CASE_ID,
+                "map_mode_control",
+                "map_mode_weather",
+                "map_mode_supply"
+            ]
+        );
+
+        let control = map_targets[1];
+        assert_eq!(control.case_family, "map_modes");
+        assert_eq!(control.case_label, "Map mode: Control");
+        assert_eq!(
+            control.native_filename,
+            "native__core.map__map_mode_control.png"
+        );
+        assert_eq!(
+            control.hoi4_reference_filename,
+            "hoi4__core.map__map_mode_control.png"
+        );
+        assert_eq!(
+            control.diff_filename,
+            "diff__core.map__map_mode_control.png"
+        );
+        assert_eq!(
+            control.native_args,
+            vec![
+                "--shot".to_string(),
+                "native__core.map__map_mode_control.png".to_string(),
+                "--shot-view".to_string(),
+                MAP_VIEW_ID.as_str().to_string(),
+                "--map-mode".to_string(),
+                "control".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -676,6 +965,7 @@ mod tests {
 
         let raw = std::fs::read(&write.path).unwrap();
         let manifest: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(manifest["version"], 2);
         assert_eq!(manifest["status"], "native_targets_planned");
         assert_eq!(manifest["path_base"], "manifest_dir");
         assert_eq!(manifest["native_args_cwd"], "manifest_dir");
@@ -684,7 +974,17 @@ mod tests {
             "native__*.png only"
         );
         assert_eq!(manifest["registry_view_count"], 2);
+        assert_eq!(manifest["target_count"], 2);
+        assert_eq!(manifest["extra_case_count"], 0);
+        assert_eq!(manifest["case_expansion"]["status"], "deterministic");
+        assert_eq!(
+            manifest["case_expansion"]["families"][0]["family"],
+            "map_modes"
+        );
         assert_eq!(manifest["targets"][0]["view_id"], "test.alpha");
+        assert_eq!(manifest["targets"][0]["case_id"], BASE_SHOT_CASE_ID);
+        assert_eq!(manifest["targets"][0]["case_family"], "base");
+        assert_eq!(manifest["targets"][0]["case_label"], "Base registered view");
         assert_eq!(
             manifest["targets"][0]["native_shot_file"],
             "native__test.alpha.png"
@@ -717,6 +1017,74 @@ mod tests {
         );
         assert_eq!(manifest["targets"][1]["view_id"], "test.beta");
         assert_eq!(manifest["targets"][1]["shot_file"], "native__test.beta.png");
+
+        std::fs::remove_dir_all(&out).unwrap();
+    }
+
+    #[test]
+    fn shot_all_views_manifest_reader_rejects_wrong_version_and_counts() {
+        let err = manifest_read_error_after_mutation("manifest_bad_version", |manifest| {
+            manifest["version"] = serde_json::json!(1);
+        });
+        assert!(err.contains("unsupported version 1"));
+
+        let err = manifest_read_error_after_mutation("manifest_bad_target_count", |manifest| {
+            manifest["target_count"] = serde_json::json!(999);
+        });
+        assert!(err.contains("target_count=999 does not match targets array length 2"));
+
+        let err = manifest_read_error_after_mutation("manifest_bad_registry_count", |manifest| {
+            manifest["registry_view_count"] = serde_json::json!(1);
+        });
+        assert!(err.contains("registry_view_count=1 does not match base case count 2"));
+
+        let err = manifest_read_error_after_mutation("manifest_bad_extra_count", |manifest| {
+            manifest["extra_case_count"] = serde_json::json!(1);
+        });
+        assert!(err.contains("extra_case_count=1 does not match expanded case count 0"));
+    }
+
+    #[test]
+    fn shot_all_views_manifest_reader_rejects_bad_case_metadata_and_args() {
+        let err = manifest_read_error_after_mutation("manifest_bad_case", |manifest| {
+            manifest["targets"][0]["case_id"] = serde_json::json!("map_mode_control");
+        });
+        assert!(err.contains("unsupported case 'map_mode_control' for view id 'test.alpha'"));
+
+        let err = manifest_read_error_after_mutation("manifest_bad_case_meta", |manifest| {
+            manifest["targets"][0]["case_label"] = serde_json::json!("Wrong label");
+        });
+        assert!(err.contains("case metadata does not match view id 'test.alpha' case 'base'"));
+
+        let err = manifest_read_error_after_mutation("manifest_bad_case_args", |manifest| {
+            manifest["targets"][0]["native_shot_args"] = serde_json::json!([
+                "--shot",
+                "native__test.alpha.png",
+                "--shot-view",
+                "test.alpha",
+                "--map-mode",
+                "control"
+            ]);
+        });
+        assert!(err.contains("native_shot_args do not match view id 'test.alpha' case 'base'"));
+    }
+
+    #[test]
+    fn shot_all_views_native_batch_rejects_target_owned_common_args() {
+        let out = unique_temp_dir_name("batch_conflict");
+        std::fs::create_dir(&out).unwrap();
+        let write = write_registry_shot_manifest(&test_registry(), &out).unwrap();
+        let manifest = read_shot_manifest(&write.path).unwrap();
+        let config = NativeShotBatchConfig {
+            command: PathBuf::from("replay_app"),
+            common_args: vec!["--map-mode".to_string(), "supply".to_string()],
+        };
+
+        let err = build_native_shot_invocations(&manifest, &config).unwrap_err();
+        assert_eq!(
+            err,
+            "shot-all-views common args cannot include target-owned --map-mode"
+        );
 
         std::fs::remove_dir_all(&out).unwrap();
     }

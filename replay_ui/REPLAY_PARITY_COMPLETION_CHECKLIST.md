@@ -578,12 +578,16 @@ Source of truth: `coverage_audit/memory_manifest.json`.
 Current manifest summary:
 
 - 272 total rows.
-- Authoritative row-level `status`: 144 `closed-by-reader`, 14
-  `closed-by-parser`, 26 `needs-wartime-save`, 9 `open-live-extractable`,
+- Authoritative row-level `status`: 146 `closed-by-reader`, 14
+  `closed-by-parser`, 26 `needs-wartime-save`, 7 `open-live-extractable`,
   15 `open-computed`, 2 `wall`, 62 `excluded`.
-- Legacy `gap`/coverage status: 158 `covered`, 63 `excluded-by-scope`,
-  32 `GAP-save-not-live`, 14 `GAP-computed`, 2 `GAP-uncovered`,
+- Legacy `gap`/coverage status: 160 `covered`, 62 `excluded-by-scope`,
+  31 `GAP-save-not-live`, 14 `GAP-computed`, 2 `GAP-uncovered`,
   1 `GAP-visual`, 2 `WALL`.
+- Closure headline: 160 rows are closed (146 reader/save + 14 parser/static),
+  48 closeable/provable rows remain open (26 fixture-gated + 7 live/static +
+  15 computed/visual), and 2 rows are permanent walls. This is not a product
+  parity claim.
 
 ### 5.1 Needs User Fixture Or Wartime State
 
@@ -625,12 +629,10 @@ not filename.
 These should be worked down before calling product parity complete:
 
 - [ ] `difficulty_settings`
-- [ ] `doctrine`
 - [ ] `all_playthrough_data`
-- [ ] `countries.logistics`
-- [ ] `countries.strategic_navy`
-- [ ] `countries.flags`
-- [ ] `countries.upgrades`
+- [ ] `countries.*.logistics`
+- [ ] `countries.*.strategic_navy`
+- [ ] `countries.*.upgrades`
 - [ ] `mapicon.general_portrait_on_counter` (partial: anchored OOB/commander
   portrait joins, anchored land-counter count/owner/org/fractional-strength/type/dig-in
   logical entities, memory-scaled strength progressbars fail closed at the anchor,
@@ -653,6 +655,12 @@ These should be worked down before calling product parity complete:
   + `parse_doctrines` catalogs and native `research_tech_doctrine` graph tests:
   every tree-visible tech/doctrine node is positioned, hidden/non-tree techs are
   classified, and edges/XOR groups are accounted)
+- [x] `doctrine` (save-cadence closed by `parse_doctrine`: top-level
+  `doctrine.countries` is parsed into TAG-keyed rows under
+  `countries.*.research.doctrine`; no live doctrine-manager root is claimed)
+- [x] `countries.*.flags` (save-backed under
+  `countries.*.extra.script_flags`; live CFlagManager payload decoding remains
+  fail-closed, not guessed)
 
 ### 5.3 Computed Jobs
 
@@ -676,7 +684,9 @@ a faithful recompute or a reviewed permanent badge:
   battleplan semantics, and side-by-side styling parity still open)
 - [ ] `mapicon.attrition_flag`
 - [ ] `world_tension`
-- [ ] `research completion fraction`
+- [ ] `research completion fraction / ETA` (static research costs are
+  parser-backed; the progress fraction and ETA remain derived/fail-closed
+  because runtime progress/speed math is not fully captured)
 - [ ] `weather temperature formula / RNG / phenomenon-name strings`
 - [ ] `combat detail stat rows`
 - [ ] `ui_computed.designer_combat_stats`
