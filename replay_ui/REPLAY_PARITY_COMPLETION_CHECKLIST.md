@@ -596,14 +596,14 @@ Source of truth: `coverage_audit/memory_manifest.json`.
 
 Current manifest summary:
 
-- 272 total rows.
-- Authoritative row-level `status`: 147 `closed-by-reader`, 14
+- 273 total rows.
+- Authoritative row-level `status`: 148 `closed-by-reader`, 14
   `closed-by-parser`, 26 `needs-wartime-save`, 6 `open-live-extractable`,
   15 `open-computed`, 2 `wall`, 62 `excluded`.
-- Legacy `gap`/coverage status: 161 `covered`, 62 `excluded-by-scope`,
+- Legacy `gap`/coverage status: 162 `covered`, 62 `excluded-by-scope`,
   30 `GAP-save-not-live`, 14 `GAP-computed`, 2 `GAP-uncovered`,
   1 `GAP-visual`, 2 `WALL`.
-- Closure headline: 161 rows are closed (147 reader/save + 14 parser/static),
+- Closure headline: 162 rows are closed (148 reader/save + 14 parser/static),
   47 closeable/provable rows remain open (26 fixture-gated + 6 live/static +
   15 computed/visual), and 2 rows are permanent walls. This is not a product
   parity claim.
@@ -705,9 +705,9 @@ a faithful recompute or a reviewed permanent badge:
   battleplan semantics, and side-by-side styling parity still open)
 - [ ] `mapicon.attrition_flag`
 - [ ] `world_tension`
-- [ ] `research completion fraction / ETA` (static research costs are
-  parser-backed; the progress fraction and ETA remain derived/fail-closed
-  because runtime progress/speed math is not fully captured)
+- [ ] `research ETA / live speed` (research completion fraction is now closed
+  through measured `progress_pct`; ETA and live-speed parity remain open because
+  runtime speed/effective-cost math is not fully captured)
 - [ ] `weather temperature formula / RNG / phenomenon-name strings`
 - [ ] `combat detail stat rows`
 - [ ] `ui_computed.designer_combat_stats`
@@ -755,15 +755,36 @@ The app is product-complete only when these pass:
 ## 7. Immediate Next Work
 
 1. Run the live unpaused recorder proof at intended MP speed for the selected
-   cadence modes and close any
-   skipped-hour/cadence failures it exposes.
-2. Expand `INTERACTION_PARITY_INVENTORY.md` into executable target contracts
-   beyond the current partial tab/row/text/scroll/hover slices.
-3. Build generic tooltip infrastructure and wire the first complete vertical slice.
-4. Finish the #26 visual overlay parity pass: feed real the game route geometry
-   into the measured-polyline schema, close exact front and battleplan styling
-   beyond the current semantic line-style metadata and live target-state arrow
-   join, and capture side-by-side map-mode screenshots.
-5. Work down non-user-blocked manifest gaps, starting with visual/map drivers and
-   computed values that affect common inspection workflows.
-6. When the user provides a mid-war paused save, close the 26 wartime/fixture rows.
+   cadence modes and close any skipped-hour/cadence failures it exposes.
+2. Expand `INTERACTION_PARITY_INVENTORY.md` and
+   `interaction_contract.rs` beyond the current partial tab/row/text/scroll/
+   hover slices. Prioritize high-traffic windows, complete tooltip/drilldown
+   coverage, disabled visuals, and read-only behavior for every visible
+   non-mutating control.
+3. Finish the #26 visual overlay parity pass: feed real the game route geometry
+   into the measured-polyline schema, close exact front/battleplan/trade/weather
+   overlay styling beyond the current semantic metadata and live target-state
+   arrow join, and capture side-by-side map-mode screenshots.
+4. Finish the #50 asset/counter work: complete portrait and insignia extraction,
+   render full GUI counter chrome/art, add commander selection, navy/air/rail/
+   transport counters, HQ/supply/attrition indicators, and side-by-side visual
+   tests.
+5. Extend the deterministic screenshot harness from registry plumbing to actual
+   broad coverage: every registered view, representative tabs/rows/tooltips,
+   map modes, native/HOI4 references, diffs, thresholds, and reviewed exceptions.
+6. Work down the 6 non-user-blocked live/static manifest rows:
+   `all_playthrough_data`, `countries.*.logistics`,
+   `countries.*.strategic_navy`, `countries.*.upgrades`,
+   `mapicon.general_portrait_on_counter`, and
+   `ui_open.insignia_emblem_assets`.
+7. Work down the 15 computed/visual rows or promote only proven impossibilities
+   to permanent badges with evidence. High-impact rows include world tension,
+   research ETA/live speed, weather phenomenon semantics, front lines, attrition,
+   designer stats, exact Air/Naval per-province values, occupation/garrison need,
+   power-balance markers, operation chances, airwing denominators, war score, and
+   combat battle detail.
+8. When the user provides a mid-war/eventful paused save, close the 26
+   wartime/fixture rows. Content-match by live game date and ROOT tag, not
+   filename or mtime.
+9. Keep the two walls badged and never faked unless new evidence changes them:
+   exact per-province supply tooltip number and true Steam real names.

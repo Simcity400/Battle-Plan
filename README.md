@@ -15,8 +15,12 @@ place, the map/weather/rendering stack is wired, the `.battleplan` container
 exists, and the coverage checker passes.
 
 Product parity is not complete. The app is not yet a fully proven 1-to-1
-inspector for every real HOI4 UI interaction and visual surface. The canonical
-remaining-work checklist is:
+inspector for every real HOI4 UI interaction and visual surface. Current data
+coverage is 273 manifest rows: 162 closed, 47 closeable/provable rows still open
+including 26 wartime/fixture-gated rows, 6 live/static rows, and 15
+computed/visual rows, plus 2 permanent walls and 62 excluded rows.
+
+The canonical remaining-work checklist is:
 
 - [replay_ui/REPLAY_PARITY_COMPLETION_CHECKLIST.md](replay_ui/REPLAY_PARITY_COMPLETION_CHECKLIST.md)
 
@@ -26,9 +30,14 @@ The current high-level blockers are:
 - full read-only interaction parity for every registered view
 - tooltip/localization parity beyond the first vertical slice
 - side-by-side game-vs-app screenshot/interaction comparison
-- remaining asset-sprite/counter chrome work
-- remaining map overlay parity for labels, routes, fronts, battle plans, and trade
-- data gaps tracked in `coverage_audit/memory_manifest.json`
+- remaining asset-sprite/counter chrome work, especially portraits, insignia,
+  and full unit-counter chrome/art parity
+- remaining map overlay parity for labels, routes, fronts, battle plans, trade,
+  weather phenomenon overlays, and exact Air/Naval per-province visual parity
+- data gaps tracked in `coverage_audit/memory_manifest.json`, especially
+  `all_playthrough_data`, `countries.*.logistics`,
+  `countries.*.strategic_navy`, `countries.*.upgrades`, computed values, and
+  visual-semantics rows
 - user-provided mid-war/eventful paused save coverage for wartime-only rows
 
 ## Run The Native Replay App
