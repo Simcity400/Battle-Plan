@@ -577,6 +577,11 @@ fn hover_tooltip_contract(view_id: ViewId) -> CategoryContract {
             status: InteractionStatus::Open,
             note: "core.state_panel has executable factual hover-tooltip proof for state owner flags, state-building rows, and resource rows, including scroll-aware building hover and stale-hover fail-closed rebind behavior; full the game tooltip frames, hover chrome, drilldowns, screenshots, and side-by-side proof remain open",
         },
+        "core.topbar" => CategoryContract {
+            category: InteractionCategory::HoverTooltip,
+            status: InteractionStatus::Open,
+            note: "core.topbar has executable factual hover-tooltip proof for threat_button/threat_value_button and faction_button over synced real .gui rects, including missing/null no-fabrication badges and hover-clear behavior; full the game tooltip frames, hover chrome, localization expansion, screenshots, and broader topbar tooltip parity remain open",
+        },
         "chrome.mapmodes" => CategoryContract {
             category: InteractionCategory::HoverTooltip,
             status: InteractionStatus::Open,
@@ -625,7 +630,7 @@ fn drilldown_contract(view_id: ViewId) -> CategoryContract {
         CategoryContract {
             category: InteractionCategory::Drilldown,
             status: InteractionStatus::Open,
-            note: "core.topbar has executable read-only OpenView proof for synced real .gui navigation button rects; faction/alerts drilldowns, hover frames/tooltips, disabled read-only behavior, screenshots, and broader topbar parity remain open",
+            note: "core.topbar has executable read-only OpenView proof for synced real .gui navigation and world-tension button rects, including threat_button/threat_value_button -> intel.world_tension_popup; faction_button and dismissed_alerts_button are separately proven as disabled/no-op controls; hover frames, screenshots, and broader topbar parity remain open",
         }
     } else if view_id.0 == "chrome.minimap" {
         CategoryContract {
@@ -666,7 +671,7 @@ fn disabled_mutation_contract(view_id: ViewId) -> CategoryContract {
         "production.production" => CategoryContract {
             category: InteractionCategory::DisabledMutation,
             status: InteractionStatus::Open,
-            note: "production.production has executable click-no-op proof for visible add-line buttons, production-line close buttons, factory add/sub buttons, and priority/amount buttons; convert/deploy/refit/obsolete controls, disabled visual treatment, and broader production mutation parity remain open",
+            note: "production.production has executable click-no-op proof for visible add-line buttons, production-line close buttons, factory add/sub buttons, priority/amount buttons, and row manufacturer/equipment/convert/deploy/name-list controls; variant/obsolete equipment-info controls, disabled visual treatment, and broader production mutation parity remain open",
         },
         "production.decisions" => CategoryContract {
             category: InteractionCategory::DisabledMutation,
@@ -676,12 +681,12 @@ fn disabled_mutation_contract(view_id: ViewId) -> CategoryContract {
         "leaders.army_trait_tree" => CategoryContract {
             category: InteractionCategory::DisabledMutation,
             status: InteractionStatus::Open,
-            note: "leaders.army_trait_tree has executable click-no-op proof for the rendered add_trait_0 through add_trait_3 trait-pick slots as replay-disabled no-ops; trait-pick availability, disabled visual treatment, tactic/wiki/tab controls, static catalog pickable/disabled nodes, and broader trait-tree mutation parity remain open",
+            note: "leaders.army_trait_tree has executable click-no-op proof for the rendered add_trait_0 through add_trait_3 trait-pick slots plus traits_tabs and preferred_tactic_tiling_container as replay-disabled no-ops; trait-pick availability, disabled visual treatment, button-level tab/wiki controls, static catalog pickable/disabled nodes, and broader trait-tree mutation parity remain open",
         },
         "leaders.navy_trait_tree" => CategoryContract {
             category: InteractionCategory::DisabledMutation,
             status: InteractionStatus::Open,
-            note: "leaders.navy_trait_tree has executable click-no-op proof for the rendered add_trait_0 through add_trait_3 trait-pick slots as replay-disabled no-ops; trait-pick availability, disabled visual treatment, wiki/tab controls, static catalog pickable/disabled nodes, and broader trait-tree mutation parity remain open",
+            note: "leaders.navy_trait_tree has executable click-no-op proof for the rendered add_trait_0 through add_trait_3 trait-pick slots plus traits_tabs as replay-disabled no-ops; trait-pick availability, disabled visual treatment, button-level tab/wiki controls, static catalog pickable/disabled nodes, and broader trait-tree mutation parity remain open",
         },
         "core.state_panel" => CategoryContract {
             category: InteractionCategory::DisabledMutation,
@@ -691,7 +696,7 @@ fn disabled_mutation_contract(view_id: ViewId) -> CategoryContract {
         "core.topbar" => CategoryContract {
             category: InteractionCategory::DisabledMutation,
             status: InteractionStatus::Open,
-            note: "core.topbar has executable click-no-op proof for visible pause/date, speed-control, lobby/menu/help/achievements, playlist, and music-control buttons as replay-disabled no-ops; dismissed alerts, threat/faction controls, disabled visual treatment, and broader topbar mutation parity remain open",
+            note: "core.topbar has executable click-no-op proof for visible pause/date, speed-control, lobby/menu/help/achievements, playlist/music controls, dismissed_alerts_button, and faction_button as replay-disabled/no-op controls; threat_button/threat_value_button are separately proven read-only OpenView controls; disabled visual treatment, screenshots, and broader topbar mutation parity remain open",
         },
         "designers.tank" | "designers.plane" | "designers.equipment" => CategoryContract {
             category: InteractionCategory::DisabledMutation,
@@ -779,6 +784,7 @@ pub fn known_hover_tooltip_targets(view_id: ViewId) -> &'static [InteractionTarg
     match view_id.0 {
         "core.map" => &CORE_MAP_HOVER_TARGETS,
         "core.state_panel" => &CORE_STATE_PANEL_HOVER_TARGETS,
+        "core.topbar" => &CORE_TOPBAR_HOVER_TARGETS,
         "chrome.mapmodes" => &CHROME_MAPMODES_HOVER_TARGETS,
         "research.tech_tree" => &RESEARCH_TECH_TREE_HOVER_TARGETS,
         "research.doctrine_tree" => &RESEARCH_DOCTRINE_TREE_HOVER_TARGETS,
@@ -868,11 +874,15 @@ const CHROME_FIND_RECENTER_NOTE: &str =
 const CHROME_MINIMAP_DRILLDOWN_NOTE: &str =
     "fixed minimap navigation target; executable MinimapView tests prove click-and-drag recenter emits RecenterMap, pointer-up clears drag capture state, and letterbox/outside clicks do not fabricate map picks; screenshot proof remains open";
 const CORE_TOPBAR_DRILLDOWN_NOTE: &str =
-    "fixed topbar navigation target; executable TopbarView tests prove synced real .gui button rects emit read-only OpenView commands, leave the topbar render digest unchanged, and keep empty-space clicks falling through; faction/alerts drilldowns, hover frames/tooltips, disabled read-only behavior, screenshots, and broader topbar parity remain open";
+    "fixed topbar navigation/world-tension target; executable TopbarView tests prove synced real .gui button rects emit read-only OpenView commands, including threat_button/threat_value_button -> intel.world_tension_popup, leave the topbar render digest unchanged, and keep empty-space clicks falling through; faction_button and dismissed_alerts_button are separately proven as disabled/no-op controls, while hover frames, screenshots, and broader topbar parity remain open";
+const CORE_TOPBAR_HOVER_NOTE: &str =
+    "fixed topbar hover target; executable TopbarView tests prove threat_button/threat_value_button hover emits a factual World tension tooltip with aggregate unavailable and measured threat-ledger count when fed, missing ledgers badged unavailable instead of fabricated zero, and faction_button hover emits factual country/faction name/leader rows with missing/null faction fields badged unavailable and hover-clear behavior; full the game tooltip frames, hover chrome, localization expansion, screenshots, and broader topbar tooltip parity remain open";
 const CORE_TOPBAR_DISABLED_MUTATION_NOTE: &str =
-    "fixed topbar time-control target; executable TopbarView tests prove pause_button_date, pause_button_date_paused, button_speeddown, button_speedstep1, button_speedstep2, button_speedstep3, button_speedstep4, button_speedstep5, and button_speedup are consumed as replay-disabled no-op pointer-down/up clicks with no emitted commands, no redraw request, and unchanged topbar digest; shell tests prove higher-z panels prevent hidden topbar time-control targets from arming; dismissed alerts, threat/faction controls, disabled visual treatment, screenshots, and broader topbar mutation parity remain open";
+    "fixed topbar time-control target; executable TopbarView tests prove pause_button_date, pause_button_date_paused, button_speeddown, button_speedstep1, button_speedstep2, button_speedstep3, button_speedstep4, button_speedstep5, and button_speedup are consumed as replay-disabled no-op pointer-down/up clicks with no emitted commands, no redraw request, and unchanged topbar digest; shell tests prove higher-z panels prevent hidden topbar time-control targets from arming; disabled visual treatment, screenshots, and broader topbar mutation parity remain open";
 const CORE_TOPBAR_DISABLED_CHROME_MUTATION_NOTE: &str =
-    "fixed topbar lobby/menu/music chrome target; executable TopbarView tests prove reopen_ingame_lobby, menu_button, help_button, achievements_button, playlist_button, music_pause_button, music_next_button, and musicplayer_button are consumed as replay-disabled no-op pointer-down/up clicks with no emitted commands, no redraw request, and unchanged topbar digest; shell tests prove higher-z panels prevent hidden topbar menu/music targets from arming; dismissed_alerts_button, threat_button, threat_value_button, faction_button, disabled visual treatment, screenshots, and broader topbar mutation parity remain open";
+    "fixed topbar lobby/menu/music chrome target; executable TopbarView tests prove reopen_ingame_lobby, menu_button, help_button, achievements_button, playlist_button, music_pause_button, music_next_button, and musicplayer_button are consumed as replay-disabled no-op pointer-down/up clicks with no emitted commands, no redraw request, and unchanged topbar digest; shell tests prove higher-z panels prevent hidden topbar menu/music targets from arming; disabled visual treatment, screenshots, and broader topbar mutation parity remain open";
+const CORE_TOPBAR_ALERT_FACTION_NOOP_NOTE: &str =
+    "fixed topbar alert/faction no-op target; executable TopbarView tests prove dismissed_alerts_button and faction_button are resolved from synced real .gui rects, consume pointer-down/up as replay-disabled/no-op controls with no emitted commands, no redraw request, and unchanged topbar digest; a missing alert ledger stays inert instead of opening fabricated data, faction inspection is limited to factual hover rows, disabled visual treatment, screenshots, and broader topbar mutation parity remain open";
 const CHROME_MAPMODES_ROW_NOTE: &str =
     "fixed map-mode rail row target; executable MapModesView tests prove real laid-out mapmode_button_* slots emit read-only SetMapMode commands while unavailable/data-proxy badges remain honest; custom slot configuration/defaults, legend hover, and screenshots remain open";
 const CHROME_MAPMODES_ALL_NOTE: &str =
@@ -920,9 +930,9 @@ const LEADERS_ARMY_TRAIT_TREE_HOVER_NOTE: &str =
 const LEADERS_NAVY_TRAIT_TREE_HOVER_NOTE: &str =
     "dynamic N3 owned-trait hover target; executable NavyTraitTreeView tests prove the same factual tooltip composer for admiral trait tokens, exact navy branch rows, and derived static DEF catalog rows; full the game trait tooltip frame, localized name/icon/effect text, prerequisite text/effect expansion, disabled/pickable states, and side-by-side proof remain open";
 const LEADERS_ARMY_TRAIT_TREE_DISABLED_MUTATION_NOTE: &str =
-    "fixed trait-tree add-trait slot target; executable ArmyTraitTreeView tests prove add_trait_0, add_trait_1, add_trait_2, and add_trait_3 are resolved from the rendered real .gui roots and consumed as replay-disabled no-op pointer-down/up clicks with no emitted commands, no redraw request, and unchanged selected trait/detail bind digest; trait-pick availability, disabled visual treatment, tactic/wiki/tab controls, static catalog pickable/disabled nodes, and broader trait-tree mutation parity remain open";
+    "fixed trait-tree add-trait/control target; executable ArmyTraitTreeView tests prove add_trait_0, add_trait_1, add_trait_2, add_trait_3, traits_tabs, and preferred_tactic_tiling_container are resolved from the rendered real .gui roots and consumed as replay-disabled no-op pointer-down/up clicks with no emitted commands, no redraw request, and unchanged selected trait/detail bind digest; trait-pick availability, disabled visual treatment, button-level tab/wiki controls, static catalog pickable/disabled nodes, and broader trait-tree mutation parity remain open";
 const LEADERS_NAVY_TRAIT_TREE_DISABLED_MUTATION_NOTE: &str =
-    "fixed trait-tree add-trait slot target; executable NavyTraitTreeView tests prove add_trait_0, add_trait_1, add_trait_2, and add_trait_3 are resolved from the rendered real .gui roots and consumed as replay-disabled no-op pointer-down/up clicks with no emitted commands, no redraw request, and unchanged selected trait/detail bind digest; trait-pick availability, disabled visual treatment, wiki/tab controls, static catalog pickable/disabled nodes, and broader trait-tree mutation parity remain open";
+    "fixed trait-tree add-trait/control target; executable NavyTraitTreeView tests prove add_trait_0, add_trait_1, add_trait_2, add_trait_3, and traits_tabs are resolved from the rendered real .gui roots and consumed as replay-disabled no-op pointer-down/up clicks with no emitted commands, no redraw request, and unchanged selected trait/detail bind digest; trait-pick availability, disabled visual treatment, button-level tab/wiki controls, static catalog pickable/disabled nodes, and broader trait-tree mutation parity remain open";
 const LOGISTICS_INGAME_MENU_DISABLED_MUTATION_NOTE: &str =
     "fixed ingame-menu verb target; executable IngameMenuView/WindowHost tests prove replay-disabled Save/Load/Resign/Quit click streams are consumed as no-op modal input with no emitted commands, no redraw request, and unchanged bind digest; per-button leaf routing, disabled visual treatment, save-list filesystem browsing, and broader mutation parity remain open";
 const LOGISTICS_EVENT_WINDOW_DISABLED_MUTATION_NOTE: &str =
@@ -934,13 +944,15 @@ const PRODUCTION_CONSTRUCTION_DISABLED_MUTATION_NOTE: &str =
 const PRODUCTION_CONSTRUCTION_QUEUE_MUTATION_NOTE: &str =
     "visible construction-queue row target; executable ConstructionView tests prove production_building_line_entry increase_priority/decrease_priority, increase_amount/decrease_amount, and close_production_line controls are consumed as replay-disabled no-op pointer-down/up clicks with no emitted commands, no redraw request, and unchanged selected row/scroll/bind digest while neighboring row-body clicks still select the backing construction row; build-picker actions, market/debug controls, disabled visual treatment, and broader construction mutation parity remain open";
 const PRODUCTION_PRODUCTION_CLOSE_MUTATION_NOTE: &str =
-    "visible production-line close target; executable ProductionView tests prove close_production_line pointer-down/up on a visible scrolled production row is consumed as a replay-disabled no-op with no emitted commands, no redraw request, and unchanged selected row/scroll/bind digest while neighboring row-body clicks still select the backing row; convert/deploy/refit/obsolete controls, disabled visual treatment, and broader production mutation parity remain open";
+    "visible production-line close target; executable ProductionView tests prove close_production_line pointer-down/up on a visible scrolled production row is consumed as a replay-disabled no-op with no emitted commands, no redraw request, and unchanged selected row/scroll/bind digest while neighboring row-body clicks still select the backing row; variant/obsolete equipment-info controls, disabled visual treatment, and broader production mutation parity remain open";
 const PRODUCTION_PRODUCTION_FACTORY_MUTATION_NOTE: &str =
-    "visible production-line factory assignment target; production.json now preserves countryproductionlineview.gui @prod_* defines so factories_sub_1x/factories_sub_5x/factories_sub_10x and factories_add_1x/factories_add_5x/factories_add_10x resolve to exact row coordinates; executable ProductionView tests prove those physical add/sub hit areas are consumed as replay-disabled no-op clicks with no emitted commands, no redraw request, and unchanged selected row/scroll/bind digest while neighboring row-body clicks still select the backing row; convert/deploy/refit/obsolete controls, disabled visual treatment, and broader production mutation parity remain open";
+    "visible production-line factory assignment target; production.json now preserves countryproductionlineview.gui @prod_* defines so factories_sub_1x/factories_sub_5x/factories_sub_10x and factories_add_1x/factories_add_5x/factories_add_10x resolve to exact row coordinates; executable ProductionView tests prove those physical add/sub hit areas are consumed as replay-disabled no-op clicks with no emitted commands, no redraw request, and unchanged selected row/scroll/bind digest while neighboring row-body clicks still select the backing row; variant/obsolete equipment-info controls, disabled visual treatment, and broader production mutation parity remain open";
 const PRODUCTION_PRODUCTION_PRIORITY_AMOUNT_MUTATION_NOTE: &str =
-    "visible production-line priority and amount target; executable ProductionView tests prove increase_priority/decrease_priority plus military btn_x10/btn_x5 and naval increase_amount/decrease_amount row controls are consumed as replay-disabled no-op pointer-down/up clicks with no emitted commands, no redraw request, and unchanged selected row/scroll/bind digest while neighboring row-body clicks still select the backing row; convert/deploy/refit/obsolete controls, disabled visual treatment, and broader production mutation parity remain open";
+    "visible production-line priority and amount target; executable ProductionView tests prove increase_priority/decrease_priority plus military btn_x10/btn_x5 and naval increase_amount/decrease_amount row controls are consumed as replay-disabled no-op pointer-down/up clicks with no emitted commands, no redraw request, and unchanged selected row/scroll/bind digest while neighboring row-body clicks still select the backing row; variant/obsolete equipment-info controls, disabled visual treatment, and broader production mutation parity remain open";
 const PRODUCTION_PRODUCTION_ADD_LINE_MUTATION_NOTE: &str =
-    "visible root add-line target; executable ProductionView tests prove infantry_button/tank_button/aircraft_button/naval_button/naval_repair_button are resolved from real production.json offsets plus measured 81x41 button frames and consumed as replay-disabled no-op pointer-down/up clicks with no emitted commands, no redraw request, and unchanged selected row/scroll/visible rows/bind digest while empty space between aircraft and naval groups remains unclaimed; convert/deploy/refit/obsolete controls, disabled visual treatment, and broader production mutation parity remain open";
+    "visible root add-line target; executable ProductionView tests prove infantry_button/tank_button/aircraft_button/naval_button/naval_repair_button are resolved from real production.json offsets plus measured 81x41 button frames and consumed as replay-disabled no-op pointer-down/up clicks with no emitted commands, no redraw request, and unchanged selected row/scroll/visible rows/bind digest while empty space between aircraft and naval groups remains unclaimed; variant/obsolete equipment-info controls, disabled visual treatment, and broader production mutation parity remain open";
+const PRODUCTION_PRODUCTION_LINE_CONTROLS_MUTATION_NOTE: &str =
+    "visible production-line manufacturer/equipment/convert/deploy/name-list target; executable ProductionView tests prove production_military_line_entry attach_manufacturer/change_manufacturer/equipment_button/expand/convert and production_naval_line_entry attach_manufacturer/change_manufacturer/equipment_button/expand/carrier_air_wing_composition/deploy_location/name_list_btn controls resolve from real template positions and are consumed as replay-disabled no-op pointer-down/up clicks with no emitted commands, no redraw request, and unchanged selected row/scroll/bind digest while neighboring equipment and name-list row-body clicks still select the backing row; variant/obsolete equipment-info controls, unrendered refit-template controls, disabled visual treatment, and broader production mutation parity remain open";
 const PRODUCTION_DECISIONS_SELECT_MUTATION_NOTE: &str =
     "visible timed-decision action target; executable DecisionsView tests prove timed_decision_item btn_select controls are consumed as replay-disabled no-op pointer-down/up clicks with no emitted commands, no redraw request, and unchanged selected row/scroll/bind digest while neighboring row-body clicks still select the backing timed decision and scrolled visible rows remain correctly resolved; one-shot decision availability, disabled visual treatment, and broader decisions mutation parity remain open";
 
@@ -976,7 +988,7 @@ const CORE_STATE_PANEL_DISABLED_MUTATION_TARGETS: [InteractionTargetContract; 1]
         status: InteractionStatus::Open,
         note: CORE_STATE_PANEL_DISABLED_MUTATION_NOTE,
     }];
-const CORE_TOPBAR_DISABLED_MUTATION_TARGETS: [InteractionTargetContract; 2] = [
+const CORE_TOPBAR_DISABLED_MUTATION_TARGETS: [InteractionTargetContract; 3] = [
     InteractionTargetContract {
         category: InteractionCategory::DisabledMutation,
         id: "core.topbar.mutation.time_controls",
@@ -990,6 +1002,13 @@ const CORE_TOPBAR_DISABLED_MUTATION_TARGETS: [InteractionTargetContract; 2] = [
         label: "Lobby/menu/help/achievements and music controls",
         status: InteractionStatus::Open,
         note: CORE_TOPBAR_DISABLED_CHROME_MUTATION_NOTE,
+    },
+    InteractionTargetContract {
+        category: InteractionCategory::DisabledMutation,
+        id: "core.topbar.mutation.alerts_faction_noops",
+        label: "Dismissed alerts and faction no-op controls",
+        status: InteractionStatus::Open,
+        note: CORE_TOPBAR_ALERT_FACTION_NOOP_NOTE,
     },
 ];
 const LOGISTICS_EVENT_WINDOW_DISABLED_MUTATION_TARGETS: [InteractionTargetContract; 1] =
@@ -1024,7 +1043,7 @@ const PRODUCTION_CONSTRUCTION_DISABLED_MUTATION_TARGETS: [InteractionTargetContr
         note: PRODUCTION_CONSTRUCTION_QUEUE_MUTATION_NOTE,
     },
 ];
-const PRODUCTION_PRODUCTION_DISABLED_MUTATION_TARGETS: [InteractionTargetContract; 4] = [
+const PRODUCTION_PRODUCTION_DISABLED_MUTATION_TARGETS: [InteractionTargetContract; 5] = [
     InteractionTargetContract {
         category: InteractionCategory::DisabledMutation,
         id: "production.production.mutation.add_line",
@@ -1052,6 +1071,13 @@ const PRODUCTION_PRODUCTION_DISABLED_MUTATION_TARGETS: [InteractionTargetContrac
         label: "Visible priority/amount buttons",
         status: InteractionStatus::Open,
         note: PRODUCTION_PRODUCTION_PRIORITY_AMOUNT_MUTATION_NOTE,
+    },
+    InteractionTargetContract {
+        category: InteractionCategory::DisabledMutation,
+        id: "production.production.mutation.line_controls",
+        label: "Visible line manufacturer/equipment/deploy controls",
+        status: InteractionStatus::Open,
+        note: PRODUCTION_PRODUCTION_LINE_CONTROLS_MUTATION_NOTE,
     },
 ];
 
@@ -1451,6 +1477,23 @@ const CORE_STATE_PANEL_HOVER_TARGETS: [InteractionTargetContract; 1] =
         note: CORE_STATE_PANEL_HOVER_NOTE,
     }];
 
+const CORE_TOPBAR_HOVER_TARGETS: [InteractionTargetContract; 2] = [
+    InteractionTargetContract {
+        category: InteractionCategory::HoverTooltip,
+        id: "core.topbar.hover.threat",
+        label: "World tension hover tooltip",
+        status: InteractionStatus::Open,
+        note: CORE_TOPBAR_HOVER_NOTE,
+    },
+    InteractionTargetContract {
+        category: InteractionCategory::HoverTooltip,
+        id: "core.topbar.hover.faction",
+        label: "Faction hover tooltip",
+        status: InteractionStatus::Open,
+        note: CORE_TOPBAR_HOVER_NOTE,
+    },
+];
+
 const LOGISTICS_UNIT_VIEW_SCROLL_TARGETS: [InteractionTargetContract; 2] = [
     InteractionTargetContract {
         category: InteractionCategory::Scroll,
@@ -1578,7 +1621,21 @@ const CHROME_FIND_DRILLDOWN_TARGETS: [InteractionTargetContract; 4] = [
     },
 ];
 
-const CORE_TOPBAR_DRILLDOWN_TARGETS: [InteractionTargetContract; 13] = [
+const CORE_TOPBAR_DRILLDOWN_TARGETS: [InteractionTargetContract; 15] = [
+    InteractionTargetContract {
+        category: InteractionCategory::Drilldown,
+        id: "core.topbar.drill.threat_icon",
+        label: "World tension icon button",
+        status: InteractionStatus::Open,
+        note: CORE_TOPBAR_DRILLDOWN_NOTE,
+    },
+    InteractionTargetContract {
+        category: InteractionCategory::Drilldown,
+        id: "core.topbar.drill.threat_value",
+        label: "World tension value button",
+        status: InteractionStatus::Open,
+        note: CORE_TOPBAR_DRILLDOWN_NOTE,
+    },
     InteractionTargetContract {
         category: InteractionCategory::Drilldown,
         id: "core.topbar.drill.decisions",
@@ -3102,14 +3159,16 @@ mod tests {
         );
         assert!(
             drilldown.note.contains("broader topbar parity remain open"),
-            "topbar navigation proof must not close hover/tooltips/alerts/faction parity"
+            "topbar navigation proof must not overclaim broader topbar parity"
         );
 
         let drill_targets: Vec<_> = topbar.targets(InteractionCategory::Drilldown).collect();
-        assert_eq!(drill_targets.len(), 13);
+        assert_eq!(drill_targets.len(), 15);
         assert_eq!(
             drill_targets.iter().map(|t| t.id).collect::<Vec<_>>(),
             vec![
+                "core.topbar.drill.threat_icon",
+                "core.topbar.drill.threat_value",
                 "core.topbar.drill.decisions",
                 "core.topbar.drill.intel_agency",
                 "core.topbar.drill.research",
@@ -3136,6 +3195,53 @@ mod tests {
                 .iter()
                 .all(|t| t.note.contains("empty-space clicks falling through")),
             "topbar target notes must preserve empty-space fallthrough proof"
+        );
+        assert!(
+            drill_targets[..2]
+                .iter()
+                .all(|t| t.note.contains("intel.world_tension_popup")),
+            "world tension drill targets must cite the exact read-only popup"
+        );
+    }
+
+    #[test]
+    fn core_topbar_hover_targets_cite_executable_no_fabrication_proof() {
+        let reg = ViewRegistry::from_inventory();
+        let contracts = interaction_contracts(&reg);
+        let topbar = contract_by_id(&contracts, ViewId("core.topbar"));
+
+        let hover = topbar.category(InteractionCategory::HoverTooltip).unwrap();
+        assert_eq!(hover.status, InteractionStatus::Open);
+        assert!(
+            hover.note.contains("threat_button")
+                && hover.note.contains("threat_value_button")
+                && hover.note.contains("faction_button"),
+            "topbar hover contract must name the proven real .gui leaves"
+        );
+        assert!(
+            hover.note.contains("no-fabrication") && hover.note.contains("hover-clear"),
+            "topbar hover contract must cite no-fabrication and clear behavior"
+        );
+
+        let targets: Vec<_> = topbar.targets(InteractionCategory::HoverTooltip).collect();
+        assert_eq!(targets.len(), 2);
+        assert_eq!(
+            targets.iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec!["core.topbar.hover.threat", "core.topbar.hover.faction"]
+        );
+        assert!(
+            targets
+                .iter()
+                .all(|t| t.note.contains("TopbarView tests prove")),
+            "topbar hover targets must cite executable TopbarView proof"
+        );
+        assert!(
+            targets.iter().all(|t| t
+                .note
+                .contains("badged unavailable instead of fabricated zero")
+                || t.note
+                    .contains("missing/null faction fields badged unavailable")),
+            "topbar hover targets must cite no-fabrication proof"
         );
     }
 
@@ -3461,6 +3567,13 @@ mod tests {
             "army trait-tree disabled-mutation contract must cite the scoped add-trait leaves"
         );
         assert!(
+            army_disabled.note.contains("traits_tabs")
+                && army_disabled
+                    .note
+                    .contains("preferred_tactic_tiling_container"),
+            "army trait-tree disabled-mutation contract must cite the proven tactic/tab containers"
+        );
+        assert!(
             army_disabled
                 .note
                 .contains("broader trait-tree mutation parity remain open"),
@@ -3481,6 +3594,13 @@ mod tests {
             "army trait-tree disabled target must cite executable no-op proof"
         );
         assert!(
+            army_disabled_targets[0].note.contains("traits_tabs")
+                && army_disabled_targets[0]
+                    .note
+                    .contains("preferred_tactic_tiling_container"),
+            "army trait-tree disabled target must cite executable trait-control no-op proof"
+        );
+        assert!(
             army_disabled_targets[0]
                 .note
                 .contains("unchanged selected trait/detail bind digest"),
@@ -3497,6 +3617,11 @@ mod tests {
                 .contains("add_trait_0 through add_trait_3"),
             "navy trait-tree disabled-mutation contract must cite the scoped add-trait leaves"
         );
+        assert!(
+            navy_disabled.note.contains("traits_tabs")
+                && navy_disabled.note.contains("button-level tab/wiki controls"),
+            "navy trait-tree disabled-mutation contract must cite the proven tab container and leave button-level tab/wiki open"
+        );
         let navy_disabled_targets: Vec<_> = navy
             .targets(InteractionCategory::DisabledMutation)
             .collect();
@@ -3510,6 +3635,13 @@ mod tests {
                 .note
                 .contains("NavyTraitTreeView tests prove add_trait_0"),
             "navy trait-tree disabled target must cite executable no-op proof"
+        );
+        assert!(
+            navy_disabled_targets[0].note.contains("traits_tabs")
+                && navy_disabled_targets[0]
+                    .note
+                    .contains("button-level tab/wiki controls"),
+            "navy trait-tree disabled target must cite executable trait-control no-op proof"
         );
         assert!(
             navy_disabled_targets[0]
@@ -3913,8 +4045,15 @@ mod tests {
             disabled.note.contains("pause/date")
                 && disabled.note.contains("speed-control")
                 && disabled.note.contains("lobby/menu/help/achievements")
-                && disabled.note.contains("music-control buttons"),
-            "topbar disabled-mutation row must cite the proven time and chrome-control clusters"
+                && disabled.note.contains("playlist/music controls")
+                && disabled.note.contains("dismissed_alerts_button")
+                && disabled.note.contains("faction_button"),
+            "topbar disabled-mutation row must cite the proven time, chrome, alert, and faction no-op clusters"
+        );
+        assert!(
+            disabled.note.contains("threat_button/threat_value_button")
+                && disabled.note.contains("read-only OpenView controls"),
+            "topbar disabled-mutation row must route threat controls through drilldown, not no-op mutation"
         );
         assert!(
             disabled
@@ -3926,7 +4065,7 @@ mod tests {
         let targets: Vec<_> = topbar
             .targets(InteractionCategory::DisabledMutation)
             .collect();
-        assert_eq!(targets.len(), 2);
+        assert_eq!(targets.len(), 3);
         assert_eq!(targets[0].id, "core.topbar.mutation.time_controls");
         assert_eq!(targets[0].label, "Pause/date and speed controls");
         assert!(
@@ -3946,9 +4085,10 @@ mod tests {
             "topbar target must cite hidden-target arming protection"
         );
         assert!(
-            targets[0].note.contains("dismissed alerts")
-                && targets[0].note.contains("threat/faction controls"),
-            "topbar time target must leave remaining topbar controls open"
+            targets[0]
+                .note
+                .contains("broader topbar mutation parity remain open"),
+            "topbar time target must leave broader mutation parity open"
         );
 
         assert_eq!(targets[1].id, "core.topbar.mutation.lobby_menu_music");
@@ -3977,11 +4117,31 @@ mod tests {
             "topbar chrome target must cite hidden-target arming protection"
         );
         assert!(
-            targets[1].note.contains("dismissed_alerts_button")
-                && targets[1].note.contains("threat_button")
-                && targets[1].note.contains("threat_value_button")
-                && targets[1].note.contains("faction_button"),
-            "topbar chrome target must leave alert/threat/faction controls open"
+            targets[1]
+                .note
+                .contains("broader topbar mutation parity remain open"),
+            "topbar chrome target must leave broader mutation parity open"
+        );
+
+        assert_eq!(targets[2].id, "core.topbar.mutation.alerts_faction_noops");
+        assert_eq!(
+            targets[2].label,
+            "Dismissed alerts and faction no-op controls"
+        );
+        assert!(
+            targets[2].note.contains("dismissed_alerts_button")
+                && targets[2].note.contains("faction_button"),
+            "topbar alert/faction target must name the real GUI leaves"
+        );
+        assert!(
+            targets[2].note.contains("no emitted commands")
+                && targets[2].note.contains("unchanged topbar digest"),
+            "topbar alert/faction target must cite executable no-op proof"
+        );
+        assert!(
+            targets[2].note.contains("missing alert ledger")
+                && targets[2].note.contains("factual hover rows"),
+            "topbar alert/faction target must cite fail-closed data behavior"
         );
     }
 
@@ -4198,8 +4358,8 @@ mod tests {
         assert!(
             disabled
                 .note
-                .contains("visible add-line buttons, production-line close buttons, factory add/sub buttons, and priority/amount buttons"),
-            "production disabled-mutation row must cite all four proven visible mutation targets"
+                .contains("visible add-line buttons, production-line close buttons, factory add/sub buttons, priority/amount buttons, and row manufacturer/equipment/convert/deploy/name-list controls"),
+            "production disabled-mutation row must cite all five proven visible mutation targets"
         );
         assert!(
             disabled
@@ -4211,7 +4371,7 @@ mod tests {
         let targets: Vec<_> = production
             .targets(InteractionCategory::DisabledMutation)
             .collect();
-        assert_eq!(targets.len(), 4);
+        assert_eq!(targets.len(), 5);
         assert_eq!(targets[0].id, "production.production.mutation.add_line");
         assert_eq!(targets[0].label, "Visible add-line buttons");
         assert!(
@@ -4232,7 +4392,7 @@ mod tests {
         assert!(
             targets[0]
                 .note
-                .contains("convert/deploy/refit/obsolete controls"),
+                .contains("variant/obsolete equipment-info controls"),
             "add-line target must leave remaining production mutation controls open"
         );
         assert_eq!(targets[1].id, "production.production.mutation.close_line");
@@ -4251,7 +4411,7 @@ mod tests {
         assert!(
             targets[1]
                 .note
-                .contains("convert/deploy/refit/obsolete controls"),
+                .contains("variant/obsolete equipment-info controls"),
             "production target must leave remaining production mutation controls open"
         );
         assert_eq!(
@@ -4275,7 +4435,7 @@ mod tests {
                 .contains("neighboring row-body clicks still select")
                 && targets[2]
                     .note
-                    .contains("convert/deploy/refit/obsolete controls"),
+                    .contains("variant/obsolete equipment-info controls"),
             "factory target must cite non-broad-hit proof and leave remaining controls open"
         );
         assert_eq!(
@@ -4291,6 +4451,35 @@ mod tests {
                     .note
                     .contains("neighboring row-body clicks still select"),
             "priority/amount target must cite the real GUI leaves and non-broad-hit proof"
+        );
+        assert_eq!(
+            targets[4].id,
+            "production.production.mutation.line_controls"
+        );
+        assert_eq!(
+            targets[4].label,
+            "Visible line manufacturer/equipment/deploy controls"
+        );
+        assert!(
+            targets[4].note.contains("production_military_line_entry")
+                && targets[4].note.contains("attach_manufacturer")
+                && targets[4].note.contains("equipment_button")
+                && targets[4].note.contains("convert")
+                && targets[4].note.contains("production_naval_line_entry")
+                && targets[4].note.contains("carrier_air_wing_composition")
+                && targets[4].note.contains("deploy_location")
+                && targets[4].note.contains("name_list_btn"),
+            "line-control target must cite the real military/naval template leaves"
+        );
+        assert!(
+            targets[4]
+                .note
+                .contains("neighboring equipment and name-list row-body clicks still select")
+                && targets[4]
+                    .note
+                    .contains("variant/obsolete equipment-info controls")
+                && targets[4].note.contains("unrendered refit-template controls"),
+            "line-control target must cite non-broad-hit proof and leave hidden production controls open"
         );
     }
 
@@ -4444,18 +4633,18 @@ mod tests {
             114 * INTERACTION_CATEGORY_COUNT,
             "the report must keep ten category rows per registered view"
         );
-        assert_eq!(report.category_status_counts.open, 174);
-        assert_eq!(report.category_status_counts.not_proven, 966);
-        assert_eq!(report.missing_not_proven_category_count, 966);
+        assert_eq!(report.category_status_counts.open, 175);
+        assert_eq!(report.category_status_counts.not_proven, 965);
+        assert_eq!(report.missing_not_proven_category_count, 965);
 
         assert_eq!(
-            report.target_row_count, 117,
-            "current target rows are 18 tab rows, 39 list-selection rows, one text-input row, 13 scroll rows, ten hover rows, 18 drill/navigation rows, and eighteen disabled-mutation rows"
+            report.target_row_count, 123,
+            "current target rows are 18 tab rows, 39 list-selection rows, one text-input row, 13 scroll rows, twelve hover rows, 20 drill/navigation rows, and twenty disabled-mutation rows"
         );
-        assert_eq!(report.target_status_counts.open, 117);
+        assert_eq!(report.target_status_counts.open, 123);
         assert_eq!(report.target_status_counts.not_proven, 0);
         assert_eq!(
-            report.target_rows_with_executable_proof_notes, 117,
+            report.target_rows_with_executable_proof_notes, 123,
             "partial executable-proof notes are accounted separately from implemented status"
         );
     }
@@ -4547,15 +4736,15 @@ mod tests {
             &report,
             InteractionCategory::HoverTooltip,
             InteractionStatusCounts {
-                open: 10,
-                not_proven: 104,
+                open: 11,
+                not_proven: 103,
             },
-            10,
+            12,
             InteractionStatusCounts {
-                open: 10,
+                open: 12,
                 not_proven: 0,
             },
-            10,
+            12,
         );
         assert_category_report(
             &report,
@@ -4564,12 +4753,12 @@ mod tests {
                 open: 3,
                 not_proven: 111,
             },
-            18,
+            20,
             InteractionStatusCounts {
-                open: 18,
+                open: 20,
                 not_proven: 0,
             },
-            18,
+            20,
         );
         assert_category_report(
             &report,
@@ -4578,12 +4767,12 @@ mod tests {
                 open: 13,
                 not_proven: 101,
             },
-            18,
+            20,
             InteractionStatusCounts {
-                open: 18,
+                open: 20,
                 not_proven: 0,
             },
-            18,
+            20,
         );
         assert_category_report(
             &report,
@@ -4620,8 +4809,8 @@ mod tests {
         );
         assert_eq!(
             report.intentionally_inert_mutation_count,
-            Some(18),
-            "only the ingame-menu disabled verb target, state-panel occupation/scorched-earth controls target, topbar time-controls target, topbar lobby/menu/music chrome target, event preview option target, displayed popup action target, construction top factory add/sub target, construction visible queue-controls target, production visible add-line target, production visible close-line target, production visible factory add/sub target, production visible priority/amount target, decisions timed btn_select target, army/navy trait-tree add-trait slot targets, and tank/plane/equipment component-designer non-slot control targets have first-class executable inert proof"
+            Some(20),
+            "only the ingame-menu disabled verb target, state-panel occupation/scorched-earth controls target, topbar time-controls target, topbar lobby/menu/music chrome target, topbar dismissed-alert/faction no-op target, event preview option target, displayed popup action target, construction top factory add/sub target, construction visible queue-controls target, production visible add-line target, production visible close-line target, production visible factory add/sub target, production visible priority/amount target, production visible line-controls target, decisions timed btn_select target, army/navy trait-tree add-trait slot targets, and tank/plane/equipment component-designer non-slot control targets have first-class executable inert proof"
         );
         assert!(
             report.missing_not_proven_category_count > 0,
@@ -4634,7 +4823,7 @@ mod tests {
                 .category_status_counts
                 .not_proven,
             101,
-            "bounded ingame-menu, state-panel occupation/scorched-earth controls, topbar time controls, topbar lobby/menu/music chrome controls, event-preview, displayed-popup, construction top factory, construction queue-controls, production add-line, production close-line, production factory add/sub, production priority/amount, decisions timed btn_select, trait-tree add-trait slot, and component-designer non-slot no-op proofs must not convert generic inert/no-op behavior into mutation parity"
+            "bounded ingame-menu, state-panel occupation/scorched-earth controls, topbar time controls, topbar lobby/menu/music chrome controls, topbar dismissed-alert/faction controls, event-preview, displayed-popup, construction top factory, construction queue-controls, production add-line, production close-line, production factory add/sub, production priority/amount, production line-controls, decisions timed btn_select, trait-tree add-trait slot, and component-designer non-slot no-op proofs must not convert generic inert/no-op behavior into mutation parity"
         );
         assert_eq!(
             report

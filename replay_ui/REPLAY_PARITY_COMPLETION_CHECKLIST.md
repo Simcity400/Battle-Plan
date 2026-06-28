@@ -172,10 +172,12 @@ or read-only-badged.
   the real extracted topbar `.gui` exposes the registered navigation button
   rects, synced topbar clicks emit read-only `OpenView` commands for
   Decisions/Intel/Research/Diplomacy/Trade/Construction/Production/Deployment/
-  Logistics/Officer Corps/Army/Navy/Air, the topbar render digest is unchanged,
-  and empty topbar space still falls through. Faction/alerts drilldowns, hover
-  frames/tooltips, disabled read-only behavior, screenshots, and broader topbar
-  parity remain open.
+  Logistics/Officer Corps/Army/Navy/Air plus `threat_button` and
+  `threat_value_button` to `intel.world_tension_popup`, the topbar render digest
+  is unchanged, and empty topbar space still falls through. Faction drilldown is
+  intentionally bounded to no-op click plus factual hover until a backed faction
+  surface exists; hover frames, screenshots, and broader topbar parity remain
+  open.
 - [x] First real `core.topbar` disabled-mutation slice exists: tests prove the
   real extracted pause/date, speed-control, lobby/menu/help/achievements,
   playlist, and music-control buttons (`pause_button_date`,
@@ -185,9 +187,19 @@ or read-only-badged.
   `music_pause_button`, `music_next_button`, and `musicplayer_button`) are
   consumed as replay-disabled no-op pointer-down/up clicks with no commands, no
   redraw, and unchanged topbar digest; shell tests also prove higher-z panels
-  prevent hidden topbar inert targets from arming. `dismissed_alerts_button`,
-  threat/faction controls, disabled visual treatment, screenshots, and broader
-  topbar mutation parity remain open.
+  prevent hidden topbar inert targets from arming. `dismissed_alerts_button` and
+  `faction_button` now have executable consumed no-op proof with unchanged
+  digest and fail closed instead of opening fabricated data; threat controls are
+  proven separately as read-only world-tension drilldowns. Disabled visual
+  treatment, screenshots, and broader topbar mutation parity remain open.
+- [x] First real `core.topbar` factual hover-tooltip slice exists: tests prove
+  synced topbar hover over `threat_button`/`threat_value_button` emits factual
+  World Tension rows with missing ledger/aggregate values badged unavailable
+  instead of fabricated zero, `faction_button` hover emits factual country,
+  faction-name, and leader rows with missing/null data badged unavailable, hover
+  clears on exit and under higher-z panels, and the real extracted `.gui` exposes
+  the required hit rects. Full the game tooltip frames/hover chrome, localization
+  expansion, screenshots, and broader topbar tooltip parity remain open.
 - [x] First real `chrome.minimap` click/drag recenter slice exists: tests prove
   fitted-map clicks and drags emit read-only `RecenterMap` commands, command
   application changes the bounded map-camera offset, pointer-up clears drag
@@ -393,9 +405,10 @@ or read-only-badged.
   no commands, no redraw, and unchanged digest; `core.state_panel` visible
   occupation-law/template and scorched-earth buttons are consumed as
   replay-disabled no-ops with unchanged digest; `core.topbar` pause/date and
-  speed controls plus lobby/menu/help/achievements/playlist/music controls are
-  consumed as replay-disabled no-ops with unchanged digest and hidden-target
-  arming protection under higher-z panels; `production.production`
+  speed controls plus lobby/menu/help/achievements/playlist/music controls and
+  dismissed-alert/faction no-op controls are consumed as replay-disabled no-ops
+  with unchanged digest and hidden-target arming protection under higher-z
+  panels; `production.production`
   visible root add-line, close-line, factory add/sub, and priority/amount
   buttons, plus `production.construction` top count-container factory add/sub
   buttons and visible queue priority/amount/close buttons, plus
@@ -406,9 +419,9 @@ or read-only-badged.
   trait/detail digests. Per-button leaf routing,
   disabled visual treatment, fired-event historical choice parity, full event
   complete event modal behavior, per-root popup buttons, native shared-slot
-  row-factory rendering plus building remove buttons, topbar
-  dismissed-alerts/threat/faction controls, one-shot decision actions, and
-  broader mutation parity remain open.
+  row-factory rendering plus building remove buttons, topbar disabled visual
+  treatment/screenshots, one-shot decision actions, and broader mutation parity
+  remain open.
 - [ ] Define an interaction contract for every registered view: tabs, subtabs,
   list row selection, drilldowns, dropdowns, filters, scrollbars, close buttons,
   map picks, graph pan/zoom, and hover targets.
@@ -461,8 +474,9 @@ or read-only-badged.
   country flag to country view, state/province to state panel, unit/army/fleet/air
   wing to details, combat bubble to combat detail, focus/tech/doctrine node to
   details, event/decision/log row to details. Partial: `core.topbar`
-  navigation buttons now open existing replay views read-only; faction/alerts
-  and most row-to-detail drilldowns remain open.
+  navigation buttons plus threat controls now open existing replay views
+  read-only; faction/alerts remain bounded no-op until a backed replay surface
+  exists, and most row-to-detail drilldowns remain open.
 - [ ] Implement and test every scrollbar/drag-scroll surface with hit clipping.
   Partial: `core.state_panel` building-grid wheel-scroll and scrollbar-thumb
   drag are implemented and tested with clamp/outside-grid-inert/
@@ -532,6 +546,8 @@ captured replay data, with missing computed pieces explicitly badged.
   tech-tree hover has a factual no-fabrication vertical slice for ID, folder,
   state, research cost, and missing/null-cost badging. State-panel owner,
   building-row, and resource-row hovers now add a factual bound-report slice.
+  Topbar threat/faction hovers now add factual no-fabrication rows over real
+  `.gui` hit rects.
 - [ ] Expand the generic tooltip resolver to full game-style tooltip frames:
   hovered node to tooltip key, bound datum, localization expansion, and
   HOI4-equivalent frame rendering.

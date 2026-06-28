@@ -4640,12 +4640,21 @@ register_template!(TemplateDescriptor {
 const EQUIPMENT_OVERVIEW_VIEW_ID: ViewId = ViewId("military.equipment_overview");
 const EQUIPMENT_OVERVIEW_FILE: &str = "equipment_overview.json";
 const EQUIPMENT_OVERVIEW_ROOT: &str = "equipment_overview_window";
+const EQUIPMENT_OVERVIEW_ROW_H: f32 = 55.0;
 
-pub struct EquipmentOverviewView;
+pub struct EquipmentOverviewView {
+    selected_equipment_key: Option<String>,
+    equipment_keys: Vec<Option<String>>,
+    screen: Rect,
+}
 
 impl EquipmentOverviewView {
     pub fn new() -> EquipmentOverviewView {
-        EquipmentOverviewView
+        EquipmentOverviewView {
+            selected_equipment_key: None,
+            equipment_keys: Vec::new(),
+            screen: default_equipment_overview_screen(),
+        }
     }
 }
 
@@ -4655,6 +4664,79 @@ impl Default for EquipmentOverviewView {
     }
 }
 
+fn default_equipment_overview_screen() -> Rect {
+    Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 1600.0,
+        h: 900.0,
+    }
+}
+
+fn equipment_overview_list_fallback(screen: Rect) -> Rect {
+    let root_x = screen.x + screen.w - 356.0;
+    let root_y = screen.y + 78.0;
+    let root_h = screen.h * 0.70;
+    Rect {
+        x: root_x + 6.0,
+        y: root_y + 103.0,
+        w: 315.0,
+        h: (root_h - 103.0).max(0.0),
+    }
+}
+
+fn equipment_row_key(elem: &serde_json::Value) -> Option<String> {
+    let id = match elem_field(elem, "equip_id") {
+        Captured::Measured(v) => row_key_token(v),
+        Captured::Null | Captured::Absent => None,
+    }?;
+    let ty = match elem_field(elem, "equip_type") {
+        Captured::Measured(v) => row_key_token(v),
+        Captured::Null | Captured::Absent => None,
+    }?;
+    Some(format!("equipment:{id}:{ty}"))
+}
+
+fn unique_equipment_keys(stock: Option<&[serde_json::Value]>) -> Vec<Option<String>> {
+    let stock = match stock {
+        Some(stock) => stock,
+        None => return Vec::new(),
+    };
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for item in stock {
+        if let Some(key) = equipment_row_key(item) {
+            let next = match counts.get(&key) {
+                Some(count) => count + 1,
+                None => 1,
+            };
+            counts.insert(key, next);
+        }
+    }
+    stock
+        .iter()
+        .map(|item| match equipment_row_key(item) {
+            Some(key) => match counts.get(&key) {
+                Some(count) if *count == 1 => Some(key),
+                Some(_) | None => None,
+            },
+            None => None,
+        })
+        .collect()
+}
+
+fn pick_equipment_row_key(
+    viewport: Rect,
+    keys: &[Option<String>],
+    x: f32,
+    y: f32,
+) -> Option<String> {
+    if !viewport.contains(x, y) {
+        return None;
+    }
+    let idx = ((y - viewport.y) / EQUIPMENT_OVERVIEW_ROW_H).floor() as usize;
+    keys.get(idx).and_then(|key| key.clone())
+}
+
 struct EquipmentOverviewDrawable {
     roots: Vec<Node>,
     file: GuiFile,
@@ -4662,13 +4744,33 @@ struct EquipmentOverviewDrawable {
     archetype_rows: Vec<DataRow>,
     equipment_rows: Vec<DataRow>,
     section: SectionState,
+    selected_equipment_key: Option<String>,
 }
 
 impl Drawable for EquipmentOverviewDrawable {
     fn draw_digest(&self) -> String {
+        let selected_key = match self.selected_equipment_key.as_deref() {
+            Some(key) => key,
+            None => DASH,
+        };
+        let selected_state = match self.selected_equipment_key.as_deref() {
+            Some(key)
+                if self
+                    .equipment_rows
+                    .iter()
+                    .any(|row| row.key.as_deref() == Some(key)) =>
+            {
+                "selected"
+            }
+            Some(_) => "missing_selected",
+            None => "none",
+        };
         format!(
-            "EQUIPOVR sect={} SUM[{}] archetypes={} equipment={}",
+            "EQUIPOVR sect={} selected={} selected_key={} selected_row={} SUM[{}] archetypes={} equipment={}",
             self.section.tag(),
+            selected_state,
+            selected_key,
+            selected_row_digest(&self.equipment_rows, self.selected_equipment_key.as_deref()),
             summary_digest(&self.summary),
             row_digest(&self.archetype_rows),
             row_digest(&self.equipment_rows),
@@ -4684,13 +4786,15 @@ impl Drawable for EquipmentOverviewDrawable {
             "overview_archetype_header_list_entry",
             &self.archetype_rows,
         );
-        render_rows(
+        render_rows_scrolled(
             fd,
             &self.roots,
             &self.file,
             "equipment_list",
             "overview_equipment_entry",
             &self.equipment_rows,
+            0.0,
+            self.selected_equipment_key.as_deref(),
         );
     }
 }
@@ -4701,6 +4805,36 @@ impl ViewInstance for EquipmentOverviewView {
     }
     fn policy(&self) -> HostPolicy {
         HostPolicy::window(ZBand::Panel)
+    }
+    fn rebind(&mut self, ctx: &RebindContext) {
+        self.screen = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: ctx.screen.0 as f32,
+            h: ctx.screen.1 as f32,
+        };
+        let (stock, _) =
+            captured_array(ctx.country_field(ctx.country, "military.equipment_stockpile"));
+        self.equipment_keys = unique_equipment_keys(stock);
+    }
+    fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
+        match *ev {
+            ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            } => {
+                let viewport = equipment_overview_list_fallback(self.screen);
+                if let Some(key) = pick_equipment_row_key(viewport, &self.equipment_keys, x, y) {
+                    let changed = self.selected_equipment_key.as_deref() != Some(key.as_str());
+                    self.selected_equipment_key = Some(key);
+                    army_input_consumed(changed)
+                } else {
+                    InputOutcome::ignored()
+                }
+            }
+            _ => InputOutcome::ignored(),
+        }
     }
     fn bind(&self, ctx: &BindContext) -> BoundView {
         let tag = ctx.country;
@@ -4735,6 +4869,7 @@ impl ViewInstance for EquipmentOverviewView {
             archetype_rows,
             equipment_rows,
             section,
+            selected_equipment_key: self.selected_equipment_key.clone(),
         };
         BoundView {
             instance: InstanceId(0),
@@ -4789,8 +4924,10 @@ fn build_equipment_overview_rows(
         archetype_rows.push(row);
     }
     // per-variant rows.
-    for e in stock {
+    let keys = unique_equipment_keys(Some(stock));
+    for (e, key) in stock.iter().zip(keys.into_iter()) {
         let mut row = DataRow::new();
+        row.key = key;
         // variant name = catalog lookup (derived); we surface the equip_id token as a fallback
         // when present, badged derived (catalog name unavailable here).
         row.bind(
@@ -5054,6 +5191,15 @@ mod tests {
         });
     }
 
+    fn rebind_equipment(v: &mut EquipmentOverviewView, snap: &snapshot::Snapshot) {
+        v.rebind(&RebindContext {
+            snapshot: snap,
+            country: "GER",
+            screen: (1600, 900),
+            refit: false,
+        });
+    }
+
     fn army_tab_center(bar: &TabBar, panel: Rect, id: &str) -> (f32, f32) {
         let rect = bar
             .layout(panel)
@@ -5102,6 +5248,20 @@ mod tests {
             y: viewport.y
                 + visible_index as f32 * THEATRE_SELECTOR_ROW_H
                 + THEATRE_SELECTOR_ROW_H * 0.5,
+            button: PointerButton::Left,
+        })
+    }
+
+    fn click_equipment_visible_row(
+        v: &mut EquipmentOverviewView,
+        visible_index: usize,
+    ) -> InputOutcome {
+        let viewport = equipment_overview_list_fallback(v.screen);
+        v.on_input(&ViewInput::PointerDown {
+            x: viewport.x + 8.0,
+            y: viewport.y
+                + visible_index as f32 * EQUIPMENT_OVERVIEW_ROW_H
+                + EQUIPMENT_OVERVIEW_ROW_H * 0.5,
             button: PointerButton::Left,
         })
     }
@@ -5393,6 +5553,65 @@ mod tests {
                     {"id": 1, "owner": "GER", "name": "Remaining Theatre", "n_armies": 1},
                     {"id": 202, "owner": "ENG", "name": "Foreign Theatre", "n_armies": 2}
                 ],
+                "battle_plan_orders": [],
+                "by_country": {}
+            },
+            "divisions": [],
+            "designs": { "division_templates": [], "equipment_variants": {} }
+        }))
+        .unwrap()
+    }
+
+    fn equipment_missing_duplicate_identity_snap() -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1941.1.1.12",
+            "hour_index": 100,
+            "countries": { "GER": {
+                "military": {
+                    "manpower": { "available": 500000 },
+                    "equipment_stockpile": [
+                        {"equip_id": 10, "archetype": "missing_type", "amount": 10.0},
+                        {"equip_id": 11, "equip_type": 0, "archetype": "duplicate", "amount": 20.0},
+                        {"equip_id": 11, "equip_type": 0, "archetype": "duplicate", "amount": 30.0},
+                        {"equip_id": 12, "equip_type": 0, "archetype": "unique", "amount": 40.0}
+                    ]
+                }
+            } },
+            "states": {},
+            "order_of_battle": {
+                "armies": [],
+                "army_groups": [],
+                "fleets": [],
+                "air_wings": [],
+                "theatres": [],
+                "battle_plan_orders": [],
+                "by_country": {}
+            },
+            "divisions": [],
+            "designs": { "division_templates": [], "equipment_variants": {} }
+        }))
+        .unwrap()
+    }
+
+    fn equipment_missing_selected_snap() -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1941.1.1.13",
+            "hour_index": 101,
+            "countries": { "GER": {
+                "military": {
+                    "manpower": { "available": 400000 },
+                    "equipment_stockpile": [
+                        {"equip_id": 1, "equip_type": 0, "archetype": "infantry_equipment", "amount": 5000.0}
+                    ]
+                }
+            } },
+            "states": {},
+            "order_of_battle": {
+                "armies": [],
+                "army_groups": [],
+                "fleets": [],
+                "air_wings": [],
+                "theatres": [],
                 "battle_plan_orders": [],
                 "by_country": {}
             },
@@ -6935,6 +7154,178 @@ mod tests {
         assert_eq!(
             a1, restored,
             "returning to A must restore the selected theatre row exactly"
+        );
+    }
+
+    fn raw_named_child<'a>(
+        node: &'a gui_runtime::model::RawNode,
+        name: &str,
+    ) -> Option<&'a gui_runtime::model::RawNode> {
+        if node.name.as_deref() == Some(name) {
+            return Some(node);
+        }
+        for child in &node.children {
+            if let Some(found) = raw_named_child(child, name) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn equipment_overview_real_gui_geometry_matches_interaction_fallback() {
+        if !assets_extracted() {
+            eprintln!("[mil-mgmt] skipped equipment geometry: game_assets/gui not extracted");
+            return;
+        }
+        let file = load_gui_file(EQUIPMENT_OVERVIEW_FILE).expect("equipment overview gui parses");
+        let root = file
+            .windows
+            .iter()
+            .find(|w| w.name.as_deref() == Some(EQUIPMENT_OVERVIEW_ROOT))
+            .expect("equipment overview root exists");
+        let equipment = raw_named_child(root, "equipment").expect("equipment container exists");
+        let grid = raw_named_child(root, "equipment_list").expect("equipment_list grid exists");
+
+        let screen = default_equipment_overview_screen();
+        let root_pos = root.position.as_ref().expect("root has position");
+        let equipment_pos = equipment.position.as_ref().expect("equipment has position");
+        let grid_pos = grid.position.as_ref().expect("equipment_list has position");
+        let expected_x =
+            screen.x + screen.w + root_pos.x.px() + equipment_pos.x.px() + grid_pos.x.px();
+        let expected_y = screen.y + root_pos.y.px() + equipment_pos.y.px() + grid_pos.y.px();
+        let fallback = equipment_overview_list_fallback(screen);
+        assert_eq!(
+            (fallback.x.round() as i32, fallback.y.round() as i32),
+            (expected_x.round() as i32, expected_y.round() as i32),
+            "equipment input viewport must stay anchored to real equipment_overview.json offsets"
+        );
+        assert_eq!(
+            (fallback.w.round() as i32, fallback.h.round() as i32),
+            (315, 527),
+            "equipment input viewport must match the real 320px panel minus the grid offset"
+        );
+
+        let template =
+            find_template(&file, "overview_equipment_entry").expect("equipment row template");
+        let spec =
+            GridSpec::from_gridbox(&stub_grid("equipment_list", fallback), &template, GUTTER);
+        assert_eq!(
+            spec.cell_h.round() as i32,
+            EQUIPMENT_OVERVIEW_ROW_H.round() as i32,
+            "equipment row picking must use the real overview_equipment_entry row height"
+        );
+    }
+
+    #[test]
+    fn equipment_overview_row_click_selects_measured_variant_key() {
+        let stage = stage_with_manifest(HashMap::new());
+        let snap = snap_a();
+        let mut v = EquipmentOverviewView::new();
+        rebind_equipment(&mut v, &snap);
+
+        let before = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert!(before.contains("selected=none"), "{before}");
+        assert!(
+            before.contains("key=equipment:2:0;equipment_name=2(D);equipment_amount=1200(E);"),
+            "equipment digest must expose the measured composite variant key, got: {before}"
+        );
+
+        let out = click_equipment_visible_row(&mut v, 1);
+        assert!(out.consumed);
+        assert!(out.needs_redraw);
+        assert!(out.commands.is_empty());
+
+        let selected = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert!(selected.contains("selected=selected"), "{selected}");
+        assert!(
+            selected.contains("selected_key=equipment:2:0"),
+            "{selected}"
+        );
+        assert!(
+            selected.contains(
+                "selected_row=r0[key=equipment:2:0;equipment_name=2(D);equipment_amount=1200(E);"
+            ),
+            "clicking row 1 must select the measured equipment variant, got: {selected}"
+        );
+    }
+
+    #[test]
+    fn equipment_overview_missing_and_duplicate_identity_rows_are_inert() {
+        let stage = stage_with_manifest(HashMap::new());
+        let snap = equipment_missing_duplicate_identity_snap();
+        let mut v = EquipmentOverviewView::new();
+        rebind_equipment(&mut v, &snap);
+
+        let digest = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert!(
+            digest.contains("equipment_name=10(D);")
+                && digest.contains("equipment_name=11(D);")
+                && digest.contains("equipment_name=12(D);"),
+            "missing/duplicate rows should still render measured amounts, got: {digest}"
+        );
+        assert!(
+            !digest.contains("key=equipment:10:") && !digest.contains("key=equipment:11:0;"),
+            "missing or duplicate measured equipment identity must not become selectable, got: {digest}"
+        );
+        assert!(
+            digest.contains("key=equipment:12:0;equipment_name=12(D);equipment_amount=40(E);"),
+            "unique measured equipment identity should remain selectable, got: {digest}"
+        );
+
+        for idx in 0..3 {
+            let out = click_equipment_visible_row(&mut v, idx);
+            assert!(
+                !out.consumed && !out.needs_redraw && out.commands.is_empty(),
+                "equipment row {idx} must be inert without a unique measured key"
+            );
+        }
+        assert!(v.selected_equipment_key.is_none());
+
+        let unique = click_equipment_visible_row(&mut v, 3);
+        assert!(unique.consumed && unique.needs_redraw);
+        let selected = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert!(
+            selected.contains(
+                "selected_row=r0[key=equipment:12:0;equipment_name=12(D);equipment_amount=40(E);"
+            ),
+            "unique equipment row should select by composite key, got: {selected}"
+        );
+    }
+
+    #[test]
+    fn equipment_overview_missing_selected_row_fails_closed_without_row_fallback() {
+        let stage = stage_with_manifest(HashMap::new());
+        let a = snap_a();
+        let b = equipment_missing_selected_snap();
+        let mut v = EquipmentOverviewView::new();
+
+        rebind_equipment(&mut v, &a);
+        let out = click_equipment_visible_row(&mut v, 1);
+        assert!(out.consumed && out.needs_redraw);
+        let a1 = bound_digest(&v.bind(&ctx(&stage, &a)));
+        assert!(a1.contains("selected_key=equipment:2:0"), "{a1}");
+
+        rebind_equipment(&mut v, &b);
+        let missing = bound_digest(&v.bind(&ctx(&stage, &b)));
+        assert!(
+            missing.contains("selected=missing_selected"),
+            "missing selected equipment id must fail closed, got: {missing}"
+        );
+        assert!(
+            missing.contains("selected_key=equipment:2:0") && missing.contains("selected_row=none"),
+            "missing selected equipment key must be retained without row fallback, got: {missing}"
+        );
+        assert!(
+            !missing.contains("selected_row=r0[key=equipment:1:0;"),
+            "missing selected equipment must not highlight the remaining first row, got: {missing}"
+        );
+
+        rebind_equipment(&mut v, &a);
+        let restored = bound_digest(&v.bind(&ctx(&stage, &a)));
+        assert_eq!(
+            a1, restored,
+            "returning to A must restore the selected equipment row exactly"
         );
     }
 

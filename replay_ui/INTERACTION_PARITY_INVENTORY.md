@@ -127,21 +127,23 @@ The first native scaffold is now code-backed, not just prose:
   known tab targets remain explicitly tracked as `not_proven` instead of
   disappearing.
 - New report tests lock the current executable counts: 114 registered views, 114
-  contracts, 1,140 category rows (ten per view), 117 target rows, 117 target rows
-  with executable-proof notes, and 966 `not_proven` category rows.
+  contracts, 1,140 category rows (ten per view), 123 target rows, 123 target rows
+  with executable-proof notes, and 965 `not_proven` category rows.
 - The report intentionally exposes no implemented/proven target count, because
   the current target status model only has `open` and `not_proven`. It does now
-  separately count eighteen intentionally inert mutation targets for the
+  separately count twenty intentionally inert mutation targets for the
   ingame-menu disabled verbs, state-panel occupation-law/template and
   scorched-earth controls, topbar pause/date and speed controls, topbar
-  lobby/menu/help/achievements/playlist/music controls, displayed event-definition
+  lobby/menu/help/achievements/playlist/music controls, topbar dismissed-alert
+  and faction no-op controls, displayed event-definition
   preview option actions, displayed popup action area, construction top factory
   add/sub buttons, construction visible queue priority/amount/close buttons,
   production visible add-line buttons, production visible close-line buttons,
   production visible factory add/sub buttons, production visible priority/amount
-  buttons, timed-decision `btn_select` action buttons, and army/navy trait-tree
-  add-trait slot buttons, plus tank/plane/equipment component-designer non-slot
-  control areas,
+  buttons, production visible manufacturer/equipment/convert/deploy/name-list
+  line controls, timed-decision `btn_select` action buttons, and army/navy
+  trait-tree add-trait slot buttons, plus tank/plane/equipment
+  component-designer non-slot control areas,
   without converting those proofs into broad mutation parity.
 - `chrome.find` now has executable read-only tab-switch proof: tests click
   States/Countries/Victory Points, verify the digest-visible catalog changes,
@@ -280,11 +282,16 @@ The first native scaffold is now code-backed, not just prose:
   pointer-up, prove track clicks do not select underlying rows, and prove
   scroll/selection survive scrub A->B->A. Primary production category filters
   now toggle replay-local row visibility from catalog-derived categories while
-  unknown categories fail open. Secondary/status filter checkboxes now have
-  geometry-anchored disabled no-op proof so clicks cannot bleed into production
-  row selection; true status filtering and disabled visual treatment remain
-  open until per-line status flags are available. Line detail drilldowns,
-  scrollbar art, mutating line controls, and side-by-side proof remain open.
+  unknown categories fail open. Visible row mutation controls now have
+  replay-disabled no-op proof for manufacturer attach/change, equipment
+  drag/drop hotspots, military convert/expand, and naval carrier-air-wing,
+  deploy-location, name-list, and expand controls, with unchanged
+  selected row/scroll/bind digest and neighboring row-body click protection.
+  Secondary/status filter checkboxes now have geometry-anchored disabled no-op
+  proof so clicks cannot bleed into production row selection; true status
+  filtering and disabled visual treatment remain open until per-line status
+  flags are available. Line detail drilldowns, scrollbar art, hidden
+  variant/obsolete/refit-template controls, and side-by-side proof remain open.
 - `logistics.unit_view` now has executable division-list and equipment-pane
   wheel-scroll/thumb-drag slices: tests prove measured `div_id` division rows
   and selected division equipment rows change/clamp visible windows, captured
@@ -356,11 +363,11 @@ Current executable report totals:
 | Registered views | 114 |
 | Interaction contracts | 114 |
 | Category rows | 1,140 |
-| Target rows | 117 |
-| Target rows with executable-proof notes | 117 |
+| Target rows | 123 |
+| Target rows with executable-proof notes | 123 |
 | Implemented/proven target rows | Not representable yet |
-| Intentionally inert mutation rows | 18 |
-| `not_proven` category rows | 966 |
+| Intentionally inert mutation rows | 20 |
+| `not_proven` category rows | 965 |
 
 Per-category report totals:
 
@@ -371,9 +378,9 @@ Per-category report totals:
 | `list_selection` | 18 | 96 | 39 | 39 | 0 | 39 |
 | `text_input` | 1 | 113 | 1 | 1 | 0 | 1 |
 | `scroll` | 9 | 105 | 13 | 13 | 0 | 13 |
-| `hover_tooltip` | 10 | 104 | 10 | 10 | 0 | 10 |
-| `drilldown` | 3 | 111 | 18 | 18 | 0 | 18 |
-| `disabled_mutation` | 13 | 101 | 18 | 18 | 0 | 18 |
+| `hover_tooltip` | 12 | 102 | 12 | 12 | 0 | 12 |
+| `drilldown` | 3 | 111 | 20 | 20 | 0 | 20 |
+| `disabled_mutation` | 13 | 101 | 20 | 20 | 0 | 20 |
 | `scrub_state` | 0 | 114 | 0 | 0 | 0 | 0 |
 | `screenshot_proof` | 0 | 114 | 0 | 0 | 0 | 0 |
 
@@ -715,9 +722,9 @@ Likely missing interactions:
 - [ ] True secondary production filtering still needs backing per-line resource
   shortage/outdated/stockpiling/reinforcing/upgrading/refitting flags or a
   faithful recompute, plus disabled visual treatment.
-- [ ] Disabled/inert proof for remaining production convert/deploy/refit/obsolete
-  controls, manufacturer/variant/equipment drag/drop/name-list controls,
-  construction building queue edits, build-picker actions,
+- [ ] Disabled/inert proof for remaining hidden production variant/obsolete,
+  unrendered refit-template controls, construction building queue edits,
+  build-picker actions,
   market/debug controls, one-shot decision actions, and broader decision
   mutation controls beyond timed-decision `btn_select`.
 - [ ] Tooltips for resources, efficiency, factory allocation, queue progress,

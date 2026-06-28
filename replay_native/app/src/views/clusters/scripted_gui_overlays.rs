@@ -1297,13 +1297,10 @@ impl ScriptedOverlayView {
             }
             SlotSource::CountryVar { var, fidelity } => {
                 // bind the genuine per-country script variable now recorded in the snapshot
-                // at `countries.<observed>.script_variables.<var>`. The dotted-path walk is
-                // safe for array vars (`name^N` carries no '.') and the no-fabrication seam
-                // ([`country_field`]) returns Absent when the country never set the var OR the
-                // snapshot has no `script_variables` bag → badge "—", never a fabricated 0.
-                let path = format!("script_variables.{var}");
-                let cap = ctx.country_field(ctx.country, &path);
-                country_atom(cap, fidelity)
+                // at `countries.<observed>.script_variables.<var>`. The helper looks up the
+                // bag explicitly so absent/null/malformed payloads stay badged unavailable
+                // instead of becoming fabricated values or JSON text.
+                country_script_var_atom(ctx, var, fidelity)
             }
             SlotSource::WorldVar { .. } => {
                 // GLOBAL world.variables — schema-present (§18) but unfed in the demo
@@ -1334,6 +1331,26 @@ fn country_atom(cap: Captured<&serde_json::Value>, fidelity: Fidelity) -> Displa
     // map &Value to an owned String only on the Measured arm (never fabricates).
     let owned: Captured<String> = cap.map(value_to_string);
     owned.display_with_fidelity(fidelity, |s| s)
+}
+
+/// Resolve a per-country script variable from the recorded var bag. The DEF-backed
+/// `CountryVar` slots in this file are frame indices / numeric script variables; if a
+/// snapshot carries a malformed bag or non-numeric payload, fail closed with the
+/// not-captured glyph instead of rendering JSON text as though it were an in-game value.
+fn country_script_var_atom(ctx: &BindContext<'_>, var: &str, fidelity: Fidelity) -> DisplayAtom {
+    match ctx.country_field(ctx.country, "script_variables") {
+        Captured::Absent => DisplayAtom::unavailable_because(UnavailableReason::Absent),
+        Captured::Null => DisplayAtom::unavailable_because(UnavailableReason::Null),
+        Captured::Measured(serde_json::Value::Object(vars)) => match vars.get(var) {
+            None => DisplayAtom::unavailable_because(UnavailableReason::Absent),
+            Some(serde_json::Value::Null) => {
+                DisplayAtom::unavailable_because(UnavailableReason::Null)
+            }
+            Some(value) if value.is_number() => DisplayAtom::text(value_to_string(value), fidelity),
+            Some(_) => DisplayAtom::unavailable_because(UnavailableReason::Blocked),
+        },
+        Captured::Measured(_) => DisplayAtom::unavailable_because(UnavailableReason::Blocked),
+    }
 }
 
 /// Display a JSON value: integral floats lose the `.0`, strings are verbatim. (Only ever
@@ -2175,6 +2192,56 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn country_var_malformed_payloads_fail_closed_without_json_or_zero() {
+        let stage = stage();
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "date": "1940.1.1.12",
+            "countries": {
+                "USA": {
+                    "script_variables": {
+                        "current_senate_icon_frame": {"bad": 1},
+                        "current_house_icon_frame": null
+                    }
+                },
+                "GER": { "script_variables": null },
+                "ITA": { "script_variables": [] }
+            }
+        }))
+        .unwrap();
+        let spec = OVERLAYS
+            .iter()
+            .find(|o| o.id == ViewId("overlay.usa_congress"))
+            .unwrap();
+        let view = ScriptedOverlayView::new(spec, None);
+
+        let usa = ctx_for(&stage, &snap, "USA");
+        let malformed_object = view.resolve_slot(&usa, &spec.slots[0]);
+        assert!(malformed_object.is_unavailable());
+        assert_eq!(
+            malformed_object.reason(),
+            Some(UnavailableReason::Blocked),
+            "non-numeric CountryVar payloads must fail closed"
+        );
+        assert_eq!(malformed_object.as_str(), "—");
+        assert!(!malformed_object.as_str().contains("bad"));
+        assert_ne!(malformed_object.as_str(), "0");
+
+        let null_var = view.resolve_slot(&usa, &spec.slots[1]);
+        assert!(null_var.is_unavailable());
+        assert_eq!(null_var.reason(), Some(UnavailableReason::Null));
+        assert_ne!(null_var.as_str(), "0");
+
+        let null_bag = view.resolve_slot(&ctx_for(&stage, &snap, "GER"), &spec.slots[0]);
+        assert!(null_bag.is_unavailable());
+        assert_eq!(null_bag.reason(), Some(UnavailableReason::Null));
+
+        let malformed_bag = view.resolve_slot(&ctx_for(&stage, &snap, "ITA"), &spec.slots[0]);
+        assert!(malformed_bag.is_unavailable());
+        assert_eq!(malformed_bag.reason(), Some(UnavailableReason::Blocked));
+        assert_ne!(malformed_bag.as_str(), "0");
     }
 
     /// PROVENANCE GUARD (Codex round): a slot is converted to `CountryVar` ONLY when its

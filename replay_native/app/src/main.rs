@@ -32,9 +32,11 @@ use app::provenance::Provenance;
 use app::scrubber::{ScrubIntent, Scrubber, TrackRect};
 use app::views::clusters::chrome_outliner_maps::{
     find_view_button_rects_from_roots, find_view_panel_rect_from_roots,
-    find_view_query_rect_from_roots, mapmode_button_targets_from_roots,
-    mapmodes_all_button_rect_from_roots, mapmodes_all_grid_rect_from_roots, FindView, MapModesView,
-    MinimapView, FIND_VIEW_ID, MAPMODES_VIEW_ID, MINIMAP_VIEW_ID,
+    find_view_query_rect_from_roots, find_view_tab_center_from_roots,
+    find_view_visible_row_center_from_roots, mapmode_button_targets_from_roots,
+    mapmodes_all_button_rect_from_roots, mapmodes_all_grid_rect_from_roots,
+    mapmodes_popup_mode_center_from_roots, FindView, MapModesView, MinimapView, FIND_VIEW_ID,
+    MAPMODES_VIEW_ID, MINIMAP_VIEW_ID,
 };
 use app::views::clusters::leaders_officers_traits::{
     trait_tree_viewport_from_roots, ArmyTraitTreeView, NavyTraitTreeView, ARMY_TRAIT_TREE_VIEW_ID,
@@ -134,11 +136,63 @@ fn resolve_map_mode(requested: Option<&str>) -> Result<MapMode, String> {
         .ok_or_else(|| format!("invalid --map-mode '{value}' (expected a supported map-mode slug)"))
 }
 
+fn resolve_shot_find_tab(requested: Option<&str>) -> Result<Option<&'static str>, String> {
+    let Some(raw) = requested else {
+        return Ok(None);
+    };
+    let value = raw.trim();
+    if value.is_empty() || value != raw {
+        return Err("--shot-find-tab requires a supported find tab slug".to_string());
+    }
+    match value {
+        "states" => Ok(Some("states")),
+        "countries" => Ok(Some("countries")),
+        "vps" => Ok(Some("vps")),
+        _ => Err(format!(
+            "invalid --shot-find-tab '{value}' (expected states, countries, or vps)"
+        )),
+    }
+}
+
+fn resolve_shot_find_row(requested: Option<&str>) -> Result<Option<usize>, String> {
+    let Some(raw) = requested else {
+        return Ok(None);
+    };
+    let value = raw.trim();
+    if value.is_empty() || value != raw {
+        return Err("--shot-find-row requires a non-negative visible row index".to_string());
+    }
+    value
+        .parse::<usize>()
+        .map(Some)
+        .map_err(|_| format!("invalid --shot-find-row '{value}' (expected a non-negative integer)"))
+}
+
+fn resolve_shot_mapmodes_hover(requested: Option<&str>) -> Result<Option<&'static str>, String> {
+    let Some(raw) = requested else {
+        return Ok(None);
+    };
+    let value = raw.trim();
+    if value.is_empty() || value != raw {
+        return Err("--shot-mapmodes-hover requires a supported map-mode slug".to_string());
+    }
+    match value {
+        "supply" => Ok(Some("supply")),
+        "intel" => Ok(Some("intel")),
+        _ => Err(format!(
+            "invalid --shot-mapmodes-hover '{value}' (expected supply or intel)"
+        )),
+    }
+}
+
 fn reject_shot_all_views_mixed_flags(
     shot_path: Option<&str>,
     shot_view: Option<&str>,
     shot_state: Option<&str>,
     map_mode: Option<&str>,
+    shot_find_tab: Option<&str>,
+    shot_find_row: Option<&str>,
+    shot_mapmodes_hover: Option<&str>,
     smoke: bool,
     shot_focus: bool,
     shot_combat: bool,
@@ -155,6 +209,15 @@ fn reject_shot_all_views_mixed_flags(
     }
     if map_mode.is_some() {
         flags.push("--map-mode");
+    }
+    if shot_find_tab.is_some() {
+        flags.push("--shot-find-tab");
+    }
+    if shot_find_row.is_some() {
+        flags.push("--shot-find-row");
+    }
+    if shot_mapmodes_hover.is_some() {
+        flags.push("--shot-mapmodes-hover");
     }
     if smoke {
         flags.push("--smoke");
@@ -346,6 +409,22 @@ mod tests {
                         "size": { "width": 40, "height": 40 },
                         "orientation": "UPPER_LEFT",
                         "sprite": "GFX_test_topbar_button"
+                    },
+                    {
+                        "type": "buttonType",
+                        "name": "threat_button",
+                        "position": { "x": 260, "y": 20 },
+                        "size": { "width": 40, "height": 40 },
+                        "orientation": "UPPER_LEFT",
+                        "sprite": "GFX_test_topbar_button"
+                    },
+                    {
+                        "type": "buttonType",
+                        "name": "faction_button",
+                        "position": { "x": 320, "y": 20 },
+                        "size": { "width": 40, "height": 40 },
+                        "orientation": "UPPER_LEFT",
+                        "sprite": "GFX_test_topbar_button"
                     }
                 ]
             }]
@@ -402,7 +481,8 @@ mod tests {
                     "politics": {
                         "political_power": 10.0,
                         "stability": 0.5,
-                        "ruling_party": "fascism"
+                        "ruling_party": "fascism",
+                        "faction": { "name": "axis", "is_leader": true }
                     },
                     "economy": {
                         "factories": { "civ": 12, "civ_from_states": 10 },
@@ -461,10 +541,11 @@ mod tests {
         app::impl_view_any!();
     }
 
-    fn topbar_construction_center(
+    fn topbar_drill_center(
         host: &WindowHost,
         stage: &'static Stage,
         snap: &Snapshot,
+        leaf: &str,
     ) -> (f32, f32) {
         let bound = bind_host(
             host,
@@ -482,12 +563,20 @@ mod tests {
             .expect("topbar is bound");
         let target = topbar_drill_targets_from_roots(&topbar.hit.roots)
             .into_iter()
-            .find(|target| target.leaf == "construction_button")
-            .expect("synthetic topbar exposes construction button");
+            .find(|target| target.leaf == leaf)
+            .unwrap_or_else(|| panic!("synthetic topbar exposes drill target {leaf}"));
         (
             target.rect.x + target.rect.w * 0.5,
             target.rect.y + target.rect.h * 0.5,
         )
+    }
+
+    fn topbar_construction_center(
+        host: &WindowHost,
+        stage: &'static Stage,
+        snap: &Snapshot,
+    ) -> (f32, f32) {
+        topbar_drill_center(host, stage, snap, "construction_button")
     }
 
     fn topbar_inert_center(
@@ -602,12 +691,62 @@ mod tests {
     }
 
     #[test]
+    fn shot_find_tab_resolver_fails_closed_for_unknown_or_padded_slug() {
+        assert_eq!(resolve_shot_find_tab(None), Ok(None));
+        assert_eq!(
+            resolve_shot_find_tab(Some("countries")),
+            Ok(Some("countries"))
+        );
+        assert_eq!(resolve_shot_find_tab(Some("vps")), Ok(Some("vps")));
+
+        let err = resolve_shot_find_tab(Some("unknown")).unwrap_err();
+        assert!(err.contains("invalid --shot-find-tab 'unknown'"));
+        let err = resolve_shot_find_tab(Some(" countries ")).unwrap_err();
+        assert_eq!(err, "--shot-find-tab requires a supported find tab slug");
+    }
+
+    #[test]
+    fn shot_find_row_resolver_accepts_nonnegative_visible_row_index() {
+        assert_eq!(resolve_shot_find_row(None), Ok(None));
+        assert_eq!(resolve_shot_find_row(Some("0")), Ok(Some(0)));
+        assert_eq!(resolve_shot_find_row(Some("4")), Ok(Some(4)));
+
+        let err = resolve_shot_find_row(Some("first")).unwrap_err();
+        assert!(err.contains("invalid --shot-find-row 'first'"));
+        let err = resolve_shot_find_row(Some(" 0 ")).unwrap_err();
+        assert_eq!(
+            err,
+            "--shot-find-row requires a non-negative visible row index"
+        );
+    }
+
+    #[test]
+    fn shot_mapmodes_hover_resolver_fails_closed_for_unknown_or_padded_slug() {
+        assert_eq!(resolve_shot_mapmodes_hover(None), Ok(None));
+        assert_eq!(
+            resolve_shot_mapmodes_hover(Some("supply")),
+            Ok(Some("supply"))
+        );
+
+        let err = resolve_shot_mapmodes_hover(Some("weather")).unwrap_err();
+        assert!(err.contains("invalid --shot-mapmodes-hover 'weather'"));
+        let err = resolve_shot_mapmodes_hover(Some(" supply ")).unwrap_err();
+        assert_eq!(
+            err,
+            "--shot-mapmodes-hover requires a supported map-mode slug"
+        );
+    }
+
+    #[test]
     fn shot_all_views_rejects_ambiguous_shot_flags() {
         let err = reject_shot_all_views_mixed_flags(
             Some("one.png"),
             Some("test.alpha"),
             Some("64"),
             Some("control"),
+            Some("vps"),
+            Some("0"),
+            Some("supply"),
             true,
             true,
             true,
@@ -618,6 +757,9 @@ mod tests {
         assert!(err.contains("--shot-view"));
         assert!(err.contains("--shot-state"));
         assert!(err.contains("--map-mode"));
+        assert!(err.contains("--shot-find-tab"));
+        assert!(err.contains("--shot-find-row"));
+        assert!(err.contains("--shot-mapmodes-hover"));
         assert!(err.contains("--smoke"));
         assert!(err.contains("--shot-focus"));
         assert!(err.contains("--shot-combat"));
@@ -881,6 +1023,98 @@ mod tests {
     }
 
     #[test]
+    fn topbar_sync_primes_hover_moves_and_clears_under_higher_z_panel() {
+        let stage = Box::leak(Box::new(stage_with_topbar()));
+        let snap = snap_with_construction();
+        let map_camera = MapCamera::new(1600, 900, 5632, 2048);
+
+        for (leaf, expected) in [
+            ("threat_button", "World tension"),
+            ("faction_button", "Faction"),
+        ] {
+            let mut host = WindowHost::new();
+            host.open_instance(Box::new(TopbarView::new("GER")));
+            host.rebind_all(&RebindContext {
+                snapshot: &snap,
+                country: "GER",
+                screen: (1600, 900),
+                refit: true,
+            });
+            let (x, y) = if leaf == "threat_button" {
+                topbar_drill_center(&host, stage, &snap, leaf)
+            } else {
+                topbar_inert_center(&host, stage, &snap, leaf)
+            };
+
+            let unsynced = host.route_input(&ViewInput::PointerMove { x, y, drag: false });
+            assert!(
+                !unsynced.needs_redraw,
+                "{leaf} hover must not rely on fabricated target geometry before shell sync"
+            );
+
+            sync_topbar_input_targets(
+                &mut host,
+                stage,
+                &snap,
+                "GER",
+                (x, y),
+                map_camera,
+                1600,
+                900,
+            );
+            let routed = host.route_input(&ViewInput::PointerMove { x, y, drag: false });
+            assert!(!routed.consumed, "{leaf} hover is passive");
+            assert!(routed.commands.is_empty(), "{leaf} hover emits no commands");
+            assert!(routed.needs_redraw, "{leaf} first synced hover must redraw");
+
+            let bound = bind_host(&host, stage, &snap, "GER", (x, y), map_camera, 1600, 900);
+            let topbar = bound
+                .iter()
+                .find(|bv| bv.view_id == TOPBAR_VIEW_ID)
+                .expect("topbar remains bound");
+            let digest = bound_digest(topbar);
+            assert!(
+                digest.contains(expected),
+                "{leaf} hover must publish the factual topbar tooltip: {digest}"
+            );
+
+            host.open_instance(Box::new(BlockingPanel {
+                rect: Rect {
+                    x: x - 5.0,
+                    y: y - 5.0,
+                    w: 10.0,
+                    h: 10.0,
+                },
+            }));
+            sync_topbar_input_targets(
+                &mut host,
+                stage,
+                &snap,
+                "GER",
+                (x, y),
+                map_camera,
+                1600,
+                900,
+            );
+            let routed = host.route_input(&ViewInput::PointerMove { x, y, drag: false });
+            assert!(
+                routed.needs_redraw,
+                "{leaf} hover under a higher-z panel must clear stale topbar hover state"
+            );
+            assert!(routed.commands.is_empty());
+            let bound = bind_host(&host, stage, &snap, "GER", (x, y), map_camera, 1600, 900);
+            let topbar = bound
+                .iter()
+                .find(|bv| bv.view_id == TOPBAR_VIEW_ID)
+                .expect("topbar remains bound under panel");
+            assert!(
+                bound_digest(topbar).contains("TOOLTIP -"),
+                "{leaf} hover under a higher-z panel must not leave a stale tooltip"
+            );
+        }
+    }
+
+    #[test]
     fn state_panel_real_close_leaf_closes_through_shell_capture_path() {
         let mut gui_files = HashMap::new();
         gui_files.insert(
@@ -1058,8 +1292,24 @@ fn main() {
     let shot_all_views_command_arg = arg_value("--shot-all-views-command");
     let shot_state_arg = arg_value("--shot-state");
     let map_mode_arg = arg_value("--map-mode");
+    let shot_find_tab_arg = arg_value("--shot-find-tab");
+    let shot_find_row_arg = arg_value("--shot-find-row");
+    let shot_mapmodes_hover_arg = arg_value("--shot-mapmodes-hover");
     let shot_state: Option<u32> =
         resolve_shot_state(shot_state_arg.as_deref()).unwrap_or_else(|e| {
+            eprintln!("[app] SHOT BLOCKER: {e}");
+            std::process::exit(2);
+        });
+    let shot_find_tab = resolve_shot_find_tab(shot_find_tab_arg.as_deref()).unwrap_or_else(|e| {
+        eprintln!("[app] SHOT BLOCKER: {e}");
+        std::process::exit(2);
+    });
+    let shot_find_row = resolve_shot_find_row(shot_find_row_arg.as_deref()).unwrap_or_else(|e| {
+        eprintln!("[app] SHOT BLOCKER: {e}");
+        std::process::exit(2);
+    });
+    let shot_mapmodes_hover = resolve_shot_mapmodes_hover(shot_mapmodes_hover_arg.as_deref())
+        .unwrap_or_else(|e| {
             eprintln!("[app] SHOT BLOCKER: {e}");
             std::process::exit(2);
         });
@@ -1084,6 +1334,9 @@ fn main() {
             shot_view_arg.as_deref(),
             shot_state_arg.as_deref(),
             map_mode_arg.as_deref(),
+            shot_find_tab_arg.as_deref(),
+            shot_find_row_arg.as_deref(),
+            shot_mapmodes_hover_arg.as_deref(),
             smoke,
             shot_focus,
             shot_combat,
@@ -1117,12 +1370,15 @@ fn main() {
                         command,
                         common_args,
                     };
-                    let run =
-                        shot_harness::run_native_shot_batch_from_manifest(&write.path, &config)
-                            .unwrap_or_else(|e| {
-                                eprintln!("[app] SHOT BLOCKER: {e}");
-                                std::process::exit(3);
-                            });
+                    let run = shot_harness::run_native_shot_batch_from_manifest(
+                        &registry,
+                        &write.path,
+                        &config,
+                    )
+                    .unwrap_or_else(|e| {
+                        eprintln!("[app] SHOT BLOCKER: {e}");
+                        std::process::exit(3);
+                    });
                     eprintln!(
                         "[app] SHOT: wrote {} native screenshots from {} (the game references and diffs pending)",
                         run.captured_count,
@@ -1164,6 +1420,29 @@ fn main() {
         eprintln!(
             "[app] SHOT BLOCKER: --shot-view={} requires --shot-state=<positive state id>",
             STATE_PANEL_VIEW_ID
+        );
+        std::process::exit(2);
+    }
+    if (shot_find_tab.is_some() || shot_find_row.is_some()) && shot_view != Some(FIND_VIEW_ID) {
+        eprintln!(
+            "[app] SHOT BLOCKER: --shot-find-tab/--shot-find-row require --shot-view={}",
+            FIND_VIEW_ID
+        );
+        std::process::exit(2);
+    }
+    if shot_mapmodes_hover.is_some() && shot_view != Some(MAPMODES_VIEW_ID) {
+        eprintln!(
+            "[app] SHOT BLOCKER: --shot-mapmodes-hover requires --shot-view={}",
+            MAPMODES_VIEW_ID
+        );
+        std::process::exit(2);
+    }
+    if shot_path.is_none()
+        && !smoke
+        && (shot_find_tab.is_some() || shot_find_row.is_some() || shot_mapmodes_hover.is_some())
+    {
+        eprintln!(
+            "[app] SHOT BLOCKER: --shot-find-tab/--shot-find-row/--shot-mapmodes-hover require --shot or --smoke"
         );
         std::process::exit(2);
     }
@@ -1462,6 +1741,32 @@ fn main() {
         });
 
         let (w, h) = gpu.size();
+        apply_shot_view_inputs(
+            &mut host,
+            &registry,
+            stage,
+            &current,
+            &country,
+            &mut cursor,
+            shot_find_tab,
+            shot_find_row,
+            shot_mapmodes_hover,
+            w,
+            h,
+        )
+        .unwrap_or_else(|e| {
+            eprintln!("[app] SHOT BLOCKER: {e}");
+            std::process::exit(2);
+        });
+        host.rebind_all(&RebindContext {
+            snapshot: &current,
+            country: &country,
+            screen: gpu.size(),
+            refit: true,
+        });
+        sync_shot_input_panels(&mut host, stage, &current, &country, cursor, w, h);
+
+        let (w, h) = gpu.size();
         let bound = bind_host(
             &host,
             stage,
@@ -1627,13 +1932,16 @@ fn main() {
                     // route a move (with drag flag) to the host overlays first.
                     let drag = left_down;
                     sync_combat_camera(&mut host);
+                    let (w, h) = gpu.size();
+                    let map_camera = current_camera(&host);
                     if host.is_open(MAPMODES_VIEW_ID) {
-                        let (w, h) = gpu.size();
-                        let map_camera = current_camera(&host);
                         sync_mapmodes_input_panel(
                             &mut host, stage, &current, &country, cursor, map_camera, w, h,
                         );
                     }
+                    sync_topbar_input_targets(
+                        &mut host, stage, &current, &country, cursor, map_camera, w, h,
+                    );
                     let r = host.route_input(&ViewInput::PointerMove {
                         x: cursor.0,
                         y: cursor.1,
@@ -2304,6 +2612,227 @@ fn route_view_key(
         *needs_redraw = true;
     }
     r.consumed
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_shot_view_inputs(
+    host: &mut WindowHost,
+    registry: &ViewRegistry,
+    stage: &'static Stage,
+    snap: &Snapshot,
+    country: &str,
+    cursor: &mut (f32, f32),
+    shot_find_tab: Option<&str>,
+    shot_find_row: Option<usize>,
+    shot_mapmodes_hover: Option<&str>,
+    w: u32,
+    h: u32,
+) -> Result<(), String> {
+    sync_shot_input_panels(host, stage, snap, country, *cursor, w, h);
+    if let Some(tab) = shot_find_tab {
+        click_shot_find_tab(host, registry, stage, snap, country, cursor, tab, w, h)?;
+        sync_shot_input_panels(host, stage, snap, country, *cursor, w, h);
+    }
+    if let Some(row) = shot_find_row {
+        click_shot_find_row(host, registry, stage, snap, country, cursor, row, w, h)?;
+        sync_shot_input_panels(host, stage, snap, country, *cursor, w, h);
+    }
+    if let Some(mode) = shot_mapmodes_hover {
+        hover_shot_mapmode(host, registry, stage, snap, country, cursor, mode, w, h)?;
+        sync_shot_input_panels(host, stage, snap, country, *cursor, w, h);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sync_shot_input_panels(
+    host: &mut WindowHost,
+    stage: &'static Stage,
+    snap: &Snapshot,
+    country: &str,
+    cursor: (f32, f32),
+    w: u32,
+    h: u32,
+) {
+    let map_camera = current_camera(host);
+    if host.is_open(FIND_VIEW_ID) {
+        sync_find_input_panel(host, stage, snap, country, cursor, map_camera, w, h);
+    }
+    if host.is_open(MAPMODES_VIEW_ID) {
+        sync_mapmodes_input_panel(host, stage, snap, country, cursor, map_camera, w, h);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn bound_roots_for_view(
+    host: &WindowHost,
+    stage: &'static Stage,
+    snap: &Snapshot,
+    country: &str,
+    cursor: (f32, f32),
+    view_id: ViewId,
+    w: u32,
+    h: u32,
+) -> Result<Vec<gui_runtime::scene::Node>, String> {
+    bind_host(
+        host,
+        stage,
+        snap,
+        country,
+        cursor,
+        current_camera(host),
+        w,
+        h,
+    )
+    .into_iter()
+    .find(|bv| bv.view_id == view_id)
+    .map(|bv| bv.hit.roots)
+    .ok_or_else(|| format!("shot view {view_id} is not open"))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn route_shot_input(
+    host: &mut WindowHost,
+    registry: &ViewRegistry,
+    ev: ViewInput,
+    snap: &Snapshot,
+    country: &str,
+    screen: (u32, u32),
+    action: &str,
+) -> Result<(), String> {
+    let routed = host.route_input(&ev);
+    let effects = execute_view_commands(host, registry, routed.emitter, routed.commands);
+    rebind_after_structural_commands(host, effects, snap, country, screen);
+    if routed.consumed || routed.needs_redraw || effects.changed {
+        Ok(())
+    } else {
+        Err(format!("shot action {action} was ignored by the open view"))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn click_shot_find_tab(
+    host: &mut WindowHost,
+    registry: &ViewRegistry,
+    stage: &'static Stage,
+    snap: &Snapshot,
+    country: &str,
+    cursor: &mut (f32, f32),
+    tab: &str,
+    w: u32,
+    h: u32,
+) -> Result<(), String> {
+    let roots = bound_roots_for_view(host, stage, snap, country, *cursor, FIND_VIEW_ID, w, h)?;
+    let screen = Rect {
+        x: 0.0,
+        y: 0.0,
+        w: w as f32,
+        h: h as f32,
+    };
+    let (x, y) = find_view_tab_center_from_roots(screen, &roots, tab)
+        .ok_or_else(|| format!("shot find tab '{tab}' is not present in the bound find view"))?;
+    *cursor = (x, y);
+    route_shot_input(
+        host,
+        registry,
+        ViewInput::PointerDown {
+            x,
+            y,
+            button: PointerButton::Left,
+        },
+        snap,
+        country,
+        (w, h),
+        "--shot-find-tab",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn click_shot_find_row(
+    host: &mut WindowHost,
+    registry: &ViewRegistry,
+    stage: &'static Stage,
+    snap: &Snapshot,
+    country: &str,
+    cursor: &mut (f32, f32),
+    row: usize,
+    w: u32,
+    h: u32,
+) -> Result<(), String> {
+    let roots = bound_roots_for_view(host, stage, snap, country, *cursor, FIND_VIEW_ID, w, h)?;
+    let screen = Rect {
+        x: 0.0,
+        y: 0.0,
+        w: w as f32,
+        h: h as f32,
+    };
+    let (x, y) = find_view_visible_row_center_from_roots(screen, &roots, row)
+        .ok_or_else(|| format!("shot find row {row} is outside the visible bound find results"))?;
+    *cursor = (x, y);
+    route_shot_input(
+        host,
+        registry,
+        ViewInput::PointerDown {
+            x,
+            y,
+            button: PointerButton::Left,
+        },
+        snap,
+        country,
+        (w, h),
+        "--shot-find-row",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn hover_shot_mapmode(
+    host: &mut WindowHost,
+    registry: &ViewRegistry,
+    stage: &'static Stage,
+    snap: &Snapshot,
+    country: &str,
+    cursor: &mut (f32, f32),
+    mode: &str,
+    w: u32,
+    h: u32,
+) -> Result<(), String> {
+    let roots = bound_roots_for_view(host, stage, snap, country, *cursor, MAPMODES_VIEW_ID, w, h)?;
+    let all_button = mapmodes_all_button_rect_from_roots(&roots)
+        .ok_or_else(|| "shot mapmodes hover requires the bound mapmodes_all button".to_string())?;
+    let (x, y) = (
+        all_button.x + all_button.w * 0.5,
+        all_button.y + all_button.h * 0.5,
+    );
+    *cursor = (x, y);
+    route_shot_input(
+        host,
+        registry,
+        ViewInput::PointerDown {
+            x,
+            y,
+            button: PointerButton::Left,
+        },
+        snap,
+        country,
+        (w, h),
+        "--shot-mapmodes-hover open popup",
+    )?;
+    sync_shot_input_panels(host, stage, snap, country, *cursor, w, h);
+
+    let roots = bound_roots_for_view(host, stage, snap, country, *cursor, MAPMODES_VIEW_ID, w, h)?;
+    let (x, y) = mapmodes_popup_mode_center_from_roots(&roots, mode).ok_or_else(|| {
+        format!("shot mapmodes hover target '{mode}' is not present in the all-modes popup")
+    })?;
+    *cursor = (x, y);
+    route_shot_input(
+        host,
+        registry,
+        ViewInput::PointerMove { x, y, drag: false },
+        snap,
+        country,
+        (w, h),
+        "--shot-mapmodes-hover",
+    )
 }
 
 fn blur_find_query(host: &mut WindowHost, needs_redraw: &mut bool) {

@@ -629,6 +629,9 @@ const PRODUCTION_PRIMARY_FILTER_BUTTON_H: f32 = 32.0;
 const PRODUCTION_STATUS_FILTER_BUTTON_W: f32 = 45.0;
 const PRODUCTION_STATUS_FILTER_BUTTON_H: f32 = 32.0;
 const PRODUCTION_REFIT_FILTER_BUTTON_H: f32 = 35.0;
+const PRODUCTION_LINE_SMALL_MUTATION_BUTTON_SIZE: f32 = 24.0;
+const PRODUCTION_EQUIPMENT_BUTTON_W: f32 = 96.0;
+const PRODUCTION_EQUIPMENT_BUTTON_H: f32 = 64.0;
 
 pub struct ProductionView {
     selected_line_key: Option<String>,
@@ -1016,6 +1019,96 @@ fn production_priority_amount_button_hit(
     production_priority_button_rects(viewport, row_y)
         .into_iter()
         .chain(production_amount_button_rects(viewport, row_y, kind))
+        .any(|rect| rect.contains(x, y))
+}
+
+fn production_line_mutation_control_rects(
+    viewport: Rect,
+    row_y: f32,
+    kind: ProductionLineKind,
+) -> Vec<Rect> {
+    let equipment_x = match kind {
+        ProductionLineKind::Military => 1.0,
+        ProductionLineKind::Naval => 0.0,
+    };
+    let mut rects = vec![
+        Rect {
+            x: viewport.x + 195.0,
+            y: row_y + 1.0,
+            w: PRODUCTION_LINE_SMALL_MUTATION_BUTTON_SIZE,
+            h: PRODUCTION_LINE_SMALL_MUTATION_BUTTON_SIZE,
+        },
+        Rect {
+            x: viewport.x + 195.0,
+            y: row_y + 1.0,
+            w: PRODUCTION_LINE_SMALL_MUTATION_BUTTON_SIZE,
+            h: PRODUCTION_LINE_SMALL_MUTATION_BUTTON_SIZE,
+        },
+        Rect {
+            x: viewport.x + equipment_x,
+            y: row_y + 27.0,
+            w: PRODUCTION_EQUIPMENT_BUTTON_W,
+            h: PRODUCTION_EQUIPMENT_BUTTON_H,
+        },
+        Rect {
+            x: viewport.x + 13.0,
+            y: row_y + 8.0,
+            w: PRODUCTION_LINE_SMALL_MUTATION_BUTTON_SIZE,
+            h: PRODUCTION_LINE_SMALL_MUTATION_BUTTON_SIZE,
+        },
+    ];
+    match kind {
+        ProductionLineKind::Military => rects.push(Rect {
+            x: viewport.x + 30.0,
+            y: row_y + 75.0,
+            w: PRODUCTION_LINE_SMALL_MUTATION_BUTTON_SIZE,
+            h: PRODUCTION_LINE_SMALL_MUTATION_BUTTON_SIZE,
+        }),
+        ProductionLineKind::Naval => {
+            rects.push(Rect {
+                x: viewport.x + 245.0,
+                y: row_y + 50.0,
+                w: PRODUCTION_LINE_SMALL_MUTATION_BUTTON_SIZE,
+                h: PRODUCTION_LINE_SMALL_MUTATION_BUTTON_SIZE,
+            });
+            rects.push(Rect {
+                x: viewport.x + 230.0,
+                y: row_y - 1.0,
+                w: PRODUCTION_LINE_SMALL_MUTATION_BUTTON_SIZE,
+                h: PRODUCTION_LINE_SMALL_MUTATION_BUTTON_SIZE,
+            });
+            rects.push(Rect {
+                x: viewport.x + 315.0,
+                y: row_y + 81.0,
+                w: PRODUCTION_LINE_SMALL_MUTATION_BUTTON_SIZE,
+                h: PRODUCTION_LINE_SMALL_MUTATION_BUTTON_SIZE,
+            });
+        }
+    }
+    rects
+}
+
+fn production_line_mutation_control_hit(
+    viewport: Rect,
+    row_kinds: &[ProductionLineKind],
+    scroll_y: f32,
+    x: f32,
+    y: f32,
+) -> bool {
+    if x < viewport.x
+        || x > viewport.x + viewport.w
+        || y < viewport.y
+        || y > viewport.y + viewport.h
+    {
+        return false;
+    }
+    let idx = ((y - viewport.y + scroll_y.max(0.0)) / PRODUCTION_ROW_H).floor() as usize;
+    let Some(kind) = row_kinds.get(idx).copied() else {
+        return false;
+    };
+    let row_y = viewport.y + idx as f32 * PRODUCTION_ROW_H - scroll_y.max(0.0);
+    production_line_mutation_control_rects(viewport, row_y, kind)
+        .into_iter()
         .any(|rect| rect.contains(x, y))
 }
 
@@ -1962,6 +2055,10 @@ impl ViewInstance for ProductionView {
                 {
                     return production_input_consumed(false);
                 }
+                if production_line_mutation_control_hit(viewport, &self.line_kinds, scroll_y, x, y)
+                {
+                    return production_input_consumed(false);
+                }
                 if let Some(key) =
                     pick_production_line_key(viewport, &self.line_keys, scroll_y, x, y)
                 {
@@ -2037,6 +2134,12 @@ impl ViewInstance for ProductionView {
                         x,
                         y,
                     ) || production_priority_amount_button_hit(
+                        viewport,
+                        &self.line_kinds,
+                        scroll_y,
+                        x,
+                        y,
+                    ) || production_line_mutation_control_hit(
                         viewport,
                         &self.line_kinds,
                         scroll_y,
@@ -3772,6 +3875,20 @@ mod tests {
         "increase_amount",
         "decrease_amount",
     ];
+    const PRODUCTION_LINE_MUTATION_BUTTON_NAMES: &[(ProductionLineKind, &str)] = &[
+        (ProductionLineKind::Military, "attach_manufacturer"),
+        (ProductionLineKind::Military, "change_manufacturer"),
+        (ProductionLineKind::Military, "equipment_button"),
+        (ProductionLineKind::Military, "expand"),
+        (ProductionLineKind::Military, "convert"),
+        (ProductionLineKind::Naval, "attach_manufacturer"),
+        (ProductionLineKind::Naval, "change_manufacturer"),
+        (ProductionLineKind::Naval, "equipment_button"),
+        (ProductionLineKind::Naval, "expand"),
+        (ProductionLineKind::Naval, "carrier_air_wing_composition"),
+        (ProductionLineKind::Naval, "deploy_location"),
+        (ProductionLineKind::Naval, "name_list_btn"),
+    ];
     const PRODUCTION_ADD_LINE_BUTTON_NAMES: &[&str] = &[
         "infantry_button",
         "tank_button",
@@ -4175,6 +4292,70 @@ mod tests {
                 "{node_name} input rect must use the GUI y coordinate"
             );
         }
+    }
+
+    #[test]
+    fn production_line_mutation_control_rects_match_gui_positions() {
+        let Some(gui) = load_gui(PRODUCTION_FILE) else {
+            eprintln!(
+                "[production] skipped line mutation-control geometry test: game_assets/gui not extracted"
+            );
+            return;
+        };
+        let viewport = production_grid_fallback(default_production_screen());
+        let row_y = viewport.y;
+        let military = find_raw_window(&gui.windows, "production_military_line_entry")
+            .expect("production_military_line_entry template exists");
+        let naval = find_raw_window(&gui.windows, "production_naval_line_entry")
+            .expect("production_naval_line_entry template exists");
+
+        let military_rects =
+            production_line_mutation_control_rects(viewport, row_y, ProductionLineKind::Military);
+        let naval_rects =
+            production_line_mutation_control_rects(viewport, row_y, ProductionLineKind::Naval);
+        let cases = [
+            (military, "attach_manufacturer", military_rects[0]),
+            (military, "change_manufacturer", military_rects[1]),
+            (military, "equipment_button", military_rects[2]),
+            (military, "expand", military_rects[3]),
+            (military, "convert", military_rects[4]),
+            (naval, "attach_manufacturer", naval_rects[0]),
+            (naval, "change_manufacturer", naval_rects[1]),
+            (naval, "equipment_button", naval_rects[2]),
+            (naval, "expand", naval_rects[3]),
+            (naval, "carrier_air_wing_composition", naval_rects[4]),
+            (naval, "deploy_location", naval_rects[5]),
+            (naval, "name_list_btn", naval_rects[6]),
+        ];
+
+        for (template, node_name, rect) in cases {
+            let node = find_raw_child(template, node_name).unwrap_or_else(|| {
+                panic!(
+                    "{node_name} exists in {}",
+                    template.name.as_deref().unwrap_or("<unnamed>")
+                )
+            });
+            assert_eq!(node.kind, "buttonType");
+            let pos = node
+                .position
+                .as_ref()
+                .unwrap_or_else(|| panic!("{node_name} carries a real position"));
+            assert_eq!(
+                rect.x,
+                viewport.x + pos.x.px(),
+                "{node_name} input rect must use the GUI x coordinate"
+            );
+            assert_eq!(
+                rect.y,
+                row_y + pos.y.px(),
+                "{node_name} input rect must use the GUI y coordinate"
+            );
+        }
+        assert_eq!(
+            (military_rects[2].w, military_rects[2].h),
+            (PRODUCTION_EQUIPMENT_BUTTON_W, PRODUCTION_EQUIPMENT_BUTTON_H),
+            "equipment_button is sprite-sized in the GUI; the replay owns the large drag/drop hit area"
+        );
     }
 
     #[test]
@@ -4798,8 +4979,8 @@ mod tests {
     fn click_production_line(view: &mut ProductionView, row: usize) -> InputOutcome {
         let viewport = production_grid_fallback(view.screen);
         view.on_input(&ViewInput::PointerDown {
-            x: viewport.x + 64.0,
-            y: viewport.y + PRODUCTION_ROW_H * (row as f32) + 48.0,
+            x: viewport.x + 122.0,
+            y: viewport.y + PRODUCTION_ROW_H * (row as f32) + 96.0,
             button: PointerButton::Left,
         })
     }
@@ -4892,6 +5073,19 @@ mod tests {
         production_priority_button_rects(viewport, row_y)
             .into_iter()
             .chain(production_amount_button_rects(viewport, row_y, kind))
+            .map(|rect| (rect.x + rect.w * 0.5, rect.y + rect.h * 0.5))
+            .collect()
+    }
+
+    fn production_line_mutation_control_centers(
+        view: &ProductionView,
+        visible_row: usize,
+        kind: ProductionLineKind,
+    ) -> Vec<(f32, f32)> {
+        let viewport = production_grid_fallback(view.screen);
+        let row_y = viewport.y + PRODUCTION_ROW_H * visible_row as f32;
+        production_line_mutation_control_rects(viewport, row_y, kind)
+            .into_iter()
             .map(|rect| (rect.x + rect.w * 0.5, rect.y + rect.h * 0.5))
             .collect()
     }
@@ -5953,6 +6147,171 @@ mod tests {
     }
 
     #[test]
+    fn production_line_mutation_controls_are_replay_disabled_noops() {
+        let Some(gui) = load_gui(PRODUCTION_FILE) else {
+            eprintln!(
+                "[production] skipped line mutation-control no-op test: game_assets/gui not extracted"
+            );
+            return;
+        };
+        let military = find_raw_window(&gui.windows, "production_military_line_entry")
+            .expect("production_military_line_entry template exists");
+        let naval = find_raw_window(&gui.windows, "production_naval_line_entry")
+            .expect("production_naval_line_entry template exists");
+        for (kind, name) in PRODUCTION_LINE_MUTATION_BUTTON_NAMES {
+            let template = match kind {
+                ProductionLineKind::Military => military,
+                ProductionLineKind::Naval => naval,
+            };
+            assert!(
+                find_raw_child(template, name).is_some(),
+                "real production {:?} template must expose {name}",
+                kind
+            );
+        }
+
+        let stage = stage_with(&[]);
+        let snap = many_production_snap(40, "A");
+        let mut view = ProductionView::new();
+        view.rebind(&rebind_ctx(&snap));
+
+        wheel_production(&mut view, -4.0);
+        let select = click_production_line(&mut view, 0);
+        assert!(select.consumed && select.needs_redraw);
+        let before = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert!(before.contains("selected_key=production:military:id:A_line_05"));
+        let before_selected = view.selected_line_key.clone();
+        let before_scroll = production_scroll_pair(&before);
+
+        for (x, y) in
+            production_line_mutation_control_centers(&view, 0, ProductionLineKind::Military)
+        {
+            let down = view.on_input(&ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            });
+            assert!(
+                down.consumed && !down.needs_redraw && down.commands.is_empty(),
+                "military production line mutation control pointer-down must be a replay-disabled no-op"
+            );
+            let up = view.on_input(&ViewInput::PointerUp {
+                x,
+                y,
+                button: PointerButton::Left,
+            });
+            assert!(
+                up.consumed && !up.needs_redraw && up.commands.is_empty(),
+                "military production line mutation control pointer-up must be a replay-disabled no-op"
+            );
+        }
+
+        assert_eq!(
+            view.selected_line_key, before_selected,
+            "military line-control no-op must not change selected production line"
+        );
+        let after = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert_eq!(production_scroll_pair(&after), before_scroll);
+        assert_eq!(
+            before, after,
+            "military line-control no-op must not change scroll, selection, visible rows, or digest"
+        );
+
+        let snap = snap_production_a();
+        let mut view = ProductionView::new();
+        view.rebind(&rebind_ctx(&snap));
+        let select = click_production_line(&mut view, 2);
+        assert!(select.consumed && select.needs_redraw);
+        let before = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert!(before.contains("selected_key=production:naval:id:A_nav_01"));
+        let before_selected = view.selected_line_key.clone();
+
+        for (x, y) in production_line_mutation_control_centers(&view, 2, ProductionLineKind::Naval)
+        {
+            let down = view.on_input(&ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            });
+            assert!(
+                down.consumed && !down.needs_redraw && down.commands.is_empty(),
+                "naval production line mutation control pointer-down must be a replay-disabled no-op"
+            );
+            let up = view.on_input(&ViewInput::PointerUp {
+                x,
+                y,
+                button: PointerButton::Left,
+            });
+            assert!(
+                up.consumed && !up.needs_redraw && up.commands.is_empty(),
+                "naval production line mutation control pointer-up must be a replay-disabled no-op"
+            );
+        }
+
+        assert_eq!(
+            view.selected_line_key, before_selected,
+            "naval line-control no-op must not change selected production line"
+        );
+        let after = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert_eq!(
+            before, after,
+            "naval line-control no-op must not change selection, visible rows, or digest"
+        );
+    }
+
+    #[test]
+    fn production_line_mutation_controls_do_not_claim_neighboring_row_clicks() {
+        let stage = stage_with(&[]);
+        let snap = many_production_snap(40, "A");
+        let mut view = ProductionView::new();
+        view.rebind(&rebind_ctx(&snap));
+        wheel_production(&mut view, -4.0);
+
+        let viewport = production_grid_fallback(view.screen);
+        let equipment = production_line_mutation_control_rects(
+            viewport,
+            viewport.y,
+            ProductionLineKind::Military,
+        )[2];
+        let out = view.on_input(&ViewInput::PointerDown {
+            x: equipment.x + equipment.w + 24.0,
+            y: equipment.y + equipment.h * 0.5,
+            button: PointerButton::Left,
+        });
+        assert!(
+            out.consumed && out.needs_redraw && out.commands.is_empty(),
+            "clicks beside equipment drag/drop controls must still select the visible backing row"
+        );
+        let digest = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert!(
+            digest.contains("selected_key=production:military:id:A_line_05"),
+            "neighboring equipment-area row click should select the scrolled row, got: {digest}"
+        );
+
+        let snap = snap_production_a();
+        let mut view = ProductionView::new();
+        view.rebind(&rebind_ctx(&snap));
+        let viewport = production_grid_fallback(view.screen);
+        let row_y = viewport.y + PRODUCTION_ROW_H * 2.0;
+        let name_list =
+            production_line_mutation_control_rects(viewport, row_y, ProductionLineKind::Naval)[6];
+        let out = view.on_input(&ViewInput::PointerDown {
+            x: name_list.x + name_list.w + 12.0,
+            y: name_list.y + name_list.h * 0.5,
+            button: PointerButton::Left,
+        });
+        assert!(
+            out.consumed && out.needs_redraw && out.commands.is_empty(),
+            "clicks beside naval name-list controls must still select the visible backing row"
+        );
+        let digest = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert!(
+            digest.contains("selected_key=production:naval:id:A_nav_01"),
+            "neighboring naval name-list row click should select the row, got: {digest}"
+        );
+    }
+
+    #[test]
     fn production_line_close_button_does_not_claim_neighboring_row_clicks() {
         let stage = stage_with(&[]);
         let snap = many_production_snap(40, "A");
@@ -6015,7 +6374,7 @@ mod tests {
         let viewport = production_grid_fallback(view.screen);
         let priority = production_priority_button_rects(viewport, viewport.y)[0];
         let out = view.on_input(&ViewInput::PointerDown {
-            x: priority.x + priority.w + 16.0,
+            x: priority.x + priority.w + 110.0,
             y: priority.y + priority.h * 0.5,
             button: PointerButton::Left,
         });

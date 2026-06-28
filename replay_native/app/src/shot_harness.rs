@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use app::host::ViewRegistry;
+use app::views::clusters::chrome_outliner_maps::{FIND_VIEW_ID, MAPMODES_VIEW_ID};
 use app::views::map::MAP_VIEW_ID;
 use app::views::state_panel::STATE_PANEL_VIEW_ID;
 
@@ -17,6 +18,44 @@ pub const MAP_MODE_SHOT_CASES: &[(&str, &str, &str)] = &[
 ];
 pub const STATE_PANEL_SELECTED_STATE_SHOT_CASES: &[(&str, &str, u32)] =
     &[("state_panel_state_64", "State panel: State 64", 64)];
+pub const FIND_SELECTED_TAB_SHOT_CASES: &[(&str, &str, &str)] = &[
+    (
+        "find_tab_countries",
+        "Find view: Countries tab",
+        "countries",
+    ),
+    (
+        "find_tab_victory_points",
+        "Find view: Victory Points tab",
+        "vps",
+    ),
+];
+pub const FIND_SELECTED_ROW_SHOT_CASES: &[(&str, &str, &str, usize)] = &[
+    (
+        "find_states_first_row",
+        "Find view: States first row selected",
+        "states",
+        0,
+    ),
+    (
+        "find_victory_points_first_row",
+        "Find view: Victory Points first row selected",
+        "vps",
+        0,
+    ),
+];
+pub const MAPMODES_HOVER_SHOT_CASES: &[(&str, &str, &str)] = &[
+    (
+        "mapmodes_hover_supply",
+        "Map modes: Supply tooltip hover",
+        "supply",
+    ),
+    (
+        "mapmodes_hover_intel",
+        "Map modes: Intel tooltip hover",
+        "intel",
+    ),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ShotCaseSpec {
@@ -25,6 +64,9 @@ struct ShotCaseSpec {
     label: &'static str,
     map_mode_slug: Option<&'static str>,
     shot_state_id: Option<u32>,
+    find_tab_slug: Option<&'static str>,
+    find_visible_row_index: Option<usize>,
+    mapmodes_hover_slug: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,7 +135,15 @@ pub struct NativeShotBatchRun {
 }
 
 fn target_owned_shot_arg(arg: &str) -> Option<&'static str> {
-    for flag in ["--shot", "--shot-view", "--shot-state", "--map-mode"] {
+    for flag in [
+        "--shot",
+        "--shot-view",
+        "--shot-state",
+        "--map-mode",
+        "--shot-find-tab",
+        "--shot-find-row",
+        "--shot-mapmodes-hover",
+    ] {
         if arg == flag
             || arg
                 .strip_prefix(flag)
@@ -182,6 +232,9 @@ fn base_shot_case() -> ShotCaseSpec {
         label: "Base registered view",
         map_mode_slug: None,
         shot_state_id: None,
+        find_tab_slug: None,
+        find_visible_row_index: None,
+        mapmodes_hover_slug: None,
     }
 }
 
@@ -197,6 +250,9 @@ fn shot_cases_for_view_id(id: &str) -> Vec<ShotCaseSpec> {
                     label,
                     map_mode_slug: Some(slug),
                     shot_state_id: None,
+                    find_tab_slug: None,
+                    find_visible_row_index: None,
+                    mapmodes_hover_slug: None,
                 }),
         );
     }
@@ -208,8 +264,55 @@ fn shot_cases_for_view_id(id: &str) -> Vec<ShotCaseSpec> {
                 label,
                 map_mode_slug: None,
                 shot_state_id: Some(state_id),
+                find_tab_slug: None,
+                find_visible_row_index: None,
+                mapmodes_hover_slug: None,
             },
         ));
+    }
+    if id == FIND_VIEW_ID.as_str() {
+        cases.extend(
+            FIND_SELECTED_TAB_SHOT_CASES
+                .iter()
+                .map(|&(case_id, label, tab_slug)| ShotCaseSpec {
+                    id: case_id,
+                    family: "find_selected_tabs",
+                    label,
+                    map_mode_slug: None,
+                    shot_state_id: None,
+                    find_tab_slug: Some(tab_slug),
+                    find_visible_row_index: None,
+                    mapmodes_hover_slug: None,
+                }),
+        );
+        cases.extend(FIND_SELECTED_ROW_SHOT_CASES.iter().map(
+            |&(case_id, label, tab_slug, row_index)| ShotCaseSpec {
+                id: case_id,
+                family: "find_selected_rows",
+                label,
+                map_mode_slug: None,
+                shot_state_id: None,
+                find_tab_slug: Some(tab_slug),
+                find_visible_row_index: Some(row_index),
+                mapmodes_hover_slug: None,
+            },
+        ));
+    }
+    if id == MAPMODES_VIEW_ID.as_str() {
+        cases.extend(
+            MAPMODES_HOVER_SHOT_CASES
+                .iter()
+                .map(|&(case_id, label, hover_slug)| ShotCaseSpec {
+                    id: case_id,
+                    family: "mapmodes_hover_tooltips",
+                    label,
+                    map_mode_slug: None,
+                    shot_state_id: None,
+                    find_tab_slug: None,
+                    find_visible_row_index: None,
+                    mapmodes_hover_slug: Some(hover_slug),
+                }),
+        );
     }
     cases
 }
@@ -263,6 +366,18 @@ fn native_args_for_shot_case(id: &str, case: ShotCaseSpec, native_filename: &str
     }
     if let Some(slug) = case.map_mode_slug {
         args.push("--map-mode".to_string());
+        args.push(slug.to_string());
+    }
+    if let Some(slug) = case.find_tab_slug {
+        args.push("--shot-find-tab".to_string());
+        args.push(slug.to_string());
+    }
+    if let Some(row_index) = case.find_visible_row_index {
+        args.push("--shot-find-row".to_string());
+        args.push(row_index.to_string());
+    }
+    if let Some(slug) = case.mapmodes_hover_slug {
+        args.push("--shot-mapmodes-hover".to_string());
         args.push(slug.to_string());
     }
     args
@@ -400,6 +515,37 @@ pub fn write_registry_shot_manifest(
                         "case_id": case_id,
                         "case_label": label,
                         "shot_state": state_id,
+                    })
+                }).collect::<Vec<_>>(),
+            }, {
+                "family": "find_selected_tabs",
+                "view_id": FIND_VIEW_ID.as_str(),
+                "cases": FIND_SELECTED_TAB_SHOT_CASES.iter().map(|&(case_id, label, tab_slug)| {
+                    serde_json::json!({
+                        "case_id": case_id,
+                        "case_label": label,
+                        "find_tab": tab_slug,
+                    })
+                }).collect::<Vec<_>>(),
+            }, {
+                "family": "find_selected_rows",
+                "view_id": FIND_VIEW_ID.as_str(),
+                "cases": FIND_SELECTED_ROW_SHOT_CASES.iter().map(|&(case_id, label, tab_slug, row_index)| {
+                    serde_json::json!({
+                        "case_id": case_id,
+                        "case_label": label,
+                        "find_tab": tab_slug,
+                        "visible_row": row_index,
+                    })
+                }).collect::<Vec<_>>(),
+            }, {
+                "family": "mapmodes_hover_tooltips",
+                "view_id": MAPMODES_VIEW_ID.as_str(),
+                "cases": MAPMODES_HOVER_SHOT_CASES.iter().map(|&(case_id, label, hover_slug)| {
+                    serde_json::json!({
+                        "case_id": case_id,
+                        "case_label": label,
+                        "hover_map_mode": hover_slug,
                     })
                 }).collect::<Vec<_>>(),
             }],
@@ -708,6 +854,47 @@ pub fn read_shot_manifest(path: &Path) -> Result<ShotManifestRead, String> {
     })
 }
 
+pub fn read_registry_shot_manifest(
+    registry: &ViewRegistry,
+    path: &Path,
+) -> Result<ShotManifestRead, String> {
+    let manifest = read_shot_manifest(path)?;
+    let manifest_dir = manifest.path.parent().ok_or_else(|| {
+        format!(
+            "shot-all-views manifest '{}' has no parent directory",
+            manifest.path.display()
+        )
+    })?;
+    let expected = build_registry_shot_matrix(registry, manifest_dir)?;
+    if manifest.targets.len() != expected.len() {
+        return Err(format!(
+            "shot-all-views manifest '{}' target_count={} does not match registry-derived target count {}",
+            manifest.path.display(),
+            manifest.targets.len(),
+            expected.len()
+        ));
+    }
+    for (index, (actual, expected)) in manifest.targets.iter().zip(expected.iter()).enumerate() {
+        if actual.view_id != expected.view_id
+            || actual.case_id != expected.case_id
+            || actual.case_family != expected.case_family
+            || actual.case_label != expected.case_label
+            || actual.native_filename != expected.native_filename
+            || actual.hoi4_reference_filename != expected.hoi4_reference_filename
+            || actual.diff_filename != expected.diff_filename
+            || actual.native_args.as_slice() != expected.native_args.as_slice()
+        {
+            return Err(format!(
+                "shot-all-views manifest '{}' target {index} does not match registry-derived target view '{}' case '{}'",
+                manifest.path.display(),
+                expected.view_id,
+                expected.case_id
+            ));
+        }
+    }
+    Ok(manifest)
+}
+
 pub fn build_native_shot_invocations(
     manifest: &ShotManifestRead,
     config: &NativeShotBatchConfig,
@@ -760,10 +947,11 @@ pub fn build_native_shot_invocations(
 }
 
 pub fn run_native_shot_batch_from_manifest(
+    registry: &ViewRegistry,
     manifest_path: &Path,
     config: &NativeShotBatchConfig,
 ) -> Result<NativeShotBatchRun, String> {
-    let manifest = read_shot_manifest(manifest_path)?;
+    let manifest = read_registry_shot_manifest(registry, manifest_path)?;
     let invocations = build_native_shot_invocations(&manifest, config)?;
     let mut captured_count = 0usize;
 
@@ -912,6 +1100,31 @@ mod tests {
         manifest_read_error_after_registry_mutation(test_name, test_registry(), mutate)
     }
 
+    fn registry_manifest_read_error_after_mutation(
+        test_name: &str,
+        registry: ViewRegistry,
+        mutate: impl FnOnce(&mut serde_json::Value),
+    ) -> String {
+        let out = unique_temp_dir_name(test_name);
+        std::fs::create_dir(&out).unwrap();
+        let write = write_registry_shot_manifest(&registry, &out).unwrap();
+        let raw = std::fs::read(&write.path).unwrap();
+        let mut manifest: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        mutate(&mut manifest);
+        std::fs::write(&write.path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+        let err = read_registry_shot_manifest(&registry, &write.path).unwrap_err();
+        std::fs::remove_dir_all(&out).unwrap();
+        err
+    }
+
+    fn deterministic_extra_case_count() -> usize {
+        MAP_MODE_SHOT_CASES.len()
+            + STATE_PANEL_SELECTED_STATE_SHOT_CASES.len()
+            + FIND_SELECTED_TAB_SHOT_CASES.len()
+            + FIND_SELECTED_ROW_SHOT_CASES.len()
+            + MAPMODES_HOVER_SHOT_CASES.len()
+    }
+
     #[test]
     fn shot_all_views_matrix_is_registry_derived_and_sorted() {
         let out = Path::new("shots");
@@ -947,9 +1160,7 @@ mod tests {
         assert_eq!(matrix_ids, registry_ids);
         assert_eq!(
             matrix.len(),
-            EXPECTED_BASE_REGISTERED_VIEW_COUNT
-                + MAP_MODE_SHOT_CASES.len()
-                + STATE_PANEL_SELECTED_STATE_SHOT_CASES.len()
+            EXPECTED_BASE_REGISTERED_VIEW_COUNT + deterministic_extra_case_count()
         );
     }
 
@@ -1040,6 +1251,107 @@ mod tests {
     }
 
     #[test]
+    fn shot_all_views_expands_find_tab_and_row_cases_deterministically() {
+        let registry = ViewRegistry::from_inventory();
+        let matrix = build_registry_shot_matrix(&registry, Path::new("shots")).unwrap();
+        let find_targets: Vec<_> = matrix
+            .iter()
+            .filter(|target| target.view_id == FIND_VIEW_ID.as_str())
+            .collect();
+        let case_ids: Vec<_> = find_targets.iter().map(|target| target.case_id).collect();
+        assert_eq!(
+            case_ids,
+            vec![
+                BASE_SHOT_CASE_ID,
+                "find_tab_countries",
+                "find_tab_victory_points",
+                "find_states_first_row",
+                "find_victory_points_first_row",
+            ]
+        );
+
+        let countries = find_targets[1];
+        assert_eq!(countries.case_family, "find_selected_tabs");
+        assert_eq!(countries.case_label, "Find view: Countries tab");
+        assert_eq!(
+            countries.native_filename,
+            "native__chrome.find__find_tab_countries.png"
+        );
+        assert_eq!(
+            countries.native_args,
+            vec![
+                "--shot".to_string(),
+                "native__chrome.find__find_tab_countries.png".to_string(),
+                "--shot-view".to_string(),
+                FIND_VIEW_ID.as_str().to_string(),
+                "--shot-find-tab".to_string(),
+                "countries".to_string(),
+            ]
+        );
+
+        let vp_row = find_targets[4];
+        assert_eq!(vp_row.case_family, "find_selected_rows");
+        assert_eq!(
+            vp_row.native_filename,
+            "native__chrome.find__find_victory_points_first_row.png"
+        );
+        assert_eq!(
+            vp_row.native_args,
+            vec![
+                "--shot".to_string(),
+                "native__chrome.find__find_victory_points_first_row.png".to_string(),
+                "--shot-view".to_string(),
+                FIND_VIEW_ID.as_str().to_string(),
+                "--shot-find-tab".to_string(),
+                "vps".to_string(),
+                "--shot-find-row".to_string(),
+                "0".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn shot_all_views_expands_mapmodes_hover_cases_deterministically() {
+        let registry = ViewRegistry::from_inventory();
+        let matrix = build_registry_shot_matrix(&registry, Path::new("shots")).unwrap();
+        let mapmodes_targets: Vec<_> = matrix
+            .iter()
+            .filter(|target| target.view_id == MAPMODES_VIEW_ID.as_str())
+            .collect();
+        let case_ids: Vec<_> = mapmodes_targets
+            .iter()
+            .map(|target| target.case_id)
+            .collect();
+        assert_eq!(
+            case_ids,
+            vec![
+                BASE_SHOT_CASE_ID,
+                "mapmodes_hover_supply",
+                "mapmodes_hover_intel"
+            ]
+        );
+
+        let supply = mapmodes_targets[1];
+        assert_eq!(supply.case_family, "mapmodes_hover_tooltips");
+        assert_eq!(supply.case_label, "Map modes: Supply tooltip hover");
+        assert_eq!(
+            supply.native_filename,
+            "native__chrome.mapmodes__mapmodes_hover_supply.png"
+        );
+        assert_eq!(
+            supply.native_args,
+            vec![
+                "--shot".to_string(),
+                "native__chrome.mapmodes__mapmodes_hover_supply.png".to_string(),
+                "--shot-view".to_string(),
+                MAPMODES_VIEW_ID.as_str().to_string(),
+                "--shot-mapmodes-hover".to_string(),
+                "supply".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn shot_all_views_rejects_path_unsafe_view_ids() {
         let mut registry = ViewRegistry::empty();
         registry.insert_view(&BAD_DESC);
@@ -1094,6 +1406,18 @@ mod tests {
         assert_eq!(
             manifest["case_expansion"]["families"][1]["family"],
             "state_panel_selected_states"
+        );
+        assert_eq!(
+            manifest["case_expansion"]["families"][2]["family"],
+            "find_selected_tabs"
+        );
+        assert_eq!(
+            manifest["case_expansion"]["families"][3]["family"],
+            "find_selected_rows"
+        );
+        assert_eq!(
+            manifest["case_expansion"]["families"][4]["family"],
+            "mapmodes_hover_tooltips"
         );
         assert_eq!(manifest["targets"][0]["view_id"], "test.alpha");
         assert_eq!(manifest["targets"][0]["case_id"], BASE_SHOT_CASE_ID);
@@ -1196,9 +1520,8 @@ mod tests {
                     .expect("state panel selected-state case");
                 targets.remove(index);
                 manifest["target_count"] = serde_json::json!(targets.len());
-                manifest["extra_case_count"] = serde_json::json!(
-                    MAP_MODE_SHOT_CASES.len() + STATE_PANEL_SELECTED_STATE_SHOT_CASES.len() - 1
-                );
+                manifest["extra_case_count"] =
+                    serde_json::json!(deterministic_extra_case_count() - 1);
             },
         );
         assert!(err.contains("missing deterministic case 'state_panel_state_64'"));
@@ -1228,6 +1551,88 @@ mod tests {
     }
 
     #[test]
+    fn shot_all_views_manifest_reader_rejects_tampered_find_and_hover_case_args() {
+        let err = manifest_read_error_after_registry_mutation(
+            "manifest_bad_find_case_args",
+            ViewRegistry::from_inventory(),
+            |manifest| {
+                let target = manifest["targets"]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|target| target["case_id"] == "find_victory_points_first_row")
+                    .expect("find selected-row case");
+                target["native_shot_args"] = serde_json::json!([
+                    "--shot",
+                    "native__chrome.find__find_victory_points_first_row.png",
+                    "--shot-view",
+                    "chrome.find",
+                    "--shot-find-tab",
+                    "countries",
+                    "--shot-find-row",
+                    "0"
+                ]);
+            },
+        );
+        assert!(err.contains(
+            "native_shot_args do not match view id 'chrome.find' case 'find_victory_points_first_row'"
+        ));
+
+        let err = manifest_read_error_after_registry_mutation(
+            "manifest_bad_mapmodes_hover_args",
+            ViewRegistry::from_inventory(),
+            |manifest| {
+                let target = manifest["targets"]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|target| target["case_id"] == "mapmodes_hover_supply")
+                    .expect("mapmodes hover case");
+                target["native_shot_args"] = serde_json::json!([
+                    "--shot",
+                    "native__chrome.mapmodes__mapmodes_hover_supply.png",
+                    "--shot-view",
+                    "chrome.mapmodes",
+                    "--shot-mapmodes-hover",
+                    "intel"
+                ]);
+            },
+        );
+        assert!(err.contains(
+            "native_shot_args do not match view id 'chrome.mapmodes' case 'mapmodes_hover_supply'"
+        ));
+    }
+
+    #[test]
+    fn shot_all_views_registry_readback_rejects_missing_or_reordered_targets() {
+        let err = registry_manifest_read_error_after_mutation(
+            "manifest_missing_registered_target",
+            test_registry(),
+            |manifest| {
+                let target_count = {
+                    let targets = manifest["targets"].as_array_mut().unwrap();
+                    targets.remove(0);
+                    targets.len()
+                };
+                manifest["registry_view_count"] = serde_json::json!(1);
+                manifest["target_count"] = serde_json::json!(target_count);
+            },
+        );
+        assert!(err.contains("does not match registry-derived target count 2"));
+
+        let err = registry_manifest_read_error_after_mutation(
+            "manifest_reordered_targets",
+            test_registry(),
+            |manifest| {
+                manifest["targets"].as_array_mut().unwrap().swap(0, 1);
+            },
+        );
+        assert!(err.contains(
+            "target 0 does not match registry-derived target view 'test.alpha' case 'base'"
+        ));
+    }
+
+    #[test]
     fn shot_all_views_native_batch_rejects_target_owned_common_args() {
         let out = unique_temp_dir_name("batch_conflict");
         std::fs::create_dir(&out).unwrap();
@@ -1252,6 +1657,26 @@ mod tests {
         assert_eq!(
             err,
             "shot-all-views common args cannot include target-owned --shot-state"
+        );
+
+        let config = NativeShotBatchConfig {
+            command: PathBuf::from("replay_app"),
+            common_args: vec!["--shot-find-tab".to_string(), "vps".to_string()],
+        };
+        let err = build_native_shot_invocations(&manifest, &config).unwrap_err();
+        assert_eq!(
+            err,
+            "shot-all-views common args cannot include target-owned --shot-find-tab"
+        );
+
+        let config = NativeShotBatchConfig {
+            command: PathBuf::from("replay_app"),
+            common_args: vec!["--shot-mapmodes-hover=supply".to_string()],
+        };
+        let err = build_native_shot_invocations(&manifest, &config).unwrap_err();
+        assert_eq!(
+            err,
+            "shot-all-views common args cannot include target-owned --shot-mapmodes-hover"
         );
 
         std::fs::remove_dir_all(&out).unwrap();

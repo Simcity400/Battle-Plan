@@ -3729,12 +3729,21 @@ register_template!(TemplateDescriptor {
 const COMBAT_LOG_VIEW_ID: ViewId = ViewId("logistics.combat_log");
 const COMBAT_LOG_FILE: &str = "combat_log.json";
 const COMBAT_LOG_ROOT: &str = "combat_log_view";
+const COMBAT_LOG_COMBATS_GRID: &str = "combats_list";
+const COMBAT_LOG_COMBAT_ITEM: &str = "combat_log_combat_item";
+const COMBAT_LOG_ROW_H: f32 = 100.0;
 
-pub struct CombatLogView;
+pub struct CombatLogView {
+    screen: Rect,
+    combat_row_count: usize,
+}
 
 impl CombatLogView {
     pub fn new() -> CombatLogView {
-        CombatLogView
+        CombatLogView {
+            screen: default_combat_log_screen(),
+            combat_row_count: 0,
+        }
     }
 }
 impl Default for CombatLogView {
@@ -3743,11 +3752,62 @@ impl Default for CombatLogView {
     }
 }
 
+fn default_combat_log_screen() -> Rect {
+    Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 1600.0,
+        h: 900.0,
+    }
+}
+
+fn combat_log_panel_rect(screen: Rect) -> Rect {
+    Rect {
+        x: screen.x + screen.w - 995.0,
+        y: screen.y + 95.0,
+        w: 670.0,
+        h: (screen.h - 165.0).max(0.0),
+    }
+}
+
+fn combat_log_rows_viewport_fallback(screen: Rect) -> Rect {
+    let panel = combat_log_panel_rect(screen);
+    Rect {
+        x: panel.x + 10.0,
+        y: panel.y + 50.0 + 115.0 + 10.0,
+        w: 610.0,
+        h: (panel.h - 50.0 - 115.0 - 10.0).max(0.0),
+    }
+}
+
+fn combat_log_rows_viewport(roots: &[Node], screen: Rect) -> Rect {
+    match find_rect(roots, "page_left") {
+        Some(page) => Rect {
+            x: page.x + 10.0,
+            y: page.y + 115.0 + 10.0,
+            w: 610.0,
+            h: (page.h - 115.0 - 10.0).max(0.0),
+        },
+        None => combat_log_rows_viewport_fallback(screen),
+    }
+}
+
+fn combat_log_visible_row_hit(screen: Rect, row_count: usize, x: f32, y: f32) -> bool {
+    let viewport = combat_log_rows_viewport_fallback(screen);
+    if row_count == 0 || !viewport.contains(x, y) {
+        return false;
+    }
+    let row = ((y - viewport.y) / COMBAT_LOG_ROW_H).floor() as usize;
+    row < row_count && (row as f32) * COMBAT_LOG_ROW_H < viewport.h
+}
+
 struct CombatLogDrawable {
     roots: Vec<Node>,
+    file: GuiFile,
     /// The combats reconstructed for the list (from captured `combats[]`); empty when the
     /// domain is absent (never fabricated from absent ledger totals).
     combat_rows: Vec<DataRow>,
+    row_viewport: Rect,
     log_section: SectionState,
     combats_section: SectionState,
 }
@@ -3763,6 +3823,16 @@ impl Drawable for CombatLogDrawable {
     }
     fn draw(&self, fd: &mut FrameDraw) {
         fd.draw_nodes(&self.roots);
+        render_rows_selected_in_viewport(
+            fd,
+            &self.file,
+            COMBAT_LOG_COMBATS_GRID,
+            COMBAT_LOG_COMBAT_ITEM,
+            &self.combat_rows,
+            self.row_viewport,
+            0.0,
+            None,
+        );
     }
 }
 
@@ -3772,6 +3842,41 @@ impl ViewInstance for CombatLogView {
     }
     fn policy(&self) -> HostPolicy {
         HostPolicy::window(ZBand::Panel)
+    }
+    fn rebind(&mut self, ctx: &RebindContext) {
+        self.screen = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: ctx.screen.0 as f32,
+            h: ctx.screen.1 as f32,
+        };
+        let snap = &ctx.snapshot;
+        let (rows, _) = domain_array(crate::host::context::classify_value(snap.domain("combats")));
+        self.combat_row_count = match rows {
+            Some(rows) => rows.len(),
+            None => 0,
+        };
+    }
+    fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
+        match ev {
+            ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            }
+            | ViewInput::PointerUp {
+                x,
+                y,
+                button: PointerButton::Left,
+            } if combat_log_visible_row_hit(self.screen, self.combat_row_count, *x, *y) => {
+                InputOutcome {
+                    consumed: true,
+                    commands: Vec::new(),
+                    needs_redraw: false,
+                }
+            }
+            _ => InputOutcome::ignored(),
+        }
     }
     fn bind(&self, ctx: &BindContext) -> BoundView {
         let mut fidelity = FidelityReport::default();
@@ -3819,9 +3924,12 @@ impl ViewInstance for CombatLogView {
         let (combat_rows, combats_section) = build_combat_log_rows(ctx, &mut fidelity);
 
         let roots = build_root(ctx, &file, COMBAT_LOG_ROOT, &summary);
+        let row_viewport = combat_log_rows_viewport(&roots, self.screen);
         let drawable = CombatLogDrawable {
             roots: roots.clone(),
+            file,
             combat_rows,
+            row_viewport,
             log_section,
             combats_section,
         };
@@ -3858,12 +3966,29 @@ fn build_combat_log_rows(
     let mut rows = Vec::new();
     for c in cs {
         let mut row = DataRow::new();
+        if let Some(id) = c.get("combat_id").and_then(row_key_token) {
+            row = row.with_key(format!("combat:{id}"));
+        }
         row.bind(
             fidelity,
             "location",
             elem_field(c, "location_province"),
             Fidelity::Exact,
             fmt_int,
+        );
+        row.bind(
+            fidelity,
+            "atk_flag",
+            side_owner(c, "attackers"),
+            Fidelity::Derived,
+            fmt_token,
+        );
+        row.bind(
+            fidelity,
+            "def_flag",
+            side_owner(c, "defenders"),
+            Fidelity::Derived,
+            fmt_token,
         );
         row.bind_value(
             fidelity,
@@ -3873,8 +3998,18 @@ fn build_combat_log_rows(
             fmt_token,
         );
         // the historical per-battle loss ledger is not stored → unavailable (never a 0).
-        row.badge_unavailable(fidelity, "atk_lost_manpower");
-        row.badge_unavailable(fidelity, "def_lost_manpower");
+        for element in [
+            "atk_lost_manpower",
+            "def_lost_manpower",
+            "atk_lost_armor_eq",
+            "def_lost_armor_eq",
+            "atk_lost_air_eq",
+            "def_lost_air_eq",
+            "atk_lost_other_eq",
+            "def_lost_other_eq",
+        ] {
+            row.badge_unavailable(fidelity, element);
+        }
         rows.push(row);
     }
     section.record(fidelity);
@@ -5593,9 +5728,27 @@ mod tests {
             d.contains("rows=r0["),
             "one reconstructed combat row, got:\n{d}"
         );
+        assert!(
+            d.contains("key=combat:1;location=5(E);"),
+            "combat row identity and exact captured location must bind, got:\n{d}"
+        );
+        for element in [
+            "def_lost_manpower",
+            "atk_lost_armor_eq",
+            "def_lost_armor_eq",
+            "atk_lost_air_eq",
+            "def_lost_air_eq",
+            "atk_lost_other_eq",
+            "def_lost_other_eq",
+        ] {
+            assert!(
+                d.contains(&format!("{element}={DASH}(Ub)")),
+                "per-battle {element} is unavailable, got:\n{d}"
+            );
+        }
         // the per-battle loss cells badge unavailable (no stored ledger), never a 0.
         assert!(
-            d.contains("atk_lost_manpower=—(Ub)"),
+            d.contains(&format!("atk_lost_manpower={DASH}(Ub)")),
             "per-battle loss is unavailable, got:\n{d}"
         );
         assert!(
@@ -5606,6 +5759,85 @@ mod tests {
         assert!(
             bv.fidelity.unavailable >= 9,
             "the 9 page/tab ledger fields are logical gaps, got:\n{d}"
+        );
+    }
+
+    #[test]
+    fn combat_log_row_clicks_are_read_only_noops() {
+        if !assets_present() {
+            return;
+        }
+        let stage = stage_with(&["combat_log.json"]);
+        let snap = snap_a();
+        let mut host = WindowHost::new();
+        host.open_instance(Box::new(CombatLogView::new()));
+        host.rebind_all(&RebindContext {
+            snapshot: &snap,
+            country: "GER",
+            screen: (1600, 900),
+            refit: true,
+        });
+
+        let before = {
+            let bound = host.bind_all(&ctx(&stage, &snap));
+            assert_eq!(bound.len(), 1);
+            let digest = bound_digest(&bound[0]);
+            assert!(
+                digest.contains("key=combat:1;location=5(E);"),
+                "test must target a real reconstructed combat row, got:\n{digest}"
+            );
+            digest
+        };
+
+        let viewport = combat_log_rows_viewport_fallback(default_combat_log_screen());
+        let x = viewport.x + 8.0;
+        let y = viewport.y + 8.0;
+        for ev in [
+            ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            },
+            ViewInput::PointerUp {
+                x,
+                y,
+                button: PointerButton::Left,
+            },
+        ] {
+            let out = host.route_input(&ev);
+            assert!(
+                out.consumed,
+                "combat-log row click must be consumed as read-only replay chrome"
+            );
+            assert!(
+                out.commands.is_empty(),
+                "combat-log row click must not emit a drilldown/mutation command on {ev:?}"
+            );
+            assert!(
+                !out.needs_redraw,
+                "combat-log read-only row click must not request redraw on {ev:?}"
+            );
+        }
+
+        let below_only_row = ViewInput::PointerDown {
+            x,
+            y: viewport.y + COMBAT_LOG_ROW_H + 8.0,
+            button: PointerButton::Left,
+        };
+        let miss = host.route_input(&below_only_row);
+        assert!(
+            !miss.consumed,
+            "clicking below the only reconstructed row must fall through, not claim an empty row"
+        );
+
+        let after = {
+            let bound = host.bind_all(&ctx(&stage, &snap));
+            assert_eq!(bound.len(), 1);
+            bound_digest(&bound[0])
+        };
+        assert_eq!(
+            before, after,
+            "combat-log read-only row clicks must not mutate replay-local view state"
         );
     }
 

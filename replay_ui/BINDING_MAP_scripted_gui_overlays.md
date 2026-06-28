@@ -58,6 +58,13 @@ in the read-only replay. We still render the button chrome so the panel looks ri
 **No-fabrication (SCHEMA §0.2).** A bindable value that is `null` renders **"—"**, never `0`. We never
 invent a scripted-gui value; a chrome-only overlay shows the badge, not a guessed number.
 
+**Native fail-closed proof.** For DEF-backed `frame` slots wired to a recorded
+per-country `script_variables` bag, native tests now prove measured numeric values
+render normally, measured zero stays `"0"`, and absent/null/malformed bags or
+non-numeric variable payloads render the unavailable badge instead of JSON text
+or a fabricated `0`. This does not promote `[GET_*]`, temp vars, computed colors,
+or other non-DEF-confirmed tokens into bindable data.
+
 **DEMO-snapshot caveat (fold-in artifact, not a true gap).** The current demo snapshot is
 **save-only**, and the save oracle's `world.json` pass may leave `world.variables`/`world.flags`
 **empty/unfed** in that snapshot. That makes even the *bindable* VP overlay render the badge **right

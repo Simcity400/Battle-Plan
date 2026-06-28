@@ -14,6 +14,7 @@ use crate::plan::{Cmd, Plan};
 pub struct Tooltip {
     pub title: Atom,
     pub rows: Vec<TooltipRow>,
+    pub meta: TooltipMetadata,
 }
 
 impl Tooltip {
@@ -21,6 +22,7 @@ impl Tooltip {
         Tooltip {
             title,
             rows: Vec::new(),
+            meta: TooltipMetadata::default(),
         }
     }
 
@@ -33,10 +35,38 @@ impl Tooltip {
     }
 
     pub fn with_row(mut self, label: impl Into<String>, value: Atom) -> Tooltip {
-        self.rows.push(TooltipRow {
-            label: label.into(),
-            value,
-        });
+        self.rows.push(TooltipRow::new(label, value));
+        self
+    }
+
+    pub fn with_metadata(mut self, meta: TooltipMetadata) -> Tooltip {
+        self.meta = meta;
+        self
+    }
+
+    pub fn with_tooltip_key(self, key: impl Into<String>) -> Tooltip {
+        let meta = self.meta.clone().with_tooltip_key(key);
+        self.with_metadata(meta)
+    }
+
+    pub fn with_title_key(self, key: impl Into<String>) -> Tooltip {
+        let meta = self.meta.clone().with_title_loc_key(key);
+        self.with_metadata(meta)
+    }
+
+    pub fn with_source_key(self, key: impl Into<String>) -> Tooltip {
+        let meta = self.meta.clone().with_source_key(key);
+        self.with_metadata(meta)
+    }
+
+    pub fn with_row_metadata(
+        mut self,
+        label: impl Into<String>,
+        value: Atom,
+        meta: TooltipRowMeta,
+    ) -> Tooltip {
+        self.rows
+            .push(TooltipRow::new(label, value).with_metadata(meta));
         self
     }
 }
@@ -45,6 +75,126 @@ impl Tooltip {
 pub struct TooltipRow {
     pub label: String,
     pub value: Atom,
+    pub meta: TooltipRowMeta,
+}
+
+impl TooltipRow {
+    pub fn new(label: impl Into<String>, value: Atom) -> TooltipRow {
+        TooltipRow {
+            label: label.into(),
+            value,
+            meta: TooltipRowMeta::default(),
+        }
+    }
+
+    pub fn with_metadata(mut self, meta: TooltipRowMeta) -> TooltipRow {
+        self.meta = meta;
+        self
+    }
+}
+
+/// Draw-inert provenance for a tooltip as a whole. These keys let parity tests
+/// prove that a hover used the intended the game tooltip/localisation/source path even
+/// when the resolved visible strings happen to match a fallback.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TooltipMetadata {
+    pub tooltip_key: Option<String>,
+    pub title_key: Option<String>,
+    pub source_key: Option<String>,
+}
+
+impl TooltipMetadata {
+    pub fn new() -> TooltipMetadata {
+        TooltipMetadata::default()
+    }
+
+    pub fn with_tooltip_key(mut self, key: impl Into<String>) -> TooltipMetadata {
+        self.tooltip_key = Some(key.into());
+        self
+    }
+
+    pub fn tooltip_key(self, key: impl Into<String>) -> TooltipMetadata {
+        self.with_tooltip_key(key)
+    }
+
+    pub fn with_title_key(mut self, key: impl Into<String>) -> TooltipMetadata {
+        self.title_key = Some(key.into());
+        self
+    }
+
+    pub fn with_title_loc_key(self, key: impl Into<String>) -> TooltipMetadata {
+        self.with_title_key(key)
+    }
+
+    pub fn title_key(self, key: impl Into<String>) -> TooltipMetadata {
+        self.with_title_key(key)
+    }
+
+    pub fn with_source_key(mut self, key: impl Into<String>) -> TooltipMetadata {
+        self.source_key = Some(key.into());
+        self
+    }
+
+    pub fn source_key(self, key: impl Into<String>) -> TooltipMetadata {
+        self.with_source_key(key)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tooltip_key.is_none() && self.title_key.is_none() && self.source_key.is_none()
+    }
+
+    fn digest(&self) -> String {
+        format!(
+            "tooltip_key={};title_key={};source_key={}",
+            opt_meta_string(&self.tooltip_key),
+            opt_meta_string(&self.title_key),
+            opt_meta_string(&self.source_key)
+        )
+    }
+}
+
+/// Draw-inert provenance for one tooltip row. `label_key` and `value_key` are
+/// localisation or scripted-tooltip keys; `source_key` is the domain/snapshot
+/// field that supplied the atom or explains why it is unavailable.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TooltipRowMeta {
+    pub label_key: Option<String>,
+    pub value_key: Option<String>,
+    pub source_key: Option<String>,
+}
+
+impl TooltipRowMeta {
+    pub fn new() -> TooltipRowMeta {
+        TooltipRowMeta::default()
+    }
+
+    pub fn label_key(mut self, key: impl Into<String>) -> TooltipRowMeta {
+        self.label_key = Some(key.into());
+        self
+    }
+
+    pub fn value_key(mut self, key: impl Into<String>) -> TooltipRowMeta {
+        self.value_key = Some(key.into());
+        self
+    }
+
+    pub fn source_key(mut self, key: impl Into<String>) -> TooltipRowMeta {
+        self.source_key = Some(key.into());
+        self
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.label_key.is_none() && self.value_key.is_none() && self.source_key.is_none()
+    }
+
+    fn digest(&self) -> String {
+        format!(
+            "label_key={};value_key={};source_key={}",
+            opt_meta_string(&self.label_key),
+            opt_meta_string(&self.value_key),
+            opt_meta_string(&self.source_key)
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -60,10 +210,39 @@ impl TooltipComposer {
     }
 
     pub fn row(mut self, label: impl Into<String>, value: Atom) -> TooltipComposer {
-        self.tooltip.rows.push(TooltipRow {
-            label: label.into(),
-            value,
-        });
+        self.tooltip.rows.push(TooltipRow::new(label, value));
+        self
+    }
+
+    pub fn metadata(mut self, meta: TooltipMetadata) -> TooltipComposer {
+        self.tooltip.meta = meta;
+        self
+    }
+
+    pub fn tooltip_key(self, key: impl Into<String>) -> TooltipComposer {
+        let meta = self.tooltip.meta.clone().tooltip_key(key);
+        self.metadata(meta)
+    }
+
+    pub fn title_key(self, key: impl Into<String>) -> TooltipComposer {
+        let meta = self.tooltip.meta.clone().title_key(key);
+        self.metadata(meta)
+    }
+
+    pub fn source_key(self, key: impl Into<String>) -> TooltipComposer {
+        let meta = self.tooltip.meta.clone().source_key(key);
+        self.metadata(meta)
+    }
+
+    pub fn row_metadata(
+        mut self,
+        label: impl Into<String>,
+        value: Atom,
+        meta: TooltipRowMeta,
+    ) -> TooltipComposer {
+        self.tooltip
+            .rows
+            .push(TooltipRow::new(label, value).with_metadata(meta));
         self
     }
 
@@ -81,6 +260,33 @@ impl TooltipComposer {
 
     pub fn unavailable_row(self, label: impl Into<String>, reason: Reason) -> TooltipComposer {
         self.row(label, Atom::unavailable_because(reason))
+    }
+
+    pub fn exact_row_with_metadata(
+        self,
+        label: impl Into<String>,
+        value: impl Into<String>,
+        meta: TooltipRowMeta,
+    ) -> TooltipComposer {
+        self.row_metadata(label, Atom::exact(value), meta)
+    }
+
+    pub fn derived_row_with_metadata(
+        self,
+        label: impl Into<String>,
+        value: impl Into<String>,
+        meta: TooltipRowMeta,
+    ) -> TooltipComposer {
+        self.row_metadata(label, Atom::derived(value), meta)
+    }
+
+    pub fn unavailable_row_with_metadata(
+        self,
+        label: impl Into<String>,
+        reason: Reason,
+        meta: TooltipRowMeta,
+    ) -> TooltipComposer {
+        self.row_metadata(label, Atom::unavailable_because(reason), meta)
     }
 
     pub fn optional_derived_row(
@@ -125,6 +331,36 @@ impl DomainTooltipComposer {
         self
     }
 
+    pub fn metadata(mut self, meta: TooltipMetadata) -> DomainTooltipComposer {
+        self.composer = self.composer.metadata(meta);
+        self
+    }
+
+    pub fn tooltip_key(mut self, key: impl Into<String>) -> DomainTooltipComposer {
+        self.composer = self.composer.tooltip_key(key);
+        self
+    }
+
+    pub fn title_key(mut self, key: impl Into<String>) -> DomainTooltipComposer {
+        self.composer = self.composer.title_key(key);
+        self
+    }
+
+    pub fn source_key(mut self, key: impl Into<String>) -> DomainTooltipComposer {
+        self.composer = self.composer.source_key(key);
+        self
+    }
+
+    pub fn row_metadata(
+        mut self,
+        label: impl Into<String>,
+        value: Atom,
+        meta: TooltipRowMeta,
+    ) -> DomainTooltipComposer {
+        self.composer = self.composer.row_metadata(label, value, meta);
+        self
+    }
+
     pub fn exact_row(
         self,
         label: impl Into<String>,
@@ -149,15 +385,57 @@ impl DomainTooltipComposer {
         self.row(label, Atom::unavailable_because(reason))
     }
 
+    pub fn exact_row_with_metadata(
+        self,
+        label: impl Into<String>,
+        value: impl Into<String>,
+        meta: TooltipRowMeta,
+    ) -> DomainTooltipComposer {
+        self.row_metadata(label, Atom::exact(value), meta)
+    }
+
+    pub fn derived_row_with_metadata(
+        self,
+        label: impl Into<String>,
+        value: impl Into<String>,
+        meta: TooltipRowMeta,
+    ) -> DomainTooltipComposer {
+        self.row_metadata(label, Atom::derived(value), meta)
+    }
+
+    pub fn unavailable_row_with_metadata(
+        self,
+        label: impl Into<String>,
+        reason: Reason,
+        meta: TooltipRowMeta,
+    ) -> DomainTooltipComposer {
+        self.row_metadata(label, Atom::unavailable_because(reason), meta)
+    }
+
     pub fn required_exact_row<T: Into<String>>(
         self,
         label: impl Into<String>,
         value: Option<T>,
         missing_reason: Reason,
     ) -> DomainTooltipComposer {
+        self.required_exact_row_with_metadata(
+            label,
+            value,
+            missing_reason,
+            TooltipRowMeta::default(),
+        )
+    }
+
+    pub fn required_exact_row_with_metadata<T: Into<String>>(
+        self,
+        label: impl Into<String>,
+        value: Option<T>,
+        missing_reason: Reason,
+        meta: TooltipRowMeta,
+    ) -> DomainTooltipComposer {
         match value {
-            Some(value) => self.exact_row(label, value),
-            None => self.unavailable_row(label, missing_reason),
+            Some(value) => self.exact_row_with_metadata(label, value, meta),
+            None => self.unavailable_row_with_metadata(label, missing_reason, meta),
         }
     }
 
@@ -167,9 +445,24 @@ impl DomainTooltipComposer {
         value: Option<T>,
         missing_reason: Reason,
     ) -> DomainTooltipComposer {
+        self.required_derived_row_with_metadata(
+            label,
+            value,
+            missing_reason,
+            TooltipRowMeta::default(),
+        )
+    }
+
+    pub fn required_derived_row_with_metadata<T: Into<String>>(
+        self,
+        label: impl Into<String>,
+        value: Option<T>,
+        missing_reason: Reason,
+        meta: TooltipRowMeta,
+    ) -> DomainTooltipComposer {
         match value {
-            Some(value) => self.derived_row(label, value),
-            None => self.unavailable_row(label, missing_reason),
+            Some(value) => self.derived_row_with_metadata(label, value, meta),
+            None => self.unavailable_row_with_metadata(label, missing_reason, meta),
         }
     }
 
@@ -247,6 +540,7 @@ pub struct TooltipChrome {
 pub struct TooltipPlan {
     pub bounds: Rect,
     frame: TooltipFrame,
+    metadata_digest: String,
     content_start: usize,
     plan: Plan,
 }
@@ -254,7 +548,7 @@ pub struct TooltipPlan {
 impl TooltipPlan {
     pub fn digest(&self) -> String {
         format!(
-            "TT {} chrome={}@{:.0},{:.0} {:.2},{:.2},{:.2},{:.2}|{}",
+            "TT {} chrome={}@{:.0},{:.0} {:.2},{:.2},{:.2},{:.2}{}|{}",
             self.frame.contract,
             self.frame.sprite,
             self.frame.sprite_border[0],
@@ -263,6 +557,7 @@ impl TooltipPlan {
             self.bounds.y,
             self.bounds.w,
             self.bounds.h,
+            self.metadata_digest,
             self.plan.digest()
         )
     }
@@ -273,6 +568,10 @@ impl TooltipPlan {
 
     pub fn frame_contract(&self) -> &'static str {
         self.frame.contract
+    }
+
+    pub fn metadata_digest(&self) -> &str {
+        &self.metadata_digest
     }
 
     pub fn chrome(&self) -> TooltipChrome {
@@ -432,9 +731,38 @@ pub fn plan_tooltip_with_frame(
     TooltipPlan {
         bounds,
         frame,
+        metadata_digest: metadata_digest(model),
         content_start,
         plan: p,
     }
+}
+
+fn metadata_digest(model: &Tooltip) -> String {
+    let mut parts = Vec::new();
+    if !model.meta.is_empty() {
+        parts.push(format!("tip{{{}}}", model.meta.digest()));
+    }
+    for (i, row) in model.rows.iter().enumerate() {
+        if !row.meta.is_empty() {
+            parts.push(format!("row{i}{{{}}}", row.meta.digest()));
+        }
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" meta{{{}}}", parts.join(";"))
+    }
+}
+
+fn opt_meta_string(value: &Option<String>) -> String {
+    value
+        .as_deref()
+        .map(meta_string)
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn meta_string(s: &str) -> String {
+    format!("{s:?}")
 }
 
 fn natural_width(model: &Tooltip, frame: TooltipFrame) -> f32 {
@@ -654,6 +982,98 @@ mod tests {
         assert!(digest.contains("missing"), "{digest}");
         assert!(digest.contains("unfed"), "{digest}");
         assert_eq!(plan.plan().unavailable_text_count(), 2);
+        assert!(!digest.contains("\"0\""), "{digest}");
+    }
+
+    #[test]
+    fn tooltip_metadata_marks_source_keys_without_changing_draw_plan() {
+        let plain = Tooltip::composer(Atom::exact("Panzer IV"))
+            .exact_row("ID", "medium_tank_chassis")
+            .derived_row("Role", "armor")
+            .build();
+        let tagged = Tooltip::composer(Atom::exact("Panzer IV"))
+            .tooltip_key("technology.tooltip")
+            .title_key("medium_tank_chassis")
+            .source_key("common/technologies/armor.txt:medium_tank_chassis")
+            .exact_row_with_metadata(
+                "ID",
+                "medium_tank_chassis",
+                TooltipRowMeta::new()
+                    .label_key("TECH_ID")
+                    .value_key("medium_tank_chassis")
+                    .source_key("tech.id"),
+            )
+            .derived_row_with_metadata(
+                "Role",
+                "armor",
+                TooltipRowMeta::new()
+                    .label_key("TECH_ROLE")
+                    .source_key("derived.role"),
+            )
+            .build();
+
+        let plain_plan = plan_tooltip(&plain, (24.0, 24.0), vp());
+        let tagged_plan = plan_tooltip(&tagged, (24.0, 24.0), vp());
+        let digest = tagged_plan.digest();
+
+        assert_eq!(plain_plan.plan().digest(), tagged_plan.plan().digest());
+        assert_ne!(plain_plan.digest(), tagged_plan.digest());
+        assert!(
+            digest.contains("tip{tooltip_key=\"technology.tooltip\""),
+            "{digest}"
+        );
+        assert!(
+            digest.contains("title_key=\"medium_tank_chassis\""),
+            "{digest}"
+        );
+        assert!(
+            digest.contains("source_key=\"common/technologies/armor.txt:medium_tank_chassis\""),
+            "{digest}"
+        );
+        assert!(digest.contains("row0{label_key=\"TECH_ID\""), "{digest}");
+        assert!(
+            digest.contains("value_key=\"medium_tank_chassis\""),
+            "{digest}"
+        );
+        assert!(digest.contains("row1{label_key=\"TECH_ROLE\""), "{digest}");
+        assert!(
+            !plain_plan.digest().contains("meta{"),
+            "{}",
+            plain_plan.digest()
+        );
+    }
+
+    #[test]
+    fn required_row_metadata_survives_missing_atom() {
+        let tt = Tooltip::domain_composer(Atom::exact("Decision"))
+            .required_exact_row_with_metadata(
+                "Effect",
+                Option::<String>::None,
+                Reason::Blocked,
+                TooltipRowMeta::new()
+                    .label_key("DECISION_EFFECT")
+                    .value_key("decision_effect_expand_industry")
+                    .source_key("decision.effect"),
+            )
+            .build();
+
+        let plan = plan_tooltip(&tt, (20.0, 20.0), vp());
+        let digest = plan.digest();
+
+        assert!(
+            digest.contains("row0{label_key=\"DECISION_EFFECT\""),
+            "{digest}"
+        );
+        assert!(
+            digest.contains("value_key=\"decision_effect_expand_industry\""),
+            "{digest}"
+        );
+        assert!(
+            digest.contains("source_key=\"decision.effect\""),
+            "{digest}"
+        );
+        assert!(digest.contains("unfed"), "{digest}");
+        assert_eq!(plan.plan().unavailable_text_count(), 1);
         assert!(!digest.contains("\"0\""), "{digest}");
     }
 }

@@ -361,10 +361,13 @@ combat/mission detail values are `unavailable`; the enumeration/identity/strengt
 | `unit_counter.hq_badge` / `leader_enroute` (iconType, `GFX_hq_badge_bg` / `GFX_leader_en_route`) | the stack is an HQ (template `is_army_hq`) / leader travelling | visibility | **derived** / **unavailable** | HQ badge derives from `designs.division_templates[].is_army_hq` join; leader-enroute (a moving commander) is not a stored field → unavailable. |
 
 Native status: land `unit_counter.count_txt`, `flag`, `bar_org`, `bar_str`, `type`, and `onmap_digin_icon`
-now emit logical entities only at real owned division counter anchors. Count/type are derived groupings; owner,
-org, fractional save-style strength, and positive dig-in are exact when the source fields are measured. Missing org,
-missing strength, or memory-scaled strength outside `0..=1` badges at the anchored counter; role/dig-in gaps do the
-same. Foreign-owner and target-only/no-anchor divisions do not place counter visuals.
+now emit logical entities only at real owned division counter anchors. Railway-gun divisions are kept out of the
+normal land stack and now emit `unit_counter_railway_gun.count_txt`, `flag`/`large_flag`, `bar_str`, `type`,
+`counter_ideology`, and `attrition` only at real owned railway-gun division anchors. Count/type are derived
+groupings; owner, org, fractional save-style strength, and positive dig-in are exact when the source fields are
+measured. Railway-gun attrition remains badged `unavailable` at the anchor because no per-division attrition flag is
+stored. Missing org, missing strength, or memory-scaled strength outside `0..=1` badges at the anchored counter;
+role/dig-in gaps do the same. Foreign-owner and target-only/no-anchor divisions do not place counter visuals.
 
 | **`unit_counter_navy.*`** — `count_txt` / `capital_count_txt` (`"99-99"`), `bar_org`, `bar_str`, `flag`/`large_flag`, `counter_ideology`, `capital_ship` (`GFX_capital_ship_icon`), `mission_type` (`GFX_onmap_mission_unit_counter_types`), `pride_of_the_fleet_icon` | the fleet/task-force at this sea province ← `order_of_battle.fleets[].task_forces[].ships[]` (count, org, strength, owner) + `countries.<owner>.extra.pride_of_the_fleet` | int / progressbar / flag / category | **exact** (ship count/org/str/owner — where OOB fed) / **unavailable** (mission_type, pride when `extra` unfed) | `order_of_battle.fleets` is `M/S` (live-first); per-ship org/str exact. `capital_count_txt`=capital-vs-screen split. `mission_type` (the task-force's current mission) is a `cached` runtime field (SCHEMA §12, non-authoritative) → unavailable/proxy. `pride_of_the_fleet` needs `extra` (unfed). |
 | `unit_counter_navy.spotting_bar_fg` (iconType, `GFX_spotting_bar`) | enemy-fleet spotting progress | progressbar-fraction | **unavailable** | Spotting/detection is a live fog-of-war computation, not stored. |

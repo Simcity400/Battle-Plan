@@ -38,8 +38,9 @@
 //! walks). The BOUND DATA is drawn ON TOP as an N4 [`widgets::designer::ModuleLayout`] (the
 //! slot grid + module icons + per-slot stat contributions) plus the header atoms + the
 //! stat-panel unavailable badges; the division designer adds an N2 [`widgets::tabs::TabBar`]
-//! (normal vs HQ). Every visible value is a [`widgets::Atom`] / [`DisplayAtom`] — a blocked
-//! field draws the not-captured glyph, never a fabricated 0.
+//! (normal vs HQ), and the equipment-upgrade window hit-tests its real `.gui` upgrade-row
+//! controls as replay-disabled mutation no-ops. Every visible value is a [`widgets::Atom`] /
+//! [`DisplayAtom`] — a blocked field draws the not-captured glyph, never a fabricated 0.
 //!
 //! ## NO-FABRICATION + the top-level `designs` domain
 //! Designer data lives in the TOP-LEVEL `designs` snapshot domain (each
@@ -1447,10 +1448,254 @@ const UPGRADE_VIEW_ID: ViewId = ViewId("designers.equipment_upgrade");
 pub(super) const UPGRADE_FILE: &str = "equipment_upgrade_designer.json";
 pub(super) const UPGRADE_ROOT: &str = "equipment_upgrade_designer_window";
 
-pub struct EquipmentUpgradeDesignerView;
+const UPGRADE_ACTIVE_EQUIPMENT_VIEW: &str = "active_equipment_view";
+const UPGRADE_LAND_VIEW: &str = "land_equipment_designer_view";
+const UPGRADE_AIR_VIEW: &str = "air_equipment_designer_view";
+const UPGRADE_NAVAL_VIEW: &str = "naval_equipment_designer_view";
+const UPGRADE_DECREASE_LEVEL: &str = "decrease_level";
+const UPGRADE_INCREASE_LEVEL: &str = "increase_level";
+const UPGRADE_LEVEL: &str = "level";
+const UPGRADE_VARIANT_NAME: &str = "variant_name";
+
+#[derive(Debug, Clone)]
+struct UpgradePickModel {
+    controls: Vec<UpgradeControlHit>,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct UpgradeControlHit {
+    upgrade: Option<String>,
+    kind: UpgradeControlKind,
+    rect: Rect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpgradeControlKind {
+    DecreaseLevel,
+    IncreaseLevel,
+    VariantName,
+}
+
+#[derive(Debug, Clone, Default)]
+struct UpgradeInteraction {
+    pick_model: Option<UpgradePickModel>,
+    pressed_disabled: bool,
+}
+
+impl UpgradeInteraction {
+    fn rebind(&mut self, snapshot: &Snapshot, tag: &str, screen: Rect) {
+        self.pick_model = Some(build_upgrade_pick_model(snapshot, tag, screen));
+        if self
+            .pick_model
+            .as_ref()
+            .map_or(true, |model| model.controls.is_empty())
+        {
+            self.pressed_disabled = false;
+        }
+    }
+
+    fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
+        match *ev {
+            ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            } if self.hit_control(x, y).is_some() => {
+                self.pressed_disabled = true;
+                component_input_consumed(false)
+            }
+            ViewInput::PointerMove { drag: true, .. } if self.pressed_disabled => {
+                component_input_consumed(false)
+            }
+            ViewInput::PointerUp {
+                button: PointerButton::Left,
+                ..
+            } if self.pressed_disabled => {
+                self.pressed_disabled = false;
+                component_input_consumed(false)
+            }
+            ViewInput::PointerUp {
+                x,
+                y,
+                button: PointerButton::Left,
+            } if self.hit_control(x, y).is_some() => component_input_consumed(false),
+            _ => InputOutcome::ignored(),
+        }
+    }
+
+    fn hit_control(&self, x: f32, y: f32) -> Option<&UpgradeControlHit> {
+        self.pick_model
+            .as_ref()?
+            .controls
+            .iter()
+            .find(|hit| hit.rect.contains(x, y))
+    }
+
+    #[cfg(test)]
+    fn control_center(
+        &self,
+        upgrade: Option<&str>,
+        kind: UpgradeControlKind,
+    ) -> Option<(f32, f32)> {
+        let hit = self.pick_model.as_ref()?.controls.iter().find(|hit| {
+            hit.kind == kind
+                && match (&hit.upgrade, upgrade) {
+                    (Some(a), Some(b)) => a == b,
+                    (None, None) => true,
+                    _ => false,
+                }
+        })?;
+        Some((hit.rect.x + hit.rect.w * 0.5, hit.rect.y + hit.rect.h * 0.5))
+    }
+
+    #[cfg(test)]
+    fn control_rect(&self, upgrade: Option<&str>, kind: UpgradeControlKind) -> Option<Rect> {
+        self.pick_model.as_ref()?.controls.iter().find_map(|hit| {
+            let upgrade_matches = match (&hit.upgrade, upgrade) {
+                (Some(a), Some(b)) => a == b,
+                (None, None) => true,
+                _ => false,
+            };
+            (hit.kind == kind && upgrade_matches).then_some(hit.rect)
+        })
+    }
+}
+
+fn build_upgrade_pick_model(snapshot: &Snapshot, tag: &str, screen: Rect) -> UpgradePickModel {
+    let file = match load_and_sanitize(std::path::Path::new("."), UPGRADE_FILE) {
+        Some(file) => file,
+        None => {
+            return UpgradePickModel {
+                controls: Vec::new(),
+            }
+        }
+    };
+    let mut controls = Vec::new();
+    let root = match laid_out_gui_window(&file, UPGRADE_ROOT, screen) {
+        Some(root) => root,
+        None => return UpgradePickModel { controls },
+    };
+    if let Some(variant_name) = find_node(&root, UPGRADE_VARIANT_NAME) {
+        if !variant_name.rect.is_empty() {
+            controls.push(UpgradeControlHit {
+                upgrade: None,
+                kind: UpgradeControlKind::VariantName,
+                rect: variant_name.rect,
+            });
+        }
+    }
+
+    let Some(active_area) = find_node(&root, UPGRADE_ACTIVE_EQUIPMENT_VIEW).map(|n| n.rect) else {
+        return UpgradePickModel { controls };
+    };
+    let Some((_key, v)) = first_variant_any_family(snapshot, tag) else {
+        return UpgradePickModel { controls };
+    };
+    let family = v
+        .get("family")
+        .and_then(Value::as_str)
+        .unwrap_or(Family::LandVehicle.token());
+    let Some(upgrades) = v.get("upgrades").and_then(Value::as_object) else {
+        return UpgradePickModel { controls };
+    };
+    let Some(subview) = laid_out_gui_window(&file, upgrade_subview_for_family(family), active_area)
+    else {
+        return UpgradePickModel { controls };
+    };
+
+    let mut names: Vec<&String> = upgrades.keys().collect();
+    names.sort();
+    for up in names {
+        let Some(row) = find_node(&subview, up) else {
+            continue;
+        };
+        for (button_name, kind) in [
+            (UPGRADE_DECREASE_LEVEL, UpgradeControlKind::DecreaseLevel),
+            (UPGRADE_INCREASE_LEVEL, UpgradeControlKind::IncreaseLevel),
+        ] {
+            if let Some(rect) = upgrade_button_hit_rect(row, button_name) {
+                controls.push(UpgradeControlHit {
+                    upgrade: Some(up.clone()),
+                    kind,
+                    rect,
+                });
+            }
+        }
+    }
+    UpgradePickModel { controls }
+}
+
+fn upgrade_subview_for_family(family: &str) -> &'static str {
+    match family {
+        "plane" => UPGRADE_AIR_VIEW,
+        "ship" => UPGRADE_NAVAL_VIEW,
+        _ => UPGRADE_LAND_VIEW,
+    }
+}
+
+fn laid_out_gui_window(file: &GuiFile, root_name: &str, parent: Rect) -> Option<Node> {
+    let manifest = assets::SpriteManifest {
+        sprites: HashMap::new(),
+    };
+    let loc = gui_runtime::Loc::new();
+    let cm = ManifestContent {
+        manifest: &manifest,
+        measure: |_t, _f| None,
+    };
+    let mut root = build_scene(file, &manifest, &loc)
+        .into_iter()
+        .find(|node| node.name == root_name)?;
+    layout(&mut root, parent, None, &cm);
+    Some(root)
+}
+
+fn find_node<'a>(root: &'a Node, name: &str) -> Option<&'a Node> {
+    if root.name == name {
+        return Some(root);
+    }
+    for child in &root.children {
+        if let Some(found) = find_node(child, name) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn direct_child<'a>(root: &'a Node, name: &str) -> Option<&'a Node> {
+    root.children.iter().find(|child| child.name == name)
+}
+
+fn upgrade_button_hit_rect(row: &Node, button_name: &str) -> Option<Rect> {
+    let button = direct_child(row, button_name)?;
+    if !button.rect.is_empty() {
+        return Some(button.rect);
+    }
+    let right = match button_name {
+        UPGRADE_DECREASE_LEVEL => direct_child(row, UPGRADE_LEVEL)
+            .map(|level| level.rect.x)
+            .unwrap_or(row.rect.x + row.rect.w),
+        UPGRADE_INCREASE_LEVEL => row.rect.x + row.rect.w,
+        _ => row.rect.x + row.rect.w,
+    };
+    let bottom = row.rect.y + row.rect.h;
+    let rect = Rect {
+        x: button.rect.x,
+        y: button.rect.y,
+        w: (right - button.rect.x).max(0.0),
+        h: (bottom - button.rect.y).max(0.0),
+    };
+    (!rect.is_empty()).then_some(rect)
+}
+
+pub struct EquipmentUpgradeDesignerView {
+    interaction: UpgradeInteraction,
+}
 impl EquipmentUpgradeDesignerView {
     pub fn new() -> Self {
-        EquipmentUpgradeDesignerView
+        EquipmentUpgradeDesignerView {
+            interaction: UpgradeInteraction::default(),
+        }
     }
 }
 impl Default for EquipmentUpgradeDesignerView {
@@ -1465,6 +1710,13 @@ impl ViewInstance for EquipmentUpgradeDesignerView {
     }
     fn policy(&self) -> HostPolicy {
         HostPolicy::window(ZBand::Panel)
+    }
+    fn rebind(&mut self, ctx: &RebindContext) {
+        self.interaction
+            .rebind(ctx.snapshot, ctx.country, screen_rect(ctx.screen));
+    }
+    fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
+        self.interaction.on_input(ev)
     }
     fn bind(&self, ctx: &BindContext) -> BoundView {
         let tag = ctx.country;

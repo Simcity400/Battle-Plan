@@ -502,19 +502,27 @@ fn trait_input_consumed(needs_redraw: bool) -> InputOutcome {
 
 const ADD_TRAIT_MUTATION_LEAVES: [&str; 4] =
     ["add_trait_0", "add_trait_1", "add_trait_2", "add_trait_3"];
+const COMMON_DISABLED_CONTROL_LEAVES: [&str; 1] = ["traits_tabs"];
+const ARMY_DISABLED_CONTROL_LEAVES: [&str; 1] = ["preferred_tactic_tiling_container"];
 
 fn trait_tree_disabled_mutation_targets(
     file_name: &str,
     root_name: &str,
     screen: (u32, u32),
+    extra_leaves: &[&'static str],
 ) -> Vec<DisabledMutationTarget> {
     let roots = trait_tree_roots_for_input(file_name, root_name, screen);
-    disabled_mutation_targets_from_roots(&roots)
+    disabled_mutation_targets_from_roots(&roots, extra_leaves)
 }
 
-fn disabled_mutation_targets_from_roots(roots: &[Node]) -> Vec<DisabledMutationTarget> {
+fn disabled_mutation_targets_from_roots(
+    roots: &[Node],
+    extra_leaves: &[&'static str],
+) -> Vec<DisabledMutationTarget> {
     ADD_TRAIT_MUTATION_LEAVES
         .iter()
+        .chain(COMMON_DISABLED_CONTROL_LEAVES.iter())
+        .chain(extra_leaves.iter())
         .filter_map(|leaf| find_rect(roots, leaf).map(|rect| DisabledMutationTarget { leaf, rect }))
         .collect()
 }
@@ -1120,7 +1128,10 @@ impl ViewInstance for ArmyTraitTreeView {
         self.state.rebind(leader, [320.0, 200.0, 600.0, 400.0]);
         self.state
             .set_disabled_mutation_targets(trait_tree_disabled_mutation_targets(
-                ARMY_FILE, ARMY_ROOT, ctx.screen,
+                ARMY_FILE,
+                ARMY_ROOT,
+                ctx.screen,
+                &ARMY_DISABLED_CONTROL_LEAVES,
             ));
     }
     fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
@@ -1210,7 +1221,10 @@ impl ViewInstance for NavyTraitTreeView {
         self.state.rebind(leader, [320.0, 200.0, 600.0, 400.0]);
         self.state
             .set_disabled_mutation_targets(trait_tree_disabled_mutation_targets(
-                NAVY_FILE, NAVY_ROOT, ctx.screen,
+                NAVY_FILE,
+                NAVY_ROOT,
+                ctx.screen,
+                &[],
             ));
     }
     fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {

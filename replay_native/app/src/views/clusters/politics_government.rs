@@ -50,6 +50,7 @@
 //! THIS FILE IS YOURS, cluster agent — edit ONLY here. Registration is distributed
 //! through `inventory`, so adding/binding a view edits NO shared file.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -529,6 +530,28 @@ fn render_rows_selected(
         Some(r) => r,
         None => return,
     };
+    render_rows_selected_in_viewport(
+        fd,
+        file,
+        grid_name,
+        template_name,
+        rows,
+        viewport,
+        scroll_y,
+        selected_key,
+    );
+}
+
+fn render_rows_selected_in_viewport(
+    fd: &mut FrameDraw,
+    file: &GuiFile,
+    grid_name: &str,
+    template_name: &str,
+    rows: &[DataRow],
+    viewport: Rect,
+    scroll_y: f32,
+    selected_key: Option<&str>,
+) {
     let template = match find_template(file, template_name) {
         Some(t) => t,
         None => return,
@@ -592,6 +615,44 @@ fn render_rows_selected(
                 .draw_sprite(t, sb.thumb.x, sb.thumb.y, sb.thumb.w, sb.thumb.h);
         }
     }
+}
+
+fn rects_intersect(a: Rect, b: Rect) -> bool {
+    a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+}
+
+fn instantiated_row_child_rects(
+    ctx: &BindContext,
+    panel: &[Node],
+    file: &GuiFile,
+    grid_name: &str,
+    template_name: &str,
+    row_count: usize,
+    scroll_y: f32,
+    child_name: &str,
+) -> Vec<Rect> {
+    if row_count == 0 {
+        return Vec::new();
+    }
+    let viewport = match find_rect(panel, grid_name) {
+        Some(r) => r,
+        None => return Vec::new(),
+    };
+    let template = match find_template(file, template_name) {
+        Some(t) => t,
+        None => return Vec::new(),
+    };
+    let spec = GridSpec::from_gridbox(&stub_grid(grid_name, viewport), &template, GUTTER);
+    let content = ManifestContent {
+        manifest: &ctx.stage.manifest,
+        measure: |_t, _f| None,
+    };
+    gridbox::instantiate(&template, row_count, viewport, &spec, scroll_y, &content)
+        .rows
+        .iter()
+        .filter_map(|row| find_rect(std::slice::from_ref(row), child_name))
+        .filter(|rect| rects_intersect(*rect, viewport))
+        .collect()
 }
 
 fn stub_grid(name: &str, rect: Rect) -> Node {
@@ -1169,6 +1230,7 @@ impl PoliticsTabStates {
 
 #[derive(Clone, Copy)]
 struct PoliticsListWindow {
+    viewport: Rect,
     scroll_y: f32,
     max_scroll: f32,
     first: usize,
@@ -1178,6 +1240,7 @@ struct PoliticsListWindow {
 impl Default for PoliticsListWindow {
     fn default() -> Self {
         PoliticsListWindow {
+            viewport: Rect::default(),
             scroll_y: 0.0,
             max_scroll: 0.0,
             first: 0,
@@ -1411,6 +1474,7 @@ fn politics_list_window(
     let first = (scroll_y / row_h).floor() as usize;
     let visible = (viewport.h / row_h).ceil().max(1.0) as usize + 1;
     PoliticsListWindow {
+        viewport,
         scroll_y,
         max_scroll,
         first,
@@ -1644,6 +1708,14 @@ fn politics_occupied_owner_row_key(owner: &str, controller: &str) -> Option<Stri
         Some(format!(
             "politics:autonomy:occupied-owner:{owner}:controller:{controller}"
         ))
+    }
+}
+
+fn advisor_role_row_key(slot: &str) -> Option<String> {
+    if slot.is_empty() {
+        None
+    } else {
+        Some(format!("politics:advisor-role:slot:{slot}"))
     }
 }
 
@@ -2453,6 +2525,8 @@ const COMMAND_CHARACTER_ROW_H: f32 = 70.0;
 pub struct CommandCharacterView {
     selected_key: Option<String>,
     row_keys: Vec<Option<String>>,
+    scroll_y: f32,
+    scroll_drag: Option<CommandCharacterScrollDrag>,
     screen: Rect,
 }
 
@@ -2461,6 +2535,8 @@ impl CommandCharacterView {
         CommandCharacterView {
             selected_key: None,
             row_keys: Vec::new(),
+            scroll_y: 0.0,
+            scroll_drag: None,
             screen: default_politics_screen(),
         }
     }
@@ -2478,6 +2554,7 @@ struct CommandCharacterDrawable {
     char_rows: Vec<DataRow>,
     section: SectionState,
     selected_key: Option<String>,
+    list_window: PoliticsListWindow,
     /// the per-row trait grids (N3). Their plans feed the digest so a scrub is exact.
     trait_trees: Vec<TraitTree>,
 }
@@ -2497,25 +2574,28 @@ impl Drawable for CommandCharacterDrawable {
             tdig.push_str(&format!("t{i}={};", plan.digest()));
         }
         format!(
-            "CMDCHAR sect={} selected={} selected_key={} selected_row={} rows={} TRAITS[{}]",
+            "CMDCHAR sect={} selected={} selected_key={} selected_row={} scroll={:.0}/{:.0} visible=[{}] rows={} TRAITS[{}]",
             self.section.tag(),
             selected_state,
             self.selected_key.as_deref().unwrap_or("none"),
             selected_row_digest(&self.char_rows, self.selected_key.as_deref()),
+            self.list_window.scroll_y,
+            self.list_window.max_scroll,
+            visible_politics_row_digest(&self.char_rows, self.list_window),
             row_digest(&self.char_rows),
             tdig
         )
     }
     fn draw(&self, fd: &mut FrameDraw) {
         fd.draw_nodes(&self.roots);
-        render_rows_selected(
+        render_rows_selected_in_viewport(
             fd,
-            &self.roots,
             &self.file,
             "box_grid",
             "command_character_view_item",
             &self.char_rows,
-            0.0,
+            self.list_window.viewport,
+            self.list_window.scroll_y,
             self.selected_key.as_deref(),
         );
         if let Some(grid) = find_rect(&self.roots, "box_grid") {
@@ -2523,7 +2603,7 @@ impl Drawable for CommandCharacterDrawable {
             let assets = widget_assets(&white);
             for (i, tree) in self.trait_trees.iter().enumerate() {
                 let g = tree.to_graph();
-                let row_y = grid.y + i as f32 * 70.0;
+                let row_y = grid.y + i as f32 * COMMAND_CHARACTER_ROW_H - self.list_window.scroll_y;
                 let cam = Canvas::fit(g.bounds(), [grid.x, row_y, grid.w.max(200.0), 64.0], 8.0);
                 node_graph::draw_graph(fd.renderer, &cam, &g, &assets);
             }
@@ -2546,6 +2626,23 @@ impl ViewInstance for CommandCharacterView {
             h: ctx.screen.1 as f32,
         };
         self.row_keys = command_character_keys_from_rebind(ctx, ctx.country);
+        let viewport = command_character_grid_fallback(self.screen);
+        self.scroll_y = self.scroll_y.min(max_politics_scroll_fallback(
+            viewport,
+            self.row_keys.len(),
+            COMMAND_CHARACTER_ROW_H,
+        ));
+        if self.scroll_drag.is_some()
+            && politics_scrollbar_geometry(
+                viewport,
+                self.row_keys.len(),
+                COMMAND_CHARACTER_ROW_H,
+                self.scroll_y,
+            )
+            .is_none()
+        {
+            self.scroll_drag = None;
+        }
     }
     fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
         match *ev {
@@ -2555,17 +2652,91 @@ impl ViewInstance for CommandCharacterView {
                 button: PointerButton::Left,
             } => {
                 let viewport = command_character_grid_fallback(self.screen);
+                let scroll_y = self.scroll_y.min(max_politics_scroll_fallback(
+                    viewport,
+                    self.row_keys.len(),
+                    COMMAND_CHARACTER_ROW_H,
+                ));
+                if let Some(geom) = politics_scrollbar_geometry(
+                    viewport,
+                    self.row_keys.len(),
+                    COMMAND_CHARACTER_ROW_H,
+                    scroll_y,
+                ) {
+                    if geom.thumb.contains(x, y) {
+                        self.scroll_drag = Some(CommandCharacterScrollDrag {
+                            pointer_offset_y: y - geom.thumb.y,
+                        });
+                        return politics_input_consumed(false);
+                    }
+                    if geom.track.contains(x, y) {
+                        return politics_input_consumed(false);
+                    }
+                }
                 if let Some(key) = pick_politics_row_key(
                     viewport,
                     &self.row_keys,
                     COMMAND_CHARACTER_ROW_H,
-                    0.0,
+                    scroll_y,
                     x,
                     y,
                 ) {
                     let changed = self.selected_key.as_deref() != Some(key.as_str());
                     self.selected_key = Some(key);
                     politics_input_consumed(changed)
+                } else {
+                    InputOutcome::ignored()
+                }
+            }
+            ViewInput::Wheel { x, y, dy } => {
+                let viewport = command_character_grid_fallback(self.screen);
+                if x < viewport.x
+                    || x > viewport.x + viewport.w
+                    || y < viewport.y
+                    || y > viewport.y + viewport.h
+                {
+                    return InputOutcome::ignored();
+                }
+                let current = self.scroll_y;
+                let next = scroll_politics_offset(
+                    current,
+                    viewport,
+                    self.row_keys.len(),
+                    COMMAND_CHARACTER_ROW_H,
+                    dy,
+                );
+                self.scroll_y = next;
+                politics_input_consumed(next != current)
+            }
+            ViewInput::PointerMove { x: _, y, drag } if drag => {
+                let drag = match self.scroll_drag {
+                    Some(drag) => drag,
+                    None => return InputOutcome::ignored(),
+                };
+                let viewport = command_character_grid_fallback(self.screen);
+                let geom = match politics_scrollbar_geometry(
+                    viewport,
+                    self.row_keys.len(),
+                    COMMAND_CHARACTER_ROW_H,
+                    self.scroll_y,
+                ) {
+                    Some(geom) => geom,
+                    None => {
+                        self.scroll_drag = None;
+                        return InputOutcome::ignored();
+                    }
+                };
+                let current = self.scroll_y;
+                let next = politics_scroll_from_thumb_y(geom, y - drag.pointer_offset_y);
+                self.scroll_y = next;
+                politics_input_consumed(next != current)
+            }
+            ViewInput::PointerUp {
+                button: PointerButton::Left,
+                ..
+            } => {
+                if self.scroll_drag.take().is_some() {
+                    politics_input_consumed(false)
                 } else {
                     InputOutcome::ignored()
                 }
@@ -2581,12 +2752,20 @@ impl ViewInstance for CommandCharacterView {
         let (char_rows, section, trait_trees) = build_character_rows(ctx, tag, &mut fidelity);
 
         let roots = build_root(ctx, &file, COMMAND_CHARACTER_ROOT, &[]);
+        let viewport =
+            command_character_grid_viewport(&roots, command_character_grid_fallback(ctx.screen));
         let drawable = CommandCharacterDrawable {
             roots: roots.clone(),
             file,
             char_rows,
             section,
             selected_key: self.selected_key.clone(),
+            list_window: politics_list_window(
+                viewport,
+                trait_trees.len(),
+                self.scroll_y,
+                COMMAND_CHARACTER_ROW_H,
+            ),
             trait_trees,
         };
         BoundView {
@@ -2601,6 +2780,11 @@ impl ViewInstance for CommandCharacterView {
     }
 
     crate::impl_view_any!();
+}
+
+#[derive(Clone, Copy)]
+struct CommandCharacterScrollDrag {
+    pointer_offset_y: f32,
 }
 
 const COMMAND_CHARACTER_SOURCES: &[(&str, &str)] = &[
@@ -2705,6 +2889,15 @@ fn command_character_grid_fallback(screen: Rect) -> Rect {
     }
 }
 
+fn command_character_grid_viewport(roots: &[Node], fallback_viewport: Rect) -> Rect {
+    match find_rect(roots, "box_grid") {
+        Some(rect) if rect.w >= COMMAND_CHARACTER_ROW_H && rect.h >= COMMAND_CHARACTER_ROW_H => {
+            rect
+        }
+        _ => fallback_viewport,
+    }
+}
+
 /// Join a leader's `traits[]` tokens into one display atom (exact when present).
 fn traits_text(l: &serde_json::Value) -> DisplayAtom {
     match l.get("traits").and_then(|t| t.as_array()) {
@@ -2786,11 +2979,29 @@ const ADVISOR_ROLE_VIEW_ID: ViewId = ViewId("politics.advisor_role_selection");
 const ADVISOR_ROLE_FILE: &str = "advisor_role_selection.json";
 const ADVISOR_ROLE_ROOT: &str = "advisorroleselectionview";
 
-pub struct AdvisorRoleView;
+pub struct AdvisorRoleView {
+    disabled_select_targets: RefCell<Vec<Rect>>,
+    disabled_select_armed: bool,
+}
 
 impl AdvisorRoleView {
     pub fn new() -> AdvisorRoleView {
-        AdvisorRoleView
+        AdvisorRoleView {
+            disabled_select_targets: RefCell::new(Vec::new()),
+            disabled_select_armed: false,
+        }
+    }
+
+    fn disabled_select_hit(&self, x: f32, y: f32) -> bool {
+        self.disabled_select_targets
+            .borrow()
+            .iter()
+            .any(|rect| rect.contains(x, y))
+    }
+
+    #[cfg(test)]
+    fn debug_disabled_select_targets(&self) -> Vec<Rect> {
+        self.disabled_select_targets.borrow().clone()
     }
 }
 
@@ -2835,6 +3046,34 @@ impl ViewInstance for AdvisorRoleView {
     fn policy(&self) -> HostPolicy {
         HostPolicy::window(ZBand::Panel)
     }
+    fn rebind(&mut self, _ctx: &RebindContext) {
+        self.disabled_select_armed = false;
+        self.disabled_select_targets.borrow_mut().clear();
+    }
+    fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
+        match *ev {
+            ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            } if self.disabled_select_hit(x, y) => {
+                self.disabled_select_armed = true;
+                politics_input_consumed(false)
+            }
+            ViewInput::PointerMove { drag: true, .. } if self.disabled_select_armed => {
+                politics_input_consumed(false)
+            }
+            ViewInput::PointerUp {
+                x,
+                y,
+                button: PointerButton::Left,
+            } if self.disabled_select_armed || self.disabled_select_hit(x, y) => {
+                self.disabled_select_armed = false;
+                politics_input_consumed(false)
+            }
+            _ => InputOutcome::ignored(),
+        }
+    }
     fn bind(&self, ctx: &BindContext) -> BoundView {
         let tag = ctx.country;
         let mut fidelity = FidelityReport::default();
@@ -2848,6 +3087,17 @@ impl ViewInstance for AdvisorRoleView {
         let (role_rows, section) = build_role_rows(ctx, tag, &mut fidelity);
 
         let roots = build_root(ctx, &file, ADVISOR_ROLE_ROOT, &summary);
+        let disabled_select_targets = instantiated_row_child_rects(
+            ctx,
+            &roots,
+            &file,
+            "roles_grid",
+            "advisor_role_entry",
+            role_rows.len(),
+            0.0,
+            "select_button",
+        );
+        *self.disabled_select_targets.borrow_mut() = disabled_select_targets;
         let drawable = AdvisorRoleDrawable {
             roots: roots.clone(),
             file,
@@ -2913,7 +3163,14 @@ fn build_role_rows(
     };
     let mut rows = Vec::new();
     for adv in arr {
-        let mut row = DataRow::new();
+        let mut row = match adv
+            .get("slot")
+            .and_then(row_key_token)
+            .and_then(|slot| advisor_role_row_key(&slot))
+        {
+            Some(key) => DataRow::new().with_key(key),
+            None => DataRow::new(),
+        };
         let slot = elem_field(adv, "slot");
         row.bind(
             fidelity,
@@ -2926,6 +3183,7 @@ fn build_role_rows(
         row.bind(fidelity, "idea_icon", slot2, Fidelity::Derived, fmt_token);
         rows.push(row);
     }
+    suppress_duplicate_row_keys(&mut rows);
     SectionState::Present.record(fidelity);
     (rows, SectionState::Present)
 }
@@ -3293,6 +3551,67 @@ mod tests {
         }
     }
 
+    fn stage_with_gui_file(name: &str, gui: GuiFile) -> Stage {
+        let mut stage = stage_with(&[]);
+        stage.gui_files.insert(name.to_string(), gui);
+        stage
+    }
+
+    fn advisor_role_test_gui(include_select_button: bool) -> GuiFile {
+        let mut template_children = vec![serde_json::json!({
+            "type": "iconType",
+            "name": "idea_icon",
+            "position": {"x": 150, "y": 5},
+            "size": {"width": 30, "height": 30}
+        })];
+        if include_select_button {
+            template_children.push(serde_json::json!({
+                "type": "buttonType",
+                "name": "select_button",
+                "position": {"x": 20, "y": 5},
+                "size": {"width": 120, "height": 30}
+            }));
+        }
+        let gui = serde_json::json!({
+            "view": "advisor_role_selection_test",
+            "windows": [
+                {
+                    "type": "containerWindowType",
+                    "name": "advisorroleselectionview",
+                    "position": {"x": 100, "y": 100},
+                    "size": {"width": 500, "height": 360},
+                    "children": [
+                        {
+                            "type": "instantTextBoxType",
+                            "name": "name",
+                            "position": {"x": 10, "y": 10},
+                            "size": {"width": 140, "height": 20}
+                        },
+                        {
+                            "type": "instantTextBoxType",
+                            "name": "skill",
+                            "position": {"x": 160, "y": 10},
+                            "size": {"width": 50, "height": 20}
+                        },
+                        {
+                            "type": "gridBoxType",
+                            "name": "roles_grid",
+                            "position": {"x": 10, "y": 60},
+                            "size": {"width": 300, "height": 120}
+                        }
+                    ]
+                },
+                {
+                    "type": "containerWindowType",
+                    "name": "advisor_role_entry",
+                    "size": {"width": 260, "height": 40},
+                    "children": template_children
+                }
+            ]
+        });
+        GuiFile::parse(&gui.to_string()).expect("advisor-role test gui parses")
+    }
+
     fn ctx<'a>(stage: &'a Stage, snap: &'a snapshot::Snapshot) -> BindContext<'a> {
         BindContext {
             stage,
@@ -3332,6 +3651,15 @@ mod tests {
         });
     }
 
+    fn rebind_advisor_role(v: &mut AdvisorRoleView, snap: &snapshot::Snapshot, refit: bool) {
+        v.rebind(&RebindContext {
+            snapshot: snap,
+            country: "GER",
+            screen: (1600, 900),
+            refit,
+        });
+    }
+
     fn politics_tab_center(bar: &TabBar, panel: Rect, id: &str) -> (f32, f32) {
         let rect = bar
             .layout(panel)
@@ -3339,6 +3667,10 @@ mod tests {
             .find(|tr| tr.id == id)
             .unwrap_or_else(|| panic!("missing politics tab rect {id}"))
             .rect;
+        (rect.x + rect.w * 0.5, rect.y + rect.h * 0.5)
+    }
+
+    fn rect_center(rect: Rect) -> (f32, f32) {
         (rect.x + rect.w * 0.5, rect.y + rect.h * 0.5)
     }
 
@@ -3375,6 +3707,15 @@ mod tests {
         })
     }
 
+    fn wheel_command_character(view: &mut CommandCharacterView, dy: f32) -> InputOutcome {
+        let viewport = command_character_grid_fallback(view.screen);
+        view.on_input(&ViewInput::Wheel {
+            x: viewport.x + 8.0,
+            y: viewport.y + COMMAND_CHARACTER_ROW_H * 0.5,
+            dy,
+        })
+    }
+
     fn wheel_politics(view: &mut PoliticsView, dy: f32) -> InputOutcome {
         let tab = active_politics_tab(view);
         let viewport = politics_grid_fallback(view.screen, tab);
@@ -3382,6 +3723,26 @@ mod tests {
             x: viewport.x + 8.0,
             y: viewport.y + tab.row_h() * 0.5,
             dy,
+        })
+    }
+
+    fn command_character_scrollbar(v: &CommandCharacterView) -> PoliticsScrollbarGeometry {
+        let viewport = command_character_grid_fallback(v.screen);
+        politics_scrollbar_geometry(
+            viewport,
+            v.row_keys.len(),
+            COMMAND_CHARACTER_ROW_H,
+            v.scroll_y,
+        )
+        .expect("command-character list has scrollbar")
+    }
+
+    fn pointer_down_command_character_thumb(v: &mut CommandCharacterView) -> InputOutcome {
+        let geom = command_character_scrollbar(v);
+        v.on_input(&ViewInput::PointerDown {
+            x: geom.thumb.x + geom.thumb.w * 0.5,
+            y: geom.thumb.y + geom.thumb.h * 0.5,
+            button: PointerButton::Left,
         })
     }
 
@@ -3423,6 +3784,29 @@ mod tests {
             .nth(1)
             .and_then(|rest| rest.split("] rows=").next())
             .expect("Politics digest has visible row chunk")
+    }
+
+    fn command_character_scroll_pair(d: &str) -> (i32, i32) {
+        let rest = d
+            .split(" scroll=")
+            .nth(1)
+            .expect("CommandCharacter digest has scroll marker");
+        let pair = rest
+            .split(" visible=")
+            .next()
+            .expect("CommandCharacter digest has visible marker");
+        let (cur, max) = pair.split_once('/').expect("command-character scroll pair");
+        (
+            cur.parse().expect("scroll current is int"),
+            max.parse().expect("scroll max is int"),
+        )
+    }
+
+    fn visible_command_character_chunk(d: &str) -> &str {
+        d.split(" visible=[")
+            .nth(1)
+            .and_then(|rest| rest.split("] rows=").next())
+            .expect("CommandCharacter digest has visible row chunk")
     }
 
     fn many_politics_snap(count: usize, prefix: &str) -> snapshot::Snapshot {
@@ -3581,6 +3965,31 @@ mod tests {
         .unwrap()
     }
 
+    fn many_command_character_snap(count: usize, prefix: &str) -> snapshot::Snapshot {
+        let leaders: Vec<_> = (1..=count)
+            .map(|idx| {
+                serde_json::json!({
+                    "char_id": idx,
+                    "unit_leader_id": 1000 + idx,
+                    "name": format!("{prefix}_Leader_{idx:02}"),
+                    "skill": (idx % 6) + 1,
+                    "traits": ["organizer"]
+                })
+            })
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "date": "1943.1.1.12", "hour_index": 400,
+            "countries": {
+                "GER": {
+                    "commanders": {
+                        "army_leaders": leaders
+                    }
+                }
+            }
+        }))
+        .unwrap()
+    }
+
     fn scrub_a_b_a(file: &str, v: &dyn ViewInstance) {
         let stage = stage_with(&[file]);
         let (a, b) = (snap_a(), snap_b());
@@ -3616,6 +4025,92 @@ mod tests {
     #[test]
     fn occupation_scrub_a_b_a() {
         scrub_a_b_a("occupation.json", &OccupationView::new());
+    }
+
+    #[test]
+    fn advisor_role_select_button_is_replay_disabled_noop() {
+        let stage = stage_with_gui_file(ADVISOR_ROLE_FILE, advisor_role_test_gui(true));
+        let snap = snap_b();
+        let mut view = AdvisorRoleView::new();
+        rebind_advisor_role(&mut view, &snap, true);
+
+        let before_bound = view.bind(&ctx(&stage, &snap));
+        let before = bound_digest(&before_bound);
+        assert!(
+            before.contains("key=politics:advisor-role:slot:political_advisor;"),
+            "advisor-role rows must carry stable slot keys, got:\n{before}"
+        );
+        assert!(
+            before.contains("key=politics:advisor-role:slot:high_command;"),
+            "advisor-role rows must key the second slot too, got:\n{before}"
+        );
+        assert!(
+            find_rect(&before_bound.hit.roots, "roles_grid").is_some(),
+            "test must bind the real roles_grid geometry"
+        );
+        let targets = view.debug_disabled_select_targets();
+        assert_eq!(
+            targets.len(),
+            2,
+            "each real advisor-role select_button row leaf should be a disabled target"
+        );
+        let (x, y) = rect_center(targets[0]);
+
+        let down = view.on_input(&ViewInput::PointerDown {
+            x,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            down.consumed && !down.needs_redraw && down.commands.is_empty(),
+            "advisor-role select_button pointer-down must be a replay-disabled no-op"
+        );
+        let up = view.on_input(&ViewInput::PointerUp {
+            x,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(
+            up.consumed && !up.needs_redraw && up.commands.is_empty(),
+            "advisor-role select_button pointer-up must also be a replay-disabled no-op"
+        );
+
+        let after = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert_eq!(
+            before, after,
+            "disabled advisor-role select_button must not change rows, keys, or digest"
+        );
+    }
+
+    #[test]
+    fn advisor_role_missing_select_button_geometry_fails_closed() {
+        let stage = stage_with_gui_file(ADVISOR_ROLE_FILE, advisor_role_test_gui(false));
+        let snap = snap_b();
+        let mut view = AdvisorRoleView::new();
+        rebind_advisor_role(&mut view, &snap, true);
+
+        let before_bound = view.bind(&ctx(&stage, &snap));
+        let before = bound_digest(&before_bound);
+        assert!(
+            view.debug_disabled_select_targets().is_empty(),
+            "missing select_button leaf must not create synthetic disabled targets"
+        );
+        let grid = find_rect(&before_bound.hit.roots, "roles_grid")
+            .expect("test gui provides roles_grid geometry");
+        let out = view.on_input(&ViewInput::PointerDown {
+            x: grid.x + 40.0,
+            y: grid.y + 10.0,
+            button: PointerButton::Left,
+        });
+        assert!(
+            !out.consumed && !out.needs_redraw && out.commands.is_empty(),
+            "without real select_button geometry the view must fail closed and ignore the click"
+        );
+        let after = bound_digest(&view.bind(&ctx(&stage, &snap)));
+        assert_eq!(
+            before, after,
+            "missing geometry no-op probe must not change the advisor-role digest"
+        );
     }
 
     #[test]
@@ -4291,6 +4786,172 @@ mod tests {
         assert_eq!(
             a1, a2,
             "command-character selected row must be byte-identical across A->B->A"
+        );
+    }
+
+    #[test]
+    fn command_character_wheel_scroll_clamps_and_scrolled_click_selects_backing_key() {
+        let stage = stage_with(&["command_character.json"]);
+        let snap = many_command_character_snap(12, "A");
+        let mut v = CommandCharacterView::new();
+        rebind_command_character(&mut v, &snap, true);
+
+        let before = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert_eq!(command_character_scroll_pair(&before).0, 0);
+        assert!(
+            visible_command_character_chunk(&before)
+                .contains("key=command_character:army_leaders:char_id:1;"),
+            "initial visible command-character rows must start at leader 1: {before}"
+        );
+
+        let out = wheel_command_character(&mut v, -3.0);
+        assert!(out.consumed && out.needs_redraw && out.commands.is_empty());
+        let after = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert_eq!(command_character_scroll_pair(&after).0, 210);
+        assert!(
+            visible_command_character_chunk(&after)
+                .contains("key=command_character:army_leaders:char_id:4;"),
+            "after three-row wheel scroll, visible rows must advance: {after}"
+        );
+        assert!(
+            !visible_command_character_chunk(&after)
+                .contains("key=command_character:army_leaders:char_id:1;"),
+            "scrolled visible slice must not keep top command-character rows: {after}"
+        );
+
+        let clicked = click_command_character_row(&mut v, 0);
+        assert!(clicked.consumed && clicked.needs_redraw && clicked.commands.is_empty());
+        let selected = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert!(
+            selected.contains("selected_key=command_character:army_leaders:char_id:4"),
+            "scrolled command-character click must select backing leader 4, got:\n{selected}"
+        );
+
+        for _ in 0..20 {
+            wheel_command_character(&mut v, -1.0);
+        }
+        let clamped = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        let (cur, max) = command_character_scroll_pair(&clamped);
+        assert_eq!(
+            cur, max,
+            "command-character wheel must clamp to max: {clamped}"
+        );
+    }
+
+    #[test]
+    fn command_character_scrollbar_thumb_drag_clamps_captures_outside_and_clears_on_up() {
+        let stage = stage_with(&["command_character.json"]);
+        let snap = many_command_character_snap(12, "A");
+        let mut v = CommandCharacterView::new();
+        rebind_command_character(&mut v, &snap, true);
+
+        let down = pointer_down_command_character_thumb(&mut v);
+        assert!(down.consumed && !down.needs_redraw && down.commands.is_empty());
+        assert!(
+            v.scroll_drag.is_some(),
+            "thumb pointer-down should capture command-character drag"
+        );
+
+        let geom = command_character_scrollbar(&v);
+        let moved = v.on_input(&ViewInput::PointerMove {
+            x: geom.track.x + geom.track.w + 40.0,
+            y: geom.track.y + geom.track.h + 120.0,
+            drag: true,
+        });
+        assert!(
+            moved.consumed && moved.needs_redraw && moved.commands.is_empty(),
+            "captured command-character thumb drag should continue outside the list"
+        );
+        let bottom = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        let (cur, max) = command_character_scroll_pair(&bottom);
+        assert_eq!(
+            cur, max,
+            "thumb drag below track must clamp to max: {bottom}"
+        );
+
+        let up = v.on_input(&ViewInput::PointerUp {
+            x: geom.track.x,
+            y: geom.track.y,
+            button: PointerButton::Left,
+        });
+        assert!(up.consumed && !up.needs_redraw && up.commands.is_empty());
+        assert!(
+            v.scroll_drag.is_none(),
+            "pointer-up must clear drag capture"
+        );
+
+        let after_up = v.on_input(&ViewInput::PointerMove {
+            x: geom.track.x,
+            y: geom.track.y,
+            drag: true,
+        });
+        assert!(
+            !after_up.consumed && !after_up.needs_redraw,
+            "pointer move after thumb release must not keep stale capture"
+        );
+    }
+
+    #[test]
+    fn command_character_scrollbar_track_click_is_consumed_and_inert() {
+        let stage = stage_with(&["command_character.json"]);
+        let snap = many_command_character_snap(12, "A");
+        let mut v = CommandCharacterView::new();
+        rebind_command_character(&mut v, &snap, true);
+        let before = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        let geom = command_character_scrollbar(&v);
+
+        let out = v.on_input(&ViewInput::PointerDown {
+            x: geom.track.x + geom.track.w * 0.5,
+            y: (geom.track.y + geom.thumb.y) * 0.5,
+            button: PointerButton::Left,
+        });
+        assert!(
+            out.consumed && !out.needs_redraw && out.commands.is_empty(),
+            "command-character scrollbar track click should be a consumed inert UI hit"
+        );
+        let after = bound_digest(&v.bind(&ctx(&stage, &snap)));
+        assert_eq!(
+            before, after,
+            "track click must not select an underlying command-character row"
+        );
+    }
+
+    #[test]
+    fn command_character_scroll_and_selection_scrub_a_b_a_without_carrying_b_rows() {
+        let stage = stage_with(&["command_character.json"]);
+        let a = many_command_character_snap(12, "A");
+        let b = many_command_character_snap(12, "B");
+        let mut v = CommandCharacterView::new();
+
+        rebind_command_character(&mut v, &a, true);
+        wheel_command_character(&mut v, -3.0);
+        click_command_character_row(&mut v, 0);
+        let a1 = bound_digest(&v.bind(&ctx(&stage, &a)));
+        assert!(
+            a1.contains("selected_key=command_character:army_leaders:char_id:4"),
+            "{a1}"
+        );
+
+        rebind_command_character(&mut v, &b, false);
+        let b_digest = bound_digest(&v.bind(&ctx(&stage, &b)));
+        assert_eq!(
+            command_character_scroll_pair(&b_digest).0,
+            command_character_scroll_pair(&a1).0
+        );
+        assert!(
+            visible_command_character_chunk(&b_digest).contains("name=B_Leader_04(D);"),
+            "B visible chunk must rebuild from B rows at retained scroll: {b_digest}"
+        );
+        assert!(
+            !visible_command_character_chunk(&b_digest).contains("name=A_Leader_04(D);"),
+            "B visible chunk must not carry A rows: {b_digest}"
+        );
+
+        rebind_command_character(&mut v, &a, false);
+        let a2 = bound_digest(&v.bind(&ctx(&stage, &a)));
+        assert_eq!(
+            a1, a2,
+            "command-character scroll + selection must be byte-identical across A->B->A"
         );
     }
 

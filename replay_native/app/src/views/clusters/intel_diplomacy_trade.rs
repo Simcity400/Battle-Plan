@@ -2644,17 +2644,58 @@ const WAR_OVERVIEW_VIEW_ID: ViewId = ViewId("intel.war_overview");
 const WAR_OVERVIEW_FILE: &str = "war_overview.json";
 const WAR_OVERVIEW_ROOT: &str = "waroverview_window";
 
-pub struct WarOverviewView;
+pub struct WarOverviewView {
+    selected_war_key: Option<String>,
+    war_row_targets: RefCell<Vec<WarRowTarget>>,
+    click_candidate: Option<String>,
+}
 
 impl WarOverviewView {
     pub fn new() -> WarOverviewView {
-        WarOverviewView
+        WarOverviewView {
+            selected_war_key: None,
+            war_row_targets: RefCell::new(Vec::new()),
+            click_candidate: None,
+        }
+    }
+
+    fn war_row_hit(&self, x: f32, y: f32) -> Option<String> {
+        self.war_row_targets
+            .borrow()
+            .iter()
+            .find(|target| target.rect.contains(x, y))
+            .map(|target| target.key.clone())
     }
 }
 
 impl Default for WarOverviewView {
     fn default() -> Self {
         WarOverviewView::new()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct WarRowTarget {
+    key: String,
+    rect: Rect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WarSelectionState {
+    Default,
+    Selected,
+    MissingSelected,
+    None,
+}
+
+impl WarSelectionState {
+    fn tag(self) -> &'static str {
+        match self {
+            WarSelectionState::Default => "default",
+            WarSelectionState::Selected => "selected",
+            WarSelectionState::MissingSelected => "missing_selected",
+            WarSelectionState::None => "none",
+        }
     }
 }
 
@@ -2665,13 +2706,17 @@ struct WarOverviewDrawable {
     attacker_rows: Vec<DataRow>,
     defender_rows: Vec<DataRow>,
     war_section: SectionState,
+    selected_state: WarSelectionState,
+    selected_key: Option<String>,
 }
 
 impl Drawable for WarOverviewDrawable {
     fn draw_digest(&self) -> String {
         format!(
-            "WAR_OVERVIEW war_sect={} wars={} attackers={} defenders={}",
+            "WAR_OVERVIEW war_sect={} selected_state={} selected_key={} wars={} attackers={} defenders={}",
             self.war_section.tag(),
+            self.selected_state.tag(),
+            self.selected_key.as_deref().unwrap_or("none"),
             row_digest(&self.war_rows),
             row_digest(&self.attacker_rows),
             row_digest(&self.defender_rows),
@@ -2713,6 +2758,49 @@ impl ViewInstance for WarOverviewView {
     fn policy(&self) -> HostPolicy {
         HostPolicy::window(ZBand::Panel)
     }
+    fn rebind(&mut self, _ctx: &RebindContext) {
+        self.click_candidate = None;
+    }
+    fn on_input(&mut self, ev: &ViewInput) -> InputOutcome {
+        match *ev {
+            ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            } => match self.war_row_hit(x, y) {
+                Some(key) => {
+                    self.click_candidate = Some(key);
+                    InputOutcome {
+                        consumed: true,
+                        commands: Vec::new(),
+                        needs_redraw: false,
+                    }
+                }
+                None => InputOutcome::ignored(),
+            },
+            ViewInput::PointerUp {
+                x,
+                y,
+                button: PointerButton::Left,
+            } => match self.click_candidate.take() {
+                Some(armed) => {
+                    let hit = self.war_row_hit(x, y);
+                    let changed = hit.as_deref() == Some(armed.as_str())
+                        && self.selected_war_key.as_deref() != Some(armed.as_str());
+                    if changed {
+                        self.selected_war_key = Some(armed);
+                    }
+                    InputOutcome {
+                        consumed: true,
+                        commands: Vec::new(),
+                        needs_redraw: changed,
+                    }
+                }
+                None => InputOutcome::ignored(),
+            },
+            _ => InputOutcome::ignored(),
+        }
+    }
     fn bind(&self, ctx: &BindContext) -> BoundView {
         let mut fidelity = FidelityReport::default();
         let file = load_gui(ctx, WAR_OVERVIEW_FILE);
@@ -2735,7 +2823,12 @@ impl ViewInstance for WarOverviewView {
         } else {
             SectionState::Present
         };
-        let selected = pick_war_for(&wars, ctx.country);
+        let (selected, selected_state) =
+            select_war(&wars, ctx.country, self.selected_war_key.as_deref());
+        let selected_key = self
+            .selected_war_key
+            .clone()
+            .or_else(|| selected.as_ref().and_then(war_key));
 
         let mut summary: Vec<Cell> = Vec::new();
         if let Some(war) = &selected {
@@ -2806,6 +2899,17 @@ impl ViewInstance for WarOverviewView {
         let defender_rows = build_war_participant_rows(ctx, selected.as_ref(), "b", &mut fidelity);
 
         let roots = build_root(ctx, &file, WAR_OVERVIEW_ROOT, &summary);
+        let mut hit_roots = roots.clone();
+        let war_row_roots = instantiated_row_roots(
+            &roots,
+            &file,
+            "waroverview_wars_box",
+            "waroverview_war_button",
+            &war_rows,
+            &ctx.stage.manifest,
+        );
+        *self.war_row_targets.borrow_mut() = collect_war_row_targets(&war_row_roots, &wars);
+        hit_roots.extend(war_row_roots);
         let drawable = WarOverviewDrawable {
             roots: roots.clone(),
             file,
@@ -2813,12 +2917,14 @@ impl ViewInstance for WarOverviewView {
             attacker_rows,
             defender_rows,
             war_section,
+            selected_state,
+            selected_key,
         };
         BoundView {
             instance: InstanceId(0),
             view_id: WAR_OVERVIEW_VIEW_ID,
             policy: self.policy(),
-            hit: HitModel::from_roots(roots),
+            hit: HitModel::from_roots(hit_roots),
             drawable: Box::new(drawable),
             fidelity,
             commands: Vec::<ViewCommand>::new(),
@@ -2826,6 +2932,24 @@ impl ViewInstance for WarOverviewView {
     }
 
     crate::impl_view_any!();
+}
+
+fn select_war(
+    wars: &[serde_json::Value],
+    tag: &str,
+    selected_key: Option<&str>,
+) -> (Option<serde_json::Value>, WarSelectionState) {
+    if let Some(key) = selected_key {
+        let selected = wars.iter().find(|w| war_key(w).as_deref() == Some(key));
+        return match selected {
+            Some(war) => (Some(war.clone()), WarSelectionState::Selected),
+            None => (None, WarSelectionState::MissingSelected),
+        };
+    }
+    match pick_war_for(wars, tag) {
+        Some(war) => (Some(war), WarSelectionState::Default),
+        None => (None, WarSelectionState::None),
+    }
 }
 
 /// The first war in `wars` whose belligerent `a`/`b` is the observed `tag`.
@@ -2841,6 +2965,27 @@ fn pick_war_for(wars: &[serde_json::Value], tag: &str) -> Option<serde_json::Val
 /// Compose a war's derived display name "<a> vs <b>" — `Some` ONLY when BOTH belligerent
 /// TAGs are measured strings. A missing side returns `None` (the caller badges it
 /// `unavailable`, never a "—-as-Derived" string — Codex fix).
+fn war_key(war: &serde_json::Value) -> Option<String> {
+    let a = war.get("a").and_then(|v| v.as_str())?;
+    let b = war.get("b").and_then(|v| v.as_str())?;
+    let start = war.get("start_date").and_then(|v| v.as_str())?;
+    Some(format!("{a}|{b}|{start}"))
+}
+
+fn collect_war_row_targets(row_roots: &[Node], wars: &[serde_json::Value]) -> Vec<WarRowTarget> {
+    let mut targets = Vec::new();
+    for (row, war) in row_roots.iter().zip(wars.iter()) {
+        let Some(key) = war_key(war) else {
+            continue;
+        };
+        let Some(rect) = find_rect(std::slice::from_ref(row), "button") else {
+            continue;
+        };
+        targets.push(WarRowTarget { key, rect });
+    }
+    targets
+}
+
 fn war_name(war: &serde_json::Value) -> Option<String> {
     let a = war.get("a").and_then(|v| v.as_str())?;
     let b = war.get("b").and_then(|v| v.as_str())?;
@@ -3876,6 +4021,64 @@ mod tests {
         .unwrap()
     }
 
+    fn war_overview_test_gui() -> GuiFile {
+        GuiFile::parse(
+            r#"{"view":"war_overview_test","windows":[
+              {"type":"containerWindowType","name":"waroverview_window",
+               "position":{"x":0,"y":0},"size":{"width":640,"height":420},
+               "children":[
+                 {"type":"instantTextBoxType","name":"header_desc","position":{"x":16,"y":12},
+                  "text":{"text":"HEADER","font":"hoi_16mbs"}},
+                 {"type":"instantTextBoxType","name":"attacker_losses","position":{"x":16,"y":40},
+                  "text":{"text":"A_LOSS","font":"hoi_16mbs"}},
+                 {"type":"instantTextBoxType","name":"defender_losses","position":{"x":120,"y":40},
+                  "text":{"text":"D_LOSS","font":"hoi_16mbs"}},
+                 {"type":"instantTextBoxType","name":"warscore_progressbar","position":{"x":224,"y":40},
+                  "text":{"text":"SCORE","font":"hoi_16mbs"}},
+                 {"type":"instantTextBoxType","name":"attacker_fielded_man","position":{"x":16,"y":68},
+                  "text":{"text":"A_FIELD","font":"hoi_16mbs"}},
+                 {"type":"instantTextBoxType","name":"defender_fielded_man","position":{"x":120,"y":68},
+                  "text":{"text":"D_FIELD","font":"hoi_16mbs"}},
+                 {"type":"gridBoxType","name":"waroverview_wars_box","position":{"x":16,"y":112},
+                  "size":{"width":120,"height":90}},
+                 {"type":"gridBoxType","name":"attacker_grid","position":{"x":180,"y":112},
+                  "size":{"width":180,"height":90}},
+                 {"type":"gridBoxType","name":"defender_grid","position":{"x":380,"y":112},
+                  "size":{"width":180,"height":90}}
+               ]},
+              {"type":"containerWindowType","name":"waroverview_war_button",
+               "position":{"x":0,"y":0},"size":{"width":96,"height":28},
+               "children":[
+                 {"type":"buttonType","name":"button","position":{"x":0,"y":0},
+                  "size":{"width":96,"height":28},"sprite":"GFX_button"},
+                 {"type":"instantTextBoxType","name":"attacker_country_flag","position":{"x":6,"y":6},
+                  "text":{"text":"A","font":"hoi_16mbs"}},
+                 {"type":"instantTextBoxType","name":"defender_country_flag","position":{"x":48,"y":6},
+                  "text":{"text":"B","font":"hoi_16mbs"}}
+               ]},
+              {"type":"containerWindowType","name":"war_ally_entry",
+               "position":{"x":0,"y":0},"size":{"width":168,"height":28},
+               "children":[
+                 {"type":"instantTextBoxType","name":"country_name","position":{"x":4,"y":5},
+                  "text":{"text":"TAG","font":"hoi_16mbs"}},
+                 {"type":"instantTextBoxType","name":"divisions","position":{"x":46,"y":5},
+                  "text":{"text":"DIV","font":"hoi_16mbs"}},
+                 {"type":"instantTextBoxType","name":"ic","position":{"x":76,"y":5},
+                  "text":{"text":"IC","font":"hoi_16mbs"}},
+                 {"type":"instantTextBoxType","name":"wargoal","position":{"x":102,"y":5},
+                  "text":{"text":"WG","font":"hoi_16mbs"}},
+                 {"type":"instantTextBoxType","name":"warscore","position":{"x":128,"y":5},
+                  "text":{"text":"WS","font":"hoi_16mbs"}},
+                 {"type":"instantTextBoxType","name":"casualties","position":{"x":4,"y":18},
+                  "text":{"text":"CAS","font":"hoi_16mbs"}},
+                 {"type":"instantTextBoxType","name":"surrender_progressbar","position":{"x":76,"y":18},
+                  "text":{"text":"CAP","font":"hoi_16mbs"}}
+               ]}
+            ]}"#,
+        )
+        .unwrap()
+    }
+
     fn ctx<'a>(stage: &'a Stage, snap: &'a snapshot::Snapshot) -> BindContext<'a> {
         BindContext {
             stage,
@@ -4035,6 +4238,97 @@ mod tests {
                 "threat": [
                     {"tag": "GER", "threat": 5.0, "final_threat": 12.0, "daily": 0.1, "date": "1941.6.1", "label": "ANNEXED_AUSTRIA"}
                 ]
+            }
+        }))
+        .unwrap()
+    }
+
+    fn war_selection_snap_a() -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1941.4.13.11", "hour_index": 300,
+            "countries": {
+                "GER": {
+                    "diplomacy": {"wargoals": [{"type": "annex_everything", "target": "POL"}]},
+                    "economy": {"civilian_factories": 40}
+                },
+                "POL": {
+                    "diplomacy": {"wargoals": []},
+                    "economy": {"civilian_factories": 12}
+                },
+                "FRA": {
+                    "diplomacy": {"wargoals": [{"type": "take_state", "target": "ITA"}]},
+                    "economy": {"civilian_factories": 25}
+                },
+                "ITA": {
+                    "diplomacy": {"wargoals": []},
+                    "economy": {"civilian_factories": 18}
+                }
+            },
+            "divisions": [
+                {"div_id": 1, "owner": "GER", "strength": 1000.0},
+                {"div_id": 2, "owner": "POL", "strength": 500.0},
+                {"div_id": 3, "owner": "FRA", "strength": 700.0},
+                {"div_id": 4, "owner": "ITA", "strength": 650.0},
+                {"div_id": 5, "owner": "ITA", "strength": 625.0}
+            ],
+            "diplomacy_world": {
+                "wars": [
+                    {"a": "GER", "b": "POL", "start_date": "1939.9.1",
+                     "a_casualties": 12000, "b_casualties": 30000,
+                     "war_score_a_vs_b": 60, "war_score_b_vs_a": 10},
+                    {"a": "FRA", "b": "ITA", "start_date": "1940.6.10",
+                     "a_casualties": 1111, "b_casualties": 2222,
+                     "war_score_a_vs_b": 9, "war_score_b_vs_a": 3}
+                ],
+                "factions": [], "subjects": []
+            }
+        }))
+        .unwrap()
+    }
+
+    fn war_selection_snap_b_missing_selected() -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1942.2.2.11", "hour_index": 400,
+            "countries": {
+                "GER": {"diplomacy": {"wargoals": []}},
+                "SOV": {"diplomacy": {"wargoals": []}}
+            },
+            "divisions": [
+                {"div_id": 1, "owner": "GER", "strength": 1000.0},
+                {"div_id": 2, "owner": "SOV", "strength": 2000.0}
+            ],
+            "diplomacy_world": {
+                "wars": [
+                    {"a": "GER", "b": "SOV", "start_date": "1941.6.22",
+                     "a_casualties": 10, "b_casualties": 20,
+                     "war_score_a_vs_b": 1, "war_score_b_vs_a": 2}
+                ],
+                "factions": [], "subjects": []
+            }
+        }))
+        .unwrap()
+    }
+
+    fn war_selection_snap_missing_key() -> snapshot::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "date": "1941.4.13.11", "hour_index": 301,
+            "countries": {
+                "GER": {"diplomacy": {"wargoals": []}},
+                "POL": {"diplomacy": {"wargoals": []}},
+                "FRA": {"diplomacy": {"wargoals": []}},
+                "ITA": {"diplomacy": {"wargoals": []}}
+            },
+            "divisions": [],
+            "diplomacy_world": {
+                "wars": [
+                    {"a": "GER", "b": "POL", "start_date": "1939.9.1",
+                     "a_casualties": 1, "b_casualties": 2,
+                     "war_score_a_vs_b": 3, "war_score_b_vs_a": 4},
+                    {"a": "FRA", "b": "ITA",
+                     "a_casualties": 5, "b_casualties": 6,
+                     "war_score_a_vs_b": 7, "war_score_b_vs_a": 8}
+                ],
+                "factions": [], "subjects": []
             }
         }))
         .unwrap()
@@ -4243,6 +4537,217 @@ mod tests {
         assert!(
             d.contains("GER vs POL"),
             "the war title must derive from belligerents, got:\n{d}"
+        );
+    }
+
+    #[test]
+    fn war_row_click_selects_measured_war_and_updates_detail() {
+        let stage =
+            stage_with_gui_and_manifest(WAR_OVERVIEW_FILE, war_overview_test_gui(), HashMap::new());
+        let snap = war_selection_snap_a();
+        let binding = ctx(&stage, &snap);
+        let mut view = WarOverviewView::new();
+
+        let before_bv = view.bind(&binding);
+        let before = bound_digest(&before_bv);
+        assert!(
+            before.contains("selected_state=default"),
+            "default selection should pick the viewer's involved war: {before}"
+        );
+        assert!(
+            before.contains("selected_key=GER|POL|1939.9.1"),
+            "default selected key should be measured from the war row: {before}"
+        );
+        assert!(
+            before.contains("header_desc|Text(\"GER vs POL\""),
+            "default detail must show the viewer's involved war: {before}"
+        );
+
+        let target = view
+            .war_row_targets
+            .borrow()
+            .iter()
+            .find(|target| target.key == "FRA|ITA|1940.6.10")
+            .cloned()
+            .expect("second measured war row should be targetable");
+        let x = target.rect.x + target.rect.w * 0.5;
+        let y = target.rect.y + target.rect.h * 0.5;
+        let leaf = before_bv
+            .hit
+            .hit_test(x, y)
+            .and_then(|hit| hit.leaf().map(str::to_string));
+        assert_eq!(
+            leaf.as_deref(),
+            Some("button"),
+            "war row selection must use the real instantiated row button"
+        );
+
+        let down = view.on_input(&ViewInput::PointerDown {
+            x,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(down.consumed);
+        assert!(!down.needs_redraw);
+        assert!(down.commands.is_empty());
+
+        let up = view.on_input(&ViewInput::PointerUp {
+            x,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(up.consumed);
+        assert!(up.needs_redraw);
+        assert!(up.commands.is_empty());
+
+        let after = bound_digest(&view.bind(&binding));
+        assert!(
+            after.contains("selected_state=selected"),
+            "explicit row click should drive selected detail: {after}"
+        );
+        assert!(
+            after.contains("selected_key=FRA|ITA|1940.6.10"),
+            "explicit selection must be keyed by measured war fields: {after}"
+        );
+        assert!(
+            after.contains("header_desc|Text(\"FRA vs ITA\""),
+            "selected detail should switch to the clicked war: {after}"
+        );
+        assert!(
+            after.contains("attacker_losses|Text(\"1111\"")
+                && after.contains("defender_losses|Text(\"2222\""),
+            "selected war side losses must bind from the clicked war, got:\n{after}"
+        );
+        assert!(
+            after.contains("country_name=FRA(E)") && after.contains("country_name=ITA(E)"),
+            "selected war participants should come from the clicked war rows: {after}"
+        );
+    }
+
+    #[test]
+    fn war_selected_row_missing_after_scrub_fails_closed() {
+        let stage =
+            stage_with_gui_and_manifest(WAR_OVERVIEW_FILE, war_overview_test_gui(), HashMap::new());
+        let a = war_selection_snap_a();
+        let b = war_selection_snap_b_missing_selected();
+        let mut view = WarOverviewView::new();
+        let binding_a = ctx(&stage, &a);
+
+        let _ = view.bind(&binding_a);
+        let target = view
+            .war_row_targets
+            .borrow()
+            .iter()
+            .find(|target| target.key == "FRA|ITA|1940.6.10")
+            .cloned()
+            .expect("selected test setup must expose the FRA vs ITA row");
+        let x = target.rect.x + target.rect.w * 0.5;
+        let y = target.rect.y + target.rect.h * 0.5;
+        assert!(
+            view.on_input(&ViewInput::PointerDown {
+                x,
+                y,
+                button: PointerButton::Left,
+            })
+            .consumed
+        );
+        assert!(
+            view.on_input(&ViewInput::PointerUp {
+                x,
+                y,
+                button: PointerButton::Left,
+            })
+            .needs_redraw
+        );
+        let selected_a = bound_digest(&view.bind(&binding_a));
+        assert!(
+            selected_a.contains("header_desc|Text(\"FRA vs ITA\""),
+            "test setup must select the non-default war: {selected_a}"
+        );
+
+        view.rebind(&RebindContext {
+            snapshot: &b,
+            country: "GER",
+            screen: (1600, 900),
+            refit: false,
+        });
+        let binding_b = ctx(&stage, &b);
+        let missing = bound_digest(&view.bind(&binding_b));
+        assert!(
+            missing.contains("selected_state=missing_selected"),
+            "stale selected war key must not fall back to another war: {missing}"
+        );
+        assert!(
+            missing.contains("selected_key=FRA|ITA|1940.6.10"),
+            "stale selected war key should stay visible for fail-closed diagnostics: {missing}"
+        );
+        assert!(
+            missing.contains(&format!("header_desc|Text(\"{DASH}\"")),
+            "missing selected war should badge detail unavailable: {missing}"
+        );
+        assert!(
+            !missing.contains("header_desc|Text(\"GER vs SOV\""),
+            "missing selected war must not fall back to the remaining measured war: {missing}"
+        );
+        assert!(
+            missing.contains("attackers= defenders="),
+            "missing selected war should draw no participant detail rows: {missing}"
+        );
+
+        view.rebind(&RebindContext {
+            snapshot: &a,
+            country: "GER",
+            screen: (1600, 900),
+            refit: false,
+        });
+        let restored = bound_digest(&view.bind(&binding_a));
+        assert_eq!(
+            selected_a, restored,
+            "scrub A->B->A should restore the keyed selected war without carrying B detail"
+        );
+    }
+
+    #[test]
+    fn war_rows_without_measured_key_are_not_selectable() {
+        let stage =
+            stage_with_gui_and_manifest(WAR_OVERVIEW_FILE, war_overview_test_gui(), HashMap::new());
+        let snap = war_selection_snap_missing_key();
+        let binding = ctx(&stage, &snap);
+        let mut view = WarOverviewView::new();
+        let before_bv = view.bind(&binding);
+        let before = bound_digest(&before_bv);
+
+        let targets = view.war_row_targets.borrow().clone();
+        assert_eq!(
+            targets.len(),
+            1,
+            "only the row with a complete measured war key should be selectable"
+        );
+        assert_eq!(targets[0].key, "GER|POL|1939.9.1");
+
+        let x = 16.0 + 48.0;
+        let y = 112.0 + 28.0 + 14.0;
+        let leaf = before_bv
+            .hit
+            .hit_test(x, y)
+            .and_then(|hit| hit.leaf().map(str::to_string));
+        assert_eq!(
+            leaf.as_deref(),
+            Some("button"),
+            "the malformed row still exists visually, but should have no measured selection key"
+        );
+        let out = view.on_input(&ViewInput::PointerDown {
+            x,
+            y,
+            button: PointerButton::Left,
+        });
+        assert!(!out.consumed);
+        assert!(!out.needs_redraw);
+        assert!(out.commands.is_empty());
+        let after = bound_digest(&view.bind(&binding));
+        assert_eq!(
+            before, after,
+            "clicking a row without a complete measured key must not change selection"
         );
     }
 

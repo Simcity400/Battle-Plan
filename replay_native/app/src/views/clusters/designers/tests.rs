@@ -487,6 +487,36 @@ fn click_division_tab_center(v: &mut DivisionDesignerView, id: &str) -> InputOut
     })
 }
 
+// Equipment-upgrade disabled mutation-control helpers.
+fn rebind_upgrade(v: &mut EquipmentUpgradeDesignerView, snap: &snapshot::Snapshot, refit: bool) {
+    v.rebind(&RebindContext {
+        snapshot: snap,
+        country: "GER",
+        screen: (1600, 900),
+        refit,
+    });
+}
+
+fn upgrade_control_center(
+    v: &EquipmentUpgradeDesignerView,
+    upgrade: Option<&str>,
+    kind: UpgradeControlKind,
+) -> (f32, f32) {
+    v.interaction
+        .control_center(upgrade, kind)
+        .unwrap_or_else(|| panic!("missing equipment-upgrade control {upgrade:?}/{kind:?}"))
+}
+
+fn upgrade_control_rect(
+    v: &EquipmentUpgradeDesignerView,
+    upgrade: Option<&str>,
+    kind: UpgradeControlKind,
+) -> Rect {
+    v.interaction
+        .control_rect(upgrade, kind)
+        .unwrap_or_else(|| panic!("missing equipment-upgrade control {upgrade:?}/{kind:?}"))
+}
+
 /// Each designer rebinds A->B->A byte-identically without carrying B's values.
 #[test]
 fn scrub_a_b_a_byte_identical_all_five() {
@@ -908,6 +938,150 @@ fn division_selected_tab_persists_across_scrub_a_b_a() {
         !da2.contains("Fuehrungsstab Ost") && !da2.contains("rocket_artillery"),
         "A after scrub must not carry B-only template data or regiment rows: {da2}"
     );
+}
+
+// ---------------------------------------------- equipment-upgrade control parity
+
+#[test]
+fn equipment_upgrade_control_hit_geometry_uses_real_gui_rows() {
+    let snap = snap_save();
+    let mut v = EquipmentUpgradeDesignerView::new();
+    rebind_upgrade(&mut v, &snap, true);
+
+    // Real `equipment_upgrade_designer.json` geometry at 1600x900:
+    // root `equipment_upgrade_designer_window` is centered at (650,200), its
+    // `active_equipment_view` begins at y=250, and the land `tank_engine_upgrade`
+    // row is at (409,100) inside that subview. The +/- buttons use the real child
+    // offsets (6,30) and (68,30), with deterministic row-bounded fallback sizes
+    // when the sprite manifest does not expose native icon dimensions.
+    assert_rect_close(
+        upgrade_control_rect(
+            &v,
+            Some("tank_engine_upgrade"),
+            UpgradeControlKind::DecreaseLevel,
+        ),
+        Rect {
+            x: 1065.0,
+            y: 380.0,
+            w: 44.0,
+            h: 30.0,
+        },
+        "tank_engine_upgrade.decrease_level",
+    );
+    assert_rect_close(
+        upgrade_control_rect(
+            &v,
+            Some("tank_engine_upgrade"),
+            UpgradeControlKind::IncreaseLevel,
+        ),
+        Rect {
+            x: 1127.0,
+            y: 380.0,
+            w: 32.0,
+            h: 30.0,
+        },
+        "tank_engine_upgrade.increase_level",
+    );
+    assert_rect_close(
+        upgrade_control_rect(&v, None, UpgradeControlKind::VariantName),
+        Rect {
+            x: 775.0,
+            y: 249.0,
+            w: 300.0,
+            h: 32.0,
+        },
+        "variant_name",
+    );
+}
+
+#[test]
+fn equipment_upgrade_buttons_are_replay_disabled_noops() {
+    let stage = stage_with(&["equipment_upgrade_designer.json"]);
+    let snap = snap_save();
+    let mut view = EquipmentUpgradeDesignerView::new();
+    rebind_upgrade(&mut view, &snap, true);
+
+    let before = bound_digest(&view.bind(&ctx(&stage, &snap)));
+    assert!(
+        before.contains("Tank Engine Upgrade=1(E)") || before.contains("tank_engine_upgrade=1(E)"),
+        "the exact upgrade level must be bound before disabled input: {before}"
+    );
+    assert!(
+        before.contains("Resulting Stats=—"),
+        "computed resulting stats must stay unavailable: {before}"
+    );
+
+    let (x, y) = upgrade_control_center(
+        &view,
+        Some("tank_engine_upgrade"),
+        UpgradeControlKind::IncreaseLevel,
+    );
+    let down = view.on_input(&left_click(x, y));
+    assert!(down.consumed);
+    assert!(!down.needs_redraw);
+    assert!(down.commands.is_empty());
+
+    let drag = view.on_input(&ViewInput::PointerMove {
+        x: x + 60.0,
+        y,
+        drag: true,
+    });
+    assert!(drag.consumed);
+    assert!(!drag.needs_redraw);
+    assert!(drag.commands.is_empty());
+
+    let up = view.on_input(&ViewInput::PointerUp {
+        x: x + 60.0,
+        y,
+        button: PointerButton::Left,
+    });
+    assert!(up.consumed);
+    assert!(!up.needs_redraw);
+    assert!(up.commands.is_empty());
+
+    let after_increase = bound_digest(&view.bind(&ctx(&stage, &snap)));
+    assert_eq!(
+        before, after_increase,
+        "disabled upgrade + control must not mutate replay-bound output"
+    );
+
+    let (x, y) = upgrade_control_center(
+        &view,
+        Some("tank_engine_upgrade"),
+        UpgradeControlKind::DecreaseLevel,
+    );
+    let out = view.on_input(&left_click(x, y));
+    assert!(out.consumed);
+    assert!(!out.needs_redraw);
+    assert!(out.commands.is_empty());
+    assert_eq!(
+        before,
+        bound_digest(&view.bind(&ctx(&stage, &snap))),
+        "disabled upgrade - control must not mutate replay-bound output"
+    );
+
+    let (x, y) = upgrade_control_center(&view, None, UpgradeControlKind::VariantName);
+    let out = view.on_input(&left_click(x, y));
+    assert!(out.consumed);
+    assert!(!out.needs_redraw);
+    assert!(out.commands.is_empty());
+    assert_eq!(
+        before,
+        bound_digest(&view.bind(&ctx(&stage, &snap))),
+        "disabled variant-name edit box must not mutate replay-bound output"
+    );
+}
+
+#[test]
+fn equipment_upgrade_outside_clicks_do_not_swallow_input() {
+    let snap = snap_save();
+    let mut view = EquipmentUpgradeDesignerView::new();
+    rebind_upgrade(&mut view, &snap, true);
+
+    let out = view.on_input(&left_click(10.0, 10.0));
+    assert!(!out.consumed);
+    assert!(!out.needs_redraw);
+    assert!(out.commands.is_empty());
 }
 
 // ----------------------------------------------------------- inventory registration

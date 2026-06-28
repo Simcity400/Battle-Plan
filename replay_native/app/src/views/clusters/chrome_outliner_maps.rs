@@ -1482,6 +1482,42 @@ pub fn find_view_button_rects_from_roots(
     (find_button, home_button)
 }
 
+pub fn find_view_tab_center_from_roots(
+    screen: Rect,
+    roots: &[Node],
+    tab_slug: &str,
+) -> Option<(f32, f32)> {
+    if !matches!(tab_slug, "states" | "countries" | "vps") {
+        return None;
+    }
+    let window_panel = find_panel_rect(screen, roots);
+    let panel = find_results_rect(window_panel, roots);
+    find_tabs()
+        .layout(panel)
+        .into_iter()
+        .find(|tab| tab.id == tab_slug)
+        .map(|tab| (tab.rect.x + tab.rect.w * 0.5, tab.rect.y + tab.rect.h * 0.5))
+}
+
+pub fn find_view_visible_row_center_from_roots(
+    screen: Rect,
+    roots: &[Node],
+    visible_index: usize,
+) -> Option<(f32, f32)> {
+    let window_panel = find_panel_rect(screen, roots);
+    let panel = find_results_rect(window_panel, roots);
+    let bar = find_tabs();
+    let content = bar.content_rect(panel);
+    let visible = find_visible_row_count(&bar, panel);
+    if visible_index >= visible {
+        return None;
+    }
+    Some((
+        content.x + content.w * 0.5,
+        content.y + visible_index as f32 * FIND_ROW_H + FIND_ROW_H * 0.5,
+    ))
+}
+
 fn click_find_tab(bar: &mut TabBar, panel: Rect, x: f32, y: f32) -> FindTabClick {
     let rects = bar.layout(panel);
     if let Some(id) = bar.pick(&rects, x, y) {
@@ -2660,6 +2696,36 @@ pub fn mapmodes_all_grid_rect_from_roots(roots: &[Node]) -> Option<Rect> {
         .find_map(|root| find_node_rect(root, MAPMODES_ALL_GRID))
 }
 
+fn mapmode_index_for_slug(slug: &str) -> Option<usize> {
+    let name = match slug {
+        "political" => "Political",
+        "control" => "Control",
+        "resistance" => "Resistance",
+        "compliance" => "Compliance",
+        "victory_points" => "VictoryPoints",
+        "buildings_industrial_complex" => "Buildings",
+        "resources" => "Resources",
+        "weather" => "Weather",
+        "front_lines" => "FrontLines",
+        "diplomacy" => "Faction",
+        "air" => "AirSuperiority",
+        "naval" => "Naval",
+        "supply" => "Supply",
+        "intel" => "Intel",
+        _ => return None,
+    };
+    MAP_MODES.iter().position(|mode| mode.name == name)
+}
+
+pub fn mapmodes_popup_mode_center_from_roots(
+    roots: &[Node],
+    mode_slug: &str,
+) -> Option<(f32, f32)> {
+    let grid = mapmodes_all_grid_rect_from_roots(roots)?;
+    let rect = mapmode_row_rect(grid, mapmode_index_for_slug(mode_slug)?);
+    Some((rect.x + rect.w * 0.5, rect.y + rect.h * 0.5))
+}
+
 fn mapmode_command(entry: &MapModeRailEntry) -> Option<ViewCommand> {
     entry.core_mode.map(|mode| ViewCommand::SetMapMode { mode })
 }
@@ -3754,6 +3820,80 @@ fn push_counter_stack_entities(
     }
 }
 
+fn push_railway_gun_counter_entities(
+    ctx: &BindContext,
+    tag: &str,
+    report: &mut FidelityReport,
+    entities: &mut Vec<IconEntity>,
+) {
+    let stacks = railway_gun_counter_stacks(ctx, tag);
+    if stacks.is_empty() {
+        let atom = DisplayAtom::unavailable_because(UnavailableReason::Blocked);
+        report.record(&atom);
+        entities.push(IconEntity::label(
+            "unit_counter_railway_gun.count_txt",
+            atom,
+            None,
+        ));
+        return;
+    }
+
+    for stack in stacks {
+        push_counter_stack_label(
+            report,
+            entities,
+            "unit_counter_railway_gun.count_txt",
+            DisplayAtom::text(stack.count.to_string(), Fidelity::Derived),
+            Some(stack.province),
+        );
+        push_counter_stack_label(
+            report,
+            entities,
+            "unit_counter_railway_gun.flag",
+            DisplayAtom::text(stack.owner.clone(), Fidelity::Exact),
+            Some(stack.province),
+        );
+        push_counter_stack_label(
+            report,
+            entities,
+            "unit_counter_railway_gun.large_flag",
+            DisplayAtom::text(stack.owner.clone(), Fidelity::Exact),
+            Some(stack.province),
+        );
+        push_counter_stack_label(
+            report,
+            entities,
+            "unit_counter_railway_gun.bar_str",
+            stack
+                .strength
+                .map(|v| DisplayAtom::text(fmt_counter_percent(v), Fidelity::Exact))
+                .unwrap_or_else(|| DisplayAtom::unavailable_because(UnavailableReason::Blocked)),
+            Some(stack.province),
+        );
+        push_counter_stack_label(
+            report,
+            entities,
+            "unit_counter_railway_gun.type",
+            DisplayAtom::text("railway_gun", Fidelity::Derived),
+            Some(stack.province),
+        );
+        push_counter_stack_label(
+            report,
+            entities,
+            "unit_counter_railway_gun.counter_ideology",
+            counter_ideology_atom(ctx, &stack.owner),
+            Some(stack.province),
+        );
+        push_counter_stack_label(
+            report,
+            entities,
+            "unit_counter_railway_gun.attrition",
+            DisplayAtom::unavailable_because(UnavailableReason::Blocked),
+            Some(stack.province),
+        );
+    }
+}
+
 fn push_counter_stack_label(
     report: &mut FidelityReport,
     entities: &mut Vec<IconEntity>,
@@ -3793,6 +3933,13 @@ impl CounterStack {
             }
         }
     }
+}
+
+struct RailwayGunCounterStack {
+    province: u32,
+    owner: String,
+    count: usize,
+    strength: Option<f64>,
 }
 
 #[derive(Clone, Copy)]
@@ -3900,6 +4047,55 @@ impl CounterStackBuilder {
     }
 }
 
+#[derive(Default)]
+struct RailwayGunCounterStackBuilder {
+    owner: Option<String>,
+    count: usize,
+    strength_sum: f64,
+    strength_count: usize,
+    strength_all_fractional: bool,
+}
+
+impl RailwayGunCounterStackBuilder {
+    fn new(owner: &str) -> RailwayGunCounterStackBuilder {
+        RailwayGunCounterStackBuilder {
+            owner: Some(owner.to_string()),
+            strength_all_fractional: true,
+            ..RailwayGunCounterStackBuilder::default()
+        }
+    }
+
+    fn push(&mut self, div: &serde_json::Value) {
+        self.count += 1;
+        if let Some(strength) = numeric_field(div, "strength") {
+            self.strength_sum += strength;
+            self.strength_count += 1;
+            if !(0.0..=1.0).contains(&strength) {
+                self.strength_all_fractional = false;
+            }
+        }
+    }
+
+    fn finish(self, province: u32) -> Option<RailwayGunCounterStack> {
+        let owner = self.owner?;
+        let count = self.count;
+        if count == 0 {
+            return None;
+        }
+        let strength = if self.strength_count == count && self.strength_all_fractional {
+            Some(self.strength_sum / count as f64)
+        } else {
+            None
+        };
+        Some(RailwayGunCounterStack {
+            province,
+            owner,
+            count,
+            strength,
+        })
+    }
+}
+
 fn counter_division_stacks(ctx: &BindContext, tag: &str) -> Vec<CounterStack> {
     let Some(divs) = division_records(ctx) else {
         return Vec::new();
@@ -3916,6 +4112,31 @@ fn counter_division_stacks(ctx: &BindContext, tag: &str) -> Vec<CounterStack> {
         grouped
             .entry(province)
             .or_insert_with(|| CounterStackBuilder::new(tag))
+            .push(div);
+    }
+    grouped
+        .into_iter()
+        .filter_map(|(province, stack)| stack.finish(province))
+        .collect()
+}
+
+fn railway_gun_counter_stacks(ctx: &BindContext, tag: &str) -> Vec<RailwayGunCounterStack> {
+    let Some(divs) = division_records(ctx) else {
+        return Vec::new();
+    };
+    let mut grouped: std::collections::BTreeMap<u32, RailwayGunCounterStackBuilder> =
+        std::collections::BTreeMap::new();
+    for div in divs
+        .iter()
+        .filter(|div| element_owner_matches(div, tag))
+        .filter(|div| is_railway_gun_division(div))
+    {
+        let Some(province) = direct_province_anchor(div) else {
+            continue;
+        };
+        grouped
+            .entry(province)
+            .or_insert_with(|| RailwayGunCounterStackBuilder::new(tag))
             .push(div);
     }
     grouped
@@ -3978,6 +4199,11 @@ fn fmt_counter_percent(value: f64) -> String {
         value
     };
     format!("{}%", percent.round() as i64)
+}
+
+fn counter_ideology_atom(ctx: &BindContext, owner: &str) -> DisplayAtom {
+    ctx.country_field(owner, "politics.ruling_party")
+        .display_with_fidelity(Fidelity::Derived, fmt_token)
 }
 
 fn counter_portrait_assets(ctx: &BindContext, tag: &str) -> Vec<(u32, assets::SpriteAsset)> {
@@ -4867,6 +5093,11 @@ impl ViewInstance for MapIconsView {
         // unavailable badge rather than a province-less stack.
         push_counter_stack_entities(ctx, ctx.country, &mut fidelity, &mut entities);
 
+        // ---- railway-gun counters: same anchor gate as land counters, but with the
+        // railway-gun template family (no org slot). Strength/owner bind only at real
+        // owned division anchors; attrition remains an unavailable runtime computation.
+        push_railway_gun_counter_entities(ctx, ctx.country, &mut fidelity, &mut entities);
+
         // ---- unit-counter commander portraits: an OOB/division leader ref can join to
         // the country's commander roster ONLY when the same counter/formation resolves to
         // a real province anchor. Misses remain explicit sprite misses; unanchored leaders
@@ -4882,14 +5113,13 @@ impl ViewInstance for MapIconsView {
 
         // ---- the remaining on-map icon-TEMPLATE families: ACCOUNTED, not dropped. Each
         // is badged with its honest reason so the binding-map's dynamic sections are all
-        // represented (none silently omitted). The navy/air/rail COUNTERS + land/naval
+        // represented (none silently omitted). The navy/air/transport COUNTERS + land/naval
         // COMBAT + air/naval MISSION + raid/faction/peace/decision icons still need
         // specialized stack types, battle/mission rosters, or target geometry not proven here →
         // badged unavailable (never a fabricated count/position). The intel /
         // special-facility families are also schema-unfed/asset-gap per §map.
         const BADGED_TEMPLATES: &[&str] = &[
             "unit_counter_navy",             // fleet roster — top-level OOB
-            "unit_counter_railway_gun",      // railway-gun divisions — top-level domain
             "air_wing_counter",              // order_of_battle.air_wings unfed
             "GFX_mapicon_tiny_unit_counter", // transported-unit stack — top-level domain
             "land_combat_mapicon",           // combats[] — top-level domain
@@ -6748,6 +6978,117 @@ mod tests {
         assert!(
             !d.contains("unit_counter.count_txt@Some(794)"),
             "target-only GER divisions must not fabricate a counter anchor: {d}"
+        );
+    }
+
+    #[test]
+    fn mapicon_railway_gun_counter_binds_at_owned_anchor() {
+        let stage = stage_with_manifest(&[], HashMap::new());
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "date": "1942.1.1.12",
+            "countries": {
+                "GER": { "politics": { "ruling_party": "fascism" } }
+            },
+            "divisions": [
+                { "div_id": 301, "div_type": 88, "owner": "GER", "location_province": 796,
+                  "strength": 0.75, "template_role": "railway_gun" },
+                { "div_id": 302, "div_type": 88, "owner": "GER", "location_province": 796,
+                  "strength": 0.5, "template_role": "railway_gun" },
+                { "div_id": 401, "div_type": 42, "owner": "GER", "location_province": 797,
+                  "organisation": 100.0, "strength": 1.0, "template_role": "infantry", "dig_in": 0.0 }
+            ]
+        }))
+        .unwrap();
+        let d = bound_digest(&MapIconsView::new().bind(&ctx(&stage, &snap, "1942.1.1.12")));
+        assert!(
+            d.contains("unit_counter_railway_gun.count_txt@Some(796)mapfalse=2(D);"),
+            "railway-gun count must derive from same-province owned railgun divisions: {d}"
+        );
+        assert!(
+            d.contains("unit_counter_railway_gun.flag@Some(796)mapfalse=GER(E);"),
+            "railway-gun flag must bind exact owner at the real anchor: {d}"
+        );
+        assert!(
+            d.contains("unit_counter_railway_gun.large_flag@Some(796)mapfalse=GER(E);"),
+            "zoomed railway-gun flag must bind exact owner at the real anchor: {d}"
+        );
+        assert!(
+            d.contains("unit_counter_railway_gun.bar_str@Some(796)mapfalse=63%(E);"),
+            "railway-gun strength must average measured fractional strength: {d}"
+        );
+        assert!(
+            d.contains("unit_counter_railway_gun.type@Some(796)mapfalse=railway_gun(D);"),
+            "railway-gun type must be a derived railway-gun category, not a land counter role: {d}"
+        );
+        assert!(
+            d.contains("unit_counter_railway_gun.counter_ideology@Some(796)mapfalse=fascism(D);"),
+            "railway-gun ideology frame derives from the owner ruling party: {d}"
+        );
+        assert!(
+            d.contains("unit_counter_railway_gun.attrition@Some(796)mapfalse=—(U);"),
+            "railway-gun attrition remains unavailable at the real anchor: {d}"
+        );
+        assert!(
+            !d.contains("unit_counter.count_txt@Some(796)"),
+            "railway-gun divisions must not leak into the normal land counter stack: {d}"
+        );
+        assert!(
+            !d.contains("unit_counter_railway_gun@Nonemapfalse=—(U);"),
+            "anchored railway-gun counters must replace the coarse unavailable template badge: {d}"
+        );
+    }
+
+    #[test]
+    fn mapicon_railway_gun_counter_rejects_foreign_owner_and_target_only_anchor() {
+        let stage = stage_with_manifest(&[], HashMap::new());
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "date": "1942.1.1.12",
+            "divisions": [
+                { "div_id": 303, "div_type": 88, "owner": "SOV", "location_province": 798,
+                  "strength": 0.9, "template_role": "railway_gun" },
+                { "div_id": 304, "div_type": 88, "owner": "GER", "target_province": 799,
+                  "strength": 0.8, "template_role": "railway_gun" }
+            ]
+        }))
+        .unwrap();
+        let d = bound_digest(&MapIconsView::new().bind(&ctx(&stage, &snap, "1942.1.1.12")));
+        assert!(
+            d.contains("unit_counter_railway_gun.count_txt@Nonemapfalse=—(U);"),
+            "no eligible GER railway-gun anchor must stay explicitly unavailable: {d}"
+        );
+        assert!(
+            !d.contains("unit_counter_railway_gun.count_txt@Some(798)"),
+            "foreign-owner railway guns must not appear in the observed country's counters: {d}"
+        );
+        assert!(
+            !d.contains("unit_counter_railway_gun.count_txt@Some(799)"),
+            "target_province is not a railway-gun counter anchor: {d}"
+        );
+    }
+
+    #[test]
+    fn mapicon_railway_gun_memory_scaled_strength_badges_at_anchor() {
+        let stage = stage_with_manifest(&[], HashMap::new());
+        let snap: snapshot::Snapshot = serde_json::from_value(serde_json::json!({
+            "date": "1942.1.1.12",
+            "divisions": [
+                { "div_id": 305, "div_type": 88, "owner": "GER", "location_province": 800,
+                  "strength": 212.0, "template_role": "railway_gun" }
+            ]
+        }))
+        .unwrap();
+        let d = bound_digest(&MapIconsView::new().bind(&ctx(&stage, &snap, "1942.1.1.12")));
+        assert!(
+            d.contains("unit_counter_railway_gun.count_txt@Some(800)mapfalse=1(D);"),
+            "memory-scaled railway-gun strength must preserve the real anchor: {d}"
+        );
+        assert!(
+            d.contains("unit_counter_railway_gun.bar_str@Some(800)mapfalse=—(U);"),
+            "memory-scaled railway-gun strength must badge unavailable at the anchor: {d}"
+        );
+        assert!(
+            !d.contains("unit_counter_railway_gun.bar_str@Some(800)mapfalse=212%(E);"),
+            "memory-scaled railway-gun strength must not be fabricated as a progressbar percent: {d}"
         );
     }
 
