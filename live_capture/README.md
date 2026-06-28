@@ -28,7 +28,8 @@ current product status and acceptance gates, and
 | `collector_attach.py` | External no-op attach helper for loading the collector DLL into a supported `hoi4.exe` and receiving one pipe frame. |
 | `collector_frames.py` | Synthetic/decoded in-process collector frame validation and snapshot adapter. |
 | `collector_profile_check.py` | Profile preflight: running-exe hash match, root-probe sentinel/address/domain validation, and transport diagnostics. |
-| `collector_probe_record.py` | Live collector probe recorder that writes verified frames into the durable snapshot store. |
+| `collector_probe_record.py` | Low-level live collector probe recorder used for bounded cadence proofs and transport debugging. |
+| `collector_session.py` | Recorder-facing collector session wrapper that writes lifecycle frames, durable snapshots, `.battleplan` output, and cadence/transport diagnostics without requiring saves. |
 | `collector_profiles/` | Build-gated collector profiles: executable hash, offsets, sentinels, roots, and enabled domains. |
 | `registry.py` | Import-guarded reader plug registry. Failed/missing plugs omit domains instead of fabricating data. |
 | `assembler.py` | Folds reader results into replay snapshots while preserving no-fabrication semantics. |
@@ -42,14 +43,37 @@ current product status and acceptance gates, and
 python live_capture/recorder/recorder_main.py --smoke
 python -m live_capture.collector_attach --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --pipe
 python -m live_capture.collector_profile_check --pid <hoi4-pid> --profile live_capture/collector_profiles/vanilla_latest_2026_06_28.json --dll replay_native/target/debug/collector.dll
+python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session --game-id collector_live_speed5_session --duration-s 8 --sample-ms 10 --dwell-s 0.25 --worker-bursts 3 --burst-interval-s 0.25 --until-game-hours 12 --max-wall-s 30
 python -m live_capture.collector_probe_record --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_probe --store-root replay/snapshots --game-id collector_live_speed5_worker --dwell-s 0.25 --worker-duration-s 8 --worker-sample-ms 10 --until-game-hours 12 --max-wall-s 15 --unique-store-hours-only
-python -m unittest live_capture.tests.test_recorder_cadence live_capture.tests.test_recorder_worker_cadence live_capture.tests.test_recorder_manifest_diagnostics live_capture.tests.test_replay_writer
+python -m unittest live_capture.tests.test_collector_session live_capture.tests.test_recorder_cadence live_capture.tests.test_recorder_worker_cadence live_capture.tests.test_recorder_manifest_diagnostics live_capture.tests.test_replay_writer
 python -m pytest live_capture
 ```
 
 Run `collector_profile_check` as a separate preflight immediately before worker
 recording. Do not combine it into the same recorder process; back-to-back hook
 loads are more reliable as separate commands.
+
+Use `collector_session` for recorder-facing capture work. It wraps the bounded
+collector worker with explicit `session_start`/`session_stop` lifecycle frames,
+feeds decoded collector frames through the durable store, finalizes a
+`.battleplan`, and records cadence plus transport diagnostics in the session
+manifest. Use `collector_probe_record` directly only when proving collector
+timing, reproducing transport behavior, or collecting raw probe fixtures.
+
+Repeated bounded workers are one logical recorder session. The raw probe
+manifest keeps every verified observation, but the replay writer processes one
+selected frame per unique game hour so duplicate 10 ms samples do not dominate
+post-processing. Worker sequence ids restart per bounded worker; diagnostics
+therefore report both global reset evidence and burst-local monotonicity. If a
+later worker burst fails after earlier verified frames, the session writes the
+prefix replay and manifest, then exits fail-closed with the attach error.
+
+Country identity rows include the live `tag_db_id` from the collector tag table
+even when country-object scalar scanning is disabled. Treat that id as the safe
+join key for future state/province/division/country-object work; do not enable
+heap-wide country-object scans in normal recorder runs.
+The worker control file and probe manifest explicitly record
+`country_object_scan: false` for this reason.
 
 When `collector_probe_record` is asked for `--until-game-hours`, hourly cadence
 is a required proof: the run must advance at least the requested number of

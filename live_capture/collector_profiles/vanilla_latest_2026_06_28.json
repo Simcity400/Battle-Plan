@@ -142,6 +142,9 @@
         "entry_stride": 32,
         "inline_text_offset": 0,
         "length_offset": 16,
+        "identity_fields": [
+          "tag_db_id"
+        ],
         "observed_active_rows_written": 439,
         "sample": [
           "---",

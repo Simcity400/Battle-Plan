@@ -31,11 +31,17 @@ class TestCollectorFrames(unittest.TestCase):
             "transport": "synthetic",
             "transport_crc32": "1234abcd",
             "transport_bytes": 512,
+            "session_id": "session-1",
+            "session_sequence": 4,
+            "duration_ms": 8000,
+            "sample_ms": 10,
+            "elapsed_wall_ms": 125,
             "date": "1936.1.2.1",
             "domains": ["country_identity", "clock"],
             "countries": {
                 "GER": {
                     "identity": {
+                        "tag_db_id": 1,
                         "original_capital": 64,
                         "original_tag": None,
                         "reserved_dynamic_country": False,
@@ -58,9 +64,15 @@ class TestCollectorFrames(unittest.TestCase):
         self.assertEqual(snap["provenance"]["collector"]["sequence"], 7)
         self.assertEqual(snap["provenance"]["collector"]["transport_crc32"], "1234abcd")
         self.assertEqual(snap["provenance"]["collector"]["transport_bytes"], 512)
+        self.assertEqual(snap["provenance"]["collector"]["session_id"], "session-1")
+        self.assertEqual(snap["provenance"]["collector"]["session_sequence"], 4)
+        self.assertEqual(snap["provenance"]["collector"]["duration_ms"], 8000)
+        self.assertEqual(snap["provenance"]["collector"]["sample_ms"], 10)
+        self.assertEqual(snap["provenance"]["collector"]["elapsed_wall_ms"], 125)
         self.assertEqual(snap["provenance"]["collector"]["domains"],
                          ["clock", "country_identity"])
         self.assertEqual(snap["countries"]["GER"]["identity"]["original_capital"], 64)
+        self.assertEqual(snap["countries"]["GER"]["identity"]["tag_db_id"], 1)
 
     def test_unknown_domain_rejected(self):
         frame = {
@@ -81,6 +93,40 @@ class TestCollectorFrames(unittest.TestCase):
         self.assertEqual(validate_collector_frame(frame), [])
         with self.assertRaisesRegex(ValueError, "not a snapshot"):
             snapshot_from_collector_frame(frame, "collector-test")
+
+    def test_session_and_gap_frames_validate(self):
+        frames = [
+            {
+                "type": "session_start",
+                "backend": "in_process_collector",
+                "abi_version": 1,
+                "session_id": "run-1",
+                "process_id": 1234,
+                "sample_ms": 10,
+                "duration_ms": 8000,
+                "quality_status": "session_started",
+            },
+            {
+                "type": "session_stop",
+                "backend": "in_process_collector",
+                "abi_version": 1,
+                "session_id": "run-1",
+                "segment_id": 1,
+                "elapsed_wall_ms": 8025,
+                "quality_status": "session_complete",
+            },
+            {
+                "type": "gap",
+                "backend": "in_process_collector",
+                "abi_version": 1,
+                "date": "1936.1.1.12",
+                "segment_id": 1,
+                "quality_status": "no_data",
+            },
+        ]
+
+        for frame in frames:
+            self.assertEqual(validate_collector_frame(frame), [])
 
     def test_attach_log_root_probe_frames_validate(self):
         frames = [
@@ -108,6 +154,8 @@ class TestCollectorFrames(unittest.TestCase):
                     "image_base": "0x7FF65D810000",
                     "daily_update": "0x7FF65D9E4540",
                     "get_long_string": "0x7FF65DD369B0",
+                    "daily_update_sentinel_match": True,
+                    "long_string_sentinel_match": True,
                     "date_root_ptr": "0x1D499734A00",
                     "country_database_root_ptr": "0x1D3EF67FD60",
                     "current_game_date": "1936.1.1.12",
@@ -145,6 +193,8 @@ class TestCollectorFrames(unittest.TestCase):
                 "image_base": "0x7FF65D810000",
                 "daily_update": "0x7FF65D9E4540",
                 "get_long_string": "0x7FF65DD369B0",
+                "daily_update_sentinel_match": True,
+                "long_string_sentinel_match": True,
                 "date_root_ptr": "0x1D499734A00",
                 "country_database_root_ptr": "0x1D3EF67FD60",
                 "current_game_date": "1936.6.15.7",
@@ -180,12 +230,14 @@ class TestCollectorFrames(unittest.TestCase):
             "tick_ms": 158373765,
             "quality_status": "root_probe_verified",
             "countries": {
-                "GER": {"present": True},
-                "ENG": {"present": True},
+                "GER": {"present": True, "identity": {"tag_db_id": 1}},
+                "ENG": {"present": True, "identity": {"tag_db_id": 2}},
             },
             "root_probe": {
                 "status": "verified",
                 "profile": "vanilla_latest_2026_06_28",
+                "daily_update_sentinel_match": True,
+                "long_string_sentinel_match": True,
                 "current_game_date": "1936.6.15.7",
                 "current_game_date_raw": 60763326,
                 "start_date": "1936.1.1.12",
@@ -203,7 +255,7 @@ class TestCollectorFrames(unittest.TestCase):
         self.assertEqual(snap["provenance"]["collector"]["domains"],
                          ["clock", "country_identity"])
         self.assertEqual(sorted(snap["countries"]), ["ENG", "GER"])
-        self.assertIsNone(snap["countries"]["GER"]["identity"])
+        self.assertEqual(snap["countries"]["GER"]["identity"]["tag_db_id"], 1)
 
     def test_root_probe_frame_folds_country_scalars(self):
         frame = {
@@ -219,6 +271,7 @@ class TestCollectorFrames(unittest.TestCase):
                     "present": True,
                     "collector_object": "0x1234",
                     "identity": {
+                        "tag_db_id": 47,
                         "original_capital": 112,
                         "original_tag": None,
                         "reserved_dynamic_country": False,
@@ -237,6 +290,8 @@ class TestCollectorFrames(unittest.TestCase):
             "root_probe": {
                 "status": "verified",
                 "profile": "vanilla_latest_2026_06_28",
+                "daily_update_sentinel_match": True,
+                "long_string_sentinel_match": True,
                 "current_game_date": "1936.6.15.7",
                 "current_game_date_raw": 60763326,
                 "start_date": "1936.1.1.12",
@@ -254,6 +309,7 @@ class TestCollectorFrames(unittest.TestCase):
         self.assertEqual(snap["provenance"]["collector"]["domains"],
                          ["clock", "country_identity", "country_scalars"])
         por = snap["countries"]["POR"]
+        self.assertEqual(por["identity"]["tag_db_id"], 47)
         self.assertEqual(por["identity"]["original_capital"], 112)
         self.assertEqual(por["politics"]["stability"], 0.61)
         self.assertEqual(por["politics"]["war_support"], 0.42)
@@ -285,6 +341,17 @@ class TestCollectorFrames(unittest.TestCase):
 
         self.assertTrue(any("scalars.stability" in p for p in problems), problems)
         self.assertTrue(any("scalars.num_ships" in p for p in problems), problems)
+
+    def test_country_identity_tag_db_id_must_be_int(self):
+        frame = {
+            "type": "snapshot",
+            "date": "1936.1.2.1",
+            "countries": {"GER": {"identity": {"tag_db_id": "1"}}},
+        }
+
+        problems = validate_collector_frame(frame)
+
+        self.assertTrue(any("identity.tag_db_id" in p for p in problems), problems)
 
     def test_transport_metadata_types_validate(self):
         frame = {

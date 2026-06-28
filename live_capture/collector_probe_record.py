@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
+import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -35,6 +37,8 @@ def record_probes(
     worker_duration_s: Optional[float] = None,
     worker_sample_ms: int = 10,
     require_hourly_cadence: Optional[bool] = None,
+    session_id: Optional[str] = None,
+    write_snapshot_artifacts: bool = True,
 ) -> Path:
     if repeat < 1:
         raise ValueError("repeat must be >= 1")
@@ -49,12 +53,15 @@ def record_probes(
     if worker_sample_ms < 10:
         raise ValueError("worker_sample_ms must be >= 10")
 
-    run_dir = out_root / _run_id(pid)
+    run_id = _run_id(pid)
+    effective_session_id = session_id or run_id
+    run_dir = out_root / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
     manifest_path = run_dir / "manifest.json"
     store = DurableCaptureStore(str(store_root)) if store_root is not None else None
     samples: List[Dict[str, Any]] = []
     worker_pipe_tokens: List[str] = []
+    attach_errors: List[str] = []
     first_frame: Optional[Dict[str, Any]] = None
     first_snapshot: Optional[Dict[str, Any]] = None
     started = time.monotonic()
@@ -64,10 +71,20 @@ def record_probes(
 
     for attach_index in range(repeat):
         if attach_index:
+            if max_wall_s is not None:
+                remaining_s = max_wall_s - (time.monotonic() - started)
+                if remaining_s <= 0 or interval_s >= remaining_s:
+                    stop_reason = "max_wall_s"
+                    break
             time.sleep(interval_s)
         if max_wall_s is not None and time.monotonic() - started >= max_wall_s:
             stop_reason = "max_wall_s"
             break
+        if worker_duration_s is not None and max_wall_s is not None:
+            remaining_s = max_wall_s - (time.monotonic() - started)
+            if remaining_s <= worker_duration_s:
+                stop_reason = "max_wall_s"
+                break
         sample_started = time.monotonic()
         effective_dwell_s = dwell_s
         if worker_duration_s is not None:
@@ -76,22 +93,33 @@ def record_probes(
         pipe_token = None
         if worker_duration_s is not None:
             control_path, pipe_token = _write_worker_control(
-                dll, worker_duration_s, worker_sample_ms
+                dll,
+                worker_duration_s,
+                worker_sample_ms,
+                session_id=effective_session_id,
             )
             worker_pipe_tokens.append(pipe_token)
         try:
-            result = _attach_with_retries(
-                pid, dll, dwell_s=effective_dwell_s, pipe_token=pipe_token
-            )
+            try:
+                result = _attach_with_retries(
+                    pid, dll, dwell_s=effective_dwell_s, pipe_token=pipe_token
+                )
+            except Exception as exc:
+                stop_reason = "attach_error"
+                attach_errors.append(
+                    "burst_%d:%s" % (attach_index, _safe_error_message(exc)))
+                break
         finally:
             if control_path is not None:
                 _remove_if_exists(control_path)
         frames = result.pipe_frames or ([result.pipe_frame] if result.pipe_frame else [])
         if not frames:
-            raise RuntimeError("collector attach returned no pipe frame")
+            stop_reason = "no_pipe_frame"
+            attach_errors.append("burst_%d:no_pipe_frame" % attach_index)
+            break
 
         stop_after_attach = False
-        for frame in frames:
+        for burst_sample_index, frame in enumerate(frames):
             root_probe = latest_verified_root_probe([frame])
             if root_probe is None:
                 continue
@@ -106,7 +134,10 @@ def record_probes(
             sample_index = len(samples)
             snapshot = None
             frame_name = f"collector_started_{sample_index:04d}.json"
-            snapshot_name = None if duplicate_store_hour else f"snapshot_{sample_index:04d}.json"
+            snapshot_name = (
+                None if duplicate_store_hour or not write_snapshot_artifacts
+                else f"snapshot_{sample_index:04d}.json"
+            )
             frame_path = run_dir / frame_name
             _write_json(frame_path, frame)
             if snapshot_name is not None:
@@ -142,6 +173,9 @@ def record_probes(
                     snapshot_name=snapshot_name,
                     store_path=store_path,
                     store_skipped_reason=store_skipped_reason,
+                    worker_burst_index=attach_index,
+                    burst_sample_index=burst_sample_index,
+                    worker_pipe_token=pipe_token,
                     elapsed_wall_s=time.monotonic() - sample_started,
                 )
             )
@@ -156,7 +190,7 @@ def record_probes(
 
     if first_frame is not None:
         _write_json(run_dir / "collector_started.json", first_frame)
-    if first_snapshot is not None:
+    if first_snapshot is not None and write_snapshot_artifacts:
         _write_json(run_dir / "snapshot.json", first_snapshot)
 
     elapsed_wall_s = time.monotonic() - started
@@ -175,7 +209,9 @@ def record_probes(
             "type": "collector_probe_manifest",
             "created_utc": datetime.now(timezone.utc).isoformat(),
             "pid": pid,
-            "dll": str(Path(dll).resolve()),
+            "dll": Path(dll).name,
+            "dll_sha256": _file_sha256(Path(dll)),
+            "session_id": effective_session_id,
             "game_id": game_id,
             "repeat": repeat,
             "interval_s": interval_s,
@@ -183,13 +219,18 @@ def record_probes(
             "until_game_hours": until_game_hours,
             "max_wall_s": max_wall_s,
             "unique_store_hours_only": unique_store_hours_only,
+            "write_snapshot_artifacts": write_snapshot_artifacts,
             "worker_duration_s": worker_duration_s,
             "worker_sample_ms": worker_sample_ms if worker_duration_s is not None else None,
+            "country_object_scan": False,
             "worker_pipe_tokens": worker_pipe_tokens,
+            "attach_errors": attach_errors,
+            "partial_session": bool(attach_errors and samples),
             "stop_reason": stop_reason,
             "elapsed_wall_s": elapsed_wall_s,
             "first_frame": "collector_started.json",
-            "first_snapshot": "snapshot.json",
+            "first_snapshot": "snapshot.json" if first_snapshot is not None
+            and write_snapshot_artifacts else None,
             **summary,
             "hourly_requirement": hourly_requirement,
             "samples": samples,
@@ -205,6 +246,17 @@ def _run_id(pid: int) -> str:
 
 def _write_json(path: Path, data: Dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _file_sha256(path: Path) -> Optional[str]:
+    try:
+        h = hashlib.sha256()
+        with Path(path).open("rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
 
 
 def _attach_with_retries(
@@ -227,7 +279,13 @@ def _attach_with_retries(
     raise last_error if last_error is not None else RuntimeError("collector attach failed")
 
 
-def _write_worker_control(dll: Path, duration_s: float, sample_ms: int) -> tuple[Path, str]:
+def _write_worker_control(
+    dll: Path,
+    duration_s: float,
+    sample_ms: int,
+    *,
+    session_id: Optional[str] = None,
+) -> tuple[Path, str]:
     control_path = Path(dll).resolve().with_name("collector_control.json")
     pipe_token = f"{time.monotonic_ns():x}"
     payload = {
@@ -235,8 +293,11 @@ def _write_worker_control(dll: Path, duration_s: float, sample_ms: int) -> tuple
         "duration_ms": int(duration_s * 1000),
         "pipe_token": pipe_token,
         "sample_ms": int(sample_ms),
+        "country_object_scan": False,
         "sidecar_log": False,
     }
+    if session_id:
+        payload["session_id"] = session_id
     control_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
     return control_path, pipe_token
 
@@ -258,10 +319,16 @@ def _sample_manifest(
     snapshot_name: Optional[str],
     store_path: Optional[str],
     store_skipped_reason: Optional[str],
+    worker_burst_index: int,
+    burst_sample_index: int,
+    worker_pipe_token: Optional[str],
     elapsed_wall_s: float,
 ) -> Dict[str, Any]:
     return {
         "sample_index": sample_index,
+        "worker_burst_index": worker_burst_index,
+        "burst_sample_index": burst_sample_index,
+        "worker_pipe_token": worker_pipe_token,
         "elapsed_wall_s": elapsed_wall_s,
         "thread_id": result.thread_id,
         "quality_status": frame.get("quality_status"),
@@ -280,9 +347,25 @@ def _sample_manifest(
         "tag_sample": root_probe.get("tag_sample") or [],
         "frame": frame_name,
         "snapshot": snapshot_name,
-        "store_path": store_path,
+        "store_path": _manifest_store_ref(store_path),
         "store_skipped_reason": store_skipped_reason,
     }
+
+
+def _manifest_store_ref(store_path: Optional[str]) -> Optional[str]:
+    if not store_path:
+        return None
+    return Path(store_path).name
+
+
+def _safe_error_message(exc: Exception) -> str:
+    raw = str(exc)
+    if raw:
+        raw = re.sub(r"[A-Za-z]:\\[^;\n\r]+", "<path>", raw)
+        raw = re.sub(r"/[^;\n\r ]+", "<path>", raw)
+        raw = raw[:160]
+        return "%s:%s" % (type(exc).__name__, raw)
+    return type(exc).__name__
 
 
 def summarize_probe_samples(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -291,6 +374,7 @@ def summarize_probe_samples(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
     raw_dates = [s.get("current_game_date_raw") for s in samples
                  if isinstance(s.get("current_game_date_raw"), int)]
     sequences = [s.get("sequence") for s in samples if isinstance(s.get("sequence"), int)]
+    transport_bursts = _transport_burst_summaries(samples)
     unique_dates = []
     for date in dates:
         if date not in unique_dates:
@@ -328,7 +412,51 @@ def summarize_probe_samples(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
         "last_sequence": sequences[-1] if sequences else None,
         "monotonic_transport_sequence": all(a < b for a, b in zip(sequences, sequences[1:])),
         "duplicate_transport_sequences": duplicate_sequences,
+        "transport_sequence_mode": "burst_local" if transport_bursts else "global",
+        "transport_bursts": transport_bursts,
+        "burst_local_monotonic_transport_sequence": all(
+            b.get("monotonic_sequence") is True for b in transport_bursts
+        ) if transport_bursts else all(a < b for a, b in zip(sequences, sequences[1:])),
+        "burst_local_duplicate_transport_sequences": sum(
+            int(b.get("duplicate_sequences") or 0) for b in transport_bursts
+        ),
     }
+
+
+def _transport_burst_summaries(samples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    grouped: Dict[int, List[Dict[str, Any]]] = {}
+    for sample in samples:
+        burst_index = sample.get("worker_burst_index")
+        if not isinstance(burst_index, int):
+            continue
+        grouped.setdefault(burst_index, []).append(sample)
+
+    bursts: List[Dict[str, Any]] = []
+    for burst_index in sorted(grouped):
+        burst_samples = grouped[burst_index]
+        sequences = [
+            s.get("sequence") for s in burst_samples
+            if isinstance(s.get("sequence"), int)
+        ]
+        duplicates = len(sequences) - len(set(sequences))
+        nonmonotonic = sum(
+            1 for a, b in zip(sequences, sequences[1:]) if b <= a
+        )
+        pipe_tokens = [
+            s.get("worker_pipe_token") for s in burst_samples
+            if isinstance(s.get("worker_pipe_token"), str)
+        ]
+        bursts.append({
+            "worker_burst_index": burst_index,
+            "sample_count": len(burst_samples),
+            "first_sequence": sequences[0] if sequences else None,
+            "last_sequence": sequences[-1] if sequences else None,
+            "monotonic_sequence": nonmonotonic == 0,
+            "nonmonotonic_pairs": nonmonotonic,
+            "duplicate_sequences": duplicates,
+            "worker_pipe_token": pipe_tokens[0] if pipe_tokens else None,
+        })
+    return bursts
 
 
 def hourly_requirement_diagnostics(

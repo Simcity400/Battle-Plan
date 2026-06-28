@@ -40,6 +40,7 @@ full-project signal.
 
 - `replay_ui/MASTER_PROGRESS.md` - product parity status and remaining work
 - `IN_PROCESS_COLLECTOR_PLAN.md` - live collector implementation plan
+- `RECORDING_LAYER_COMPLETION_PLAN.md` - working plan for completing runtime recording coverage
 - `coverage_audit/memory_manifest.json` - data completeness row status
 - `coverage_audit/COVERAGE_REPORT.md` - readable data coverage report
 - `replay_ui/BINDING_MAP_COVERAGE.md` - UI binding inventory

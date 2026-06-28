@@ -4,6 +4,7 @@ use core::{ptr, slice};
 
 pub const ABI_VERSION: u32 = 1;
 pub const COLLECTOR_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const COLLECTOR_PROFILE_ID: &str = "vanilla_latest_2026_06_28";
 
 const HEARTBEAT_JSON: &[u8] = br#"{"type":"heartbeat","backend":"in_process_collector","collector_version":"0.1.0","abi_version":1,"domains":[],"quality_status":"ok"}"#;
 
@@ -230,14 +231,23 @@ mod attach_log {
                 .and_then(|control| control.pipe_token.as_deref()),
         );
         if let Some(control) = control {
-            let deadline = Instant::now() + Duration::from_millis(control.duration_ms as u64);
+            let worker_started = Instant::now();
+            let deadline = worker_started + Duration::from_millis(control.duration_ms as u64);
+            let mut session_sequence = 1u64;
             while Instant::now() <= deadline {
-                let line = build_frame_line(pid, state.as_ref());
+                let line = build_frame_line(
+                    pid,
+                    state.as_ref(),
+                    Some(&control),
+                    Some(session_sequence),
+                    Some(duration_millis_u64(worker_started.elapsed())),
+                );
                 write_sinks(file.as_mut(), pipe, line.as_bytes());
+                session_sequence = session_sequence.saturating_add(1);
                 thread::sleep(Duration::from_millis(control.sample_ms as u64));
             }
         } else {
-            let line = build_frame_line(pid, state.as_ref());
+            let line = build_frame_line(pid, state.as_ref(), None, None, None);
             write_sinks(file.as_mut(), pipe, line.as_bytes());
         }
         if let Some(handle) = pipe.take() {
@@ -252,6 +262,7 @@ mod attach_log {
         sample_ms: u32,
         country_object_scan: bool,
         pipe_token: Option<String>,
+        session_id: Option<String>,
         sidecar_log: bool,
     }
 
@@ -266,12 +277,14 @@ mod attach_log {
         let sample_ms = parse_json_u32(&text, "sample_ms").unwrap_or(50);
         let country_object_scan = parse_json_bool(&text, "country_object_scan").unwrap_or(false);
         let pipe_token = parse_json_string(&text, "pipe_token").and_then(clean_pipe_token);
+        let session_id = parse_json_string(&text, "session_id").and_then(clean_session_id);
         let sidecar_log = parse_json_bool(&text, "sidecar_log").unwrap_or(false);
         Some(CollectorControl {
             duration_ms: duration_ms.clamp(100, 30_000),
             sample_ms: sample_ms.clamp(10, 5_000),
             country_object_scan,
             pipe_token,
+            session_id,
             sidecar_log,
         })
     }
@@ -331,10 +344,32 @@ mod attach_log {
         }
     }
 
-    fn build_frame_line(pid: Dword, state: Option<&CollectorState>) -> String {
+    fn clean_session_id(session_id: String) -> Option<String> {
+        if session_id.is_empty() || session_id.len() > 96 {
+            return None;
+        }
+        if session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            Some(session_id)
+        } else {
+            None
+        }
+    }
+
+    fn build_frame_line(
+        pid: Dword,
+        state: Option<&CollectorState>,
+        control: Option<&CollectorControl>,
+        session_sequence: Option<u64>,
+        elapsed_wall_ms: Option<u64>,
+    ) -> String {
         let tick = unsafe { GetTickCount64() };
         let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let probe = root_probe_json(state);
+        let domains = frame_domains_json(state);
+        let control_meta = control_metadata_json(control, session_sequence, elapsed_wall_ms);
         let quality = if probe.contains("\"status\":\"verified\"") {
             "root_probe_verified"
         } else if probe.contains("\"status\":\"profile_mismatch\"") {
@@ -345,15 +380,60 @@ mod attach_log {
         format!(
             "{{\"type\":\"collector_started\",\"backend\":\"in_process_collector\",\
              \"collector_version\":\"{}\",\"abi_version\":{},\"process_id\":{},\
-             \"tick_ms\":{},\"sequence\":{},\"quality_status\":\"{}\",{}}}\n",
+             \"tick_ms\":{},\"sequence\":{},\"profile_id\":\"{}\",\
+             \"domains\":{},{}\"quality_status\":\"{}\",{}}}\n",
             super::COLLECTOR_VERSION,
             super::ABI_VERSION,
             pid,
             tick,
             sequence,
+            super::COLLECTOR_PROFILE_ID,
+            domains,
+            control_meta,
             quality,
             probe
         )
+    }
+
+    fn control_metadata_json(
+        control: Option<&CollectorControl>,
+        session_sequence: Option<u64>,
+        elapsed_wall_ms: Option<u64>,
+    ) -> String {
+        let Some(control) = control else {
+            return String::new();
+        };
+        let session = control
+            .session_id
+            .as_deref()
+            .map(|id| format!("\"session_id\":\"{id}\","))
+            .unwrap_or_default();
+        let session_sequence = session_sequence
+            .map(|n| format!("\"session_sequence\":{n},"))
+            .unwrap_or_default();
+        let elapsed_wall_ms = elapsed_wall_ms
+            .map(|n| format!("\"elapsed_wall_ms\":{n},"))
+            .unwrap_or_default();
+        format!(
+            "{session}{session_sequence}{elapsed_wall_ms}\"capture_boundary\":\"worker_poll\",\
+             \"duration_ms\":{},\"sample_ms\":{},",
+            control.duration_ms, control.sample_ms
+        )
+    }
+
+    fn duration_millis_u64(duration: Duration) -> u64 {
+        duration.as_millis().min(u128::from(u64::MAX)) as u64
+    }
+
+    fn frame_domains_json(state: Option<&CollectorState>) -> &'static str {
+        let Some(state) = state else {
+            return "[]";
+        };
+        if state.daily_match && state.long_string_match {
+            state.country_identity.domains_json()
+        } else {
+            "[]"
+        }
     }
 
     struct CollectorState {
@@ -615,7 +695,7 @@ mod attach_log {
         let clock_probe = clock_probe_json(date_ptr as usize);
         format!(
             "\"root_probe\":{{\"status\":\"verified\",\
-             \"profile\":\"vanilla_latest_2026_06_28\",\
+             \"profile\":\"{}\",\
              \"image_base\":\"0x{base:X}\",\
              \"daily_update\":\"0x{:X}\",\
              \"get_long_string\":\"0x{:X}\",\
@@ -628,7 +708,9 @@ mod attach_log {
              {identity_probe},\
              \"domains\":{domains}}},\
              \"countries\":{country_rows}",
-            state.daily_addr, state.long_string_addr
+            super::COLLECTOR_PROFILE_ID,
+            state.daily_addr,
+            state.long_string_addr
         )
     }
 
@@ -707,7 +789,9 @@ mod attach_log {
                 continue;
             };
             if is_country_tag(&tag) {
-                rows.push(format!("\"{tag}\":{{\"present\":true}}"));
+                rows.push(format!(
+                    "\"{tag}\":{{\"present\":true,\"identity\":{{\"tag_db_id\":{i}}}}}"
+                ));
             }
         }
         format!("{{{}}}", rows.join(","))
@@ -819,7 +903,8 @@ mod attach_log {
         format!(
             "\"{}\":{{\"present\":true,\
              \"collector_object\":\"0x{:X}\",\
-             \"identity\":{{\"original_capital\":{original_capital},\
+             \"identity\":{{\"tag_db_id\":{},\
+             \"original_capital\":{original_capital},\
              \"original_tag\":{original_tag},\
              \"reserved_dynamic_country\":{reserved_dynamic_country},\
              \"templates_locked\":{templates_locked}}},\
@@ -829,7 +914,7 @@ mod attach_log {
              \"num_ships\":{num_ships},\
              \"manpower_pool\":{manpower_pool},\
              \"convoys\":{convoys}}}}}",
-            row.tag, row.object_ptr
+            row.tag, row.object_ptr, row.tag_db_id
         )
     }
 
@@ -1069,6 +1154,111 @@ mod attach_log {
         };
         let region_end = region_start.saturating_add(region_size);
         addr >= region_start && addr.saturating_add(len) <= region_end
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::fs;
+
+        #[test]
+        fn collector_control_accepts_sanitized_session_id() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_control_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            fs::write(
+                &control,
+                r#"{"mode":"hourly_poll","duration_ms":8000,"sample_ms":10,"pipe_token":"abc-123","session_id":"run_1-abc","sidecar_log":false}"#,
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert_eq!(parsed.duration_ms, 8000);
+            assert_eq!(parsed.sample_ms, 10);
+            assert_eq!(parsed.pipe_token.as_deref(), Some("abc-123"));
+            assert_eq!(parsed.session_id.as_deref(), Some("run_1-abc"));
+            assert!(!parsed.sidecar_log);
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn collector_control_rejects_unsafe_session_id() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_control_bad_session_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            fs::write(
+                &control,
+                r#"{"mode":"hourly_poll","duration_ms":8000,"sample_ms":10,"session_id":"bad path"}"#,
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert_eq!(parsed.session_id, None);
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn worker_frame_without_state_includes_session_metadata_and_no_domains() {
+            let control = CollectorControl {
+                duration_ms: 8000,
+                sample_ms: 10,
+                country_object_scan: false,
+                pipe_token: Some("abc".to_string()),
+                session_id: Some("run_1".to_string()),
+                sidecar_log: false,
+            };
+
+            let frame = build_frame_line(1234, None, Some(&control), Some(7), Some(125));
+
+            assert!(frame.contains("\"type\":\"collector_started\""));
+            assert!(frame.contains("\"session_id\":\"run_1\""));
+            assert!(frame.contains("\"session_sequence\":7"));
+            assert!(frame.contains("\"elapsed_wall_ms\":125"));
+            assert!(frame.contains("\"capture_boundary\":\"worker_poll\""));
+            assert!(frame.contains("\"duration_ms\":8000"));
+            assert!(frame.contains("\"sample_ms\":10"));
+            assert!(frame.contains("\"profile_id\":\"vanilla_latest_2026_06_28\""));
+            assert!(frame.contains("\"domains\":[]"));
+            assert!(frame.contains("\"root_probe\":null"));
+        }
+
+        #[test]
+        fn country_object_row_json_includes_tag_db_id() {
+            let row = CountryObjectRow {
+                tag: "POR".to_string(),
+                tag_db_id: 47,
+                object_ptr: 0x1234,
+                original_capital: Some(112),
+                original_tag: None,
+                templates_locked: Some(false),
+                reserved_dynamic_country: Some(false),
+                stability: Some(0.61),
+                war_support: Some(0.42),
+                command_power: Some(12.5),
+                num_ships: Some(7),
+                manpower_pool: Some(123456),
+                convoys: Some(99.0),
+            };
+
+            let json = row_json(&row);
+
+            assert!(json.contains("\"POR\""));
+            assert!(json.contains("\"tag_db_id\":47"));
+            assert!(json.contains("\"stability\":0.61"));
+            assert!(json.contains("\"manpower_pool\":123456"));
+        }
     }
 }
 

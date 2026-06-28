@@ -16,7 +16,17 @@ from replay import schema
 
 COLLECTOR_BACKEND = "in_process_collector"
 COLLECTOR_ABI_VERSION = 1
-FRAME_TYPES = frozenset({"collector_started", "heartbeat", "snapshot"})
+FRAME_TYPES = frozenset({
+    "collector_started",
+    "heartbeat",
+    "snapshot",
+    "session_start",
+    "session_stop",
+    "domain_delta",
+    "event",
+    "diagnostic",
+    "gap",
+})
 
 
 def make_heartbeat_frame(
@@ -51,18 +61,29 @@ def validate_collector_frame(frame: Any) -> List[str]:
 
     for key in ("backend", "collector_version", "exe_sha256", "mod_checksum",
                 "profile_id", "quality_status", "capture_boundary", "transport",
-                "transport_crc32"):
+                "transport_crc32", "session_id"):
         value = frame.get(key)
         if value is not None and not isinstance(value, str):
             problems.append(f"collector frame {key} {value!r} not str|null")
+    backend = frame.get("backend")
+    if backend != COLLECTOR_BACKEND:
+        problems.append(
+            f"collector frame backend {backend!r} != {COLLECTOR_BACKEND!r}")
+    segment_id = frame.get("segment_id")
+    if segment_id is not None and not isinstance(segment_id, (int, str)):
+        problems.append(f"collector frame segment_id {segment_id!r} not int|str|null")
 
     abi = frame.get("abi_version")
     if abi is not None and not isinstance(abi, int):
         problems.append(f"collector frame abi_version {abi!r} not int|null")
+    elif abi != COLLECTOR_ABI_VERSION:
+        problems.append(
+            f"collector frame abi_version {abi!r} != {COLLECTOR_ABI_VERSION}")
     sequence = frame.get("sequence")
     if sequence is not None and not isinstance(sequence, int):
         problems.append(f"collector frame sequence {sequence!r} not int|null")
-    for key in ("process_id", "tick_ms", "transport_bytes"):
+    for key in ("process_id", "tick_ms", "transport_bytes", "session_sequence",
+                "sample_ms", "duration_ms", "elapsed_wall_ms"):
         value = frame.get(key)
         if value is not None and not isinstance(value, int):
             problems.append(f"collector frame {key} {value!r} not int|null")
@@ -216,6 +237,11 @@ def _collector_provenance(frame: Dict[str, Any], domains: List[str]) -> Dict[str
         "transport_crc32": frame.get("transport_crc32"),
         "transport_bytes": frame.get("transport_bytes"),
         "sequence": frame.get("sequence"),
+        "session_id": frame.get("session_id"),
+        "session_sequence": frame.get("session_sequence"),
+        "duration_ms": frame.get("duration_ms"),
+        "sample_ms": frame.get("sample_ms"),
+        "elapsed_wall_ms": frame.get("elapsed_wall_ms"),
         "domains": domains,
     }
     abi = frame.get("abi_version")
@@ -252,6 +278,10 @@ def _validate_country_rows(countries: Dict[str, Any]) -> List[str]:
             if original_capital is not None and not isinstance(original_capital, int):
                 problems.append(
                     f"collector frame country {tag!r}.identity.original_capital not int|null")
+            tag_db_id = identity.get("tag_db_id")
+            if tag_db_id is not None and not isinstance(tag_db_id, int):
+                problems.append(
+                    f"collector frame country {tag!r}.identity.tag_db_id not int|null")
             original_tag = identity.get("original_tag")
             if original_tag is not None and not schema.valid_tag(original_tag):
                 problems.append(
@@ -295,6 +325,11 @@ def _validate_root_probe(root_probe: Dict[str, Any]) -> List[str]:
         value = root_probe.get(key)
         if value is not None and not isinstance(value, bool):
             problems.append(f"collector frame root_probe.{key} {value!r} not bool|null")
+    if status == "verified":
+        for key in ("daily_update_sentinel_match", "long_string_sentinel_match"):
+            if root_probe.get(key) is not True:
+                problems.append(
+                    f"collector frame verified root_probe.{key} not true")
     for key in ("country_tag_count", "country_active_count",
                 "current_game_date_raw", "start_date_raw"):
         value = root_probe.get(key)
@@ -336,7 +371,7 @@ def _fold_country_identity(snap: Dict[str, Any], countries: Dict[str, Any]) -> N
             continue
 
         clean: Dict[str, Any] = {}
-        for key in ("original_capital", "original_tag",
+        for key in ("tag_db_id", "original_capital", "original_tag",
                     "reserved_dynamic_country", "templates_locked"):
             if key in identity:
                 clean[key] = identity[key]

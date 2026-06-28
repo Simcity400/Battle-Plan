@@ -495,6 +495,7 @@ FIELD_SOURCES: Dict[str, str] = {
     # cracked + validated 140/140 vs the content-matched melt; all M. original_tag is
     # a resolved TAG (None when absent); reserved_dynamic_country / templates_locked are
     # bools; original_capital is a state id (None when 0/none). ---
+    "countries.*.identity.tag_db_id": "C",
     "countries.*.identity.original_capital": "M",
     "countries.*.identity.original_tag": "M",
     "countries.*.identity.reserved_dynamic_country": "M",
@@ -2111,13 +2112,18 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                                     f"provenance.collector.domains[{i}] {dom!r} not canonical")
                 for k in ("backend", "collector_version", "exe_sha256", "mod_checksum",
                           "profile_id", "quality_status", "capture_boundary", "transport",
-                          "transport_crc32"):
+                          "transport_crc32", "session_id"):
                     v = collector.get(k)
                     if v is not None and not isinstance(v, str):
                         problems.append(f"provenance.collector.{k} {v!r} not str|null")
                 seq = collector.get("sequence")
                 if seq is not None and not isinstance(seq, int):
                     problems.append(f"provenance.collector.sequence {seq!r} not int|null")
+                for k in ("session_sequence", "duration_ms", "sample_ms",
+                          "elapsed_wall_ms"):
+                    v = collector.get(k)
+                    if v is not None and not isinstance(v, int):
+                        problems.append(f"provenance.collector.{k} {v!r} not int|null")
                 transport_bytes = collector.get("transport_bytes")
                 if transport_bytes is not None and not isinstance(transport_bytes, int):
                     problems.append(
