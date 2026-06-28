@@ -66,6 +66,23 @@ PRODUCTION_PAYLOAD_KEYS = frozenset((
     "military_factories",
     "naval_factories",
 ))
+RAW_FRAME_TYPES = frozenset(("domain_delta", "event", "gap"))
+RAW_CONFIDENCES = frozenset(("exact", "sampled", "proxy", "gap"))
+RAW_DOMAIN_DELTA_OPS = frozenset(("upsert", "delete", "sample"))
+RAW_GAP_KINDS = frozenset((
+    "dropped_frames",
+    "validation_failed",
+    "overload",
+    "layout_invalid",
+    "race_detected",
+    "unsupported",
+))
+RAW_SOURCE = "C"
+RAW_SEQUENCE_MAX = 9_223_372_036_854_775_807
+RAW_STRING_MAX_LENGTH = 512
+RAW_SHORT_STRING_MAX_LENGTH = 128
+RAW_CONTAINER_MAX_ENTRIES = 256
+RAW_DETAIL_MAX_DEPTH = 5
 
 
 def make_heartbeat_frame(
@@ -220,6 +237,8 @@ def validate_collector_frame(frame: Any) -> List[str]:
             problems.append(f"collector frame root_probe {root_probe!r} not dict|null")
         else:
             problems.extend(_validate_root_probe(root_probe))
+    if frame_type in RAW_FRAME_TYPES:
+        problems.extend(_validate_raw_frame(frame_type, frame))
 
     return problems
 
@@ -392,6 +411,295 @@ def _collector_provenance(frame: Dict[str, Any], domains: List[str]) -> Dict[str
 
 def _clean_domains(domains: Iterable[Any]) -> List[str]:
     return sorted({d for d in domains if isinstance(d, str) and d in schema.DOMAINS})
+
+
+def _validate_raw_frame(frame_type: str, frame: Dict[str, Any]) -> List[str]:
+    problems: List[str] = []
+    for key in ("sequence", "tick_ms", "hour_index", "sample_ms"):
+        problems.extend(_require_raw_int(frame, key))
+    problems.extend(_require_raw_int(frame, "session_sequence", required=False))
+
+    date = frame.get("date")
+    if not _valid_raw_string(date, max_length=RAW_SHORT_STRING_MAX_LENGTH):
+        problems.append("collector raw frame date missing or not bounded str")
+    else:
+        parsed_hour = schema.date_to_hour_index(date)
+        if parsed_hour is None:
+            problems.append(f"collector raw frame date {date!r} not valid game date")
+        elif (
+            _valid_bounded_int(
+                frame.get("hour_index"),
+                minimum=0,
+                maximum=RAW_SEQUENCE_MAX,
+            )
+            and frame.get("hour_index") != parsed_hour
+        ):
+            problems.append(
+                "collector raw frame hour_index "
+                f"{frame.get('hour_index')!r} != date_to_hour_index({date!r})"
+            )
+
+    capture_boundary = frame.get("capture_boundary")
+    if not _valid_raw_string(capture_boundary, max_length=RAW_SHORT_STRING_MAX_LENGTH):
+        problems.append("collector raw frame capture_boundary missing or not bounded str")
+
+    domain = frame.get("domain")
+    if not _valid_raw_string(domain, max_length=RAW_SHORT_STRING_MAX_LENGTH):
+        problems.append("collector raw frame domain missing or not bounded str")
+    elif domain not in schema.DOMAINS:
+        problems.append(f"collector raw frame domain {domain!r} not canonical")
+
+    entity_key = frame.get("entity_key")
+    if not _valid_raw_key(entity_key):
+        problems.append("collector raw frame entity_key missing or not stable str")
+
+    source = frame.get("source")
+    if source != RAW_SOURCE:
+        problems.append(f"collector raw frame source {source!r} != {RAW_SOURCE!r}")
+
+    confidence = frame.get("confidence")
+    if confidence not in RAW_CONFIDENCES:
+        problems.append(f"collector raw frame confidence {confidence!r} invalid")
+
+    diagnostics = frame.get("diagnostics")
+    if diagnostics is not None and not isinstance(diagnostics, (dict, list)):
+        problems.append("collector raw frame diagnostics not object|list|null")
+    elif diagnostics is not None:
+        problems.extend(_validate_bounded_raw_value(
+            diagnostics,
+            "collector raw frame diagnostics",
+        ))
+
+    payload = frame.get("payload")
+    if not isinstance(payload, dict):
+        problems.append("collector raw frame payload missing or not dict")
+        return problems
+    problems.extend(_validate_bounded_raw_value(
+        payload,
+        "collector raw frame payload",
+    ))
+    if frame_type == "event":
+        problems.extend(_validate_raw_event_payload(frame, payload))
+    elif frame_type == "domain_delta":
+        problems.extend(_validate_raw_domain_delta_payload(payload))
+    elif frame_type == "gap":
+        problems.extend(_validate_raw_gap_payload(frame, payload))
+    return problems
+
+
+def _validate_raw_event_payload(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> List[str]:
+    problems: List[str] = []
+    _validate_payload_keys(
+        problems,
+        payload,
+        allowed={"event_type", "key", "from", "to", "subject", "detail"},
+        prefix="collector event payload",
+    )
+    event_type = payload.get("event_type")
+    if not _valid_raw_string(event_type, max_length=RAW_SHORT_STRING_MAX_LENGTH):
+        problems.append("collector event payload event_type missing or not bounded str")
+    key = payload.get("key")
+    if not _valid_raw_key(key):
+        problems.append("collector event payload key missing or not stable str")
+    elif _valid_raw_key(frame.get("entity_key")) and key != frame.get("entity_key"):
+        problems.append("collector event payload key != entity_key")
+    subject = payload.get("subject")
+    if subject is not None and not _valid_raw_string(
+        subject,
+        max_length=RAW_SHORT_STRING_MAX_LENGTH,
+    ):
+        problems.append("collector event payload subject not bounded str|null")
+    detail = payload.get("detail")
+    if detail is not None and not isinstance(detail, dict):
+        problems.append("collector event payload detail not object|null")
+    return problems
+
+
+def _validate_raw_domain_delta_payload(payload: Dict[str, Any]) -> List[str]:
+    problems: List[str] = []
+    _validate_payload_keys(
+        problems,
+        payload,
+        allowed={"op", "before", "after", "changed_fields"},
+        prefix="collector domain_delta payload",
+    )
+    op = payload.get("op")
+    if op not in RAW_DOMAIN_DELTA_OPS:
+        problems.append(f"collector domain_delta payload op {op!r} invalid")
+    if "after" not in payload:
+        problems.append("collector domain_delta payload after missing")
+    changed_fields = payload.get("changed_fields")
+    if not isinstance(changed_fields, list):
+        problems.append("collector domain_delta payload changed_fields not list")
+    else:
+        if len(changed_fields) > RAW_CONTAINER_MAX_ENTRIES:
+            problems.append("collector domain_delta payload changed_fields too many entries")
+        for i, field in enumerate(changed_fields):
+            if not _valid_raw_string(field, max_length=RAW_SHORT_STRING_MAX_LENGTH):
+                problems.append(
+                    "collector domain_delta payload "
+                    f"changed_fields[{i}] not bounded str"
+                )
+    return problems
+
+
+def _validate_raw_gap_payload(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> List[str]:
+    problems: List[str] = []
+    _validate_payload_keys(
+        problems,
+        payload,
+        allowed={
+            "gap_kind",
+            "domain",
+            "start_sequence",
+            "end_sequence",
+            "reason",
+            "detail",
+        },
+        prefix="collector gap payload",
+    )
+    gap_kind = payload.get("gap_kind")
+    if gap_kind not in RAW_GAP_KINDS:
+        problems.append(f"collector gap payload gap_kind {gap_kind!r} invalid")
+    domain = payload.get("domain")
+    if not _valid_raw_string(domain, max_length=RAW_SHORT_STRING_MAX_LENGTH):
+        problems.append("collector gap payload domain missing or not bounded str")
+    elif domain not in schema.DOMAINS:
+        problems.append(f"collector gap payload domain {domain!r} not canonical")
+    elif _valid_raw_string(frame.get("domain"), max_length=RAW_SHORT_STRING_MAX_LENGTH):
+        if domain != frame.get("domain"):
+            problems.append("collector gap payload domain != raw frame domain")
+    start = payload.get("start_sequence")
+    end = payload.get("end_sequence")
+    for key, value in (("start_sequence", start), ("end_sequence", end)):
+        if key not in payload:
+            problems.append(f"collector gap payload {key} missing")
+        elif value is not None and not _valid_bounded_int(
+            value,
+            minimum=0,
+            maximum=RAW_SEQUENCE_MAX,
+        ):
+            problems.append(f"collector gap payload {key} not int|null in range")
+    if start is not None and end is not None:
+        if (
+            _valid_bounded_int(start, minimum=0, maximum=RAW_SEQUENCE_MAX)
+            and _valid_bounded_int(end, minimum=0, maximum=RAW_SEQUENCE_MAX)
+            and start > end
+        ):
+            problems.append("collector gap payload start_sequence > end_sequence")
+    reason = payload.get("reason")
+    if not _valid_gap_reason(reason):
+        problems.append("collector gap payload reason missing or not machine-readable str")
+    detail = payload.get("detail")
+    if detail is not None and not isinstance(detail, (dict, list)):
+        problems.append("collector gap payload detail not object|list|null")
+    return problems
+
+
+def _validate_payload_keys(
+    problems: List[str],
+    payload: Dict[str, Any],
+    *,
+    allowed: set[str],
+    prefix: str,
+) -> None:
+    for key in payload:
+        if key not in allowed:
+            problems.append(f"{prefix} key {key!r} unsupported")
+
+
+def _require_raw_int(
+    frame: Dict[str, Any],
+    key: str,
+    *,
+    required: bool = True,
+) -> List[str]:
+    if key not in frame or frame.get(key) is None:
+        return [f"collector raw frame {key} missing"] if required else []
+    if not _valid_bounded_int(
+        frame.get(key),
+        minimum=0,
+        maximum=RAW_SEQUENCE_MAX,
+    ):
+        return [f"collector raw frame {key} not int in range"]
+    return []
+
+
+def _valid_raw_string(value: Any, *, max_length: int) -> bool:
+    return (
+        isinstance(value, str)
+        and 0 < len(value) <= max_length
+    )
+
+
+def _valid_raw_key(value: Any) -> bool:
+    return (
+        _valid_raw_string(value, max_length=RAW_STRING_MAX_LENGTH)
+        and not _valid_hex_pointer(value)
+    )
+
+
+def _valid_gap_reason(value: Any) -> bool:
+    return (
+        _valid_raw_string(value, max_length=RAW_SHORT_STRING_MAX_LENGTH)
+        and all(ch.isalnum() or ch in "._:-/" for ch in value)
+    )
+
+
+def _validate_bounded_raw_value(
+    value: Any,
+    prefix: str,
+    *,
+    depth: int = 0,
+) -> List[str]:
+    problems: List[str] = []
+    if depth > RAW_DETAIL_MAX_DEPTH:
+        return [f"{prefix} too deep"]
+    if isinstance(value, dict):
+        if len(value) > RAW_CONTAINER_MAX_ENTRIES:
+            problems.append(f"{prefix} too many entries")
+        for key, child in value.items():
+            if not _valid_raw_string(key, max_length=RAW_STRING_MAX_LENGTH):
+                problems.append(f"{prefix} key {key!r} not bounded str")
+                continue
+            problems.extend(_validate_bounded_raw_value(
+                child,
+                f"{prefix}.{key}",
+                depth=depth + 1,
+            ))
+        return problems
+    if isinstance(value, list):
+        if len(value) > RAW_CONTAINER_MAX_ENTRIES:
+            problems.append(f"{prefix} too many entries")
+        for i, child in enumerate(value):
+            problems.extend(_validate_bounded_raw_value(
+                child,
+                f"{prefix}[{i}]",
+                depth=depth + 1,
+            ))
+        return problems
+    if value is None or isinstance(value, bool):
+        return problems
+    if isinstance(value, str):
+        if len(value) > RAW_STRING_MAX_LENGTH:
+            problems.append(f"{prefix} str too long")
+        return problems
+    if isinstance(value, int):
+        if abs(value) > RAW_SEQUENCE_MAX:
+            problems.append(f"{prefix} int out of range")
+        return problems
+    if isinstance(value, float):
+        if not _is_finite_number(value):
+            problems.append(f"{prefix} not finite number")
+        return problems
+    problems.append(f"{prefix} unsupported value type")
+    return problems
 
 
 def _explicit_scheduled_domains(

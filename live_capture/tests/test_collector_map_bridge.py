@@ -1,9 +1,10 @@
 import os
 from pathlib import Path
 import sys
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -42,6 +43,17 @@ class FakeProc:
         return self.mem[addr]
 
 
+class FakeProcessContext:
+    def __init__(self, proc):
+        self.proc = proc
+
+    def __enter__(self):
+        return self.proc
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
 class FakeTable:
     def tag(self, tag_db_id):
         return {1: "GER", 2: "ENG", 3: "SOV"}.get(tag_db_id)
@@ -68,6 +80,48 @@ class FakeProvinceModule:
     HEAP_HI = 0xB000
     MIN_CONTROLLERS = 2
     MAX_CONTROLLERS = 250
+
+
+def _fake_resolve_modules(proc, prov_to_state, locate_array):
+    winmem = ModuleType("winmem")
+    winmem.Process = lambda pid, name: FakeProcessContext(proc)
+
+    state_detail_live = ModuleType("state_detail_live")
+    state_detail_live.STATE_VTABLE_REL = FakeStateModule.STATE_VTABLE_REL
+    state_detail_live.OFF_SID = FakeStateModule.OFF_SID
+    state_detail_live.OFF_OWNER = FakeStateModule.OFF_OWNER
+    state_detail_live.OFF_CTRL = FakeStateModule.OFF_CTRL
+    state_detail_live.StateDetailLive = SimpleNamespace(
+        resolve=lambda proc: SimpleNamespace(states={1: 0x2000, 2: 0x3000})
+    )
+
+    province_control = ModuleType("live_layers.province_control")
+    province_control.PROV_STRIDE = FakeProvinceModule.PROV_STRIDE
+    province_control.HEAP_LO = FakeProvinceModule.HEAP_LO
+    province_control.HEAP_HI = FakeProvinceModule.HEAP_HI
+    province_control.MIN_CONTROLLERS = FakeProvinceModule.MIN_CONTROLLERS
+    province_control.MAX_CONTROLLERS = FakeProvinceModule.MAX_CONTROLLERS
+    province_control.load_province_to_state = lambda: dict(prov_to_state)
+    province_control.locate_array = locate_array
+    province_control._build_expected = (
+        lambda state_ctrl, prov_to_state: {
+            prov: state_ctrl[st]
+            for prov, st in prov_to_state.items()
+            if state_ctrl.get(st)
+        }
+    )
+
+    live_layers = ModuleType("live_layers")
+    live_layers.province_control = province_control
+    live_layers.tag_table = ModuleType("live_layers.tag_table")
+
+    return {
+        "winmem": winmem,
+        "state_detail_live": state_detail_live,
+        "live_layers": live_layers,
+        "live_layers.province_control": province_control,
+        "live_layers.tag_table": live_layers.tag_table,
+    }
 
 
 class TestCollectorMapBridge(unittest.TestCase):
@@ -314,6 +368,206 @@ class TestCollectorMapBridge(unittest.TestCase):
             prov_to_state,
             FakeProvinceModule,
         ))
+
+    def test_province_array_cache_validation_accepts_stale_unused_bridge_entry(self):
+        proc = FakeProc()
+        base = 0x4000
+        prov_to_state = {11: 1, 12: 2}
+        proc.mem[base + 11 * FakeProvinceModule.PROV_STRIDE] = 0x8000
+        proc.mem[base + 12 * FakeProvinceModule.PROV_STRIDE] = 0x9000
+
+        reason = cmb.province_array_cache_validation_error(
+            proc,
+            base,
+            20,
+            {0x8000: 1, 0x9000: 2, 0xA000: 3},
+            FakeTable(),
+            prov_to_state,
+            FakeProvinceModule,
+        )
+
+        self.assertIsNone(reason)
+
+    def test_province_preflight_cache_miss_without_cold_scan_fails_closed(self):
+        proc = FakeProc()
+        proc.mem[0x3000 + FakeStateModule.OFF_CTRL] = 2
+        prov_to_state = {11: 1, 12: 2}
+        identity = SimpleNamespace(
+            pid=111,
+            create_time_100ns=222,
+            exe_sha256="a" * 64,
+            module_base=proc.module_base,
+        )
+
+        def locate_array(unused_proc, unused_expected):
+            raise AssertionError("cold locator should not run")
+
+        original_state_min = cmb.MIN_USABLE_STATE_ROWS
+        try:
+            cmb.MIN_USABLE_STATE_ROWS = 2
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                self.assertTrue(cmb._write_state_roots_cache(
+                    root / "state_roots.json",
+                    identity,
+                    {1: 0x2000, 2: 0x3000},
+                ))
+                with patch.dict(
+                    sys.modules,
+                    _fake_resolve_modules(proc, prov_to_state, locate_array),
+                ), patch.object(
+                    cmb._process_identity,
+                    "identify",
+                    return_value=identity,
+                ), patch.object(
+                    cmb,
+                    "tag_table_from_country_database_root",
+                    return_value=FakeTable(),
+                ):
+                    result = cmb.resolve_province_control_preflight(
+                        111,
+                        min_rows=2,
+                        cache_path=root / "province_control.json",
+                        state_cache_path=root / "state_roots.json",
+                        allow_cold_scan=False,
+                    )
+        finally:
+            cmb.MIN_USABLE_STATE_ROWS = original_state_min
+
+        self.assertEqual(result.status, "province_array_cache_unavailable")
+        self.assertEqual(result.row_count, 0)
+        self.assertIsNone(result.province_bridge_encoded)
+        self.assertEqual(result.diagnostics["cache"]["status"], "miss")
+        self.assertEqual(result.diagnostics["state_bridge"]["status"], "hit")
+
+    def test_province_preflight_cold_scan_resolves_and_stores_cache(self):
+        proc = FakeProc()
+        base = 0x4000
+        proc.mem[0x3000 + FakeStateModule.OFF_CTRL] = 2
+        proc.mem[base + 11 * FakeProvinceModule.PROV_STRIDE] = 0x8000
+        proc.mem[base + 12 * FakeProvinceModule.PROV_STRIDE] = 0x9000
+        prov_to_state = {11: 1, 12: 2}
+        identity = SimpleNamespace(
+            pid=111,
+            create_time_100ns=222,
+            exe_sha256="a" * 64,
+            module_base=proc.module_base,
+        )
+        locate_calls = []
+
+        def locate_array(unused_proc, expected):
+            locate_calls.append(dict(expected))
+            return base, 20
+
+        original_state_min = cmb.MIN_USABLE_STATE_ROWS
+        try:
+            cmb.MIN_USABLE_STATE_ROWS = 2
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                cache_path = root / "province_control.json"
+                self.assertTrue(cmb._write_state_roots_cache(
+                    root / "state_roots.json",
+                    identity,
+                    {1: 0x2000, 2: 0x3000},
+                ))
+                with patch.dict(
+                    sys.modules,
+                    _fake_resolve_modules(proc, prov_to_state, locate_array),
+                ), patch.object(
+                    cmb._process_identity,
+                    "identify",
+                    return_value=identity,
+                ), patch.object(
+                    cmb,
+                    "tag_table_from_country_database_root",
+                    return_value=FakeTable(),
+                ):
+                    result = cmb.resolve_province_control_preflight(
+                        111,
+                        min_rows=2,
+                        cache_path=cache_path,
+                        state_cache_path=root / "state_roots.json",
+                        allow_cold_scan=True,
+                    )
+                    loaded = cmb._load_province_array_cache(cache_path, identity)
+        finally:
+            cmb.MIN_USABLE_STATE_ROWS = original_state_min
+
+        self.assertEqual(result.status, "resolved")
+        self.assertEqual(result.row_count, 2)
+        self.assertEqual(result.provinces["11"]["controller"], "GER")
+        self.assertEqual(result.provinces["12"]["controller"], "ENG")
+        self.assertEqual(locate_calls, [{11: 1, 12: 2}])
+        self.assertIn("province_array=0x4000", result.province_bridge_encoded)
+        self.assertEqual(result.controller_bridge_encoded, "1:0x8000;2:0x9000")
+        self.assertEqual(result.diagnostics["cache"]["status"], "stored")
+        self.assertIsNotNone(loaded)
+
+    def test_province_preflight_stale_cache_without_cold_scan_fails_closed(self):
+        proc = FakeProc()
+        base = 0x4000
+        proc.mem[0x3000 + FakeStateModule.OFF_CTRL] = 2
+        proc.mem[base + 11 * FakeProvinceModule.PROV_STRIDE] = 0x8000
+        proc.mem[base + 12 * FakeProvinceModule.PROV_STRIDE] = 0x9000
+        prov_to_state = {11: 1, 12: 2}
+        identity = SimpleNamespace(
+            pid=111,
+            create_time_100ns=222,
+            exe_sha256="a" * 64,
+            module_base=proc.module_base,
+        )
+
+        def locate_array(unused_proc, unused_expected):
+            raise AssertionError("cold locator should not run")
+
+        original_state_min = cmb.MIN_USABLE_STATE_ROWS
+        try:
+            cmb.MIN_USABLE_STATE_ROWS = 2
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                self.assertTrue(cmb._write_state_roots_cache(
+                    root / "state_roots.json",
+                    identity,
+                    {1: 0x2000, 2: 0x3000},
+                ))
+                self.assertTrue(cmb._write_province_array_cache(
+                    root / "province_control.json",
+                    identity,
+                    base,
+                    20,
+                    {0x8000: 1, 0xA000: 2},
+                    2,
+                ))
+                with patch.dict(
+                    sys.modules,
+                    _fake_resolve_modules(proc, prov_to_state, locate_array),
+                ), patch.object(
+                    cmb._process_identity,
+                    "identify",
+                    return_value=identity,
+                ), patch.object(
+                    cmb,
+                    "tag_table_from_country_database_root",
+                    return_value=FakeTable(),
+                ):
+                    result = cmb.resolve_province_control_preflight(
+                        111,
+                        min_rows=2,
+                        cache_path=root / "province_control.json",
+                        state_cache_path=root / "state_roots.json",
+                        allow_cold_scan=False,
+                    )
+        finally:
+            cmb.MIN_USABLE_STATE_ROWS = original_state_min
+
+        self.assertEqual(result.status, "province_array_cache_unavailable")
+        self.assertEqual(result.row_count, 0)
+        self.assertIsNone(result.province_bridge_encoded)
+        self.assertEqual(result.diagnostics["cache"]["status"], "stale")
+        self.assertEqual(
+            result.diagnostics["cache"]["validation"],
+            "pointer_bridge_mismatch",
+        )
 
     def test_province_array_cache_loads_only_matching_process_identity(self):
         identity = SimpleNamespace(

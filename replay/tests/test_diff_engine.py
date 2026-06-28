@@ -299,6 +299,112 @@ class TestConfidenceAndMerge(unittest.TestCase):
             self.assertEqual(schema.validate_event(ev), [], ev)
 
 
+class TestRawEventTimelineMerge(unittest.TestCase):
+    def test_raw_exact_province_controller_event_supersedes_interval_diff(self):
+        s1 = _snap("1940.1.1.0")
+        s2 = _snap("1940.1.1.3")
+        s1["provinces"]["5"] = {"controller": "POL", "state_id": 1}
+        s2["provinces"]["5"] = {"controller": "GER", "state_id": 1}
+        raw = [{
+            "type": "event",
+            "source": "C",
+            "confidence": "exact",
+            "domain": "province_control",
+            "entity_key": "5",
+            "hour_index": s1["hour_index"] + 1,
+            "date": "1940.1.1.1",
+            "tick_ms": 12,
+            "sequence": 7,
+            "payload": {
+                "event_type": "province_controller_change",
+                "key": "5",
+                "from": "POL",
+                "to": "GER",
+            },
+        }]
+
+        tl = diff_engine.build_timeline_with_raw_events([s1, s2], raw)
+        province_events = [e for e in tl if e["type"] == "province_controller_change"]
+
+        self.assertEqual(len(province_events), 1)
+        self.assertEqual(province_events[0]["source"], "C")
+        self.assertEqual(province_events[0]["confidence"], "exact")
+        self.assertEqual(province_events[0]["hour_index"], raw[0]["hour_index"])
+        self.assertEqual(province_events[0]["sequence"], 7)
+
+    def test_raw_sampled_event_does_not_supersede_exact_diff(self):
+        s1 = _snap("1940.1.1.0")
+        s2 = _snap("1940.1.1.3")
+        for snap in (s1, s2):
+            snap["provenance"]["collector"] = {
+                "captured": True,
+                "domains": ["province_control"],
+            }
+        s1["provinces"]["5"] = {"controller": "POL", "state_id": 1}
+        s2["provinces"]["5"] = {"controller": "GER", "state_id": 1}
+        raw = [{
+            "type": "event",
+            "source": "C",
+            "confidence": "sampled",
+            "domain": "province_control",
+            "entity_key": "5",
+            "hour_index": s1["hour_index"] + 1,
+            "date": "1940.1.1.1",
+            "tick_ms": 20,
+            "sequence": 8,
+            "payload": {
+                "event_type": "province_controller_change",
+                "key": "5",
+                "from": "POL",
+                "to": "GER",
+            },
+        }]
+
+        tl = diff_engine.build_timeline_with_raw_events([s1, s2], raw)
+        province_events = [e for e in tl if e["type"] == "province_controller_change"]
+
+        self.assertEqual(len(province_events), 2)
+        self.assertTrue(any(e["confidence"] == "exact" and e.get("sequence") is None
+                            for e in province_events))
+        sampled = next(e for e in province_events if e.get("sequence") == 8)
+        self.assertEqual(sampled["confidence"], "inferred")
+        self.assertEqual(sampled["detail"]["raw_confidence"], "sampled")
+
+    def test_raw_gap_frames_are_retained(self):
+        s1 = _snap("1940.1.1.0")
+        s2 = _snap("1940.1.1.3")
+        s1["provinces"]["5"] = {"controller": "POL", "state_id": 1}
+        s2["provinces"]["5"] = {"controller": "GER", "state_id": 1}
+        raw = [{
+            "type": "gap",
+            "source": "C",
+            "confidence": "gap",
+            "domain": "province_control",
+            "hour_index": s1["hour_index"] + 1,
+            "date": "1940.1.1.1",
+            "tick_ms": 25,
+            "sequence": 9,
+            "payload": {
+                "gap_kind": "dropped_frames",
+                "domain": "province_control",
+                "start_sequence": 4,
+                "end_sequence": 8,
+                "reason": "transport_drop",
+            },
+        }]
+
+        tl = diff_engine.build_timeline_with_raw_events([s1, s2], raw)
+
+        self.assertEqual(
+            len([e for e in tl if e["type"] == "province_controller_change"]), 1)
+        gaps = [e for e in tl if e["type"] == "gap"]
+        self.assertEqual(len(gaps), 1)
+        self.assertEqual(gaps[0]["confidence"], "gap")
+        self.assertEqual(gaps[0]["gap_kind"], "dropped_frames")
+        self.assertEqual(gaps[0]["start_sequence"], 4)
+        self.assertEqual(gaps[0]["end_sequence"], 8)
+
+
 class TestLiveAliasGating(unittest.TestCase):
     """NO-FABRICATION gate (Codex-verified): a `<domain>_live` channel may satisfy a
     save-shaped canonical gate ONLY when it actually writes that reader's save-shaped

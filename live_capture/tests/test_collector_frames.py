@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import unittest
@@ -16,6 +17,29 @@ from replay import schema  # noqa: E402
 
 
 class TestCollectorFrames(unittest.TestCase):
+    def _raw_frame(self, frame_type, payload, **overrides):
+        date = "1936.1.1.12"
+        frame = {
+            "type": frame_type,
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "sequence": 11,
+            "session_sequence": 5,
+            "tick_ms": 123456,
+            "date": date,
+            "hour_index": schema.date_to_hour_index(date),
+            "sample_ms": 10,
+            "capture_boundary": "worker_poll",
+            "domain": "divisions",
+            "entity_key": "division:GER:1",
+            "source": "C",
+            "confidence": "exact",
+            "payload": payload,
+        }
+        frame.update(overrides)
+        return frame
+
     def test_synthetic_snapshot_frame_validates(self):
         frame = {
             "type": "snapshot",
@@ -118,15 +142,158 @@ class TestCollectorFrames(unittest.TestCase):
             {
                 "type": "gap",
                 "backend": "in_process_collector",
+                "collector_version": "0.1.0",
                 "abi_version": 1,
+                "sequence": 11,
+                "session_sequence": 3,
+                "tick_ms": 123456,
                 "date": "1936.1.1.12",
+                "hour_index": schema.date_to_hour_index("1936.1.1.12"),
+                "sample_ms": 10,
+                "capture_boundary": "worker_poll",
+                "domain": "combats",
+                "entity_key": "gap:combats",
+                "source": "C",
+                "confidence": "gap",
                 "segment_id": 1,
                 "quality_status": "no_data",
+                "payload": {
+                    "gap_kind": "dropped_frames",
+                    "domain": "combats",
+                    "start_sequence": 20,
+                    "end_sequence": 23,
+                    "reason": "ring_buffer_overflow",
+                    "detail": {"dropped": 3},
+                },
             },
         ]
 
         for frame in frames:
             self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_event_frame_validates(self):
+        frame = self._raw_frame(
+            "event",
+            {
+                "event_type": "movement_started",
+                "key": "division:GER:1",
+                "from": None,
+                "to": {"province_id": 42},
+                "subject": "GER",
+                "detail": {"order_generation": 3, "path": [1, 2, 3]},
+            },
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_event_frame_rejects_malformed_envelope_and_payload(self):
+        frame = self._raw_frame(
+            "event",
+            {
+                "event_type": "",
+                "key": "0x1234",
+                "detail": ["not", "an", "object"],
+            },
+            source="memory_reader",
+            confidence="certain",
+            hour_index=True,
+            domain="not_a_domain",
+            entity_key=42,
+        )
+
+        problems = validate_collector_frame(frame)
+
+        for needle in (
+            "hour_index not int in range",
+            "domain 'not_a_domain' not canonical",
+            "entity_key missing or not stable str",
+            "source 'memory_reader' != 'C'",
+            "confidence 'certain' invalid",
+            "event_type missing",
+            "key missing or not stable str",
+            "detail not object",
+        ):
+            self.assertTrue(any(needle in p for p in problems), (needle, problems))
+
+    def test_raw_domain_delta_frame_validates(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "upsert",
+                "before": {"province": 41, "progress_bucket": 3},
+                "after": {"province": 42, "progress_bucket": 4},
+                "changed_fields": ["province", "progress_bucket"],
+            },
+            entity_key="division:GER:2",
+            confidence="sampled",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_domain_delta_frame_rejects_malformed_payload(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "replace",
+                "changed_fields": ["province", 7],
+                "unexpected": True,
+            },
+        )
+
+        problems = validate_collector_frame(frame)
+
+        for needle in (
+            "op 'replace' invalid",
+            "after missing",
+            "changed_fields[1] not bounded str",
+            "key 'unexpected' unsupported",
+        ):
+            self.assertTrue(any(needle in p for p in problems), (needle, problems))
+
+    def test_raw_gap_frame_validates(self):
+        frame = self._raw_frame(
+            "gap",
+            {
+                "gap_kind": "layout_invalid",
+                "domain": "combats",
+                "start_sequence": 20,
+                "end_sequence": 23,
+                "reason": "combat_side_validation_failed",
+                "detail": [{"side": "attacker", "participants": None}],
+            },
+            domain="combats",
+            entity_key="gap:combats",
+            confidence="gap",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_gap_frame_rejects_malformed_payload(self):
+        frame = self._raw_frame(
+            "gap",
+            {
+                "gap_kind": "lost",
+                "domain": "divisions",
+                "start_sequence": 30,
+                "end_sequence": 29,
+                "reason": "not machine readable",
+                "detail": "too loose",
+            },
+            domain="combats",
+            entity_key="gap:combats",
+            confidence="gap",
+        )
+
+        problems = validate_collector_frame(frame)
+
+        for needle in (
+            "gap_kind 'lost' invalid",
+            "domain != raw frame domain",
+            "start_sequence > end_sequence",
+            "reason missing or not machine-readable str",
+            "detail not object|list",
+        ):
+            self.assertTrue(any(needle in p for p in problems), (needle, problems))
 
     def test_attach_log_root_probe_frames_validate(self):
         frames = [
@@ -998,6 +1165,23 @@ class TestCollectorFrames(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(bad)
             with self.assertRaisesRegex(ValueError, "not canonical"):
+                read_collector_jsonl(path)
+
+    def test_jsonl_reader_rejects_malformed_raw_frame(self):
+        import tempfile
+
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "replace",
+                "changed_fields": ["province"],
+            },
+        )
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "collector_frames.jsonl")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(json.dumps(frame) + "\n")
+            with self.assertRaisesRegex(ValueError, "op 'replace' invalid"):
                 read_collector_jsonl(path)
 
 

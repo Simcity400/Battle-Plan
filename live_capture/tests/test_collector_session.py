@@ -139,6 +139,45 @@ class TestCollectorSession(unittest.TestCase):
         self.assertEqual(summary["production_on_lightweight_frames"], 1)
         self.assertEqual(summary["heavy_payload_on_lightweight_frames"], 1)
 
+    def test_collector_frame_payload_summary_counts_raw_stream_frames(self):
+        summary = cs._collector_frame_payload_summary([
+            {
+                "type": "event",
+                "capture_boundary": "worker_poll",
+                "event_type": "province_controller_change",
+                "domain": "province_control",
+            },
+            {
+                "type": "domain_delta",
+                "capture_boundary": "worker_poll",
+                "domain": "divisions",
+                "op": "sample",
+            },
+            {
+                "type": "gap",
+                "capture_boundary": "worker_poll",
+                "domain": "land_combats",
+                "gap_kind": "dropped_frames",
+            },
+        ])
+
+        self.assertEqual(summary["frames_by_type"], {
+            "domain_delta": 1,
+            "event": 1,
+            "gap": 1,
+        })
+        self.assertEqual(summary["raw_event_frame_count"], 1)
+        self.assertEqual(summary["raw_domain_delta_frame_count"], 1)
+        self.assertEqual(summary["raw_gap_frame_count"], 1)
+        self.assertEqual(
+            summary["raw_event_types_seen"],
+            ["province_controller_change"],
+        )
+        self.assertEqual(summary["raw_delta_domains_seen"], ["divisions"])
+        self.assertEqual(summary["raw_gap_domains_seen"], ["land_combats"])
+        self.assertEqual(summary["lightweight_poll_frame_count"], 3)
+        self.assertEqual(summary["heavy_payload_on_lightweight_frames"], 0)
+
     def test_session_can_record_state_control_preflight_diagnostics(self):
         original_record_probes = cs.record_probes
         original_preflight = cs.resolve_state_control_preflight

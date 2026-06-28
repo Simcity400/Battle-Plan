@@ -726,9 +726,28 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     max_production_military_line_rows = 0
     max_production_naval_line_rows = 0
     production_on_lightweight_frames = 0
+    frames_by_type: Dict[str, int] = {}
+    raw_event_types_seen: set[str] = set()
+    raw_delta_domains_seen: set[str] = set()
+    raw_gap_domains_seen: set[str] = set()
     frames_by_capture_boundary: Dict[str, int] = {}
     heavy_payload_on_lightweight_frames = 0
     for frame in frames:
+        frame_type = frame.get("type")
+        if isinstance(frame_type, str):
+            frames_by_type[frame_type] = frames_by_type.get(frame_type, 0) + 1
+        if frame_type == "event":
+            event_type = frame.get("event_type")
+            if isinstance(event_type, str):
+                raw_event_types_seen.add(event_type)
+        elif frame_type == "domain_delta":
+            domain = frame.get("domain")
+            if isinstance(domain, str):
+                raw_delta_domains_seen.add(domain)
+        elif frame_type == "gap":
+            domain = frame.get("domain")
+            if isinstance(domain, str):
+                raw_gap_domains_seen.add(domain)
         boundary = frame.get("capture_boundary")
         if isinstance(boundary, str):
             frames_by_capture_boundary[boundary] = (
@@ -808,6 +827,13 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         if boundary == "worker_poll" and heavy_payload_in_lightweight_frame:
             heavy_payload_on_lightweight_frames += 1
     return {
+        "frames_by_type": dict(sorted(frames_by_type.items())),
+        "raw_event_frame_count": frames_by_type.get("event", 0),
+        "raw_domain_delta_frame_count": frames_by_type.get("domain_delta", 0),
+        "raw_gap_frame_count": frames_by_type.get("gap", 0),
+        "raw_event_types_seen": sorted(raw_event_types_seen),
+        "raw_delta_domains_seen": sorted(raw_delta_domains_seen),
+        "raw_gap_domains_seen": sorted(raw_gap_domains_seen),
         "domains_seen": sorted(domains_seen),
         "frames_by_capture_boundary": dict(sorted(frames_by_capture_boundary.items())),
         "scheduled_snapshot_frame_count": frames_by_capture_boundary.get(

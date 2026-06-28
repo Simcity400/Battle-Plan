@@ -629,7 +629,8 @@ def province_array_cache_validation_error(
     )
     if distinct_ptrs is None:
         return "province_array_unreadable"
-    if distinct_ptrs != set(int(k) for k in ptr2tagid):
+    bridged_ptrs = set(int(k) for k in ptr2tagid)
+    if not distinct_ptrs.issubset(bridged_ptrs):
         return "pointer_bridge_mismatch"
     if state_ctrl:
         expected = province_ptr_bridge_from_cached_base(

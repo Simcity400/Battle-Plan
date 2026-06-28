@@ -1432,6 +1432,202 @@ def build_timeline(snapshots: List[Dict[str, Any]],
     return _merge_dedupe(all_events)
 
 
+_RAW_METADATA_FIELDS = (
+    "sequence", "session_sequence", "tick_ms", "sample_ms", "capture_boundary",
+    "domain", "entity_key", "diagnostics",
+)
+
+
+def build_timeline_with_raw_events(snapshots: List[Dict[str, Any]],
+                                   raw_events: List[Dict[str, Any]],
+                                   *,
+                                   milestone_steps: Optional[Dict[str, float]] = None
+                                   ) -> List[Dict[str, Any]]:
+    """Build the normal snapshot timeline, then merge already-validated raw frames.
+
+    Exact collector raw events supersede only interval snapshot diffs with the same
+    identity inside that diff's interval. Sampled/proxy raw observations and gap
+    markers remain visible but never delete snapshot-derived fallback events.
+    """
+    snapshot_events = build_timeline(snapshots, milestone_steps=milestone_steps)
+    normalized_raw: List[Dict[str, Any]] = []
+    for frame in raw_events or []:
+        normalized = _normalize_raw_frame(frame)
+        if normalized is not None:
+            normalized_raw.append(normalized)
+    return _merge_raw_events(snapshot_events, normalized_raw)
+
+
+def _normalize_raw_frame(frame: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(frame, dict):
+        return None
+    frame_type = frame.get("type")
+    if frame_type == "event":
+        return _normalize_raw_event(frame)
+    if frame_type == "gap":
+        return _normalize_raw_gap(frame)
+    return None
+
+
+def _raw_payload(frame: Dict[str, Any]) -> Dict[str, Any]:
+    payload = frame.get("payload")
+    return payload if isinstance(payload, dict) else {}
+
+
+def _normalize_raw_event(frame: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    payload = _raw_payload(frame)
+    event_type = payload.get("event_type") or frame.get("event_type")
+    if event_type not in schema.EVENT_TYPES:
+        return None
+
+    raw_confidence = frame.get("confidence") or payload.get("confidence")
+    confidence = (raw_confidence if raw_confidence in schema.CONFIDENCE_LEVELS
+                  else "inferred")
+    source = frame.get("source") or "C"
+    if source not in schema.EVENT_SOURCES:
+        source = "D"
+
+    detail = payload.get("detail") if isinstance(payload.get("detail"), dict) else {}
+    detail = dict(detail)
+    if raw_confidence is not None and raw_confidence not in schema.CONFIDENCE_LEVELS:
+        detail.setdefault("raw_confidence", raw_confidence)
+    raw_detail = {field: frame[field] for field in _RAW_METADATA_FIELDS
+                  if field in frame and frame.get(field) is not None}
+    if raw_detail:
+        detail.setdefault("raw", raw_detail)
+
+    frm = payload.get("from")
+    to = payload.get("to")
+    subject = payload.get("subject")
+    if subject is None and event_type in _DIRECTIONAL_SUBJECT_OBJECT:
+        subject = to if to is not None else frm
+    obj = payload.get("object")
+    if obj is None and event_type in _DIRECTIONAL_SUBJECT_OBJECT:
+        obj = frm
+
+    ev = schema.make_event(
+        event_type,
+        hour_index=frame.get("hour_index"),
+        date=frame.get("date"),
+        subject=subject,
+        object=obj,
+        key=payload.get("key", frame.get("entity_key")),
+        source=source,
+        confidence=confidence,
+        detail=detail or None,
+        **{"from": frm},
+        to=to,
+    )
+    _copy_raw_metadata(frame, ev)
+    return ev
+
+
+def _normalize_raw_gap(frame: Dict[str, Any]) -> Dict[str, Any]:
+    payload = _raw_payload(frame)
+    detail = payload.get("detail") if isinstance(payload.get("detail"), dict) else {}
+    detail = dict(detail)
+    raw_detail = {field: frame[field] for field in _RAW_METADATA_FIELDS
+                  if field in frame and frame.get(field) is not None}
+    if raw_detail:
+        detail.setdefault("raw", raw_detail)
+    marker: Dict[str, Any] = {
+        "type": "gap",
+        "hour_index": frame.get("hour_index"),
+        "date": frame.get("date"),
+        "source": frame.get("source") or "C",
+        "confidence": "gap",
+        "domain": payload.get("domain", frame.get("domain")),
+        "gap_kind": payload.get("gap_kind", frame.get("gap_kind")),
+        "start_sequence": payload.get("start_sequence", frame.get("start_sequence")),
+        "end_sequence": payload.get("end_sequence", frame.get("end_sequence")),
+        "reason": payload.get("reason", frame.get("reason")),
+    }
+    if detail:
+        marker["detail"] = detail
+    _copy_raw_metadata(frame, marker)
+    return marker
+
+
+def _copy_raw_metadata(frame: Dict[str, Any], target: Dict[str, Any]) -> None:
+    for field in _RAW_METADATA_FIELDS:
+        if field in frame and frame.get(field) is not None:
+            target[field] = frame[field]
+
+
+def _merge_raw_events(snapshot_events: List[Dict[str, Any]],
+                      raw_events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    raw_superseders: Dict[Tuple, List[Dict[str, Any]]] = {}
+    for ev in raw_events:
+        if not _is_exact_collector_raw_event(ev):
+            continue
+        identity = _raw_merge_identity(ev)
+        if identity is not None:
+            raw_superseders.setdefault(identity, []).append(ev)
+
+    kept: List[Dict[str, Any]] = []
+    for ev in snapshot_events:
+        if not _interval_diff_superseded_by_raw(ev, raw_superseders):
+            kept.append(ev)
+    return sorted(kept + raw_events, key=_raw_timeline_sort_key)
+
+
+def _is_exact_collector_raw_event(ev: Dict[str, Any]) -> bool:
+    return (ev.get("type") != "gap"
+            and ev.get("source") == "C"
+            and ev.get("confidence") == "exact"
+            and isinstance(ev.get("hour_index"), int))
+
+
+def _interval_diff_superseded_by_raw(
+    ev: Dict[str, Any],
+    raw_superseders: Dict[Tuple, List[Dict[str, Any]]],
+) -> bool:
+    if ev.get("confidence") != "interval":
+        return False
+    hi = ev.get("hour_index")
+    if not isinstance(hi, int):
+        return False
+    identity = _raw_merge_identity(ev)
+    if identity is None:
+        return False
+    candidates = raw_superseders.get(identity) or []
+    if not candidates:
+        return False
+    lo = _event_interval_start(ev, hi)
+    return any(lo < raw_ev["hour_index"] <= hi for raw_ev in candidates)
+
+
+def _event_interval_start(ev: Dict[str, Any], fallback_end: int) -> int:
+    detail = ev.get("detail") if isinstance(ev.get("detail"), dict) else {}
+    start = detail.get("interval_start_hour")
+    if not isinstance(start, int):
+        start = (detail.get("interval") or {}).get("start_hour")
+    return start if isinstance(start, int) else fallback_end - 1
+
+
+def _raw_merge_identity(ev: Dict[str, Any]) -> Optional[Tuple]:
+    typ = ev.get("type")
+    if typ is None or typ == "gap":
+        return None
+    if typ in _DIRECTIONAL_SUBJECT_OBJECT:
+        return (typ, _dedupe_atom(ev.get("key")), _dedupe_atom(ev.get("from")),
+                _dedupe_atom(ev.get("to")))
+    return _dedupe_key(ev)
+
+
+def _raw_timeline_sort_key(ev: Dict[str, Any]) -> Tuple:
+    big = 1 << 62
+
+    def int_or_big(value: Any) -> int:
+        return value if isinstance(value, int) else big
+
+    return (int_or_big(ev.get("hour_index")),
+            int_or_big(ev.get("tick_ms")),
+            int_or_big(ev.get("sequence")),
+            ev.get("type") or "",
+            str(ev.get("key") or ev.get("entity_key") or ""))
+
+
 def _merge_dedupe(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Sort, then drop a diff-derived event when an exact marker reports the SAME net
     transition over the diff's window. The dedupe window is INTERVAL-AWARE (Codex P2 #8):
@@ -1625,4 +1821,4 @@ def _merge_provenance(pa: Any, pb: Any) -> Dict[str, Any]:
     return out
 
 
-__all__ = ["diff_snapshots", "build_timeline"]
+__all__ = ["diff_snapshots", "build_timeline", "build_timeline_with_raw_events"]
