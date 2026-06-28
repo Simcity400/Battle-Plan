@@ -137,13 +137,33 @@ def _build_expected(state_ctrl, prov_to_state):
     return exp
 
 
-def locate_array(p, expected, progress=None):
+def locate_array(p, expected, progress=None, diagnostics=None):
     """Locate the dense u64 province-control pointer array by requiring that its
     per-province pointer PARTITIONS provinces by their expected controller (from
     the live state crack). Direct index by province_id. Returns (base, slots) or
-    None. Arena first, then full heap. Allows a small in-flight mismatch budget."""
+    None. Arena first, then full heap. Allows a small in-flight mismatch budget.
+
+    When ``diagnostics`` is a dict, populate it with address-free scan counters.
+    These counters are safe for recorder manifests: they describe how much work
+    the locator attempted without exposing live process addresses.
+    """
+    t0 = time.time()
+
+    def diag_set(key, value):
+        if diagnostics is not None:
+            diagnostics[key] = value
+
+    def finish(result, **extra):
+        diag_set("result", result)
+        for key, value in extra.items():
+            diag_set(key, value)
+        diag_set("elapsed_ms", int((time.time() - t0) * 1000))
+
     pids = sorted(expected)
+    diag_set("version", 1)
+    diag_set("expected_count", len(pids))
     if len(pids) < 100:
+        finish("insufficient_expected", required_expected_count=100)
         return None
     by = defaultdict(list)
     for pid, c in expected.items():
@@ -157,22 +177,64 @@ def locate_array(p, expected, progress=None):
     maxpid = max(pids)
     w = PROV_STRIDE
     need = (maxpid + 1) * w + w
+    diag_set("expected_controller_count", len(by))
+    diag_set("top_controller_group_count", len(tops))
+    diag_set("equality_pair_count", len(eq))
+    diag_set("inequality_pair_count", len(neq))
+    diag_set("max_province_id", maxpid)
+    diag_set("stride", w)
+    diag_set("required_span_bytes", need)
 
     try:
         import numpy as np
     except ImportError:
         np = None
+    diag_set("numpy_enabled", np is not None)
 
-    def scan(lo, hi):
+    scan_ranges = []
+    diag_set("scan_ranges", scan_ranges)
+
+    def range_stats(name):
+        stats = {
+            "name": name,
+            "regions_seen": 0,
+            "regions_skipped_small": 0,
+            "regions_read": 0,
+            "regions_read_failed": 0,
+            "bytes_read": 0,
+            "largest_region_bytes": 0,
+            "candidate_offsets": 0,
+            "survivor_offsets": 0,
+            "unaligned_survivors": 0,
+            "partition_candidates": 0,
+            "partition_rejects": 0,
+            "eq_rejected_regions": 0,
+            "neq_rejected_regions": 0,
+        }
+        scan_ranges.append(stats)
+        return stats
+
+    def scan(name, lo, hi):
+        stats = range_stats(name)
         for base, size in p.iter_regions(lo, hi, want_exec=False):
+            stats["regions_seen"] += 1
+            stats["largest_region_bytes"] = max(
+                int(stats["largest_region_bytes"]), int(size))
             if size < need:
+                stats["regions_skipped_small"] += 1
                 continue
             blob = p.try_read(base, size)
             if not blob or len(blob) < need:
+                stats["regions_read_failed"] += 1
+                if blob:
+                    stats["bytes_read"] += len(blob)
                 continue
+            stats["regions_read"] += 1
+            stats["bytes_read"] += len(blob)
             K = len(blob) - need
             if K <= 0:
                 continue
+            stats["candidate_offsets"] += K
             if np is not None:
                 U8 = np.frombuffer(blob, dtype=np.uint8)
                 mask = np.ones(K, dtype=bool)
@@ -186,6 +248,7 @@ def locate_array(p, expected, progress=None):
                     if not mask.any():
                         ok = False; break
                 if not ok:
+                    stats["eq_rejected_regions"] += 1
                     continue
                 for a, c in neq:
                     pa = a * w; pc = c * w
@@ -196,12 +259,17 @@ def locate_array(p, expected, progress=None):
                     if not mask.any():
                         break
                 survivors = mask.nonzero()[0].tolist() if mask.any() else []
+                if not survivors:
+                    stats["neq_rejected_regions"] += 1
             else:
                 survivors = range(0, K, 8)   # slow fallback: every 8-aligned start
+            stats["survivor_offsets"] += len(survivors)
             for sidx in survivors:
                 if sidx % 8 != 0:
+                    stats["unaligned_survivors"] += 1
                     continue
                 # full partition verify (bijection ptr<->controller)
+                stats["partition_candidates"] += 1
                 v2c = {}; c2v = {}; bad = 0
                 for pid in pids:
                     off = sidx + pid * w
@@ -217,15 +285,20 @@ def locate_array(p, expected, progress=None):
                         break
                 if bad <= 40 and len(v2c) >= MIN_CONTROLLERS:
                     # measure slot count
+                    diag_set("hit_scan_range", name)
+                    diag_set("hit_partition_bad_count", bad)
+                    diag_set("hit_controller_count", len(v2c))
                     return base + sidx
+                stats["partition_rejects"] += 1
             if progress:
                 progress(base + size - lo)
         return None
 
-    hit = scan(ARENA_LO, ARENA_HI)
+    hit = scan("arena", ARENA_LO, ARENA_HI)
     if hit is None:
-        hit = scan(HEAP_LO, HEAP_HI)
+        hit = scan("heap", HEAP_LO, HEAP_HI)
     if hit is None:
+        finish("not_found")
         return None
     # measure length (null-or-heap-pointer run)
     slots = 0
@@ -238,6 +311,7 @@ def locate_array(p, expected, progress=None):
             slots = idx + 1
         else:
             break
+    finish("hit", slots=slots)
     return hit, slots
 
 

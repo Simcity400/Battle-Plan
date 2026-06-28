@@ -286,14 +286,21 @@ def resolve_province_control_preflight(
 
             if state_ctrl:
                 expected = pc._build_expected(state_ctrl, prov_to_state)
-                loc = pc.locate_array(proc, expected)
+                locator_diag: Dict[str, Any] = {
+                    "state_controller_count": len(state_ctrl),
+                    "province_to_state_count": len(prov_to_state),
+                }
+                loc = pc.locate_array(proc, expected, diagnostics=locator_diag)
+                locator_diag["state_controller_count"] = len(state_ctrl)
+                locator_diag["province_to_state_count"] = len(prov_to_state)
                 if loc is None:
                     return _province_status(
-                        "province_array_unavailable",
+                        "province_array_locate_failed",
                         {},
-                        source="state_roots_cache",
+                        source="province_array_locator",
                         cache=cache_diag,
                         state_bridge=state_bridge_diag,
+                        locator=locator_diag,
                     )
                 base, slots = int(loc[0]), int(loc[1])
                 ptr2tagid = province_ptr_bridge_from_cached_base(
@@ -323,6 +330,7 @@ def resolve_province_control_preflight(
                         state_bridge=state_bridge_diag,
                         slots=slots,
                         pointer_bridge_count=len(ptr2tagid),
+                        locator=locator_diag,
                     )
                 provinces = province_rows_from_cached_base(
                     proc,
@@ -342,6 +350,7 @@ def resolve_province_control_preflight(
                         state_bridge=state_bridge_diag,
                         slots=slots,
                         pointer_bridge_count=len(ptr2tagid),
+                        locator=locator_diag,
                     )
                 if cache_path is not None:
                     cache_diag["status"] = (
@@ -363,6 +372,7 @@ def resolve_province_control_preflight(
                     state_bridge=state_bridge_diag,
                     slots=slots,
                     pointer_bridge_count=len(ptr2tagid),
+                    locator=locator_diag,
                     province_bridge_encoded=encode_map_control_province_bridge(
                         base,
                         slots,
@@ -777,6 +787,7 @@ def _province_status(
     state_bridge: Optional[Dict[str, Any]] = None,
     slots: Optional[int] = None,
     pointer_bridge_count: Optional[int] = None,
+    locator: Optional[Dict[str, Any]] = None,
     province_bridge_encoded: Optional[str] = None,
     controller_bridge_encoded: Optional[str] = None,
 ) -> ProvinceControlPreflight:
@@ -792,6 +803,7 @@ def _province_status(
             state_bridge=state_bridge,
             slots=slots,
             pointer_bridge_count=pointer_bridge_count,
+            locator=locator,
         ),
         province_bridge_encoded=province_bridge_encoded,
         controller_bridge_encoded=controller_bridge_encoded,
@@ -875,6 +887,7 @@ def _province_diagnostics(
     state_bridge: Optional[Dict[str, Any]] = None,
     slots: Optional[int] = None,
     pointer_bridge_count: Optional[int] = None,
+    locator: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     controller_rows = sum(1 for row in provinces.values() if row.get("controller"))
     distinct_controllers = len({
@@ -910,7 +923,84 @@ def _province_diagnostics(
         }
         if state_bridge.get("row_count") is not None:
             diagnostics["state_bridge"]["row_count"] = int(state_bridge["row_count"])
+    locator_diag = _sanitize_locator_diagnostics(locator)
+    if locator_diag:
+        diagnostics["locator"] = locator_diag
     return diagnostics
+
+
+def _sanitize_locator_diagnostics(value: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    scalar_keys = {
+        "version",
+        "result",
+        "required_expected_count",
+        "expected_count",
+        "expected_controller_count",
+        "top_controller_group_count",
+        "equality_pair_count",
+        "inequality_pair_count",
+        "max_province_id",
+        "stride",
+        "required_span_bytes",
+        "numpy_enabled",
+        "elapsed_ms",
+        "slots",
+        "hit_scan_range",
+        "hit_partition_bad_count",
+        "hit_controller_count",
+        "state_controller_count",
+        "province_to_state_count",
+    }
+    out: Dict[str, Any] = {}
+    for key in scalar_keys:
+        if key in value:
+            raw = value[key]
+            if isinstance(raw, bool):
+                out[key] = bool(raw)
+            elif isinstance(raw, int):
+                out[key] = int(raw)
+            elif isinstance(raw, str) and not raw.lower().startswith("0x"):
+                out[key] = raw[:80]
+    range_keys = {
+        "name",
+        "regions_seen",
+        "regions_skipped_small",
+        "regions_read",
+        "regions_read_failed",
+        "bytes_read",
+        "largest_region_bytes",
+        "candidate_offsets",
+        "survivor_offsets",
+        "unaligned_survivors",
+        "partition_candidates",
+        "partition_rejects",
+        "eq_rejected_regions",
+        "neq_rejected_regions",
+    }
+    raw_ranges = value.get("scan_ranges")
+    if isinstance(raw_ranges, list):
+        ranges: List[Dict[str, Any]] = []
+        for raw_range in raw_ranges:
+            if not isinstance(raw_range, dict):
+                continue
+            safe_range: Dict[str, Any] = {}
+            for key in range_keys:
+                if key not in raw_range:
+                    continue
+                raw = raw_range[key]
+                if isinstance(raw, bool):
+                    safe_range[key] = bool(raw)
+                elif isinstance(raw, int):
+                    safe_range[key] = int(raw)
+                elif isinstance(raw, str) and not raw.lower().startswith("0x"):
+                    safe_range[key] = raw[:80]
+            if safe_range:
+                ranges.append(safe_range)
+        if ranges:
+            out["scan_ranges"] = ranges
+    return out
 
 
 def _load_state_roots_cache(

@@ -399,7 +399,7 @@ class TestCollectorMapBridge(unittest.TestCase):
             module_base=proc.module_base,
         )
 
-        def locate_array(unused_proc, unused_expected):
+        def locate_array(unused_proc, unused_expected, diagnostics=None):
             raise AssertionError("cold locator should not run")
 
         original_state_min = cmb.MIN_USABLE_STATE_ROWS
@@ -455,8 +455,14 @@ class TestCollectorMapBridge(unittest.TestCase):
         )
         locate_calls = []
 
-        def locate_array(unused_proc, expected):
+        def locate_array(unused_proc, expected, diagnostics=None):
             locate_calls.append(dict(expected))
+            if diagnostics is not None:
+                diagnostics.update({
+                    "result": "hit",
+                    "expected_count": len(expected),
+                    "scan_ranges": [{"name": "heap", "regions_read": 1}],
+                })
             return base, 20
 
         original_state_min = cmb.MIN_USABLE_STATE_ROWS
@@ -501,7 +507,158 @@ class TestCollectorMapBridge(unittest.TestCase):
         self.assertIn("province_array=0x4000", result.province_bridge_encoded)
         self.assertEqual(result.controller_bridge_encoded, "1:0x8000;2:0x9000")
         self.assertEqual(result.diagnostics["cache"]["status"], "stored")
+        self.assertEqual(result.diagnostics["locator"]["result"], "hit")
+        self.assertEqual(result.diagnostics["locator"]["expected_count"], 2)
         self.assertIsNotNone(loaded)
+
+    def test_province_preflight_cold_scan_locate_failure_reports_locator_diagnostics(self):
+        proc = FakeProc()
+        proc.mem[0x3000 + FakeStateModule.OFF_CTRL] = 2
+        prov_to_state = {11: 1, 12: 2}
+        identity = SimpleNamespace(
+            pid=111,
+            create_time_100ns=222,
+            exe_sha256="a" * 64,
+            module_base=proc.module_base,
+        )
+
+        def locate_array(unused_proc, expected, diagnostics=None):
+            if diagnostics is not None:
+                diagnostics.update({
+                    "result": "not_found",
+                    "expected_count": len(expected),
+                    "elapsed_ms": 17,
+                    "last_base": "0xDEADBEEF",
+                    "scan_ranges": [
+                        {
+                            "name": "heap",
+                            "regions_seen": 3,
+                            "regions_read": 2,
+                            "bytes_read": 4096,
+                            "last_base": "0xBADF00D",
+                        },
+                    ],
+                })
+            return None
+
+        original_state_min = cmb.MIN_USABLE_STATE_ROWS
+        try:
+            cmb.MIN_USABLE_STATE_ROWS = 2
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                self.assertTrue(cmb._write_state_roots_cache(
+                    root / "state_roots.json",
+                    identity,
+                    {1: 0x2000, 2: 0x3000},
+                ))
+                with patch.dict(
+                    sys.modules,
+                    _fake_resolve_modules(proc, prov_to_state, locate_array),
+                ), patch.object(
+                    cmb._process_identity,
+                    "identify",
+                    return_value=identity,
+                ), patch.object(
+                    cmb,
+                    "tag_table_from_country_database_root",
+                    return_value=FakeTable(),
+                ):
+                    result = cmb.resolve_province_control_preflight(
+                        111,
+                        min_rows=2,
+                        cache_path=root / "province_control.json",
+                        state_cache_path=root / "state_roots.json",
+                        allow_cold_scan=True,
+                    )
+        finally:
+            cmb.MIN_USABLE_STATE_ROWS = original_state_min
+
+        self.assertEqual(result.status, "province_array_locate_failed")
+        self.assertEqual(result.row_count, 0)
+        self.assertEqual(result.diagnostics["source"], "province_array_locator")
+        self.assertEqual(result.diagnostics["state_bridge"]["status"], "hit")
+        self.assertEqual(result.diagnostics["locator"]["result"], "not_found")
+        self.assertEqual(result.diagnostics["locator"]["expected_count"], 2)
+        self.assertEqual(
+            result.diagnostics["locator"]["state_controller_count"],
+            2,
+        )
+        self.assertEqual(
+            result.diagnostics["locator"]["scan_ranges"][0]["regions_seen"],
+            3,
+        )
+        self.assertNotIn("0xDEADBEEF", str(result.diagnostics))
+        self.assertNotIn("0xBADF00D", str(result.diagnostics))
+
+    def test_low_level_province_locator_reports_address_free_scan_diagnostics(self):
+        from live_layers import province_control as pc
+
+        original_bounds = (
+            pc.ARENA_LO,
+            pc.ARENA_HI,
+            pc.HEAP_LO,
+            pc.HEAP_HI,
+            pc.MAX_PROVINCE_ID,
+        )
+        try:
+            pc.ARENA_LO = 0x1000
+            pc.ARENA_HI = 0x2000
+            pc.HEAP_LO = 0x7000
+            pc.HEAP_HI = 0xB000
+            pc.MAX_PROVINCE_ID = 130
+            base = 0x5000
+            start = 16
+            stride = pc.PROV_STRIDE
+            slots = pc.MAX_PROVINCE_ID + 4
+            blob = bytearray(start + slots * stride)
+            expected = {}
+            for pid in range(120):
+                controller = 1 if pid < 60 else 2
+                expected[pid] = controller
+                ptr = 0x8000 if controller == 1 else 0x9000
+                off = start + pid * stride
+                blob[off:off + stride] = int(ptr).to_bytes(stride, "little")
+
+            class ScanProc:
+                def iter_regions(self, lo, hi, want_exec=False):
+                    if lo == pc.HEAP_LO:
+                        yield base, len(blob)
+
+                def try_read(self, addr, size):
+                    if int(addr) == base and int(size) == len(blob):
+                        return bytes(blob)
+                    return None
+
+                def u64(self, addr):
+                    off = int(addr) - base
+                    if off < 0 or off + stride > len(blob):
+                        raise OSError("bad u64")
+                    return int.from_bytes(blob[off:off + stride], "little")
+
+            diagnostics = {}
+            loc = pc.locate_array(ScanProc(), expected, diagnostics=diagnostics)
+        finally:
+            (
+                pc.ARENA_LO,
+                pc.ARENA_HI,
+                pc.HEAP_LO,
+                pc.HEAP_HI,
+                pc.MAX_PROVINCE_ID,
+            ) = original_bounds
+
+        self.assertIsNotNone(loc)
+        self.assertEqual(loc[0], base + start)
+        self.assertGreaterEqual(loc[1], 120)
+        self.assertEqual(diagnostics["result"], "hit")
+        self.assertEqual(diagnostics["expected_count"], 120)
+        self.assertEqual(diagnostics["hit_scan_range"], "heap")
+        self.assertEqual(diagnostics["scan_ranges"][0]["name"], "arena")
+        self.assertEqual(diagnostics["scan_ranges"][1]["name"], "heap")
+        self.assertGreaterEqual(
+            diagnostics["scan_ranges"][1]["partition_candidates"],
+            1,
+        )
+        self.assertNotIn("0x", str(diagnostics))
 
     def test_province_preflight_stale_cache_without_cold_scan_fails_closed(self):
         proc = FakeProc()
@@ -517,7 +674,7 @@ class TestCollectorMapBridge(unittest.TestCase):
             module_base=proc.module_base,
         )
 
-        def locate_array(unused_proc, unused_expected):
+        def locate_array(unused_proc, unused_expected, diagnostics=None):
             raise AssertionError("cold locator should not run")
 
         original_state_min = cmb.MIN_USABLE_STATE_ROWS
