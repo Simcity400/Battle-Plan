@@ -448,6 +448,19 @@ class TestCollectorFrames(unittest.TestCase):
         self.assertEqual(snap["provinces"], {})
         self.assertIsNone(snap["map"]["control_by_province"])
 
+    def test_snapshot_frame_rejects_unsupported_claimed_domains(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "domains": ["clock", "divisions"],
+        }
+
+        with self.assertRaisesRegex(ValueError, "unsupported domains: divisions"):
+            snapshot_from_collector_frame(frame, "collector-test")
+
     def test_root_probe_frame_requires_scheduled_map_domain_claims(self):
         frame = {
             "type": "collector_started",

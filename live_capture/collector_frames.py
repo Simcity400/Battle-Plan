@@ -27,6 +27,14 @@ FRAME_TYPES = frozenset({
     "diagnostic",
     "gap",
 })
+SUPPORTED_SNAPSHOT_DOMAINS = frozenset({
+    "clock",
+    "country_identity",
+    "country_scalars",
+    "state_ownership",
+    "state_control",
+    "province_control",
+})
 
 
 def make_heartbeat_frame(
@@ -244,6 +252,12 @@ def snapshot_from_collector_frame(frame: Dict[str, Any], game_id: str) -> Dict[s
 
     snap = schema.empty_snapshot(game_id, frame.get("date"))
     domains = _clean_domains(frame.get("domains") or [])
+    unsupported = sorted(set(domains) - SUPPORTED_SNAPSHOT_DOMAINS)
+    if unsupported:
+        raise ValueError(
+            "collector snapshot claims unsupported domains: "
+            + ",".join(unsupported)
+        )
     snap["provenance"]["collector"] = _collector_provenance(frame, domains)
     _fold_country_identity(snap, frame.get("countries") or {})
     _fold_country_scalars(snap, frame.get("countries") or {})
@@ -667,6 +681,7 @@ def _has_country_scalar_rows(countries: Any) -> bool:
 
 __all__ = [
     "COLLECTOR_ABI_VERSION", "COLLECTOR_BACKEND", "FRAME_TYPES",
+    "SUPPORTED_SNAPSHOT_DOMAINS",
     "latest_verified_root_probe", "make_heartbeat_frame", "read_collector_jsonl",
     "snapshot_from_collector_frame", "snapshot_from_root_probe_frame",
     "validate_collector_frame",
