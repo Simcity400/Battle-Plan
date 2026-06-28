@@ -35,6 +35,41 @@ class TestCollectorSession(unittest.TestCase):
         ).hexdigest()[:16]
         self.assertEqual(instance_id, expected)
 
+    def test_collector_frame_payload_summary_counts_map_rows(self):
+        summary = cs._collector_frame_payload_summary([
+            {
+                "domains": ["clock", "state_control", "province_control"],
+                "countries": {"GER": {}, "ENG": {}},
+                "states": {"1": {"controller": "GER"}},
+                "provinces": {
+                    "11": {"controller": "GER"},
+                    "12": {"controller": "ENG"},
+                },
+            },
+            {
+                "domains": ["clock", "state_ownership"],
+                "countries": {"GER": {}},
+                "states": {
+                    "1": {"owner": "GER"},
+                    "2": {"owner": "ENG"},
+                },
+            },
+        ])
+
+        self.assertEqual(
+            summary["domains_seen"],
+            ["clock", "province_control", "state_control", "state_ownership"],
+        )
+        self.assertEqual(summary["frames_with_countries"], 2)
+        self.assertEqual(summary["frames_with_states"], 2)
+        self.assertEqual(summary["frames_with_provinces"], 1)
+        self.assertEqual(summary["max_country_rows"], 2)
+        self.assertEqual(summary["max_state_rows"], 2)
+        self.assertEqual(summary["max_province_rows"], 2)
+        self.assertEqual(summary["state_control_frames"], 1)
+        self.assertEqual(summary["province_control_frames"], 1)
+        self.assertEqual(summary["state_ownership_frames"], 1)
+
     def test_session_wraps_probe_manifest_with_lifecycle_frames(self):
         original_record_probes = cs.record_probes
         try:

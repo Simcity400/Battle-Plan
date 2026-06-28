@@ -111,6 +111,20 @@ def validate_collector_frame(frame: Any) -> List[str]:
         else:
             problems.extend(_validate_country_rows(countries))
 
+    states = frame.get("states")
+    if states is not None:
+        if not isinstance(states, dict):
+            problems.append(f"collector frame states {states!r} not dict|null")
+        else:
+            problems.extend(_validate_state_rows(states))
+
+    provinces = frame.get("provinces")
+    if provinces is not None:
+        if not isinstance(provinces, dict):
+            problems.append(f"collector frame provinces {provinces!r} not dict|null")
+        else:
+            problems.extend(_validate_province_rows(provinces))
+
     root_probe = frame.get("root_probe")
     if root_probe is not None:
         if not isinstance(root_probe, dict):
@@ -176,12 +190,23 @@ def snapshot_from_root_probe_frame(frame: Dict[str, Any], game_id: str) -> Dict[
         domains.append("country_identity")
     if _has_country_scalar_rows(frame_countries):
         domains.append("country_scalars")
+    frame_states = frame.get("states") or {}
+    if _has_state_owner_rows(frame_states):
+        domains.append("state_ownership")
+    if _has_state_control_rows(frame_states):
+        domains.append("state_control")
+    frame_provinces = frame.get("provinces") or {}
+    if _has_province_control_rows(frame_provinces):
+        domains.append("province_control")
 
     snap = schema.empty_snapshot(game_id, date)
     snap["provenance"]["collector"] = _collector_provenance(frame, domains)
     snap["provenance"]["collector"]["root_probe"] = root_probe
     _fold_country_identity(snap, frame_countries)
     _fold_country_scalars(snap, frame_countries)
+    _fold_state_rows(snap, frame_states, domains)
+    _fold_province_rows(snap, frame_provinces, domains)
+    _fill_map_mirrors(snap)
     world = snap.get("world")
     if not isinstance(world, dict):
         world = schema.empty_world()
@@ -215,6 +240,9 @@ def snapshot_from_collector_frame(frame: Dict[str, Any], game_id: str) -> Dict[s
     snap["provenance"]["collector"] = _collector_provenance(frame, domains)
     _fold_country_identity(snap, frame.get("countries") or {})
     _fold_country_scalars(snap, frame.get("countries") or {})
+    _fold_state_rows(snap, frame.get("states") or {}, domains)
+    _fold_province_rows(snap, frame.get("provinces") or {}, domains)
+    _fill_map_mirrors(snap)
 
     schema_problems = schema.validate_snapshot(snap)
     if schema_problems:
@@ -350,6 +378,57 @@ def _valid_hex_pointer(value: Any) -> bool:
         return False
 
 
+def _validate_state_rows(states: Dict[str, Any]) -> List[str]:
+    problems: List[str] = []
+    for sid, row in states.items():
+        if not _valid_positive_int_key(sid, max_value=100_000):
+            problems.append(f"collector frame state key {sid!r} not valid positive id")
+            continue
+        if not isinstance(row, dict):
+            problems.append(f"collector frame state {sid!r} not a dict")
+            continue
+        for key in ("owner", "controller"):
+            value = row.get(key)
+            if value is not None and not schema.valid_tag(value):
+                problems.append(
+                    f"collector frame state {sid!r}.{key} not TAG|null")
+    return problems
+
+
+def _validate_province_rows(provinces: Dict[str, Any]) -> List[str]:
+    problems: List[str] = []
+    for pid, row in provinces.items():
+        if not _valid_positive_int_key(pid, max_value=1_000_000):
+            problems.append(f"collector frame province key {pid!r} not valid positive id")
+            continue
+        if not isinstance(row, dict):
+            problems.append(f"collector frame province {pid!r} not a dict")
+            continue
+        controller = row.get("controller")
+        if controller is not None and not schema.valid_tag(controller):
+            problems.append(
+                f"collector frame province {pid!r}.controller not TAG|null")
+        state_id = row.get("state_id")
+        if state_id is not None:
+            if isinstance(state_id, bool) or not isinstance(state_id, int):
+                problems.append(
+                    f"collector frame province {pid!r}.state_id not int|null")
+            elif state_id <= 0 or state_id > 100_000:
+                problems.append(
+                    f"collector frame province {pid!r}.state_id out of range")
+    return problems
+
+
+def _valid_positive_int_key(value: Any, *, max_value: int) -> bool:
+    if isinstance(value, bool):
+        return False
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return False
+    return str(parsed) == str(value) and 1 <= parsed <= max_value
+
+
 def _validate_root_probe(root_probe: Dict[str, Any]) -> List[str]:
     problems: List[str] = []
     status = root_probe.get("status")
@@ -457,6 +536,89 @@ def _fold_country_scalars(snap: Dict[str, Any], countries: Dict[str, Any]) -> No
         convoys = clean.get("convoys")
         if isinstance(convoys, (int, float)):
             military["convoys_count"] = int(round(convoys))
+
+
+def _fold_state_rows(
+    snap: Dict[str, Any],
+    states: Dict[str, Any],
+    domains: Iterable[str],
+) -> None:
+    domain_set = set(domains)
+    fold_owner = "state_ownership" in domain_set
+    fold_controller = "state_control" in domain_set
+    if not (fold_owner or fold_controller):
+        return
+    for sid, row in states.items():
+        if not _valid_positive_int_key(sid, max_value=100_000) or not isinstance(row, dict):
+            continue
+        clean: Dict[str, Any] = {}
+        if fold_owner and "owner" in row:
+            owner = row.get("owner")
+            clean["owner"] = owner if schema.valid_tag(owner) else None
+        if fold_controller and "controller" in row:
+            controller = row.get("controller")
+            clean["controller"] = controller if schema.valid_tag(controller) else None
+        if clean:
+            state = snap["states"].setdefault(str(int(sid)), schema.empty_state())
+            state.update(clean)
+
+
+def _fold_province_rows(
+    snap: Dict[str, Any],
+    provinces: Dict[str, Any],
+    domains: Iterable[str],
+) -> None:
+    if "province_control" not in set(domains):
+        return
+    for pid, row in provinces.items():
+        if not _valid_positive_int_key(pid, max_value=1_000_000) or not isinstance(row, dict):
+            continue
+        clean: Dict[str, Any] = {}
+        if "controller" in row:
+            controller = row.get("controller")
+            clean["controller"] = controller if schema.valid_tag(controller) else None
+        state_id = row.get("state_id")
+        if isinstance(state_id, int) and not isinstance(state_id, bool):
+            clean["state_id"] = state_id
+        if clean:
+            province = snap["provinces"].setdefault(str(int(pid)), schema.empty_province())
+            province.update(clean)
+
+
+def _fill_map_mirrors(snap: Dict[str, Any]) -> None:
+    owner_by_state = {
+        sid: state.get("owner")
+        for sid, state in (snap.get("states") or {}).items()
+        if isinstance(state, dict) and state.get("owner") is not None
+    }
+    control_by_province = {
+        pid: province.get("controller")
+        for pid, province in (snap.get("provinces") or {}).items()
+        if isinstance(province, dict) and province.get("controller") is not None
+    }
+    snap["map"]["owner_by_state"] = owner_by_state or None
+    snap["map"]["control_by_province"] = control_by_province or None
+
+
+def _has_state_owner_rows(states: Any) -> bool:
+    return isinstance(states, dict) and any(
+        isinstance(row, dict) and "owner" in row
+        for row in states.values()
+    )
+
+
+def _has_state_control_rows(states: Any) -> bool:
+    return isinstance(states, dict) and any(
+        isinstance(row, dict) and "controller" in row
+        for row in states.values()
+    )
+
+
+def _has_province_control_rows(provinces: Any) -> bool:
+    return isinstance(provinces, dict) and any(
+        isinstance(row, dict) and "controller" in row
+        for row in provinces.values()
+    )
 
 
 def _has_present_country_rows(countries: Any) -> bool:

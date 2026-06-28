@@ -93,6 +93,12 @@ Current recorder-facing bridge status:
   from live memory without a country-object heap scan. This is the safe first
   identity bridge needed by later state, province, division, and country-object
   joins. It is not yet the full country-scalar bridge.
+- The collector-frame adapter now has a map-control contract for
+  `state_ownership`, `state_control`, and `province_control` payloads. It folds
+  valid state/province rows into schema snapshots, mirrors province control into
+  the map block, and records raw-frame row-count summaries in the session
+  manifest. Live DLL emission for these domains is still the next implementation
+  step.
 
 ## Definition Of Done
 
@@ -199,6 +205,8 @@ Tasks:
 - Promote the bounded worker into normal long-running session mode.
 - Add explicit start/stop/pause/resume segment records.
 - Persist backpressure and transport-health counters in the manifest.
+- Persist raw-frame payload summaries so large domains like states/provinces
+  prove their row counts without manual frame inspection.
 - Store only basename/profile ids where filesystem identity is needed.
 - Make proof mode fail on non-monotonic time, skipped requested hours, or wall
   time overrun.

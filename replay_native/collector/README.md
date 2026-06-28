@@ -66,6 +66,18 @@ Current country-scalar bridge:
 Political power uses the separate country-record bridge. It is emitted only when
 the record pointer still points at the same validated country object.
 
+Recorder-side map-control contract:
+
+- collector frames may carry `states` rows for `state_ownership` /
+  `state_control` and `provinces` rows for `province_control`;
+- the Python adapter folds only domains explicitly claimed by the frame;
+- non-TAG owner/controller values are rejected before reaching snapshots;
+- province control is mirrored into `map.control_by_province` for replay UI use;
+- session manifests summarize maximum country/state/province row counts across
+  the raw frame stream;
+- the DLL does not emit live map-control rows yet. That needs a bounded
+  root/preflight source and scheduled-hour gating before it is enabled.
+
 Runtime rules:
 
 - read-only observation only;

@@ -397,6 +397,13 @@ Completed in the first repo/live proof pass:
     same-hour frame count, and the fact that canonical snapshots are hour-keyed.
     This keeps 10 ms/sub-hour observations available for later combat, movement,
     and event-stream extraction.
+27. Map-control collector-frame contract added: the Python adapter validates and
+    folds collector `states` / `provinces` payloads for `state_ownership`,
+    `state_control`, and `province_control` domains, mirrors province control
+    into `map.control_by_province`, and refuses raw numeric/non-TAG controller
+    values. Session manifests summarize max country/state/province row counts
+    across the raw frame stream. The DLL still needs a bounded root/preflight
+    source before live map-control emission is enabled.
 
 Next:
 
@@ -407,8 +414,8 @@ Next:
    hook-derived country-object identity path. Normal capture must reduce this to
    cached pointer validation plus direct reads; no heap-wide scans in the
    recorder loop.
-3. Start adding hourly-readable domains to the worker frame, beginning with
-   country/economy roots that can be sampled safely without code patching.
+3. Feed `state_control` and `province_control` from a bounded DLL/preflight path,
+   emitted on scheduled-hour frames rather than every 10 ms raw clock sample.
 4. Promote the speed-five bounded-worker proof into the normal long-running
    recorder path, preserving per-run pipe tokens, sidecar-off worker mode,
    monotonic producer sequence, duplicate snapshot suppression, and manifest

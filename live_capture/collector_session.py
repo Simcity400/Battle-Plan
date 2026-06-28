@@ -412,6 +412,7 @@ def record_collector_session(
         probe_manifest,
         unique_game_hours_only=False,
     )
+    raw_frame_payload_summary = _collector_frame_payload_summary(raw_frames)
     frame_stream_path = _write_collector_frame_stream(
         run_dir,
         "collector_frames.jsonl",
@@ -513,6 +514,7 @@ def record_collector_session(
             "collector_frame_stream": frame_stream_path.name if frame_stream_path else None,
             "raw_collector_frame_count": len(raw_frames),
             "duplicate_game_hour_frame_count": max(0, len(raw_frames) - len(frames)),
+            "collector_frame_payload_summary": raw_frame_payload_summary,
             "canonical_snapshot_step_hours": 1,
             "frame_stream_granularity": {
                 "sample_ms": sample_ms,
@@ -616,6 +618,55 @@ def _frames_from_probe_manifest(
         raise RuntimeError("collector probe frame load failed: "
                            + "; ".join(errors[:8]))
     return frames
+
+
+def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+    domains_seen: set[str] = set()
+    frames_with_states = 0
+    frames_with_provinces = 0
+    frames_with_countries = 0
+    max_country_rows = 0
+    max_state_rows = 0
+    max_province_rows = 0
+    state_control_frames = 0
+    province_control_frames = 0
+    state_ownership_frames = 0
+    for frame in frames:
+        domains = frame.get("domains")
+        if isinstance(domains, list):
+            for domain in domains:
+                if isinstance(domain, str):
+                    domains_seen.add(domain)
+            if "state_control" in domains:
+                state_control_frames += 1
+            if "province_control" in domains:
+                province_control_frames += 1
+            if "state_ownership" in domains:
+                state_ownership_frames += 1
+        countries = frame.get("countries")
+        if isinstance(countries, dict):
+            frames_with_countries += 1
+            max_country_rows = max(max_country_rows, len(countries))
+        states = frame.get("states")
+        if isinstance(states, dict):
+            frames_with_states += 1
+            max_state_rows = max(max_state_rows, len(states))
+        provinces = frame.get("provinces")
+        if isinstance(provinces, dict):
+            frames_with_provinces += 1
+            max_province_rows = max(max_province_rows, len(provinces))
+    return {
+        "domains_seen": sorted(domains_seen),
+        "frames_with_countries": frames_with_countries,
+        "frames_with_states": frames_with_states,
+        "frames_with_provinces": frames_with_provinces,
+        "max_country_rows": max_country_rows,
+        "max_state_rows": max_state_rows,
+        "max_province_rows": max_province_rows,
+        "state_ownership_frames": state_ownership_frames,
+        "state_control_frames": state_control_frames,
+        "province_control_frames": province_control_frames,
+    }
 
 
 def _write_collector_frame_stream(
