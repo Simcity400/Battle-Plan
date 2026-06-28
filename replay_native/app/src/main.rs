@@ -14,6 +14,7 @@
 //! path in source). `--smoke`/`--shot` run one headless frame through the SAME host
 //! compose path so a non-interactive box proves the surface + the architecture.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -341,6 +342,97 @@ fn shot_all_views_command_path(base: &Path, command: Option<&str>) -> Result<Pat
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RawReplayDiagnostics {
+    frame_count: usize,
+    error_count: usize,
+    source_paths: Vec<String>,
+    domains: Vec<String>,
+    first_hour_index: Option<i64>,
+    last_hour_index: Option<i64>,
+    errors: Vec<String>,
+}
+
+impl RawReplayDiagnostics {
+    fn from_timeline(timeline: &Timeline) -> RawReplayDiagnostics {
+        let raw = timeline.raw_index();
+        let mut domains = BTreeSet::new();
+        let mut hours = Vec::new();
+        for frame in raw.frames() {
+            if let Some(domain) = frame.domain.as_deref() {
+                domains.insert(domain.to_string());
+            }
+            if let Some(hour) = frame.hour_index {
+                hours.push(hour);
+            }
+        }
+        hours.sort_unstable();
+        RawReplayDiagnostics {
+            frame_count: raw.frames().len(),
+            error_count: raw.errors().len(),
+            source_paths: raw.source_paths().to_vec(),
+            domains: domains.into_iter().collect(),
+            first_hour_index: hours.first().copied(),
+            last_hour_index: hours.last().copied(),
+            errors: raw.errors().to_vec(),
+        }
+    }
+
+    fn status(&self) -> &'static str {
+        if self.error_count > 0 {
+            "error"
+        } else if self.frame_count > 0 {
+            "available"
+        } else if !self.source_paths.is_empty() {
+            "empty"
+        } else {
+            "none"
+        }
+    }
+
+    fn log_line(&self) -> String {
+        format!(
+            "[app] raw collector: status={} frames={} source_paths={} errors={} domains={} hours={}",
+            self.status(),
+            self.frame_count,
+            list_or_none(&self.source_paths),
+            self.error_count,
+            list_or_none(&self.domains),
+            hour_span(self.first_hour_index, self.last_hour_index)
+        )
+    }
+}
+
+fn emit_raw_replay_diagnostics(timeline: &Timeline) {
+    let diagnostics = RawReplayDiagnostics::from_timeline(timeline);
+    eprintln!("{}", diagnostics.log_line());
+    for error in diagnostics.errors.iter().take(3) {
+        eprintln!("[app] raw collector error: {error}");
+    }
+    if diagnostics.errors.len() > 3 {
+        eprintln!(
+            "[app] raw collector error: {} additional error(s)",
+            diagnostics.errors.len() - 3
+        );
+    }
+}
+
+fn list_or_none(values: &[String]) -> String {
+    if values.is_empty() {
+        "<none>".to_string()
+    } else {
+        values.join(",")
+    }
+}
+
+fn hour_span(first: Option<i64>, last: Option<i64>) -> String {
+    match (first, last) {
+        (Some(first), Some(last)) if first == last => first.to_string(),
+        (Some(first), Some(last)) => format!("{first}..{last}"),
+        _ => "<none>".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,7 +442,10 @@ mod tests {
     };
     use app::views::digest::bound_digest;
     use gui_runtime::GuiFile;
+    use snapshot::{pack, PackEntry, PackIdentity};
     use std::collections::HashMap;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     const TEST_ALPHA: ViewId = ViewId("test.alpha");
     const TEST_BETA: ViewId = ViewId("test.beta");
@@ -384,6 +479,173 @@ mod tests {
         registry.insert_view(&BETA_DESC);
         registry.insert_view(&ALPHA_DESC);
         registry
+    }
+
+    struct TempReplay {
+        path: PathBuf,
+    }
+
+    impl Drop for TempReplay {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+
+    fn replay_store_with_raw(raw_jsonl: Option<&str>, suffix: &str) -> (TempReplay, Store, String) {
+        let game = "g".to_string();
+        let snap_a = serde_json::json!({
+            "schema_version": "1",
+            "game_id": "g",
+            "date": "1940.1.1.12",
+            "hour_index": 100,
+            "countries": { "GER": { "politics": { "political_power": 10.0 } } },
+            "states": {}
+        });
+        let snap_b = serde_json::json!({
+            "schema_version": "1",
+            "game_id": "g",
+            "date": "1940.1.1.13",
+            "hour_index": 200,
+            "countries": { "GER": { "politics": { "political_power": 20.0 } } },
+            "states": {}
+        });
+        let index = serde_json::json!({
+            "game_id": "g",
+            "schema_version": "1",
+            "snapshots": [
+                { "hour_index": 100, "date": "1940.1.1.12", "file": "000000000100.snapshot.json" },
+                { "hour_index": 200, "date": "1940.1.1.13", "file": "000000000200.snapshot.json" }
+            ]
+        });
+        let mut entries = vec![
+            PackEntry {
+                path: format!("payload/{game}/index.json"),
+                bytes: serde_json::to_vec(&index).unwrap(),
+                role: "index",
+                hour_index: None,
+            },
+            PackEntry {
+                path: format!("payload/{game}/000000000100.snapshot.json"),
+                bytes: serde_json::to_vec(&snap_a).unwrap(),
+                role: "snapshot",
+                hour_index: Some(100),
+            },
+            PackEntry {
+                path: format!("payload/{game}/000000000200.snapshot.json"),
+                bytes: serde_json::to_vec(&snap_b).unwrap(),
+                role: "snapshot",
+                hour_index: Some(200),
+            },
+        ];
+        if let Some(raw_jsonl) = raw_jsonl {
+            entries.push(PackEntry {
+                path: format!("payload/{game}/collector_raw/collector_frames.jsonl"),
+                bytes: raw_jsonl.as_bytes().to_vec(),
+                role: "collector_raw_stream",
+                hour_index: None,
+            });
+        }
+        let bytes = pack(
+            &game,
+            &entries,
+            &PackIdentity {
+                schema_version: Some("1".into()),
+                ..Default::default()
+            },
+            true,
+        )
+        .unwrap();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "replay_app_raw_{suffix}_{}_{}.battleplan",
+            std::process::id(),
+            nanos
+        ));
+        fs::write(&path, bytes).unwrap();
+        let store = Store::open(&path);
+        (TempReplay { path }, store, game)
+    }
+
+    #[test]
+    fn raw_replay_diagnostics_reports_present_stream_without_changing_timeline() {
+        let raw = r#"{"type":"domain_delta","hour_index":100,"tick_ms":2,"sequence":2,"domain":"divisions"}
+{"type":"gap","hour_index":200,"tick_ms":5,"sequence":3,"domain":"land_combats","reason":"bridge_not_ready"}
+{"type":"domain_delta","hour_index":100,"tick_ms":1,"sequence":1,"domain":"clock"}
+"#;
+        let (_tmp, store, game) = replay_store_with_raw(Some(raw), "present");
+        let mut timeline = Timeline::open(store, game, 4).unwrap();
+
+        let diagnostics = RawReplayDiagnostics::from_timeline(&timeline);
+
+        assert_eq!(timeline.hours(), &[100, 200]);
+        assert_eq!(timeline.seek_to(0).unwrap().hour_index, 100);
+        assert_eq!(timeline.step(Dir::Forward).unwrap().hour_index, 200);
+        assert_eq!(diagnostics.status(), "available");
+        assert_eq!(diagnostics.frame_count, 3);
+        assert_eq!(diagnostics.error_count, 0);
+        assert_eq!(
+            diagnostics.source_paths,
+            vec!["payload/g/collector_raw/collector_frames.jsonl"]
+        );
+        assert_eq!(
+            diagnostics.domains,
+            vec!["clock", "divisions", "land_combats"]
+        );
+        assert_eq!(diagnostics.first_hour_index, Some(100));
+        assert_eq!(diagnostics.last_hour_index, Some(200));
+        assert_eq!(
+            diagnostics.log_line(),
+            "[app] raw collector: status=available frames=3 source_paths=payload/g/collector_raw/collector_frames.jsonl errors=0 domains=clock,divisions,land_combats hours=100..200"
+        );
+    }
+
+    #[test]
+    fn raw_replay_diagnostics_reports_absent_stream_as_none() {
+        let (_tmp, store, game) = replay_store_with_raw(None, "absent");
+        let mut timeline = Timeline::open(store, game, 4).unwrap();
+
+        let diagnostics = RawReplayDiagnostics::from_timeline(&timeline);
+
+        assert_eq!(timeline.hours(), &[100, 200]);
+        assert_eq!(timeline.seek_to(0).unwrap().hour_index, 100);
+        assert_eq!(diagnostics.status(), "none");
+        assert_eq!(diagnostics.frame_count, 0);
+        assert_eq!(diagnostics.error_count, 0);
+        assert!(diagnostics.source_paths.is_empty());
+        assert_eq!(
+            diagnostics.log_line(),
+            "[app] raw collector: status=none frames=0 source_paths=<none> errors=0 domains=<none> hours=<none>"
+        );
+    }
+
+    #[test]
+    fn raw_replay_diagnostics_reports_raw_parse_error_but_keeps_hourly_replay_open() {
+        let raw = r#"{"type":"domain_delta","hour_index":100,"tick_ms":1,"sequence":1,"domain":"clock"}
+not json
+"#;
+        let (_tmp, store, game) = replay_store_with_raw(Some(raw), "malformed");
+        let mut timeline = Timeline::open(store, game, 4).unwrap();
+
+        let diagnostics = RawReplayDiagnostics::from_timeline(&timeline);
+
+        assert_eq!(timeline.hours(), &[100, 200]);
+        assert_eq!(timeline.seek_to(0).unwrap().hour_index, 100);
+        assert_eq!(diagnostics.status(), "error");
+        assert_eq!(diagnostics.frame_count, 0);
+        assert_eq!(diagnostics.error_count, 1);
+        assert!(diagnostics.source_paths.is_empty());
+        assert!(
+            diagnostics.errors[0].contains("line 2"),
+            "raw parse error should identify the failed JSONL line"
+        );
+        assert_eq!(
+            diagnostics.log_line(),
+            "[app] raw collector: status=error frames=0 source_paths=<none> errors=1 domains=<none> hours=<none>"
+        );
     }
 
     fn synthetic_topbar_gui() -> GuiFile {
@@ -1642,6 +1904,7 @@ fn main() {
         timeline.len(),
         timeline.hours()
     );
+    emit_raw_replay_diagnostics(&timeline);
 
     let first_frame = timeline.seek_to(0).unwrap_or_else(|e| {
         eprintln!("[app] BLOCKER: seek first snapshot: {e}");
