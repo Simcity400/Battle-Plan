@@ -156,7 +156,13 @@ current product status and acceptance gates, and
   research-slot rows, captured 15687 live base-denominator rows, verified
   replay output, and kept worker polls free of research payloads. The manifest
   recorded 15263 persisted live-progress rows, 15263 DLL-base progress rows,
-  and 346 ETA rows after the daily progress movement. `progress_units` remains
+  and 346 ETA rows after the daily progress movement. A current-game rerun
+  `replay/snapshots/_collector_session_research_denominator_gate/20260629T204418Z_pid43412`
+  used a no-cold tech-definition cache hit in 0.109s, advanced 36 game hours in
+  52.344 wall seconds, emitted 38 scheduled `tech_live` frames, captured 16562
+  named active research-slot rows and 16126 DLL-base progress rows, produced 708
+  ETA rows after two positive progress-delta frames, verified replay output, and
+  kept worker polls free of research payloads. `progress_units` remains
   source-badged to `CResearchSlot+0x38` and is not accepted as moving live
   progress; effective modifier aggregation remains unclaimed.
   Worker polls must not carry research payloads.

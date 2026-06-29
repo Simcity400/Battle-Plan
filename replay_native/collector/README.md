@@ -206,7 +206,12 @@ Scheduled country research:
   across 36 game hours, captured 15687 named active research-slot rows and 15687
   live base-denominator rows with up to 424 rows per frame, produced 346
   derived ETA rows after a positive daily progress delta, verified replay
-  output, and kept research payloads off worker polls;
+  output, and kept research payloads off worker polls. A current-game rerun
+  `replay/snapshots/_collector_session_research_denominator_gate/20260629T204418Z_pid43412`
+  hit the tech-definition cache in 0.109s, emitted 38 scheduled `tech_live`
+  frames across 36 game hours, captured 16562 named active research-slot rows,
+  16126 DLL-base progress rows, and 708 ETA rows, verified replay output, and
+  kept research payloads off worker polls;
 - worker-poll frames stay light and must not carry research payloads.
 
 Scheduled special projects:

@@ -1127,7 +1127,13 @@ research-slot rows and 15687 live base-denominator rows with up to 424 rows per
 frame, verified replay output, and kept research payloads off worker-poll
 frames. The manifest recorded 15263 persisted live-progress rows, 15263
 DLL-base progress rows, one moving-progress delta frame with 346 rows, and 346
-ETA rows. The static denominator audit recorded
+ETA rows. A current-game rerun
+`replay/snapshots/_collector_session_research_denominator_gate/20260629T204418Z_pid43412`
+advanced 36 game hours in 52.344 wall seconds with a no-cold tech-definition
+cache hit, emitted 38 scheduled `tech_live` frames, captured 16562 named active
+research-slot rows, 16126 DLL-base progress rows, two moving-progress delta
+frames with 708 rows, and 708 ETA rows, verified replay output, and kept
+research payloads off worker-poll frames. The static denominator audit recorded
 `game_defs/out/technologies.json`, 557 tech defs, 10 no-cost defs, and base
 points-per-cost 110. The older `progress_units` remains source-badged but is
 not accepted as moving progress; effective research cost/speed modifiers remain
