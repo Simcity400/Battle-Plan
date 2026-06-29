@@ -4497,6 +4497,8 @@ def _validate_country_research_active_rows(tag: str, value: Any) -> List[str]:
         "progress_units",
         "live_progress_raw",
         "live_progress_units",
+        "base_required_points_raw",
+        "base_required_points_units",
     }
     for idx, item in enumerate(value):
         if not isinstance(item, dict):
@@ -4526,6 +4528,7 @@ def _validate_country_research_active_rows(tag: str, value: Any) -> List[str]:
             "tech_def_index_raw",
             "progress_raw",
             "live_progress_raw",
+            "base_required_points_raw",
         ):
             value_raw = item.get(key)
             if value_raw is not None and not _valid_bounded_int(
@@ -4561,6 +4564,17 @@ def _validate_country_research_active_rows(tag: str, value: Any) -> List[str]:
             problems.append(
                 f"collector frame country {tag!r}.research."
                 f"active_research[{idx}].live_progress_units not finite number in range|null"
+            )
+        base_required_points_units = item.get("base_required_points_units")
+        if base_required_points_units is not None and not (
+            _is_finite_number(base_required_points_units)
+            and 0.0 < float(base_required_points_units)
+            <= COUNTRY_RESEARCH_PROGRESS_UNITS_MAX
+        ):
+            problems.append(
+                f"collector frame country {tag!r}.research."
+                "active_research[%d].base_required_points_units "
+                "not finite positive number in range|null" % idx
             )
     return problems
 
@@ -5745,6 +5759,7 @@ def _clean_country_research_active_rows(value: Any) -> Optional[List[Dict[str, A
             "tech_def_index_raw",
             "progress_raw",
             "live_progress_raw",
+            "base_required_points_raw",
         ):
             raw_value = item.get(key)
             if raw_value is None:
@@ -5778,6 +5793,15 @@ def _clean_country_research_active_rows(value: Any) -> Optional[List[Dict[str, A
             ):
                 return None
             clean["live_progress_units"] = float(live_progress_units)
+        base_required_points_units = item.get("base_required_points_units")
+        if base_required_points_units is not None:
+            if not (
+                _is_finite_number(base_required_points_units)
+                and 0.0 < float(base_required_points_units)
+                <= COUNTRY_RESEARCH_PROGRESS_UNITS_MAX
+            ):
+                return None
+            clean["base_required_points_units"] = float(base_required_points_units)
         out.append(clean)
     return out
 

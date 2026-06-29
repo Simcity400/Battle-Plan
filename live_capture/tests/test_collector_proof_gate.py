@@ -368,6 +368,149 @@ class TestCollectorProofGate(unittest.TestCase):
         self.assertIn("research live progress did not move between frames", errors)
         self.assertIn("research live progress moving rows were not observed", errors)
 
+    def test_accepts_tech_live_static_cost_progress_proof(self):
+        proof = collector_session_proof_summary(
+            _manifest(
+                game_hours_advanced=36,
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock", "country_identity", "tech_live"],
+                    "scheduled_tech_domain_frames": 36,
+                    "frames_with_research_payloads": 36,
+                    "country_rows_with_research_payloads": 12816,
+                    "max_research_active_rows_per_country": 5,
+                    "tech_on_lightweight_frames": 0,
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+                recording_diagnostics={
+                    "collector": {
+                        "research_live_progress": {
+                            "static_cost_progress_frames": 36,
+                            "static_cost_progress_rows": 12000,
+                            "max_static_cost_progress_rows_per_frame": 400,
+                            "progress_unavailable_reasons": {
+                                "ahead_of_time_effective_cost_unavailable": 20,
+                            },
+                        },
+                    },
+                },
+            ),
+            required_scheduled_snapshot_domains=["tech_live"],
+            min_game_hours=36,
+            require_tech_live_static_cost_progress=True,
+        )
+
+        self.assertTrue(proof["ok"])
+        self.assertEqual(proof["errors"], [])
+        self.assertEqual(
+            proof["research_live_progress"]["static_cost_progress_rows"],
+            12000,
+        )
+
+    def test_rejects_missing_tech_live_static_cost_progress_rows(self):
+        errors = collector_session_proof_errors(
+            _manifest(
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock", "country_identity", "tech_live"],
+                    "scheduled_tech_domain_frames": 36,
+                    "frames_with_research_payloads": 36,
+                    "country_rows_with_research_payloads": 12816,
+                    "max_research_active_rows_per_country": 5,
+                    "tech_on_lightweight_frames": 0,
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+                recording_diagnostics={
+                    "collector": {
+                        "research_live_progress": {
+                            "static_cost_progress_frames": 0,
+                            "static_cost_progress_rows": 0,
+                            "max_static_cost_progress_rows_per_frame": 0,
+                        },
+                    },
+                },
+            ),
+            min_game_hours=36,
+            require_tech_live_static_cost_progress=True,
+        )
+
+        self.assertIn(
+            "research static-cost progress frames below required cadence",
+            errors,
+        )
+        self.assertIn(
+            "research static-cost progress rows were not observed",
+            errors,
+        )
+
+    def test_accepts_tech_live_dll_base_progress_proof(self):
+        proof = collector_session_proof_summary(
+            _manifest(
+                game_hours_advanced=36,
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock", "country_identity", "tech_live"],
+                    "scheduled_tech_domain_frames": 36,
+                    "frames_with_research_payloads": 36,
+                    "country_rows_with_research_payloads": 12816,
+                    "max_research_active_rows_per_country": 5,
+                    "tech_on_lightweight_frames": 0,
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+                recording_diagnostics={
+                    "collector": {
+                        "research_live_progress": {
+                            "dll_base_required_progress_frames": 36,
+                            "dll_base_required_progress_rows": 12000,
+                            "max_dll_base_required_progress_rows_per_frame": 400,
+                        },
+                    },
+                },
+            ),
+            required_scheduled_snapshot_domains=["tech_live"],
+            min_game_hours=36,
+            require_tech_live_dll_base_progress=True,
+        )
+
+        self.assertTrue(proof["ok"])
+        self.assertEqual(proof["errors"], [])
+        self.assertEqual(
+            proof["research_live_progress"]["dll_base_required_progress_rows"],
+            12000,
+        )
+
+    def test_rejects_missing_tech_live_dll_base_progress_rows(self):
+        errors = collector_session_proof_errors(
+            _manifest(
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock", "country_identity", "tech_live"],
+                    "scheduled_tech_domain_frames": 36,
+                    "frames_with_research_payloads": 36,
+                    "country_rows_with_research_payloads": 12816,
+                    "max_research_active_rows_per_country": 5,
+                    "tech_on_lightweight_frames": 0,
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+                recording_diagnostics={
+                    "collector": {
+                        "research_live_progress": {
+                            "dll_base_required_progress_frames": 0,
+                            "dll_base_required_progress_rows": 0,
+                            "max_dll_base_required_progress_rows_per_frame": 0,
+                        },
+                    },
+                },
+            ),
+            min_game_hours=36,
+            require_tech_live_dll_base_progress=True,
+        )
+
+        self.assertIn(
+            "research DLL-base progress frames below required cadence",
+            errors,
+        )
+        self.assertIn(
+            "research DLL-base progress rows were not observed",
+            errors,
+        )
+
     def test_accepts_tech_live_eta_proof(self):
         proof = collector_session_proof_summary(
             _manifest(

@@ -145,14 +145,20 @@ for inspection, with no ability to mutate the game.
   research-slot vector and uses the cache-first live tech-definition bridge to
   resolve `tech_name` without saves. Moving live progress is now proven from
   `CResearchSlot+0x18 -> CTechnology+0x198` as
-  `live_progress_raw/live_progress_units`; the older `progress_units` remains
-  source-badged but is not accepted as moving progress. The combined proof
-  `replay/snapshots/_collector_session_research_name_gate/20260629T184728Z_pid43412`
-  advanced 36 game hours in 51.219 wall seconds with a no-cold cache hit,
-  emitted 37 scheduled `tech_live` frames, captured 15609 named active
-  research-slot rows and 15609 live-progress rows with up to 422 rows per
-  frame, verified replay output, kept research payloads off worker-poll frames,
-  and produced 340 derived ETA rows after a positive daily progress delta.
+  `live_progress_raw/live_progress_units`, and base denominator is now proven
+  from `CTechnology+0x160 -> CTechnologyTemplate+0x3e0` as
+  `base_required_points_raw/base_required_points_units`; the older
+  `progress_units` remains source-badged but is not accepted as moving
+  progress. The combined proof
+  `replay/snapshots/_collector_session_research_denominator_gate/20260629T192125Z_pid43412`
+  advanced 36 game hours in 48.125 wall seconds with a no-cold cache hit,
+  emitted 37 scheduled `tech_live` frames, captured 15687 named active
+  research-slot rows and 15687 live base-denominator rows with up to 424 rows
+  per frame, verified replay output, kept research payloads off worker-poll
+  frames, produced 346 derived ETA rows after a positive daily progress delta,
+  and recorded the static denominator audit `{tech_count=557,
+  no_research_cost_count=10, base_research_points_per_cost=110}`. Effective
+  cost/speed modifiers remain unclaimed until separately pinned.
 - DLL-native raw `land_combats` lifecycle capture is proven at speed five for
   the raw replay stream: the 2026-06-29 pid 43412 proof
   `replay/snapshots/_collector_session_diplomacy_gate/20260629T152734Z_pid43412`

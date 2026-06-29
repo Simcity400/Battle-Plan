@@ -51,6 +51,8 @@ def collector_session_proof_errors(
     require_production_construction: bool = False,
     require_tech_live_names: bool = False,
     require_tech_live_progress: bool = False,
+    require_tech_live_static_cost_progress: bool = False,
+    require_tech_live_dll_base_progress: bool = False,
     require_tech_live_eta: bool = False,
 ) -> List[str]:
     errors: List[str] = []
@@ -237,6 +239,71 @@ def collector_session_proof_errors(
             errors.append("research live progress moving rows were not observed")
         if _as_int(summary.get("tech_on_lightweight_frames")) not in (0, None):
             errors.append("research payloads appeared on lightweight frames")
+    if require_tech_live_static_cost_progress:
+        scheduled = _scheduled_domain_frame_count(summary, "tech_live")
+        required_frames = int(min_game_hours or 1)
+        if scheduled is None or scheduled < required_frames:
+            errors.append(
+                "tech live static-cost progress proof scheduled frames "
+                f"{scheduled!r} below required {required_frames}"
+            )
+        if _as_int(summary.get("frames_with_research_payloads")) in (None, 0):
+            errors.append("research payload frames were not observed")
+        if _as_int(summary.get("country_rows_with_research_payloads")) in (None, 0):
+            errors.append("country research rows were not observed")
+        if _as_int(summary.get("max_research_active_rows_per_country")) in (None, 0):
+            errors.append("active research rows were not observed")
+        if _as_int(summary.get("tech_on_lightweight_frames")) not in (0, None):
+            errors.append("research payloads appeared on lightweight frames")
+        research_progress = _research_live_progress_summary(manifest)
+        static_cost_progress_frames = _as_int(
+            research_progress.get("static_cost_progress_frames")
+        )
+        if (
+            static_cost_progress_frames is None
+            or static_cost_progress_frames < required_frames
+        ):
+            errors.append("research static-cost progress frames below required cadence")
+        if _as_int(research_progress.get("static_cost_progress_rows")) in (None, 0):
+            errors.append("research static-cost progress rows were not observed")
+        if _as_int(
+            research_progress.get("max_static_cost_progress_rows_per_frame")
+        ) in (None, 0):
+            errors.append("research static-cost progress rows were empty in every frame")
+    if require_tech_live_dll_base_progress:
+        scheduled = _scheduled_domain_frame_count(summary, "tech_live")
+        required_frames = int(min_game_hours or 1)
+        if scheduled is None or scheduled < required_frames:
+            errors.append(
+                "tech live DLL-base progress proof scheduled frames "
+                f"{scheduled!r} below required {required_frames}"
+            )
+        if _as_int(summary.get("frames_with_research_payloads")) in (None, 0):
+            errors.append("research payload frames were not observed")
+        if _as_int(summary.get("country_rows_with_research_payloads")) in (None, 0):
+            errors.append("country research rows were not observed")
+        if _as_int(summary.get("max_research_active_rows_per_country")) in (None, 0):
+            errors.append("active research rows were not observed")
+        if _as_int(summary.get("tech_on_lightweight_frames")) not in (0, None):
+            errors.append("research payloads appeared on lightweight frames")
+        research_progress = _research_live_progress_summary(manifest)
+        dll_base_progress_frames = _as_int(
+            research_progress.get("dll_base_required_progress_frames")
+        )
+        if (
+            dll_base_progress_frames is None
+            or dll_base_progress_frames < required_frames
+        ):
+            errors.append("research DLL-base progress frames below required cadence")
+        if _as_int(research_progress.get("dll_base_required_progress_rows")) in (
+            None,
+            0,
+        ):
+            errors.append("research DLL-base progress rows were not observed")
+        if _as_int(
+            research_progress.get("max_dll_base_required_progress_rows_per_frame")
+        ) in (None, 0):
+            errors.append("research DLL-base progress rows were empty in every frame")
     if require_tech_live_eta:
         scheduled = _scheduled_domain_frame_count(summary, "tech_live")
         required_frames = int(min_game_hours or 1)
@@ -280,6 +347,8 @@ def collector_session_proof_summary(
     require_production_construction: bool = False,
     require_tech_live_names: bool = False,
     require_tech_live_progress: bool = False,
+    require_tech_live_static_cost_progress: bool = False,
+    require_tech_live_dll_base_progress: bool = False,
     require_tech_live_eta: bool = False,
 ) -> Dict[str, Any]:
     summary = _payload_summary(manifest)
@@ -297,6 +366,8 @@ def collector_session_proof_summary(
         require_production_construction=require_production_construction,
         require_tech_live_names=require_tech_live_names,
         require_tech_live_progress=require_tech_live_progress,
+        require_tech_live_static_cost_progress=require_tech_live_static_cost_progress,
+        require_tech_live_dll_base_progress=require_tech_live_dll_base_progress,
         require_tech_live_eta=require_tech_live_eta,
     )
     hourly = manifest.get("hourly_requirement") or {}
@@ -487,6 +558,16 @@ def _main(argv: Optional[List[str]] = None) -> int:
         help="require positive scheduled live research rows and moving live progress",
     )
     parser.add_argument(
+        "--require-tech-live-static-cost-progress",
+        action="store_true",
+        help="require replay-written live research progress fractions from static tech cost",
+    )
+    parser.add_argument(
+        "--require-tech-live-dll-base-progress",
+        action="store_true",
+        help="require replay-written live research progress fractions from DLL base denominator",
+    )
+    parser.add_argument(
         "--require-tech-live-eta",
         action="store_true",
         help="require replay-written live research speed and ETA rows",
@@ -508,6 +589,10 @@ def _main(argv: Optional[List[str]] = None) -> int:
         require_production_construction=args.require_production_construction,
         require_tech_live_names=args.require_tech_live_names,
         require_tech_live_progress=args.require_tech_live_progress,
+        require_tech_live_static_cost_progress=(
+            args.require_tech_live_static_cost_progress
+        ),
+        require_tech_live_dll_base_progress=args.require_tech_live_dll_base_progress,
         require_tech_live_eta=args.require_tech_live_eta,
     )
     print(json.dumps(proof, indent=2, sort_keys=True))

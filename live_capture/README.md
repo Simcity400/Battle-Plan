@@ -137,18 +137,23 @@ current product status and acceptance gates, and
   vector and emits raw slot rows plus `progress_units = progress_raw / 1000`.
   It also follows each active slot's `CResearchSlot+0x18` active-tech pointer
   and emits moving `live_progress_raw/live_progress_units` from
-  `CTechnology+0x198`.
+  `CTechnology+0x198`. It reads the base denominator from the same active tech
+  via `CTechnology+0x160 -> CTechnologyTemplate+0x3e0`, scaled through the
+  engine's `TECH_BASE_COST` helper, and emits
+  `base_required_points_raw/base_required_points_units`. This is base progress
+  denominator data, not an effective-cost modifier or research-speed claim.
   When `--preflight-tech-defs` or an explicit `tech_def_filter` supplies a
   validated live registry map, those rows may also carry `tech_name`. Current
   no-cold proof
-  `replay/snapshots/_collector_session_research_name_gate/20260629T184728Z_pid43412`
-  used the tech-definition cache, advanced 36 game hours in 51.219 wall
-  seconds, emitted 37 scheduled `tech_live` frames, captured 15609 named active
-  research-slot rows, captured 15609 live-progress slot rows, verified replay
-  output, and kept worker polls free of research payloads. The manifest recorded
-  15187 persisted live-progress rows and 340 ETA rows after the daily progress
-  movement. `progress_units` remains source-badged to `CResearchSlot+0x38` and
-  is not accepted as moving live progress.
+  `replay/snapshots/_collector_session_research_denominator_gate/20260629T192125Z_pid43412`
+  used the tech-definition cache, advanced 36 game hours in 48.125 wall
+  seconds, emitted 37 scheduled `tech_live` frames, captured 15687 named active
+  research-slot rows, captured 15687 live base-denominator rows, verified
+  replay output, and kept worker polls free of research payloads. The manifest
+  recorded 15263 persisted live-progress rows, 15263 DLL-base progress rows,
+  and 346 ETA rows after the daily progress movement. `progress_units` remains
+  source-badged to `CResearchSlot+0x38` and is not accepted as moving live
+  progress; effective modifier aggregation remains unclaimed.
   Worker polls must not carry research payloads.
   It can fold scheduled `projects_live` frames into top-level
   `special_projects` with `source = "C"`. The normal session path can now
@@ -205,9 +210,9 @@ python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/ta
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_economy_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain production_live --require-domain fuel_live --require-domain country_misc --require-domain country_scalars
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_construction_gate --game-id construction_queue_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_construction_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain production_live --require-production-construction
-python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_research_name_gate --game-id research_name_cache_bootstrap --duration-s 8 --sample-ms 10 --until-game-hours 1 --max-wall-s 240 --preflight-tech-defs --allow-tech-def-cold-scan
-python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_research_name_gate --game-id research_names_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300 --preflight-tech-defs
-python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_research_name_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain tech_live --require-tech-live-names
+python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_research_denominator_gate --game-id research_denominator_cache_bootstrap --duration-s 8 --sample-ms 10 --until-game-hours 1 --max-wall-s 240 --preflight-tech-defs --allow-tech-def-cold-scan
+python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_research_denominator_gate --game-id research_denominator_dll_base_live --duration-s 240 --sample-ms 10 --until-game-hours 36 --max-wall-s 300 --preflight-tech-defs
+python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_research_denominator_gate/<run-dir>/session_manifest.json --min-game-hours 36 --require-scheduled-domain tech_live --require-tech-live-names --require-tech-live-progress --require-tech-live-dll-base-progress --require-tech-live-eta
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_buildings_gate --game-id buildings_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_buildings_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain buildings_live
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_diplomacy_gate --game-id diplomacy_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300

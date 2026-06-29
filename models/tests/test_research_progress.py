@@ -95,6 +95,42 @@ def test_live_slot_can_compute_eta_when_live_speed_is_present():
     assert slot["eta_days"] == math.ceil(82.5 / 1.5)
 
 
+def test_live_slot_prefers_dll_base_required_points():
+    research = {
+        "in_progress_live": [{
+            "slot_index": 0,
+            "live_progress_units": 55.0,
+            "base_required_points_units": 110.0,
+        }],
+    }
+
+    RP.enrich_country_research_progress(research, None, current_year=1936)
+
+    slot = research["in_progress_live"][0]
+    assert slot["required_points_base"] == 110.0
+    assert slot["remaining_points_base"] == 55.0
+    assert slot["progress_pct"] == 0.5
+    assert slot["progress_basis"] == \
+        "live_progress_units/dll_base_required_points"
+
+
+def test_live_slot_beyond_dll_base_required_points_fails_closed():
+    research = {
+        "in_progress_live": [{
+            "slot_index": 0,
+            "live_progress_units": 111.0,
+            "base_required_points_units": 110.0,
+        }],
+    }
+
+    RP.enrich_country_research_progress(research, None, current_year=1936)
+
+    slot = research["in_progress_live"][0]
+    assert "progress_pct" not in slot
+    assert slot["progress_unavailable_reason"] == \
+        "progress_exceeds_dll_base_required_points"
+
+
 def test_save_slot_missing_active_progress_fails_closed():
     research = {
         "in_progress": [{

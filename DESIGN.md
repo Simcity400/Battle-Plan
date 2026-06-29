@@ -219,18 +219,24 @@ Implemented in the current bridge:
   `CTechnologyStatus+0xA0` `CResearchSlot*` vector before emitting, and the
   Python adapter folds the values into `countries.*.research.tech_count`,
   `.research_slots`, and `.in_progress_live`. Tech-token resolution is now
-  proven through the cache-first live tech-definition bridge: the
-  `replay/snapshots/_collector_session_research_name_gate/20260629T184728Z_pid43412`
-  proof advanced 36 game hours in 51.219 wall seconds, used a no-cold cache hit
-  for the tech-definition bridge, emitted 37 scheduled `tech_live` frames,
-  captured 15609 named active research-slot rows, captured 15609
-  `CTechnology+0x198` live progress rows, verified replay output, and kept
-  research payloads off worker polls. The older `progress_units` field remains
-  source-badged to `CResearchSlot+0x38` and is not accepted as moving progress;
-  moving progress now comes from `live_progress_raw/live_progress_units`
-  (`CResearchSlot+0x18 -> CTechnology+0x198`). The same proof produced 15187
-  persisted live-progress rows and 340 derived ETA rows after a daily progress
-  movement, while still sampling at hourly scheduled cadence;
+  proven through the cache-first live tech-definition bridge. Moving progress
+  comes from `live_progress_raw/live_progress_units`
+  (`CResearchSlot+0x18 -> CTechnology+0x198`), while the base denominator comes
+  from the same active tech through
+  `CTechnology+0x160 -> CTechnologyTemplate+0x3e0` as
+  `base_required_points_raw/base_required_points_units`; this is not an
+  effective-cost modifier claim. The
+  `replay/snapshots/_collector_session_research_denominator_gate/20260629T192125Z_pid43412`
+  proof advanced 36 game hours in 48.125 wall seconds, used a no-cold cache hit
+  for a 552-row tech-definition bridge, emitted 37 scheduled `tech_live`
+  frames, captured 15687 named active research-slot rows and 15687 live base
+  denominator rows, verified replay output, and kept research payloads off
+  worker polls. The manifest recorded 15263 persisted live-progress rows, 15263
+  DLL-base progress rows, 346 ETA rows after a daily progress movement, and the
+  static denominator audit `{path=game_defs/out/technologies.json, tech_count=557,
+  no_research_cost_count=10, base_research_points_per_cost=110}`. The older
+  `progress_units` field remains source-badged to `CResearchSlot+0x38` and is
+  not accepted as moving progress;
 - collector-frame adapter contract for `state_ownership`, `state_control`, and
   `province_control`, including TAG validation and session row-count summaries;
 - static DLL map-control path through `CGameState+0x2B0` `CProvince*` rows:

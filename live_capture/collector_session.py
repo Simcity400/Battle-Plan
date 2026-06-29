@@ -119,6 +119,7 @@ class CollectorFrameSession:
         self._last_snapshot: Optional[Dict[str, Any]] = None
         self._research_tech_defs_loaded = False
         self._research_tech_defs: Optional[Dict[str, Any]] = None
+        self._research_static_tech_defs = _empty_research_static_tech_defs_metadata()
         self._research_live_progress = _empty_research_live_progress_stats()
         self._sequences: List[int] = []
         self._sequence_bursts: Dict[int, List[int]] = {}
@@ -263,6 +264,7 @@ class CollectorFrameSession:
             "invalid_frame_errors": list(self.invalid_frame_errors[-8:]),
             "finalize_error": self.finalize_error,
             "transport_sequence": self._transport_sequence_diagnostics(),
+            "research_static_tech_defs": dict(self._research_static_tech_defs),
             "research_live_progress": dict(self._research_live_progress),
         }
         return diagnostics
@@ -277,10 +279,16 @@ class CollectorFrameSession:
             self._research_tech_defs = None
             return None
         try:
-            tech_defs = RP.load_static_tech_defs()
+            path = Path(RP.default_tech_defs_path())
+            tech_defs = RP.load_static_tech_defs(str(path))
         except Exception:
             tech_defs = None
         self._research_tech_defs = tech_defs if isinstance(tech_defs, dict) else None
+        self._research_static_tech_defs = _research_static_tech_defs_metadata(
+            path if "path" in locals() else None,
+            self._research_tech_defs,
+            RP,
+        )
         return self._research_tech_defs
 
     def patch_recording_diagnostics(self, replay_path: str) -> bool:
@@ -359,15 +367,90 @@ def _empty_research_live_progress_stats() -> Dict[str, Any]:
     return {
         "live_progress_frames": 0,
         "live_progress_rows": 0,
+        "static_cost_progress_frames": 0,
+        "static_cost_progress_rows": 0,
+        "dll_base_required_progress_frames": 0,
+        "dll_base_required_progress_rows": 0,
         "speed_frames": 0,
         "speed_rows": 0,
         "eta_frames": 0,
         "eta_rows": 0,
         "max_live_progress_rows_per_frame": 0,
+        "max_static_cost_progress_rows_per_frame": 0,
+        "max_dll_base_required_progress_rows_per_frame": 0,
         "max_speed_rows_per_frame": 0,
         "max_eta_rows_per_frame": 0,
         "max_points_factor_milli": 0,
+        "progress_unavailable_reasons": {},
+        "eta_unavailable_reasons": {},
     }
+
+
+def _empty_research_static_tech_defs_metadata() -> Dict[str, Any]:
+    return {
+        "status": "not_loaded",
+        "path": "game_defs/out/technologies.json",
+        "sha256": None,
+        "tech_count": 0,
+        "no_research_cost_count": 0,
+        "tree_visible_count": 0,
+        "hidden_count": 0,
+        "base_research_points_per_cost": None,
+    }
+
+
+def _research_static_tech_defs_metadata(
+    path: Optional[Path],
+    tech_defs: Optional[Dict[str, Any]],
+    research_progress_module: Any,
+) -> Dict[str, Any]:
+    meta = _empty_research_static_tech_defs_metadata()
+    base_points = getattr(
+        research_progress_module,
+        "BASE_RESEARCH_POINTS_PER_COST",
+        None,
+    )
+    if isinstance(base_points, (int, float)) and not isinstance(base_points, bool):
+        if float(base_points).is_integer():
+            meta["base_research_points_per_cost"] = int(base_points)
+        else:
+            meta["base_research_points_per_cost"] = str(base_points)
+    if path is not None:
+        meta["path"] = _repo_relative_path(path)
+        try:
+            meta["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            meta["status"] = "missing_file"
+            return meta
+    if not isinstance(tech_defs, dict):
+        meta["status"] = "unavailable"
+        return meta
+    meta["status"] = "loaded"
+    meta["tech_count"] = len(tech_defs)
+    meta["no_research_cost_count"] = sum(
+        1
+        for row in tech_defs.values()
+        if isinstance(row, dict) and row.get("research_cost") is None
+    )
+    meta["tree_visible_count"] = sum(
+        1
+        for row in tech_defs.values()
+        if isinstance(row, dict) and row.get("tree_visible") is True
+    )
+    meta["hidden_count"] = sum(
+        1
+        for row in tech_defs.values()
+        if isinstance(row, dict) and row.get("tree_visible") is False
+    )
+    return meta
+
+
+def _repo_relative_path(path: Path) -> str:
+    try:
+        repo_root = Path(__file__).resolve().parents[1]
+        return path.resolve().relative_to(repo_root).as_posix()
+    except (OSError, ValueError):
+        return path.name
 
 
 def _merge_research_live_progress_stats(
@@ -377,6 +460,10 @@ def _merge_research_live_progress_stats(
     for key in (
         "live_progress_frames",
         "live_progress_rows",
+        "static_cost_progress_frames",
+        "static_cost_progress_rows",
+        "dll_base_required_progress_frames",
+        "dll_base_required_progress_rows",
         "speed_frames",
         "speed_rows",
         "eta_frames",
@@ -385,6 +472,8 @@ def _merge_research_live_progress_stats(
         target[key] = int(target.get(key) or 0) + int(source.get(key) or 0)
     for key in (
         "max_live_progress_rows_per_frame",
+        "max_static_cost_progress_rows_per_frame",
+        "max_dll_base_required_progress_rows_per_frame",
         "max_speed_rows_per_frame",
         "max_eta_rows_per_frame",
     ):
@@ -393,6 +482,36 @@ def _merge_research_live_progress_stats(
         int(target.get("max_points_factor_milli") or 0),
         int(source.get("max_points_factor_milli") or 0),
     )
+    _merge_count_map(
+        target,
+        source,
+        "progress_unavailable_reasons",
+    )
+    _merge_count_map(
+        target,
+        source,
+        "eta_unavailable_reasons",
+    )
+
+
+def _merge_count_map(
+    target: Dict[str, Any],
+    source: Dict[str, Any],
+    key: str,
+) -> None:
+    target_map = target.get(key)
+    if not isinstance(target_map, dict):
+        target_map = {}
+        target[key] = target_map
+    source_map = source.get(key)
+    if not isinstance(source_map, dict):
+        return
+    for reason, count in source_map.items():
+        if not isinstance(reason, str):
+            continue
+        if not isinstance(count, int) or isinstance(count, bool):
+            continue
+        target_map[reason] = int(target_map.get(reason) or 0) + int(count)
 
 
 def _derive_research_live_points_factor(
@@ -466,6 +585,8 @@ def _attach_research_live_progress(
 def _snapshot_research_live_progress_stats(snap: Dict[str, Any]) -> Dict[str, Any]:
     stats = _empty_research_live_progress_stats()
     live_progress_rows = 0
+    static_cost_progress_rows = 0
+    dll_base_required_progress_rows = 0
     speed_rows = 0
     eta_rows = 0
     max_points_factor = 0.0
@@ -486,6 +607,28 @@ def _snapshot_research_live_progress_stats(snap: Dict[str, Any]) -> Dict[str, An
                 continue
             if _finite_float(slot.get("live_progress_units")) is not None:
                 live_progress_rows += 1
+            progress_basis = slot.get("progress_basis")
+            has_derived_base_progress = (
+                _finite_float(slot.get("progress_pct")) is not None
+                and _finite_float(slot.get("required_points_base")) is not None
+                and _finite_float(slot.get("remaining_points_base")) is not None
+            )
+            if (
+                progress_basis == "live_progress_units/static_research_cost"
+                and has_derived_base_progress
+            ):
+                static_cost_progress_rows += 1
+            if (
+                progress_basis == "live_progress_units/dll_base_required_points"
+                and has_derived_base_progress
+            ):
+                dll_base_required_progress_rows += 1
+            progress_reason = slot.get("progress_unavailable_reason")
+            if isinstance(progress_reason, str) and progress_reason:
+                _inc_count_map(stats, "progress_unavailable_reasons", progress_reason)
+            eta_reason = slot.get("eta_unavailable_reason")
+            if isinstance(eta_reason, str) and eta_reason:
+                _inc_count_map(stats, "eta_unavailable_reasons", eta_reason)
             if slot.get("points_factor_basis") != RESEARCH_LIVE_POINTS_FACTOR_BASIS:
                 continue
             points_factor = _finite_float(slot.get("points_factor"))
@@ -500,6 +643,16 @@ def _snapshot_research_live_progress_stats(snap: Dict[str, Any]) -> Dict[str, An
         stats["live_progress_frames"] = 1
         stats["live_progress_rows"] = live_progress_rows
         stats["max_live_progress_rows_per_frame"] = live_progress_rows
+    if static_cost_progress_rows:
+        stats["static_cost_progress_frames"] = 1
+        stats["static_cost_progress_rows"] = static_cost_progress_rows
+        stats["max_static_cost_progress_rows_per_frame"] = static_cost_progress_rows
+    if dll_base_required_progress_rows:
+        stats["dll_base_required_progress_frames"] = 1
+        stats["dll_base_required_progress_rows"] = dll_base_required_progress_rows
+        stats["max_dll_base_required_progress_rows_per_frame"] = (
+            dll_base_required_progress_rows
+        )
     if speed_rows:
         stats["speed_frames"] = 1
         stats["speed_rows"] = speed_rows
@@ -510,6 +663,14 @@ def _snapshot_research_live_progress_stats(snap: Dict[str, Any]) -> Dict[str, An
         stats["eta_rows"] = eta_rows
         stats["max_eta_rows_per_frame"] = eta_rows
     return stats
+
+
+def _inc_count_map(stats: Dict[str, Any], key: str, reason: str) -> None:
+    counts = stats.get(key)
+    if not isinstance(counts, dict):
+        counts = {}
+        stats[key] = counts
+    counts[reason] = int(counts.get(reason) or 0) + 1
 
 
 def _research_slots_by_tag_and_key(

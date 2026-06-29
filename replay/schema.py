@@ -418,7 +418,8 @@ FIELD_SOURCES: Dict[str, str] = {
     # LIVE active-research rows live in a SEPARATE leaf (raw-handle shape, distinct
     # from the save's {name, points_factor} in_progress) so the two shapes never mix.
     # Carries {slot_index, tech_handle_raw, tech_def_index_raw, progress_raw,
-    # progress_units, live_progress_raw, live_progress_units, tech_name?};
+    # progress_units, live_progress_raw, live_progress_units,
+    # base_required_points_raw, base_required_points_units, tech_name?};
     # scheduled DLL frames now emit the raw rows from the bounded CResearchSlot vector,
     # while legacy memory remains a fallback. Completion fraction/ETA remain derived
     # until the static cost and live speed inputs are safe.
@@ -438,17 +439,25 @@ FIELD_SOURCES: Dict[str, str] = {
     # changing at hourly-or-better scheduled cadence.
     "countries.*.research.in_progress_live.*.live_progress_raw": "C/M",
     "countries.*.research.in_progress_live.*.live_progress_units": "C/M",
+    # DLL-emitted base denominator from the active tech object:
+    # CResearchSlot+0x18 -> CTechnology+0x160 -> CTechnologyTemplate+0x3e0,
+    # scaled through the engine's TECH_BASE_COST helper. This is the same base
+    # denominator used by the research progressbar path, not an effective-cost
+    # claim after ahead-of-time / bonus modifier aggregation.
+    "countries.*.research.in_progress_live.*.base_required_points_raw": "C/M",
+    "countries.*.research.in_progress_live.*.base_required_points_units": "C/M",
     # Derived live speed from consecutive collector snapshots with the same
     # tag/slot/tech identity. This is not a save backstop and not a direct offset:
     # it is a replay-writer derivative from the DLL `live_progress_units` stream.
     "countries.*.research.in_progress_live.*.points_factor": "D",
     "countries.*.research.in_progress_live.*.points_factor_basis": "D",
     "countries.*.research.in_progress_live.*.points_factor_elapsed_hours": "D",
-    # Derived active-research progress/ETA (models.research_progress, D): computed only when a
-    # live slot has live_progress_units + resolved tech_name, generated static tech defs provide a
-    # positive research_cost, the current year/bonus context is safe, and a positive derived
-    # points_factor is available. Otherwise the value stays absent and an
-    # *_unavailable_reason explains the blocker.
+    # Derived active-research progress/ETA (models.research_progress, D):
+    # progress fraction is computed from DLL live_progress_units plus DLL
+    # base_required_points_units when present, otherwise from resolved tech_name
+    # plus generated static tech defs when that fallback is safe. ETA still
+    # requires a positive live points_factor from consecutive collector frames.
+    # Effective-cost modifiers remain unclaimed unless separately pinned.
     "countries.*.research.in_progress_live.*.required_points_base": "D",
     "countries.*.research.in_progress_live.*.remaining_points_base": "D",
     "countries.*.research.in_progress_live.*.progress_pct": "D",

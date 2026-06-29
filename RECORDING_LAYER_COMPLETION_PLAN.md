@@ -1104,17 +1104,23 @@ validation and adapter folding into `countries.*.research.tech_count` and
 `countries.*.research.in_progress_live`. Rows now carry
 `progress_units = progress_raw / 1000`, moving
 `live_progress_raw/live_progress_units` from
-`CResearchSlot+0x18 -> CTechnology+0x198`, and `tech_name` when the cache-first
-`tech_def_filter` preflight supplies a validated live tech-definition handle
-map. Combined proof
-`replay/snapshots/_collector_session_research_name_gate/20260629T184728Z_pid43412`
-advanced 36 game hours in 51.219 wall seconds with a no-cold tech-definition
-cache hit, emitted 37 scheduled `tech_live` frames, captured 15609 named active
-research-slot rows and 15609 live-progress rows with up to 422 rows per frame,
-verified replay output, and kept research payloads off worker-poll frames. The
-manifest recorded 15187 persisted live-progress rows, one moving-progress
-delta frame with 340 rows, and 340 ETA rows. The older `progress_units` remains
-source-badged but is not accepted as moving progress.
+`CResearchSlot+0x18 -> CTechnology+0x198`, DLL base denominator
+`base_required_points_raw/base_required_points_units` from
+`CTechnology+0x160 -> CTechnologyTemplate+0x3e0`, and `tech_name` when the
+cache-first `tech_def_filter` preflight supplies a validated live
+tech-definition handle map. Combined proof
+`replay/snapshots/_collector_session_research_denominator_gate/20260629T192125Z_pid43412`
+advanced 36 game hours in 48.125 wall seconds with a no-cold tech-definition
+cache hit, emitted 37 scheduled `tech_live` frames, captured 15687 named active
+research-slot rows and 15687 live base-denominator rows with up to 424 rows per
+frame, verified replay output, and kept research payloads off worker-poll
+frames. The manifest recorded 15263 persisted live-progress rows, 15263
+DLL-base progress rows, one moving-progress delta frame with 346 rows, and 346
+ETA rows. The static denominator audit recorded
+`game_defs/out/technologies.json`, 557 tech defs, 10 no-cost defs, and base
+points-per-cost 110. The older `progress_units` remains source-badged but is
+not accepted as moving progress; effective research cost/speed modifiers remain
+unclaimed unless separately pinned.
 The DLL/adapter contract for `projects_live` now supports the first top-level
 `special_projects` catalog slice: facilities, scientists, and currently worked
 project rows, all source-badged `C`. The adapter folds only scheduled frames

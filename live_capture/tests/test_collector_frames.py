@@ -2988,6 +2988,10 @@ class TestCollectorFrames(unittest.TestCase):
                             "progress_raw": 9000,
                             "tech_name": "basic_machine_tools",
                             "progress_units": 9.0,
+                            "live_progress_raw": 900000,
+                            "live_progress_units": 9.0,
+                            "base_required_points_raw": 11000000,
+                            "base_required_points_units": 110.0,
                         }],
                     },
                 },
@@ -3017,6 +3021,12 @@ class TestCollectorFrames(unittest.TestCase):
         self.assertEqual(ger["in_progress_live"][0]["tech_handle_raw"], 0x1234)
         self.assertEqual(ger["in_progress_live"][0]["tech_name"], "basic_machine_tools")
         self.assertEqual(ger["in_progress_live"][0]["progress_units"], 9.0)
+        self.assertEqual(ger["in_progress_live"][0]["live_progress_raw"], 900000)
+        self.assertEqual(ger["in_progress_live"][0]["live_progress_units"], 9.0)
+        self.assertEqual(
+            ger["in_progress_live"][0]["base_required_points_raw"], 11000000)
+        self.assertEqual(
+            ger["in_progress_live"][0]["base_required_points_units"], 110.0)
         self.assertEqual(ger["in_progress"], [])
         sov = snap["countries"]["SOV"]["research"]
         self.assertEqual(sov["tech_count"], 0)
@@ -3050,6 +3060,7 @@ class TestCollectorFrames(unittest.TestCase):
                                 "tech_handle_raw": -1,
                                 "tech_name": "bad token!",
                                 "progress_units": -1.0,
+                                "base_required_points_units": -1.0,
                                 "unexpected": 1,
                             },
                             "not a dict",
@@ -3068,6 +3079,7 @@ class TestCollectorFrames(unittest.TestCase):
             "active_research[0].tech_handle_raw",
             "active_research[0].tech_name",
             "active_research[0].progress_units",
+            "active_research[0].base_required_points_units",
             "active_research[0].unexpected unsupported",
             "active_research[1] not dict",
         ):

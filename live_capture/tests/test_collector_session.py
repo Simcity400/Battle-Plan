@@ -2565,6 +2565,39 @@ class TestCollectorSession(unittest.TestCase):
             self.assertTrue(
                 diagnostics["collector"]["transport_sequence"]["monotonic"])
 
+    def test_research_static_tech_defs_metadata_fingerprints_denominator(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            tech_defs_path = root / "technologies.json"
+            tech_defs_path.write_text(
+                json.dumps({"technologies": {"basic": {"research_cost": 1.0}}}),
+                encoding="utf-8",
+            )
+
+            class _ResearchProgressModule:
+                BASE_RESEARCH_POINTS_PER_COST = 110.0
+
+            metadata = cs._research_static_tech_defs_metadata(
+                tech_defs_path,
+                {
+                    "basic": {"research_cost": 1.0, "tree_visible": True},
+                    "hidden_flag": {"research_cost": None, "tree_visible": False},
+                },
+                _ResearchProgressModule,
+            )
+
+        self.assertEqual(metadata["status"], "loaded")
+        self.assertEqual(metadata["path"], "technologies.json")
+        self.assertRegex(metadata["sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(metadata["tech_count"], 2)
+        self.assertEqual(metadata["no_research_cost_count"], 1)
+        self.assertEqual(metadata["tree_visible_count"], 1)
+        self.assertEqual(metadata["hidden_count"], 1)
+        self.assertEqual(metadata["base_research_points_per_cost"], 110)
+        self.assertFalse(Path(metadata["path"]).is_absolute())
+        self.assertNotIn(":", metadata["path"])
+        self.assertNotIn("\\", metadata["path"])
+
     def test_collector_frame_session_derives_research_live_eta_from_progress_delta(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -2615,10 +2648,19 @@ class TestCollectorSession(unittest.TestCase):
             progress = session.diagnostics()["collector"]["research_live_progress"]
             self.assertEqual(progress["live_progress_frames"], 2)
             self.assertEqual(progress["live_progress_rows"], 2)
+            self.assertEqual(progress["static_cost_progress_frames"], 2)
+            self.assertEqual(progress["static_cost_progress_rows"], 2)
+            self.assertEqual(progress["dll_base_required_progress_frames"], 0)
+            self.assertEqual(progress["dll_base_required_progress_rows"], 0)
             self.assertEqual(progress["speed_frames"], 1)
             self.assertEqual(progress["speed_rows"], 1)
             self.assertEqual(progress["eta_frames"], 1)
             self.assertEqual(progress["eta_rows"], 1)
+            self.assertEqual(progress["progress_unavailable_reasons"], {})
+            self.assertEqual(
+                progress["eta_unavailable_reasons"],
+                {"missing_live_points_factor": 1},
+            )
 
     def test_collector_frame_session_rejects_invalid_frame_without_write(self):
         with tempfile.TemporaryDirectory() as td:
