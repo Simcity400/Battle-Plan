@@ -168,6 +168,13 @@ Implemented in the current bridge:
   `diplomacy_live` on 14 scheduled frames, captured 4984 diplomacy country rows
   with up to 356 countries and 9 faction groups per frame, and kept diplomacy
   payloads off worker polls;
+- DLL-native raw `land_combats` lifecycle stream at 10 ms worker cadence: the
+  collector emits combat identity, location, age, attacker/defender division
+  lists, and lifecycle events into the packaged raw collector stream. The
+  current pid 43412 speed-five proof reused the same replay-verified 12-hour run
+  and explicitly passed the raw-domain gate with 56 `land_combat_started`, 6695
+  `land_combat_updated`, and 11 `land_combat_ended` events, with no heavy
+  scheduled payloads leaking onto lightweight frames;
 - DLL-native scheduled `focus_live` through validated `CCountry` child roots:
   `CCountry+0x1370 -> CFocusTree` supplies `focus_tree`, while
   `CCountry+0x1380` supplies completed focuses, completed count, current
@@ -215,8 +222,9 @@ Still open:
   historical proof/schema coverage to live collector output or explicit
   unavailable badges. Active land-combat identity, location, age,
   attacker/defender division lists, and lifecycle events now have a live raw
-  collector stream; focus still needs pause-state proof and optional event
-  markers; the combat stream still needs speed-five soak and app ingestion.
+  collector stream with speed-five 12-game-hour proof; focus still needs
+  pause-state proof and optional event markers; combat app ingestion and richer
+  battle-detail enrichment remain open.
 
 ### Historical feasibility evidence (memory-reader and save-oracle research snapshot)
 

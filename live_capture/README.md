@@ -228,9 +228,12 @@ project payloads off worker-poll frames.
 
 For land-combat lifecycle acceptance, require raw `land_combats` plus
 `land_combat_started`, `land_combat_updated`, and `land_combat_ended` events on
-a no-cold 12-game-hour run. The 2026-06-29 pid 43412 proof advanced 12 game
-hours, verified replay output, emitted 2485 raw domain-delta frames, 2419 raw
-event frames, and reported zero raw gap frames.
+a no-cold 12-game-hour run. The 2026-06-29 pid 43412 speed-five proof
+`replay/snapshots/_collector_session_diplomacy_gate/20260629T152734Z_pid43412`
+advanced 12 game hours in 48.328 wall seconds, verified replay output, kept
+heavy payloads off lightweight frames, and explicitly passed
+`collector_proof_gate` with raw `land_combats` plus 56 `land_combat_started`,
+6695 `land_combat_updated`, and 11 `land_combat_ended` events.
 
 For economy acceptance, require scheduled `production_live` plus snapshot
 domains `fuel_live`, `country_misc`, and `country_scalars`. The 2026-06-29 pid

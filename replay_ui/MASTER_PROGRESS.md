@@ -109,6 +109,14 @@ for inspection, with no ability to mutate the game.
   356 countries and 9 faction groups per scheduled frame, and zero worker-poll
   diplomacy payloads. War relations, `at_war`, and casualties remain unclaimed
   until their own DLL proof segment passes.
+- DLL-native raw `land_combats` lifecycle capture is proven at speed five for
+  the raw replay stream: the 2026-06-29 pid 43412 proof
+  `replay/snapshots/_collector_session_diplomacy_gate/20260629T152734Z_pid43412`
+  advanced 12 game hours in 48.328 wall seconds, verified the replay container,
+  passed the raw `land_combats` proof gate, and observed 56 combat-started, 6695
+  combat-updated, and 11 combat-ended events without heavyweight payloads on
+  lightweight frames. UI ingestion and richer battle-detail enrichment remain
+  open.
 - Anchored land-counter stacks now compose portrait and formation-insignia
   sprites into the native fixed-footprint `UnitCounter` render plan, preserving
   four stable asset slots, sprite frame identities, and explicit missing-asset
@@ -137,8 +145,8 @@ for inspection, with no ability to mutate the game.
 - Prove either no scheduled in-game hours are missed, or that skipped scheduled
   hours are explicitly recorded in the `.battleplan` manifest.
 - Reopen the resulting `.battleplan` in the native app.
-- Decide whether `land_combats` Stage-4 performance work is required only after
-  the real collector proof, not from static timing alone.
+- Promote the proven raw `land_combats` stream into app ingestion and only add
+  Stage-4 performance work if longer soaks show recorder pressure.
 
 ### 2. Interaction Parity
 
@@ -344,6 +352,11 @@ The app is product-complete only when all applicable gates pass:
   country rows, measured up to 356 countries and 9 faction groups per scheduled
   frame, verified the replay container, and reported zero heavy payloads on
   lightweight frames.
+- Raw `land_combats` lifecycle proof passed on 2026-06-29:
+  `replay/snapshots/_collector_session_diplomacy_gate/20260629T152734Z_pid43412`
+  advanced 12 game hours in 48.328 wall seconds, verified the replay container,
+  saw raw `land_combats`, and observed 56 `land_combat_started`, 6695
+  `land_combat_updated`, and 11 `land_combat_ended` events.
 - Every registered view opens from the in-app menu.
 - Every registered view has an interaction contract.
 - Every read-only interaction in each contract is implemented and tested.
