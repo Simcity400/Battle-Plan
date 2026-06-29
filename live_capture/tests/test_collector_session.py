@@ -715,10 +715,56 @@ class TestCollectorSession(unittest.TestCase):
             summary["raw_event_type_counts"],
             {"province_controller_change": 1},
         )
+        self.assertEqual(
+            summary["raw_event_domain_counts"],
+            {"province_control": 1},
+        )
+        self.assertEqual(
+            summary["raw_event_type_domain_counts"],
+            {"province_control:province_controller_change": 1},
+        )
         self.assertEqual(summary["raw_delta_domains_seen"], ["divisions"])
+        self.assertEqual(summary["raw_delta_domain_counts"], {"divisions": 1})
+        self.assertEqual(
+            summary["raw_delta_domain_worker_poll_counts"],
+            {"divisions": 1},
+        )
+        self.assertEqual(summary["raw_delta_domain_object_counts"], {})
+        self.assertEqual(summary["raw_delta_domain_null_counts"], {})
         self.assertEqual(summary["raw_gap_domains_seen"], ["land_combats"])
+        self.assertEqual(summary["raw_gap_domain_counts"], {"land_combats": 1})
         self.assertEqual(summary["lightweight_poll_frame_count"], 3)
         self.assertEqual(summary["heavy_payload_on_lightweight_frames"], 0)
+
+    def test_collector_frame_payload_summary_counts_confidence_gap_deltas(self):
+        summary = cs._collector_frame_payload_summary([
+            {
+                "type": "domain_delta",
+                "capture_boundary": "worker_poll",
+                "domain": "land_combats",
+                "entity_key": "land_combats:gap:manager_read_failed",
+                "confidence": "gap",
+                "payload": {
+                    "op": "sample",
+                    "after": {
+                        "gap_key": "land_combats:gap:manager_read_failed",
+                        "gap_kind": "manager_read_failed",
+                        "status": "validation_failed",
+                    },
+                    "changed_fields": ["gap_key", "gap_kind", "status"],
+                },
+            },
+        ])
+
+        self.assertEqual(summary["raw_domain_delta_frame_count"], 1)
+        self.assertEqual(summary["raw_delta_domains_seen"], ["land_combats"])
+        self.assertEqual(summary["raw_delta_domain_counts"], {"land_combats": 1})
+        self.assertEqual(
+            summary["raw_delta_domain_object_counts"],
+            {"land_combats": 1},
+        )
+        self.assertEqual(summary["raw_gap_domains_seen"], ["land_combats"])
+        self.assertEqual(summary["raw_gap_domain_counts"], {"land_combats": 1})
 
     def test_collector_stream_transport_summary_counts_raw_frame_sequences(self):
         summary = cs._collector_stream_transport_summary([

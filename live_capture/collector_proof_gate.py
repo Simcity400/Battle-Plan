@@ -27,6 +27,25 @@ SCHEDULED_DOMAIN_FRAME_COUNT_KEYS = {
     "buildings_live": "scheduled_buildings_domain_frames",
 }
 
+DIVISION_RAW_EVENT_TYPES = (
+    "division_movement_started",
+    "division_movement_stopped",
+    "division_org_strength_delta",
+    "division_combat_ref_changed",
+)
+
+LAND_COMBAT_RAW_EVENT_TYPES = (
+    "land_combat_started",
+    "land_combat_updated",
+    "land_combat_ended",
+)
+
+ARMY_ORDER_RAW_EVENT_TYPES = (
+    "army_order_added",
+    "army_order_updated",
+    "army_order_removed",
+)
+
 
 def load_session_manifest(path: Path) -> Dict[str, Any]:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -45,6 +64,7 @@ def collector_session_proof_errors(
     min_game_hours: Optional[int] = None,
     require_replay_verified: bool = True,
     require_hourly: bool = True,
+    require_no_raw_gaps: bool = True,
     require_no_lightweight_heavy_payloads: bool = True,
     require_diplomacy_war_relations: bool = False,
     require_politics_leaders: bool = False,
@@ -54,6 +74,11 @@ def collector_session_proof_errors(
     require_tech_live_static_cost_progress: bool = False,
     require_tech_live_dll_base_progress: bool = False,
     require_tech_live_eta: bool = False,
+    require_division_raw_telemetry: bool = False,
+    require_land_combat_raw_lifecycle: bool = False,
+    require_army_order_raw_telemetry: bool = False,
+    require_army_order_raw_updates: bool = False,
+    require_oob_command_raw_telemetry: bool = False,
 ) -> List[str]:
     errors: List[str] = []
     session_errors = manifest.get("session_errors")
@@ -94,9 +119,17 @@ def collector_session_proof_errors(
             errors.append(f"scheduled snapshot domain {domain!r} not observed")
 
     raw_delta_domains = _string_set(summary.get("raw_delta_domains_seen"))
+    raw_gap_domain_counts = _int_map(summary.get("raw_gap_domain_counts"))
     for domain in required_raw_delta_domains:
-        if str(domain) not in raw_delta_domains:
+        raw_domain = str(domain)
+        if raw_domain not in raw_delta_domains:
             errors.append(f"raw delta domain {domain!r} not observed")
+        if require_no_raw_gaps:
+            gap_count = raw_gap_domain_counts.get(raw_domain, 0)
+            if gap_count > 0:
+                errors.append(
+                    f"raw delta domain {domain!r} emitted gap frames: {gap_count}"
+                )
 
     raw_event_types = _string_set(summary.get("raw_event_types_seen"))
     for event_type in required_raw_event_types:
@@ -329,6 +362,88 @@ def collector_session_proof_errors(
             errors.append("research live ETA frames were not observed")
         if _as_int(research_progress.get("eta_rows")) in (None, 0):
             errors.append("research live ETA rows were not observed")
+    if require_division_raw_telemetry:
+        required_frames = int(min_game_hours or 1)
+        if manifest.get("division_body_bridge_supplied") is not True:
+            errors.append("division body bridge was not supplied")
+        if _as_int(manifest.get("division_body_bridge_rows")) in (None, 0):
+            errors.append("division body bridge rows not positive")
+        division_delta_frames = _map_int(
+            summary,
+            "raw_delta_domain_counts",
+            "divisions",
+        )
+        if division_delta_frames < required_frames:
+            errors.append(
+                "division raw telemetry frames "
+                f"{division_delta_frames} below required {required_frames}"
+            )
+        if _map_int(summary, "raw_delta_domain_object_counts", "divisions") == 0:
+            errors.append("division raw telemetry object rows were not observed")
+        division_event_rows = _event_rows(summary, DIVISION_RAW_EVENT_TYPES)
+        if division_event_rows == 0:
+            errors.append("division raw telemetry change events were not observed")
+        if _map_int(summary, "raw_gap_domain_counts", "divisions") > 0:
+            errors.append("division raw telemetry gap frames observed")
+    if require_land_combat_raw_lifecycle:
+        required_frames = int(min_game_hours or 1)
+        land_delta_frames = _map_int(
+            summary,
+            "raw_delta_domain_counts",
+            "land_combats",
+        )
+        if land_delta_frames < required_frames:
+            errors.append(
+                "land combat raw telemetry frames "
+                f"{land_delta_frames} below required {required_frames}"
+            )
+        if _map_int(summary, "raw_delta_domain_object_counts", "land_combats") == 0:
+            errors.append("land combat raw telemetry object rows were not observed")
+        raw_event_counts = _int_map(summary.get("raw_event_type_counts"))
+        for event_type in LAND_COMBAT_RAW_EVENT_TYPES:
+            if raw_event_counts.get(event_type, 0) <= 0:
+                errors.append(f"land combat raw event {event_type!r} not observed")
+        if _map_int(summary, "raw_gap_domain_counts", "land_combats") > 0:
+            errors.append("land combat raw telemetry gap frames observed")
+    if require_army_order_raw_telemetry:
+        if manifest.get("army_body_bridge_supplied") is not True:
+            errors.append("army body bridge was not supplied")
+        if _as_int(manifest.get("army_body_bridge_rows")) in (None, 0):
+            errors.append("army body bridge rows not positive")
+        if _map_int(summary, "raw_delta_domain_counts", "army_orders") == 0:
+            errors.append("army order raw telemetry frames were not observed")
+        if _map_int(summary, "raw_delta_domain_object_counts", "army_orders") == 0:
+            errors.append("army order raw telemetry object rows were not observed")
+        raw_event_counts = _int_map(summary.get("raw_event_type_counts"))
+        if raw_event_counts.get("army_order_added", 0) <= 0:
+            errors.append("army order raw add events were not observed")
+        if _map_int(summary, "raw_gap_domain_counts", "army_orders") > 0:
+            errors.append("army order raw telemetry gap frames observed")
+    if require_army_order_raw_updates:
+        if manifest.get("army_body_bridge_supplied") is not True:
+            errors.append("army body bridge was not supplied")
+        if _as_int(manifest.get("army_body_bridge_rows")) in (None, 0):
+            errors.append("army body bridge rows not positive")
+        if _map_int(summary, "raw_delta_domain_counts", "army_orders") == 0:
+            errors.append("army order raw telemetry frames were not observed")
+        if _map_int(summary, "raw_delta_domain_object_counts", "army_orders") == 0:
+            errors.append("army order raw telemetry object rows were not observed")
+        raw_event_counts = _int_map(summary.get("raw_event_type_counts"))
+        if raw_event_counts.get("army_order_updated", 0) <= 0:
+            errors.append("army order raw update events were not observed")
+        if _map_int(summary, "raw_gap_domain_counts", "army_orders") > 0:
+            errors.append("army order raw telemetry gap frames observed")
+    if require_oob_command_raw_telemetry:
+        if manifest.get("oob_command_bridge_supplied") is not True:
+            errors.append("OOB command bridge was not supplied")
+        if _as_int(manifest.get("oob_command_bridge_rows")) in (None, 0):
+            errors.append("OOB command bridge rows not positive")
+        if _map_int(summary, "raw_delta_domain_counts", "oob_command") == 0:
+            errors.append("OOB command raw telemetry frames were not observed")
+        if _map_int(summary, "raw_delta_domain_object_counts", "oob_command") == 0:
+            errors.append("OOB command raw telemetry object rows were not observed")
+        if _map_int(summary, "raw_gap_domain_counts", "oob_command") > 0:
+            errors.append("OOB command raw telemetry gap frames observed")
     return errors
 
 
@@ -342,6 +457,7 @@ def collector_session_proof_summary(
     min_game_hours: Optional[int] = None,
     require_replay_verified: bool = True,
     require_hourly: bool = True,
+    require_no_raw_gaps: bool = True,
     require_diplomacy_war_relations: bool = False,
     require_politics_leaders: bool = False,
     require_production_construction: bool = False,
@@ -350,6 +466,11 @@ def collector_session_proof_summary(
     require_tech_live_static_cost_progress: bool = False,
     require_tech_live_dll_base_progress: bool = False,
     require_tech_live_eta: bool = False,
+    require_division_raw_telemetry: bool = False,
+    require_land_combat_raw_lifecycle: bool = False,
+    require_army_order_raw_telemetry: bool = False,
+    require_army_order_raw_updates: bool = False,
+    require_oob_command_raw_telemetry: bool = False,
 ) -> Dict[str, Any]:
     summary = _payload_summary(manifest)
     errors = collector_session_proof_errors(
@@ -361,6 +482,7 @@ def collector_session_proof_summary(
         min_game_hours=min_game_hours,
         require_replay_verified=require_replay_verified,
         require_hourly=require_hourly,
+        require_no_raw_gaps=require_no_raw_gaps,
         require_diplomacy_war_relations=require_diplomacy_war_relations,
         require_politics_leaders=require_politics_leaders,
         require_production_construction=require_production_construction,
@@ -369,6 +491,11 @@ def collector_session_proof_summary(
         require_tech_live_static_cost_progress=require_tech_live_static_cost_progress,
         require_tech_live_dll_base_progress=require_tech_live_dll_base_progress,
         require_tech_live_eta=require_tech_live_eta,
+        require_division_raw_telemetry=require_division_raw_telemetry,
+        require_land_combat_raw_lifecycle=require_land_combat_raw_lifecycle,
+        require_army_order_raw_telemetry=require_army_order_raw_telemetry,
+        require_army_order_raw_updates=require_army_order_raw_updates,
+        require_oob_command_raw_telemetry=require_oob_command_raw_telemetry,
     )
     hourly = manifest.get("hourly_requirement") or {}
     return {
@@ -392,6 +519,21 @@ def collector_session_proof_summary(
             _string_set(summary.get("raw_event_types_seen"))
         ),
         "raw_event_type_counts": _int_map(summary.get("raw_event_type_counts")),
+        "raw_event_domain_counts": _int_map(
+            summary.get("raw_event_domain_counts")),
+        "raw_event_type_domain_counts": _int_map(
+            summary.get("raw_event_type_domain_counts")),
+        "raw_delta_domain_counts": _int_map(
+            summary.get("raw_delta_domain_counts")),
+        "raw_delta_domain_object_counts": _int_map(
+            summary.get("raw_delta_domain_object_counts")),
+        "raw_delta_domain_null_counts": _int_map(
+            summary.get("raw_delta_domain_null_counts")),
+        "raw_delta_domain_worker_poll_counts": _int_map(
+            summary.get("raw_delta_domain_worker_poll_counts")),
+        "raw_delta_domain_scheduled_counts": _int_map(
+            summary.get("raw_delta_domain_scheduled_counts")),
+        "raw_gap_domain_counts": _int_map(summary.get("raw_gap_domain_counts")),
         "heavy_payload_on_lightweight_frames": summary.get(
             "heavy_payload_on_lightweight_frames"
         ),
@@ -500,6 +642,15 @@ def _int_map(value: Any) -> Dict[str, int]:
     return dict(sorted(out.items()))
 
 
+def _map_int(summary: Dict[str, Any], map_key: str, item_key: str) -> int:
+    return _int_map(summary.get(map_key)).get(item_key, 0)
+
+
+def _event_rows(summary: Dict[str, Any], event_types: Iterable[str]) -> int:
+    counts = _int_map(summary.get("raw_event_type_counts"))
+    return sum(counts.get(event_type, 0) for event_type in event_types)
+
+
 def _main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Validate a live collector session manifest proof gate."
@@ -532,6 +683,7 @@ def _main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--min-game-hours", type=int, default=None)
     parser.add_argument("--allow-unverified-replay", action="store_true")
     parser.add_argument("--allow-hourly-missing", action="store_true")
+    parser.add_argument("--allow-raw-gaps", action="store_true")
     parser.add_argument(
         "--require-diplomacy-war-relations",
         action="store_true",
@@ -572,6 +724,31 @@ def _main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="require replay-written live research speed and ETA rows",
     )
+    parser.add_argument(
+        "--require-division-raw-telemetry",
+        action="store_true",
+        help="require live DLL division raw rows and change events",
+    )
+    parser.add_argument(
+        "--require-land-combat-raw-lifecycle",
+        action="store_true",
+        help="require live DLL land-combat started/updated/ended lifecycle rows",
+    )
+    parser.add_argument(
+        "--require-army-order-raw-telemetry",
+        action="store_true",
+        help="require live DLL army-order raw rows and add events",
+    )
+    parser.add_argument(
+        "--require-army-order-raw-updates",
+        action="store_true",
+        help="require live DLL army-order update events, not only initial rows",
+    )
+    parser.add_argument(
+        "--require-oob-command-raw-telemetry",
+        action="store_true",
+        help="require live DLL OOB command hierarchy rows",
+    )
     args = parser.parse_args(argv)
 
     manifest = load_session_manifest(args.manifest)
@@ -584,6 +761,7 @@ def _main(argv: Optional[List[str]] = None) -> int:
         min_game_hours=args.min_game_hours,
         require_replay_verified=not args.allow_unverified_replay,
         require_hourly=not args.allow_hourly_missing,
+        require_no_raw_gaps=not args.allow_raw_gaps,
         require_diplomacy_war_relations=args.require_diplomacy_war_relations,
         require_politics_leaders=args.require_politics_leaders,
         require_production_construction=args.require_production_construction,
@@ -594,6 +772,11 @@ def _main(argv: Optional[List[str]] = None) -> int:
         ),
         require_tech_live_dll_base_progress=args.require_tech_live_dll_base_progress,
         require_tech_live_eta=args.require_tech_live_eta,
+        require_division_raw_telemetry=args.require_division_raw_telemetry,
+        require_land_combat_raw_lifecycle=args.require_land_combat_raw_lifecycle,
+        require_army_order_raw_telemetry=args.require_army_order_raw_telemetry,
+        require_army_order_raw_updates=args.require_army_order_raw_updates,
+        require_oob_command_raw_telemetry=args.require_oob_command_raw_telemetry,
     )
     print(json.dumps(proof, indent=2, sort_keys=True))
     return 0 if proof["ok"] else 1

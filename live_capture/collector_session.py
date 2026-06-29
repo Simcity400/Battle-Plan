@@ -1577,8 +1577,16 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     frames_by_type: Dict[str, int] = {}
     raw_event_types_seen: set[str] = set()
     raw_event_type_counts: Dict[str, int] = {}
+    raw_event_domain_counts: Dict[str, int] = {}
+    raw_event_type_domain_counts: Dict[str, int] = {}
     raw_delta_domains_seen: set[str] = set()
+    raw_delta_domain_counts: Dict[str, int] = {}
+    raw_delta_domain_object_counts: Dict[str, int] = {}
+    raw_delta_domain_null_counts: Dict[str, int] = {}
+    raw_delta_domain_worker_poll_counts: Dict[str, int] = {}
+    raw_delta_domain_scheduled_counts: Dict[str, int] = {}
     raw_gap_domains_seen: set[str] = set()
+    raw_gap_domain_counts: Dict[str, int] = {}
     country_object_identity_statuses: Dict[str, int] = {}
     country_object_identity_max_object_count = 0
     country_object_identity_max_scan_ms = 0
@@ -1589,6 +1597,11 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         if isinstance(frame_type, str):
             frames_by_type[frame_type] = frames_by_type.get(frame_type, 0) + 1
         if frame_type == "event":
+            domain = frame.get("domain")
+            if isinstance(domain, str):
+                raw_event_domain_counts[domain] = (
+                    raw_event_domain_counts.get(domain, 0) + 1
+                )
             event_type = frame.get("event_type")
             if not isinstance(event_type, str):
                 payload = frame.get("payload")
@@ -1599,14 +1612,49 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
                 raw_event_type_counts[event_type] = (
                     raw_event_type_counts.get(event_type, 0) + 1
                 )
+                if isinstance(domain, str):
+                    domain_key = f"{domain}:{event_type}"
+                    raw_event_type_domain_counts[domain_key] = (
+                        raw_event_type_domain_counts.get(domain_key, 0) + 1
+                    )
         elif frame_type == "domain_delta":
             domain = frame.get("domain")
             if isinstance(domain, str):
                 raw_delta_domains_seen.add(domain)
+                raw_delta_domain_counts[domain] = (
+                    raw_delta_domain_counts.get(domain, 0) + 1
+                )
+                if frame.get("capture_boundary") == "worker_poll":
+                    raw_delta_domain_worker_poll_counts[domain] = (
+                        raw_delta_domain_worker_poll_counts.get(domain, 0) + 1
+                    )
+                elif frame.get("capture_boundary") == "scheduled_hour_snapshot":
+                    raw_delta_domain_scheduled_counts[domain] = (
+                        raw_delta_domain_scheduled_counts.get(domain, 0) + 1
+                    )
+                payload = frame.get("payload")
+                if isinstance(payload, dict):
+                    after = payload.get("after")
+                    if isinstance(after, dict):
+                        raw_delta_domain_object_counts[domain] = (
+                            raw_delta_domain_object_counts.get(domain, 0) + 1
+                        )
+                    elif after is None:
+                        raw_delta_domain_null_counts[domain] = (
+                            raw_delta_domain_null_counts.get(domain, 0) + 1
+                        )
+                if _is_raw_gap_domain_delta(frame):
+                    raw_gap_domains_seen.add(domain)
+                    raw_gap_domain_counts[domain] = (
+                        raw_gap_domain_counts.get(domain, 0) + 1
+                    )
         elif frame_type == "gap":
             domain = frame.get("domain")
             if isinstance(domain, str):
                 raw_gap_domains_seen.add(domain)
+                raw_gap_domain_counts[domain] = (
+                    raw_gap_domain_counts.get(domain, 0) + 1
+                )
         boundary = frame.get("capture_boundary")
         if isinstance(boundary, str):
             frames_by_capture_boundary[boundary] = (
@@ -2169,8 +2217,21 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         "raw_gap_frame_count": frames_by_type.get("gap", 0),
         "raw_event_types_seen": sorted(raw_event_types_seen),
         "raw_event_type_counts": dict(sorted(raw_event_type_counts.items())),
+        "raw_event_domain_counts": dict(sorted(raw_event_domain_counts.items())),
+        "raw_event_type_domain_counts": dict(
+            sorted(raw_event_type_domain_counts.items())),
         "raw_delta_domains_seen": sorted(raw_delta_domains_seen),
+        "raw_delta_domain_counts": dict(sorted(raw_delta_domain_counts.items())),
+        "raw_delta_domain_object_counts": dict(
+            sorted(raw_delta_domain_object_counts.items())),
+        "raw_delta_domain_null_counts": dict(
+            sorted(raw_delta_domain_null_counts.items())),
+        "raw_delta_domain_worker_poll_counts": dict(
+            sorted(raw_delta_domain_worker_poll_counts.items())),
+        "raw_delta_domain_scheduled_counts": dict(
+            sorted(raw_delta_domain_scheduled_counts.items())),
         "raw_gap_domains_seen": sorted(raw_gap_domains_seen),
+        "raw_gap_domain_counts": dict(sorted(raw_gap_domain_counts.items())),
         "domains_seen": sorted(domains_seen),
         "frames_by_capture_boundary": dict(sorted(frames_by_capture_boundary.items())),
         "scheduled_snapshot_frame_count": frames_by_capture_boundary.get(
@@ -2458,6 +2519,20 @@ def _map_control_request_blocker(
 
 def _int_value(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _is_raw_gap_domain_delta(frame: Dict[str, Any]) -> bool:
+    if frame.get("confidence") == "gap":
+        return True
+    entity_key = frame.get("entity_key")
+    if isinstance(entity_key, str) and ":gap:" in entity_key:
+        return True
+    payload = frame.get("payload")
+    if isinstance(payload, dict):
+        after = payload.get("after")
+        if isinstance(after, dict) and after.get("status") == "validation_failed":
+            return True
+    return False
 
 
 def _collector_stream_transport_summary(

@@ -166,7 +166,16 @@ Current measured constraint:
   `division_org_strength_delta` events plus 85
   `division_combat_ref_changed` events with no raw gap domains. This proves the
   division org/strength stream at hourly-or-better replay cadence on the current
-  live process; it does not prove every possible movement mode yet.
+  live process; it does not prove every possible movement mode yet. A stricter
+  2026-06-29 raw military gate
+  `replay/snapshots/_collector_session_raw_military_gate/20260629T194359Z_pid43412`
+  advanced 12 game hours with `hourly_requirement.met = true` in 62.688 wall
+  seconds, verified replay output, emitted zero raw gap domains, and captured
+  12002 raw division deltas, 6189 `division_org_strength_delta`, 2109
+  `division_movement_started`, 38 `division_movement_stopped`, and 19
+  `division_combat_ref_changed` events. That run allowed cold preflight only to
+  refresh caches outside the hot loop; it is a capture-cadence proof, not an
+  acceptable normal startup-time proof.
 
 Cadence:
 
@@ -235,7 +244,11 @@ Bridge contract now implemented for the first land-combat slice:
   2026-06-29 no-cold live proof against pid 43412 advanced 12 game hours in
   39.266 wall seconds with replay verification, 2485 raw domain-delta frames,
   2419 raw event frames, 42 starts, 2368 updates, 9 ends, and zero raw gap
-  frames.
+  frames. The stricter raw military proof
+  `replay/snapshots/_collector_session_raw_military_gate/20260629T194359Z_pid43412`
+  also passed `--require-land-combat-raw-lifecycle`, advancing 12 game hours in
+  62.688 wall seconds and observing 160 raw land-combat deltas, 8 starts, 151
+  updates, 1 end, and zero raw gap domains.
 - Replay timeline promotion is now implemented for the lifecycle endpoints:
   `land_combat_started` maps to canonical `combat_started`, and
   `land_combat_ended` maps to canonical `combat_ended`. `land_combat_updated`
@@ -416,7 +429,12 @@ Command-hierarchy membership:
   replay output, and reported no raw gap domains. The same proof established
   that OOB discovery stays out of the worker loop (`hot_loop_heap_scan = false`)
   but also exposed the high raw-frame volume that needs coalescing before full
-  game-length capture.
+  game-length capture. The stricter raw military gate later resolved 7117
+  command roots after an intentionally allowed 135.703s cold preflight, then
+  captured 17705 raw `oob_command` deltas across 12 game hours with zero raw gap
+  domains and verified replay output. The cold discovery timing is not
+  acceptable for the normal path; it confirms cache/root refresh work is still
+  required before full-game capture.
 
 ### Air Activity
 
@@ -515,18 +533,19 @@ Current DLL contract:
   add/remove lifecycle, still unverified for in-place order edits. The Rust
   tracker splits same-address different-army reuse into `army_order_removed` for
   the old `army_order:<army_id>:<generation>` and `army_order_added` for a fresh
-  generation, with regression coverage and no pointer leakage. A 2026-06-29
-  cold bootstrap on pid 43412 found 456 army bodies outside the hot loop. The
-  first no-cold run exposed an all-or-nothing stale-cache failure; the preflight
-  now validates cached army bodies row-by-row and salvages still-live rows,
-  mirroring the division bridge behavior. The 12-game-hour no-cold proof then
-  resolved 417 valid army bodies from cache in 0.093s, emitted `army_orders`
-  raw deltas, observed 383 `army_order_added` events and 2
-  `army_order_removed` events, advanced 12 game hours with
-  `hourly_requirement.met = true`, verified the replay, and reported no raw gap
-  domains. No `army_order_updated` event appeared because no existing order was
-  edited during the observed window; that specific event still needs a live
-  order-edit fixture.
+  generation, with regression coverage and no pointer leakage; it also has
+  regression coverage that same-address/same-army target-state mutation emits
+  `army_order_updated` rather than add/remove. A 2026-06-29 cold bootstrap on
+  pid 43412 found 456 army bodies outside the hot loop. The first no-cold run
+  exposed an all-or-nothing stale-cache failure; the preflight now validates
+  cached army bodies row-by-row and salvages still-live rows, mirroring the
+  division bridge behavior. The stricter raw military proof resolved 636 army
+  bodies after an intentionally allowed 27.516s cold preflight, advanced 12 game
+  hours with `hourly_requirement.met = true` in 62.688 wall seconds, emitted 547
+  raw `army_orders` deltas and 547 `army_order_added` events, verified the
+  replay, and reported zero raw gap domains. No `army_order_updated` event
+  appeared because no existing order was edited during the observed window; that
+  specific event still needs a live order-edit fixture.
 
 Cadence:
 

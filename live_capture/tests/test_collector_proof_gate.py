@@ -602,6 +602,131 @@ class TestCollectorProofGate(unittest.TestCase):
         self.assertIn("war_relation_bridge was not supplied", errors)
         self.assertIn("diplomacy war relations were not observed", errors)
 
+    def test_accepts_verified_raw_military_segment_proof(self):
+        proof = collector_session_proof_summary(
+            _manifest(
+                game_hours_advanced=12,
+                division_body_bridge_supplied=True,
+                division_body_bridge_rows=2042,
+                army_body_bridge_supplied=True,
+                army_body_bridge_rows=383,
+                oob_command_bridge_supplied=True,
+                oob_command_bridge_rows=4704,
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock"],
+                    "raw_delta_domains_seen": [
+                        "army_orders",
+                        "divisions",
+                        "land_combats",
+                        "oob_command",
+                    ],
+                    "raw_event_types_seen": [
+                        "army_order_added",
+                        "army_order_updated",
+                        "division_org_strength_delta",
+                        "land_combat_ended",
+                        "land_combat_started",
+                        "land_combat_updated",
+                    ],
+                    "raw_event_type_counts": {
+                        "army_order_added": 383,
+                        "army_order_updated": 4,
+                        "division_org_strength_delta": 6903,
+                        "land_combat_ended": 11,
+                        "land_combat_started": 56,
+                        "land_combat_updated": 6695,
+                    },
+                    "raw_delta_domain_counts": {
+                        "army_orders": 387,
+                        "divisions": 3229,
+                        "land_combats": 6762,
+                        "oob_command": 4704,
+                    },
+                    "raw_delta_domain_object_counts": {
+                        "army_orders": 387,
+                        "divisions": 3229,
+                        "land_combats": 6751,
+                        "oob_command": 4704,
+                    },
+                    "raw_gap_domain_counts": {},
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+            ),
+            min_game_hours=12,
+            require_division_raw_telemetry=True,
+            require_land_combat_raw_lifecycle=True,
+            require_army_order_raw_telemetry=True,
+            require_army_order_raw_updates=True,
+            require_oob_command_raw_telemetry=True,
+        )
+
+        self.assertTrue(proof["ok"])
+        self.assertEqual(proof["errors"], [])
+        self.assertEqual(proof["raw_delta_domain_counts"]["land_combats"], 6762)
+
+    def test_rejects_required_raw_domain_gap_deltas_by_default(self):
+        errors = collector_session_proof_errors(
+            _manifest(
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock"],
+                    "raw_delta_domains_seen": ["land_combats"],
+                    "raw_event_types_seen": [],
+                    "raw_event_type_counts": {},
+                    "raw_delta_domain_counts": {"land_combats": 1},
+                    "raw_gap_domain_counts": {"land_combats": 1},
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+            ),
+            required_raw_delta_domains=["land_combats"],
+        )
+
+        self.assertIn(
+            "raw delta domain 'land_combats' emitted gap frames: 1",
+            errors,
+        )
+
+        allowed = collector_session_proof_errors(
+            _manifest(
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock"],
+                    "raw_delta_domains_seen": ["land_combats"],
+                    "raw_event_types_seen": [],
+                    "raw_event_type_counts": {},
+                    "raw_delta_domain_counts": {"land_combats": 1},
+                    "raw_gap_domain_counts": {"land_combats": 1},
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+            ),
+            required_raw_delta_domains=["land_combats"],
+            require_no_raw_gaps=False,
+        )
+
+        self.assertNotIn(
+            "raw delta domain 'land_combats' emitted gap frames: 1",
+            allowed,
+        )
+
+    def test_rejects_army_order_rows_without_update_proof(self):
+        errors = collector_session_proof_errors(
+            _manifest(
+                army_body_bridge_supplied=True,
+                army_body_bridge_rows=383,
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock"],
+                    "raw_delta_domains_seen": ["army_orders"],
+                    "raw_event_types_seen": ["army_order_added"],
+                    "raw_event_type_counts": {"army_order_added": 383},
+                    "raw_delta_domain_counts": {"army_orders": 383},
+                    "raw_delta_domain_object_counts": {"army_orders": 383},
+                    "raw_gap_domain_counts": {},
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+            ),
+            require_army_order_raw_updates=True,
+        )
+
+        self.assertIn("army order raw update events were not observed", errors)
+
     def test_domains_seen_does_not_satisfy_scheduled_domain_gate(self):
         errors = collector_session_proof_errors(
             _manifest(collector_frame_payload_summary={

@@ -14852,6 +14852,74 @@ mod attach_log {
         }
 
         #[test]
+        fn army_order_tracker_emits_update_for_same_order_mutation() {
+            let control = raw_test_control();
+            let clock = ClockSample {
+                date: "1936.1.1.12".to_string(),
+                hour_index: ((1936 * 365) * 24 + 12) as u64,
+                raw_date: DATE_EPOCH_CONST + ((1936 * 365) * 24 + 12),
+            };
+            let mut tracker = ArmyOrderTracker::default();
+            let sample = ArmyOrderSample {
+                army_id: 17,
+                generation: 0,
+                order_addr: HEAP_LO + 0x33000,
+                slot_index: 2,
+                order_type: ORDER_TYPE5_OFFENSIVE,
+                target_states: Some(vec![107, 108]),
+                target_state_count: Some(2),
+                target_status: "exact",
+            };
+            let _ = build_army_order_raw_lines_from_samples(
+                1234,
+                &control,
+                &mut tracker,
+                vec![sample.clone()],
+                10,
+                100,
+                123456,
+                Some(125),
+                "worker_poll",
+                &clock,
+            );
+
+            let mut updated = sample;
+            updated.target_states = Some(vec![107, 108, 109]);
+            updated.target_state_count = Some(3);
+            let lines = build_army_order_raw_lines_from_samples(
+                1234,
+                &control,
+                &mut tracker,
+                vec![updated],
+                20,
+                200,
+                123556,
+                Some(225),
+                "worker_poll",
+                &clock,
+            );
+
+            assert_eq!(lines.len(), 2);
+            assert!(lines[0].contains("\"entity_key\":\"army_order:17:0\""));
+            assert!(lines[0].contains("\"target_states\":[107,108,109]"));
+            assert!(lines[0].contains("\"target_state_count\":3"));
+            assert!(lines[0].contains(
+                "\"changed_fields\":[\"target_states\",\"target_state_count\"]"
+            ));
+            assert!(lines[1].contains("\"event_type\":\"army_order_updated\""));
+            assert!(lines[1].contains("\"entity_key\":\"army_order:17:0\""));
+            assert!(!lines.join("").contains("army_order_added"));
+            assert!(!lines.join("").contains("army_order_removed"));
+            for frame in &lines {
+                assert!(!frame.contains("order_addr"));
+                assert!(!frame.contains("body_ptr"));
+                assert!(!frame.contains("body_addr"));
+                assert!(!frame.contains("tag_db_id"));
+                assert!(!frame.contains("0x"));
+            }
+        }
+
+        #[test]
         fn naval_combat_frame_builders_emit_sanitized_bridge_rows() {
             let control = raw_test_control();
             let clock = ClockSample {

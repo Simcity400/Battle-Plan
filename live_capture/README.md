@@ -271,7 +271,12 @@ a no-cold 12-game-hour run. The 2026-06-29 pid 43412 speed-five proof
 advanced 12 game hours in 48.328 wall seconds, verified replay output, kept
 heavy payloads off lightweight frames, and explicitly passed
 `collector_proof_gate` with raw `land_combats` plus 56 `land_combat_started`,
-6695 `land_combat_updated`, and 11 `land_combat_ended` events.
+6695 `land_combat_updated`, and 11 `land_combat_ended` events. The stricter raw
+military gate
+`replay/snapshots/_collector_session_raw_military_gate/20260629T194359Z_pid43412`
+also passed `--require-land-combat-raw-lifecycle`, advancing 12 game hours in
+62.688 wall seconds, verifying replay output, observing 160 raw land-combat
+deltas with 8 starts, 151 updates, 1 end, and reporting zero raw gap domains.
 
 For diplomacy war/casualty acceptance, require scheduled `diplomacy_live` plus
 `--require-diplomacy-war-relations` on a 12-game-hour run using
@@ -315,14 +320,28 @@ without any cold-scan flags. The 2026-06-29 pid 43412 proof advanced 12 game
 hours, verified replay output, observed raw `divisions` and `army_orders`, and
 captured `division_org_strength_delta`. `army_order_updated` is a separate live
 fixture: it requires an already-sampled offensive order to be edited/redrawn
-during the capture window.
+during the capture window. The stricter raw military gate
+`replay/snapshots/_collector_session_raw_military_gate/20260629T194359Z_pid43412`
+passed `--require-division-raw-telemetry` and
+`--require-army-order-raw-telemetry`, advanced 12 game hours in 62.688 wall
+seconds, verified replay output, emitted 12002 division deltas, 547 army-order
+deltas, 6189 `division_org_strength_delta`, 2109
+`division_movement_started`, 38 `division_movement_stopped`, 19
+`division_combat_ref_changed`, and 547 `army_order_added` events with zero raw
+gap domains. The same run failed `--require-army-order-raw-updates`, correctly,
+because no existing order changed.
 
 For ship/OOB raw-stream acceptance, first populate same-process `ship_bodies`
 and `oob_command_roots` caches if needed, then rerun without cold-scan flags.
 The 2026-06-29 pid 43412 proof advanced 12 game hours, verified replay output,
 observed raw `ships` and `oob_command`, and reported no raw gap domains. This
 slice has high raw-frame volume, so a full-game recorder should add coalescing
-or lower-frequency sampling policy before long soaks.
+or lower-frequency sampling policy before long soaks. The strict raw military
+gate also passed `--require-oob-command-raw-telemetry`, capturing 17705
+`oob_command` deltas over 12 game hours with zero raw gap domains after an
+intentionally allowed 135.703s cold preflight. That cold discovery time is not
+acceptable for normal startup and should be treated as cache/root-refresh work,
+not hot-loop recording cost.
 
 For naval-combat acceptance, `--preflight-naval-combat` must find at least one
 active battle at attach time; this bridge does not yet discover battles born

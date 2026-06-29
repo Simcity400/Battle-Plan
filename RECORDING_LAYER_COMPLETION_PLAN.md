@@ -1226,14 +1226,21 @@ Current status: the DLL already consumes a `division_body_bridge` and emits raw
 cache-first and process-identity-scoped. Normal recording validates cached body
 pins through the warm `read_divisions_from_bodies()` path before emitting a
 bridge; cold body discovery is disabled unless `--allow-division-cold-scan` is
-explicitly set. Live proof on the restarted vanilla process: a cold bootstrap
-outside the hot loop found 1931 division bodies and 456 army bodies, then a
-normal no-cold run resolved 1898 division bodies from cache and 417 still-live
-army bodies from cache, advanced 12 game hours in 52.266 wall seconds, stored
-13 verified hourly snapshots, and emitted raw `clock`, `divisions`,
-`army_orders`, and `land_combats` streams with no raw gaps. The same run emitted
-6903 `division_org_strength_delta` events, 85 `division_combat_ref_changed`
-events, 383 `army_order_added` events, and 2 `army_order_removed` events.
+explicitly set. Earlier no-cold proof on the restarted vanilla process resolved
+1898 division bodies and 417 still-live army bodies from cache, advanced 12 game
+hours in 52.266 wall seconds, stored 13 verified hourly snapshots, and emitted
+raw `clock`, `divisions`, `army_orders`, and `land_combats` streams with no raw
+gaps. A stricter raw military proof
+`replay/snapshots/_collector_session_raw_military_gate/20260629T194359Z_pid43412`
+advanced 12 game hours with `hourly_requirement.met = true` in 62.688 wall
+seconds, verified replay output, and emitted zero raw gap domains while proving
+`divisions`, `army_orders`, `land_combats`, and `oob_command` together. That run
+emitted 12002 raw division deltas, 6189 `division_org_strength_delta`, 2109
+`division_movement_started`, 38 `division_movement_stopped`, and 19
+`division_combat_ref_changed` events. Its cold preflight was intentionally
+allowed only to refresh caches outside the hot loop: division discovery took
+26.531s, army discovery took 27.516s, and OOB command discovery took 135.703s,
+so this is a capture-cadence proof, not an acceptable normal startup path.
 The DLL now also accepts an `army_body_bridge` populated by
 `--preflight-army-orders` and emits raw `army_orders` deltas/events from
 revalidated army bodies at a 250 ms sampling floor. The first slice captures
@@ -1241,9 +1248,10 @@ order type, slot index, and exact type-5 target state sets; non-type-5 geometry
 is explicitly marked unsupported until those layouts are pinned. The army
 preflight now salvages individually valid cached army rows instead of dropping
 the whole bridge when a few cached army objects go stale. `army_order_updated`
-remains unverified because the live soak did not edit an existing sampled order;
-it needs a fixture where an offensive order is redrawn/resized/retyped after the
-collector has taken its baseline sample.
+is unit-tested in the Rust tracker for same-order target mutation, but remains
+unverified in the live game because the live proof did not edit an existing
+sampled order; it needs a fixture where an offensive order is
+redrawn/resized/retyped after the collector has taken its baseline sample.
 
 ### Phase 6: Combat And Movement High-Frequency Layer
 
@@ -1276,9 +1284,13 @@ now skipped when other rows validate, matching the Python combat reader. A
 39.266 wall seconds with replay verification, emitted 2485 raw domain-delta
 frames, 2419 raw event frames, 42 `land_combat_started`, 2368
 `land_combat_updated`, and 9 `land_combat_ended` events, and reported zero raw
-gap frames. The remaining land-combat unlock is not "find the objects"; it is
-richer participant/tick canonical events, longer full-war soaks, and
-timeline/app ingestion. Naval combat now has the same raw-frame shape for
+gap frames. The stricter raw military proof
+`replay/snapshots/_collector_session_raw_military_gate/20260629T194359Z_pid43412`
+also passed the new `--require-land-combat-raw-lifecycle` gate at speed five,
+with 160 raw `land_combats` deltas, 8 starts, 151 updates, 1 end, and zero raw
+gap domains across 12 game hours. The remaining land-combat unlock is not "find
+the objects"; it is richer participant/tick canonical events, longer full-war
+soaks, and timeline/app ingestion. Naval combat now has the same raw-frame shape for
 the canonical `naval_air_combats` domain when the recorder supplies
 `naval_combat_body_bridge` rows: the DLL revalidates active `CNavalCombat`
 bodies, emits side-level summaries and started/updated/ended lifecycle events,

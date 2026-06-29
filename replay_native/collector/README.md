@@ -336,7 +336,11 @@ Land-combat raw stream status:
   game hours in 39.266 wall seconds, verified replay output, emitted 2485 raw
   domain-delta frames, 2419 raw event frames, 42 `land_combat_started`, 2368
   `land_combat_updated`, and 9 `land_combat_ended` events, and reported zero
-  raw gap frames.
+  raw gap frames. The stricter raw military proof
+  `replay/snapshots/_collector_session_raw_military_gate/20260629T194359Z_pid43412`
+  also passed `--require-land-combat-raw-lifecycle`, advancing 12 game hours in
+  62.688 wall seconds and observing 160 raw land-combat deltas, 8 starts, 151
+  updates, 1 end, and zero raw gap domains.
 - Remaining promotion work is richer combat-tick/participant canonical events
   and raw `land_combats` ingestion into the replay timeline/app.
 
@@ -362,9 +366,15 @@ Army-order raw stream status:
   `army_order_removed`. Type-5 target-state vectors are exact when they fit the
   bounded inline payload; larger valid vectors emit `target_status:"overflow"`
   with a count; non-type-5 geometry emits `target_status:"unsupported"`.
-- Remaining promotion work is live speed-five proof while issuing orders,
-  semantic event splits, non-type-5 geometry, periodic bridge refresh for new
-  armies, and timeline ingestion.
+- `army_order_updated` is covered by a Rust tracker regression for
+  same-address/same-army target-state mutation. The stricter 2026-06-29 raw
+  military gate live-proved order presence at speed five with 547 raw
+  `army_orders` deltas and 547 `army_order_added` events over 12 game hours,
+  but correctly failed the `--require-army-order-raw-updates` gate because no
+  existing order changed during the capture window.
+- Remaining promotion work is a live speed-five order-edit fixture, semantic
+  event splits, non-type-5 geometry, periodic bridge refresh for new armies, and
+  timeline ingestion.
 
 Naval-combat raw stream status:
 
@@ -449,7 +459,10 @@ OOB command raw stream status:
 - Live proof on pid 43412: an explicit cold bootstrap populated
   `oob_command_roots`, then a no-cold 12-game-hour run resolved 4704 still-live
   OOB roots from cache in 0.109s, emitted raw `oob_command`, verified replay
-  output, and reported no raw gap domains.
+  output, and reported no raw gap domains. The stricter raw military gate later
+  captured 17705 `oob_command` deltas across 12 game hours with zero raw gap
+  domains after an intentionally allowed 135.703s cold preflight. Treat that
+  cold discovery time as cache/root-refresh work, not normal hot-loop cost.
 
 Air-wing raw stream status:
 
