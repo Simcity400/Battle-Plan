@@ -625,10 +625,11 @@ Tasks:
 
 - Use the live land-combat manager stream as the template, then add naval and
   air active fixtures.
-- Continue speed-five land-combat soak. Canonical replay timeline promotion now
-  exists for `land_combat_started` -> `combat_started` and
-  `land_combat_ended` -> `combat_ended`; richer tick/participant deltas and app
-  ingestion are still open.
+- Land combat is live-verified for a no-cold 12-game-hour speed-five slice with
+  start/update/end raw events. Canonical replay timeline promotion now exists
+  for `land_combat_started` -> `combat_started` and `land_combat_ended` ->
+  `combat_ended`; richer tick/participant deltas and app ingestion are still
+  open.
 - Lifecycle events for born, participant/age update, generation split, and ended
   are now emitted; damage update remains derived from division strength/org
   deltas joined to combat participants.
@@ -1235,11 +1236,14 @@ nullable attacker/defender division lists, `delete` ops with `after:null` for
 disappeared combats, bounded gap markers for manager/layout validation failures,
 explicit lifecycle `event` frames for started/updated/ended combats, generation
 split end reasons, and pointer/tag-db leak rejection. Invalid manager slots are
-now skipped when other rows validate, matching the Python combat reader; a
-2026-06-29 live run advanced two game hours with 406 sampled land-combat deltas,
-406 lifecycle events, and no land-combat gap frames. The remaining land-combat
-unlock is not "find the objects"; it is speed-five soak, battle-end observation,
-and timeline/app ingestion. Naval combat now has the same raw-frame shape for
+now skipped when other rows validate, matching the Python combat reader. A
+2026-06-29 no-cold live proof against pid 43412 advanced 12 game hours in
+39.266 wall seconds with replay verification, emitted 2485 raw domain-delta
+frames, 2419 raw event frames, 42 `land_combat_started`, 2368
+`land_combat_updated`, and 9 `land_combat_ended` events, and reported zero raw
+gap frames. The remaining land-combat unlock is not "find the objects"; it is
+richer participant/tick canonical events, longer full-war soaks, and
+timeline/app ingestion. Naval combat now has the same raw-frame shape for
 the canonical `naval_air_combats` domain when the recorder supplies
 `naval_combat_body_bridge` rows: the DLL revalidates active `CNavalCombat`
 bodies, emits side-level summaries and started/updated/ended lifecycle events,

@@ -307,11 +307,13 @@ Land-combat raw stream status:
 - Combat starts/participant or age updates, generation splits, and ends now emit
   explicit `event` frames alongside the existing `domain_delta` samples/deletes,
   so downstream replay code does not have to infer lifecycle transitions from
-  deltas alone. A 2026-06-29 live probe against the running vanilla game advanced
-  two game hours with 406 sampled land-combat deltas, 406 lifecycle events, and
-  no land-combat gap frames.
-- Remaining promotion work is speed-five soak and raw `land_combats` ingestion
-  into the replay timeline/app.
+  deltas alone. A 2026-06-29 no-cold live proof against pid 43412 advanced 12
+  game hours in 39.266 wall seconds, verified replay output, emitted 2485 raw
+  domain-delta frames, 2419 raw event frames, 42 `land_combat_started`, 2368
+  `land_combat_updated`, and 9 `land_combat_ended` events, and reported zero
+  raw gap frames.
+- Remaining promotion work is richer combat-tick/participant canonical events
+  and raw `land_combats` ingestion into the replay timeline/app.
 
 Army-order raw stream status:
 

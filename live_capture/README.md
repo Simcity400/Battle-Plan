@@ -153,6 +153,7 @@ python -m live_capture.collector_profile_check --pid <hoi4-pid> --profile live_c
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session --game-id collector_live_speed5_session --duration-s 8 --sample-ms 10 --dwell-s 0.25 --worker-bursts 3 --burst-interval-s 0.25 --until-game-hours 12 --max-wall-s 30
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session --game-id collector_live_focus_decision_project_roots --duration-s 180 --sample-ms 10 --dwell-s 0.25 --worker-bursts 3 --burst-interval-s 0.25 --until-game-hours 12 --max-wall-s 120 --preflight-special-projects
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain focus_live --require-scheduled-domain decisions_live --require-scheduled-domain projects_live
+python -m live_capture.collector_proof_gate replay/snapshots/_collector_session/<run-dir>/session_manifest.json --min-game-hours 12 --require-raw-domain land_combats --require-raw-event-type land_combat_started --require-raw-event-type land_combat_updated --require-raw-event-type land_combat_ended
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session --game-id collector_live_division_cache_bootstrap --duration-s 5 --sample-ms 20 --dwell-s 0.25 --preflight-division-movement --allow-division-cold-scan
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_order_org_gate --game-id order_org_strength_cache_bootstrap --duration-s 8 --sample-ms 10 --until-game-hours 1 --max-wall-s 240 --preflight-division-movement --allow-division-cold-scan --preflight-army-orders --allow-army-cold-scan
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_order_org_gate --game-id order_org_strength_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300 --preflight-division-movement --preflight-army-orders
@@ -190,6 +191,12 @@ used a no-cold `special_projects_cache` bridge hit in 0.391s, advanced 12 game
 hours, stored 13 snapshots, verified replay output, emitted 12 scheduled frames
 each for `focus_live`, `decisions_live`, and `projects_live`, and kept heavy
 project payloads off worker-poll frames.
+
+For land-combat lifecycle acceptance, require raw `land_combats` plus
+`land_combat_started`, `land_combat_updated`, and `land_combat_ended` events on
+a no-cold 12-game-hour run. The 2026-06-29 pid 43412 proof advanced 12 game
+hours, verified replay output, emitted 2485 raw domain-delta frames, 2419 raw
+event frames, and reported zero raw gap frames.
 
 For division org/strength plus army-order raw-stream acceptance, first populate
 same-process caches with the cold bootstrap command if needed, then rerun

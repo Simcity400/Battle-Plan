@@ -232,18 +232,18 @@ Bridge contract now implemented for the first land-combat slice:
   `land_combats:gap:<gap_kind>` instead of silently producing no coverage marker.
 - The current DLL also emits explicit lifecycle `event` frames for
   `land_combat_started`, `land_combat_updated`, and `land_combat_ended`. A
-  2026-06-29 live probe against the running vanilla game advanced two game hours
-  with 406 sampled land-combat deltas, 406 lifecycle events, and no land-combat
-  gap frames.
+  2026-06-29 no-cold live proof against pid 43412 advanced 12 game hours in
+  39.266 wall seconds with replay verification, 2485 raw domain-delta frames,
+  2419 raw event frames, 42 starts, 2368 updates, 9 ends, and zero raw gap
+  frames.
 - Replay timeline promotion is now implemented for the lifecycle endpoints:
   `land_combat_started` maps to canonical `combat_started`, and
   `land_combat_ended` maps to canonical `combat_ended`. `land_combat_updated`
   remains a raw frame until the canonical combat-tick/participant-delta schema is
   widened.
-- Remaining hardening before this is replay-truth quality: speed-five live soak,
-  end/delete lifecycle validation across real battle endings, richer
-  participant/tick canonical events, and app ingestion for the `land_combats`
-  raw stream.
+- Remaining hardening before this is replay-truth quality: richer
+  participant/tick canonical events, longer full-war soaks, and app ingestion
+  for the `land_combats` raw stream.
 
 Cadence:
 
