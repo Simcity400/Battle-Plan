@@ -151,6 +151,8 @@ python live_capture/recorder/recorder_main.py --smoke
 python -m live_capture.collector_attach --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --pipe
 python -m live_capture.collector_profile_check --pid <hoi4-pid> --profile live_capture/collector_profiles/vanilla_latest_2026_06_28.json --dll replay_native/target/debug/collector.dll
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session --game-id collector_live_speed5_session --duration-s 8 --sample-ms 10 --dwell-s 0.25 --worker-bursts 3 --burst-interval-s 0.25 --until-game-hours 12 --max-wall-s 30
+python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_economy_gate --game-id production_fuel_misc_live --duration-s 180 --sample-ms 10 --dwell-s 0.25 --worker-bursts 3 --burst-interval-s 0.25 --until-game-hours 12 --max-wall-s 300
+python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_economy_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain production_live --require-domain fuel_live --require-domain country_misc --require-domain country_scalars
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session --game-id collector_live_focus_decision_project_roots --duration-s 180 --sample-ms 10 --dwell-s 0.25 --worker-bursts 3 --burst-interval-s 0.25 --until-game-hours 12 --max-wall-s 120 --preflight-special-projects
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain focus_live --require-scheduled-domain decisions_live --require-scheduled-domain projects_live
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session/<run-dir>/session_manifest.json --min-game-hours 12 --require-raw-domain land_combats --require-raw-event-type land_combat_started --require-raw-event-type land_combat_updated --require-raw-event-type land_combat_ended
@@ -199,6 +201,12 @@ For land-combat lifecycle acceptance, require raw `land_combats` plus
 a no-cold 12-game-hour run. The 2026-06-29 pid 43412 proof advanced 12 game
 hours, verified replay output, emitted 2485 raw domain-delta frames, 2419 raw
 event frames, and reported zero raw gap frames.
+
+For economy acceptance, require scheduled `production_live` plus snapshot
+domains `fuel_live`, `country_misc`, and `country_scalars`. The 2026-06-29 pid
+43412 proof advanced 12 game hours, stored 13 verified snapshots, emitted 12
+production frames and 12 fuel frames, and observed up to 20 military lines, 12
+naval lines, and 146 stockpile entries per production frame.
 
 For division org/strength plus army-order raw-stream acceptance, first populate
 same-process caches with the cold bootstrap command if needed, then rerun

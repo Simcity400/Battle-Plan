@@ -1168,11 +1168,14 @@ Current status: scheduled DLL economy frames already emit `production_live`
 stockpile/line/factory totals and `fuel_live` current/max from validated
 country-object bridge rows. Fuel gain/cost are now also DLL-emitted from the
 fuel-status object, validated as bounded signed fixed-point values, and folded
-into `countries.*.economy.fuel.{gain,cost}`. Live speed-five proof on the
-current Portugal process advanced 12 game hours in 11.77s, verified replay
-output, observed `fuel_live` and `production_live`, and confirmed every sampled
-fuel row carried both `gain` and `cost`. Construction queue, market contracts,
-resource trade, and lend-lease remain separate follow-up DLL slices.
+into `countries.*.economy.fuel.{gain,cost}`. Live no-setup proof on pid 43412
+advanced 12 game hours in 45.734 wall seconds, stored 13 verified snapshots,
+observed `country_scalars`, `country_misc`, `fuel_live`, and scheduled
+`production_live`, emitted 12 production frames and 12 fuel frames, and kept
+heavy payloads off lightweight worker polls. The same run saw 356 production
+country rows per frame, up to 20 military lines, 12 naval lines, and 146
+stockpile entries. Construction queue, market contracts, resource trade, and
+lend-lease remain separate follow-up DLL slices.
 
 ### Phase 5: Divisions And Land OOB
 

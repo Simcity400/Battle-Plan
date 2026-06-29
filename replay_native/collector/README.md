@@ -250,6 +250,10 @@ Scheduled country production:
   `[]`, and `0` survive as measured values;
 - non-null bad-gated stockpile entries, duplicate variant ids, broken vector
   headers, and implausible fixed-point values fail closed for that sub-vector;
+- live proof on pid 43412 advanced 12 game hours in 45.734 wall seconds, stored
+  13 verified snapshots, emitted 12 scheduled `production_live` frames and 12
+  `fuel_live` frames, and observed up to 356 production country rows, 20
+  military lines, 12 naval lines, and 146 stockpile entries per frame;
 - worker-poll frames stay light and must not carry production payloads.
 
 Recorder-side map-control contract:
