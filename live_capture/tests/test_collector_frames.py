@@ -3097,6 +3097,14 @@ class TestCollectorFrames(unittest.TestCase):
                             "neutrality": 15.0,
                         },
                         "ruling_party": "neutrality",
+                        "leader": {
+                            "char_id": 371,
+                            "name": "Antonio de Oliveira Salazar",
+                            "token": "POR_antonio_de_oliveira_salazar",
+                            "ideology_group": "neutrality",
+                            "ambiguous": False,
+                            "source": "C",
+                        },
                         "ideas": [
                             "war_economy",
                             "free_trade",
@@ -3139,6 +3147,13 @@ class TestCollectorFrames(unittest.TestCase):
         )
         politics = snap["countries"]["POR"]["politics"]
         self.assertEqual(politics["ruling_party"], "neutrality")
+        leader = snap["countries"]["POR"]["commanders"]["leader"]
+        self.assertEqual(leader["char_id"], 371)
+        self.assertEqual(leader["name"], "Antonio de Oliveira Salazar")
+        self.assertEqual(leader["token"], "POR_antonio_de_oliveira_salazar")
+        self.assertEqual(leader["ideology_group"], "neutrality")
+        self.assertFalse(leader["ambiguous"])
+        self.assertEqual(leader["source"], "C")
         self.assertEqual(politics["party_popularities"]["democratic"], 72.5)
         self.assertEqual(
             politics["ideas"],
@@ -3174,6 +3189,7 @@ class TestCollectorFrames(unittest.TestCase):
         self.assertFalse(politics["low_confidence"])
         self.assertIsNone(politics["political_power"])
         measured = snap["_live_measured_leaf_tags"]
+        self.assertEqual(measured["commanders.leader"], ["POR"])
         self.assertEqual(measured["politics.ideas_other"], ["POR"])
         self.assertEqual(measured["politics.national_spirits"], ["POR"])
 
@@ -3228,6 +3244,14 @@ class TestCollectorFrames(unittest.TestCase):
                     "politics": {
                         "popularities": {"bad": 1.0, "democratic": float("inf")},
                         "ruling_party": "bad",
+                        "leader": {
+                            "char_id": 0,
+                            "name": "",
+                            "token": "bad token!",
+                            "ideology_group": "bad",
+                            "ambiguous": 1,
+                            "source": "M",
+                        },
                         "ideas": ["ok", "bad token!"],
                         "ideas_other": ["ok", "bad token!"],
                         "national_spirits": ["ok", "bad token!"],
@@ -3256,6 +3280,12 @@ class TestCollectorFrames(unittest.TestCase):
             "popularities key",
             "popularities.democratic",
             "ruling_party",
+            "leader.char_id",
+            "leader.name",
+            "leader.token",
+            "leader.ideology_group",
+            "leader.ambiguous",
+            "leader.source",
             "ideas[1]",
             "ideas_other[1]",
             "national_spirits[1]",

@@ -120,6 +120,15 @@ mod attach_log {
     const POLITICAL_STATUS_ELECTIONS_ALLOWED: usize = 0x0EC;
     const POLITICAL_PARTY_IDEOLOGY_GROUP: usize = 0x18;
     const POLITICAL_PARTY_POPULARITY: usize = 0x88;
+    const POLITICAL_PARTY_LEADER_VEC: usize = 0x70;
+    const COUNTRY_LEADER_VTABLE_RVA: usize = 0x295A630;
+    const COUNTRY_LEADER_CHARACTER_PTR: usize = 0x08;
+    const POLITICS_CHARACTER_VTABLE_RVA: usize = 0x2957D40;
+    const POLITICS_CHARACTER_TYPE: u32 = 73;
+    const POLITICS_CHARACTER_OFF_TYPE: usize = 0x08;
+    const POLITICS_CHARACTER_OFF_ID: usize = 0x0C;
+    const POLITICS_CHARACTER_OFF_DISPLAY: usize = 0x28;
+    const POLITICS_CHARACTER_OFF_TOKEN: usize = 0x48;
     const IDEOLOGY_GROUP_ID: usize = 0x18;
     const IDEA_ID: usize = 0x18;
     const STATE_VTABLE_RVA: usize = 0x2910920;
@@ -255,6 +264,8 @@ mod attach_log {
     const MAX_POLITICAL_PARTIES: u32 = 16;
     const MAX_ACTIVE_IDEAS: u32 = 400;
     const MAX_POLITICS_TOKEN_LEN: usize = 160;
+    const MAX_CHARACTER_DISPLAY_LEN: usize = 256;
+    const MAX_CHARACTER_ID: u32 = 10_000_000;
     const MAX_ADVISOR_TOKEN_FILTER_TOKENS: usize = 8192;
     const MAX_ADVISOR_TOKEN_FILTER_PAYLOAD_BYTES: usize = 512 * 1024;
     const MAX_IDEA_GROUP_FILTER_ROWS: usize = 8192;
@@ -8250,6 +8261,7 @@ mod attach_log {
     struct CountryPoliticsRow {
         popularities: Option<BTreeMap<String, f64>>,
         ruling_party: Option<String>,
+        leader: Option<CountryLeaderRow>,
         ideas: Option<Vec<String>>,
         laws: Option<BTreeMap<String, String>>,
         idea_groups: Option<BTreeMap<String, Vec<String>>>,
@@ -8266,6 +8278,7 @@ mod attach_log {
         fn has_any(&self) -> bool {
             self.popularities.is_some()
                 || self.ruling_party.is_some()
+                || self.leader.is_some()
                 || self.ideas.is_some()
                 || self.laws.is_some()
                 || self.idea_groups.is_some()
@@ -8277,6 +8290,15 @@ mod attach_log {
                 || self.party_count.is_some()
                 || self.low_confidence.is_some()
         }
+    }
+
+    #[derive(Clone)]
+    struct CountryLeaderRow {
+        char_id: u32,
+        name: Option<String>,
+        token: Option<String>,
+        ideology_group: Option<String>,
+        ambiguous: bool,
     }
 
     #[derive(Clone)]
@@ -10881,6 +10903,12 @@ mod attach_log {
             read_u64(status_ptr + POLITICAL_STATUS_RULING_PARTY).unwrap_or(0) as usize;
         let ruling_party =
             read_political_party_ideology(ruling_party_ptr, party_vtable, ideology_group_vtable);
+        let leader = read_active_country_leader(
+            module_base,
+            ruling_party_ptr,
+            party_vtable,
+            ruling_party.as_deref(),
+        );
         let ideas = read_active_ideas(status_ptr, idea_vtable_primary, idea_vtable_secondary);
         let election_frequency = read_u32_stable(status_ptr + POLITICAL_STATUS_ELECTION_FREQUENCY)
             .filter(|v| (1..=600).contains(v));
@@ -10912,6 +10940,7 @@ mod attach_log {
         let row = CountryPoliticsRow {
             popularities,
             ruling_party,
+            leader,
             ideas,
             laws,
             idea_groups,
@@ -10928,6 +10957,76 @@ mod attach_log {
         } else {
             None
         }
+    }
+
+    fn read_active_country_leader(
+        module_base: usize,
+        ruling_party_ptr: usize,
+        party_vtable: usize,
+        ideology_group: Option<&str>,
+    ) -> Option<CountryLeaderRow> {
+        if !is_map_control_heap_pointer(ruling_party_ptr)
+            || read_u64(ruling_party_ptr)? as usize != party_vtable
+        {
+            return None;
+        }
+        let leader_vec_begin =
+            read_u64_stable(ruling_party_ptr + POLITICAL_PARTY_LEADER_VEC)? as usize;
+        let leader_vec_meta =
+            read_u64_stable(ruling_party_ptr + POLITICAL_PARTY_LEADER_VEC + 8)? as usize;
+        if !political_party_leader_vector_is_singleton(leader_vec_begin, leader_vec_meta) {
+            return None;
+        }
+        let country_leader_ptr = read_u64_stable(leader_vec_begin)? as usize;
+        let country_leader_vtable = module_base.checked_add(COUNTRY_LEADER_VTABLE_RVA)?;
+        if !is_map_control_heap_pointer(country_leader_ptr)
+            || read_u64(country_leader_ptr)? as usize != country_leader_vtable
+        {
+            return None;
+        }
+        let character_ptr =
+            read_u64_stable(country_leader_ptr + COUNTRY_LEADER_CHARACTER_PTR)? as usize;
+        let character_vtable = module_base.checked_add(POLITICS_CHARACTER_VTABLE_RVA)?;
+        if !is_map_control_heap_pointer(character_ptr)
+            || read_u64(character_ptr)? as usize != character_vtable
+            || read_u32(character_ptr + POLITICS_CHARACTER_OFF_TYPE)? != POLITICS_CHARACTER_TYPE
+        {
+            return None;
+        }
+        let char_id = read_u32_stable(character_ptr + POLITICS_CHARACTER_OFF_ID)?;
+        if char_id == 0 || char_id > MAX_CHARACTER_ID {
+            return None;
+        }
+        let name = read_msvc_string(
+            character_ptr + POLITICS_CHARACTER_OFF_DISPLAY,
+            MAX_CHARACTER_DISPLAY_LEN,
+        );
+        let token = read_msvc_string(
+            character_ptr + POLITICS_CHARACTER_OFF_TOKEN,
+            MAX_POLITICS_TOKEN_LEN,
+        )
+        .filter(|value| is_script_token(value));
+        Some(CountryLeaderRow {
+            char_id,
+            name,
+            token,
+            ideology_group: ideology_group.map(|value| value.to_string()),
+            ambiguous: false,
+        })
+    }
+
+    fn political_party_leader_vector_is_singleton(data: usize, meta: usize) -> bool {
+        if !is_map_control_heap_pointer(data) {
+            return false;
+        }
+        if is_map_control_heap_pointer(meta) && meta > data {
+            return meta.checked_sub(data) == Some(8);
+        }
+        // Current 16022851 builds store CPoliticalParty+0x78 as packed
+        // {size, capacity}; only size==capacity==1 is a provable active-ruler row.
+        let size = (meta & 0xFFFF_FFFF) as u32;
+        let capacity = (meta >> 32) as u32;
+        size == 1 && capacity == 1
     }
 
     fn classify_idea_laws(
@@ -11976,6 +12075,9 @@ mod attach_log {
             if let Some(ruling_party) = politics.ruling_party.as_ref() {
                 fields.push(format!("\"ruling_party\":{}", json_str(ruling_party)));
             }
+            if let Some(leader) = politics.leader.as_ref() {
+                fields.push(format!("\"leader\":{}", country_leader_json(leader)));
+            }
             if let Some(ideas) = politics.ideas.as_ref() {
                 let parts: Vec<String> = ideas.iter().map(|idea| json_str(idea)).collect();
                 fields.push(format!("\"ideas\":[{}]", parts.join(",")));
@@ -12071,6 +12173,24 @@ mod attach_log {
         } else {
             format!(",\"politics\":{{{}}}", fields.join(","))
         }
+    }
+
+    fn country_leader_json(leader: &CountryLeaderRow) -> String {
+        let mut fields = vec![
+            format!("\"char_id\":{}", leader.char_id),
+            format!("\"ambiguous\":{}", leader.ambiguous),
+            "\"source\":\"C\"".to_string(),
+        ];
+        if let Some(name) = leader.name.as_ref() {
+            fields.push(format!("\"name\":{}", json_str(name)));
+        }
+        if let Some(token) = leader.token.as_ref() {
+            fields.push(format!("\"token\":{}", json_str(token)));
+        }
+        if let Some(ideology_group) = leader.ideology_group.as_ref() {
+            fields.push(format!("\"ideology_group\":{}", json_str(ideology_group)));
+        }
+        format!("{{{}}}", fields.join(","))
     }
 
     fn string_vec_map_json(map: &BTreeMap<String, Vec<String>>) -> String {
@@ -15668,6 +15788,13 @@ mod attach_log {
                 politics: Some(CountryPoliticsRow {
                     popularities: Some(popularities),
                     ruling_party: Some("neutrality".to_string()),
+                    leader: Some(CountryLeaderRow {
+                        char_id: 12345,
+                        name: Some("Antonio de Oliveira Salazar".to_string()),
+                        token: Some("POR_antonio_de_oliveira_salazar".to_string()),
+                        ideology_group: Some("neutrality".to_string()),
+                        ambiguous: false,
+                    }),
                     ideas: Some(vec![
                         "war_economy".to_string(),
                         "free_trade".to_string(),
@@ -15694,6 +15821,10 @@ mod attach_log {
 
             assert!(scheduled.contains("\"politics\""));
             assert!(scheduled.contains("\"ruling_party\":\"neutrality\""));
+            assert!(scheduled.contains("\"leader\""));
+            assert!(scheduled.contains("\"char_id\":12345"));
+            assert!(scheduled.contains("\"token\":\"POR_antonio_de_oliveira_salazar\""));
+            assert!(scheduled.contains("\"ideology_group\":\"neutrality\""));
             assert!(scheduled.contains("\"war_economy\""));
             assert!(scheduled.contains("\"laws\":{\"economy\":\"war_economy\""));
             assert!(scheduled.contains("\"trade_laws\":\"free_trade\""));
@@ -15719,6 +15850,25 @@ mod attach_log {
                 false,
             );
             assert!(domains.contains("\"politics_live\""));
+        }
+
+        #[test]
+        fn political_party_leader_vector_accepts_packed_singleton_only() {
+            let data = HEAP_LO + 0x1000;
+            assert!(political_party_leader_vector_is_singleton(
+                data,
+                0x0000_0001_0000_0001,
+            ));
+            assert!(political_party_leader_vector_is_singleton(data, data + 8));
+            assert!(!political_party_leader_vector_is_singleton(
+                data,
+                0x0000_0002_0000_0002,
+            ));
+            assert!(!political_party_leader_vector_is_singleton(
+                data,
+                0x0000_0005_0000_0006,
+            ));
+            assert!(!political_party_leader_vector_is_singleton(0, data + 8));
         }
 
         #[test]

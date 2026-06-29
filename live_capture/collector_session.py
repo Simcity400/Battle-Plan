@@ -1103,6 +1103,9 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     country_rows_with_politics_payloads = 0
     max_politics_country_rows_per_frame = 0
     max_politics_idea_rows_per_country = 0
+    politics_leader_frames = 0
+    country_rows_with_politics_leader = 0
+    max_politics_leader_rows_per_frame = 0
     country_rows_with_politics_idea_groups = 0
     country_rows_with_politics_advisor_ideas = 0
     max_politics_idea_group_keys_per_country = 0
@@ -1289,6 +1292,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         diplomacy_rows_in_frame = 0
         diplomacy_faction_groups_in_frame: set[int] = set()
         politics_rows_in_frame = 0
+        politics_leader_rows_in_frame = 0
         politics_residual_rows_in_frame = 0
         state_building_rows_in_frame = 0
         province_building_rows_in_frame = 0
@@ -1377,6 +1381,11 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
                             or "elections_allowed" in politics
                         ):
                             politics_residual_rows_in_frame += 1
+                        leader = politics.get("leader")
+                        if isinstance(leader, dict) and isinstance(
+                            leader.get("char_id"), int
+                        ):
+                            politics_leader_rows_in_frame += 1
                         ideas = politics.get("ideas")
                         if isinstance(ideas, list):
                             max_politics_idea_rows_per_country = max(
@@ -1525,6 +1534,13 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
             max_politics_country_rows_per_frame = max(
                 max_politics_country_rows_per_frame,
                 politics_rows_in_frame,
+            )
+        if politics_leader_rows_in_frame:
+            politics_leader_frames += 1
+            country_rows_with_politics_leader += politics_leader_rows_in_frame
+            max_politics_leader_rows_per_frame = max(
+                max_politics_leader_rows_per_frame,
+                politics_leader_rows_in_frame,
             )
         if politics_residual_rows_in_frame:
             frames_with_politics_residual_payloads += 1
@@ -1775,6 +1791,9 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         "max_politics_country_rows_per_frame": (
             max_politics_country_rows_per_frame),
         "max_politics_idea_rows_per_country": max_politics_idea_rows_per_country,
+        "politics_leader_frames": politics_leader_frames,
+        "country_rows_with_politics_leader": country_rows_with_politics_leader,
+        "max_politics_leader_rows_per_frame": max_politics_leader_rows_per_frame,
         "country_rows_with_politics_idea_groups": (
             country_rows_with_politics_idea_groups),
         "country_rows_with_politics_advisor_ideas": (

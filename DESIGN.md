@@ -137,7 +137,10 @@ Implemented in the current bridge:
 - DLL-native scheduled politics through the same validated `CPoliticalStatus`:
   `politics_live` emits ruling party, party popularities, ordered active idea
   tokens, typed law buckets, broad non-law `ideas_other`, narrower
-  `national_spirits`, counts, election frequency, and confidence diagnostics;
+  `national_spirits`, counts, election frequency, confidence diagnostics, and
+  active country leader rows from
+  `CPoliticalStatus -> ruling_party -> CCountryLeader -> CCharacter`, folded
+  into `countries.*.commanders.leader`;
   and `politics_residuals` emits `last_election`, `elections_allowed`,
   `appointed_advisors`, `appointed_advisor_details`, and
   `appointed_advisor_slots` when validated static contracts are supplied. The
@@ -150,7 +153,13 @@ Implemented in the current bridge:
   `collector_live_politics_decisions_probe` supplied a 3722-token advisor
   contract and 6474 idea-group rows, advanced 2 game hours with zero skipped
   hours, emitted 3 scheduled politics frames, and emitted zero worker-poll
-  politics payloads;
+  politics payloads. Follow-up active-ruler proof
+  `replay/snapshots/_collector_session_politics_leader_gate/20260629T171216Z_pid43412`
+  advanced 12 game hours, stored 13 verified snapshots, emitted 13 scheduled
+  `politics_live` frames, captured 4095 non-ambiguous `commanders.leader` rows
+  with up to 315 active rulers per scheduled frame, and kept politics payloads
+  off worker-poll frames. Multi-entry ruling-party leader vectors are omitted
+  until the active element is proven;
 - DLL-native scheduled `decisions_live` through
   `CCountry+0xFA0 -> CDecisionStatus`: the collector validates the status
   vtable and owner back-pointer, emits non-empty status-vector counts, and

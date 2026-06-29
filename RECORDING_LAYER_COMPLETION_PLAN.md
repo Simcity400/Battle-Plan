@@ -992,7 +992,12 @@ collector now reads political power without the record bridge by validating
 `CPoliticalStatus+0xE0`. Scheduled `politics_live` now follows the same
 validated `CPoliticalStatus` object and emits ruling party, party popularities,
 ordered active idea tokens, idea count, election frequency, party count, and
-low-confidence diagnostics only on scheduled frames. Scheduled
+low-confidence diagnostics only on scheduled frames. It also emits active
+country leader rows by validating
+`CPoliticalStatus -> ruling_party -> CCountryLeader -> CCharacter`; only
+singleton ruling-party leader vectors are folded into
+`countries.*.commanders.leader`, while multi-entry vectors are omitted until the
+active element can be proven. Scheduled
 `politics_residuals` also uses the same validated `CPoliticalStatus`, decoding
 `last_election` from `+0xA0` and reading `elections_allowed` from `+0xEC`.
 `appointed_advisors`, `appointed_advisor_details`, and
@@ -1069,6 +1074,12 @@ problems. The proof folded `idea_groups` for 712 country rows and positive
 `civilian_economy` / `export_focus` / `limited_conscription`, 11
 `national_spirits`, `idea_groups.industrial_concern = companhia_uniao_fabril`,
 and `advisor_ideas.industrial_concern = companhia_uniao_fabril`.
+Follow-up active-ruler proof
+`replay/snapshots/_collector_session_politics_leader_gate/20260629T171216Z_pid43412`
+advanced 12 game hours in 39.328 wall seconds, stored 13 verified snapshots,
+emitted 13 scheduled `politics_live` frames, captured 4095 non-ambiguous
+`commanders.leader` rows with up to 315 active rulers per scheduled frame,
+verified the replay, and kept politics payloads off worker-poll frames.
 `decisions_live` is also now DLL-native: the collector validates
 `CCountry+0xFA0 -> CDecisionStatus`, checks the owner back-pointer, emits
 decision-status vector counts, and decodes active `CTimedDecision` rows. That
@@ -1312,7 +1323,8 @@ nullable `cosmetic_tag`. It also emits scheduled `politics_live` rows from
 tokens, typed law buckets, broad non-law `ideas_other`, narrower
 `national_spirits`, complete `idea_groups`, active cabinet/designer
 `advisor_ideas`, idea count, election frequency, party count, and
-low-confidence diagnostics, plus scheduled `politics_residuals` rows for
+low-confidence diagnostics, active-ruler rows folded into
+`countries.*.commanders.leader`, plus scheduled `politics_residuals` rows for
 `last_election`, `elections_allowed`, `appointed_advisors`,
 `appointed_advisor_details`, `appointed_advisor_slots`, and
 `appointed_advisor_ledgers` when validated static contracts are supplied. The
@@ -1325,6 +1337,11 @@ Current 12-game-hour no-cold proof on pid 43412 emitted 12 scheduled
 `politics_live` frames, 12 scheduled `politics_residuals` frames, 12 scheduled
 `tech_live` frames, up to 356 politics rows, 356 residual-politics rows, and 356
 research rows per frame, with no heavy payloads on lightweight worker polls.
+Follow-up active-ruler proof
+`replay/snapshots/_collector_session_politics_leader_gate/20260629T171216Z_pid43412`
+emitted 13 scheduled `politics_live` frames across 12 game hours, folded 4095
+`commanders.leader` rows into the replay store, and kept multi-entry leader
+vectors omitted rather than guessing.
 The DLL also emits scheduled
 `decisions_live` status counts and active timed-decision rows, plus scheduled
 `focus_live` core focus state from validated `CCountry` child roots; live proof

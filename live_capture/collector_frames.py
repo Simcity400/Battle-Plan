@@ -96,6 +96,7 @@ COUNTRY_POLITICS_IDEOLOGIES = frozenset((
 COUNTRY_POLITICS_PAYLOAD_KEYS = frozenset((
     "popularities",
     "ruling_party",
+    "leader",
     "ideas",
     "ideas_other",
     "national_spirits",
@@ -116,6 +117,7 @@ COUNTRY_POLITICS_PAYLOAD_KEYS = frozenset((
 COUNTRY_POLITICS_LIVE_PAYLOAD_KEYS = frozenset((
     "popularities",
     "ruling_party",
+    "leader",
     "ideas",
     "ideas_other",
     "national_spirits",
@@ -138,6 +140,16 @@ COUNTRY_POLITICS_RESIDUAL_PAYLOAD_KEYS = frozenset((
 COUNTRY_POLITICS_MAX_IDEAS = 400
 COUNTRY_POLITICS_MAX_LAWS = 32
 COUNTRY_POLITICS_MAX_TOKEN_LENGTH = 160
+COUNTRY_LEADER_CHAR_ID_MAX = 10_000_000
+COUNTRY_LEADER_NAME_MAX_LENGTH = 256
+COUNTRY_LEADER_PAYLOAD_KEYS = frozenset((
+    "char_id",
+    "name",
+    "token",
+    "ideology_group",
+    "ambiguous",
+    "source",
+))
 COUNTRY_FOCUS_PAYLOAD_KEYS = frozenset((
     "focus_tree",
     "completed",
@@ -4263,6 +4275,9 @@ def _validate_country_rows(countries: Dict[str, Any]) -> List[str]:
                         f"collector frame country {tag!r}.politics.ruling_party "
                         "not ideology|null"
                     )
+                leader = politics.get("leader")
+                if leader is not None:
+                    problems.extend(_validate_country_leader_row(tag, leader))
                 ideas = politics.get("ideas")
                 if ideas is not None:
                     if not isinstance(ideas, list) or len(ideas) > COUNTRY_POLITICS_MAX_IDEAS:
@@ -4421,6 +4436,42 @@ def _validate_country_rows(countries: Dict[str, Any]) -> List[str]:
                 present=present,
                 collector_object=collector_object,
             ))
+    return problems
+
+
+def _validate_country_leader_row(tag: str, value: Any) -> List[str]:
+    problems: List[str] = []
+    prefix = f"collector frame country {tag!r}.politics.leader"
+    if not isinstance(value, dict):
+        return [f"{prefix} not dict|null"]
+    for key in value:
+        if key not in COUNTRY_LEADER_PAYLOAD_KEYS:
+            problems.append(f"{prefix}.{key} unsupported")
+    char_id = value.get("char_id")
+    if not _valid_bounded_int(
+        char_id,
+        minimum=1,
+        maximum=COUNTRY_LEADER_CHAR_ID_MAX,
+    ):
+        problems.append(f"{prefix}.char_id not positive int in range")
+    name = value.get("name")
+    if name is not None and (
+        not isinstance(name, str)
+        or not (0 < len(name) <= COUNTRY_LEADER_NAME_MAX_LENGTH)
+    ):
+        problems.append(f"{prefix}.name not bounded str|null")
+    token = value.get("token")
+    if token is not None and not _valid_politics_token(token):
+        problems.append(f"{prefix}.token not token|null")
+    ideology_group = value.get("ideology_group")
+    if ideology_group is not None and ideology_group not in COUNTRY_POLITICS_IDEOLOGIES:
+        problems.append(f"{prefix}.ideology_group not ideology|null")
+    ambiguous = value.get("ambiguous")
+    if ambiguous is not None and not isinstance(ambiguous, bool):
+        problems.append(f"{prefix}.ambiguous not bool|null")
+    source = value.get("source")
+    if source is not None and source != RAW_SOURCE:
+        problems.append(f"{prefix}.source {source!r} != {RAW_SOURCE!r}")
     return problems
 
 
@@ -5649,6 +5700,7 @@ def _fold_country_politics(
         return
     measured_ideas_other_tags = set()
     measured_national_spirit_tags = set()
+    measured_leader_tags = set()
     for tag, row in countries.items():
         if not schema.valid_tag(tag) or not isinstance(row, dict):
             continue
@@ -5672,6 +5724,15 @@ def _fold_country_politics(
         ruling_party = politics_payload.get("ruling_party")
         if ruling_party in COUNTRY_POLITICS_IDEOLOGIES:
             clean["ruling_party"] = ruling_party
+        leader = _clean_country_leader_payload(politics_payload.get("leader"))
+        if leader is not None:
+            country = snap["countries"].setdefault(tag, schema.empty_country())
+            commanders = country.get("commanders")
+            if not isinstance(commanders, dict):
+                commanders = {}
+                country["commanders"] = commanders
+            commanders["leader"] = leader
+            measured_leader_tags.add(tag)
         ideas = politics_payload.get("ideas")
         if (
             isinstance(ideas, list)
@@ -5730,12 +5791,15 @@ def _fold_country_politics(
                 politics = {}
                 country["politics"] = politics
             politics.update(clean)
-    if measured_ideas_other_tags or measured_national_spirit_tags:
+    if measured_ideas_other_tags or measured_national_spirit_tags or measured_leader_tags:
         measured = snap.setdefault("_live_measured_leaf_tags", {})
     if measured_ideas_other_tags:
         measured["politics.ideas_other"] = sorted(measured_ideas_other_tags)
     if measured_national_spirit_tags:
         measured["politics.national_spirits"] = sorted(measured_national_spirit_tags)
+    if measured_leader_tags:
+        existing = set(measured.get("commanders.leader") or [])
+        measured["commanders.leader"] = sorted(existing | measured_leader_tags)
 
 
 def _clean_politics_token_map(value: Any) -> Optional[Dict[str, List[str]]]:
@@ -5753,6 +5817,39 @@ def _clean_politics_token_map(value: Any) -> Optional[Dict[str, List[str]]]:
             return None
         out[group] = list(tokens)
     return out
+
+
+def _clean_country_leader_payload(value: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(value, dict):
+        return None
+    char_id = value.get("char_id")
+    if not _valid_bounded_int(
+        char_id,
+        minimum=1,
+        maximum=COUNTRY_LEADER_CHAR_ID_MAX,
+    ):
+        return None
+    clean: Dict[str, Any] = {"char_id": char_id, "source": RAW_SOURCE}
+    name = value.get("name")
+    if isinstance(name, str) and 0 < len(name) <= COUNTRY_LEADER_NAME_MAX_LENGTH:
+        clean["name"] = name
+    token = value.get("token")
+    if token is not None:
+        if not _valid_politics_token(token):
+            return None
+        clean["token"] = token
+    ideology_group = value.get("ideology_group")
+    if ideology_group is not None:
+        if ideology_group not in COUNTRY_POLITICS_IDEOLOGIES:
+            return None
+        clean["ideology_group"] = ideology_group
+    ambiguous = value.get("ambiguous")
+    if isinstance(ambiguous, bool):
+        clean["ambiguous"] = ambiguous
+    source = value.get("source")
+    if source is not None and source != RAW_SOURCE:
+        return None
+    return clean
 
 
 def _fold_country_politics_residuals(

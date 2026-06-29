@@ -117,6 +117,17 @@ for inspection, with no ability to mutate the game.
   1022 country `at_war` rows and 1022 country casualty rows, observed max
   per-frame casualty sum 56475731, and kept diplomacy payloads off worker-poll
   frames.
+- DLL-native active country leaders are proven through scheduled
+  `politics_live`: the collector validates
+  `CPoliticalStatus -> ruling_party -> CCountryLeader -> CCharacter`, accepts
+  only singleton ruling-party leader vectors, and folds verified rows into
+  `countries.*.commanders.leader`. The proof
+  `replay/snapshots/_collector_session_politics_leader_gate/20260629T171216Z_pid43412`
+  advanced 12 game hours in 39.328 wall seconds, stored 13 verified snapshots,
+  emitted 13 scheduled `politics_live` frames, captured 4095 active-ruler rows
+  with up to 315 per scheduled frame, and kept politics payloads off
+  worker-poll frames. Multi-entry leader vectors remain intentionally omitted
+  until active-element disambiguation is proven.
 - DLL-native raw `land_combats` lifecycle capture is proven at speed five for
   the raw replay stream: the 2026-06-29 pid 43412 proof
   `replay/snapshots/_collector_session_diplomacy_gate/20260629T152734Z_pid43412`

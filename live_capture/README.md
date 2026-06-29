@@ -73,7 +73,8 @@ current product status and acceptance gates, and
   `countries.*.politics` for ruling party, party popularities, active idea
   tokens, typed `laws`, complete `idea_groups`, active cabinet/designer
   `advisor_ideas`, broad non-law `ideas_other`, narrower `national_spirits`,
-  idea count, election frequency, party count, and low-confidence diagnostics,
+  idea count, election frequency, party count, low-confidence diagnostics, and
+  verified active-ruler rows folded into `countries.*.commanders.leader`,
   and scheduled `politics_residuals` rows for
   `last_election` and `elections_allowed`. `appointed_advisors`,
   `appointed_advisor_details`, `appointed_advisor_slots`, and
@@ -89,9 +90,12 @@ current product status and acceptance gates, and
   `advisor_ideas` for 160 country rows, and measured Portugal as
   `advisor_ideas.industrial_concern = companhia_uniao_fabril`. Current no-cold
   proof on pid 43412 advanced 12 game hours, stored 13 verified snapshots,
-  emitted 12 scheduled `politics_live` frames and 12 scheduled
-  `politics_residuals` frames, observed up to 356 politics rows per frame, and
-  kept worker-poll frames free of politics payloads.
+  emitted 13 scheduled `politics_live` frames and 13 scheduled
+  `politics_residuals` frames, observed up to 315 active-ruler rows and 355
+  politics rows per frame, folded 4095 `commanders.leader` rows into the replay
+  store, and kept worker-poll frames free of politics payloads. Countries whose
+  ruling-party leader vector has multiple entries are deliberately omitted until
+  the active element can be disambiguated without guessing.
   It also folds scheduled `decisions_live` rows into
   `countries.*.decisions.status_present` and `.timed_live`; measured-empty
   `timed_live = []` is protected only for tags actually measured by the

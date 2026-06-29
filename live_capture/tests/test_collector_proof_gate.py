@@ -149,6 +149,49 @@ class TestCollectorProofGate(unittest.TestCase):
         self.assertEqual(proof["errors"], [])
         self.assertEqual(proof["max_diplomacy_war_relations_per_frame"], 144)
 
+    def test_accepts_politics_leader_proof(self):
+        proof = collector_session_proof_summary(
+            _manifest(
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock", "country_identity", "politics_live"],
+                    "scheduled_politics_domain_frames": 12,
+                    "politics_leader_frames": 12,
+                    "country_rows_with_politics_leader": 4260,
+                    "max_politics_leader_rows_per_frame": 355,
+                    "politics_on_lightweight_frames": 0,
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+            ),
+            required_scheduled_snapshot_domains=["politics_live"],
+            min_game_hours=12,
+            require_politics_leaders=True,
+        )
+
+        self.assertTrue(proof["ok"])
+        self.assertEqual(proof["errors"], [])
+        self.assertEqual(proof["politics_leader_frames"], 12)
+        self.assertEqual(proof["max_politics_leader_rows_per_frame"], 355)
+
+    def test_rejects_missing_politics_leaders(self):
+        errors = collector_session_proof_errors(
+            _manifest(
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock", "country_identity", "politics_live"],
+                    "scheduled_politics_domain_frames": 12,
+                    "politics_leader_frames": 0,
+                    "country_rows_with_politics_leader": 0,
+                    "max_politics_leader_rows_per_frame": 0,
+                    "politics_on_lightweight_frames": 0,
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+            ),
+            min_game_hours=12,
+            require_politics_leaders=True,
+        )
+
+        self.assertIn("politics leader frames below required cadence", errors)
+        self.assertIn("country politics leader rows were not observed", errors)
+
     def test_rejects_faction_only_diplomacy_for_war_relation_proof(self):
         errors = collector_session_proof_errors(
             _manifest(

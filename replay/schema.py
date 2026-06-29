@@ -111,8 +111,9 @@ DOMAINS = (
                              # home; it adds `skill`/`traits` keys to existing leader dicts.
     "politics_live",         # LIVE per-country politics -> countries.*.politics (party_popularities
                              # /ruling_party/ideas/idea_count/election_frequency/party_count/
-                             # low_confidence, M; shares the save politics home, tracked under a
-                             # DISTINCT live id). political_power stays country_scalars-owned.
+                             # low_confidence, M) and the active country leader relation into
+                             # countries.*.commanders.leader (M/S); shares save homes, tracked
+                             # under a DISTINCT live id. political_power stays country_scalars-owned.
     "oob_command",           # LIVE OOB command hierarchy -> order_of_battle.{armies,army_groups,
                              # fleets,theatres} + membership/leader/owner (M; shares the save
                              # "order_of_battle" home, tracked under a DISTINCT live id). The
@@ -524,7 +525,9 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.intel.peace_conference": "S",
     "countries.*.intel.intel_networks": "S",
     # --- country.commanders (§3.9, from characters.json) ---
-    "countries.*.commanders.leader": "S",
+    # Active country leader is now live-first when politics_live supplies the verified
+    # ruling-party -> CCountryLeader -> CCharacter chain; save characters remain fallback.
+    "countries.*.commanders.leader": "M/S",
     "countries.*.commanders.party_leaders": "S",
     "countries.*.commanders.ruling_party": "S",
     "countries.*.commanders.generals": "S",
@@ -2400,6 +2403,27 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                     f"country {tag!r}.research.research_slots {slots!r} not int|null")
         cmd = c.get("commanders")
         if isinstance(cmd, dict):
+            leader = cmd.get("leader")
+            if leader is not None and not isinstance(leader, dict):
+                problems.append(
+                    f"country {tag!r}.commanders.leader {leader!r} not dict|null")
+            elif isinstance(leader, dict):
+                char_id = leader.get("char_id")
+                if char_id is not None and not isinstance(char_id, int):
+                    problems.append(
+                        f"country {tag!r}.commanders.leader.char_id {char_id!r} "
+                        "not int|null")
+                for key in ("name", "token", "ideology", "ideology_group", "source"):
+                    value = leader.get(key)
+                    if value is not None and not isinstance(value, str):
+                        problems.append(
+                            f"country {tag!r}.commanders.leader.{key} "
+                            f"{value!r} not str|null")
+                ambiguous = leader.get("ambiguous")
+                if ambiguous is not None and not isinstance(ambiguous, bool):
+                    problems.append(
+                        f"country {tag!r}.commanders.leader.ambiguous "
+                        f"{ambiguous!r} not bool|null")
             for k in ("army_leaders", "navy_leaders"):
                 v = cmd.get(k)
                 if v is not None and not isinstance(v, list):

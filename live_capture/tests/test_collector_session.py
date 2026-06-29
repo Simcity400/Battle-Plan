@@ -543,6 +543,10 @@ class TestCollectorSession(unittest.TestCase):
                         "politics": {
                             "popularities": {"neutrality": 100.0},
                             "ruling_party": "neutrality",
+                            "leader": {
+                                "char_id": 371,
+                                "token": "POR_antonio_de_oliveira_salazar",
+                            },
                             "ideas": ["war_economy", "sour_loser"],
                             "idea_groups": {
                                 "economy": ["war_economy"],
@@ -555,6 +559,10 @@ class TestCollectorSession(unittest.TestCase):
                         "politics": {
                             "popularities": {"fascism": 80.0},
                             "ruling_party": "fascism",
+                            "leader": {
+                                "char_id": 1028,
+                                "token": "GER_adolf_hitler",
+                            },
                             "ideas": ["autarky", "krupp"],
                             "idea_groups": {
                                 "economy": ["autarky"],
@@ -589,6 +597,9 @@ class TestCollectorSession(unittest.TestCase):
         self.assertEqual(summary["country_rows_with_politics_payloads"], 3)
         self.assertEqual(summary["max_politics_country_rows_per_frame"], 2)
         self.assertEqual(summary["max_politics_idea_rows_per_country"], 3)
+        self.assertEqual(summary["politics_leader_frames"], 1)
+        self.assertEqual(summary["country_rows_with_politics_leader"], 2)
+        self.assertEqual(summary["max_politics_leader_rows_per_frame"], 2)
         self.assertEqual(summary["country_rows_with_politics_idea_groups"], 2)
         self.assertEqual(summary["country_rows_with_politics_advisor_ideas"], 1)
         self.assertEqual(summary["max_politics_idea_group_keys_per_country"], 2)

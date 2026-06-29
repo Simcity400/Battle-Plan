@@ -399,7 +399,7 @@ are `null`.
 The the game 1.19 unified CHARACTER system, resolved to names + assignments by the parser.
 | field | type | source | notes |
 |-------|------|--------|-------|
-| `leader` | obj\|null | S | active country leader (ruling party): `{name, token, ideology, traits[], expire, portrait_gfx, char_id}` |
+| `leader` | obj\|null | M / S | active country leader (ruling party). Live `politics_live` folds verified singleton `CPoliticalStatus -> ruling_party -> CCountryLeader -> CCharacter` rows as `{char_id, name?, token?, ideology_group?, source:"C", ambiguous:false}`; save characters remain fallback for traits, expiry, portrait, and multi-entry leader vectors that are not yet disambiguated |
 | `party_leaders[]` | list | S | all ideology-group leaders + `party`, `popularity` (the political picture) |
 | `ruling_party` | str\|null | C / M / S | ideology group currently in power; collector politics is authoritative when present |
 | `generals[]` / `field_marshals[]` / `admirals[]` | list | S | military leaders. Each: `name`, `token`, `role`, `level` (`skill`), `experience`, `attack`/`defense`/`planning`/`logistics` (army) or `maneuvering`/`coordination` (navy), `traits[]`, `preferred_tactic`, `penalty`, `captured`, `unit_leader_id`, `assignment` (`{kind: army_group/army/fleet, name}` or `null` = reserve), `portrait_gfx` |
