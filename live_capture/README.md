@@ -299,10 +299,16 @@ gap frames. `naval_combat_ended` requires a battle-ending fixture.
 
 For air-wing acceptance, first populate the same-process air-wing cache only
 when the current game actually has active wings; the acceptance run must then
-rerun without `--allow-air-wing-cold-scan`. The current pid 43412 fixture remains
-blocked: explicit cold preflight reported `status = insufficient_rows`,
-`row_count = 0`, and the proof gate correctly failed `--require-raw-domain
-air_wings`.
+rerun without `--allow-air-wing-cold-scan`. Cold preflight now live-discovers
+the current heap arena before `NavalAirReader.enumerate_air_wings`; this avoids
+the stale fixed-arena zero-row failure documented by the air-combat research.
+The 2026-06-29 pid 43412 bootstrap discovered a 9803792384-byte arena and
+stored 653 air-wing body rows. The no-cold acceptance run
+`replay/snapshots/_collector_session_air_wing_gate/20260629T164933Z_pid43412`
+then hit the cache in 0.094s, supplied 652 bridge rows, advanced 12 game hours
+in 52.891 wall seconds, verified replay output, observed raw `air_wings`,
+captured 652 `air_wing_observed` and 9128 `air_wing_updated` events, reported
+zero raw gaps, and kept heavy scheduled payloads off lightweight frames.
 
 Repeated bounded workers are one logical recorder session. The raw probe
 manifest keeps every verified observation, but the replay writer processes one

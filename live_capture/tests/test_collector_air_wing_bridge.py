@@ -75,10 +75,18 @@ class FakeAirWingReader:
         self.closed = True
 
 
+class IndexInt:
+    def __init__(self, value):
+        self.value = value
+
+    def __index__(self):
+        return self.value
+
+
 class TestCollectorAirWingBridge(unittest.TestCase):
     def test_encode_air_wing_body_bridge_sorts_and_sanitizes_rows(self):
         encoded = encode_air_wing_body_bridge([
-            {"owner_tagid": 2, "wing_id": "4", "body_addr": "0x9000"},
+            {"owner_tagid": 2, "wing_id": "4", "body_addr": IndexInt(0x9000)},
             {"owner_tag_db_id": "1", "wing_id": 3, "body_ptr": 0x8000},
         ])
 
@@ -97,11 +105,12 @@ class TestCollectorAirWingBridge(unittest.TestCase):
     def test_preflight_resolves_encoded_bridge_with_sanitized_diagnostics(self):
         reader = FakeAirWingReader()
 
-        result = resolve_air_wing_body_bridge_preflight(
-            111,
-            reader_factory=lambda: reader,
-            allow_cold_scan=True,
-        )
+        with _patched_arena_discovery({"status": "updated", "range_bytes": 0x4000}):
+            result = resolve_air_wing_body_bridge_preflight(
+                111,
+                reader_factory=lambda: reader,
+                allow_cold_scan=True,
+            )
 
         self.assertTrue(result.usable)
         self.assertEqual(result.encoded, "1:3:0x8000;2:4:0x9000")
@@ -111,6 +120,7 @@ class TestCollectorAirWingBridge(unittest.TestCase):
         self.assertEqual(result.diagnostics["address_manifest_policy"], "omitted")
         self.assertTrue(result.diagnostics["bridge_supplied"])
         self.assertTrue(result.diagnostics["allow_cold_scan"])
+        self.assertEqual(result.diagnostics["arena_discovery"]["status"], "updated")
         self.assertFalse(result.diagnostics["hot_loop_heap_scan"])
         self.assertNotIn("0x8000", json.dumps(result.diagnostics, sort_keys=True))
         self.assertEqual(reader.enumerate_calls, 1)
@@ -234,6 +244,19 @@ class _patched_identity:
 
     def __exit__(self, exc_type, exc, tb):
         cawb._process_identity.identify = self.original
+        return False
+
+
+class _patched_arena_discovery:
+    def __init__(self, value):
+        self.value = value
+        self.original = cawb._discover_live_arena_for_reader
+
+    def __enter__(self):
+        cawb._discover_live_arena_for_reader = lambda _reader: dict(self.value)
+
+    def __exit__(self, exc_type, exc, tb):
+        cawb._discover_live_arena_for_reader = self.original
         return False
 
 

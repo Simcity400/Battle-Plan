@@ -4,6 +4,9 @@ This resolves live air-wing body addresses before a collector session and
 encodes them for the temporary DLL control file. The DLL revalidates each
 supplied body and samples count/mission/effective-plane telemetry without
 heap-scanning inside the worker loop.
+
+Cold preflight live-discovers the current heap arena before calling the legacy
+reader; the reader's fixed arena constants are only stale hints after restart.
 """
 from __future__ import annotations
 
@@ -152,6 +155,7 @@ def resolve_air_wing_body_bridge_preflight(
                 cache=cache_diag,
             )
 
+        cache_diag["arena_discovery"] = _discover_live_arena_for_reader(reader)
         locate_started = time.monotonic()
         wings = reader.enumerate_air_wings()
         locate_s = time.monotonic() - locate_started
@@ -271,6 +275,34 @@ def _default_reader_factory() -> Any:
     return NavalAirReader()
 
 
+def _discover_live_arena_for_reader(reader: Any) -> Dict[str, Any]:
+    """Update naval-air reader globals to the current process arena before a cold scan."""
+    pid = _coerce_optional_int(getattr(reader, "pid", None))
+    if pid is None:
+        return {"status": "pid_unavailable"}
+    try:
+        from memory_reader import fastscan  # type: ignore
+        from memory_reader.naval_air import naval_air_reader as na  # type: ignore
+
+        arena = fastscan.discover_arena(pid)
+        if not arena:
+            return {"status": "not_found"}
+        lo, hi = (int(arena[0]), int(arena[1]))
+        if lo <= 0 or hi <= lo:
+            return {"status": "invalid"}
+        na.ARENA_LO = lo
+        na.ARENA_HI = hi
+        return {
+            "status": "updated",
+            "range_bytes": hi - lo,
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "error": _safe_error_message(exc),
+        }
+
+
 def _air_wing_bridge_row(item: Any) -> Tuple[int, int, int]:
     if isinstance(item, dict):
         owner_raw = item.get("owner_tag_db_id", item.get("owner_tagid"))
@@ -307,6 +339,12 @@ def _bridge_int(value: Any, name: str) -> int:
         raise ValueError(f"air_wing_body_bridge {name} must be int-like")
     if isinstance(value, int):
         return value
+    index = getattr(value, "__index__", None)
+    if index is not None:
+        try:
+            return int(index())
+        except Exception as exc:
+            raise ValueError(f"air_wing_body_bridge {name} must be int-like") from exc
     if isinstance(value, str):
         value = value.strip()
         if value.lower().startswith("0x"):
@@ -426,6 +464,8 @@ def _diagnostics(
             "status": str(cache.get("status") or "unknown"),
         }
         diagnostics["allow_cold_scan"] = bool(cache.get("allow_cold_scan"))
+        if "arena_discovery" in cache:
+            diagnostics["arena_discovery"] = dict(cache["arena_discovery"])
     if reject_stats:
         diagnostics["reject_stats"] = dict(sorted(reject_stats.items()))
     return diagnostics

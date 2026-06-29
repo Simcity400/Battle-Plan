@@ -181,6 +181,16 @@ Implemented in the current bridge:
   and explicitly passed the raw-domain gate with 56 `land_combat_started`, 6695
   `land_combat_updated`, and 11 `land_combat_ended` events, with no heavy
   scheduled payloads leaking onto lightweight frames;
+- DLL-native raw `air_wings` telemetry stream: a one-time preflight bridge
+  locates live air-wing bodies after live arena discovery, then the DLL hot path
+  revalidates pinned bodies and samples owner, wing id, count, mission mask,
+  mission region, and effective active planes. The current pid 43412 proof
+  `replay/snapshots/_collector_session_air_wing_gate/20260629T164933Z_pid43412`
+  advanced 12 game hours in 52.891 wall seconds, verified replay output,
+  supplied 652 no-cold cached bridge rows, observed raw `air_wings`, captured
+  652 `air_wing_observed` and 9128 `air_wing_updated` events, and reported zero
+  raw gaps or heavyweight payloads on lightweight frames. This proves wing-level
+  region/mission inputs, not the exact displayed air-superiority percentage;
 - DLL-native scheduled `focus_live` through validated `CCountry` child roots:
   `CCountry+0x1370 -> CFocusTree` supplies `focus_tree`, while
   `CCountry+0x1380` supplies completed focuses, completed count, current
@@ -421,8 +431,8 @@ province + progress) `M`; in-combat flag `M`; encirclement/supply status `M*`.
 **Combat (the marquee — Tier C, high-freq sampled):** active **land** combats
 (location, age, attacker/defender division ids) `M`; land battle-detail
 (combat width, terrain, tactics/modifiers, GUI progress) `M*`; **naval**
-battles (fleets, ships engaged, sinkings) `M`; **air** engagements / region
-superiority `M/S`; per-engagement casualties & outcome `D` (reconstructed from
+battles (fleets, ships engaged, sinkings) `M`; **air** wing telemetry / region
+mission inputs `C/M/S`, displayed air-superiority percentage `M*/S`; per-engagement casualties & outcome `D` (reconstructed from
 the combat lifecycle + strength deltas).
 
 **Map layers:** territory (owner) `C/M`; province control `C/S/D/M*` with the
