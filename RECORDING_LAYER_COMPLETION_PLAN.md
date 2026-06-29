@@ -1305,7 +1305,6 @@ low-confidence diagnostics, plus scheduled `politics_residuals` rows for
 adapter validates and folds these into
 `countries.*.misc` and `countries.*.politics`; live proof observed
 `country_misc`, `politics_live`, `politics_residuals`, scheduled advisor
-leaves, typed laws, `ideas_other`, and `national_spirits` with no session errors
 leaves, typed laws, `idea_groups`, `advisor_ideas`, `ideas_other`, and
 `national_spirits` with no session errors and no worker-poll politics payloads.
 The DLL also emits scheduled
@@ -1339,21 +1338,22 @@ If `--preflight-special-projects` cannot supply a bridge from cache, classify
 populate the cache, but the acceptance proof should be rerun without
 `--allow-special-projects-cold-scan`.
 
-Short live proof completed on 2026-06-29 against running PID 40464 with the
-pinned 16022851 executable hash. The first cache-only run verified hourly
-cadence, `focus_live`, and `decisions_live`, but failed the full proof because
-`projects_live` had zero scheduled frames; the preflight reported
-`status = cold_scan_disabled`, cache miss, and no bridge supplied. A read-only
-special-project cold bootstrap then resolved and cached 21,531 bridge rows in
-91.86s outside the collector hot loop. The acceptance rerun used that cache
-without `--allow-special-projects-cold-scan`; `collector_proof_gate` passed with
-`game_hours_advanced = 2`, `hourly_requirement.met = true`,
+Live proof completed on 2026-06-29 against running PID 43412 with the pinned
+16022851 executable hash. A read-only special-project cold bootstrap resolved
+and cached 21,533 bridge rows in 79.313s outside the collector hot loop. The
+acceptance rerun used that cache without `--allow-special-projects-cold-scan`;
+the preflight reported `status = resolved`, `source = special_projects_cache`,
+`row_count = 21533`, `elapsed_s = 0.391`, and `hot_loop_heap_scan = false`.
+`collector_proof_gate` passed with `game_hours_advanced = 12`,
+`stored_snapshot_count = 13`, `hourly_requirement.met = true`,
 `replay_verified = true`, `heavy_payload_on_lightweight_frames = 0`, and
-scheduled frame counts `focus_live = 3`, `decisions_live = 3`,
-`projects_live = 3`. Payload summary: 1,068 focus country rows, 1,068 decision
-country rows, 60 facility rows, 39 worked-project rows, and 0 measured
-scientist rows in that active game state. Next hardening proof is the standard
-12-game-hour speed-five run using the same scheduled-domain gate.
+scheduled collector-frame counts `focus_live = 12`, `decisions_live = 12`,
+`projects_live = 12`. Payload summary: 240 facility rows, 204 worked-project
+rows, and 0 measured scientist rows across the scheduled snapshots in that
+active game state. This segment is therefore live-verified at hourly-or-better
+cadence only for cache-backed, no-cold recorder runs; any cache miss or disabled
+bridge reverts `projects_live` to blocked/unverified until a fresh bootstrap is
+rerun and followed by another no-cold proof.
 
 ### Phase 8: Diplomacy, Intel, Market, Logistics, Weather
 

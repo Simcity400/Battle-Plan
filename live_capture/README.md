@@ -151,7 +151,7 @@ python live_capture/recorder/recorder_main.py --smoke
 python -m live_capture.collector_attach --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --pipe
 python -m live_capture.collector_profile_check --pid <hoi4-pid> --profile live_capture/collector_profiles/vanilla_latest_2026_06_28.json --dll replay_native/target/debug/collector.dll
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session --game-id collector_live_speed5_session --duration-s 8 --sample-ms 10 --dwell-s 0.25 --worker-bursts 3 --burst-interval-s 0.25 --until-game-hours 12 --max-wall-s 30
-python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session --game-id collector_live_focus_decision_project_roots --duration-s 8 --sample-ms 10 --dwell-s 0.25 --worker-bursts 3 --burst-interval-s 0.25 --until-game-hours 12 --max-wall-s 30 --preflight-special-projects
+python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session --game-id collector_live_focus_decision_project_roots --duration-s 180 --sample-ms 10 --dwell-s 0.25 --worker-bursts 3 --burst-interval-s 0.25 --until-game-hours 12 --max-wall-s 120 --preflight-special-projects
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain focus_live --require-scheduled-domain decisions_live --require-scheduled-domain projects_live
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session --game-id collector_live_division_cache_bootstrap --duration-s 5 --sample-ms 20 --dwell-s 0.25 --preflight-division-movement --allow-division-cold-scan
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_order_org_gate --game-id order_org_strength_cache_bootstrap --duration-s 8 --sample-ms 10 --until-game-hours 1 --max-wall-s 240 --preflight-division-movement --allow-division-cold-scan --preflight-army-orders --allow-army-cold-scan
@@ -185,7 +185,11 @@ only executable scaffolding. The segment is live-verified only after
 passes on that run's `session_manifest.json`. If the special-project cache is
 missing, first run a cache-populating diagnostic with
 `--preflight-special-projects --allow-special-projects-cold-scan`, then rerun
-the acceptance proof without the cold-scan flag.
+the acceptance proof without the cold-scan flag. The 2026-06-29 pid 43412 proof
+used a no-cold `special_projects_cache` bridge hit in 0.391s, advanced 12 game
+hours, stored 13 snapshots, verified replay output, emitted 12 scheduled frames
+each for `focus_live`, `decisions_live`, and `projects_live`, and kept heavy
+project payloads off worker-poll frames.
 
 For division org/strength plus army-order raw-stream acceptance, first populate
 same-process caches with the cold bootstrap command if needed, then rerun
