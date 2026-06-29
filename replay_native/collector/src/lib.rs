@@ -198,6 +198,9 @@ mod attach_log {
     const TECHNOLOGY_DEF_INDEX: usize = 0x08;
     const MAX_COMPLETED_TECH_COUNT: u32 = 2000;
     const MAX_RESEARCH_SLOT_COUNT: u32 = 32;
+    const MAX_TECH_DEF_FILTER_ROWS: usize = 8192;
+    const MAX_TECH_DEF_FILTER_PAYLOAD_BYTES: usize = 512 * 1024;
+    const TECH_PROGRESS_SCALE: f64 = 1000.0;
     const FUEL_STATUS_CURRENT: usize = 0x08;
     const FUEL_STATUS_MAX: usize = 0x10;
     const FUEL_STATUS_GAIN: usize = 0x18;
@@ -790,6 +793,8 @@ mod attach_log {
         map_control: MapControlContract,
         advisor_token_filter: BTreeMap<String, AdvisorTokenInfo>,
         advisor_token_filter_valid: bool,
+        tech_def_filter: BTreeMap<u32, String>,
+        tech_def_filter_valid: bool,
         idea_group_filter: BTreeMap<String, String>,
         idea_group_filter_valid: bool,
         scheduled_snapshot_step_hours: u32,
@@ -1091,6 +1096,14 @@ mod attach_log {
                 },
                 None => (BTreeMap::new(), true),
             };
+        let (tech_def_filter, tech_def_filter_valid) =
+            match parse_json_string(&text, "tech_def_filter") {
+                Some(value) => match parse_tech_def_filter(&value) {
+                    Some(rows) => (rows, true),
+                    None => (BTreeMap::new(), false),
+                },
+                None => (BTreeMap::new(), true),
+            };
         let (idea_group_filter, idea_group_filter_valid) =
             match parse_json_string(&text, "idea_group_filter") {
                 Some(value) => match parse_idea_group_filter(&value) {
@@ -1129,6 +1142,8 @@ mod attach_log {
             map_control,
             advisor_token_filter,
             advisor_token_filter_valid,
+            tech_def_filter,
+            tech_def_filter_valid,
             idea_group_filter,
             idea_group_filter_valid,
             scheduled_snapshot_step_hours: scheduled_snapshot_step_hours.clamp(1, 24),
@@ -1816,6 +1831,33 @@ mod attach_log {
         }
     }
 
+    fn parse_tech_def_filter(value: &str) -> Option<BTreeMap<u32, String>> {
+        if value.trim().is_empty() {
+            return Some(BTreeMap::new());
+        }
+        if value.len() > MAX_TECH_DEF_FILTER_PAYLOAD_BYTES {
+            return None;
+        }
+        let mut rows = BTreeMap::new();
+        for raw in value.split(';') {
+            let (handle_raw, token_raw) = raw.split_once('=')?;
+            let handle = parse_bridge_u32(handle_raw.trim())?;
+            let token = token_raw.trim();
+            if handle == 0 || handle > MAX_PROJECT_HANDLE || !is_script_token(token) {
+                return None;
+            }
+            if let Some(previous) = rows.insert(handle, token.to_string()) {
+                if previous != token {
+                    return None;
+                }
+            }
+            if rows.len() > MAX_TECH_DEF_FILTER_ROWS {
+                return None;
+            }
+        }
+        Some(rows)
+    }
+
     fn parse_idea_group_filter(value: &str) -> Option<BTreeMap<String, String>> {
         if value.trim().is_empty() {
             return Some(BTreeMap::new());
@@ -2076,6 +2118,7 @@ mod attach_log {
             include_scheduled_country_politics_residuals,
             include_scheduled_country_decisions,
             control.map(|control| &control.advisor_token_filter),
+            control.map(|control| &control.tech_def_filter),
             control.map(|control| &control.idea_group_filter),
         );
         let control_meta =
@@ -7578,6 +7621,8 @@ mod attach_log {
              \"special_projects_bridge_valid\":{},\
              \"advisor_token_filter_tokens\":{},\
              \"advisor_token_filter_valid\":{},\
+             \"tech_def_filter_rows\":{},\
+             \"tech_def_filter_valid\":{},\
              \"idea_group_filter_rows\":{},\
              \"idea_group_filter_valid\":{},\
              \"map_control_state_root_rows\":{},\
@@ -7610,6 +7655,8 @@ mod attach_log {
             special_projects_bridge_valid,
             control.advisor_token_filter.len(),
             control.advisor_token_filter_valid,
+            control.tech_def_filter.len(),
+            control.tech_def_filter_valid,
             control.idea_group_filter.len(),
             control.idea_group_filter_valid,
             control.map_control.state_roots.len(),
@@ -7953,12 +8000,14 @@ mod attach_log {
         }
     }
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone)]
     struct CountryResearchSlotRow {
         slot_index: u32,
         tech_handle_raw: u32,
         tech_def_index_raw: u32,
         progress_raw: u32,
+        tech_name: Option<String>,
+        progress_units: f64,
     }
 
     #[derive(Clone)]
@@ -8094,6 +8143,7 @@ mod attach_log {
                     false,
                     None,
                     None,
+                    None,
                 ) else {
                     rejected_objects = rejected_objects.saturating_add(1);
                     continue;
@@ -8152,6 +8202,7 @@ mod attach_log {
                     false,
                     false,
                     false,
+                    None,
                     None,
                     None,
                 ) else {
@@ -8325,6 +8376,7 @@ mod attach_log {
                     false,
                     None,
                     None,
+                    None,
                 ) else {
                     rejected_objects = rejected_objects.saturating_add(1);
                     continue;
@@ -8374,6 +8426,7 @@ mod attach_log {
             include_scheduled_country_politics_residuals: bool,
             include_scheduled_country_decisions: bool,
             advisor_token_filter: Option<&BTreeMap<String, AdvisorTokenInfo>>,
+            tech_def_filter: Option<&BTreeMap<u32, String>>,
             idea_group_filter: Option<&BTreeMap<String, String>>,
         ) -> Vec<CountryObjectRow> {
             if !self.has_scalar_source() {
@@ -8396,6 +8449,7 @@ mod attach_log {
                     include_scheduled_country_politics_residuals,
                     include_scheduled_country_decisions,
                     advisor_token_filter,
+                    tech_def_filter,
                     idea_group_filter,
                 ) {
                     rows.push(fresh);
@@ -9465,6 +9519,7 @@ mod attach_log {
         include_scheduled_country_politics_residuals: bool,
         include_scheduled_country_decisions: bool,
         advisor_token_filter: Option<&BTreeMap<String, AdvisorTokenInfo>>,
+        tech_def_filter: Option<&BTreeMap<u32, String>>,
         idea_group_filter: Option<&BTreeMap<String, String>>,
     ) -> (String, String) {
         let Some(state) = state else {
@@ -9505,6 +9560,7 @@ mod attach_log {
             include_scheduled_country_politics_residuals,
             include_scheduled_country_decisions,
             advisor_token_filter,
+            tech_def_filter,
             idea_group_filter,
         );
         let country_rows = state.country_identity.countries_json_from_rows(
@@ -9740,6 +9796,7 @@ mod attach_log {
                 false,
                 None,
                 None,
+                None,
             )?;
             rows.push(row);
         }
@@ -9794,6 +9851,7 @@ mod attach_log {
         include_scheduled_country_politics_residuals: bool,
         include_scheduled_country_decisions: bool,
         advisor_token_filter: Option<&BTreeMap<String, AdvisorTokenInfo>>,
+        tech_def_filter: Option<&BTreeMap<u32, String>>,
         idea_group_filter: Option<&BTreeMap<String, String>>,
     ) -> Option<CountryObjectRow> {
         if read_u64(object_ptr)? as usize != country_vtable {
@@ -9866,7 +9924,7 @@ mod attach_log {
                 None
             },
             research: if include_scheduled_country_research {
-                read_country_research(object_ptr, country_vtable)
+                read_country_research(object_ptr, country_vtable, tech_def_filter)
             } else {
                 None
             },
@@ -9902,6 +9960,7 @@ mod attach_log {
         include_scheduled_country_politics_residuals: bool,
         include_scheduled_country_decisions: bool,
         advisor_token_filter: Option<&BTreeMap<String, AdvisorTokenInfo>>,
+        tech_def_filter: Option<&BTreeMap<u32, String>>,
         idea_group_filter: Option<&BTreeMap<String, String>>,
     ) -> Option<CountryObjectRow> {
         let row = country_object_row(
@@ -9917,6 +9976,7 @@ mod attach_log {
             include_scheduled_country_politics_residuals,
             include_scheduled_country_decisions,
             advisor_token_filter,
+            tech_def_filter,
             idea_group_filter,
         )?;
         if row.tag_db_id == expected_tag_db_id {
@@ -9938,6 +9998,7 @@ mod attach_log {
         include_scheduled_country_politics_residuals: bool,
         include_scheduled_country_decisions: bool,
         advisor_token_filter: Option<&BTreeMap<String, AdvisorTokenInfo>>,
+        tech_def_filter: Option<&BTreeMap<u32, String>>,
         idea_group_filter: Option<&BTreeMap<String, String>>,
     ) -> Option<CountryObjectRow> {
         let row = country_object_row_expected(
@@ -9954,6 +10015,7 @@ mod attach_log {
             include_scheduled_country_politics_residuals,
             include_scheduled_country_decisions,
             advisor_token_filter,
+            tech_def_filter,
             idea_group_filter,
         )?;
         if row.tag == expected.tag && row.name == expected.name {
@@ -10071,6 +10133,7 @@ mod attach_log {
     fn read_country_research(
         object_ptr: usize,
         country_vtable: usize,
+        tech_def_filter: Option<&BTreeMap<u32, String>>,
     ) -> Option<CountryResearchRow> {
         let module_base = country_vtable.checked_sub(COUNTRY_VTABLE_RVA)?;
         let status_vtable = module_base.checked_add(TECH_STATUS_VTABLE_RVA)?;
@@ -10111,7 +10174,13 @@ mod attach_log {
         let research_slot_count = read_u32_stable(status_ptr + TECH_STATUS_RESEARCH_SLOT_COUNT)
             .filter(|count| *count <= MAX_RESEARCH_SLOT_COUNT);
         let active_research = research_slot_count.and_then(|count| {
-            read_country_active_research_slots(status_ptr, slot_vtable, tech_vtables, count)
+            read_country_active_research_slots(
+                status_ptr,
+                slot_vtable,
+                tech_vtables,
+                count,
+                tech_def_filter,
+            )
         });
 
         let row = CountryResearchRow {
@@ -10131,6 +10200,7 @@ mod attach_log {
         slot_vtable: usize,
         tech_vtables: [usize; 2],
         slot_count: u32,
+        tech_def_filter: Option<&BTreeMap<u32, String>>,
     ) -> Option<Vec<CountryResearchSlotRow>> {
         let cap = read_u32_stable(status_ptr + TECH_STATUS_RESEARCH_SLOTS_CAP)?;
         if cap < slot_count || cap > MAX_RESEARCH_SLOT_COUNT {
@@ -10190,6 +10260,8 @@ mod attach_log {
                 tech_handle_raw: handle,
                 tech_def_index_raw: def_index,
                 progress_raw: progress,
+                tech_name: tech_def_filter.and_then(|defs| defs.get(&handle).cloned()),
+                progress_units: progress as f64 / TECH_PROGRESS_SCALE,
             });
         }
         active.sort_by_key(|slot| slot.slot_index);
@@ -11053,13 +11125,21 @@ mod attach_log {
             let rows = active_research
                 .iter()
                 .map(|slot| {
+                    let tech_name = slot
+                        .tech_name
+                        .as_ref()
+                        .map(|name| format!(",\"tech_name\":{}", json_str(name)))
+                        .unwrap_or_default();
                     format!(
                         "{{\"slot_index\":{},\"tech_handle_raw\":{},\
-                         \"tech_def_index_raw\":{},\"progress_raw\":{}}}",
+                         \"tech_def_index_raw\":{},\"progress_raw\":{},\
+                         \"progress_units\":{}{}}}",
                         slot.slot_index,
                         slot.tech_handle_raw,
                         slot.tech_def_index_raw,
-                        slot.progress_raw
+                        slot.progress_raw,
+                        json_opt_f64(Some(slot.progress_units)),
+                        tech_name
                     )
                 })
                 .collect::<Vec<_>>()
@@ -11754,6 +11834,8 @@ mod attach_log {
                 map_control: MapControlContract::empty(),
                 advisor_token_filter: BTreeMap::new(),
                 advisor_token_filter_valid: true,
+                tech_def_filter: BTreeMap::new(),
+                tech_def_filter_valid: true,
                 idea_group_filter: BTreeMap::new(),
                 idea_group_filter_valid: true,
                 scheduled_snapshot_step_hours: 1,
@@ -11856,6 +11938,8 @@ mod attach_log {
             assert!(parsed.map_control.controller_bridge_valid);
             assert!(parsed.advisor_token_filter.is_empty());
             assert!(parsed.advisor_token_filter_valid);
+            assert!(parsed.tech_def_filter.is_empty());
+            assert!(parsed.tech_def_filter_valid);
             assert!(parsed.idea_group_filter.is_empty());
             assert!(parsed.idea_group_filter_valid);
             assert!(!parsed.special_projects_scan);
@@ -11946,6 +12030,70 @@ mod attach_log {
             assert_eq!(aitken.slot.as_deref(), Some("high_command"));
             assert_eq!(aitken.ledger.as_deref(), None);
             assert_eq!(aitken.character.as_deref(), Some("ENG_maxwell_aitken"));
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn collector_control_accepts_tech_def_filter() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_control_tech_def_filter_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            fs::write(
+                &control,
+                r#"{"mode":"hourly_poll","duration_ms":8000,"sample_ms":10,"tech_def_filter":"4660=basic_machine_tools;4661=construction1;4660=basic_machine_tools"}"#,
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert!(parsed.tech_def_filter_valid);
+            assert_eq!(parsed.tech_def_filter.len(), 2);
+            assert_eq!(
+                parsed.tech_def_filter.get(&4660).map(String::as_str),
+                Some("basic_machine_tools")
+            );
+            assert_eq!(
+                parsed.tech_def_filter.get(&4661).map(String::as_str),
+                Some("construction1")
+            );
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn collector_control_marks_bad_tech_def_filter_invalid() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_control_bad_tech_def_filter_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            fs::write(
+                &control,
+                r#"{"mode":"hourly_poll","duration_ms":8000,"sample_ms":10,"tech_def_filter":"4660=basic_machine_tools;4660=bad token!"}"#,
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert!(parsed.tech_def_filter.is_empty());
+            assert!(!parsed.tech_def_filter_valid);
+            let frame = build_frame_line(
+                1234,
+                None,
+                Some(&parsed),
+                Some(7),
+                Some(125),
+                Some("worker_poll"),
+            );
+            assert!(frame.contains("\"tech_def_filter_rows\":0"));
+            assert!(frame.contains("\"tech_def_filter_valid\":false"));
             let _ = fs::remove_dir_all(&dir);
         }
 
@@ -14112,6 +14260,8 @@ mod attach_log {
                 map_control: MapControlContract::empty(),
                 advisor_token_filter: BTreeMap::new(),
                 advisor_token_filter_valid: true,
+                tech_def_filter: BTreeMap::new(),
+                tech_def_filter_valid: true,
                 idea_group_filter: BTreeMap::new(),
                 idea_group_filter_valid: true,
                 scheduled_snapshot_step_hours: 1,
@@ -14583,6 +14733,8 @@ mod attach_log {
                     tech_handle_raw: 0x9020,
                     tech_def_index_raw: 0x9020,
                     progress_raw: 117_000,
+                    tech_name: Some("basic_machine_tools".to_string()),
+                    progress_units: 117.0,
                 }]),
             });
 
@@ -14595,6 +14747,8 @@ mod attach_log {
             assert!(scheduled.contains("\"active_research\":[{\"slot_index\":0"));
             assert!(scheduled.contains("\"tech_handle_raw\":36896"));
             assert!(scheduled.contains("\"progress_raw\":117000"));
+            assert!(scheduled.contains("\"progress_units\":117"));
+            assert!(scheduled.contains("\"tech_name\":\"basic_machine_tools\""));
             assert!(!worker.contains("\"research\""));
 
             let cache = CountryIdentityCache::not_attempted("test");

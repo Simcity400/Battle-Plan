@@ -2892,6 +2892,8 @@ class TestCollectorFrames(unittest.TestCase):
                             "tech_handle_raw": 0x1234,
                             "tech_def_index_raw": 5,
                             "progress_raw": 9000,
+                            "tech_name": "basic_machine_tools",
+                            "progress_units": 9.0,
                         }],
                     },
                 },
@@ -2919,6 +2921,8 @@ class TestCollectorFrames(unittest.TestCase):
         self.assertEqual(ger["tech_count"], 120)
         self.assertEqual(ger["research_slots"], 4)
         self.assertEqual(ger["in_progress_live"][0]["tech_handle_raw"], 0x1234)
+        self.assertEqual(ger["in_progress_live"][0]["tech_name"], "basic_machine_tools")
+        self.assertEqual(ger["in_progress_live"][0]["progress_units"], 9.0)
         self.assertEqual(ger["in_progress"], [])
         sov = snap["countries"]["SOV"]["research"]
         self.assertEqual(sov["tech_count"], 0)
@@ -2950,6 +2954,8 @@ class TestCollectorFrames(unittest.TestCase):
                             {
                                 "slot_index": 32,
                                 "tech_handle_raw": -1,
+                                "tech_name": "bad token!",
+                                "progress_units": -1.0,
                                 "unexpected": 1,
                             },
                             "not a dict",
@@ -2966,6 +2972,8 @@ class TestCollectorFrames(unittest.TestCase):
             "research.research_slot_count",
             "active_research[0].slot_index",
             "active_research[0].tech_handle_raw",
+            "active_research[0].tech_name",
+            "active_research[0].progress_units",
             "active_research[0].unexpected unsupported",
             "active_research[1] not dict",
         ):

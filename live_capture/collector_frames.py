@@ -149,6 +149,8 @@ COUNTRY_RESEARCH_MAX_COMPLETED_TECHS = 2000
 COUNTRY_RESEARCH_MAX_SLOTS = 32
 COUNTRY_RESEARCH_MAX_ACTIVE = 32
 COUNTRY_RESEARCH_RAW_VALUE_MAX = 9_223_372_036_854_775_807
+COUNTRY_RESEARCH_PROGRESS_UNITS_MAX = COUNTRY_RESEARCH_RAW_VALUE_MAX / 1000.0
+COUNTRY_RESEARCH_TOKEN_MAX_LENGTH = 160
 SPECIAL_PROJECTS_PAYLOAD_KEYS = frozenset((
     "facilities",
     "projects",
@@ -4343,6 +4345,8 @@ def _validate_country_research_active_rows(tag: str, value: Any) -> List[str]:
         "tech_handle_raw",
         "tech_def_index_raw",
         "progress_raw",
+        "tech_name",
+        "progress_units",
     }
     for idx, item in enumerate(value):
         if not isinstance(item, dict):
@@ -4378,6 +4382,21 @@ def _validate_country_research_active_rows(tag: str, value: Any) -> List[str]:
                     f"collector frame country {tag!r}.research."
                     f"active_research[{idx}].{key} not int in range|null"
                 )
+        tech_name = item.get("tech_name")
+        if tech_name is not None and not _valid_research_token(tech_name):
+            problems.append(
+                f"collector frame country {tag!r}.research."
+                f"active_research[{idx}].tech_name not script token|null"
+            )
+        progress_units = item.get("progress_units")
+        if progress_units is not None and not (
+            _is_finite_number(progress_units)
+            and 0.0 <= float(progress_units) <= COUNTRY_RESEARCH_PROGRESS_UNITS_MAX
+        ):
+            problems.append(
+                f"collector frame country {tag!r}.research."
+                f"active_research[{idx}].progress_units not finite number in range|null"
+            )
     return problems
 
 
@@ -4589,6 +4608,20 @@ def _valid_focus_token(value: Any) -> bool:
     if not isinstance(value, str):
         return False
     if not (0 < len(value) <= COUNTRY_FOCUS_MAX_TOKEN_LENGTH):
+        return False
+    return all(
+        ("A" <= ch <= "Z")
+        or ("a" <= ch <= "z")
+        or ("0" <= ch <= "9")
+        or ch in "_-.:"
+        for ch in value
+    )
+
+
+def _valid_research_token(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    if not (0 < len(value) <= COUNTRY_RESEARCH_TOKEN_MAX_LENGTH):
         return False
     return all(
         ("A" <= ch <= "Z")
@@ -5316,6 +5349,19 @@ def _clean_country_research_active_rows(value: Any) -> Optional[List[Dict[str, A
             ):
                 return None
             clean[key] = raw_value
+        tech_name = item.get("tech_name")
+        if tech_name is not None:
+            if not _valid_research_token(tech_name):
+                return None
+            clean["tech_name"] = tech_name
+        progress_units = item.get("progress_units")
+        if progress_units is not None:
+            if not (
+                _is_finite_number(progress_units)
+                and 0.0 <= float(progress_units) <= COUNTRY_RESEARCH_PROGRESS_UNITS_MAX
+            ):
+                return None
+            clean["progress_units"] = float(progress_units)
         out.append(clean)
     return out
 

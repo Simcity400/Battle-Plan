@@ -180,12 +180,15 @@ Scheduled country research:
   `+0xA0/+0xA8/+0xAC`;
 - emitted leaves are `completed_tech_count`, `research_slot_count`, and
   `active_research[]` rows `{slot_index, tech_handle_raw, tech_def_index_raw,
-  progress_raw}`. The Python frame adapter folds them into
-  `countries.*.research.tech_count`, `.research_slots`, and
+  progress_raw, progress_units, tech_name?}`. The Python frame adapter folds
+  them into `countries.*.research.tech_count`, `.research_slots`, and
   `.in_progress_live`;
-- active research rows are raw engine rows only. Tech-token resolution,
-  progress percentage, and ETA remain gated on validated tech-def registry,
-  static research cost, and live speed inputs;
+- `progress_units = progress_raw / 1000` is emitted directly from the validated
+  slot progress. `tech_name` is emitted only when `tech_def_filter` supplies a
+  validated live tech-definition handle map; missing names are omitted instead
+  of guessed;
+- progress percentage and ETA remain derived layers gated on static research
+  cost and live speed inputs;
 - worker-poll frames stay light and must not carry research payloads.
 
 Scheduled special projects:

@@ -104,9 +104,11 @@ current product status and acceptance gates, and
   `countries.*.research.tech_count`, `.research_slots`, and
   `.in_progress_live` from the DLL `CCountry+0xF60 -> CTechnologyStatus`
   slice. The DLL reads the bounded `CTechnologyStatus+0xA0` `CResearchSlot*`
-  vector and emits raw slot rows only; tech-token resolution, progress
-  percentage, and ETA remain gated on separate validated inputs. Worker polls
-  must not carry research payloads.
+  vector and emits raw slot rows plus `progress_units = progress_raw / 1000`.
+  When `--preflight-tech-defs` or an explicit `tech_def_filter` supplies a
+  validated live registry map, those rows may also carry `tech_name`; progress
+  percentage and ETA remain gated on separate static-cost and live-speed inputs.
+  Worker polls must not carry research payloads.
   It can fold scheduled `projects_live` frames into top-level
   `special_projects` with `source = "C"`. The normal session path can now
   preflight/cache special-project roots into a `special_projects_bridge`

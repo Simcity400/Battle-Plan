@@ -1075,8 +1075,11 @@ capacity from `CCountry+0xF60 -> CTechnologyStatus`, with vector/header/backlink
 validation and adapter folding into `countries.*.research.tech_count` and
 `.research_slots`. It also emits raw active-research rows from the bounded
 `CTechnologyStatus+0xA0` `CResearchSlot*` vector and folds them into
-`countries.*.research.in_progress_live`. Tech-token resolution, progress
-percentage, ETA, and live research speed remain open gated layers.
+`countries.*.research.in_progress_live`. Rows now carry
+`progress_units = progress_raw / 1000`, and `tech_name` when the
+cache-first `tech_def_filter` preflight supplies a validated live
+tech-definition handle map. Progress percentage, ETA, and live research speed
+remain open gated layers.
 The DLL/adapter contract for `projects_live` now supports the first top-level
 `special_projects` catalog slice: facilities, scientists, and currently worked
 project rows, all source-badged `C`. The adapter folds only scheduled frames

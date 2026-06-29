@@ -23,6 +23,10 @@ from .collector_naval_combat_bridge import encode_naval_combat_body_bridge
 from .collector_oob_command_bridge import encode_oob_command_bridge
 from .collector_ship_bridge import encode_ship_body_bridge
 from .collector_special_projects_bridge import encode_special_projects_bridge
+from .collector_tech_defs import (
+    encode_tech_def_filter,
+    tech_def_filter_metadata,
+)
 from .collector_idea_groups import (
     encode_idea_group_filter,
     idea_group_filter_metadata,
@@ -71,6 +75,7 @@ def record_probes(
     map_control_controller_bridge: Optional[str] = None,
     scheduled_snapshot_step_hours: int = 1,
     advisor_token_filter: Any = None,
+    tech_def_filter: Any = None,
     idea_group_filter: Any = None,
     special_projects_scan: bool = False,
 ) -> Path:
@@ -172,6 +177,11 @@ def record_probes(
     advisor_token_filter_meta = advisor_token_filter_metadata(
         encoded_advisor_token_filter
     )
+    encoded_tech_def_filter = (
+        encode_tech_def_filter(tech_def_filter)
+        if tech_def_filter is not None else None
+    )
+    tech_def_filter_meta = tech_def_filter_metadata(encoded_tech_def_filter)
     encoded_idea_group_filter = (
         encode_idea_group_filter(idea_group_filter)
         if idea_group_filter is not None else None
@@ -237,6 +247,7 @@ def record_probes(
                 map_control_controller_bridge=map_control_controller_bridge,
                 scheduled_snapshot_step_hours=scheduled_snapshot_step_hours,
                 advisor_token_filter=encoded_advisor_token_filter,
+                tech_def_filter=encoded_tech_def_filter,
                 idea_group_filter=encoded_idea_group_filter,
                 special_projects_scan=special_projects_scan,
             )
@@ -409,6 +420,7 @@ def record_probes(
             "map_control_controller_bridge_supplied": bool(map_control_controller_bridge),
             "map_control_controller_bridge_rows": map_control_controller_bridge_rows,
             **advisor_token_filter_meta,
+            **tech_def_filter_meta,
             **idea_group_filter_meta,
             "scheduled_snapshot_step_hours": (
                 scheduled_snapshot_step_hours if worker_duration_s is not None else None
@@ -491,6 +503,7 @@ def _write_worker_control(
     map_control_controller_bridge: Optional[str] = None,
     scheduled_snapshot_step_hours: int = 1,
     advisor_token_filter: Optional[str] = None,
+    tech_def_filter: Optional[str] = None,
     idea_group_filter: Optional[str] = None,
     special_projects_scan: bool = False,
 ) -> tuple[Path, str]:
@@ -534,6 +547,8 @@ def _write_worker_control(
         payload["map_control_controller_bridge"] = map_control_controller_bridge
     if advisor_token_filter:
         payload["advisor_token_filter"] = advisor_token_filter
+    if tech_def_filter:
+        payload["tech_def_filter"] = tech_def_filter
     if idea_group_filter:
         payload["idea_group_filter"] = idea_group_filter
     control_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")

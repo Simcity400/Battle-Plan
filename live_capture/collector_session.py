@@ -48,6 +48,7 @@ from .collector_map_bridge import (
 )
 from .collector_probe_record import record_probes
 from .collector_idea_groups import resolve_idea_group_filter_preflight
+from .collector_tech_defs import resolve_tech_def_filter_preflight
 from .durable_store import CaptureLock, DurableCaptureStore
 from .recorder.cadence import RecorderCadence
 from .replay_writer import ReplayRecorder, _verify_container
@@ -355,6 +356,7 @@ def record_collector_session(
     ship_body_bridge: Any = None,
     oob_command_bridge: Any = None,
     special_projects_bridge: Any = None,
+    tech_def_filter: Any = None,
     preflight_country_object_bridge: bool = False,
     allow_country_cold_scan: bool = False,
     preflight_division_movement: bool = False,
@@ -370,6 +372,8 @@ def record_collector_session(
     allow_oob_command_cold_scan: bool = False,
     preflight_special_projects: bool = False,
     allow_special_projects_cold_scan: bool = False,
+    preflight_tech_defs: bool = False,
+    allow_tech_def_cold_scan: bool = False,
     preflight_state_control: bool = False,
     preflight_province_control: bool = False,
     allow_province_cold_scan: bool = False,
@@ -408,6 +412,8 @@ def record_collector_session(
         raise ValueError(
             "allow_special_projects_cold_scan requires preflight_special_projects"
         )
+    if allow_tech_def_cold_scan and not preflight_tech_defs:
+        raise ValueError("allow_tech_def_cold_scan requires preflight_tech_defs")
 
     started_utc = datetime.now(timezone.utc).isoformat()
     started_monotonic = time.monotonic()
@@ -576,6 +582,23 @@ def record_collector_session(
         advisor_token_filter_preflight.encoded
         if advisor_token_filter_preflight.usable else None
     )
+    tech_def_filter_preflight = {
+        "enabled": bool(preflight_tech_defs),
+        "status": "not_requested",
+        "row_count": 0,
+        "allow_cold_scan": bool(allow_tech_def_cold_scan),
+    }
+    if tech_def_filter is None and preflight_tech_defs:
+        preflight = resolve_tech_def_filter_preflight(
+            pid,
+            cache_path=out_root / "_preflight_cache" / "tech_defs.json",
+            allow_cold_scan=allow_tech_def_cold_scan,
+        )
+        tech_def_filter_preflight = preflight.diagnostics
+        tech_def_filter_preflight["enabled"] = True
+        tech_def_filter_preflight["allow_cold_scan"] = bool(allow_tech_def_cold_scan)
+        if preflight.usable:
+            tech_def_filter = preflight.encoded
     idea_group_filter_preflight = resolve_idea_group_filter_preflight(pid)
     idea_group_filter = (
         idea_group_filter_preflight.encoded
@@ -637,6 +660,7 @@ def record_collector_session(
         map_control_controller_bridge=map_control_controller_bridge,
         scheduled_snapshot_step_hours=1,
         advisor_token_filter=advisor_token_filter,
+        tech_def_filter=tech_def_filter,
         idea_group_filter=idea_group_filter,
     )
 
@@ -813,6 +837,13 @@ def record_collector_session(
                 "advisor_token_filter_tokens"),
             "advisor_token_filter_sha256": probe_manifest.get(
                 "advisor_token_filter_sha256"),
+            "tech_def_filter_preflight": tech_def_filter_preflight,
+            "tech_def_filter_supplied": probe_manifest.get(
+                "tech_def_filter_supplied"),
+            "tech_def_filter_rows": probe_manifest.get(
+                "tech_def_filter_rows"),
+            "tech_def_filter_sha256": probe_manifest.get(
+                "tech_def_filter_sha256"),
             "idea_group_filter_preflight": idea_group_filter_preflight.diagnostics,
             "idea_group_filter_supplied": probe_manifest.get(
                 "idea_group_filter_supplied"),
@@ -1889,6 +1920,16 @@ def _main() -> int:
         help="allow the slow special-project vtable scans during preflight",
     )
     parser.add_argument(
+        "--preflight-tech-defs",
+        action="store_true",
+        help="resolve live tech handle names before enriching active research rows",
+    )
+    parser.add_argument(
+        "--allow-tech-def-cold-scan",
+        action="store_true",
+        help="allow the slow tech-definition registry scan during preflight",
+    )
+    parser.add_argument(
         "--preflight-state-control",
         action="store_true",
         help="resolve/cache live state owner/controller roots before recording",
@@ -1941,6 +1982,8 @@ def _main() -> int:
         allow_oob_command_cold_scan=args.allow_oob_command_cold_scan,
         preflight_special_projects=args.preflight_special_projects,
         allow_special_projects_cold_scan=args.allow_special_projects_cold_scan,
+        preflight_tech_defs=args.preflight_tech_defs,
+        allow_tech_def_cold_scan=args.allow_tech_def_cold_scan,
         preflight_state_control=args.preflight_state_control,
         preflight_province_control=args.preflight_province_control,
         allow_province_cold_scan=args.allow_province_cold_scan,

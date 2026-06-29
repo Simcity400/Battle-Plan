@@ -213,6 +213,7 @@ class TestCollectorProbeRecord(unittest.TestCase):
                 air_wing_body_bridge="1:3:0x9000",
                 ship_body_bridge="3458:0xA000",
                 special_projects_bridge="facility:1:118:0x10000000000",
+                tech_def_filter="4660=basic_machine_tools",
             )
             payload = json.loads(control_path.read_text(encoding="utf-8"))
 
@@ -225,6 +226,7 @@ class TestCollectorProbeRecord(unittest.TestCase):
         self.assertEqual(payload["ship_body_bridge"], "3458:0xA000")
         self.assertEqual(
             payload["special_projects_bridge"], "facility:1:118:0x10000000000")
+        self.assertEqual(payload["tech_def_filter"], "4660=basic_machine_tools")
         self.assertFalse(payload["country_object_scan"])
         self.assertFalse(payload["special_projects_scan"])
         self.assertFalse(payload["sidecar_log"])

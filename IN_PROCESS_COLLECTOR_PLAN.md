@@ -104,8 +104,8 @@ Tasks:
 - Define the initial collector profile file shape:
   `exe_sha256`, game version, supported module ranges, hook RVAs/patterns,
   root offsets, layout sentinels, and mod checksum.
-- For substantial implementation passes, use a Codex-native partner early for
-  architecture review. Do not use the obsolete local Codex CLI workflow.
+- For substantial implementation passes, use a native partner early for
+  architecture review. Do not use the obsolete local CLI workflow.
 
 Acceptance:
 
@@ -526,9 +526,11 @@ Completed in the first repo/live proof pass:
     frames. The Python adapter folds these into
     `countries.*.research.tech_count`, `.research_slots`, and
     `.in_progress_live`, rejects non-scheduled research payloads, and reports
-    `tech_live` diagnostics in the session manifest. Tech-token resolution,
-    progress percentage, ETA, and live research speed remain separate gated
-    layers.
+    `tech_live` diagnostics in the session manifest. The slot rows now include
+    `progress_units = progress_raw / 1000`, and `tech_name` when a cache-first
+    `tech_def_filter` preflight supplies a validated live tech-definition
+    handle map. Progress percentage, ETA, and live research speed remain
+    separate gated layers.
 39. Scheduled special-project catalogs moved into the DLL as the first
     `projects_live` slice: the collector can use a cache-first
     `special_projects_bridge` for project facilities, CProject identities, and

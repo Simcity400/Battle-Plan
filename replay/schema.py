@@ -73,7 +73,7 @@ DOMAINS = (
     "supply_inputs",     # LIVE supply solver INPUTS (per-province efficiency/draw) -> badged
                          # signals on snap["supply"] (M; NOT the exact per-province supply,
                          # which is provably not stored — distinct from the "supply" proxy).
-    # LIVE provenance ids the assembler emits for per-entity live domains (Codex
+    # LIVE provenance ids the assembler emits for per-entity live domains (schema
     # review #7: these are appended to provenance.memory.domains, so they must be
     # canonical here too):
     "country_misc",          # convoys_destroyed/accidents/ace_count/cosmetic_tag (M)
@@ -84,7 +84,7 @@ DOMAINS = (
     # LIVE per-country domains that fold into the SAME canonical save HOMES
     # (research/commanders/intel) but are tracked under DISTINCT *_live provenance
     # ids so the live memory channel never collides with the save channel's
-    # canonical "tech"/"commanders"/"intel" ids (Codex: distinct-live-id strategy).
+    # canonical "tech"/"commanders"/"intel" ids (schema: distinct-live-id strategy).
     "tech_live",             # LIVE research counts/slots -> countries.*.research (C/M);
                              # DLL collector emits raw active_research rows from the bounded
                              # CTechnologyStatus+0xA0 CResearchSlot* vector on scheduled frames.
@@ -249,7 +249,7 @@ def valid_tag(v: Any) -> bool:
     alphanumeric, not all-digits (GER/ENG/SOV/D01 pass; '---', '?<id>', '42',
     '123', lowercase, and any non-TAG string fail). The single source of truth
     for "a 3-letter TAG or null" so a raw numeric id can never masquerade as
-    identity in an owner/controller/*_tag field (Codex review #5)."""
+    identity in an owner/controller/*_tag field (schema review #5)."""
     return (isinstance(v, str) and len(v) == 3 and v.isalnum()
             and v.isupper() and not v.isdigit())
 
@@ -381,10 +381,12 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.politics.autonomy": "S",
     "countries.*.politics.faction": "S",
     # --- country.research (§3.4) ---
-    # tech_count + research_slots + raw active-research rows are now LIVE-first
+    # tech_count + research_slots + active-research rows are now LIVE-first
     # (tech_live, C/M) with the save as the backstop. The collector reads the
     # CTechnologyStatus completed-tech vector size, slot vector size, and bounded
-    # CResearchSlot* vector through CCountry+0xF60 on scheduled frames.
+    # CResearchSlot* vector through CCountry+0xF60 on scheduled frames. Rows carry
+    # raw handles, progress_raw, progress_units, and optionally tech_name when a
+    # validated tech_def_filter is supplied.
     "countries.*.research.tech_count": "C/M/S",
     "countries.*.research.technologies": "S/D",
     "countries.*.research.in_progress": "S/M*",
@@ -405,21 +407,23 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.research.in_progress.*.progress_unavailable_reason": "D",
     "countries.*.research.in_progress.*.eta_unavailable_reason": "D",
     # LIVE active-research rows live in a SEPARATE leaf (raw-handle shape, distinct
-    # from the save's {name, points_factor} in_progress) so the two shapes never mix
-    # (Codex). Carries {slot_index, tech_handle_raw, tech_def_index_raw, progress_raw};
+    # from the save's {name, points_factor} in_progress) so the two shapes never mix.
+    # Carries {slot_index, tech_handle_raw, tech_def_index_raw, progress_raw,
+    # progress_units, tech_name?};
     # scheduled DLL frames now emit the raw rows from the bounded CResearchSlot vector,
-    # while legacy memory remains a fallback. Tech NAMES + completion fraction/ETA are
-    # resisted until the registry/cost/speed inputs are safe.
+    # while legacy memory remains a fallback. Completion fraction/ETA remain derived
+    # until the static cost and live speed inputs are safe.
     "countries.*.research.in_progress_live": "C/M",
-    # resolved tech TOKEN per in-progress slot (tech_live + defnames_live, M-derived). ADDED
-    # ALONGSIDE the raw tech_handle_raw/tech_def_index_raw; absent for an unknown handle (no
-    # fabrication). Only present when name resolution is enabled.
-    "countries.*.research.in_progress_live.*.tech_name": "M",
-    # accumulated research UNITS per in-progress slot (final_residuals_live, M). progress_units
+    # resolved tech TOKEN per in-progress slot. The scheduled DLL emits this only when
+    # tech_def_filter supplies a validated live tech-definition handle map; absent for
+    # an unknown handle (no fabrication).
+    "countries.*.research.in_progress_live.*.tech_name": "C/M",
+    # accumulated research UNITS per in-progress slot. The scheduled DLL now emits
+    # progress_units directly from the validated CResearchSlot row.
     # = progress_raw/1000 = accumulated research-points (NOT a completion fraction; the fraction
     # needs the per-tech cost def + has no save GT this frame -> RESISTED, never fabricated).
     # ADDED ALONGSIDE the raw progress_raw on each slot dict (merged by slot_index).
-    "countries.*.research.in_progress_live.*.progress_units": "M",
+    "countries.*.research.in_progress_live.*.progress_units": "C/M",
     # Derived active-research progress/ETA (models.research_progress, D): computed only when a
     # live slot has progress_units + resolved tech_name, generated static tech defs provide a
     # positive research_cost, and the current year/bonus context is safe. Otherwise the value
@@ -540,7 +544,7 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.commanders.navy_leaders.*.skill": "M",
     "countries.*.commanders.navy_leaders.*.traits": "M",
     # live count sub-leaves only (the save's richer counts dict is preserved; we
-    # write just these measured sub-keys so save counts are never erased — Codex).
+    # write just these measured sub-keys so save counts are never erased — schema).
     "countries.*.commanders.counts.army_leaders": "M/S",
     "countries.*.commanders.counts.navy_leaders": "M/S",
     "countries.*.commanders.counts.characters": "M/S",
@@ -645,7 +649,7 @@ FIELD_SOURCES: Dict[str, str] = {
     "designs.division_templates": "M/S",
     # the save equipment_variants catalog stays save-owned (keyed "id:type"); the LIVE variant
     # module catalog (designs_mio_deep_live) lands in the DISTINCT equipment_variants_live leaf
-    # (keyed by the bare live variant id) so the two key spaces never collide (Codex review #3).
+    # (keyed by the bare live variant id) so the two key spaces never collide (schema review #3).
     "designs.equipment_variants": "S",
     "designs.equipment_variants_live": "M",
     # derived design stats (WAVE-2; models/division_stats + models/equipment_stats).
@@ -729,7 +733,7 @@ FIELD_SOURCES: Dict[str, str] = {
     "states.*.category": "M/S",
     "states.*.occupation": "S",
     # live state_detail measures resistance/compliance; the rest of occupation
-    # (occupied_country_tag, *_speed, …) stays save-sourced (Codex review #6).
+    # (occupied_country_tag, *_speed, …) stays save-sourced (schema review #6).
     "states.*.occupation.resistance": "M/S",
     "states.*.occupation.compliance": "M/S",
     "states.*.occupation_law": "S",
@@ -883,7 +887,7 @@ FIELD_SOURCES: Dict[str, str] = {
     # LIVE scenario DATES (world_extract_live, M). DISTINCT live-only keys under the save-shaped
     # scenario block: current_date_live (the live in-game date, EXACT vs save) + start_date_live
     # (the scenario start date, EXACT). EXPLICIT M entries so source_of() does NOT fall back to
-    # the parent "world.scenario"=S (which would mislabel a live read as save — Codex review #1).
+    # the parent "world.scenario"=S (which would mislabel a live read as save — schema review #1).
     "world.scenario.current_date_live": "M",
     "world.scenario.start_date_live": "M",
     "world.variables": "S",
@@ -926,7 +930,7 @@ def source_of(dotted_path: str) -> Optional[str]:
 # A path-segment that is an entity KEY (country TAG / numeric id) -> normalize to '*'.
 # TAGs are 2-3 uppercase alphanumerics starting with a letter, which covers both
 # static tags (GER, SOV) AND dynamic/released tags (D01, D02, ...). Field/domain names
-# are lowercase, so they never match (Codex integ-review finding 2).
+# are lowercase, so they never match (schema integration review finding 2).
 _KEY_SEG = re.compile(r"^[A-Z][A-Z0-9]{1,2}$|^\d+$")
 
 
@@ -955,7 +959,7 @@ def date_to_hour_index(date_str: Optional[str]) -> Optional[int]:
     day_of_year_index is 0-based; matches the memory_reader epoch note
     (1940.9.2 hour21 -> 17000277). 365-day no-leap calendar. Validates per-month
     day max and 0<=hour<=23 so out-of-range dates (e.g. '1936.2.31.0', '...24')
-    are rejected rather than silently aliasing onto another day (Codex P3 #14).
+    are rejected rather than silently aliasing onto another day (schema P3 #14).
     Returns None on malformed input.
     """
     if not date_str or not isinstance(date_str, str):
@@ -1070,7 +1074,7 @@ class Politics:
     # CPoliticalStatus ideas vector (set AND order EXACT vs save). Defaults None (Optional)
     # NOT [] so an unmeasured country reads None (skipped by the backstop's `lv is not None`
     # guard); a measured-empty [] is a real "no active ideas" and is written + protected, so
-    # no _SKELETON_EMPTY_CONTAINER_LEAVES entry is needed (live-only leaf — Codex).
+    # no _SKELETON_EMPTY_CONTAINER_LEAVES entry is needed (live-only leaf — schema).
     ideas: Optional[List[str]] = None
     idea_count: Optional[int] = None
     # LIVE election cadence (politics_live, M): months between elections (ps+0xE8, EXACT).
@@ -1087,7 +1091,7 @@ class Politics:
     # idea tokens present in the active ideas; 46/46 EXACT); details/slots/ledgers add static
     # `common/characters` metadata. All default None (unmeasured); a
     # measured-empty appointed_advisors [] (no advisor hired) is a real value (live-only leaf,
-    # so no _SKELETON_EMPTY_CONTAINER_LEAVES entry needed — Codex).
+    # so no _SKELETON_EMPTY_CONTAINER_LEAVES entry needed — schema).
     last_election: Optional[str] = None
     elections_allowed: Optional[bool] = None
     appointed_advisors: Optional[List[str]] = None
@@ -1179,7 +1183,7 @@ class Decisions:
     # country's currently-active timed decisions. Defaults None (Optional) NOT [] so an
     # unmeasured country reads None (skipped by the backstop's `lv is not None` guard); a
     # measured-empty [] (no active timed decision) is a real value (live-only leaf, so no
-    # _SKELETON_EMPTY_CONTAINER_LEAVES entry is needed — Codex). null until a live read folds it.
+    # _SKELETON_EMPTY_CONTAINER_LEAVES entry is needed — schema). null until a live read folds it.
     timed_live: Optional[List[Dict[str, Any]]] = None
 
 
@@ -1202,7 +1206,7 @@ class Diplomacy:
     # to None (Optional) NOT [] so an UNMEASURED country (created by another live domain)
     # reads None and the backstop merge's `lv is not None` guard skips it; a measured-empty
     # at_war [] (a country genuinely at peace) is written + protected (no skeleton-[]
-    # masquerade, so no _SKELETON_EMPTY_CONTAINER_LEAVES entry is needed — Codex).
+    # masquerade, so no _SKELETON_EMPTY_CONTAINER_LEAVES entry is needed — schema).
     at_war: Optional[List[str]] = None
     casualties: Optional[int] = None
     faction_group: Optional[int] = None
@@ -1214,7 +1218,7 @@ class Diplomacy:
     # default None (Optional) NOT {} so an UNMEASURED country (created by another live domain)
     # reads None and the backstop's `lv is not None` guard skips it; a measured-empty {} is a
     # real "no relations" and is written + protected (no skeleton-{} masquerade -> no
-    # _SKELETON_EMPTY_CONTAINER_LEAVES entry needed -- Codex).
+    # _SKELETON_EMPTY_CONTAINER_LEAVES entry needed -- schema).
     relation_flags: Optional[Dict[str, Any]] = None
     # SUBJECT/AUTONOMY (diplo_relations_live, M). This country's overlord-or-subject role,
     # read from the CSubjectRelation sub-object (the save puppet={} block). `overlord` is the
@@ -1365,7 +1369,7 @@ class State:
     is_claimed_by: List[str] = field(default_factory=list)
     buildings: Optional[Dict[str, int]] = None
     province_buildings: Optional[Dict[str, int]] = None  # naval_base etc. (province-scoped)
-    # VP: total scalar AND per-province map are distinct things (Codex P1 #6).
+    # VP: total scalar AND per-province map are distinct things (schema P1 #6).
     victory_points_total: Optional[int] = None
     victory_points_by_province: Optional[Dict[str, int]] = None
     resources: Optional[Dict[str, float]] = None
@@ -1374,7 +1378,7 @@ class State:
     # building-slot count (real read; incl. a measured 0). null until a live read folds them.
     dynamic_modifier: Optional[List[str]] = None
     extra_shared_slots: Optional[int] = None
-    # manpower is a pool object {available, locked, total}, not a scalar (Codex P1 #6).
+    # manpower is a pool object {available, locked, total}, not a scalar (schema P1 #6).
     manpower_pool: Optional[Dict[str, int]] = None
     category: Optional[str] = None
     # occupation is an object {resistance, compliance, *_speed, occupied_country_tag,...}
@@ -1417,7 +1421,7 @@ class Division:
     # leaf, separate from the save-shaped `equipment` above (which may carry a richer per-item
     # shape): {variant_id(str): count_held}. null-but-present until a live read folds it; a
     # measured count is the held amount (validated vs the melt). Kept DISTINCT so the live join
-    # never clobbers the save-owned equipment list (Codex review).
+    # never clobbers the save-owned equipment list (schema review).
     equipment_live: Optional[Dict[str, Any]] = None
     experience: Optional[float] = None
     moving: Optional[bool] = None
@@ -1490,7 +1494,7 @@ class Designs:
     # keyed by the bare live variant id (str) -> {modules{slot_name: module_name}, upgrade_levels[]}.
     # Kept SEPARATE from the save `equipment_variants` above (which is keyed "id:type" and carries
     # the save's richer per-variant record) so the live join never collides the two key spaces or
-    # discards save metadata (Codex review #3). upgrade NAMES are RESISTED (levels only). null
+    # discards save metadata (schema review #3). upgrade NAMES are RESISTED (levels only). null
     # until a live read folds it; `equipment_variants_live_source` self-badges "M".
     equipment_variants_live: Optional[Dict[str, Any]] = None
     equipment_variants_live_source: Optional[str] = None
@@ -1838,7 +1842,7 @@ class OrderOfBattle:
 EVENT_TYPES = (
     # territory / control
     "state_owner_change", "state_controller_change", "province_controller_change",
-    # country lifecycle (Codex P1 #2, P3 #13)
+    # country lifecycle (schema P1 #2, P3 #13)
     "country_created", "country_removed",
     # divisions
     "division_created", "division_destroyed", "division_moved",
@@ -1907,7 +1911,7 @@ class Event:
 
 
 def div_uid(div: Dict[str, Any]) -> Optional[str]:
-    """Canonical division identity = full Clausewitz id '(id:type)' (Codex P1 #3).
+    """Canonical division identity = full Clausewitz id '(id:type)' (schema P1 #3).
 
     Using bare div_id alone mis-classifies id-reuse-after-destruction as a move +
     retemplate. Falls back to bare id when div_type is absent.
@@ -2009,7 +2013,7 @@ def modset_id(mods: List[Dict[str, Any]]) -> str:
     still identified, just by id alone). Returns a short hex digest. The vanilla
     (empty) mod-set digests to a fixed sentinel so it is stable + recognisable.
 
-    The identity token is NAMESPACED ``workshop:<id>`` vs ``name:<name>`` (Codex
+    The identity token is NAMESPACED ``workshop:<id>`` vs ``name:<name>`` (schema
     review A): so a LOCAL mod named ``12345`` can never collide with a WORKSHOP mod
     whose ``remote_file_id`` is ``12345``. A mod with neither id nor name tokenises
     to ``name:`` (empty) -- still order-positioned, but the native matcher diffs the
@@ -2150,7 +2154,7 @@ _TOP_CONTAINERS = {
     "designs": dict, "order_of_battle": dict,
     # top-level LIVE catalogs (§11b mio_live source M, §11c special_projects source C/M).
     # Always present (null-but-present block); validated as a dict so a malformed
-    # payload can't pass as an ignored unknown key (Codex: close the validator
+    # payload can't pass as an ignored unknown key (schema: close the validator
     # blind spot — mio_live was missing here from a prior pass).
     "mio_live": dict,
     # top-level LIVE equipment-MARKET sidecar (§7c, market_live). Always present (null-but-
@@ -2319,7 +2323,7 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
         if not isinstance(c.get("mios", []), list):
             problems.append(f"country {tag!r}.mios should be a list")
         # newly-wired live leaves: misc dict|null, military.convoys_count int|null
-        # (Codex review #8 — these were folded but not validated).
+        # (schema review #8 — these were folded but not validated).
         if c.get("misc") is not None and not isinstance(c.get("misc"), dict):
             problems.append(f"country {tag!r}.misc {c.get('misc')!r} not dict|null")
         extra = c.get("extra")
@@ -2395,7 +2399,7 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                     problems.append(
                         f"country {tag!r}.commanders.{k} {v!r} not list|null")
         # intel_live agency: a dict|null whose live-measured capacity (if present) is
-        # a dict|null (Codex review: validate the newly-wired nested leaf).
+        # a dict|null (schema review: validate the newly-wired nested leaf).
         intl = c.get("intel")
         if isinstance(intl, dict):
             ag = intl.get("agency")
@@ -2416,7 +2420,7 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                     f"country {tag!r}.focus.current_continuous {cc!r} not str|null")
         # newly-wired LIVE production home (production_live, C/M): a dict whose measured
         # leaves are the right kind (stockpile dict|null, *_lines list|null, factory
-        # counts int|null). Codex review: validate the new always-present sub-dict so a
+        # counts int|null). schema review: validate the new always-present sub-dict so a
         # malformed live payload can't pass as an ignored key.
         prod = c.get("production")
         if "production" in c and not isinstance(prod, dict):
@@ -2792,7 +2796,7 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
             problems.append(f"order_of_battle.battle_plan_orders {bpo!r} not list|null")
 
     # Top-level LIVE catalogs: validate the documented leaves so a malformed
-    # payload can't slip through (Codex review #8). mio_live.by_tag/by_id are
+    # payload can't slip through (schema review #8). mio_live.by_tag/by_id are
     # dict|null; special_projects.facilities/projects/scientists are list|null.
     ml = snap.get("mio_live")
     if isinstance(ml, dict):
