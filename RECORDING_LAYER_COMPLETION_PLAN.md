@@ -211,6 +211,14 @@ Current recorder-facing bridge status:
   `NavalAirReader.enumerate_air_wings()` scan is gated by
   `--allow-air-wing-cold-scan`. This captures count, mission mask, mission
   region, and effective active planes, not the final UI air-superiority percent.
+- Active naval combat now has the first per-member DLL stream. The existing
+  `naval_combat_body_bridge` roots `CNavalCombat` bodies; the DLL revalidates
+  body, registry, side, group, and `CFEXMember` vtables, then emits bounded
+  `naval_combat_members` deltas keyed by combat generation, side, and either
+  ship instance id or convoy group/member/slot. Rows carry side membership,
+  display identity, owner TAG, designed max-strength raw value, battle-slot
+  index, state bitmask, and engagement-weight raw value. They intentionally do
+  not claim current HP/org, targets, aggregate attack rows, or UI damage totals.
 
 ## Definition Of Done
 
@@ -1180,11 +1188,17 @@ and timeline/app ingestion. Naval combat now has the same raw-frame shape for
 the canonical `naval_air_combats` domain when the recorder supplies
 `naval_combat_body_bridge` rows: the DLL revalidates active `CNavalCombat`
 bodies, emits side-level summaries and started/updated/ended lifecycle events,
-and produces bounded gap rows when the bridge/layout fails closed. The
-recorder-side `--preflight-naval-combat` producer can now populate that bridge
-from active combats already present at attach time. The next naval unlocks are
-live fixture proof, a root/hook-derived discoverer for newly born combats,
-per-ship rows, damage/sinking deltas, and speed-five soak. Army orders now have
+and produces bounded gap rows when the bridge/layout fails closed. The same
+bridge now also feeds `naval_combat_members`, a pointer-free per-`CFEXMember`
+stream for ship/convoy identity, side membership, designed max-strength raw
+value, battle-slot index, state bitmask, and engagement-weight raw value.
+Current HP/org still require a separate `CShip` registry bridge; targets,
+aggregate attack rows, damage ticks, hit counters, sinking events, and UI
+damage totals remain resisted until they have live proof. The recorder-side
+`--preflight-naval-combat` producer can populate that bridge from active
+combats already present at attach time. The next naval unlocks are live fixture
+proof, a root/hook-derived discoverer for newly born combats, optional CShip
+enrichment, damage/sinking deltas, and speed-five soak. Army orders now have
 a raw `army_orders` stream from `army_body_bridge`, with
 `army_order:<army_id>:<generation>` identities, add/update/remove events,
 bounded bridge gaps, exact type-5 target states, and unsupported status for

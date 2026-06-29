@@ -349,12 +349,18 @@ Naval-combat raw stream status:
   `confidence:"gap"` rows instead of guessed combat data.
 - The current stream emits side-level combat summaries and explicit
   `naval_combat_started`, `naval_combat_updated`, and `naval_combat_ended`
-  events. Per-ship combat participants, damage ticks, hit counters, and sinking
-  events remain separate follow-up streams so large battles do not overflow the
-  raw JSON frame envelope.
+  events. The same bridge also feeds `naval_combat_members` domain-delta rows,
+  one per active `CFEXMember`, keyed by combat generation, side, and either
+  warship instance id or convoy group/member/slot. Rows include display
+  identity, owner TAG, designed max-strength raw value, battle-slot index,
+  state bitmask, and engagement-weight raw value, with no body/member address
+  leakage.
+- Current HP/org still require the separate global `CShip` registry bridge.
+  Targets, aggregate attack rows, damage ticks, hit counters, sinking events,
+  and UI damage totals remain follow-up streams pending live proof.
 - Remaining promotion work is a live active-naval-combat fixture, a
-  root/hook-derived discoverer for combats born after preflight, per-ship
-  combat rows, speed-five soak, and timeline ingestion.
+  root/hook-derived discoverer for combats born after preflight, optional CShip
+  enrichment, speed-five soak, and timeline ingestion.
 
 Air-wing raw stream status:
 

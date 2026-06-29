@@ -1067,6 +1067,183 @@ class TestCollectorFrames(unittest.TestCase):
         ):
             self.assertTrue(any(needle in p for p in problems), (needle, problems))
 
+    def test_raw_naval_combat_member_delta_frame_validates(self):
+        member_key = (
+            "naval_combat_members:naval_combat:241671:3:attacker:ship:3458"
+        )
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": None,
+                "after": {
+                    "member_key": member_key,
+                    "combat_key": "naval_combat:241671:3",
+                    "combat_id": 241671,
+                    "generation": 3,
+                    "side": "attacker",
+                    "group_index": 0,
+                    "member_index": 2,
+                    "unit_type_tag": 51,
+                    "ship_instance_id": 3458,
+                    "is_convoy": False,
+                    "owner": "FRA",
+                    "name": "Sidi-Ferruch",
+                    "type_display": "Cruiser Submarine",
+                    "archetype": "submarine",
+                    "designed_max_strength_raw": 49_000_000,
+                    "battle_slot_index_raw": 4,
+                    "state_bitmask": 4,
+                    "engagement_weight_raw": 100_000,
+                },
+                "changed_fields": [
+                    "member_key",
+                    "combat_key",
+                    "combat_id",
+                    "generation",
+                    "side",
+                    "group_index",
+                    "member_index",
+                    "unit_type_tag",
+                    "ship_instance_id",
+                    "is_convoy",
+                    "owner",
+                    "name",
+                    "type_display",
+                    "archetype",
+                    "designed_max_strength_raw",
+                    "battle_slot_index_raw",
+                    "state_bitmask",
+                    "engagement_weight_raw",
+                ],
+            },
+            domain="naval_combat_members",
+            entity_key=member_key,
+            confidence="sampled",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_naval_combat_member_convoy_delta_frame_validates(self):
+        member_key = (
+            "naval_combat_members:naval_combat:241671:3:defender:convoy:0:12:19"
+        )
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": None,
+                "after": {
+                    "member_key": member_key,
+                    "combat_key": "naval_combat:241671:3",
+                    "combat_id": 241671,
+                    "generation": 3,
+                    "side": "defender",
+                    "group_index": 0,
+                    "member_index": 12,
+                    "unit_type_tag": 0,
+                    "ship_instance_id": None,
+                    "is_convoy": True,
+                    "owner": "JAP",
+                    "name": None,
+                    "type_display": "Convoy",
+                    "archetype": "convoy",
+                    "designed_max_strength_raw": 0,
+                    "battle_slot_index_raw": 19,
+                    "state_bitmask": 8,
+                    "engagement_weight_raw": 0,
+                },
+                "changed_fields": ["state_bitmask", "engagement_weight_raw"],
+            },
+            domain="naval_combat_members",
+            entity_key=member_key,
+            confidence="sampled",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_naval_combat_member_gap_delta_frame_validates(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": None,
+                "after": {
+                    "gap_key": "naval_combat_members:gap:member_entry_invalid",
+                    "gap_kind": "member_entry_invalid",
+                    "status": "validation_failed",
+                },
+                "changed_fields": ["gap_key", "gap_kind", "status"],
+            },
+            domain="naval_combat_members",
+            entity_key="naval_combat_members:gap:member_entry_invalid",
+            confidence="gap",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_naval_combat_member_delta_rejects_raw_leakage_and_bad_rows(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": None,
+                "after": {
+                    "member_key": (
+                        "naval_combat_members:naval_combat:241671:3:"
+                        "attacker:ship:3459"
+                    ),
+                    "combat_key": "naval_combat:241672:3",
+                    "combat_id": 241672,
+                    "generation": True,
+                    "side": "left",
+                    "group_index": 257,
+                    "member_index": 1001,
+                    "unit_type_tag": 0,
+                    "ship_instance_id": 9999,
+                    "is_convoy": True,
+                    "owner": "FRAA",
+                    "name": "",
+                    "designed_max_strength_raw": 1_000_000_001,
+                    "battle_slot_index_raw": 20_001,
+                    "state_bitmask": 256,
+                    "engagement_weight_raw": 10_000_001,
+                    "member_addr": "0x1234",
+                    "owner_tag_db_id": 5,
+                },
+                "changed_fields": ["state_bitmask", "member_addr"],
+            },
+            domain="naval_combat_members",
+            entity_key="naval_combat_members:naval_combat:241671:3:attacker:ship:3458",
+            confidence="sampled",
+        )
+
+        problems = validate_collector_frame(frame)
+
+        for needle in (
+            "payload contains raw pointer/tag-db diagnostic key",
+            "changed_fields[1] raw pointer/tag-db diagnostic key",
+            "after.member_addr unsupported",
+            "after.owner_tag_db_id unsupported",
+            "after.member_key != entity_key",
+            "after.combat_key != member_key",
+            "after.combat_id != member_key",
+            "after.generation not nonnegative int|null in range",
+            "after.side invalid",
+            "after.group_index not nonnegative int|null in range",
+            "after.member_index not nonnegative int|null in range",
+            "after.unit_type_tag invalid for ship",
+            "after.ship_instance_id != member_key",
+            "after.is_convoy true for ship key",
+            "after.owner not TAG|null",
+            "after.name not bounded str|null",
+            "after.designed_max_strength_raw not nonnegative int|null in range",
+            "after.battle_slot_index_raw not nonnegative int|null in range",
+            "after.state_bitmask not nonnegative int|null in range",
+            "after.engagement_weight_raw not nonnegative int|null in range",
+        ):
+            self.assertTrue(any(needle in p for p in problems), (needle, problems))
+
     def test_raw_air_wing_delta_frame_validates(self):
         frame = self._raw_frame(
             "domain_delta",

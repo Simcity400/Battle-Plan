@@ -158,6 +158,10 @@ DOMAINS = (
                              # separate from the save-owned equipment list -> no clobber).
     "land_combats",          # SOLVED land-combat reader -> combats[] kind=land (M)
     "naval_air_combats",     # naval/air combat detector sidecar (M)
+    "naval_combat_members",  # Raw active-naval-combat CFEXMember rows: ship/convoy
+                             # identity, side membership, designed max strength, and
+                             # raw engagement state. Pointer-free; rooted from the
+                             # live CNavalCombat bridge, not save OOB.
     "naval_air_combat_stats",  # per-side naval combat stat rows (M/M*)
     "air_wings",             # Raw in-process collector wing telemetry stream. Emits save-free
                              # per-wing count/mission/effective-plane deltas/events before folding

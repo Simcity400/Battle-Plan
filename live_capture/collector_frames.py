@@ -386,6 +386,45 @@ RAW_NAVAL_COMBAT_GAP_FIELDS = frozenset((
     "gap_kind",
     "status",
 ))
+RAW_NAVAL_COMBAT_MEMBER_ID_MAX = 2_147_483_647
+RAW_NAVAL_COMBAT_MEMBER_GENERATION_MAX = RAW_SEQUENCE_MAX
+RAW_NAVAL_COMBAT_MEMBER_GROUP_INDEX_MAX = 256
+RAW_NAVAL_COMBAT_MEMBER_INDEX_MAX = 1000
+RAW_NAVAL_COMBAT_MEMBER_SLOT_INDEX_MAX = 20_000
+RAW_NAVAL_COMBAT_MEMBER_UNIT_TYPE_MAX = 10_000
+RAW_NAVAL_COMBAT_MEMBER_SHIP_INSTANCE_ID_MAX = 4_000_000
+RAW_NAVAL_COMBAT_MEMBER_MAX_STRENGTH_RAW_MAX = 1_000_000_000
+RAW_NAVAL_COMBAT_MEMBER_STATE_BITMASK_MAX = 255
+RAW_NAVAL_COMBAT_MEMBER_ENGAGEMENT_WEIGHT_RAW_MAX = 10_000_000
+RAW_NAVAL_COMBAT_MEMBER_SIDES = frozenset((
+    "attacker",
+    "defender",
+))
+RAW_NAVAL_COMBAT_MEMBER_FIELDS = frozenset((
+    "member_key",
+    "combat_key",
+    "combat_id",
+    "generation",
+    "side",
+    "group_index",
+    "member_index",
+    "unit_type_tag",
+    "ship_instance_id",
+    "is_convoy",
+    "owner",
+    "name",
+    "type_display",
+    "archetype",
+    "designed_max_strength_raw",
+    "battle_slot_index_raw",
+    "state_bitmask",
+    "engagement_weight_raw",
+))
+RAW_NAVAL_COMBAT_MEMBER_GAP_FIELDS = frozenset((
+    "gap_key",
+    "gap_kind",
+    "status",
+))
 RAW_AIR_WING_ID_MAX = 2_147_483_647
 RAW_AIR_WING_GENERATION_MAX = RAW_SEQUENCE_MAX
 RAW_AIR_WING_PLANES_MAX = 10_000_000
@@ -1146,6 +1185,8 @@ def _validate_raw_domain_delta_payload(
         problems.extend(_validate_raw_army_order_delta(frame, payload))
     if frame.get("domain") == "naval_air_combats":
         problems.extend(_validate_raw_naval_combat_delta(frame, payload))
+    if frame.get("domain") == "naval_combat_members":
+        problems.extend(_validate_raw_naval_combat_member_delta(frame, payload))
     if frame.get("domain") == "air_wings":
         problems.extend(_validate_raw_air_wing_delta(frame, payload))
     return problems
@@ -2110,6 +2151,321 @@ def _validate_raw_naval_combat_tags(
     return problems
 
 
+def _validate_raw_naval_combat_member_delta(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> List[str]:
+    problems: List[str] = []
+    if _is_raw_naval_combat_member_gap_delta(frame, payload):
+        return _validate_raw_naval_combat_member_gap_delta(frame, payload)
+
+    entity_uid = _parse_raw_naval_combat_member_entity_key(frame.get("entity_key"))
+    if entity_uid is None:
+        problems.append(
+            "collector naval combat member delta entity_key not stable "
+            "naval_combat_members key"
+        )
+    if _contains_forbidden_raw_key(payload):
+        problems.append(
+            "collector naval combat member delta payload contains raw pointer/tag-db "
+            "diagnostic key"
+        )
+    changed_fields = payload.get("changed_fields")
+    if isinstance(changed_fields, list):
+        for i, field in enumerate(changed_fields):
+            if _forbidden_raw_key_name(field):
+                problems.append(
+                    "collector naval combat member delta "
+                    f"changed_fields[{i}] raw pointer/tag-db diagnostic key"
+                )
+            elif field not in RAW_NAVAL_COMBAT_MEMBER_FIELDS:
+                problems.append(
+                    "collector naval combat member delta "
+                    f"changed_fields[{i}] invalid"
+                )
+    for row_key in ("before", "after"):
+        row = payload.get(row_key)
+        if isinstance(row, dict):
+            problems.extend(_validate_raw_naval_combat_member_row(
+                row,
+                f"collector naval combat member delta {row_key}",
+                entity_uid,
+                require_identity=(row_key == "after"),
+            ))
+    return problems
+
+
+def _is_raw_naval_combat_member_gap_delta(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> bool:
+    return (
+        frame.get("confidence") == "gap"
+        or _parse_raw_naval_combat_member_gap_key(frame.get("entity_key")) is not None
+        or (
+            isinstance(payload.get("after"), dict)
+            and "gap_kind" in payload["after"]
+        )
+    )
+
+
+def _validate_raw_naval_combat_member_gap_delta(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> List[str]:
+    problems: List[str] = []
+    entity_key = frame.get("entity_key")
+    gap_kind = _parse_raw_naval_combat_member_gap_key(entity_key)
+    if gap_kind is None:
+        problems.append(
+            "collector naval combat member gap entity_key not stable "
+            "naval_combat_members gap key"
+        )
+    if _contains_forbidden_raw_key(payload):
+        problems.append(
+            "collector naval combat member gap payload contains raw pointer/tag-db "
+            "diagnostic key"
+        )
+    changed_fields = payload.get("changed_fields")
+    if isinstance(changed_fields, list):
+        for i, field in enumerate(changed_fields):
+            if _forbidden_raw_key_name(field):
+                problems.append(
+                    "collector naval combat member gap "
+                    f"changed_fields[{i}] raw pointer/tag-db diagnostic key"
+                )
+            elif field not in RAW_NAVAL_COMBAT_MEMBER_GAP_FIELDS:
+                problems.append(
+                    f"collector naval combat member gap changed_fields[{i}] invalid"
+                )
+    for row_key in ("before", "after"):
+        row = payload.get(row_key)
+        if isinstance(row, dict):
+            problems.extend(_validate_raw_naval_combat_member_gap_row(
+                row,
+                f"collector naval combat member gap {row_key}",
+                entity_key if isinstance(entity_key, str) else None,
+                gap_kind,
+            ))
+    return problems
+
+
+def _validate_raw_naval_combat_member_gap_row(
+    row: Dict[str, Any],
+    prefix: str,
+    entity_key: Optional[str],
+    entity_gap_kind: Optional[str],
+) -> List[str]:
+    problems: List[str] = []
+    for key in row:
+        if key not in RAW_NAVAL_COMBAT_MEMBER_GAP_FIELDS:
+            problems.append(f"{prefix}.{key} unsupported")
+
+    gap_key = row.get("gap_key")
+    if not _valid_raw_key(gap_key):
+        problems.append(f"{prefix}.gap_key missing or not stable str")
+    elif entity_key is not None and gap_key != entity_key:
+        problems.append(f"{prefix}.gap_key != entity_key")
+
+    gap_kind = row.get("gap_kind")
+    if not _valid_raw_string(gap_kind, max_length=RAW_SHORT_STRING_MAX_LENGTH):
+        problems.append(f"{prefix}.gap_kind missing or not bounded str")
+    elif _valid_hex_pointer(gap_kind):
+        problems.append(f"{prefix}.gap_kind looks like pointer")
+    elif entity_gap_kind is not None and gap_kind != entity_gap_kind:
+        problems.append(f"{prefix}.gap_kind != entity_key")
+
+    status = row.get("status")
+    if status not in ("validation_failed", "unsupported", "layout_invalid"):
+        problems.append(f"{prefix}.status invalid")
+    return problems
+
+
+def _validate_raw_naval_combat_member_row(
+    row: Dict[str, Any],
+    prefix: str,
+    entity_uid: Optional[Dict[str, Any]],
+    *,
+    require_identity: bool,
+) -> List[str]:
+    problems: List[str] = []
+    for key in row:
+        if key not in RAW_NAVAL_COMBAT_MEMBER_FIELDS:
+            problems.append(f"{prefix}.{key} unsupported")
+
+    member_key = row.get("member_key")
+    parsed_member_key = None
+    if member_key is not None:
+        parsed_member_key = _parse_raw_naval_combat_member_entity_key(member_key)
+        if parsed_member_key is None:
+            problems.append(
+                f"{prefix}.member_key not stable naval_combat_members key|null"
+            )
+        elif entity_uid is not None and parsed_member_key != entity_uid:
+            problems.append(f"{prefix}.member_key != entity_key")
+    elif require_identity:
+        problems.append(f"{prefix}.member_key missing")
+
+    key_uid = parsed_member_key or entity_uid
+
+    combat_key = row.get("combat_key")
+    if combat_key is not None:
+        combat_uid = _parse_raw_naval_combat_entity_key(combat_key)
+        if combat_uid is None:
+            problems.append(f"{prefix}.combat_key not stable naval_combat key|null")
+        elif key_uid is not None and combat_uid != (
+            key_uid["combat_id"],
+            key_uid["generation"],
+        ):
+            problems.append(f"{prefix}.combat_key != member_key")
+    elif require_identity:
+        problems.append(f"{prefix}.combat_key missing")
+
+    combat_id = row.get("combat_id")
+    if combat_id is None:
+        if require_identity:
+            problems.append(f"{prefix}.combat_id missing")
+    elif not _valid_bounded_int(
+        combat_id,
+        minimum=1,
+        maximum=RAW_NAVAL_COMBAT_MEMBER_ID_MAX,
+    ):
+        problems.append(f"{prefix}.combat_id not positive int|null in range")
+    elif key_uid is not None and combat_id != key_uid["combat_id"]:
+        problems.append(f"{prefix}.combat_id != member_key")
+
+    generation = row.get("generation")
+    if generation is None:
+        if require_identity:
+            problems.append(f"{prefix}.generation missing")
+    elif not _valid_bounded_int(
+        generation,
+        minimum=0,
+        maximum=RAW_NAVAL_COMBAT_MEMBER_GENERATION_MAX,
+    ):
+        problems.append(f"{prefix}.generation not nonnegative int|null in range")
+    elif key_uid is not None and generation != key_uid["generation"]:
+        problems.append(f"{prefix}.generation != member_key")
+
+    side = row.get("side")
+    if side is None:
+        if require_identity:
+            problems.append(f"{prefix}.side missing")
+    elif side not in RAW_NAVAL_COMBAT_MEMBER_SIDES:
+        problems.append(f"{prefix}.side invalid")
+    elif key_uid is not None and side != key_uid["side"]:
+        problems.append(f"{prefix}.side != member_key")
+
+    for key, maximum in (
+        ("group_index", RAW_NAVAL_COMBAT_MEMBER_GROUP_INDEX_MAX),
+        ("member_index", RAW_NAVAL_COMBAT_MEMBER_INDEX_MAX),
+    ):
+        value = row.get(key)
+        if value is not None and not _valid_bounded_int(
+            value,
+            minimum=0,
+            maximum=maximum,
+        ):
+            problems.append(f"{prefix}.{key} not nonnegative int|null in range")
+
+    unit_type_tag = row.get("unit_type_tag")
+    if unit_type_tag is not None and not _valid_bounded_int(
+        unit_type_tag,
+        minimum=0,
+        maximum=RAW_NAVAL_COMBAT_MEMBER_UNIT_TYPE_MAX,
+    ):
+        problems.append(f"{prefix}.unit_type_tag not nonnegative int|null in range")
+
+    ship_instance_id = row.get("ship_instance_id")
+    if ship_instance_id is not None and not _valid_bounded_int(
+        ship_instance_id,
+        minimum=1,
+        maximum=RAW_NAVAL_COMBAT_MEMBER_SHIP_INSTANCE_ID_MAX,
+    ):
+        problems.append(f"{prefix}.ship_instance_id not positive int|null in range")
+
+    is_convoy = row.get("is_convoy")
+    if is_convoy is not None and not isinstance(is_convoy, bool):
+        problems.append(f"{prefix}.is_convoy not bool|null")
+
+    if key_uid is not None:
+        if key_uid["kind"] == "ship":
+            if ship_instance_id is not None and ship_instance_id != key_uid["instance_id"]:
+                problems.append(f"{prefix}.ship_instance_id != member_key")
+            if unit_type_tag is not None and unit_type_tag != 51:
+                problems.append(f"{prefix}.unit_type_tag invalid for ship")
+            if is_convoy is not None and is_convoy:
+                problems.append(f"{prefix}.is_convoy true for ship key")
+        elif key_uid["kind"] == "convoy":
+            if ship_instance_id is not None:
+                problems.append(f"{prefix}.ship_instance_id set for convoy key")
+            if unit_type_tag is not None and unit_type_tag != 0:
+                problems.append(f"{prefix}.unit_type_tag invalid for convoy")
+            if is_convoy is not None and not is_convoy:
+                problems.append(f"{prefix}.is_convoy false for convoy key")
+            for key in ("group_index", "member_index"):
+                value = row.get(key)
+                if isinstance(value, int) and value != key_uid[key]:
+                    problems.append(f"{prefix}.{key} != member_key")
+            slot = row.get("battle_slot_index_raw")
+            if isinstance(slot, int) and slot != key_uid["battle_slot_index_raw"]:
+                problems.append(f"{prefix}.battle_slot_index_raw != member_key")
+
+    owner = row.get("owner")
+    if owner is not None and not schema.valid_tag(owner):
+        problems.append(f"{prefix}.owner not TAG|null")
+
+    for key in ("name", "type_display", "archetype"):
+        value = row.get(key)
+        if value is not None and not _valid_raw_string(
+            value,
+            max_length=RAW_SHORT_STRING_MAX_LENGTH,
+        ):
+            problems.append(f"{prefix}.{key} not bounded str|null")
+
+    designed_max_strength_raw = row.get("designed_max_strength_raw")
+    if designed_max_strength_raw is not None and not _valid_bounded_int(
+        designed_max_strength_raw,
+        minimum=0,
+        maximum=RAW_NAVAL_COMBAT_MEMBER_MAX_STRENGTH_RAW_MAX,
+    ):
+        problems.append(
+            f"{prefix}.designed_max_strength_raw not nonnegative int|null in range"
+        )
+
+    battle_slot_index_raw = row.get("battle_slot_index_raw")
+    if battle_slot_index_raw is None:
+        if require_identity:
+            problems.append(f"{prefix}.battle_slot_index_raw missing")
+    elif not _valid_bounded_int(
+        battle_slot_index_raw,
+        minimum=0,
+        maximum=RAW_NAVAL_COMBAT_MEMBER_SLOT_INDEX_MAX,
+    ):
+        problems.append(
+            f"{prefix}.battle_slot_index_raw not nonnegative int|null in range"
+        )
+
+    state_bitmask = row.get("state_bitmask")
+    if state_bitmask is not None and not _valid_bounded_int(
+        state_bitmask,
+        minimum=0,
+        maximum=RAW_NAVAL_COMBAT_MEMBER_STATE_BITMASK_MAX,
+    ):
+        problems.append(f"{prefix}.state_bitmask not nonnegative int|null in range")
+
+    engagement_weight_raw = row.get("engagement_weight_raw")
+    if engagement_weight_raw is not None and not _valid_bounded_int(
+        engagement_weight_raw,
+        minimum=0,
+        maximum=RAW_NAVAL_COMBAT_MEMBER_ENGAGEMENT_WEIGHT_RAW_MAX,
+    ):
+        problems.append(
+            f"{prefix}.engagement_weight_raw not nonnegative int|null in range"
+        )
+    return problems
+
+
 def _validate_raw_air_wing_event(
     frame: Dict[str, Any],
     payload: Dict[str, Any],
@@ -2560,6 +2916,80 @@ def _parse_raw_naval_combat_gap_key(value: Any) -> Optional[str]:
     if not isinstance(value, str) or not value.startswith("naval_air_combats:gap:"):
         return None
     gap_kind = value[len("naval_air_combats:gap:"):]
+    if not _valid_raw_string(gap_kind, max_length=RAW_SHORT_STRING_MAX_LENGTH):
+        return None
+    if _valid_hex_pointer(gap_kind):
+        return None
+    return gap_kind
+
+
+def _parse_raw_naval_combat_member_entity_key(value: Any) -> Optional[Dict[str, Any]]:
+    prefix = "naval_combat_members:naval_combat:"
+    if not isinstance(value, str) or not value.startswith(prefix):
+        return None
+    raw = value[len(prefix):]
+    parts = raw.split(":")
+    if len(parts) not in (5, 7):
+        return None
+    combat_id = _parse_raw_nonnegative_int_string(
+        parts[0],
+        maximum=RAW_NAVAL_COMBAT_MEMBER_ID_MAX,
+    )
+    generation = _parse_raw_nonnegative_int_string(
+        parts[1],
+        maximum=RAW_NAVAL_COMBAT_MEMBER_GENERATION_MAX,
+    )
+    side = parts[2]
+    kind = parts[3]
+    if combat_id is None or combat_id == 0 or generation is None:
+        return None
+    if side not in RAW_NAVAL_COMBAT_MEMBER_SIDES:
+        return None
+    if kind == "ship" and len(parts) == 5:
+        instance_id = _parse_raw_nonnegative_int_string(
+            parts[4],
+            maximum=RAW_NAVAL_COMBAT_MEMBER_SHIP_INSTANCE_ID_MAX,
+        )
+        if instance_id is None or instance_id == 0:
+            return None
+        return {
+            "combat_id": combat_id,
+            "generation": generation,
+            "side": side,
+            "kind": kind,
+            "instance_id": instance_id,
+        }
+    if kind == "convoy" and len(parts) == 7:
+        group_index = _parse_raw_nonnegative_int_string(
+            parts[4],
+            maximum=RAW_NAVAL_COMBAT_MEMBER_GROUP_INDEX_MAX,
+        )
+        member_index = _parse_raw_nonnegative_int_string(
+            parts[5],
+            maximum=RAW_NAVAL_COMBAT_MEMBER_INDEX_MAX,
+        )
+        slot_index = _parse_raw_nonnegative_int_string(
+            parts[6],
+            maximum=RAW_NAVAL_COMBAT_MEMBER_SLOT_INDEX_MAX,
+        )
+        if group_index is None or member_index is None or slot_index is None:
+            return None
+        return {
+            "combat_id": combat_id,
+            "generation": generation,
+            "side": side,
+            "kind": kind,
+            "group_index": group_index,
+            "member_index": member_index,
+            "battle_slot_index_raw": slot_index,
+        }
+    return None
+
+
+def _parse_raw_naval_combat_member_gap_key(value: Any) -> Optional[str]:
+    if not isinstance(value, str) or not value.startswith("naval_combat_members:gap:"):
+        return None
+    gap_kind = value[len("naval_combat_members:gap:"):]
     if not _valid_raw_string(gap_kind, max_length=RAW_SHORT_STRING_MAX_LENGTH):
         return None
     if _valid_hex_pointer(gap_kind):

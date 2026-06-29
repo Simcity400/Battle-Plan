@@ -340,6 +340,15 @@ mod attach_log {
     const NAVAL_COMBAT_REGISTRY_OFF_FRONT: usize = 0x38;
     const NAVAL_COMBAT_FEX_OFF_MEMBERS_DATA: usize = 0x08;
     const NAVAL_COMBAT_FEX_OFF_MEMBERS_PACKED: usize = 0x10;
+    const NAVAL_COMBAT_MEMBER_OFF_TYPEID: usize = 0x08;
+    const NAVAL_COMBAT_MEMBER_OFF_OWNER_TAG: usize = 0x20;
+    const NAVAL_COMBAT_MEMBER_OFF_MAX_STRENGTH: usize = 0x30;
+    const NAVAL_COMBAT_MEMBER_OFF_NAME: usize = 0x48;
+    const NAVAL_COMBAT_MEMBER_OFF_TYPE_DISPLAY: usize = 0x68;
+    const NAVAL_COMBAT_MEMBER_OFF_ARCHETYPE: usize = 0x88;
+    const NAVAL_COMBAT_MEMBER_OFF_STATE: usize = 0xE0;
+    const NAVAL_COMBAT_MEMBER_OFF_ENGAGEMENT_WEIGHT: usize = 0xF8;
+    const NAVAL_COMBAT_MEMBER_OFF_SLOT: usize = 0x120;
     const NAVAL_LEADER_NAME: usize = 0x20;
     const MAX_NAVAL_COMBAT_ID: u32 = i32::MAX as u32;
     const MAX_NAVAL_COMBAT_BODY_BRIDGE_ROWS: usize = 4_000;
@@ -349,6 +358,11 @@ mod attach_log {
     const MAX_NAVAL_COMBAT_SHIPS_PER_GROUP: u32 = 1_000;
     const MAX_NAVAL_COMBAT_SIDE_SHIPS: u32 = 20_000;
     const MAX_NAVAL_COMMANDER_NAME_LEN: usize = 128;
+    const NAVAL_COMBAT_SHIP_TYPE_TAG: u32 = 51;
+    const MAX_NAVAL_COMBAT_SHIP_INSTANCE_ID: u32 = 4_000_000;
+    const MAX_NAVAL_COMBAT_MEMBER_STRING_LEN: usize = 128;
+    const MAX_NAVAL_COMBAT_MEMBER_MAX_STRENGTH_RAW: u32 = 1_000_000_000;
+    const MAX_NAVAL_COMBAT_MEMBER_ENGAGEMENT_WEIGHT_RAW: u32 = 10_000_000;
     const AIR_WING_VTABLE_RVA: usize = 0x29540C0;
     const AIR_WING_POOL_VTABLE_RVA: usize = 0x2954118;
     const AIR_WING_OWNER_COUNTRY_VTABLE_RVA: usize = 0x2932248;
@@ -550,6 +564,7 @@ mod attach_log {
             let mut army_order_tracker = ArmyOrderTracker::default();
             let mut last_army_order_sample_elapsed_ms: Option<u64> = None;
             let mut naval_combat_tracker = NavalCombatTracker::default();
+            let mut naval_combat_member_tracker = NavalCombatMemberTracker::default();
             let mut air_wing_tracker = AirWingTracker::default();
             let mut last_air_wing_sample_elapsed_ms: Option<u64> = None;
             while Instant::now() <= deadline {
@@ -627,6 +642,7 @@ mod attach_log {
                     state.as_ref(),
                     &control,
                     &mut naval_combat_tracker,
+                    &mut naval_combat_member_tracker,
                     session_sequence,
                     Some(elapsed_wall_ms),
                     capture_boundary,
@@ -1699,6 +1715,7 @@ mod attach_log {
     const RAW_LAND_COMBATS_DOMAIN: &str = "land_combats";
     const RAW_ARMY_ORDERS_DOMAIN: &str = "army_orders";
     const RAW_NAVAL_COMBATS_DOMAIN: &str = "naval_air_combats";
+    const RAW_NAVAL_COMBAT_MEMBERS_DOMAIN: &str = "naval_combat_members";
     const RAW_AIR_WINGS_DOMAIN: &str = "air_wings";
     const RAW_CONFIDENCE_SAMPLED: &str = "sampled";
     const LAND_COMBAT_EVENT_STARTED: &str = "land_combat_started";
@@ -1804,6 +1821,33 @@ mod attach_log {
     struct NavalCombatTracker {
         previous: BTreeMap<u32, NavalCombatSample>,
         next_generation: u64,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct NavalCombatMemberSample {
+        member_key: String,
+        combat_key: String,
+        combat_id: u32,
+        generation: u64,
+        side: &'static str,
+        group_index: u32,
+        member_index: u32,
+        unit_type_tag: u32,
+        ship_instance_id: Option<u32>,
+        is_convoy: bool,
+        owner: Option<String>,
+        name: Option<String>,
+        type_display: Option<String>,
+        archetype: Option<String>,
+        designed_max_strength_raw: Option<u32>,
+        battle_slot_index_raw: u32,
+        state_bitmask: Option<u32>,
+        engagement_weight_raw: Option<u32>,
+    }
+
+    #[derive(Default)]
+    struct NavalCombatMemberTracker {
+        previous: BTreeMap<String, NavalCombatMemberSample>,
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3757,6 +3801,7 @@ mod attach_log {
         state: Option<&CollectorState>,
         control: &CollectorControl,
         tracker: &mut NavalCombatTracker,
+        member_tracker: &mut NavalCombatMemberTracker,
         first_session_sequence: u64,
         elapsed_wall_ms: Option<u64>,
         capture_boundary: &str,
@@ -3772,7 +3817,7 @@ mod attach_log {
             Err(gap_kind) => {
                 let tick_ms = unsafe { GetTickCount64() };
                 let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-                return naval_combat_gap_raw_domain_delta_frame_line(
+                let mut lines: Vec<String> = naval_combat_gap_raw_domain_delta_frame_line(
                     pid,
                     sequence,
                     Some(first_session_sequence),
@@ -3785,13 +3830,30 @@ mod attach_log {
                 )
                 .into_iter()
                 .collect();
+                if let Some(line) = naval_combat_member_gap_raw_domain_delta_frame_line(
+                    pid,
+                    FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+                    Some(first_session_sequence.saturating_add(lines.len() as u64)),
+                    unsafe { GetTickCount64() },
+                    control,
+                    elapsed_wall_ms,
+                    capture_boundary,
+                    &clock,
+                    gap_kind,
+                ) {
+                    lines.push(line);
+                }
+                return lines;
             }
         };
-        if current_samples.is_empty() && tracker.previous.is_empty() {
+        if current_samples.is_empty()
+            && tracker.previous.is_empty()
+            && member_tracker.previous.is_empty()
+        {
             return Vec::new();
         }
 
-        build_naval_combat_raw_lines_from_samples(
+        let mut lines = build_naval_combat_raw_lines_from_samples(
             pid,
             control,
             tracker,
@@ -3800,7 +3862,20 @@ mod attach_log {
             capture_boundary,
             &clock,
             current_samples,
-        )
+        );
+        let member_start_sequence = first_session_sequence.saturating_add(lines.len() as u64);
+        lines.extend(build_naval_combat_member_raw_lines_from_combat_samples(
+            pid,
+            state,
+            control,
+            member_tracker,
+            member_start_sequence,
+            elapsed_wall_ms,
+            capture_boundary,
+            &clock,
+            tracker.previous.values().cloned().collect(),
+        ));
+        lines
     }
 
     fn build_naval_combat_raw_lines_from_samples(
@@ -4522,6 +4597,535 @@ mod attach_log {
         ))
     }
 
+    fn build_naval_combat_member_raw_lines_from_combat_samples(
+        pid: Dword,
+        state: &CollectorState,
+        control: &CollectorControl,
+        tracker: &mut NavalCombatMemberTracker,
+        first_session_sequence: u64,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        combat_samples: Vec<NavalCombatSample>,
+    ) -> Vec<String> {
+        let tag_table = if combat_samples.is_empty() {
+            None
+        } else {
+            match country_tag_table(state.country_database_ptr as usize) {
+                Some(table) => Some(table),
+                None => {
+                    return naval_combat_member_gap_raw_domain_delta_frame_line(
+                        pid,
+                        FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+                        Some(first_session_sequence),
+                        unsafe { GetTickCount64() },
+                        control,
+                        elapsed_wall_ms,
+                        capture_boundary,
+                        clock,
+                        "tag_table_unavailable",
+                    )
+                    .into_iter()
+                    .collect();
+                }
+            }
+        };
+        let mut invalid_combat_rows = 0_u32;
+        let mut current = BTreeMap::new();
+        for combat in combat_samples {
+            let Some(tag_table) = tag_table else {
+                continue;
+            };
+            match sample_naval_combat_members_from_sample(state.base, tag_table, &combat) {
+                Some(samples) => {
+                    for sample in samples {
+                        current.entry(sample.member_key.clone()).or_insert(sample);
+                    }
+                }
+                None => {
+                    invalid_combat_rows = invalid_combat_rows.saturating_add(1);
+                }
+            }
+        }
+        if current.is_empty() && invalid_combat_rows > 0 {
+            return naval_combat_member_gap_raw_domain_delta_frame_line(
+                pid,
+                FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+                Some(first_session_sequence),
+                unsafe { GetTickCount64() },
+                control,
+                elapsed_wall_ms,
+                capture_boundary,
+                clock,
+                "member_entry_invalid",
+            )
+            .into_iter()
+            .collect();
+        }
+
+        let mut lines = Vec::new();
+        let mut session_sequence = first_session_sequence;
+        for sample in current.values() {
+            let changed_fields = tracker
+                .previous
+                .get(&sample.member_key)
+                .and_then(|old| naval_combat_member_changed_fields(old, sample))
+                .unwrap_or_else(naval_combat_member_all_fields);
+            if changed_fields.is_empty() {
+                continue;
+            }
+            push_naval_combat_member_delta_frame(
+                &mut lines,
+                &mut session_sequence,
+                pid,
+                control,
+                elapsed_wall_ms,
+                capture_boundary,
+                clock,
+                sample,
+                "sample",
+                &changed_fields,
+            );
+        }
+        for old in tracker.previous.values() {
+            if current.contains_key(&old.member_key) {
+                continue;
+            }
+            push_naval_combat_member_delta_frame(
+                &mut lines,
+                &mut session_sequence,
+                pid,
+                control,
+                elapsed_wall_ms,
+                capture_boundary,
+                clock,
+                old,
+                "delete",
+                &["member_key"],
+            );
+        }
+        tracker.previous = current;
+        lines
+    }
+
+    fn push_naval_combat_member_delta_frame(
+        lines: &mut Vec<String>,
+        session_sequence: &mut u64,
+        pid: Dword,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        sample: &NavalCombatMemberSample,
+        op: &str,
+        changed_fields: &[&str],
+    ) {
+        let tick_ms = unsafe { GetTickCount64() };
+        let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        if let Some(line) = naval_combat_member_raw_domain_delta_frame_line(
+            pid,
+            sequence,
+            Some(*session_sequence),
+            tick_ms,
+            control,
+            elapsed_wall_ms,
+            capture_boundary,
+            clock,
+            sample,
+            op,
+            changed_fields,
+        ) {
+            lines.push(line);
+            *session_sequence = session_sequence.saturating_add(1);
+        }
+    }
+
+    fn sample_naval_combat_members_from_sample(
+        module_base: usize,
+        tag_table: usize,
+        combat: &NavalCombatSample,
+    ) -> Option<Vec<NavalCombatMemberSample>> {
+        let body = combat.body_addr;
+        if !is_map_control_heap_pointer(body) {
+            return None;
+        }
+        if read_u64(body)? as usize != module_base.checked_add(NAVAL_COMBAT_VTABLE_RVA)? {
+            return None;
+        }
+        let handle = read_u64(body.checked_add(NAVAL_COMBAT_OFF_TYPEID)?)?;
+        if (handle & 0xFFFF_FFFF) as u32 != NAVAL_COMBAT_TYPE
+            || ((handle >> 32) & 0xFFFF_FFFF) as u32 != combat.combat_id
+        {
+            return None;
+        }
+        let front = read_u64(body.checked_add(NAVAL_COMBAT_OFF_FRONT)?)? as usize;
+        let (attacker_side, defender_side) =
+            naval_combat_sides(module_base, body, combat.combat_id, front)?;
+        let combat_key = format!("naval_combat:{}:{}", combat.combat_id, combat.generation);
+        let mut samples = Vec::new();
+        samples.extend(sample_naval_combat_members_from_side(
+            module_base,
+            tag_table,
+            combat,
+            &combat_key,
+            attacker_side,
+            "attacker",
+        )?);
+        samples.extend(sample_naval_combat_members_from_side(
+            module_base,
+            tag_table,
+            combat,
+            &combat_key,
+            defender_side,
+            "defender",
+        )?);
+        Some(samples)
+    }
+
+    fn sample_naval_combat_members_from_side(
+        module_base: usize,
+        tag_table: usize,
+        combat: &NavalCombatSample,
+        combat_key: &str,
+        side: usize,
+        side_name: &'static str,
+    ) -> Option<Vec<NavalCombatMemberSample>> {
+        let group_count = read_u32(side.checked_add(NAVAL_COMBAT_SIDE_OFF_FEX_SIZE)?)?;
+        if group_count > MAX_NAVAL_COMBAT_SIDE_GROUPS {
+            return None;
+        }
+        if group_count == 0 {
+            return Some(Vec::new());
+        }
+        let group_data = read_u64(side.checked_add(NAVAL_COMBAT_SIDE_OFF_FEX_DATA)?)? as usize;
+        if !is_map_control_heap_pointer(group_data) {
+            return None;
+        }
+        let group_bytes = (group_count as usize).checked_mul(8)?;
+        let groups = read_bytes(group_data, group_bytes)?;
+        if groups.len() != group_bytes {
+            return None;
+        }
+        let member_vtable = module_base.checked_add(NAVAL_COMBAT_MEMBER_VTABLE_RVA)?;
+        let mut total = 0_u32;
+        let mut samples = Vec::new();
+        for group_index in 0..group_count as usize {
+            let group = read_u64_from_slice(&groups, group_index * 8)? as usize;
+            if !is_map_control_heap_pointer(group) {
+                return None;
+            }
+            let members_data =
+                read_u64(group.checked_add(NAVAL_COMBAT_FEX_OFF_MEMBERS_DATA)?)? as usize;
+            let packed = read_u64(group.checked_add(NAVAL_COMBAT_FEX_OFF_MEMBERS_PACKED)?)?;
+            let capacity = (packed & 0xFFFF_FFFF) as u32;
+            let size = ((packed >> 32) & 0xFFFF_FFFF) as u32;
+            if size > MAX_NAVAL_COMBAT_SHIPS_PER_GROUP || capacity < size {
+                return None;
+            }
+            total = total.checked_add(size)?;
+            if total > MAX_NAVAL_COMBAT_SIDE_SHIPS {
+                return None;
+            }
+            if size == 0 {
+                continue;
+            }
+            if !is_map_control_heap_pointer(members_data) {
+                return None;
+            }
+            let member_bytes = (size as usize).checked_mul(8)?;
+            let members = read_bytes(members_data, member_bytes)?;
+            if members.len() != member_bytes {
+                return None;
+            }
+            for member_index in 0..size as usize {
+                let member = read_u64_from_slice(&members, member_index * 8)? as usize;
+                if !is_map_control_heap_pointer(member)
+                    || read_u64(member)? as usize != member_vtable
+                {
+                    return None;
+                }
+                samples.push(read_naval_combat_member_sample(
+                    tag_table,
+                    combat,
+                    combat_key,
+                    side_name,
+                    group_index as u32,
+                    member_index as u32,
+                    member,
+                )?);
+            }
+        }
+        Some(samples)
+    }
+
+    fn read_naval_combat_member_sample(
+        tag_table: usize,
+        combat: &NavalCombatSample,
+        combat_key: &str,
+        side: &'static str,
+        group_index: u32,
+        member_index: u32,
+        member: usize,
+    ) -> Option<NavalCombatMemberSample> {
+        let packed_id = read_u64(member.checked_add(NAVAL_COMBAT_MEMBER_OFF_TYPEID)?)?;
+        let unit_type_tag = (packed_id & 0xFFFF_FFFF) as u32;
+        let raw_instance_id = ((packed_id >> 32) & 0xFFFF_FFFF) as u32;
+        let is_convoy = unit_type_tag == 0 && raw_instance_id == 0;
+        let ship_instance_id = if is_convoy {
+            None
+        } else {
+            if unit_type_tag != NAVAL_COMBAT_SHIP_TYPE_TAG
+                || raw_instance_id == 0
+                || raw_instance_id > MAX_NAVAL_COMBAT_SHIP_INSTANCE_ID
+            {
+                return None;
+            }
+            Some(raw_instance_id)
+        };
+        let owner_tag_db_id = read_u32(member.checked_add(NAVAL_COMBAT_MEMBER_OFF_OWNER_TAG)?)?;
+        let owner = if owner_tag_db_id == 0 {
+            None
+        } else {
+            Some(tag_from_table(tag_table, owner_tag_db_id)?)
+        };
+        let battle_slot_index_raw = read_u32(member.checked_add(NAVAL_COMBAT_MEMBER_OFF_SLOT)?)?;
+        if battle_slot_index_raw > MAX_NAVAL_COMBAT_SIDE_SHIPS {
+            return None;
+        }
+        let member_key = if let Some(instance_id) = ship_instance_id {
+            format!("{RAW_NAVAL_COMBAT_MEMBERS_DOMAIN}:{combat_key}:{side}:ship:{instance_id}")
+        } else {
+            format!(
+                "{RAW_NAVAL_COMBAT_MEMBERS_DOMAIN}:{combat_key}:{side}:convoy:{group_index}:{member_index}:{battle_slot_index_raw}"
+            )
+        };
+        let designed_max_strength_raw =
+            read_u32(member.checked_add(NAVAL_COMBAT_MEMBER_OFF_MAX_STRENGTH)?)
+                .filter(|value| *value <= MAX_NAVAL_COMBAT_MEMBER_MAX_STRENGTH_RAW);
+        let engagement_weight_raw =
+            read_u32(member.checked_add(NAVAL_COMBAT_MEMBER_OFF_ENGAGEMENT_WEIGHT)?)
+                .filter(|value| *value <= MAX_NAVAL_COMBAT_MEMBER_ENGAGEMENT_WEIGHT_RAW);
+        Some(NavalCombatMemberSample {
+            member_key,
+            combat_key: combat_key.to_string(),
+            combat_id: combat.combat_id,
+            generation: combat.generation,
+            side,
+            group_index,
+            member_index,
+            unit_type_tag,
+            ship_instance_id,
+            is_convoy,
+            owner,
+            name: read_msvc_string(
+                member.checked_add(NAVAL_COMBAT_MEMBER_OFF_NAME)?,
+                MAX_NAVAL_COMBAT_MEMBER_STRING_LEN,
+            ),
+            type_display: read_msvc_string(
+                member.checked_add(NAVAL_COMBAT_MEMBER_OFF_TYPE_DISPLAY)?,
+                MAX_NAVAL_COMBAT_MEMBER_STRING_LEN,
+            ),
+            archetype: read_msvc_string(
+                member.checked_add(NAVAL_COMBAT_MEMBER_OFF_ARCHETYPE)?,
+                MAX_NAVAL_COMBAT_MEMBER_STRING_LEN,
+            ),
+            designed_max_strength_raw,
+            battle_slot_index_raw,
+            state_bitmask: read_u8(member.checked_add(NAVAL_COMBAT_MEMBER_OFF_STATE)?)
+                .map(|value| value as u32),
+            engagement_weight_raw,
+        })
+    }
+
+    fn naval_combat_member_all_fields() -> Vec<&'static str> {
+        vec![
+            "member_key",
+            "combat_key",
+            "combat_id",
+            "generation",
+            "side",
+            "group_index",
+            "member_index",
+            "unit_type_tag",
+            "ship_instance_id",
+            "is_convoy",
+            "owner",
+            "name",
+            "type_display",
+            "archetype",
+            "designed_max_strength_raw",
+            "battle_slot_index_raw",
+            "state_bitmask",
+            "engagement_weight_raw",
+        ]
+    }
+
+    fn naval_combat_member_changed_fields(
+        old: &NavalCombatMemberSample,
+        new: &NavalCombatMemberSample,
+    ) -> Option<Vec<&'static str>> {
+        let mut changed = Vec::new();
+        if old.combat_key != new.combat_key {
+            changed.push("combat_key");
+        }
+        if old.combat_id != new.combat_id {
+            changed.push("combat_id");
+        }
+        if old.generation != new.generation {
+            changed.push("generation");
+        }
+        if old.side != new.side {
+            changed.push("side");
+        }
+        if old.group_index != new.group_index {
+            changed.push("group_index");
+        }
+        if old.member_index != new.member_index {
+            changed.push("member_index");
+        }
+        if old.unit_type_tag != new.unit_type_tag {
+            changed.push("unit_type_tag");
+        }
+        if old.ship_instance_id != new.ship_instance_id {
+            changed.push("ship_instance_id");
+        }
+        if old.is_convoy != new.is_convoy {
+            changed.push("is_convoy");
+        }
+        if old.owner != new.owner {
+            changed.push("owner");
+        }
+        if old.name != new.name {
+            changed.push("name");
+        }
+        if old.type_display != new.type_display {
+            changed.push("type_display");
+        }
+        if old.archetype != new.archetype {
+            changed.push("archetype");
+        }
+        if old.designed_max_strength_raw != new.designed_max_strength_raw {
+            changed.push("designed_max_strength_raw");
+        }
+        if old.battle_slot_index_raw != new.battle_slot_index_raw {
+            changed.push("battle_slot_index_raw");
+        }
+        if old.state_bitmask != new.state_bitmask {
+            changed.push("state_bitmask");
+        }
+        if old.engagement_weight_raw != new.engagement_weight_raw {
+            changed.push("engagement_weight_raw");
+        }
+        (!changed.is_empty()).then_some(changed)
+    }
+
+    fn naval_combat_member_raw_domain_delta_frame_line(
+        pid: Dword,
+        sequence: u64,
+        session_sequence: Option<u64>,
+        tick_ms: u64,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        sample: &NavalCombatMemberSample,
+        op: &str,
+        changed_fields: &[&str],
+    ) -> Option<String> {
+        let after_json = if op == "delete" {
+            "null".to_string()
+        } else {
+            naval_combat_member_row_json(sample)
+        };
+        raw_domain_delta_frame_line(RawDomainDeltaFrame {
+            pid,
+            sequence,
+            session_sequence,
+            tick_ms,
+            date: &clock.date,
+            hour_index: clock.hour_index,
+            sample_ms: control.sample_ms,
+            duration_ms: Some(control.duration_ms),
+            elapsed_wall_ms,
+            capture_boundary,
+            domain: RAW_NAVAL_COMBAT_MEMBERS_DOMAIN,
+            entity_key: &sample.member_key,
+            confidence: RAW_CONFIDENCE_SAMPLED,
+            op,
+            after_json: &after_json,
+            changed_fields,
+        })
+    }
+
+    fn naval_combat_member_gap_raw_domain_delta_frame_line(
+        pid: Dword,
+        sequence: u64,
+        session_sequence: Option<u64>,
+        tick_ms: u64,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        gap_kind: &str,
+    ) -> Option<String> {
+        if !valid_raw_short_string(gap_kind) || looks_like_hex_pointer(gap_kind) {
+            return None;
+        }
+        let gap_key = format!("{RAW_NAVAL_COMBAT_MEMBERS_DOMAIN}:gap:{gap_kind}");
+        let after_json = format!(
+            "{{\"gap_key\":{},\"gap_kind\":{},\"status\":\"validation_failed\"}}",
+            json_str(&gap_key),
+            json_str(gap_kind)
+        );
+        raw_domain_delta_frame_line(RawDomainDeltaFrame {
+            pid,
+            sequence,
+            session_sequence,
+            tick_ms,
+            date: &clock.date,
+            hour_index: clock.hour_index,
+            sample_ms: control.sample_ms,
+            duration_ms: Some(control.duration_ms),
+            elapsed_wall_ms,
+            capture_boundary,
+            domain: RAW_NAVAL_COMBAT_MEMBERS_DOMAIN,
+            entity_key: &gap_key,
+            confidence: "gap",
+            op: "sample",
+            after_json: &after_json,
+            changed_fields: &["gap_key", "gap_kind", "status"],
+        })
+    }
+
+    fn naval_combat_member_row_json(sample: &NavalCombatMemberSample) -> String {
+        format!(
+            "{{\"member_key\":{},\"combat_key\":{},\"combat_id\":{},\"generation\":{},\
+             \"side\":{},\"group_index\":{},\"member_index\":{},\
+             \"unit_type_tag\":{},\"ship_instance_id\":{},\"is_convoy\":{},\
+             \"owner\":{},\"name\":{},\"type_display\":{},\"archetype\":{},\
+             \"designed_max_strength_raw\":{},\"battle_slot_index_raw\":{},\
+             \"state_bitmask\":{},\"engagement_weight_raw\":{}}}",
+            json_str(&sample.member_key),
+            json_str(&sample.combat_key),
+            sample.combat_id,
+            sample.generation,
+            json_str(sample.side),
+            sample.group_index,
+            sample.member_index,
+            sample.unit_type_tag,
+            json_opt_u32(sample.ship_instance_id),
+            sample.is_convoy,
+            json_opt_escaped_str(sample.owner.as_deref()),
+            json_opt_escaped_str(sample.name.as_deref()),
+            json_opt_escaped_str(sample.type_display.as_deref()),
+            json_opt_escaped_str(sample.archetype.as_deref()),
+            json_opt_u32(sample.designed_max_strength_raw),
+            sample.battle_slot_index_raw,
+            json_opt_u32(sample.state_bitmask),
+            json_opt_u32(sample.engagement_weight_raw)
+        )
+    }
+
     fn build_air_wing_raw_domain_delta_lines(
         pid: Dword,
         state: Option<&CollectorState>,
@@ -5213,6 +5817,7 @@ mod attach_log {
                 | RAW_LAND_COMBATS_DOMAIN
                 | RAW_ARMY_ORDERS_DOMAIN
                 | RAW_NAVAL_COMBATS_DOMAIN
+                | RAW_NAVAL_COMBAT_MEMBERS_DOMAIN
                 | RAW_AIR_WINGS_DOMAIN
         )
     }
@@ -11149,6 +11754,94 @@ mod attach_log {
             assert!(delete_frame.contains("\"domain\":\"naval_air_combats\""));
             assert!(delete_frame.contains("\"payload\":{\"op\":\"delete\",\"after\":null"));
             assert!(!delete_frame.contains("body_addr"));
+            assert!(!delete_frame.contains("0x"));
+        }
+
+        #[test]
+        fn naval_combat_member_frame_builder_emits_sanitized_rows() {
+            let control = raw_test_control();
+            let clock = ClockSample {
+                date: "1936.1.1.12".to_string(),
+                hour_index: ((1936 * 365) * 24 + 12) as u64,
+                raw_date: DATE_EPOCH_CONST + ((1936 * 365) * 24 + 12),
+            };
+            let sample = NavalCombatMemberSample {
+                member_key: "naval_combat_members:naval_combat:241671:3:attacker:ship:3458"
+                    .to_string(),
+                combat_key: "naval_combat:241671:3".to_string(),
+                combat_id: 241671,
+                generation: 3,
+                side: "attacker",
+                group_index: 0,
+                member_index: 2,
+                unit_type_tag: 51,
+                ship_instance_id: Some(3458),
+                is_convoy: false,
+                owner: Some("FRA".to_string()),
+                name: Some("Sidi-Ferruch".to_string()),
+                type_display: Some("Cruiser Submarine".to_string()),
+                archetype: Some("submarine".to_string()),
+                designed_max_strength_raw: Some(49_000_000),
+                battle_slot_index_raw: 4,
+                state_bitmask: Some(4),
+                engagement_weight_raw: Some(100_000),
+            };
+            let changed_fields = naval_combat_member_all_fields();
+
+            let frame = naval_combat_member_raw_domain_delta_frame_line(
+                1234,
+                42,
+                Some(9),
+                123456,
+                &control,
+                Some(125),
+                "worker_poll",
+                &clock,
+                &sample,
+                "sample",
+                &changed_fields,
+            )
+            .unwrap();
+
+            assert!(frame.contains("\"type\":\"domain_delta\""));
+            assert!(frame.contains("\"domain\":\"naval_combat_members\""));
+            assert!(frame.contains(
+                "\"entity_key\":\"naval_combat_members:naval_combat:241671:3:attacker:ship:3458\""
+            ));
+            assert!(frame.contains("\"combat_key\":\"naval_combat:241671:3\""));
+            assert!(frame.contains("\"side\":\"attacker\""));
+            assert!(frame.contains("\"ship_instance_id\":3458"));
+            assert!(frame.contains("\"is_convoy\":false"));
+            assert!(frame.contains("\"owner\":\"FRA\""));
+            assert!(frame.contains("\"name\":\"Sidi-Ferruch\""));
+            assert!(frame.contains("\"type_display\":\"Cruiser Submarine\""));
+            assert!(frame.contains("\"archetype\":\"submarine\""));
+            assert!(frame.contains("\"designed_max_strength_raw\":49000000"));
+            assert!(frame.contains("\"battle_slot_index_raw\":4"));
+            assert!(frame.contains("\"state_bitmask\":4"));
+            assert!(frame.contains("\"engagement_weight_raw\":100000"));
+            assert!(!frame.contains("body_ptr"));
+            assert!(!frame.contains("body_addr"));
+            assert!(!frame.contains("member_addr"));
+            assert!(!frame.contains("tag_db_id"));
+            assert!(!frame.contains("0x"));
+
+            let delete_frame = naval_combat_member_raw_domain_delta_frame_line(
+                1234,
+                43,
+                Some(10),
+                123456,
+                &control,
+                Some(125),
+                "worker_poll",
+                &clock,
+                &sample,
+                "delete",
+                &["member_key"],
+            )
+            .unwrap();
+            assert!(delete_frame.contains("\"domain\":\"naval_combat_members\""));
+            assert!(delete_frame.contains("\"payload\":{\"op\":\"delete\",\"after\":null"));
             assert!(!delete_frame.contains("0x"));
         }
 

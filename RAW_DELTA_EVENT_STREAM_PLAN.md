@@ -269,6 +269,14 @@ Current DLL contract:
   side-level summaries: location, attacker/defender TAG sets, side ship counts,
   commander tokens when available, positioning values, side validation status,
   and lifecycle `event` frames for started/updated/ended.
+- A second bounded stream now emits `naval_combat_members` domain deltas keyed
+  as `naval_combat_members:naval_combat:<combat_id>:<generation>:<side>:ship:<instance_id>`
+  for warships and
+  `naval_combat_members:naval_combat:<combat_id>:<generation>:<side>:convoy:<group_index>:<member_index>:<slot_index>`
+  for convoys. Each row is one active `CFEXMember` and carries combat key,
+  side, group/member index, unit type tag, nullable ship instance id, convoy
+  flag, owner TAG, display strings, designed max strength raw value,
+  battle-slot index, state bitmask, and engagement-weight raw value.
 - Validation exists on both sides: Rust bounds/sanitizes emitted rows and
   `live_capture.collector_frames` rejects pointer/tag-db leakage, unstable keys,
   bad TAGs, unbounded ship counts, bad positioning, and malformed gap rows.
@@ -314,9 +322,12 @@ Notes:
   discovery path.
 - Side summaries are intentionally not per-ship combat rows. Per-ship rows need
   a separate bounded stream keyed by ship/combat so large battle arrays do not
-  exceed the raw JSON frame envelope.
-- Damage history and hit counters need unpaused mid-tick proof before they are
-  treated as exact.
+  exceed the raw JSON frame envelope. That bounded stream now exists as
+  `naval_combat_members`.
+- The member stream deliberately does not claim current HP, organisation,
+  target, aggregate attack rows, or UI damage totals. Current ship strength/org
+  require the separate `CShip` registry bridge; damage history and hit counters
+  still need unpaused mid-tick proof before they are treated as exact.
 
 ### Air Activity
 

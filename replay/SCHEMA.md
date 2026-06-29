@@ -198,6 +198,8 @@ counters such as
 `raw_collector_frame_count`, duplicate same-hour frame count, payload row-count
 summaries, transport diagnostics, and preflight bridge status. The canonical
 snapshot stream still stores one selected frame per unique game hour.
+High-frequency active-combat sidecars such as `naval_combat_members` live in
+that raw collector stream, not in save-shaped `order_of_battle` arrays.
 
 ### 2.1 `provenance.mod` — the per-replay MOD IDENTITY (additive, §K MOD AWARENESS)
 
