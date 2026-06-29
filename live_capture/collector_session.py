@@ -32,6 +32,9 @@ from .collector_frames import (
 )
 from .collector_country_bridge import resolve_country_object_bridge_preflight
 from .collector_division_bridge import resolve_division_body_bridge_preflight
+from .collector_naval_combat_bridge import (
+    resolve_naval_combat_body_bridge_preflight,
+)
 from .collector_map_bridge import (
     resolve_province_control_preflight,
     resolve_state_control_preflight,
@@ -339,10 +342,12 @@ def record_collector_session(
     country_object_bridge: Any = None,
     country_record_bridge: Any = None,
     division_body_bridge: Any = None,
+    naval_combat_body_bridge: Any = None,
     preflight_country_object_bridge: bool = False,
     allow_country_cold_scan: bool = False,
     preflight_division_movement: bool = False,
     allow_division_cold_scan: bool = False,
+    preflight_naval_combat: bool = False,
     preflight_state_control: bool = False,
     preflight_province_control: bool = False,
     allow_province_cold_scan: bool = False,
@@ -420,6 +425,17 @@ def record_collector_session(
             allow_division_cold_scan)
         if preflight.usable:
             division_body_bridge = preflight.encoded
+    naval_combat_body_bridge_preflight = {
+        "enabled": bool(preflight_naval_combat),
+        "status": "not_requested",
+        "row_count": 0,
+    }
+    if naval_combat_body_bridge is None and preflight_naval_combat:
+        preflight = resolve_naval_combat_body_bridge_preflight(pid)
+        naval_combat_body_bridge_preflight = preflight.diagnostics
+        naval_combat_body_bridge_preflight["enabled"] = True
+        if preflight.usable:
+            naval_combat_body_bridge = preflight.encoded
     map_control_state_roots = None
     map_control_province_bridge = None
     map_control_controller_bridge = None
@@ -488,6 +504,7 @@ def record_collector_session(
         country_object_bridge=country_object_bridge,
         country_record_bridge=country_record_bridge,
         division_body_bridge=division_body_bridge,
+        naval_combat_body_bridge=naval_combat_body_bridge,
         map_control_state_roots=map_control_state_roots,
         map_control_province_bridge=map_control_province_bridge,
         map_control_controller_bridge=map_control_controller_bridge,
@@ -620,6 +637,11 @@ def record_collector_session(
                 "division_body_bridge_supplied"),
             "division_body_bridge_rows": probe_manifest.get(
                 "division_body_bridge_rows"),
+            "naval_combat_body_bridge_preflight": naval_combat_body_bridge_preflight,
+            "naval_combat_body_bridge_supplied": probe_manifest.get(
+                "naval_combat_body_bridge_supplied"),
+            "naval_combat_body_bridge_rows": probe_manifest.get(
+                "naval_combat_body_bridge_rows"),
             "state_control_preflight": state_control_preflight,
             "province_control_preflight": province_control_preflight,
             "map_control_state_roots_supplied": probe_manifest.get(
@@ -1660,6 +1682,11 @@ def _main() -> int:
         help="allow the slow division body locator during preflight",
     )
     parser.add_argument(
+        "--preflight-naval-combat",
+        action="store_true",
+        help="resolve active naval combat bodies before recording raw naval combat deltas",
+    )
+    parser.add_argument(
         "--preflight-state-control",
         action="store_true",
         help="resolve/cache live state owner/controller roots before recording",
@@ -1701,6 +1728,7 @@ def _main() -> int:
         allow_country_cold_scan=args.allow_country_cold_scan,
         preflight_division_movement=args.preflight_division_movement,
         allow_division_cold_scan=args.allow_division_cold_scan,
+        preflight_naval_combat=args.preflight_naval_combat,
         preflight_state_control=args.preflight_state_control,
         preflight_province_control=args.preflight_province_control,
         allow_province_cold_scan=args.allow_province_cold_scan,

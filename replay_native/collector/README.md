@@ -312,6 +312,11 @@ Naval-combat raw stream status:
   `collector_control.json` as `combat_id:body_ptr` entries. The parser rejects
   malformed, duplicate, unaligned, out-of-range, or oversized payloads and
   reports row count/validity in control metadata.
+- The recorder can populate that bridge with
+  `live_capture.collector_session --preflight-naval-combat`. This runs the
+  existing `CombatReader.enumerate_naval_combats()` path before attach, writes
+  only ephemeral bridge rows into the temporary control file, and stores
+  sanitized counts/status in manifests.
 - Worker sampling does not sweep the heap. For each supplied bridge row, the DLL
   revalidates the naval-combat body, registry, side, member, and leader vtables
   before emitting a row. Invalid bridge/layout reads become bounded
@@ -321,9 +326,9 @@ Naval-combat raw stream status:
   events. Per-ship combat participants, damage ticks, hit counters, and sinking
   events remain separate follow-up streams so large battles do not overflow the
   raw JSON frame envelope.
-- Remaining promotion work is a recorder-side preflight/cache producer for the
-  bridge rows, a live active-naval-combat fixture, speed-five soak, and timeline
-  ingestion.
+- Remaining promotion work is a live active-naval-combat fixture, a
+  root/hook-derived discoverer for combats born after preflight, per-ship
+  combat rows, speed-five soak, and timeline ingestion.
 
 Runtime rules:
 

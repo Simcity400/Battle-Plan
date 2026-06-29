@@ -17,6 +17,7 @@ from .collector_advisor_tokens import (
 )
 from .collector_division_bridge import encode_division_body_bridge
 from .collector_frames import latest_verified_root_probe, snapshot_from_root_probe_frame
+from .collector_naval_combat_bridge import encode_naval_combat_body_bridge
 from .collector_idea_groups import (
     encode_idea_group_filter,
     idea_group_filter_metadata,
@@ -54,6 +55,7 @@ def record_probes(
     country_object_bridge: Any = None,
     country_record_bridge: Any = None,
     division_body_bridge: Any = None,
+    naval_combat_body_bridge: Any = None,
     map_control_state_roots: Optional[str] = None,
     map_control_province_bridge: Optional[str] = None,
     map_control_controller_bridge: Optional[str] = None,
@@ -99,6 +101,14 @@ def record_probes(
     division_body_bridge_rows = (
         len(encoded_division_body_bridge.split(";"))
         if encoded_division_body_bridge else 0
+    )
+    encoded_naval_combat_body_bridge = (
+        encode_naval_combat_body_bridge(naval_combat_body_bridge)
+        if naval_combat_body_bridge is not None else None
+    )
+    naval_combat_body_bridge_rows = (
+        len(encoded_naval_combat_body_bridge.split(";"))
+        if encoded_naval_combat_body_bridge else 0
     )
     map_control_state_root_rows = _encoded_row_count(map_control_state_roots)
     map_control_controller_bridge_rows = _encoded_row_count(
@@ -166,6 +176,7 @@ def record_probes(
                 country_object_bridge=encoded_country_object_bridge,
                 country_record_bridge=encoded_country_record_bridge,
                 division_body_bridge=encoded_division_body_bridge,
+                naval_combat_body_bridge=encoded_naval_combat_body_bridge,
                 map_control_state_roots=map_control_state_roots,
                 map_control_province_bridge=map_control_province_bridge,
                 map_control_controller_bridge=map_control_controller_bridge,
@@ -324,6 +335,9 @@ def record_probes(
             "country_record_bridge_rows": country_record_bridge_rows,
             "division_body_bridge_supplied": bool(encoded_division_body_bridge),
             "division_body_bridge_rows": division_body_bridge_rows,
+            "naval_combat_body_bridge_supplied": bool(
+                encoded_naval_combat_body_bridge),
+            "naval_combat_body_bridge_rows": naval_combat_body_bridge_rows,
             "map_control_state_roots_supplied": bool(map_control_state_roots),
             "map_control_state_root_rows": map_control_state_root_rows,
             "map_control_province_bridge_supplied": map_control_province_bridge_supplied,
@@ -401,6 +415,7 @@ def _write_worker_control(
     country_object_bridge: Optional[str] = None,
     country_record_bridge: Optional[str] = None,
     division_body_bridge: Optional[str] = None,
+    naval_combat_body_bridge: Optional[str] = None,
     map_control_state_roots: Optional[str] = None,
     map_control_province_bridge: Optional[str] = None,
     map_control_controller_bridge: Optional[str] = None,
@@ -429,6 +444,8 @@ def _write_worker_control(
         payload["country_record_bridge"] = country_record_bridge
     if division_body_bridge:
         payload["division_body_bridge"] = division_body_bridge
+    if naval_combat_body_bridge:
+        payload["naval_combat_body_bridge"] = naval_combat_body_bridge
     if map_control_state_roots:
         payload["map_control_state_roots"] = map_control_state_roots
     if map_control_province_bridge:

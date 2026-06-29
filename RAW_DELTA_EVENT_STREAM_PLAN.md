@@ -306,8 +306,12 @@ Notes:
   The older `memory_reader/naval_air` naval-combat detector is useful as a
   negative/probe path, not the primary port target.
 - The current DLL slice is bridge-gated. The remaining promotion step is a
-  normal recorder preflight/cache producer for `naval_combat_body_bridge`, then
-  a live naval-combat fixture and speed-five soak.
+  root-anchored active-combat discoverer; the current recorder producer
+  `live_capture.collector_naval_combat_bridge` performs explicit preflight
+  vtable enumeration, encodes active `combat_id:body_ptr` rows, and records only
+  sanitized counts/status in manifests. It can bridge combats already active at
+  attach time, but battles born after preflight need a later root/hook-derived
+  discovery path.
 - Side summaries are intentionally not per-ship combat rows. Per-ship rows need
   a separate bounded stream keyed by ship/combat so large battle arrays do not
   exceed the raw JSON frame envelope.

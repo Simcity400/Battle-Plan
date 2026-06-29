@@ -522,8 +522,10 @@ Tasks:
   from supplied `CNavalCombat` body pins. The collector revalidates bridged
   bodies every sample and emits side-level active-combat summaries plus
   lifecycle start/update/end events without leaking raw pointers. This does not
-  yet include the recorder preflight producer, per-ship combat rows, damage
-  ticks, or sinkings.
+  yet include per-ship combat rows, damage ticks, or sinkings. The recorder now
+  has an explicit `--preflight-naval-combat` producer that enumerates active
+  `CNavalCombat` bodies before attach and supplies the bridge rows, but this is
+  still preflight-only and will not discover battles born later in a long run.
 - Build a live fixture with active naval combat; peacetime empty captures are
   not enough.
 - Treat region-level naval/air values as badged proxies until per-province or
@@ -1156,9 +1158,11 @@ and timeline/app ingestion. Naval combat now has the same raw-frame shape for
 the canonical `naval_air_combats` domain when the recorder supplies
 `naval_combat_body_bridge` rows: the DLL revalidates active `CNavalCombat`
 bodies, emits side-level summaries and started/updated/ended lifecycle events,
-and produces bounded gap rows when the bridge/layout fails closed. The next
-naval unlocks are the recorder-side bridge preflight/cache producer, live
-fixture proof, per-ship rows, damage/sinking deltas, and speed-five soak.
+and produces bounded gap rows when the bridge/layout fails closed. The
+recorder-side `--preflight-naval-combat` producer can now populate that bridge
+from active combats already present at attach time. The next naval unlocks are
+live fixture proof, a root/hook-derived discoverer for newly born combats,
+per-ship rows, damage/sinking deltas, and speed-five soak.
 
 ### Phase 7: Focus, Tech, Decisions, Projects, Politics
 

@@ -18,6 +18,9 @@ from live_capture.collector_probe_record import (  # noqa: E402
 from live_capture.collector_division_bridge import (  # noqa: E402
     encode_division_body_bridge,
 )
+from live_capture.collector_naval_combat_bridge import (  # noqa: E402
+    encode_naval_combat_body_bridge,
+)
 from live_capture.collector_advisor_tokens import (  # noqa: E402
     encode_advisor_token_filter,
 )
@@ -192,12 +195,18 @@ class TestCollectorProbeRecord(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             dll = Path(td) / "collector.dll"
             control_path, pipe_token = cpr._write_worker_control(
-                dll, 3.0, 25, session_id="session-1")
+                dll,
+                3.0,
+                25,
+                session_id="session-1",
+                naval_combat_body_bridge="41:0x8000",
+            )
             payload = json.loads(control_path.read_text(encoding="utf-8"))
 
         self.assertEqual(payload["mode"], "hourly_poll")
         self.assertEqual(payload["pipe_token"], pipe_token)
         self.assertEqual(payload["session_id"], "session-1")
+        self.assertEqual(payload["naval_combat_body_bridge"], "41:0x8000")
         self.assertFalse(payload["country_object_scan"])
         self.assertFalse(payload["special_projects_scan"])
         self.assertFalse(payload["sidecar_log"])
@@ -227,6 +236,14 @@ class TestCollectorProbeRecord(unittest.TestCase):
         })
 
         self.assertEqual(encoded, "17:0x8000;18:0x9000")
+
+    def test_encode_naval_combat_body_bridge_sorts_and_sanitizes_rows(self):
+        encoded = encode_naval_combat_body_bridge([
+            {"combat_id": 42, "body_addr": "0x9000"},
+            {"combat_id": "41", "body_ptr": 0x8000},
+        ])
+
+        self.assertEqual(encoded, "41:0x8000;42:0x9000")
 
     def test_encode_advisor_token_filter_sorts_dedupes_and_rejects_bad_tokens(self):
         encoded = encode_advisor_token_filter([
