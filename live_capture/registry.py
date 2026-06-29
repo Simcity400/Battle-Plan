@@ -2946,24 +2946,14 @@ def _r_land_combats(ctx: CaptureContext, CombatReader) -> Dict[str, Any]:
     empty []); we pass that through honestly. The assembler promotes these into the
     canonical typed combats[] (kind="land") AND keeps the raw rows in a sidecar.
 
-    STAGE-4 (deliberately NOT pinned -- proven unpinnable; do NOT re-investigate):
-    enumerate_land_combats locates active land combats by a full committed-heap vtable scan
-    (CLandCombat vtable MODULE+0x2980CB8, type==62) -- there is NO base pointer to a land-
-    combat container. At PEACETIME there are 0 active land combats: the scan finds NOTHING but
-    still pays the full sweep, and there is no decoded ROOT to pin. Per the Codex B-round, a
-    cached EMPTY scan cannot prove continued absence without a CHEAP AUTHORITATIVE zero/count
-    validator, and none exists for land combats:
-      * The combat-MANAGER handle array (holder vtable MODULE+0x305B170, stride 0x18) has NO
-        fixed base pointer (its first record is session-dynamic, re-located every launch -> you
-        would have to SCAN to find it, defeating the purpose), AND it mixes 67 type-62 records
-        = land + naval/air + RECYCLED slots (each record carries a 'gen' generation field). An
-        UNCHANGED total therefore does NOT prove "no new land combat" (a recycled slot can be
-        reused without changing the total; a naval/air combat changes it without a land combat).
-      * No per-type bucket count / land-combat registry size field exists in the cracked layout.
-    So land_combats RE-SCANS every warm walk -- the honest peacetime floor for this domain.
-    (At WARTIME it has real combat bodies to anchor on; an empty pin is only ever the peacetime
-    problem, and it has no safe anchor. Pinning it unsafely would risk serving a stale "no
-    combats" after a battle appears -- explicitly rejected.)"""
+    STAGE-4 superseded 2026-06-29:
+    enumerate_land_combats now defaults to the bounded active manager rooted at
+    CGameState+0x260 (gamestate = u64[MODULE+0x33048C0], manager data @+0x08,
+    count @+0x14, manager entry -> CLandCombat body by +0x10). The previous
+    committed-heap CLandCombat vtable scan remains available only as
+    method="heap_scan" for research cross-checks; it is not the warm/live
+    recording path. A passive live proof returned 22 manager rows and 22 legacy
+    heap-scan rows with the exact same (combat_id, body) set."""
     reader = CombatReader()
     try:
         _verify_same_process(ctx, reader)

@@ -141,9 +141,11 @@ Still open:
 - complete live speed-five proof for scheduled state owner/controller rows;
 - solve province-control dense-array relocation/cache well enough for normal
   recording;
-- promote divisions, economy, production, focus/research, diplomacy, and combat
-  from historical proof/schema coverage to live collector output or explicit
-  unavailable badges.
+- promote economy, production, focus/research, diplomacy, naval/air combat, and
+  combat battle-detail from historical proof/schema coverage to live collector
+  output or explicit unavailable badges. Active land-combat identity, location,
+  age, and attacker/defender division lists now have a live raw collector stream;
+  they still need speed-five soak, lifecycle promotion, and app ingestion.
 
 ### Historical feasibility evidence (memory-reader and save-oracle research snapshot)
 
@@ -167,7 +169,7 @@ unavailable.
 | **tag-db-id → TAG** table (the shared identity unlock) | memory (1-based index into contiguous std::string array, stride 0x20, idx0="---") | ✓ 1603/1603 |
 | live **province control** (final merged) | memory (dense `u64[base + pid*8]` → controller country obj, bridged save-free) | ✓ 10270/10272 (2 = real post-save drift) |
 | province control fallback (override→state-ctrl→owner) | save oracle + province→state map | ✓ all land provinces |
-| **active LAND combats**: enumerate + location + age + attacker + **defender** | memory (combat-sides registry chain; each side = inline small-vec, data @ +0x20 / count @ +0x2C) | ✓ 13/13 atk **and** def |
+| **active LAND combats**: enumerate + location + age + attacker + **defender** | memory (`CGameState+0x260` active manager; validate body/side/registry chain; each side = inline small-vec, data @ +0x20 / count @ +0x2C) | ✓ 13/13 atk **and** def; later live proof 22/22 manager rows matched heap-scan cross-check |
 | naval / air combats | memory (same registry layout is the re-anchor template) | M\* — none active in that snapshot; required a live sea/air battle fixture |
 | economy scalars → TAG live (country running_index ↔ tag-db-id) | memory | M\* — open in that snapshot (last save dependency for live economy labeling) |
 | divisions (full: +template/equipment), economy deep, fuel/manpower/factories | save oracle | ✓ |
@@ -325,11 +327,12 @@ recording. Supply & rail/route usage `S`; naval-base/port usage `S`.
 `M`, strength `M`, equipment inventory `M`**; experience `M*`; movement (moving? target
 province + progress) `M`; in-combat flag `M`; encirclement/supply status `M*`.
 
-**Combat (the marquee — Tier C, high-freq sampled):** active **land** combats (location,
-attacker/defender divisions, combat width, terrain, modifiers, progress) `M`; **naval**
-battles (fleets, ships engaged, sinkings) `M`; **air** engagements / region superiority
-`M/S`; per-engagement casualties & outcome `D` (reconstructed from the combat lifecycle +
-strength deltas).
+**Combat (the marquee — Tier C, high-freq sampled):** active **land** combats
+(location, age, attacker/defender division ids) `M`; land battle-detail
+(combat width, terrain, tactics/modifiers, GUI progress) `M*`; **naval**
+battles (fleets, ships engaged, sinkings) `M`; **air** engagements / region
+superiority `M/S`; per-engagement casualties & outcome `D` (reconstructed from
+the combat lifecycle + strength deltas).
 
 **Map layers:** territory (owner) `C/M`; province control `C/S/D/M*` with the
 same province-array caveat above; supply areas & strategic regions `S(static)`;

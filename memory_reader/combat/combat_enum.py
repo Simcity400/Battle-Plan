@@ -1,7 +1,7 @@
 """combat_enum.py - READ-ONLY live ACTIVE-LAND-COMBAT enumerator for Battle Plan.
 
 Lists active land battles from a running hoi4.exe: combat_id, location (province),
-combat age (day/duration), attacker division set, and the reachable participant union.
+combat age (day/duration), attacker division set, and defender division set.
 Designed for a high-frequency sampling loop that reconstructs a battle log from the
 appear / persist / disappear lifecycle of these combat objects.
 
@@ -11,6 +11,8 @@ exact; ATTACKER division set 13/13 exact AND DEFENDER division set 13/13 exact -
 from live memory (the prior 'defender residual' is SOLVED, and the prior attacker 12/13
 longest-run heuristic is superseded). The exact per-side membership comes from the combat-sides
 registry and the two side objects, NOT from the save (the save is a validation backstop only).
+The active land-combat set is now rooted at CGameState+0x260; the old heap-vtable scan remains
+available as a research cross-check, not as the speed-five hot path.
 
 HARD RULES honored:
   * READ-ONLY memory (PROCESS_VM_READ | PROCESS_QUERY_INFORMATION); never writes / injects /
@@ -45,6 +47,11 @@ SIDE_VT_OFF         = 0x2980AC0   # CCombatSide vtable (attacker AND defender si
 REG_VT_OFF          = 0x2980BD8   # combat-sides REGISTRY vtable (links the two sides)
 LAND_COMBAT_TYPE    = 62          # type tag @ combat_body+0x08
 DIVISION_TYPE       = 4713        # type tag @ division_body+0x08
+COMBAT_SIDE_UNIT_TYPES = {DIVISION_TYPE, 51}
+
+# Static roots
+GAMESTATE_GLOBAL_RVA = 0x33048C0  # DAT_1433048c0, read as u64(module_base+rva)
+LAND_COMBAT_MANAGER_OFF = 0x260   # CGameState+0x260 -> active land-combat manager
 
 # --- NAVAL combat (CNavalCombat / CNavalCombatant) - solved 2026-06-25, validated 3/3 ---
 # Discovered via RTTI off the proven land vtables (the same RTTI walk reproduces the land
@@ -148,6 +155,11 @@ OFF_REG_HANDLE   = 0x18  # u64 packed (combat_id<<32)|62  -> identity back-ref
 OFF_REG_ATK_SIDE = 0x28  # u64 -> attacker side (== combat_body+0x18)
 OFF_REG_DEF_SIDE = 0x30  # u64 -> DEFENDER side object  <-- the solved defender source
 OFF_REG_FRONT    = 0x38  # u64 -> front/border object
+
+# land-combat manager at CGameState+0x260
+OFF_LCM_DATA = 0x08          # u64 -> compact array of handles/pointers
+OFF_LCM_COUNT = 0x14         # u32 active entry count
+OFF_LCM_BODY_DELTA = 0x10    # manager entry points at CLandCombat body - 0x10
 
 # division body
 OFF_DIV_TYPE = 0x08
@@ -324,9 +336,11 @@ class CombatReader(object):
         b = self._rpm(body_addr, 0x10)
         rid = None
         if b and len(b) >= 0x10:
-            if struct.unpack_from("<Q", b, 0)[0] == self.div_vt and \
-               struct.unpack_from("<I", b, OFF_DIV_TYPE)[0] == DIVISION_TYPE:
-                rid = struct.unpack_from("<I", b, OFF_DIV_ID)[0]
+            if struct.unpack_from("<Q", b, 0)[0] == self.div_vt:
+                unit_type = struct.unpack_from("<I", b, OFF_DIV_TYPE)[0]
+                unit_id = struct.unpack_from("<I", b, OFF_DIV_ID)[0]
+                if unit_type in COMBAT_SIDE_UNIT_TYPES and 0 < unit_id < 0x80000000:
+                    rid = unit_id
         self._div_cache[body_addr] = rid
         return rid
 
@@ -410,8 +424,54 @@ class CombatReader(object):
             def_side = None
         return atk_side, def_side, reg
 
+    def _gamestate_ptr(self):
+        return self.u64(self.module_base + GAMESTATE_GLOBAL_RVA)
+
+    def _land_combat_manager(self):
+        gs = self._gamestate_ptr()
+        if not gs or not (HEAP_LO <= gs < HEAP_HI):
+            self._note_reject("bad_gamestate_root")
+            return None
+        return gs + LAND_COMBAT_MANAGER_OFF
+
+    def _land_body_from_manager_entry(self, raw):
+        if not raw or not (HEAP_LO <= raw < HEAP_HI):
+            self._note_reject("bad_manager_entry")
+            return None
+        body = raw + OFF_LCM_BODY_DELTA
+        if not (HEAP_LO <= body < HEAP_HI):
+            self._note_reject("bad_manager_body")
+            return None
+        if self.u64(body) != self.cland_vt:
+            self._note_reject("bad_manager_body_vtable")
+            return None
+        if self.u32(body + OFF_TYPE) != LAND_COMBAT_TYPE:
+            self._note_reject("bad_manager_body_type")
+            return None
+        return body
+
+    def _land_record(self, body, with_defenders):
+        cid = self.u32(body + OFF_COMBAT_ID)
+        duration = self.u32(body + OFF_DURATION)
+        day = self.u32(body + OFF_DAY)
+        front = self.u64(body + OFF_FRONT)
+        location = self.u32(front + OFF_FRONT_LOC) if front and HEAP_LO <= front < HEAP_HI else None
+        atk_side, def_side, _reg = self._combat_sides(body)
+        attacker = self._side_units(atk_side) if atk_side else None
+        rec = {
+            "combat_id": cid,
+            "body_addr": body,
+            "location": location,
+            "day": day,
+            "duration": duration,
+            "attacker_units": attacker,
+        }
+        if with_defenders:
+            rec["defender_units"] = self._side_units(def_side) if def_side else None
+        return rec
+
     # ---- enumeration ----
-    def enumerate_land_combats(self, with_defenders=True, **_legacy):
+    def enumerate_land_combats(self, with_defenders=True, method="manager", **_legacy):
         """Return a list of dicts, one per active land combat:
             { combat_id, body_addr, location, day, duration,
               attacker_units:[div_id,...],
@@ -420,7 +480,47 @@ class CombatReader(object):
         Both attacker_units and defender_units are EXACT sets read from live memory (13/13
         validated vs the save). A side that fails the fail-closed validators yields None for
         that side (distinguishable from an empty []), and the reason is tallied in
-        self.reject_stats. Enumeration: vtable scan (MODULE+0x2980CB8) filtered by type==62.
+        self.reject_stats. Default enumeration uses the bounded manager rooted at
+        CGameState+0x260. Pass method="heap_scan" for the old research cross-check.
+        """
+        if method == "heap_scan":
+            return self.enumerate_land_combats_heap_scan(with_defenders=with_defenders)
+        if method != "manager":
+            raise ValueError("unknown land combat enumeration method: %r" % (method,))
+        manager = self._land_combat_manager()
+        if manager is None:
+            return []
+        data = self.u64(manager + OFF_LCM_DATA)
+        count = self.u32(manager + OFF_LCM_COUNT)
+        if count is None or count > MAX_COMBATS:
+            self._note_reject("bad_manager_count")
+            return []
+        if count == 0:
+            return []
+        if not data or not (HEAP_LO <= data < HEAP_HI):
+            self._note_reject("bad_manager_data")
+            return []
+        blob = self._read_clamped(data, count * 8)
+        if len(blob) < count * 8:
+            self._note_reject("short_manager_read")
+            return []
+        bodies = {}
+        for i in range(count):
+            raw = struct.unpack_from("<Q", blob, i * 8)[0]
+            body = self._land_body_from_manager_entry(raw)
+            if body is None:
+                continue
+            cid = self.u32(body + OFF_COMBAT_ID)
+            if cid is None:
+                self._note_reject("bad_manager_cid")
+                continue
+            bodies.setdefault(cid, body)
+        return [self._land_record(bodies[cid], with_defenders) for cid in sorted(bodies)]
+
+    def enumerate_land_combats_heap_scan(self, with_defenders=True):
+        """Research cross-check: scan heap for CLandCombat vtables and filter type==62.
+
+        This is intentionally not the default speed-five path.
         """
         vt_pat = struct.pack("<Q", self.cland_vt)
         bodies = {}
@@ -442,27 +542,7 @@ class CombatReader(object):
                 if len(bodies) > MAX_COMBATS:
                     raise RuntimeError("combat count exceeds sanity bound (%d) - layout likely broken" % MAX_COMBATS)
 
-        out = []
-        for cid in sorted(bodies):
-            body = bodies[cid]
-            duration = self.u32(body + OFF_DURATION)
-            day = self.u32(body + OFF_DAY)
-            front = self.u64(body + OFF_FRONT)
-            location = self.u32(front + OFF_FRONT_LOC) if front and HEAP_LO <= front < HEAP_HI else None
-            atk_side, def_side, _reg = self._combat_sides(body)
-            attacker = self._side_units(atk_side) if atk_side else None
-            rec = {
-                "combat_id": cid,
-                "body_addr": body,
-                "location": location,
-                "day": day,
-                "duration": duration,
-                "attacker_units": attacker,
-            }
-            if with_defenders:
-                rec["defender_units"] = self._side_units(def_side) if def_side else None
-            out.append(rec)
-        return out
+        return [self._land_record(bodies[cid], with_defenders) for cid in sorted(bodies)]
 
     # ======================================================================
     # NAVAL combat (CNavalCombat / CNavalCombatant) - solved + validated 3/3

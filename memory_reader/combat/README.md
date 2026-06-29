@@ -19,7 +19,10 @@ unless the live exe hash matches.
 
 ## What's solved (validated 13/13 vs a time-aligned melted save)
 A live land battle is a heap **CLandCombat** object:
-- vtable `MODULE+0x2980CB8` @ +0x00 (enumeration anchor; scan heap for it, filter type==62)
+- active manager root: `u64[MODULE+0x33048C0] + 0x260`; vector data @ +0x08,
+  count @ +0x14, and each manager slot points at `CLandCombat body - 0x10`
+- vtable `MODULE+0x2980CB8` @ +0x00 (identity check; the old heap scan is now
+  a research cross-check only)
 - type tag `62` @ +0x08, **combat_id** @ +0x0C
 - **duration** @ +0x30, **day** (combat age) @ +0x34
 - **location** (province id): `*(body+0x28)` → front object → +0xA4
@@ -30,9 +33,12 @@ A live land battle is a heap **CLandCombat** object:
   front. Each side is a small-vector `{data@+0x20, u32 cap@+0x28, u32 size@+0x2C}`; read
   exactly `size` `CDivision*` from `data`.
 
-Validation: enumeration, combat_id, location, day, duration all **13/13**; **attacker set
-13/13 AND defender set 13/13** (both from memory; cross-checked through `CombatReader`). The
-save is a validation backstop only — the runtime path is memory-only.
+Validation: save-correlated enumeration, combat_id, location, day, duration all
+**13/13**; **attacker set 13/13 AND defender set 13/13** (both from memory;
+cross-checked through `CombatReader`). A later live proof on 2026-06-29 compared
+the active manager against the legacy heap-vtable scan: **22 manager rows,
+22 heap-scan rows, exact same `(combat_id, body)` set**. The save is a validation
+backstop only — the runtime path is memory-only.
 
 ## Defender solve notes
 - The earlier "defender residual" assumed a `std::vector<CDivision*>` triple and a single
@@ -44,6 +50,11 @@ save is a validation backstop only — the runtime path is memory-only.
 - Production hardening: vtable identity on every hop, registry `{cid,62}` assert, count-driven
   read, region-clamped reads, `size<=cap` sanity, **double-read revalidation** (realloc-race
   guard), fail-closed with per-reason `CombatReader.reject_stats` telemetry.
+- Combat participant resolution uses the CDivision vtable as the primary
+  discriminator. The save-correlated proof used type `4713`; the 2026-06-29
+  active-manager proof also observed type `51` under the same division vtable in
+  combat-side arrays. The combat-side resolver accepts both; the global division
+  enumerator remains stricter.
 
 ## Remaining residual
 - **Naval / air combats**: unmapped — none were active at the captured snapshot. Re-run the

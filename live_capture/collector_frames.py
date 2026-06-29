@@ -140,6 +140,11 @@ RAW_LAND_COMBAT_FIELDS = frozenset((
     "attacker_status",
     "defender_status",
 ))
+RAW_LAND_COMBAT_GAP_FIELDS = frozenset((
+    "gap_key",
+    "gap_kind",
+    "status",
+))
 RAW_FORBIDDEN_KEY_NAMES = frozenset((
     "addr",
     "address",
@@ -770,6 +775,9 @@ def _validate_raw_land_combat_delta(
     payload: Dict[str, Any],
 ) -> List[str]:
     problems: List[str] = []
+    if _is_raw_land_combat_gap_delta(frame, payload):
+        return _validate_raw_land_combat_gap_delta(frame, payload)
+
     entity_uid = _parse_raw_land_combat_entity_key(frame.get("entity_key"))
     if entity_uid is None:
         problems.append(
@@ -797,6 +805,87 @@ def _validate_raw_land_combat_delta(
                 entity_uid,
                 require_identity=(row_key == "after"),
             ))
+    return problems
+
+
+def _is_raw_land_combat_gap_delta(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> bool:
+    return (
+        frame.get("confidence") == "gap"
+        or _parse_raw_land_combat_gap_key(frame.get("entity_key")) is not None
+        or (
+            isinstance(payload.get("after"), dict)
+            and "gap_kind" in payload["after"]
+        )
+    )
+
+
+def _validate_raw_land_combat_gap_delta(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> List[str]:
+    problems: List[str] = []
+    entity_key = frame.get("entity_key")
+    gap_kind = _parse_raw_land_combat_gap_key(entity_key)
+    if gap_kind is None:
+        problems.append(
+            "collector land combat gap entity_key not stable land_combats gap key"
+        )
+    if _contains_forbidden_raw_key(payload):
+        problems.append(
+            "collector land combat gap payload contains raw pointer/tag-db "
+            "diagnostic key"
+        )
+    changed_fields = payload.get("changed_fields")
+    if isinstance(changed_fields, list):
+        for i, field in enumerate(changed_fields):
+            if _forbidden_raw_key_name(field):
+                problems.append(
+                    "collector land combat gap "
+                    f"changed_fields[{i}] raw pointer/tag-db diagnostic key"
+                )
+    for row_key in ("before", "after"):
+        row = payload.get(row_key)
+        if isinstance(row, dict):
+            problems.extend(_validate_raw_land_combat_gap_row(
+                row,
+                f"collector land combat gap {row_key}",
+                entity_key if isinstance(entity_key, str) else None,
+                gap_kind,
+            ))
+    return problems
+
+
+def _validate_raw_land_combat_gap_row(
+    row: Dict[str, Any],
+    prefix: str,
+    entity_key: Optional[str],
+    entity_gap_kind: Optional[str],
+) -> List[str]:
+    problems: List[str] = []
+    for key in row:
+        if key not in RAW_LAND_COMBAT_GAP_FIELDS:
+            problems.append(f"{prefix}.{key} unsupported")
+
+    gap_key = row.get("gap_key")
+    if not _valid_raw_key(gap_key):
+        problems.append(f"{prefix}.gap_key missing or not stable str")
+    elif entity_key is not None and gap_key != entity_key:
+        problems.append(f"{prefix}.gap_key != entity_key")
+
+    gap_kind = row.get("gap_kind")
+    if not _valid_raw_string(gap_kind, max_length=RAW_SHORT_STRING_MAX_LENGTH):
+        problems.append(f"{prefix}.gap_kind missing or not bounded str")
+    elif _valid_hex_pointer(gap_kind):
+        problems.append(f"{prefix}.gap_kind looks like pointer")
+    elif entity_gap_kind is not None and gap_kind != entity_gap_kind:
+        problems.append(f"{prefix}.gap_kind != entity_key")
+
+    status = row.get("status")
+    if status not in ("validation_failed", "unsupported", "layout_invalid"):
+        problems.append(f"{prefix}.status invalid")
     return problems
 
 
@@ -1024,6 +1113,17 @@ def _parse_raw_land_combat_entity_key(value: Any) -> Optional[tuple[int, int]]:
     if combat_id is None or combat_id == 0 or generation is None:
         return None
     return (combat_id, generation)
+
+
+def _parse_raw_land_combat_gap_key(value: Any) -> Optional[str]:
+    if not isinstance(value, str) or not value.startswith("land_combats:gap:"):
+        return None
+    gap_kind = value[len("land_combats:gap:"):]
+    if not _valid_raw_string(gap_kind, max_length=RAW_SHORT_STRING_MAX_LENGTH):
+        return None
+    if _valid_hex_pointer(gap_kind):
+        return None
+    return gap_kind
 
 
 def _parse_raw_division_uid(value: Any) -> Optional[tuple[int, int]]:

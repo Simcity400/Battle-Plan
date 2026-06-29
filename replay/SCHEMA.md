@@ -554,19 +554,20 @@ a combat's `combat_id` across the appear→persist→disappear sequence (§9, `c
 
 | field | type | source | notes |
 |-------|------|--------|-------|
-| `combat_id` | int\|null | M\* | stable-ish id used to track lifecycle; null until cracked |
-| `kind` | str | M\* | `"land"` \| `"naval"` \| `"air"` |
-| `location_province` | int\|null | M\* | land/naval anchor province |
-| `attackers[]` | list | M\* | TAGs and/or div_ids/ship-ids engaged |
-| `defenders[]` | list | M\* | |
+| `combat_id` | int\|null | M | live-fed for active land combats; stable-ish id used to track lifecycle |
+| `kind` | str | M/M\* | `"land"` is live-fed; `"naval"` / `"air"` remain fixture-dependent |
+| `location_province` | int\|null | M | live-fed for active land combats |
+| `attackers[]` | list | M/M\* | active land-combat attacker division ids live-fed; naval/air participants pending |
+| `defenders[]` | list | M/M\* | active land-combat defender division ids live-fed; naval/air participants pending |
 | `combat_width` | float\|null | M\* | land |
 | `terrain` | str\|null | M\* | land |
 | `progress` | float\|null | M\* | combat bar `-1..1` |
 | `modifiers` | obj\|null | M\* | |
 
-> The entire `combats[]` domain is **M\*** (not yet cracked). Until then snapshots carry
-> `"combats": []` and `provenance` omits the `combats` domain. Schema-present, never
-> faked.
+> Active land `combats[]` identity/location/participant rows are live manager-backed.
+> Battle-detail fields (`combat_width`, `terrain`, GUI-scale `progress`, tactics,
+> modifiers) remain unsupported/badged unless separately validated. Naval and air
+> combat rows remain fixture-dependent. Schema-present, never faked.
 
 ---
 

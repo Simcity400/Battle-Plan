@@ -183,6 +183,35 @@ mod attach_log {
     const MAX_DIVISION_ORGANISATION_RAW: u32 = 100_000_000;
     const MAX_DIVISION_STRENGTH_RAW: u32 = 1_000_000_000;
     const DIVISION_DELTA_BUCKET_RAW: u32 = 1_000;
+    const LAND_COMBAT_MANAGER_OFFSET: usize = 0x260;
+    const LAND_COMBAT_MANAGER_DATA: usize = 0x08;
+    const LAND_COMBAT_MANAGER_COUNT: usize = 0x14;
+    const LAND_COMBAT_MANAGER_BODY_DELTA: usize = 0x10;
+    const LAND_COMBAT_VTABLE_RVA: usize = 0x2980CB8;
+    const LAND_COMBAT_SIDE_VTABLE_RVA: usize = 0x2980AC0;
+    const LAND_COMBAT_REGISTRY_VTABLE_RVA: usize = 0x2980BD8;
+    const LAND_COMBAT_FRONT_VTABLE_RVA: usize = 0x294AE78;
+    const LAND_COMBAT_TYPE: u32 = 62;
+    const LAND_COMBAT_OFF_TYPE: usize = 0x08;
+    const LAND_COMBAT_OFF_ID: usize = 0x0C;
+    const LAND_COMBAT_OFF_ATTACKER_SIDE: usize = 0x18;
+    const LAND_COMBAT_OFF_FRONT: usize = 0x28;
+    const LAND_COMBAT_OFF_DURATION: usize = 0x30;
+    const LAND_COMBAT_OFF_DAY: usize = 0x34;
+    const LAND_COMBAT_FRONT_OFF_PROVINCE: usize = 0xA4;
+    const LAND_COMBAT_SIDE_OFF_REGISTRY: usize = 0x18;
+    const LAND_COMBAT_SIDE_OFF_DATA: usize = 0x20;
+    const LAND_COMBAT_SIDE_OFF_CAPACITY: usize = 0x28;
+    const LAND_COMBAT_SIDE_OFF_SIZE: usize = 0x2C;
+    const LAND_COMBAT_REGISTRY_OFF_HANDLE: usize = 0x18;
+    const LAND_COMBAT_REGISTRY_OFF_ATTACKER_SIDE: usize = 0x28;
+    const LAND_COMBAT_REGISTRY_OFF_DEFENDER_SIDE: usize = 0x30;
+    const LAND_COMBAT_REGISTRY_OFF_FRONT: usize = 0x38;
+    const LAND_COMBAT_SIDE_UNIT_ALT_TYPE: u32 = 51;
+    const MAX_LAND_COMBATS: u32 = 4_000;
+    const MAX_LAND_COMBAT_SIDE_UNITS: u32 = 128;
+    const MAX_LAND_COMBAT_AGE_DAYS: u32 = 100_000;
+    const MAX_LAND_COMBAT_PROVINCE_ID: u32 = 1_000_000;
     const FP_SCALE: f64 = 100000.0;
     const MAX_COUNTRY_ACE_COUNT: u32 = 100_000;
     const MAX_COUNTRY_CONVOYS_DESTROYED: u32 = 100_000_000;
@@ -313,6 +342,7 @@ mod attach_log {
             let mut last_scheduled_game_hour: Option<i32> = None;
             let mut previous_division_movement: BTreeMap<u32, DivisionMovementSample> =
                 BTreeMap::new();
+            let mut land_combat_tracker = LandCombatTracker::default();
             while Instant::now() <= deadline {
                 let elapsed_wall_ms = duration_millis_u64(worker_started.elapsed());
                 let capture_boundary = capture_boundary_for_frame(
@@ -346,6 +376,18 @@ mod attach_log {
                     state.as_ref(),
                     &control,
                     &mut previous_division_movement,
+                    session_sequence,
+                    Some(elapsed_wall_ms),
+                    capture_boundary,
+                ) {
+                    write_sinks(file.as_mut(), pipe, line.as_bytes());
+                    session_sequence = session_sequence.saturating_add(1);
+                }
+                for line in build_land_combat_raw_domain_delta_lines(
+                    pid,
+                    state.as_ref(),
+                    &control,
+                    &mut land_combat_tracker,
                     session_sequence,
                     Some(elapsed_wall_ms),
                     capture_boundary,
@@ -993,6 +1035,7 @@ mod attach_log {
     const RAW_CLOCK_DOMAIN: &str = "clock";
     const RAW_CLOCK_ENTITY_KEY: &str = "clock:game_date";
     const RAW_DIVISIONS_DOMAIN: &str = "divisions";
+    const RAW_LAND_COMBATS_DOMAIN: &str = "land_combats";
     const RAW_CONFIDENCE_SAMPLED: &str = "sampled";
     const RAW_SHORT_STRING_MAX_LENGTH: usize = 128;
     const RAW_STRING_MAX_LENGTH: usize = 512;
@@ -1021,6 +1064,26 @@ mod attach_log {
         in_combat: bool,
     }
 
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct LandCombatSample {
+        combat_id: u32,
+        generation: u64,
+        body_addr: usize,
+        location: Option<u32>,
+        day: Option<u32>,
+        duration: Option<u32>,
+        attacker_divisions: Option<Vec<u32>>,
+        defender_divisions: Option<Vec<u32>>,
+        attacker_status: &'static str,
+        defender_status: &'static str,
+    }
+
+    #[derive(Default)]
+    struct LandCombatTracker {
+        previous: BTreeMap<u32, LandCombatSample>,
+        next_generation: u64,
+    }
+
     struct RawDomainDeltaFrame<'a> {
         pid: Dword,
         sequence: u64,
@@ -1035,6 +1098,7 @@ mod attach_log {
         domain: &'a str,
         entity_key: &'a str,
         confidence: &'a str,
+        op: &'a str,
         after_json: &'a str,
         changed_fields: &'a [&'a str],
     }
@@ -1092,6 +1156,7 @@ mod attach_log {
             domain: RAW_CLOCK_DOMAIN,
             entity_key: RAW_CLOCK_ENTITY_KEY,
             confidence: RAW_CONFIDENCE_SAMPLED,
+            op: "sample",
             after_json: &after_json,
             changed_fields: &["date", "hour_index", "raw_date"],
         })
@@ -1363,9 +1428,512 @@ mod attach_log {
             domain: RAW_DIVISIONS_DOMAIN,
             entity_key: &entity_key,
             confidence: RAW_CONFIDENCE_SAMPLED,
+            op: "sample",
             after_json: &after_json,
             changed_fields,
         })
+    }
+
+    fn build_land_combat_raw_domain_delta_lines(
+        pid: Dword,
+        state: Option<&CollectorState>,
+        control: &CollectorControl,
+        tracker: &mut LandCombatTracker,
+        first_session_sequence: u64,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+    ) -> Vec<String> {
+        let Some(state) = state else {
+            return Vec::new();
+        };
+        let Some(clock) = clock_sample_from_state(Some(state)) else {
+            return Vec::new();
+        };
+        let current_samples = match sample_land_combats(state) {
+            Ok(samples) => samples,
+            Err(gap_kind) => {
+                let tick_ms = unsafe { GetTickCount64() };
+                let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+                return land_combat_gap_raw_domain_delta_frame_line(
+                    pid,
+                    sequence,
+                    Some(first_session_sequence),
+                    tick_ms,
+                    control,
+                    elapsed_wall_ms,
+                    capture_boundary,
+                    &clock,
+                    gap_kind,
+                )
+                .into_iter()
+                .collect();
+            }
+        };
+        if current_samples.is_empty() && tracker.previous.is_empty() {
+            return Vec::new();
+        }
+
+        let mut lines = Vec::new();
+        let mut session_sequence = first_session_sequence;
+        let mut current = BTreeMap::new();
+        for mut sample in current_samples {
+            let old = tracker.previous.get(&sample.combat_id);
+            let generation = if land_combat_continues(old, &sample) {
+                old.map(|old| old.generation).unwrap_or_else(|| {
+                    let generation = tracker.next_generation;
+                    tracker.next_generation = tracker.next_generation.saturating_add(1);
+                    generation
+                })
+            } else {
+                let generation = tracker.next_generation;
+                tracker.next_generation = tracker.next_generation.saturating_add(1);
+                generation
+            };
+            sample.generation = generation;
+            let changed_fields = old
+                .filter(|old| old.generation == generation)
+                .and_then(|old| land_combat_changed_fields(old, &sample))
+                .unwrap_or_else(land_combat_all_fields);
+            if !changed_fields.is_empty() {
+                let tick_ms = unsafe { GetTickCount64() };
+                let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+                if let Some(line) = land_combat_raw_domain_delta_frame_line(
+                    pid,
+                    sequence,
+                    Some(session_sequence),
+                    tick_ms,
+                    control,
+                    elapsed_wall_ms,
+                    capture_boundary,
+                    &clock,
+                    &sample,
+                    "sample",
+                    &changed_fields,
+                ) {
+                    lines.push(line);
+                    session_sequence = session_sequence.saturating_add(1);
+                }
+            }
+            current.insert(sample.combat_id, sample);
+        }
+
+        for old in tracker.previous.values() {
+            if current.contains_key(&old.combat_id) {
+                continue;
+            }
+            let tick_ms = unsafe { GetTickCount64() };
+            let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            if let Some(line) = land_combat_raw_domain_delta_frame_line(
+                pid,
+                sequence,
+                Some(session_sequence),
+                tick_ms,
+                control,
+                elapsed_wall_ms,
+                capture_boundary,
+                &clock,
+                old,
+                "delete",
+                &["combat_key"],
+            ) {
+                lines.push(line);
+                session_sequence = session_sequence.saturating_add(1);
+            }
+        }
+
+        tracker.previous = current;
+        lines
+    }
+
+    fn sample_land_combats(state: &CollectorState) -> Result<Vec<LandCombatSample>, &'static str> {
+        if !(state.daily_match && state.long_string_match) {
+            return Err("state_validation_failed");
+        }
+        let gamestate = state.date_ptr as usize;
+        if !is_map_control_heap_pointer(gamestate) {
+            return Err("gamestate_invalid");
+        }
+        let manager = gamestate.saturating_add(LAND_COMBAT_MANAGER_OFFSET);
+        let count = match read_u32(manager.saturating_add(LAND_COMBAT_MANAGER_COUNT)) {
+            Some(count) if count <= MAX_LAND_COMBATS => count,
+            _ => return Err("manager_count_invalid"),
+        };
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        let data = match read_u64(manager.saturating_add(LAND_COMBAT_MANAGER_DATA)) {
+            Some(data) if is_map_control_heap_pointer(data as usize) => data as usize,
+            _ => return Err("manager_data_invalid"),
+        };
+        let byte_len = match (count as usize).checked_mul(8) {
+            Some(byte_len) => byte_len,
+            None => return Err("manager_size_overflow"),
+        };
+        let raw = match read_bytes(data, byte_len) {
+            Some(raw) if raw.len() == byte_len => raw,
+            _ => return Err("manager_read_failed"),
+        };
+        let mut by_id = BTreeMap::new();
+        let mut invalid_entries = 0_u32;
+        for i in 0..count as usize {
+            let Some(raw_ptr) = read_u64_from_slice(&raw, i * 8) else {
+                invalid_entries = invalid_entries.saturating_add(1);
+                continue;
+            };
+            if let Some(sample) =
+                sample_land_combat_from_manager_entry(state.base, raw_ptr as usize)
+            {
+                by_id.entry(sample.combat_id).or_insert(sample);
+            } else {
+                invalid_entries = invalid_entries.saturating_add(1);
+            }
+        }
+        let data2 = read_u64(manager.saturating_add(LAND_COMBAT_MANAGER_DATA));
+        let count2 = read_u32(manager.saturating_add(LAND_COMBAT_MANAGER_COUNT));
+        if data2 != Some(data as u64) || count2 != Some(count) {
+            return Err("manager_changed_during_read");
+        }
+        if invalid_entries > 0 {
+            return Err("manager_entry_invalid");
+        }
+        Ok(by_id.into_values().collect())
+    }
+
+    fn sample_land_combat_from_manager_entry(
+        module_base: usize,
+        manager_entry: usize,
+    ) -> Option<LandCombatSample> {
+        if !is_map_control_heap_pointer(manager_entry) {
+            return None;
+        }
+        let body = manager_entry.checked_add(LAND_COMBAT_MANAGER_BODY_DELTA)?;
+        if !is_map_control_heap_pointer(body) {
+            return None;
+        }
+        if read_u64(body)? as usize != module_base.checked_add(LAND_COMBAT_VTABLE_RVA)? {
+            return None;
+        }
+        if read_u32(body.checked_add(LAND_COMBAT_OFF_TYPE)?)? != LAND_COMBAT_TYPE {
+            return None;
+        }
+        let combat_id = read_u32(body.checked_add(LAND_COMBAT_OFF_ID)?)?;
+        if combat_id == 0 || combat_id > i32::MAX as u32 {
+            return None;
+        }
+        let front = read_u64(body.checked_add(LAND_COMBAT_OFF_FRONT)?)? as usize;
+        let location = Some(read_land_combat_location(module_base, front)?);
+        let day = read_u32(body.checked_add(LAND_COMBAT_OFF_DAY)?)
+            .filter(|value| *value <= MAX_LAND_COMBAT_AGE_DAYS);
+        let duration = read_u32(body.checked_add(LAND_COMBAT_OFF_DURATION)?)
+            .filter(|value| *value <= MAX_LAND_COMBAT_AGE_DAYS);
+        let (attacker_side, defender_side) =
+            land_combat_sides(module_base, body, combat_id, front)?;
+        let (attacker_divisions, attacker_status) =
+            read_land_combat_side_units(module_base, attacker_side);
+        let (defender_divisions, defender_status) =
+            read_land_combat_side_units(module_base, defender_side);
+        Some(LandCombatSample {
+            combat_id,
+            generation: 0,
+            body_addr: body,
+            location,
+            day,
+            duration,
+            attacker_divisions,
+            defender_divisions,
+            attacker_status,
+            defender_status,
+        })
+    }
+
+    fn read_land_combat_location(module_base: usize, front: usize) -> Option<u32> {
+        if !is_map_control_heap_pointer(front) {
+            return None;
+        }
+        if read_u64(front)? as usize != module_base.checked_add(LAND_COMBAT_FRONT_VTABLE_RVA)? {
+            return None;
+        }
+        read_u32(front.checked_add(LAND_COMBAT_FRONT_OFF_PROVINCE)?)
+            .filter(|province| *province > 0 && *province <= MAX_LAND_COMBAT_PROVINCE_ID)
+    }
+
+    fn land_combat_sides(
+        module_base: usize,
+        body: usize,
+        combat_id: u32,
+        front: usize,
+    ) -> Option<(usize, usize)> {
+        let side_vtable = module_base.checked_add(LAND_COMBAT_SIDE_VTABLE_RVA)?;
+        let registry_vtable = module_base.checked_add(LAND_COMBAT_REGISTRY_VTABLE_RVA)?;
+        let attacker = read_u64(body.checked_add(LAND_COMBAT_OFF_ATTACKER_SIDE)?)? as usize;
+        if !is_map_control_heap_pointer(attacker) || read_u64(attacker)? as usize != side_vtable {
+            return None;
+        }
+        let registry = read_u64(attacker.checked_add(LAND_COMBAT_SIDE_OFF_REGISTRY)?)? as usize;
+        if !is_map_control_heap_pointer(registry) || read_u64(registry)? as usize != registry_vtable
+        {
+            return None;
+        }
+        let handle = read_u64(registry.checked_add(LAND_COMBAT_REGISTRY_OFF_HANDLE)?)?;
+        if (handle & 0xFFFF_FFFF) as u32 != LAND_COMBAT_TYPE
+            || ((handle >> 32) & 0xFFFF_FFFF) as u32 != combat_id
+        {
+            return None;
+        }
+        if read_u64(registry.checked_add(LAND_COMBAT_REGISTRY_OFF_ATTACKER_SIDE)?)? as usize
+            != attacker
+        {
+            return None;
+        }
+        if is_map_control_heap_pointer(front)
+            && read_u64(registry.checked_add(LAND_COMBAT_REGISTRY_OFF_FRONT)?)? as usize != front
+        {
+            return None;
+        }
+        let defender =
+            read_u64(registry.checked_add(LAND_COMBAT_REGISTRY_OFF_DEFENDER_SIDE)?)? as usize;
+        if !is_map_control_heap_pointer(defender) || read_u64(defender)? as usize != side_vtable {
+            return None;
+        }
+        Some((attacker, defender))
+    }
+
+    fn read_land_combat_side_units(
+        module_base: usize,
+        side: usize,
+    ) -> (Option<Vec<u32>>, &'static str) {
+        let side_vtable = match module_base.checked_add(LAND_COMBAT_SIDE_VTABLE_RVA) {
+            Some(value) => value,
+            None => return (None, "validation_failed"),
+        };
+        if !is_map_control_heap_pointer(side)
+            || read_u64(side).map(|v| v as usize) != Some(side_vtable)
+        {
+            return (None, "validation_failed");
+        }
+        let data = match read_u64(side.saturating_add(LAND_COMBAT_SIDE_OFF_DATA)) {
+            Some(data) => data as usize,
+            None => return (None, "validation_failed"),
+        };
+        let capacity = match read_u32(side.saturating_add(LAND_COMBAT_SIDE_OFF_CAPACITY)) {
+            Some(capacity) => capacity,
+            None => return (None, "validation_failed"),
+        };
+        let size = match read_u32(side.saturating_add(LAND_COMBAT_SIDE_OFF_SIZE)) {
+            Some(size) => size,
+            None => return (None, "validation_failed"),
+        };
+        if size > capacity || size > MAX_LAND_COMBAT_SIDE_UNITS {
+            return (None, "validation_failed");
+        }
+        if size == 0 {
+            return (Some(Vec::new()), "exact");
+        }
+        if !is_map_control_heap_pointer(data) {
+            return (None, "validation_failed");
+        }
+        let byte_len = match (size as usize).checked_mul(8) {
+            Some(byte_len) => byte_len,
+            None => return (None, "validation_failed"),
+        };
+        let raw = match read_bytes(data, byte_len) {
+            Some(raw) if raw.len() == byte_len => raw,
+            _ => return (None, "validation_failed"),
+        };
+        let mut ids = Vec::with_capacity(size as usize);
+        for i in 0..size as usize {
+            let Some(ptr) = read_u64_from_slice(&raw, i * 8) else {
+                return (None, "validation_failed");
+            };
+            let Some(id) = resolve_land_combat_unit_id(module_base, ptr as usize) else {
+                return (None, "validation_failed");
+            };
+            ids.push(id);
+        }
+        let data2 = read_u64(side.saturating_add(LAND_COMBAT_SIDE_OFF_DATA));
+        let capacity2 = read_u32(side.saturating_add(LAND_COMBAT_SIDE_OFF_CAPACITY));
+        let size2 = read_u32(side.saturating_add(LAND_COMBAT_SIDE_OFF_SIZE));
+        if data2 != Some(data as u64) || capacity2 != Some(capacity) || size2 != Some(size) {
+            return (None, "validation_failed");
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        (Some(ids), "exact")
+    }
+
+    fn resolve_land_combat_unit_id(module_base: usize, ptr: usize) -> Option<u32> {
+        resolve_land_combat_unit_id_at(module_base, ptr)
+            .or_else(|| resolve_land_combat_unit_id_at(module_base, ptr.checked_add(0x10)?))
+    }
+
+    fn resolve_land_combat_unit_id_at(module_base: usize, body: usize) -> Option<u32> {
+        if !is_map_control_heap_pointer(body) {
+            return None;
+        }
+        if read_u64(body)? as usize != module_base.checked_add(DIVISION_VTABLE_RVA)? {
+            return None;
+        }
+        let unit_type = read_u32(body.checked_add(DIVISION_OFF_ID_TYPE)?)?;
+        if unit_type != DIVISION_TYPE && unit_type != LAND_COMBAT_SIDE_UNIT_ALT_TYPE {
+            return None;
+        }
+        let id = read_u32(body.checked_add(DIVISION_OFF_ID_ID)?)?;
+        (id > 0 && id <= MAX_DIVISION_BODY_BRIDGE_DIV_ID).then_some(id)
+    }
+
+    fn land_combat_continues(old: Option<&LandCombatSample>, new: &LandCombatSample) -> bool {
+        let Some(old) = old else {
+            return false;
+        };
+        if old.body_addr != new.body_addr {
+            return false;
+        }
+        match (old.day, new.day) {
+            (Some(old_day), Some(new_day)) => new_day >= old_day,
+            _ => true,
+        }
+    }
+
+    fn land_combat_all_fields() -> Vec<&'static str> {
+        vec![
+            "combat_key",
+            "combat_id",
+            "generation",
+            "location",
+            "day",
+            "duration",
+            "attacker_divisions",
+            "defender_divisions",
+            "attacker_status",
+            "defender_status",
+        ]
+    }
+
+    fn land_combat_changed_fields(
+        old: &LandCombatSample,
+        new: &LandCombatSample,
+    ) -> Option<Vec<&'static str>> {
+        let mut changed = Vec::new();
+        if old.location != new.location {
+            changed.push("location");
+        }
+        if old.day != new.day {
+            changed.push("day");
+        }
+        if old.duration != new.duration {
+            changed.push("duration");
+        }
+        if old.attacker_divisions != new.attacker_divisions {
+            changed.push("attacker_divisions");
+        }
+        if old.defender_divisions != new.defender_divisions {
+            changed.push("defender_divisions");
+        }
+        if old.attacker_status != new.attacker_status {
+            changed.push("attacker_status");
+        }
+        if old.defender_status != new.defender_status {
+            changed.push("defender_status");
+        }
+        (!changed.is_empty()).then_some(changed)
+    }
+
+    fn land_combat_raw_domain_delta_frame_line(
+        pid: Dword,
+        sequence: u64,
+        session_sequence: Option<u64>,
+        tick_ms: u64,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        sample: &LandCombatSample,
+        op: &str,
+        changed_fields: &[&str],
+    ) -> Option<String> {
+        let combat_key = format!("land_combat:{}:{}", sample.combat_id, sample.generation);
+        let after_json = if op == "delete" {
+            "null".to_string()
+        } else {
+            land_combat_row_json(sample, &combat_key)
+        };
+        raw_domain_delta_frame_line(RawDomainDeltaFrame {
+            pid,
+            sequence,
+            session_sequence,
+            tick_ms,
+            date: &clock.date,
+            hour_index: clock.hour_index,
+            sample_ms: control.sample_ms,
+            duration_ms: Some(control.duration_ms),
+            elapsed_wall_ms,
+            capture_boundary,
+            domain: RAW_LAND_COMBATS_DOMAIN,
+            entity_key: &combat_key,
+            confidence: RAW_CONFIDENCE_SAMPLED,
+            op,
+            after_json: &after_json,
+            changed_fields,
+        })
+    }
+
+    fn land_combat_gap_raw_domain_delta_frame_line(
+        pid: Dword,
+        sequence: u64,
+        session_sequence: Option<u64>,
+        tick_ms: u64,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        gap_kind: &str,
+    ) -> Option<String> {
+        if !valid_raw_short_string(gap_kind) || looks_like_hex_pointer(gap_kind) {
+            return None;
+        }
+        let gap_key = format!("land_combats:gap:{gap_kind}");
+        let after_json = format!(
+            "{{\"gap_key\":{},\"gap_kind\":{},\"status\":\"validation_failed\"}}",
+            json_str(&gap_key),
+            json_str(gap_kind)
+        );
+        raw_domain_delta_frame_line(RawDomainDeltaFrame {
+            pid,
+            sequence,
+            session_sequence,
+            tick_ms,
+            date: &clock.date,
+            hour_index: clock.hour_index,
+            sample_ms: control.sample_ms,
+            duration_ms: Some(control.duration_ms),
+            elapsed_wall_ms,
+            capture_boundary,
+            domain: RAW_LAND_COMBATS_DOMAIN,
+            entity_key: &gap_key,
+            confidence: "gap",
+            op: "sample",
+            after_json: &after_json,
+            changed_fields: &["gap_key", "gap_kind", "status"],
+        })
+    }
+
+    fn land_combat_row_json(sample: &LandCombatSample, combat_key: &str) -> String {
+        format!(
+            "{{\"combat_key\":{},\"combat_id\":{},\"generation\":{},\
+             \"location\":{},\"day\":{},\"duration\":{},\
+             \"attacker_divisions\":{},\"defender_divisions\":{},\
+             \"attacker_status\":{},\"defender_status\":{}}}",
+            json_str(combat_key),
+            sample.combat_id,
+            sample.generation,
+            json_opt_u32(sample.location),
+            json_opt_u32(sample.day),
+            json_opt_u32(sample.duration),
+            json_opt_u32_vec(sample.attacker_divisions.as_ref()),
+            json_opt_u32_vec(sample.defender_divisions.as_ref()),
+            json_str(sample.attacker_status),
+            json_str(sample.defender_status)
+        )
     }
 
     fn raw_domain_delta_frame_line(frame: RawDomainDeltaFrame<'_>) -> Option<String> {
@@ -1374,7 +1942,8 @@ mod attach_log {
             || !valid_raw_domain(frame.domain)
             || !valid_raw_key(frame.entity_key)
             || !valid_raw_confidence(frame.confidence)
-            || !valid_raw_object_json(frame.after_json)
+            || !valid_raw_delta_op(frame.op)
+            || !valid_raw_after_json(frame.after_json)
             || frame.changed_fields.len() > 256
             || frame
                 .changed_fields
@@ -1418,8 +1987,10 @@ mod attach_log {
             fields.push(format!("\"elapsed_wall_ms\":{elapsed_wall_ms}"));
         }
         fields.push(format!(
-            "\"payload\":{{\"op\":\"sample\",\"after\":{},\"changed_fields\":[{}]}}",
-            frame.after_json, changed_fields
+            "\"payload\":{{\"op\":{},\"after\":{},\"changed_fields\":[{}]}}",
+            json_str(frame.op),
+            frame.after_json,
+            changed_fields
         ));
         Some(format!("{{{}}}\n", fields.join(",")))
     }
@@ -1433,11 +2004,18 @@ mod attach_log {
     }
 
     fn valid_raw_domain(value: &str) -> bool {
-        matches!(value, RAW_CLOCK_DOMAIN | RAW_DIVISIONS_DOMAIN)
+        matches!(
+            value,
+            RAW_CLOCK_DOMAIN | RAW_DIVISIONS_DOMAIN | RAW_LAND_COMBATS_DOMAIN
+        )
     }
 
     fn valid_raw_confidence(value: &str) -> bool {
         matches!(value, "exact" | "sampled" | "proxy" | "gap")
+    }
+
+    fn valid_raw_delta_op(value: &str) -> bool {
+        matches!(value, "upsert" | "delete" | "sample")
     }
 
     fn looks_like_hex_pointer(value: &str) -> bool {
@@ -1450,12 +2028,13 @@ mod attach_log {
         !hex.is_empty() && hex.bytes().all(|b| b.is_ascii_hexdigit())
     }
 
-    fn valid_raw_object_json(value: &str) -> bool {
+    fn valid_raw_after_json(value: &str) -> bool {
         let trimmed = value.trim();
-        !trimmed.is_empty()
-            && trimmed.len() <= RAW_JSON_OBJECT_MAX_LENGTH
-            && trimmed.starts_with('{')
-            && trimmed.ends_with('}')
+        trimmed == "null"
+            || (!trimmed.is_empty()
+                && trimmed.len() <= RAW_JSON_OBJECT_MAX_LENGTH
+                && trimmed.starts_with('{')
+                && trimmed.ends_with('}'))
     }
 
     fn json_str(value: &str) -> String {
@@ -2928,6 +3507,20 @@ mod attach_log {
         }
     }
 
+    fn json_opt_u32_vec(value: Option<&Vec<u32>>) -> String {
+        match value {
+            Some(values) => {
+                let items = values
+                    .iter()
+                    .map(|value| value.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("[{items}]")
+            }
+            None => "null".to_string(),
+        }
+    }
+
     fn json_opt_bool(value: Option<bool>) -> String {
         match value {
             Some(v) => v.to_string(),
@@ -3677,6 +4270,7 @@ mod attach_log {
                 domain: "clock",
                 entity_key: "clock:game_date",
                 confidence: "sampled",
+                op: "sample",
                 after_json: "{}",
                 changed_fields: &changed_fields,
             });
@@ -3696,6 +4290,7 @@ mod attach_log {
                 domain: "clock",
                 entity_key: "0x1234",
                 confidence: "sampled",
+                op: "sample",
                 after_json: "{}",
                 changed_fields: &changed_fields,
             });
@@ -3715,10 +4310,51 @@ mod attach_log {
                 domain: "divisions",
                 entity_key: "clock:game_date",
                 confidence: "sampled",
+                op: "sample",
                 after_json: "{}",
                 changed_fields: &changed_fields,
             });
             assert!(accepted_divisions_domain.is_some());
+
+            let accepted_land_combats_domain = raw_domain_delta_frame_line(RawDomainDeltaFrame {
+                pid: 1234,
+                sequence: 11,
+                session_sequence: Some(5),
+                tick_ms: 123456,
+                date: "1936.1.1.12",
+                hour_index: 1,
+                sample_ms: 10,
+                duration_ms: Some(8000),
+                elapsed_wall_ms: Some(125),
+                capture_boundary: "worker_poll",
+                domain: "land_combats",
+                entity_key: "land_combat:1:0",
+                confidence: "sampled",
+                op: "sample",
+                after_json: "{}",
+                changed_fields: &changed_fields,
+            });
+            assert!(accepted_land_combats_domain.is_some());
+
+            let accepted_delete_null_after = raw_domain_delta_frame_line(RawDomainDeltaFrame {
+                pid: 1234,
+                sequence: 11,
+                session_sequence: Some(5),
+                tick_ms: 123456,
+                date: "1936.1.1.12",
+                hour_index: 1,
+                sample_ms: 10,
+                duration_ms: Some(8000),
+                elapsed_wall_ms: Some(125),
+                capture_boundary: "worker_poll",
+                domain: "land_combats",
+                entity_key: "land_combat:1:0",
+                confidence: "sampled",
+                op: "delete",
+                after_json: "null",
+                changed_fields: &changed_fields,
+            });
+            assert!(accepted_delete_null_after.is_some());
 
             let rejected_unknown_domain = raw_domain_delta_frame_line(RawDomainDeltaFrame {
                 pid: 1234,
@@ -3734,6 +4370,7 @@ mod attach_log {
                 domain: "countries",
                 entity_key: "clock:game_date",
                 confidence: "sampled",
+                op: "sample",
                 after_json: "{}",
                 changed_fields: &changed_fields,
             });
@@ -3753,10 +4390,31 @@ mod attach_log {
                 domain: "clock",
                 entity_key: "clock:game_date",
                 confidence: "certain",
+                op: "sample",
                 after_json: "{}",
                 changed_fields: &changed_fields,
             });
             assert!(rejected_confidence.is_none());
+
+            let rejected_op = raw_domain_delta_frame_line(RawDomainDeltaFrame {
+                pid: 1234,
+                sequence: 11,
+                session_sequence: Some(5),
+                tick_ms: 123456,
+                date: "1936.1.1.12",
+                hour_index: 1,
+                sample_ms: 10,
+                duration_ms: Some(8000),
+                elapsed_wall_ms: Some(125),
+                capture_boundary: "worker_poll",
+                domain: "clock",
+                entity_key: "clock:game_date",
+                confidence: "sampled",
+                op: "patch",
+                after_json: "{}",
+                changed_fields: &changed_fields,
+            });
+            assert!(rejected_op.is_none());
 
             let rejected_after = raw_domain_delta_frame_line(RawDomainDeltaFrame {
                 pid: 1234,
@@ -3772,6 +4430,7 @@ mod attach_log {
                 domain: "clock",
                 entity_key: "clock:game_date",
                 confidence: "sampled",
+                op: "sample",
                 after_json: "[]",
                 changed_fields: &changed_fields,
             });
@@ -3955,6 +4614,128 @@ mod attach_log {
             assert!(!frame.contains("tag_db_id"));
             assert!(!frame.contains("\"owner\""));
             assert!(!frame.contains("0x"));
+        }
+
+        #[test]
+        fn land_combat_frame_builder_emits_sanitized_raw_delta() {
+            let control = raw_test_control();
+            let clock = ClockSample {
+                date: "1936.1.1.12".to_string(),
+                hour_index: ((1936 * 365) * 24 + 12) as u64,
+                raw_date: DATE_EPOCH_CONST + ((1936 * 365) * 24 + 12),
+            };
+            let sample = LandCombatSample {
+                combat_id: 271,
+                generation: 2,
+                body_addr: HEAP_LO + 0x12000,
+                location: Some(3986),
+                day: Some(4618),
+                duration: Some(17),
+                attacker_divisions: Some(vec![1053, 2837]),
+                defender_divisions: Some(vec![465]),
+                attacker_status: "exact",
+                defender_status: "exact",
+            };
+            let changed_fields = land_combat_all_fields();
+
+            let frame = land_combat_raw_domain_delta_frame_line(
+                1234,
+                22,
+                Some(9),
+                123456,
+                &control,
+                Some(125),
+                "worker_poll",
+                &clock,
+                &sample,
+                "sample",
+                &changed_fields,
+            )
+            .unwrap();
+
+            assert!(frame.contains("\"type\":\"domain_delta\""));
+            assert!(frame.contains("\"domain\":\"land_combats\""));
+            assert!(frame.contains("\"entity_key\":\"land_combat:271:2\""));
+            assert!(frame.contains("\"payload\":{\"op\":\"sample\""));
+            assert!(frame.contains("\"combat_key\":\"land_combat:271:2\""));
+            assert!(frame.contains("\"combat_id\":271"));
+            assert!(frame.contains("\"generation\":2"));
+            assert!(frame.contains("\"location\":3986"));
+            assert!(frame.contains("\"day\":4618"));
+            assert!(frame.contains("\"duration\":17"));
+            assert!(frame.contains("\"attacker_divisions\":[1053,2837]"));
+            assert!(frame.contains("\"defender_divisions\":[465]"));
+            assert!(frame.contains("\"attacker_status\":\"exact\""));
+            assert!(frame.contains("\"defender_status\":\"exact\""));
+            assert!(frame.contains("\"changed_fields\":[\"combat_key\",\"combat_id\",\"generation\",\"location\",\"day\",\"duration\",\"attacker_divisions\",\"defender_divisions\",\"attacker_status\",\"defender_status\"]"));
+            assert!(!frame.contains("body_ptr"));
+            assert!(!frame.contains("body_addr"));
+            assert!(!frame.contains("manager"));
+            assert!(!frame.contains("0x"));
+        }
+
+        #[test]
+        fn land_combat_delete_and_gap_frames_have_explicit_contracts() {
+            let control = raw_test_control();
+            let clock = ClockSample {
+                date: "1936.1.1.12".to_string(),
+                hour_index: ((1936 * 365) * 24 + 12) as u64,
+                raw_date: DATE_EPOCH_CONST + ((1936 * 365) * 24 + 12),
+            };
+            let sample = LandCombatSample {
+                combat_id: 271,
+                generation: 2,
+                body_addr: HEAP_LO + 0x12000,
+                location: Some(3986),
+                day: Some(4618),
+                duration: Some(17),
+                attacker_divisions: Some(vec![1053, 2837]),
+                defender_divisions: Some(vec![465]),
+                attacker_status: "exact",
+                defender_status: "exact",
+            };
+
+            let delete_frame = land_combat_raw_domain_delta_frame_line(
+                1234,
+                23,
+                Some(10),
+                123456,
+                &control,
+                Some(125),
+                "worker_poll",
+                &clock,
+                &sample,
+                "delete",
+                &["combat_key"],
+            )
+            .unwrap();
+            assert!(delete_frame.contains("\"domain\":\"land_combats\""));
+            assert!(delete_frame.contains("\"entity_key\":\"land_combat:271:2\""));
+            assert!(delete_frame.contains("\"payload\":{\"op\":\"delete\",\"after\":null"));
+            assert!(delete_frame.contains("\"changed_fields\":[\"combat_key\"]"));
+            assert!(!delete_frame.contains("\"attacker_divisions\""));
+            assert!(!delete_frame.contains("body_addr"));
+            assert!(!delete_frame.contains("0x"));
+
+            let gap_frame = land_combat_gap_raw_domain_delta_frame_line(
+                1234,
+                24,
+                Some(11),
+                123456,
+                &control,
+                Some(125),
+                "worker_poll",
+                &clock,
+                "manager_read_failed",
+            )
+            .unwrap();
+            assert!(gap_frame.contains("\"domain\":\"land_combats\""));
+            assert!(gap_frame.contains("\"entity_key\":\"land_combats:gap:manager_read_failed\""));
+            assert!(gap_frame.contains("\"confidence\":\"gap\""));
+            assert!(gap_frame.contains("\"gap_kind\":\"manager_read_failed\""));
+            assert!(gap_frame.contains("\"status\":\"validation_failed\""));
+            assert!(!gap_frame.contains("body_addr"));
+            assert!(!gap_frame.contains("0x"));
         }
 
         #[test]

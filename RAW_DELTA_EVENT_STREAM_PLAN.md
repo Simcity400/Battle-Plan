@@ -185,11 +185,12 @@ Source candidates:
 
 Current measured constraint:
 
-- The Python proof currently reaches active land combats by heap vtable scan
-  for `CLandCombat`. That is acceptable as a development/proof reader, but it
-  must not be copied into the DLL scheduled loop.
-- The collector raw-frame adapter now accepts a bounded `land_combats`
-  `domain_delta` shape for future DLL output:
+- Active land combats are now rooted at `CGameState+0x260`. The Python proof
+  defaults to the bounded manager walk and keeps the old `CLandCombat`
+  heap-vtable scan only as a research cross-check. Live 2026-06-29 proof:
+  22 manager rows, 22 heap-scan rows, exact same `(combat_id, body)` set.
+- The collector now emits bounded `land_combats` `domain_delta` samples from
+  that active-manager root:
   `entity_key = land_combat:<combat_id>:<generation>`, with `combat_id`,
   `generation`, `location`, optional `day`/`duration`, and nullable
   `attacker_divisions` / `defender_divisions`. A `null` side means validation
@@ -198,18 +199,20 @@ Current measured constraint:
   tag-db ids, or pointer-like changed fields. Body continuity, if needed, stays
   internal and is represented only by the generation component.
 
-Bridge contract before DLL enablement:
+Bridge contract now implemented for the first land-combat slice:
 
-- A safe live implementation needs one of:
-  - a pinned active-combat registry/root that the DLL can validate and walk with
-    bounded reads every sample;
-  - a preflight cache/bridge that can keep the dynamic active-combat body set
-    fresh without heap discovery in the hot loop;
-  - a reviewed lifecycle hook that enqueues only bounded combat descriptors and
-    lets the worker thread serialize raw frames.
-- Until one of those exists, the DLL should emit `land_combats` gap frames such
-  as `unsupported` / `layout_invalid` / `validation_failed`, not guessed combat
-  samples.
+- The DLL validates the active manager vector, each body vtable/type/id, the
+  front object, registry identity, side vtables, side counts, and CDivision
+  participant references before emitting a sample.
+- The collector keeps body continuity internal and emits only stable
+  `land_combat:<combat_id>:<generation>` keys. Missing/disappeared combats emit
+  a `delete` op with `after:null` for the last known generation.
+- Active-manager validation failures emit bounded `confidence:"gap"` samples
+  keyed as `land_combats:gap:<gap_kind>` instead of silently producing no
+  coverage marker.
+- Remaining hardening before promotion to replay truth: speed-five live soak,
+  end/delete lifecycle validation across real battle endings, and timeline/app
+  ingestion for the `land_combats` raw stream.
 
 Cadence:
 

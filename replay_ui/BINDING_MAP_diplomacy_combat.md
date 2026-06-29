@@ -30,9 +30,9 @@ Grounded in **empirical inspection of a real save+memory-backed snapshot**
 (`replay/snapshots/replay/000017005619.snapshot.json`, `schema_version "1"`, date `1941.4.13.11`, GER
 1941 channel) cross-checked against `replay/SCHEMA.md` / `replay/schema.py`, and **adversarially
 reviewed by Codex** (read-only, 2026-06-26). Codex **confirmed** the diplomacy opinion/trade source
-paths and the combat battle-detail `unavailable` badging, and **corrected two calls** (both folded in):
-(A) the attacker/defender **division rosters** and per-division stat rows are `unavailable` — only the
-**leader ref pairs** are exact/derived (no division-join exists in `combats[]`); and (B) the
+paths and the combat battle-detail `unavailable` badging. Superseded by later live work:
+attacker/defender **division rosters** are now available from `land_combats`, while committed/reserve
+split, leaders, and per-division combat stat rows remain `unavailable`; and (B) the
 opinion **direction** — `our_opinion = countries.<VIEWER>.diplomacy.opinion.<SEL>.opinion_sum` (the
 owning country's dict holds **its** opinion of the keyed target), not the reciprocal.
 
@@ -40,10 +40,10 @@ owning country's dict holds **its** opinion of the keyed target), not the recipr
 
 | schema field | state in the inspected snapshot | consequence |
 |---|---|---|
-| `combats[]` | **13 entries, all `kind:"land"`, 0 naval** | naval-combat roster has no live battle to bind; land roster binds leader refs only |
+| `combats[]` | land active-combat identity/location/participant division ids are live manager-backed; historical inspected snapshot had 13 land, 0 naval | naval-combat roster still needs a live battle fixture; land side division rosters now bind from live `land_combats` |
 | `combats[].combat_width` | **`null`** | combat-width readouts → `unavailable` |
 | `combats[].terrain` / `.progress` / `.modifiers` | present (`"hills"`, `14.55…`, `{day,duration}`) **but domain is `M*`-uncracked (SCHEMA §7)**; `progress` is a large positive float, **NOT** the `-1..1` GUI bar | terrain/progress-bar/tactics/modifiers → `unavailable`; only `modifiers.duration` → `derived` (§G allows duration) |
-| `combats[].attackers` / `.defenders` | `[[unit_leader_id, 4713], …]` — **commander leader refs, not division ids** | flags/leaders → exact/derived; **committed/reserve division lists + per-division stat rows → `unavailable`** |
+| `combats[].attackers` / `.defenders` | live land rows provide attacker/defender division-id lists | side division rosters/counts → exact where `land_combats` is present; committed/reserve split, leaders, and per-division combat stat rows remain `unavailable` unless separately cracked |
 | `order_of_battle` (top-level) | **key absent** in this snapshot | naval per-ship rows (`order_of_battle.ships`) → `unavailable` (current data) |
 | `market_live` (top-level) / `diplomacy_world.trade_contracts` | **both absent** in this snapshot | diplomacy trade grid → `unavailable` (current data) |
 | `countries.<TAG>.diplomacy.opinion` | **rich dict** `{TGT:{attitude, opinion_sum, opinion_modifiers[], guarantee, non_aggression_pact, military_access, embargo, at_war}}` | opinion values + relation flags → exact; per-target modifier rows = numeric `token_id`+`value` only (names `unavailable`) |
@@ -181,17 +181,17 @@ below maps the ROW SHAPES the combat adapter instantiates.
 ### Combat adapter — `combats[]` → roster rows (the imperative view-model, PLAN §C.2)
 
 `combats[]` entry shape (empirical): `{ combat_id:"5457:62", kind:"land"|"naval"|"air",
-location_province, attackers:[[unit_leader_id, 4713], …], defenders:[…], combat_width:null,
-terrain:str, progress:float, modifiers:{day,duration} }`.
+location_province, attackers:[division_id, …], defenders:[division_id, …], combat_width:null,
+terrain:str|null, progress:float|null, modifiers:{day,duration}|null }`.
 
 | roster element produced by the adapter | source | formatter | fidelity | notes |
 |---|---|---|---|---|
 | **battle enumeration** (one panel/bubble per active combat) | `combats[]` (filter `kind`) | — | **exact** | 13 land combats in the inspected snapshot; lifecycle (appear→persist→disappear) tracked by `combat_id` → SCHEMA §9 `combat_started`/`combat_ended`. |
-| **attacker / defender side identity** (the two flags) | `combats[].attackers[0]` / `.defenders[0]` → leader ref → owner TAG | flag-small | **derived** | The ref pair `[unit_leader_id, 4713]` resolves (via `commanders`/`order_of_battle`) to a leader→country; `commanders` absent here → flag falls back to the combat's province controller/owner. Side membership itself is **exact**; the resolved TAG is derived. |
-| **attacker / defender LEADER** (portrait + name + skill) | `combats[].attackers[0][0]` (`unit_leader_id`) → `commanders.{generals,field_marshals}` | loc + int | **unavailable** (current data) | Leader REF is exact, but name/skill/portrait need the `commanders` domain (absent in this snapshot) → "—". |
+| **attacker / defender side identity** (the two flags) | `combats[].attackers[]` / `.defenders[]` division ids → division owner where available, else combat province controller/owner fallback | flag-small | **derived** | Side membership itself is **exact** from live land-combat side arrays; the displayed TAG is a derived resolution, not a raw combat field. |
+| **attacker / defender LEADER** (portrait + name + skill) | commander/leader source | loc + int | **unavailable** (current data) | Live `land_combats` gives division ids, not commander portrait/name/skill rows. |
 | **location** | `combats[].location_province` | int (id) / loc (name) | **exact** (id) / **derived** (name) | Province name from static province meta. |
 | **duration** | `combats[].modifiers.duration` (days) | int/days | **derived** | §G explicitly permits duration. `modifiers.duration`==`day` (44/143/48 in samples). Low-confidence (M\* domain) but allowed. |
-| **committed / reserve DIVISION rosters** (per-unit rows) | — (would need `combats[]`→division join) | — | **unavailable** | **Codex correction.** `attackers`/`defenders` are **leader** refs, not division ids; there is NO division roster in `combats[]`. The committed/reserve unit lists + every per-division stat row are `unavailable`. |
+| **side DIVISION rosters** (unsplit per-unit rows) | `combats[].attackers[]` / `.defenders[]` division ids joined to division snapshot rows | id + loc where available | **exact/derived** | Division ids are exact from live `land_combats`; names/templates/org/strength come from the division domain when present. Committed-vs-reserve split is still unavailable. |
 | **combat_width** | `combats[].combat_width` | int | **unavailable** | `null` in the snapshot. |
 | **terrain** | `combats[].terrain` | category | **unavailable** | Present (`"hills"`) but `M*`-uncracked battle-detail (§G). |
 | **progress bar (−1..1)** | `combats[].progress` | progressbar (−1..1) | **unavailable** | Present (`14.55…`) but **NOT the −1..1 GUI bar** (large positive float, different scale) → must not bind to the bar (Codex). |
@@ -223,8 +223,8 @@ picker — mutation), `reserve_combat_entry` / `division_combat_attacker_entry` 
 | `attacker_leader_name` / `defender_leader_name` (instantTextboxType) | `commanders.*.name` | loc | **unavailable** (current data) | As above. |
 | `attacker_leader_skill` / `defender_leader_skill` (instantTextboxType) | `commanders.*.level` | int | **unavailable** (current data) | As above. |
 | `window_title` (instantTextboxType, `BATTLE_BATTLE`) | static loc + `combats[].location_province` (name) | loc | **derived** | Title "Battle of <province>" — province from `location_province`. |
-| `attacker_committed_label` / `defender_committed_label` (`"4 Divisions"`) | committed division count | int | **unavailable** | Needs the committed-division roster (not in `combats[]`). |
-| `attacker_reserves_label` / `defender_reserves_label` (`"4 Reserves"`) | reserve division count | int | **unavailable** | As above. |
+| `attacker_committed_label` / `defender_committed_label` (`"4 Divisions"`) | live side division count | int | **exact** where `land_combats` is present | This is the total measured side list, not a proven committed-only count. |
+| `attacker_reserves_label` / `defender_reserves_label` (`"4 Reserves"`) | committed/reserve split | int | **unavailable** | Reserve split is not cracked. |
 
 ## 2b. Land combat — battle-DETAIL → `unavailable` (PLAN §G HARD LIMIT)
 
@@ -238,8 +238,8 @@ picker — mutation), `reserve_combat_entry` / `division_combat_attacker_entry` 
 | `attacker_traits_grid` / `defender_traits_grid` (gridBoxType) → leader-trait rows | `commanders.*.traits[]` | **unavailable** (current data) | Needs `commanders` (absent). |
 | `attacker_air_count` / `attacker_air_text` / `defender_air_count` / `defender_air_text` (+ `*_air_icon`) | air-support to the battle | **unavailable** | Air support not in `combats[]` (§G). |
 | `modifier_icons_container.list` (gridBoxType, attacker/defender) → `global_modifier_icon_entry` / `modifier_icon_entry` rows (`modifier_icon`) | `combats[].modifiers` (combat-modifier vector) | **unavailable** | Only `{day,duration}` present, no modifier vector (§G). |
-| **`division_combat_attacker_entry` / `division_combat_defender_entry` ROWS** — `name`, `unit_icon`, `org_bar`, `str_bar`, `soft_attack`, `hard_attack`, `defense`, per-row `modifier_icons_container.list` | committed-division roster + per-division combat stats | **unavailable** | **Codex correction.** No division roster in `combats[]`; per-division org/str/soft/hard/defense are runtime-computed combat stats (§G). The entire committed grid is `unavailable`. |
-| **`reserve_combat_entry` ROWS** — `name`, `unit_icon`, `org_bar`, `str_bar` | reserve-division roster | **unavailable** | As above. |
+| **`division_combat_attacker_entry` / `division_combat_defender_entry` ROWS** — `name`, `unit_icon`, `org_bar`, `str_bar`, `soft_attack`, `hard_attack`, `defense`, per-row `modifier_icons_container.list` | live side division ids joined to division rows | **exact/derived for roster identity; unavailable for battle stats** | Division membership is available from `land_combats`; per-division combat stats such as soft/hard/defense and combat modifiers remain runtime-computed battle-detail gaps (§G). |
+| **`reserve_combat_entry` ROWS** — `name`, `unit_icon`, `org_bar`, `str_bar` | reserve-division roster | **unavailable** | Reserve split is not cracked. |
 
 ## 2c. Land combat — STATIC / decoration / navigation / mutation (no binding)
 
@@ -425,10 +425,10 @@ the deferred war/wargoal modals (world-tension aggregate not stored, SCHEMA §17
 
 **Combat (all three views):** combat_width (`null`), terrain (M\*-uncracked §G), progress −1..1 bar
 (`progress` is a different scale), tactics, combat modifiers, air support, carrier-penalty/screening,
-all per-division and per-ship STAT rows (runtime-computed §G), committed/reserve DIVISION rosters (no
-division-join in `combats[]` — Codex), naval per-ship rows + role columns (`order_of_battle` absent +
-0 naval combats), combat leaders/traits (commanders absent). **Exact/derived in combat:** the
-enumeration, side identity, `location_province`, and `modifiers.duration` only.
+all per-division and per-ship STAT rows (runtime-computed §G), committed/reserve split, naval
+per-ship rows + role columns (`order_of_battle` absent + 0 naval combats), combat leaders/traits
+(commanders absent). **Exact/derived in combat:** land enumeration, side division ids/counts,
+derived side identity, `location_province`, age/day/duration, and `modifiers.duration`.
 
 **Combat log:** the entire stored-ledger model (per-battle losses, equipment lost/recovered/attrition,
 template win tallies, aggregate manpower/win-factor) is not in the snapshot — combat HISTORY is
@@ -452,9 +452,9 @@ review and must not run the old local CLI command. **Claim A (combat battle-deta
 terrain/progress/combat_width/modifiers correctly `unavailable` (the raw `terrain`/`progress` are
 present but `progress` must NOT bind the −1..1 bar; the M\* domain is uncracked); `modifiers.duration`
 correctly `derived` (§G allows duration); `location_province` exact (id)/derived (name). **Correction
-folded in:** the attacker/defender **rosters are NOT division rosters** — `attackers`/`defenders` are
-`[unit_leader_id, 4713]` LEADER refs only, so committed/reserve division lists + every per-division
-stat row are `unavailable`, and only the leader ref pairs are exact-raw / derived-resolved. **Claim B
+superseded:** live `land_combats` now supplies attacker/defender division-id rosters. Committed/reserve
+split, combat leaders, and per-division battle stat rows remain `unavailable`; roster identity/counts
+are exact where `land_combats` is present. **Claim B
 (diplomacy opinion/trade): CONFIRMED with one correction** — `opinion_sum` is the right field for the
 signed opinion number (do not re-sum modifiers); nested `opinion[TGT].opinion_modifiers` = numeric
 `token_id`+`value`, names `unavailable`; trade grid `unavailable` (unfed); wars/factions/subjects

@@ -531,10 +531,10 @@ Capture:
 
 Tasks:
 
-- Keep land combat exact participant work as the template, then add naval and
+- Use the live land-combat manager stream as the template, then add naval and
   air active fixtures.
-- Move combat enumeration into the collector with a high-frequency cadence or
-  safe combat-boundary hooks.
+- Soak land combat at speed five, validate battle-end/delete lifecycle behavior,
+  and promote the raw stream into replay timeline/app ingestion.
 - Emit lifecycle events: born, participant update, damage update, ended.
 - Derive battle logs from lifecycle plus division/ship/wing deltas.
 - Accept that a combat that starts and ends between two samples can be missed;
@@ -1019,15 +1019,16 @@ Acceptance:
 - Sub-boundary misses are counted as possible misses, not fabricated.
 
 Current status: raw `divisions` movement deltas are live-proven through cached
-division body pins. Land combat now has a bounded raw `land_combats`
-`domain_delta` contract and adapter/schema validation for stable
+division body pins. Land combat now has a pinned active manager root at
+`CGameState+0x260` and both Python and Rust paths use bounded manager reads
+instead of heap discovery in the hot loop. The Rust collector emits raw
+`land_combats` `domain_delta` samples with stable
 `land_combat:<combat_id>:<generation>` identities, province/age scalars,
-nullable attacker/defender division lists, and pointer/tag-db leak rejection.
-The DLL must not emit land-combat samples yet: the current Python proof still
-finds `CLandCombat` bodies by heap vtable scan. The next unlock is a pinned
-active-combat root, dynamic bridge/cache refresh contract, or reviewed lifecycle
-hook; until then the correct collector output is a gap, not guessed combat
-samples.
+nullable attacker/defender division lists, `delete` ops with `after:null` for
+disappeared combats, bounded gap markers for manager/layout validation failures,
+and pointer/tag-db leak rejection. The remaining land-combat unlock is not "find
+the objects"; it is speed-five soak, battle-end lifecycle validation, and
+timeline/app ingestion.
 
 ### Phase 7: Focus, Tech, Decisions, Projects, Politics
 

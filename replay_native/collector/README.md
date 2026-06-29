@@ -143,17 +143,23 @@ State-root preflight:
 
 Land-combat raw stream status:
 
-- `live_capture.collector_frames` defines and tests a bounded raw
-  `land_combats` domain-delta contract for future DLL output:
+- `live_capture.collector_frames` and the Rust collector define and test a
+  bounded raw `land_combats` domain-delta contract:
   `land_combat:<combat_id>:<generation>` keys, province/age scalars, nullable
   attacker/defender division-id lists, and no raw address leakage.
-- The Rust DLL does not emit land-combat samples yet. The current Python proof
-  discovers `CLandCombat` bodies with a heap vtable scan, which is not a valid
-  scheduled-loop source.
-- Enabling live land-combat capture requires a pinned active-combat root,
-  dynamic bridge/cache refresh contract, or reviewed lifecycle hook. Without
-  that, the collector must fail closed with raw `land_combats` gap frames
-  instead of guessed samples.
+- The Rust DLL now samples active land combats from the pinned manager root
+  `CGameState+0x260`: vector data @ +0x08, count @ +0x14, manager slot to body
+  delta +0x10. The old Python heap-vtable scan is retained only as a research
+  cross-check.
+- The live reader validates the manager, body vtable/type/id, front object,
+  registry identity, side vtables/counts, and division participant references
+  before emitting samples. Body addresses stay internal and are represented only
+  by the generation component of the replay key.
+- Manager/layout validation failures emit bounded `confidence:"gap"` markers
+  instead of disappearing silently; ended combats emit `delete` ops with
+  `after:null`.
+- Remaining promotion work is speed-five soak, battle-end/delete lifecycle
+  validation, and raw `land_combats` ingestion into the replay timeline/app.
 
 Runtime rules:
 

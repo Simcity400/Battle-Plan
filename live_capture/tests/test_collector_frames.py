@@ -472,6 +472,26 @@ class TestCollectorFrames(unittest.TestCase):
 
         self.assertEqual(validate_collector_frame(frame), [])
 
+    def test_raw_land_combat_gap_delta_frame_validates(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": None,
+                "after": {
+                    "gap_key": "land_combats:gap:manager_read_failed",
+                    "gap_kind": "manager_read_failed",
+                    "status": "validation_failed",
+                },
+                "changed_fields": ["gap_key", "gap_kind", "status"],
+            },
+            domain="land_combats",
+            entity_key="land_combats:gap:manager_read_failed",
+            confidence="gap",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
     def test_raw_land_combat_delta_rejects_raw_leakage_and_bad_rows(self):
         frame = self._raw_frame(
             "domain_delta",
