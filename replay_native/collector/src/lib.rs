@@ -383,10 +383,18 @@ mod attach_log {
     const MAX_SHIP_DEFINITION_LEN: usize = 128;
     const SHIP_STATS_SAMPLE_MIN_MS: u64 = 250;
     const AG_VTABLE_RVA: usize = 0x292BF58;
+    const ARMY_LEADER_VTABLE_RVA: usize = 0x292F788;
+    const NAVY_LEADER_VTABLE_RVA: usize = 0x292F8A0;
     const FLEET_VTABLE_RVA: usize = 0x293C178;
     const TASK_FORCE_VTABLE_RVA: usize = 0x293C8B0;
     const THEATRE_VTABLE_RVA: usize = 0x294ED28;
     const OOB_TYPE_FLEET: u32 = 61;
+    const OOB_TYPE_THEATRE: u32 = 67;
+    const ARMY_OFF_MEMBER_COUNT: usize = 0x5C;
+    const ARMY_OFF_LEADER_PTR: usize = 0x88;
+    const ARMY_OFF_AG_PARENT: usize = 0x1B8;
+    const DIVISION_OFF_ARMY_PARENT: usize = 0xB0;
+    const LEADER_OFF_ID: usize = 0x0C;
     const TASK_FORCE_OFF_FLEET_PARENT: usize = 0x330;
     const TASK_FORCE_OFF_SHIP_BEGIN: usize = 0x338;
     const TASK_FORCE_OFF_SHIP_COUNT: usize = 0x344;
@@ -2157,8 +2165,20 @@ mod attach_log {
     struct OobCommandSample {
         oob_key: String,
         entity_kind: &'static str,
+        army_id: Option<u32>,
+        army_group_id: Option<u32>,
         fleet_id: Option<u32>,
         task_force_id: Option<u32>,
+        member_division_ids: Option<Vec<u32>>,
+        member_division_count: Option<u32>,
+        member_division_status: Option<&'static str>,
+        member_army_ids: Option<Vec<u32>>,
+        member_army_count: Option<u32>,
+        member_army_status: Option<&'static str>,
+        leader_id: Option<u32>,
+        leader_status: Option<&'static str>,
+        member_count_engine: Option<u32>,
+        missing_member_count: Option<u32>,
         task_force_ids: Option<Vec<u32>>,
         task_force_count: Option<u32>,
         task_force_status: Option<&'static str>,
@@ -6520,22 +6540,79 @@ mod attach_log {
             return Ok(Vec::new());
         }
         let module_base = state.base;
+        let mut army_ptr_to_id: BTreeMap<usize, u32> = BTreeMap::new();
+        let mut ag_ptr_to_id: BTreeMap<usize, u32> = BTreeMap::new();
         let mut fleet_ptr_to_id: BTreeMap<usize, u32> = BTreeMap::new();
         let mut invalid_command_rows = 0u32;
         let mut sampled_command_rows = 0u32;
-        for entry in control
-            .oob_command_bridge
-            .iter()
-            .filter(|entry| entry.kind == OobCommandKind::Fleet)
-        {
+        for entry in control.oob_command_bridge.iter().filter(|entry| {
+            matches!(
+                entry.kind,
+                OobCommandKind::Army | OobCommandKind::ArmyGroup | OobCommandKind::Fleet
+            )
+        }) {
             if validate_oob_command_bridge_entry(module_base, entry) {
-                fleet_ptr_to_id.insert(entry.body_ptr, entry.object_id);
+                match entry.kind {
+                    OobCommandKind::Army => {
+                        army_ptr_to_id.insert(entry.body_ptr, entry.object_id);
+                    }
+                    OobCommandKind::ArmyGroup => {
+                        ag_ptr_to_id.insert(entry.body_ptr, entry.object_id);
+                    }
+                    OobCommandKind::Fleet => {
+                        fleet_ptr_to_id.insert(entry.body_ptr, entry.object_id);
+                    }
+                    _ => {}
+                }
                 sampled_command_rows = sampled_command_rows.saturating_add(1);
             } else {
                 invalid_command_rows = invalid_command_rows.saturating_add(1);
             }
         }
 
+        let mut divisions_by_army: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+        for entry in control
+            .oob_command_bridge
+            .iter()
+            .filter(|entry| entry.kind == OobCommandKind::Division)
+        {
+            if !validate_oob_command_bridge_entry(module_base, entry) {
+                continue;
+            }
+            let Some(parent_ptr) =
+                read_u64(entry.body_ptr.saturating_add(DIVISION_OFF_ARMY_PARENT))
+                    .map(|v| v as usize)
+            else {
+                continue;
+            };
+            if let Some(army_id) = army_ptr_to_id.get(&parent_ptr).copied() {
+                divisions_by_army
+                    .entry(army_id)
+                    .or_default()
+                    .push(entry.object_id);
+            }
+        }
+
+        let mut armies_by_ag: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+        let mut army_samples = Vec::new();
+        for entry in control
+            .oob_command_bridge
+            .iter()
+            .filter(|entry| entry.kind == OobCommandKind::Army)
+        {
+            match sample_army_oob_row(module_base, entry, &ag_ptr_to_id, &mut divisions_by_army) {
+                Some(sample) => {
+                    if sample.parent_status == Some("exact") {
+                        if let (Some(ag_id), Some(army_id)) = (sample.army_group_id, sample.army_id)
+                        {
+                            armies_by_ag.entry(ag_id).or_default().push(army_id);
+                        }
+                    }
+                    army_samples.push(sample);
+                }
+                None => invalid_command_rows = invalid_command_rows.saturating_add(1),
+            }
+        }
         let mut task_force_samples = Vec::new();
         let mut task_forces_by_fleet: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
         for entry in control
@@ -6566,6 +6643,44 @@ mod attach_log {
         }
 
         let mut rows = Vec::new();
+        for ag_id in ag_ptr_to_id.values() {
+            let mut member_army_ids = armies_by_ag.remove(ag_id).unwrap_or_default();
+            member_army_ids.sort_unstable();
+            member_army_ids.dedup();
+            let member_army_count = member_army_ids.len() as u32;
+            let (member_army_ids, member_army_status) =
+                if member_army_ids.len() > MAX_OOB_INLINE_IDS {
+                    (None, "overflow")
+                } else {
+                    (Some(member_army_ids), "exact")
+                };
+            rows.push(OobCommandSample {
+                oob_key: format!("oob_command:army_group:{ag_id}"),
+                entity_kind: "army_group",
+                army_id: None,
+                army_group_id: Some(*ag_id),
+                fleet_id: None,
+                task_force_id: None,
+                member_division_ids: None,
+                member_division_count: None,
+                member_division_status: None,
+                member_army_ids,
+                member_army_count: Some(member_army_count),
+                member_army_status: Some(member_army_status),
+                leader_id: None,
+                leader_status: None,
+                member_count_engine: None,
+                missing_member_count: None,
+                task_force_ids: None,
+                task_force_count: None,
+                task_force_status: None,
+                parent_status: None,
+                ship_ids: None,
+                ship_count: None,
+                ship_status: None,
+            });
+        }
+        rows.extend(army_samples);
         for fleet_id in fleet_ptr_to_id.values() {
             let mut task_force_ids = task_forces_by_fleet.remove(fleet_id).unwrap_or_default();
             task_force_ids.sort_unstable();
@@ -6579,8 +6694,20 @@ mod attach_log {
             rows.push(OobCommandSample {
                 oob_key: format!("oob_command:fleet:{fleet_id}"),
                 entity_kind: "fleet",
+                army_id: None,
+                army_group_id: None,
                 fleet_id: Some(*fleet_id),
                 task_force_id: None,
+                member_division_ids: None,
+                member_division_count: None,
+                member_division_status: None,
+                member_army_ids: None,
+                member_army_count: None,
+                member_army_status: None,
+                leader_id: None,
+                leader_status: None,
+                member_count_engine: None,
+                missing_member_count: None,
                 task_force_ids,
                 task_force_count: Some(task_force_count),
                 task_force_status: Some(task_force_status),
@@ -6627,13 +6754,110 @@ mod attach_log {
             OobCommandKind::ArmyGroup => Some((AG_VTABLE_RVA, ARMY_TYPE)),
             OobCommandKind::Fleet => Some((FLEET_VTABLE_RVA, OOB_TYPE_FLEET)),
             OobCommandKind::TaskForce => Some((TASK_FORCE_VTABLE_RVA, OOB_TYPE_FLEET)),
-            OobCommandKind::Theatre => Some((THEATRE_VTABLE_RVA, TYPE_THEATRE)),
+            OobCommandKind::Theatre => Some((THEATRE_VTABLE_RVA, OOB_TYPE_THEATRE)),
             OobCommandKind::Division => Some((DIVISION_VTABLE_RVA, DIVISION_TYPE)),
             OobCommandKind::Ship => Some((CSHIP_VTABLE_RVA, CSHIP_TYPE)),
         }
     }
 
-    const TYPE_THEATRE: u32 = 67;
+    fn sample_army_oob_row(
+        module_base: usize,
+        entry: &OobCommandBridgeEntry,
+        ag_ptr_to_id: &BTreeMap<usize, u32>,
+        divisions_by_army: &mut BTreeMap<u32, Vec<u32>>,
+    ) -> Option<OobCommandSample> {
+        if entry.kind != OobCommandKind::Army
+            || !validate_oob_command_bridge_entry(module_base, entry)
+        {
+            return None;
+        }
+        let parent_ptr = read_u64(entry.body_ptr.saturating_add(ARMY_OFF_AG_PARENT))
+            .map(|v| v as usize)
+            .unwrap_or(0);
+        let army_group_id = ag_ptr_to_id.get(&parent_ptr).copied();
+        let parent_status = if army_group_id.is_some() {
+            "exact"
+        } else {
+            "unknown"
+        };
+        let mut member_division_ids = divisions_by_army
+            .remove(&entry.object_id)
+            .unwrap_or_default();
+        member_division_ids.sort_unstable();
+        member_division_ids.dedup();
+        let live_member_count = member_division_ids.len() as u32;
+        let member_count_engine = read_u32(entry.body_ptr.saturating_add(ARMY_OFF_MEMBER_COUNT));
+        let missing_member_count =
+            member_count_engine.and_then(|engine| engine.checked_sub(live_member_count));
+        let (member_division_ids, member_division_status) =
+            if member_division_ids.len() > MAX_OOB_INLINE_IDS {
+                (None, "overflow")
+            } else {
+                (Some(member_division_ids), "exact")
+            };
+        let (leader_id, leader_status) = read_army_oob_leader_id(module_base, entry.body_ptr);
+        Some(OobCommandSample {
+            oob_key: format!("oob_command:army:{}", entry.object_id),
+            entity_kind: "army",
+            army_id: Some(entry.object_id),
+            army_group_id,
+            fleet_id: None,
+            task_force_id: None,
+            member_division_ids,
+            member_division_count: Some(live_member_count),
+            member_division_status: Some(member_division_status),
+            member_army_ids: None,
+            member_army_count: None,
+            member_army_status: None,
+            leader_id,
+            leader_status: Some(leader_status),
+            member_count_engine,
+            missing_member_count,
+            task_force_ids: None,
+            task_force_count: None,
+            task_force_status: None,
+            parent_status: Some(parent_status),
+            ship_ids: None,
+            ship_count: None,
+            ship_status: None,
+        })
+    }
+
+    fn read_army_oob_leader_id(
+        module_base: usize,
+        army_body: usize,
+    ) -> (Option<u32>, &'static str) {
+        let Some(leader_ptr) =
+            read_u64(army_body.saturating_add(ARMY_OFF_LEADER_PTR)).map(|v| v as usize)
+        else {
+            return (None, "validation_failed");
+        };
+        if !is_map_control_heap_pointer(leader_ptr) {
+            return (None, "unknown");
+        }
+        let Some(vtable) = read_u64(leader_ptr).map(|v| v as usize) else {
+            return (None, "validation_failed");
+        };
+        let army_leader_vtable = module_base.saturating_add(ARMY_LEADER_VTABLE_RVA);
+        let navy_leader_vtable = module_base.saturating_add(NAVY_LEADER_VTABLE_RVA);
+        if vtable != army_leader_vtable && vtable != navy_leader_vtable {
+            return (None, "validation_failed");
+        }
+        let Some(handle_type) = read_u32(leader_ptr.saturating_add(0x08)) else {
+            return (None, "validation_failed");
+        };
+        if handle_type != DIVISION_TYPE {
+            return (None, "validation_failed");
+        }
+        let Some(leader_id) = read_u32(leader_ptr.saturating_add(LEADER_OFF_ID)) else {
+            return (None, "validation_failed");
+        };
+        if leader_id == 0 || leader_id > MAX_OOB_COMMAND_ID {
+            (None, "validation_failed")
+        } else {
+            (Some(leader_id), "exact")
+        }
+    }
 
     fn sample_task_force_oob_row(
         module_base: usize,
@@ -6658,8 +6882,20 @@ mod attach_log {
         Some(OobCommandSample {
             oob_key: format!("oob_command:task_force:{}", entry.object_id),
             entity_kind: "task_force",
+            army_id: None,
+            army_group_id: None,
             fleet_id,
             task_force_id: Some(entry.object_id),
+            member_division_ids: None,
+            member_division_count: None,
+            member_division_status: None,
+            member_army_ids: None,
+            member_army_count: None,
+            member_army_status: None,
+            leader_id: None,
+            leader_status: None,
+            member_count_engine: None,
+            missing_member_count: None,
             task_force_ids: None,
             task_force_count: None,
             task_force_status: None,
@@ -6752,8 +6988,20 @@ mod attach_log {
         vec![
             "oob_key",
             "entity_kind",
+            "army_id",
+            "army_group_id",
             "fleet_id",
             "task_force_id",
+            "member_division_ids",
+            "member_division_count",
+            "member_division_status",
+            "member_army_ids",
+            "member_army_count",
+            "member_army_status",
+            "leader_id",
+            "leader_status",
+            "member_count_engine",
+            "missing_member_count",
             "task_force_ids",
             "task_force_count",
             "task_force_status",
@@ -6772,11 +7020,47 @@ mod attach_log {
         if old.entity_kind != new.entity_kind {
             changed.push("entity_kind");
         }
+        if old.army_id != new.army_id {
+            changed.push("army_id");
+        }
+        if old.army_group_id != new.army_group_id {
+            changed.push("army_group_id");
+        }
         if old.fleet_id != new.fleet_id {
             changed.push("fleet_id");
         }
         if old.task_force_id != new.task_force_id {
             changed.push("task_force_id");
+        }
+        if old.member_division_ids != new.member_division_ids {
+            changed.push("member_division_ids");
+        }
+        if old.member_division_count != new.member_division_count {
+            changed.push("member_division_count");
+        }
+        if old.member_division_status != new.member_division_status {
+            changed.push("member_division_status");
+        }
+        if old.member_army_ids != new.member_army_ids {
+            changed.push("member_army_ids");
+        }
+        if old.member_army_count != new.member_army_count {
+            changed.push("member_army_count");
+        }
+        if old.member_army_status != new.member_army_status {
+            changed.push("member_army_status");
+        }
+        if old.leader_id != new.leader_id {
+            changed.push("leader_id");
+        }
+        if old.leader_status != new.leader_status {
+            changed.push("leader_status");
+        }
+        if old.member_count_engine != new.member_count_engine {
+            changed.push("member_count_engine");
+        }
+        if old.missing_member_count != new.missing_member_count {
+            changed.push("missing_member_count");
         }
         if old.task_force_ids != new.task_force_ids {
             changed.push("task_force_ids");
@@ -6882,15 +7166,32 @@ mod attach_log {
 
     fn oob_command_row_json(sample: &OobCommandSample) -> String {
         format!(
-            "{{\"oob_key\":{},\"entity_kind\":{},\"fleet_id\":{},\
-             \"task_force_id\":{},\"task_force_ids\":{},\
+            "{{\"oob_key\":{},\"entity_kind\":{},\"army_id\":{},\
+             \"army_group_id\":{},\"fleet_id\":{},\"task_force_id\":{},\
+             \"member_division_ids\":{},\"member_division_count\":{},\
+             \"member_division_status\":{},\"member_army_ids\":{},\
+             \"member_army_count\":{},\"member_army_status\":{},\
+             \"leader_id\":{},\"leader_status\":{},\"member_count_engine\":{},\
+             \"missing_member_count\":{},\"task_force_ids\":{},\
              \"task_force_count\":{},\"task_force_status\":{},\
              \"parent_status\":{},\"ship_ids\":{},\"ship_count\":{},\
              \"ship_status\":{}}}",
             json_str(&sample.oob_key),
             json_str(sample.entity_kind),
+            json_opt_u32(sample.army_id),
+            json_opt_u32(sample.army_group_id),
             json_opt_u32(sample.fleet_id),
             json_opt_u32(sample.task_force_id),
+            json_opt_u32_vec(sample.member_division_ids.as_ref()),
+            json_opt_u32(sample.member_division_count),
+            json_opt_escaped_str(sample.member_division_status),
+            json_opt_u32_vec(sample.member_army_ids.as_ref()),
+            json_opt_u32(sample.member_army_count),
+            json_opt_escaped_str(sample.member_army_status),
+            json_opt_u32(sample.leader_id),
+            json_opt_escaped_str(sample.leader_status),
+            json_opt_u32(sample.member_count_engine),
+            json_opt_u32(sample.missing_member_count),
             json_opt_u32_vec(sample.task_force_ids.as_ref()),
             json_opt_u32(sample.task_force_count),
             json_opt_escaped_str(sample.task_force_status),

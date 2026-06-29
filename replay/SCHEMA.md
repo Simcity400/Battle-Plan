@@ -199,8 +199,9 @@ counters such as
 summaries, transport diagnostics, and preflight bridge status. The canonical
 snapshot stream still stores one selected frame per unique game hour.
 High-frequency sidecars such as `naval_combat_members`, raw `ships` CShip
-telemetry, and raw `oob_command` fleet/task-force/ship membership live in that
-raw collector stream, not in save-shaped `order_of_battle` arrays.
+telemetry, and raw `oob_command` army/army-group/fleet/task-force/ship
+membership live in that raw collector stream, not in save-shaped
+`order_of_battle` arrays.
 
 ### 2.1 `provenance.mod` — the per-replay MOD IDENTITY (additive, §K MOD AWARENESS)
 

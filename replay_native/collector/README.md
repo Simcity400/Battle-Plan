@@ -373,7 +373,7 @@ Naval-combat raw stream status:
 
 OOB command raw stream status:
 
-- Fleet/task-force/ship membership now has a bridge-gated raw `oob_command`
+- Land and naval command membership now have a bridge-gated raw `oob_command`
   stream. The Rust DLL accepts `oob_command_bridge` rows in
   `collector_control.json` as `kind:id:body_ptr` entries. The parser rejects
   malformed, duplicate, unaligned, out-of-range, or oversized payloads and
@@ -383,11 +383,14 @@ OOB command raw stream status:
   cache-first and fails closed unless `--allow-oob-command-cold-scan`
   explicitly allows the slower `oob_command_live.enumerate_command_objs()`
   vtable sweep.
-- Current emitted rows are `oob_command:fleet:<fleet_id>` and
-  `oob_command:task_force:<task_force_id>`. Rows expose task-force membership,
-  task-force parent fleet, and bounded CShip instance-id membership from the
-  live `CTaskForce+0x338/+0x344` vector. Owner, names, missions, locations,
-  army/army-group/theatre rows, and save-shaped nested OOB records are not yet
+- Current emitted rows are `oob_command:army_group:<army_group_id>`,
+  `oob_command:army:<army_id>`, `oob_command:fleet:<fleet_id>`, and
+  `oob_command:task_force:<task_force_id>`. Rows expose army-group member
+  armies, army member divisions, army parent groups, army leader ids, engine
+  member-count diagnostics, fleet task-force membership, task-force parent
+  fleet, and bounded CShip instance-id membership from the live
+  `CTaskForce+0x338/+0x344` vector. Owner, names, missions, locations, theatre
+  membership, naval leaders, and save-shaped nested OOB records are not yet
   claimed.
 - Remaining promotion work is a live active-naval-combat fixture, a
   root/hook-derived discoverer for combats born after preflight, speed-five

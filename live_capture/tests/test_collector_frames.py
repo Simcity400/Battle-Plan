@@ -1547,6 +1547,106 @@ class TestCollectorFrames(unittest.TestCase):
 
         self.assertEqual(validate_collector_frame(frame), [])
 
+    def test_raw_oob_command_army_group_delta_frame_validates(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": None,
+                "after": {
+                    "oob_key": "oob_command:army_group:81000",
+                    "entity_kind": "army_group",
+                    "army_id": None,
+                    "army_group_id": 81000,
+                    "fleet_id": None,
+                    "task_force_id": None,
+                    "member_division_ids": None,
+                    "member_division_count": None,
+                    "member_division_status": None,
+                    "member_army_ids": [82000, 82001],
+                    "member_army_count": 2,
+                    "member_army_status": "exact",
+                    "leader_id": None,
+                    "leader_status": None,
+                    "member_count_engine": None,
+                    "missing_member_count": None,
+                    "task_force_ids": None,
+                    "task_force_count": None,
+                    "task_force_status": None,
+                    "parent_status": None,
+                    "ship_ids": None,
+                    "ship_count": None,
+                    "ship_status": None,
+                },
+                "changed_fields": [
+                    "oob_key",
+                    "entity_kind",
+                    "army_group_id",
+                    "member_army_ids",
+                    "member_army_count",
+                    "member_army_status",
+                ],
+            },
+            domain="oob_command",
+            entity_key="oob_command:army_group:81000",
+            confidence="sampled",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_oob_command_army_delta_frame_validates(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": None,
+                "after": {
+                    "oob_key": "oob_command:army:82000",
+                    "entity_kind": "army",
+                    "army_id": 82000,
+                    "army_group_id": 81000,
+                    "fleet_id": None,
+                    "task_force_id": None,
+                    "member_division_ids": [1101, 1102, 1103],
+                    "member_division_count": 3,
+                    "member_division_status": "exact",
+                    "member_army_ids": None,
+                    "member_army_count": None,
+                    "member_army_status": None,
+                    "leader_id": 305,
+                    "leader_status": "exact",
+                    "member_count_engine": 3,
+                    "missing_member_count": 0,
+                    "task_force_ids": None,
+                    "task_force_count": None,
+                    "task_force_status": None,
+                    "parent_status": "exact",
+                    "ship_ids": None,
+                    "ship_count": None,
+                    "ship_status": None,
+                },
+                "changed_fields": [
+                    "oob_key",
+                    "entity_kind",
+                    "army_id",
+                    "army_group_id",
+                    "member_division_ids",
+                    "member_division_count",
+                    "member_division_status",
+                    "leader_id",
+                    "leader_status",
+                    "member_count_engine",
+                    "missing_member_count",
+                    "parent_status",
+                ],
+            },
+            domain="oob_command",
+            entity_key="oob_command:army:82000",
+            confidence="sampled",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
     def test_raw_oob_command_gap_delta_frame_validates(self):
         frame = self._raw_frame(
             "domain_delta",

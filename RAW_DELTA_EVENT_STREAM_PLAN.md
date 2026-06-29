@@ -348,14 +348,20 @@ Notes:
   target state, and sinking semantics still need unpaused mid-tick proof before
   they are treated as exact.
 
-Fleet/task-force membership:
+Command-hierarchy membership:
 
 - The first command-hierarchy DLL slice now emits raw `oob_command`
   domain-delta rows from a cache-first `oob_command_bridge` contract. The
   temporary control payload is semicolon-separated `kind:id:body_ptr` rows from
   `live_capture.collector_oob_command_bridge`; manifests store only sanitized
   counts/status.
-- The current emitted rows are deliberately narrow:
+- The current emitted rows are deliberately narrow but now span land and navy:
+  `oob_command:army_group:<army_group_id>` rows expose bounded
+  `member_army_ids`, `member_army_count`, and `member_army_status`;
+  `oob_command:army:<army_id>` rows expose `army_group_id`, `parent_status`,
+  bounded `member_division_ids`, `member_division_count`,
+  `member_division_status`, `leader_id`, `leader_status`,
+  `member_count_engine`, and `missing_member_count`;
   `oob_command:fleet:<fleet_id>` rows expose bounded `task_force_ids`,
   `task_force_count`, and `task_force_status`; and
   `oob_command:task_force:<task_force_id>` rows expose `fleet_id`,
@@ -363,11 +369,14 @@ Fleet/task-force membership:
 - Worker sampling does not sweep the heap. It revalidates CFleet/CTaskForce
   vtable + handle identity, resolves `CTaskForce+0x330` against bridged fleet
   bodies, and validates each inlined CShip pointer from
-  `CTaskForce+0x338/+0x344` before emitting ship ids.
-- This stream does not yet claim owner, fleet/task-force names, missions,
-  location, army/army-group/theatre rows, or save-shaped nested OOB records.
-  Invalid bridge/layout reads emit `oob_command:gap:<kind>` rows instead of
-  guessed hierarchy.
+  `CTaskForce+0x338/+0x344` before emitting ship ids. Land rows revalidate
+  army/army-group/division roots, map `CDivision+0xB0` parent armies, map
+  `CArmy+0x1B8` parent army groups, and validate `CArmy+0x88` leader pointers
+  before emitting leader ids.
+- This stream does not yet claim owner, command names, missions, locations,
+  theatre membership, naval leaders, or save-shaped nested OOB records. Invalid
+  bridge/layout reads emit `oob_command:gap:<kind>` rows instead of guessed
+  hierarchy.
 
 ### Air Activity
 

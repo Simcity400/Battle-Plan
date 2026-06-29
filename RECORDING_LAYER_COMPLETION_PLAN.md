@@ -230,18 +230,20 @@ Current recorder-facing bridge status:
   `--allow-ship-cold-scan`. This captures current CShip hull HP/org/XP, not
   owner, fleet/task-force membership, ship name, target, or exact sinking/damage
   events.
-- Fleet/task-force/ship membership now has the same bridge-gated raw-stream
+- Land and naval command membership now share the same bridge-gated raw-stream
   shape. The DLL accepts `oob_command_bridge` rows (`kind:id:body_ptr`),
-  revalidates bridged CFleet/CTaskForce object identity every sample, resolves
+  revalidates bridged army/army-group/division/fleet/task-force object identity
+  every sample, maps `CDivision+0xB0` parent armies, maps `CArmy+0x1B8` parent
+  army groups, validates `CArmy+0x88` leader pointers, resolves
   `CTaskForce+0x330` parent fleets against the bridge, validates CShip pointers
   from `CTaskForce+0x338/+0x344`, and emits pointer-free raw `oob_command`
-  deltas keyed as `oob_command:fleet:<id>` and
-  `oob_command:task_force:<id>`. The Python recorder can populate the bridge
-  with `--preflight-oob-command`; cache hits validate cached roots and the
-  expensive command-object vtable scan is gated by
-  `--allow-oob-command-cold-scan`. This captures membership joins, not owner,
-  names, missions, locations, army/army-group/theatre rows, or save-shaped OOB
-  nesting.
+  deltas keyed as `oob_command:army_group:<id>`, `oob_command:army:<id>`,
+  `oob_command:fleet:<id>`, and `oob_command:task_force:<id>`. The Python
+  recorder can populate the bridge with `--preflight-oob-command`; cache hits
+  validate cached roots and the expensive command-object vtable scan is gated by
+  `--allow-oob-command-cold-scan`. This captures live membership joins and army
+  leader ids, not owner, names, missions, locations, theatre rows, naval
+  leaders, or save-shaped OOB nesting.
 
 ## Definition Of Done
 

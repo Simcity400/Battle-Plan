@@ -490,7 +490,13 @@ RAW_SHIP_GAP_FIELDS = frozenset((
 RAW_OOB_COMMAND_ID_MAX = 4_000_000
 RAW_OOB_COMMAND_IDS_MAX = RAW_CONTAINER_MAX_ENTRIES
 RAW_OOB_COMMAND_SHIP_COUNT_MAX = 20_000
-RAW_OOB_COMMAND_ENTITY_KINDS = frozenset(("fleet", "task_force"))
+RAW_OOB_COMMAND_MEMBER_COUNT_MAX = 20_000
+RAW_OOB_COMMAND_ENTITY_KINDS = frozenset((
+    "army",
+    "army_group",
+    "fleet",
+    "task_force",
+))
 RAW_OOB_COMMAND_STATUSES = frozenset((
     "exact",
     "unknown",
@@ -500,8 +506,20 @@ RAW_OOB_COMMAND_STATUSES = frozenset((
 RAW_OOB_COMMAND_FIELDS = frozenset((
     "oob_key",
     "entity_kind",
+    "army_id",
+    "army_group_id",
     "fleet_id",
     "task_force_id",
+    "member_division_ids",
+    "member_division_count",
+    "member_division_status",
+    "member_army_ids",
+    "member_army_count",
+    "member_army_status",
+    "leader_id",
+    "leader_status",
+    "member_count_engine",
+    "missing_member_count",
     "task_force_ids",
     "task_force_count",
     "task_force_status",
@@ -3167,32 +3185,68 @@ def _validate_raw_oob_command_row(
     elif require_identity and entity_kind is None:
         problems.append(f"{prefix}.entity_kind missing")
 
+    army_id = row.get("army_id")
+    army_group_id = row.get("army_group_id")
     fleet_id = row.get("fleet_id")
     task_force_id = row.get("task_force_id")
-    if fleet_id is not None and not _valid_bounded_int(
-        fleet_id,
-        minimum=1,
-        maximum=RAW_OOB_COMMAND_ID_MAX,
+    leader_id = row.get("leader_id")
+    for key, value in (
+        ("army_id", army_id),
+        ("army_group_id", army_group_id),
+        ("fleet_id", fleet_id),
+        ("task_force_id", task_force_id),
+        ("leader_id", leader_id),
     ):
-        problems.append(f"{prefix}.fleet_id not positive int|null in range")
-    if task_force_id is not None and not _valid_bounded_int(
-        task_force_id,
-        minimum=1,
-        maximum=RAW_OOB_COMMAND_ID_MAX,
-    ):
-        problems.append(f"{prefix}.task_force_id not positive int|null in range")
+        if value is not None and not _valid_bounded_int(
+            value,
+            minimum=1,
+            maximum=RAW_OOB_COMMAND_ID_MAX,
+        ):
+            problems.append(f"{prefix}.{key} not positive int|null in range")
 
     if effective_entity is not None:
         kind, object_id = effective_entity
-        if kind == "fleet":
+        if kind == "army":
+            if army_id != object_id:
+                problems.append(f"{prefix}.army_id != entity_key")
+            if fleet_id is not None:
+                problems.append(f"{prefix}.fleet_id set on army row")
+            if task_force_id is not None:
+                problems.append(f"{prefix}.task_force_id set on army row")
+        elif kind == "army_group":
+            if army_group_id != object_id:
+                problems.append(f"{prefix}.army_group_id != entity_key")
+            if army_id is not None:
+                problems.append(f"{prefix}.army_id set on army_group row")
+            if fleet_id is not None:
+                problems.append(f"{prefix}.fleet_id set on army_group row")
+            if task_force_id is not None:
+                problems.append(f"{prefix}.task_force_id set on army_group row")
+        elif kind == "fleet":
             if fleet_id != object_id:
                 problems.append(f"{prefix}.fleet_id != entity_key")
+            if army_id is not None:
+                problems.append(f"{prefix}.army_id set on fleet row")
+            if army_group_id is not None:
+                problems.append(f"{prefix}.army_group_id set on fleet row")
             if task_force_id is not None:
                 problems.append(f"{prefix}.task_force_id set on fleet row")
-        if kind == "task_force":
+        elif kind == "task_force":
             if task_force_id != object_id:
                 problems.append(f"{prefix}.task_force_id != entity_key")
+            if army_id is not None:
+                problems.append(f"{prefix}.army_id set on task_force row")
+            if army_group_id is not None:
+                problems.append(f"{prefix}.army_group_id set on task_force row")
 
+    problems.extend(_validate_oob_id_list(
+        row.get("member_division_ids"),
+        f"{prefix}.member_division_ids",
+    ))
+    problems.extend(_validate_oob_id_list(
+        row.get("member_army_ids"),
+        f"{prefix}.member_army_ids",
+    ))
     problems.extend(_validate_oob_id_list(
         row.get("task_force_ids"),
         f"{prefix}.task_force_ids",
@@ -3202,23 +3256,54 @@ def _validate_raw_oob_command_row(
         f"{prefix}.ship_ids",
     ))
 
-    task_force_count = row.get("task_force_count")
-    if task_force_count is not None and not _valid_bounded_int(
-        task_force_count,
-        minimum=0,
-        maximum=RAW_OOB_COMMAND_SHIP_COUNT_MAX,
+    for key in (
+        "member_division_count",
+        "member_army_count",
+        "member_count_engine",
+        "missing_member_count",
     ):
-        problems.append(f"{prefix}.task_force_count not nonnegative int|null in range")
+        value = row.get(key)
+        if value is not None and not _valid_bounded_int(
+            value,
+            minimum=0,
+            maximum=RAW_OOB_COMMAND_MEMBER_COUNT_MAX,
+        ):
+            problems.append(f"{prefix}.{key} not nonnegative int|null in range")
 
-    ship_count = row.get("ship_count")
-    if ship_count is not None and not _valid_bounded_int(
-        ship_count,
-        minimum=0,
-        maximum=RAW_OOB_COMMAND_SHIP_COUNT_MAX,
+    for key in ("task_force_count", "ship_count"):
+        value = row.get(key)
+        if value is not None and not _valid_bounded_int(
+            value,
+            minimum=0,
+            maximum=RAW_OOB_COMMAND_SHIP_COUNT_MAX,
+        ):
+            problems.append(f"{prefix}.{key} not nonnegative int|null in range")
+
+    member_count_engine = row.get("member_count_engine")
+    missing_member_count = row.get("missing_member_count")
+    if (
+        _valid_bounded_int(
+            member_count_engine,
+            minimum=0,
+            maximum=RAW_OOB_COMMAND_MEMBER_COUNT_MAX,
+        )
+        and _valid_bounded_int(
+            missing_member_count,
+            minimum=0,
+            maximum=RAW_OOB_COMMAND_MEMBER_COUNT_MAX,
+        )
+        and missing_member_count > member_count_engine
     ):
-        problems.append(f"{prefix}.ship_count not nonnegative int|null in range")
+        problems.append(f"{prefix}.missing_member_count exceeds member_count_engine")
 
-    for key in ("task_force_status", "parent_status", "ship_status"):
+    for key in (
+        "member_division_status",
+        "member_army_status",
+        "leader_status",
+        "task_force_status",
+        "parent_status",
+        "ship_status",
+    ):
         status = row.get(key)
         if status is not None and status not in RAW_OOB_COMMAND_STATUSES:
             problems.append(f"{prefix}.{key} invalid")

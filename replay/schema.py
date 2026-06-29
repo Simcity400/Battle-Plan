@@ -1800,14 +1800,13 @@ class OrderOfBattle:
     its `owner` TAG. `by_country` is the per-tag count rollup (also mirrored onto
     Country.order_of_battle for convenience).
 
-    LIVE command TREE (§12c, oob_command_live.py, M): armies/army_groups/fleets/theatres are
-    filled live-first by the "oob_command" domain (membership ids + leader_id + owner-consensus
-    TAG; task forces nest under each fleet). The save oob.json is the BACKSTOP for those (M/S);
-    navy_theaters and the save-shaped air_wings list stay save-only; the separate
-    raw `air_wings` domain carries live wing telemetry. Membership/leader ids are
-    RAW engine ints (NOT TAGs); only `owner` is a resolved country TAG. When a live
-    list is filled, the assembler sets a matching `<list>_source = "M"` key
-    (validator-inert) alongside it.
+    LIVE command TREE (§12c, oob_command_live.py, M/S): the raw "oob_command"
+    domain currently carries army-group member army ids, army member division ids,
+    army parent group ids, army leader ids, fleet member task-force ids, and
+    task-force member ship instance ids. The save oob.json remains the BACKSTOP
+    for owner TAGs, command names, theatres, missions, locations, naval leaders,
+    and save-shaped nesting. The separate raw `air_wings` domain carries live
+    wing telemetry.
     """
     army_groups: List[Dict[str, Any]] = field(default_factory=list)
     armies: List[Dict[str, Any]] = field(default_factory=list)
