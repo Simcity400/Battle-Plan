@@ -78,7 +78,9 @@ DOMAINS = (
     # canonical here too):
     "country_misc",          # convoys_destroyed/accidents/ace_count/cosmetic_tag (M)
     "mio",                   # LIVE MIO pool -> top-level mio_live (M)
-    "ships",                 # LIVE per-ship OOB -> order_of_battle.ships (M)
+    "ships",                 # LIVE per-ship OOB/CShip telemetry -> order_of_battle.ships (C/M);
+                             # raw collector deltas use stable ship:<instance_id> keys and carry
+                             # CShip strength/org/experience/category/sunk-convoy stats.
     # LIVE per-country domains that fold into the SAME canonical save HOMES
     # (research/commanders/intel) but are tracked under DISTINCT *_live provenance
     # ids so the live memory channel never collides with the save channel's

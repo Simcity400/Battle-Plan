@@ -292,12 +292,30 @@ Source candidates:
   - `OobShipRegistry.build_index()`
   - `OobShipRegistry.read_ship()`
 
+Ship/CShip telemetry:
+
+- The Rust collector now accepts a separate `ship_body_bridge` control contract:
+  semicolon-separated `instance_id:body_ptr` CShip rows produced outside the
+  hot loop from the existing `OobShipRegistry` cache/preflight path.
+- Each bridged CShip body is revalidated every sample with vtable
+  `MODULE+0x2931998`, handle type `51`, handle high-id matching
+  `instance_id`, and the `ref100_raw == 10000000` sentinel before any row is
+  emitted.
+- The raw `ships` domain uses stable `ship:<instance_id>` keys and carries
+  pointer-free CShip stats: definition token when readable, category enum/label,
+  `strength_raw` plus decoded absolute `strength_hp`, `organisation_raw` plus
+  decoded `organisation`, `experience_raw` plus decoded `experience`, and
+  `sunk_convoys`.
+- Owner, fleet/task-force membership, ship name, refit/equipment variant,
+  target, hit counters, and sinking events are intentionally not claimed from
+  this row. Combat wrapper state remains in `naval_combat_members`; command
+  hierarchy and names still require their own sources.
+
 Cadence:
 
 - Sample active naval combats at the high-frequency combat cadence.
-- Sample global CShip stats opportunistically for ships participating in active
-  combats; avoid whole-navy scans in the hot path unless a cached registry has
-  been validated.
+- Sample global CShip stats from the preflight/cache bridge at a bounded
+  sub-second cadence; avoid whole-navy scans in the hot path.
 
 Events/deltas:
 
@@ -305,7 +323,7 @@ Events/deltas:
 - `naval_combat_updated`
 - `naval_combat_ended`
 - Later per-ship streams: `naval_combat_participants_changed`,
-  `naval_ship_strength_delta`, `naval_ship_sunk`, and
+  `naval_ship_sunk`, exact damage/hit counters, and
   `naval_combat_damage_delta`.
 
 Notes:
@@ -326,8 +344,9 @@ Notes:
   `naval_combat_members`.
 - The member stream deliberately does not claim current HP, organisation,
   target, aggregate attack rows, or UI damage totals. Current ship strength/org
-  require the separate `CShip` registry bridge; damage history and hit counters
-  still need unpaused mid-tick proof before they are treated as exact.
+  now come from the separate `ships` CShip bridge; damage history, hit counters,
+  target state, and sinking semantics still need unpaused mid-tick proof before
+  they are treated as exact.
 
 ### Air Activity
 

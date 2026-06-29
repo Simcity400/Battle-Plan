@@ -1364,6 +1364,117 @@ class TestCollectorFrames(unittest.TestCase):
         ):
             self.assertTrue(any(needle in p for p in problems), (needle, problems))
 
+    def test_raw_ship_delta_frame_validates(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": None,
+                "after": {
+                    "ship_key": "ship:3458",
+                    "instance_id": 3458,
+                    "definition": "submarine_2",
+                    "category_enum": 2,
+                    "category": "submarine",
+                    "strength_raw": 3_997_607,
+                    "strength_hp": 39.97607,
+                    "organisation_raw": 5_420_000,
+                    "organisation": 54.2,
+                    "experience_raw": 9_936_256,
+                    "experience": 99.36256,
+                    "sunk_convoys": 0,
+                },
+                "changed_fields": [
+                    "ship_key",
+                    "instance_id",
+                    "definition",
+                    "category_enum",
+                    "category",
+                    "strength_raw",
+                    "strength_hp",
+                    "organisation_raw",
+                    "organisation",
+                    "experience_raw",
+                    "experience",
+                    "sunk_convoys",
+                ],
+            },
+            domain="ships",
+            entity_key="ship:3458",
+            confidence="sampled",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_ship_gap_delta_frame_validates(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": None,
+                "after": {
+                    "gap_key": "ships:gap:bridge_entry_invalid",
+                    "gap_kind": "bridge_entry_invalid",
+                    "status": "validation_failed",
+                },
+                "changed_fields": ["gap_key", "gap_kind", "status"],
+            },
+            domain="ships",
+            entity_key="ships:gap:bridge_entry_invalid",
+            confidence="gap",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_ship_delta_rejects_raw_leakage_and_bad_rows(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": None,
+                "after": {
+                    "ship_key": "ship:3459",
+                    "instance_id": 3459,
+                    "definition": "0x1234",
+                    "category_enum": 4,
+                    "category": "bad_category",
+                    "strength_raw": 1_000_000_001,
+                    "strength_hp": 10_000.1,
+                    "organisation_raw": 100_000_001,
+                    "organisation": 1000.1,
+                    "experience_raw": 100_000_001,
+                    "experience": 1000.1,
+                    "sunk_convoys": 100_000_001,
+                    "body_ptr": "0x1234",
+                },
+                "changed_fields": ["strength_raw", "body_ptr"],
+            },
+            domain="ships",
+            entity_key="ship:3458",
+            confidence="sampled",
+        )
+
+        problems = validate_collector_frame(frame)
+
+        for needle in (
+            "payload contains raw pointer/tag-db diagnostic key",
+            "changed_fields[1] raw pointer/tag-db diagnostic key",
+            "after.body_ptr unsupported",
+            "after.ship_key != entity_key",
+            "after.instance_id != entity_key",
+            "after.definition looks like pointer",
+            "after.category_enum invalid",
+            "after.category invalid",
+            "after.strength_raw not nonnegative int|null in range",
+            "after.strength_hp not finite number|null in range",
+            "after.organisation_raw not nonnegative int|null in range",
+            "after.organisation not finite number|null in range",
+            "after.experience_raw not nonnegative int|null in range",
+            "after.experience not finite number|null in range",
+            "after.sunk_convoys not nonnegative int|null in range",
+        ):
+            self.assertTrue(any(needle in p for p in problems), (needle, problems))
+
     def test_raw_domain_delta_frame_rejects_malformed_payload(self):
         frame = self._raw_frame(
             "domain_delta",

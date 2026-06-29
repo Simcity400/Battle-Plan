@@ -453,6 +453,40 @@ RAW_AIR_WING_GAP_FIELDS = frozenset((
     "gap_kind",
     "status",
 ))
+RAW_SHIP_INSTANCE_ID_MAX = 4_000_000
+RAW_SHIP_FIXED_RAW_MAX = 1_000_000_000
+RAW_SHIP_PERCENT_RAW_MAX = 100_000_000
+RAW_SHIP_STRENGTH_HP_MAX = 10_000.0
+RAW_SHIP_NORMALIZED_MAX = 1000.0
+RAW_SHIP_SUNK_CONVOYS_MAX = 100_000_000
+RAW_SHIP_CATEGORY_LABELS = {
+    2: "submarine",
+    3: "destroyer",
+    5: "light_cruiser",
+    6: "heavy_cruiser",
+    8: "battle_cruiser",
+    9: "battleship",
+    10: "carrier",
+}
+RAW_SHIP_FIELDS = frozenset((
+    "ship_key",
+    "instance_id",
+    "definition",
+    "category_enum",
+    "category",
+    "strength_raw",
+    "strength_hp",
+    "organisation_raw",
+    "organisation",
+    "experience_raw",
+    "experience",
+    "sunk_convoys",
+))
+RAW_SHIP_GAP_FIELDS = frozenset((
+    "gap_key",
+    "gap_kind",
+    "status",
+))
 RAW_FORBIDDEN_KEY_NAMES = frozenset((
     "addr",
     "address",
@@ -1189,6 +1223,8 @@ def _validate_raw_domain_delta_payload(
         problems.extend(_validate_raw_naval_combat_member_delta(frame, payload))
     if frame.get("domain") == "air_wings":
         problems.extend(_validate_raw_air_wing_delta(frame, payload))
+    if frame.get("domain") == "ships":
+        problems.extend(_validate_raw_ship_delta(frame, payload))
     return problems
 
 
@@ -2721,7 +2757,226 @@ def _validate_raw_air_wing_row(
         minimum=1,
         maximum=RAW_AIR_WING_REGION_ID_MAX,
     ):
-        problems.append(f"{prefix}.mission_region not positive int|null in range")
+            problems.append(f"{prefix}.mission_region not positive int|null in range")
+    return problems
+
+
+def _validate_raw_ship_delta(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> List[str]:
+    problems: List[str] = []
+    if _is_raw_ship_gap_delta(frame, payload):
+        return _validate_raw_ship_gap_delta(frame, payload)
+
+    entity_uid = _parse_raw_ship_entity_key(frame.get("entity_key"))
+    if entity_uid is None:
+        problems.append("collector ship delta entity_key not stable ship key")
+    if _contains_forbidden_raw_key(payload):
+        problems.append(
+            "collector ship delta payload contains raw pointer/tag-db diagnostic key"
+        )
+    changed_fields = payload.get("changed_fields")
+    if isinstance(changed_fields, list):
+        for i, field in enumerate(changed_fields):
+            if _forbidden_raw_key_name(field):
+                problems.append(
+                    "collector ship delta "
+                    f"changed_fields[{i}] raw pointer/tag-db diagnostic key"
+                )
+            elif field not in RAW_SHIP_FIELDS:
+                problems.append(f"collector ship delta changed_fields[{i}] invalid")
+    for row_key in ("before", "after"):
+        row = payload.get(row_key)
+        if isinstance(row, dict):
+            problems.extend(_validate_raw_ship_row(
+                row,
+                f"collector ship delta {row_key}",
+                entity_uid,
+                require_identity=(row_key == "after"),
+            ))
+    return problems
+
+
+def _is_raw_ship_gap_delta(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> bool:
+    return (
+        frame.get("confidence") == "gap"
+        or _parse_raw_ship_gap_key(frame.get("entity_key")) is not None
+        or (
+            isinstance(payload.get("after"), dict)
+            and "gap_kind" in payload["after"]
+        )
+    )
+
+
+def _validate_raw_ship_gap_delta(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> List[str]:
+    problems: List[str] = []
+    entity_key = frame.get("entity_key")
+    gap_kind = _parse_raw_ship_gap_key(entity_key)
+    if gap_kind is None:
+        problems.append("collector ship gap entity_key not stable ships gap key")
+    if _contains_forbidden_raw_key(payload):
+        problems.append(
+            "collector ship gap payload contains raw pointer/tag-db diagnostic key"
+        )
+    changed_fields = payload.get("changed_fields")
+    if isinstance(changed_fields, list):
+        for i, field in enumerate(changed_fields):
+            if _forbidden_raw_key_name(field):
+                problems.append(
+                    "collector ship gap "
+                    f"changed_fields[{i}] raw pointer/tag-db diagnostic key"
+                )
+            elif field not in RAW_SHIP_GAP_FIELDS:
+                problems.append(f"collector ship gap changed_fields[{i}] invalid")
+    for row_key in ("before", "after"):
+        row = payload.get(row_key)
+        if isinstance(row, dict):
+            problems.extend(_validate_raw_ship_gap_row(
+                row,
+                f"collector ship gap {row_key}",
+                entity_key if isinstance(entity_key, str) else None,
+                gap_kind,
+            ))
+    return problems
+
+
+def _validate_raw_ship_gap_row(
+    row: Dict[str, Any],
+    prefix: str,
+    entity_key: Optional[str],
+    entity_gap_kind: Optional[str],
+) -> List[str]:
+    problems: List[str] = []
+    for key in row:
+        if key not in RAW_SHIP_GAP_FIELDS:
+            problems.append(f"{prefix}.{key} unsupported")
+
+    gap_key = row.get("gap_key")
+    if not _valid_raw_key(gap_key):
+        problems.append(f"{prefix}.gap_key missing or not stable str")
+    elif entity_key is not None and gap_key != entity_key:
+        problems.append(f"{prefix}.gap_key != entity_key")
+
+    gap_kind = row.get("gap_kind")
+    if not _valid_raw_string(gap_kind, max_length=RAW_SHORT_STRING_MAX_LENGTH):
+        problems.append(f"{prefix}.gap_kind missing or not bounded str")
+    elif _valid_hex_pointer(gap_kind):
+        problems.append(f"{prefix}.gap_kind looks like pointer")
+    elif entity_gap_kind is not None and gap_kind != entity_gap_kind:
+        problems.append(f"{prefix}.gap_kind != entity_key")
+
+    status = row.get("status")
+    if status not in ("validation_failed", "unsupported", "layout_invalid"):
+        problems.append(f"{prefix}.status invalid")
+    return problems
+
+
+def _validate_raw_ship_row(
+    row: Dict[str, Any],
+    prefix: str,
+    entity_uid: Optional[int],
+    *,
+    require_identity: bool,
+) -> List[str]:
+    problems: List[str] = []
+    for key in row:
+        if key not in RAW_SHIP_FIELDS:
+            problems.append(f"{prefix}.{key} unsupported")
+
+    ship_key = row.get("ship_key")
+    if ship_key is not None:
+        parsed_key = _parse_raw_ship_entity_key(ship_key)
+        if parsed_key is None:
+            problems.append(f"{prefix}.ship_key not stable ship key|null")
+        elif entity_uid is not None and parsed_key != entity_uid:
+            problems.append(f"{prefix}.ship_key != entity_key")
+    elif require_identity:
+        problems.append(f"{prefix}.ship_key missing")
+
+    instance_id = row.get("instance_id")
+    if instance_id is None:
+        if require_identity:
+            problems.append(f"{prefix}.instance_id missing")
+    elif not _valid_bounded_int(
+        instance_id,
+        minimum=1,
+        maximum=RAW_SHIP_INSTANCE_ID_MAX,
+    ):
+        problems.append(f"{prefix}.instance_id not positive int|null in range")
+    elif entity_uid is not None and instance_id != entity_uid:
+        problems.append(f"{prefix}.instance_id != entity_key")
+
+    definition = row.get("definition")
+    if definition is not None:
+        if not _valid_raw_string(definition, max_length=RAW_SHORT_STRING_MAX_LENGTH):
+            problems.append(f"{prefix}.definition not bounded str|null")
+        elif _valid_hex_pointer(definition):
+            problems.append(f"{prefix}.definition looks like pointer")
+
+    category_enum = row.get("category_enum")
+    category = row.get("category")
+    if category_enum is not None and not _valid_bounded_int(
+        category_enum,
+        minimum=0,
+        maximum=100,
+    ):
+        problems.append(f"{prefix}.category_enum not nonnegative int|null in range")
+    elif category_enum is not None and category_enum not in RAW_SHIP_CATEGORY_LABELS:
+        problems.append(f"{prefix}.category_enum invalid")
+
+    if category is not None:
+        if not _valid_raw_string(category, max_length=RAW_SHORT_STRING_MAX_LENGTH):
+            problems.append(f"{prefix}.category not bounded str|null")
+        elif category not in set(RAW_SHIP_CATEGORY_LABELS.values()):
+            problems.append(f"{prefix}.category invalid")
+        elif (
+            category_enum in RAW_SHIP_CATEGORY_LABELS
+            and category != RAW_SHIP_CATEGORY_LABELS[category_enum]
+        ):
+            problems.append(f"{prefix}.category != category_enum")
+
+    raw_bounds = (
+        ("strength_raw", RAW_SHIP_FIXED_RAW_MAX),
+        ("organisation_raw", RAW_SHIP_PERCENT_RAW_MAX),
+        ("experience_raw", RAW_SHIP_PERCENT_RAW_MAX),
+    )
+    for key, maximum in raw_bounds:
+        value = row.get(key)
+        if value is not None and not _valid_bounded_int(
+            value,
+            minimum=0,
+            maximum=maximum,
+        ):
+            problems.append(f"{prefix}.{key} not nonnegative int|null in range")
+
+    float_bounds = (
+        ("strength_hp", RAW_SHIP_STRENGTH_HP_MAX),
+        ("organisation", RAW_SHIP_NORMALIZED_MAX),
+        ("experience", RAW_SHIP_NORMALIZED_MAX),
+    )
+    for key, maximum in float_bounds:
+        value = row.get(key)
+        if value is not None and (
+            not _is_finite_number(value)
+            or value < 0.0
+            or value > maximum
+        ):
+            problems.append(f"{prefix}.{key} not finite number|null in range")
+
+    sunk_convoys = row.get("sunk_convoys")
+    if sunk_convoys is not None and not _valid_bounded_int(
+        sunk_convoys,
+        minimum=0,
+        maximum=RAW_SHIP_SUNK_CONVOYS_MAX,
+    ):
+        problems.append(f"{prefix}.sunk_convoys not nonnegative int|null in range")
     return problems
 
 
@@ -3024,6 +3279,30 @@ def _parse_raw_air_wing_gap_key(value: Any) -> Optional[str]:
     if not isinstance(value, str) or not value.startswith("air_wings:gap:"):
         return None
     gap_kind = value[len("air_wings:gap:"):]
+    if not _valid_raw_string(gap_kind, max_length=RAW_SHORT_STRING_MAX_LENGTH):
+        return None
+    if _valid_hex_pointer(gap_kind):
+        return None
+    return gap_kind
+
+
+def _parse_raw_ship_entity_key(value: Any) -> Optional[int]:
+    if not isinstance(value, str) or not value.startswith("ship:"):
+        return None
+    raw = value[len("ship:"):]
+    instance_id = _parse_raw_nonnegative_int_string(
+        raw,
+        maximum=RAW_SHIP_INSTANCE_ID_MAX,
+    )
+    if instance_id is None or instance_id == 0:
+        return None
+    return instance_id
+
+
+def _parse_raw_ship_gap_key(value: Any) -> Optional[str]:
+    if not isinstance(value, str) or not value.startswith("ships:gap:"):
+        return None
+    gap_kind = value[len("ships:gap:"):]
     if not _valid_raw_string(gap_kind, max_length=RAW_SHORT_STRING_MAX_LENGTH):
         return None
     if _valid_hex_pointer(gap_kind):

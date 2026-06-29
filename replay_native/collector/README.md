@@ -355,12 +355,24 @@ Naval-combat raw stream status:
   identity, owner TAG, designed max-strength raw value, battle-slot index,
   state bitmask, and engagement-weight raw value, with no body/member address
   leakage.
-- Current HP/org still require the separate global `CShip` registry bridge.
-  Targets, aggregate attack rows, damage ticks, hit counters, sinking events,
-  and UI damage totals remain follow-up streams pending live proof.
+- Current CShip hull HP/org/XP now have their own bridge-gated raw `ships`
+  stream. The Rust DLL accepts `ship_body_bridge` rows in
+  `collector_control.json` as `instance_id:body_ptr` entries, revalidates the
+  CShip vtable, handle type/id, and `ref100` sentinel every sample, and emits
+  pointer-free `ship:<instance_id>` deltas with definition, category,
+  strength/org/experience raw values plus decoded floats, and sunk-convoy
+  counts.
+- The recorder can populate that bridge with
+  `live_capture.collector_session --preflight-ships`; by default it is
+  cache-first and fails closed unless `--allow-ship-cold-scan` explicitly
+  allows the slower global CShip vtable scan. Manifests store sanitized
+  counts/status only.
+- Targets, aggregate attack rows, damage ticks, hit counters, sinking events,
+  fleet/task-force membership, ship names, and UI damage totals remain follow-up
+  streams pending live proof or separate command/OOB sources.
 - Remaining promotion work is a live active-naval-combat fixture, a
-  root/hook-derived discoverer for combats born after preflight, optional CShip
-  enrichment, speed-five soak, and timeline ingestion.
+  root/hook-derived discoverer for combats born after preflight, speed-five
+  soak, exact damage/sinking semantics, and timeline ingestion.
 
 Air-wing raw stream status:
 

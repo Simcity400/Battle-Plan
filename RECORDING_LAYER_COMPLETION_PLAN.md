@@ -219,6 +219,17 @@ Current recorder-facing bridge status:
   display identity, owner TAG, designed max-strength raw value, battle-slot
   index, state bitmask, and engagement-weight raw value. They intentionally do
   not claim current HP/org, targets, aggregate attack rows, or UI damage totals.
+- Global CShip stats now have the same bridge-gated raw-stream shape. The DLL
+  accepts `ship_body_bridge` rows (`instance_id:body_ptr`), revalidates the
+  CShip vtable, handle type/id, and `ref100` sentinel every sample, and emits
+  pointer-free raw `ships` deltas keyed as `ship:<instance_id>`. Rows carry
+  definition token when readable, category enum/label, strength/org/experience
+  raw fixed-point values plus decoded floats, and sunk-convoy counts. The Python
+  recorder can populate the bridge with `--preflight-ships`; cache hits validate
+  cached bodies and the expensive global CShip vtable scan is gated by
+  `--allow-ship-cold-scan`. This captures current CShip hull HP/org/XP, not
+  owner, fleet/task-force membership, ship name, target, or exact sinking/damage
+  events.
 
 ## Definition Of Done
 

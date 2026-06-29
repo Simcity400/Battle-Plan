@@ -363,6 +363,25 @@ mod attach_log {
     const MAX_NAVAL_COMBAT_MEMBER_STRING_LEN: usize = 128;
     const MAX_NAVAL_COMBAT_MEMBER_MAX_STRENGTH_RAW: u32 = 1_000_000_000;
     const MAX_NAVAL_COMBAT_MEMBER_ENGAGEMENT_WEIGHT_RAW: u32 = 10_000_000;
+    const CSHIP_VTABLE_RVA: usize = 0x2931998;
+    const CSHIP_TYPE: u32 = 51;
+    const CSHIP_OFF_HANDLE: usize = 0x08;
+    const CSHIP_OFF_SUNK_CONVOYS: usize = 0x3C;
+    const CSHIP_OFF_DEFINITION: usize = 0x98;
+    const CSHIP_OFF_CATEGORY: usize = 0xE0;
+    const CSHIP_OFF_STRENGTH: usize = 0x6F8;
+    const CSHIP_OFF_ORGANISATION: usize = 0x700;
+    const CSHIP_OFF_EXPERIENCE: usize = 0x708;
+    const CSHIP_OFF_REF100: usize = 0x710;
+    const CSHIP_REF100_RAW: u32 = 10_000_000;
+    const MAX_SHIP_BODY_BRIDGE_ROWS: usize = 20_000;
+    const MAX_SHIP_BODY_BRIDGE_PAYLOAD_BYTES: usize = 2 * 1024 * 1024;
+    const MAX_SHIP_INSTANCE_ID: u32 = 4_000_000;
+    const MAX_SHIP_STRENGTH_RAW: u32 = 1_000_000_000;
+    const MAX_SHIP_ORGANISATION_RAW: u32 = 100_000_000;
+    const MAX_SHIP_EXPERIENCE_RAW: u32 = 100_000_000;
+    const MAX_SHIP_DEFINITION_LEN: usize = 128;
+    const SHIP_STATS_SAMPLE_MIN_MS: u64 = 250;
     const AIR_WING_VTABLE_RVA: usize = 0x29540C0;
     const AIR_WING_POOL_VTABLE_RVA: usize = 0x2954118;
     const AIR_WING_OWNER_COUNTRY_VTABLE_RVA: usize = 0x2932248;
@@ -567,6 +586,8 @@ mod attach_log {
             let mut naval_combat_member_tracker = NavalCombatMemberTracker::default();
             let mut air_wing_tracker = AirWingTracker::default();
             let mut last_air_wing_sample_elapsed_ms: Option<u64> = None;
+            let mut ship_stats_tracker = ShipStatsTracker::default();
+            let mut last_ship_stats_sample_elapsed_ms: Option<u64> = None;
             while Instant::now() <= deadline {
                 let elapsed_wall_ms = duration_millis_u64(worker_started.elapsed());
                 let capture_boundary = capture_boundary_for_frame(
@@ -668,6 +689,24 @@ mod attach_log {
                     }
                     last_air_wing_sample_elapsed_ms = Some(elapsed_wall_ms);
                 }
+                let sample_ship_stats = last_ship_stats_sample_elapsed_ms
+                    .map(|last| elapsed_wall_ms.saturating_sub(last) >= SHIP_STATS_SAMPLE_MIN_MS)
+                    .unwrap_or(true);
+                if sample_ship_stats {
+                    for line in build_ship_stats_raw_domain_delta_lines(
+                        pid,
+                        state.as_ref(),
+                        &control,
+                        &mut ship_stats_tracker,
+                        session_sequence,
+                        Some(elapsed_wall_ms),
+                        capture_boundary,
+                    ) {
+                        write_sinks(file.as_mut(), pipe, line.as_bytes());
+                        session_sequence = session_sequence.saturating_add(1);
+                    }
+                    last_ship_stats_sample_elapsed_ms = Some(elapsed_wall_ms);
+                }
                 thread::sleep(Duration::from_millis(control.sample_ms as u64));
             }
         } else {
@@ -698,6 +737,8 @@ mod attach_log {
         naval_combat_body_bridge_valid: bool,
         air_wing_body_bridge: Vec<AirWingBodyBridgeEntry>,
         air_wing_body_bridge_valid: bool,
+        ship_body_bridge: Vec<ShipBodyBridgeEntry>,
+        ship_body_bridge_valid: bool,
         map_control: MapControlContract,
         advisor_token_filter: BTreeMap<String, AdvisorTokenInfo>,
         advisor_token_filter_valid: bool,
@@ -737,6 +778,12 @@ mod attach_log {
     struct AirWingBodyBridgeEntry {
         owner_tag_db_id: u32,
         wing_id: u32,
+        body_ptr: usize,
+    }
+
+    #[derive(Clone, Copy)]
+    struct ShipBodyBridgeEntry {
+        instance_id: u32,
         body_ptr: usize,
     }
 
@@ -905,6 +952,14 @@ mod attach_log {
                 },
                 None => (Vec::new(), true),
             };
+        let (ship_body_bridge, ship_body_bridge_valid) =
+            match parse_json_string(&text, "ship_body_bridge") {
+                Some(value) => match parse_ship_body_bridge(&value) {
+                    Some(rows) => (rows, true),
+                    None => (Vec::new(), false),
+                },
+                None => (Vec::new(), true),
+            };
         let (advisor_token_filter, advisor_token_filter_valid) =
             match parse_json_string(&text, "advisor_token_filter") {
                 Some(value) => match parse_advisor_token_filter(&value) {
@@ -942,6 +997,8 @@ mod attach_log {
             naval_combat_body_bridge_valid,
             air_wing_body_bridge,
             air_wing_body_bridge_valid,
+            ship_body_bridge,
+            ship_body_bridge_valid,
             map_control,
             advisor_token_filter,
             advisor_token_filter_valid,
@@ -1313,6 +1370,68 @@ mod attach_log {
             if seen_keys
                 .insert((row.owner_tag_db_id, row.wing_id), ())
                 .is_some()
+                || seen_body_ptrs.insert(row.body_ptr, ()).is_some()
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn parse_ship_body_bridge(value: &str) -> Option<Vec<ShipBodyBridgeEntry>> {
+        if value.trim().is_empty() {
+            return Some(Vec::new());
+        }
+        if value.len() > MAX_SHIP_BODY_BRIDGE_PAYLOAD_BYTES {
+            return None;
+        }
+        let mut entries = Vec::new();
+        let mut seen_instance_ids: BTreeMap<u32, ()> = BTreeMap::new();
+        let mut seen_body_ptrs: BTreeMap<usize, ()> = BTreeMap::new();
+        for raw in value.split(';') {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                return None;
+            }
+            let (id_raw, ptr_raw) = raw.split_once(':')?;
+            let instance_id = parse_bridge_u32(id_raw.trim())?;
+            if instance_id == 0 || instance_id > MAX_SHIP_INSTANCE_ID {
+                return None;
+            }
+            let body_ptr = parse_bridge_pointer(ptr_raw.trim())?;
+            if !is_map_control_heap_pointer(body_ptr) {
+                return None;
+            }
+            if seen_instance_ids.insert(instance_id, ()).is_some()
+                || seen_body_ptrs.insert(body_ptr, ()).is_some()
+            {
+                return None;
+            }
+            entries.push(ShipBodyBridgeEntry {
+                instance_id,
+                body_ptr,
+            });
+            if entries.len() > MAX_SHIP_BODY_BRIDGE_ROWS {
+                return None;
+            }
+        }
+        Some(entries)
+    }
+
+    fn ship_body_bridge_well_formed(rows: &[ShipBodyBridgeEntry]) -> bool {
+        if rows.len() > MAX_SHIP_BODY_BRIDGE_ROWS {
+            return false;
+        }
+        let mut seen_instance_ids: BTreeMap<u32, ()> = BTreeMap::new();
+        let mut seen_body_ptrs: BTreeMap<usize, ()> = BTreeMap::new();
+        for row in rows {
+            if row.instance_id == 0 || row.instance_id > MAX_SHIP_INSTANCE_ID {
+                return false;
+            }
+            if !is_map_control_heap_pointer(row.body_ptr) {
+                return false;
+            }
+            if seen_instance_ids.insert(row.instance_id, ()).is_some()
                 || seen_body_ptrs.insert(row.body_ptr, ()).is_some()
             {
                 return false;
@@ -1717,6 +1836,7 @@ mod attach_log {
     const RAW_NAVAL_COMBATS_DOMAIN: &str = "naval_air_combats";
     const RAW_NAVAL_COMBAT_MEMBERS_DOMAIN: &str = "naval_combat_members";
     const RAW_AIR_WINGS_DOMAIN: &str = "air_wings";
+    const RAW_SHIPS_DOMAIN: &str = "ships";
     const RAW_CONFIDENCE_SAMPLED: &str = "sampled";
     const LAND_COMBAT_EVENT_STARTED: &str = "land_combat_started";
     const LAND_COMBAT_EVENT_UPDATED: &str = "land_combat_updated";
@@ -1866,6 +1986,27 @@ mod attach_log {
     struct AirWingTracker {
         previous: BTreeMap<(String, u32), AirWingSample>,
         next_generation: u64,
+    }
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct ShipStatsSample {
+        ship_key: String,
+        instance_id: u32,
+        definition: Option<String>,
+        category_enum: u32,
+        category: &'static str,
+        strength_raw: u32,
+        strength_hp: f64,
+        organisation_raw: u32,
+        organisation: f64,
+        experience_raw: u32,
+        experience: f64,
+        sunk_convoys: u32,
+    }
+
+    #[derive(Default)]
+    struct ShipStatsTracker {
+        previous: BTreeMap<u32, ShipStatsSample>,
     }
 
     struct RawDomainDeltaFrame<'a> {
@@ -5690,6 +5831,401 @@ mod attach_log {
         ))
     }
 
+    fn build_ship_stats_raw_domain_delta_lines(
+        pid: Dword,
+        state: Option<&CollectorState>,
+        control: &CollectorControl,
+        tracker: &mut ShipStatsTracker,
+        first_session_sequence: u64,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+    ) -> Vec<String> {
+        let Some(state) = state else {
+            return Vec::new();
+        };
+        let Some(clock) = clock_sample_from_state(Some(state)) else {
+            return Vec::new();
+        };
+        let current_samples = match sample_ship_stats(state, control) {
+            Ok(samples) => samples,
+            Err(gap_kind) => {
+                let tick_ms = unsafe { GetTickCount64() };
+                let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+                return ship_stats_gap_raw_domain_delta_frame_line(
+                    pid,
+                    sequence,
+                    Some(first_session_sequence),
+                    tick_ms,
+                    control,
+                    elapsed_wall_ms,
+                    capture_boundary,
+                    &clock,
+                    gap_kind,
+                )
+                .into_iter()
+                .collect();
+            }
+        };
+        if current_samples.is_empty() && tracker.previous.is_empty() {
+            return Vec::new();
+        }
+
+        build_ship_stats_raw_lines_from_samples(
+            pid,
+            control,
+            tracker,
+            first_session_sequence,
+            elapsed_wall_ms,
+            capture_boundary,
+            &clock,
+            current_samples,
+        )
+    }
+
+    fn build_ship_stats_raw_lines_from_samples(
+        pid: Dword,
+        control: &CollectorControl,
+        tracker: &mut ShipStatsTracker,
+        first_session_sequence: u64,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        current_samples: Vec<ShipStatsSample>,
+    ) -> Vec<String> {
+        let mut lines = Vec::new();
+        let mut session_sequence = first_session_sequence;
+        let mut current = BTreeMap::new();
+        for sample in current_samples {
+            let changed_fields = tracker
+                .previous
+                .get(&sample.instance_id)
+                .and_then(|old| ship_stats_changed_fields(old, &sample))
+                .unwrap_or_else(ship_stats_all_fields);
+            if !changed_fields.is_empty() {
+                push_ship_stats_delta_frame(
+                    &mut lines,
+                    &mut session_sequence,
+                    pid,
+                    control,
+                    elapsed_wall_ms,
+                    capture_boundary,
+                    clock,
+                    &sample,
+                    "sample",
+                    &changed_fields,
+                );
+            }
+            current.insert(sample.instance_id, sample);
+        }
+
+        for (instance_id, old) in &tracker.previous {
+            if current.contains_key(instance_id) {
+                continue;
+            }
+            push_ship_stats_delta_frame(
+                &mut lines,
+                &mut session_sequence,
+                pid,
+                control,
+                elapsed_wall_ms,
+                capture_boundary,
+                clock,
+                old,
+                "delete",
+                &["ship_key"],
+            );
+        }
+
+        tracker.previous = current;
+        lines
+    }
+
+    fn push_ship_stats_delta_frame(
+        lines: &mut Vec<String>,
+        session_sequence: &mut u64,
+        pid: Dword,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        sample: &ShipStatsSample,
+        op: &str,
+        changed_fields: &[&str],
+    ) {
+        let tick_ms = unsafe { GetTickCount64() };
+        let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        if let Some(line) = ship_stats_raw_domain_delta_frame_line(
+            pid,
+            sequence,
+            Some(*session_sequence),
+            tick_ms,
+            control,
+            elapsed_wall_ms,
+            capture_boundary,
+            clock,
+            sample,
+            op,
+            changed_fields,
+        ) {
+            lines.push(line);
+            *session_sequence = session_sequence.saturating_add(1);
+        }
+    }
+
+    fn sample_ship_stats(
+        state: &CollectorState,
+        control: &CollectorControl,
+    ) -> Result<Vec<ShipStatsSample>, &'static str> {
+        if !(state.daily_match && state.long_string_match) {
+            return Err("state_validation_failed");
+        }
+        if !(control.ship_body_bridge_valid
+            && ship_body_bridge_well_formed(&control.ship_body_bridge))
+        {
+            return Err("bridge_invalid");
+        }
+        if control.ship_body_bridge.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut by_id = BTreeMap::new();
+        let mut invalid_entries = 0_u32;
+        for entry in &control.ship_body_bridge {
+            if let Some(sample) = sample_ship_stats_from_bridge_entry(state.base, entry) {
+                by_id.entry(sample.instance_id).or_insert(sample);
+            } else {
+                invalid_entries = invalid_entries.saturating_add(1);
+            }
+        }
+        if by_id.is_empty() && invalid_entries > 0 {
+            return Err("bridge_entry_invalid");
+        }
+        Ok(by_id.into_values().collect())
+    }
+
+    fn sample_ship_stats_from_bridge_entry(
+        module_base: usize,
+        entry: &ShipBodyBridgeEntry,
+    ) -> Option<ShipStatsSample> {
+        let body = entry.body_ptr;
+        if !is_map_control_heap_pointer(body) {
+            return None;
+        }
+        if read_u64(body)? as usize != module_base.checked_add(CSHIP_VTABLE_RVA)? {
+            return None;
+        }
+        let handle = read_u64(body.checked_add(CSHIP_OFF_HANDLE)?)?;
+        if (handle & 0xFFFF_FFFF) as u32 != CSHIP_TYPE {
+            return None;
+        }
+        let instance_id = ((handle >> 32) & 0xFFFF_FFFF) as u32;
+        if instance_id == 0
+            || instance_id != entry.instance_id
+            || instance_id > MAX_SHIP_INSTANCE_ID
+        {
+            return None;
+        }
+        if read_u32(body.checked_add(CSHIP_OFF_REF100)?)? != CSHIP_REF100_RAW {
+            return None;
+        }
+        let category_enum = read_u32(body.checked_add(CSHIP_OFF_CATEGORY)?)?;
+        let category = ship_category_label(category_enum)?;
+        let strength_raw = read_u32(body.checked_add(CSHIP_OFF_STRENGTH)?)?;
+        if strength_raw > MAX_SHIP_STRENGTH_RAW {
+            return None;
+        }
+        let organisation_raw = read_u32(body.checked_add(CSHIP_OFF_ORGANISATION)?)?;
+        if organisation_raw > MAX_SHIP_ORGANISATION_RAW {
+            return None;
+        }
+        let experience_raw = read_u32(body.checked_add(CSHIP_OFF_EXPERIENCE)?)?;
+        if experience_raw > MAX_SHIP_EXPERIENCE_RAW {
+            return None;
+        }
+        let definition = read_msvc_string(
+            body.checked_add(CSHIP_OFF_DEFINITION)?,
+            MAX_SHIP_DEFINITION_LEN,
+        )
+        .filter(|value| !looks_like_hex_pointer(value));
+        Some(ShipStatsSample {
+            ship_key: format!("ship:{instance_id}"),
+            instance_id,
+            definition,
+            category_enum,
+            category,
+            strength_raw,
+            strength_hp: ship_fixed_value(strength_raw),
+            organisation_raw,
+            organisation: ship_fixed_value(organisation_raw),
+            experience_raw,
+            experience: ship_fixed_value(experience_raw),
+            sunk_convoys: read_u32(body.checked_add(CSHIP_OFF_SUNK_CONVOYS)?)?,
+        })
+    }
+
+    fn ship_category_label(category_enum: u32) -> Option<&'static str> {
+        match category_enum {
+            2 => Some("submarine"),
+            3 => Some("destroyer"),
+            5 => Some("light_cruiser"),
+            6 => Some("heavy_cruiser"),
+            8 => Some("battle_cruiser"),
+            9 => Some("battleship"),
+            10 => Some("carrier"),
+            _ => None,
+        }
+    }
+
+    fn ship_fixed_value(raw: u32) -> f64 {
+        raw as f64 / 100_000.0
+    }
+
+    fn ship_stats_all_fields() -> Vec<&'static str> {
+        vec![
+            "ship_key",
+            "instance_id",
+            "definition",
+            "category_enum",
+            "category",
+            "strength_raw",
+            "strength_hp",
+            "organisation_raw",
+            "organisation",
+            "experience_raw",
+            "experience",
+            "sunk_convoys",
+        ]
+    }
+
+    fn ship_stats_changed_fields(
+        old: &ShipStatsSample,
+        new: &ShipStatsSample,
+    ) -> Option<Vec<&'static str>> {
+        let mut changed = Vec::new();
+        if old.definition != new.definition {
+            changed.push("definition");
+        }
+        if old.category_enum != new.category_enum {
+            changed.push("category_enum");
+            changed.push("category");
+        }
+        if old.strength_raw != new.strength_raw {
+            changed.push("strength_raw");
+            changed.push("strength_hp");
+        }
+        if old.organisation_raw != new.organisation_raw {
+            changed.push("organisation_raw");
+            changed.push("organisation");
+        }
+        if old.experience_raw != new.experience_raw {
+            changed.push("experience_raw");
+            changed.push("experience");
+        }
+        if old.sunk_convoys != new.sunk_convoys {
+            changed.push("sunk_convoys");
+        }
+        (!changed.is_empty()).then_some(changed)
+    }
+
+    fn ship_stats_raw_domain_delta_frame_line(
+        pid: Dword,
+        sequence: u64,
+        session_sequence: Option<u64>,
+        tick_ms: u64,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        sample: &ShipStatsSample,
+        op: &str,
+        changed_fields: &[&str],
+    ) -> Option<String> {
+        let after_json = if op == "delete" {
+            "null".to_string()
+        } else {
+            ship_stats_row_json(sample)
+        };
+        raw_domain_delta_frame_line(RawDomainDeltaFrame {
+            pid,
+            sequence,
+            session_sequence,
+            tick_ms,
+            date: &clock.date,
+            hour_index: clock.hour_index,
+            sample_ms: control.sample_ms,
+            duration_ms: Some(control.duration_ms),
+            elapsed_wall_ms,
+            capture_boundary,
+            domain: RAW_SHIPS_DOMAIN,
+            entity_key: &sample.ship_key,
+            confidence: RAW_CONFIDENCE_SAMPLED,
+            op,
+            after_json: &after_json,
+            changed_fields,
+        })
+    }
+
+    fn ship_stats_gap_raw_domain_delta_frame_line(
+        pid: Dword,
+        sequence: u64,
+        session_sequence: Option<u64>,
+        tick_ms: u64,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        gap_kind: &str,
+    ) -> Option<String> {
+        if !valid_raw_short_string(gap_kind) || looks_like_hex_pointer(gap_kind) {
+            return None;
+        }
+        let gap_key = format!("{RAW_SHIPS_DOMAIN}:gap:{gap_kind}");
+        let after_json = format!(
+            "{{\"gap_key\":{},\"gap_kind\":{},\"status\":\"validation_failed\"}}",
+            json_str(&gap_key),
+            json_str(gap_kind)
+        );
+        raw_domain_delta_frame_line(RawDomainDeltaFrame {
+            pid,
+            sequence,
+            session_sequence,
+            tick_ms,
+            date: &clock.date,
+            hour_index: clock.hour_index,
+            sample_ms: control.sample_ms,
+            duration_ms: Some(control.duration_ms),
+            elapsed_wall_ms,
+            capture_boundary,
+            domain: RAW_SHIPS_DOMAIN,
+            entity_key: &gap_key,
+            confidence: "gap",
+            op: "sample",
+            after_json: &after_json,
+            changed_fields: &["gap_key", "gap_kind", "status"],
+        })
+    }
+
+    fn ship_stats_row_json(sample: &ShipStatsSample) -> String {
+        format!(
+            "{{\"ship_key\":{},\"instance_id\":{},\"definition\":{},\
+             \"category_enum\":{},\"category\":{},\
+             \"strength_raw\":{},\"strength_hp\":{},\
+             \"organisation_raw\":{},\"organisation\":{},\
+             \"experience_raw\":{},\"experience\":{},\"sunk_convoys\":{}}}",
+            json_str(&sample.ship_key),
+            sample.instance_id,
+            json_opt_escaped_str(sample.definition.as_deref()),
+            sample.category_enum,
+            json_str(sample.category),
+            sample.strength_raw,
+            json_opt_f64(Some(sample.strength_hp)),
+            sample.organisation_raw,
+            json_opt_f64(Some(sample.organisation)),
+            sample.experience_raw,
+            json_opt_f64(Some(sample.experience)),
+            sample.sunk_convoys
+        )
+    }
+
     fn raw_event_frame_line(frame: RawEventFrame<'_>) -> Option<String> {
         if !valid_raw_short_string(frame.date)
             || !valid_raw_short_string(frame.capture_boundary)
@@ -5819,6 +6355,7 @@ mod attach_log {
                 | RAW_NAVAL_COMBATS_DOMAIN
                 | RAW_NAVAL_COMBAT_MEMBERS_DOMAIN
                 | RAW_AIR_WINGS_DOMAIN
+                | RAW_SHIPS_DOMAIN
         )
     }
 
@@ -5896,6 +6433,8 @@ mod attach_log {
             && naval_combat_body_bridge_well_formed(&control.naval_combat_body_bridge);
         let air_wing_body_bridge_valid = control.air_wing_body_bridge_valid
             && air_wing_body_bridge_well_formed(&control.air_wing_body_bridge);
+        let ship_body_bridge_valid = control.ship_body_bridge_valid
+            && ship_body_bridge_well_formed(&control.ship_body_bridge);
         let map_control_state_roots_valid =
             control.map_control.state_roots_valid && control.map_control.state_roots_well_formed();
         let map_control_province_bridge_valid = control.map_control.province_bridge_valid
@@ -5919,6 +6458,8 @@ mod attach_log {
              \"naval_combat_body_bridge_valid\":{},\
              \"air_wing_body_bridge_rows\":{},\
              \"air_wing_body_bridge_valid\":{},\
+             \"ship_body_bridge_rows\":{},\
+             \"ship_body_bridge_valid\":{},\
              \"advisor_token_filter_tokens\":{},\
              \"advisor_token_filter_valid\":{},\
              \"idea_group_filter_rows\":{},\
@@ -5945,6 +6486,8 @@ mod attach_log {
             naval_combat_body_bridge_valid,
             control.air_wing_body_bridge.len(),
             air_wing_body_bridge_valid,
+            control.ship_body_bridge.len(),
+            ship_body_bridge_valid,
             control.advisor_token_filter.len(),
             control.advisor_token_filter_valid,
             control.idea_group_filter.len(),
@@ -9961,6 +10504,8 @@ mod attach_log {
                 naval_combat_body_bridge_valid: true,
                 air_wing_body_bridge: Vec::new(),
                 air_wing_body_bridge_valid: true,
+                ship_body_bridge: Vec::new(),
+                ship_body_bridge_valid: true,
                 map_control: MapControlContract::empty(),
                 advisor_token_filter: BTreeMap::new(),
                 advisor_token_filter_valid: true,
@@ -10054,6 +10599,10 @@ mod attach_log {
             assert!(parsed.army_body_bridge_valid);
             assert!(parsed.naval_combat_body_bridge.is_empty());
             assert!(parsed.naval_combat_body_bridge_valid);
+            assert!(parsed.air_wing_body_bridge.is_empty());
+            assert!(parsed.air_wing_body_bridge_valid);
+            assert!(parsed.ship_body_bridge.is_empty());
+            assert!(parsed.ship_body_bridge_valid);
             assert!(parsed.map_control.state_roots.is_empty());
             assert!(parsed.map_control.state_roots_valid);
             assert!(parsed.map_control.province_bridge.is_none());
@@ -10373,6 +10922,37 @@ mod attach_log {
         }
 
         #[test]
+        fn collector_control_accepts_ship_body_bridge() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_control_ship_bridge_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            fs::write(
+                &control,
+                format!(
+                    r#"{{"mode":"hourly_poll","duration_ms":8000,"sample_ms":10,"ship_body_bridge":"3458:0x{:x};3459:{}"}}"#,
+                    HEAP_LO,
+                    HEAP_LO + 0x100
+                ),
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert!(parsed.ship_body_bridge_valid);
+            assert_eq!(parsed.ship_body_bridge.len(), 2);
+            assert_eq!(parsed.ship_body_bridge[0].instance_id, 3458);
+            assert_eq!(parsed.ship_body_bridge[0].body_ptr, HEAP_LO);
+            assert_eq!(parsed.ship_body_bridge[1].instance_id, 3459);
+            assert_eq!(parsed.ship_body_bridge[1].body_ptr, HEAP_LO + 0x100);
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
         fn collector_control_accepts_map_control_contract() {
             let dir = std::env::temp_dir().join(format!(
                 "hoi4_collector_control_map_control_test_{}",
@@ -10635,6 +11215,40 @@ mod attach_log {
         }
 
         #[test]
+        fn collector_control_marks_bad_ship_body_bridge_invalid() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_control_bad_ship_bridge_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            fs::write(
+                &control,
+                r#"{"mode":"hourly_poll","duration_ms":8000,"sample_ms":10,"ship_body_bridge":"3458:0x1001"}"#,
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert!(parsed.ship_body_bridge.is_empty());
+            assert!(!parsed.ship_body_bridge_valid);
+            let frame = build_frame_line(
+                1234,
+                None,
+                Some(&parsed),
+                Some(7),
+                Some(125),
+                Some("worker_poll"),
+            );
+            assert!(frame.contains("\"ship_body_bridge_rows\":0"));
+            assert!(frame.contains("\"ship_body_bridge_valid\":false"));
+            assert!(!frame.contains("0x1001"));
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
         fn collector_control_marks_bad_map_control_invalid() {
             let dir = std::env::temp_dir().join(format!(
                 "hoi4_collector_control_bad_map_control_test_{}",
@@ -10828,6 +11442,41 @@ mod attach_log {
                 .collect::<Vec<_>>()
                 .join(";");
             assert!(parse_air_wing_body_bridge(&too_many).is_none());
+        }
+
+        #[test]
+        fn ship_body_bridge_parser_rejects_duplicates_ranges_and_size() {
+            assert!(parse_ship_body_bridge("").unwrap().is_empty());
+            assert!(
+                parse_ship_body_bridge(&format!("1:0x{:x};2:{}", HEAP_LO, HEAP_LO + 8)).is_some()
+            );
+            assert!(
+                parse_ship_body_bridge(&format!("1:0x{:x};1:0x{:x}", HEAP_LO, HEAP_LO + 8))
+                    .is_none()
+            );
+            assert!(
+                parse_ship_body_bridge(&format!("1:0x{:x};2:0x{:x}", HEAP_LO, HEAP_LO)).is_none()
+            );
+            assert!(parse_ship_body_bridge(&format!("0:0x{:x}", HEAP_LO)).is_none());
+            assert!(parse_ship_body_bridge(&format!(
+                "{}:0x{:x}",
+                MAX_SHIP_INSTANCE_ID + 1,
+                HEAP_LO
+            ))
+            .is_none());
+            assert!(parse_ship_body_bridge("1:0x1000").is_none());
+            assert!(parse_ship_body_bridge(&format!("1:0x{:x}", HEAP_LO + 1)).is_none());
+            assert!(parse_ship_body_bridge("1").is_none());
+            assert!(parse_ship_body_bridge("1:0x10000000000:extra").is_none());
+            assert!(
+                parse_ship_body_bridge(&"x".repeat(MAX_SHIP_BODY_BRIDGE_PAYLOAD_BYTES + 1))
+                    .is_none()
+            );
+            let too_many = (1..=MAX_SHIP_BODY_BRIDGE_ROWS + 1)
+                .map(|i| format!("{}:0x{:x}", i, HEAP_LO + (i * 8)))
+                .collect::<Vec<_>>()
+                .join(";");
+            assert!(parse_ship_body_bridge(&too_many).is_none());
         }
 
         #[test]
@@ -12126,6 +12775,8 @@ mod attach_log {
                 naval_combat_body_bridge_valid: true,
                 air_wing_body_bridge: Vec::new(),
                 air_wing_body_bridge_valid: true,
+                ship_body_bridge: Vec::new(),
+                ship_body_bridge_valid: true,
                 map_control: MapControlContract::empty(),
                 advisor_token_filter: BTreeMap::new(),
                 advisor_token_filter_valid: true,
