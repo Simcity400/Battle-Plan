@@ -473,9 +473,32 @@ class TestCollectorSession(unittest.TestCase):
                 "capture_boundary": "scheduled_hour_snapshot",
                 "domains": ["clock", "diplomacy_live"],
                 "countries": {
-                    "GER": {"diplomacy": {"faction_group": 7}},
+                    "GER": {
+                        "diplomacy": {
+                            "faction_group": 7,
+                            "at_war": ["SOV"],
+                            "casualties": 100,
+                        }
+                    },
                     "ITA": {"diplomacy": {"faction_group": 7}},
-                    "SOV": {"diplomacy": {"faction_group": 9}},
+                    "SOV": {
+                        "diplomacy": {
+                            "faction_group": 9,
+                            "at_war": ["GER"],
+                            "casualties": 200,
+                        }
+                    },
+                },
+                "diplomacy_live": {
+                    "war_relations": [{
+                        "first": "GER",
+                        "second": "SOV",
+                        "first_casualties": 100,
+                        "second_casualties": 200,
+                    }],
+                    "faction_members": {"7": ["GER", "ITA"], "9": ["SOV"]},
+                    "subtype_warning": {},
+                    "source": "C",
                 },
             },
             {
@@ -499,8 +522,14 @@ class TestCollectorSession(unittest.TestCase):
         self.assertEqual(summary["scheduled_diplomacy_domain_frames"], 2)
         self.assertEqual(summary["frames_with_diplomacy_payloads"], 3)
         self.assertEqual(summary["country_rows_with_diplomacy_payloads"], 5)
+        self.assertEqual(summary["country_rows_with_diplomacy_at_war"], 2)
+        self.assertEqual(summary["country_rows_with_diplomacy_casualties"], 2)
         self.assertEqual(summary["max_diplomacy_country_rows_per_frame"], 3)
         self.assertEqual(summary["max_diplomacy_faction_groups_per_frame"], 2)
+        self.assertEqual(summary["diplomacy_war_relation_frames"], 1)
+        self.assertEqual(summary["diplomacy_war_relation_rows"], 1)
+        self.assertEqual(summary["max_diplomacy_war_relations_per_frame"], 1)
+        self.assertEqual(summary["max_diplomacy_casualty_sum_per_frame"], 300)
         self.assertEqual(summary["diplomacy_on_lightweight_frames"], 1)
         self.assertEqual(summary["heavy_payload_on_lightweight_frames"], 1)
 

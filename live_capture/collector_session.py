@@ -24,6 +24,7 @@ from . import process_identity as _process_identity
 from .collector_advisor_tokens import resolve_advisor_token_filter_preflight
 from .collector_air_wing_bridge import resolve_air_wing_body_bridge_preflight
 from .collector_army_order_bridge import resolve_army_body_bridge_preflight
+from .collector_diplomacy_bridge import resolve_war_relation_bridge_preflight
 from .collector_frames import (
     COLLECTOR_BACKEND,
     COLLECTOR_ABI_VERSION,
@@ -356,6 +357,7 @@ def record_collector_session(
     ship_body_bridge: Any = None,
     oob_command_bridge: Any = None,
     special_projects_bridge: Any = None,
+    war_relation_bridge: Any = None,
     tech_def_filter: Any = None,
     preflight_country_object_bridge: bool = False,
     allow_country_cold_scan: bool = False,
@@ -372,6 +374,7 @@ def record_collector_session(
     allow_oob_command_cold_scan: bool = False,
     preflight_special_projects: bool = False,
     allow_special_projects_cold_scan: bool = False,
+    preflight_war_relations: bool = False,
     preflight_tech_defs: bool = False,
     allow_tech_def_cold_scan: bool = False,
     preflight_state_control: bool = False,
@@ -564,6 +567,17 @@ def record_collector_session(
             allow_special_projects_cold_scan)
         if preflight.usable:
             special_projects_bridge = preflight.encoded
+    war_relation_bridge_preflight = {
+        "enabled": bool(preflight_war_relations),
+        "status": "not_requested",
+        "row_count": 0,
+    }
+    if war_relation_bridge is None and preflight_war_relations:
+        preflight = resolve_war_relation_bridge_preflight(pid)
+        war_relation_bridge_preflight = preflight.diagnostics
+        war_relation_bridge_preflight["enabled"] = True
+        if preflight.usable:
+            war_relation_bridge = preflight.encoded
     map_control_state_roots = None
     map_control_province_bridge = None
     map_control_controller_bridge = None
@@ -655,6 +669,7 @@ def record_collector_session(
         ship_body_bridge=ship_body_bridge,
         oob_command_bridge=oob_command_bridge,
         special_projects_bridge=special_projects_bridge,
+        war_relation_bridge=war_relation_bridge,
         map_control_state_roots=map_control_state_roots,
         map_control_province_bridge=map_control_province_bridge,
         map_control_controller_bridge=map_control_controller_bridge,
@@ -818,6 +833,11 @@ def record_collector_session(
                 "special_projects_bridge_supplied"),
             "special_projects_bridge_rows": probe_manifest.get(
                 "special_projects_bridge_rows"),
+            "war_relation_bridge_preflight": war_relation_bridge_preflight,
+            "war_relation_bridge_supplied": probe_manifest.get(
+                "war_relation_bridge_supplied"),
+            "war_relation_bridge_rows": probe_manifest.get(
+                "war_relation_bridge_rows"),
             "state_control_preflight": state_control_preflight,
             "province_control_preflight": province_control_preflight,
             "map_control_state_roots_supplied": probe_manifest.get(
@@ -1070,8 +1090,15 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     max_decisions_timed_rows_per_country = 0
     frames_with_diplomacy_payloads = 0
     country_rows_with_diplomacy_payloads = 0
+    country_rows_with_diplomacy_at_war = 0
+    country_rows_with_diplomacy_casualties = 0
     max_diplomacy_country_rows_per_frame = 0
     max_diplomacy_faction_groups_per_frame = 0
+    diplomacy_war_relation_frames = 0
+    diplomacy_war_relation_rows = 0
+    max_diplomacy_war_relations_per_frame = 0
+    max_diplomacy_casualty_sum_per_frame = 0
+    diplomacy_war_subtype_warning_frames = 0
     frames_with_politics_payloads = 0
     country_rows_with_politics_payloads = 0
     max_politics_country_rows_per_frame = 0
@@ -1268,6 +1295,38 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         heavy_payload_in_lightweight_frame = False
         special_projects = frame.get("special_projects")
         special_projects_payload_in_frame = False
+        diplomacy_live = frame.get("diplomacy_live")
+        diplomacy_sidecar_payload_in_frame = False
+        if isinstance(diplomacy_live, dict):
+            war_relations = diplomacy_live.get("war_relations")
+            if isinstance(war_relations, list):
+                diplomacy_sidecar_payload_in_frame = True
+                if war_relations:
+                    diplomacy_war_relation_frames += 1
+                    diplomacy_war_relation_rows += len(war_relations)
+                    max_diplomacy_war_relations_per_frame = max(
+                        max_diplomacy_war_relations_per_frame,
+                        len(war_relations),
+                    )
+                    casualty_sum = 0
+                    for relation in war_relations:
+                        if not isinstance(relation, dict):
+                            continue
+                        for key in ("first_casualties", "second_casualties"):
+                            value = relation.get(key)
+                            if isinstance(value, int) and not isinstance(value, bool):
+                                casualty_sum += max(0, value)
+                    max_diplomacy_casualty_sum_per_frame = max(
+                        max_diplomacy_casualty_sum_per_frame,
+                        casualty_sum,
+                    )
+            subtype_warning = diplomacy_live.get("subtype_warning")
+            if isinstance(subtype_warning, dict) and subtype_warning:
+                diplomacy_sidecar_payload_in_frame = True
+                diplomacy_war_subtype_warning_frames += 1
+            faction_members = diplomacy_live.get("faction_members")
+            if isinstance(faction_members, dict):
+                diplomacy_sidecar_payload_in_frame = True
         if isinstance(special_projects, dict):
             facilities = special_projects.get("facilities")
             projects = special_projects.get("projects")
@@ -1391,6 +1450,12 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
                             faction_group, bool
                         ):
                             diplomacy_faction_groups_in_frame.add(faction_group)
+                        at_war = diplomacy.get("at_war")
+                        if isinstance(at_war, list):
+                            country_rows_with_diplomacy_at_war += 1
+                        casualties = diplomacy.get("casualties")
+                        if isinstance(casualties, int) and not isinstance(casualties, bool):
+                            country_rows_with_diplomacy_casualties += 1
                 production = row.get("production")
                 if production is None:
                     continue
@@ -1501,7 +1566,11 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
             heavy_payload_in_lightweight_frame = True
         if (
             boundary == "worker_poll"
-            and (diplomacy_domain_claimed or diplomacy_rows_in_frame)
+            and (
+                diplomacy_domain_claimed
+                or diplomacy_rows_in_frame
+                or diplomacy_sidecar_payload_in_frame
+            )
         ):
             diplomacy_on_lightweight_frames += 1
             heavy_payload_in_lightweight_frame = True
@@ -1683,10 +1752,22 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         "frames_with_diplomacy_payloads": frames_with_diplomacy_payloads,
         "country_rows_with_diplomacy_payloads": (
             country_rows_with_diplomacy_payloads),
+        "country_rows_with_diplomacy_at_war": (
+            country_rows_with_diplomacy_at_war),
+        "country_rows_with_diplomacy_casualties": (
+            country_rows_with_diplomacy_casualties),
         "max_diplomacy_country_rows_per_frame": (
             max_diplomacy_country_rows_per_frame),
         "max_diplomacy_faction_groups_per_frame": (
             max_diplomacy_faction_groups_per_frame),
+        "diplomacy_war_relation_frames": diplomacy_war_relation_frames,
+        "diplomacy_war_relation_rows": diplomacy_war_relation_rows,
+        "max_diplomacy_war_relations_per_frame": (
+            max_diplomacy_war_relations_per_frame),
+        "max_diplomacy_casualty_sum_per_frame": (
+            max_diplomacy_casualty_sum_per_frame),
+        "diplomacy_war_subtype_warning_frames": (
+            diplomacy_war_subtype_warning_frames),
         "diplomacy_on_lightweight_frames": diplomacy_on_lightweight_frames,
         "frames_with_politics_payloads": frames_with_politics_payloads,
         "country_rows_with_politics_payloads": (
@@ -2158,6 +2239,11 @@ def _main() -> int:
         help="allow the slow special-project vtable scans during preflight",
     )
     parser.add_argument(
+        "--preflight-war-relations",
+        action="store_true",
+        help="resolve live war_relation rows before recording diplomacy war/casualty data",
+    )
+    parser.add_argument(
         "--preflight-tech-defs",
         action="store_true",
         help="resolve live tech handle names before enriching active research rows",
@@ -2220,6 +2306,7 @@ def _main() -> int:
         allow_oob_command_cold_scan=args.allow_oob_command_cold_scan,
         preflight_special_projects=args.preflight_special_projects,
         allow_special_projects_cold_scan=args.allow_special_projects_cold_scan,
+        preflight_war_relations=args.preflight_war_relations,
         preflight_tech_defs=args.preflight_tech_defs,
         allow_tech_def_cold_scan=args.allow_tech_def_cold_scan,
         preflight_state_control=args.preflight_state_control,

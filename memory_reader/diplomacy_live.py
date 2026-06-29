@@ -70,11 +70,13 @@ OBJ_FACTION_GROUP = 0x598        # i32 faction/diplomatic-group id (shared per f
 # ---- war_relation struct (offsets from the header = the tag pair) ----
 WR_FIRST_TAGID = 0x00            # i32
 WR_SECOND_TAGID = 0x04           # i32
-WR_TYPEPTR = 0x08               # u64 == module_base + WR_TYPEPTR_RVA for EVERY
-                                #        war_relation (the type/RTTI pointer); the
-                                #        PRIMARY signature -- rejects all decoy arrays
-                                #        whose [tagid][tagid] header coincidentally matches
-WR_TYPEPTR_RVA = 0x26F2398
+WR_TYPEPTR = 0x08               # u64 == one of the accepted date vtables below.
+                                #        Live 1.19.1 war rows can carry either
+                                #        CGameDate or CGregorianDate here; both are
+                                #        interleaved in the same war-relation pool.
+WR_TYPEPTR_RVA = 0x26F2398      # CGameDate vtable
+WR_GREGORIAN_DATE_TYPEPTR_RVA = 0x26F21A0
+WR_TYPEPTR_RVAS = (WR_TYPEPTR_RVA, WR_GREGORIAN_DATE_TYPEPTR_RVA)
 WR_FIRST_CAS = 0x40             # i32
 WR_SECOND_CAS = 0x48            # i32
 WR_ECHO = 0x68                  # i32 first tag_db_id again (+0x6C second) -- secondary sig
@@ -333,8 +335,8 @@ def read_war_relations(p, ident, want_addrs=False):
 
     Signature: header [u32 +0x00]=first_tagid, [u32 +0x04]=second_tagid (both valid,
     distinct); the +0x68/+0x6C echo equals the same pair; and the PRIMARY signature
-    [u64 +0x08]==module_base+0x26F2398 (the war_relation type pointer). Casualties at
-    +0x40 / +0x48."""
+    [u64 +0x08] is one of the accepted live date vtables observed in the war-relation
+    pool (CGameDate or CGregorianDate). Casualties at +0x40 / +0x48."""
     addr_by_pair = {}
     try:
         import numpy as np
@@ -346,14 +348,15 @@ def read_war_relations(p, ident, want_addrs=False):
     isvalid = bytearray(maxid + 2)
     for i in valid:
         isvalid[i] = 1
-    typeptr = p.module_base + WR_TYPEPTR_RVA
+    typeptrs = _war_relation_typeptrs(p)
     out = []
     seen = set()
-    # Completeness guard (Codex): a record that LOOKS like a war_relation (valid tag
-    # pair + the +0x68 echo + plausible casualties) but whose +0x08 type pointer is a
-    # DIFFERENT module pointer would be a war_relation SUBTYPE we'd silently miss. Count
-    # those so read_completeness_warning() can fail closed instead of under-reporting.
+    # Completeness guard: a record that LOOKS like a war_relation (valid tag pair +
+    # the +0x68 echo + plausible casualties) but whose +0x08 date-vtable is a
+    # DIFFERENT RTTI-backed module pointer could be a missed variant. Non-RTTI
+    # in-module integers are common decoys and are ignored here.
     other_types = {}                 # foreign type ptr -> hit count
+    rtti_warning_cache = {}
     modlo = p.module_base
     modhi = p.module_base + p.module_size
     CH = 16 << 20
@@ -380,8 +383,8 @@ def read_war_relations(p, ident, want_addrs=False):
                     if _u32(blob, bo + WR_ECHO) != ta or _u32(blob, bo + WR_ECHO + 4) != tb:
                         continue
                     tp = _u64(blob, bo + WR_TYPEPTR) if bo + WR_TYPEPTR + 8 <= n else 0
-                    # PRIMARY signature: the war_relation type pointer at +0x08.
-                    if tp != typeptr:
+                    # PRIMARY signature: accepted date vtable at +0x08.
+                    if tp not in typeptrs:
                         # Only flag a FOREIGN in-module type as a possible missed subtype
                         # when the record ALSO carries plausible (nonzero) casualties at
                         # the war_relation casualty offsets -- otherwise it's an unrelated
@@ -390,7 +393,9 @@ def read_war_relations(p, ident, want_addrs=False):
                         if modlo <= tp < modhi and bo + WR_SECOND_CAS + 4 <= n:
                             ffc = _i32(blob, bo + WR_FIRST_CAS)
                             fsc = _i32(blob, bo + WR_SECOND_CAS)
-                            if (0 < ffc <= WR_MAX_CAS or 0 < fsc <= WR_MAX_CAS):
+                            if ((0 < ffc <= WR_MAX_CAS or 0 < fsc <= WR_MAX_CAS)
+                                    and _foreign_war_relation_type_maybe_relevant(
+                                        p, tp, typeptrs, rtti_warning_cache)):
                                 other_types.setdefault(tp, set()).add((ta, tb))
                         continue
                     fc = _i32(blob, bo + WR_FIRST_CAS)
@@ -429,8 +434,8 @@ def read_war_relations(p, ident, want_addrs=False):
 
 def validate_war_relation_addrs(p, ident, addr_by_pair):
     """Fail-closed liveness gate for the PINNED war_relation record addresses. For EVERY pinned
-    record re-confirm, at its base addr, the war_relation signature is intact: [u64 +0x08] ==
-    module_base+WR_TYPEPTR_RVA (the type ptr -- PRIMARY signature) AND [u32 +0x00]/[u32 +0x04] ==
+    record re-confirm, at its base addr, the war_relation signature is intact: [u64 +0x08] is an
+    accepted date vtable (the primary signature) AND [u32 +0x00]/[u32 +0x04] ==
     the pinned (first_tagid, second_tagid) AND the +0x68/+0x6C echo equals the same pair AND BOTH
     tag-db-ids are STILL in the live identity's valid set (Codex change-1 #4: identity drift must
     also force a re-sweep) AND the casualty fields are still within the cold sweep's 0..WR_MAX_CAS
@@ -441,7 +446,7 @@ def validate_war_relation_addrs(p, ident, addr_by_pair):
     out-of-bound war as live). Returns True iff every pinned record still validates."""
     if not addr_by_pair:
         return False
-    typeptr = p.module_base + WR_TYPEPTR_RVA
+    typeptrs = _war_relation_typeptrs(p)
     valid_ids = None
     try:
         valid_ids = ident.valid_ids()
@@ -451,7 +456,7 @@ def validate_war_relation_addrs(p, ident, addr_by_pair):
         if valid_ids is not None and (ta not in valid_ids or tb not in valid_ids):
             return False                              # identity drift -> re-sweep (fail closed)
         try:
-            if p.u64(addr + WR_TYPEPTR) != typeptr:
+            if p.u64(addr + WR_TYPEPTR) not in typeptrs:
                 return False
             if p.u32(addr + WR_FIRST_TAGID) != ta or p.u32(addr + WR_SECOND_TAGID) != tb:
                 return False
@@ -581,6 +586,42 @@ def _i32(blob, off):
 def _u64(blob, off):
     import struct as _s
     return _s.unpack_from("<Q", blob, off)[0]
+
+
+def _war_relation_typeptrs(p):
+    return {p.module_base + rva for rva in WR_TYPEPTR_RVAS}
+
+
+def _rtti_type_name_for_vftable(p, vftable):
+    """Best-effort MSVC RTTI type name for an in-module vftable pointer."""
+    try:
+        col = p.u64(vftable - 8)
+        if col < p.module_base or col >= p.module_base + p.module_size:
+            return None
+        if p.u32(col) != 1:
+            return None
+        type_desc_rva = p.u32(col + 12)
+        if type_desc_rva >= p.module_size:
+            return None
+        raw = p.try_read(p.module_base + type_desc_rva + 16, 160)
+        if not raw:
+            return None
+        end = raw.find(b"\0")
+        if end >= 0:
+            raw = raw[:end]
+        return raw.decode("utf-8", "replace")
+    except Exception:
+        return None
+
+
+def _foreign_war_relation_type_maybe_relevant(p, tp, accepted_typeptrs, cache):
+    if tp in accepted_typeptrs:
+        return False
+    if tp in cache:
+        return cache[tp]
+    name = _rtti_type_name_for_vftable(p, tp)
+    cache[tp] = bool(name)
+    return cache[tp]
 
 
 # ==========================================================================

@@ -122,6 +122,58 @@ class TestCollectorProofGate(unittest.TestCase):
             3,
         )
 
+    def test_accepts_diplomacy_war_relation_proof(self):
+        proof = collector_session_proof_summary(
+            _manifest(
+                war_relation_bridge_supplied=True,
+                war_relation_bridge_rows=144,
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock", "country_identity", "diplomacy_live"],
+                    "scheduled_diplomacy_domain_frames": 12,
+                    "diplomacy_war_relation_frames": 12,
+                    "max_diplomacy_war_relations_per_frame": 144,
+                    "max_diplomacy_casualty_sum_per_frame": 300,
+                    "country_rows_with_diplomacy_at_war": 30,
+                    "country_rows_with_diplomacy_casualties": 30,
+                    "diplomacy_war_subtype_warning_frames": 0,
+                    "diplomacy_on_lightweight_frames": 0,
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+            ),
+            required_scheduled_snapshot_domains=["diplomacy_live"],
+            min_game_hours=12,
+            require_diplomacy_war_relations=True,
+        )
+
+        self.assertTrue(proof["ok"])
+        self.assertEqual(proof["errors"], [])
+        self.assertEqual(proof["max_diplomacy_war_relations_per_frame"], 144)
+
+    def test_rejects_faction_only_diplomacy_for_war_relation_proof(self):
+        errors = collector_session_proof_errors(
+            _manifest(
+                war_relation_bridge_supplied=False,
+                war_relation_bridge_rows=0,
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock", "country_identity", "diplomacy_live"],
+                    "scheduled_diplomacy_domain_frames": 12,
+                    "diplomacy_war_relation_frames": 0,
+                    "max_diplomacy_war_relations_per_frame": 0,
+                    "max_diplomacy_casualty_sum_per_frame": 0,
+                    "country_rows_with_diplomacy_at_war": 0,
+                    "country_rows_with_diplomacy_casualties": 0,
+                    "diplomacy_war_subtype_warning_frames": 0,
+                    "diplomacy_on_lightweight_frames": 0,
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+            ),
+            min_game_hours=12,
+            require_diplomacy_war_relations=True,
+        )
+
+        self.assertIn("war_relation_bridge was not supplied", errors)
+        self.assertIn("diplomacy war relations were not observed", errors)
+
     def test_domains_seen_does_not_satisfy_scheduled_domain_gate(self):
         errors = collector_session_proof_errors(
             _manifest(collector_frame_payload_summary={

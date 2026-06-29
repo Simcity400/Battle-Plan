@@ -3472,6 +3472,75 @@ class TestCollectorFrames(unittest.TestCase):
             {"GER", "ITA", "SOV"},
         )
 
+    def test_snapshot_frame_folds_scheduled_diplomacy_war_relations(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1939.9.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock", "country_identity", "diplomacy_live"],
+            "countries": {
+                "GER": {
+                    "present": True,
+                    "collector_object": "0x1000",
+                    "identity": {"tag_db_id": 1},
+                    "diplomacy": {
+                        "faction_group": 7,
+                        "at_war": ["SOV"],
+                        "casualties": 100,
+                    },
+                },
+                "SOV": {
+                    "present": True,
+                    "collector_object": "0x2000",
+                    "identity": {"tag_db_id": 3},
+                    "diplomacy": {
+                        "faction_group": 9,
+                        "at_war": ["GER"],
+                        "casualties": 200,
+                    },
+                },
+            },
+            "diplomacy_live": {
+                "war_relations": [
+                    {
+                        "first": "GER",
+                        "second": "SOV",
+                        "first_casualties": 100,
+                        "second_casualties": 200,
+                    }
+                ],
+                "faction_members": {"7": ["GER"], "9": ["SOV"]},
+                "subtype_warning": {},
+                "source": "C",
+            },
+        }
+
+        snap = snapshot_from_collector_frame(frame, "collector-test")
+
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        self.assertEqual(snap["countries"]["GER"]["diplomacy"]["at_war"], ["SOV"])
+        self.assertEqual(snap["countries"]["SOV"]["diplomacy"]["casualties"], 200)
+        self.assertEqual(
+            snap["diplomacy_live"]["war_relations"],
+            [{
+                "first": "GER",
+                "second": "SOV",
+                "first_casualties": 100,
+                "second_casualties": 200,
+            }],
+        )
+        self.assertEqual(
+            set(snap["_live_measured_leaf_tags"]["diplomacy.at_war"]),
+            {"GER", "SOV"},
+        )
+        self.assertEqual(
+            set(snap["_live_measured_leaf_tags"]["diplomacy.casualties"]),
+            {"GER", "SOV"},
+        )
+
     def test_snapshot_frame_rejects_malformed_diplomacy_live(self):
         frame = {
             "type": "snapshot",

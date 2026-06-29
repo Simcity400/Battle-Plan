@@ -146,6 +146,17 @@ mod attach_log {
     const OBJ_PROD_MANAGER: usize = 0x0F68;
     const OBJ_FUEL_STATUS: usize = 0x1580;
     const OBJ_FACTION_GROUP: usize = 0x598;
+    const WR_GAME_DATE_VTABLE_RVA: usize = 0x26F2398;
+    const WR_GREGORIAN_DATE_VTABLE_RVA: usize = 0x26F21A0;
+    const WR_FIRST_TAGID: usize = 0x00;
+    const WR_SECOND_TAGID: usize = 0x04;
+    const WR_TYPEPTR: usize = 0x08;
+    const WR_FIRST_CAS: usize = 0x40;
+    const WR_SECOND_CAS: usize = 0x48;
+    const WR_ECHO: usize = 0x68;
+    const WR_MAX_CASUALTIES: i32 = 50_000_000;
+    const MAX_WAR_RELATION_BRIDGE_ROWS: usize = 10_000;
+    const MAX_WAR_RELATION_BRIDGE_PAYLOAD_BYTES: usize = 512 * 1024;
     const OBJ_ORIGINAL_CAPITAL: usize = 0x101C;
     const OBJ_STABILITY: usize = 0x10D0;
     const OBJ_WAR_SUPPORT: usize = 0x10D8;
@@ -798,6 +809,8 @@ mod attach_log {
         oob_command_bridge_valid: bool,
         special_projects_bridge: Vec<SpecialProjectsBridgeEntry>,
         special_projects_bridge_valid: bool,
+        war_relation_bridge: Vec<WarRelationBridgeEntry>,
+        war_relation_bridge_valid: bool,
         map_control: MapControlContract,
         advisor_token_filter: BTreeMap<String, AdvisorTokenInfo>,
         advisor_token_filter_valid: bool,
@@ -846,6 +859,13 @@ mod attach_log {
     struct ShipBodyBridgeEntry {
         instance_id: u32,
         body_ptr: usize,
+    }
+
+    #[derive(Clone, Copy)]
+    struct WarRelationBridgeEntry {
+        first_tag_db_id: u32,
+        second_tag_db_id: u32,
+        record_ptr: usize,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -1096,6 +1116,14 @@ mod attach_log {
                 },
                 None => (Vec::new(), true),
             };
+        let (war_relation_bridge, war_relation_bridge_valid) =
+            match parse_json_string(&text, "war_relation_bridge") {
+                Some(value) => match parse_war_relation_bridge(&value) {
+                    Some(rows) => (rows, true),
+                    None => (Vec::new(), false),
+                },
+                None => (Vec::new(), true),
+            };
         let (advisor_token_filter, advisor_token_filter_valid) =
             match parse_json_string(&text, "advisor_token_filter") {
                 Some(value) => match parse_advisor_token_filter(&value) {
@@ -1147,6 +1175,8 @@ mod attach_log {
             oob_command_bridge_valid,
             special_projects_bridge,
             special_projects_bridge_valid,
+            war_relation_bridge,
+            war_relation_bridge_valid,
             map_control,
             advisor_token_filter,
             advisor_token_filter_valid,
@@ -1745,6 +1775,81 @@ mod attach_log {
         }
     }
 
+    fn parse_war_relation_bridge(value: &str) -> Option<Vec<WarRelationBridgeEntry>> {
+        if value.trim().is_empty() {
+            return Some(Vec::new());
+        }
+        if value.len() > MAX_WAR_RELATION_BRIDGE_PAYLOAD_BYTES {
+            return None;
+        }
+        let mut entries = Vec::new();
+        let mut seen_pairs: BTreeMap<(u32, u32), ()> = BTreeMap::new();
+        let mut seen_ptrs: BTreeMap<usize, ()> = BTreeMap::new();
+        for raw in value.split(';') {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                return None;
+            }
+            let mut parts = raw.split(':');
+            let first_tag_db_id = parse_bridge_u32(parts.next()?.trim())?;
+            let second_tag_db_id = parse_bridge_u32(parts.next()?.trim())?;
+            let record_ptr = parse_bridge_pointer(parts.next()?.trim())?;
+            if parts.next().is_some()
+                || !war_relation_bridge_ids_valid(first_tag_db_id, second_tag_db_id)
+                || !is_heap_pointer_aligned(record_ptr, 4)
+            {
+                return None;
+            }
+            if seen_pairs
+                .insert((first_tag_db_id, second_tag_db_id), ())
+                .is_some()
+                || seen_ptrs.insert(record_ptr, ()).is_some()
+            {
+                return None;
+            }
+            entries.push(WarRelationBridgeEntry {
+                first_tag_db_id,
+                second_tag_db_id,
+                record_ptr,
+            });
+            if entries.len() > MAX_WAR_RELATION_BRIDGE_ROWS {
+                return None;
+            }
+        }
+        Some(entries)
+    }
+
+    fn war_relation_bridge_well_formed(rows: &[WarRelationBridgeEntry]) -> bool {
+        if rows.len() > MAX_WAR_RELATION_BRIDGE_ROWS {
+            return false;
+        }
+        let mut seen_pairs: BTreeMap<(u32, u32), ()> = BTreeMap::new();
+        let mut seen_ptrs: BTreeMap<usize, ()> = BTreeMap::new();
+        for row in rows {
+            if !war_relation_bridge_ids_valid(row.first_tag_db_id, row.second_tag_db_id)
+                || !is_heap_pointer_aligned(row.record_ptr, 4)
+            {
+                return false;
+            }
+            if seen_pairs
+                .insert((row.first_tag_db_id, row.second_tag_db_id), ())
+                .is_some()
+                || seen_ptrs.insert(row.record_ptr, ()).is_some()
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn war_relation_bridge_ids_valid(first_tag_db_id: u32, second_tag_db_id: u32) -> bool {
+        first_tag_db_id > 0
+            && first_tag_db_id <= 1024
+            && second_tag_db_id > 0
+            && second_tag_db_id <= 1024
+            && first_tag_db_id != second_tag_db_id
+    }
+
     fn parse_map_control_contract(text: &str) -> MapControlContract {
         let mut contract = MapControlContract::empty();
         if let Some(value) = parse_json_string(text, "map_control_state_roots") {
@@ -2068,6 +2173,10 @@ mod attach_log {
         value >= HEAP_LO && value < HEAP_HI && value % (MAP_CONTROL_POINTER_WIDTH as usize) == 0
     }
 
+    fn is_heap_pointer_aligned(value: usize, align: usize) -> bool {
+        align != 0 && value >= HEAP_LO && value < HEAP_HI && value % align == 0
+    }
+
     fn parse_bridge_u32(value: &str) -> Option<u32> {
         if let Some(hex) = value
             .strip_prefix("0x")
@@ -2138,6 +2247,7 @@ mod attach_log {
             include_scheduled_country_politics_residuals,
             include_scheduled_country_decisions,
             include_scheduled_country_diplomacy,
+            control,
             control.map(|control| &control.advisor_token_filter),
             control.map(|control| &control.tech_def_filter),
             control.map(|control| &control.idea_group_filter),
@@ -7692,6 +7802,8 @@ mod attach_log {
             && oob_command_bridge_well_formed(&control.oob_command_bridge);
         let special_projects_bridge_valid = control.special_projects_bridge_valid
             && special_projects_bridge_well_formed(&control.special_projects_bridge);
+        let war_relation_bridge_valid = control.war_relation_bridge_valid
+            && war_relation_bridge_well_formed(&control.war_relation_bridge);
         let map_control_state_roots_valid =
             control.map_control.state_roots_valid && control.map_control.state_roots_well_formed();
         let map_control_province_bridge_valid = control.map_control.province_bridge_valid
@@ -7721,6 +7833,8 @@ mod attach_log {
              \"oob_command_bridge_valid\":{},\
              \"special_projects_bridge_rows\":{},\
              \"special_projects_bridge_valid\":{},\
+             \"war_relation_bridge_rows\":{},\
+             \"war_relation_bridge_valid\":{},\
              \"advisor_token_filter_tokens\":{},\
              \"advisor_token_filter_valid\":{},\
              \"tech_def_filter_rows\":{},\
@@ -7755,6 +7869,8 @@ mod attach_log {
             oob_command_bridge_valid,
             control.special_projects_bridge.len(),
             special_projects_bridge_valid,
+            control.war_relation_bridge.len(),
+            war_relation_bridge_valid,
             control.advisor_token_filter.len(),
             control.advisor_token_filter_valid,
             control.tech_def_filter.len(),
@@ -8019,9 +8135,21 @@ mod attach_log {
         diplomacy: Option<CountryDiplomacyRow>,
     }
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone)]
     struct CountryDiplomacyRow {
         faction_group: i32,
+        at_war: Option<Vec<String>>,
+        casualties: Option<i64>,
+    }
+
+    #[derive(Clone)]
+    struct WarRelationRow {
+        first_tag_db_id: u32,
+        second_tag_db_id: u32,
+        first: String,
+        second: String,
+        first_casualties: i32,
+        second_casualties: i32,
     }
 
     #[derive(Clone)]
@@ -9791,6 +9919,7 @@ mod attach_log {
         include_scheduled_country_politics_residuals: bool,
         include_scheduled_country_decisions: bool,
         include_scheduled_country_diplomacy: bool,
+        control: Option<&CollectorControl>,
         advisor_token_filter: Option<&BTreeMap<String, AdvisorTokenInfo>>,
         tech_def_filter: Option<&BTreeMap<u32, String>>,
         idea_group_filter: Option<&BTreeMap<String, String>>,
@@ -9823,7 +9952,7 @@ mod attach_log {
         let date_ptr = state.date_ptr;
         let country_database_ptr = state.country_database_ptr;
         let country_probe = country_database_probe_json(country_database_ptr as usize);
-        let current_rows = state.country_identity.current_rows(
+        let mut current_rows = state.country_identity.current_rows(
             country_database_ptr as usize,
             include_scheduled_country_fuel,
             include_scheduled_country_production,
@@ -9837,6 +9966,23 @@ mod attach_log {
             tech_def_filter,
             idea_group_filter,
         );
+        let tag_table = country_tag_table(country_database_ptr as usize);
+        let war_relations = if include_scheduled_country_diplomacy {
+            match (control, tag_table) {
+                (Some(control), Some(tag_table))
+                    if control.war_relation_bridge_valid
+                        && war_relation_bridge_well_formed(&control.war_relation_bridge) =>
+                {
+                    read_war_relation_rows(base as usize, tag_table, &control.war_relation_bridge)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Some(war_relations) = war_relations.as_ref() {
+            apply_war_relations_to_country_rows(&mut current_rows, war_relations);
+        }
         let country_rows = state.country_identity.countries_json_from_rows(
             country_database_ptr as usize,
             &current_rows,
@@ -9889,6 +10035,10 @@ mod attach_log {
         let province_rows = scheduled_province_rows
             .map(|rows| format!(",\"provinces\":{rows}"))
             .unwrap_or_default();
+        let diplomacy_live = war_relations
+            .as_ref()
+            .and_then(|rows| diplomacy_live_sidecar_json(&current_rows, rows))
+            .unwrap_or_default();
         (
             format!(
                 "\"root_probe\":{{\"status\":\"verified\",\
@@ -9905,7 +10055,7 @@ mod attach_log {
                  {identity_probe},\
                  {special_projects_probe},\
                  \"domains\":{domains}}},\
-                 \"countries\":{country_rows}{state_rows}{province_rows}",
+                 \"countries\":{country_rows}{diplomacy_live}{state_rows}{province_rows}",
                 super::COLLECTOR_PROFILE_ID,
                 state.daily_addr,
                 state.long_string_addr
@@ -10352,7 +10502,99 @@ mod attach_log {
 
     fn read_country_diplomacy(object_ptr: usize) -> Option<CountryDiplomacyRow> {
         let faction_group = read_i32_stable(object_ptr + OBJ_FACTION_GROUP)?;
-        Some(CountryDiplomacyRow { faction_group })
+        Some(CountryDiplomacyRow {
+            faction_group,
+            at_war: None,
+            casualties: None,
+        })
+    }
+
+    fn read_war_relation_rows(
+        module_base: usize,
+        tag_table: usize,
+        bridge: &[WarRelationBridgeEntry],
+    ) -> Option<Vec<WarRelationRow>> {
+        if bridge.is_empty() || !war_relation_bridge_well_formed(bridge) {
+            return None;
+        }
+        let mut rows = Vec::new();
+        for entry in bridge {
+            let base = entry.record_ptr;
+            let typeptr = read_u64(base.checked_add(WR_TYPEPTR)?)?;
+            if !war_relation_date_vtable_valid(module_base, typeptr) {
+                return None;
+            }
+            if read_u32(base.checked_add(WR_FIRST_TAGID)?)? != entry.first_tag_db_id
+                || read_u32(base.checked_add(WR_SECOND_TAGID)?)? != entry.second_tag_db_id
+                || read_u32(base.checked_add(WR_ECHO)?)? != entry.first_tag_db_id
+                || read_u32(base.checked_add(WR_ECHO)?.checked_add(4)?)? != entry.second_tag_db_id
+            {
+                return None;
+            }
+            let first_casualties = read_i32_stable(base.checked_add(WR_FIRST_CAS)?)?;
+            let second_casualties = read_i32_stable(base.checked_add(WR_SECOND_CAS)?)?;
+            if !(0..=WR_MAX_CASUALTIES).contains(&first_casualties)
+                || !(0..=WR_MAX_CASUALTIES).contains(&second_casualties)
+            {
+                return None;
+            }
+            let first = tag_from_table(tag_table, entry.first_tag_db_id)?;
+            let second = tag_from_table(tag_table, entry.second_tag_db_id)?;
+            rows.push(WarRelationRow {
+                first_tag_db_id: entry.first_tag_db_id,
+                second_tag_db_id: entry.second_tag_db_id,
+                first,
+                second,
+                first_casualties,
+                second_casualties,
+            });
+        }
+        Some(rows)
+    }
+
+    fn war_relation_date_vtable_valid(module_base: usize, value: u64) -> bool {
+        let game_date = module_base
+            .checked_add(WR_GAME_DATE_VTABLE_RVA)
+            .map(|ptr| ptr as u64);
+        let gregorian_date = module_base
+            .checked_add(WR_GREGORIAN_DATE_VTABLE_RVA)
+            .map(|ptr| ptr as u64);
+        Some(value) == game_date || Some(value) == gregorian_date
+    }
+
+    fn apply_war_relations_to_country_rows(
+        rows: &mut [CountryObjectRow],
+        war_relations: &[WarRelationRow],
+    ) {
+        let mut enemies: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+        let mut casualties: BTreeMap<u32, i64> = BTreeMap::new();
+        for relation in war_relations {
+            enemies
+                .entry(relation.first_tag_db_id)
+                .or_default()
+                .push(relation.second.clone());
+            enemies
+                .entry(relation.second_tag_db_id)
+                .or_default()
+                .push(relation.first.clone());
+            *casualties.entry(relation.first_tag_db_id).or_insert(0) +=
+                relation.first_casualties as i64;
+            *casualties.entry(relation.second_tag_db_id).or_insert(0) +=
+                relation.second_casualties as i64;
+        }
+        for row in rows {
+            let Some(diplomacy) = row.diplomacy.as_mut() else {
+                continue;
+            };
+            if let Some(mut at_war) = enemies.remove(&row.tag_db_id) {
+                at_war.sort();
+                at_war.dedup();
+                diplomacy.at_war = Some(at_war);
+            }
+            if let Some(total) = casualties.remove(&row.tag_db_id) {
+                diplomacy.casualties = Some(total);
+            }
+        }
     }
 
     fn country_record_political_power(record_ptr: usize, object_ptr: usize) -> Option<f64> {
@@ -11489,10 +11731,74 @@ mod attach_log {
     }
 
     fn country_diplomacy_json(diplomacy: &CountryDiplomacyRow) -> String {
+        let at_war = diplomacy
+            .at_war
+            .as_ref()
+            .map(|tags| {
+                let values = tags
+                    .iter()
+                    .map(|tag| format!("\"{tag}\""))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(",\"at_war\":[{values}]")
+            })
+            .unwrap_or_default();
+        let casualties = diplomacy
+            .casualties
+            .map(|value| format!(",\"casualties\":{value}"))
+            .unwrap_or_default();
         format!(
-            ",\"diplomacy\":{{\"faction_group\":{}}}",
+            ",\"diplomacy\":{{\"faction_group\":{}{at_war}{casualties}}}",
             diplomacy.faction_group
         )
+    }
+
+    fn diplomacy_live_sidecar_json(
+        rows: &[CountryObjectRow],
+        war_relations: &[WarRelationRow],
+    ) -> Option<String> {
+        if war_relations.is_empty() {
+            return None;
+        }
+        let war_rows = war_relations
+            .iter()
+            .map(|row| {
+                format!(
+                    "{{\"first\":\"{}\",\"second\":\"{}\",\
+                     \"first_casualties\":{},\"second_casualties\":{}}}",
+                    row.first, row.second, row.first_casualties, row.second_casualties
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut members: BTreeMap<i32, Vec<String>> = BTreeMap::new();
+        for row in rows {
+            if let Some(diplomacy) = row.diplomacy.as_ref() {
+                members
+                    .entry(diplomacy.faction_group)
+                    .or_default()
+                    .push(row.tag.clone());
+            }
+        }
+        let faction_members = members
+            .into_iter()
+            .map(|(group, mut tags)| {
+                tags.sort();
+                tags.dedup();
+                let values = tags
+                    .iter()
+                    .map(|tag| format!("\"{tag}\""))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("\"{group}\":[{values}]")
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        Some(format!(
+            ",\"diplomacy_live\":{{\"war_relations\":[{war_rows}],\
+             \"faction_members\":{{{faction_members}}},\"subtype_warning\":{{}},\
+             \"source\":\"C\"}}"
+        ))
     }
 
     fn country_research_json(research: &CountryResearchRow) -> String {
@@ -12220,6 +12526,8 @@ mod attach_log {
                 oob_command_bridge_valid: true,
                 special_projects_bridge: Vec::new(),
                 special_projects_bridge_valid: true,
+                war_relation_bridge: Vec::new(),
+                war_relation_bridge_valid: true,
                 map_control: MapControlContract::empty(),
                 advisor_token_filter: BTreeMap::new(),
                 advisor_token_filter_valid: true,
@@ -14713,6 +15021,8 @@ mod attach_log {
                 oob_command_bridge_valid: true,
                 special_projects_bridge: Vec::new(),
                 special_projects_bridge_valid: true,
+                war_relation_bridge: Vec::new(),
+                war_relation_bridge_valid: true,
                 map_control: MapControlContract::empty(),
                 advisor_token_filter: BTreeMap::new(),
                 advisor_token_filter_valid: true,
@@ -15017,6 +15327,39 @@ mod attach_log {
                 repeated,
                 "[\"clock\",\"country_identity\",\"diplomacy_live\"]"
             );
+        }
+
+        #[test]
+        fn war_relation_date_vtable_accepts_known_date_variants() {
+            let module_base = 0x140000000usize;
+
+            assert!(war_relation_date_vtable_valid(
+                module_base,
+                (module_base + WR_GAME_DATE_VTABLE_RVA) as u64
+            ));
+            assert!(war_relation_date_vtable_valid(
+                module_base,
+                (module_base + WR_GREGORIAN_DATE_VTABLE_RVA) as u64
+            ));
+            assert!(!war_relation_date_vtable_valid(
+                module_base,
+                (module_base + WR_GAME_DATE_VTABLE_RVA + 8) as u64
+            ));
+        }
+
+        #[test]
+        fn war_relation_bridge_parser_rejects_duplicates_and_bad_rows() {
+            let rows = parse_war_relation_bridge("1:3:0x10000000000;3:1:0x10000000004")
+                .expect("valid bridge");
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].first_tag_db_id, 1);
+            assert_eq!(rows[0].second_tag_db_id, 3);
+            assert_eq!(rows[1].record_ptr, 0x10000000004);
+
+            assert!(parse_war_relation_bridge("1:1:0x10000000000").is_none());
+            assert!(parse_war_relation_bridge("1:3:0x10000000002").is_none());
+            assert!(parse_war_relation_bridge("1:3:0x10000000000;1:3:0x10000000004").is_none());
+            assert!(parse_war_relation_bridge("1:3:0x10000000000;3:1:0x10000000000").is_none());
         }
 
         #[test]
@@ -15586,7 +15929,11 @@ mod attach_log {
         #[test]
         fn country_object_row_json_includes_scheduled_diplomacy() {
             let mut row = test_country_row("POR", 47, 0x1234);
-            row.diplomacy = Some(CountryDiplomacyRow { faction_group: 42 });
+            row.diplomacy = Some(CountryDiplomacyRow {
+                faction_group: 42,
+                at_war: None,
+                casualties: None,
+            });
 
             let json = row_json(&row, false, false, false, false, false, false, false);
 

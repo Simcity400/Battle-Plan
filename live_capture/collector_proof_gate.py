@@ -46,6 +46,7 @@ def collector_session_proof_errors(
     require_replay_verified: bool = True,
     require_hourly: bool = True,
     require_no_lightweight_heavy_payloads: bool = True,
+    require_diplomacy_war_relations: bool = False,
 ) -> List[str]:
     errors: List[str] = []
     session_errors = manifest.get("session_errors")
@@ -102,6 +103,34 @@ def collector_session_proof_errors(
                 "heavy payloads appeared on lightweight frames: "
                 f"{heavy_on_light}"
             )
+    if require_diplomacy_war_relations:
+        scheduled = _scheduled_domain_frame_count(summary, "diplomacy_live")
+        required_frames = int(min_game_hours or 1)
+        if scheduled is None or scheduled < required_frames:
+            errors.append(
+                "diplomacy war proof scheduled frames "
+                f"{scheduled!r} below required {required_frames}"
+            )
+        if manifest.get("war_relation_bridge_supplied") is not True:
+            errors.append("war_relation_bridge was not supplied")
+        if _as_int(manifest.get("war_relation_bridge_rows")) in (None, 0):
+            errors.append("war_relation_bridge_rows not positive")
+        if _as_int(summary.get("diplomacy_war_relation_frames")) is None or _as_int(
+            summary.get("diplomacy_war_relation_frames")
+        ) < required_frames:
+            errors.append("diplomacy war relation frames below required cadence")
+        if _as_int(summary.get("max_diplomacy_war_relations_per_frame")) in (None, 0):
+            errors.append("diplomacy war relations were not observed")
+        if _as_int(summary.get("country_rows_with_diplomacy_at_war")) in (None, 0):
+            errors.append("country diplomacy at_war rows were not observed")
+        if _as_int(summary.get("country_rows_with_diplomacy_casualties")) in (None, 0):
+            errors.append("country diplomacy casualty rows were not observed")
+        if _as_int(summary.get("max_diplomacy_casualty_sum_per_frame")) in (None, 0):
+            errors.append("positive diplomacy casualty sum was not observed")
+        if _as_int(summary.get("diplomacy_war_subtype_warning_frames")) not in (0, None):
+            errors.append("diplomacy war subtype warnings observed")
+        if _as_int(summary.get("diplomacy_on_lightweight_frames")) not in (0, None):
+            errors.append("diplomacy payloads appeared on lightweight frames")
     return errors
 
 
@@ -115,6 +144,7 @@ def collector_session_proof_summary(
     min_game_hours: Optional[int] = None,
     require_replay_verified: bool = True,
     require_hourly: bool = True,
+    require_diplomacy_war_relations: bool = False,
 ) -> Dict[str, Any]:
     summary = _payload_summary(manifest)
     errors = collector_session_proof_errors(
@@ -126,6 +156,7 @@ def collector_session_proof_summary(
         min_game_hours=min_game_hours,
         require_replay_verified=require_replay_verified,
         require_hourly=require_hourly,
+        require_diplomacy_war_relations=require_diplomacy_war_relations,
     )
     hourly = manifest.get("hourly_requirement") or {}
     return {
@@ -152,6 +183,16 @@ def collector_session_proof_summary(
         "heavy_payload_on_lightweight_frames": summary.get(
             "heavy_payload_on_lightweight_frames"
         ),
+        "diplomacy_war_relation_frames": summary.get(
+            "diplomacy_war_relation_frames"),
+        "max_diplomacy_war_relations_per_frame": summary.get(
+            "max_diplomacy_war_relations_per_frame"),
+        "max_diplomacy_casualty_sum_per_frame": summary.get(
+            "max_diplomacy_casualty_sum_per_frame"),
+        "country_rows_with_diplomacy_at_war": summary.get(
+            "country_rows_with_diplomacy_at_war"),
+        "country_rows_with_diplomacy_casualties": summary.get(
+            "country_rows_with_diplomacy_casualties"),
     }
 
 
@@ -236,6 +277,11 @@ def _main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--min-game-hours", type=int, default=None)
     parser.add_argument("--allow-unverified-replay", action="store_true")
     parser.add_argument("--allow-hourly-missing", action="store_true")
+    parser.add_argument(
+        "--require-diplomacy-war-relations",
+        action="store_true",
+        help="require positive scheduled diplomacy war/casualty rows",
+    )
     args = parser.parse_args(argv)
 
     manifest = load_session_manifest(args.manifest)
@@ -248,6 +294,7 @@ def _main(argv: Optional[List[str]] = None) -> int:
         min_game_hours=args.min_game_hours,
         require_replay_verified=not args.allow_unverified_replay,
         require_hourly=not args.allow_hourly_missing,
+        require_diplomacy_war_relations=args.require_diplomacy_war_relations,
     )
     print(json.dumps(proof, indent=2, sort_keys=True))
     return 0 if proof["ok"] else 1

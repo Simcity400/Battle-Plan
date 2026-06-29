@@ -101,14 +101,22 @@ for inspection, with no ability to mutate the game.
   no-cold 12-game-hour proof on pid 43412 with 13 verified scheduled building
   frames, 1081 state rows and 10272 province rows per scheduled frame, non-empty
   state/province building maps, and zero worker-poll building payloads.
-- DLL-native scheduled `diplomacy_live` first slice is proven for faction
-  membership: the collector reads `CCountry+0x598` faction groups on hourly
-  frames, folds into `countries.*.diplomacy.faction_group` and
-  `diplomacy_live.faction_members`, and passed a no-cold 12-game-hour proof on
-  pid 43412 with 14 scheduled diplomacy frames, 4984 diplomacy country rows,
-  356 countries and 9 faction groups per scheduled frame, and zero worker-poll
-  diplomacy payloads. War relations, `at_war`, and casualties remain unclaimed
-  until their own DLL proof segment passes.
+- DLL-native scheduled `diplomacy_live` is proven for faction membership and
+  war/casualty rows: the collector reads `CCountry+0x598` faction groups on
+  hourly frames, folds into `countries.*.diplomacy.faction_group` and
+  `diplomacy_live.faction_members`, and now uses a preflight
+  `war_relation_bridge` so the DLL hot path can revalidate pinned war rows and
+  reread casualties on scheduled frames. The faction proof passed a no-cold
+  12-game-hour run on pid 43412 with 14 scheduled diplomacy frames, 4984
+  diplomacy country rows, 356 countries and 9 faction groups per scheduled
+  frame, and zero worker-poll diplomacy payloads. The war/casualty proof
+  `replay/snapshots/_collector_session_diplomacy_war_gate/20260629T163650Z_pid43412`
+  advanced 12 game hours in 43.203 wall seconds, verified replay output,
+  supplied 1033 bridge rows via live tag-table identity, observed 14 scheduled
+  diplomacy war frames, captured up to 1033 `war_relations` per frame, folded
+  1022 country `at_war` rows and 1022 country casualty rows, observed max
+  per-frame casualty sum 56475731, and kept diplomacy payloads off worker-poll
+  frames.
 - DLL-native raw `land_combats` lifecycle capture is proven at speed five for
   the raw replay stream: the 2026-06-29 pid 43412 proof
   `replay/snapshots/_collector_session_diplomacy_gate/20260629T152734Z_pid43412`
@@ -352,6 +360,13 @@ The app is product-complete only when all applicable gates pass:
   country rows, measured up to 356 countries and 9 faction groups per scheduled
   frame, verified the replay container, and reported zero heavy payloads on
   lightweight frames.
+- Scheduled `diplomacy_live` war/casualty proof passed on 2026-06-29:
+  `replay/snapshots/_collector_session_diplomacy_war_gate/20260629T163650Z_pid43412`
+  advanced 12 game hours in 43.203 wall seconds, stored 13 verified snapshots,
+  supplied 1033 live tag-table bridge rows, observed 14 scheduled diplomacy war
+  frames, measured max `war_relations = 1033`, folded 1022 country `at_war`
+  rows and 1022 country casualty rows, verified the replay container, and
+  reported zero diplomacy payloads on lightweight frames.
 - Raw `land_combats` lifecycle proof passed on 2026-06-29:
   `replay/snapshots/_collector_session_diplomacy_gate/20260629T152734Z_pid43412`
   advanced 12 game hours in 48.328 wall seconds, verified the replay container,

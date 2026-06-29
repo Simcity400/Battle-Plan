@@ -157,17 +157,23 @@ Implemented in the current bridge:
   decodes active `CTimedDecision` rows from the `+0xA0` list. The same proof
   measured Portugal as `timed_live = []` and decoded non-empty active timed
   decisions for 7 other countries;
-- DLL-native scheduled `diplomacy_live` first slice through `CCountry+0x598`:
-  the collector emits the opaque per-country diplomatic faction group only on
-  scheduled hourly frames. The adapter folds that into
-  `countries.*.diplomacy.faction_group` and reconstructs
-  `diplomacy_live.faction_members` with `source = "C"`. War relations,
-  `at_war`, and casualties are intentionally left null until their own DLL
-  segment is proven. The current pid 43412 proof advanced 12 game hours in
-  48.328 wall seconds, stored 13 verified snapshots, observed
-  `diplomacy_live` on 14 scheduled frames, captured 4984 diplomacy country rows
-  with up to 356 countries and 9 faction groups per frame, and kept diplomacy
-  payloads off worker polls;
+- DLL-native scheduled `diplomacy_live`: `CCountry+0x598` supplies opaque
+  per-country diplomatic faction groups, folded into
+  `countries.*.diplomacy.faction_group` and reconstructed
+  `diplomacy_live.faction_members` with `source = "C"`. War relations use a
+  one-time preflight bridge from the live `war_relation` heap discovery, then
+  the DLL hot path revalidates pinned rows and rereads casualties on scheduled
+  frames only. The bridge accepts both observed date-vtable variants in the war
+  pool (`CGameDate` RVA `0x26F2398`, `CGregorianDate` RVA `0x26F21A0`) and can
+  fall back to live tag-table identity if the old country-object identity scan
+  fails. The current faction pid 43412 proof advanced 12 game hours in 48.328
+  wall seconds with 14 scheduled diplomacy frames and zero worker-poll
+  diplomacy payloads. The current war/casualty pid 43412 proof
+  `replay/snapshots/_collector_session_diplomacy_war_gate/20260629T163650Z_pid43412`
+  advanced 12 game hours in 43.203 wall seconds, stored 13 verified snapshots,
+  observed 14 scheduled diplomacy war frames, captured up to 1033
+  `war_relations` per frame, folded 1022 country `at_war` rows and 1022
+  country casualty rows, and kept diplomacy payloads off worker polls;
 - DLL-native raw `land_combats` lifecycle stream at 10 ms worker cadence: the
   collector emits combat identity, location, age, attacker/defender division
   lists, and lifecycle events into the packaged raw collector stream. The
@@ -218,9 +224,9 @@ Still open:
 - classify any remaining country-record-only fields and add a speed-safe
   DLL-resident root only if replay-critical fields still need the record array;
 - promote remaining economy, active-research slot detail, diplomacy
-  war/casualty relations, naval/air combat, and combat battle-detail from
-  historical proof/schema coverage to live collector output or explicit
-  unavailable badges. Active land-combat identity, location, age,
+  participant/war-goal/war-score detail, naval/air combat, and combat
+  battle-detail from historical proof/schema coverage to live collector output
+  or explicit unavailable badges. Active land-combat identity, location, age,
   attacker/defender division lists, and lifecycle events now have a live raw
   collector stream with speed-five 12-game-hour proof; focus still needs
   pause-state proof and optional event markers; combat app ingestion and richer
@@ -391,8 +397,9 @@ research bonuses / ahead-of-time penalties `S`.
 **Country — decisions/missions:** active decisions & categories `S`; timed decisions &
 cooldowns `S`; ongoing missions `S`; one-shot clicks `D` (only when state-persisting / log-marked).
 
-**Country — diplomacy & intel:** wars (participants, war goals, war score) `S`; factions
-`S`; guarantees / NAPs / embargoes `S`; opinion & relations matrix `S`; lend-lease,
+**Country — diplomacy & intel:** war pairs / at-war sets / side casualties
+`C/M/S`; war goals, war score, participant-level casualties `S`; factions
+`C/M/S`; guarantees / NAPs / embargoes `S`; opinion & relations matrix `S`; lend-lease,
 volunteers, attachés, expeditionary forces `S`; operatives, intel networks, decryption
 `S`; peace-conference state `S`.
 

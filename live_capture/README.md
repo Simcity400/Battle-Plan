@@ -96,17 +96,28 @@ current product status and acceptance gates, and
   `countries.*.decisions.status_present` and `.timed_live`; measured-empty
   `timed_live = []` is protected only for tags actually measured by the
   collector.
-  It also folds the first DLL-native scheduled `diplomacy_live` slice:
-  `CCountry+0x598` supplies the opaque per-country diplomatic faction group.
-  The adapter writes only `countries.*.diplomacy.faction_group` and reconstructs
-  `diplomacy_live.faction_members` with `source = "C"`; `at_war`, casualties,
-  and `war_relations` remain unmeasured/null until their own DLL segment is
-  proven. Current no-cold proof
+  It also folds scheduled `diplomacy_live` rows. `CCountry+0x598` supplies the
+  opaque per-country diplomatic faction group; the adapter folds
+  `countries.*.diplomacy.faction_group` and reconstructs
+  `diplomacy_live.faction_members` with `source = "C"`. War relations now use a
+  one-time preflight bridge from the existing live `war_relation` heap
+  discovery; the hot DLL path only revalidates pinned rows and rereads
+  casualties on scheduled frames. The bridge accepts both live date-vtable
+  variants seen in the war pool (`CGameDate` at RVA `0x26F2398` and
+  `CGregorianDate` at RVA `0x26F21A0`) and can fall back to the live tag table
+  when the old country-object identity bridge is unavailable. Current faction
+  no-cold proof
   `replay/snapshots/_collector_session_diplomacy_gate/20260629T152734Z_pid43412`
   advanced 12 game hours in 48.328 wall seconds, stored 13 verified snapshots,
   observed `diplomacy_live` on 14 scheduled frames, captured 4984 diplomacy
   country rows with up to 356 countries and 9 faction groups per frame, and
-  kept diplomacy payloads off worker-poll frames.
+  kept diplomacy payloads off worker-poll frames. Current war/casualty proof
+  `replay/snapshots/_collector_session_diplomacy_war_gate/20260629T163650Z_pid43412`
+  advanced 12 game hours in 43.203 wall seconds, stored 13 verified snapshots,
+  observed 14 scheduled diplomacy war frames, captured up to 1033
+  `war_relations` per frame, folded 1022 country `at_war` rows and 1022
+  country casualty rows, observed a max per-frame casualty sum of 56475731,
+  and kept diplomacy payloads off worker-poll frames.
   It also folds scheduled `focus_live` rows into `countries.*.focus` for
   `focus_tree`, `completed`, `completed_count`, `current`,
   `current_continuous`, and `progress`; measured-empty `completed = []` is
@@ -181,6 +192,8 @@ python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/ta
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_buildings_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain buildings_live
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_diplomacy_gate --game-id diplomacy_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_diplomacy_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain diplomacy_live
+python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_diplomacy_war_gate --game-id diplomacy_war_relations_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300 --preflight-war-relations
+python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_diplomacy_war_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain diplomacy_live --require-diplomacy-war-relations
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session --game-id collector_live_focus_decision_project_roots --duration-s 180 --sample-ms 10 --dwell-s 0.25 --worker-bursts 3 --burst-interval-s 0.25 --until-game-hours 12 --max-wall-s 120 --preflight-special-projects
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain focus_live --require-scheduled-domain decisions_live --require-scheduled-domain projects_live
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session/<run-dir>/session_manifest.json --min-game-hours 12 --require-raw-domain land_combats --require-raw-event-type land_combat_started --require-raw-event-type land_combat_updated --require-raw-event-type land_combat_ended
@@ -234,6 +247,18 @@ advanced 12 game hours in 48.328 wall seconds, verified replay output, kept
 heavy payloads off lightweight frames, and explicitly passed
 `collector_proof_gate` with raw `land_combats` plus 56 `land_combat_started`,
 6695 `land_combat_updated`, and 11 `land_combat_ended` events.
+
+For diplomacy war/casualty acceptance, require scheduled `diplomacy_live` plus
+`--require-diplomacy-war-relations` on a 12-game-hour run using
+`--preflight-war-relations`. The preflight is allowed to do one heap discovery
+before recording; the DLL hot path must only validate pinned bridge rows during
+scheduled frames. The 2026-06-29 pid 43412 proof
+`replay/snapshots/_collector_session_diplomacy_war_gate/20260629T163650Z_pid43412`
+advanced 12 game hours in 43.203 wall seconds, verified replay output, supplied
+1033 bridge rows from the live tag-table identity path, observed 14 scheduled
+diplomacy war frames, folded 1022 country `at_war` rows and 1022 country
+casualty rows, observed max per-frame `war_relations = 1033` and casualty sum
+56475731, and reported zero diplomacy payloads on lightweight worker frames.
 
 For economy acceptance, require scheduled `production_live` plus snapshot
 domains `fuel_live`, `country_misc`, and `country_scalars`. The 2026-06-29 pid

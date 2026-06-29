@@ -219,8 +219,18 @@ COUNTRY_DECISIONS_STATE_MAX = 1024
 COUNTRY_DECISIONS_TOKEN_MAX_LENGTH = 160
 COUNTRY_DIPLOMACY_PAYLOAD_KEYS = frozenset((
     "faction_group",
+    "at_war",
+    "casualties",
 ))
 COUNTRY_DIPLOMACY_FACTION_GROUP_ABS_MAX = 10_000_000
+COUNTRY_DIPLOMACY_CASUALTIES_MAX = 1_000_000_000_000
+DIPLOMACY_LIVE_PAYLOAD_KEYS = frozenset((
+    "war_relations",
+    "faction_members",
+    "subtype_warning",
+    "source",
+))
+DIPLOMACY_LIVE_MAX_WAR_RELATIONS = 10_000
 PRODUCTION_PAYLOAD_KEYS = frozenset((
     "stockpile",
     "stockpile_total",
@@ -665,6 +675,14 @@ def validate_collector_frame(frame: Any) -> List[str]:
         else:
             problems.extend(_validate_special_projects(special_projects))
 
+    diplomacy_live = frame.get("diplomacy_live")
+    if diplomacy_live is not None:
+        if not isinstance(diplomacy_live, dict):
+            problems.append(
+                f"collector frame diplomacy_live {diplomacy_live!r} not dict|null")
+        else:
+            problems.extend(_validate_diplomacy_live_sidecar(diplomacy_live))
+
     root_probe = frame.get("root_probe")
     scheduled_domain_claims = _claimed_scheduled_domains(frame, root_probe)
     if frame.get("capture_boundary") == "worker_poll":
@@ -691,6 +709,9 @@ def validate_collector_frame(frame: Any) -> List[str]:
             problems.append("collector worker_poll frame must not carry decisions payload")
         if _has_country_diplomacy_rows(countries):
             problems.append("collector worker_poll frame must not carry diplomacy payload")
+        if _has_diplomacy_live_sidecar(diplomacy_live):
+            problems.append(
+                "collector worker_poll frame must not carry diplomacy_live sidecar")
         if _has_payload_rows(states):
             problems.append("collector worker_poll frame must not carry states payload")
         if _has_payload_rows(provinces):
@@ -763,6 +784,7 @@ def validate_collector_frame(frame: Any) -> List[str]:
         and (
             "diplomacy_live" in scheduled_domain_claims
             or _has_country_diplomacy_rows(countries)
+            or _has_diplomacy_live_sidecar(diplomacy_live)
         )
     ):
         problems.append("collector diplomacy_live payload requires scheduled_hour_snapshot")
@@ -905,7 +927,13 @@ def snapshot_from_root_probe_frame(frame: Dict[str, Any], game_id: str) -> Dict[
         and _has_country_decisions_live_rows(frame_countries)
     ):
         domains.append("decisions_live")
-    if "diplomacy_live" in claimed_domains and _has_country_diplomacy_rows(frame_countries):
+    if (
+        "diplomacy_live" in claimed_domains
+        and (
+            _has_country_diplomacy_rows(frame_countries)
+            or _has_diplomacy_live_sidecar(frame.get("diplomacy_live"))
+        )
+    ):
         domains.append("diplomacy_live")
     if "state_ownership" in claimed_domains and _has_state_owner_rows(frame_states):
         domains.append("state_ownership")
@@ -934,7 +962,8 @@ def snapshot_from_root_probe_frame(frame: Dict[str, Any], game_id: str) -> Dict[
     _fold_country_politics(snap, frame_countries, domains)
     _fold_country_politics_residuals(snap, frame_countries, domains)
     _fold_country_decisions_live(snap, frame_countries, domains)
-    _fold_country_diplomacy_live(snap, frame_countries, domains)
+    _fold_country_diplomacy_live(
+        snap, frame_countries, domains, frame.get("diplomacy_live"))
     _fold_state_rows(snap, frame_states, domains)
     _fold_province_rows(snap, frame_provinces, domains)
     _fold_special_projects(snap, frame_special_projects, domains)
@@ -991,7 +1020,8 @@ def snapshot_from_collector_frame(frame: Dict[str, Any], game_id: str) -> Dict[s
     _fold_country_politics(snap, frame.get("countries") or {}, domains)
     _fold_country_politics_residuals(snap, frame.get("countries") or {}, domains)
     _fold_country_decisions_live(snap, frame.get("countries") or {}, domains)
-    _fold_country_diplomacy_live(snap, frame.get("countries") or {}, domains)
+    _fold_country_diplomacy_live(
+        snap, frame.get("countries") or {}, domains, frame.get("diplomacy_live"))
     _fold_state_rows(snap, frame.get("states") or {}, domains)
     _fold_province_rows(snap, frame.get("provinces") or {}, domains)
     _fold_special_projects(snap, frame.get("special_projects") or {}, domains)
@@ -4675,9 +4705,12 @@ def _validate_country_diplomacy_row(
     if not any(key in diplomacy for key in COUNTRY_DIPLOMACY_PAYLOAD_KEYS):
         problems.append(
             f"collector frame country {tag!r}.diplomacy has no measured leaves")
-    faction_group = diplomacy.get("faction_group")
-    if not _valid_bounded_int(
-        faction_group,
+    for key in diplomacy:
+        if key not in COUNTRY_DIPLOMACY_PAYLOAD_KEYS:
+            problems.append(
+                f"collector frame country {tag!r}.diplomacy key {key!r} unsupported")
+    if "faction_group" in diplomacy and not _valid_bounded_int(
+        diplomacy.get("faction_group"),
         minimum=-COUNTRY_DIPLOMACY_FACTION_GROUP_ABS_MAX,
         maximum=COUNTRY_DIPLOMACY_FACTION_GROUP_ABS_MAX,
     ):
@@ -4685,6 +4718,94 @@ def _validate_country_diplomacy_row(
             f"collector frame country {tag!r}.diplomacy.faction_group "
             "not int in range"
         )
+    at_war = diplomacy.get("at_war")
+    if "at_war" in diplomacy:
+        if not isinstance(at_war, list):
+            problems.append(
+                f"collector frame country {tag!r}.diplomacy.at_war not list")
+        elif not all(schema.valid_tag(enemy) for enemy in at_war):
+            problems.append(
+                f"collector frame country {tag!r}.diplomacy.at_war contains non-TAG")
+    if "casualties" in diplomacy and not _valid_bounded_int(
+        diplomacy.get("casualties"),
+        minimum=0,
+        maximum=COUNTRY_DIPLOMACY_CASUALTIES_MAX,
+    ):
+        problems.append(
+            f"collector frame country {tag!r}.diplomacy.casualties "
+            "not nonnegative int in range"
+        )
+    return problems
+
+
+def _validate_diplomacy_live_sidecar(diplomacy_live: Dict[str, Any]) -> List[str]:
+    problems: List[str] = []
+    for key in diplomacy_live:
+        if key not in DIPLOMACY_LIVE_PAYLOAD_KEYS:
+            problems.append(f"collector frame diplomacy_live key {key!r} unsupported")
+    war_relations = diplomacy_live.get("war_relations")
+    if war_relations is not None:
+        if not isinstance(war_relations, list):
+            problems.append("collector frame diplomacy_live.war_relations not list|null")
+        elif len(war_relations) > DIPLOMACY_LIVE_MAX_WAR_RELATIONS:
+            problems.append("collector frame diplomacy_live.war_relations too many rows")
+        else:
+            for idx, row in enumerate(war_relations):
+                if not isinstance(row, dict):
+                    problems.append(
+                        f"collector frame diplomacy_live.war_relations[{idx}] not object")
+                    continue
+                allowed = {
+                    "first", "second", "first_casualties", "second_casualties"}
+                for key in row:
+                    if key not in allowed:
+                        problems.append(
+                            "collector frame diplomacy_live."
+                            f"war_relations[{idx}] key {key!r} unsupported")
+                first = row.get("first")
+                second = row.get("second")
+                if not schema.valid_tag(first):
+                    problems.append(
+                        f"collector frame diplomacy_live.war_relations[{idx}].first not TAG")
+                if not schema.valid_tag(second):
+                    problems.append(
+                        f"collector frame diplomacy_live.war_relations[{idx}].second not TAG")
+                for key in ("first_casualties", "second_casualties"):
+                    if not _valid_bounded_int(
+                        row.get(key),
+                        minimum=0,
+                        maximum=COUNTRY_DIPLOMACY_CASUALTIES_MAX,
+                    ):
+                        problems.append(
+                            "collector frame diplomacy_live."
+                            f"war_relations[{idx}].{key} not nonnegative int in range")
+    faction_members = diplomacy_live.get("faction_members")
+    if faction_members is not None:
+        if not isinstance(faction_members, dict):
+            problems.append("collector frame diplomacy_live.faction_members not dict|null")
+        else:
+            for group, members in faction_members.items():
+                try:
+                    int(str(group))
+                except (TypeError, ValueError):
+                    problems.append(
+                        "collector frame diplomacy_live.faction_members group "
+                        f"{group!r} not int-like")
+                    continue
+                if not isinstance(members, list):
+                    problems.append(
+                        "collector frame diplomacy_live.faction_members "
+                        f"{group!r} not list")
+                elif not all(schema.valid_tag(tag) for tag in members):
+                    problems.append(
+                        "collector frame diplomacy_live.faction_members "
+                        f"{group!r} contains non-TAG")
+    subtype_warning = diplomacy_live.get("subtype_warning")
+    if subtype_warning is not None and not isinstance(subtype_warning, dict):
+        problems.append("collector frame diplomacy_live.subtype_warning not dict|null")
+    source = diplomacy_live.get("source")
+    if source is not None and source not in {"C", "M"}:
+        problems.append("collector frame diplomacy_live.source not C|M|null")
     return problems
 
 
@@ -5813,10 +5934,13 @@ def _fold_country_diplomacy_live(
     snap: Dict[str, Any],
     countries: Dict[str, Any],
     domains: Iterable[str],
+    diplomacy_live_payload: Any = None,
 ) -> None:
     if "diplomacy_live" not in set(domains):
         return
     measured_faction_tags = set()
+    measured_at_war_tags = set()
+    measured_casualty_tags = set()
     members_by_group: Dict[str, List[str]] = {}
     for tag, row in countries.items():
         if not schema.valid_tag(tag) or not isinstance(row, dict):
@@ -5826,35 +5950,126 @@ def _fold_country_diplomacy_live(
         diplomacy_payload = row.get("diplomacy")
         if not isinstance(diplomacy_payload, dict):
             continue
+        clean: Dict[str, Any] = {}
         faction_group = diplomacy_payload.get("faction_group")
-        if not _valid_bounded_int(
+        if _valid_bounded_int(
             faction_group,
             minimum=-COUNTRY_DIPLOMACY_FACTION_GROUP_ABS_MAX,
             maximum=COUNTRY_DIPLOMACY_FACTION_GROUP_ABS_MAX,
         ):
+            clean["faction_group"] = faction_group
+            measured_faction_tags.add(tag)
+            members_by_group.setdefault(str(faction_group), []).append(tag)
+        at_war = diplomacy_payload.get("at_war")
+        if isinstance(at_war, list) and all(schema.valid_tag(enemy) for enemy in at_war):
+            clean["at_war"] = sorted(at_war)
+            measured_at_war_tags.add(tag)
+        casualties = diplomacy_payload.get("casualties")
+        if _valid_bounded_int(
+            casualties,
+            minimum=0,
+            maximum=COUNTRY_DIPLOMACY_CASUALTIES_MAX,
+        ):
+            clean["casualties"] = casualties
+            measured_casualty_tags.add(tag)
+        if not clean:
             continue
         country = snap["countries"].setdefault(tag, schema.empty_country())
         diplomacy = country.get("diplomacy")
         if not isinstance(diplomacy, dict):
             diplomacy = {}
             country["diplomacy"] = diplomacy
-        diplomacy["faction_group"] = faction_group
-        measured_faction_tags.add(tag)
-        members_by_group.setdefault(str(faction_group), []).append(tag)
+        diplomacy.update(clean)
 
-    if measured_faction_tags:
+    clean_sidecar = _clean_diplomacy_live_sidecar(diplomacy_live_payload)
+    if measured_faction_tags or measured_at_war_tags or measured_casualty_tags or clean_sidecar:
         measured = snap.setdefault("_live_measured_leaf_tags", {})
-        existing = set(measured.get("diplomacy.faction_group") or [])
-        measured["diplomacy.faction_group"] = sorted(
-            existing | measured_faction_tags)
+        if measured_faction_tags:
+            existing = set(measured.get("diplomacy.faction_group") or [])
+            measured["diplomacy.faction_group"] = sorted(
+                existing | measured_faction_tags)
+        if measured_at_war_tags:
+            existing = set(measured.get("diplomacy.at_war") or [])
+            measured["diplomacy.at_war"] = sorted(existing | measured_at_war_tags)
+        if measured_casualty_tags:
+            existing = set(measured.get("diplomacy.casualties") or [])
+            measured["diplomacy.casualties"] = sorted(
+                existing | measured_casualty_tags)
         dl_side = snap.get("diplomacy_live")
         if not isinstance(dl_side, dict):
             dl_side = schema.empty_diplomacy_live()
             snap["diplomacy_live"] = dl_side
-        dl_side["faction_members"] = {
-            group: sorted(tags) for group, tags in sorted(members_by_group.items())
-        }
+        if clean_sidecar:
+            if clean_sidecar.get("war_relations") is not None:
+                dl_side["war_relations"] = clean_sidecar["war_relations"]
+            if clean_sidecar.get("faction_members") is not None:
+                dl_side["faction_members"] = clean_sidecar["faction_members"]
+            if clean_sidecar.get("subtype_warning") is not None:
+                dl_side["subtype_warning"] = clean_sidecar["subtype_warning"]
+        elif members_by_group:
+            dl_side["faction_members"] = {
+                group: sorted(tags) for group, tags in sorted(members_by_group.items())
+            }
+        if dl_side.get("faction_members") is None and members_by_group:
+            dl_side["faction_members"] = {
+                group: sorted(tags) for group, tags in sorted(members_by_group.items())
+            }
         dl_side["source"] = "C"
+
+
+def _clean_diplomacy_live_sidecar(value: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(value, dict):
+        return None
+    clean: Dict[str, Any] = {}
+    war_relations = value.get("war_relations")
+    if isinstance(war_relations, list) and len(war_relations) <= DIPLOMACY_LIVE_MAX_WAR_RELATIONS:
+        clean_rows = []
+        for row in war_relations:
+            if not isinstance(row, dict):
+                continue
+            first = row.get("first")
+            second = row.get("second")
+            first_casualties = row.get("first_casualties")
+            second_casualties = row.get("second_casualties")
+            if not (schema.valid_tag(first) and schema.valid_tag(second)):
+                continue
+            if not (
+                _valid_bounded_int(
+                    first_casualties,
+                    minimum=0,
+                    maximum=COUNTRY_DIPLOMACY_CASUALTIES_MAX,
+                )
+                and _valid_bounded_int(
+                    second_casualties,
+                    minimum=0,
+                    maximum=COUNTRY_DIPLOMACY_CASUALTIES_MAX,
+                )
+            ):
+                continue
+            clean_rows.append({
+                "first": first,
+                "second": second,
+                "first_casualties": first_casualties,
+                "second_casualties": second_casualties,
+            })
+        clean["war_relations"] = clean_rows
+    faction_members = value.get("faction_members")
+    if isinstance(faction_members, dict):
+        clean_members: Dict[str, List[str]] = {}
+        for group, members in faction_members.items():
+            try:
+                group_key = str(int(str(group)))
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(members, list):
+                continue
+            tags = sorted(tag for tag in members if schema.valid_tag(tag))
+            clean_members[group_key] = tags
+        clean["faction_members"] = clean_members
+    subtype_warning = value.get("subtype_warning")
+    if isinstance(subtype_warning, dict):
+        clean["subtype_warning"] = dict(subtype_warning)
+    return clean or None
 
 
 def _fold_country_fuel(
@@ -6397,6 +6612,13 @@ def _has_country_diplomacy_rows(countries: Any) -> bool:
         and isinstance(row.get("diplomacy"), dict)
         and any(key in row["diplomacy"] for key in COUNTRY_DIPLOMACY_PAYLOAD_KEYS)
         for row in countries.values()
+    )
+
+
+def _has_diplomacy_live_sidecar(diplomacy_live: Any) -> bool:
+    return (
+        isinstance(diplomacy_live, dict)
+        and any(key in diplomacy_live for key in DIPLOMACY_LIVE_PAYLOAD_KEYS)
     )
 
 
