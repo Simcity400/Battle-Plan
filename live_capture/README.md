@@ -108,15 +108,15 @@ current product status and acceptance gates, and
   percentage, and ETA remain gated on separate validated inputs. Worker polls
   must not carry research payloads.
   It can fold scheduled `projects_live` frames into top-level
-  `special_projects` with `source = "C"`. The first DLL project slice emits
-  validated facilities, scientists, and currently worked project rows from the
-  special-project heap pool, but `special_projects_scan` is disabled by default
-  because the cold heap-scan proof exceeded its wall cap before any persisted
-  frame/manifest and the HOI4 process was gone afterward. Project
-  progress/completion, owner attribution, resolved project definition tokens,
-  and a bounded root/cache path remain open. Worker polls must not carry
-  `special_projects`, and pointer/tag-db diagnostics are rejected before
-  folding.
+  `special_projects` with `source = "C"`. The normal session path can now
+  preflight/cache special-project roots into a `special_projects_bridge`
+  control payload and keeps the old `special_projects_scan` heap sweep disabled
+  unless explicitly requested. The bridge carries facilities, all CProject
+  identities, and scientist characters to the DLL; manifests keep only counts,
+  cache status, and `address_manifest_policy = "omitted"`. Project
+  progress/completion, owner attribution, and resolved project definition
+  tokens remain open. Worker polls must not carry `special_projects`, and
+  pointer/tag-db diagnostics are rejected before folding.
   Session/probe manifests summarize
   country-object identity status, scalar-frame counts, focus-domain sample
   counts, tech-domain sample counts, project-domain sample counts, politics-

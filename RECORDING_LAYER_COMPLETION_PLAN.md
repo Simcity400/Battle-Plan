@@ -473,8 +473,9 @@ Tasks:
   definition joins, `decisions_market`, `mio`, `designs`, `designs_variants`,
   and save-proven project parsers into collector domain plans. The first
   gated DLL `projects_live` catalog slice now covers facilities, scientists,
-  and currently worked project rows only, but it is disabled by default until a
-  bounded root/cache path replaces the current cold heap sweep.
+  and currently worked project rows only; normal runs should use the
+  cache-first `special_projects_bridge` path, with the cold heap sweep reserved
+  for explicit preflight refreshes.
 - Keep scheduled DLL `focus_live` on the validated `CCountry` path and add only
   the missing pause/event-marker proof rather than reopening the old Python
   scan model.
@@ -1080,12 +1081,15 @@ The DLL/adapter contract for `projects_live` now supports the first top-level
 `special_projects` catalog slice: facilities, scientists, and currently worked
 project rows, all source-badged `C`. The adapter folds only scheduled frames
 that explicitly claim `projects_live`, rejects pointer/tag-db diagnostics, and
-summarizes project row counts in manifests. The producer scan is gated behind
-`special_projects_scan = true` and disabled by default because the first live
-cold-scan proof exceeded its wall cap before any persisted frame/manifest and
-the game process was gone afterward. Project progress/completion, owner
-attribution, resolved project definition tokens, and a bounded root/cache path
-remain open.
+summarizes project row counts in manifests. The normal producer path now has a
+cache-first `special_projects_bridge`: Python preflight validates cached
+facility, project, and scientist roots or performs a cold discovery only when
+`--allow-special-projects-cold-scan` is explicitly paired with
+`--preflight-special-projects`; the DLL then revalidates those roots in-process
+and emits `special_projects_identity.status = bridge_verified` when usable.
+The older `special_projects_scan = true` heap sweep remains available but is
+not the normal/speed-five path. Project progress/completion, owner attribution,
+and resolved project definition tokens remain open.
 
 Remaining Phase 2 gaps:
 

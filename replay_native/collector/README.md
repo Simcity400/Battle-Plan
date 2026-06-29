@@ -190,13 +190,18 @@ Scheduled country research:
 
 Scheduled special projects:
 
-- scheduled snapshot frames may claim `projects_live` only when the profile
-  sentinels match and `special_projects_scan = true` is supplied in
+- scheduled snapshot frames may claim `projects_live` when the profile
+  sentinels match and either `special_projects_bridge` supplies validated roots
+  or the explicit fallback `special_projects_scan = true` is supplied in
   `collector_control.json`;
-- the first DLL project slice scans for `CProjectFacility`, `CProject`, and
-  scientist-backed `CCharacter` objects once per collector worker, pins
-  validated identities, then revalidates and rereads those pins on scheduled
-  frames instead of sweeping the heap in the hot path;
+- the normal recorder path is now bridge-first: Python preflight resolves or
+  validates cached `facility:<id>:<province>:0xptr`,
+  `project:<id>:<static_def_handle>:0xptr`, and `scientist:<char_id>:0xptr`
+  rows, the control file passes only that ephemeral bridge to the DLL, and the
+  DLL revalidates vtables/types/identity before every scheduled read;
+- the older DLL project slice can still scan for `CProjectFacility`, `CProject`,
+  and scientist-backed `CCharacter` objects once per collector worker when
+  explicitly requested, but that heap sweep remains disabled for normal runs;
 - emitted top-level `special_projects` rows have `source = "C"` and include
   facilities, scientists, and currently worked project rows. Facility active
   project handles and project static-def handles are raw engine ids, not
@@ -207,10 +212,9 @@ Scheduled special projects:
 - the Python adapter rejects pointer/tag-db diagnostic keys, folds only frames
   that explicitly claim `projects_live`, and preserves measured-empty `[]`
   payloads when the DLL emits them;
-- this cold scan is disabled by default because the first live attempt exceeded
-  its wall cap before any manifest/frame output and the HOI4 process was no
-  longer present afterward. Replace it with a bounded root/cache path before
-  enabling it in normal or speed-five recording;
+- preflight/session manifests record bridge status, row counts, cache status,
+  and `address_manifest_policy = "omitted"`; raw addresses are never written to
+  durable manifests;
 - worker-poll frames stay light and must not carry `special_projects`.
 
 Scheduled country fuel:

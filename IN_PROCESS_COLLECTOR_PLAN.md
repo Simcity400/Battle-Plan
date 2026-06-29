@@ -530,17 +530,18 @@ Completed in the first repo/live proof pass:
     progress percentage, ETA, and live research speed remain separate gated
     layers.
 39. Scheduled special-project catalogs moved into the DLL as the first
-    `projects_live` slice: the collector scans once for project facilities,
-    projects, and scientist-backed characters, pins validated identities, and
-    rereads those pins on scheduled frames. The Python adapter folds top-level
-    `special_projects` with `source = "C"`, rejects pointer/tag-db diagnostic
-    leakage, and records project-domain counts in the session manifest. The
-    scan is now gated behind `special_projects_scan = true` and remains disabled
-    for normal runs: the first live cold-scan proof exceeded its wall cap before
-    any persisted frame/manifest, and the game process was gone afterward. This
-    is catalog/state contract proof only until a bounded root/cache path
-    replaces the heap sweep; progress/completion, owner attribution, and
-    resolved project definition tokens remain open.
+    `projects_live` slice: the collector can use a cache-first
+    `special_projects_bridge` for project facilities, CProject identities, and
+    scientist-backed characters, then reread those pins on scheduled frames.
+    The Python adapter folds top-level `special_projects` with `source = "C"`,
+    rejects pointer/tag-db diagnostic leakage, and records project-domain counts
+    plus bridge/cache diagnostics in the session manifest. The old
+    `special_projects_scan = true` heap sweep remains gated and disabled for
+    normal runs; cold discovery is only allowed when
+    `--preflight-special-projects` and `--allow-special-projects-cold-scan` are
+    both requested. This is still catalog/state contract proof only;
+    progress/completion, owner attribution, and resolved project definition
+    tokens remain open.
 
 Next:
 

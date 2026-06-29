@@ -462,6 +462,8 @@ mod attach_log {
     const MAX_PROJECT_ACTIVE_PROJECTS: usize = 4_096;
     const MAX_PROJECT_PROJECT_PINS: usize = 20_000;
     const MAX_PROJECT_SCIENTISTS: usize = 4_096;
+    const MAX_SPECIAL_PROJECT_BRIDGE_ROWS: usize = 30_000;
+    const MAX_SPECIAL_PROJECT_BRIDGE_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
     const MAX_PROJECT_ID: u32 = 10_000_000;
     const MAX_PROJECT_PROVINCE_ID: u32 = 1_000_000;
     const MAX_PROJECT_HANDLE: u32 = 10_000_000;
@@ -783,6 +785,8 @@ mod attach_log {
         ship_body_bridge_valid: bool,
         oob_command_bridge: Vec<OobCommandBridgeEntry>,
         oob_command_bridge_valid: bool,
+        special_projects_bridge: Vec<SpecialProjectsBridgeEntry>,
+        special_projects_bridge_valid: bool,
         map_control: MapControlContract,
         advisor_token_filter: BTreeMap<String, AdvisorTokenInfo>,
         advisor_token_filter_valid: bool,
@@ -861,6 +865,32 @@ mod attach_log {
     struct OobCommandBridgeEntry {
         kind: OobCommandKind,
         object_id: u32,
+        body_ptr: usize,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    enum SpecialProjectsBridgeKind {
+        Facility,
+        Project,
+        Scientist,
+    }
+
+    impl SpecialProjectsBridgeKind {
+        fn from_str(value: &str) -> Option<Self> {
+            match value {
+                "facility" => Some(Self::Facility),
+                "project" => Some(Self::Project),
+                "scientist" => Some(Self::Scientist),
+                _ => None,
+            }
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct SpecialProjectsBridgeEntry {
+        kind: SpecialProjectsBridgeKind,
+        object_id: u32,
+        aux_id: u32,
         body_ptr: usize,
     }
 
@@ -1045,6 +1075,14 @@ mod attach_log {
                 },
                 None => (Vec::new(), true),
             };
+        let (special_projects_bridge, special_projects_bridge_valid) =
+            match parse_json_string(&text, "special_projects_bridge") {
+                Some(value) => match parse_special_projects_bridge(&value) {
+                    Some(rows) => (rows, true),
+                    None => (Vec::new(), false),
+                },
+                None => (Vec::new(), true),
+            };
         let (advisor_token_filter, advisor_token_filter_valid) =
             match parse_json_string(&text, "advisor_token_filter") {
                 Some(value) => match parse_advisor_token_filter(&value) {
@@ -1086,6 +1124,8 @@ mod attach_log {
             ship_body_bridge_valid,
             oob_command_bridge,
             oob_command_bridge_valid,
+            special_projects_bridge,
+            special_projects_bridge_valid,
             map_control,
             advisor_token_filter,
             advisor_token_filter_valid,
@@ -1589,6 +1629,97 @@ mod attach_log {
             }
         }
         true
+    }
+
+    fn parse_special_projects_bridge(value: &str) -> Option<Vec<SpecialProjectsBridgeEntry>> {
+        if value.trim().is_empty() {
+            return Some(Vec::new());
+        }
+        if value.len() > MAX_SPECIAL_PROJECT_BRIDGE_PAYLOAD_BYTES {
+            return None;
+        }
+        let mut entries = Vec::new();
+        let mut seen_keys: BTreeMap<(SpecialProjectsBridgeKind, u32, u32), ()> = BTreeMap::new();
+        let mut seen_body_ptrs: BTreeMap<usize, ()> = BTreeMap::new();
+        for raw in value.split(';') {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                return None;
+            }
+            let mut parts = raw.split(':');
+            let kind = SpecialProjectsBridgeKind::from_str(parts.next()?.trim())?;
+            let object_id = parse_bridge_u32(parts.next()?.trim())?;
+            let (aux_id, ptr_raw) = match kind {
+                SpecialProjectsBridgeKind::Scientist => (0, parts.next()?),
+                SpecialProjectsBridgeKind::Facility | SpecialProjectsBridgeKind::Project => {
+                    (parse_bridge_u32(parts.next()?.trim())?, parts.next()?)
+                }
+            };
+            if parts.next().is_some() {
+                return None;
+            }
+            if !special_projects_bridge_ids_valid(kind, object_id, aux_id) {
+                return None;
+            }
+            let body_ptr = parse_bridge_pointer(ptr_raw.trim())?;
+            if !is_map_control_heap_pointer(body_ptr) {
+                return None;
+            }
+            if seen_keys.insert((kind, object_id, aux_id), ()).is_some()
+                || seen_body_ptrs.insert(body_ptr, ()).is_some()
+            {
+                return None;
+            }
+            entries.push(SpecialProjectsBridgeEntry {
+                kind,
+                object_id,
+                aux_id,
+                body_ptr,
+            });
+            if entries.len() > MAX_SPECIAL_PROJECT_BRIDGE_ROWS {
+                return None;
+            }
+        }
+        Some(entries)
+    }
+
+    fn special_projects_bridge_well_formed(rows: &[SpecialProjectsBridgeEntry]) -> bool {
+        if rows.len() > MAX_SPECIAL_PROJECT_BRIDGE_ROWS {
+            return false;
+        }
+        let mut seen_keys: BTreeMap<(SpecialProjectsBridgeKind, u32, u32), ()> = BTreeMap::new();
+        let mut seen_body_ptrs: BTreeMap<usize, ()> = BTreeMap::new();
+        for row in rows {
+            if !special_projects_bridge_ids_valid(row.kind, row.object_id, row.aux_id) {
+                return false;
+            }
+            if !is_map_control_heap_pointer(row.body_ptr) {
+                return false;
+            }
+            if seen_keys
+                .insert((row.kind, row.object_id, row.aux_id), ())
+                .is_some()
+                || seen_body_ptrs.insert(row.body_ptr, ()).is_some()
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn special_projects_bridge_ids_valid(
+        kind: SpecialProjectsBridgeKind,
+        object_id: u32,
+        aux_id: u32,
+    ) -> bool {
+        if object_id == 0 || object_id > MAX_PROJECT_ID {
+            return false;
+        }
+        match kind {
+            SpecialProjectsBridgeKind::Facility => aux_id > 0 && aux_id <= MAX_PROJECT_PROVINCE_ID,
+            SpecialProjectsBridgeKind::Project => aux_id > 0 && aux_id <= MAX_PROJECT_HANDLE,
+            SpecialProjectsBridgeKind::Scientist => aux_id == 0,
+        }
     }
 
     fn parse_map_control_contract(text: &str) -> MapControlContract {
@@ -7414,6 +7545,8 @@ mod attach_log {
             && ship_body_bridge_well_formed(&control.ship_body_bridge);
         let oob_command_bridge_valid = control.oob_command_bridge_valid
             && oob_command_bridge_well_formed(&control.oob_command_bridge);
+        let special_projects_bridge_valid = control.special_projects_bridge_valid
+            && special_projects_bridge_well_formed(&control.special_projects_bridge);
         let map_control_state_roots_valid =
             control.map_control.state_roots_valid && control.map_control.state_roots_well_formed();
         let map_control_province_bridge_valid = control.map_control.province_bridge_valid
@@ -7441,6 +7574,8 @@ mod attach_log {
              \"ship_body_bridge_valid\":{},\
              \"oob_command_bridge_rows\":{},\
              \"oob_command_bridge_valid\":{},\
+             \"special_projects_bridge_rows\":{},\
+             \"special_projects_bridge_valid\":{},\
              \"advisor_token_filter_tokens\":{},\
              \"advisor_token_filter_valid\":{},\
              \"idea_group_filter_rows\":{},\
@@ -7471,6 +7606,8 @@ mod attach_log {
             ship_body_bridge_valid,
             control.oob_command_bridge.len(),
             oob_command_bridge_valid,
+            control.special_projects_bridge.len(),
+            special_projects_bridge_valid,
             control.advisor_token_filter.len(),
             control.advisor_token_filter_valid,
             control.idea_group_filter.len(),
@@ -7617,6 +7754,23 @@ mod attach_log {
                 special_projects: if daily_match
                     && long_string_match
                     && control
+                        .map(|control| !control.special_projects_bridge_valid)
+                        .unwrap_or(false)
+                {
+                    SpecialProjectsCache::not_attempted("invalid_control_bridge")
+                } else if daily_match
+                    && long_string_match
+                    && control
+                        .map(|control| !control.special_projects_bridge.is_empty())
+                        .unwrap_or(false)
+                {
+                    let bridge = control
+                        .map(|control| control.special_projects_bridge.as_slice())
+                        .unwrap_or(&[]);
+                    SpecialProjectsCache::from_control_bridge(base, bridge)
+                } else if daily_match
+                    && long_string_match
+                    && control
                         .map(|control| control.special_projects_scan)
                         .unwrap_or(false)
                 {
@@ -7652,6 +7806,7 @@ mod attach_log {
     struct SpecialProjectsCache {
         status: &'static str,
         scan_ms: u64,
+        bridge_rows_supplied: u32,
         facilities: Vec<ProjectFacilityPin>,
         projects: Vec<ProjectPin>,
         scientists: Vec<ProjectScientistPin>,
@@ -8373,6 +8528,7 @@ mod attach_log {
             Self {
                 status,
                 scan_ms: 0,
+                bridge_rows_supplied: 0,
                 facilities: Vec::new(),
                 projects: Vec::new(),
                 scientists: Vec::new(),
@@ -8391,6 +8547,7 @@ mod attach_log {
                 return Self {
                     status: "too_many",
                     scan_ms,
+                    bridge_rows_supplied: 0,
                     facilities: Vec::new(),
                     projects: Vec::new(),
                     scientists: Vec::new(),
@@ -8427,6 +8584,69 @@ mod attach_log {
             Self {
                 status,
                 scan_ms,
+                bridge_rows_supplied: 0,
+                facilities,
+                projects,
+                scientists,
+                too_many: false,
+            }
+        }
+
+        fn from_control_bridge(base: usize, bridge: &[SpecialProjectsBridgeEntry]) -> Self {
+            if base == 0 {
+                return Self::not_attempted("profile_mismatch");
+            }
+            if !special_projects_bridge_well_formed(bridge) {
+                return Self::not_attempted("invalid_control_bridge");
+            }
+            let facility_vtable = base.saturating_add(PROJECT_FACILITY_VTABLE_RVA);
+            let project_vtable = base.saturating_add(PROJECT_CPROJECT_VTABLE_RVA);
+            let character_vtable = base.saturating_add(PROJECT_CHARACTER_VTABLE_RVA);
+            let scientist_vtable = base.saturating_add(PROJECT_SCIENTIST_VTABLE_RVA);
+            let mut facilities = Vec::new();
+            let mut projects = Vec::new();
+            let mut scientists = Vec::new();
+            for entry in bridge.iter().take(MAX_SPECIAL_PROJECT_BRIDGE_ROWS) {
+                match entry.kind {
+                    SpecialProjectsBridgeKind::Facility => {
+                        if let Some(pin) = project_facility_pin(entry.body_ptr, facility_vtable) {
+                            if pin.facility_id == entry.object_id && pin.province_id == entry.aux_id
+                            {
+                                facilities.push(pin);
+                            }
+                        }
+                    }
+                    SpecialProjectsBridgeKind::Project => {
+                        if let Some(pin) = project_pin(entry.body_ptr, project_vtable) {
+                            if pin.project_id == entry.object_id
+                                && pin.static_def_handle == entry.aux_id
+                            {
+                                projects.push(pin);
+                            }
+                        }
+                    }
+                    SpecialProjectsBridgeKind::Scientist => {
+                        if let Some(pin) = project_scientist_pin(
+                            entry.body_ptr,
+                            character_vtable,
+                            scientist_vtable,
+                        ) {
+                            if pin.char_id == entry.object_id {
+                                scientists.push(pin);
+                            }
+                        }
+                    }
+                }
+            }
+            let status = if facilities.is_empty() && projects.is_empty() && scientists.is_empty() {
+                "bridge_rejected"
+            } else {
+                "bridge_verified"
+            };
+            Self {
+                status,
+                scan_ms: 0,
+                bridge_rows_supplied: bridge.len().min(u32::MAX as usize) as u32,
                 facilities,
                 projects,
                 scientists,
@@ -8442,7 +8662,7 @@ mod attach_log {
             Vec<ProjectRow>,
             Vec<ProjectScientistRow>,
         ) {
-            if self.status != "verified" || self.too_many {
+            if !matches!(self.status, "verified" | "bridge_verified") || self.too_many {
                 return (Vec::new(), Vec::new(), Vec::new());
             }
             let facility_vtable = base.saturating_add(PROJECT_FACILITY_VTABLE_RVA);
@@ -8485,10 +8705,12 @@ mod attach_log {
         fn root_json(&self) -> String {
             format!(
                 "\"special_projects_identity\":{{\"status\":\"{}\",\
-                 \"scan_ms\":{},\"facility_pins\":{},\"project_pins\":{},\
+                 \"scan_ms\":{},\"bridge_rows_supplied\":{},\
+                 \"facility_pins\":{},\"project_pins\":{},\
                  \"scientist_pins\":{},\"too_many\":{}}}",
                 self.status,
                 self.scan_ms,
+                self.bridge_rows_supplied,
                 self.facilities.len(),
                 self.projects.len(),
                 self.scientists.len(),
@@ -11527,6 +11749,8 @@ mod attach_log {
                 ship_body_bridge_valid: true,
                 oob_command_bridge: Vec::new(),
                 oob_command_bridge_valid: true,
+                special_projects_bridge: Vec::new(),
+                special_projects_bridge_valid: true,
                 map_control: MapControlContract::empty(),
                 advisor_token_filter: BTreeMap::new(),
                 advisor_token_filter_valid: true,
@@ -12531,6 +12755,56 @@ mod attach_log {
                 .collect::<Vec<_>>()
                 .join(";");
             assert!(parse_ship_body_bridge(&too_many).is_none());
+        }
+
+        #[test]
+        fn special_projects_bridge_parser_rejects_duplicates_ranges_and_size() {
+            assert!(parse_special_projects_bridge("").unwrap().is_empty());
+            assert!(parse_special_projects_bridge(&format!(
+                "facility:1:118:0x{:x};project:77:9001:0x{:x};scientist:44:0x{:x}",
+                HEAP_LO,
+                HEAP_LO + 8,
+                HEAP_LO + 16
+            ))
+            .is_some());
+            assert!(parse_special_projects_bridge(&format!(
+                "facility:1:118:0x{:x};facility:1:118:0x{:x}",
+                HEAP_LO,
+                HEAP_LO + 8
+            ))
+            .is_none());
+            assert!(parse_special_projects_bridge(&format!(
+                "facility:1:118:0x{:x};project:77:9001:0x{:x}",
+                HEAP_LO, HEAP_LO
+            ))
+            .is_none());
+            assert!(
+                parse_special_projects_bridge(&format!("facility:0:118:0x{:x}", HEAP_LO)).is_none()
+            );
+            assert!(
+                parse_special_projects_bridge(&format!("facility:1:0:0x{:x}", HEAP_LO)).is_none()
+            );
+            assert!(
+                parse_special_projects_bridge(&format!("project:77:0:0x{:x}", HEAP_LO)).is_none()
+            );
+            assert!(
+                parse_special_projects_bridge(&format!("scientist:44:9:0x{:x}", HEAP_LO)).is_none()
+            );
+            assert!(parse_special_projects_bridge("scientist:44:0x1000").is_none());
+            assert!(
+                parse_special_projects_bridge(&format!("scientist:44:0x{:x}", HEAP_LO + 1))
+                    .is_none()
+            );
+            assert!(parse_special_projects_bridge("project:77:9001").is_none());
+            assert!(parse_special_projects_bridge(
+                &"x".repeat(MAX_SPECIAL_PROJECT_BRIDGE_PAYLOAD_BYTES + 1)
+            )
+            .is_none());
+            let too_many = (1..=MAX_SPECIAL_PROJECT_BRIDGE_ROWS + 1)
+                .map(|i| format!("scientist:{}:0x{:x}", i, HEAP_LO + (i * 8)))
+                .collect::<Vec<_>>()
+                .join(";");
+            assert!(parse_special_projects_bridge(&too_many).is_none());
         }
 
         #[test]
@@ -13833,6 +14107,8 @@ mod attach_log {
                 ship_body_bridge_valid: true,
                 oob_command_bridge: Vec::new(),
                 oob_command_bridge_valid: true,
+                special_projects_bridge: Vec::new(),
+                special_projects_bridge_valid: true,
                 map_control: MapControlContract::empty(),
                 advisor_token_filter: BTreeMap::new(),
                 advisor_token_filter_valid: true,
@@ -13861,6 +14137,8 @@ mod attach_log {
             assert!(frame.contains("\"duration_ms\":8000"));
             assert!(frame.contains("\"sample_ms\":10"));
             assert!(frame.contains("\"special_projects_scan\":false"));
+            assert!(frame.contains("\"special_projects_bridge_rows\":0"));
+            assert!(frame.contains("\"special_projects_bridge_valid\":true"));
             assert!(frame.contains("\"scheduled_snapshot_step_hours\":1"));
             assert!(frame.contains("\"map_control_state_root_rows\":0"));
             assert!(frame.contains("\"map_control_state_roots_valid\":true"));
