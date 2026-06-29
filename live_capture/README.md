@@ -248,8 +248,8 @@ python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/ta
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_politics_idea_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain politics_live --require-politics-idea-classification
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_politics_advisor_gate --game-id politics_advisor_residuals_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_politics_advisor_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain politics_residuals --require-politics-advisor-residuals
-python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session --game-id collector_live_focus_decision_project_roots --duration-s 180 --sample-ms 10 --dwell-s 0.25 --worker-bursts 3 --burst-interval-s 0.25 --until-game-hours 12 --max-wall-s 120 --preflight-special-projects
-python -m live_capture.collector_proof_gate replay/snapshots/_collector_session/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain focus_live --require-scheduled-domain decisions_live --require-scheduled-domain projects_live
+python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_project_roots_bootstrap --game-id collector_live_focus_decision_project_roots --duration-s 180 --sample-ms 10 --dwell-s 0.25 --worker-bursts 3 --burst-interval-s 0.25 --until-game-hours 12 --max-wall-s 300 --preflight-special-projects
+python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_project_roots_bootstrap/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain focus_live --require-scheduled-domain decisions_live --require-scheduled-domain projects_live --require-projects-live-payload
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session/<run-dir>/session_manifest.json --min-game-hours 12 --require-raw-domain land_combats --require-raw-event-type land_combat_started --require-raw-event-type land_combat_updated --require-raw-event-type land_combat_ended
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session --game-id collector_live_division_cache_bootstrap --duration-s 5 --sample-ms 20 --dwell-s 0.25 --preflight-division-movement --allow-division-cold-scan
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_order_org_gate --game-id order_org_strength_cache_bootstrap --duration-s 8 --sample-ms 10 --until-game-hours 1 --max-wall-s 240 --preflight-division-movement --allow-division-cold-scan --preflight-army-orders --allow-army-cold-scan
@@ -286,12 +286,14 @@ For focus/decision/project root-contract acceptance, the unit tests above are
 only executable scaffolding. The segment is live-verified only after
 `collector_session` runs against the real running HOI4 process with
 `hourly_requirement.met = true`, `replay_verified = true`, and
-`collector_proof_gate --require-scheduled-domain focus_live --require-scheduled-domain decisions_live --require-scheduled-domain projects_live`
+`collector_proof_gate --require-scheduled-domain focus_live --require-scheduled-domain decisions_live --require-scheduled-domain projects_live --require-projects-live-payload`
 passes on that run's `session_manifest.json`. If the special-project cache is
 missing, first run a cache-populating diagnostic with
 `--preflight-special-projects --allow-special-projects-cold-scan`, then rerun
 the acceptance proof without the cold-scan flag using the same `out-root` so the
-scoped `_preflight_cache` is reused. The 2026-06-29 pid 43412 proof used a
+scoped `_preflight_cache` is reused. Keep `--max-wall-s` larger than
+`--duration-s` so the bounded worker can start before the wall-budget guard
+closes the run. The 2026-06-29 pid 43412 proof used a
 no-cold `special_projects_cache` bridge hit in 0.391s, advanced 12 game hours,
 stored 13 snapshots, verified replay output, emitted 12 scheduled frames each
 for `focus_live`, `decisions_live`, and `projects_live`, and kept heavy project
@@ -302,7 +304,15 @@ seconds, verified replay output, supplied 21548 bridge rows, emitted 14
 scheduled frames each for `focus_live`, `decisions_live`, and `projects_live`,
 folded 4956 focus country rows, 4956 decision country rows, 392 facility rows,
 392 worked-project rows, and 0 scientist rows, and kept worker polls free of
-heavy/project payloads.
+heavy/project payloads. The latest strict-payload rerun
+`replay/snapshots/_collector_session_project_roots_bootstrap/20260629T224333Z_pid43412`
+used the same no-cold cache path with 21496 bridge rows, advanced 12 game hours
+in 40.781 wall seconds, verified replay output, emitted 12 scheduled frames
+each for `focus_live`, `decisions_live`, and `projects_live`, folded 4236 focus
+country rows, 4236 decision country rows, 288 facility rows, 348 worked-project
+rows, and 0 scientist rows, kept project payloads off lightweight frames, and
+passed `--require-projects-live-payload`. This verifies the project root slice
+at hourly cadence for cache-backed no-cold recorder runs.
 
 For land-combat lifecycle acceptance, require raw `land_combats` plus
 `land_combat_started`, `land_combat_updated`, and `land_combat_ended` events on

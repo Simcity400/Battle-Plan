@@ -259,7 +259,14 @@ Scheduled special projects:
   `_preflight_cache` from the same `out-root`, hit `special_projects_cache` in
   0.375s, advanced 12 game hours in 38.969 wall seconds, verified replay output,
   supplied 21548 bridge rows, emitted 14 scheduled `projects_live` frames, and
-  kept worker-poll frames free of `special_projects` payloads;
+  kept worker-poll frames free of `special_projects` payloads. The latest
+  strict-payload proof
+  `replay/snapshots/_collector_session_project_roots_bootstrap/20260629T224333Z_pid43412`
+  hit the no-cold cache with 21496 bridge rows, advanced 12 game hours in
+  40.781 wall seconds, verified replay output, emitted 12 scheduled
+  `projects_live` frames, folded 288 facility rows, 348 worked-project rows,
+  and 0 scientist rows, kept worker-poll frames free of `special_projects`
+  payloads, and passed `--require-projects-live-payload`;
 - worker-poll frames stay light and must not carry `special_projects`.
 
 Scheduled country fuel:

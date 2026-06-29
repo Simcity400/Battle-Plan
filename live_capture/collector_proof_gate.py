@@ -70,6 +70,7 @@ def collector_session_proof_errors(
     require_politics_leaders: bool = False,
     require_politics_idea_classification: bool = False,
     require_politics_advisor_residuals: bool = False,
+    require_projects_live_payload: bool = False,
     require_production_construction: bool = False,
     require_state_resources: bool = False,
     require_tech_live_names: bool = False,
@@ -311,6 +312,43 @@ def collector_session_proof_errors(
             None,
         ):
             errors.append("politics residual payloads appeared on lightweight frames")
+    if require_projects_live_payload:
+        scheduled = _scheduled_domain_frame_count(summary, "projects_live")
+        required_frames = int(min_game_hours or 1)
+        bridge_rows = _as_int(manifest.get("special_projects_bridge_rows"))
+        payload_frames = _as_int(
+            summary.get("frames_with_special_projects_payloads")
+        )
+        facility_rows = _as_int(summary.get("special_project_facility_rows"))
+        project_rows = _as_int(summary.get("special_project_rows"))
+        max_facilities = _as_int(
+            summary.get("max_special_project_facilities_per_frame")
+        )
+        max_projects = _as_int(summary.get("max_special_project_rows_per_frame"))
+        lightweight_projects = _as_int(
+            summary.get("projects_on_lightweight_frames")
+        )
+        if scheduled is None or scheduled < required_frames:
+            errors.append(
+                "projects_live proof scheduled frames "
+                f"{scheduled!r} below required {required_frames}"
+            )
+        if manifest.get("special_projects_bridge_supplied") is not True:
+            errors.append("special_projects_bridge was not supplied")
+        if bridge_rows in (None, 0):
+            errors.append("special_projects_bridge_rows not positive")
+        if payload_frames is None or payload_frames < required_frames:
+            errors.append("special_projects payload frames below required cadence")
+        if facility_rows in (None, 0):
+            errors.append("special project facility rows were not observed")
+        if max_facilities in (None, 0):
+            errors.append("special project facilities were empty in every frame")
+        if project_rows in (None, 0):
+            errors.append("special project rows were not observed")
+        if max_projects in (None, 0):
+            errors.append("special project rows were empty in every frame")
+        if lightweight_projects not in (0, None):
+            errors.append("special_projects payloads appeared on lightweight frames")
     if require_production_construction:
         scheduled = _scheduled_domain_frame_count(summary, "production_live")
         required_frames = int(min_game_hours or 1)
@@ -675,6 +713,7 @@ def collector_session_proof_summary(
     require_politics_leaders: bool = False,
     require_politics_idea_classification: bool = False,
     require_politics_advisor_residuals: bool = False,
+    require_projects_live_payload: bool = False,
     require_production_construction: bool = False,
     require_state_resources: bool = False,
     require_tech_live_names: bool = False,
@@ -707,6 +746,7 @@ def collector_session_proof_summary(
         require_politics_leaders=require_politics_leaders,
         require_politics_idea_classification=require_politics_idea_classification,
         require_politics_advisor_residuals=require_politics_advisor_residuals,
+        require_projects_live_payload=require_projects_live_payload,
         require_production_construction=require_production_construction,
         require_state_resources=require_state_resources,
         require_tech_live_names=require_tech_live_names,
@@ -849,6 +889,21 @@ def collector_session_proof_summary(
             "max_appointed_advisor_slots_per_country"),
         "max_appointed_advisor_ledgers_per_country": summary.get(
             "max_appointed_advisor_ledgers_per_country"),
+        "frames_with_special_projects_payloads": summary.get(
+            "frames_with_special_projects_payloads"),
+        "special_project_facility_rows": summary.get(
+            "special_project_facility_rows"),
+        "special_project_rows": summary.get("special_project_rows"),
+        "special_project_scientist_rows": summary.get(
+            "special_project_scientist_rows"),
+        "max_special_project_facilities_per_frame": summary.get(
+            "max_special_project_facilities_per_frame"),
+        "max_special_project_rows_per_frame": summary.get(
+            "max_special_project_rows_per_frame"),
+        "max_special_project_scientists_per_frame": summary.get(
+            "max_special_project_scientists_per_frame"),
+        "projects_on_lightweight_frames": summary.get(
+            "projects_on_lightweight_frames"),
         "construction_queue_frames": summary.get("construction_queue_frames"),
         "country_rows_with_construction_queue": summary.get(
             "country_rows_with_construction_queue"),
@@ -1015,6 +1070,11 @@ def _main(argv: Optional[List[str]] = None) -> int:
         help="require live politics appointed-advisor residual fields",
     )
     parser.add_argument(
+        "--require-projects-live-payload",
+        action="store_true",
+        help="require scheduled projects_live facility/project payload rows",
+    )
+    parser.add_argument(
         "--require-production-construction",
         action="store_true",
         help="require positive scheduled production construction-queue rows",
@@ -1113,6 +1173,7 @@ def _main(argv: Optional[List[str]] = None) -> int:
             args.require_politics_idea_classification
         ),
         require_politics_advisor_residuals=args.require_politics_advisor_residuals,
+        require_projects_live_payload=args.require_projects_live_payload,
         require_production_construction=args.require_production_construction,
         require_state_resources=args.require_state_resources,
         require_tech_live_names=args.require_tech_live_names,

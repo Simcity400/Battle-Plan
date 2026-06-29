@@ -1500,13 +1500,15 @@ run against the real the game process with
 on worker-poll frames, and:
 
 ```powershell
-python -m live_capture.collector_proof_gate replay/snapshots/_collector_session/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain focus_live --require-scheduled-domain decisions_live --require-scheduled-domain projects_live
+python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_project_roots_bootstrap/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain focus_live --require-scheduled-domain decisions_live --require-scheduled-domain projects_live --require-projects-live-payload
 ```
 
 If `--preflight-special-projects` cannot supply a bridge from cache, classify
 `projects_live` as blocked/unverified for this proof. A cold-scan run may
 populate the cache, but the acceptance proof should be rerun without
-`--allow-special-projects-cold-scan`.
+`--allow-special-projects-cold-scan`. The no-cold acceptance run should keep
+`--max-wall-s` larger than `--duration-s`; otherwise the session wall-budget
+guard can close before the bounded worker starts.
 
 Live proof completed on 2026-06-29 against running PID 43412 with the pinned
 16022851 executable hash. A read-only special-project cold bootstrap resolved
@@ -1534,7 +1536,17 @@ and `elapsed_s = 0.375`. The gate passed after 12 game hours in 38.969 wall
 seconds with replay verification, 14 scheduled frames each for `focus_live`,
 `decisions_live`, and `projects_live`, 4956 focus country rows, 4956 decision
 country rows, 392 facility rows, 392 worked-project rows, 0 scientist rows, and
-zero heavy/project payloads on worker-poll frames.
+zero heavy/project payloads on worker-poll frames. A stricter rerun then proved
+the payload gate itself:
+`replay/snapshots/_collector_session_project_roots_bootstrap/20260629T224333Z_pid43412`
+hit the scoped no-cold cache, supplied 21496 bridge rows, passed
+`--require-projects-live-payload`, advanced 12 game hours in 40.781 wall
+seconds with replay verification, emitted 12 scheduled frames each for
+`focus_live`, `decisions_live`, and `projects_live`, folded 4236 focus country
+rows, 4236 decision country rows, 288 facility rows, 348 worked-project rows,
+0 scientist rows, and kept project payloads off lightweight frames. This keeps
+the focus/decision/project root segment classified as hourly-or-better verified
+only for cache-backed no-cold recorder runs.
 
 ### Phase 8: Diplomacy, Intel, Market, Logistics, Weather
 
