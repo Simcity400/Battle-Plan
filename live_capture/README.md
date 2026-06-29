@@ -165,6 +165,8 @@ python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/ta
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_air_ship_oob_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-raw-domain ships --require-raw-domain oob_command
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_naval_combat_gate --game-id naval_combat_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300 --preflight-naval-combat
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_naval_combat_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-raw-domain naval_air_combats --require-raw-domain naval_combat_members --require-raw-event-type naval_combat_started --require-raw-event-type naval_combat_updated
+python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_air_wing_gate --game-id air_wing_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300 --preflight-air-wings
+python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_air_wing_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-raw-domain air_wings
 python -m live_capture.collector_probe_record --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_probe --store-root replay/snapshots --game-id collector_live_speed5_worker --dwell-s 0.25 --worker-duration-s 8 --worker-sample-ms 10 --until-game-hours 12 --max-wall-s 15 --unique-store-hours-only
 python -m unittest live_capture.tests.test_collector_session live_capture.tests.test_collector_proof_gate live_capture.tests.test_recorder_cadence live_capture.tests.test_recorder_worker_cadence live_capture.tests.test_recorder_manifest_diagnostics live_capture.tests.test_replay_writer
 python -m pytest live_capture
@@ -229,6 +231,13 @@ after preflight. The 2026-06-29 pid 43412 proof advanced 12 game hours, verified
 replay output, observed raw `naval_air_combats` and `naval_combat_members`,
 captured `naval_combat_started` / `naval_combat_updated`, and reported zero raw
 gap frames. `naval_combat_ended` requires a battle-ending fixture.
+
+For air-wing acceptance, first populate the same-process air-wing cache only
+when the current game actually has active wings; the acceptance run must then
+rerun without `--allow-air-wing-cold-scan`. The current pid 43412 fixture remains
+blocked: explicit cold preflight reported `status = insufficient_rows`,
+`row_count = 0`, and the proof gate correctly failed `--require-raw-domain
+air_wings`.
 
 Repeated bounded workers are one logical recorder session. The raw probe
 manifest keeps every verified observation, but the replay writer processes one

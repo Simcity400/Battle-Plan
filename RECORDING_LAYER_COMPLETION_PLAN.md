@@ -1285,8 +1285,10 @@ stream from `air_wing_body_bridge`, with
 `air_wing:<TAG>:<wing_id>:<generation>` identities, observed/update/lost
 events, bounded bridge gaps, and 250 ms sampling of count, mission mask,
 mission region, and effective active planes. On pid 43412, explicit air-wing
-cold preflight found zero wing rows, so `air_wings` remains unverified in this
-fixture. The next air unlocks are a live proof with at least one active wing,
+cold preflight on 2026-06-29 reported `status = insufficient_rows`,
+`row_count = 0`, and no raw `air_wings` domain, so `air_wings` remains
+unverified in this fixture. The next air unlocks are a no-cold 12-game-hour live
+proof with at least one active wing,
 exact airbase/variant joins, region aggregate rows, air-loss/attrition proof,
 and a decision on which air-superiority values are exact state versus computed
 UI proxies.

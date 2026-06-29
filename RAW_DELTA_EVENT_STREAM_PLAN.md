@@ -468,9 +468,11 @@ Notes:
   replay file never receives `body_ptr` or `tag_db_id`.
 - Current `air_wings` verification state on pid 43412: not live-proven in this
   fixture. The explicit cold preflight completed quickly but found zero wing
-  rows (`status = insufficient_rows`, `row_count = 0`), so no raw `air_wings`
-  stream was emitted. The contract and tests remain valid, but a live proof
-  needs an air-wing fixture with at least one active wing.
+  rows (`status = insufficient_rows`, `row_count = 0`), including the latest
+  2026-06-29 pid 43412 probe, so no raw `air_wings` stream was emitted. The
+  contract and tests remain valid, but a live proof needs an air-wing fixture
+  with at least one active wing, followed by a no-cold 12-game-hour acceptance
+  run.
 - Do not model air as land-style `combat_started`/`combat_ended`. Current live
   evidence supports continuous per-region attrition/aggregation, not a discrete
   CCombatSide object with air-wing participants.

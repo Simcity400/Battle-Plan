@@ -454,6 +454,10 @@ Air-wing raw stream status:
   `air_wing_lost`. `effective_planes` is the live active/effective plane count
   used for later aggregation; it is not the final displayed air-superiority
   percent.
+- Current pid 43412 fixture status: the explicit cold preflight returned
+  `status = insufficient_rows`, `row_count = 0`, and no raw `air_wings` domain.
+  This stream is implemented but not live-verified until a running game has at
+  least one active wing, followed by a no-cold 12-game-hour proof.
 - Remaining promotion work is speed-five live proof while changing missions,
   exact airbase/variant joins, derived region aggregate rows, air-loss/attrition
   proof, and timeline ingestion.
