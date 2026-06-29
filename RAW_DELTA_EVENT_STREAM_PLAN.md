@@ -543,9 +543,14 @@ Current DLL contract:
   bodies after an intentionally allowed 27.516s cold preflight, advanced 12 game
   hours with `hourly_requirement.met = true` in 62.688 wall seconds, emitted 547
   raw `army_orders` deltas and 547 `army_order_added` events, verified the
-  replay, and reported zero raw gap domains. No `army_order_updated` event
-  appeared because no existing order was edited during the observed window; that
-  specific event still needs a live order-edit fixture.
+  replay, and reported zero raw gap domains. A later cache-backed fixture run
+  `replay/snapshots/_collector_session_raw_military_gate/20260629T200009Z_pid43412`
+  advanced 36 game hours in 45.266 wall seconds, verified replay output,
+  resolved 580 army bodies from cache in 0.078s, emitted 519 army-order events,
+  observed one `army_order_removed`, and reported zero raw gap domains. No
+  `army_order_updated` event appeared; raw-stream inspection showed the removal
+  had no same-army/same-slot replacement nearby, so in-place order edits remain
+  a live fixture gap rather than a hidden replacement case in that evidence.
 
 Cadence:
 

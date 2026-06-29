@@ -77,6 +77,7 @@ def collector_session_proof_errors(
     require_division_raw_telemetry: bool = False,
     require_land_combat_raw_lifecycle: bool = False,
     require_army_order_raw_telemetry: bool = False,
+    require_army_order_raw_removals: bool = False,
     require_army_order_raw_updates: bool = False,
     require_oob_command_raw_telemetry: bool = False,
 ) -> List[str]:
@@ -419,6 +420,18 @@ def collector_session_proof_errors(
             errors.append("army order raw add events were not observed")
         if _map_int(summary, "raw_gap_domain_counts", "army_orders") > 0:
             errors.append("army order raw telemetry gap frames observed")
+    if require_army_order_raw_removals:
+        if manifest.get("army_body_bridge_supplied") is not True:
+            errors.append("army body bridge was not supplied")
+        if _as_int(manifest.get("army_body_bridge_rows")) in (None, 0):
+            errors.append("army body bridge rows not positive")
+        if _map_int(summary, "raw_delta_domain_counts", "army_orders") == 0:
+            errors.append("army order raw telemetry frames were not observed")
+        raw_event_counts = _int_map(summary.get("raw_event_type_counts"))
+        if raw_event_counts.get("army_order_removed", 0) <= 0:
+            errors.append("army order raw removal events were not observed")
+        if _map_int(summary, "raw_gap_domain_counts", "army_orders") > 0:
+            errors.append("army order raw telemetry gap frames observed")
     if require_army_order_raw_updates:
         if manifest.get("army_body_bridge_supplied") is not True:
             errors.append("army body bridge was not supplied")
@@ -469,6 +482,7 @@ def collector_session_proof_summary(
     require_division_raw_telemetry: bool = False,
     require_land_combat_raw_lifecycle: bool = False,
     require_army_order_raw_telemetry: bool = False,
+    require_army_order_raw_removals: bool = False,
     require_army_order_raw_updates: bool = False,
     require_oob_command_raw_telemetry: bool = False,
 ) -> Dict[str, Any]:
@@ -494,6 +508,7 @@ def collector_session_proof_summary(
         require_division_raw_telemetry=require_division_raw_telemetry,
         require_land_combat_raw_lifecycle=require_land_combat_raw_lifecycle,
         require_army_order_raw_telemetry=require_army_order_raw_telemetry,
+        require_army_order_raw_removals=require_army_order_raw_removals,
         require_army_order_raw_updates=require_army_order_raw_updates,
         require_oob_command_raw_telemetry=require_oob_command_raw_telemetry,
     )
@@ -740,6 +755,11 @@ def _main(argv: Optional[List[str]] = None) -> int:
         help="require live DLL army-order raw rows and add events",
     )
     parser.add_argument(
+        "--require-army-order-raw-removals",
+        action="store_true",
+        help="require live DLL army-order removal events",
+    )
+    parser.add_argument(
         "--require-army-order-raw-updates",
         action="store_true",
         help="require live DLL army-order update events, not only initial rows",
@@ -775,6 +795,7 @@ def _main(argv: Optional[List[str]] = None) -> int:
         require_division_raw_telemetry=args.require_division_raw_telemetry,
         require_land_combat_raw_lifecycle=args.require_land_combat_raw_lifecycle,
         require_army_order_raw_telemetry=args.require_army_order_raw_telemetry,
+        require_army_order_raw_removals=args.require_army_order_raw_removals,
         require_army_order_raw_updates=args.require_army_order_raw_updates,
         require_oob_command_raw_telemetry=args.require_oob_command_raw_telemetry,
     )

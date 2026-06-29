@@ -329,7 +329,15 @@ deltas, 6189 `division_org_strength_delta`, 2109
 `division_movement_started`, 38 `division_movement_stopped`, 19
 `division_combat_ref_changed`, and 547 `army_order_added` events with zero raw
 gap domains. The same run failed `--require-army-order-raw-updates`, correctly,
-because no existing order changed.
+because no existing order changed. A later cache-backed fixture run
+`replay/snapshots/_collector_session_raw_military_gate/20260629T200009Z_pid43412`
+passed the explicit `--require-army-order-raw-removals` gate: it advanced 36
+game hours in 45.266 wall seconds, verified replay output, resolved 580 army
+bodies from cache in 0.078s, emitted 519 army-order events, observed one
+`army_order_removed`, and reported zero raw gap domains. That run still did not
+observe `army_order_updated`; parsing the raw stream showed the removal had no
+same-army/same-slot replacement nearby, so in-place order edits remain a live
+fixture gap rather than a hidden replacement case in that evidence.
 
 For ship/OOB raw-stream acceptance, first populate same-process `ship_bodies`
 and `oob_command_roots` caches if needed, then rerun without cold-scan flags.

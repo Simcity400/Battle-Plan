@@ -727,6 +727,55 @@ class TestCollectorProofGate(unittest.TestCase):
 
         self.assertIn("army order raw update events were not observed", errors)
 
+    def test_accepts_army_order_removal_proof(self):
+        proof = collector_session_proof_summary(
+            _manifest(
+                army_body_bridge_supplied=True,
+                army_body_bridge_rows=580,
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock"],
+                    "raw_delta_domains_seen": ["army_orders"],
+                    "raw_event_types_seen": [
+                        "army_order_added",
+                        "army_order_removed",
+                    ],
+                    "raw_event_type_counts": {
+                        "army_order_added": 518,
+                        "army_order_removed": 1,
+                    },
+                    "raw_delta_domain_counts": {"army_orders": 519},
+                    "raw_delta_domain_object_counts": {"army_orders": 518},
+                    "raw_gap_domain_counts": {},
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+            ),
+            require_army_order_raw_removals=True,
+        )
+
+        self.assertTrue(proof["ok"])
+        self.assertEqual(proof["errors"], [])
+
+    def test_rejects_army_order_rows_without_removal_proof(self):
+        errors = collector_session_proof_errors(
+            _manifest(
+                army_body_bridge_supplied=True,
+                army_body_bridge_rows=383,
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock"],
+                    "raw_delta_domains_seen": ["army_orders"],
+                    "raw_event_types_seen": ["army_order_added"],
+                    "raw_event_type_counts": {"army_order_added": 383},
+                    "raw_delta_domain_counts": {"army_orders": 383},
+                    "raw_delta_domain_object_counts": {"army_orders": 383},
+                    "raw_gap_domain_counts": {},
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+            ),
+            require_army_order_raw_removals=True,
+        )
+
+        self.assertIn("army order raw removal events were not observed", errors)
+
     def test_domains_seen_does_not_satisfy_scheduled_domain_gate(self):
         errors = collector_session_proof_errors(
             _manifest(collector_frame_payload_summary={

@@ -371,7 +371,12 @@ Army-order raw stream status:
   military gate live-proved order presence at speed five with 547 raw
   `army_orders` deltas and 547 `army_order_added` events over 12 game hours,
   but correctly failed the `--require-army-order-raw-updates` gate because no
-  existing order changed during the capture window.
+  existing order changed during the capture window. A later cache-backed
+  fixture run advanced 36 game hours in 45.266 wall seconds, resolved 580 army
+  bodies from cache in 0.078s, verified replay output, emitted 519 army-order
+  events, observed one `army_order_removed`, and reported zero raw gap domains.
+  Raw-stream inspection found no same-army/same-slot replacement near that
+  removal, so replacement-as-update remains unproven for that fixture.
 - Remaining promotion work is a live speed-five order-edit fixture, semantic
   event splits, non-type-5 geometry, periodic bridge refresh for new armies, and
   timeline ingestion.

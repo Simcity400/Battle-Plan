@@ -1251,7 +1251,14 @@ the whole bridge when a few cached army objects go stale. `army_order_updated`
 is unit-tested in the Rust tracker for same-order target mutation, but remains
 unverified in the live game because the live proof did not edit an existing
 sampled order; it needs a fixture where an offensive order is
-redrawn/resized/retyped after the collector has taken its baseline sample.
+redrawn/resized/retyped after the collector has taken its baseline sample. A
+later cache-backed fixture run
+`replay/snapshots/_collector_session_raw_military_gate/20260629T200009Z_pid43412`
+advanced 36 game hours in 45.266 wall seconds, resolved 580 army bodies from
+cache in 0.078s, verified replay output, emitted 519 army-order events, observed
+one `army_order_removed`, and reported zero raw gap domains. Raw-stream
+inspection found no same-army/same-slot replacement near that removal, so this
+evidence proves removals but not hidden replacement-as-update behavior.
 
 ### Phase 6: Combat And Movement High-Frequency Layer
 
