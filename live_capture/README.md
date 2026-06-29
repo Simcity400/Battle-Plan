@@ -243,7 +243,7 @@ python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_naval_combat_gate --game-id naval_combat_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300 --preflight-naval-combat
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_naval_combat_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-raw-domain naval_air_combats --require-raw-domain naval_combat_members --require-raw-event-type naval_combat_started --require-raw-event-type naval_combat_updated
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_air_wing_gate --game-id air_wing_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300 --preflight-air-wings
-python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_air_wing_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-raw-domain air_wings
+python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_air_wing_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-raw-domain air_wings --require-air-wing-raw-telemetry
 python -m live_capture.collector_probe_record --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_probe --store-root replay/snapshots --game-id collector_live_speed5_worker --dwell-s 0.25 --worker-duration-s 8 --worker-sample-ms 10 --until-game-hours 12 --max-wall-s 15 --unique-store-hours-only
 python -m unittest live_capture.tests.test_collector_session live_capture.tests.test_collector_proof_gate live_capture.tests.test_recorder_cadence live_capture.tests.test_recorder_worker_cadence live_capture.tests.test_recorder_manifest_diagnostics live_capture.tests.test_replay_writer
 python -m pytest live_capture
@@ -408,7 +408,14 @@ stored 653 air-wing body rows. The no-cold acceptance run
 then hit the cache in 0.094s, supplied 652 bridge rows, advanced 12 game hours
 in 52.891 wall seconds, verified replay output, observed raw `air_wings`,
 captured 652 `air_wing_observed` and 9128 `air_wing_updated` events, reported
-zero raw gaps, and kept heavy scheduled payloads off lightweight frames.
+zero raw gaps, and kept heavy scheduled payloads off lightweight frames. A
+current-game no-cold rerun
+`replay/snapshots/_collector_session_air_wing_gate/20260629T205254Z_pid43412`
+passed the stricter `--require-air-wing-raw-telemetry` gate: it advanced 12 game
+hours in 55.875 wall seconds, verified replay output, hit the air-wing cache in
+0.094s, supplied 585 bridge rows, emitted 11115 raw `air_wings` deltas, observed
+585 `air_wing_observed` and 10530 `air_wing_updated` events, and reported zero
+raw gaps.
 
 Repeated bounded workers are one logical recorder session. The raw probe
 manifest keeps every verified observation, but the replay writer processes one

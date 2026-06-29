@@ -1364,11 +1364,13 @@ raw `air_wings`
 stream from `air_wing_body_bridge`, with
 `air_wing:<TAG>:<wing_id>:<generation>` identities, observed/update/lost
 events, bounded bridge gaps, and 250 ms sampling of count, mission mask,
-mission region, and effective active planes. On pid 43412, explicit air-wing
-cold preflight on 2026-06-29 reported `status = insufficient_rows`,
-`row_count = 0`, and no raw `air_wings` domain, so `air_wings` remains
-unverified in this fixture. The next air unlocks are a no-cold 12-game-hour live
-proof with at least one active wing,
+mission region, and effective active planes. Current pid 43412 proof
+`replay/snapshots/_collector_session_air_wing_gate/20260629T205254Z_pid43412`
+passed the strict `--require-air-wing-raw-telemetry` gate: it advanced 12 game
+hours in 55.875 wall seconds, verified replay output, hit `air_wing_body_cache`
+in 0.094s, supplied 585 bridge rows, emitted 11115 raw `air_wings` deltas,
+observed 585 `air_wing_observed` and 10530 `air_wing_updated` events, and
+reported zero raw gaps. The next air unlocks are
 exact airbase/variant joins, region aggregate rows, air-loss/attrition proof,
 and a decision on which air-superiority values are exact state versus computed
 UI proxies.
