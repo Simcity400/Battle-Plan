@@ -1123,6 +1123,11 @@ preflight failed fast in 0.094s, explicit cold bootstrap found 8 divisions in
 32.25s and stored `division_bodies.json`, warm preflight resolved 8 bodies in
 0.094s, and a normal country/state/division session advanced 4 game hours in
 6.0s with 5 verified snapshots and raw `clock` + `divisions` domain deltas.
+The DLL now also accepts an `army_body_bridge` populated by
+`--preflight-army-orders` and emits raw `army_orders` deltas/events from
+revalidated army bodies at a 250 ms sampling floor. The first slice captures
+order type, slot index, and exact type-5 target state sets; non-type-5 geometry
+is explicitly marked unsupported until those layouts are pinned.
 
 ### Phase 6: Combat And Movement High-Frequency Layer
 
@@ -1162,7 +1167,13 @@ and produces bounded gap rows when the bridge/layout fails closed. The
 recorder-side `--preflight-naval-combat` producer can now populate that bridge
 from active combats already present at attach time. The next naval unlocks are
 live fixture proof, a root/hook-derived discoverer for newly born combats,
-per-ship rows, damage/sinking deltas, and speed-five soak.
+per-ship rows, damage/sinking deltas, and speed-five soak. Army orders now have
+a raw `army_orders` stream from `army_body_bridge`, with
+`army_order:<army_id>:<generation>` identities, add/update/remove events,
+bounded bridge gaps, exact type-5 target states, and unsupported status for
+unvalidated non-type-5 geometry. The next army-order unlocks are live
+speed-five proof while issuing orders, semantic event splits, non-type-5
+geometry, and timeline/app ingestion.
 
 ### Phase 7: Focus, Tech, Decisions, Projects, Politics
 

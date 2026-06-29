@@ -22,6 +22,7 @@ from replay import schema
 from . import continuity as _continuity
 from . import process_identity as _process_identity
 from .collector_advisor_tokens import resolve_advisor_token_filter_preflight
+from .collector_army_order_bridge import resolve_army_body_bridge_preflight
 from .collector_frames import (
     COLLECTOR_BACKEND,
     COLLECTOR_ABI_VERSION,
@@ -342,11 +343,14 @@ def record_collector_session(
     country_object_bridge: Any = None,
     country_record_bridge: Any = None,
     division_body_bridge: Any = None,
+    army_body_bridge: Any = None,
     naval_combat_body_bridge: Any = None,
     preflight_country_object_bridge: bool = False,
     allow_country_cold_scan: bool = False,
     preflight_division_movement: bool = False,
     allow_division_cold_scan: bool = False,
+    preflight_army_orders: bool = False,
+    allow_army_cold_scan: bool = False,
     preflight_naval_combat: bool = False,
     preflight_state_control: bool = False,
     preflight_province_control: bool = False,
@@ -374,6 +378,8 @@ def record_collector_session(
         raise ValueError("allow_country_cold_scan requires preflight_country_object_bridge")
     if allow_division_cold_scan and not preflight_division_movement:
         raise ValueError("allow_division_cold_scan requires preflight_division_movement")
+    if allow_army_cold_scan and not preflight_army_orders:
+        raise ValueError("allow_army_cold_scan requires preflight_army_orders")
 
     started_utc = datetime.now(timezone.utc).isoformat()
     started_monotonic = time.monotonic()
@@ -425,6 +431,23 @@ def record_collector_session(
             allow_division_cold_scan)
         if preflight.usable:
             division_body_bridge = preflight.encoded
+    army_body_bridge_preflight = {
+        "enabled": bool(preflight_army_orders),
+        "status": "not_requested",
+        "row_count": 0,
+        "allow_cold_scan": bool(allow_army_cold_scan),
+    }
+    if army_body_bridge is None and preflight_army_orders:
+        preflight = resolve_army_body_bridge_preflight(
+            pid,
+            cache_path=out_root / "_preflight_cache" / "army_bodies.json",
+            allow_cold_scan=allow_army_cold_scan,
+        )
+        army_body_bridge_preflight = preflight.diagnostics
+        army_body_bridge_preflight["enabled"] = True
+        army_body_bridge_preflight["allow_cold_scan"] = bool(allow_army_cold_scan)
+        if preflight.usable:
+            army_body_bridge = preflight.encoded
     naval_combat_body_bridge_preflight = {
         "enabled": bool(preflight_naval_combat),
         "status": "not_requested",
@@ -504,6 +527,7 @@ def record_collector_session(
         country_object_bridge=country_object_bridge,
         country_record_bridge=country_record_bridge,
         division_body_bridge=division_body_bridge,
+        army_body_bridge=army_body_bridge,
         naval_combat_body_bridge=naval_combat_body_bridge,
         map_control_state_roots=map_control_state_roots,
         map_control_province_bridge=map_control_province_bridge,
@@ -637,6 +661,11 @@ def record_collector_session(
                 "division_body_bridge_supplied"),
             "division_body_bridge_rows": probe_manifest.get(
                 "division_body_bridge_rows"),
+            "army_body_bridge_preflight": army_body_bridge_preflight,
+            "army_body_bridge_supplied": probe_manifest.get(
+                "army_body_bridge_supplied"),
+            "army_body_bridge_rows": probe_manifest.get(
+                "army_body_bridge_rows"),
             "naval_combat_body_bridge_preflight": naval_combat_body_bridge_preflight,
             "naval_combat_body_bridge_supplied": probe_manifest.get(
                 "naval_combat_body_bridge_supplied"),
@@ -1682,6 +1711,16 @@ def _main() -> int:
         help="allow the slow division body locator during preflight",
     )
     parser.add_argument(
+        "--preflight-army-orders",
+        action="store_true",
+        help="resolve live army bodies before recording battle-plan order deltas",
+    )
+    parser.add_argument(
+        "--allow-army-cold-scan",
+        action="store_true",
+        help="allow the slow army body locator during preflight",
+    )
+    parser.add_argument(
         "--preflight-naval-combat",
         action="store_true",
         help="resolve active naval combat bodies before recording raw naval combat deltas",
@@ -1728,6 +1767,8 @@ def _main() -> int:
         allow_country_cold_scan=args.allow_country_cold_scan,
         preflight_division_movement=args.preflight_division_movement,
         allow_division_cold_scan=args.allow_division_cold_scan,
+        preflight_army_orders=args.preflight_army_orders,
+        allow_army_cold_scan=args.allow_army_cold_scan,
         preflight_naval_combat=args.preflight_naval_combat,
         preflight_state_control=args.preflight_state_control,
         preflight_province_control=args.preflight_province_control,

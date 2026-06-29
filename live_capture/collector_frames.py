@@ -303,6 +303,42 @@ RAW_LAND_COMBAT_GAP_FIELDS = frozenset((
     "gap_kind",
     "status",
 ))
+RAW_ARMY_ORDER_ID_MAX = 2_147_483_647
+RAW_ARMY_ORDER_GENERATION_MAX = RAW_SEQUENCE_MAX
+RAW_ARMY_ORDER_SLOT_INDEX_MAX = 255
+RAW_ARMY_ORDER_TYPE_ABS_MAX = 10_000
+RAW_ARMY_ORDER_TARGET_STATES_MAX = RAW_CONTAINER_MAX_ENTRIES
+RAW_ARMY_ORDER_TARGET_STATE_ID_MAX = 65_535
+RAW_ARMY_ORDER_TARGET_STATE_COUNT_MAX = 5_000
+RAW_ARMY_ORDER_TARGET_STATUSES = frozenset((
+    "exact",
+    "unsupported",
+    "overflow",
+    "validation_failed",
+))
+RAW_ARMY_ORDER_EVENT_TYPES = frozenset((
+    "army_order_added",
+    "army_order_updated",
+    "army_order_removed",
+))
+RAW_ARMY_ORDER_FIELDS = frozenset((
+    "order_key",
+    "army_id",
+    "generation",
+    "slot_index",
+    "order_type",
+    "target_states",
+    "target_state_count",
+    "target_status",
+))
+RAW_ARMY_ORDER_EVENT_DETAIL_FIELDS = RAW_ARMY_ORDER_FIELDS | frozenset((
+    "changed_fields",
+))
+RAW_ARMY_ORDER_GAP_FIELDS = frozenset((
+    "gap_key",
+    "gap_kind",
+    "status",
+))
 RAW_NAVAL_COMBAT_ID_MAX = 2_147_483_647
 RAW_NAVAL_COMBAT_GENERATION_MAX = RAW_SEQUENCE_MAX
 RAW_NAVAL_COMBAT_PROVINCE_ID_MAX = 1_000_000
@@ -910,6 +946,8 @@ def _validate_raw_event_payload(
         problems.extend(_validate_raw_division_event(frame, payload))
     if frame.get("domain") == "land_combats":
         problems.extend(_validate_raw_land_combat_event(frame, payload))
+    if frame.get("domain") == "army_orders":
+        problems.extend(_validate_raw_army_order_event(frame, payload))
     if frame.get("domain") == "naval_air_combats":
         problems.extend(_validate_raw_naval_combat_event(frame, payload))
     return problems
@@ -1074,6 +1112,8 @@ def _validate_raw_domain_delta_payload(
         problems.extend(_validate_raw_division_movement_delta(frame, payload))
     if frame.get("domain") == "land_combats":
         problems.extend(_validate_raw_land_combat_delta(frame, payload))
+    if frame.get("domain") == "army_orders":
+        problems.extend(_validate_raw_army_order_delta(frame, payload))
     if frame.get("domain") == "naval_air_combats":
         problems.extend(_validate_raw_naval_combat_delta(frame, payload))
     return problems
@@ -1438,6 +1478,299 @@ def _validate_raw_land_combat_participants(
         if participant in seen:
             problems.append(f"{prefix}[{i}] duplicate division id")
         seen.add(participant)
+    return problems
+
+
+def _validate_raw_army_order_event(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> List[str]:
+    problems: List[str] = []
+    event_type = payload.get("event_type")
+    if event_type not in RAW_ARMY_ORDER_EVENT_TYPES:
+        problems.append(f"collector army order event_type {event_type!r} invalid")
+    entity_uid = _parse_raw_army_order_entity_key(frame.get("entity_key"))
+    if entity_uid is None:
+        problems.append("collector army order event entity_key not stable army_order key")
+    subject = payload.get("subject")
+    if subject != "army_order":
+        problems.append("collector army order event subject != 'army_order'")
+    if _contains_forbidden_raw_key(payload):
+        problems.append(
+            "collector army order event payload contains raw pointer/tag-db "
+            "diagnostic key"
+        )
+    detail = payload.get("detail")
+    if not isinstance(detail, dict):
+        problems.append("collector army order event detail missing or not object")
+        return problems
+    problems.extend(_validate_raw_army_order_event_detail(
+        detail,
+        "collector army order event detail",
+        entity_uid,
+    ))
+    return problems
+
+
+def _validate_raw_army_order_event_detail(
+    detail: Dict[str, Any],
+    prefix: str,
+    entity_uid: Optional[tuple[int, int]],
+) -> List[str]:
+    problems: List[str] = []
+    for key in detail:
+        if key not in RAW_ARMY_ORDER_EVENT_DETAIL_FIELDS:
+            problems.append(f"{prefix}.{key} unsupported")
+    row = {
+        key: value
+        for key, value in detail.items()
+        if key in RAW_ARMY_ORDER_FIELDS
+    }
+    problems.extend(_validate_raw_army_order_row(
+        row,
+        prefix,
+        entity_uid,
+        require_identity=True,
+    ))
+    changed_fields = detail.get("changed_fields")
+    if not isinstance(changed_fields, list):
+        problems.append(f"{prefix}.changed_fields not list")
+    else:
+        if len(changed_fields) > RAW_CONTAINER_MAX_ENTRIES:
+            problems.append(f"{prefix}.changed_fields too many entries")
+        for i, field in enumerate(changed_fields):
+            if field not in RAW_ARMY_ORDER_EVENT_DETAIL_FIELDS:
+                problems.append(f"{prefix}.changed_fields[{i}] invalid")
+    return problems
+
+
+def _validate_raw_army_order_delta(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> List[str]:
+    problems: List[str] = []
+    if _is_raw_army_order_gap_delta(frame, payload):
+        return _validate_raw_army_order_gap_delta(frame, payload)
+
+    entity_uid = _parse_raw_army_order_entity_key(frame.get("entity_key"))
+    if entity_uid is None:
+        problems.append("collector army order delta entity_key not stable army_order key")
+    if _contains_forbidden_raw_key(payload):
+        problems.append(
+            "collector army order delta payload contains raw pointer/tag-db "
+            "diagnostic key"
+        )
+    changed_fields = payload.get("changed_fields")
+    if isinstance(changed_fields, list):
+        for i, field in enumerate(changed_fields):
+            if _forbidden_raw_key_name(field):
+                problems.append(
+                    "collector army order delta "
+                    f"changed_fields[{i}] raw pointer/tag-db diagnostic key"
+                )
+    for row_key in ("before", "after"):
+        row = payload.get(row_key)
+        if isinstance(row, dict):
+            problems.extend(_validate_raw_army_order_row(
+                row,
+                f"collector army order delta {row_key}",
+                entity_uid,
+                require_identity=(row_key == "after"),
+            ))
+    return problems
+
+
+def _is_raw_army_order_gap_delta(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> bool:
+    return (
+        frame.get("confidence") == "gap"
+        or _parse_raw_army_order_gap_key(frame.get("entity_key")) is not None
+        or (
+            isinstance(payload.get("after"), dict)
+            and "gap_kind" in payload["after"]
+        )
+    )
+
+
+def _validate_raw_army_order_gap_delta(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> List[str]:
+    problems: List[str] = []
+    entity_key = frame.get("entity_key")
+    gap_kind = _parse_raw_army_order_gap_key(entity_key)
+    if gap_kind is None:
+        problems.append(
+            "collector army order gap entity_key not stable army_orders gap key"
+        )
+    if _contains_forbidden_raw_key(payload):
+        problems.append(
+            "collector army order gap payload contains raw pointer/tag-db "
+            "diagnostic key"
+        )
+    changed_fields = payload.get("changed_fields")
+    if isinstance(changed_fields, list):
+        for i, field in enumerate(changed_fields):
+            if _forbidden_raw_key_name(field):
+                problems.append(
+                    "collector army order gap "
+                    f"changed_fields[{i}] raw pointer/tag-db diagnostic key"
+                )
+    for row_key in ("before", "after"):
+        row = payload.get(row_key)
+        if isinstance(row, dict):
+            problems.extend(_validate_raw_army_order_gap_row(
+                row,
+                f"collector army order gap {row_key}",
+                entity_key if isinstance(entity_key, str) else None,
+                gap_kind,
+            ))
+    return problems
+
+
+def _validate_raw_army_order_gap_row(
+    row: Dict[str, Any],
+    prefix: str,
+    entity_key: Optional[str],
+    entity_gap_kind: Optional[str],
+) -> List[str]:
+    problems: List[str] = []
+    for key in row:
+        if key not in RAW_ARMY_ORDER_GAP_FIELDS:
+            problems.append(f"{prefix}.{key} unsupported")
+
+    gap_key = row.get("gap_key")
+    if not _valid_raw_key(gap_key):
+        problems.append(f"{prefix}.gap_key missing or not stable str")
+    elif entity_key is not None and gap_key != entity_key:
+        problems.append(f"{prefix}.gap_key != entity_key")
+
+    gap_kind = row.get("gap_kind")
+    if not _valid_raw_string(gap_kind, max_length=RAW_SHORT_STRING_MAX_LENGTH):
+        problems.append(f"{prefix}.gap_kind missing or not bounded str")
+    elif _valid_hex_pointer(gap_kind):
+        problems.append(f"{prefix}.gap_kind looks like pointer")
+    elif entity_gap_kind is not None and gap_kind != entity_gap_kind:
+        problems.append(f"{prefix}.gap_kind != entity_key")
+
+    status = row.get("status")
+    if status not in ("validation_failed", "unsupported", "layout_invalid"):
+        problems.append(f"{prefix}.status invalid")
+    return problems
+
+
+def _validate_raw_army_order_row(
+    row: Dict[str, Any],
+    prefix: str,
+    entity_uid: Optional[tuple[int, int]],
+    *,
+    require_identity: bool,
+) -> List[str]:
+    problems: List[str] = []
+    for key in row:
+        if key not in RAW_ARMY_ORDER_FIELDS:
+            problems.append(f"{prefix}.{key} unsupported")
+
+    order_key = row.get("order_key")
+    if order_key is not None:
+        parsed_key = _parse_raw_army_order_entity_key(order_key)
+        if parsed_key is None:
+            problems.append(f"{prefix}.order_key not stable army_order key|null")
+        elif entity_uid is not None and parsed_key != entity_uid:
+            problems.append(f"{prefix}.order_key != entity_key")
+    elif require_identity:
+        problems.append(f"{prefix}.order_key missing")
+
+    army_id = row.get("army_id")
+    generation = row.get("generation")
+    if army_id is None:
+        if require_identity:
+            problems.append(f"{prefix}.army_id missing")
+    elif not _valid_bounded_int(
+        army_id,
+        minimum=1,
+        maximum=RAW_ARMY_ORDER_ID_MAX,
+    ):
+        problems.append(f"{prefix}.army_id not positive int|null in range")
+    elif entity_uid is not None and army_id != entity_uid[0]:
+        problems.append(f"{prefix}.army_id != entity_key")
+
+    if generation is None:
+        if require_identity:
+            problems.append(f"{prefix}.generation missing")
+    elif not _valid_bounded_int(
+        generation,
+        minimum=0,
+        maximum=RAW_ARMY_ORDER_GENERATION_MAX,
+    ):
+        problems.append(f"{prefix}.generation not nonnegative int|null in range")
+    elif entity_uid is not None and generation != entity_uid[1]:
+        problems.append(f"{prefix}.generation != entity_key")
+
+    slot_index = row.get("slot_index")
+    if slot_index is not None and not _valid_bounded_int(
+        slot_index,
+        minimum=0,
+        maximum=RAW_ARMY_ORDER_SLOT_INDEX_MAX,
+    ):
+        problems.append(f"{prefix}.slot_index not nonnegative int|null in range")
+
+    order_type = row.get("order_type")
+    if order_type is not None and (
+        isinstance(order_type, bool)
+        or not isinstance(order_type, int)
+        or abs(order_type) > RAW_ARMY_ORDER_TYPE_ABS_MAX
+    ):
+        problems.append(f"{prefix}.order_type not bounded int|null")
+
+    target_states = row.get("target_states")
+    problems.extend(_validate_raw_army_order_target_states(
+        target_states,
+        f"{prefix}.target_states",
+    ))
+
+    target_state_count = row.get("target_state_count")
+    if target_state_count is not None and not _valid_bounded_int(
+        target_state_count,
+        minimum=0,
+        maximum=RAW_ARMY_ORDER_TARGET_STATE_COUNT_MAX,
+    ):
+        problems.append(f"{prefix}.target_state_count not nonnegative int|null in range")
+    elif isinstance(target_states, list) and isinstance(target_state_count, int):
+        if target_state_count != len(target_states):
+            problems.append(f"{prefix}.target_state_count != target_states length")
+
+    target_status = row.get("target_status")
+    if target_status is not None and target_status not in RAW_ARMY_ORDER_TARGET_STATUSES:
+        problems.append(f"{prefix}.target_status invalid")
+    return problems
+
+
+def _validate_raw_army_order_target_states(
+    value: Any,
+    prefix: str,
+) -> List[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return [f"{prefix} not list|null"]
+    problems: List[str] = []
+    if len(value) > RAW_ARMY_ORDER_TARGET_STATES_MAX:
+        problems.append(f"{prefix} too many entries")
+    seen: set[int] = set()
+    for i, state_id in enumerate(value):
+        if not _valid_bounded_int(
+            state_id,
+            minimum=1,
+            maximum=RAW_ARMY_ORDER_TARGET_STATE_ID_MAX,
+        ):
+            problems.append(f"{prefix}[{i}] not positive state id")
+            continue
+        if state_id in seen:
+            problems.append(f"{prefix}[{i}] duplicate state id")
+        seen.add(state_id)
     return problems
 
 
@@ -1874,6 +2207,37 @@ def _parse_raw_land_combat_gap_key(value: Any) -> Optional[str]:
     if not isinstance(value, str) or not value.startswith("land_combats:gap:"):
         return None
     gap_kind = value[len("land_combats:gap:"):]
+    if not _valid_raw_string(gap_kind, max_length=RAW_SHORT_STRING_MAX_LENGTH):
+        return None
+    if _valid_hex_pointer(gap_kind):
+        return None
+    return gap_kind
+
+
+def _parse_raw_army_order_entity_key(value: Any) -> Optional[tuple[int, int]]:
+    if not isinstance(value, str) or not value.startswith("army_order:"):
+        return None
+    raw = value[len("army_order:"):]
+    parts = raw.split(":")
+    if len(parts) != 2:
+        return None
+    army_id = _parse_raw_nonnegative_int_string(
+        parts[0],
+        maximum=RAW_ARMY_ORDER_ID_MAX,
+    )
+    generation = _parse_raw_nonnegative_int_string(
+        parts[1],
+        maximum=RAW_ARMY_ORDER_GENERATION_MAX,
+    )
+    if army_id is None or army_id == 0 or generation is None:
+        return None
+    return (army_id, generation)
+
+
+def _parse_raw_army_order_gap_key(value: Any) -> Optional[str]:
+    if not isinstance(value, str) or not value.startswith("army_orders:gap:"):
+        return None
+    gap_kind = value[len("army_orders:gap:"):]
     if not _valid_raw_string(gap_kind, max_length=RAW_SHORT_STRING_MAX_LENGTH):
         return None
     if _valid_hex_pointer(gap_kind):

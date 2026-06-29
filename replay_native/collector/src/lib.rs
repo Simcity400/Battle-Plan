@@ -271,6 +271,24 @@ mod attach_log {
     const MAX_DIVISION_ORGANISATION_RAW: u32 = 100_000_000;
     const MAX_DIVISION_STRENGTH_RAW: u32 = 1_000_000_000;
     const DIVISION_DELTA_BUCKET_RAW: u32 = 1_000;
+    const ARMY_VTABLE_RVA: usize = 0x292BEC0;
+    const ARMY_TYPE: u32 = 53;
+    const ARMY_OFF_HANDLE: usize = 0x08;
+    const ARMY_OFF_ORDERS_VEC: usize = 0x98;
+    const ORDER_VTABLE_RVA: usize = 0x295FA08;
+    const ORDER_OFF_TYPE: usize = 0x30;
+    const ORDER_OFF_ARMY_BACKREF: usize = 0x38;
+    const ORDER_OFF_TYPE5_STATES_BEGIN: usize = 0xE0;
+    const ORDER_OFF_TYPE5_STATES_SIZE: usize = 0xE8;
+    const ORDER_TYPE5_OFFENSIVE: i32 = 5;
+    const MAX_ARMY_ID: u32 = i32::MAX as u32;
+    const MAX_ARMY_BODY_BRIDGE_ROWS: usize = 20_000;
+    const MAX_ARMY_BODY_BRIDGE_PAYLOAD_BYTES: usize = 2 * 1024 * 1024;
+    const MAX_ARMY_ORDERS_PER_ARMY: u32 = 64;
+    const MAX_ARMY_ORDER_TARGET_STATES: u32 = 5_000;
+    const MAX_ARMY_ORDER_INLINE_TARGET_STATES: u32 = 256;
+    const MAX_ARMY_ORDER_STATE_ID: u32 = 65_535;
+    const ARMY_ORDER_SAMPLE_MIN_MS: u64 = 250;
     const LAND_COMBAT_MANAGER_OFFSET: usize = 0x260;
     const LAND_COMBAT_MANAGER_DATA: usize = 0x08;
     const LAND_COMBAT_MANAGER_COUNT: usize = 0x14;
@@ -507,6 +525,8 @@ mod attach_log {
             let mut previous_division_movement: BTreeMap<u32, DivisionMovementSample> =
                 BTreeMap::new();
             let mut land_combat_tracker = LandCombatTracker::default();
+            let mut army_order_tracker = ArmyOrderTracker::default();
+            let mut last_army_order_sample_elapsed_ms: Option<u64> = None;
             let mut naval_combat_tracker = NavalCombatTracker::default();
             while Instant::now() <= deadline {
                 let elapsed_wall_ms = duration_millis_u64(worker_started.elapsed());
@@ -560,6 +580,24 @@ mod attach_log {
                     write_sinks(file.as_mut(), pipe, line.as_bytes());
                     session_sequence = session_sequence.saturating_add(1);
                 }
+                let sample_army_orders = last_army_order_sample_elapsed_ms
+                    .map(|last| elapsed_wall_ms.saturating_sub(last) >= ARMY_ORDER_SAMPLE_MIN_MS)
+                    .unwrap_or(true);
+                if sample_army_orders {
+                    for line in build_army_order_raw_domain_delta_lines(
+                        pid,
+                        state.as_ref(),
+                        &control,
+                        &mut army_order_tracker,
+                        session_sequence,
+                        Some(elapsed_wall_ms),
+                        capture_boundary,
+                    ) {
+                        write_sinks(file.as_mut(), pipe, line.as_bytes());
+                        session_sequence = session_sequence.saturating_add(1);
+                    }
+                    last_army_order_sample_elapsed_ms = Some(elapsed_wall_ms);
+                }
                 for line in build_naval_combat_raw_domain_delta_lines(
                     pid,
                     state.as_ref(),
@@ -596,6 +634,8 @@ mod attach_log {
         country_record_bridge_valid: bool,
         division_body_bridge: Vec<DivisionBodyBridgeEntry>,
         division_body_bridge_valid: bool,
+        army_body_bridge: Vec<ArmyBodyBridgeEntry>,
+        army_body_bridge_valid: bool,
         naval_combat_body_bridge: Vec<NavalCombatBodyBridgeEntry>,
         naval_combat_body_bridge_valid: bool,
         map_control: MapControlContract,
@@ -618,6 +658,12 @@ mod attach_log {
     #[derive(Clone, Copy)]
     struct DivisionBodyBridgeEntry {
         div_id: u32,
+        body_ptr: usize,
+    }
+
+    #[derive(Clone, Copy)]
+    struct ArmyBodyBridgeEntry {
+        army_id: u32,
         body_ptr: usize,
     }
 
@@ -768,6 +814,14 @@ mod attach_log {
                 },
                 None => (Vec::new(), true),
             };
+        let (army_body_bridge, army_body_bridge_valid) =
+            match parse_json_string(&text, "army_body_bridge") {
+                Some(value) => match parse_army_body_bridge(&value) {
+                    Some(rows) => (rows, true),
+                    None => (Vec::new(), false),
+                },
+                None => (Vec::new(), true),
+            };
         let (naval_combat_body_bridge, naval_combat_body_bridge_valid) =
             match parse_json_string(&text, "naval_combat_body_bridge") {
                 Some(value) => match parse_naval_combat_body_bridge(&value) {
@@ -807,6 +861,8 @@ mod attach_log {
             country_record_bridge_valid,
             division_body_bridge,
             division_body_bridge_valid,
+            army_body_bridge,
+            army_body_bridge_valid,
             naval_combat_body_bridge,
             naval_combat_body_bridge_valid,
             map_control,
@@ -981,6 +1037,65 @@ mod attach_log {
                 return false;
             }
             if seen_div_ids.insert(row.div_id, ()).is_some()
+                || seen_body_ptrs.insert(row.body_ptr, ()).is_some()
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn parse_army_body_bridge(value: &str) -> Option<Vec<ArmyBodyBridgeEntry>> {
+        if value.trim().is_empty() {
+            return Some(Vec::new());
+        }
+        if value.len() > MAX_ARMY_BODY_BRIDGE_PAYLOAD_BYTES {
+            return None;
+        }
+        let mut entries = Vec::new();
+        let mut seen_army_ids: BTreeMap<u32, ()> = BTreeMap::new();
+        let mut seen_body_ptrs: BTreeMap<usize, ()> = BTreeMap::new();
+        for raw in value.split(';') {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                return None;
+            }
+            let (army_raw, ptr_raw) = raw.split_once(':')?;
+            let army_id = parse_bridge_u32(army_raw.trim())?;
+            if army_id == 0 || army_id > MAX_ARMY_ID {
+                return None;
+            }
+            let body_ptr = parse_bridge_pointer(ptr_raw.trim())?;
+            if !is_map_control_heap_pointer(body_ptr) {
+                return None;
+            }
+            if seen_army_ids.insert(army_id, ()).is_some()
+                || seen_body_ptrs.insert(body_ptr, ()).is_some()
+            {
+                return None;
+            }
+            entries.push(ArmyBodyBridgeEntry { army_id, body_ptr });
+            if entries.len() > MAX_ARMY_BODY_BRIDGE_ROWS {
+                return None;
+            }
+        }
+        Some(entries)
+    }
+
+    fn army_body_bridge_well_formed(rows: &[ArmyBodyBridgeEntry]) -> bool {
+        if rows.len() > MAX_ARMY_BODY_BRIDGE_ROWS {
+            return false;
+        }
+        let mut seen_army_ids: BTreeMap<u32, ()> = BTreeMap::new();
+        let mut seen_body_ptrs: BTreeMap<usize, ()> = BTreeMap::new();
+        for row in rows {
+            if row.army_id == 0 || row.army_id > MAX_ARMY_ID {
+                return false;
+            }
+            if !is_map_control_heap_pointer(row.body_ptr) {
+                return false;
+            }
+            if seen_army_ids.insert(row.army_id, ()).is_some()
                 || seen_body_ptrs.insert(row.body_ptr, ()).is_some()
             {
                 return false;
@@ -1443,11 +1558,15 @@ mod attach_log {
     const RAW_CLOCK_ENTITY_KEY: &str = "clock:game_date";
     const RAW_DIVISIONS_DOMAIN: &str = "divisions";
     const RAW_LAND_COMBATS_DOMAIN: &str = "land_combats";
+    const RAW_ARMY_ORDERS_DOMAIN: &str = "army_orders";
     const RAW_NAVAL_COMBATS_DOMAIN: &str = "naval_air_combats";
     const RAW_CONFIDENCE_SAMPLED: &str = "sampled";
     const LAND_COMBAT_EVENT_STARTED: &str = "land_combat_started";
     const LAND_COMBAT_EVENT_UPDATED: &str = "land_combat_updated";
     const LAND_COMBAT_EVENT_ENDED: &str = "land_combat_ended";
+    const ARMY_ORDER_EVENT_ADDED: &str = "army_order_added";
+    const ARMY_ORDER_EVENT_UPDATED: &str = "army_order_updated";
+    const ARMY_ORDER_EVENT_REMOVED: &str = "army_order_removed";
     const NAVAL_COMBAT_EVENT_STARTED: &str = "naval_combat_started";
     const NAVAL_COMBAT_EVENT_UPDATED: &str = "naval_combat_updated";
     const NAVAL_COMBAT_EVENT_ENDED: &str = "naval_combat_ended";
@@ -1499,6 +1618,24 @@ mod attach_log {
     #[derive(Default)]
     struct LandCombatTracker {
         previous: BTreeMap<u32, LandCombatSample>,
+        next_generation: u64,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct ArmyOrderSample {
+        army_id: u32,
+        generation: u64,
+        order_addr: usize,
+        slot_index: u32,
+        order_type: i32,
+        target_states: Option<Vec<u32>>,
+        target_state_count: Option<u32>,
+        target_status: &'static str,
+    }
+
+    #[derive(Default)]
+    struct ArmyOrderTracker {
+        previous: BTreeMap<usize, ArmyOrderSample>,
         next_generation: u64,
     }
 
@@ -2825,6 +2962,635 @@ mod attach_log {
         ))
     }
 
+    fn build_army_order_raw_domain_delta_lines(
+        pid: Dword,
+        state: Option<&CollectorState>,
+        control: &CollectorControl,
+        tracker: &mut ArmyOrderTracker,
+        first_session_sequence: u64,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+    ) -> Vec<String> {
+        let Some(state) = state else {
+            return Vec::new();
+        };
+        let Some(clock) = clock_sample_from_state(Some(state)) else {
+            return Vec::new();
+        };
+        let tick_ms = unsafe { GetTickCount64() };
+        let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let current_samples = match sample_army_orders(state, control, tracker) {
+            Ok(samples) => samples,
+            Err(gap_kind) => {
+                return army_order_gap_raw_domain_delta_frame_line(
+                    pid,
+                    sequence,
+                    Some(first_session_sequence),
+                    tick_ms,
+                    control,
+                    elapsed_wall_ms,
+                    capture_boundary,
+                    &clock,
+                    gap_kind,
+                )
+                .into_iter()
+                .collect();
+            }
+        };
+        build_army_order_raw_lines_from_samples(
+            pid,
+            control,
+            tracker,
+            current_samples,
+            first_session_sequence,
+            sequence,
+            tick_ms,
+            elapsed_wall_ms,
+            capture_boundary,
+            &clock,
+        )
+    }
+
+    fn build_army_order_raw_lines_from_samples(
+        pid: Dword,
+        control: &CollectorControl,
+        tracker: &mut ArmyOrderTracker,
+        current_samples: Vec<ArmyOrderSample>,
+        first_session_sequence: u64,
+        first_sequence: u64,
+        tick_ms: u64,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+    ) -> Vec<String> {
+        let previous = std::mem::take(&mut tracker.previous);
+        let mut current: BTreeMap<usize, ArmyOrderSample> = BTreeMap::new();
+        for mut sample in current_samples {
+            if let Some(old) = previous.get(&sample.order_addr) {
+                sample.generation = old.generation;
+            } else {
+                sample.generation = tracker.next_generation;
+                tracker.next_generation = tracker.next_generation.saturating_add(1);
+            }
+            current.insert(sample.order_addr, sample);
+        }
+
+        let mut lines = Vec::new();
+        let mut sequence = first_sequence;
+        let mut session_sequence = first_session_sequence;
+        for (order_addr, sample) in &current {
+            match previous.get(order_addr) {
+                Some(old) => {
+                    if let Some(changed_fields) = army_order_changed_fields(old, sample) {
+                        push_army_order_delta_frame(
+                            &mut lines,
+                            pid,
+                            sequence,
+                            session_sequence,
+                            tick_ms,
+                            control,
+                            elapsed_wall_ms,
+                            capture_boundary,
+                            clock,
+                            sample,
+                            "sample",
+                            &changed_fields,
+                        );
+                        sequence = sequence.saturating_add(1);
+                        session_sequence = session_sequence.saturating_add(1);
+                        push_army_order_event_frame(
+                            &mut lines,
+                            pid,
+                            sequence,
+                            session_sequence,
+                            tick_ms,
+                            control,
+                            elapsed_wall_ms,
+                            capture_boundary,
+                            clock,
+                            sample,
+                            ARMY_ORDER_EVENT_UPDATED,
+                            &changed_fields,
+                        );
+                        sequence = sequence.saturating_add(1);
+                        session_sequence = session_sequence.saturating_add(1);
+                    }
+                }
+                None => {
+                    let changed_fields = army_order_all_fields();
+                    push_army_order_delta_frame(
+                        &mut lines,
+                        pid,
+                        sequence,
+                        session_sequence,
+                        tick_ms,
+                        control,
+                        elapsed_wall_ms,
+                        capture_boundary,
+                        clock,
+                        sample,
+                        "sample",
+                        &changed_fields,
+                    );
+                    sequence = sequence.saturating_add(1);
+                    session_sequence = session_sequence.saturating_add(1);
+                    push_army_order_event_frame(
+                        &mut lines,
+                        pid,
+                        sequence,
+                        session_sequence,
+                        tick_ms,
+                        control,
+                        elapsed_wall_ms,
+                        capture_boundary,
+                        clock,
+                        sample,
+                        ARMY_ORDER_EVENT_ADDED,
+                        &changed_fields,
+                    );
+                    sequence = sequence.saturating_add(1);
+                    session_sequence = session_sequence.saturating_add(1);
+                }
+            }
+        }
+        for (order_addr, old_sample) in &previous {
+            if current.contains_key(order_addr) {
+                continue;
+            }
+            let changed_fields = ["order_key"];
+            push_army_order_delta_frame(
+                &mut lines,
+                pid,
+                sequence,
+                session_sequence,
+                tick_ms,
+                control,
+                elapsed_wall_ms,
+                capture_boundary,
+                clock,
+                old_sample,
+                "delete",
+                &changed_fields,
+            );
+            sequence = sequence.saturating_add(1);
+            session_sequence = session_sequence.saturating_add(1);
+            push_army_order_event_frame(
+                &mut lines,
+                pid,
+                sequence,
+                session_sequence,
+                tick_ms,
+                control,
+                elapsed_wall_ms,
+                capture_boundary,
+                clock,
+                old_sample,
+                ARMY_ORDER_EVENT_REMOVED,
+                &changed_fields,
+            );
+            sequence = sequence.saturating_add(1);
+            session_sequence = session_sequence.saturating_add(1);
+        }
+        tracker.previous = current;
+        lines
+    }
+
+    fn push_army_order_delta_frame(
+        lines: &mut Vec<String>,
+        pid: Dword,
+        sequence: u64,
+        session_sequence: u64,
+        tick_ms: u64,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        sample: &ArmyOrderSample,
+        op: &str,
+        changed_fields: &[&str],
+    ) {
+        if let Some(line) = army_order_raw_domain_delta_frame_line(
+            pid,
+            sequence,
+            Some(session_sequence),
+            tick_ms,
+            control,
+            elapsed_wall_ms,
+            capture_boundary,
+            clock,
+            sample,
+            op,
+            changed_fields,
+        ) {
+            lines.push(line);
+        }
+    }
+
+    fn push_army_order_event_frame(
+        lines: &mut Vec<String>,
+        pid: Dword,
+        sequence: u64,
+        session_sequence: u64,
+        tick_ms: u64,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        sample: &ArmyOrderSample,
+        event_type: &str,
+        changed_fields: &[&str],
+    ) {
+        if let Some(line) = army_order_raw_event_frame_line(
+            pid,
+            sequence,
+            Some(session_sequence),
+            tick_ms,
+            control,
+            elapsed_wall_ms,
+            capture_boundary,
+            clock,
+            sample,
+            event_type,
+            changed_fields,
+        ) {
+            lines.push(line);
+        }
+    }
+
+    fn sample_army_orders(
+        state: &CollectorState,
+        control: &CollectorControl,
+        tracker: &ArmyOrderTracker,
+    ) -> Result<Vec<ArmyOrderSample>, &'static str> {
+        let _ = tracker;
+        if !(control.army_body_bridge_valid
+            && army_body_bridge_well_formed(&control.army_body_bridge))
+        {
+            return Err("bridge_invalid");
+        }
+        if control.army_body_bridge.is_empty() {
+            return Ok(Vec::new());
+        }
+        let module_base = state.base;
+        let mut out = Vec::new();
+        let mut valid_armies = 0u32;
+        let mut invalid_entries = 0u32;
+        let mut seen_orders: BTreeMap<usize, ()> = BTreeMap::new();
+        for entry in &control.army_body_bridge {
+            match sample_army_orders_from_bridge_entry(module_base, entry) {
+                Some(samples) => {
+                    valid_armies = valid_armies.saturating_add(1);
+                    for sample in samples {
+                        if seen_orders.insert(sample.order_addr, ()).is_none() {
+                            out.push(sample);
+                        }
+                    }
+                }
+                None => invalid_entries = invalid_entries.saturating_add(1),
+            }
+        }
+        if valid_armies == 0 && invalid_entries > 0 {
+            return Err("bridge_entry_invalid");
+        }
+        Ok(out)
+    }
+
+    fn sample_army_orders_from_bridge_entry(
+        module_base: usize,
+        entry: &ArmyBodyBridgeEntry,
+    ) -> Option<Vec<ArmyOrderSample>> {
+        let body = entry.body_ptr;
+        let army_vtable = module_base.checked_add(ARMY_VTABLE_RVA)?;
+        if !is_map_control_heap_pointer(body) || read_u64(body)? as usize != army_vtable {
+            return None;
+        }
+        let handle = read_u64(body.checked_add(ARMY_OFF_HANDLE)?)?;
+        if (handle & 0xFFFF_FFFF) as u32 != ARMY_TYPE {
+            return None;
+        }
+        if ((handle >> 32) & 0xFFFF_FFFF) as u32 != entry.army_id {
+            return None;
+        }
+        let orders_begin = read_u64(body.checked_add(ARMY_OFF_ORDERS_VEC)?)? as usize;
+        if !is_map_control_heap_pointer(orders_begin) {
+            return Some(Vec::new());
+        }
+        let order_vtable = module_base.checked_add(ORDER_VTABLE_RVA)?;
+        let mut out = Vec::new();
+        for slot_index in 0..MAX_ARMY_ORDERS_PER_ARMY {
+            let order_ptr_addr = orders_begin.checked_add(slot_index as usize * 8)?;
+            let order_ptr = read_u64(order_ptr_addr)? as usize;
+            if !is_map_control_heap_pointer(order_ptr) {
+                break;
+            }
+            let Some(sample) =
+                read_army_order_sample(order_vtable, entry.army_id, body, order_ptr, slot_index)
+            else {
+                continue;
+            };
+            out.push(sample);
+        }
+        Some(out)
+    }
+
+    fn read_army_order_sample(
+        order_vtable: usize,
+        army_id: u32,
+        army_body: usize,
+        order_ptr: usize,
+        slot_index: u32,
+    ) -> Option<ArmyOrderSample> {
+        if !is_map_control_heap_pointer(order_ptr) || read_u64(order_ptr)? as usize != order_vtable
+        {
+            return None;
+        }
+        if read_u64(order_ptr.checked_add(ORDER_OFF_ARMY_BACKREF)?)? as usize != army_body {
+            return None;
+        }
+        let order_type = read_i32(order_ptr.checked_add(ORDER_OFF_TYPE)?)?;
+        let (target_states, target_state_count, target_status) =
+            read_army_order_target_states(order_ptr, order_type);
+        Some(ArmyOrderSample {
+            army_id,
+            generation: 0,
+            order_addr: order_ptr,
+            slot_index,
+            order_type,
+            target_states,
+            target_state_count,
+            target_status,
+        })
+    }
+
+    fn read_army_order_target_states(
+        order_ptr: usize,
+        order_type: i32,
+    ) -> (Option<Vec<u32>>, Option<u32>, &'static str) {
+        if order_type != ORDER_TYPE5_OFFENSIVE {
+            return (None, None, "unsupported");
+        }
+        let Some(begin_addr) = order_ptr.checked_add(ORDER_OFF_TYPE5_STATES_BEGIN) else {
+            return (None, None, "validation_failed");
+        };
+        let Some(size_addr) = order_ptr.checked_add(ORDER_OFF_TYPE5_STATES_SIZE) else {
+            return (None, None, "validation_failed");
+        };
+        let Some(begin) = read_u64(begin_addr).map(|v| v as usize) else {
+            return (None, None, "validation_failed");
+        };
+        let Some(size) = read_u32(size_addr) else {
+            return (None, None, "validation_failed");
+        };
+        if size == 0 {
+            return (Some(Vec::new()), Some(0), "exact");
+        }
+        if size > MAX_ARMY_ORDER_TARGET_STATES {
+            return (None, None, "validation_failed");
+        }
+        if !is_map_control_heap_pointer(begin) {
+            return (None, Some(size), "validation_failed");
+        }
+        if size > MAX_ARMY_ORDER_INLINE_TARGET_STATES {
+            return (None, Some(size), "overflow");
+        }
+        let byte_len = (size as usize).checked_mul(4).unwrap_or(usize::MAX);
+        if byte_len == usize::MAX {
+            return (None, Some(size), "validation_failed");
+        }
+        let Some(raw) = read_bytes(begin, byte_len) else {
+            return (None, Some(size), "validation_failed");
+        };
+        if raw.len() < byte_len {
+            return (None, Some(size), "validation_failed");
+        }
+        let mut states = Vec::new();
+        let mut seen: BTreeMap<u32, ()> = BTreeMap::new();
+        for i in 0..size as usize {
+            let offset = i * 4;
+            let state_id = u32::from_le_bytes([
+                raw[offset],
+                raw[offset + 1],
+                raw[offset + 2],
+                raw[offset + 3],
+            ]);
+            if state_id == 0 || state_id > MAX_ARMY_ORDER_STATE_ID {
+                return (None, Some(size), "validation_failed");
+            }
+            if seen.insert(state_id, ()).is_some() {
+                return (None, Some(size), "validation_failed");
+            }
+            states.push(state_id);
+        }
+        states.sort_unstable();
+        (Some(states), Some(size), "exact")
+    }
+
+    fn army_order_all_fields() -> Vec<&'static str> {
+        vec![
+            "order_key",
+            "army_id",
+            "generation",
+            "slot_index",
+            "order_type",
+            "target_states",
+            "target_state_count",
+            "target_status",
+        ]
+    }
+
+    fn army_order_changed_fields(
+        old: &ArmyOrderSample,
+        new: &ArmyOrderSample,
+    ) -> Option<Vec<&'static str>> {
+        let mut changed = Vec::new();
+        if old.slot_index != new.slot_index {
+            changed.push("slot_index");
+        }
+        if old.order_type != new.order_type {
+            changed.push("order_type");
+        }
+        if old.target_states != new.target_states {
+            changed.push("target_states");
+        }
+        if old.target_state_count != new.target_state_count {
+            changed.push("target_state_count");
+        }
+        if old.target_status != new.target_status {
+            changed.push("target_status");
+        }
+        (!changed.is_empty()).then_some(changed)
+    }
+
+    fn army_order_raw_domain_delta_frame_line(
+        pid: Dword,
+        sequence: u64,
+        session_sequence: Option<u64>,
+        tick_ms: u64,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        sample: &ArmyOrderSample,
+        op: &str,
+        changed_fields: &[&str],
+    ) -> Option<String> {
+        let order_key = format!("army_order:{}:{}", sample.army_id, sample.generation);
+        let after_json = if op == "delete" {
+            "null".to_string()
+        } else {
+            army_order_row_json(sample, &order_key)
+        };
+        raw_domain_delta_frame_line(RawDomainDeltaFrame {
+            pid,
+            sequence,
+            session_sequence,
+            tick_ms,
+            date: &clock.date,
+            hour_index: clock.hour_index,
+            sample_ms: control.sample_ms,
+            duration_ms: Some(control.duration_ms),
+            elapsed_wall_ms,
+            capture_boundary,
+            domain: RAW_ARMY_ORDERS_DOMAIN,
+            entity_key: &order_key,
+            confidence: RAW_CONFIDENCE_SAMPLED,
+            op,
+            after_json: &after_json,
+            changed_fields,
+        })
+    }
+
+    fn army_order_gap_raw_domain_delta_frame_line(
+        pid: Dword,
+        sequence: u64,
+        session_sequence: Option<u64>,
+        tick_ms: u64,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        gap_kind: &str,
+    ) -> Option<String> {
+        if !valid_raw_short_string(gap_kind) || looks_like_hex_pointer(gap_kind) {
+            return None;
+        }
+        let gap_key = format!("army_orders:gap:{gap_kind}");
+        let after_json = format!(
+            "{{\"gap_key\":{},\"gap_kind\":{},\"status\":\"validation_failed\"}}",
+            json_str(&gap_key),
+            json_str(gap_kind)
+        );
+        raw_domain_delta_frame_line(RawDomainDeltaFrame {
+            pid,
+            sequence,
+            session_sequence,
+            tick_ms,
+            date: &clock.date,
+            hour_index: clock.hour_index,
+            sample_ms: control.sample_ms,
+            duration_ms: Some(control.duration_ms),
+            elapsed_wall_ms,
+            capture_boundary,
+            domain: RAW_ARMY_ORDERS_DOMAIN,
+            entity_key: &gap_key,
+            confidence: "gap",
+            op: "sample",
+            after_json: &after_json,
+            changed_fields: &["gap_key", "gap_kind", "status"],
+        })
+    }
+
+    fn army_order_raw_event_frame_line(
+        pid: Dword,
+        sequence: u64,
+        session_sequence: Option<u64>,
+        tick_ms: u64,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        sample: &ArmyOrderSample,
+        event_type: &str,
+        changed_fields: &[&str],
+    ) -> Option<String> {
+        if !matches!(
+            event_type,
+            ARMY_ORDER_EVENT_ADDED | ARMY_ORDER_EVENT_UPDATED | ARMY_ORDER_EVENT_REMOVED
+        ) {
+            return None;
+        }
+        let order_key = format!("army_order:{}:{}", sample.army_id, sample.generation);
+        let detail_json = army_order_event_detail_json(sample, &order_key, changed_fields)?;
+        raw_event_frame_line(RawEventFrame {
+            pid,
+            sequence,
+            session_sequence,
+            tick_ms,
+            date: &clock.date,
+            hour_index: clock.hour_index,
+            sample_ms: control.sample_ms,
+            duration_ms: Some(control.duration_ms),
+            elapsed_wall_ms,
+            capture_boundary,
+            domain: RAW_ARMY_ORDERS_DOMAIN,
+            entity_key: &order_key,
+            confidence: RAW_CONFIDENCE_SAMPLED,
+            event_type,
+            subject: "army_order",
+            detail_json: &detail_json,
+        })
+    }
+
+    fn army_order_row_json(sample: &ArmyOrderSample, order_key: &str) -> String {
+        format!(
+            "{{\"order_key\":{},\"army_id\":{},\"generation\":{},\
+             \"slot_index\":{},\"order_type\":{},\"target_states\":{},\
+             \"target_state_count\":{},\"target_status\":{}}}",
+            json_str(order_key),
+            sample.army_id,
+            sample.generation,
+            sample.slot_index,
+            sample.order_type,
+            json_opt_u32_vec(sample.target_states.as_ref()),
+            json_opt_u32(sample.target_state_count),
+            json_str(sample.target_status)
+        )
+    }
+
+    fn army_order_event_detail_json(
+        sample: &ArmyOrderSample,
+        order_key: &str,
+        changed_fields: &[&str],
+    ) -> Option<String> {
+        if changed_fields.len() > 256
+            || changed_fields
+                .iter()
+                .any(|field| !valid_raw_short_string(field))
+        {
+            return None;
+        }
+        let changed_fields = changed_fields
+            .iter()
+            .map(|field| json_str(field))
+            .collect::<Vec<_>>()
+            .join(",");
+        Some(format!(
+            "{{\"order_key\":{},\"army_id\":{},\"generation\":{},\
+             \"slot_index\":{},\"order_type\":{},\"target_states\":{},\
+             \"target_state_count\":{},\"target_status\":{},\
+             \"changed_fields\":[{}] }}",
+            json_str(order_key),
+            sample.army_id,
+            sample.generation,
+            sample.slot_index,
+            sample.order_type,
+            json_opt_u32_vec(sample.target_states.as_ref()),
+            json_opt_u32(sample.target_state_count),
+            json_str(sample.target_status),
+            changed_fields
+        ))
+    }
+
     fn build_naval_combat_raw_domain_delta_lines(
         pid: Dword,
         state: Option<&CollectorState>,
@@ -3720,6 +4486,7 @@ mod attach_log {
             RAW_CLOCK_DOMAIN
                 | RAW_DIVISIONS_DOMAIN
                 | RAW_LAND_COMBATS_DOMAIN
+                | RAW_ARMY_ORDERS_DOMAIN
                 | RAW_NAVAL_COMBATS_DOMAIN
         )
     }
@@ -3792,6 +4559,8 @@ mod attach_log {
             .unwrap_or_default();
         let division_body_bridge_valid = control.division_body_bridge_valid
             && division_body_bridge_well_formed(&control.division_body_bridge);
+        let army_body_bridge_valid = control.army_body_bridge_valid
+            && army_body_bridge_well_formed(&control.army_body_bridge);
         let naval_combat_body_bridge_valid = control.naval_combat_body_bridge_valid
             && naval_combat_body_bridge_well_formed(&control.naval_combat_body_bridge);
         let map_control_state_roots_valid =
@@ -3811,6 +4580,8 @@ mod attach_log {
              \"country_record_bridge_valid\":{},\
              \"division_body_bridge_rows\":{},\
              \"division_body_bridge_valid\":{},\
+             \"army_body_bridge_rows\":{},\
+             \"army_body_bridge_valid\":{},\
              \"naval_combat_body_bridge_rows\":{},\
              \"naval_combat_body_bridge_valid\":{},\
              \"advisor_token_filter_tokens\":{},\
@@ -3833,6 +4604,8 @@ mod attach_log {
             control.country_record_bridge_valid,
             control.division_body_bridge.len(),
             division_body_bridge_valid,
+            control.army_body_bridge.len(),
+            army_body_bridge_valid,
             control.naval_combat_body_bridge.len(),
             naval_combat_body_bridge_valid,
             control.advisor_token_filter.len(),
@@ -7845,6 +8618,8 @@ mod attach_log {
                 country_record_bridge_valid: true,
                 division_body_bridge: Vec::new(),
                 division_body_bridge_valid: true,
+                army_body_bridge: Vec::new(),
+                army_body_bridge_valid: true,
                 naval_combat_body_bridge: Vec::new(),
                 naval_combat_body_bridge_valid: true,
                 map_control: MapControlContract::empty(),
@@ -7936,6 +8711,8 @@ mod attach_log {
             assert!(parsed.country_record_bridge_valid);
             assert!(parsed.division_body_bridge.is_empty());
             assert!(parsed.division_body_bridge_valid);
+            assert!(parsed.army_body_bridge.is_empty());
+            assert!(parsed.army_body_bridge_valid);
             assert!(parsed.naval_combat_body_bridge.is_empty());
             assert!(parsed.naval_combat_body_bridge_valid);
             assert!(parsed.map_control.state_roots.is_empty());
@@ -8162,6 +8939,37 @@ mod attach_log {
         }
 
         #[test]
+        fn collector_control_accepts_army_body_bridge() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_control_army_bridge_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            fs::write(
+                &control,
+                format!(
+                    r#"{{"mode":"hourly_poll","duration_ms":8000,"sample_ms":10,"army_body_bridge":"17:0x{:x};18:{}"}}"#,
+                    HEAP_LO,
+                    HEAP_LO + 0x100
+                ),
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert!(parsed.army_body_bridge_valid);
+            assert_eq!(parsed.army_body_bridge.len(), 2);
+            assert_eq!(parsed.army_body_bridge[0].army_id, 17);
+            assert_eq!(parsed.army_body_bridge[0].body_ptr, HEAP_LO);
+            assert_eq!(parsed.army_body_bridge[1].army_id, 18);
+            assert_eq!(parsed.army_body_bridge[1].body_ptr, HEAP_LO + 0x100);
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
         fn collector_control_accepts_naval_combat_body_bridge() {
             let dir = std::env::temp_dir().join(format!(
                 "hoi4_collector_control_naval_bridge_test_{}",
@@ -8353,6 +9161,40 @@ mod attach_log {
         }
 
         #[test]
+        fn collector_control_marks_bad_army_body_bridge_invalid() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_control_bad_army_bridge_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            fs::write(
+                &control,
+                r#"{"mode":"hourly_poll","duration_ms":8000,"sample_ms":10,"army_body_bridge":"17:0x1001"}"#,
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert!(parsed.army_body_bridge.is_empty());
+            assert!(!parsed.army_body_bridge_valid);
+            let frame = build_frame_line(
+                1234,
+                None,
+                Some(&parsed),
+                Some(7),
+                Some(125),
+                Some("worker_poll"),
+            );
+            assert!(frame.contains("\"army_body_bridge_rows\":0"));
+            assert!(frame.contains("\"army_body_bridge_valid\":false"));
+            assert!(!frame.contains("0x1001"));
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
         fn collector_control_marks_bad_naval_combat_body_bridge_invalid() {
             let dir = std::env::temp_dir().join(format!(
                 "hoi4_collector_control_bad_naval_bridge_test_{}",
@@ -8466,6 +9308,36 @@ mod attach_log {
                 .collect::<Vec<_>>()
                 .join(";");
             assert!(parse_division_body_bridge(&too_many).is_none());
+        }
+
+        #[test]
+        fn army_body_bridge_parser_rejects_duplicates_ranges_and_size() {
+            assert!(parse_army_body_bridge("").unwrap().is_empty());
+            assert!(
+                parse_army_body_bridge(&format!("1:0x{:x};2:{}", HEAP_LO, HEAP_LO + 8)).is_some()
+            );
+            assert!(
+                parse_army_body_bridge(&format!("1:0x{:x};1:0x{:x}", HEAP_LO, HEAP_LO + 8))
+                    .is_none()
+            );
+            assert!(
+                parse_army_body_bridge(&format!("1:0x{:x};2:0x{:x}", HEAP_LO, HEAP_LO)).is_none()
+            );
+            assert!(parse_army_body_bridge(&format!("0:0x{:x}", HEAP_LO)).is_none());
+            assert!(
+                parse_army_body_bridge(&format!("{}:0x{:x}", MAX_ARMY_ID + 1, HEAP_LO)).is_none()
+            );
+            assert!(parse_army_body_bridge("1:0x1000").is_none());
+            assert!(parse_army_body_bridge(&format!("1:0x{:x}", HEAP_LO + 1)).is_none());
+            assert!(
+                parse_army_body_bridge(&"x".repeat(MAX_ARMY_BODY_BRIDGE_PAYLOAD_BYTES + 1))
+                    .is_none()
+            );
+            let too_many = (1..=MAX_ARMY_BODY_BRIDGE_ROWS + 1)
+                .map(|i| format!("{}:0x{:x}", i, HEAP_LO + (i * 8)))
+                .collect::<Vec<_>>()
+                .join(";");
+            assert!(parse_army_body_bridge(&too_many).is_none());
         }
 
         #[test]
@@ -9250,6 +10122,85 @@ mod attach_log {
         }
 
         #[test]
+        fn army_order_frame_builders_emit_sanitized_bridge_rows() {
+            let control = raw_test_control();
+            let clock = ClockSample {
+                date: "1936.1.1.12".to_string(),
+                hour_index: ((1936 * 365) * 24 + 12) as u64,
+                raw_date: DATE_EPOCH_CONST + ((1936 * 365) * 24 + 12),
+            };
+            let sample = ArmyOrderSample {
+                army_id: 17,
+                generation: 4,
+                order_addr: HEAP_LO + 0x33000,
+                slot_index: 2,
+                order_type: ORDER_TYPE5_OFFENSIVE,
+                target_states: Some(vec![107, 108]),
+                target_state_count: Some(2),
+                target_status: "exact",
+            };
+            let changed_fields = army_order_all_fields();
+
+            let frame = army_order_raw_domain_delta_frame_line(
+                1234,
+                42,
+                Some(9),
+                123456,
+                &control,
+                Some(125),
+                "worker_poll",
+                &clock,
+                &sample,
+                "sample",
+                &changed_fields,
+            )
+            .unwrap();
+
+            assert!(frame.contains("\"type\":\"domain_delta\""));
+            assert!(frame.contains("\"domain\":\"army_orders\""));
+            assert!(frame.contains("\"entity_key\":\"army_order:17:4\""));
+            assert!(frame.contains("\"order_key\":\"army_order:17:4\""));
+            assert!(frame.contains("\"army_id\":17"));
+            assert!(frame.contains("\"slot_index\":2"));
+            assert!(frame.contains("\"order_type\":5"));
+            assert!(frame.contains("\"target_states\":[107,108]"));
+            assert!(frame.contains("\"target_state_count\":2"));
+            assert!(frame.contains("\"target_status\":\"exact\""));
+            assert!(frame.contains("\"changed_fields\":[\"order_key\",\"army_id\",\"generation\",\"slot_index\",\"order_type\",\"target_states\",\"target_state_count\",\"target_status\"]"));
+            assert!(!frame.contains("body_ptr"));
+            assert!(!frame.contains("body_addr"));
+            assert!(!frame.contains("order_addr"));
+            assert!(!frame.contains("tag_db_id"));
+            assert!(!frame.contains("0x"));
+
+            let event = army_order_raw_event_frame_line(
+                1234,
+                43,
+                Some(10),
+                123456,
+                &control,
+                Some(125),
+                "worker_poll",
+                &clock,
+                &sample,
+                ARMY_ORDER_EVENT_ADDED,
+                &changed_fields,
+            )
+            .unwrap();
+
+            assert!(event.contains("\"type\":\"event\""));
+            assert!(event.contains("\"domain\":\"army_orders\""));
+            assert!(event.contains("\"event_type\":\"army_order_added\""));
+            assert!(event.contains("\"subject\":\"army_order\""));
+            assert!(event.contains("\"detail\":{\"order_key\":\"army_order:17:4\""));
+            assert!(!event.contains("body_ptr"));
+            assert!(!event.contains("body_addr"));
+            assert!(!event.contains("order_addr"));
+            assert!(!event.contains("tag_db_id"));
+            assert!(!event.contains("0x"));
+        }
+
+        #[test]
         fn naval_combat_frame_builders_emit_sanitized_bridge_rows() {
             let control = raw_test_control();
             let clock = ClockSample {
@@ -9631,6 +10582,8 @@ mod attach_log {
                 country_record_bridge_valid: true,
                 division_body_bridge: Vec::new(),
                 division_body_bridge_valid: true,
+                army_body_bridge: Vec::new(),
+                army_body_bridge_valid: true,
                 naval_combat_body_bridge: Vec::new(),
                 naval_combat_body_bridge_valid: true,
                 map_control: MapControlContract::empty(),

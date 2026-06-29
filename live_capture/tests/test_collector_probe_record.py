@@ -18,6 +18,9 @@ from live_capture.collector_probe_record import (  # noqa: E402
 from live_capture.collector_division_bridge import (  # noqa: E402
     encode_division_body_bridge,
 )
+from live_capture.collector_army_order_bridge import (  # noqa: E402
+    encode_army_body_bridge,
+)
 from live_capture.collector_naval_combat_bridge import (  # noqa: E402
     encode_naval_combat_body_bridge,
 )
@@ -199,6 +202,7 @@ class TestCollectorProbeRecord(unittest.TestCase):
                 3.0,
                 25,
                 session_id="session-1",
+                army_body_bridge="17:0x7000",
                 naval_combat_body_bridge="41:0x8000",
             )
             payload = json.loads(control_path.read_text(encoding="utf-8"))
@@ -206,6 +210,7 @@ class TestCollectorProbeRecord(unittest.TestCase):
         self.assertEqual(payload["mode"], "hourly_poll")
         self.assertEqual(payload["pipe_token"], pipe_token)
         self.assertEqual(payload["session_id"], "session-1")
+        self.assertEqual(payload["army_body_bridge"], "17:0x7000")
         self.assertEqual(payload["naval_combat_body_bridge"], "41:0x8000")
         self.assertFalse(payload["country_object_scan"])
         self.assertFalse(payload["special_projects_scan"])
@@ -231,6 +236,14 @@ class TestCollectorProbeRecord(unittest.TestCase):
 
     def test_encode_division_body_bridge_sorts_and_sanitizes_rows(self):
         encoded = encode_division_body_bridge({
+            18: "0x9000",
+            "17": 0x8000,
+        })
+
+        self.assertEqual(encoded, "17:0x8000;18:0x9000")
+
+    def test_encode_army_body_bridge_sorts_and_sanitizes_rows(self):
+        encoded = encode_army_body_bridge({
             18: "0x9000",
             "17": 0x8000,
         })

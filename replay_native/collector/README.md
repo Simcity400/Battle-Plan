@@ -301,6 +301,32 @@ Land-combat raw stream status:
 - Remaining promotion work is speed-five soak and raw `land_combats` ingestion
   into the replay timeline/app.
 
+Army-order raw stream status:
+
+- `live_capture.collector_frames` and the Rust collector define and test a
+  bounded raw `army_orders` domain-delta/event contract:
+  `army_order:<army_id>:<generation>` keys, army id, slot index, order type,
+  nullable target state ids, target-state count, target status, and no raw
+  address leakage.
+- The Rust DLL accepts `army_body_bridge` rows in `collector_control.json` as
+  `army_id:body_ptr` entries. The parser rejects malformed, duplicate,
+  unaligned, out-of-range, or oversized payloads and reports row count/validity
+  in control metadata.
+- The recorder can populate that bridge with
+  `live_capture.collector_session --preflight-army-orders`; by default it is
+  cache-first and fails closed unless `--allow-army-cold-scan` explicitly allows
+  the slower army vtable sweep. Manifests store sanitized counts/status only.
+- Worker sampling does not sweep the heap. For each supplied army row, the DLL
+  revalidates the `CArmy` body by vtable, type, and id, then reads the active
+  order vector at `CArmy+0x98` at a 250 ms floor.
+- The first stream emits `army_order_added`, `army_order_updated`, and
+  `army_order_removed`. Type-5 target-state vectors are exact when they fit the
+  bounded inline payload; larger valid vectors emit `target_status:"overflow"`
+  with a count; non-type-5 geometry emits `target_status:"unsupported"`.
+- Remaining promotion work is live speed-five proof while issuing orders,
+  semantic event splits, non-type-5 geometry, periodic bridge refresh for new
+  armies, and timeline ingestion.
+
 Naval-combat raw stream status:
 
 - `live_capture.collector_frames` and the Rust collector define and test a

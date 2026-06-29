@@ -15,6 +15,7 @@ from .collector_advisor_tokens import (
     advisor_token_filter_metadata,
     encode_advisor_token_filter,
 )
+from .collector_army_order_bridge import encode_army_body_bridge
 from .collector_division_bridge import encode_division_body_bridge
 from .collector_frames import latest_verified_root_probe, snapshot_from_root_probe_frame
 from .collector_naval_combat_bridge import encode_naval_combat_body_bridge
@@ -55,6 +56,7 @@ def record_probes(
     country_object_bridge: Any = None,
     country_record_bridge: Any = None,
     division_body_bridge: Any = None,
+    army_body_bridge: Any = None,
     naval_combat_body_bridge: Any = None,
     map_control_state_roots: Optional[str] = None,
     map_control_province_bridge: Optional[str] = None,
@@ -101,6 +103,14 @@ def record_probes(
     division_body_bridge_rows = (
         len(encoded_division_body_bridge.split(";"))
         if encoded_division_body_bridge else 0
+    )
+    encoded_army_body_bridge = (
+        encode_army_body_bridge(army_body_bridge)
+        if army_body_bridge is not None else None
+    )
+    army_body_bridge_rows = (
+        len(encoded_army_body_bridge.split(";"))
+        if encoded_army_body_bridge else 0
     )
     encoded_naval_combat_body_bridge = (
         encode_naval_combat_body_bridge(naval_combat_body_bridge)
@@ -176,6 +186,7 @@ def record_probes(
                 country_object_bridge=encoded_country_object_bridge,
                 country_record_bridge=encoded_country_record_bridge,
                 division_body_bridge=encoded_division_body_bridge,
+                army_body_bridge=encoded_army_body_bridge,
                 naval_combat_body_bridge=encoded_naval_combat_body_bridge,
                 map_control_state_roots=map_control_state_roots,
                 map_control_province_bridge=map_control_province_bridge,
@@ -335,6 +346,8 @@ def record_probes(
             "country_record_bridge_rows": country_record_bridge_rows,
             "division_body_bridge_supplied": bool(encoded_division_body_bridge),
             "division_body_bridge_rows": division_body_bridge_rows,
+            "army_body_bridge_supplied": bool(encoded_army_body_bridge),
+            "army_body_bridge_rows": army_body_bridge_rows,
             "naval_combat_body_bridge_supplied": bool(
                 encoded_naval_combat_body_bridge),
             "naval_combat_body_bridge_rows": naval_combat_body_bridge_rows,
@@ -415,6 +428,7 @@ def _write_worker_control(
     country_object_bridge: Optional[str] = None,
     country_record_bridge: Optional[str] = None,
     division_body_bridge: Optional[str] = None,
+    army_body_bridge: Optional[str] = None,
     naval_combat_body_bridge: Optional[str] = None,
     map_control_state_roots: Optional[str] = None,
     map_control_province_bridge: Optional[str] = None,
@@ -444,6 +458,8 @@ def _write_worker_control(
         payload["country_record_bridge"] = country_record_bridge
     if division_body_bridge:
         payload["division_body_bridge"] = division_body_bridge
+    if army_body_bridge:
+        payload["army_body_bridge"] = army_body_bridge
     if naval_combat_body_bridge:
         payload["naval_combat_body_bridge"] = naval_combat_body_bridge
     if map_control_state_roots:

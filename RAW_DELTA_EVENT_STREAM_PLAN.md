@@ -366,17 +366,36 @@ Source candidates:
   - `read_orders_from_armies()`
 - `memory_reader/construction_orders_offsets.draft.json`
 
+Current DLL contract:
+
+- The Rust collector accepts an `army_body_bridge` control contract:
+  semicolon-separated `army_id:body_ptr` rows. The recorder producer
+  `live_capture.collector_army_order_bridge` is cache-first and requires
+  `--allow-army-cold-scan` before running the expensive army vtable sweep.
+- The worker revalidates every supplied `CArmy` body by vtable, type, and id
+  before reading `CArmy+0x98` active order pointers. It does not scan the heap in
+  the worker loop.
+- Durable raw frames use synthetic `army_order:<army_id>:<generation>` keys.
+  Order pointers stay internal and are used only for per-session continuity.
+- The first raw domain is `army_orders`: `army_id`, `generation`,
+  `slot_index`, `order_type`, nullable `target_states`, `target_state_count`,
+  and `target_status`. Type-5 target-state vectors up to the bounded inline cap
+  are exact; larger valid vectors are `target_status:"overflow"` with only the
+  count; non-type-5 geometry is `target_status:"unsupported"`.
+
 Cadence:
 
 - Orders are event/delta data, not 10 ms hot-loop data by default.
-- Start at 250-1000 ms while the user is issuing orders or when army/order
-  object vectors change; otherwise rely on hourly snapshots.
+- The current DLL stream samples at a 250 ms floor even when the worker cadence
+  is 10 ms for combat/movement.
 
 Events/deltas:
 
 - `army_order_added`
 - `army_order_removed`
-- `army_order_target_changed`
+- `army_order_updated`
+- Later semantic splits: `army_order_target_changed`,
+  `army_order_reordered`, `army_order_type_changed`.
 - `army_membership_changed`
 - `army_group_assignment_changed`
 - `fleet_task_force_assignment_changed`

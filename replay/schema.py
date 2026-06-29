@@ -127,6 +127,9 @@ DOMAINS = (
                              # battle.battle_plan_orders (NEW live-only list) + countries.*.
                              # diplomacy.opinion_modifiers (NEW live-only leaf). Order/modifier
                              # target geometry + token NAMES stay RESISTED (null), never invented.
+    "army_orders",           # Raw in-process collector battle-plan order stream. Emits
+                             # save-free per-army order deltas/events before later folding into
+                             # order_of_battle.battle_plan_orders.
     "decisions_market",      # LIVE active timed DECISIONS + global equipment-MARKET contracts
                              # (decisions_market_live, M) -> countries.*.decisions.timed_live
                              # (NEW live-only leaf) + the NEW top-level snap["market_live"]

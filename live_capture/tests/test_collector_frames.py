@@ -741,6 +741,138 @@ class TestCollectorFrames(unittest.TestCase):
         ):
             self.assertTrue(any(needle in p for p in problems), (needle, problems))
 
+    def test_raw_army_order_delta_frame_validates(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": None,
+                "after": {
+                    "order_key": "army_order:17:4",
+                    "army_id": 17,
+                    "generation": 4,
+                    "slot_index": 2,
+                    "order_type": 5,
+                    "target_states": [107, 108],
+                    "target_state_count": 2,
+                    "target_status": "exact",
+                },
+                "changed_fields": [
+                    "order_key",
+                    "army_id",
+                    "generation",
+                    "slot_index",
+                    "order_type",
+                    "target_states",
+                    "target_state_count",
+                    "target_status",
+                ],
+            },
+            domain="army_orders",
+            entity_key="army_order:17:4",
+            confidence="sampled",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_army_order_lifecycle_event_frame_validates(self):
+        frame = self._raw_frame(
+            "event",
+            {
+                "event_type": "army_order_added",
+                "key": "army_order:17:4",
+                "subject": "army_order",
+                "detail": {
+                    "order_key": "army_order:17:4",
+                    "army_id": 17,
+                    "generation": 4,
+                    "slot_index": 2,
+                    "order_type": 5,
+                    "target_states": [107, 108],
+                    "target_state_count": 2,
+                    "target_status": "exact",
+                    "changed_fields": [
+                        "order_key",
+                        "army_id",
+                        "generation",
+                        "slot_index",
+                        "order_type",
+                        "target_states",
+                        "target_state_count",
+                        "target_status",
+                    ],
+                },
+            },
+            domain="army_orders",
+            entity_key="army_order:17:4",
+            confidence="sampled",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_army_order_gap_delta_frame_validates(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": None,
+                "after": {
+                    "gap_key": "army_orders:gap:bridge_entry_invalid",
+                    "gap_kind": "bridge_entry_invalid",
+                    "status": "validation_failed",
+                },
+                "changed_fields": ["gap_key", "gap_kind", "status"],
+            },
+            domain="army_orders",
+            entity_key="army_orders:gap:bridge_entry_invalid",
+            confidence="gap",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_army_order_delta_rejects_raw_leakage_and_bad_rows(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": None,
+                "after": {
+                    "order_key": "army_order:18:4",
+                    "army_id": 18,
+                    "generation": True,
+                    "slot_index": 999,
+                    "order_type": 10001,
+                    "target_states": [107, 107, 0, 70000],
+                    "target_state_count": 2,
+                    "target_status": "measured",
+                    "order_addr": "0x1234",
+                },
+                "changed_fields": ["target_states", "body_addr"],
+            },
+            domain="army_orders",
+            entity_key="army_order:17:4",
+            confidence="sampled",
+        )
+
+        problems = validate_collector_frame(frame)
+
+        for needle in (
+            "payload contains raw pointer/tag-db diagnostic key",
+            "changed_fields[1] raw pointer/tag-db diagnostic key",
+            "after.order_addr unsupported",
+            "after.order_key != entity_key",
+            "after.army_id != entity_key",
+            "after.generation not nonnegative int|null in range",
+            "after.slot_index not nonnegative int|null in range",
+            "after.order_type not bounded int|null",
+            "after.target_states[1] duplicate state id",
+            "after.target_states[2] not positive state id",
+            "after.target_states[3] not positive state id",
+            "after.target_state_count != target_states length",
+            "after.target_status invalid",
+        ):
+            self.assertTrue(any(needle in p for p in problems), (needle, problems))
+
     def test_raw_naval_combat_delta_frame_validates(self):
         frame = self._raw_frame(
             "domain_delta",
