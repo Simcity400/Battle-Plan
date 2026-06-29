@@ -226,9 +226,15 @@ Bridge contract now implemented for the first land-combat slice:
   2026-06-29 live probe against the running vanilla game advanced two game hours
   with 406 sampled land-combat deltas, 406 lifecycle events, and no land-combat
   gap frames.
-- Remaining hardening before promotion to replay truth: speed-five live soak,
-  end/delete lifecycle validation across real battle endings, and timeline/app
-  ingestion for the `land_combats` raw stream.
+- Replay timeline promotion is now implemented for the lifecycle endpoints:
+  `land_combat_started` maps to canonical `combat_started`, and
+  `land_combat_ended` maps to canonical `combat_ended`. `land_combat_updated`
+  remains a raw frame until the canonical combat-tick/participant-delta schema is
+  widened.
+- Remaining hardening before this is replay-truth quality: speed-five live soak,
+  end/delete lifecycle validation across real battle endings, richer
+  participant/tick canonical events, and app ingestion for the `land_combats`
+  raw stream.
 
 Cadence:
 
@@ -542,10 +548,14 @@ identity:
 
 Merge entry point:
 
-- Keep `build_timeline(snapshots)` unchanged until the raw contract is proven.
-- Add a sibling helper, for example `build_timeline_with_raw_events(snapshots,
-  raw_events)`, that calls the existing snapshot diff path, normalizes raw
+- Keep `build_timeline(snapshots)` unchanged for snapshot-only callers.
+- Use the sibling helper `build_timeline_with_raw_events(snapshots,
+  raw_events)`, which calls the existing snapshot diff path, normalizes raw
   frames into schema events or gap markers, then applies one merge/dedupe pass.
+- Land-combat raw lifecycle endpoints are the first real collector-domain
+  promotion in this path: started/ended frames become canonical combat events,
+  update frames remain raw-only, and pointer-like diagnostics are rejected rather
+  than written into the replay timeline.
 - Raw events with `source="C"` and `confidence="exact"` supersede interval
   diffs only when their identity matches and their timestamp falls inside the
   diff interval.
@@ -555,8 +565,8 @@ Merge entry point:
 
 ## Bounded First Implementation Slice
 
-The first slice should avoid live reader porting and prove the contract end to
-end with synthetic frames:
+The first slice is implemented for the raw-frame contract and has now been
+widened to one live combat domain:
 
 1. Extend collector frame validation for typed `domain_delta`, `event`, and
    `gap` payloads.
@@ -569,8 +579,9 @@ end with synthetic frames:
    - exact raw province-control event superseding an interval diff;
    - explicit combat gap surfacing in the merged timeline;
    - malformed delta/event frames failing closed.
-5. Only after that, port one live domain: division movement deltas from pinned
-   division bodies.
+5. Port live domains incrementally. Division movement proved the raw delta path;
+   land combat now proves canonical lifecycle event promotion from a live DLL
+   stream.
 
 Suggested first patch set:
 

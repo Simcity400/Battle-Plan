@@ -43,7 +43,7 @@ _EVENT_DOMAIN = {
     "idea_lost": "economy",
     # ruling_party is sourced from country_snapshot (see _diff_government); the
     # event-domain MUST match the gate + the data source so confidence is computed
-    # against the right channel (Codex P1: was country_scalars -> a save-derived
+    # against the right channel (schema P1: was country_scalars -> a save-derived
     # govt change could be mislabeled memory-exact when live captured country_scalars).
     "government_changed": "country_snapshot",
     "tech_researched": "tech",
@@ -100,7 +100,7 @@ _EVENT_DOMAIN = {
 }
 
 
-# NO-FABRICATION GATE (Codex-verified 2026-06-27). The LIVE memory channel records
+# NO-FABRICATION GATE (schema-verified 2026-06-27). The LIVE memory channel records
 # DISTINCT provenance ids (live_capture/assembler.py): the `<canonical>_live` suffix
 # convention (tech_live/commanders_live/intel_live/focus_live/production_live/
 # diplomacy_live/projects_live/...) plus a few non-suffix ids (mio, oob_command), and a
@@ -208,7 +208,7 @@ def _confidence_for(domain: str, a: Dict[str, Any], b: Dict[str, Any]) -> str:
 
 
 def _source_for(domain: str, a: Dict[str, Any], b: Dict[str, Any]) -> str:
-    """Honest event source (Codex P2): a memory-exact diff is "M"; a diff that BOTH
+    """Honest event source (schema P2): a memory-exact diff is "M"; a diff that BOTH
     snapshots backed with the SAVE channel is "S" (it really IS save-sourced, not a
     generic derivation); everything else (mixed / pure-synthetic) is "D"."""
     if _domain_is_collector(a, domain) and _domain_is_collector(b, domain):
@@ -248,7 +248,7 @@ def diff_snapshots(a: Dict[str, Any], b: Dict[str, Any],
         if kw["confidence"] == "interval" and hi_a is not None:
             det = dict(det)
             # explicit interval range so the UI shows a range, not a point at b
-            # (Codex P3 #15). interval_start_hour kept for back-compat.
+            # (schema P3 #15). interval_start_hour kept for back-compat.
             det.setdefault("interval_start_hour", hi_a)
             det.setdefault("interval", {"start_hour": hi_a, "start_date": date_a,
                                         "end_hour": hi_b, "end_date": date_b})
@@ -260,7 +260,7 @@ def diff_snapshots(a: Dict[str, Any], b: Dict[str, Any],
         # No prior state: emit nothing (baseline). Real timelines start at pair 2.
         return []
 
-    # No-fabrication gate (Codex 2nd-pass P1): only diff a domain when BOTH snapshots
+    # No-fabrication gate (schema 2nd-pass P1): only diff a domain when BOTH snapshots
     # actually captured it. Otherwise "uncaptured" would masquerade as "everything
     # changed" (all states null->TAG, all divisions created/destroyed, tech lost, ...).
     if _both_captured(a, b, "state_ownership"):
@@ -270,7 +270,7 @@ def diff_snapshots(a: Dict[str, Any], b: Dict[str, Any],
         _diff_states(a, b, emit, do_owner=False, do_controller=True)
     if _both_captured(a, b, "province_control"):
         _diff_provinces(a, b, emit)
-    # Occupation governance is sourced from TWO domains with DISTINCT gates (Codex
+    # Occupation governance is sourced from TWO domains with DISTINCT gates (schema
     # P1): resistance/compliance come from state_detail; the occupation LAW comes
     # from occupation.json. Gate each on its OWN domain so a pair that captured only
     # state_detail (no occupation) never fabricates a law disappearance, and vice
@@ -310,14 +310,14 @@ def _both_captured(a: Dict[str, Any], b: Dict[str, Any], domain: str) -> bool:
 def _diff_states(a: Dict[str, Any], b: Dict[str, Any], emit,
                  *, do_owner: bool = True, do_controller: bool = True) -> None:
     sa, sb = a.get("states") or {}, b.get("states") or {}
-    # Union of keys so a state present in only one snapshot still diffs (Codex P1 #2).
+    # Union of keys so a state present in only one snapshot still diffs (schema P1 #2).
     for sid in set(sa) | set(sb):
         old = sa.get(sid) or {}
         new = sb.get(sid) or {}
         if do_owner:
             o_owner, n_owner = old.get("owner"), new.get("owner")
             if o_owner != n_owner and (o_owner is not None or n_owner is not None):
-                # subject = new owner, or (on TAG->null) the losing tag (Codex P2 #9)
+                # subject = new owner, or (on TAG->null) the losing tag (schema P2 #9)
                 emit("state_owner_change", key=sid, **{"from": o_owner}, to=n_owner,
                      subject=(n_owner or o_owner), object=o_owner)
         if do_controller:
@@ -342,7 +342,7 @@ def _diff_provinces(a: Dict[str, Any], b: Dict[str, Any], emit) -> None:
 # ---------------------------------------------------------------------------
 def _div_index(snap: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     # Key by full Clausewitz identity (id:type) so id reuse after destruction is a
-    # destroy+create, not a spurious move+retemplate (Codex P1 #3).
+    # destroy+create, not a spurious move+retemplate (schema P1 #3).
     out = {}
     for d in snap.get("divisions") or []:
         uid = schema.div_uid(d)
@@ -424,7 +424,7 @@ def _diff_divisions(a: Dict[str, Any], b: Dict[str, Any], emit) -> None:
                  subject=new.get("owner"),
                  detail={"from_state": old.get("state_id"),
                          "to_state": new.get("state_id")})
-        # template identity is also (id, type) (Codex 2nd-pass P2).
+        # template identity is also (id, type) (schema 2nd-pass P2).
         o_tpl = (old.get("template_id"), old.get("template_type"))
         n_tpl = (new.get("template_id"), new.get("template_type"))
         if o_tpl != n_tpl and (o_tpl[0] is not None or n_tpl[0] is not None):
@@ -444,7 +444,7 @@ def _diff_countries(a: Dict[str, Any], b: Dict[str, Any], emit,
                     milestone_steps: Dict[str, float]) -> None:
     ca, cb = a.get("countries") or {}, b.get("countries") or {}
     # Lifecycle: a country present in only one snapshot appeared / disappeared.
-    # Gate STRICTLY on provenance (Codex 2nd-pass P1): partial country maps built
+    # Gate STRICTLY on provenance (schema 2nd-pass P1): partial country maps built
     # from diplomacy/divisions must NOT trigger false created/removed. Only the
     # country_snapshot domain authoritatively lists every living country.
     if _both_captured(a, b, "country_snapshot"):
@@ -455,7 +455,7 @@ def _diff_countries(a: Dict[str, Any], b: Dict[str, Any], emit,
     # Per-domain sub-diffs, each gated on both snapshots capturing that domain.
     # Laws/ideas are sourced from economy.json; government (ruling_party) from
     # country_snapshot — gate them SEPARATELY so a snapshot pair that captured one
-    # but not the other can't fabricate events from empty defaults (Codex 3rd-pass).
+    # but not the other can't fabricate events from empty defaults (schema 3rd-pass).
     do_focus = _both_captured(a, b, "focus")
     do_laws_ideas = _both_captured(a, b, "economy")
     do_government = _both_captured(a, b, "country_snapshot")
@@ -497,7 +497,7 @@ def _diff_countries(a: Dict[str, Any], b: Dict[str, Any], emit,
         if do_market:
             _diff_market(tag, old, new, emit)
         if do_country_extra:
-            # ACE DEDUP (Codex-reviewed): within a single (a,b) diff, aces come from
+            # ACE DEDUP (schema-reviewed): within a single (a,b) diff, aces come from
             # exactly ONE source — abilities (id-keyed) when `do_abilities`, else
             # country_extra (name-keyed). `emit_aces=not do_abilities` guarantees the
             # two paths never BOTH emit ace_gained for the same pair, so no per-pair
@@ -576,7 +576,7 @@ def _diff_faction_autonomy(tag, old, new, emit) -> None:
     elif o_over and n_over:
         if o_over != n_over:
             # overlord switched (e.g. A -> B): freed from A, then created under B
-            # (Codex 2nd-pass P2 — was missed when only the level was compared).
+            # (schema 2nd-pass P2 — was missed when only the level was compared).
             emit("subject_freed", subject=tag, object=o_over,
                  **{"from": o_aut.get("level")})
             emit("subject_created", subject=tag, object=n_over, to=n_aut.get("level"),
@@ -598,7 +598,7 @@ def _diff_research(tag, old, new, emit) -> None:
             emit("tech_researched", subject=tag, key=name, to=lvl,
                  detail={"date": t.get("date")})
         elif lvl is not None and o_tech.get(name) is not None:
-            # only an INCREASE is "researched"; a decrease is a rollback (Codex P1 #4)
+            # only an INCREASE is "researched"; a decrease is a rollback (schema P1 #4)
             if lvl > o_tech[name]:
                 emit("tech_researched", subject=tag, key=name,
                      **{"from": o_tech[name]}, to=lvl, detail={"date": t.get("date")})
@@ -665,7 +665,7 @@ def _diff_production(tag, old, new, emit, milestone_steps: Dict[str, float]) -> 
         n_prod = _gross_by_archetype(
             (new.get("economy") or {}).get("_production_lines"))
         for arch, nv in n_prod.items():
-            # Old baseline (Codex P2, refined): if the OLD archetype had a line whose
+            # Old baseline (schema P2, refined): if the OLD archetype had a line whose
             # `produced` was UNMEASURED (None), we cannot baseline it at 0.0 -> skip
             # (no fabricated milestone). But an archetype GENUINELY ABSENT from a
             # measured old production set is a real 0 baseline (a new line that has
@@ -681,7 +681,7 @@ def _diff_production(tag, old, new, emit, milestone_steps: Dict[str, float]) -> 
 
 def _gross_by_archetype(lines: Any, *, with_unmeasured: bool = False):
     """Sum measured `produced` per archetype. A line with `produced=None` is
-    UNMEASURED, not zero (Codex P2): it is excluded from the gross sum so a later
+    UNMEASURED, not zero (schema P2): it is excluded from the gross sum so a later
     measured value does not diff against a fabricated 0.0. With ``with_unmeasured``,
     also return the SET of archetypes that had at least one unmeasured line, so the
     caller can distinguish "old line present but produced unknown" (skip) from
@@ -900,7 +900,7 @@ def _diff_occupation(a: Dict[str, Any], b: Dict[str, Any], emit,
                                  or o_occ.get("occupied_country_tag")),
                          **{"from": ov}, to=nv,
                          detail={"from_band": ob, "to_band": nb})
-        # occupation law (occupation-domain-gated ONLY — Codex P1): a state_detail-
+        # occupation law (occupation-domain-gated ONLY — schema P1): a state_detail-
         # only pair must NOT diff the law (it is unmeasured there, so a measured-vs-
         # null comparison would fabricate a law disappearance).
         if do_law:
@@ -1165,7 +1165,7 @@ def _diff_projects(tag, old, new, emit) -> None:
     facility_built / facility_dismantled: a facility id appears / disappears (or
     dismantle_in_progress flips true). Diffs token SETS + flags, never raw floats.
 
-    DISTINCT from the existing `project_completed` (Codex-reviewed): that event is a
+    DISTINCT from the existing `project_completed` (schema-reviewed): that event is a
     COUNT-delta from country_extra.special_projects.projects_completed (sourced from a
     different parser, fired in _diff_country_extra) — a coarse "N more finished" signal.
     `project_finished` is a per-TOKEN event naming WHICH project finished. They are
@@ -1335,7 +1335,7 @@ def _event_sort_key(ev: Dict[str, Any]) -> Tuple:
 
 
 # A distinct sentinel for a genuinely-absent/None field so it can never collide
-# with the literal STRING "None" once stringified (Codex: `str(None) == "None"` let
+# with the literal STRING "None" once stringified (schema: `str(None) == "None"` let
 # a marker carrying the literal "None" supersede a real `from=None` diff).
 _NONE = object()
 
@@ -1350,14 +1350,14 @@ def _dedupe_atom(v: Any) -> Any:
 def _dedupe_key(ev: Dict[str, Any]) -> Tuple:
     # Include 'from' so an A->B flip and a B->A flip are NOT collapsed (P2 #8), and
     # 'object' so e.g. two subject_created with different overlords don't collide
-    # (Codex 2nd-pass P2). None != the literal "None" (Codex: _dedupe_atom sentinel).
+    # (schema 2nd-pass P2). None != the literal "None" (schema: _dedupe_atom sentinel).
     return (ev.get("type"), _dedupe_atom(ev.get("key")), _dedupe_atom(ev.get("from")),
             _dedupe_atom(ev.get("to")), _dedupe_atom(ev.get("subject")),
             _dedupe_atom(ev.get("object")))
 
 
 # Paired inverse event TYPES where the DIRECTION of the change lives in the type name,
-# not in from/to (Codex-verified 2026-06-27). The two members of each pair describe the
+# not in from/to (schema-verified 2026-06-27). The two members of each pair describe the
 # SAME underlying identity in opposite directions, so for the marker-oscillation
 # "last marker wins" logic they must share ONE identity family — otherwise a later
 # reversing marker of the OPPOSITE type is invisible to the diff and the (now-reversed)
@@ -1379,7 +1379,7 @@ _DIRECTIONAL_SUBJECT_OBJECT = frozenset({
 
 
 def _dedupe_identity(ev: Dict[str, Any]) -> Tuple:
-    """Direction-AGNOSTIC identity of the changing thing (Codex-verified). Used to group
+    """Direction-AGNOSTIC identity of the changing thing (schema-verified). Used to group
     a diff with the markers that touch the SAME identity so the LAST (net) marker decides
     supersession. Strips the value/direction (from/to is never part of identity); folds
     paired inverse TYPES into one family; and drops subject/object for the owner/controller
@@ -1408,7 +1408,7 @@ def build_timeline(snapshots: List[Dict[str, Any]],
     )
     # Merge snapshots sharing the same hour_index (e.g. a memory snapshot + a save
     # snapshot at the same tick carrying complementary domains) so we don't diff
-    # two partial views of one instant into fabricated transitions (Codex P3 #12).
+    # two partial views of one instant into fabricated transitions (schema P3 #12).
     snaps = _coalesce_same_hour(snaps)
     all_events: List[Dict[str, Any]] = []
 
@@ -1476,8 +1476,9 @@ def _raw_payload(frame: Dict[str, Any]) -> Dict[str, Any]:
 
 def _normalize_raw_event(frame: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     payload = _raw_payload(frame)
-    event_type = payload.get("event_type") or frame.get("event_type")
-    if event_type not in schema.EVENT_TYPES:
+    raw_event_type = payload.get("event_type") or frame.get("event_type")
+    event_type = _canonical_raw_event_type(frame, payload, raw_event_type)
+    if event_type is None or event_type not in schema.EVENT_TYPES:
         return None
 
     raw_confidence = frame.get("confidence") or payload.get("confidence")
@@ -1489,6 +1490,10 @@ def _normalize_raw_event(frame: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     detail = payload.get("detail") if isinstance(payload.get("detail"), dict) else {}
     detail = dict(detail)
+    if raw_event_type != event_type and _contains_forbidden_raw_key(detail):
+        return None
+    if raw_event_type != event_type:
+        detail.setdefault("raw_event_type", raw_event_type)
     if raw_confidence is not None and raw_confidence not in schema.CONFIDENCE_LEVELS:
         detail.setdefault("raw_confidence", raw_confidence)
     raw_detail = {field: frame[field] for field in _RAW_METADATA_FIELDS
@@ -1520,6 +1525,26 @@ def _normalize_raw_event(frame: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     )
     _copy_raw_metadata(frame, ev)
     return ev
+
+
+def _canonical_raw_event_type(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+    raw_event_type: Any,
+) -> Optional[str]:
+    if raw_event_type in schema.EVENT_TYPES:
+        return raw_event_type
+    if frame.get("domain") != "land_combats" and payload.get("domain") != "land_combats":
+        return None
+    if raw_event_type == "land_combat_started":
+        return "combat_started"
+    if raw_event_type == "land_combat_ended":
+        return "combat_ended"
+    return None
+
+
+def _contains_forbidden_raw_key(value: Any) -> bool:
+    return schema._contains_forbidden_raw_key(value)
 
 
 def _normalize_raw_gap(frame: Dict[str, Any]) -> Dict[str, Any]:
@@ -1630,7 +1655,7 @@ def _raw_timeline_sort_key(ev: Dict[str, Any]) -> Tuple:
 
 def _merge_dedupe(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Sort, then drop a diff-derived event when an exact marker reports the SAME net
-    transition over the diff's window. The dedupe window is INTERVAL-AWARE (Codex P2 #8):
+    transition over the diff's window. The dedupe window is INTERVAL-AWARE (schema P2 #8):
 
       * for an interval diff, the window is (interval_start_hour, hour_index] — exactly
         the span the change is known to have occurred in (handles monthly saves where
@@ -1638,7 +1663,7 @@ def _merge_dedupe(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
       * for an exact (memory) diff, only a marker at the same tick supersedes it
         (no fuzzy window — hourly memory must not eat a real repeated flip).
 
-    NET-MARKER RULE (Codex-verified 2026-06-27, fixes the oscillation drop): a diff is
+    NET-MARKER RULE (schema-verified 2026-06-27, fixes the oscillation drop): a diff is
     superseded only when the LAST marker for that diff's IDENTITY in the window agrees
     with the diff's full (type,from,to,subject,object) key. Identity is direction-
     agnostic (`_dedupe_identity`: strips from/to, folds paired inverse types into one
@@ -1709,7 +1734,7 @@ def _coalesce_same_hour(snaps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def _is_empty(v: Any) -> bool:
     """A value that carries no information: None, or an empty list/dict (the
     no-fabrication skeleton default). Such a value must NOT overwrite earlier real
-    data during a same-hour merge (Codex 3rd-pass P1 — list/dict defaults were
+    data during a same-hour merge (schema 3rd-pass P1 — list/dict defaults were
     wiping ideas_all/focus.completed/equipment)."""
     return v is None or v == [] or v == {}
 
@@ -1742,7 +1767,7 @@ def _merge_two_snapshots(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]
     # Top-level world catalogs (designs / order_of_battle + Tier-1 EXTRACT world
     # domains): null-aware deep merge so a same-hour partial snapshot (e.g. one
     # carrying only designs, the other only world) doesn't drop the sibling's data
-    # while provenance still unions both domains (Codex integ-review finding 1).
+    # while provenance still unions both domains (schema integration review finding 1).
     # Empty lists/dicts don't clobber real data.
     for key in ("designs", "order_of_battle", "strategic_air",
                 "strategic_operatives", "raids", "world_events", "world"):
@@ -1796,7 +1821,7 @@ def _merge_by_key(la: List[Dict[str, Any]], lb: List[Dict[str, Any]], key: str
 def _merge_provenance(pa: Any, pb: Any) -> Dict[str, Any]:
     """Union the captured domains per channel, but DOWNGRADE a domain to save when
     it was captured by save in EITHER input — a merged value that save touched must
-    not be reported as memory-exact (Codex 2nd-pass P1)."""
+    not be reported as memory-exact (schema 2nd-pass P1)."""
     pa, pb = pa or {}, pb or {}
     out: Dict[str, Any] = {"notes": (pa.get("notes") or []) + (pb.get("notes") or [])}
     save_domains = set()

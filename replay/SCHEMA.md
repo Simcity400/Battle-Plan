@@ -913,8 +913,12 @@ Country extra (from `country_extra` domain):
   `detail.completed_delta`. Emitted on an INCREASE only (a rollback does not fire).
 
 Combat (Tier C, inferred):
-- `combat_started` — `key`=combat_id; `confidence`="inferred".
-- `combat_ended` — `key`=combat_id; `detail`=casualties/outcome; `confidence`="inferred".
+- `combat_started` — `key`=combat identity; `confidence`="inferred". Live
+  `land_combat_started` raw collector frames are promoted into this event when
+  their detail is free of pointer-like diagnostics.
+- `combat_ended` — `key`=combat identity; `detail`=casualties/outcome when
+  available; `confidence`="inferred". Live `land_combat_ended` raw collector
+  frames are promoted into this event.
 
 ### 9.3 Ordering & dedupe
 

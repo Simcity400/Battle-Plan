@@ -43,6 +43,41 @@ def _types(events):
     return [e["type"] for e in events]
 
 
+def _raw_land_combat_event(event_type, *, sequence, detail_extra=None):
+    detail = {
+        "combat_key": "land_combat:7:0",
+        "combat_id": 7,
+        "generation": 0,
+        "location": 1234,
+        "day": 3,
+        "duration": 3,
+        "attacker_divisions": [100, 101],
+        "defender_divisions": [200],
+        "attacker_status": "exact",
+        "defender_status": "exact",
+        "changed_fields": ["combat_key"],
+    }
+    if detail_extra:
+        detail.update(detail_extra)
+    return {
+        "type": "event",
+        "source": "C",
+        "confidence": "sampled",
+        "domain": "land_combats",
+        "entity_key": "land_combat:7:0",
+        "hour_index": schema.date_to_hour_index("1940.1.1.1"),
+        "date": "1940.1.1.1",
+        "tick_ms": 20,
+        "sequence": sequence,
+        "payload": {
+            "event_type": event_type,
+            "key": "land_combat:7:0",
+            "subject": "land_combat",
+            "detail": detail,
+        },
+    }
+
+
 class TestStateProvinceEvents(unittest.TestCase):
     def test_owner_and_controller_change(self):
         a = _snap("1940.1.1.0"); b = _snap("1940.1.2.0")
@@ -266,7 +301,7 @@ class TestConfidenceAndMerge(unittest.TestCase):
         self.assertEqual(his, sorted(his))
 
     def test_marker_with_literal_none_string_does_not_eat_real_diff(self):
-        # BUG (Codex): _dedupe_key used str(field), so a diff event with a real
+        # BUG (schema): _dedupe_key used str(field), so a diff event with a real
         # `from=None` (owner null -> GER) collided with a marker carrying the literal
         # STRING "None" -> the marker wrongly superseded a genuinely-distinct diff.
         # None and the literal "None" must NEVER share a dedupe identity.
@@ -404,9 +439,83 @@ class TestRawEventTimelineMerge(unittest.TestCase):
         self.assertEqual(gaps[0]["start_sequence"], 4)
         self.assertEqual(gaps[0]["end_sequence"], 8)
 
+    def test_raw_land_combat_start_end_map_to_canonical_combat_events(self):
+        s1 = _snap("1940.1.1.0")
+        s2 = _snap("1940.1.1.3")
+        raw = [
+            _raw_land_combat_event("land_combat_started", sequence=10),
+            _raw_land_combat_event("land_combat_updated", sequence=11),
+            _raw_land_combat_event(
+                "land_combat_ended",
+                sequence=12,
+                detail_extra={"end_reason": "resolved"},
+            ),
+        ]
+
+        tl = diff_engine.build_timeline_with_raw_events([s1, s2], raw)
+        combat_events = [e for e in tl if e["type"].startswith("combat_")]
+
+        self.assertEqual([e["type"] for e in combat_events],
+                         ["combat_started", "combat_ended"])
+        self.assertEqual(combat_events[0]["key"], "land_combat:7:0")
+        self.assertEqual(combat_events[0]["source"], "C")
+        self.assertEqual(combat_events[0]["confidence"], "inferred")
+        self.assertEqual(
+            combat_events[0]["detail"]["raw_event_type"],
+            "land_combat_started",
+        )
+        self.assertEqual(combat_events[0]["detail"]["combat_id"], 7)
+        self.assertEqual(combat_events[1]["detail"]["raw_event_type"],
+                         "land_combat_ended")
+        self.assertEqual(combat_events[1]["detail"]["end_reason"], "resolved")
+        for event in combat_events:
+            self.assertEqual(schema.validate_event(event), [])
+
+    def test_raw_land_combat_gap_frame_is_retained(self):
+        s1 = _snap("1940.1.1.0")
+        s2 = _snap("1940.1.1.3")
+        raw = [{
+            "type": "gap",
+            "source": "C",
+            "confidence": "gap",
+            "domain": "land_combats",
+            "entity_key": "land_combats:gap:manager_read_failed",
+            "hour_index": s1["hour_index"] + 1,
+            "date": "1940.1.1.1",
+            "tick_ms": 30,
+            "sequence": 13,
+            "payload": {
+                "gap_kind": "manager_read_failed",
+                "domain": "land_combats",
+                "reason": "validation_failed",
+            },
+        }]
+
+        tl = diff_engine.build_timeline_with_raw_events([s1, s2], raw)
+        gaps = [e for e in tl if e["type"] == "gap"]
+
+        self.assertEqual(len(gaps), 1)
+        self.assertEqual(gaps[0]["domain"], "land_combats")
+        self.assertEqual(gaps[0]["gap_kind"], "manager_read_failed")
+        self.assertEqual(gaps[0]["entity_key"],
+                         "land_combats:gap:manager_read_failed")
+
+    def test_raw_land_combat_pointer_diagnostic_is_rejected(self):
+        s1 = _snap("1940.1.1.0")
+        s2 = _snap("1940.1.1.3")
+        raw = [_raw_land_combat_event(
+            "land_combat_started",
+            sequence=14,
+            detail_extra={"body_ptr": "0xDEADBEEF"},
+        )]
+
+        tl = diff_engine.build_timeline_with_raw_events([s1, s2], raw)
+
+        self.assertEqual([e for e in tl if e["type"] == "combat_started"], [])
+
 
 class TestLiveAliasGating(unittest.TestCase):
-    """NO-FABRICATION gate (Codex-verified): a `<domain>_live` channel may satisfy a
+    """NO-FABRICATION gate (schema-verified): a `<domain>_live` channel may satisfy a
     save-shaped canonical gate ONLY when it actually writes that reader's save-shaped
     leaves. The live channels write DIFFERENT leaves than the save-shaped diff readers
     consume (tech_live -> counts not technologies[]; diplomacy_live -> at_war[] not

@@ -625,8 +625,10 @@ Tasks:
 
 - Use the live land-combat manager stream as the template, then add naval and
   air active fixtures.
-- Soak land combat at speed five and promote the raw stream into replay
-  timeline/app ingestion.
+- Continue speed-five land-combat soak. Canonical replay timeline promotion now
+  exists for `land_combat_started` -> `combat_started` and
+  `land_combat_ended` -> `combat_ended`; richer tick/participant deltas and app
+  ingestion are still open.
 - Lifecycle events for born, participant/age update, generation split, and ended
   are now emitted; damage update remains derived from division strength/org
   deltas joined to combat participants.
