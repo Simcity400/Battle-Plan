@@ -239,7 +239,11 @@ Scheduled special projects:
 - the 2026-06-29 pid 43412 no-cold acceptance proof hit
   `special_projects_cache`, advanced 12 game hours, verified replay output,
   emitted 12 scheduled `projects_live` frames, and kept worker-poll frames free
-  of `special_projects` payloads;
+  of `special_projects` payloads. A current-game rerun reused the scoped
+  `_preflight_cache` from the same `out-root`, hit `special_projects_cache` in
+  0.375s, advanced 12 game hours in 38.969 wall seconds, verified replay output,
+  supplied 21548 bridge rows, emitted 14 scheduled `projects_live` frames, and
+  kept worker-poll frames free of `special_projects` payloads;
 - worker-poll frames stay light and must not carry `special_projects`.
 
 Scheduled country fuel:

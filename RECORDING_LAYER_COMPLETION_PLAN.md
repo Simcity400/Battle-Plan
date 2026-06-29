@@ -1452,7 +1452,18 @@ rows, and 0 measured scientist rows across the scheduled snapshots in that
 active game state. This segment is therefore live-verified at hourly-or-better
 cadence only for cache-backed, no-cold recorder runs; any cache miss or disabled
 bridge reverts `projects_live` to blocked/unverified until a fresh bootstrap is
-rerun and followed by another no-cold proof.
+rerun and followed by another no-cold proof. A current-game rerun refreshed that
+proof after a cache miss: the cold bootstrap
+`replay/snapshots/_collector_session_project_roots_bootstrap/20260629T203510Z_pid43412`
+resolved 21,549 bridge rows in 81.859s, and the no-cold acceptance rerun
+`replay/snapshots/_collector_session_project_roots_bootstrap/20260629T203922Z_pid43412`
+reused the same `out-root` cache with `status = resolved`,
+`source = special_projects_cache`, `cache.status = hit`, `row_count = 21548`,
+and `elapsed_s = 0.375`. The gate passed after 12 game hours in 38.969 wall
+seconds with replay verification, 14 scheduled frames each for `focus_live`,
+`decisions_live`, and `projects_live`, 4956 focus country rows, 4956 decision
+country rows, 392 facility rows, 392 worked-project rows, 0 scientist rows, and
+zero heavy/project payloads on worker-poll frames.
 
 ### Phase 8: Diplomacy, Intel, Market, Logistics, Weather
 

@@ -263,11 +263,19 @@ only executable scaffolding. The segment is live-verified only after
 passes on that run's `session_manifest.json`. If the special-project cache is
 missing, first run a cache-populating diagnostic with
 `--preflight-special-projects --allow-special-projects-cold-scan`, then rerun
-the acceptance proof without the cold-scan flag. The 2026-06-29 pid 43412 proof
-used a no-cold `special_projects_cache` bridge hit in 0.391s, advanced 12 game
-hours, stored 13 snapshots, verified replay output, emitted 12 scheduled frames
-each for `focus_live`, `decisions_live`, and `projects_live`, and kept heavy
-project payloads off worker-poll frames.
+the acceptance proof without the cold-scan flag using the same `out-root` so the
+scoped `_preflight_cache` is reused. The 2026-06-29 pid 43412 proof used a
+no-cold `special_projects_cache` bridge hit in 0.391s, advanced 12 game hours,
+stored 13 snapshots, verified replay output, emitted 12 scheduled frames each
+for `focus_live`, `decisions_live`, and `projects_live`, and kept heavy project
+payloads off worker-poll frames. A current-game rerun
+`replay/snapshots/_collector_session_project_roots_bootstrap/20260629T203922Z_pid43412`
+used a no-cold cache hit in 0.375s, advanced 12 game hours in 38.969 wall
+seconds, verified replay output, supplied 21548 bridge rows, emitted 14
+scheduled frames each for `focus_live`, `decisions_live`, and `projects_live`,
+folded 4956 focus country rows, 4956 decision country rows, 392 facility rows,
+392 worked-project rows, and 0 scientist rows, and kept worker polls free of
+heavy/project payloads.
 
 For land-combat lifecycle acceptance, require raw `land_combats` plus
 `land_combat_started`, `land_combat_updated`, and `land_combat_ended` events on
