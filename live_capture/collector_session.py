@@ -357,10 +357,13 @@ class CollectorFrameSession:
 
 def _empty_research_live_progress_stats() -> Dict[str, Any]:
     return {
+        "live_progress_frames": 0,
+        "live_progress_rows": 0,
         "speed_frames": 0,
         "speed_rows": 0,
         "eta_frames": 0,
         "eta_rows": 0,
+        "max_live_progress_rows_per_frame": 0,
         "max_speed_rows_per_frame": 0,
         "max_eta_rows_per_frame": 0,
         "max_points_factor_milli": 0,
@@ -371,9 +374,20 @@ def _merge_research_live_progress_stats(
     target: Dict[str, Any],
     source: Dict[str, Any],
 ) -> None:
-    for key in ("speed_frames", "speed_rows", "eta_frames", "eta_rows"):
+    for key in (
+        "live_progress_frames",
+        "live_progress_rows",
+        "speed_frames",
+        "speed_rows",
+        "eta_frames",
+        "eta_rows",
+    ):
         target[key] = int(target.get(key) or 0) + int(source.get(key) or 0)
-    for key in ("max_speed_rows_per_frame", "max_eta_rows_per_frame"):
+    for key in (
+        "max_live_progress_rows_per_frame",
+        "max_speed_rows_per_frame",
+        "max_eta_rows_per_frame",
+    ):
         target[key] = max(int(target.get(key) or 0), int(source.get(key) or 0))
     target["max_points_factor_milli"] = max(
         int(target.get("max_points_factor_milli") or 0),
@@ -418,7 +432,7 @@ def _derive_research_live_points_factor(
             if key is None:
                 continue
             previous_progress = previous_by_key.get(key)
-            current_progress = _finite_float(slot.get("progress_units"))
+            current_progress = _research_live_slot_progress(slot)
             if previous_progress is None or current_progress is None:
                 continue
             delta = current_progress - previous_progress
@@ -451,6 +465,7 @@ def _attach_research_live_progress(
 
 def _snapshot_research_live_progress_stats(snap: Dict[str, Any]) -> Dict[str, Any]:
     stats = _empty_research_live_progress_stats()
+    live_progress_rows = 0
     speed_rows = 0
     eta_rows = 0
     max_points_factor = 0.0
@@ -469,6 +484,8 @@ def _snapshot_research_live_progress_stats(snap: Dict[str, Any]) -> Dict[str, An
         for slot in slots:
             if not isinstance(slot, dict):
                 continue
+            if _finite_float(slot.get("live_progress_units")) is not None:
+                live_progress_rows += 1
             if slot.get("points_factor_basis") != RESEARCH_LIVE_POINTS_FACTOR_BASIS:
                 continue
             points_factor = _finite_float(slot.get("points_factor"))
@@ -479,6 +496,10 @@ def _snapshot_research_live_progress_stats(snap: Dict[str, Any]) -> Dict[str, An
             eta_days = slot.get("eta_days")
             if isinstance(eta_days, int) and not isinstance(eta_days, bool):
                 eta_rows += 1
+    if live_progress_rows:
+        stats["live_progress_frames"] = 1
+        stats["live_progress_rows"] = live_progress_rows
+        stats["max_live_progress_rows_per_frame"] = live_progress_rows
     if speed_rows:
         stats["speed_frames"] = 1
         stats["speed_rows"] = speed_rows
@@ -512,7 +533,7 @@ def _research_slots_by_tag_and_key(
             if not isinstance(slot, dict):
                 continue
             key = _research_slot_delta_key(slot)
-            progress = _finite_float(slot.get("progress_units"))
+            progress = _research_live_slot_progress(slot)
             if key is not None and progress is not None:
                 by_key[key] = progress
         if by_key:
@@ -530,6 +551,13 @@ def _research_slot_delta_key(
     if slot_index is None or handle is None or def_index is None:
         return None
     return (slot_index, handle, def_index)
+
+
+def _research_live_slot_progress(slot: Dict[str, Any]) -> Optional[float]:
+    progress = _finite_float(slot.get("live_progress_units"))
+    if progress is not None:
+        return progress
+    return _finite_float(slot.get("progress_units"))
 
 
 def _snapshot_hour_index(snap: Dict[str, Any]) -> Optional[int]:
@@ -1317,6 +1345,11 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     country_rows_with_research_named_slots = 0
     max_research_named_slot_rows_per_frame = 0
     max_research_named_slot_rows_per_country = 0
+    research_live_progress_slot_frames = 0
+    research_live_progress_slot_rows = 0
+    country_rows_with_research_live_progress_slots = 0
+    max_research_live_progress_rows_per_frame = 0
+    max_research_live_progress_rows_per_country = 0
     frames_with_special_projects_payloads = 0
     special_project_facility_rows = 0
     special_project_rows = 0
@@ -1535,6 +1568,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         focus_rows_in_frame = 0
         research_rows_in_frame = 0
         research_named_rows_in_frame = 0
+        research_live_progress_rows_in_frame = 0
         decisions_rows_in_frame = 0
         diplomacy_rows_in_frame = 0
         diplomacy_faction_groups_in_frame: set[int] = set()
@@ -1683,18 +1717,29 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
                                 len(active_research),
                             )
                             named_rows = 0
+                            live_progress_rows = 0
                             for slot in active_research:
                                 if not isinstance(slot, dict):
                                     continue
                                 tech_name = slot.get("tech_name")
                                 if isinstance(tech_name, str) and tech_name:
                                     named_rows += 1
+                                if _finite_float(slot.get("live_progress_units")) is not None:
+                                    live_progress_rows += 1
                             if named_rows:
                                 country_rows_with_research_named_slots += 1
                                 research_named_rows_in_frame += named_rows
                                 max_research_named_slot_rows_per_country = max(
                                     max_research_named_slot_rows_per_country,
                                     named_rows,
+                                )
+                            if live_progress_rows:
+                                country_rows_with_research_live_progress_slots += 1
+                                research_live_progress_rows_in_frame += (
+                                    live_progress_rows)
+                                max_research_live_progress_rows_per_country = max(
+                                    max_research_live_progress_rows_per_country,
+                                    live_progress_rows,
                                 )
                 decisions = row.get("decisions")
                 if decisions is not None:
@@ -1793,6 +1838,13 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
             max_research_named_slot_rows_per_frame = max(
                 max_research_named_slot_rows_per_frame,
                 research_named_rows_in_frame,
+            )
+        if research_live_progress_rows_in_frame:
+            research_live_progress_slot_frames += 1
+            research_live_progress_slot_rows += research_live_progress_rows_in_frame
+            max_research_live_progress_rows_per_frame = max(
+                max_research_live_progress_rows_per_frame,
+                research_live_progress_rows_in_frame,
             )
         if decisions_rows_in_frame:
             frames_with_decisions_payloads += 1
@@ -2043,6 +2095,15 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
             max_research_named_slot_rows_per_frame),
         "max_research_named_slot_rows_per_country": (
             max_research_named_slot_rows_per_country),
+        "research_live_progress_slot_frames": (
+            research_live_progress_slot_frames),
+        "research_live_progress_slot_rows": research_live_progress_slot_rows,
+        "country_rows_with_research_live_progress_slots": (
+            country_rows_with_research_live_progress_slots),
+        "max_research_live_progress_rows_per_frame": (
+            max_research_live_progress_rows_per_frame),
+        "max_research_live_progress_rows_per_country": (
+            max_research_live_progress_rows_per_country),
         "tech_on_lightweight_frames": tech_on_lightweight_frames,
         "frames_with_special_projects_payloads": (
             frames_with_special_projects_payloads),

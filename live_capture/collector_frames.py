@@ -4495,6 +4495,8 @@ def _validate_country_research_active_rows(tag: str, value: Any) -> List[str]:
         "progress_raw",
         "tech_name",
         "progress_units",
+        "live_progress_raw",
+        "live_progress_units",
     }
     for idx, item in enumerate(value):
         if not isinstance(item, dict):
@@ -4519,7 +4521,12 @@ def _validate_country_research_active_rows(tag: str, value: Any) -> List[str]:
                 f"collector frame country {tag!r}.research."
                 f"active_research[{idx}].slot_index not int in range|null"
             )
-        for key in ("tech_handle_raw", "tech_def_index_raw", "progress_raw"):
+        for key in (
+            "tech_handle_raw",
+            "tech_def_index_raw",
+            "progress_raw",
+            "live_progress_raw",
+        ):
             value_raw = item.get(key)
             if value_raw is not None and not _valid_bounded_int(
                 value_raw,
@@ -4544,6 +4551,16 @@ def _validate_country_research_active_rows(tag: str, value: Any) -> List[str]:
             problems.append(
                 f"collector frame country {tag!r}.research."
                 f"active_research[{idx}].progress_units not finite number in range|null"
+            )
+        live_progress_units = item.get("live_progress_units")
+        if live_progress_units is not None and not (
+            _is_finite_number(live_progress_units)
+            and 0.0 <= float(live_progress_units)
+            <= COUNTRY_RESEARCH_PROGRESS_UNITS_MAX
+        ):
+            problems.append(
+                f"collector frame country {tag!r}.research."
+                f"active_research[{idx}].live_progress_units not finite number in range|null"
             )
     return problems
 
@@ -5723,7 +5740,12 @@ def _clean_country_research_active_rows(value: Any) -> Optional[List[Dict[str, A
             ):
                 return None
             clean["slot_index"] = slot_index
-        for key in ("tech_handle_raw", "tech_def_index_raw", "progress_raw"):
+        for key in (
+            "tech_handle_raw",
+            "tech_def_index_raw",
+            "progress_raw",
+            "live_progress_raw",
+        ):
             raw_value = item.get(key)
             if raw_value is None:
                 continue
@@ -5747,6 +5769,15 @@ def _clean_country_research_active_rows(value: Any) -> Optional[List[Dict[str, A
             ):
                 return None
             clean["progress_units"] = float(progress_units)
+        live_progress_units = item.get("live_progress_units")
+        if live_progress_units is not None:
+            if not (
+                _is_finite_number(live_progress_units)
+                and 0.0 <= float(live_progress_units)
+                <= COUNTRY_RESEARCH_PROGRESS_UNITS_MAX
+            ):
+                return None
+            clean["live_progress_units"] = float(live_progress_units)
         out.append(clean)
     return out
 

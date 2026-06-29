@@ -385,7 +385,8 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
     # fold onto the SAME save leaves (live-first; protected from save overwrite).
     # active_research goes to a DISTINCT leaf research.in_progress_live (raw-handle
     # shape) so it never mixes with the save-shaped research.in_progress (schema).
-    # A measured 0 is informative and kept; tech NAMES + progress SCALE stay null. ---
+    # A measured 0 is informative and kept; tech names and live progress fields
+    # pass through only when the collector measured them. ---
     tl = captured("tech_live")
     if tl is not None:
         for tag, rec in (tl.get("countries") or {}).items():

@@ -220,14 +220,17 @@ Implemented in the current bridge:
   Python adapter folds the values into `countries.*.research.tech_count`,
   `.research_slots`, and `.in_progress_live`. Tech-token resolution is now
   proven through the cache-first live tech-definition bridge: the
-  `replay/snapshots/_collector_session_research_name_gate/20260629T175846Z_pid43412`
-  proof advanced 36 game hours in 49.125 wall seconds, used a no-cold cache hit
-  for 552 tech definitions, emitted 37 scheduled `tech_live` frames, captured
-  15384 named active research-slot rows, verified replay output, and kept
-  research payloads off worker polls. Progress percentage, ETA, and live
-  research speed remain separate gated layers; the same run showed
-  `progress_units` staying flat across stored named slots, so that field is not
-  yet accepted as moving research progress;
+  `replay/snapshots/_collector_session_research_name_gate/20260629T184728Z_pid43412`
+  proof advanced 36 game hours in 51.219 wall seconds, used a no-cold cache hit
+  for the tech-definition bridge, emitted 37 scheduled `tech_live` frames,
+  captured 15609 named active research-slot rows, captured 15609
+  `CTechnology+0x198` live progress rows, verified replay output, and kept
+  research payloads off worker polls. The older `progress_units` field remains
+  source-badged to `CResearchSlot+0x38` and is not accepted as moving progress;
+  moving progress now comes from `live_progress_raw/live_progress_units`
+  (`CResearchSlot+0x18 -> CTechnology+0x198`). The same proof produced 15187
+  persisted live-progress rows and 340 derived ETA rows after a daily progress
+  movement, while still sampling at hourly scheduled cadence;
 - collector-frame adapter contract for `state_ownership`, `state_control`, and
   `province_control`, including TAG validation and session row-count summaries;
 - static DLL map-control path through `CGameState+0x2B0` `CProvince*` rows:

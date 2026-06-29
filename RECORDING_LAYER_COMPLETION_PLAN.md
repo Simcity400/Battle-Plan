@@ -1102,17 +1102,19 @@ validation and adapter folding into `countries.*.research.tech_count` and
 `.research_slots`. It also emits raw active-research rows from the bounded
 `CTechnologyStatus+0xA0` `CResearchSlot*` vector and folds them into
 `countries.*.research.in_progress_live`. Rows now carry
-`progress_units = progress_raw / 1000`, and `tech_name` when the
-cache-first `tech_def_filter` preflight supplies a validated live
-tech-definition handle map. Live proof
-`replay/snapshots/_collector_session_research_name_gate/20260629T175846Z_pid43412`
-advanced 36 game hours in 49.125 wall seconds with a no-cold tech-definition
-cache hit, emitted 37 scheduled `tech_live` frames, captured 15384 named active
-research-slot rows with up to 416 named rows per frame, verified replay output,
-and kept research payloads off worker-poll frames. Progress percentage, ETA,
-and live research speed remain open gated layers: the same 36-hour proof kept
-`progress_units` flat across stored named slots, so the current field is not yet
-accepted as moving research progress.
+`progress_units = progress_raw / 1000`, moving
+`live_progress_raw/live_progress_units` from
+`CResearchSlot+0x18 -> CTechnology+0x198`, and `tech_name` when the cache-first
+`tech_def_filter` preflight supplies a validated live tech-definition handle
+map. Combined proof
+`replay/snapshots/_collector_session_research_name_gate/20260629T184728Z_pid43412`
+advanced 36 game hours in 51.219 wall seconds with a no-cold tech-definition
+cache hit, emitted 37 scheduled `tech_live` frames, captured 15609 named active
+research-slot rows and 15609 live-progress rows with up to 422 rows per frame,
+verified replay output, and kept research payloads off worker-poll frames. The
+manifest recorded 15187 persisted live-progress rows, one moving-progress
+delta frame with 340 rows, and 340 ETA rows. The older `progress_units` remains
+source-badged but is not accepted as moving progress.
 The DLL/adapter contract for `projects_live` now supports the first top-level
 `special_projects` catalog slice: facilities, scientists, and currently worked
 project rows, all source-badged `C`. The adapter folds only scheduled frames

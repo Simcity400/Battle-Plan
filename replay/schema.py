@@ -146,8 +146,9 @@ DOMAINS = (
                              # (C; distinct from the market sidecar domain).
     "operative_xp",          # LIVE operative SKILL + XP + tech in-progress UNITS (final_residuals_
                              # live, M) -> countries.*.intel.operative_skill_xp (NEW live-only leaf)
-                             # + merged onto research.in_progress_live slots (progress_units). The
-                             # tech-completion FRACTION + operations detail stay RESISTED (null).
+                             # + legacy merge onto research.in_progress_live slots
+                             # (progress_units). The DLL tech_live stream owns moving
+                             # live_progress_units for current research.
     "politics_residuals",    # LIVE election residuals + appointed advisors (politics_residuals_
                              # live, M) -> countries.*.politics.{last_election,elections_allowed,
                              # appointed_advisors,appointed_advisor_details,
@@ -393,8 +394,8 @@ FIELD_SOURCES: Dict[str, str] = {
     # (tech_live, C/M) with the save as the backstop. The collector reads the
     # CTechnologyStatus completed-tech vector size, slot vector size, and bounded
     # CResearchSlot* vector through CCountry+0xF60 on scheduled frames. Rows carry
-    # raw handles, progress_raw, progress_units, and optionally tech_name when a
-    # validated tech_def_filter is supplied.
+    # raw handles, source-badged slot progress, moving live progress, and
+    # optionally tech_name when a validated tech_def_filter is supplied.
     "countries.*.research.tech_count": "C/M/S",
     "countries.*.research.technologies": "S/D",
     "countries.*.research.in_progress": "S/M*",
@@ -417,7 +418,7 @@ FIELD_SOURCES: Dict[str, str] = {
     # LIVE active-research rows live in a SEPARATE leaf (raw-handle shape, distinct
     # from the save's {name, points_factor} in_progress) so the two shapes never mix.
     # Carries {slot_index, tech_handle_raw, tech_def_index_raw, progress_raw,
-    # progress_units, tech_name?};
+    # progress_units, live_progress_raw, live_progress_units, tech_name?};
     # scheduled DLL frames now emit the raw rows from the bounded CResearchSlot vector,
     # while legacy memory remains a fallback. Completion fraction/ETA remain derived
     # until the static cost and live speed inputs are safe.
@@ -426,21 +427,25 @@ FIELD_SOURCES: Dict[str, str] = {
     # tech_def_filter supplies a validated live tech-definition handle map; absent for
     # an unknown handle (no fabrication).
     "countries.*.research.in_progress_live.*.tech_name": "C/M",
-    # raw research-slot units per in-progress slot. The scheduled DLL emits
-    # progress_units directly from the validated CResearchSlot row as
-    # progress_raw/1000. Live proof has not accepted this as moving progress yet:
-    # a 36-game-hour named-slot run kept it flat, so completion fraction/ETA still
-    # need a separately verified moving progress or speed source.
-    # ADDED ALONGSIDE the raw progress_raw on each slot dict (merged by slot_index).
+    # source-badged CResearchSlot units per in-progress slot. The scheduled DLL
+    # emits progress_units directly from the validated CResearchSlot row as
+    # progress_raw/1000. Live proof does not accept this as moving progress: a
+    # 36-game-hour named-slot run kept it flat.
     "countries.*.research.in_progress_live.*.progress_units": "C/M",
+    # moving live progress numerator from CResearchSlot+0x18 -> CTechnology+0x198.
+    # It is the same field the research progressbar path divides by the tech cost
+    # denominator. A 36-game-hour speed-five proof showed 370 stable same-tech rows
+    # changing at hourly-or-better scheduled cadence.
+    "countries.*.research.in_progress_live.*.live_progress_raw": "C/M",
+    "countries.*.research.in_progress_live.*.live_progress_units": "C/M",
     # Derived live speed from consecutive collector snapshots with the same
     # tag/slot/tech identity. This is not a save backstop and not a direct offset:
-    # it is a replay-writer derivative from the DLL `progress_units` stream.
+    # it is a replay-writer derivative from the DLL `live_progress_units` stream.
     "countries.*.research.in_progress_live.*.points_factor": "D",
     "countries.*.research.in_progress_live.*.points_factor_basis": "D",
     "countries.*.research.in_progress_live.*.points_factor_elapsed_hours": "D",
     # Derived active-research progress/ETA (models.research_progress, D): computed only when a
-    # live slot has progress_units + resolved tech_name, generated static tech defs provide a
+    # live slot has live_progress_units + resolved tech_name, generated static tech defs provide a
     # positive research_cost, the current year/bonus context is safe, and a positive derived
     # points_factor is available. Otherwise the value stays absent and an
     # *_unavailable_reason explains the blocker.

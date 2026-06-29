@@ -184,22 +184,22 @@ Scheduled country research:
   `+0xA0/+0xA8/+0xAC`;
 - emitted leaves are `completed_tech_count`, `research_slot_count`, and
   `active_research[]` rows `{slot_index, tech_handle_raw, tech_def_index_raw,
-  progress_raw, progress_units, tech_name?}`. The Python frame adapter folds
-  them into `countries.*.research.tech_count`, `.research_slots`, and
-  `.in_progress_live`;
+  progress_raw, progress_units, live_progress_raw, live_progress_units,
+  tech_name?}`. The Python frame adapter folds them into
+  `countries.*.research.tech_count`, `.research_slots`, and `.in_progress_live`;
 - `progress_units = progress_raw / 1000` is emitted directly from the validated
   slot field. `tech_name` is emitted only when `tech_def_filter` supplies a
   validated live tech-definition handle map; missing names are omitted instead
   of guessed;
-- progress percentage and ETA remain derived layers gated on static research
-  cost and a verified moving live progress/speed input. Current live evidence
-  shows `progress_units` can stay flat across a 36-game-hour named-slot proof,
-  so it is not yet accepted as moving progress;
+- moving research progress comes from `CResearchSlot+0x18 -> CTechnology+0x198`
+  as `live_progress_raw/live_progress_units`. `progress_units` is still emitted
+  for compatibility but is not accepted as moving progress;
 - current no-cold proof
-  `replay/snapshots/_collector_session_research_name_gate/20260629T175846Z_pid43412`
-  used a cache hit for 552 tech definitions, emitted 37 scheduled `tech_live`
-  frames across 36 game hours, captured 15384 named active research-slot rows
-  with up to 416 named rows per frame, verified replay output, and kept
+  `replay/snapshots/_collector_session_research_name_gate/20260629T184728Z_pid43412`
+  used the tech-definition cache, emitted 37 scheduled `tech_live` frames
+  across 36 game hours, captured 15609 named active research-slot rows and 15609
+  live-progress rows with up to 422 rows per frame, produced 340 derived ETA
+  rows after a positive daily progress delta, verified replay output, and kept
   research payloads off worker polls;
 - worker-poll frames stay light and must not carry research payloads.
 

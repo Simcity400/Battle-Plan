@@ -50,6 +50,7 @@ def collector_session_proof_errors(
     require_politics_leaders: bool = False,
     require_production_construction: bool = False,
     require_tech_live_names: bool = False,
+    require_tech_live_progress: bool = False,
     require_tech_live_eta: bool = False,
 ) -> List[str]:
     errors: List[str] = []
@@ -199,6 +200,43 @@ def collector_session_proof_errors(
             errors.append("research named-slot rows were empty in every frame")
         if _as_int(summary.get("tech_on_lightweight_frames")) not in (0, None):
             errors.append("research payloads appeared on lightweight frames")
+    if require_tech_live_progress:
+        scheduled = _scheduled_domain_frame_count(summary, "tech_live")
+        required_frames = int(min_game_hours or 1)
+        if scheduled is None or scheduled < required_frames:
+            errors.append(
+                "tech live progress proof scheduled frames "
+                f"{scheduled!r} below required {required_frames}"
+            )
+        if _as_int(summary.get("frames_with_research_payloads")) in (None, 0):
+            errors.append("research payload frames were not observed")
+        if _as_int(summary.get("country_rows_with_research_payloads")) in (None, 0):
+            errors.append("country research rows were not observed")
+        if _as_int(summary.get("max_research_active_rows_per_country")) in (None, 0):
+            errors.append("active research rows were not observed")
+        if _as_int(summary.get("research_live_progress_slot_frames")) is None or _as_int(
+            summary.get("research_live_progress_slot_frames")
+        ) < required_frames:
+            errors.append("research live-progress frames below required cadence")
+        if _as_int(summary.get("research_live_progress_slot_rows")) in (None, 0):
+            errors.append("research live-progress rows were not observed")
+        if _as_int(summary.get("country_rows_with_research_live_progress_slots")) in (
+            None,
+            0,
+        ):
+            errors.append("country research live-progress rows were not observed")
+        if _as_int(summary.get("max_research_live_progress_rows_per_frame")) in (
+            None,
+            0,
+        ):
+            errors.append("research live-progress rows were empty in every frame")
+        research_progress = _research_live_progress_summary(manifest)
+        if _as_int(research_progress.get("speed_frames")) in (None, 0):
+            errors.append("research live progress did not move between frames")
+        if _as_int(research_progress.get("speed_rows")) in (None, 0):
+            errors.append("research live progress moving rows were not observed")
+        if _as_int(summary.get("tech_on_lightweight_frames")) not in (0, None):
+            errors.append("research payloads appeared on lightweight frames")
     if require_tech_live_eta:
         scheduled = _scheduled_domain_frame_count(summary, "tech_live")
         required_frames = int(min_game_hours or 1)
@@ -241,6 +279,7 @@ def collector_session_proof_summary(
     require_politics_leaders: bool = False,
     require_production_construction: bool = False,
     require_tech_live_names: bool = False,
+    require_tech_live_progress: bool = False,
     require_tech_live_eta: bool = False,
 ) -> Dict[str, Any]:
     summary = _payload_summary(manifest)
@@ -257,6 +296,7 @@ def collector_session_proof_summary(
         require_politics_leaders=require_politics_leaders,
         require_production_construction=require_production_construction,
         require_tech_live_names=require_tech_live_names,
+        require_tech_live_progress=require_tech_live_progress,
         require_tech_live_eta=require_tech_live_eta,
     )
     hourly = manifest.get("hourly_requirement") or {}
@@ -315,6 +355,16 @@ def collector_session_proof_summary(
             "max_research_named_slot_rows_per_frame"),
         "max_research_named_slot_rows_per_country": summary.get(
             "max_research_named_slot_rows_per_country"),
+        "research_live_progress_slot_frames": summary.get(
+            "research_live_progress_slot_frames"),
+        "research_live_progress_slot_rows": summary.get(
+            "research_live_progress_slot_rows"),
+        "country_rows_with_research_live_progress_slots": summary.get(
+            "country_rows_with_research_live_progress_slots"),
+        "max_research_live_progress_rows_per_frame": summary.get(
+            "max_research_live_progress_rows_per_frame"),
+        "max_research_live_progress_rows_per_country": summary.get(
+            "max_research_live_progress_rows_per_country"),
         "research_live_progress": _research_live_progress_summary(manifest),
     }
 
@@ -432,6 +482,11 @@ def _main(argv: Optional[List[str]] = None) -> int:
         help="require positive scheduled live research rows with resolved tech_name",
     )
     parser.add_argument(
+        "--require-tech-live-progress",
+        action="store_true",
+        help="require positive scheduled live research rows and moving live progress",
+    )
+    parser.add_argument(
         "--require-tech-live-eta",
         action="store_true",
         help="require replay-written live research speed and ETA rows",
@@ -452,6 +507,7 @@ def _main(argv: Optional[List[str]] = None) -> int:
         require_politics_leaders=args.require_politics_leaders,
         require_production_construction=args.require_production_construction,
         require_tech_live_names=args.require_tech_live_names,
+        require_tech_live_progress=args.require_tech_live_progress,
         require_tech_live_eta=args.require_tech_live_eta,
     )
     print(json.dumps(proof, indent=2, sort_keys=True))

@@ -135,17 +135,20 @@ current product status and acceptance gates, and
   `.in_progress_live` from the DLL `CCountry+0xF60 -> CTechnologyStatus`
   slice. The DLL reads the bounded `CTechnologyStatus+0xA0` `CResearchSlot*`
   vector and emits raw slot rows plus `progress_units = progress_raw / 1000`.
+  It also follows each active slot's `CResearchSlot+0x18` active-tech pointer
+  and emits moving `live_progress_raw/live_progress_units` from
+  `CTechnology+0x198`.
   When `--preflight-tech-defs` or an explicit `tech_def_filter` supplies a
   validated live registry map, those rows may also carry `tech_name`. Current
   no-cold proof
-  `replay/snapshots/_collector_session_research_name_gate/20260629T175846Z_pid43412`
-  used a cache hit for 552 tech definitions, advanced 36 game hours in 49.125
-  wall seconds, emitted 37 scheduled `tech_live` frames, captured 15384 named
-  active research-slot rows, verified replay output, and kept worker polls free
-  of research payloads. Progress percentage and ETA remain gated on separate
-  static-cost and live-speed inputs; the same 36-hour run showed
-  `progress_units` staying flat across stored named slots, so that field is not
-  yet accepted as moving live progress.
+  `replay/snapshots/_collector_session_research_name_gate/20260629T184728Z_pid43412`
+  used the tech-definition cache, advanced 36 game hours in 51.219 wall
+  seconds, emitted 37 scheduled `tech_live` frames, captured 15609 named active
+  research-slot rows, captured 15609 live-progress slot rows, verified replay
+  output, and kept worker polls free of research payloads. The manifest recorded
+  15187 persisted live-progress rows and 340 ETA rows after the daily progress
+  movement. `progress_units` remains source-badged to `CResearchSlot+0x38` and
+  is not accepted as moving live progress.
   Worker polls must not carry research payloads.
   It can fold scheduled `projects_live` frames into top-level
   `special_projects` with `source = "C"`. The normal session path can now

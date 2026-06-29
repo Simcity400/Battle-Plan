@@ -334,6 +334,7 @@ class TestCollectorSession(unittest.TestCase):
                                     "slot_index": 0,
                                     "tech_handle_raw": 1,
                                     "tech_name": "basic_machine_tools",
+                                    "live_progress_units": 12.5,
                                 },
                                 {"slot_index": 1, "tech_handle_raw": 2},
                             ],
@@ -374,6 +375,12 @@ class TestCollectorSession(unittest.TestCase):
         self.assertEqual(summary["country_rows_with_research_named_slots"], 1)
         self.assertEqual(summary["max_research_named_slot_rows_per_frame"], 1)
         self.assertEqual(summary["max_research_named_slot_rows_per_country"], 1)
+        self.assertEqual(summary["research_live_progress_slot_frames"], 1)
+        self.assertEqual(summary["research_live_progress_slot_rows"], 1)
+        self.assertEqual(
+            summary["country_rows_with_research_live_progress_slots"], 1)
+        self.assertEqual(summary["max_research_live_progress_rows_per_frame"], 1)
+        self.assertEqual(summary["max_research_live_progress_rows_per_country"], 1)
         self.assertEqual(summary["tech_on_lightweight_frames"], 1)
         self.assertEqual(summary["heavy_payload_on_lightweight_frames"], 1)
 
@@ -2578,8 +2585,18 @@ class TestCollectorSession(unittest.TestCase):
             }
 
             results = session.record_frames([
-                _research_frame("1936.1.1.1", sequence=20, progress_units=10.0),
-                _research_frame("1936.1.2.1", sequence=21, progress_units=20.0),
+                _research_frame(
+                    "1936.1.1.1",
+                    sequence=20,
+                    progress_units=1.0,
+                    live_progress_units=10.0,
+                ),
+                _research_frame(
+                    "1936.1.2.1",
+                    sequence=21,
+                    progress_units=1.0,
+                    live_progress_units=20.0,
+                ),
             ])
 
             self.assertEqual(sum(1 for r in results if r.written_path), 2)
@@ -2596,6 +2613,8 @@ class TestCollectorSession(unittest.TestCase):
             self.assertEqual(slot["progress_basis"], "live_progress_units/static_research_cost")
 
             progress = session.diagnostics()["collector"]["research_live_progress"]
+            self.assertEqual(progress["live_progress_frames"], 2)
+            self.assertEqual(progress["live_progress_rows"], 2)
             self.assertEqual(progress["speed_frames"], 1)
             self.assertEqual(progress["speed_rows"], 1)
             self.assertEqual(progress["eta_frames"], 1)
@@ -2706,7 +2725,9 @@ def _frame(date, raw, *, sequence, pid, capture_boundary=None):
     }
 
 
-def _research_frame(date, *, sequence, progress_units):
+def _research_frame(date, *, sequence, progress_units, live_progress_units=None):
+    if live_progress_units is None:
+        live_progress_units = progress_units
     return {
         "type": "snapshot",
         "backend": "in_process_collector",
@@ -2733,6 +2754,8 @@ def _research_frame(date, *, sequence, progress_units):
                         "tech_def_index_raw": 9020,
                         "progress_raw": int(progress_units * 1000),
                         "progress_units": progress_units,
+                        "live_progress_raw": int(live_progress_units * 100000),
+                        "live_progress_units": live_progress_units,
                         "tech_name": "basic_machine_tools",
                     }],
                 },

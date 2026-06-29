@@ -143,15 +143,16 @@ for inspection, with no ability to mutate the game.
 - DLL-native active research slot identity is proven through scheduled
   `tech_live`: the collector reads the bounded `CTechnologyStatus+0xA0`
   research-slot vector and uses the cache-first live tech-definition bridge to
-  resolve `tech_name` without saves. The proof
-  `replay/snapshots/_collector_session_research_name_gate/20260629T175846Z_pid43412`
-  advanced 36 game hours in 49.125 wall seconds with a no-cold cache hit for
-  552 tech definitions, emitted 37 scheduled `tech_live` frames, captured
-  15384 named active research-slot rows with up to 416 named rows per frame,
-  verified replay output, and kept research payloads off worker-poll frames.
-  Research progress/ETA is not accepted yet: stored named slots showed flat
-  `progress_units` across the same 36-hour proof, so the moving progress/speed
-  source still needs to be pinned.
+  resolve `tech_name` without saves. Moving live progress is now proven from
+  `CResearchSlot+0x18 -> CTechnology+0x198` as
+  `live_progress_raw/live_progress_units`; the older `progress_units` remains
+  source-badged but is not accepted as moving progress. The combined proof
+  `replay/snapshots/_collector_session_research_name_gate/20260629T184728Z_pid43412`
+  advanced 36 game hours in 51.219 wall seconds with a no-cold cache hit,
+  emitted 37 scheduled `tech_live` frames, captured 15609 named active
+  research-slot rows and 15609 live-progress rows with up to 422 rows per
+  frame, verified replay output, kept research payloads off worker-poll frames,
+  and produced 340 derived ETA rows after a positive daily progress delta.
 - DLL-native raw `land_combats` lifecycle capture is proven at speed five for
   the raw replay stream: the 2026-06-29 pid 43412 proof
   `replay/snapshots/_collector_session_diplomacy_gate/20260629T152734Z_pid43412`

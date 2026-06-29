@@ -24,7 +24,9 @@ class TestResearchProgressAssembly(unittest.TestCase):
             "tech_def_index_raw": 0x1234,
             "tech_name": "basic_machine_tools",
             "progress_raw": 82500,
-            "progress_units": 82.5,
+            "progress_units": 1.0,
+            "live_progress_raw": 8250000,
+            "live_progress_units": 82.5,
         }]
         snap["countries"]["GER"] = country
 
@@ -44,7 +46,8 @@ class TestResearchProgressAssembly(unittest.TestCase):
         self.assertEqual(slot["tech_handle_raw"], 0x1234)
         self.assertEqual(slot["tech_def_index_raw"], 0x1234)
         self.assertEqual(slot["progress_raw"], 82500)
-        self.assertEqual(slot["progress_units"], 82.5)
+        self.assertEqual(slot["progress_units"], 1.0)
+        self.assertEqual(slot["live_progress_units"], 82.5)
         self.assertEqual(slot["progress_pct"], 0.5)
         self.assertEqual(slot["required_points_base"], 165.0)
         self.assertEqual(slot["eta_unavailable_reason"],

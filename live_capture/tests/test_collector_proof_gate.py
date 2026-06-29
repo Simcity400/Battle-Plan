@@ -289,6 +289,85 @@ class TestCollectorProofGate(unittest.TestCase):
         self.assertIn("research named-slot frames below required cadence", errors)
         self.assertIn("research named-slot rows were not observed", errors)
 
+    def test_accepts_tech_live_progress_proof(self):
+        proof = collector_session_proof_summary(
+            _manifest(
+                game_hours_advanced=36,
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock", "country_identity", "tech_live"],
+                    "scheduled_tech_domain_frames": 36,
+                    "frames_with_research_payloads": 36,
+                    "country_rows_with_research_payloads": 12816,
+                    "max_research_active_rows_per_country": 5,
+                    "research_live_progress_slot_frames": 36,
+                    "research_live_progress_slot_rows": 15384,
+                    "country_rows_with_research_live_progress_slots": 4248,
+                    "max_research_live_progress_rows_per_frame": 428,
+                    "max_research_live_progress_rows_per_country": 5,
+                    "tech_on_lightweight_frames": 0,
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+                recording_diagnostics={
+                    "collector": {
+                        "research_live_progress": {
+                            "live_progress_frames": 36,
+                            "live_progress_rows": 15384,
+                            "speed_frames": 35,
+                            "speed_rows": 12000,
+                            "eta_frames": 0,
+                            "eta_rows": 0,
+                            "max_live_progress_rows_per_frame": 428,
+                            "max_speed_rows_per_frame": 400,
+                            "max_eta_rows_per_frame": 0,
+                            "max_points_factor_milli": 2500,
+                        },
+                    },
+                },
+            ),
+            required_scheduled_snapshot_domains=["tech_live"],
+            min_game_hours=36,
+            require_tech_live_progress=True,
+        )
+
+        self.assertTrue(proof["ok"])
+        self.assertEqual(proof["errors"], [])
+        self.assertEqual(proof["research_live_progress"]["speed_rows"], 12000)
+
+    def test_rejects_tech_live_progress_without_moving_rows(self):
+        errors = collector_session_proof_errors(
+            _manifest(
+                game_hours_advanced=36,
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock", "country_identity", "tech_live"],
+                    "scheduled_tech_domain_frames": 36,
+                    "frames_with_research_payloads": 36,
+                    "country_rows_with_research_payloads": 12816,
+                    "max_research_active_rows_per_country": 5,
+                    "research_live_progress_slot_frames": 36,
+                    "research_live_progress_slot_rows": 15384,
+                    "country_rows_with_research_live_progress_slots": 4248,
+                    "max_research_live_progress_rows_per_frame": 428,
+                    "tech_on_lightweight_frames": 0,
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+                recording_diagnostics={
+                    "collector": {
+                        "research_live_progress": {
+                            "live_progress_frames": 36,
+                            "live_progress_rows": 15384,
+                            "speed_frames": 0,
+                            "speed_rows": 0,
+                        },
+                    },
+                },
+            ),
+            min_game_hours=36,
+            require_tech_live_progress=True,
+        )
+
+        self.assertIn("research live progress did not move between frames", errors)
+        self.assertIn("research live progress moving rows were not observed", errors)
+
     def test_accepts_tech_live_eta_proof(self):
         proof = collector_session_proof_summary(
             _manifest(

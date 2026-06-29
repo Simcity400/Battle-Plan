@@ -224,11 +224,14 @@ mod attach_log {
     const TECHNOLOGY_VTABLE_RVA_PRIMARY: usize = 0x294E218;
     const TECHNOLOGY_VTABLE_RVA_SECONDARY: usize = 0x294E1C8;
     const TECHNOLOGY_DEF_INDEX: usize = 0x08;
+    const TECHNOLOGY_LIVE_PROGRESS_RAW: usize = 0x198;
     const MAX_COMPLETED_TECH_COUNT: u32 = 2000;
     const MAX_RESEARCH_SLOT_COUNT: u32 = 32;
+    const MAX_TECH_LIVE_PROGRESS_RAW: i64 = 1_000_000_000_000;
     const MAX_TECH_DEF_FILTER_ROWS: usize = 8192;
     const MAX_TECH_DEF_FILTER_PAYLOAD_BYTES: usize = 512 * 1024;
     const TECH_PROGRESS_SCALE: f64 = 1000.0;
+    const TECH_LIVE_PROGRESS_SCALE: f64 = 100000.0;
     const FUEL_STATUS_CURRENT: usize = 0x08;
     const FUEL_STATUS_MAX: usize = 0x10;
     const FUEL_STATUS_GAIN: usize = 0x18;
@@ -8274,6 +8277,8 @@ mod attach_log {
         progress_raw: u32,
         tech_name: Option<String>,
         progress_units: f64,
+        live_progress_raw: Option<i64>,
+        live_progress_units: Option<f64>,
     }
 
     #[derive(Clone)]
@@ -10835,7 +10840,7 @@ mod attach_log {
             if handle == RESEARCH_SLOT_IDLE_HANDLE || tech_ptr == 0 {
                 continue;
             }
-            if !is_readable_range(tech_ptr, TECHNOLOGY_DEF_INDEX + 4) {
+            if !is_readable_range(tech_ptr, TECHNOLOGY_LIVE_PROGRESS_RAW + 8) {
                 continue;
             }
             let tech_vtable = read_u64(tech_ptr)? as usize;
@@ -10847,6 +10852,11 @@ mod attach_log {
                 continue;
             }
             let progress = read_u32_stable(slot_ptr + RESEARCH_SLOT_PROGRESS)?;
+            let live_progress_raw = read_i64_stable(tech_ptr + TECHNOLOGY_LIVE_PROGRESS_RAW)
+                .filter(|value| *value >= 0 && *value <= MAX_TECH_LIVE_PROGRESS_RAW);
+            let live_progress_units = live_progress_raw
+                .map(|value| value as f64 / TECH_LIVE_PROGRESS_SCALE)
+                .filter(|value| value.is_finite() && *value >= 0.0);
             active.push(CountryResearchSlotRow {
                 slot_index,
                 tech_handle_raw: handle,
@@ -10854,6 +10864,8 @@ mod attach_log {
                 progress_raw: progress,
                 tech_name: tech_def_filter.and_then(|defs| defs.get(&handle).cloned()),
                 progress_units: progress as f64 / TECH_PROGRESS_SCALE,
+                live_progress_raw,
+                live_progress_units,
             });
         }
         active.sort_by_key(|slot| slot.slot_index);
@@ -11998,12 +12010,15 @@ mod attach_log {
                     format!(
                         "{{\"slot_index\":{},\"tech_handle_raw\":{},\
                          \"tech_def_index_raw\":{},\"progress_raw\":{},\
-                         \"progress_units\":{}{}}}",
+                         \"progress_units\":{},\"live_progress_raw\":{},\
+                         \"live_progress_units\":{}{}}}",
                         slot.slot_index,
                         slot.tech_handle_raw,
                         slot.tech_def_index_raw,
                         slot.progress_raw,
                         json_opt_f64(Some(slot.progress_units)),
+                        json_opt_i64(slot.live_progress_raw),
+                        json_opt_f64(slot.live_progress_units),
                         tech_name
                     )
                 })
@@ -12418,6 +12433,16 @@ mod attach_log {
         Some(i64::from_le_bytes(arr))
     }
 
+    fn read_i64_stable(addr: usize) -> Option<i64> {
+        let first = read_i64(addr)?;
+        let second = read_i64(addr)?;
+        if first == second {
+            Some(first)
+        } else {
+            None
+        }
+    }
+
     fn read_u64_from_slice(bytes: &[u8], offset: usize) -> Option<u64> {
         let end = offset.checked_add(8)?;
         let slice = bytes.get(offset..end)?;
@@ -12484,6 +12509,13 @@ mod attach_log {
     }
 
     fn json_opt_i32(value: Option<i32>) -> String {
+        match value {
+            Some(v) => v.to_string(),
+            None => "null".to_string(),
+        }
+    }
+
+    fn json_opt_i64(value: Option<i64>) -> String {
         match value {
             Some(v) => v.to_string(),
             None => "null".to_string(),
@@ -15810,6 +15842,8 @@ mod attach_log {
                     progress_raw: 117_000,
                     tech_name: Some("basic_machine_tools".to_string()),
                     progress_units: 117.0,
+                    live_progress_raw: Some(11_700_000),
+                    live_progress_units: Some(117.0),
                 }]),
             });
 
@@ -15823,6 +15857,8 @@ mod attach_log {
             assert!(scheduled.contains("\"tech_handle_raw\":36896"));
             assert!(scheduled.contains("\"progress_raw\":117000"));
             assert!(scheduled.contains("\"progress_units\":117"));
+            assert!(scheduled.contains("\"live_progress_raw\":11700000"));
+            assert!(scheduled.contains("\"live_progress_units\":117"));
             assert!(scheduled.contains("\"tech_name\":\"basic_machine_tools\""));
             assert!(!worker.contains("\"research\""));
 
