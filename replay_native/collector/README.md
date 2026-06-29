@@ -356,6 +356,34 @@ Naval-combat raw stream status:
   root/hook-derived discoverer for combats born after preflight, per-ship
   combat rows, speed-five soak, and timeline ingestion.
 
+Air-wing raw stream status:
+
+- `live_capture.collector_frames` and the Rust collector define and test a
+  bounded raw `air_wings` domain-delta/event contract:
+  `air_wing:<TAG>:<wing_id>:<generation>` keys, owner TAG, wing id, generation,
+  count, mission mask, nullable mission region, effective active planes, and no
+  raw address or tag-db-id leakage.
+- The Rust DLL accepts `air_wing_body_bridge` rows in `collector_control.json`
+  as `owner_tag_db_id:wing_id:body_ptr` entries. The parser rejects malformed,
+  duplicate, unaligned, out-of-range, or oversized payloads and reports row
+  count/validity in control metadata.
+- The recorder can populate that bridge with
+  `live_capture.collector_session --preflight-air-wings`; by default it is
+  cache-first and fails closed unless `--allow-air-wing-cold-scan` explicitly
+  allows the slower `NavalAirReader.enumerate_air_wings()` vtable sweep.
+  Manifests store sanitized counts/status only.
+- Worker sampling does not sweep the heap. For each supplied bridge row, the
+  DLL revalidates the air-wing body vtable/type/id, pool vtable, owner-chain
+  country vtable, owner tag id, live tag-table decode, optional mission-region
+  vtables, and sane count/effective-plane bounds at a 250 ms floor.
+- The current stream emits `air_wing_observed`, `air_wing_updated`, and
+  `air_wing_lost`. `effective_planes` is the live active/effective plane count
+  used for later aggregation; it is not the final displayed air-superiority
+  percent.
+- Remaining promotion work is speed-five live proof while changing missions,
+  exact airbase/variant joins, derived region aggregate rows, air-loss/attrition
+  proof, and timeline ingestion.
+
 Runtime rules:
 
 - read-only observation only;

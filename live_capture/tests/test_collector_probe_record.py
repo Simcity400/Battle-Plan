@@ -24,6 +24,9 @@ from live_capture.collector_army_order_bridge import (  # noqa: E402
 from live_capture.collector_naval_combat_bridge import (  # noqa: E402
     encode_naval_combat_body_bridge,
 )
+from live_capture.collector_air_wing_bridge import (  # noqa: E402
+    encode_air_wing_body_bridge,
+)
 from live_capture.collector_advisor_tokens import (  # noqa: E402
     encode_advisor_token_filter,
 )
@@ -204,6 +207,7 @@ class TestCollectorProbeRecord(unittest.TestCase):
                 session_id="session-1",
                 army_body_bridge="17:0x7000",
                 naval_combat_body_bridge="41:0x8000",
+                air_wing_body_bridge="1:3:0x9000",
             )
             payload = json.loads(control_path.read_text(encoding="utf-8"))
 
@@ -212,6 +216,7 @@ class TestCollectorProbeRecord(unittest.TestCase):
         self.assertEqual(payload["session_id"], "session-1")
         self.assertEqual(payload["army_body_bridge"], "17:0x7000")
         self.assertEqual(payload["naval_combat_body_bridge"], "41:0x8000")
+        self.assertEqual(payload["air_wing_body_bridge"], "1:3:0x9000")
         self.assertFalse(payload["country_object_scan"])
         self.assertFalse(payload["special_projects_scan"])
         self.assertFalse(payload["sidecar_log"])
@@ -257,6 +262,14 @@ class TestCollectorProbeRecord(unittest.TestCase):
         ])
 
         self.assertEqual(encoded, "41:0x8000;42:0x9000")
+
+    def test_encode_air_wing_body_bridge_sorts_and_sanitizes_rows(self):
+        encoded = encode_air_wing_body_bridge([
+            {"owner_tagid": 2, "wing_id": "4", "body_addr": "0x9000"},
+            {"owner_tag_db_id": "1", "wing_id": 3, "body_ptr": 0x8000},
+        ])
+
+        self.assertEqual(encoded, "1:3:0x8000;2:4:0x9000")
 
     def test_encode_advisor_token_filter_sorts_dedupes_and_rejects_bad_tokens(self):
         encoded = encode_advisor_token_filter([
@@ -392,6 +405,8 @@ class TestCollectorProbeRecord(unittest.TestCase):
         self.assertEqual(manifest["country_record_bridge_rows"], 0)
         self.assertFalse(manifest["division_body_bridge_supplied"])
         self.assertEqual(manifest["division_body_bridge_rows"], 0)
+        self.assertFalse(manifest["air_wing_body_bridge_supplied"])
+        self.assertEqual(manifest["air_wing_body_bridge_rows"], 0)
         self.assertFalse(manifest["advisor_token_filter_supplied"])
         self.assertEqual(manifest["advisor_token_filter_tokens"], 0)
         self.assertIsNone(manifest["advisor_token_filter_sha256"])
@@ -418,6 +433,10 @@ class TestCollectorProbeRecord(unittest.TestCase):
                     country_object_bridge={1: 0x1000, 2: 0x2000},
                     country_record_bridge={1: 0x1200, 2: 0x2200},
                     division_body_bridge={17: 0x8000, 18: 0x9000},
+                    air_wing_body_bridge=[
+                        {"owner_tag_db_id": 1, "wing_id": 3, "body_ptr": 0xA000},
+                        {"owner_tag_db_id": 2, "wing_id": 4, "body_ptr": 0xB000},
+                    ],
                     map_control_state_roots="1:0x3000;2:0x4000",
                     map_control_province_bridge=(
                         "province_array=0x5000;province_count=13232;"
@@ -444,6 +463,8 @@ class TestCollectorProbeRecord(unittest.TestCase):
         self.assertEqual(manifest["country_record_bridge_rows"], 2)
         self.assertTrue(manifest["division_body_bridge_supplied"])
         self.assertEqual(manifest["division_body_bridge_rows"], 2)
+        self.assertTrue(manifest["air_wing_body_bridge_supplied"])
+        self.assertEqual(manifest["air_wing_body_bridge_rows"], 2)
         self.assertTrue(manifest["map_control_state_roots_supplied"])
         self.assertEqual(manifest["map_control_state_root_rows"], 2)
         self.assertTrue(manifest["map_control_province_bridge_supplied"])
@@ -459,6 +480,8 @@ class TestCollectorProbeRecord(unittest.TestCase):
         self.assertNotIn("0x1200", json.dumps(manifest, sort_keys=True))
         self.assertNotIn("0x8000", json.dumps(manifest, sort_keys=True))
         self.assertNotIn("0x9000", json.dumps(manifest, sort_keys=True))
+        self.assertNotIn("0xA000", json.dumps(manifest, sort_keys=True))
+        self.assertNotIn("0xB000", json.dumps(manifest, sort_keys=True))
         self.assertNotIn("0x3000", json.dumps(manifest, sort_keys=True))
         self.assertNotIn("0x5000", json.dumps(manifest, sort_keys=True))
         self.assertNotIn("0x6000", json.dumps(manifest, sort_keys=True))

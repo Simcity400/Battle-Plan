@@ -386,6 +386,34 @@ RAW_NAVAL_COMBAT_GAP_FIELDS = frozenset((
     "gap_kind",
     "status",
 ))
+RAW_AIR_WING_ID_MAX = 2_147_483_647
+RAW_AIR_WING_GENERATION_MAX = RAW_SEQUENCE_MAX
+RAW_AIR_WING_PLANES_MAX = 10_000_000
+RAW_AIR_WING_MISSION_MASK_MAX = 4_294_967_295
+RAW_AIR_WING_REGION_ID_MAX = 65_535
+RAW_AIR_WING_EVENT_TYPES = frozenset((
+    "air_wing_observed",
+    "air_wing_updated",
+    "air_wing_lost",
+))
+RAW_AIR_WING_FIELDS = frozenset((
+    "air_wing_key",
+    "owner",
+    "wing_id",
+    "generation",
+    "count",
+    "mission_mask",
+    "mission_region",
+    "effective_planes",
+))
+RAW_AIR_WING_EVENT_DETAIL_FIELDS = RAW_AIR_WING_FIELDS | frozenset((
+    "changed_fields",
+))
+RAW_AIR_WING_GAP_FIELDS = frozenset((
+    "gap_key",
+    "gap_kind",
+    "status",
+))
 RAW_FORBIDDEN_KEY_NAMES = frozenset((
     "addr",
     "address",
@@ -950,6 +978,8 @@ def _validate_raw_event_payload(
         problems.extend(_validate_raw_army_order_event(frame, payload))
     if frame.get("domain") == "naval_air_combats":
         problems.extend(_validate_raw_naval_combat_event(frame, payload))
+    if frame.get("domain") == "air_wings":
+        problems.extend(_validate_raw_air_wing_event(frame, payload))
     return problems
 
 
@@ -1116,6 +1146,8 @@ def _validate_raw_domain_delta_payload(
         problems.extend(_validate_raw_army_order_delta(frame, payload))
     if frame.get("domain") == "naval_air_combats":
         problems.extend(_validate_raw_naval_combat_delta(frame, payload))
+    if frame.get("domain") == "air_wings":
+        problems.extend(_validate_raw_air_wing_delta(frame, payload))
     return problems
 
 
@@ -2078,6 +2110,265 @@ def _validate_raw_naval_combat_tags(
     return problems
 
 
+def _validate_raw_air_wing_event(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> List[str]:
+    problems: List[str] = []
+    event_type = payload.get("event_type")
+    if event_type not in RAW_AIR_WING_EVENT_TYPES:
+        problems.append(f"collector air wing event_type {event_type!r} invalid")
+    entity_uid = _parse_raw_air_wing_entity_key(frame.get("entity_key"))
+    if entity_uid is None:
+        problems.append("collector air wing event entity_key not stable air_wing key")
+    subject = payload.get("subject")
+    if subject != "air_wing":
+        problems.append("collector air wing event subject != 'air_wing'")
+    if _contains_forbidden_raw_key(payload):
+        problems.append(
+            "collector air wing event payload contains raw pointer/tag-db diagnostic key"
+        )
+    detail = payload.get("detail")
+    if not isinstance(detail, dict):
+        problems.append("collector air wing event detail missing or not object")
+        return problems
+    problems.extend(_validate_raw_air_wing_event_detail(
+        detail,
+        "collector air wing event detail",
+        entity_uid,
+    ))
+    return problems
+
+
+def _validate_raw_air_wing_event_detail(
+    detail: Dict[str, Any],
+    prefix: str,
+    entity_uid: Optional[tuple[str, int, int]],
+) -> List[str]:
+    problems: List[str] = []
+    for key in detail:
+        if key not in RAW_AIR_WING_EVENT_DETAIL_FIELDS:
+            problems.append(f"{prefix}.{key} unsupported")
+    row = {
+        key: value
+        for key, value in detail.items()
+        if key in RAW_AIR_WING_FIELDS
+    }
+    problems.extend(_validate_raw_air_wing_row(
+        row,
+        prefix,
+        entity_uid,
+        require_identity=True,
+    ))
+    changed_fields = detail.get("changed_fields")
+    if not isinstance(changed_fields, list):
+        problems.append(f"{prefix}.changed_fields not list")
+    else:
+        if len(changed_fields) > RAW_CONTAINER_MAX_ENTRIES:
+            problems.append(f"{prefix}.changed_fields too many entries")
+        for i, field in enumerate(changed_fields):
+            if field not in RAW_AIR_WING_EVENT_DETAIL_FIELDS:
+                problems.append(f"{prefix}.changed_fields[{i}] invalid")
+    return problems
+
+
+def _validate_raw_air_wing_delta(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> List[str]:
+    problems: List[str] = []
+    if _is_raw_air_wing_gap_delta(frame, payload):
+        return _validate_raw_air_wing_gap_delta(frame, payload)
+
+    entity_uid = _parse_raw_air_wing_entity_key(frame.get("entity_key"))
+    if entity_uid is None:
+        problems.append("collector air wing delta entity_key not stable air_wing key")
+    if _contains_forbidden_raw_key(payload):
+        problems.append(
+            "collector air wing delta payload contains raw pointer/tag-db diagnostic key"
+        )
+    changed_fields = payload.get("changed_fields")
+    if isinstance(changed_fields, list):
+        for i, field in enumerate(changed_fields):
+            if _forbidden_raw_key_name(field):
+                problems.append(
+                    "collector air wing delta "
+                    f"changed_fields[{i}] raw pointer/tag-db diagnostic key"
+                )
+    for row_key in ("before", "after"):
+        row = payload.get(row_key)
+        if isinstance(row, dict):
+            problems.extend(_validate_raw_air_wing_row(
+                row,
+                f"collector air wing delta {row_key}",
+                entity_uid,
+                require_identity=(row_key == "after"),
+            ))
+    return problems
+
+
+def _is_raw_air_wing_gap_delta(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> bool:
+    return (
+        frame.get("confidence") == "gap"
+        or _parse_raw_air_wing_gap_key(frame.get("entity_key")) is not None
+        or (
+            isinstance(payload.get("after"), dict)
+            and "gap_kind" in payload["after"]
+        )
+    )
+
+
+def _validate_raw_air_wing_gap_delta(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> List[str]:
+    problems: List[str] = []
+    entity_key = frame.get("entity_key")
+    gap_kind = _parse_raw_air_wing_gap_key(entity_key)
+    if gap_kind is None:
+        problems.append("collector air wing gap entity_key not stable air_wings gap key")
+    if _contains_forbidden_raw_key(payload):
+        problems.append(
+            "collector air wing gap payload contains raw pointer/tag-db diagnostic key"
+        )
+    changed_fields = payload.get("changed_fields")
+    if isinstance(changed_fields, list):
+        for i, field in enumerate(changed_fields):
+            if _forbidden_raw_key_name(field):
+                problems.append(
+                    "collector air wing gap "
+                    f"changed_fields[{i}] raw pointer/tag-db diagnostic key"
+                )
+    for row_key in ("before", "after"):
+        row = payload.get(row_key)
+        if isinstance(row, dict):
+            problems.extend(_validate_raw_air_wing_gap_row(
+                row,
+                f"collector air wing gap {row_key}",
+                entity_key if isinstance(entity_key, str) else None,
+                gap_kind,
+            ))
+    return problems
+
+
+def _validate_raw_air_wing_gap_row(
+    row: Dict[str, Any],
+    prefix: str,
+    entity_key: Optional[str],
+    entity_gap_kind: Optional[str],
+) -> List[str]:
+    problems: List[str] = []
+    for key in row:
+        if key not in RAW_AIR_WING_GAP_FIELDS:
+            problems.append(f"{prefix}.{key} unsupported")
+
+    gap_key = row.get("gap_key")
+    if not _valid_raw_key(gap_key):
+        problems.append(f"{prefix}.gap_key missing or not stable str")
+    elif entity_key is not None and gap_key != entity_key:
+        problems.append(f"{prefix}.gap_key != entity_key")
+
+    gap_kind = row.get("gap_kind")
+    if not _valid_raw_string(gap_kind, max_length=RAW_SHORT_STRING_MAX_LENGTH):
+        problems.append(f"{prefix}.gap_kind missing or not bounded str")
+    elif _valid_hex_pointer(gap_kind):
+        problems.append(f"{prefix}.gap_kind looks like pointer")
+    elif entity_gap_kind is not None and gap_kind != entity_gap_kind:
+        problems.append(f"{prefix}.gap_kind != entity_key")
+
+    status = row.get("status")
+    if status not in ("validation_failed", "unsupported", "layout_invalid"):
+        problems.append(f"{prefix}.status invalid")
+    return problems
+
+
+def _validate_raw_air_wing_row(
+    row: Dict[str, Any],
+    prefix: str,
+    entity_uid: Optional[tuple[str, int, int]],
+    *,
+    require_identity: bool,
+) -> List[str]:
+    problems: List[str] = []
+    for key in row:
+        if key not in RAW_AIR_WING_FIELDS:
+            problems.append(f"{prefix}.{key} unsupported")
+
+    air_wing_key = row.get("air_wing_key")
+    if air_wing_key is not None:
+        parsed_key = _parse_raw_air_wing_entity_key(air_wing_key)
+        if parsed_key is None:
+            problems.append(f"{prefix}.air_wing_key not stable air_wing key|null")
+        elif entity_uid is not None and parsed_key != entity_uid:
+            problems.append(f"{prefix}.air_wing_key != entity_key")
+    elif require_identity:
+        problems.append(f"{prefix}.air_wing_key missing")
+
+    owner = row.get("owner")
+    wing_id = row.get("wing_id")
+    generation = row.get("generation")
+    if owner is None:
+        if require_identity:
+            problems.append(f"{prefix}.owner missing")
+    elif not schema.valid_tag(owner):
+        problems.append(f"{prefix}.owner not valid TAG|null")
+    elif entity_uid is not None and owner != entity_uid[0]:
+        problems.append(f"{prefix}.owner != entity_key")
+
+    if wing_id is None:
+        if require_identity:
+            problems.append(f"{prefix}.wing_id missing")
+    elif not _valid_bounded_int(
+        wing_id,
+        minimum=1,
+        maximum=RAW_AIR_WING_ID_MAX,
+    ):
+        problems.append(f"{prefix}.wing_id not positive int|null in range")
+    elif entity_uid is not None and wing_id != entity_uid[1]:
+        problems.append(f"{prefix}.wing_id != entity_key")
+
+    if generation is None:
+        if require_identity:
+            problems.append(f"{prefix}.generation missing")
+    elif not _valid_bounded_int(
+        generation,
+        minimum=0,
+        maximum=RAW_AIR_WING_GENERATION_MAX,
+    ):
+        problems.append(f"{prefix}.generation not nonnegative int|null in range")
+    elif entity_uid is not None and generation != entity_uid[2]:
+        problems.append(f"{prefix}.generation != entity_key")
+
+    for key in ("count", "effective_planes"):
+        value = row.get(key)
+        if value is not None and not _valid_bounded_int(
+            value,
+            minimum=0,
+            maximum=RAW_AIR_WING_PLANES_MAX,
+        ):
+            problems.append(f"{prefix}.{key} not nonnegative int|null in range")
+
+    mission_mask = row.get("mission_mask")
+    if mission_mask is not None and not _valid_bounded_int(
+        mission_mask,
+        minimum=0,
+        maximum=RAW_AIR_WING_MISSION_MASK_MAX,
+    ):
+        problems.append(f"{prefix}.mission_mask not nonnegative u32|null")
+
+    mission_region = row.get("mission_region")
+    if mission_region is not None and not _valid_bounded_int(
+        mission_region,
+        minimum=1,
+        maximum=RAW_AIR_WING_REGION_ID_MAX,
+    ):
+        problems.append(f"{prefix}.mission_region not positive int|null in range")
+    return problems
+
+
 def _validate_raw_gap_payload(
     frame: Dict[str, Any],
     payload: Dict[str, Any],
@@ -2269,6 +2560,40 @@ def _parse_raw_naval_combat_gap_key(value: Any) -> Optional[str]:
     if not isinstance(value, str) or not value.startswith("naval_air_combats:gap:"):
         return None
     gap_kind = value[len("naval_air_combats:gap:"):]
+    if not _valid_raw_string(gap_kind, max_length=RAW_SHORT_STRING_MAX_LENGTH):
+        return None
+    if _valid_hex_pointer(gap_kind):
+        return None
+    return gap_kind
+
+
+def _parse_raw_air_wing_entity_key(value: Any) -> Optional[tuple[str, int, int]]:
+    if not isinstance(value, str) or not value.startswith("air_wing:"):
+        return None
+    raw = value[len("air_wing:"):]
+    parts = raw.split(":")
+    if len(parts) != 3:
+        return None
+    owner = parts[0]
+    if not schema.valid_tag(owner):
+        return None
+    wing_id = _parse_raw_nonnegative_int_string(
+        parts[1],
+        maximum=RAW_AIR_WING_ID_MAX,
+    )
+    generation = _parse_raw_nonnegative_int_string(
+        parts[2],
+        maximum=RAW_AIR_WING_GENERATION_MAX,
+    )
+    if wing_id is None or wing_id == 0 or generation is None:
+        return None
+    return (owner, wing_id, generation)
+
+
+def _parse_raw_air_wing_gap_key(value: Any) -> Optional[str]:
+    if not isinstance(value, str) or not value.startswith("air_wings:gap:"):
+        return None
+    gap_kind = value[len("air_wings:gap:"):]
     if not _valid_raw_string(gap_kind, max_length=RAW_SHORT_STRING_MAX_LENGTH):
         return None
     if _valid_hex_pointer(gap_kind):

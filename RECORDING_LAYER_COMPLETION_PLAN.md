@@ -201,6 +201,16 @@ Current recorder-facing bridge status:
   all-field sample. A 2026-06-29 warm-cache live proof bridged 1564 division
   bodies, preserved 846 division deltas and 842 `division_movement_started`
   events in one game hour, and met the wall cap in 9.31 seconds.
+- Air-wing telemetry now has the same bridge-gated raw-stream shape. The DLL
+  accepts `air_wing_body_bridge` rows (`owner_tag_db_id:wing_id:body_ptr`),
+  revalidates the wing body, pool, owner-chain country object, tag-table decode,
+  and optional mission-region object every sample, and emits pointer-free raw
+  `air_wings` deltas/events keyed as `air_wing:<TAG>:<wing_id>:<generation>`.
+  The Python recorder can populate the bridge with
+  `--preflight-air-wings`; cache hits reread cached bodies and the expensive
+  `NavalAirReader.enumerate_air_wings()` scan is gated by
+  `--allow-air-wing-cold-scan`. This captures count, mission mask, mission
+  region, and effective active planes, not the final UI air-superiority percent.
 
 ## Definition Of Done
 
@@ -550,6 +560,13 @@ Tasks:
 
 - Promote `strategic_air`, `naval_air`, `abilities`, `country_extra`, and OOB
   air-wing rows into collector-sourced domains or exact derived rows.
+- Current DLL checkpoint: `air_wings` now has a bridge-gated raw stream from
+  supplied air-wing body pins. It emits `air_wing_observed`,
+  `air_wing_updated`, and `air_wing_lost` events with owner, wing id,
+  generation, count, mission mask, mission region, and effective active planes.
+  It does not yet emit plane variant/type, airbase, reserves, ace joins,
+  airbase capacity, exact air-superiority percent, air losses, or region combat
+  resolution.
 - Build an active air-combat fixture for validation.
 - Resolve `airwing_effective_planes_denom` or badge it.
 - Decide which air-superiority values are exact live state and which are
@@ -1173,7 +1190,14 @@ a raw `army_orders` stream from `army_body_bridge`, with
 bounded bridge gaps, exact type-5 target states, and unsupported status for
 unvalidated non-type-5 geometry. The next army-order unlocks are live
 speed-five proof while issuing orders, semantic event splits, non-type-5
-geometry, and timeline/app ingestion.
+geometry, and timeline/app ingestion. Air wings now have a raw `air_wings`
+stream from `air_wing_body_bridge`, with
+`air_wing:<TAG>:<wing_id>:<generation>` identities, observed/update/lost
+events, bounded bridge gaps, and 250 ms sampling of count, mission mask,
+mission region, and effective active planes. The next air unlocks are
+speed-five live proof while changing missions, exact airbase/variant joins,
+region aggregate rows, air-loss/attrition proof, and a decision on which
+air-superiority values are exact state versus computed UI proxies.
 
 ### Phase 7: Focus, Tech, Decisions, Projects, Politics
 

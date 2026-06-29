@@ -1259,6 +1259,129 @@ class TestCollectorSession(unittest.TestCase):
         self.assertNotIn("0x9000", json.dumps(session_manifest, sort_keys=True))
         self.assertNotIn(str(root), json.dumps(session_manifest, sort_keys=True))
 
+    def test_session_can_preflight_air_wing_bridge(self):
+        original_record_probes = cs.record_probes
+        original_preflight = cs.resolve_air_wing_body_bridge_preflight
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+
+                def fake_preflight(pid, *, cache_path, allow_cold_scan):
+                    self.assertEqual(pid, 555)
+                    self.assertEqual(cache_path.name, "air_wing_bodies.json")
+                    self.assertFalse(allow_cold_scan)
+                    return _DivisionPreflightResult(
+                        {
+                            "enabled": True,
+                            "status": "resolved",
+                            "row_count": 2,
+                            "build_ok": True,
+                            "pid_match": True,
+                            "elapsed_s": 0.25,
+                            "cold_locate_s": None,
+                            "allow_cold_scan": False,
+                            "cache": {
+                                "enabled": True,
+                                "status": "hit",
+                            },
+                            "discovery_mode": "cache_or_preflight_vtable_enumeration",
+                            "hot_loop_heap_scan": False,
+                            "address_manifest_policy": "omitted",
+                        },
+                        encoded="1:3:0x8000;2:4:0x9000",
+                    )
+
+                def fake_record_probes(pid, dll, out_root, **kwargs):
+                    del dll
+                    self.assertIs(kwargs.get("write_snapshot_artifacts"), False)
+                    self.assertEqual(
+                        kwargs.get("air_wing_body_bridge"),
+                        "1:3:0x8000;2:4:0x9000",
+                    )
+                    run_dir = Path(out_root) / ("20260628T031500Z_pid%d" % pid)
+                    run_dir.mkdir(parents=True)
+                    frame = _frame("1936.1.1.1", 100, sequence=1, pid=pid)
+                    frame_name = "collector_started_0000.json"
+                    _write_json(run_dir / frame_name, frame)
+                    _write_json(run_dir / "manifest.json", {
+                        "type": "collector_probe_manifest",
+                        "session_id": run_dir.name,
+                        "pid": pid,
+                        "game_id": "air_wing_preflight",
+                        "stop_reason": "repeat_exhausted",
+                        "sample_count": 1,
+                        "unique_game_date_count": 1,
+                        "game_hours_advanced": 0,
+                        "skipped_game_hours": 0,
+                        "air_wing_body_bridge_supplied": True,
+                        "air_wing_body_bridge_rows": 2,
+                        "worker_pipe_tokens": ["token"],
+                        "monotonic_transport_sequence": True,
+                        "duplicate_transport_sequences": 0,
+                        "first_sequence": 1,
+                        "last_sequence": 1,
+                        "samples": [{
+                            "frame": frame_name,
+                            "current_game_date": frame["root_probe"]["current_game_date"],
+                            "current_game_date_raw": frame["root_probe"]["current_game_date_raw"],
+                            "sequence": frame["sequence"],
+                        }],
+                        "hourly_requirement": {
+                            "required": False,
+                            "requested_game_hours": None,
+                            "met": True,
+                            "problems": [],
+                        },
+                    })
+                    return run_dir
+
+                cs.resolve_air_wing_body_bridge_preflight = fake_preflight
+                cs.record_probes = fake_record_probes
+
+                run_dir = record_collector_session(
+                    555,
+                    Path("collector.dll"),
+                    root / "out",
+                    game_id="air_wing_preflight",
+                    duration_s=1.0,
+                    preflight_air_wings=True,
+                )
+                session_manifest = _read_json(run_dir / "session_manifest.json")
+        finally:
+            cs.record_probes = original_record_probes
+            cs.resolve_air_wing_body_bridge_preflight = original_preflight
+
+        self.assertEqual(
+            session_manifest["air_wing_body_bridge_preflight"]["status"],
+            "resolved",
+        )
+        self.assertEqual(
+            session_manifest["air_wing_body_bridge_preflight"]["row_count"],
+            2,
+        )
+        self.assertEqual(
+            session_manifest["air_wing_body_bridge_preflight"]
+            ["address_manifest_policy"],
+            "omitted",
+        )
+        self.assertFalse(
+            session_manifest["air_wing_body_bridge_preflight"]
+            ["allow_cold_scan"],
+        )
+        self.assertFalse(
+            session_manifest["air_wing_body_bridge_preflight"]
+            ["hot_loop_heap_scan"],
+        )
+        self.assertEqual(
+            session_manifest["air_wing_body_bridge_preflight"]["cache"]["status"],
+            "hit",
+        )
+        self.assertTrue(session_manifest["air_wing_body_bridge_supplied"])
+        self.assertEqual(session_manifest["air_wing_body_bridge_rows"], 2)
+        self.assertNotIn("0x8000", json.dumps(session_manifest, sort_keys=True))
+        self.assertNotIn("0x9000", json.dumps(session_manifest, sort_keys=True))
+        self.assertNotIn(str(root), json.dumps(session_manifest, sort_keys=True))
+
     def test_session_wraps_probe_manifest_with_lifecycle_frames(self):
         original_record_probes = cs.record_probes
         try:

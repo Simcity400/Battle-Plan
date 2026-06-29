@@ -349,6 +349,28 @@ mod attach_log {
     const MAX_NAVAL_COMBAT_SHIPS_PER_GROUP: u32 = 1_000;
     const MAX_NAVAL_COMBAT_SIDE_SHIPS: u32 = 20_000;
     const MAX_NAVAL_COMMANDER_NAME_LEN: usize = 128;
+    const AIR_WING_VTABLE_RVA: usize = 0x29540C0;
+    const AIR_WING_POOL_VTABLE_RVA: usize = 0x2954118;
+    const AIR_WING_OWNER_COUNTRY_VTABLE_RVA: usize = 0x2932248;
+    const AIR_WING_REGION_VTABLE_RVA: usize = 0x29468B8;
+    const AIR_WING_REGION_ALT_VTABLE_RVA: usize = 0x2946908;
+    const AIR_WING_TYPE: u32 = 69;
+    const AIR_WING_OFF_TYPE: usize = 0x08;
+    const AIR_WING_OFF_ID: usize = 0x0C;
+    const AIR_WING_OFF_POOL: usize = 0x28;
+    const AIR_WING_OFF_COUNT: usize = 0x6C;
+    const AIR_WING_OFF_MISSION_MASK: usize = 0x90;
+    const AIR_WING_OFF_MISSION_REGION: usize = 0xB0;
+    const AIR_WING_OFF_EFFECTIVE_PLANES: usize = 0x160;
+    const AIR_WING_POOL_OFF_COUNTRY: usize = 0x40;
+    const AIR_WING_COUNTRY_OFF_TAG: usize = 0x90;
+    const AIR_WING_REGION_OFF_ID: usize = 0x58;
+    const MAX_AIR_WING_ID: u32 = i32::MAX as u32;
+    const MAX_AIR_WING_BODY_BRIDGE_ROWS: usize = 20_000;
+    const MAX_AIR_WING_BODY_BRIDGE_PAYLOAD_BYTES: usize = 2 * 1024 * 1024;
+    const MAX_AIR_WING_PLANES: u32 = 10_000_000;
+    const MAX_AIR_WING_MISSION_REGION_ID: u32 = 65_535;
+    const AIR_WING_SAMPLE_MIN_MS: u64 = 250;
     const PROJECT_FACILITY_VTABLE_RVA: usize = 0x294AB40;
     const PROJECT_CPROJECT_VTABLE_RVA: usize = 0x295C190;
     const PROJECT_CHARACTER_VTABLE_RVA: usize = 0x2957D40;
@@ -528,6 +550,8 @@ mod attach_log {
             let mut army_order_tracker = ArmyOrderTracker::default();
             let mut last_army_order_sample_elapsed_ms: Option<u64> = None;
             let mut naval_combat_tracker = NavalCombatTracker::default();
+            let mut air_wing_tracker = AirWingTracker::default();
+            let mut last_air_wing_sample_elapsed_ms: Option<u64> = None;
             while Instant::now() <= deadline {
                 let elapsed_wall_ms = duration_millis_u64(worker_started.elapsed());
                 let capture_boundary = capture_boundary_for_frame(
@@ -610,6 +634,24 @@ mod attach_log {
                     write_sinks(file.as_mut(), pipe, line.as_bytes());
                     session_sequence = session_sequence.saturating_add(1);
                 }
+                let sample_air_wings = last_air_wing_sample_elapsed_ms
+                    .map(|last| elapsed_wall_ms.saturating_sub(last) >= AIR_WING_SAMPLE_MIN_MS)
+                    .unwrap_or(true);
+                if sample_air_wings {
+                    for line in build_air_wing_raw_domain_delta_lines(
+                        pid,
+                        state.as_ref(),
+                        &control,
+                        &mut air_wing_tracker,
+                        session_sequence,
+                        Some(elapsed_wall_ms),
+                        capture_boundary,
+                    ) {
+                        write_sinks(file.as_mut(), pipe, line.as_bytes());
+                        session_sequence = session_sequence.saturating_add(1);
+                    }
+                    last_air_wing_sample_elapsed_ms = Some(elapsed_wall_ms);
+                }
                 thread::sleep(Duration::from_millis(control.sample_ms as u64));
             }
         } else {
@@ -638,6 +680,8 @@ mod attach_log {
         army_body_bridge_valid: bool,
         naval_combat_body_bridge: Vec<NavalCombatBodyBridgeEntry>,
         naval_combat_body_bridge_valid: bool,
+        air_wing_body_bridge: Vec<AirWingBodyBridgeEntry>,
+        air_wing_body_bridge_valid: bool,
         map_control: MapControlContract,
         advisor_token_filter: BTreeMap<String, AdvisorTokenInfo>,
         advisor_token_filter_valid: bool,
@@ -670,6 +714,13 @@ mod attach_log {
     #[derive(Clone, Copy)]
     struct NavalCombatBodyBridgeEntry {
         combat_id: u32,
+        body_ptr: usize,
+    }
+
+    #[derive(Clone, Copy)]
+    struct AirWingBodyBridgeEntry {
+        owner_tag_db_id: u32,
+        wing_id: u32,
         body_ptr: usize,
     }
 
@@ -830,6 +881,14 @@ mod attach_log {
                 },
                 None => (Vec::new(), true),
             };
+        let (air_wing_body_bridge, air_wing_body_bridge_valid) =
+            match parse_json_string(&text, "air_wing_body_bridge") {
+                Some(value) => match parse_air_wing_body_bridge(&value) {
+                    Some(rows) => (rows, true),
+                    None => (Vec::new(), false),
+                },
+                None => (Vec::new(), true),
+            };
         let (advisor_token_filter, advisor_token_filter_valid) =
             match parse_json_string(&text, "advisor_token_filter") {
                 Some(value) => match parse_advisor_token_filter(&value) {
@@ -865,6 +924,8 @@ mod attach_log {
             army_body_bridge_valid,
             naval_combat_body_bridge,
             naval_combat_body_bridge_valid,
+            air_wing_body_bridge,
+            air_wing_body_bridge_valid,
             map_control,
             advisor_token_filter,
             advisor_token_filter_valid,
@@ -1158,6 +1219,84 @@ mod attach_log {
                 return false;
             }
             if seen_combat_ids.insert(row.combat_id, ()).is_some()
+                || seen_body_ptrs.insert(row.body_ptr, ()).is_some()
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn parse_air_wing_body_bridge(value: &str) -> Option<Vec<AirWingBodyBridgeEntry>> {
+        if value.trim().is_empty() {
+            return Some(Vec::new());
+        }
+        if value.len() > MAX_AIR_WING_BODY_BRIDGE_PAYLOAD_BYTES {
+            return None;
+        }
+        let mut entries = Vec::new();
+        let mut seen_keys: BTreeMap<(u32, u32), ()> = BTreeMap::new();
+        let mut seen_body_ptrs: BTreeMap<usize, ()> = BTreeMap::new();
+        for raw in value.split(';') {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                return None;
+            }
+            let mut parts = raw.split(':');
+            let owner_raw = parts.next()?;
+            let wing_raw = parts.next()?;
+            let ptr_raw = parts.next()?;
+            if parts.next().is_some() {
+                return None;
+            }
+            let owner_tag_db_id = parse_bridge_u32(owner_raw.trim())?;
+            if owner_tag_db_id == 0 || owner_tag_db_id > 1024 {
+                return None;
+            }
+            let wing_id = parse_bridge_u32(wing_raw.trim())?;
+            if wing_id == 0 || wing_id > MAX_AIR_WING_ID {
+                return None;
+            }
+            let body_ptr = parse_bridge_pointer(ptr_raw.trim())?;
+            if !is_map_control_heap_pointer(body_ptr) {
+                return None;
+            }
+            if seen_keys.insert((owner_tag_db_id, wing_id), ()).is_some()
+                || seen_body_ptrs.insert(body_ptr, ()).is_some()
+            {
+                return None;
+            }
+            entries.push(AirWingBodyBridgeEntry {
+                owner_tag_db_id,
+                wing_id,
+                body_ptr,
+            });
+            if entries.len() > MAX_AIR_WING_BODY_BRIDGE_ROWS {
+                return None;
+            }
+        }
+        Some(entries)
+    }
+
+    fn air_wing_body_bridge_well_formed(rows: &[AirWingBodyBridgeEntry]) -> bool {
+        if rows.len() > MAX_AIR_WING_BODY_BRIDGE_ROWS {
+            return false;
+        }
+        let mut seen_keys: BTreeMap<(u32, u32), ()> = BTreeMap::new();
+        let mut seen_body_ptrs: BTreeMap<usize, ()> = BTreeMap::new();
+        for row in rows {
+            if row.owner_tag_db_id == 0 || row.owner_tag_db_id > 1024 {
+                return false;
+            }
+            if row.wing_id == 0 || row.wing_id > MAX_AIR_WING_ID {
+                return false;
+            }
+            if !is_map_control_heap_pointer(row.body_ptr) {
+                return false;
+            }
+            if seen_keys
+                .insert((row.owner_tag_db_id, row.wing_id), ())
+                .is_some()
                 || seen_body_ptrs.insert(row.body_ptr, ()).is_some()
             {
                 return false;
@@ -1560,6 +1699,7 @@ mod attach_log {
     const RAW_LAND_COMBATS_DOMAIN: &str = "land_combats";
     const RAW_ARMY_ORDERS_DOMAIN: &str = "army_orders";
     const RAW_NAVAL_COMBATS_DOMAIN: &str = "naval_air_combats";
+    const RAW_AIR_WINGS_DOMAIN: &str = "air_wings";
     const RAW_CONFIDENCE_SAMPLED: &str = "sampled";
     const LAND_COMBAT_EVENT_STARTED: &str = "land_combat_started";
     const LAND_COMBAT_EVENT_UPDATED: &str = "land_combat_updated";
@@ -1570,6 +1710,9 @@ mod attach_log {
     const NAVAL_COMBAT_EVENT_STARTED: &str = "naval_combat_started";
     const NAVAL_COMBAT_EVENT_UPDATED: &str = "naval_combat_updated";
     const NAVAL_COMBAT_EVENT_ENDED: &str = "naval_combat_ended";
+    const AIR_WING_EVENT_OBSERVED: &str = "air_wing_observed";
+    const AIR_WING_EVENT_UPDATED: &str = "air_wing_updated";
+    const AIR_WING_EVENT_LOST: &str = "air_wing_lost";
     const DIVISION_EVENT_MOVEMENT_STARTED: &str = "division_movement_started";
     const DIVISION_EVENT_MOVEMENT_STOPPED: &str = "division_movement_stopped";
     const DIVISION_EVENT_ORG_STRENGTH_DELTA: &str = "division_org_strength_delta";
@@ -1660,6 +1803,24 @@ mod attach_log {
     #[derive(Default)]
     struct NavalCombatTracker {
         previous: BTreeMap<u32, NavalCombatSample>,
+        next_generation: u64,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct AirWingSample {
+        owner: String,
+        wing_id: u32,
+        generation: u64,
+        body_addr: usize,
+        count: u32,
+        mission_mask: u32,
+        mission_region: Option<u32>,
+        effective_planes: u32,
+    }
+
+    #[derive(Default)]
+    struct AirWingTracker {
+        previous: BTreeMap<(String, u32), AirWingSample>,
         next_generation: u64,
     }
 
@@ -4361,6 +4522,570 @@ mod attach_log {
         ))
     }
 
+    fn build_air_wing_raw_domain_delta_lines(
+        pid: Dword,
+        state: Option<&CollectorState>,
+        control: &CollectorControl,
+        tracker: &mut AirWingTracker,
+        first_session_sequence: u64,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+    ) -> Vec<String> {
+        let Some(state) = state else {
+            return Vec::new();
+        };
+        let Some(clock) = clock_sample_from_state(Some(state)) else {
+            return Vec::new();
+        };
+        let current_samples = match sample_air_wings(state, control) {
+            Ok(samples) => samples,
+            Err(gap_kind) => {
+                let tick_ms = unsafe { GetTickCount64() };
+                let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+                return air_wing_gap_raw_domain_delta_frame_line(
+                    pid,
+                    sequence,
+                    Some(first_session_sequence),
+                    tick_ms,
+                    control,
+                    elapsed_wall_ms,
+                    capture_boundary,
+                    &clock,
+                    gap_kind,
+                )
+                .into_iter()
+                .collect();
+            }
+        };
+        if current_samples.is_empty() && tracker.previous.is_empty() {
+            return Vec::new();
+        }
+
+        build_air_wing_raw_lines_from_samples(
+            pid,
+            control,
+            tracker,
+            first_session_sequence,
+            elapsed_wall_ms,
+            capture_boundary,
+            &clock,
+            current_samples,
+        )
+    }
+
+    fn build_air_wing_raw_lines_from_samples(
+        pid: Dword,
+        control: &CollectorControl,
+        tracker: &mut AirWingTracker,
+        first_session_sequence: u64,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        current_samples: Vec<AirWingSample>,
+    ) -> Vec<String> {
+        let mut lines = Vec::new();
+        let mut session_sequence = first_session_sequence;
+        let mut current = BTreeMap::new();
+        for mut sample in current_samples {
+            let key = (sample.owner.clone(), sample.wing_id);
+            let old = tracker.previous.get(&key).cloned();
+            let continues = old
+                .as_ref()
+                .map(|old| old.body_addr == sample.body_addr)
+                .unwrap_or(false);
+            if let Some(old_sample) = old.as_ref().filter(|_| !continues) {
+                push_air_wing_delta_frame(
+                    &mut lines,
+                    &mut session_sequence,
+                    pid,
+                    control,
+                    elapsed_wall_ms,
+                    capture_boundary,
+                    clock,
+                    old_sample,
+                    "delete",
+                    &["air_wing_key"],
+                );
+                push_air_wing_event_frame(
+                    &mut lines,
+                    &mut session_sequence,
+                    pid,
+                    control,
+                    elapsed_wall_ms,
+                    capture_boundary,
+                    clock,
+                    old_sample,
+                    AIR_WING_EVENT_LOST,
+                    &["air_wing_key"],
+                );
+            }
+            sample.generation = if continues {
+                old.as_ref().map(|old| old.generation).unwrap_or(0)
+            } else {
+                let generation = tracker.next_generation;
+                tracker.next_generation = tracker.next_generation.saturating_add(1);
+                generation
+            };
+            let changed_fields = tracker
+                .previous
+                .get(&key)
+                .filter(|old| old.generation == sample.generation && continues)
+                .and_then(|old| air_wing_changed_fields(old, &sample))
+                .unwrap_or_else(air_wing_all_fields);
+            if !changed_fields.is_empty() {
+                push_air_wing_delta_frame(
+                    &mut lines,
+                    &mut session_sequence,
+                    pid,
+                    control,
+                    elapsed_wall_ms,
+                    capture_boundary,
+                    clock,
+                    &sample,
+                    "sample",
+                    &changed_fields,
+                );
+                let event_type = if continues {
+                    AIR_WING_EVENT_UPDATED
+                } else {
+                    AIR_WING_EVENT_OBSERVED
+                };
+                push_air_wing_event_frame(
+                    &mut lines,
+                    &mut session_sequence,
+                    pid,
+                    control,
+                    elapsed_wall_ms,
+                    capture_boundary,
+                    clock,
+                    &sample,
+                    event_type,
+                    &changed_fields,
+                );
+            }
+            current.insert(key, sample);
+        }
+
+        for (key, old) in &tracker.previous {
+            if current.contains_key(key) {
+                continue;
+            }
+            push_air_wing_delta_frame(
+                &mut lines,
+                &mut session_sequence,
+                pid,
+                control,
+                elapsed_wall_ms,
+                capture_boundary,
+                clock,
+                old,
+                "delete",
+                &["air_wing_key"],
+            );
+            push_air_wing_event_frame(
+                &mut lines,
+                &mut session_sequence,
+                pid,
+                control,
+                elapsed_wall_ms,
+                capture_boundary,
+                clock,
+                old,
+                AIR_WING_EVENT_LOST,
+                &["air_wing_key"],
+            );
+        }
+
+        tracker.previous = current;
+        lines
+    }
+
+    fn push_air_wing_delta_frame(
+        lines: &mut Vec<String>,
+        session_sequence: &mut u64,
+        pid: Dword,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        sample: &AirWingSample,
+        op: &str,
+        changed_fields: &[&str],
+    ) {
+        let tick_ms = unsafe { GetTickCount64() };
+        let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        if let Some(line) = air_wing_raw_domain_delta_frame_line(
+            pid,
+            sequence,
+            Some(*session_sequence),
+            tick_ms,
+            control,
+            elapsed_wall_ms,
+            capture_boundary,
+            clock,
+            sample,
+            op,
+            changed_fields,
+        ) {
+            lines.push(line);
+            *session_sequence = session_sequence.saturating_add(1);
+        }
+    }
+
+    fn push_air_wing_event_frame(
+        lines: &mut Vec<String>,
+        session_sequence: &mut u64,
+        pid: Dword,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        sample: &AirWingSample,
+        event_type: &str,
+        changed_fields: &[&str],
+    ) {
+        let tick_ms = unsafe { GetTickCount64() };
+        let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        if let Some(line) = air_wing_raw_event_frame_line(
+            pid,
+            sequence,
+            Some(*session_sequence),
+            tick_ms,
+            control,
+            elapsed_wall_ms,
+            capture_boundary,
+            clock,
+            sample,
+            event_type,
+            changed_fields,
+        ) {
+            lines.push(line);
+            *session_sequence = session_sequence.saturating_add(1);
+        }
+    }
+
+    fn sample_air_wings(
+        state: &CollectorState,
+        control: &CollectorControl,
+    ) -> Result<Vec<AirWingSample>, &'static str> {
+        if !(state.daily_match && state.long_string_match) {
+            return Err("state_validation_failed");
+        }
+        if !(control.air_wing_body_bridge_valid
+            && air_wing_body_bridge_well_formed(&control.air_wing_body_bridge))
+        {
+            return Err("bridge_invalid");
+        }
+        if control.air_wing_body_bridge.is_empty() {
+            return Ok(Vec::new());
+        }
+        let tag_table = country_tag_table(state.country_database_ptr as usize)
+            .ok_or("tag_table_unavailable")?;
+        let mut by_key = BTreeMap::new();
+        let mut invalid_entries = 0_u32;
+        for entry in &control.air_wing_body_bridge {
+            if let Some(sample) = sample_air_wing_from_bridge_entry(state.base, tag_table, entry) {
+                by_key
+                    .entry((sample.owner.clone(), sample.wing_id))
+                    .or_insert(sample);
+            } else {
+                invalid_entries = invalid_entries.saturating_add(1);
+            }
+        }
+        if by_key.is_empty() && invalid_entries > 0 {
+            return Err("bridge_entry_invalid");
+        }
+        Ok(by_key.into_values().collect())
+    }
+
+    fn sample_air_wing_from_bridge_entry(
+        module_base: usize,
+        tag_table: usize,
+        entry: &AirWingBodyBridgeEntry,
+    ) -> Option<AirWingSample> {
+        let body = entry.body_ptr;
+        if !is_map_control_heap_pointer(body) {
+            return None;
+        }
+        if read_u64(body)? as usize != module_base.checked_add(AIR_WING_VTABLE_RVA)? {
+            return None;
+        }
+        if read_u32(body.checked_add(AIR_WING_OFF_TYPE)?)? != AIR_WING_TYPE {
+            return None;
+        }
+        let wing_id = read_u32(body.checked_add(AIR_WING_OFF_ID)?)?;
+        if wing_id == 0 || wing_id != entry.wing_id || wing_id > MAX_AIR_WING_ID {
+            return None;
+        }
+        let owner_tag_db_id = read_air_wing_owner_tag_db_id(module_base, body)?;
+        if owner_tag_db_id != entry.owner_tag_db_id {
+            return None;
+        }
+        let owner = tag_from_table(tag_table, owner_tag_db_id)?;
+        let count = read_u32(body.checked_add(AIR_WING_OFF_COUNT)?)?;
+        let effective_planes = read_u32(body.checked_add(AIR_WING_OFF_EFFECTIVE_PLANES)?)?;
+        if count > MAX_AIR_WING_PLANES || effective_planes > MAX_AIR_WING_PLANES {
+            return None;
+        }
+        Some(AirWingSample {
+            owner,
+            wing_id,
+            generation: 0,
+            body_addr: body,
+            count,
+            mission_mask: read_u32(body.checked_add(AIR_WING_OFF_MISSION_MASK)?)?,
+            mission_region: read_air_wing_mission_region(module_base, body),
+            effective_planes,
+        })
+    }
+
+    fn read_air_wing_owner_tag_db_id(module_base: usize, body: usize) -> Option<u32> {
+        let pool = read_u64(body.checked_add(AIR_WING_OFF_POOL)?)? as usize;
+        if !is_map_control_heap_pointer(pool)
+            || read_u64(pool)? as usize != module_base.checked_add(AIR_WING_POOL_VTABLE_RVA)?
+        {
+            return None;
+        }
+        let country = read_u64(pool.checked_add(AIR_WING_POOL_OFF_COUNTRY)?)? as usize;
+        if !is_map_control_heap_pointer(country)
+            || read_u64(country)? as usize
+                != module_base.checked_add(AIR_WING_OWNER_COUNTRY_VTABLE_RVA)?
+        {
+            return None;
+        }
+        let tag_db_id = read_u32(country.checked_add(AIR_WING_COUNTRY_OFF_TAG)?)?;
+        (tag_db_id > 0 && tag_db_id <= 1024).then_some(tag_db_id)
+    }
+
+    fn read_air_wing_mission_region(module_base: usize, body: usize) -> Option<u32> {
+        let region = read_u64(body.checked_add(AIR_WING_OFF_MISSION_REGION)?)? as usize;
+        if !is_map_control_heap_pointer(region) {
+            return None;
+        }
+        if read_u64(region)? as usize != module_base.checked_add(AIR_WING_REGION_VTABLE_RVA)? {
+            return None;
+        }
+        if read_u64(region.checked_add(8)?)? as usize
+            != module_base.checked_add(AIR_WING_REGION_ALT_VTABLE_RVA)?
+        {
+            return None;
+        }
+        let region_id = read_u32(region.checked_add(AIR_WING_REGION_OFF_ID)?)?;
+        (region_id > 0 && region_id <= MAX_AIR_WING_MISSION_REGION_ID).then_some(region_id)
+    }
+
+    fn air_wing_all_fields() -> Vec<&'static str> {
+        vec![
+            "air_wing_key",
+            "owner",
+            "wing_id",
+            "generation",
+            "count",
+            "mission_mask",
+            "mission_region",
+            "effective_planes",
+        ]
+    }
+
+    fn air_wing_changed_fields(
+        old: &AirWingSample,
+        new: &AirWingSample,
+    ) -> Option<Vec<&'static str>> {
+        let mut changed = Vec::new();
+        if old.owner != new.owner {
+            changed.push("owner");
+        }
+        if old.count != new.count {
+            changed.push("count");
+        }
+        if old.mission_mask != new.mission_mask {
+            changed.push("mission_mask");
+        }
+        if old.mission_region != new.mission_region {
+            changed.push("mission_region");
+        }
+        if old.effective_planes != new.effective_planes {
+            changed.push("effective_planes");
+        }
+        (!changed.is_empty()).then_some(changed)
+    }
+
+    fn air_wing_key(sample: &AirWingSample) -> String {
+        format!(
+            "air_wing:{}:{}:{}",
+            sample.owner, sample.wing_id, sample.generation
+        )
+    }
+
+    fn air_wing_raw_domain_delta_frame_line(
+        pid: Dword,
+        sequence: u64,
+        session_sequence: Option<u64>,
+        tick_ms: u64,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        sample: &AirWingSample,
+        op: &str,
+        changed_fields: &[&str],
+    ) -> Option<String> {
+        let key = air_wing_key(sample);
+        let after_json = if op == "delete" {
+            "null".to_string()
+        } else {
+            air_wing_row_json(sample, &key)
+        };
+        raw_domain_delta_frame_line(RawDomainDeltaFrame {
+            pid,
+            sequence,
+            session_sequence,
+            tick_ms,
+            date: &clock.date,
+            hour_index: clock.hour_index,
+            sample_ms: control.sample_ms,
+            duration_ms: Some(control.duration_ms),
+            elapsed_wall_ms,
+            capture_boundary,
+            domain: RAW_AIR_WINGS_DOMAIN,
+            entity_key: &key,
+            confidence: RAW_CONFIDENCE_SAMPLED,
+            op,
+            after_json: &after_json,
+            changed_fields,
+        })
+    }
+
+    fn air_wing_gap_raw_domain_delta_frame_line(
+        pid: Dword,
+        sequence: u64,
+        session_sequence: Option<u64>,
+        tick_ms: u64,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        gap_kind: &str,
+    ) -> Option<String> {
+        if !valid_raw_short_string(gap_kind) || looks_like_hex_pointer(gap_kind) {
+            return None;
+        }
+        let gap_key = format!("air_wings:gap:{gap_kind}");
+        let after_json = format!(
+            "{{\"gap_key\":{},\"gap_kind\":{},\"status\":\"validation_failed\"}}",
+            json_str(&gap_key),
+            json_str(gap_kind)
+        );
+        raw_domain_delta_frame_line(RawDomainDeltaFrame {
+            pid,
+            sequence,
+            session_sequence,
+            tick_ms,
+            date: &clock.date,
+            hour_index: clock.hour_index,
+            sample_ms: control.sample_ms,
+            duration_ms: Some(control.duration_ms),
+            elapsed_wall_ms,
+            capture_boundary,
+            domain: RAW_AIR_WINGS_DOMAIN,
+            entity_key: &gap_key,
+            confidence: "gap",
+            op: "sample",
+            after_json: &after_json,
+            changed_fields: &["gap_key", "gap_kind", "status"],
+        })
+    }
+
+    fn air_wing_raw_event_frame_line(
+        pid: Dword,
+        sequence: u64,
+        session_sequence: Option<u64>,
+        tick_ms: u64,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        sample: &AirWingSample,
+        event_type: &str,
+        changed_fields: &[&str],
+    ) -> Option<String> {
+        if !matches!(
+            event_type,
+            AIR_WING_EVENT_OBSERVED | AIR_WING_EVENT_UPDATED | AIR_WING_EVENT_LOST
+        ) {
+            return None;
+        }
+        let key = air_wing_key(sample);
+        let detail_json = air_wing_event_detail_json(sample, &key, changed_fields)?;
+        raw_event_frame_line(RawEventFrame {
+            pid,
+            sequence,
+            session_sequence,
+            tick_ms,
+            date: &clock.date,
+            hour_index: clock.hour_index,
+            sample_ms: control.sample_ms,
+            duration_ms: Some(control.duration_ms),
+            elapsed_wall_ms,
+            capture_boundary,
+            domain: RAW_AIR_WINGS_DOMAIN,
+            entity_key: &key,
+            confidence: RAW_CONFIDENCE_SAMPLED,
+            event_type,
+            subject: "air_wing",
+            detail_json: &detail_json,
+        })
+    }
+
+    fn air_wing_row_json(sample: &AirWingSample, key: &str) -> String {
+        format!(
+            "{{\"air_wing_key\":{},\"owner\":{},\"wing_id\":{},\"generation\":{},\
+             \"count\":{},\"mission_mask\":{},\"mission_region\":{},\
+             \"effective_planes\":{}}}",
+            json_str(key),
+            json_str(&sample.owner),
+            sample.wing_id,
+            sample.generation,
+            sample.count,
+            sample.mission_mask,
+            json_opt_u32(sample.mission_region),
+            sample.effective_planes
+        )
+    }
+
+    fn air_wing_event_detail_json(
+        sample: &AirWingSample,
+        key: &str,
+        changed_fields: &[&str],
+    ) -> Option<String> {
+        if changed_fields.len() > 256
+            || changed_fields
+                .iter()
+                .any(|field| !valid_raw_short_string(field))
+        {
+            return None;
+        }
+        let changed_fields = changed_fields
+            .iter()
+            .map(|field| json_str(field))
+            .collect::<Vec<_>>()
+            .join(",");
+        Some(format!(
+            "{{\"air_wing_key\":{},\"owner\":{},\"wing_id\":{},\"generation\":{},\
+             \"count\":{},\"mission_mask\":{},\"mission_region\":{},\
+             \"effective_planes\":{},\"changed_fields\":[{}] }}",
+            json_str(key),
+            json_str(&sample.owner),
+            sample.wing_id,
+            sample.generation,
+            sample.count,
+            sample.mission_mask,
+            json_opt_u32(sample.mission_region),
+            sample.effective_planes,
+            changed_fields
+        ))
+    }
+
     fn raw_event_frame_line(frame: RawEventFrame<'_>) -> Option<String> {
         if !valid_raw_short_string(frame.date)
             || !valid_raw_short_string(frame.capture_boundary)
@@ -4488,6 +5213,7 @@ mod attach_log {
                 | RAW_LAND_COMBATS_DOMAIN
                 | RAW_ARMY_ORDERS_DOMAIN
                 | RAW_NAVAL_COMBATS_DOMAIN
+                | RAW_AIR_WINGS_DOMAIN
         )
     }
 
@@ -4563,6 +5289,8 @@ mod attach_log {
             && army_body_bridge_well_formed(&control.army_body_bridge);
         let naval_combat_body_bridge_valid = control.naval_combat_body_bridge_valid
             && naval_combat_body_bridge_well_formed(&control.naval_combat_body_bridge);
+        let air_wing_body_bridge_valid = control.air_wing_body_bridge_valid
+            && air_wing_body_bridge_well_formed(&control.air_wing_body_bridge);
         let map_control_state_roots_valid =
             control.map_control.state_roots_valid && control.map_control.state_roots_well_formed();
         let map_control_province_bridge_valid = control.map_control.province_bridge_valid
@@ -4584,6 +5312,8 @@ mod attach_log {
              \"army_body_bridge_valid\":{},\
              \"naval_combat_body_bridge_rows\":{},\
              \"naval_combat_body_bridge_valid\":{},\
+             \"air_wing_body_bridge_rows\":{},\
+             \"air_wing_body_bridge_valid\":{},\
              \"advisor_token_filter_tokens\":{},\
              \"advisor_token_filter_valid\":{},\
              \"idea_group_filter_rows\":{},\
@@ -4608,6 +5338,8 @@ mod attach_log {
             army_body_bridge_valid,
             control.naval_combat_body_bridge.len(),
             naval_combat_body_bridge_valid,
+            control.air_wing_body_bridge.len(),
+            air_wing_body_bridge_valid,
             control.advisor_token_filter.len(),
             control.advisor_token_filter_valid,
             control.idea_group_filter.len(),
@@ -8622,6 +9354,8 @@ mod attach_log {
                 army_body_bridge_valid: true,
                 naval_combat_body_bridge: Vec::new(),
                 naval_combat_body_bridge_valid: true,
+                air_wing_body_bridge: Vec::new(),
+                air_wing_body_bridge_valid: true,
                 map_control: MapControlContract::empty(),
                 advisor_token_filter: BTreeMap::new(),
                 advisor_token_filter_valid: true,
@@ -9001,6 +9735,39 @@ mod attach_log {
         }
 
         #[test]
+        fn collector_control_accepts_air_wing_body_bridge() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_control_air_wing_bridge_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            fs::write(
+                &control,
+                format!(
+                    r#"{{"mode":"hourly_poll","duration_ms":8000,"sample_ms":10,"air_wing_body_bridge":"1:3:0x{:x};2:4:{}"}}"#,
+                    HEAP_LO,
+                    HEAP_LO + 0x100
+                ),
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert!(parsed.air_wing_body_bridge_valid);
+            assert_eq!(parsed.air_wing_body_bridge.len(), 2);
+            assert_eq!(parsed.air_wing_body_bridge[0].owner_tag_db_id, 1);
+            assert_eq!(parsed.air_wing_body_bridge[0].wing_id, 3);
+            assert_eq!(parsed.air_wing_body_bridge[0].body_ptr, HEAP_LO);
+            assert_eq!(parsed.air_wing_body_bridge[1].owner_tag_db_id, 2);
+            assert_eq!(parsed.air_wing_body_bridge[1].wing_id, 4);
+            assert_eq!(parsed.air_wing_body_bridge[1].body_ptr, HEAP_LO + 0x100);
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
         fn collector_control_accepts_map_control_contract() {
             let dir = std::env::temp_dir().join(format!(
                 "hoi4_collector_control_map_control_test_{}",
@@ -9229,6 +9996,40 @@ mod attach_log {
         }
 
         #[test]
+        fn collector_control_marks_bad_air_wing_body_bridge_invalid() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_control_bad_air_wing_bridge_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            fs::write(
+                &control,
+                r#"{"mode":"hourly_poll","duration_ms":8000,"sample_ms":10,"air_wing_body_bridge":"1:3:0x1001"}"#,
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert!(parsed.air_wing_body_bridge.is_empty());
+            assert!(!parsed.air_wing_body_bridge_valid);
+            let frame = build_frame_line(
+                1234,
+                None,
+                Some(&parsed),
+                Some(7),
+                Some(125),
+                Some("worker_poll"),
+            );
+            assert!(frame.contains("\"air_wing_body_bridge_rows\":0"));
+            assert!(frame.contains("\"air_wing_body_bridge_valid\":false"));
+            assert!(!frame.contains("0x1001"));
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
         fn collector_control_marks_bad_map_control_invalid() {
             let dir = std::env::temp_dir().join(format!(
                 "hoi4_collector_control_bad_map_control_test_{}",
@@ -9378,6 +10179,50 @@ mod attach_log {
                 .collect::<Vec<_>>()
                 .join(";");
             assert!(parse_naval_combat_body_bridge(&too_many).is_none());
+        }
+
+        #[test]
+        fn air_wing_body_bridge_parser_rejects_duplicates_ranges_and_size() {
+            assert!(parse_air_wing_body_bridge("").unwrap().is_empty());
+            assert!(parse_air_wing_body_bridge(&format!(
+                "1:3:0x{:x};2:4:{}",
+                HEAP_LO,
+                HEAP_LO + 8
+            ))
+            .is_some());
+            assert!(parse_air_wing_body_bridge(&format!(
+                "1:3:0x{:x};1:3:0x{:x}",
+                HEAP_LO,
+                HEAP_LO + 8
+            ))
+            .is_none());
+            assert!(parse_air_wing_body_bridge(&format!(
+                "1:3:0x{:x};2:4:0x{:x}",
+                HEAP_LO, HEAP_LO
+            ))
+            .is_none());
+            assert!(parse_air_wing_body_bridge(&format!("0:3:0x{:x}", HEAP_LO)).is_none());
+            assert!(parse_air_wing_body_bridge(&format!("1:0:0x{:x}", HEAP_LO)).is_none());
+            assert!(parse_air_wing_body_bridge(&format!("1025:3:0x{:x}", HEAP_LO)).is_none());
+            assert!(parse_air_wing_body_bridge(&format!(
+                "1:{}:0x{:x}",
+                MAX_AIR_WING_ID + 1,
+                HEAP_LO
+            ))
+            .is_none());
+            assert!(parse_air_wing_body_bridge("1:3:0x1000").is_none());
+            assert!(parse_air_wing_body_bridge(&format!("1:3:0x{:x}", HEAP_LO + 1)).is_none());
+            assert!(parse_air_wing_body_bridge("1:3").is_none());
+            assert!(parse_air_wing_body_bridge("1:3:0x10000000000:extra").is_none());
+            assert!(parse_air_wing_body_bridge(
+                &"x".repeat(MAX_AIR_WING_BODY_BRIDGE_PAYLOAD_BYTES + 1)
+            )
+            .is_none());
+            let too_many = (1..=MAX_AIR_WING_BODY_BRIDGE_ROWS + 1)
+                .map(|i| format!("1:{}:0x{:x}", i, HEAP_LO + (i * 8)))
+                .collect::<Vec<_>>()
+                .join(";");
+            assert!(parse_air_wing_body_bridge(&too_many).is_none());
         }
 
         #[test]
@@ -10586,6 +11431,8 @@ mod attach_log {
                 army_body_bridge_valid: true,
                 naval_combat_body_bridge: Vec::new(),
                 naval_combat_body_bridge_valid: true,
+                air_wing_body_bridge: Vec::new(),
+                air_wing_body_bridge_valid: true,
                 map_control: MapControlContract::empty(),
                 advisor_token_filter: BTreeMap::new(),
                 advisor_token_filter_valid: true,

@@ -331,26 +331,48 @@ Source candidates:
 
 Cadence:
 
-- Region/wing deltas can be sampled below the combat hot path unless proof
-  shows mission changes or air ticks are being missed.
-- Start with raw frames at 100-250 ms for air-region deltas, plus hourly full
-  wing snapshots.
+- The first DLL slice samples bridged air-wing bodies at a 250 ms floor even
+  when the worker itself is running at 10 ms. This keeps speed-five recording
+  bounded while still catching sub-hour wing mission/count transitions.
+- Region aggregates can be derived from the wing stream by grouping
+  `(mission_region, owner, mission_mask)` and summing `effective_planes`, then
+  promoted into a separate region stream if the UI needs precomputed rows.
 
 Events/deltas:
 
-- `air_wing_mission_changed`
-- `air_region_planes_delta`
-- `air_region_effective_planes_delta`
-- `air_region_proxy_control_delta`
-- `air_gap`
+- Current raw domain: `air_wings`.
+- Current durable key: `air_wing:<TAG>:<wing_id>:<generation>`. The generation
+  is assigned by body continuity and prevents owner/wing-id reuse from
+  overwriting an earlier logical wing without leaking the pointer.
+- Current row fields: `air_wing_key`, `owner`, `wing_id`, `generation`,
+  `count`, `mission_mask`, `mission_region`, and `effective_planes`.
+- Current events: `air_wing_observed`, `air_wing_updated`, and
+  `air_wing_lost`.
+- Current gap key: `air_wings:gap:<kind>`.
+- Later derived region events: `air_region_planes_delta`,
+  `air_region_effective_planes_delta`, and `air_region_proxy_control_delta`.
 
 Notes:
 
+- The Rust collector accepts an `air_wing_body_bridge` control contract:
+  `owner_tag_db_id:wing_id:body_ptr`. It rejects malformed, duplicate,
+  unaligned, out-of-range, or oversized bridge rows before sampling.
+- `live_capture.collector_air_wing_bridge` is cache-first and requires
+  `--allow-air-wing-cold-scan` before running the expensive
+  `NavalAirReader.enumerate_air_wings()` heap/vtable scan. Cache hits reread
+  each cached body and require the wing vtable, type `69`, wing id, and owner
+  chain to match before the DLL receives a bridge row.
+- Each DLL sample revalidates the wing vtable, type, wing id, pool vtable,
+  owner-chain country vtable, owner tag id, tag-table decode, optional mission
+  region vtables, and sane count/effective-plane bounds before emitting. The
+  replay file never receives `body_ptr` or `tag_db_id`.
 - Do not model air as land-style `combat_started`/`combat_ended`. Current live
   evidence supports continuous per-region attrition/aggregation, not a discrete
   CCombatSide object with air-wing participants.
 - Displayed air-superiority percent remains a proxy until the exact UI scalar or
-  full scoring inputs are located.
+  full scoring inputs are located. The emitted `effective_planes` value is the
+  live active/effective plane count and a stable aggregation input, not the
+  final UI air-superiority percentage.
 
 ### Orders And Fronts
 

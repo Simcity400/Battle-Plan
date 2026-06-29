@@ -22,6 +22,7 @@ from replay import schema
 from . import continuity as _continuity
 from . import process_identity as _process_identity
 from .collector_advisor_tokens import resolve_advisor_token_filter_preflight
+from .collector_air_wing_bridge import resolve_air_wing_body_bridge_preflight
 from .collector_army_order_bridge import resolve_army_body_bridge_preflight
 from .collector_frames import (
     COLLECTOR_BACKEND,
@@ -345,6 +346,7 @@ def record_collector_session(
     division_body_bridge: Any = None,
     army_body_bridge: Any = None,
     naval_combat_body_bridge: Any = None,
+    air_wing_body_bridge: Any = None,
     preflight_country_object_bridge: bool = False,
     allow_country_cold_scan: bool = False,
     preflight_division_movement: bool = False,
@@ -352,6 +354,8 @@ def record_collector_session(
     preflight_army_orders: bool = False,
     allow_army_cold_scan: bool = False,
     preflight_naval_combat: bool = False,
+    preflight_air_wings: bool = False,
+    allow_air_wing_cold_scan: bool = False,
     preflight_state_control: bool = False,
     preflight_province_control: bool = False,
     allow_province_cold_scan: bool = False,
@@ -380,6 +384,8 @@ def record_collector_session(
         raise ValueError("allow_division_cold_scan requires preflight_division_movement")
     if allow_army_cold_scan and not preflight_army_orders:
         raise ValueError("allow_army_cold_scan requires preflight_army_orders")
+    if allow_air_wing_cold_scan and not preflight_air_wings:
+        raise ValueError("allow_air_wing_cold_scan requires preflight_air_wings")
 
     started_utc = datetime.now(timezone.utc).isoformat()
     started_monotonic = time.monotonic()
@@ -459,6 +465,24 @@ def record_collector_session(
         naval_combat_body_bridge_preflight["enabled"] = True
         if preflight.usable:
             naval_combat_body_bridge = preflight.encoded
+    air_wing_body_bridge_preflight = {
+        "enabled": bool(preflight_air_wings),
+        "status": "not_requested",
+        "row_count": 0,
+        "allow_cold_scan": bool(allow_air_wing_cold_scan),
+    }
+    if air_wing_body_bridge is None and preflight_air_wings:
+        preflight = resolve_air_wing_body_bridge_preflight(
+            pid,
+            cache_path=out_root / "_preflight_cache" / "air_wing_bodies.json",
+            allow_cold_scan=allow_air_wing_cold_scan,
+        )
+        air_wing_body_bridge_preflight = preflight.diagnostics
+        air_wing_body_bridge_preflight["enabled"] = True
+        air_wing_body_bridge_preflight["allow_cold_scan"] = bool(
+            allow_air_wing_cold_scan)
+        if preflight.usable:
+            air_wing_body_bridge = preflight.encoded
     map_control_state_roots = None
     map_control_province_bridge = None
     map_control_controller_bridge = None
@@ -529,6 +553,7 @@ def record_collector_session(
         division_body_bridge=division_body_bridge,
         army_body_bridge=army_body_bridge,
         naval_combat_body_bridge=naval_combat_body_bridge,
+        air_wing_body_bridge=air_wing_body_bridge,
         map_control_state_roots=map_control_state_roots,
         map_control_province_bridge=map_control_province_bridge,
         map_control_controller_bridge=map_control_controller_bridge,
@@ -671,6 +696,11 @@ def record_collector_session(
                 "naval_combat_body_bridge_supplied"),
             "naval_combat_body_bridge_rows": probe_manifest.get(
                 "naval_combat_body_bridge_rows"),
+            "air_wing_body_bridge_preflight": air_wing_body_bridge_preflight,
+            "air_wing_body_bridge_supplied": probe_manifest.get(
+                "air_wing_body_bridge_supplied"),
+            "air_wing_body_bridge_rows": probe_manifest.get(
+                "air_wing_body_bridge_rows"),
             "state_control_preflight": state_control_preflight,
             "province_control_preflight": province_control_preflight,
             "map_control_state_roots_supplied": probe_manifest.get(
@@ -1726,6 +1756,16 @@ def _main() -> int:
         help="resolve active naval combat bodies before recording raw naval combat deltas",
     )
     parser.add_argument(
+        "--preflight-air-wings",
+        action="store_true",
+        help="resolve live air-wing bodies before recording raw wing telemetry deltas",
+    )
+    parser.add_argument(
+        "--allow-air-wing-cold-scan",
+        action="store_true",
+        help="allow the slow air-wing vtable scan during preflight",
+    )
+    parser.add_argument(
         "--preflight-state-control",
         action="store_true",
         help="resolve/cache live state owner/controller roots before recording",
@@ -1770,6 +1810,8 @@ def _main() -> int:
         preflight_army_orders=args.preflight_army_orders,
         allow_army_cold_scan=args.allow_army_cold_scan,
         preflight_naval_combat=args.preflight_naval_combat,
+        preflight_air_wings=args.preflight_air_wings,
+        allow_air_wing_cold_scan=args.allow_air_wing_cold_scan,
         preflight_state_control=args.preflight_state_control,
         preflight_province_control=args.preflight_province_control,
         allow_province_cold_scan=args.allow_province_cold_scan,

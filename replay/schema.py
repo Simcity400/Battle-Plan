@@ -159,6 +159,9 @@ DOMAINS = (
     "land_combats",          # SOLVED land-combat reader -> combats[] kind=land (M)
     "naval_air_combats",     # naval/air combat detector sidecar (M)
     "naval_air_combat_stats",  # per-side naval combat stat rows (M/M*)
+    "air_wings",             # Raw in-process collector wing telemetry stream. Emits save-free
+                             # per-wing count/mission/effective-plane deltas/events before folding
+                             # into order_of_battle.air_wings / air-map inputs.
     # NEW WAVE-2 save deep domains (all save-sourced; folded under provenance.save)
     "abilities",         # aces + commander cooldowns + officer corps (parse_abilities)
     "projects",          # special-projects/facilities/scientists deep (parse_projects)
@@ -644,9 +647,11 @@ FIELD_SOURCES: Dict[str, str] = {
     # --- top-level order_of_battle (§12, from oob.json) ---
     # The LIVE oob_command reader (§12c) folds the command TREE into armies/army_groups/
     # fleets/theatres (membership + leader + owner-consensus), so those are live-first with
-    # the save oob.json as the backstop (M/S). navy_theaters/air_wings are NOT measured live
-    # -> save-only (S). by_country is the per-tag count rollup (S/D). Per-list *_source flags
-    # are "M" when the live read filled the list, else absent (save-sourced).
+    # the save oob.json as the backstop (M/S). navy_theaters and the save-shaped
+    # order_of_battle.air_wings list are not filled by oob_command -> save-only (S).
+    # The separate raw `air_wings` domain carries live wing telemetry. by_country
+    # is the per-tag count rollup (S/D). Per-list *_source flags are "M" when the
+    # live read filled the list, else absent (save-sourced).
     "order_of_battle.army_groups": "M/S",
     "order_of_battle.armies": "M/S",
     "order_of_battle.fleets": "M/S",
@@ -1791,9 +1796,11 @@ class OrderOfBattle:
     LIVE command TREE (§12c, oob_command_live.py, M): armies/army_groups/fleets/theatres are
     filled live-first by the "oob_command" domain (membership ids + leader_id + owner-consensus
     TAG; task forces nest under each fleet). The save oob.json is the BACKSTOP for those (M/S);
-    navy_theaters/air_wings stay save-only. Membership/leader ids are RAW engine ints (NOT TAGs);
-    only `owner` is a resolved country TAG. When a live list is filled, the assembler sets a
-    matching `<list>_source = "M"` key (validator-inert) alongside it.
+    navy_theaters and the save-shaped air_wings list stay save-only; the separate
+    raw `air_wings` domain carries live wing telemetry. Membership/leader ids are
+    RAW engine ints (NOT TAGs); only `owner` is a resolved country TAG. When a live
+    list is filled, the assembler sets a matching `<list>_source = "M"` key
+    (validator-inert) alongside it.
     """
     army_groups: List[Dict[str, Any]] = field(default_factory=list)
     armies: List[Dict[str, Any]] = field(default_factory=list)
