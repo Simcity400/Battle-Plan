@@ -106,6 +106,35 @@ class TestCollectorSession(unittest.TestCase):
         self.assertEqual(summary["buildings_on_lightweight_frames"], 1)
         self.assertEqual(summary["heavy_payload_on_lightweight_frames"], 1)
 
+    def test_collector_frame_payload_summary_counts_state_resources(self):
+        summary = cs._collector_frame_payload_summary([
+            {
+                "capture_boundary": "scheduled_hour_snapshot",
+                "domains": ["clock", "state_detail"],
+                "states": {
+                    "1": {"resources": {"steel": 12.5, "oil": 3}},
+                    "2": {"resources": {}},
+                },
+            },
+            {
+                "capture_boundary": "scheduled_hour_snapshot",
+                "domains": ["clock", "state_detail"],
+                "states": {
+                    "3": {"resources": {"rubber": 1}},
+                },
+            },
+        ])
+
+        self.assertEqual(summary["domains_seen"], ["clock", "state_detail"])
+        self.assertEqual(summary["state_detail_frames"], 2)
+        self.assertEqual(summary["scheduled_state_detail_domain_frames"], 2)
+        self.assertEqual(summary["state_resource_frames"], 2)
+        self.assertEqual(summary["state_rows_with_resources"], 3)
+        self.assertEqual(summary["state_rows_with_nonempty_resources"], 2)
+        self.assertEqual(summary["state_resource_entries"], 3)
+        self.assertEqual(summary["max_state_resource_rows_per_frame"], 2)
+        self.assertEqual(summary["max_state_resource_entries_per_state"], 2)
+
     def test_collector_frame_payload_summary_counts_country_scalar_source(self):
         summary = cs._collector_frame_payload_summary([
             {

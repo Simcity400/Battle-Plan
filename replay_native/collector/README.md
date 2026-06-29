@@ -311,9 +311,20 @@ Recorder-side map-control contract:
   array for map control: `CProvince+0xC0` yields state objects for
   `state_ownership` / `state_control`, and `CProvince+0x188` yields province
   controller tag-db ids;
+- the same scheduled state-object path now emits `state_detail` resource
+  deposits by reading `CState* + 0x30` to the static definition and its
+  resource table at `def+0xF8/+0x100/+0x104`; these are raw state deposits, not
+  country resource production/export/import totals;
 - current no-cold proof on pid 43412 emitted 12 scheduled frames each for
   `state_ownership`, `state_control`, and `province_control` across 12 game
   hours, with 1081 state rows and 10272 province rows per frame;
+- current state-resource proof on pid 43412 emitted 13 scheduled `state_detail`
+  frames across 12 game hours in 47.453 wall seconds, verified replay output,
+  folded 14027 state resource rows with 9204 resource entries, reached 1079
+  resource-bearing state rows out of 1081 state rows in one frame, preserved
+  unknown resource db ids as `tid_0x...`, and kept worker-poll frames free of
+  heavy scheduled payloads. Two state rows still omit `resources` fail-closed
+  and need follow-up before claiming full 1081/1081 resource-row coverage;
 - the older `map_control_state_roots`, dense province array, and controller
   bridges remain fallbacks if the static root is unavailable; worker-poll
   frames stay light.

@@ -469,7 +469,7 @@ stays `0`, e.g. a nuke RECORD with `amount=0` yields `nukes_total=0`).
 | `province_buildings` | obj\|null | S | province-scoped buildings folded to the state (`naval_base, coastal_fort, ...`) |
 | `victory_points_total` | int\|null | S | sum of the state's province VP |
 | `victory_points_by_province` | obj\|null | S | `{province_id: vp}` (static) |
-| `resources` | obj\|null | S | `{resource: amount}` (raw deposits) |
+| `resources` | obj\|null | M / S | `{resource: amount}` raw deposits. `M` only when a scheduled collector `state_detail` frame supplied live `CState` definition resources; save data is the backstop. Known resources use canonical names; unknown live db ids are preserved as `tid_0x...` instead of dropping the row. |
 | `manpower_pool` | obj\|null | S | `{available, locked, total}` |
 | `category` | str\|null | M/S | state category id (`town`, `large_city`, …) |
 | `occupation` | obj\|null | S | `{resistance, resistance_speed, compliance, compliance_speed, occupied_country_tag, operational_status}` |

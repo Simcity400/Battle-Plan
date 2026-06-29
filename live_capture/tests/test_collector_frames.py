@@ -2277,6 +2277,54 @@ class TestCollectorFrames(unittest.TestCase):
         self.assertEqual(snap["provinces"], {})
         self.assertIsNone(snap["map"]["control_by_province"])
 
+    def test_snapshot_frame_folds_scheduled_state_resources(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock", "state_detail"],
+            "states": {
+                "1": {"resources": {"steel": 12.5, "oil": 3, "tid_0x1234": 1}},
+                "2": {"resources": {}},
+            },
+        }
+
+        snap = snapshot_from_collector_frame(frame, "collector-test")
+
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        self.assertEqual(
+            snap["provenance"]["collector"]["domains"],
+            ["clock", "state_detail"],
+        )
+        self.assertEqual(snap["states"]["1"]["resources"], {
+            "steel": 12.5,
+            "oil": 3.0,
+            "tid_0x1234": 1.0,
+        })
+        self.assertEqual(snap["states"]["2"]["resources"], {})
+
+    def test_snapshot_frame_rejects_malformed_state_resources(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock", "state_detail"],
+            "states": {
+                "1": {"resources": {"bad_resource": 2, "steel": -1}},
+            },
+        }
+
+        problems = validate_collector_frame(frame)
+
+        self.assertTrue(any("not known resource" in p for p in problems), problems)
+        self.assertTrue(any("not finite nonnegative number" in p for p in problems), problems)
+
     def test_snapshot_frame_folds_scheduled_buildings_live(self):
         frame = {
             "type": "snapshot",

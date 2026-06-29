@@ -44,6 +44,7 @@ SUPPORTED_SNAPSHOT_DOMAINS = frozenset({
     "diplomacy_live",
     "state_ownership",
     "state_control",
+    "state_detail",
     "province_control",
     "buildings_live",
 })
@@ -59,6 +60,7 @@ SCHEDULED_ONLY_SNAPSHOT_DOMAINS = frozenset({
     "diplomacy_live",
     "state_ownership",
     "state_control",
+    "state_detail",
     "province_control",
     "buildings_live",
 })
@@ -835,6 +837,16 @@ def validate_collector_frame(frame: Any) -> List[str]:
         and
         frame.get("capture_boundary") != "scheduled_hour_snapshot"
         and (
+            "state_detail" in scheduled_domain_claims
+            or _has_state_resource_rows(states)
+        )
+    ):
+        problems.append("collector state_detail payload requires scheduled_hour_snapshot")
+    if (
+        frame.get("capture_boundary") != "worker_poll"
+        and
+        frame.get("capture_boundary") != "scheduled_hour_snapshot"
+        and (
             "buildings_live" in scheduled_domain_claims
             or _has_building_rows(states, provinces)
         )
@@ -958,6 +970,8 @@ def snapshot_from_root_probe_frame(frame: Dict[str, Any], game_id: str) -> Dict[
         domains.append("state_ownership")
     if "state_control" in claimed_domains and _has_state_control_rows(frame_states):
         domains.append("state_control")
+    if "state_detail" in claimed_domains and _has_state_resource_rows(frame_states):
+        domains.append("state_detail")
     if "province_control" in claimed_domains and _has_province_control_rows(frame_provinces):
         domains.append("province_control")
     if "buildings_live" in claimed_domains and _has_building_rows(
@@ -5224,6 +5238,12 @@ def _validate_state_rows(states: Dict[str, Any]) -> List[str]:
                 buildings,
                 f"collector frame state {sid!r}.buildings",
             ))
+        resources = row.get("resources")
+        if resources is not None:
+            problems.extend(_validate_state_resource_map(
+                resources,
+                f"collector frame state {sid!r}.resources",
+            ))
     return problems
 
 
@@ -5277,6 +5297,18 @@ def _validate_building_map(buildings: Any, prefix: str) -> List[str]:
             problems.append(f"{prefix} key {building!r} not script token")
         if not _valid_bounded_int(level, minimum=0, maximum=BUILDING_LEVEL_MAX):
             problems.append(f"{prefix}.{building!s} not int in range")
+    return problems
+
+
+def _validate_state_resource_map(resources: Any, prefix: str) -> List[str]:
+    if not isinstance(resources, dict):
+        return [f"{prefix} not dict|null"]
+    problems: List[str] = []
+    for resource, amount in resources.items():
+        if resource not in schema.RESOURCE_KEYS and not _valid_unknown_resource_key(resource):
+            problems.append(f"{prefix} key {resource!r} not known resource")
+        if not _valid_nonnegative_measure(amount):
+            problems.append(f"{prefix}.{resource!s} not finite nonnegative number in range")
     return problems
 
 
@@ -6694,8 +6726,9 @@ def _fold_state_rows(
     domain_set = set(domains)
     fold_owner = "state_ownership" in domain_set
     fold_controller = "state_control" in domain_set
+    fold_resources = "state_detail" in domain_set
     fold_buildings = "buildings_live" in domain_set
-    if not (fold_owner or fold_controller or fold_buildings):
+    if not (fold_owner or fold_controller or fold_resources or fold_buildings):
         return
     for sid, row in states.items():
         if not _valid_positive_int_key(sid, max_value=100_000) or not isinstance(row, dict):
@@ -6711,6 +6744,10 @@ def _fold_state_rows(
             buildings = _clean_building_map(row.get("buildings"))
             if buildings is not None:
                 clean["buildings"] = buildings
+        if fold_resources and "resources" in row:
+            resources = _clean_state_resource_map(row.get("resources"))
+            if resources is not None:
+                clean["resources"] = resources
         if clean:
             state = snap["states"].setdefault(str(int(sid)), schema.empty_state())
             state.update(clean)
@@ -6758,6 +6795,28 @@ def _clean_building_map(buildings: Any) -> Optional[Dict[str, int]]:
     return clean
 
 
+def _clean_state_resource_map(resources: Any) -> Optional[Dict[str, float]]:
+    if not isinstance(resources, dict):
+        return None
+    clean: Dict[str, float] = {}
+    for key, value in resources.items():
+        if key not in schema.RESOURCE_KEYS and not _valid_unknown_resource_key(key):
+            return None
+        if not _valid_nonnegative_measure(value):
+            return None
+        clean[key] = float(value)
+    return clean
+
+
+def _valid_unknown_resource_key(value: Any) -> bool:
+    if not isinstance(value, str) or not value.startswith("tid_0x"):
+        return False
+    suffix = value[6:]
+    return 1 <= len(suffix) <= 8 and all(
+        ("0" <= ch <= "9") or ("A" <= ch <= "F") for ch in suffix
+    )
+
+
 def _fill_map_mirrors(snap: Dict[str, Any]) -> None:
     owner_by_state = {
         sid: state.get("owner")
@@ -6783,6 +6842,13 @@ def _has_state_owner_rows(states: Any) -> bool:
 def _has_state_control_rows(states: Any) -> bool:
     return isinstance(states, dict) and any(
         isinstance(row, dict) and "controller" in row
+        for row in states.values()
+    )
+
+
+def _has_state_resource_rows(states: Any) -> bool:
+    return isinstance(states, dict) and any(
+        isinstance(row, dict) and isinstance(row.get("resources"), dict)
         for row in states.values()
     )
 

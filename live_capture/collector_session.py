@@ -1467,6 +1467,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     state_control_frames = 0
     province_control_frames = 0
     state_ownership_frames = 0
+    state_detail_frames = 0
     country_scalars_frames = 0
     country_misc_frames = 0
     fuel_live_frames = 0
@@ -1486,6 +1487,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     scheduled_diplomacy_domain_frames = 0
     scheduled_politics_domain_frames = 0
     scheduled_politics_residuals_domain_frames = 0
+    scheduled_state_detail_domain_frames = 0
     scheduled_buildings_domain_frames = 0
     country_rows_with_scalar_payloads = 0
     country_rows_with_non_null_scalar_values = 0
@@ -1573,6 +1575,12 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     province_rows_with_buildings = 0
     state_rows_with_nonempty_buildings = 0
     province_rows_with_nonempty_buildings = 0
+    state_resource_frames = 0
+    state_rows_with_resources = 0
+    state_rows_with_nonempty_resources = 0
+    state_resource_entries = 0
+    max_state_resource_rows_per_frame = 0
+    max_state_resource_entries_per_state = 0
     max_state_building_rows_per_frame = 0
     max_province_building_rows_per_frame = 0
     max_building_types_per_location = 0
@@ -1731,6 +1739,8 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
                 province_control_frames += 1
             if "state_ownership" in domains:
                 state_ownership_frames += 1
+            if "state_detail" in domains:
+                state_detail_frames += 1
             if "country_scalars" in domains:
                 country_scalars_frames += 1
             if "country_misc" in domains:
@@ -1761,6 +1771,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
             diplomacy_domain_claimed = "diplomacy_live" in domains
             politics_domain_claimed = "politics_live" in domains
             politics_residuals_domain_claimed = "politics_residuals" in domains
+            state_detail_domain_claimed = "state_detail" in domains
             buildings_domain_claimed = "buildings_live" in domains
         else:
             production_domain_claimed = False
@@ -1771,6 +1782,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
             diplomacy_domain_claimed = False
             politics_domain_claimed = False
             politics_residuals_domain_claimed = False
+            state_detail_domain_claimed = False
             buildings_domain_claimed = False
         root_probe = frame.get("root_probe")
         if isinstance(root_probe, dict):
@@ -1827,6 +1839,11 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         ):
             scheduled_politics_residuals_domain_frames += 1
         if (
+            state_detail_domain_claimed
+            and boundary == "scheduled_hour_snapshot"
+        ):
+            scheduled_state_detail_domain_frames += 1
+        if (
             buildings_domain_claimed
             and boundary == "scheduled_hour_snapshot"
         ):
@@ -1846,6 +1863,8 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         politics_residual_rows_in_frame = 0
         construction_queue_rows_in_frame = 0
         state_building_rows_in_frame = 0
+        state_resource_rows_in_frame = 0
+        state_resource_entries_in_frame = 0
         province_building_rows_in_frame = 0
         heavy_payload_in_lightweight_frame = False
         special_projects = frame.get("special_projects")
@@ -2291,6 +2310,16 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
                     )
                     if buildings:
                         state_rows_with_nonempty_buildings += 1
+                resources = row.get("resources")
+                if isinstance(resources, dict):
+                    state_resource_rows_in_frame += 1
+                    state_resource_entries_in_frame += len(resources)
+                    max_state_resource_entries_per_state = max(
+                        max_state_resource_entries_per_state,
+                        len(resources),
+                    )
+                    if resources:
+                        state_rows_with_nonempty_resources += 1
             if states and boundary == "worker_poll":
                 heavy_payload_in_lightweight_frame = True
         provinces = frame.get("provinces")
@@ -2322,6 +2351,14 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
             max_province_building_rows_per_frame = max(
                 max_province_building_rows_per_frame,
                 province_building_rows_in_frame,
+            )
+        if state_resource_rows_in_frame:
+            state_resource_frames += 1
+            state_rows_with_resources += state_resource_rows_in_frame
+            state_resource_entries += state_resource_entries_in_frame
+            max_state_resource_rows_per_frame = max(
+                max_state_resource_rows_per_frame,
+                state_resource_rows_in_frame,
             )
         if (
             boundary == "worker_poll"
@@ -2406,6 +2443,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         "state_ownership_frames": state_ownership_frames,
         "state_control_frames": state_control_frames,
         "province_control_frames": province_control_frames,
+        "state_detail_frames": state_detail_frames,
         "scheduled_production_domain_frames": scheduled_production_domain_frames,
         "scheduled_focus_domain_frames": scheduled_focus_domain_frames,
         "scheduled_tech_domain_frames": scheduled_tech_domain_frames,
@@ -2416,6 +2454,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         "scheduled_politics_domain_frames": scheduled_politics_domain_frames,
         "scheduled_politics_residuals_domain_frames": (
             scheduled_politics_residuals_domain_frames),
+        "scheduled_state_detail_domain_frames": scheduled_state_detail_domain_frames,
         "scheduled_buildings_domain_frames": scheduled_buildings_domain_frames,
         "frames_with_production_payloads": frames_with_production_payloads,
         "country_rows_with_production_payloads": (
@@ -2573,6 +2612,13 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         "state_rows_with_nonempty_buildings": state_rows_with_nonempty_buildings,
         "province_rows_with_nonempty_buildings": (
             province_rows_with_nonempty_buildings),
+        "state_resource_frames": state_resource_frames,
+        "state_rows_with_resources": state_rows_with_resources,
+        "state_rows_with_nonempty_resources": state_rows_with_nonempty_resources,
+        "state_resource_entries": state_resource_entries,
+        "max_state_resource_rows_per_frame": max_state_resource_rows_per_frame,
+        "max_state_resource_entries_per_state": (
+            max_state_resource_entries_per_state),
         "max_state_building_rows_per_frame": max_state_building_rows_per_frame,
         "max_province_building_rows_per_frame": max_province_building_rows_per_frame,
         "max_building_types_per_location": max_building_types_per_location,
@@ -2635,6 +2681,7 @@ def _map_control_quality_summary(
     observed_map_domains = (
         ("state_ownership", "state_ownership_frames"),
         ("state_control", "state_control_frames"),
+        ("state_detail", "scheduled_state_detail_domain_frames"),
         ("province_control", "province_control_frames"),
     )
     for domain, count_key in observed_map_domains:
@@ -2652,6 +2699,10 @@ def _map_control_quality_summary(
         "scheduled_snapshot_frame_count": scheduled_frames,
         "state_control_frames": _int_value(
             payload_summary.get("state_control_frames")),
+        "state_detail_frames": _int_value(
+            payload_summary.get("state_detail_frames")),
+        "scheduled_state_detail_domain_frames": _int_value(
+            payload_summary.get("scheduled_state_detail_domain_frames")),
         "state_ownership_frames": _int_value(
             payload_summary.get("state_ownership_frames")),
         "province_control_frames": _int_value(

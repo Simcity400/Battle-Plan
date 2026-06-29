@@ -23,6 +23,7 @@ SCHEDULED_DOMAIN_FRAME_COUNT_KEYS = {
     "production_live": "scheduled_production_domain_frames",
     "state_ownership": "state_ownership_frames",
     "state_control": "state_control_frames",
+    "state_detail": "scheduled_state_detail_domain_frames",
     "province_control": "province_control_frames",
     "buildings_live": "scheduled_buildings_domain_frames",
 }
@@ -70,6 +71,7 @@ def collector_session_proof_errors(
     require_politics_idea_classification: bool = False,
     require_politics_advisor_residuals: bool = False,
     require_production_construction: bool = False,
+    require_state_resources: bool = False,
     require_tech_live_names: bool = False,
     require_tech_live_progress: bool = False,
     require_tech_live_static_cost_progress: bool = False,
@@ -329,6 +331,33 @@ def collector_session_proof_errors(
             errors.append("construction queue rows were empty in every frame")
         if _as_int(summary.get("production_on_lightweight_frames")) not in (0, None):
             errors.append("production payloads appeared on lightweight frames")
+    if require_state_resources:
+        scheduled = _scheduled_domain_frame_count(summary, "state_detail")
+        required_frames = int(min_game_hours or 1)
+        if scheduled is None or scheduled < required_frames:
+            errors.append(
+                "state resources proof scheduled frames "
+                f"{scheduled!r} below required {required_frames}"
+            )
+        if _as_int(summary.get("state_resource_frames")) is None or _as_int(
+            summary.get("state_resource_frames")
+        ) < required_frames:
+            errors.append("state resource frames below required cadence")
+        resource_rows = _as_int(summary.get("state_rows_with_resources"))
+        min_resource_rows = required_frames * 1000
+        if resource_rows is None or resource_rows < min_resource_rows:
+            errors.append(
+                "state resource rows "
+                f"{resource_rows!r} below required {min_resource_rows}"
+            )
+        if _as_int(summary.get("state_rows_with_nonempty_resources")) in (None, 0):
+            errors.append("nonempty state resource rows were not observed")
+        if _as_int(summary.get("state_resource_entries")) in (None, 0):
+            errors.append("state resource entries were not observed")
+        if _as_int(summary.get("max_state_resource_rows_per_frame")) is None or _as_int(
+            summary.get("max_state_resource_rows_per_frame")
+        ) < 1000:
+            errors.append("state resource rows per frame below full-state coverage")
     if require_tech_live_names:
         scheduled = _scheduled_domain_frame_count(summary, "tech_live")
         required_frames = int(min_game_hours or 1)
@@ -635,6 +664,7 @@ def collector_session_proof_summary(
     require_politics_idea_classification: bool = False,
     require_politics_advisor_residuals: bool = False,
     require_production_construction: bool = False,
+    require_state_resources: bool = False,
     require_tech_live_names: bool = False,
     require_tech_live_progress: bool = False,
     require_tech_live_static_cost_progress: bool = False,
@@ -666,6 +696,7 @@ def collector_session_proof_summary(
         require_politics_idea_classification=require_politics_idea_classification,
         require_politics_advisor_residuals=require_politics_advisor_residuals,
         require_production_construction=require_production_construction,
+        require_state_resources=require_state_resources,
         require_tech_live_names=require_tech_live_names,
         require_tech_live_progress=require_tech_live_progress,
         require_tech_live_static_cost_progress=require_tech_live_static_cost_progress,
@@ -814,6 +845,18 @@ def collector_session_proof_summary(
             "max_construction_queue_rows_per_frame"),
         "max_construction_queue_rows_per_country": summary.get(
             "max_construction_queue_rows_per_country"),
+        "state_detail_frames": summary.get("state_detail_frames"),
+        "scheduled_state_detail_domain_frames": summary.get(
+            "scheduled_state_detail_domain_frames"),
+        "state_resource_frames": summary.get("state_resource_frames"),
+        "state_rows_with_resources": summary.get("state_rows_with_resources"),
+        "state_rows_with_nonempty_resources": summary.get(
+            "state_rows_with_nonempty_resources"),
+        "state_resource_entries": summary.get("state_resource_entries"),
+        "max_state_resource_rows_per_frame": summary.get(
+            "max_state_resource_rows_per_frame"),
+        "max_state_resource_entries_per_state": summary.get(
+            "max_state_resource_entries_per_state"),
         "research_named_slot_frames": summary.get("research_named_slot_frames"),
         "research_named_slot_rows": summary.get("research_named_slot_rows"),
         "country_rows_with_research_named_slots": summary.get(
@@ -964,6 +1007,11 @@ def _main(argv: Optional[List[str]] = None) -> int:
         help="require positive scheduled production construction-queue rows",
     )
     parser.add_argument(
+        "--require-state-resources",
+        action="store_true",
+        help="require positive scheduled live state resource deposit rows",
+    )
+    parser.add_argument(
         "--require-tech-live-names",
         action="store_true",
         help="require positive scheduled live research rows with resolved tech_name",
@@ -1053,6 +1101,7 @@ def _main(argv: Optional[List[str]] = None) -> int:
         ),
         require_politics_advisor_residuals=args.require_politics_advisor_residuals,
         require_production_construction=args.require_production_construction,
+        require_state_resources=args.require_state_resources,
         require_tech_live_names=args.require_tech_live_names,
         require_tech_live_progress=args.require_tech_live_progress,
         require_tech_live_static_cost_progress=(

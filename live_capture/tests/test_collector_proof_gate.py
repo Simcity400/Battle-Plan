@@ -104,6 +104,52 @@ class TestCollectorProofGate(unittest.TestCase):
             3,
         )
 
+    def test_accepts_state_resources_scheduled_domain_proof(self):
+        proof = collector_session_proof_summary(
+            _manifest(collector_frame_payload_summary={
+                "domains_seen": ["clock", "state_detail"],
+                "state_detail_frames": 12,
+                "scheduled_state_detail_domain_frames": 12,
+                "state_resource_frames": 12,
+                "state_rows_with_resources": 12972,
+                "state_rows_with_nonempty_resources": 4920,
+                "state_resource_entries": 5304,
+                "max_state_resource_rows_per_frame": 1081,
+                "max_state_resource_entries_per_state": 3,
+                "heavy_payload_on_lightweight_frames": 0,
+            }),
+            required_scheduled_snapshot_domains=["state_detail"],
+            min_game_hours=12,
+            require_state_resources=True,
+        )
+
+        self.assertTrue(proof["ok"])
+        self.assertEqual(proof["errors"], [])
+        self.assertEqual(
+            proof["scheduled_snapshot_domain_frames"]["state_detail"],
+            12,
+        )
+        self.assertEqual(proof["state_resource_entries"], 5304)
+
+    def test_rejects_state_resources_without_nonempty_entries(self):
+        errors = collector_session_proof_errors(
+            _manifest(collector_frame_payload_summary={
+                "domains_seen": ["clock", "state_detail"],
+                "state_detail_frames": 12,
+                "scheduled_state_detail_domain_frames": 12,
+                "state_resource_frames": 12,
+                "state_rows_with_resources": 12972,
+                "state_rows_with_nonempty_resources": 0,
+                "state_resource_entries": 0,
+                "heavy_payload_on_lightweight_frames": 0,
+            }),
+            min_game_hours=12,
+            require_state_resources=True,
+        )
+
+        self.assertIn("nonempty state resource rows were not observed", errors)
+        self.assertIn("state resource entries were not observed", errors)
+
     def test_accepts_diplomacy_live_scheduled_domain_proof(self):
         proof = collector_session_proof_summary(
             _manifest(collector_frame_payload_summary={

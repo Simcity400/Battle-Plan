@@ -147,6 +147,15 @@ mod attach_log {
     const CBUILDING_OFF_TYPE: usize = 0x08;
     const CBUILDING_OFF_LEVEL: usize = 0x40;
     const STATE_OFF_BUILDINGS_VEC: usize = 0x158;
+    const STATE_OFF_DEF: usize = 0x30;
+    const STATE_DEF_OFF_RESOURCES_PTR: usize = 0xF8;
+    const STATE_DEF_OFF_RESOURCES_SIZE: usize = 0x100;
+    const STATE_DEF_OFF_RESOURCES_CAP: usize = 0x104;
+    const STATE_RESOURCE_STRIDE: usize = 0x10;
+    const STATE_RESOURCE_AMOUNT_SCALE: f64 = 100_000.0;
+    const STATE_RESOURCE_NO_ID: u32 = 0xFFFF_FFFF;
+    const STATE_RESOURCE_MAX_ROWS: u32 = 16;
+    const STATE_RESOURCE_MAX_ABS_RAW: i32 = 100_000_000;
     const BUILDING_VECTOR_MAX: u32 = 64;
     const BUILDING_LEVEL_SANE_MAX: u16 = 1000;
     const OBJ_TEMPLATES_LOCKED: usize = 0x01B4;
@@ -9653,16 +9662,22 @@ mod attach_log {
             } else {
                 None
             };
+            let resources = state_resources_json(entry.state_ptr);
             let building_field = buildings
                 .as_deref()
                 .map(|rows| format!(",\"buildings\":{rows}"))
                 .unwrap_or_default();
+            let resource_field = resources
+                .as_deref()
+                .map(|rows| format!(",\"resources\":{rows}"))
+                .unwrap_or_default();
             rows.push(format!(
-                "\"{}\":{{\"owner\":{},\"controller\":{}{}}}",
+                "\"{}\":{{\"owner\":{},\"controller\":{}{}{}}}",
                 entry.state_id,
                 json_opt_str(owner_tag.as_deref()),
                 json_opt_str(controller_tag.as_deref()),
-                building_field
+                building_field,
+                resource_field
             ));
         }
         if rows.len() >= MIN_USABLE_STATE_ROWS {
@@ -9745,16 +9760,22 @@ mod attach_log {
             } else {
                 None
             };
+            let resources = state_resources_json(state_ptr);
             let building_field = buildings
                 .as_deref()
                 .map(|rows| format!(",\"buildings\":{rows}"))
                 .unwrap_or_default();
+            let resource_field = resources
+                .as_deref()
+                .map(|rows| format!(",\"resources\":{rows}"))
+                .unwrap_or_default();
             rows.push(format!(
-                "\"{}\":{{\"owner\":{},\"controller\":{}{}}}",
+                "\"{}\":{{\"owner\":{},\"controller\":{}{}{}}}",
                 state_id,
                 json_opt_str(owner_tag.as_deref()),
                 json_opt_str(controller_tag.as_deref()),
-                building_field
+                building_field,
+                resource_field
             ));
         }
 
@@ -9961,6 +9982,62 @@ mod attach_log {
             province_id, controller, controller_tag_db_id, decode_status, state_field,
             building_field
         )
+    }
+
+    fn state_resources_json(state_ptr: usize) -> Option<String> {
+        if !is_map_control_heap_pointer(state_ptr) {
+            return None;
+        }
+        let state_def = read_u64(state_ptr.checked_add(STATE_OFF_DEF)?)? as usize;
+        if !is_map_control_heap_pointer(state_def) {
+            return None;
+        }
+        let data = read_u64(state_def.checked_add(STATE_DEF_OFF_RESOURCES_PTR)?)? as usize;
+        let size = read_u32(state_def.checked_add(STATE_DEF_OFF_RESOURCES_SIZE)?)?;
+        let cap = read_u32(state_def.checked_add(STATE_DEF_OFF_RESOURCES_CAP)?)?;
+        if size == 0 {
+            return Some("{}".to_string());
+        }
+        if size > cap || size > STATE_RESOURCE_MAX_ROWS || !is_map_control_heap_pointer(data) {
+            return None;
+        }
+        let byte_len = (size as usize).checked_mul(STATE_RESOURCE_STRIDE)?;
+        let rows = read_bytes(data, byte_len)?;
+        if rows.len() != byte_len {
+            return None;
+        }
+        let mut resources: BTreeMap<String, f64> = BTreeMap::new();
+        for idx in 0..size {
+            let offset = (idx as usize).checked_mul(STATE_RESOURCE_STRIDE)?;
+            let amount_raw = read_i32_from_slice(&rows, offset)?;
+            if !(0..=STATE_RESOURCE_MAX_ABS_RAW).contains(&amount_raw) {
+                return None;
+            }
+            let resource_id = read_u32_from_slice(&rows, offset.checked_add(8)?)?;
+            if resource_id == STATE_RESOURCE_NO_ID {
+                continue;
+            }
+            let name = state_resource_name_from_id(resource_id);
+            resources.insert(name, amount_raw as f64 / STATE_RESOURCE_AMOUNT_SCALE);
+        }
+        let json_rows: Vec<String> = resources
+            .iter()
+            .map(|(key, value)| format!("{}:{}", json_str(key), json_opt_f64(Some(*value))))
+            .collect();
+        Some(format!("{{{}}}", json_rows.join(",")))
+    }
+
+    fn state_resource_name_from_id(resource_id: u32) -> String {
+        match resource_id {
+            0x3E03 => "steel".to_string(),
+            0x3E05 => "rubber".to_string(),
+            0x3E06 => "tungsten".to_string(),
+            0x3E07 => "chromium".to_string(),
+            0x4E1F => "aluminium".to_string(),
+            0x4E25 => "coal".to_string(),
+            0x4E37 => "oil".to_string(),
+            _ => format!("tid_0x{resource_id:X}"),
+        }
     }
 
     fn building_levels_json(module_base: usize, obj_base: usize, vec_off: usize) -> Option<String> {
@@ -10170,6 +10247,9 @@ mod attach_log {
             || scheduled_province_rows
                 .map(|rows| rows.contains("\"buildings\":"))
                 .unwrap_or(false);
+        let has_state_resource_rows = scheduled_state_rows
+            .map(|rows| rows.contains("\"resources\":"))
+            .unwrap_or(false);
         let domains = state.country_identity.domains_json_from_rows(
             &current_rows,
             scheduled_state_rows.is_some(),
@@ -10185,6 +10265,11 @@ mod attach_log {
         );
         let domains = if has_building_rows {
             domains_json_with_extra_domain(domains, "buildings_live")
+        } else {
+            domains
+        };
+        let domains = if has_state_resource_rows {
+            domains_json_with_extra_domain(domains, "state_detail")
         } else {
             domains
         };
@@ -12628,6 +12713,22 @@ mod attach_log {
         let mut arr = [0u8; 8];
         arr.copy_from_slice(slice);
         Some(i64::from_le_bytes(arr))
+    }
+
+    fn read_u32_from_slice(bytes: &[u8], offset: usize) -> Option<u32> {
+        let end = offset.checked_add(4)?;
+        let slice = bytes.get(offset..end)?;
+        let mut arr = [0u8; 4];
+        arr.copy_from_slice(slice);
+        Some(u32::from_le_bytes(arr))
+    }
+
+    fn read_i32_from_slice(bytes: &[u8], offset: usize) -> Option<i32> {
+        let end = offset.checked_add(4)?;
+        let slice = bytes.get(offset..end)?;
+        let mut arr = [0u8; 4];
+        arr.copy_from_slice(slice);
+        Some(i32::from_le_bytes(arr))
     }
 
     fn read_fixed_0_1(addr: usize) -> Option<f64> {

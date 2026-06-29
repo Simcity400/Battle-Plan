@@ -238,6 +238,8 @@ python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/ta
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_research_denominator_gate/<run-dir>/session_manifest.json --min-game-hours 36 --require-scheduled-domain tech_live --require-tech-live-names --require-tech-live-progress --require-tech-live-dll-base-progress --require-tech-live-eta
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_buildings_gate --game-id buildings_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_buildings_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain buildings_live
+python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_state_resources_gate --game-id state_resources_unknown_ids_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300
+python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_state_resources_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain state_detail --require-state-resources
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_diplomacy_gate --game-id diplomacy_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_diplomacy_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain diplomacy_live
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_diplomacy_war_gate --game-id diplomacy_war_relations_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300 --preflight-war-relations
@@ -357,6 +359,19 @@ observed 13 scheduled `buildings_live` frames, captured 1081 state rows and
 10272 province rows per scheduled frame, captured non-empty building maps in
 13689 state rows and 50765 province rows across the run, and reported zero
 building payloads on lightweight worker frames.
+
+For state resource-deposit acceptance, require scheduled `state_detail` plus
+`--require-state-resources` on a 12-game-hour run. This proves live raw state
+resource deposits from `CState` definition tables, not country
+produced/exported/imported economy totals. The 2026-06-29 pid 43412 proof
+`replay/snapshots/_collector_session_state_resources_gate/20260629T222307Z_pid43412`
+advanced 12 game hours in 47.453 wall seconds, stored 13 verified snapshots,
+observed 13 scheduled `state_detail` frames, folded 14027 state resource rows
+with 9204 resource entries, reached 1079 resource-bearing state rows out of
+1081 state rows in a single frame, and reported zero heavy payloads on
+lightweight worker frames. Unknown resource db ids are preserved as
+`tid_0x...`; the two rows without `resources` are still fail-closed omissions
+to investigate before claiming full 1081/1081 resource-row coverage.
 
 For division org/strength plus army-order raw-stream acceptance, first populate
 same-process caches with the cold bootstrap command if needed, then rerun
