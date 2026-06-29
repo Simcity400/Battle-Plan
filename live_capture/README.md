@@ -57,8 +57,10 @@ current product status and acceptance gates, and
   movement, and event extraction.
 - Country identity/scalars use a preflight cache/control-contract path:
   `tag_db_id:country_object_ptr` plus `tag_db_id:country_record_ptr`, validated
-  by the DLL per frame. `country_object_scan` must stay false for normal and
-  speed-five proof runs.
+  by the DLL per frame. Warm startup validates `country_objects.json` for
+  object-backed scalars and `country_records.json` for record-backed political
+  power; record rows are additive and must not reduce object-row coverage.
+  `country_object_scan` must stay false for normal and speed-five proof runs.
 - The collector-frame adapter can fold `state_ownership`, `state_control`, and
   `province_control` rows when a collector frame explicitly claims those
   domains. Session manifests summarize raw-frame country/state/province row

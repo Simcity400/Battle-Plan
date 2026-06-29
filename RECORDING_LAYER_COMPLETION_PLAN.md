@@ -893,21 +893,37 @@ country vtable and `tag_db_id`, validates each record pointer by checking that i
 still points at the same country object, then re-reads object-backed scalars plus
 record-backed political power per frame before emitting `country_scalars`.
 
-The preflight now has two same-process caches keyed by PID, process creation
-time, exe hash, and module base. `country_array.json` remains the country-record
-cache for record-backed political power when the array token is available.
-`country_objects.json` is the speed-five object bridge cache: warm recording
-validates each cached object pointer by vtable, object-owned `tag_db_id`, and
-tag-table match before emitting `tag_db_id:country_object_ptr` control rows.
+The preflight now has three same-process caches keyed by PID, process creation
+time, exe hash, and module base. `country_array.json` stores the located record
+array token when available. `country_objects.json` is the speed-five object
+bridge cache: warm recording validates each cached object pointer by vtable,
+object-owned `tag_db_id`, and tag-table match before emitting
+`tag_db_id:country_object_ptr` control rows. `country_records.json` stores
+record pointers for record-backed political power; warm recording validates the
+record cache against current object rows, checks each record back-pointer, and
+merges record pointers additively so political-power coverage cannot shrink the
+object-backed country-scalar set. Record-only rows that cannot validate as
+current country objects are skipped instead of poisoning the full cache.
 Heap-wide record recovery and cold object discovery are opt-in through
 `allow_cold_scan` / `--allow-country-cold-scan`; normal recording startup fails
 fast with `cold_scan_disabled` when only uncached cold discovery could continue.
 
+Live proof on the current Portugal process: explicit record-cache bootstrap from
+the object cache resolved in 111.907s and stored `country_records.json`; warm
+preflight then resolved in 0.063s from `country_object_cache_record_cache` with
+354 object rows and 223 record-backed political-power rows. A clean static
+payload proof wrote and verified
+`collector_country_records_static_payload_probe.battleplan`; the first live
+frame had 354 country rows and 223 non-null `political_power` values. The
+same speed-five cadence command could not prove hourly advancement in that run
+because the game clock remained fixed at `1950.2.9.1` for 33.89s, so cadence
+must be re-run once the game is unpaused/advancing.
+
 Remaining Phase 2 gaps:
 
 - Replace cold preflight country-record discovery with a root-anchored or
-  hook-derived bridge so record-backed fields can start fast on every supported
-  build.
+  hook-derived bridge so first-run record-cache bootstrap is not a 111s heap
+  reverse scan on every supported build.
 - Expand country-record-backed fields beyond political power where the live
   record layout proves them.
 - Add longer-run pointer freshness diagnostics: accepted row count, stale row

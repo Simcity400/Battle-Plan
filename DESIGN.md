@@ -124,9 +124,9 @@ Implemented in the current bridge:
   finalization, cadence/transport diagnostics, and raw-frame sidecar retention;
 - live country identity and country-scalar bridge through a preflight
   `tag_db_id:country_object_ptr` / `tag_db_id:country_record_ptr` control
-  contract, with same-process country-array and country-object caches, explicit
-  cold object-scan bootstrap only, warm cache validation during recording, and
-  `country_object_scan = false`;
+  contract, with same-process country-array, country-object, and
+  country-record caches, explicit cold object/record-scan bootstrap only, warm
+  cache validation during recording, and `country_object_scan = false`;
 - collector-frame adapter contract for `state_ownership`, `state_control`, and
   `province_control`, including TAG validation and session row-count summaries;
 - state-root map preflight cache: all 1081 state owner/controller rows are slow

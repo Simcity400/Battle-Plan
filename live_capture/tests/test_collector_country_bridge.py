@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+import json
 import os
 from pathlib import Path
 import sys
@@ -14,14 +15,17 @@ from live_capture import collector_country_bridge as ccb  # noqa: E402
 from live_capture.collector_country_bridge import (  # noqa: E402
     _encoded_preflight,
     _load_country_object_preflight_cache,
+    _load_country_record_preflight_cache,
     _load_preflight_cache,
     _write_country_object_preflight_cache,
+    _write_country_record_preflight_cache,
     _write_preflight_cache,
     country_object_bridge_rows_from_country_database_root,
     country_object_bridge_rows_from_vtable_scan,
     country_object_bridge_rows_from_bridge,
     country_object_bridge_rows_from_country_array,
     country_object_bridge_rows_from_object_cache,
+    country_object_bridge_rows_from_record_cache,
     locate_country_array_from_object_rows,
     resolve_country_object_bridge_preflight,
     tag_table_from_country_database_root,
@@ -215,10 +219,16 @@ class FakePreflightProc(FakeMemoryProc):
         self._write_u64(self.country_database, self.table_base)
         self._write_u32(self.country_database + 8, len(self.tags) + 5)
         self._write_u32(self.country_database + 12, len(self.tags))
+        for i in range(50):
+            self._write_u16(self.rec0 + i * 0x120 + 0x5D, i)
+        self._write_u64(self.rec0 + 0x08, self.ger_obj)
+        self._write_u64(self.rec0 + 0x120 + 0x08, self.eng_obj)
         for tag_db_id in range(3, 51):
-            object_ptr = 0xD000 + (tag_db_id - 3) * 0x100
+            object_ptr = 0x11000 + (tag_db_id - 3) * 0x100
             self._write_country_object(object_ptr, tag_db_id, f"Country {tag_db_id}")
             self._write_u64(self.object_array + tag_db_id * 8, object_ptr)
+            record_ptr = self.rec0 + (tag_db_id - 1) * 0x120
+            self._write_u64(record_ptr + 0x08, object_ptr)
 
 
 @contextmanager
@@ -466,6 +476,271 @@ class TestCollectorCountryBridge(unittest.TestCase):
             )
             self.assertEqual(len(validated), len(rows))
 
+    def test_preflight_record_cache_loads_only_matching_process_identity(self):
+        proc = FakePreflightProc()
+        identity = SimpleNamespace(
+            pid=111,
+            create_time_100ns=222,
+            exe_sha256="a" * 64,
+            module_base=proc.module_base,
+        )
+        other_identity = SimpleNamespace(
+            pid=111,
+            create_time_100ns=333,
+            exe_sha256="a" * 64,
+            module_base=proc.module_base,
+        )
+        table = tag_table_from_country_database_root(proc, FakeTagTableModule)
+        object_rows = country_object_bridge_rows_from_country_database_root(
+            proc,
+            table,
+            min_rows=40,
+        )
+        record_rows = country_object_bridge_rows_from_country_array(
+            proc,
+            table,
+            (proc.rec0, proc.rec0, 50),
+        )
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "country_records.json"
+
+            self.assertTrue(_write_country_record_preflight_cache(path, identity, record_rows))
+            loaded = _load_country_record_preflight_cache(path, identity)
+
+            self.assertIsNotNone(loaded)
+            self.assertEqual(loaded["row_count"], len(record_rows))
+            self.assertIsNone(_load_country_record_preflight_cache(path, other_identity))
+            validated = country_object_bridge_rows_from_record_cache(
+                proc,
+                table,
+                loaded,
+                object_rows,
+                min_rows=40,
+            )
+            self.assertEqual(len(validated), len(record_rows))
+            self.assertEqual(encode_country_record_bridge(validated).split(";")[0], "1:0xA000")
+            extended_object_rows = object_rows + [{
+                "tag_db_id": 99,
+                "tag": "ZZZ",
+                "object_ptr": 0x8888,
+            }]
+            validated_extended = country_object_bridge_rows_from_record_cache(
+                proc,
+                table,
+                loaded,
+                extended_object_rows,
+                min_rows=40,
+            )
+            self.assertEqual(len(validated_extended), len(extended_object_rows))
+            self.assertEqual(validated_extended[-1]["tag"], "ZZZ")
+            self.assertNotIn("record_ptr", validated_extended[-1])
+            pruned_object_rows = [
+                row for row in object_rows
+                if int(row["tag_db_id"]) != 3
+            ]
+            validated_pruned = country_object_bridge_rows_from_record_cache(
+                proc,
+                table,
+                loaded,
+                pruned_object_rows,
+                min_rows=40,
+            )
+            self.assertEqual(len(validated_pruned), len(object_rows))
+            self.assertEqual(validated_pruned[2]["tag"], "SOV")
+            self.assertIn("record_ptr", validated_pruned[2])
+
+    def test_preflight_record_cache_validator_rejects_stale_rows(self):
+        proc = FakePreflightProc()
+        identity = SimpleNamespace(
+            pid=111,
+            create_time_100ns=222,
+            exe_sha256="a" * 64,
+            module_base=proc.module_base,
+        )
+        table = tag_table_from_country_database_root(proc, FakeTagTableModule)
+        object_rows = country_object_bridge_rows_from_country_database_root(
+            proc,
+            table,
+            min_rows=40,
+        )
+        record_rows = country_object_bridge_rows_from_country_array(
+            proc,
+            table,
+            (proc.rec0, proc.rec0, 50),
+        )
+
+        def validated_after(mutator):
+            with tempfile.TemporaryDirectory() as td:
+                path = Path(td) / "country_records.json"
+                self.assertTrue(
+                    _write_country_record_preflight_cache(path, identity, record_rows)
+                )
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                mutator(payload["rows"])
+                path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+                loaded = _load_country_record_preflight_cache(path, identity)
+                self.assertIsNotNone(loaded)
+                return country_object_bridge_rows_from_record_cache(
+                    proc,
+                    table,
+                    loaded,
+                    object_rows,
+                    min_rows=40,
+                )
+
+        cases = {
+            "bad_record_ptr": lambda rows: rows[0].update(record_ptr=0x1234),
+            "object_mismatch": lambda rows: rows[0].update(object_ptr=0xDEADBEEF),
+            "tag_mismatch": lambda rows: rows[0].update(tag="BAD"),
+            "duplicate_record_ptr": lambda rows: rows[1].update(
+                record_ptr=rows[0]["record_ptr"],
+            ),
+            "duplicate_tag_id": lambda rows: rows[1].update(
+                tag_db_id=rows[0]["tag_db_id"],
+                tag=rows[0]["tag"],
+                object_ptr=rows[0]["object_ptr"],
+            ),
+            "bad_running_index": lambda rows: rows[0].update(running_index=999),
+        }
+        for label, mutator in cases.items():
+            with self.subTest(label=label):
+                self.assertEqual(validated_after(mutator), [])
+
+    def test_preflight_object_and_record_cache_hit_is_bounded(self):
+        proc = FakePreflightProc()
+        table = tag_table_from_country_database_root(proc, FakeTagTableModule)
+        object_rows = country_object_bridge_rows_from_country_database_root(
+            proc,
+            table,
+            min_rows=40,
+        )
+        record_rows = country_object_bridge_rows_from_country_array(
+            proc,
+            table,
+            (proc.rec0, proc.rec0, 50),
+        )
+        with tempfile.TemporaryDirectory() as td:
+            array_cache = Path(td) / "country_array.json"
+            object_cache = Path(td) / "country_objects.json"
+            record_cache = Path(td) / "country_records.json"
+            with patched_preflight_environment(proc) as identity:
+                self.assertTrue(
+                    _write_country_object_preflight_cache(object_cache, identity, object_rows)
+                )
+                self.assertTrue(
+                    _write_country_record_preflight_cache(record_cache, identity, record_rows)
+                )
+                old_scan = ccb._scan_aligned_qword_hits
+                ccb._scan_aligned_qword_hits = lambda *_args, **_kwargs: (
+                    _ for _ in ()
+                ).throw(AssertionError("unexpected scan"))
+                try:
+                    result = resolve_country_object_bridge_preflight(
+                        123,
+                        min_rows=40,
+                        cache_path=array_cache,
+                        object_cache_path=object_cache,
+                        record_cache_path=record_cache,
+                    )
+                finally:
+                    ccb._scan_aligned_qword_hits = old_scan
+
+        self.assertTrue(result.usable)
+        self.assertEqual(result.diagnostics["source"], "country_object_cache_record_cache")
+        self.assertEqual(result.diagnostics["object_cache"]["status"], "hit")
+        self.assertEqual(result.diagnostics["record_cache"]["status"], "hit")
+        self.assertIsNotNone(result.record_encoded)
+
+    def test_preflight_stale_record_cache_falls_back_to_object_cache(self):
+        proc = FakePreflightProc()
+        table = tag_table_from_country_database_root(proc, FakeTagTableModule)
+        object_rows = country_object_bridge_rows_from_country_database_root(
+            proc,
+            table,
+            min_rows=40,
+        )
+        record_rows = country_object_bridge_rows_from_country_array(
+            proc,
+            table,
+            (proc.rec0, proc.rec0, 50),
+        )
+        with tempfile.TemporaryDirectory() as td:
+            object_cache = Path(td) / "country_objects.json"
+            record_cache = Path(td) / "country_records.json"
+            with patched_preflight_environment(proc) as identity:
+                self.assertTrue(
+                    _write_country_object_preflight_cache(object_cache, identity, object_rows)
+                )
+                self.assertTrue(
+                    _write_country_record_preflight_cache(record_cache, identity, record_rows)
+                )
+                payload = json.loads(record_cache.read_text(encoding="utf-8"))
+                payload["rows"][0]["record_ptr"] = 0x1234
+                record_cache.write_text(
+                    json.dumps(payload, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                old_scan = ccb._scan_aligned_qword_hits
+                ccb._scan_aligned_qword_hits = lambda *_args, **_kwargs: (
+                    _ for _ in ()
+                ).throw(AssertionError("unexpected scan"))
+                try:
+                    result = resolve_country_object_bridge_preflight(
+                        123,
+                        min_rows=40,
+                        object_cache_path=object_cache,
+                        record_cache_path=record_cache,
+                    )
+                finally:
+                    ccb._scan_aligned_qword_hits = old_scan
+
+        self.assertTrue(result.usable)
+        self.assertEqual(result.diagnostics["source"], "country_object_cache")
+        self.assertEqual(result.diagnostics["record_cache"]["status"], "stale")
+        self.assertIsNone(result.record_encoded)
+
+    def test_preflight_object_cache_can_cold_scan_record_cache_when_allowed(self):
+        proc = FakePreflightProc()
+        table = tag_table_from_country_database_root(proc, FakeTagTableModule)
+        object_rows = country_object_bridge_rows_from_country_database_root(
+            proc,
+            table,
+            min_rows=40,
+        )
+
+        def fake_scan(_proc, needle, *, scan_range=None):
+            for tag_db_id in range(1, 51):
+                object_ptr = int(proc.u64(proc.object_array + tag_db_id * 8))
+                if needle == object_ptr:
+                    yield proc.rec0 + (tag_db_id - 1) * ccb.REC + ccb.OFF_NAMEPTR
+
+        with tempfile.TemporaryDirectory() as td:
+            array_cache = Path(td) / "country_array.json"
+            object_cache = Path(td) / "country_objects.json"
+            record_cache = Path(td) / "country_records.json"
+            with patched_preflight_environment(proc) as identity:
+                self.assertTrue(
+                    _write_country_object_preflight_cache(object_cache, identity, object_rows)
+                )
+                old_scan = ccb._scan_aligned_qword_hits
+                ccb._scan_aligned_qword_hits = fake_scan
+                try:
+                    result = resolve_country_object_bridge_preflight(
+                        123,
+                        min_rows=40,
+                        cache_path=array_cache,
+                        object_cache_path=object_cache,
+                        record_cache_path=record_cache,
+                        allow_cold_scan=True,
+                    )
+                finally:
+                    ccb._scan_aligned_qword_hits = old_scan
+
+        self.assertTrue(result.usable)
+        self.assertEqual(result.diagnostics["source"], "country_object_cache_record_scan")
+        self.assertEqual(result.diagnostics["record_cache"]["status"], "stored")
+        self.assertIsNotNone(result.record_encoded)
+
     def test_preflight_cache_hit_is_bounded(self):
         proc = FakePreflightProc()
         with tempfile.TemporaryDirectory() as td:
@@ -626,6 +901,70 @@ class TestCollectorCountryBridge(unittest.TestCase):
         self.assertTrue(warm.usable)
         self.assertEqual(warm.diagnostics["source"], "country_object_cache")
         self.assertEqual(warm.diagnostics["object_cache"]["status"], "hit")
+
+    def test_preflight_cold_scan_stores_record_cache_for_bounded_reuse(self):
+        proc = FakePreflightProc()
+        scan_hits = []
+
+        def fake_scan(_proc, needle, *, scan_range=None):
+            scan_hits.append((needle, scan_range))
+            if needle == proc.country_vtable:
+                for tag_db_id in range(1, 51):
+                    yield int(proc.u64(proc.object_array + tag_db_id * 8))
+                return
+            for tag_db_id in range(1, 51):
+                object_ptr = int(proc.u64(proc.object_array + tag_db_id * 8))
+                if needle == object_ptr:
+                    yield proc.rec0 + (tag_db_id - 1) * ccb.REC + ccb.OFF_NAMEPTR
+
+        with tempfile.TemporaryDirectory() as td:
+            array_cache = Path(td) / "country_array.json"
+            object_cache = Path(td) / "country_objects.json"
+            record_cache = Path(td) / "country_records.json"
+            with patched_preflight_environment(proc):
+                old_scan = ccb._scan_aligned_qword_hits
+                old_root = ccb.country_object_bridge_rows_from_country_database_root
+                ccb._scan_aligned_qword_hits = fake_scan
+                ccb.country_object_bridge_rows_from_country_database_root = (
+                    lambda *_args, **_kwargs: []
+                )
+                try:
+                    cold = resolve_country_object_bridge_preflight(
+                        123,
+                        min_rows=40,
+                        cache_path=array_cache,
+                        object_cache_path=object_cache,
+                        record_cache_path=record_cache,
+                        allow_cold_scan=True,
+                    )
+                finally:
+                    ccb._scan_aligned_qword_hits = old_scan
+                    ccb.country_object_bridge_rows_from_country_database_root = old_root
+
+            with patched_preflight_environment(proc):
+                old_scan = ccb._scan_aligned_qword_hits
+                ccb._scan_aligned_qword_hits = lambda *_args, **_kwargs: (
+                    _ for _ in ()
+                ).throw(AssertionError("unexpected warm scan"))
+                try:
+                    warm = resolve_country_object_bridge_preflight(
+                        123,
+                        min_rows=40,
+                        object_cache_path=object_cache,
+                        record_cache_path=record_cache,
+                    )
+                finally:
+                    ccb._scan_aligned_qword_hits = old_scan
+
+        self.assertTrue(scan_hits)
+        self.assertTrue(cold.usable)
+        self.assertEqual(cold.diagnostics["source"], "country_object_vtable_scan_record_scan")
+        self.assertEqual(cold.diagnostics["record_cache"]["status"], "stored")
+        self.assertIsNotNone(cold.record_encoded)
+        self.assertTrue(warm.usable)
+        self.assertEqual(warm.diagnostics["source"], "country_object_cache_record_cache")
+        self.assertEqual(warm.diagnostics["record_cache"]["status"], "hit")
+        self.assertIsNotNone(warm.record_encoded)
 
     def test_preflight_root_tag_table_unavailable_is_bounded(self):
         proc = SimpleNamespace(module_base=0)

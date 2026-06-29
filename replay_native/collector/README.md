@@ -57,14 +57,19 @@ Current country-scalar bridge:
 - the Python recorder may run `live_capture.collector_country_bridge` as a
   preflight step before bounded worker recording;
 - normal recording first reuses bounded same-process caches; `country_array.json`
-  is for record-backed fields and `country_objects.json` is for object-backed
-  scalars;
+  stores the located record-array token, `country_objects.json` is for
+  object-backed scalars, and `country_records.json` is for record-backed
+  political power;
 - object-cache hits revalidate each cached country object against the country
   vtable, its own `tag_db_id`, and the live tag table before any row is passed
   to the DLL;
+- record-cache hits are validated against current object rows and each record's
+  back-pointer; record rows merge additively and must not shrink the object
+  bridge;
 - when the object cache is missing, `--allow-country-cold-scan` is an explicit
   bootstrap/cache-populate mode. It may run the slow country-object vtable scan
-  once, then normal recording should return to the bounded cache path;
+  and reverse record scan once, then normal recording should return to the
+  bounded cache path;
 - preflight rows are written only to the temporary `collector_control.json` as a
   compact `tag_db_id:country_object_ptr` string plus a separate
   `tag_db_id:country_record_ptr` string;
