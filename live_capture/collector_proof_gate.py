@@ -67,6 +67,7 @@ def collector_session_proof_errors(
     require_no_lightweight_heavy_payloads: bool = True,
     require_diplomacy_war_relations: bool = False,
     require_politics_leaders: bool = False,
+    require_politics_idea_classification: bool = False,
     require_production_construction: bool = False,
     require_tech_live_names: bool = False,
     require_tech_live_progress: bool = False,
@@ -189,6 +190,76 @@ def collector_session_proof_errors(
             errors.append("country politics leader rows were not observed")
         if _as_int(summary.get("max_politics_leader_rows_per_frame")) in (None, 0):
             errors.append("politics leader rows were empty in every frame")
+        if _as_int(summary.get("politics_on_lightweight_frames")) not in (0, None):
+            errors.append("politics payloads appeared on lightweight frames")
+    if require_politics_idea_classification:
+        scheduled = _scheduled_domain_frame_count(summary, "politics_live")
+        required_frames = int(min_game_hours or 1)
+        if scheduled is None or scheduled < required_frames:
+            errors.append(
+                "politics idea-classification proof scheduled frames "
+                f"{scheduled!r} below required {required_frames}"
+            )
+        if manifest.get("idea_group_filter_supplied") is not True:
+            errors.append("idea_group_filter was not supplied")
+        if _as_int(manifest.get("idea_group_filter_rows")) in (None, 0):
+            errors.append("idea_group_filter_rows not positive")
+        if _as_int(summary.get("frames_with_politics_payloads")) is None or _as_int(
+            summary.get("frames_with_politics_payloads")
+        ) < required_frames:
+            errors.append("politics payload frames below required cadence")
+        if _as_int(summary.get("country_rows_with_politics_payloads")) in (None, 0):
+            errors.append("country politics payload rows were not observed")
+        if _as_int(summary.get("country_rows_with_politics_ideas")) in (None, 0):
+            errors.append("country politics active idea rows were not observed")
+        if _as_int(summary.get("max_politics_idea_rows_per_country")) in (None, 0):
+            errors.append("active politics ideas were empty in every country row")
+        if _as_int(summary.get("country_rows_with_politics_laws")) in (None, 0):
+            errors.append("country politics law rows were not observed")
+        if _as_int(summary.get("max_politics_law_keys_per_country")) in (None, 0):
+            errors.append("politics law buckets were empty in every country row")
+        if _as_int(summary.get("country_rows_with_politics_idea_groups")) in (
+            None,
+            0,
+        ):
+            errors.append("country politics idea-group rows were not observed")
+        if _as_int(summary.get("max_politics_idea_group_keys_per_country")) in (
+            None,
+            0,
+        ):
+            errors.append("politics idea-group buckets were empty in every country row")
+        if _as_int(summary.get("country_rows_with_politics_advisor_ideas")) in (
+            None,
+            0,
+        ):
+            errors.append("country politics advisor-idea rows were not observed")
+        if _as_int(summary.get("max_politics_advisor_idea_keys_per_country")) in (
+            None,
+            0,
+        ):
+            errors.append("politics advisor-idea buckets were empty in every country row")
+        if _as_int(summary.get("max_politics_advisor_idea_tokens_per_country")) in (
+            None,
+            0,
+        ):
+            errors.append("politics advisor-idea tokens were empty in every country row")
+        if _as_int(summary.get("country_rows_with_politics_ideas_other")) in (None, 0):
+            errors.append("country politics non-law idea rows were not observed")
+        if _as_int(summary.get("max_politics_ideas_other_tokens_per_country")) in (
+            None,
+            0,
+        ):
+            errors.append("politics non-law ideas were empty in every country row")
+        if _as_int(summary.get("country_rows_with_politics_national_spirits")) in (
+            None,
+            0,
+        ):
+            errors.append("country politics national-spirit rows were not observed")
+        if _as_int(summary.get("max_politics_national_spirit_tokens_per_country")) in (
+            None,
+            0,
+        ):
+            errors.append("politics national spirits were empty in every country row")
         if _as_int(summary.get("politics_on_lightweight_frames")) not in (0, None):
             errors.append("politics payloads appeared on lightweight frames")
     if require_production_construction:
@@ -499,6 +570,7 @@ def collector_session_proof_summary(
     require_no_raw_gaps: bool = True,
     require_diplomacy_war_relations: bool = False,
     require_politics_leaders: bool = False,
+    require_politics_idea_classification: bool = False,
     require_production_construction: bool = False,
     require_tech_live_names: bool = False,
     require_tech_live_progress: bool = False,
@@ -527,6 +599,7 @@ def collector_session_proof_summary(
         require_no_raw_gaps=require_no_raw_gaps,
         require_diplomacy_war_relations=require_diplomacy_war_relations,
         require_politics_leaders=require_politics_leaders,
+        require_politics_idea_classification=require_politics_idea_classification,
         require_production_construction=require_production_construction,
         require_tech_live_names=require_tech_live_names,
         require_tech_live_progress=require_tech_live_progress,
@@ -597,6 +670,32 @@ def collector_session_proof_summary(
             "country_rows_with_politics_leader"),
         "max_politics_leader_rows_per_frame": summary.get(
             "max_politics_leader_rows_per_frame"),
+        "country_rows_with_politics_ideas": summary.get(
+            "country_rows_with_politics_ideas"),
+        "max_politics_idea_rows_per_country": summary.get(
+            "max_politics_idea_rows_per_country"),
+        "country_rows_with_politics_laws": summary.get(
+            "country_rows_with_politics_laws"),
+        "max_politics_law_keys_per_country": summary.get(
+            "max_politics_law_keys_per_country"),
+        "country_rows_with_politics_idea_groups": summary.get(
+            "country_rows_with_politics_idea_groups"),
+        "max_politics_idea_group_keys_per_country": summary.get(
+            "max_politics_idea_group_keys_per_country"),
+        "country_rows_with_politics_advisor_ideas": summary.get(
+            "country_rows_with_politics_advisor_ideas"),
+        "max_politics_advisor_idea_keys_per_country": summary.get(
+            "max_politics_advisor_idea_keys_per_country"),
+        "max_politics_advisor_idea_tokens_per_country": summary.get(
+            "max_politics_advisor_idea_tokens_per_country"),
+        "country_rows_with_politics_ideas_other": summary.get(
+            "country_rows_with_politics_ideas_other"),
+        "max_politics_ideas_other_tokens_per_country": summary.get(
+            "max_politics_ideas_other_tokens_per_country"),
+        "country_rows_with_politics_national_spirits": summary.get(
+            "country_rows_with_politics_national_spirits"),
+        "max_politics_national_spirit_tokens_per_country": summary.get(
+            "max_politics_national_spirit_tokens_per_country"),
         "construction_queue_frames": summary.get("construction_queue_frames"),
         "country_rows_with_construction_queue": summary.get(
             "country_rows_with_construction_queue"),
@@ -740,6 +839,11 @@ def _main(argv: Optional[List[str]] = None) -> int:
         help="require positive scheduled politics active-leader rows",
     )
     parser.add_argument(
+        "--require-politics-idea-classification",
+        action="store_true",
+        help="require live politics idea law/advisor/spirit classification rows",
+    )
+    parser.add_argument(
         "--require-production-construction",
         action="store_true",
         help="require positive scheduled production construction-queue rows",
@@ -824,6 +928,9 @@ def _main(argv: Optional[List[str]] = None) -> int:
         require_no_raw_gaps=not args.allow_raw_gaps,
         require_diplomacy_war_relations=args.require_diplomacy_war_relations,
         require_politics_leaders=args.require_politics_leaders,
+        require_politics_idea_classification=(
+            args.require_politics_idea_classification
+        ),
         require_production_construction=args.require_production_construction,
         require_tech_live_names=args.require_tech_live_names,
         require_tech_live_progress=args.require_tech_live_progress,

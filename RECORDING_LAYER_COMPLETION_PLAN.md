@@ -1091,6 +1091,14 @@ advanced 12 game hours in 39.328 wall seconds, stored 13 verified snapshots,
 emitted 13 scheduled `politics_live` frames, captured 4095 non-ambiguous
 `commanders.leader` rows with up to 315 active rulers per scheduled frame,
 verified the replay, and kept politics payloads off worker-poll frames.
+Current strict politics classification proof
+`replay/snapshots/_collector_session_politics_idea_gate/20260629T211245Z_pid43412`
+passed `--require-politics-idea-classification`: it supplied 6474 vanilla
+`common/ideas` rows, advanced 12 game hours in 45.797 wall seconds, verified
+replay output, emitted 12 scheduled `politics_live` frames, folded 4248 active
+idea rows, 4248 law rows, 4248 complete idea-group rows, 1104 advisor/cabinet
+idea rows, 4248 broad non-law idea rows, and 4248 national-spirit rows, and
+kept worker-poll frames free of politics payloads.
 `decisions_live` is also now DLL-native: the collector validates
 `CCountry+0xFA0 -> CDecisionStatus`, checks the owner back-pointer, emits
 decision-status vector counts, and decodes active `CTimedDecision` rows. That
@@ -1410,10 +1418,13 @@ adapter validates and folds these into
 `country_misc`, `politics_live`, `politics_residuals`, scheduled advisor
 leaves, typed laws, `idea_groups`, `advisor_ideas`, `ideas_other`, and
 `national_spirits` with no session errors and no worker-poll politics payloads.
-Current 12-game-hour no-cold proof on pid 43412 emitted 12 scheduled
-`politics_live` frames, 12 scheduled `politics_residuals` frames, 12 scheduled
-`tech_live` frames, up to 356 politics rows, 356 residual-politics rows, and 356
-research rows per frame, with no heavy payloads on lightweight worker polls.
+Current strict politics classification proof
+`replay/snapshots/_collector_session_politics_idea_gate/20260629T211245Z_pid43412`
+emitted 12 scheduled `politics_live` frames across 12 game hours, supplied a
+6474-row vanilla `common/ideas` contract, folded 4248 active-idea rows, 4248
+law rows, 4248 complete idea-group rows, 1104 advisor/cabinet idea rows, 4248
+broad non-law idea rows, and 4248 national-spirit rows, verified replay output,
+and kept heavy payloads off lightweight worker polls.
 Follow-up active-ruler proof
 `replay/snapshots/_collector_session_politics_leader_gate/20260629T171216Z_pid43412`
 emitted 13 scheduled `politics_live` frames across 12 game hours, folded 4095

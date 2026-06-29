@@ -192,6 +192,115 @@ class TestCollectorProofGate(unittest.TestCase):
         self.assertIn("politics leader frames below required cadence", errors)
         self.assertIn("country politics leader rows were not observed", errors)
 
+    def test_accepts_politics_idea_classification_proof(self):
+        proof = collector_session_proof_summary(
+            _manifest(
+                idea_group_filter_supplied=True,
+                idea_group_filter_rows=4095,
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock", "country_identity", "politics_live"],
+                    "scheduled_politics_domain_frames": 12,
+                    "frames_with_politics_payloads": 12,
+                    "country_rows_with_politics_payloads": 4260,
+                    "country_rows_with_politics_ideas": 4260,
+                    "max_politics_idea_rows_per_country": 14,
+                    "country_rows_with_politics_laws": 4260,
+                    "max_politics_law_keys_per_country": 3,
+                    "country_rows_with_politics_idea_groups": 4260,
+                    "max_politics_idea_group_keys_per_country": 12,
+                    "country_rows_with_politics_advisor_ideas": 160,
+                    "max_politics_advisor_idea_keys_per_country": 2,
+                    "max_politics_advisor_idea_tokens_per_country": 2,
+                    "country_rows_with_politics_ideas_other": 4260,
+                    "max_politics_ideas_other_tokens_per_country": 11,
+                    "country_rows_with_politics_national_spirits": 4260,
+                    "max_politics_national_spirit_tokens_per_country": 9,
+                    "politics_on_lightweight_frames": 0,
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+            ),
+            required_scheduled_snapshot_domains=["politics_live"],
+            min_game_hours=12,
+            require_politics_idea_classification=True,
+        )
+
+        self.assertTrue(proof["ok"])
+        self.assertEqual(proof["errors"], [])
+        self.assertEqual(proof["country_rows_with_politics_laws"], 4260)
+        self.assertEqual(proof["max_politics_advisor_idea_tokens_per_country"], 2)
+        self.assertEqual(proof["max_politics_national_spirit_tokens_per_country"], 9)
+
+    def test_rejects_politics_idea_classification_without_contract(self):
+        errors = collector_session_proof_errors(
+            _manifest(
+                idea_group_filter_supplied=False,
+                idea_group_filter_rows=0,
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock", "country_identity", "politics_live"],
+                    "scheduled_politics_domain_frames": 12,
+                    "frames_with_politics_payloads": 12,
+                    "country_rows_with_politics_payloads": 4260,
+                    "country_rows_with_politics_ideas": 4260,
+                    "max_politics_idea_rows_per_country": 14,
+                    "country_rows_with_politics_laws": 4260,
+                    "max_politics_law_keys_per_country": 3,
+                    "country_rows_with_politics_idea_groups": 4260,
+                    "max_politics_idea_group_keys_per_country": 12,
+                    "country_rows_with_politics_advisor_ideas": 160,
+                    "max_politics_advisor_idea_keys_per_country": 2,
+                    "max_politics_advisor_idea_tokens_per_country": 2,
+                    "country_rows_with_politics_ideas_other": 4260,
+                    "max_politics_ideas_other_tokens_per_country": 11,
+                    "country_rows_with_politics_national_spirits": 4260,
+                    "max_politics_national_spirit_tokens_per_country": 9,
+                    "politics_on_lightweight_frames": 0,
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+            ),
+            min_game_hours=12,
+            require_politics_idea_classification=True,
+        )
+
+        self.assertIn("idea_group_filter was not supplied", errors)
+        self.assertIn("idea_group_filter_rows not positive", errors)
+
+    def test_rejects_politics_idea_classification_without_partitions(self):
+        errors = collector_session_proof_errors(
+            _manifest(
+                idea_group_filter_supplied=True,
+                idea_group_filter_rows=4095,
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock", "country_identity", "politics_live"],
+                    "scheduled_politics_domain_frames": 12,
+                    "frames_with_politics_payloads": 12,
+                    "country_rows_with_politics_payloads": 4260,
+                    "country_rows_with_politics_ideas": 4260,
+                    "max_politics_idea_rows_per_country": 14,
+                    "country_rows_with_politics_laws": 0,
+                    "max_politics_law_keys_per_country": 0,
+                    "country_rows_with_politics_idea_groups": 0,
+                    "max_politics_idea_group_keys_per_country": 0,
+                    "country_rows_with_politics_advisor_ideas": 0,
+                    "max_politics_advisor_idea_keys_per_country": 0,
+                    "max_politics_advisor_idea_tokens_per_country": 0,
+                    "country_rows_with_politics_ideas_other": 0,
+                    "max_politics_ideas_other_tokens_per_country": 0,
+                    "country_rows_with_politics_national_spirits": 0,
+                    "max_politics_national_spirit_tokens_per_country": 0,
+                    "politics_on_lightweight_frames": 0,
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+            ),
+            min_game_hours=12,
+            require_politics_idea_classification=True,
+        )
+
+        self.assertIn("country politics law rows were not observed", errors)
+        self.assertIn("country politics idea-group rows were not observed", errors)
+        self.assertIn("country politics advisor-idea rows were not observed", errors)
+        self.assertIn("country politics non-law idea rows were not observed", errors)
+        self.assertIn("country politics national-spirit rows were not observed", errors)
+
     def test_accepts_production_construction_proof(self):
         proof = collector_session_proof_summary(
             _manifest(

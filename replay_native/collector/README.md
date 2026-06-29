@@ -122,15 +122,19 @@ Scheduled country politics:
   hot path, omits the leaves when the contract is missing or invalid, preserves
   measured-empty `[]` as real, and is live-proven by
   `collector_live_politics_decisions_probe` at speed five;
-- typed laws, non-law active ideas, and national spirits are emitted when collector control
-  supplies the static `common/ideas` idea-group contract. The collector
-  classifies the live active-ideas vector into `laws` groups
+- typed laws, non-law active ideas, and national spirits are emitted when
+  collector control supplies the static `common/ideas` idea-group contract. The
+  collector classifies the live active-ideas vector into `laws` groups
   (`economy`, `trade_laws`, `mobilization_laws`), ordered broad `ideas_other`,
-  and narrower `national_spirits` for `common/ideas` category `country` without
-  requiring a save. `collector_live_politics_decisions_probe` supplied 6474
-  idea-group rows, advanced 2 game hours at speed five with zero skipped hours,
-  and measured Portugal laws as `civilian_economy`, `export_focus`, and
-  `volunteer_only`;
+  complete `idea_groups`, active cabinet/designer `advisor_ideas`, and narrower
+  `national_spirits` for `common/ideas` category `country` without requiring a
+  save. Current strict proof
+  `replay/snapshots/_collector_session_politics_idea_gate/20260629T211245Z_pid43412`
+  passed `--require-politics-idea-classification`: it supplied 6474 idea-group
+  rows, advanced 12 game hours in 45.797 wall seconds, verified replay output,
+  emitted 12 scheduled `politics_live` frames, folded 4248 active-idea/law/
+  idea-group/non-law/national-spirit rows plus 1104 advisor-idea rows, and kept
+  worker-poll frames free of politics payloads;
 - current no-cold proof on pid 43412 advanced 12 game hours, stored 13 verified
   snapshots, emitted 12 scheduled `politics_live` and 12 scheduled
   `politics_residuals` frames, observed up to 356 politics and residual rows per

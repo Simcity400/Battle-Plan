@@ -85,15 +85,17 @@ current product status and acceptance gates, and
   law / idea-group / advisor-like / non-law / national-spirit classification is
   folded when the session supplies the static `common/ideas` group contract.
   The DLL intersects those contracts with live active ideas. Missing or invalid
-  contracts omit the relevant leaves, while measured-empty `[]` is real. Earlier
-  idea/advisor proof folded `idea_groups` for 712 country rows and positive
-  `advisor_ideas` for 160 country rows, and measured Portugal as
-  `advisor_ideas.industrial_concern = companhia_uniao_fabril`. Current no-cold
-  proof on pid 43412 advanced 12 game hours, stored 13 verified snapshots,
-  emitted 13 scheduled `politics_live` frames and 13 scheduled
-  `politics_residuals` frames, observed up to 315 active-ruler rows and 355
-  politics rows per frame, folded 4095 `commanders.leader` rows into the replay
-  store, and kept worker-poll frames free of politics payloads. Countries whose
+  contracts omit the relevant leaves, while measured-empty `[]` is real.
+  Current strict classification proof
+  `replay/snapshots/_collector_session_politics_idea_gate/20260629T211245Z_pid43412`
+  passed `--require-politics-idea-classification`: it advanced 12 game hours in
+  45.797 wall seconds, verified replay output, supplied 6474 vanilla
+  `common/ideas` rows, emitted 12 scheduled `politics_live` frames, folded 4248
+  active-idea rows, 4248 law rows, 4248 idea-group rows, 1104 advisor-idea rows,
+  4248 non-law idea rows, and 4248 national-spirit rows, and kept worker-poll
+  frames free of politics payloads. Active-ruler proof remains separate:
+  `replay/snapshots/_collector_session_politics_leader_gate/20260629T171216Z_pid43412`
+  folded 4095 `commanders.leader` rows into the replay store. Countries whose
   ruling-party leader vector has multiple entries are deliberately omitted until
   the active element can be disambiguated without guessing.
   It also folds scheduled `decisions_live` rows into
@@ -230,6 +232,8 @@ python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/ta
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_diplomacy_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain diplomacy_live
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_diplomacy_war_gate --game-id diplomacy_war_relations_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300 --preflight-war-relations
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_diplomacy_war_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain diplomacy_live --require-diplomacy-war-relations
+python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_politics_idea_gate --game-id politics_idea_classification_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300
+python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_politics_idea_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain politics_live --require-politics-idea-classification
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session --game-id collector_live_focus_decision_project_roots --duration-s 180 --sample-ms 10 --dwell-s 0.25 --worker-bursts 3 --burst-interval-s 0.25 --until-game-hours 12 --max-wall-s 120 --preflight-special-projects
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain focus_live --require-scheduled-domain decisions_live --require-scheduled-domain projects_live
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session/<run-dir>/session_manifest.json --min-game-hours 12 --require-raw-domain land_combats --require-raw-event-type land_combat_started --require-raw-event-type land_combat_updated --require-raw-event-type land_combat_ended

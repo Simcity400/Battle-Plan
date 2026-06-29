@@ -1537,15 +1537,22 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     frames_with_politics_payloads = 0
     country_rows_with_politics_payloads = 0
     max_politics_country_rows_per_frame = 0
+    country_rows_with_politics_ideas = 0
     max_politics_idea_rows_per_country = 0
     politics_leader_frames = 0
     country_rows_with_politics_leader = 0
     max_politics_leader_rows_per_frame = 0
+    country_rows_with_politics_laws = 0
     country_rows_with_politics_idea_groups = 0
     country_rows_with_politics_advisor_ideas = 0
+    country_rows_with_politics_ideas_other = 0
+    country_rows_with_politics_national_spirits = 0
+    max_politics_law_keys_per_country = 0
     max_politics_idea_group_keys_per_country = 0
     max_politics_advisor_idea_keys_per_country = 0
     max_politics_advisor_idea_tokens_per_country = 0
+    max_politics_ideas_other_tokens_per_country = 0
+    max_politics_national_spirit_tokens_per_country = 0
     frames_with_politics_residual_payloads = 0
     country_rows_with_politics_residual_payloads = 0
     max_politics_residual_country_rows_per_frame = 0
@@ -1879,8 +1886,17 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
                             politics_leader_rows_in_frame += 1
                         ideas = politics.get("ideas")
                         if isinstance(ideas, list):
+                            country_rows_with_politics_ideas += 1
                             max_politics_idea_rows_per_country = max(
                                 max_politics_idea_rows_per_country, len(ideas))
+                        laws = politics.get("laws")
+                        if isinstance(laws, dict):
+                            if laws:
+                                country_rows_with_politics_laws += 1
+                            max_politics_law_keys_per_country = max(
+                                max_politics_law_keys_per_country,
+                                len(laws),
+                            )
                         idea_groups = politics.get("idea_groups")
                         if isinstance(idea_groups, dict):
                             country_rows_with_politics_idea_groups += 1
@@ -1905,6 +1921,20 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
                                     max_politics_advisor_idea_tokens_per_country,
                                     token_count,
                                 )
+                        ideas_other = politics.get("ideas_other")
+                        if isinstance(ideas_other, list):
+                            country_rows_with_politics_ideas_other += 1
+                            max_politics_ideas_other_tokens_per_country = max(
+                                max_politics_ideas_other_tokens_per_country,
+                                len(ideas_other),
+                            )
+                        national_spirits = politics.get("national_spirits")
+                        if isinstance(national_spirits, list):
+                            country_rows_with_politics_national_spirits += 1
+                            max_politics_national_spirit_tokens_per_country = max(
+                                max_politics_national_spirit_tokens_per_country,
+                                len(national_spirits),
+                            )
                 focus = row.get("focus")
                 if focus is not None:
                     focus_rows_in_frame += 1
@@ -2373,20 +2403,33 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
             country_rows_with_politics_payloads),
         "max_politics_country_rows_per_frame": (
             max_politics_country_rows_per_frame),
+        "country_rows_with_politics_ideas": country_rows_with_politics_ideas,
         "max_politics_idea_rows_per_country": max_politics_idea_rows_per_country,
         "politics_leader_frames": politics_leader_frames,
         "country_rows_with_politics_leader": country_rows_with_politics_leader,
         "max_politics_leader_rows_per_frame": max_politics_leader_rows_per_frame,
+        "country_rows_with_politics_laws": (
+            country_rows_with_politics_laws),
+        "max_politics_law_keys_per_country": (
+            max_politics_law_keys_per_country),
         "country_rows_with_politics_idea_groups": (
             country_rows_with_politics_idea_groups),
         "country_rows_with_politics_advisor_ideas": (
             country_rows_with_politics_advisor_ideas),
+        "country_rows_with_politics_ideas_other": (
+            country_rows_with_politics_ideas_other),
+        "country_rows_with_politics_national_spirits": (
+            country_rows_with_politics_national_spirits),
         "max_politics_idea_group_keys_per_country": (
             max_politics_idea_group_keys_per_country),
         "max_politics_advisor_idea_keys_per_country": (
             max_politics_advisor_idea_keys_per_country),
         "max_politics_advisor_idea_tokens_per_country": (
             max_politics_advisor_idea_tokens_per_country),
+        "max_politics_ideas_other_tokens_per_country": (
+            max_politics_ideas_other_tokens_per_country),
+        "max_politics_national_spirit_tokens_per_country": (
+            max_politics_national_spirit_tokens_per_country),
         "politics_on_lightweight_frames": politics_on_lightweight_frames,
         "frames_with_politics_residual_payloads": (
             frames_with_politics_residual_payloads),
