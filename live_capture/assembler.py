@@ -208,7 +208,7 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
             st = _ensure_state(snap, sid)
             # measured controller (may be None = un-nameable id, still measured-
             # present as a state). owner stays null: we did not measure it here.
-            # Defense in depth (Codex code-review #6): never let a non-TAG (e.g. a
+            # Defense in depth (schema review #6): never let a non-TAG (e.g. a
             # raw numeric id from a misbehaving plug) reach a *_tag field.
             st["controller"] = tag if schema.valid_tag(tag) else None
         captured_domains.append("state_control")
@@ -231,7 +231,7 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
             rec = schema.empty_division()
             rec["div_id"] = d.get("div_id")
             owner = d.get("owner")
-            rec["owner"] = owner if schema.valid_tag(owner) else None  # Codex #6/#5
+            rec["owner"] = owner if schema.valid_tag(owner) else None  # schema #6/#5
             rec["location_province"] = d.get("location_province")
             rec["organisation"] = d.get("organisation")
             rec["strength"] = d.get("strength")
@@ -301,7 +301,7 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
                     misc[k] = rec[k]
             # cosmetic_tag: the reader MEASURES this; None == "no cosmetic tag set"
             # (a measured absence), a str == the tag. Write it through unconditionally
-            # so the measured value (incl. the measured None) is recorded (Codex
+            # so the measured value (incl. the measured None) is recorded (schema
             # review #2). country.misc is a live-only home, so no save fold reads it.
             if "cosmetic_tag" in rec:
                 misc["cosmetic_tag"] = rec["cosmetic_tag"]
@@ -384,7 +384,7 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
     # tech_count (= completed_tech_count) + research_slots (= research_slot_count)
     # fold onto the SAME save leaves (live-first; protected from save overwrite).
     # active_research goes to a DISTINCT leaf research.in_progress_live (raw-handle
-    # shape) so it never mixes with the save-shaped research.in_progress (Codex).
+    # shape) so it never mixes with the save-shaped research.in_progress (schema).
     # A measured 0 is informative and kept; tech NAMES + progress SCALE stay null. ---
     tl = captured("tech_live")
     if tl is not None:
@@ -411,7 +411,7 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
     # the UNSPLIT army leaders into commanders.army_leaders + admirals into
     # commanders.navy_leaders -- NEVER onto the role-split save leaves. Live counts
     # are written as individual sub-keys of commanders.counts so the save's richer
-    # counts dict is preserved (Codex). Measured-empty lists are kept (measured 0). ---
+    # counts dict is preserved (schema). Measured-empty lists are kept (measured 0). ---
     cl = captured("commanders_live")
     if cl is not None:
         for tag, leaders in (cl.get("army_by_tag") or {}).items():
@@ -440,7 +440,7 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
         # only need to CLAIM the distinct "leader_detail" provenance id when the enrichment
         # actually ran to completion (the plug sets leader_detail_enriched=True). A disabled/
         # failed enrichment leaves the flag False -> the domain is NOT claimed (the leaders are
-        # structurally valid with no skill/traits leaves; no fabrication, Codex).
+        # structurally valid with no skill/traits leaves; no fabrication, schema).
         if cl.get("leader_detail_enriched"):
             captured_domains.append("leader_detail")
 
@@ -448,7 +448,7 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
     # the SAME nested save shape (name/icon/upgrade_progress + capacity.{max_operatives
     # ,usable_slots,defense}) writing ONLY the measured sub-keys, so save-only agency
     # sub-keys (is_created/current_upgrade/upgrades/...) are preserved -- never clobber
-    # the whole agency dict (Codex). A measured 0 is kept; per-operative data RESISTED. ---
+    # the whole agency dict (schema). A measured 0 is kept; per-operative data RESISTED. ---
     il = captured("intel_live")
     if il is not None:
         for tag, rec in (il.get("countries") or {}).items():
@@ -490,7 +490,7 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
         # Record the exact TAGs focus_live MEASURED, so the save backstop can protect the
         # measured-empty country.focus.completed [] for these countries WITHOUT also
         # protecting the skeleton [] on a country that was created by another live domain
-        # but NOT measured by focus_live (the cross-domain masquerade, Codex review). The
+        # but NOT measured by focus_live (the cross-domain masquerade, schema review). The
         # snapshot keeps this as a non-canonical sidecar consumed by fold_save_bundle.
         _measured = snap.setdefault("_live_measured_leaf_tags", {})
         _focus_completed_tags = set()
@@ -573,7 +573,7 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
     # measured 0 = no casualties) + faction_group (an OPAQUE engine group id, an int NOT a
     # TAG) likewise. The world-scoped war_relations + faction_members go to the NEW top-level
     # sidecar -- NOT diplomacy_world (a SAVE-shaped catalog with a different identity model;
-    # Codex). EVERY enemy/member TAG was already valid_tag-filtered by the reader. ---
+    # schema). EVERY enemy/member TAG was already valid_tag-filtered by the reader. ---
     dl = captured("diplomacy_live")
     if dl is not None:
         for tag, rec in (dl.get("countries") or {}).items():
@@ -597,7 +597,7 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
         # completeness advisory. ALWAYS assign the measured lists/dicts (incl. measured-empty)
         # so the live channel wins and a measured zero is recorded as a measured zero (the
         # domain_captured gate already proves the reader ran to completion -> the reader
-        # always yields concrete containers here). DEFENSE IN DEPTH (Codex final review):
+        # always yields concrete containers here). DEFENSE IN DEPTH (schema final review):
         # re-validate EVERY TAG at the assembler boundary too -- a war_relation with a
         # non-TAG end is dropped, and a faction member that is not a TAG is filtered out, so
         # a misbehaving reader can never let a numeric/None id masquerade as identity in the
@@ -630,7 +630,7 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
         captured_domains.append("diplomacy_live")
 
     # --- diplo_relations: LIVE bilateral relations -> country.diplomacy (M). PER-COUNTRY
-    # (Codex-blessed; the bilateral matrix is the SAME {TGT: value} per-country shape the save
+    # (schema-approved; the bilateral matrix is the SAME {TGT: value} per-country shape the save
     # opinion leaf uses, so no top-level-sidecar identity duplication). `opinion` folds LIVE-FIRST
     # onto the save-shared diplomacy.opinion leaf ({TGT: net_opinion}); `relation_flags`
     # ({TGT: [flag,...]}) + overlord/autonomy_state/autonomy_ratio are DISTINCT live-only leaves.
@@ -722,6 +722,20 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
             laws = rec.get("laws")
             if isinstance(laws, dict):
                 pol["laws"] = dict(laws)
+            idea_groups = rec.get("idea_groups")
+            if isinstance(idea_groups, dict):
+                pol["idea_groups"] = {
+                    group: list(tokens)
+                    for group, tokens in idea_groups.items()
+                    if isinstance(group, str) and isinstance(tokens, list)
+                }
+            advisor_ideas = rec.get("advisor_ideas")
+            if isinstance(advisor_ideas, dict):
+                pol["advisor_ideas"] = {
+                    group: list(tokens)
+                    for group, tokens in advisor_ideas.items()
+                    if isinstance(group, str) and isinstance(tokens, list)
+                }
             # political_power: NOT written here (country_scalars owns the protected leaf).
         if _ideas_other_tags:
             _measured = snap.setdefault("_live_measured_leaf_tags", {})
@@ -854,7 +868,7 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
         captured_domains.append("state_fields")
 
     # When the divisions domain WAS captured, a known country with no division is
-    # a MEASURED zero, not unmeasured -> division_count = 0 (Codex code-review #4).
+    # a MEASURED zero, not unmeasured -> division_count = 0 (schema review #4).
     # Only a country we actually know about (it appears in the snapshot) gets the
     # measured zero; we do not invent countries just to zero them.
     if dv is not None:
@@ -870,7 +884,7 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
     dsg = captured("designs")
     if dsg is not None:
         # ALWAYS assign the LIVE list (even a measured-empty []), so the save
-        # backstop can never overlay templates while we badge them "M" (Codex
+        # backstop can never overlay templates while we badge them "M" (schema
         # review #1: an empty live read is a measured zero, not a gap to fill).
         snap["designs"]["division_templates"] = list(
             dsg.get("division_templates") or [])
@@ -929,7 +943,7 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
         captured_domains.append("ships")
 
     # --- live OOB command tree -> order_of_battle.{armies,army_groups,fleets,theatres}
-    # (M). World-scoped command structure (Codex-blessed top-level home, NOT by_country);
+    # (M). World-scoped command structure (schema-approved top-level home, NOT by_country);
     # each army/AG/fleet element carries its owner-CONSENSUS TAG, membership ids are raw
     # engine ints, task forces nest under each fleet. The per-SHIP order_of_battle.ships
     # leaf is owned by the "ships" domain and is NEVER touched here -- we add the command-
@@ -944,7 +958,7 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
         if not isinstance(oob, dict):
             oob = schema.empty_order_of_battle()
             snap["order_of_battle"] = oob
-        # FAIL-CLOSED (Codex final review): a CAPTURED oob_command must carry a concrete
+        # FAIL-CLOSED (schema final review): a CAPTURED oob_command must carry a concrete
         # list for every command leaf. A missing / non-list leaf is a contract violation,
         # NOT a measured-empty -> fold NOTHING and do not claim the domain rather than
         # fabricating a measured-empty [] from a malformed read. The reader always builds
@@ -956,7 +970,7 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
                 oob[src + "_source"] = "M"
             # orphan task forces (live TF whose fleet parent missed this frame) are a
             # MEASURED observation, not an error; keep them in a sidecar on the OOB dict so
-            # they are not silently discarded (Codex finding #1). Only set when measured
+            # they are not silently discarded (schema finding #1). Only set when measured
             # (a list); absent -> leave it unset (validator-inert extra key).
             otf = oc.get("orphan_task_forces")
             if isinstance(otf, list):
@@ -1001,7 +1015,7 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
     # (supply_solver_live.province_supply_exact()->{} honestly), so we DO NOT claim it. What
     # IS stored are the per-province solver INPUTS -- efficiency/fulfilment + draw/demand --
     # which we surface as DISTINCTLY-NAMED, SEPARATELY-BADGED fields ALONGSIDE the existing
-    # division-province proxy WITHOUT touching it (Codex: badge harder, clearer names, don't
+    # division-province proxy WITHOUT touching it (schema: badge harder, clearer names, don't
     # let the proxy's confidence apply to these). Each field carries its OWN confidence so a
     # consumer never reads efficiency/draw as "supply available". The supply block is added
     # even if the proxy ("supply") domain did NOT capture (the inputs stand on their own).
@@ -1015,7 +1029,7 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
         # ALWAYS assign each measured map (incl. a measured-sparse {} -- the reader returns
         # only nonzero entries) so the live channel wins; an unmeasured None stays None. Copy
         # the maps so the typed supply block never ALIASES the _live_supply_inputs sidecar's
-        # dict objects (a later normalization of one must not mutate the other -- Codex #4).
+        # dict objects (a later normalization of one must not mutate the other -- schema #4).
         eff = si.get("efficiency_by_province")
         draw = si.get("draw_by_province")
         if eff is not None:
@@ -1023,7 +1037,7 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
         if draw is not None:
             sblk["solver_draw_by_province"] = dict(draw) if isinstance(draw, dict) else draw
         # per-field source + confidence so the solver-input signal is never mistaken for the
-        # exact per-province supply (NOT the block-level proxy badge -- Codex).
+        # exact per-province supply (NOT the block-level proxy badge -- schema).
         sblk["solver_inputs_source"] = "M"
         sblk["solver_inputs_confidence"] = "live_solver_input_not_exact_supply"
         captured_domains.append("supply_inputs")
@@ -1277,7 +1291,7 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
     # --- designs_variants: LIVE equipment-VARIANT module catalog -> designs.equipment_variants_live
     # (M, a DISTINCT live-only leaf keyed by the bare live variant id). Kept SEPARATE from the save
     # designs.equipment_variants (keyed "id:type") so the two key spaces never collide and the
-    # save catalog is never clobbered/discarded (Codex review #3). ALWAYS assign the measured
+    # save catalog is never clobbered/discarded (schema review #3). ALWAYS assign the measured
     # catalog (the plug raises on an empty read, so a captured result is a real non-empty
     # catalog); badge equipment_variants_live_source = "M". ---
     dvr = captured("designs_variants")
@@ -1290,7 +1304,7 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
 
     # --- division_equipment: LIVE per-division held-equipment inventory -> divisions[].
     # equipment_live (M, a DISTINCT live-only leaf, NOT the save-owned `equipment` list -- so the
-    # live join can NEVER clobber a richer save equipment shape, Codex review). The plug keyed by
+    # live join can NEVER clobber a richer save equipment shape, schema review). The plug keyed by
     # "TAG|div_id"; we join onto the snapshot divisions list by (owner, div_id). A division with
     # no live equipment match keeps equipment_live None. Variant ids are raw ints (NOT tags). ---
     de = captured("division_equipment")
@@ -1334,7 +1348,7 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
     # and its shape maps cleanly onto the typed Combat schema, so we promote it
     # into the canonical combats[] (kind="land"). We also keep the raw rows in a
     # sidecar for the lifecycle sampler. div_ids / province ids are raw ints (NOT
-    # tags) and pass through unresolved (Codex Q1/Q4).
+    # tags) and pass through unresolved (schema Q1/Q4).
     lc = captured("land_combats")
     if lc is not None:
         snap["_live_land_combats"] = lc
@@ -1359,7 +1373,7 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
 
     # --- SAVE-anchored backstops (opt-in; present only when a save path was given)
     # Named _save_* (not _live_*) so a consumer never mistakes them for a live read
-    # (Codex Q2). These are NOT memory-sourced, so they are tracked in a SEPARATE
+    # (schema Q2). These are NOT memory-sourced, so they are tracked in a SEPARATE
     # provenance bucket (save_backstops) and are NOT listed under
     # provenance.memory.domains -- mislabeling save data as a memory read would be
     # dishonest provenance (adversarial review #5).
@@ -1483,7 +1497,7 @@ def _backstop_merge(live: Any, save: Any) -> Any:
     Measured-empty []/{} containers at the SPECIFIC leaves the live channel measured
     are protected separately by ``_merge_country`` (re-asserting those leaves AFTER
     this merge), so this function's generic "empty -> take save" rule is safe: it
-    only ever fills a SKELETON-default empty, never a measured one (Codex P1)."""
+    only ever fills a SKELETON-default empty, never a measured one (schema P1)."""
     if isinstance(live, dict) and isinstance(save, dict):
         out = dict(live)
         for k, sv in save.items():
@@ -1499,7 +1513,7 @@ def _backstop_merge(live: Any, save: Any) -> Any:
 # Map a LIVE memory/collector domain to the EXACT country leaf paths it MEASURES (dotted,
 # relative to the country object), so the fold protects a measured value/empty there
 # from save overwrite WITHOUT over-protecting sibling leaves the domain did NOT
-# measure (Codex P1). country_scalars measures only these specific scalars; a future
+# measure (schema P1). country_scalars measures only these specific scalars; a future
 # live reader that measures e.g. a list field registers its leaf path here and the
 # protection then covers a measured-empty []/{}.
 _LIVE_COUNTRY_DOMAIN_LEAVES = {
@@ -1526,7 +1540,7 @@ _LIVE_COUNTRY_DOMAIN_LEAVES = {
     ),
     # LIVE unit-leaders (commanders_live): the unsplit army/navy leader lists + the
     # individual live count sub-keys. Protect the deep count sub-leaves (NOT the whole
-    # commanders.counts dict) so the save's richer counts are preserved (Codex).
+    # commanders.counts dict) so the save's richer counts are preserved (schema).
     "commanders_live": (
         "commanders.army_leaders", "commanders.navy_leaders",
         "commanders.counts.army_leaders", "commanders.counts.navy_leaders",
@@ -1534,7 +1548,7 @@ _LIVE_COUNTRY_DOMAIN_LEAVES = {
     ),
     # LIVE agency scalars (intel_live): protect the DEEP measured sub-leaves of
     # intel.agency (NOT the whole agency dict) so save-only agency sub-keys survive
-    # the merge while live wins on the measured scalars (Codex).
+    # the merge while live wins on the measured scalars (schema).
     "intel_live": (
         "intel.agency.name", "intel.agency.icon", "intel.agency.upgrade_progress",
         "intel.agency.capacity.max_operatives", "intel.agency.capacity.usable_slots",
@@ -1544,7 +1558,7 @@ _LIVE_COUNTRY_DOMAIN_LEAVES = {
     # protect ONLY the exact leaves the live read measured (incl. a measured-empty
     # completed [] = truly zero, which must beat a stale save list). focus.paused is
     # NOT protected (RESISTED live -> the save keeps it); current_continuous is a
-    # live-only leaf. A live None leaf is unmeasured and left for the save (Codex).
+    # live-only leaf. A live None leaf is unmeasured and left for the save (schema).
     "focus_live": (
         "focus.focus_tree", "focus.completed", "focus.completed_count",
         "focus.current", "focus.current_continuous", "focus.progress",
@@ -1562,7 +1576,7 @@ _LIVE_COUNTRY_DOMAIN_LEAVES = {
     # writes diplomacy.wars/opinion/...), but at_war/casualties/faction_group are DISTINCT
     # live-only leaves whose skeleton default is None (NOT []), so the `lv is not None` guard
     # in _merge_country already skips an unmeasured country -- no _SKELETON_EMPTY_CONTAINER_
-    # LEAVES entry is needed (a measured-empty at_war [] = at peace is protected here; Codex).
+    # LEAVES entry is needed (a measured-empty at_war [] = at peace is protected here; schema).
     "diplomacy_live": (
         "diplomacy.at_war", "diplomacy.casualties", "diplomacy.faction_group",
     ),
@@ -1572,7 +1586,7 @@ _LIVE_COUNTRY_DOMAIN_LEAVES = {
     # `lv is not None` guard in _merge_country already skips an unmeasured country -- no
     # measured-empty container guard is needed (a measured-empty {} is never emitted by
     # the plug; it only keys a country that carries a measured leaf). Protecting opinion keeps a
-    # live measured matrix from being clobbered by a stale save opinion map (Codex).
+    # live measured matrix from being clobbered by a stale save opinion map (schema).
     "diplo_relations": (
         "diplomacy.opinion", "diplomacy.relation_flags", "diplomacy.overlord",
         "diplomacy.autonomy_state", "diplomacy.autonomy_ratio",
@@ -1589,7 +1603,8 @@ _LIVE_COUNTRY_DOMAIN_LEAVES = {
     "politics_live": (
         "politics.party_popularities", "politics.ruling_party", "politics.ideas",
         "politics.idea_count", "politics.election_frequency", "politics.party_count",
-        "politics.low_confidence", "politics.ideas_other",
+        "politics.low_confidence", "politics.ideas_other", "politics.idea_groups",
+        "politics.advisor_ideas",
         "politics.national_spirits",
     ),
     # LIVE national fuel (fuel_live): country.economy.fuel is a SAVE-SHARED dict home. We
@@ -1598,7 +1613,7 @@ _LIVE_COUNTRY_DOMAIN_LEAVES = {
     # NOT measure carries None at fuel.current/fuel.max and the None-guard in _merge_country
     # already skips it -- no measured-empty container guard is needed (the {} parent
     # is itself never protected as a measurement). A measured 0.0 fuel is protected here so a
-    # stale save value cannot overwrite a live empty tank (Codex).
+    # stale save value cannot overwrite a live empty tank (schema).
     "fuel_live": (
         "economy.fuel.current", "economy.fuel.max",
     ),
@@ -1682,7 +1697,7 @@ _SKELETON_EMPTY_CONTAINER_STATE_LEAVES = frozenset()
 
 def _set_leaf(d: Dict[str, Any], path: str, value: Any) -> None:
     """Set a dotted leaf, CREATING missing dict parents so a measured live value is
-    never silently dropped (Codex P1c). A non-dict intermediate is the only case we
+    never silently dropped (schema P1c). A non-dict intermediate is the only case we
     cannot recover; that is a malformed snapshot and would have failed validation, so
     we leave it (the leaf simply isn't reasserted rather than corrupting the shape)."""
     parts = path.split(".")
@@ -1726,7 +1741,7 @@ def _merge_country(live_c: Dict[str, Any], save_c: Dict[str, Any],
                    measured_leaf_tags: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Backstop-merge one country (live wins where informative; save fills gaps),
     then RE-ASSERT the exact live-measured leaves so save can never overwrite a
-    value the live channel measured -- including a measured-empty []/{} (Codex P1).
+    value the live channel measured -- including a measured-empty []/{} (schema P1).
     A live None leaf is unmeasured and is left for save to have filled.
 
     ``measured_leaf_tags`` (optional) maps a protected leaf path -> the set of TAGs the
@@ -1735,7 +1750,7 @@ def _merge_country(live_c: Dict[str, Any], save_c: Dict[str, Any],
     for those, a
     non-None [] is re-asserted only when ``tag`` is in the leaf's measured set, so a
     cross-domain skeleton [] on an UN-measured country can never masquerade as a measured
-    zero and overwrite the save (Codex cross-domain review). When the map is absent (the
+    zero and overwrite the save (schema cross-domain review). When the map is absent (the
     legacy 3-arg call), behaviour is unchanged for None-defaulting leaves; an empty-
     container leaf falls back to the value guard (callers that need the cross-domain
     protection pass the map)."""
@@ -1749,7 +1764,7 @@ def _merge_country(live_c: Dict[str, Any], save_c: Dict[str, Any],
         # proven by the per-leaf measured-TAG set the assembler recorded. We FAIL CLOSED:
         # if we cannot prove this TAG was measured (no measured_leaf_tags map at all, no
         # entry for this leaf, or tag absent from the set), we do NOT re-assert -- a
-        # skeleton [] must never overwrite the save (Codex cross-domain review + legacy-
+        # skeleton [] must never overwrite the save (schema cross-domain review + legacy-
         # snapshot edge). The normal assembler path always supplies the map + entry, so a
         # genuinely-measured country is still protected; only an un-provable [] is skipped.
         if path in _MEASURED_EMPTY_CONTAINER_LEAVES and lv in ([], {}):
@@ -1757,7 +1772,7 @@ def _merge_country(live_c: Dict[str, Any], save_c: Dict[str, Any],
             if measured is None or tag is None or tag not in measured:
                 continue  # cannot prove this [] was measured -> do NOT protect (fail-closed)
         # measured (incl. 0/0.0/False/[]/{}) -> re-assert it. deep-copy a mutable leaf so
-        # the merged snapshot never ALIASES the live snapshot's object (Codex P1c).
+        # the merged snapshot never ALIASES the live snapshot's object (schema P1c).
         _set_leaf(merged, path,
                   copy.deepcopy(lv) if isinstance(lv, (dict, list)) else lv)
     return merged
@@ -1829,7 +1844,7 @@ def fold_save_bundle(snap: Dict[str, Any], output_dir: str, *,
         return snap  # nothing to fold (empty/absent oracle) -> no fabrication
 
     # Which exact country LEAVES did the LIVE memory/collector channel measure? Those values
-    # (incl. a measured-empty []/{}) must be protected from save overwrite (Codex P1).
+    # (incl. a measured-empty []/{}) must be protected from save overwrite (schema P1).
     live_mem_domains = ((snap.get("provenance") or {}).get("memory") or {}).get(
         "domains") or []
     live_collector_domains = (
@@ -1842,7 +1857,7 @@ def fold_save_bundle(snap: Dict[str, Any], output_dir: str, *,
     # Per-leaf MEASURED-TAG sets for the masquerade guard: a protected save-shared leaf
     # whose skeleton default is a non-None empty container ([]) must be re-asserted ONLY
     # on the TAGs the owning live domain actually measured, never on a cross-domain
-    # skeleton [] (Codex cross-domain review). The assembler recorded this set per leaf.
+    # skeleton [] (schema cross-domain review). The assembler recorded this set per leaf.
     measured_leaf_tags = {}
     for path, tags in (snap.get("_live_measured_leaf_tags") or {}).items():
         measured_leaf_tags[path] = set(tags or ())
@@ -1896,7 +1911,7 @@ def fold_save_bundle(snap: Dict[str, Any], output_dir: str, *,
 
     # provenance domains the LIVE memory channel actually captured. Gate the
     # divisions/combats adoption on THIS, not on emptiness: a captured measured-empty
-    # live [] is a measured zero that must WIN over a stale save roster (Codex review
+    # live [] is a measured zero that must WIN over a stale save roster (schema review
     # #1/#2). Computed once here and reused below.
     _live_mem = ((snap.get("provenance") or {}).get("memory") or {}).get("domains") or []
 
@@ -1910,7 +1925,7 @@ def fold_save_bundle(snap: Dict[str, Any], output_dir: str, *,
     # country's military.division_count from snap["divisions"] (0 for a tag with no live
     # division). Without this, a country present ONLY in the save (copied wholesale into
     # countries above) keeps its stale SAVE-derived division_count even though the live
-    # divisions won (Codex re-verify #1: a measured-zero from the live roster must win).
+    # divisions won (schema re-verify #1: a measured-zero from the live roster must win).
     if "divisions" in _live_mem:
         _dc: Dict[str, int] = {}
         for d in (snap.get("divisions") or []):
@@ -1929,7 +1944,7 @@ def fold_save_bundle(snap: Dict[str, Any], output_dir: str, *,
     # them), so the backstop simply fills the empty live skeleton; if a future live
     # read ever populates one, the live-wins rule still holds (informative wins).
     # Protect the EXACT top-level leaves the LIVE channel measured (incl. a
-    # measured-empty []) from being overlaid by the save's _backstop_merge (Codex
+    # measured-empty []) from being overlaid by the save's _backstop_merge (schema
     # review #1): a measured-empty live list is a measured zero, not a gap. We
     # snapshot those leaves BEFORE the merge and re-assert them AFTER. Only a leaf
     # whose live domain actually captured is protected. (_live_mem computed above.)
@@ -1951,7 +1966,7 @@ def fold_save_bundle(snap: Dict[str, Any], output_dir: str, *,
     # measured-empty []) from the save backstop's _backstop_merge, so the live command
     # structure wins. LEAF-level re-assertion (NOT the whole order_of_battle dict), so it
     # coexists with the ships re-assert above -- each restores an independent sub-list of
-    # the same dict (Codex-blessed). navy_theaters/air_wings/by_country are NOT live-measured
+    # the same dict (schema-approved). navy_theaters/air_wings/by_country are NOT live-measured
     # and stay save-filled.
     if "oob_command" in _live_mem:
         for _leaf in ("armies", "army_groups", "fleets", "theatres"):
@@ -1971,7 +1986,7 @@ def fold_save_bundle(snap: Dict[str, Any], output_dir: str, *,
 
     # --- combats: adopt the save's active combats only when NO live combat domain
     # captured (land_combats / naval_air_combats / naval_air_combat_stats). A captured
-    # live combat domain — even producing an empty combats[] — wins (Codex review #2).
+    # live combat domain — even producing an empty combats[] — wins (schema review #2).
     _live_combat = any(d in _live_mem for d in
                        ("land_combats", "naval_air_combats", "naval_air_combat_stats"))
     if not _live_combat and save_snap.get("combats"):
@@ -2060,7 +2075,7 @@ def _wire_weather(snap: Dict[str, Any], pid: Optional[int]) -> bool:
     precip (`water`) and snow are the SAVE-PERSISTED per-province amounts (validated exact
     vs the save), i32/1e5 floats. The reader collapses a zero/absent slot to None (it cannot
     distinguish a measured 0.0 from unmeasured), so we fold None as None and NEVER fabricate
-    a 0.0; a positive float is kept as measured (Codex B2). temp_c is None for a province
+    a 0.0; a positive float is kept as measured (schema B2). temp_c is None for a province
     whose temp slot reads exactly 0 (sea/inactive), also never a fabricated 0 C.
 
     Guarded: no pid (offline) or any import/read failure -> leave the null-but-present
@@ -2132,7 +2147,7 @@ def _wire_weather(snap: Dict[str, Any], pid: Optional[int]) -> bool:
         "temp_mean_c": tres.get("temp_mean_c"),
         # honesty: when the precip read did NOT run (additive read failed), the tallies are
         # UNMEASURED -> None, NOT a fabricated 0 that would read as "measured, none found"
-        # (Codex final review). They are concrete counts only when precip was measured.
+        # (schema final review). They are concrete counts only when precip was measured.
         "n_with_precip": (n_with_precip if precip_measured else None),
         "n_with_snow": (n_with_snow if precip_measured else None),
     }
@@ -2260,7 +2275,7 @@ def _wire_naval_combat_stats(snap: Dict[str, Any], pid: Optional[int]) -> bool:
     except Exception:
         return False
     try:
-        # CombatReader takes a process NAME (defaults to hoi4.exe), NOT a pid (Codex
+        # CombatReader takes a process NAME (defaults to hoi4.exe), NOT a pid (schema
         # re-verify #4: passing the int pid made name.lower() throw, so the whole domain
         # silently failed closed and never captured). Attach by name, then confirm it is
         # OUR process instance before trusting any read.
@@ -2279,7 +2294,7 @@ def _wire_naval_combat_stats(snap: Dict[str, Any], pid: Optional[int]) -> bool:
     # Index live naval combats by combat_id. This domain is ALL-OR-NOTHING: any
     # enumerated combat we cannot FULLY read (not a dict / no body_addr / non-dict stats
     # / missing int combat_id / read error) -> abort and fold nothing, so we never claim
-    # naval_air_combat_stats from a partial read (Codex re-verify #2/#3).
+    # naval_air_combat_stats from a partial read (schema re-verify #2/#3).
     by_id: Dict[str, Any] = {}
     for c in combats:
         if not isinstance(c, dict) or c.get("body_addr") is None:
@@ -2303,7 +2318,7 @@ def _wire_naval_combat_stats(snap: Dict[str, Any], pid: Optional[int]) -> bool:
     # already in snap["combats"] (folded earlier); a naval combat whose id collides with
     # a land combat must NOT attach naval_stats to the LAND record -> exclude kind=="land"
     # so a same-id land record is treated as non-matching and we append a naval record
-    # instead (Codex re-verify #2: combat-id spaces can overlap across kinds).
+    # instead (schema re-verify #2: combat-id spaces can overlap across kinds).
     existing = {str(c.get("combat_id")): c for c in snap.get("combats") or []
                 if isinstance(c, dict) and c.get("kind") in (None, "naval")}
     for cid, stats in by_id.items():
@@ -2315,12 +2330,12 @@ def _wire_naval_combat_stats(snap: Dict[str, Any], pid: Optional[int]) -> bool:
             merged_any = True
         else:
             # cid is the stringified map key; Combat.combat_id is typed int, so write
-            # back the original int id (validation doesn't catch a str). Codex review #4.
+            # back the original int id (validation doesn't catch a str). schema review #4.
             cid_int = int(cid) if isinstance(cid, str) and cid.lstrip("-").isdigit() else cid
             combat = schema.asdict(schema.Combat(combat_id=cid_int, kind="naval"))
             # participants were NOT measured on this stats-only path; schema.Combat
             # defaults them to [] which would FABRICATE "no participants". Force them
-            # absent (None) -- measured-absent, not measured-empty (Codex re-verify #3).
+            # absent (None) -- measured-absent, not measured-empty (schema re-verify #3).
             combat["attackers"] = None
             combat["defenders"] = None
             combat["naval_stats"] = stats

@@ -12,6 +12,20 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 
+SCHEDULED_DOMAIN_FRAME_COUNT_KEYS = {
+    "focus_live": "scheduled_focus_domain_frames",
+    "tech_live": "scheduled_tech_domain_frames",
+    "projects_live": "scheduled_projects_domain_frames",
+    "decisions_live": "scheduled_decisions_domain_frames",
+    "politics_live": "scheduled_politics_domain_frames",
+    "politics_residuals": "scheduled_politics_residuals_domain_frames",
+    "production_live": "scheduled_production_domain_frames",
+    "state_ownership": "state_ownership_frames",
+    "state_control": "state_control_frames",
+    "province_control": "province_control_frames",
+}
+
+
 def load_session_manifest(path: Path) -> Dict[str, Any]:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -23,7 +37,9 @@ def collector_session_proof_errors(
     manifest: Dict[str, Any],
     *,
     required_snapshot_domains: Iterable[str] = (),
+    required_scheduled_snapshot_domains: Iterable[str] = (),
     required_raw_delta_domains: Iterable[str] = (),
+    required_raw_event_types: Iterable[str] = (),
     min_game_hours: Optional[int] = None,
     require_replay_verified: bool = True,
     require_hourly: bool = True,
@@ -60,11 +76,22 @@ def collector_session_proof_errors(
     for domain in required_snapshot_domains:
         if str(domain) not in snapshot_domains:
             errors.append(f"snapshot domain {domain!r} not observed")
+    for domain in required_scheduled_snapshot_domains:
+        frame_count = _scheduled_domain_frame_count(summary, str(domain))
+        if frame_count is None:
+            errors.append(f"scheduled snapshot domain {domain!r} is not countable")
+        elif frame_count <= 0:
+            errors.append(f"scheduled snapshot domain {domain!r} not observed")
 
     raw_delta_domains = _string_set(summary.get("raw_delta_domains_seen"))
     for domain in required_raw_delta_domains:
         if str(domain) not in raw_delta_domains:
             errors.append(f"raw delta domain {domain!r} not observed")
+
+    raw_event_types = _string_set(summary.get("raw_event_types_seen"))
+    for event_type in required_raw_event_types:
+        if str(event_type) not in raw_event_types:
+            errors.append(f"raw event type {event_type!r} not observed")
 
     if require_no_lightweight_heavy_payloads:
         heavy_on_light = _as_int(summary.get("heavy_payload_on_lightweight_frames"))
@@ -80,7 +107,9 @@ def collector_session_proof_summary(
     manifest: Dict[str, Any],
     *,
     required_snapshot_domains: Iterable[str] = (),
+    required_scheduled_snapshot_domains: Iterable[str] = (),
     required_raw_delta_domains: Iterable[str] = (),
+    required_raw_event_types: Iterable[str] = (),
     min_game_hours: Optional[int] = None,
     require_replay_verified: bool = True,
     require_hourly: bool = True,
@@ -89,7 +118,9 @@ def collector_session_proof_summary(
     errors = collector_session_proof_errors(
         manifest,
         required_snapshot_domains=required_snapshot_domains,
+        required_scheduled_snapshot_domains=required_scheduled_snapshot_domains,
         required_raw_delta_domains=required_raw_delta_domains,
+        required_raw_event_types=required_raw_event_types,
         min_game_hours=min_game_hours,
         require_replay_verified=require_replay_verified,
         require_hourly=require_hourly,
@@ -108,9 +139,14 @@ def collector_session_proof_summary(
             hourly.get("elapsed_wall_s") if isinstance(hourly, dict) else None
         ),
         "domains_seen": sorted(_string_set(summary.get("domains_seen"))),
+        "scheduled_snapshot_domain_frames": _scheduled_domain_counts(summary),
         "raw_delta_domains_seen": sorted(
             _string_set(summary.get("raw_delta_domains_seen"))
         ),
+        "raw_event_types_seen": sorted(
+            _string_set(summary.get("raw_event_types_seen"))
+        ),
+        "raw_event_type_counts": _int_map(summary.get("raw_event_type_counts")),
         "heavy_payload_on_lightweight_frames": summary.get(
             "heavy_payload_on_lightweight_frames"
         ),
@@ -128,12 +164,42 @@ def _string_set(value: Any) -> set[str]:
     return {str(item) for item in value if isinstance(item, str)}
 
 
+def _scheduled_domain_counts(summary: Dict[str, Any]) -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    for domain in sorted(SCHEDULED_DOMAIN_FRAME_COUNT_KEYS):
+        count = _scheduled_domain_frame_count(summary, domain)
+        if count is not None:
+            out[domain] = count
+    return out
+
+
+def _scheduled_domain_frame_count(
+    summary: Dict[str, Any],
+    domain: str,
+) -> Optional[int]:
+    key = SCHEDULED_DOMAIN_FRAME_COUNT_KEYS.get(domain)
+    if key is None:
+        return None
+    return _as_int(summary.get(key))
+
+
 def _as_int(value: Any) -> Optional[int]:
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
         return value
     return None
+
+
+def _int_map(value: Any) -> Dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    out: Dict[str, int] = {}
+    for key, raw_count in value.items():
+        count = _as_int(raw_count)
+        if isinstance(key, str) and count is not None:
+            out[key] = count
+    return dict(sorted(out.items()))
 
 
 def _main(argv: Optional[List[str]] = None) -> int:
@@ -148,10 +214,22 @@ def _main(argv: Optional[List[str]] = None) -> int:
         help="snapshot domain that must appear in collector_frame_payload_summary",
     )
     parser.add_argument(
+        "--require-scheduled-domain",
+        action="append",
+        default=[],
+        help="snapshot domain that must appear on a scheduled_hour_snapshot frame",
+    )
+    parser.add_argument(
         "--require-raw-domain",
         action="append",
         default=[],
         help="raw domain_delta domain that must appear in collector_frame_payload_summary",
+    )
+    parser.add_argument(
+        "--require-raw-event-type",
+        action="append",
+        default=[],
+        help="raw event type that must appear in collector_frame_payload_summary",
     )
     parser.add_argument("--min-game-hours", type=int, default=None)
     parser.add_argument("--allow-unverified-replay", action="store_true")
@@ -162,7 +240,9 @@ def _main(argv: Optional[List[str]] = None) -> int:
     proof = collector_session_proof_summary(
         manifest,
         required_snapshot_domains=args.require_domain,
+        required_scheduled_snapshot_domains=args.require_scheduled_domain,
         required_raw_delta_domains=args.require_raw_domain,
+        required_raw_event_types=args.require_raw_event_type,
         min_game_hours=args.min_game_hours,
         require_replay_verified=not args.allow_unverified_replay,
         require_hourly=not args.allow_hourly_missing,

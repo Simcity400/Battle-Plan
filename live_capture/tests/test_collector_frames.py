@@ -3033,6 +3033,7 @@ class TestCollectorFrames(unittest.TestCase):
                             "free_trade",
                             "volunteer_only",
                             "sour_loser",
+                            "companhia_uniao_fabril",
                         ],
                         "ideas_other": ["sour_loser"],
                         "national_spirits": ["sour_loser"],
@@ -3041,7 +3042,17 @@ class TestCollectorFrames(unittest.TestCase):
                             "trade_laws": "free_trade",
                             "mobilization_laws": "volunteer_only",
                         },
-                        "idea_count": 4,
+                        "idea_groups": {
+                            "country": ["sour_loser"],
+                            "economy": ["war_economy"],
+                            "industrial_concern": ["companhia_uniao_fabril"],
+                            "trade_laws": ["free_trade"],
+                            "mobilization_laws": ["volunteer_only"],
+                        },
+                        "advisor_ideas": {
+                            "industrial_concern": ["companhia_uniao_fabril"],
+                        },
+                        "idea_count": 5,
                         "election_frequency": 48,
                         "party_count": 4,
                         "low_confidence": False,
@@ -3062,7 +3073,13 @@ class TestCollectorFrames(unittest.TestCase):
         self.assertEqual(politics["party_popularities"]["democratic"], 72.5)
         self.assertEqual(
             politics["ideas"],
-            ["war_economy", "free_trade", "volunteer_only", "sour_loser"],
+            [
+                "war_economy",
+                "free_trade",
+                "volunteer_only",
+                "sour_loser",
+                "companhia_uniao_fabril",
+            ],
         )
         self.assertEqual(politics["ideas_other"], ["sour_loser"])
         self.assertEqual(politics["national_spirits"], ["sour_loser"])
@@ -3074,7 +3091,15 @@ class TestCollectorFrames(unittest.TestCase):
                 "mobilization_laws": "volunteer_only",
             },
         )
-        self.assertEqual(politics["idea_count"], 4)
+        self.assertEqual(
+            politics["idea_groups"]["industrial_concern"],
+            ["companhia_uniao_fabril"],
+        )
+        self.assertEqual(
+            politics["advisor_ideas"],
+            {"industrial_concern": ["companhia_uniao_fabril"]},
+        )
+        self.assertEqual(politics["idea_count"], 5)
         self.assertEqual(politics["election_frequency"], 48)
         self.assertEqual(politics["party_count"], 4)
         self.assertFalse(politics["low_confidence"])
@@ -3141,6 +3166,12 @@ class TestCollectorFrames(unittest.TestCase):
                             "bad key!": "ok",
                             "economy": "bad token!",
                         },
+                        "idea_groups": {
+                            "industrial_concern": ["ok", "bad token!"],
+                        },
+                        "advisor_ideas": {
+                            "bad group!": ["ok"],
+                        },
                         "idea_count": 401,
                         "election_frequency": 0,
                         "party_count": 17,
@@ -3161,6 +3192,8 @@ class TestCollectorFrames(unittest.TestCase):
             "national_spirits[1]",
             "laws key",
             "laws.economy",
+            "idea_groups.industrial_concern[1]",
+            "advisor_ideas key",
             "idea_count",
             "election_frequency",
             "party_count",

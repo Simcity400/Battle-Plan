@@ -93,7 +93,7 @@ def _stub_results(*, include=("state_control", "province_control",
                 {"div_id": 101, "owner": "SOV", "location_province": 12,
                  "organisation": 0.0, "strength": 0.0, "moving": True,
                  "move_target_province": 13, "in_combat": False},
-                # un-nameable owner kept as a division with owner=None (Codex D)
+                # un-nameable owner kept as a division with owner=None (schema D)
                 {"div_id": 102, "owner": None, "location_province": 12},
             ],
             "count": 3, "unresolved_owner": 1,
@@ -130,7 +130,7 @@ class TestAssembly(unittest.TestCase):
         self.assertIn("4", snap["states"])
         self.assertIsNone(snap["states"]["4"]["controller"])
         self.assertEqual(snap["provinces"]["11"]["controller"], "GER")
-        # 3 divisions including the owner=None one (kept, Codex D)
+        # 3 divisions including the owner=None one (kept, schema D)
         self.assertEqual(len(snap["divisions"]), 3)
         ger_div = [d for d in snap["divisions"] if d["owner"] == "GER"]
         self.assertEqual(len(ger_div), 1)
@@ -167,7 +167,7 @@ class TestAssembly(unittest.TestCase):
         self.assertIsNone(snap["countries"]["GER"]["military"]["num_ships"])
 
     def test_known_country_zero_divisions_is_measured_zero(self):
-        # Codex code-review #4: when divisions captured, a known country with no
+        # schema review #4: when divisions captured, a known country with no
         # division is a MEASURED zero (0), not unmeasured (null). SOV appears via
         # country_scalars but has a division here; add a 3rd country with scalars
         # and no division to prove the zero-fill.
@@ -190,7 +190,7 @@ class TestAssembly(unittest.TestCase):
         self.assertIsNone(snap["countries"]["GER"]["military"]["division_count"])
 
     def test_numeric_owner_controller_sanitized_to_null(self):
-        # Codex code-review #6: a misbehaving plug emitting a numeric id must not
+        # schema review #6: a misbehaving plug emitting a numeric id must not
         # land it in a *_tag field; it becomes null.
         res = _stub_results()
         res["state_control"].data["controllers"]["9"] = 42  # numeric, not a TAG
@@ -410,7 +410,7 @@ class TestNewDomains(unittest.TestCase):
         self.assertNotIn("buildings", snap["provenance"]["memory"]["domains"])
 
     def test_save_intel_keeps_indices_not_tags(self):
-        # Codex Q3: target indices are raw ints, NEVER fabricated TAGs.
+        # schema Q3: target indices are raw ints, NEVER fabricated TAGs.
         res = {"intel": self._res("intel", {
             "source": "save", "from": "intel_save", "melt_path": "X.hoi4",
             "by_observer": {"GER": {"5": {"civ": 1.0}}},
@@ -515,7 +515,7 @@ class TestWiredLiveDomains(unittest.TestCase):
         self.assertEqual(ger["misc"]["convoys_destroyed"], 12)
         self.assertEqual(ger["misc"]["ace_count"], 3)
         # cosmetic_tag is MEASURED by the reader; None == "no cosmetic tag set"
-        # (a measured absence) and is written through, not omitted (Codex review #2)
+        # (a measured absence) and is written through, not omitted (schema review #2)
         self.assertIn("cosmetic_tag", ger["misc"])
         self.assertIsNone(ger["misc"]["cosmetic_tag"])
         self.assertEqual(sov["misc"]["convoys_destroyed"], 0)
@@ -1145,7 +1145,7 @@ class TestTechCommandersIntelLiveDomains(unittest.TestCase):
     """MOCK-based coverage for the 3 LIVE per-country domains wired into the same
     canonical save HOMES (research / commanders / intel) under DISTINCT *_live
     provenance ids: tech_live, commanders_live, intel_live. NO live memory -- every
-    reader output is a canned DomainResult. Asserts the new fields land where Codex
+    reader output is a canned DomainResult. Asserts the new fields land where schema
     blessed them, measured 0 survives, the save-shaped research.in_progress is NOT
     polluted, the role-split save commander leaves are not clobbered, the nested
     agency capacity shape matches the save, diagnostic addresses never leak, and the
@@ -1328,7 +1328,7 @@ class TestTechCommandersIntelLiveDomains(unittest.TestCase):
         self.assertNotIn("Germany", out["countries"])
 
     def test_intel_live_bridge_known_tag_crosscheck(self):
-        # Codex final review: a 3-letter localized name (e.g. "MI6") would pass
+        # schema final review: a 3-letter localized name (e.g. "MI6") would pass
         # schema.valid_tag. With a bridge available, only keys the bridge KNOWS are
         # accepted, closing the no-fabrication hole.
         plugs = {p.name: p for p in reg.default_registry()}
@@ -1442,7 +1442,7 @@ class TestTechCommandersIntelLiveDomains(unittest.TestCase):
         self.assertNotIn("42", out["countries"])
 
     def test_tech_reader_preserves_unmeasured_active_research_none(self):
-        # Codex final review: a missing/None active_research is UNMEASURED and must
+        # schema final review: a missing/None active_research is UNMEASURED and must
         # stay None (NOT coerced to []), so the assembler leaves in_progress_live null
         # and the save can fill it. A measured [] stays [] (measured-empty).
         plugs = {p.name: p for p in reg.default_registry()}
@@ -1483,7 +1483,7 @@ class TestFocusProductionLiveDomains(unittest.TestCase):
       * production_live -> a NEW live-only home (country.production), distinct from the
         save "production" domain (which folds into economy/military).
     NO live memory -- every reader output is a canned DomainResult. Asserts the fields
-    land where Codex blessed them, measured 0 / measured-empty survive, the save-shared
+    land where schema Blessed them, measured 0 / measured-empty survive, the save-shared
     focus.paused is not fabricated, the save backstop cannot overwrite a live-measured
     leaf (incl. a measured-empty completed []), diagnostic addrs never leak, and a
     bridge-name fallback (no TAG resolved) is honestly omitted."""
@@ -1834,7 +1834,7 @@ class TestDiplomacyPoliticsLiveDomains(unittest.TestCase):
         low_confidence live/classified leaves). political_power is RESISTED here
         (country_scalars owns the protected leaf -- the PP-overlap reconciliation).
     NO live memory -- every reader output is a canned DomainResult. Asserts the fields land
-    where Codex blessed them, measured 0 / measured-empty survive, every TAG is valid_tag-
+    where schema Blessed them, measured 0 / measured-empty survive, every TAG is valid_tag-
     checked, political_power is NOT double-written, the save backstop cannot overwrite a
     live-measured leaf, diagnostic addrs never leak, and validate_snapshot still passes."""
 
@@ -1868,6 +1868,12 @@ class TestDiplomacyPoliticsLiveDomains(unittest.TestCase):
                             "national_spirits": ["sour_loser"],
                             "laws": {"economy": "war_economy",
                                      "trade_laws": "free_trade"},
+                            "idea_groups": {
+                                "country": ["sour_loser"],
+                                "economy": ["war_economy"],
+                                "trade_laws": ["free_trade"],
+                            },
+                            "advisor_ideas": {},
                             "idea_count": 3, "election_frequency": 48,
                             "party_count": 4, "low_confidence": False},
                     # measured zeros: 0 ideas (measured-empty), no elections (freq None)
@@ -1928,6 +1934,8 @@ class TestDiplomacyPoliticsLiveDomains(unittest.TestCase):
         self.assertEqual(ger["national_spirits"], ["sour_loser"])
         self.assertEqual(ger["laws"], {"economy": "war_economy",
                                        "trade_laws": "free_trade"})
+        self.assertEqual(ger["idea_groups"]["country"], ["sour_loser"])
+        self.assertEqual(ger["advisor_ideas"], {})
         self.assertEqual(ger["idea_count"], 3)
         self.assertEqual(ger["election_frequency"], 48)
         self.assertEqual(ger["party_count"], 4)
@@ -2685,7 +2693,7 @@ class TestContinuity(unittest.TestCase):
         self.assertEqual(u.continuity_break, "unknown_time")
         self.assertEqual(u.confidence, "degraded")
         # a later KNOWN hour LOWER than the pre-gap known hour is still a rollback
-        # (compared across the unknown gap, Codex A)
+        # (compared across the unknown gap, schema A)
         r = t.tag(process_instance_id="A", pid=1, hour_index=90)
         self.assertEqual(r.segment_id, 2)
         self.assertEqual(r.continuity_break, "time_rollback")
@@ -2693,7 +2701,7 @@ class TestContinuity(unittest.TestCase):
     def test_campaign_id_stable_across_tool_restart(self):
         # same process instance -> same campaign_id even with a fresh tracker
         # (simulated tool restart): the campaign_id is process-derived, not
-        # wallclock-derived (Codex C).
+        # wallclock-derived (schema C).
         t1 = self._tracker()
         a = t1.tag(process_instance_id="A", pid=1, hour_index=100)
         t2 = self._tracker()  # fresh state == restart
@@ -2707,7 +2715,7 @@ class TestContinuity(unittest.TestCase):
         self.assertEqual(tags.campaign_id_source, "save_seed")
 
     def test_process_change_then_unknown_then_known_no_false_rollback(self):
-        # Codex code-review #3: a process change must DROP last_known_hour so the
+        # schema review #3: a process change must DROP last_known_hour so the
         # next known hour (even if < the OLD process's last hour) is NOT a rollback.
         t = self._tracker()
         t.tag(process_instance_id="A", pid=1, hour_index=5000)  # old proc, late
@@ -2722,7 +2730,7 @@ class TestContinuity(unittest.TestCase):
         self.assertIsNone(k.continuity_break)
 
     def test_compute_does_not_mutate_until_commit(self):
-        # Codex code-review #2: compute() is pure; the live state only advances on
+        # schema review #2: compute() is pure; the live state only advances on
         # commit(). A failed write (no commit) must not advance continuity.
         t = self._tracker()
         t.tag(process_instance_id="A", pid=1, hour_index=100)  # seq=1 committed
@@ -2804,7 +2812,7 @@ class TestDurableStore(unittest.TestCase):
         self.assertEqual(read_json(p), {"a": 2})
 
     def test_rollback_does_not_overwrite_prior_segment(self):
-        # Codex code-review #1: a rollback to an already-captured hour in a NEW
+        # schema review #1: a rollback to an already-captured hour in a NEW
         # segment must produce a DISTINCT file, not overwrite segment 1's snapshot.
         store = DurableCaptureStore(self.tmp)
         s1 = schema.empty_snapshot("g", "1940.9.10.13")
@@ -2841,7 +2849,7 @@ class TestDurableStore(unittest.TestCase):
             self.assertIn("_noncanonical", p)
 
     def test_unsafe_game_id_rejected(self):
-        # Codex code-review #8: a game_id with a path separator / .. is refused.
+        # schema review #8: a game_id with a path separator / .. is refused.
         store = DurableCaptureStore(self.tmp)
         for bad in ("../escape", "a/b", "..", "x" * 200):
             snap = schema.empty_snapshot(bad, "1940.9.10.13")
@@ -2902,7 +2910,7 @@ class TestEndToEndDryRun(unittest.TestCase):
         self.assertEqual(st["last_known_hour"], res2.snapshot["hour_index"])
 
     def test_measured_zero_division_count_survives_derive(self):
-        # Codex reconcile #4: derive's deployed-manpower pass re-nulls
+        # schema reconcile #4: derive's deployed-manpower pass re-nulls
         # division_count for tags absent from divisions[]; the loop must restore
         # the MEASURED zero for a known country that simply has no division.
         loop = _make_loop(self.tmp, game_id="zerodiv")
@@ -2931,7 +2939,7 @@ class TestEndToEndDryRun(unittest.TestCase):
         self.assertIn("UNTRUSTED", notes)
 
     def test_untrusted_date_source_is_redacted_in_notes(self):
-        # Codex follow-up: a caller could pass an arbitrary string (even a path) as
+        # schema follow-up: a caller could pass an arbitrary string (even a path) as
         # DateInfo.source; it must NEVER leak into a persisted note. An unknown
         # source is reported as 'other', not echoed.
         loop = _make_loop(self.tmp, game_id="srcredact")
@@ -3655,7 +3663,7 @@ class TestWeatherPrecipWire(unittest.TestCase):
         self.assertIsNone(w["provinces"]["1896"]["precip"])
         self.assertIsNone(w["provinces"]["1896"]["snow"])
         # rollup precip tallies are UNMEASURED -> None (not a fabricated 0 implying
-        # "measured, none found"); temp tallies still concrete (Codex final review).
+        # "measured, none found"); temp tallies still concrete (schema final review).
         self.assertIsNone(w["global_rollup"]["n_with_precip"])
         self.assertIsNone(w["global_rollup"]["n_with_snow"])
         self.assertNotIn("precip_max", w["global_rollup"])
@@ -4006,7 +4014,7 @@ class TestStage2Pin(unittest.TestCase):
             reg._verify_same_process = orig_vsp
 
     def test_pin_country_reader_revalidate_miss_reresolves_identity(self):
-        # Codex finding 1: after a validate MISS the shared identity must be RE-RESOLVED fresh,
+        # schema finding 1: after a validate MISS the shared identity must be RE-RESOLVED fresh,
         # not served from the ctx cache. Drive a country-set pin whose identity goes "dead".
         import diplomacy_live as dl
         idmap = {i: "T%02d" % i for i in range(1, 9)}
@@ -4527,7 +4535,7 @@ class TestStage15WarmPins(unittest.TestCase):
         self.assertNotIn("mod_1001", set(cat2["41"]["modules"].values()))
 
     def test_designs_variants_pin_fails_closed_on_none_fingerprint(self):
-        # FAIL-CLOSED (Codex Q2 residual): when the per-variant payload fp is UNREADABLE
+        # FAIL-CLOSED (schema Q2 residual): when the per-variant payload fp is UNREADABLE
         # (a read fault / insane size -> _variant_payload_fp returns None), the variant's
         # payload is UNVERIFIABLE. A warm hit MUST re-decode (fail closed), NOT serve the
         # cached catalog behind a None==None compare. We force None by making the module
@@ -4747,7 +4755,7 @@ class TestStage15ResidualPins(unittest.TestCase):
 
         class _OCL:
             valid = True
-            # _pin_oob_command's struct fingerprint (_oob_struct_fp, Codex-C MUST-FIX) reads the
+            # _pin_oob_command's struct fingerprint (_oob_struct_fp, schema-C MUST-FIX) reads the
             # mutable inline edge offsets off the module -- surface them so the fake is complete.
             DIV_ARMY_PARENT = _ocl_real.DIV_ARMY_PARENT
             DIV_OWNER = _ocl_real.DIV_OWNER

@@ -487,8 +487,10 @@ Completed in the first repo/live proof pass:
     DLL-scheduled. A static idea-group contract from `game_defs` /
     `common/ideas` is passed into collector control so the DLL can classify the
     live active-ideas vector into `politics.laws`, broad
-    `politics.ideas_other`, and narrower `politics.national_spirits` without a
-    save. The static advisor contract from `game_defs` / `common/characters`
+    `politics.ideas_other`, narrower `politics.national_spirits`, complete
+    `politics.idea_groups`, and active cabinet/designer
+    `politics.advisor_ideas` without a save. The static advisor contract from
+    `game_defs` / `common/characters`
     enriches hired active advisor tokens into `appointed_advisor_details` and
     `appointed_advisor_slots` without sweeping `CAdvisor` heap objects. The
     same scheduled frame now emits `decisions_live` from the validated
@@ -501,6 +503,14 @@ Completed in the first repo/live proof pass:
     `decisions_live`, measured Portugal laws as `civilian_economy` /
     `export_focus` / `volunteer_only`, measured Portugal 12 active ideas and 9
     `ideas_other`, and decoded non-empty active timed decisions for 7 countries.
+    Follow-up hourly proof `politics_live_idea_groups_2h_proof` verified the
+    widened group maps in a replay file: 2 game hours advanced, 3 snapshots were
+    stored, 2 scheduled `politics_live` frames were emitted, replay
+    verification passed, canonical snapshot validation reported zero schema
+    problems, `idea_groups` folded for 712 country rows, and positive
+    `advisor_ideas` folded for 160 rows. Portugal measured
+    `idea_groups.industrial_concern = companhia_uniao_fabril` and
+    `advisor_ideas.industrial_concern = companhia_uniao_fabril`.
 37. Scheduled focus core moved into the DLL: the collector now emits
     `focus_live` on scheduled frames from the validated
     `CGameState+0x310 -> CCountry*` table. It reads `focus_tree` through

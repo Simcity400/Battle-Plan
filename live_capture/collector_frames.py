@@ -95,6 +95,8 @@ COUNTRY_POLITICS_PAYLOAD_KEYS = frozenset((
     "ideas_other",
     "national_spirits",
     "laws",
+    "idea_groups",
+    "advisor_ideas",
     "idea_count",
     "election_frequency",
     "party_count",
@@ -113,6 +115,8 @@ COUNTRY_POLITICS_LIVE_PAYLOAD_KEYS = frozenset((
     "ideas_other",
     "national_spirits",
     "laws",
+    "idea_groups",
+    "advisor_ideas",
     "idea_count",
     "election_frequency",
     "party_count",
@@ -4260,6 +4264,14 @@ def _validate_country_rows(countries: Dict[str, Any]) -> List[str]:
                                     f"collector frame country {tag!r}.politics."
                                     f"laws.{group} not token"
                                 )
+                idea_groups = politics.get("idea_groups")
+                if idea_groups is not None:
+                    problems.extend(_validate_politics_token_map(
+                        tag, idea_groups, "idea_groups"))
+                advisor_ideas = politics.get("advisor_ideas")
+                if advisor_ideas is not None:
+                    problems.extend(_validate_politics_token_map(
+                        tag, advisor_ideas, "advisor_ideas"))
                 for key, minimum, maximum in (
                     ("idea_count", 0, COUNTRY_POLITICS_MAX_IDEAS),
                     ("election_frequency", 1, 600),
@@ -4427,6 +4439,39 @@ def _validate_appointed_advisor_details(tag: str, value: Any) -> List[str]:
                     f"collector frame country {tag!r}.politics."
                     f"appointed_advisor_details[{idx}].{key} not token|null"
                 )
+    return problems
+
+
+def _validate_politics_token_map(tag: str, value: Any, field: str) -> List[str]:
+    problems: List[str] = []
+    if not isinstance(value, dict) or len(value) > COUNTRY_POLITICS_MAX_IDEAS:
+        return [
+            f"collector frame country {tag!r}.politics.{field} "
+            "not bounded dict|null"
+        ]
+    for group, tokens in value.items():
+        if not _valid_politics_token(group):
+            problems.append(
+                f"collector frame country {tag!r}.politics."
+                f"{field} key {group!r} not token"
+            )
+            continue
+        if (
+            not isinstance(tokens, list)
+            or len(tokens) > COUNTRY_POLITICS_MAX_IDEAS
+        ):
+            problems.append(
+                f"collector frame country {tag!r}.politics."
+                f"{field}.{group} not bounded list"
+            )
+            continue
+        for idx, token in enumerate(tokens):
+            if not _valid_politics_token(token):
+                problems.append(
+                    f"collector frame country {tag!r}.politics."
+                    f"{field}.{group}[{idx}] not token"
+                )
+                break
     return problems
 
 
@@ -5431,6 +5476,13 @@ def _fold_country_politics(
             )
         ):
             clean["laws"] = dict(laws)
+        idea_groups = _clean_politics_token_map(politics_payload.get("idea_groups"))
+        if idea_groups is not None:
+            clean["idea_groups"] = idea_groups
+        advisor_ideas = _clean_politics_token_map(
+            politics_payload.get("advisor_ideas"))
+        if advisor_ideas is not None:
+            clean["advisor_ideas"] = advisor_ideas
         for key, minimum, maximum in (
             ("idea_count", 0, COUNTRY_POLITICS_MAX_IDEAS),
             ("election_frequency", 1, 600),
@@ -5455,6 +5507,23 @@ def _fold_country_politics(
         measured["politics.ideas_other"] = sorted(measured_ideas_other_tags)
     if measured_national_spirit_tags:
         measured["politics.national_spirits"] = sorted(measured_national_spirit_tags)
+
+
+def _clean_politics_token_map(value: Any) -> Optional[Dict[str, List[str]]]:
+    if not isinstance(value, dict) or len(value) > COUNTRY_POLITICS_MAX_IDEAS:
+        return None
+    out: Dict[str, List[str]] = {}
+    for group, tokens in value.items():
+        if not _valid_politics_token(group):
+            return None
+        if (
+            not isinstance(tokens, list)
+            or len(tokens) > COUNTRY_POLITICS_MAX_IDEAS
+            or not all(_valid_politics_token(token) for token in tokens)
+        ):
+            return None
+        out[group] = list(tokens)
+    return out
 
 
 def _fold_country_politics_residuals(

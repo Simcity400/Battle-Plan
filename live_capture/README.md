@@ -71,23 +71,26 @@ current product status and acceptance gates, and
   `province_control` rows when a collector frame explicitly claims those
   domains. It also folds scheduled `politics_live` rows from the DLL into
   `countries.*.politics` for ruling party, party popularities, active idea
-  tokens, typed `laws`, broad non-law `ideas_other`, narrower
-  `national_spirits`, idea count, election frequency, party count, and
-  low-confidence diagnostics, and scheduled `politics_residuals` rows for
+  tokens, typed `laws`, complete `idea_groups`, active cabinet/designer
+  `advisor_ideas`, broad non-law `ideas_other`, narrower `national_spirits`,
+  idea count, election frequency, party count, and low-confidence diagnostics,
+  and scheduled `politics_residuals` rows for
   `last_election` and `elections_allowed`. `appointed_advisors`,
   `appointed_advisor_details`, `appointed_advisor_slots`, and
   `appointed_advisor_ledgers` are folded when the session supplies a validated
   static advisor contract built from `game_defs` / `common/characters`; the
   details include `{idea_token, slot, ledger, character}` without sweeping
   `CAdvisor` heap objects in the hot path. Typed
-  law / non-law / national-spirit classification is folded when the session
-  supplies the static `common/ideas` group contract. The DLL intersects those
-  contracts with live active ideas. Missing or invalid contracts omit the
-  relevant leaves, while measured-empty `[]` is real. Live speed-five proof
-  `collector_live_politics_decisions_probe` supplied 3722 advisor tokens and a
-  6474-row idea-group contract, advanced 2 game hours with zero skipped hours,
-  emitted 3 scheduled politics/decisions frames, and kept worker-poll politics
-  payloads at zero.
+  law / idea-group / advisor-like / non-law / national-spirit classification is
+  folded when the session supplies the static `common/ideas` group contract.
+  The DLL intersects those contracts with live active ideas. Missing or invalid
+  contracts omit the relevant leaves, while measured-empty `[]` is real. Live
+  hourly proof `politics_live_idea_groups_2h_proof` supplied 3722 advisor
+  tokens and a 6474-row idea-group contract, advanced 2 game hours, stored 3
+  snapshots, verified the replay, emitted 2 scheduled `politics_live` frames,
+  folded `idea_groups` for 712 country rows and positive `advisor_ideas` for
+  160 country rows, and measured Portugal as
+  `advisor_ideas.industrial_concern = companhia_uniao_fabril`.
   It also folds scheduled `decisions_live` rows into
   `countries.*.decisions.status_present` and `.timed_live`; measured-empty
   `timed_live = []` is protected only for tags actually measured by the
@@ -144,9 +147,11 @@ python live_capture/recorder/recorder_main.py --smoke
 python -m live_capture.collector_attach --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --pipe
 python -m live_capture.collector_profile_check --pid <hoi4-pid> --profile live_capture/collector_profiles/vanilla_latest_2026_06_28.json --dll replay_native/target/debug/collector.dll
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session --game-id collector_live_speed5_session --duration-s 8 --sample-ms 10 --dwell-s 0.25 --worker-bursts 3 --burst-interval-s 0.25 --until-game-hours 12 --max-wall-s 30
+python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session --game-id collector_live_focus_decision_project_roots --duration-s 8 --sample-ms 10 --dwell-s 0.25 --worker-bursts 3 --burst-interval-s 0.25 --until-game-hours 12 --max-wall-s 30 --preflight-special-projects
+python -m live_capture.collector_proof_gate replay/snapshots/_collector_session/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain focus_live --require-scheduled-domain decisions_live --require-scheduled-domain projects_live
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session --game-id collector_live_division_cache_bootstrap --duration-s 5 --sample-ms 20 --dwell-s 0.25 --preflight-division-movement --allow-division-cold-scan
 python -m live_capture.collector_probe_record --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_probe --store-root replay/snapshots --game-id collector_live_speed5_worker --dwell-s 0.25 --worker-duration-s 8 --worker-sample-ms 10 --until-game-hours 12 --max-wall-s 15 --unique-store-hours-only
-python -m unittest live_capture.tests.test_collector_session live_capture.tests.test_recorder_cadence live_capture.tests.test_recorder_worker_cadence live_capture.tests.test_recorder_manifest_diagnostics live_capture.tests.test_replay_writer
+python -m unittest live_capture.tests.test_collector_session live_capture.tests.test_collector_proof_gate live_capture.tests.test_recorder_cadence live_capture.tests.test_recorder_worker_cadence live_capture.tests.test_recorder_manifest_diagnostics live_capture.tests.test_replay_writer
 python -m pytest live_capture
 ```
 
@@ -161,6 +166,16 @@ feeds decoded collector frames through the durable store, finalizes a
 transport diagnostics in the session manifest. Use `collector_probe_record`
 directly only when proving collector timing, reproducing transport behavior, or
 collecting raw probe fixtures.
+
+For focus/decision/project root-contract acceptance, the unit tests above are
+only executable scaffolding. The segment is live-verified only after
+`collector_session` runs against the real running HOI4 process with
+`hourly_requirement.met = true`, `replay_verified = true`, and
+`collector_proof_gate --require-scheduled-domain focus_live --require-scheduled-domain decisions_live --require-scheduled-domain projects_live`
+passes on that run's `session_manifest.json`. If the special-project cache is
+missing, first run a cache-populating diagnostic with
+`--preflight-special-projects --allow-special-projects-cold-scan`, then rerun
+the acceptance proof without the cold-scan flag.
 
 Repeated bounded workers are one logical recorder session. The raw probe
 manifest keeps every verified observation, but the replay writer processes one

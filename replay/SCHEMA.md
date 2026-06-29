@@ -316,6 +316,8 @@ are `null`.
 | `ideas_all[]` | list[str] | S | save/oracle active idea list; live `ideas[]` is the ordered collector list |
 | `ideas_other[]` | list[str] | C / M / S | broad non-law active ideas (laws stripped); collector emits this ordered list when the idea-group contract is supplied, with measured-empty `[]` protected only for measured tags |
 | `national_spirits[]` | list[str] | C / M / S | active `common/ideas` category `country` tokens; this is the narrower national-spirit subset of `ideas_other[]`, with measured-empty `[]` protected only for measured tags |
+| `idea_groups` | obj\|null | C / M | `{common/ideas group: [active idea tokens...]}` from the live active-ideas vector joined to the validated static idea-group contract; hourly proof `politics_live_idea_groups_2h_proof` captured 712 country rows with this map and folded it into a verified `.battleplan` |
+| `advisor_ideas` | obj\|null | C / M | active cabinet/designer/advisor-like ideas keyed by group, e.g. `industrial_concern`, `political_advisor`, `theorist`, chiefs, and manufacturers; separate from true modern `appointed_advisors[]`; hourly proof captured 160 country rows, including Portugal `industrial_concern = companhia_uniao_fabril` |
 | `cabinet` | obj\|null | S | `{leader, advisors[], theorists[]}`; null until parsed |
 | `is_human` | bool\|null | S/M | `is_ai = no` at start (DESIGN §4 — humans flagged) |
 | `is_major` | bool\|null | S | |

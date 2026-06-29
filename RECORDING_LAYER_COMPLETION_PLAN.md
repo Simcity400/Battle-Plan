@@ -1056,6 +1056,18 @@ narrower `national_spirits` subset from the active-ideas vector when a validated
 static idea-group contract is supplied. The proof measured Portugal laws as
 `civilian_economy`, `export_focus`, and `volunteer_only` with 12 active ideas
 and 9 non-law `ideas_other`.
+Follow-up live proof `politics_live_idea_groups_2h_proof` rebuilt the DLL
+with complete active `idea_groups` and active cabinet/designer `advisor_ideas`,
+then ran against PID 40464 with `hourly_requirement.met = true`,
+`game_hours_advanced = 2`, `stored_snapshot_count = 3`, and
+`replay_verified = true`. The raw stream carried 2 scheduled `politics_live`
+frames and 2 `politics_residuals` frames, with zero heavy payloads on
+worker-poll frames; canonical replay snapshot validation reported zero schema
+problems. The proof folded `idea_groups` for 712 country rows and positive
+`advisor_ideas` for 160 rows. Portugal carried laws
+`civilian_economy` / `export_focus` / `limited_conscription`, 11
+`national_spirits`, `idea_groups.industrial_concern = companhia_uniao_fabril`,
+and `advisor_ideas.industrial_concern = companhia_uniao_fabril`.
 `decisions_live` is also now DLL-native: the collector validates
 `CCountry+0xFA0 -> CDecisionStatus`, checks the owner back-pointer, emits
 decision-status vector counts, and decodes active `CTimedDecision` rows. That
@@ -1266,7 +1278,8 @@ country-object rows: `convoys_destroyed`, `accidents_score`, `ace_count`, and
 nullable `cosmetic_tag`. It also emits scheduled `politics_live` rows from
 `CPoliticalStatus`: ruling party, party popularities, ordered active idea
 tokens, typed law buckets, broad non-law `ideas_other`, narrower
-`national_spirits`, idea count, election frequency, party count, and
+`national_spirits`, complete `idea_groups`, active cabinet/designer
+`advisor_ideas`, idea count, election frequency, party count, and
 low-confidence diagnostics, plus scheduled `politics_residuals` rows for
 `last_election`, `elections_allowed`, `appointed_advisors`,
 `appointed_advisor_details`, `appointed_advisor_slots`, and
@@ -1275,7 +1288,9 @@ adapter validates and folds these into
 `countries.*.misc` and `countries.*.politics`; live proof observed
 `country_misc`, `politics_live`, `politics_residuals`, scheduled advisor
 leaves, typed laws, `ideas_other`, and `national_spirits` with no session errors
-and no worker-poll politics payloads. The DLL also emits scheduled
+leaves, typed laws, `idea_groups`, `advisor_ideas`, `ideas_other`, and
+`national_spirits` with no session errors and no worker-poll politics payloads.
+The DLL also emits scheduled
 `decisions_live` status counts and active timed-decision rows, plus scheduled
 `focus_live` core focus state from validated `CCountry` child roots; live proof
 emitted 3 scheduled focus frames and 1065 country focus rows with no worker-poll
@@ -1286,6 +1301,41 @@ token-name/progress/ETA resolution, project progress/definition joins, focus
 pause/event markers, deeper targeted decision/cooldown internals, and deeper
 political/cabinet state still need dedicated manager/root contracts before
 promotion.
+
+2026-06-29 proof-gate update for the focus/decision/project root slice:
+the recorder manifest now exposes scheduled `decisions_live` frame and payload
+counts alongside the existing focus/project counters, and
+`live_capture.collector_proof_gate` can require scheduled collector frames for
+`focus_live`, `decisions_live`, and `projects_live`. Unit tests are executable
+scaffolding only; a segment is live-verified only after a `collector_session`
+run against the real the game process with
+`hourly_requirement.met = true`, `replay_verified = true`, zero heavy payloads
+on worker-poll frames, and:
+
+```powershell
+python -m live_capture.collector_proof_gate replay/snapshots/_collector_session/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain focus_live --require-scheduled-domain decisions_live --require-scheduled-domain projects_live
+```
+
+If `--preflight-special-projects` cannot supply a bridge from cache, classify
+`projects_live` as blocked/unverified for this proof. A cold-scan run may
+populate the cache, but the acceptance proof should be rerun without
+`--allow-special-projects-cold-scan`.
+
+Short live proof completed on 2026-06-29 against running PID 40464 with the
+pinned 16022851 executable hash. The first cache-only run verified hourly
+cadence, `focus_live`, and `decisions_live`, but failed the full proof because
+`projects_live` had zero scheduled frames; the preflight reported
+`status = cold_scan_disabled`, cache miss, and no bridge supplied. A read-only
+special-project cold bootstrap then resolved and cached 21,531 bridge rows in
+91.86s outside the collector hot loop. The acceptance rerun used that cache
+without `--allow-special-projects-cold-scan`; `collector_proof_gate` passed with
+`game_hours_advanced = 2`, `hourly_requirement.met = true`,
+`replay_verified = true`, `heavy_payload_on_lightweight_frames = 0`, and
+scheduled frame counts `focus_live = 3`, `decisions_live = 3`,
+`projects_live = 3`. Payload summary: 1,068 focus country rows, 1,068 decision
+country rows, 60 facility rows, 39 worked-project rows, and 0 measured
+scientist rows in that active game state. Next hardening proof is the standard
+12-game-hour speed-five run using the same scheduled-domain gate.
 
 ### Phase 8: Diplomacy, Intel, Market, Logistics, Weather
 

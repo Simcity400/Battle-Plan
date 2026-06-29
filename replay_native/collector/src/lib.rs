@@ -3729,9 +3729,16 @@ mod attach_log {
     ) -> Vec<String> {
         let previous = std::mem::take(&mut tracker.previous);
         let mut current: BTreeMap<usize, ArmyOrderSample> = BTreeMap::new();
+        let mut generation_splits: BTreeMap<usize, ArmyOrderSample> = BTreeMap::new();
         for mut sample in current_samples {
             if let Some(old) = previous.get(&sample.order_addr) {
-                sample.generation = old.generation;
+                if army_order_continues(old, &sample) {
+                    sample.generation = old.generation;
+                } else {
+                    generation_splits.insert(sample.order_addr, old.clone());
+                    sample.generation = tracker.next_generation;
+                    tracker.next_generation = tracker.next_generation.saturating_add(1);
+                }
             } else {
                 sample.generation = tracker.next_generation;
                 tracker.next_generation = tracker.next_generation.saturating_add(1);
@@ -3743,6 +3750,76 @@ mod attach_log {
         let mut sequence = first_sequence;
         let mut session_sequence = first_session_sequence;
         for (order_addr, sample) in &current {
+            if let Some(old) = generation_splits.get(order_addr) {
+                let changed_fields = ["order_key"];
+                push_army_order_delta_frame(
+                    &mut lines,
+                    pid,
+                    sequence,
+                    session_sequence,
+                    tick_ms,
+                    control,
+                    elapsed_wall_ms,
+                    capture_boundary,
+                    clock,
+                    old,
+                    "delete",
+                    &changed_fields,
+                );
+                sequence = sequence.saturating_add(1);
+                session_sequence = session_sequence.saturating_add(1);
+                push_army_order_event_frame(
+                    &mut lines,
+                    pid,
+                    sequence,
+                    session_sequence,
+                    tick_ms,
+                    control,
+                    elapsed_wall_ms,
+                    capture_boundary,
+                    clock,
+                    old,
+                    ARMY_ORDER_EVENT_REMOVED,
+                    &changed_fields,
+                );
+                sequence = sequence.saturating_add(1);
+                session_sequence = session_sequence.saturating_add(1);
+
+                let changed_fields = army_order_all_fields();
+                push_army_order_delta_frame(
+                    &mut lines,
+                    pid,
+                    sequence,
+                    session_sequence,
+                    tick_ms,
+                    control,
+                    elapsed_wall_ms,
+                    capture_boundary,
+                    clock,
+                    sample,
+                    "sample",
+                    &changed_fields,
+                );
+                sequence = sequence.saturating_add(1);
+                session_sequence = session_sequence.saturating_add(1);
+                push_army_order_event_frame(
+                    &mut lines,
+                    pid,
+                    sequence,
+                    session_sequence,
+                    tick_ms,
+                    control,
+                    elapsed_wall_ms,
+                    capture_boundary,
+                    clock,
+                    sample,
+                    ARMY_ORDER_EVENT_ADDED,
+                    &changed_fields,
+                );
+                sequence = sequence.saturating_add(1);
+                session_sequence = session_sequence.saturating_add(1);
+                continue;
+            }
             match previous.get(order_addr) {
                 Some(old) => {
                     if let Some(changed_fields) = army_order_changed_fields(old, sample) {
@@ -3857,6 +3934,10 @@ mod attach_log {
         }
         tracker.previous = current;
         lines
+    }
+
+    fn army_order_continues(old: &ArmyOrderSample, new: &ArmyOrderSample) -> bool {
+        old.army_id == new.army_id
     }
 
     fn push_army_order_delta_frame(
@@ -8016,6 +8097,8 @@ mod attach_log {
         ruling_party: Option<String>,
         ideas: Option<Vec<String>>,
         laws: Option<BTreeMap<String, String>>,
+        idea_groups: Option<BTreeMap<String, Vec<String>>>,
+        advisor_ideas: Option<BTreeMap<String, Vec<String>>>,
         ideas_other: Option<Vec<String>>,
         national_spirits: Option<Vec<String>>,
         idea_count: Option<u32>,
@@ -8030,6 +8113,8 @@ mod attach_log {
                 || self.ruling_party.is_some()
                 || self.ideas.is_some()
                 || self.laws.is_some()
+                || self.idea_groups.is_some()
+                || self.advisor_ideas.is_some()
                 || self.ideas_other.is_some()
                 || self.national_spirits.is_some()
                 || self.idea_count.is_some()
@@ -10345,6 +10430,12 @@ mod attach_log {
         let laws = ideas
             .as_ref()
             .and_then(|values| classify_idea_laws(values, idea_group_filter));
+        let idea_groups = ideas
+            .as_ref()
+            .and_then(|values| classify_idea_groups(values, idea_group_filter));
+        let advisor_ideas = ideas
+            .as_ref()
+            .and_then(|values| classify_advisor_ideas(values, idea_group_filter));
         let ideas_other = ideas
             .as_ref()
             .and_then(|values| classify_ideas_other(values, idea_group_filter));
@@ -10357,6 +10448,8 @@ mod attach_log {
             ruling_party,
             ideas,
             laws,
+            idea_groups,
+            advisor_ideas,
             ideas_other,
             national_spirits,
             idea_count,
@@ -10415,8 +10508,61 @@ mod attach_log {
         Some(out)
     }
 
+    fn classify_idea_groups(
+        ideas: &[String],
+        idea_group_filter: Option<&BTreeMap<String, String>>,
+    ) -> Option<BTreeMap<String, Vec<String>>> {
+        let groups = idea_group_filter?;
+        if groups.is_empty() {
+            return None;
+        }
+        let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for idea in ideas {
+            if let Some(group) = groups.get(idea) {
+                out.entry(group.clone()).or_default().push(idea.clone());
+            }
+        }
+        Some(out)
+    }
+
+    fn classify_advisor_ideas(
+        ideas: &[String],
+        idea_group_filter: Option<&BTreeMap<String, String>>,
+    ) -> Option<BTreeMap<String, Vec<String>>> {
+        let groups = idea_group_filter?;
+        if groups.is_empty() {
+            return None;
+        }
+        let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for idea in ideas {
+            if let Some(group) = groups.get(idea) {
+                if is_advisor_idea_group(group) {
+                    out.entry(group.clone()).or_default().push(idea.clone());
+                }
+            }
+        }
+        Some(out)
+    }
+
     fn is_law_group(group: &str) -> bool {
         matches!(group, "economy" | "trade_laws" | "mobilization_laws")
+    }
+
+    fn is_advisor_idea_group(group: &str) -> bool {
+        matches!(
+            group,
+            "political_advisor"
+                | "theorist"
+                | "army_chief"
+                | "navy_chief"
+                | "air_chief"
+                | "high_command"
+                | "industrial_concern"
+                | "tank_manufacturer"
+                | "naval_manufacturer"
+                | "aircraft_manufacturer"
+                | "materiel_manufacturer"
+        )
     }
 
     fn classify_national_spirits(
@@ -11299,6 +11445,18 @@ mod attach_log {
                     .collect();
                 fields.push(format!("\"laws\":{{{}}}", parts.join(",")));
             }
+            if let Some(idea_groups) = politics.idea_groups.as_ref() {
+                fields.push(format!(
+                    "\"idea_groups\":{}",
+                    string_vec_map_json(idea_groups)
+                ));
+            }
+            if let Some(advisor_ideas) = politics.advisor_ideas.as_ref() {
+                fields.push(format!(
+                    "\"advisor_ideas\":{}",
+                    string_vec_map_json(advisor_ideas)
+                ));
+            }
             if let Some(ideas_other) = politics.ideas_other.as_ref() {
                 let parts: Vec<String> = ideas_other.iter().map(|idea| json_str(idea)).collect();
                 fields.push(format!("\"ideas_other\":[{}]", parts.join(",")));
@@ -11354,31 +11512,15 @@ mod attach_log {
                 ));
             }
             if let Some(slots) = residuals.appointed_advisor_slots.as_ref() {
-                let parts: Vec<String> = slots
-                    .iter()
-                    .map(|(slot, tokens)| {
-                        let tokens_json: Vec<String> =
-                            tokens.iter().map(|token| json_str(token)).collect();
-                        format!("{}:[{}]", json_str(slot), tokens_json.join(","))
-                    })
-                    .collect();
                 fields.push(format!(
-                    "\"appointed_advisor_slots\":{{{}}}",
-                    parts.join(",")
+                    "\"appointed_advisor_slots\":{}",
+                    string_vec_map_json(slots)
                 ));
             }
             if let Some(ledgers) = residuals.appointed_advisor_ledgers.as_ref() {
-                let parts: Vec<String> = ledgers
-                    .iter()
-                    .map(|(ledger, tokens)| {
-                        let tokens_json: Vec<String> =
-                            tokens.iter().map(|token| json_str(token)).collect();
-                        format!("{}:[{}]", json_str(ledger), tokens_json.join(","))
-                    })
-                    .collect();
                 fields.push(format!(
-                    "\"appointed_advisor_ledgers\":{{{}}}",
-                    parts.join(",")
+                    "\"appointed_advisor_ledgers\":{}",
+                    string_vec_map_json(ledgers)
                 ));
             }
         }
@@ -11387,6 +11529,17 @@ mod attach_log {
         } else {
             format!(",\"politics\":{{{}}}", fields.join(","))
         }
+    }
+
+    fn string_vec_map_json(map: &BTreeMap<String, Vec<String>>) -> String {
+        let parts: Vec<String> = map
+            .iter()
+            .map(|(key, values)| {
+                let items: Vec<String> = values.iter().map(|value| json_str(value)).collect();
+                format!("{}:[{}]", json_str(key), items.join(","))
+            })
+            .collect();
+        format!("{{{}}}", parts.join(","))
     }
 
     fn country_decisions_json(decisions: &CountryDecisionsRow) -> String {
@@ -13776,6 +13929,72 @@ mod attach_log {
         }
 
         #[test]
+        fn army_order_tracker_splits_generation_on_pointer_reuse() {
+            let control = raw_test_control();
+            let clock = ClockSample {
+                date: "1936.1.1.12".to_string(),
+                hour_index: ((1936 * 365) * 24 + 12) as u64,
+                raw_date: DATE_EPOCH_CONST + ((1936 * 365) * 24 + 12),
+            };
+            let mut tracker = ArmyOrderTracker::default();
+            let sample = ArmyOrderSample {
+                army_id: 17,
+                generation: 0,
+                order_addr: HEAP_LO + 0x33000,
+                slot_index: 2,
+                order_type: ORDER_TYPE5_OFFENSIVE,
+                target_states: Some(vec![107, 108]),
+                target_state_count: Some(2),
+                target_status: "exact",
+            };
+            let _ = build_army_order_raw_lines_from_samples(
+                1234,
+                &control,
+                &mut tracker,
+                vec![sample.clone()],
+                10,
+                100,
+                123456,
+                Some(125),
+                "worker_poll",
+                &clock,
+            );
+
+            let mut reused = sample;
+            reused.army_id = 23;
+            reused.slot_index = 0;
+            let split = build_army_order_raw_lines_from_samples(
+                1234,
+                &control,
+                &mut tracker,
+                vec![reused],
+                20,
+                200,
+                123556,
+                Some(225),
+                "worker_poll",
+                &clock,
+            );
+
+            assert_eq!(split.len(), 4);
+            assert!(split[0].contains("\"entity_key\":\"army_order:17:0\""));
+            assert!(split[0].contains("\"payload\":{\"op\":\"delete\",\"after\":null"));
+            assert!(split[1].contains("\"event_type\":\"army_order_removed\""));
+            assert!(split[1].contains("\"entity_key\":\"army_order:17:0\""));
+            assert!(split[2].contains("\"entity_key\":\"army_order:23:1\""));
+            assert!(split[2].contains("\"order_key\":\"army_order:23:1\""));
+            assert!(split[3].contains("\"event_type\":\"army_order_added\""));
+            assert!(split[3].contains("\"entity_key\":\"army_order:23:1\""));
+            for frame in &split {
+                assert!(!frame.contains("order_addr"));
+                assert!(!frame.contains("body_ptr"));
+                assert!(!frame.contains("body_addr"));
+                assert!(!frame.contains("tag_db_id"));
+                assert!(!frame.contains("0x"));
+            }
+        }
+
+        #[test]
         fn naval_combat_frame_builders_emit_sanitized_bridge_rows() {
             let control = raw_test_control();
             let clock = ClockSample {
@@ -14778,6 +14997,19 @@ mod attach_log {
             let mut laws = BTreeMap::new();
             laws.insert("economy".to_string(), "war_economy".to_string());
             laws.insert("trade_laws".to_string(), "free_trade".to_string());
+            let mut idea_groups = BTreeMap::new();
+            idea_groups.insert("country".to_string(), vec!["sour_loser".to_string()]);
+            idea_groups.insert("economy".to_string(), vec!["war_economy".to_string()]);
+            idea_groups.insert(
+                "industrial_concern".to_string(),
+                vec!["companhia_uniao_fabril".to_string()],
+            );
+            idea_groups.insert("trade_laws".to_string(), vec!["free_trade".to_string()]);
+            let mut advisor_ideas = BTreeMap::new();
+            advisor_ideas.insert(
+                "industrial_concern".to_string(),
+                vec!["companhia_uniao_fabril".to_string()],
+            );
             let row = CountryObjectRow {
                 tag: "POR".to_string(),
                 tag_db_id: 47,
@@ -14807,11 +15039,14 @@ mod attach_log {
                         "war_economy".to_string(),
                         "free_trade".to_string(),
                         "sour_loser".to_string(),
+                        "companhia_uniao_fabril".to_string(),
                     ]),
                     laws: Some(laws),
+                    idea_groups: Some(idea_groups),
+                    advisor_ideas: Some(advisor_ideas),
                     ideas_other: Some(vec!["sour_loser".to_string()]),
                     national_spirits: Some(vec!["sour_loser".to_string()]),
-                    idea_count: Some(3),
+                    idea_count: Some(4),
                     election_frequency: Some(48),
                     party_count: Some(4),
                     low_confidence: Some(false),
@@ -14828,6 +15063,9 @@ mod attach_log {
             assert!(scheduled.contains("\"war_economy\""));
             assert!(scheduled.contains("\"laws\":{\"economy\":\"war_economy\""));
             assert!(scheduled.contains("\"trade_laws\":\"free_trade\""));
+            assert!(scheduled.contains("\"idea_groups\""));
+            assert!(scheduled.contains("\"industrial_concern\":[\"companhia_uniao_fabril\"]"));
+            assert!(scheduled.contains("\"advisor_ideas\""));
             assert!(scheduled.contains("\"ideas_other\":[\"sour_loser\"]"));
             assert!(scheduled.contains("\"national_spirits\":[\"sour_loser\"]"));
             assert!(scheduled.contains("\"party_count\":4"));

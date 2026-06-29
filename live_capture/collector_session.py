@@ -1028,12 +1028,14 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     focus_live_frames = 0
     tech_live_frames = 0
     projects_live_frames = 0
+    decisions_live_frames = 0
     politics_live_frames = 0
     politics_residuals_frames = 0
     scheduled_production_domain_frames = 0
     scheduled_focus_domain_frames = 0
     scheduled_tech_domain_frames = 0
     scheduled_projects_domain_frames = 0
+    scheduled_decisions_domain_frames = 0
     scheduled_politics_domain_frames = 0
     scheduled_politics_residuals_domain_frames = 0
     country_rows_with_scalar_payloads = 0
@@ -1057,10 +1059,20 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     max_special_project_facilities_per_frame = 0
     max_special_project_rows_per_frame = 0
     max_special_project_scientists_per_frame = 0
+    frames_with_decisions_payloads = 0
+    country_rows_with_decisions_payloads = 0
+    max_decisions_country_rows_per_frame = 0
+    max_decisions_status_keys_per_country = 0
+    max_decisions_timed_rows_per_country = 0
     frames_with_politics_payloads = 0
     country_rows_with_politics_payloads = 0
     max_politics_country_rows_per_frame = 0
     max_politics_idea_rows_per_country = 0
+    country_rows_with_politics_idea_groups = 0
+    country_rows_with_politics_advisor_ideas = 0
+    max_politics_idea_group_keys_per_country = 0
+    max_politics_advisor_idea_keys_per_country = 0
+    max_politics_advisor_idea_tokens_per_country = 0
     frames_with_politics_residual_payloads = 0
     country_rows_with_politics_residual_payloads = 0
     max_politics_residual_country_rows_per_frame = 0
@@ -1071,10 +1083,12 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     focus_on_lightweight_frames = 0
     tech_on_lightweight_frames = 0
     projects_on_lightweight_frames = 0
+    decisions_on_lightweight_frames = 0
     politics_on_lightweight_frames = 0
     politics_residuals_on_lightweight_frames = 0
     frames_by_type: Dict[str, int] = {}
     raw_event_types_seen: set[str] = set()
+    raw_event_type_counts: Dict[str, int] = {}
     raw_delta_domains_seen: set[str] = set()
     raw_gap_domains_seen: set[str] = set()
     country_object_identity_statuses: Dict[str, int] = {}
@@ -1094,6 +1108,9 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
                     event_type = payload.get("event_type")
             if isinstance(event_type, str):
                 raw_event_types_seen.add(event_type)
+                raw_event_type_counts[event_type] = (
+                    raw_event_type_counts.get(event_type, 0) + 1
+                )
         elif frame_type == "domain_delta":
             domain = frame.get("domain")
             if isinstance(domain, str):
@@ -1130,6 +1147,8 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
                 tech_live_frames += 1
             if "projects_live" in domains:
                 projects_live_frames += 1
+            if "decisions_live" in domains:
+                decisions_live_frames += 1
             if "politics_live" in domains:
                 politics_live_frames += 1
             if "politics_residuals" in domains:
@@ -1138,6 +1157,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
             focus_domain_claimed = "focus_live" in domains
             tech_domain_claimed = "tech_live" in domains
             projects_domain_claimed = "projects_live" in domains
+            decisions_domain_claimed = "decisions_live" in domains
             politics_domain_claimed = "politics_live" in domains
             politics_residuals_domain_claimed = "politics_residuals" in domains
         else:
@@ -1145,6 +1165,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
             focus_domain_claimed = False
             tech_domain_claimed = False
             projects_domain_claimed = False
+            decisions_domain_claimed = False
             politics_domain_claimed = False
             politics_residuals_domain_claimed = False
         root_probe = frame.get("root_probe")
@@ -1182,6 +1203,11 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         ):
             scheduled_projects_domain_frames += 1
         if (
+            decisions_domain_claimed
+            and boundary == "scheduled_hour_snapshot"
+        ):
+            scheduled_decisions_domain_frames += 1
+        if (
             politics_domain_claimed
             and boundary == "scheduled_hour_snapshot"
         ):
@@ -1196,6 +1222,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         production_rows_in_frame = 0
         focus_rows_in_frame = 0
         research_rows_in_frame = 0
+        decisions_rows_in_frame = 0
         politics_rows_in_frame = 0
         politics_residual_rows_in_frame = 0
         heavy_payload_in_lightweight_frame = False
@@ -1255,6 +1282,30 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
                         if isinstance(ideas, list):
                             max_politics_idea_rows_per_country = max(
                                 max_politics_idea_rows_per_country, len(ideas))
+                        idea_groups = politics.get("idea_groups")
+                        if isinstance(idea_groups, dict):
+                            country_rows_with_politics_idea_groups += 1
+                            max_politics_idea_group_keys_per_country = max(
+                                max_politics_idea_group_keys_per_country,
+                                len(idea_groups),
+                            )
+                        advisor_ideas = politics.get("advisor_ideas")
+                        if isinstance(advisor_ideas, dict):
+                            token_count = sum(
+                                len(tokens)
+                                for tokens in advisor_ideas.values()
+                                if isinstance(tokens, list)
+                            )
+                            if token_count > 0:
+                                country_rows_with_politics_advisor_ideas += 1
+                                max_politics_advisor_idea_keys_per_country = max(
+                                    max_politics_advisor_idea_keys_per_country,
+                                    len(advisor_ideas),
+                                )
+                                max_politics_advisor_idea_tokens_per_country = max(
+                                    max_politics_advisor_idea_tokens_per_country,
+                                    token_count,
+                                )
                 focus = row.get("focus")
                 if focus is not None:
                     focus_rows_in_frame += 1
@@ -1274,6 +1325,22 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
                             max_research_active_rows_per_country = max(
                                 max_research_active_rows_per_country,
                                 len(active_research),
+                            )
+                decisions = row.get("decisions")
+                if decisions is not None:
+                    decisions_rows_in_frame += 1
+                    if isinstance(decisions, dict):
+                        status_present = decisions.get("status_present")
+                        if isinstance(status_present, dict):
+                            max_decisions_status_keys_per_country = max(
+                                max_decisions_status_keys_per_country,
+                                len(status_present),
+                            )
+                        timed_live = decisions.get("timed_live")
+                        if isinstance(timed_live, list):
+                            max_decisions_timed_rows_per_country = max(
+                                max_decisions_timed_rows_per_country,
+                                len(timed_live),
                             )
                 production = row.get("production")
                 if production is None:
@@ -1320,6 +1387,13 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
                 max_research_country_rows_per_frame,
                 research_rows_in_frame,
             )
+        if decisions_rows_in_frame:
+            frames_with_decisions_payloads += 1
+            country_rows_with_decisions_payloads += decisions_rows_in_frame
+            max_decisions_country_rows_per_frame = max(
+                max_decisions_country_rows_per_frame,
+                decisions_rows_in_frame,
+            )
         if politics_rows_in_frame:
             frames_with_politics_payloads += 1
             country_rows_with_politics_payloads += politics_rows_in_frame
@@ -1361,6 +1435,12 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
             heavy_payload_in_lightweight_frame = True
         if (
             boundary == "worker_poll"
+            and (decisions_domain_claimed or decisions_rows_in_frame)
+        ):
+            decisions_on_lightweight_frames += 1
+            heavy_payload_in_lightweight_frame = True
+        if (
+            boundary == "worker_poll"
             and (politics_domain_claimed or politics_rows_in_frame)
         ):
             politics_on_lightweight_frames += 1
@@ -1394,6 +1474,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         "raw_domain_delta_frame_count": frames_by_type.get("domain_delta", 0),
         "raw_gap_frame_count": frames_by_type.get("gap", 0),
         "raw_event_types_seen": sorted(raw_event_types_seen),
+        "raw_event_type_counts": dict(sorted(raw_event_type_counts.items())),
         "raw_delta_domains_seen": sorted(raw_delta_domains_seen),
         "raw_gap_domains_seen": sorted(raw_gap_domains_seen),
         "domains_seen": sorted(domains_seen),
@@ -1413,6 +1494,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         "focus_live_frames": focus_live_frames,
         "tech_live_frames": tech_live_frames,
         "projects_live_frames": projects_live_frames,
+        "decisions_live_frames": decisions_live_frames,
         "politics_live_frames": politics_live_frames,
         "politics_residuals_frames": politics_residuals_frames,
         "country_rows_with_scalar_payloads": country_rows_with_scalar_payloads,
@@ -1433,6 +1515,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         "scheduled_focus_domain_frames": scheduled_focus_domain_frames,
         "scheduled_tech_domain_frames": scheduled_tech_domain_frames,
         "scheduled_projects_domain_frames": scheduled_projects_domain_frames,
+        "scheduled_decisions_domain_frames": scheduled_decisions_domain_frames,
         "scheduled_politics_domain_frames": scheduled_politics_domain_frames,
         "scheduled_politics_residuals_domain_frames": (
             scheduled_politics_residuals_domain_frames),
@@ -1470,12 +1553,32 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         "max_special_project_scientists_per_frame": (
             max_special_project_scientists_per_frame),
         "projects_on_lightweight_frames": projects_on_lightweight_frames,
+        "frames_with_decisions_payloads": frames_with_decisions_payloads,
+        "country_rows_with_decisions_payloads": (
+            country_rows_with_decisions_payloads),
+        "max_decisions_country_rows_per_frame": (
+            max_decisions_country_rows_per_frame),
+        "max_decisions_status_keys_per_country": (
+            max_decisions_status_keys_per_country),
+        "max_decisions_timed_rows_per_country": (
+            max_decisions_timed_rows_per_country),
+        "decisions_on_lightweight_frames": decisions_on_lightweight_frames,
         "frames_with_politics_payloads": frames_with_politics_payloads,
         "country_rows_with_politics_payloads": (
             country_rows_with_politics_payloads),
         "max_politics_country_rows_per_frame": (
             max_politics_country_rows_per_frame),
         "max_politics_idea_rows_per_country": max_politics_idea_rows_per_country,
+        "country_rows_with_politics_idea_groups": (
+            country_rows_with_politics_idea_groups),
+        "country_rows_with_politics_advisor_ideas": (
+            country_rows_with_politics_advisor_ideas),
+        "max_politics_idea_group_keys_per_country": (
+            max_politics_idea_group_keys_per_country),
+        "max_politics_advisor_idea_keys_per_country": (
+            max_politics_advisor_idea_keys_per_country),
+        "max_politics_advisor_idea_tokens_per_country": (
+            max_politics_advisor_idea_tokens_per_country),
         "politics_on_lightweight_frames": politics_on_lightweight_frames,
         "frames_with_politics_residual_payloads": (
             frames_with_politics_residual_payloads),

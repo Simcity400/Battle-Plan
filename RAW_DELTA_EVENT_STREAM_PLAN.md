@@ -158,6 +158,15 @@ Current measured constraint:
   hour in 9.31 wall seconds, preserved 846 division deltas and 842
   `division_movement_started` events, with zero first-observation org/combat
   noise events.
+- Current verification state for this patch: **blocked/unverified on the
+  current running process**. A no-cold-scan live gate on 2026-06-29 against pid
+  40464 advanced 1 game hour, stored 2 snapshots, verified the replay, and met
+  the hourly gate in 11.453s, but `division_body_bridge_preflight.status` was
+  `cold_scan_disabled`, `row_count = 0`, `bridge_supplied = false`, so no
+  `divisions` raw stream or `division_org_strength_delta` event was observed.
+  The code/test changes in this patch are executable scaffolding only until a
+  live run supplies a valid division bridge and captures a real org/strength
+  change.
 
 Cadence:
 
@@ -470,6 +479,16 @@ Current DLL contract:
   and `target_status`. Type-5 target-state vectors up to the bounded inline cap
   are exact; larger valid vectors are `target_status:"overflow"` with only the
   count; non-type-5 geometry is `target_status:"unsupported"`.
+- Current verification state for this patch: **executable scaffolding only,
+  blocked/unverified live**. The Rust tracker now splits same-address
+  different-army reuse into `army_order_removed` for the old
+  `army_order:<army_id>:<generation>` and `army_order_added` for a fresh
+  generation, with regression coverage and no pointer leakage. A no-cold-scan
+  live gate on 2026-06-29 against pid 40464 advanced 1 game hour, stored 2
+  snapshots, verified the replay, and met the hourly gate in 11.453s, but
+  `army_body_bridge_preflight.status` was `cold_scan_disabled`, `row_count = 0`,
+  `bridge_supplied = false`, so no `army_orders` raw stream or order transition
+  event was observed. This does not satisfy live order-transition coverage.
 
 Cadence:
 
@@ -497,6 +516,20 @@ Notes:
 - `map.front_lines[]` remains derived from control adjacency. Exact player order
   overlays come from order-instance geometry, not from the derived front-line
   map field.
+- Exact proof command needed after a current-process cache is available, or
+  after explicitly allowing the slow cold bootstrap scans:
+
+  ```powershell
+  python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native\target\debug\collector.dll --out-root replay\snapshots\_collector_session_order_org_gate --game-id order_org_strength_live --duration-s 8 --sample-ms 10 --until-game-hours 1 --max-wall-s 60 --preflight-division-movement --preflight-army-orders
+  python -m live_capture.collector_proof_gate <run-dir>\session_manifest.json --min-game-hours 1 --require-raw-domain divisions --require-raw-domain army_orders --require-raw-event-type division_org_strength_delta --require-raw-event-type army_order_updated
+  ```
+
+  If the cache is missing and a bootstrap run is intentionally allowed, add
+  `--allow-division-cold-scan --allow-army-cold-scan` to the session command.
+  The order event type should match the live action being tested:
+  `army_order_updated` for target/type/reorder edits or `army_order_removed`
+  for deletion. Treat `army_order_added` as first-observation scaffolding unless
+  the run already had an earlier army-order sample before the order was created.
 
 ### Province And State Control
 

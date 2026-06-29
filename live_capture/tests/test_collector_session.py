@@ -381,6 +381,58 @@ class TestCollectorSession(unittest.TestCase):
         self.assertEqual(summary["projects_on_lightweight_frames"], 1)
         self.assertEqual(summary["heavy_payload_on_lightweight_frames"], 1)
 
+    def test_collector_frame_payload_summary_counts_decisions_live_coverage(self):
+        summary = cs._collector_frame_payload_summary([
+            {
+                "capture_boundary": "scheduled_hour_snapshot",
+                "domains": ["clock", "decisions_live"],
+                "countries": {
+                    "POR": {
+                        "decisions": {
+                            "status_present": {
+                                "active_timed_decision": 1,
+                                "active_targeted_decision": 2,
+                                "decision_to_re_enable": 1,
+                            },
+                            "timed_live": [
+                                {"decision": "POR_expand_aluminium_mines"},
+                                {"decision": "POR_extra_decision"},
+                            ],
+                        },
+                    },
+                    "ENG": {
+                        "decisions": {
+                            "status_present": {},
+                            "timed_live": [],
+                        },
+                    },
+                },
+            },
+            {
+                "capture_boundary": "worker_poll",
+                "domains": ["clock"],
+                "countries": {
+                    "ITA": {
+                        "decisions": {
+                            "status_present": {"active_timed_decision": 1},
+                            "timed_live": [{"decision": "ITA_decision"}],
+                        },
+                    },
+                },
+            },
+        ])
+
+        self.assertEqual(summary["domains_seen"], ["clock", "decisions_live"])
+        self.assertEqual(summary["decisions_live_frames"], 1)
+        self.assertEqual(summary["scheduled_decisions_domain_frames"], 1)
+        self.assertEqual(summary["frames_with_decisions_payloads"], 2)
+        self.assertEqual(summary["country_rows_with_decisions_payloads"], 3)
+        self.assertEqual(summary["max_decisions_country_rows_per_frame"], 2)
+        self.assertEqual(summary["max_decisions_status_keys_per_country"], 3)
+        self.assertEqual(summary["max_decisions_timed_rows_per_country"], 2)
+        self.assertEqual(summary["decisions_on_lightweight_frames"], 1)
+        self.assertEqual(summary["heavy_payload_on_lightweight_frames"], 1)
+
     def test_collector_frame_payload_summary_counts_politics_live_coverage(self):
         summary = cs._collector_frame_payload_summary([
             {
@@ -392,13 +444,25 @@ class TestCollectorSession(unittest.TestCase):
                             "popularities": {"neutrality": 100.0},
                             "ruling_party": "neutrality",
                             "ideas": ["war_economy", "sour_loser"],
+                            "idea_groups": {
+                                "economy": ["war_economy"],
+                                "country": ["sour_loser"],
+                            },
+                            "advisor_ideas": {},
                         },
                     },
                     "GER": {
                         "politics": {
                             "popularities": {"fascism": 80.0},
                             "ruling_party": "fascism",
-                            "ideas": ["autarky"],
+                            "ideas": ["autarky", "krupp"],
+                            "idea_groups": {
+                                "economy": ["autarky"],
+                                "industrial_concern": ["krupp"],
+                            },
+                            "advisor_ideas": {
+                                "industrial_concern": ["krupp"],
+                            },
                         },
                     },
                 },
@@ -425,6 +489,11 @@ class TestCollectorSession(unittest.TestCase):
         self.assertEqual(summary["country_rows_with_politics_payloads"], 3)
         self.assertEqual(summary["max_politics_country_rows_per_frame"], 2)
         self.assertEqual(summary["max_politics_idea_rows_per_country"], 3)
+        self.assertEqual(summary["country_rows_with_politics_idea_groups"], 2)
+        self.assertEqual(summary["country_rows_with_politics_advisor_ideas"], 1)
+        self.assertEqual(summary["max_politics_idea_group_keys_per_country"], 2)
+        self.assertEqual(summary["max_politics_advisor_idea_keys_per_country"], 1)
+        self.assertEqual(summary["max_politics_advisor_idea_tokens_per_country"], 1)
         self.assertEqual(summary["politics_on_lightweight_frames"], 1)
         self.assertEqual(summary["heavy_payload_on_lightweight_frames"], 1)
 
@@ -505,6 +574,10 @@ class TestCollectorSession(unittest.TestCase):
         self.assertEqual(
             summary["raw_event_types_seen"],
             ["province_controller_change"],
+        )
+        self.assertEqual(
+            summary["raw_event_type_counts"],
+            {"province_controller_change": 1},
         )
         self.assertEqual(summary["raw_delta_domains_seen"], ["divisions"])
         self.assertEqual(summary["raw_gap_domains_seen"], ["land_combats"])

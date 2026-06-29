@@ -345,10 +345,14 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.politics.ideas_all": "S",
     "countries.*.politics.ideas_other": "M/S",
     "countries.*.politics.national_spirits": "M/S",
+    "countries.*.politics.idea_groups": "C/M",
+    "countries.*.politics.advisor_ideas": "C/M",
     # LIVE active-ideas list + cadence (politics_live, M). `ideas` is the ordered full
     # active-ideas/spirits set (incl. law ideas by id; set AND order EXACT vs save);
     # ideas_other is the ordered broad active non-law subset when live classification is
     # available; national_spirits is the narrower `common/ideas` category=country subset.
+    # idea_groups is the complete active-token grouping by `common/ideas` group;
+    # advisor_ideas is the cabinet/designer/advisor subset keyed by group.
     # election_frequency (months, EXACT) + party_count + low_confidence are live-only
     # read-quality/cadence leaves.
     "countries.*.politics.ideas": "M",
@@ -1068,6 +1072,8 @@ class Politics:
     ideas_all: List[str] = field(default_factory=list)
     ideas_other: List[str] = field(default_factory=list)
     national_spirits: List[str] = field(default_factory=list)
+    idea_groups: Optional[Dict[str, List[str]]] = None
+    advisor_ideas: Optional[Dict[str, List[str]]] = None
     # LIVE active-ideas list (politics_live, M). DISTINCT live-only leaf, separate from the
     # save-derived ideas_all / ideas_other/national_spirits above: the ORDERED full
     # active-ideas/spirits set (incl. the economy/trade/mobilisation LAW ideas, by id) read straight from the live
@@ -2572,6 +2578,11 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                         problems.append(
                             f"country {tag!r}.politics.national_spirits entry {token!r} not token")
                         break
+            for field_name in ("idea_groups", "advisor_ideas"):
+                problems.extend(_validate_token_list_map(
+                    pol.get(field_name),
+                    f"country {tag!r}.politics.{field_name}",
+                ))
             for k in ("idea_count", "election_frequency", "party_count"):
                 v = pol.get(k)
                 if v is not None and not isinstance(v, int):
@@ -2845,6 +2856,26 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
     for i, ev in enumerate(snap.get("events") or []):
         problems.extend(_validate_event(ev, f"events[{i}]"))
 
+    return problems
+
+
+def _validate_token_list_map(value: Any, where: str) -> List[str]:
+    if value is None:
+        return []
+    if not isinstance(value, dict):
+        return [f"{where} {value!r} not dict|null"]
+    problems: List[str] = []
+    for key, tokens in value.items():
+        if not valid_script_token(key):
+            problems.append(f"{where} key {key!r} not token")
+            continue
+        if not isinstance(tokens, list):
+            problems.append(f"{where}.{key} {tokens!r} not list")
+            continue
+        for token in tokens:
+            if not valid_script_token(token):
+                problems.append(f"{where}.{key} entry {token!r} not token")
+                break
     return problems
 
 
