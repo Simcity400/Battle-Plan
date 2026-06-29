@@ -361,6 +361,14 @@ Notes:
   sanitized counts/status in manifests. It can bridge combats already active at
   attach time, but battles born after preflight need a later root/hook-derived
   discovery path.
+- Current `naval_air_combats` / `naval_combat_members` verification state:
+  live-verified for active-at-attach battles on pid 43412. A no-cold
+  12-game-hour proof resolved 3 active naval combats during preflight in
+  26.031s outside the hot loop, emitted both raw domains, advanced 12 game
+  hours in 46.953 wall seconds, verified replay output, observed 3
+  `naval_combat_started` and 360 `naval_combat_updated` events, and reported
+  zero raw gap frames. `naval_combat_ended` remains fixture-dependent until a
+  bridged battle ends inside a capture window.
 - Side summaries are intentionally not per-ship combat rows. Per-ship rows need
   a separate bounded stream keyed by ship/combat so large battle arrays do not
   exceed the raw JSON frame envelope. That bounded stream now exists as

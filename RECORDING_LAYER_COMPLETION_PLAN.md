@@ -1255,9 +1255,15 @@ Current HP/org still require a separate `CShip` registry bridge; targets,
 aggregate attack rows, damage ticks, hit counters, sinking events, and UI
 damage totals remain resisted until they have live proof. The recorder-side
 `--preflight-naval-combat` producer can populate that bridge from active
-combats already present at attach time. The next naval unlocks are live fixture
-proof, a root/hook-derived discoverer for newly born combats, optional CShip
-enrichment, damage/sinking deltas, and speed-five soak. Ship telemetry and
+combats already present at attach time. A 2026-06-29 no-cold live proof against
+pid 43412 resolved 3 active naval combats during preflight in 26.031s outside
+the hot loop, advanced 12 game hours in 46.953 wall seconds, verified replay
+output, emitted raw `naval_air_combats` and `naval_combat_members`, observed 3
+`naval_combat_started` and 360 `naval_combat_updated` events, and reported zero
+raw gap frames. `naval_combat_ended` still needs a fixture where a bridged
+naval battle ends during capture. The next naval unlocks are a root/hook-derived
+discoverer for newly born combats, optional CShip enrichment, exact end/delete
+fixture proof, damage/sinking deltas, and longer soaks. Ship telemetry and
 command hierarchy now also have a 12-game-hour no-cold proof on the restarted
 vanilla process: a cache-only run resolved 1604 CShip bodies and 4704 OOB
 command roots, advanced 12 game hours in 78.047 wall seconds, stored 13

@@ -161,6 +161,8 @@ python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_air_ship_oob_gate --game-id ship_oob_cache_bootstrap --duration-s 8 --sample-ms 10 --until-game-hours 1 --max-wall-s 360 --preflight-ships --allow-ship-cold-scan --preflight-oob-command --allow-oob-command-cold-scan
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_air_ship_oob_gate --game-id ship_oob_live --duration-s 300 --sample-ms 10 --until-game-hours 12 --max-wall-s 420 --preflight-ships --preflight-oob-command
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_air_ship_oob_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-raw-domain ships --require-raw-domain oob_command
+python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_naval_combat_gate --game-id naval_combat_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300 --preflight-naval-combat
+python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_naval_combat_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-raw-domain naval_air_combats --require-raw-domain naval_combat_members --require-raw-event-type naval_combat_started --require-raw-event-type naval_combat_updated
 python -m live_capture.collector_probe_record --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_probe --store-root replay/snapshots --game-id collector_live_speed5_worker --dwell-s 0.25 --worker-duration-s 8 --worker-sample-ms 10 --until-game-hours 12 --max-wall-s 15 --unique-store-hours-only
 python -m unittest live_capture.tests.test_collector_session live_capture.tests.test_collector_proof_gate live_capture.tests.test_recorder_cadence live_capture.tests.test_recorder_worker_cadence live_capture.tests.test_recorder_manifest_diagnostics live_capture.tests.test_replay_writer
 python -m pytest live_capture
@@ -212,6 +214,13 @@ The 2026-06-29 pid 43412 proof advanced 12 game hours, verified replay output,
 observed raw `ships` and `oob_command`, and reported no raw gap domains. This
 slice has high raw-frame volume, so a full-game recorder should add coalescing
 or lower-frequency sampling policy before long soaks.
+
+For naval-combat acceptance, `--preflight-naval-combat` must find at least one
+active battle at attach time; this bridge does not yet discover battles born
+after preflight. The 2026-06-29 pid 43412 proof advanced 12 game hours, verified
+replay output, observed raw `naval_air_combats` and `naval_combat_members`,
+captured `naval_combat_started` / `naval_combat_updated`, and reported zero raw
+gap frames. `naval_combat_ended` requires a battle-ending fixture.
 
 Repeated bounded workers are one logical recorder session. The raw probe
 manifest keeps every verified observation, but the replay writer processes one

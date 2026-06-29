@@ -384,6 +384,12 @@ Naval-combat raw stream status:
 - Targets, aggregate attack rows, damage ticks, hit counters, sinking events,
   ship names, owner attribution, missions, and UI damage totals remain follow-up
   streams pending live proof or separate command/OOB sources.
+- Live proof on pid 43412: a no-cold 12-game-hour run resolved 3 active naval
+  combats during preflight in 26.031s outside the hot loop, emitted raw
+  `naval_air_combats` and `naval_combat_members`, verified replay output,
+  reported zero raw gap frames, and observed 3 `naval_combat_started` plus 360
+  `naval_combat_updated` events. `naval_combat_ended` still needs a fixture
+  where a bridged naval battle ends during the capture window.
 - Live proof on pid 43412: an explicit cold bootstrap populated `ship_bodies`,
   then a no-cold 12-game-hour run resolved 1604 still-live CShip rows from
   cache, emitted raw `ships`, verified replay output, and reported no raw gap
