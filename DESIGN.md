@@ -157,6 +157,17 @@ Implemented in the current bridge:
   decodes active `CTimedDecision` rows from the `+0xA0` list. The same proof
   measured Portugal as `timed_live = []` and decoded non-empty active timed
   decisions for 7 other countries;
+- DLL-native scheduled `diplomacy_live` first slice through `CCountry+0x598`:
+  the collector emits the opaque per-country diplomatic faction group only on
+  scheduled hourly frames. The adapter folds that into
+  `countries.*.diplomacy.faction_group` and reconstructs
+  `diplomacy_live.faction_members` with `source = "C"`. War relations,
+  `at_war`, and casualties are intentionally left null until their own DLL
+  segment is proven. The current pid 43412 proof advanced 12 game hours in
+  48.328 wall seconds, stored 13 verified snapshots, observed
+  `diplomacy_live` on 14 scheduled frames, captured 4984 diplomacy country rows
+  with up to 356 countries and 9 faction groups per frame, and kept diplomacy
+  payloads off worker polls;
 - DLL-native scheduled `focus_live` through validated `CCountry` child roots:
   `CCountry+0x1370 -> CFocusTree` supplies `focus_tree`, while
   `CCountry+0x1380` supplies completed focuses, completed count, current
@@ -199,11 +210,12 @@ Still open:
   session;
 - classify any remaining country-record-only fields and add a speed-safe
   DLL-resident root only if replay-critical fields still need the record array;
-- promote remaining economy, active-research slot detail, diplomacy, naval/air combat, and
-  combat battle-detail from historical proof/schema coverage to live collector
-  output or explicit unavailable badges. Active land-combat identity, location,
-  age, attacker/defender division lists, and lifecycle events now have a live
-  raw collector stream; focus still needs pause-state proof and optional event
+- promote remaining economy, active-research slot detail, diplomacy
+  war/casualty relations, naval/air combat, and combat battle-detail from
+  historical proof/schema coverage to live collector output or explicit
+  unavailable badges. Active land-combat identity, location, age,
+  attacker/defender division lists, and lifecycle events now have a live raw
+  collector stream; focus still needs pause-state proof and optional event
   markers; the combat stream still needs speed-five soak and app ingestion.
 
 ### Historical feasibility evidence (memory-reader and save-oracle research snapshot)

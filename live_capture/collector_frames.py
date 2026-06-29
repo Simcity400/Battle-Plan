@@ -41,6 +41,7 @@ SUPPORTED_SNAPSHOT_DOMAINS = frozenset({
     "politics_live",
     "politics_residuals",
     "production_live",
+    "diplomacy_live",
     "state_ownership",
     "state_control",
     "province_control",
@@ -55,6 +56,7 @@ SCHEDULED_ONLY_SNAPSHOT_DOMAINS = frozenset({
     "politics_live",
     "politics_residuals",
     "production_live",
+    "diplomacy_live",
     "state_ownership",
     "state_control",
     "province_control",
@@ -215,6 +217,10 @@ COUNTRY_DECISIONS_MAX_TIMED = 4096
 COUNTRY_DECISIONS_DAYS_MAX = 100_000
 COUNTRY_DECISIONS_STATE_MAX = 1024
 COUNTRY_DECISIONS_TOKEN_MAX_LENGTH = 160
+COUNTRY_DIPLOMACY_PAYLOAD_KEYS = frozenset((
+    "faction_group",
+))
+COUNTRY_DIPLOMACY_FACTION_GROUP_ABS_MAX = 10_000_000
 PRODUCTION_PAYLOAD_KEYS = frozenset((
     "stockpile",
     "stockpile_total",
@@ -683,6 +689,8 @@ def validate_collector_frame(frame: Any) -> List[str]:
             problems.append("collector worker_poll frame must not carry politics payload")
         if _has_country_decisions_live_rows(countries):
             problems.append("collector worker_poll frame must not carry decisions payload")
+        if _has_country_diplomacy_rows(countries):
+            problems.append("collector worker_poll frame must not carry diplomacy payload")
         if _has_payload_rows(states):
             problems.append("collector worker_poll frame must not carry states payload")
         if _has_payload_rows(provinces):
@@ -748,6 +756,16 @@ def validate_collector_frame(frame: Any) -> List[str]:
         )
     ):
         problems.append("collector decisions_live payload requires scheduled_hour_snapshot")
+    if (
+        frame.get("capture_boundary") != "worker_poll"
+        and
+        frame.get("capture_boundary") != "scheduled_hour_snapshot"
+        and (
+            "diplomacy_live" in scheduled_domain_claims
+            or _has_country_diplomacy_rows(countries)
+        )
+    ):
+        problems.append("collector diplomacy_live payload requires scheduled_hour_snapshot")
     if (
         frame.get("capture_boundary") != "worker_poll"
         and
@@ -887,6 +905,8 @@ def snapshot_from_root_probe_frame(frame: Dict[str, Any], game_id: str) -> Dict[
         and _has_country_decisions_live_rows(frame_countries)
     ):
         domains.append("decisions_live")
+    if "diplomacy_live" in claimed_domains and _has_country_diplomacy_rows(frame_countries):
+        domains.append("diplomacy_live")
     if "state_ownership" in claimed_domains and _has_state_owner_rows(frame_states):
         domains.append("state_ownership")
     if "state_control" in claimed_domains and _has_state_control_rows(frame_states):
@@ -914,6 +934,7 @@ def snapshot_from_root_probe_frame(frame: Dict[str, Any], game_id: str) -> Dict[
     _fold_country_politics(snap, frame_countries, domains)
     _fold_country_politics_residuals(snap, frame_countries, domains)
     _fold_country_decisions_live(snap, frame_countries, domains)
+    _fold_country_diplomacy_live(snap, frame_countries, domains)
     _fold_state_rows(snap, frame_states, domains)
     _fold_province_rows(snap, frame_provinces, domains)
     _fold_special_projects(snap, frame_special_projects, domains)
@@ -970,6 +991,7 @@ def snapshot_from_collector_frame(frame: Dict[str, Any], game_id: str) -> Dict[s
     _fold_country_politics(snap, frame.get("countries") or {}, domains)
     _fold_country_politics_residuals(snap, frame.get("countries") or {}, domains)
     _fold_country_decisions_live(snap, frame.get("countries") or {}, domains)
+    _fold_country_diplomacy_live(snap, frame.get("countries") or {}, domains)
     _fold_state_rows(snap, frame.get("states") or {}, domains)
     _fold_province_rows(snap, frame.get("provinces") or {}, domains)
     _fold_special_projects(snap, frame.get("special_projects") or {}, domains)
@@ -4360,6 +4382,15 @@ def _validate_country_rows(countries: Dict[str, Any]) -> List[str]:
                 present=present,
                 collector_object=collector_object,
             ))
+        diplomacy = row.get("diplomacy")
+        if diplomacy is not None:
+            problems.extend(_validate_country_diplomacy_row(
+                tag,
+                row,
+                diplomacy,
+                present=present,
+                collector_object=collector_object,
+            ))
     return problems
 
 
@@ -4619,6 +4650,41 @@ def _validate_country_decision_timed_row(
     state_name = item.get("state_name")
     if state_name is not None and not _valid_decision_token(state_name):
         problems.append(f"{prefix}.state_name not token|null")
+    return problems
+
+
+def _validate_country_diplomacy_row(
+    tag: str,
+    row: Dict[str, Any],
+    diplomacy: Any,
+    *,
+    present: Any,
+    collector_object: Any,
+) -> List[str]:
+    problems: List[str] = []
+    if not isinstance(diplomacy, dict):
+        return [f"collector frame country {tag!r}.diplomacy not dict|null"]
+    if present is not True:
+        problems.append(f"collector frame country {tag!r}.diplomacy requires present=true")
+    if not _has_valid_scalar_identity(row):
+        problems.append(
+            f"collector frame country {tag!r}.diplomacy requires identity.tag_db_id")
+    if collector_object is None or not _valid_hex_pointer(collector_object):
+        problems.append(
+            f"collector frame country {tag!r}.diplomacy requires hex collector_object")
+    if not any(key in diplomacy for key in COUNTRY_DIPLOMACY_PAYLOAD_KEYS):
+        problems.append(
+            f"collector frame country {tag!r}.diplomacy has no measured leaves")
+    faction_group = diplomacy.get("faction_group")
+    if not _valid_bounded_int(
+        faction_group,
+        minimum=-COUNTRY_DIPLOMACY_FACTION_GROUP_ABS_MAX,
+        maximum=COUNTRY_DIPLOMACY_FACTION_GROUP_ABS_MAX,
+    ):
+        problems.append(
+            f"collector frame country {tag!r}.diplomacy.faction_group "
+            "not int in range"
+        )
     return problems
 
 
@@ -5743,6 +5809,54 @@ def _fold_country_decisions_live(
         measured["decisions.timed_live"] = sorted(existing | measured_timed_tags)
 
 
+def _fold_country_diplomacy_live(
+    snap: Dict[str, Any],
+    countries: Dict[str, Any],
+    domains: Iterable[str],
+) -> None:
+    if "diplomacy_live" not in set(domains):
+        return
+    measured_faction_tags = set()
+    members_by_group: Dict[str, List[str]] = {}
+    for tag, row in countries.items():
+        if not schema.valid_tag(tag) or not isinstance(row, dict):
+            continue
+        if row.get("present") is not True or not _has_valid_scalar_identity(row):
+            continue
+        diplomacy_payload = row.get("diplomacy")
+        if not isinstance(diplomacy_payload, dict):
+            continue
+        faction_group = diplomacy_payload.get("faction_group")
+        if not _valid_bounded_int(
+            faction_group,
+            minimum=-COUNTRY_DIPLOMACY_FACTION_GROUP_ABS_MAX,
+            maximum=COUNTRY_DIPLOMACY_FACTION_GROUP_ABS_MAX,
+        ):
+            continue
+        country = snap["countries"].setdefault(tag, schema.empty_country())
+        diplomacy = country.get("diplomacy")
+        if not isinstance(diplomacy, dict):
+            diplomacy = {}
+            country["diplomacy"] = diplomacy
+        diplomacy["faction_group"] = faction_group
+        measured_faction_tags.add(tag)
+        members_by_group.setdefault(str(faction_group), []).append(tag)
+
+    if measured_faction_tags:
+        measured = snap.setdefault("_live_measured_leaf_tags", {})
+        existing = set(measured.get("diplomacy.faction_group") or [])
+        measured["diplomacy.faction_group"] = sorted(
+            existing | measured_faction_tags)
+        dl_side = snap.get("diplomacy_live")
+        if not isinstance(dl_side, dict):
+            dl_side = schema.empty_diplomacy_live()
+            snap["diplomacy_live"] = dl_side
+        dl_side["faction_members"] = {
+            group: sorted(tags) for group, tags in sorted(members_by_group.items())
+        }
+        dl_side["source"] = "C"
+
+
 def _fold_country_fuel(
     snap: Dict[str, Any],
     countries: Dict[str, Any],
@@ -6273,6 +6387,15 @@ def _has_country_decisions_live_rows(countries: Any) -> bool:
         isinstance(row, dict)
         and isinstance(row.get("decisions"), dict)
         and any(key in row["decisions"] for key in COUNTRY_DECISIONS_PAYLOAD_KEYS)
+        for row in countries.values()
+    )
+
+
+def _has_country_diplomacy_rows(countries: Any) -> bool:
+    return isinstance(countries, dict) and any(
+        isinstance(row, dict)
+        and isinstance(row.get("diplomacy"), dict)
+        and any(key in row["diplomacy"] for key in COUNTRY_DIPLOMACY_PAYLOAD_KEYS)
         for row in countries.values()
     )
 

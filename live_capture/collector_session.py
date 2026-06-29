@@ -1029,6 +1029,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     tech_live_frames = 0
     projects_live_frames = 0
     decisions_live_frames = 0
+    diplomacy_live_frames = 0
     politics_live_frames = 0
     politics_residuals_frames = 0
     buildings_live_frames = 0
@@ -1037,6 +1038,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     scheduled_tech_domain_frames = 0
     scheduled_projects_domain_frames = 0
     scheduled_decisions_domain_frames = 0
+    scheduled_diplomacy_domain_frames = 0
     scheduled_politics_domain_frames = 0
     scheduled_politics_residuals_domain_frames = 0
     scheduled_buildings_domain_frames = 0
@@ -1066,6 +1068,10 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     max_decisions_country_rows_per_frame = 0
     max_decisions_status_keys_per_country = 0
     max_decisions_timed_rows_per_country = 0
+    frames_with_diplomacy_payloads = 0
+    country_rows_with_diplomacy_payloads = 0
+    max_diplomacy_country_rows_per_frame = 0
+    max_diplomacy_faction_groups_per_frame = 0
     frames_with_politics_payloads = 0
     country_rows_with_politics_payloads = 0
     max_politics_country_rows_per_frame = 0
@@ -1094,6 +1100,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     tech_on_lightweight_frames = 0
     projects_on_lightweight_frames = 0
     decisions_on_lightweight_frames = 0
+    diplomacy_on_lightweight_frames = 0
     politics_on_lightweight_frames = 0
     politics_residuals_on_lightweight_frames = 0
     buildings_on_lightweight_frames = 0
@@ -1160,6 +1167,8 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
                 projects_live_frames += 1
             if "decisions_live" in domains:
                 decisions_live_frames += 1
+            if "diplomacy_live" in domains:
+                diplomacy_live_frames += 1
             if "politics_live" in domains:
                 politics_live_frames += 1
             if "politics_residuals" in domains:
@@ -1171,6 +1180,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
             tech_domain_claimed = "tech_live" in domains
             projects_domain_claimed = "projects_live" in domains
             decisions_domain_claimed = "decisions_live" in domains
+            diplomacy_domain_claimed = "diplomacy_live" in domains
             politics_domain_claimed = "politics_live" in domains
             politics_residuals_domain_claimed = "politics_residuals" in domains
             buildings_domain_claimed = "buildings_live" in domains
@@ -1180,6 +1190,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
             tech_domain_claimed = False
             projects_domain_claimed = False
             decisions_domain_claimed = False
+            diplomacy_domain_claimed = False
             politics_domain_claimed = False
             politics_residuals_domain_claimed = False
             buildings_domain_claimed = False
@@ -1223,6 +1234,11 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         ):
             scheduled_decisions_domain_frames += 1
         if (
+            diplomacy_domain_claimed
+            and boundary == "scheduled_hour_snapshot"
+        ):
+            scheduled_diplomacy_domain_frames += 1
+        if (
             politics_domain_claimed
             and boundary == "scheduled_hour_snapshot"
         ):
@@ -1243,6 +1259,8 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         focus_rows_in_frame = 0
         research_rows_in_frame = 0
         decisions_rows_in_frame = 0
+        diplomacy_rows_in_frame = 0
+        diplomacy_faction_groups_in_frame: set[int] = set()
         politics_rows_in_frame = 0
         politics_residual_rows_in_frame = 0
         state_building_rows_in_frame = 0
@@ -1364,6 +1382,15 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
                                 max_decisions_timed_rows_per_country,
                                 len(timed_live),
                             )
+                diplomacy = row.get("diplomacy")
+                if diplomacy is not None:
+                    diplomacy_rows_in_frame += 1
+                    if isinstance(diplomacy, dict):
+                        faction_group = diplomacy.get("faction_group")
+                        if isinstance(faction_group, int) and not isinstance(
+                            faction_group, bool
+                        ):
+                            diplomacy_faction_groups_in_frame.add(faction_group)
                 production = row.get("production")
                 if production is None:
                     continue
@@ -1416,6 +1443,17 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
                 max_decisions_country_rows_per_frame,
                 decisions_rows_in_frame,
             )
+        if diplomacy_rows_in_frame:
+            frames_with_diplomacy_payloads += 1
+            country_rows_with_diplomacy_payloads += diplomacy_rows_in_frame
+            max_diplomacy_country_rows_per_frame = max(
+                max_diplomacy_country_rows_per_frame,
+                diplomacy_rows_in_frame,
+            )
+            max_diplomacy_faction_groups_per_frame = max(
+                max_diplomacy_faction_groups_per_frame,
+                len(diplomacy_faction_groups_in_frame),
+            )
         if politics_rows_in_frame:
             frames_with_politics_payloads += 1
             country_rows_with_politics_payloads += politics_rows_in_frame
@@ -1460,6 +1498,12 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
             and (decisions_domain_claimed or decisions_rows_in_frame)
         ):
             decisions_on_lightweight_frames += 1
+            heavy_payload_in_lightweight_frame = True
+        if (
+            boundary == "worker_poll"
+            and (diplomacy_domain_claimed or diplomacy_rows_in_frame)
+        ):
+            diplomacy_on_lightweight_frames += 1
             heavy_payload_in_lightweight_frame = True
         if (
             boundary == "worker_poll"
@@ -1563,6 +1607,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         "tech_live_frames": tech_live_frames,
         "projects_live_frames": projects_live_frames,
         "decisions_live_frames": decisions_live_frames,
+        "diplomacy_live_frames": diplomacy_live_frames,
         "politics_live_frames": politics_live_frames,
         "politics_residuals_frames": politics_residuals_frames,
         "buildings_live_frames": buildings_live_frames,
@@ -1585,6 +1630,8 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         "scheduled_tech_domain_frames": scheduled_tech_domain_frames,
         "scheduled_projects_domain_frames": scheduled_projects_domain_frames,
         "scheduled_decisions_domain_frames": scheduled_decisions_domain_frames,
+        "scheduled_diplomacy_domain_frames": (
+            scheduled_diplomacy_domain_frames),
         "scheduled_politics_domain_frames": scheduled_politics_domain_frames,
         "scheduled_politics_residuals_domain_frames": (
             scheduled_politics_residuals_domain_frames),
@@ -1633,6 +1680,14 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         "max_decisions_timed_rows_per_country": (
             max_decisions_timed_rows_per_country),
         "decisions_on_lightweight_frames": decisions_on_lightweight_frames,
+        "frames_with_diplomacy_payloads": frames_with_diplomacy_payloads,
+        "country_rows_with_diplomacy_payloads": (
+            country_rows_with_diplomacy_payloads),
+        "max_diplomacy_country_rows_per_frame": (
+            max_diplomacy_country_rows_per_frame),
+        "max_diplomacy_faction_groups_per_frame": (
+            max_diplomacy_faction_groups_per_frame),
+        "diplomacy_on_lightweight_frames": diplomacy_on_lightweight_frames,
         "frames_with_politics_payloads": frames_with_politics_payloads,
         "country_rows_with_politics_payloads": (
             country_rows_with_politics_payloads),

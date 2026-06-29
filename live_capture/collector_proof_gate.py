@@ -17,6 +17,7 @@ SCHEDULED_DOMAIN_FRAME_COUNT_KEYS = {
     "tech_live": "scheduled_tech_domain_frames",
     "projects_live": "scheduled_projects_domain_frames",
     "decisions_live": "scheduled_decisions_domain_frames",
+    "diplomacy_live": "scheduled_diplomacy_domain_frames",
     "politics_live": "scheduled_politics_domain_frames",
     "politics_residuals": "scheduled_politics_residuals_domain_frames",
     "production_live": "scheduled_production_domain_frames",

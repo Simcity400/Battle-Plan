@@ -145,6 +145,7 @@ mod attach_log {
     const OBJ_MANPOWER_POOL: usize = 0x0338;
     const OBJ_PROD_MANAGER: usize = 0x0F68;
     const OBJ_FUEL_STATUS: usize = 0x1580;
+    const OBJ_FACTION_GROUP: usize = 0x598;
     const OBJ_ORIGINAL_CAPITAL: usize = 0x101C;
     const OBJ_STABILITY: usize = 0x10D0;
     const OBJ_WAR_SUPPORT: usize = 0x10D8;
@@ -2108,6 +2109,7 @@ mod attach_log {
         let include_scheduled_country_politics = scheduled_frame;
         let include_scheduled_country_politics_residuals = scheduled_frame;
         let include_scheduled_country_decisions = scheduled_frame;
+        let include_scheduled_country_diplomacy = scheduled_frame;
         let include_scheduled_projects = scheduled_frame;
         let include_scheduled_buildings = scheduled_frame;
         let state_rows = scheduled_state_rows_json(
@@ -2135,6 +2137,7 @@ mod attach_log {
             include_scheduled_country_politics,
             include_scheduled_country_politics_residuals,
             include_scheduled_country_decisions,
+            include_scheduled_country_diplomacy,
             control.map(|control| &control.advisor_token_filter),
             control.map(|control| &control.tech_def_filter),
             control.map(|control| &control.idea_group_filter),
@@ -8013,6 +8016,12 @@ mod attach_log {
         politics: Option<CountryPoliticsRow>,
         politics_residuals: Option<CountryPoliticsResidualsRow>,
         decisions: Option<CountryDecisionsRow>,
+        diplomacy: Option<CountryDiplomacyRow>,
+    }
+
+    #[derive(Clone, Copy)]
+    struct CountryDiplomacyRow {
+        faction_group: i32,
     }
 
     #[derive(Clone)]
@@ -8244,6 +8253,7 @@ mod attach_log {
                     false,
                     false,
                     false,
+                    false,
                     None,
                     None,
                     None,
@@ -8298,6 +8308,7 @@ mod attach_log {
                     tag_table,
                     entry.tag_db_id,
                     records_by_tag_id.get(&entry.tag_db_id).copied(),
+                    false,
                     false,
                     false,
                     false,
@@ -8477,6 +8488,7 @@ mod attach_log {
                     false,
                     false,
                     false,
+                    false,
                     None,
                     None,
                     None,
@@ -8528,6 +8540,7 @@ mod attach_log {
             include_scheduled_country_politics: bool,
             include_scheduled_country_politics_residuals: bool,
             include_scheduled_country_decisions: bool,
+            include_scheduled_country_diplomacy: bool,
             advisor_token_filter: Option<&BTreeMap<String, AdvisorTokenInfo>>,
             tech_def_filter: Option<&BTreeMap<u32, String>>,
             idea_group_filter: Option<&BTreeMap<String, String>>,
@@ -8551,6 +8564,7 @@ mod attach_log {
                     include_scheduled_country_politics,
                     include_scheduled_country_politics_residuals,
                     include_scheduled_country_decisions,
+                    include_scheduled_country_diplomacy,
                     advisor_token_filter,
                     tech_def_filter,
                     idea_group_filter,
@@ -8657,6 +8671,7 @@ mod attach_log {
             include_scheduled_country_politics: bool,
             include_scheduled_country_politics_residuals: bool,
             include_scheduled_country_decisions: bool,
+            _include_scheduled_country_diplomacy: bool,
         ) -> String {
             if !current_rows.is_empty() {
                 let rows: Vec<String> = current_rows
@@ -9775,6 +9790,7 @@ mod attach_log {
         include_scheduled_country_politics: bool,
         include_scheduled_country_politics_residuals: bool,
         include_scheduled_country_decisions: bool,
+        include_scheduled_country_diplomacy: bool,
         advisor_token_filter: Option<&BTreeMap<String, AdvisorTokenInfo>>,
         tech_def_filter: Option<&BTreeMap<u32, String>>,
         idea_group_filter: Option<&BTreeMap<String, String>>,
@@ -9816,6 +9832,7 @@ mod attach_log {
             include_scheduled_country_politics,
             include_scheduled_country_politics_residuals,
             include_scheduled_country_decisions,
+            include_scheduled_country_diplomacy,
             advisor_token_filter,
             tech_def_filter,
             idea_group_filter,
@@ -9830,6 +9847,7 @@ mod attach_log {
             include_scheduled_country_politics,
             include_scheduled_country_politics_residuals,
             include_scheduled_country_decisions,
+            include_scheduled_country_diplomacy,
         );
         let identity_probe = state.country_identity.root_json();
         let has_building_rows = scheduled_state_rows
@@ -9853,6 +9871,13 @@ mod attach_log {
         );
         let domains = if has_building_rows {
             domains_json_with_extra_domain(domains, "buildings_live")
+        } else {
+            domains
+        };
+        let domains = if include_scheduled_country_diplomacy
+            && current_rows.iter().any(|row| row.diplomacy.is_some())
+        {
+            domains_json_with_extra_domain(domains, "diplomacy_live")
         } else {
             domains
         };
@@ -10062,6 +10087,7 @@ mod attach_log {
                 false,
                 false,
                 false,
+                false,
                 None,
                 None,
                 None,
@@ -10118,6 +10144,7 @@ mod attach_log {
         include_scheduled_country_politics: bool,
         include_scheduled_country_politics_residuals: bool,
         include_scheduled_country_decisions: bool,
+        include_scheduled_country_diplomacy: bool,
         advisor_token_filter: Option<&BTreeMap<String, AdvisorTokenInfo>>,
         tech_def_filter: Option<&BTreeMap<u32, String>>,
         idea_group_filter: Option<&BTreeMap<String, String>>,
@@ -10211,6 +10238,11 @@ mod attach_log {
             } else {
                 None
             },
+            diplomacy: if include_scheduled_country_diplomacy {
+                read_country_diplomacy(object_ptr)
+            } else {
+                None
+            },
         })
     }
 
@@ -10227,6 +10259,7 @@ mod attach_log {
         include_scheduled_country_politics: bool,
         include_scheduled_country_politics_residuals: bool,
         include_scheduled_country_decisions: bool,
+        include_scheduled_country_diplomacy: bool,
         advisor_token_filter: Option<&BTreeMap<String, AdvisorTokenInfo>>,
         tech_def_filter: Option<&BTreeMap<u32, String>>,
         idea_group_filter: Option<&BTreeMap<String, String>>,
@@ -10243,6 +10276,7 @@ mod attach_log {
             include_scheduled_country_politics,
             include_scheduled_country_politics_residuals,
             include_scheduled_country_decisions,
+            include_scheduled_country_diplomacy,
             advisor_token_filter,
             tech_def_filter,
             idea_group_filter,
@@ -10265,6 +10299,7 @@ mod attach_log {
         include_scheduled_country_politics: bool,
         include_scheduled_country_politics_residuals: bool,
         include_scheduled_country_decisions: bool,
+        include_scheduled_country_diplomacy: bool,
         advisor_token_filter: Option<&BTreeMap<String, AdvisorTokenInfo>>,
         tech_def_filter: Option<&BTreeMap<u32, String>>,
         idea_group_filter: Option<&BTreeMap<String, String>>,
@@ -10282,6 +10317,7 @@ mod attach_log {
             include_scheduled_country_politics,
             include_scheduled_country_politics_residuals,
             include_scheduled_country_decisions,
+            include_scheduled_country_diplomacy,
             advisor_token_filter,
             tech_def_filter,
             idea_group_filter,
@@ -10312,6 +10348,11 @@ mod attach_log {
         } else {
             None
         }
+    }
+
+    fn read_country_diplomacy(object_ptr: usize) -> Option<CountryDiplomacyRow> {
+        let faction_group = read_i32_stable(object_ptr + OBJ_FACTION_GROUP)?;
+        Some(CountryDiplomacyRow { faction_group })
     }
 
     fn country_record_political_power(record_ptr: usize, object_ptr: usize) -> Option<f64> {
@@ -11423,6 +11464,11 @@ mod attach_log {
         } else {
             String::new()
         };
+        let diplomacy = row
+            .diplomacy
+            .as_ref()
+            .map(country_diplomacy_json)
+            .unwrap_or_default();
         format!(
             "\"{}\":{{\"present\":true,\
              \"collector_object\":\"0x{:X}\",\
@@ -11437,8 +11483,15 @@ mod attach_log {
              \"command_power\":{command_power},\
              \"num_ships\":{num_ships},\
              \"manpower_pool\":{manpower_pool},\
-             \"convoys\":{convoys}}}{misc}{fuel}{production}{focus}{research}{politics}{decisions}}}",
+             \"convoys\":{convoys}}}{misc}{fuel}{production}{focus}{research}{politics}{decisions}{diplomacy}}}",
             row.tag, row.object_ptr, row.tag_db_id
+        )
+    }
+
+    fn country_diplomacy_json(diplomacy: &CountryDiplomacyRow) -> String {
+        format!(
+            ",\"diplomacy\":{{\"faction_group\":{}}}",
+            diplomacy.faction_group
         )
     }
 
@@ -12227,6 +12280,7 @@ mod attach_log {
                 politics: None,
                 politics_residuals: None,
                 decisions: None,
+                diplomacy: None,
             }
         }
 
@@ -14948,6 +15002,24 @@ mod attach_log {
         }
 
         #[test]
+        fn domain_json_append_claims_diplomacy_live_once() {
+            let domains = domains_json_with_extra_domain(
+                "[\"clock\",\"country_identity\"]".to_string(),
+                "diplomacy_live",
+            );
+            assert_eq!(
+                domains,
+                "[\"clock\",\"country_identity\",\"diplomacy_live\"]"
+            );
+
+            let repeated = domains_json_with_extra_domain(domains, "diplomacy_live");
+            assert_eq!(
+                repeated,
+                "[\"clock\",\"country_identity\",\"diplomacy_live\"]"
+            );
+        }
+
+        #[test]
         fn country_object_row_json_includes_tag_db_id() {
             let row = CountryObjectRow {
                 tag: "POR".to_string(),
@@ -14974,6 +15046,7 @@ mod attach_log {
                 politics: None,
                 politics_residuals: None,
                 decisions: None,
+                diplomacy: None,
             };
 
             let json = row_json(&row, false, false, false, false, false, false, false);
@@ -15018,6 +15091,7 @@ mod attach_log {
                 politics: None,
                 politics_residuals: None,
                 decisions: None,
+                diplomacy: None,
             };
 
             let json = row_json(&row, false, false, false, false, false, false, false);
@@ -15076,6 +15150,7 @@ mod attach_log {
                 politics: None,
                 politics_residuals: None,
                 decisions: None,
+                diplomacy: None,
             };
 
             let scheduled = row_json(&row, true, false, false, false, false, false, false);
@@ -15124,6 +15199,7 @@ mod attach_log {
                 politics: None,
                 politics_residuals: None,
                 decisions: None,
+                diplomacy: None,
             };
 
             let scheduled = row_json(&row, false, false, true, false, false, false, false);
@@ -15267,6 +15343,7 @@ mod attach_log {
                 }),
                 politics_residuals: None,
                 decisions: None,
+                diplomacy: None,
             };
 
             let scheduled = row_json(&row, false, false, false, false, true, false, false);
@@ -15354,6 +15431,7 @@ mod attach_log {
                     }),
                 }),
                 decisions: None,
+                diplomacy: None,
             };
 
             let scheduled = row_json(&row, false, false, false, false, false, true, false);
@@ -15426,6 +15504,7 @@ mod attach_log {
                     appointed_advisor_ledgers: Some(BTreeMap::new()),
                 }),
                 decisions: None,
+                diplomacy: None,
             };
 
             let scheduled = row_json(&row, false, false, false, false, false, true, false);
@@ -15474,6 +15553,7 @@ mod attach_log {
                         state_name: "active".to_string(),
                     }]),
                 }),
+                diplomacy: None,
             };
 
             let scheduled = row_json(&row, false, false, false, false, false, false, true);
@@ -15501,6 +15581,16 @@ mod attach_log {
                 true,  // decisions
             );
             assert!(domains.contains("\"decisions_live\""));
+        }
+
+        #[test]
+        fn country_object_row_json_includes_scheduled_diplomacy() {
+            let mut row = test_country_row("POR", 47, 0x1234);
+            row.diplomacy = Some(CountryDiplomacyRow { faction_group: 42 });
+
+            let json = row_json(&row, false, false, false, false, false, false, false);
+
+            assert!(json.contains("\"diplomacy\":{\"faction_group\":42}"));
         }
 
         #[test]
@@ -15550,6 +15640,7 @@ mod attach_log {
                 politics: None,
                 politics_residuals: None,
                 decisions: None,
+                diplomacy: None,
             };
 
             let scheduled = row_json(&row, false, true, false, false, false, false, false);
@@ -15602,6 +15693,7 @@ mod attach_log {
                 politics: None,
                 politics_residuals: None,
                 decisions: None,
+                diplomacy: None,
             };
 
             let scheduled = row_json(&row, false, true, false, false, false, false, false);

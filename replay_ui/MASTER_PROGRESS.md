@@ -101,6 +101,14 @@ for inspection, with no ability to mutate the game.
   no-cold 12-game-hour proof on pid 43412 with 13 verified scheduled building
   frames, 1081 state rows and 10272 province rows per scheduled frame, non-empty
   state/province building maps, and zero worker-poll building payloads.
+- DLL-native scheduled `diplomacy_live` first slice is proven for faction
+  membership: the collector reads `CCountry+0x598` faction groups on hourly
+  frames, folds into `countries.*.diplomacy.faction_group` and
+  `diplomacy_live.faction_members`, and passed a no-cold 12-game-hour proof on
+  pid 43412 with 14 scheduled diplomacy frames, 4984 diplomacy country rows,
+  356 countries and 9 faction groups per scheduled frame, and zero worker-poll
+  diplomacy payloads. War relations, `at_war`, and casualties remain unclaimed
+  until their own DLL proof segment passes.
 - Anchored land-counter stacks now compose portrait and formation-insignia
   sprites into the native fixed-footprint `UnitCounter` render plan, preserving
   four stable asset slots, sprite frame identities, and explicit missing-asset
@@ -329,6 +337,13 @@ The app is product-complete only when all applicable gates pass:
   observed `buildings_live` on all 13 scheduled frames, captured non-empty state
   and province building maps, and reported zero heavy payloads on lightweight
   frames.
+- Scheduled `diplomacy_live` faction proof passed on 2026-06-29:
+  `replay/snapshots/_collector_session_diplomacy_gate/20260629T152734Z_pid43412`
+  advanced 12 game hours in 48.328 wall seconds, stored 13 verified snapshots,
+  observed `diplomacy_live` on 14 scheduled frames, captured 4984 diplomacy
+  country rows, measured up to 356 countries and 9 faction groups per scheduled
+  frame, verified the replay container, and reported zero heavy payloads on
+  lightweight frames.
 - Every registered view opens from the in-app menu.
 - Every registered view has an interaction contract.
 - Every read-only interaction in each contract is implemented and tested.

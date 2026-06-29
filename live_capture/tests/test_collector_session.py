@@ -467,6 +467,43 @@ class TestCollectorSession(unittest.TestCase):
         self.assertEqual(summary["decisions_on_lightweight_frames"], 1)
         self.assertEqual(summary["heavy_payload_on_lightweight_frames"], 1)
 
+    def test_collector_frame_payload_summary_counts_diplomacy_live_coverage(self):
+        summary = cs._collector_frame_payload_summary([
+            {
+                "capture_boundary": "scheduled_hour_snapshot",
+                "domains": ["clock", "diplomacy_live"],
+                "countries": {
+                    "GER": {"diplomacy": {"faction_group": 7}},
+                    "ITA": {"diplomacy": {"faction_group": 7}},
+                    "SOV": {"diplomacy": {"faction_group": 9}},
+                },
+            },
+            {
+                "capture_boundary": "scheduled_hour_snapshot",
+                "domains": ["clock", "diplomacy_live"],
+                "countries": {
+                    "POR": {"diplomacy": {"faction_group": 0}},
+                },
+            },
+            {
+                "capture_boundary": "worker_poll",
+                "domains": ["clock"],
+                "countries": {
+                    "ENG": {"diplomacy": {"faction_group": 1}},
+                },
+            },
+        ])
+
+        self.assertEqual(summary["domains_seen"], ["clock", "diplomacy_live"])
+        self.assertEqual(summary["diplomacy_live_frames"], 2)
+        self.assertEqual(summary["scheduled_diplomacy_domain_frames"], 2)
+        self.assertEqual(summary["frames_with_diplomacy_payloads"], 3)
+        self.assertEqual(summary["country_rows_with_diplomacy_payloads"], 5)
+        self.assertEqual(summary["max_diplomacy_country_rows_per_frame"], 3)
+        self.assertEqual(summary["max_diplomacy_faction_groups_per_frame"], 2)
+        self.assertEqual(summary["diplomacy_on_lightweight_frames"], 1)
+        self.assertEqual(summary["heavy_payload_on_lightweight_frames"], 1)
+
     def test_collector_frame_payload_summary_counts_politics_live_coverage(self):
         summary = cs._collector_frame_payload_summary([
             {

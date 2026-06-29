@@ -3416,6 +3416,112 @@ class TestCollectorFrames(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid collector frame"):
             snapshot_from_collector_frame(frame, "collector-test")
 
+    def test_snapshot_frame_folds_scheduled_diplomacy_live(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock", "country_identity", "diplomacy_live"],
+            "countries": {
+                "GER": {
+                    "present": True,
+                    "collector_object": "0x1000",
+                    "identity": {"tag_db_id": 1},
+                    "diplomacy": {"faction_group": 7},
+                },
+                "ITA": {
+                    "present": True,
+                    "collector_object": "0x2000",
+                    "identity": {"tag_db_id": 11},
+                    "diplomacy": {"faction_group": 7},
+                },
+                "SOV": {
+                    "present": True,
+                    "collector_object": "0x3000",
+                    "identity": {"tag_db_id": 3},
+                    "diplomacy": {"faction_group": 9},
+                },
+            },
+        }
+
+        snap = snapshot_from_collector_frame(frame, "collector-test")
+
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        self.assertEqual(
+            snap["provenance"]["collector"]["domains"],
+            ["clock", "country_identity", "diplomacy_live"],
+        )
+        self.assertEqual(
+            snap["countries"]["GER"]["diplomacy"]["faction_group"],
+            7,
+        )
+        self.assertIsNone(snap["countries"]["GER"]["diplomacy"]["at_war"])
+        self.assertIsNone(snap["countries"]["GER"]["diplomacy"]["casualties"])
+        self.assertEqual(
+            snap["diplomacy_live"]["faction_members"],
+            {"7": ["GER", "ITA"], "9": ["SOV"]},
+        )
+        self.assertIsNone(snap["diplomacy_live"]["war_relations"])
+        self.assertIsNone(snap["diplomacy_live"]["subtype_warning"])
+        self.assertEqual(snap["diplomacy_live"]["source"], "C")
+        self.assertEqual(
+            set(snap["_live_measured_leaf_tags"]["diplomacy.faction_group"]),
+            {"GER", "ITA", "SOV"},
+        )
+
+    def test_snapshot_frame_rejects_malformed_diplomacy_live(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock", "country_identity", "diplomacy_live"],
+            "countries": {
+                "POR": {
+                    "present": True,
+                    "collector_object": "0x1000",
+                    "identity": {"tag_db_id": 47},
+                    "diplomacy": {"faction_group": True},
+                },
+            },
+        }
+
+        problems = validate_collector_frame(frame)
+
+        self.assertTrue(
+            any("diplomacy.faction_group" in p for p in problems),
+            problems,
+        )
+        with self.assertRaisesRegex(ValueError, "invalid collector frame"):
+            snapshot_from_collector_frame(frame, "collector-test")
+
+    def test_snapshot_frame_rejects_non_scheduled_diplomacy_live(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "daily_update",
+            "domains": ["clock", "country_identity", "diplomacy_live"],
+            "countries": {
+                "POR": {
+                    "present": True,
+                    "collector_object": "0x1000",
+                    "identity": {"tag_db_id": 47},
+                    "diplomacy": {"faction_group": 5},
+                },
+            },
+        }
+
+        with self.assertRaisesRegex(ValueError, "diplomacy_live payload requires scheduled"):
+            snapshot_from_collector_frame(frame, "collector-test")
+
     def test_snapshot_frame_folds_scheduled_politics_residuals(self):
         frame = {
             "type": "snapshot",
@@ -3631,6 +3737,64 @@ class TestCollectorFrames(unittest.TestCase):
                          ["clock", "buildings_live"])
         self.assertEqual(snap["states"]["1"]["buildings"], {"arms_factory": 2})
         self.assertEqual(snap["provinces"]["11"]["buildings"], {"naval_base": 10})
+
+    def test_root_probe_frame_folds_scheduled_diplomacy_live(self):
+        frame = {
+            "type": "collector_started",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "process_id": 32440,
+            "tick_ms": 158373765,
+            "capture_boundary": "scheduled_hour_snapshot",
+            "quality_status": "root_probe_verified",
+            "domains": ["clock", "diplomacy_live"],
+            "countries": {
+                "GER": {
+                    "present": True,
+                    "collector_object": "0x1000",
+                    "identity": {"tag_db_id": 1},
+                    "diplomacy": {"faction_group": 7},
+                },
+                "ITA": {
+                    "present": True,
+                    "collector_object": "0x2000",
+                    "identity": {"tag_db_id": 11},
+                    "diplomacy": {"faction_group": 7},
+                },
+            },
+            "root_probe": {
+                "status": "verified",
+                "profile": "vanilla_latest_2026_06_28",
+                "daily_update_sentinel_match": True,
+                "long_string_sentinel_match": True,
+                "current_game_date": "1936.6.15.7",
+                "current_game_date_raw": 60763326,
+                "start_date": "1936.1.1.12",
+                "start_date_raw": 60759371,
+                "country_tag_count": 474,
+                "country_active_count": 440,
+                "tag_sample": ["---", "GER", "ITA"],
+                "domains": ["clock", "diplomacy_live"],
+            },
+        }
+
+        snap = snapshot_from_root_probe_frame(frame, "collector-test")
+
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        self.assertEqual(
+            snap["provenance"]["collector"]["domains"],
+            ["clock", "country_identity", "diplomacy_live"],
+        )
+        self.assertEqual(
+            snap["countries"]["GER"]["diplomacy"]["faction_group"],
+            7,
+        )
+        self.assertEqual(
+            snap["diplomacy_live"]["faction_members"],
+            {"7": ["GER", "ITA"]},
+        )
+        self.assertIsNone(snap["diplomacy_live"]["war_relations"])
 
     def test_root_probe_map_payload_without_scheduled_claim_is_not_folded(self):
         frame = {

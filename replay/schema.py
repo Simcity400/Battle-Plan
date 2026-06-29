@@ -96,9 +96,9 @@ DOMAINS = (
                              # (C/M; a NEW live-only home, distinct from the save "production"
                              # domain which folds into economy/military)
     "diplomacy_live",        # LIVE wars/at-war/casualties/faction-group -> countries.*.diplomacy
-                             # (at_war/casualties/faction_group, M) + a top-level live sidecar
-                             # snap["diplomacy_live"] (war_relations + faction_members). Distinct
-                             # from the SAVE "diplomacy" id (which folds diplomacy.wars +
+                             # (at_war/casualties M, faction_group C/M) + a top-level live sidecar
+                             # snap["diplomacy_live"] (war_relations M + faction_members C/M).
+                             # Distinct from the SAVE "diplomacy" id (which folds diplomacy.wars +
                              # diplomacy_world).
     "diplo_relations",       # LIVE bilateral RELATIONS (diplo_relations_live, M) -> countries.*.
                              # diplomacy.{opinion (live-first onto the save-shared leaf),
@@ -482,14 +482,14 @@ FIELD_SOURCES: Dict[str, str] = {
     # leaf {TGT: [{token_id, value}, ...]} decomposing the cached_sum net opinion above; the
     # modifier-token id->NAME registry is RESISTED, so only the raw token_id + value are carried.
     "countries.*.diplomacy.opinion_modifiers": "M",
-    # LIVE per-country diplomacy (diplomacy_live, M). DISTINCT live-only leaves from the
+    # LIVE per-country diplomacy (diplomacy_live, C/M). DISTINCT live-only leaves from the
     # save-derived `wars` above: `at_war` (live enemy-TAG list from the global war_relation
     # pool, at-war set 30/30 EXACT vs save), `casualties` (cumulative war casualties, per-
-    # country total 30/30 EXACT), `faction_group` (OPAQUE engine diplomatic-group id — an
-    # int, NOT a TAG; meaningful only via the diplomacy_live sidecar's faction_members).
+    # country total 30/30 EXACT), `faction_group` (OPAQUE engine diplomatic-group id, NOT
+    # a TAG; DLL reads the per-country group id directly from CCountry+0x598).
     "countries.*.diplomacy.at_war": "M",
     "countries.*.diplomacy.casualties": "M",
-    "countries.*.diplomacy.faction_group": "M",
+    "countries.*.diplomacy.faction_group": "C/M",
     # equipment market / lend-lease (parse_market). Trade contracts attached to
     # both parties under diplomacy.lend_lease; canonical world list in §7b.
     "countries.*.diplomacy.lend_lease": "S",
@@ -706,7 +706,7 @@ FIELD_SOURCES: Dict[str, str] = {
     # ALONGSIDE trait_count via the direct trait def-pointer walk; absent when resolution is
     # off or the walk fails closed (no fabrication). A measured-empty [] = a traitless scientist.
     "special_projects.scientists.*.traits": "M",
-    # --- top-level LIVE diplomacy sidecar (§13b, diplomacy_live.py). All M. World-scoped
+    # --- top-level LIVE diplomacy sidecar (§13b, diplomacy_live.py / DLL). World-scoped
     # data that has NO save-shaped home: the pairwise war_relations list (each TAG pair +
     # per-side casualties) + faction_members keyed by the OPAQUE engine diplomatic-group id
     # (stringified for JSON; member TAGs valid_tag-checked). Distinct from the SAVE
@@ -714,7 +714,7 @@ FIELD_SOURCES: Dict[str, str] = {
     # identity model, so it is NOT folded into diplomacy_world. subtype_warning is the
     # reader's completeness advisory (nonempty => a possible missed war_relation subtype). ---
     "diplomacy_live.war_relations": "M",
-    "diplomacy_live.faction_members": "M",
+    "diplomacy_live.faction_members": "C/M",
     # --- top-level LIVE equipment-MARKET sidecar (§7c, decisions_market_live.py). All M. The
     # global purchase contracts (28/28 EXACT vs save), each {contract_id, seller(TAG), buyer(TAG),
     # equip_variant_id, amount, price}. Distinct from the SAVE "market" domain (a per-country
@@ -1780,7 +1780,7 @@ class SpecialProjects:
 
 @dataclass
 class DiplomacyLive:
-    """Top-level LIVE diplomacy sidecar (§13b, diplomacy_live.py). M = process memory.
+    """Top-level LIVE diplomacy sidecar (§13b, diplomacy_live.py / DLL). C/M = live.
 
     NEW first-class LIVE container for the world-scoped diplomacy data that has NO
     save-shaped home. Distinct from the SAVE-sourced snap["diplomacy_world"] (whose
@@ -1797,12 +1797,13 @@ class DiplomacyLive:
 
     Forcing this into diplomacy_world would collide the two key spaces and fabricate a
     unified identity model that does not exist, so it lives here. null-but-present until
-    a live read folds it; ``source`` self-badges "M".
+    a live read folds it; ``source`` self-badges "C" for the DLL collector or "M" for the
+    external process-memory reader.
     """
     war_relations: Optional[List[Dict[str, Any]]] = None
     faction_members: Optional[Dict[str, Any]] = None
     subtype_warning: Optional[Dict[str, Any]] = None
-    source: Optional[str] = None        # "M" when a live read filled it, else null
+    source: Optional[str] = None        # "C"/"M" when a live read filled it, else null
 
 
 @dataclass
