@@ -1253,8 +1253,15 @@ damage totals remain resisted until they have live proof. The recorder-side
 `--preflight-naval-combat` producer can populate that bridge from active
 combats already present at attach time. The next naval unlocks are live fixture
 proof, a root/hook-derived discoverer for newly born combats, optional CShip
-enrichment, damage/sinking deltas, and speed-five soak. Army orders now have
-a raw `army_orders` stream from `army_body_bridge`, with
+enrichment, damage/sinking deltas, and speed-five soak. Ship telemetry and
+command hierarchy now also have a 12-game-hour no-cold proof on the restarted
+vanilla process: a cache-only run resolved 1604 CShip bodies and 4704 OOB
+command roots, advanced 12 game hours in 78.047 wall seconds, stored 13
+verified hourly snapshots, emitted raw `ships` and `oob_command` streams, and
+reported no raw gap domains. The generated raw sidecar was 132 MB, so this
+slice is verified for extraction but still needs coalescing/backpressure policy
+before full-length recording. Army orders now have a raw `army_orders` stream
+from `army_body_bridge`, with
 `army_order:<army_id>:<generation>` identities, add/remove lifecycle proof,
 bounded bridge gaps, exact type-5 target states, and unsupported status for
 unvalidated non-type-5 geometry. The next army-order unlocks are a live
@@ -1264,10 +1271,12 @@ raw `air_wings`
 stream from `air_wing_body_bridge`, with
 `air_wing:<TAG>:<wing_id>:<generation>` identities, observed/update/lost
 events, bounded bridge gaps, and 250 ms sampling of count, mission mask,
-mission region, and effective active planes. The next air unlocks are
-speed-five live proof while changing missions, exact airbase/variant joins,
-region aggregate rows, air-loss/attrition proof, and a decision on which
-air-superiority values are exact state versus computed UI proxies.
+mission region, and effective active planes. On pid 43412, explicit air-wing
+cold preflight found zero wing rows, so `air_wings` remains unverified in this
+fixture. The next air unlocks are a live proof with at least one active wing,
+exact airbase/variant joins, region aggregate rows, air-loss/attrition proof,
+and a decision on which air-superiority values are exact state versus computed
+UI proxies.
 
 ### Phase 7: Focus, Tech, Decisions, Projects, Politics
 

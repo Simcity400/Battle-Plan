@@ -325,6 +325,14 @@ Ship/CShip telemetry:
   target, hit counters, and sinking events are intentionally not claimed from
   this row. Combat wrapper state remains in `naval_combat_members`; command
   hierarchy and names still require their own sources.
+- Current `ships` verification state: live-verified on the restarted vanilla
+  process (pid 43412). A cold bootstrap outside the hot loop found 1665 CShip
+  bodies and stored `ship_bodies.json`; the 12-game-hour no-cold proof resolved
+  1604 still-live ship bodies from cache in 0.109s, emitted raw `ships`
+  deltas, advanced 12 game hours with `hourly_requirement.met = true`, verified
+  the replay, and reported no raw gap domains. The raw stream sidecar was large
+  (132 MB for the combined ship/OOB 12-hour run), so long-session coalescing or
+  lower-frequency ship sampling is still a recording-layer hardening item.
 
 Cadence:
 
@@ -392,6 +400,15 @@ Command-hierarchy membership:
   theatre membership, naval leaders, or save-shaped nested OOB records. Invalid
   bridge/layout reads emit `oob_command:gap:<kind>` rows instead of guessed
   hierarchy.
+- Current `oob_command` verification state: live-verified on the restarted
+  vanilla process (pid 43412). A cold bootstrap outside the hot loop found 4897
+  command roots and stored `oob_command_roots.json`; the 12-game-hour no-cold
+  proof resolved 4704 still-live roots from cache in 0.109s, emitted raw
+  `oob_command` deltas together with `ships`, advanced 12 game hours, verified
+  replay output, and reported no raw gap domains. The same proof established
+  that OOB discovery stays out of the worker loop (`hot_loop_heap_scan = false`)
+  but also exposed the high raw-frame volume that needs coalescing before full
+  game-length capture.
 
 ### Air Activity
 
@@ -441,6 +458,11 @@ Notes:
   owner-chain country vtable, owner tag id, tag-table decode, optional mission
   region vtables, and sane count/effective-plane bounds before emitting. The
   replay file never receives `body_ptr` or `tag_db_id`.
+- Current `air_wings` verification state on pid 43412: not live-proven in this
+  fixture. The explicit cold preflight completed quickly but found zero wing
+  rows (`status = insufficient_rows`, `row_count = 0`), so no raw `air_wings`
+  stream was emitted. The contract and tests remain valid, but a live proof
+  needs an air-wing fixture with at least one active wing.
 - Do not model air as land-style `combat_started`/`combat_ended`. Current live
   evidence supports continuous per-region attrition/aggregation, not a discrete
   CCombatSide object with air-wing participants.

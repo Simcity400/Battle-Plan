@@ -378,6 +378,12 @@ Naval-combat raw stream status:
 - Targets, aggregate attack rows, damage ticks, hit counters, sinking events,
   ship names, owner attribution, missions, and UI damage totals remain follow-up
   streams pending live proof or separate command/OOB sources.
+- Live proof on pid 43412: an explicit cold bootstrap populated `ship_bodies`,
+  then a no-cold 12-game-hour run resolved 1604 still-live CShip rows from
+  cache, emitted raw `ships`, verified replay output, and reported no raw gap
+  domains. This proves the DLL extraction path; full-game recording still needs
+  raw-stream coalescing/backpressure because the combined ship/OOB 12-hour
+  sidecar was large.
 
 OOB command raw stream status:
 
@@ -403,6 +409,10 @@ OOB command raw stream status:
 - Remaining promotion work is a live active-naval-combat fixture, a
   root/hook-derived discoverer for combats born after preflight, speed-five
   soak, exact damage/sinking semantics, and timeline ingestion.
+- Live proof on pid 43412: an explicit cold bootstrap populated
+  `oob_command_roots`, then a no-cold 12-game-hour run resolved 4704 still-live
+  OOB roots from cache in 0.109s, emitted raw `oob_command`, verified replay
+  output, and reported no raw gap domains.
 
 Air-wing raw stream status:
 
