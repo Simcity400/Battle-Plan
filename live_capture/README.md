@@ -239,7 +239,7 @@ python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/ta
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_order_org_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-raw-domain divisions --require-raw-domain army_orders --require-raw-event-type division_org_strength_delta
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_air_ship_oob_gate --game-id ship_oob_cache_bootstrap --duration-s 8 --sample-ms 10 --until-game-hours 1 --max-wall-s 360 --preflight-ships --allow-ship-cold-scan --preflight-oob-command --allow-oob-command-cold-scan
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_air_ship_oob_gate --game-id ship_oob_live --duration-s 300 --sample-ms 10 --until-game-hours 12 --max-wall-s 420 --preflight-ships --preflight-oob-command
-python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_air_ship_oob_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-raw-domain ships --require-raw-domain oob_command
+python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_air_ship_oob_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-raw-domain ships --require-ship-raw-telemetry --require-raw-domain oob_command --require-oob-command-raw-telemetry
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_naval_combat_gate --game-id naval_combat_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300 --preflight-naval-combat
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_naval_combat_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-raw-domain naval_air_combats --require-raw-domain naval_combat_members --require-raw-event-type naval_combat_started --require-raw-event-type naval_combat_updated
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_air_wing_gate --game-id air_wing_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300 --preflight-air-wings
@@ -380,15 +380,19 @@ domains.
 
 For ship/OOB raw-stream acceptance, first populate same-process `ship_bodies`
 and `oob_command_roots` caches if needed, then rerun without cold-scan flags.
-The 2026-06-29 pid 43412 proof advanced 12 game hours, verified replay output,
-observed raw `ships` and `oob_command`, and reported no raw gap domains. This
-slice has high raw-frame volume, so a full-game recorder should add coalescing
-or lower-frequency sampling policy before long soaks. The strict raw military
-gate also passed `--require-oob-command-raw-telemetry`, capturing 17705
-`oob_command` deltas over 12 game hours with zero raw gap domains after an
-intentionally allowed 135.703s cold preflight. That cold discovery time is not
-acceptable for normal startup and should be treated as cache/root-refresh work,
-not hot-loop recording cost.
+The 2026-06-29 pid 43412 ship-specific proof
+`replay/snapshots/_collector_session_air_ship_oob_gate/20260629T210118Z_pid43412`
+passed `--require-ship-raw-telemetry`: it advanced 12 game hours in 57.297
+wall seconds, verified replay output, hit `ship_body_cache` in 0.125s, supplied
+1309 bridge rows, emitted 22249 raw `ships` deltas / 22248 object rows, and
+reported zero raw gap domains. This slice has high raw-frame volume, so a
+full-game recorder should add coalescing or lower-frequency sampling policy
+before long soaks. The strict raw military gate also passed
+`--require-oob-command-raw-telemetry`, capturing 17705 `oob_command` deltas
+over 12 game hours with zero raw gap domains after an intentionally allowed
+135.703s cold preflight. That cold discovery time is not acceptable for normal
+startup and should be treated as cache/root-refresh work, not hot-loop
+recording cost.
 
 For naval-combat acceptance, `--preflight-naval-combat` must find at least one
 active battle at attach time; this bridge does not yet discover battles born

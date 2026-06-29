@@ -840,6 +840,85 @@ class TestCollectorProofGate(unittest.TestCase):
 
         self.assertIn("air wing raw telemetry gap frames observed", errors)
 
+    def test_accepts_ship_raw_telemetry_proof(self):
+        proof = collector_session_proof_summary(
+            _manifest(
+                ship_body_bridge_supplied=True,
+                ship_body_bridge_rows=1604,
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock"],
+                    "raw_delta_domains_seen": ["ships"],
+                    "raw_delta_domain_counts": {"ships": 1604},
+                    "raw_delta_domain_object_counts": {"ships": 1604},
+                    "raw_gap_domain_counts": {},
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+            ),
+            require_ship_raw_telemetry=True,
+        )
+
+        self.assertTrue(proof["ok"])
+        self.assertEqual(proof["errors"], [])
+
+    def test_rejects_ship_rows_without_bridge(self):
+        errors = collector_session_proof_errors(
+            _manifest(
+                ship_body_bridge_supplied=False,
+                ship_body_bridge_rows=0,
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock"],
+                    "raw_delta_domains_seen": ["ships"],
+                    "raw_delta_domain_counts": {"ships": 1604},
+                    "raw_delta_domain_object_counts": {"ships": 1604},
+                    "raw_gap_domain_counts": {},
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+            ),
+            require_ship_raw_telemetry=True,
+        )
+
+        self.assertIn("ship body bridge was not supplied", errors)
+        self.assertIn("ship body bridge rows not positive", errors)
+
+    def test_rejects_ship_bridge_without_rows(self):
+        errors = collector_session_proof_errors(
+            _manifest(
+                ship_body_bridge_supplied=True,
+                ship_body_bridge_rows=1604,
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock"],
+                    "raw_delta_domains_seen": [],
+                    "raw_delta_domain_counts": {},
+                    "raw_delta_domain_object_counts": {},
+                    "raw_gap_domain_counts": {},
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+            ),
+            require_ship_raw_telemetry=True,
+        )
+
+        self.assertIn("ship raw telemetry frames were not observed", errors)
+        self.assertIn("ship raw telemetry object rows were not observed", errors)
+
+    def test_rejects_ship_raw_gaps(self):
+        errors = collector_session_proof_errors(
+            _manifest(
+                ship_body_bridge_supplied=True,
+                ship_body_bridge_rows=1604,
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock"],
+                    "raw_delta_domains_seen": ["ships"],
+                    "raw_delta_domain_counts": {"ships": 1604},
+                    "raw_delta_domain_object_counts": {"ships": 1604},
+                    "raw_gap_domain_counts": {"ships": 1},
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+            ),
+            require_ship_raw_telemetry=True,
+        )
+
+        self.assertIn("ship raw telemetry gap frames observed", errors)
+
     def test_domains_seen_does_not_satisfy_scheduled_domain_gate(self):
         errors = collector_session_proof_errors(
             _manifest(collector_frame_payload_summary={

@@ -1347,14 +1347,19 @@ raw gap frames. `naval_combat_ended` still needs a fixture where a bridged
 naval battle ends during capture. The next naval unlocks are a root/hook-derived
 discoverer for newly born combats, optional CShip enrichment, exact end/delete
 fixture proof, damage/sinking deltas, and longer soaks. Ship telemetry and
-command hierarchy now also have a 12-game-hour no-cold proof on the restarted
-vanilla process: a cache-only run resolved 1604 CShip bodies and 4704 OOB
-command roots, advanced 12 game hours in 78.047 wall seconds, stored 13
-verified hourly snapshots, emitted raw `ships` and `oob_command` streams, and
-reported no raw gap domains. The generated raw sidecar was 132 MB, so this
-slice is verified for extraction but still needs coalescing/backpressure policy
-before full-length recording. Army orders now have a raw `army_orders` stream
-from `army_body_bridge`, with
+command hierarchy are gated as separate live segments. Ship telemetry now has a
+strict 12-game-hour no-cold proof on the restarted vanilla process:
+`replay/snapshots/_collector_session_air_ship_oob_gate/20260629T210118Z_pid43412`
+passed `--require-ship-raw-telemetry`, hit `ship_body_cache` in 0.125s,
+supplied 1309 bridge rows, emitted 22249 raw `ships` deltas / 22248 object
+rows, advanced 12 game hours in 57.297 wall seconds, stored verified hourly
+snapshots, and reported zero raw gap domains. OOB command hierarchy retains its
+own strict proof from the same pid family: 4704 OOB command roots, 17705
+`oob_command` deltas over 12 game hours, and zero raw gap domains after an
+intentionally cold 135.703s discovery. The generated raw sidecars can be large,
+so this slice is verified for extraction but still needs coalescing/backpressure
+policy before full-length recording. Army orders now have a raw `army_orders`
+stream from `army_body_bridge`, with
 `army_order:<army_id>:<generation>` identities, add/remove lifecycle proof,
 bounded bridge gaps, exact type-5 target states, and unsupported status for
 unvalidated non-type-5 geometry. The next army-order unlocks are a live

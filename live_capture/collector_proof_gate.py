@@ -79,6 +79,7 @@ def collector_session_proof_errors(
     require_army_order_raw_removals: bool = False,
     require_army_order_raw_updates: bool = False,
     require_air_wing_raw_telemetry: bool = False,
+    require_ship_raw_telemetry: bool = False,
     require_oob_command_raw_telemetry: bool = False,
 ) -> List[str]:
     errors: List[str] = []
@@ -460,6 +461,17 @@ def collector_session_proof_errors(
             errors.append("air wing raw observed events were not observed")
         if _map_int(summary, "raw_gap_domain_counts", "air_wings") > 0:
             errors.append("air wing raw telemetry gap frames observed")
+    if require_ship_raw_telemetry:
+        if manifest.get("ship_body_bridge_supplied") is not True:
+            errors.append("ship body bridge was not supplied")
+        if _as_int(manifest.get("ship_body_bridge_rows")) in (None, 0):
+            errors.append("ship body bridge rows not positive")
+        if _map_int(summary, "raw_delta_domain_counts", "ships") == 0:
+            errors.append("ship raw telemetry frames were not observed")
+        if _map_int(summary, "raw_delta_domain_object_counts", "ships") == 0:
+            errors.append("ship raw telemetry object rows were not observed")
+        if _map_int(summary, "raw_gap_domain_counts", "ships") > 0:
+            errors.append("ship raw telemetry gap frames observed")
     if require_oob_command_raw_telemetry:
         if manifest.get("oob_command_bridge_supplied") is not True:
             errors.append("OOB command bridge was not supplied")
@@ -499,6 +511,7 @@ def collector_session_proof_summary(
     require_army_order_raw_removals: bool = False,
     require_army_order_raw_updates: bool = False,
     require_air_wing_raw_telemetry: bool = False,
+    require_ship_raw_telemetry: bool = False,
     require_oob_command_raw_telemetry: bool = False,
 ) -> Dict[str, Any]:
     summary = _payload_summary(manifest)
@@ -526,6 +539,7 @@ def collector_session_proof_summary(
         require_army_order_raw_removals=require_army_order_raw_removals,
         require_army_order_raw_updates=require_army_order_raw_updates,
         require_air_wing_raw_telemetry=require_air_wing_raw_telemetry,
+        require_ship_raw_telemetry=require_ship_raw_telemetry,
         require_oob_command_raw_telemetry=require_oob_command_raw_telemetry,
     )
     hourly = manifest.get("hourly_requirement") or {}
@@ -786,6 +800,11 @@ def _main(argv: Optional[List[str]] = None) -> int:
         help="require live DLL air-wing raw rows and observed events",
     )
     parser.add_argument(
+        "--require-ship-raw-telemetry",
+        action="store_true",
+        help="require live DLL ship raw telemetry rows",
+    )
+    parser.add_argument(
         "--require-oob-command-raw-telemetry",
         action="store_true",
         help="require live DLL OOB command hierarchy rows",
@@ -819,6 +838,7 @@ def _main(argv: Optional[List[str]] = None) -> int:
         require_army_order_raw_removals=args.require_army_order_raw_removals,
         require_army_order_raw_updates=args.require_army_order_raw_updates,
         require_air_wing_raw_telemetry=args.require_air_wing_raw_telemetry,
+        require_ship_raw_telemetry=args.require_ship_raw_telemetry,
         require_oob_command_raw_telemetry=args.require_oob_command_raw_telemetry,
     )
     print(json.dumps(proof, indent=2, sort_keys=True))

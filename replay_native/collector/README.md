@@ -447,12 +447,14 @@ Naval-combat raw stream status:
   reported zero raw gap frames, and observed 3 `naval_combat_started` plus 360
   `naval_combat_updated` events. `naval_combat_ended` still needs a fixture
   where a bridged naval battle ends during the capture window.
-- Live proof on pid 43412: an explicit cold bootstrap populated `ship_bodies`,
-  then a no-cold 12-game-hour run resolved 1604 still-live CShip rows from
-  cache, emitted raw `ships`, verified replay output, and reported no raw gap
-  domains. This proves the DLL extraction path; full-game recording still needs
-  raw-stream coalescing/backpressure because the combined ship/OOB 12-hour
-  sidecar was large.
+- Live proof on pid 43412:
+  `replay/snapshots/_collector_session_air_ship_oob_gate/20260629T210118Z_pid43412`
+  passed the strict `--require-ship-raw-telemetry` gate. The no-cold run hit
+  `ship_body_cache` in 0.125s, supplied 1309 bridge rows, emitted 22249 raw
+  `ships` deltas / 22248 object rows, advanced 12 game hours in 57.297 wall
+  seconds, verified replay output, and reported no raw gap domains. This proves
+  the DLL extraction path; full-game recording still needs raw-stream
+  coalescing/backpressure because combined ship/OOB sidecars can be large.
 
 OOB command raw stream status:
 

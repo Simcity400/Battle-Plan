@@ -339,13 +339,15 @@ Ship/CShip telemetry:
   this row. Combat wrapper state remains in `naval_combat_members`; command
   hierarchy and names still require their own sources.
 - Current `ships` verification state: live-verified on the restarted vanilla
-  process (pid 43412). A cold bootstrap outside the hot loop found 1665 CShip
-  bodies and stored `ship_bodies.json`; the 12-game-hour no-cold proof resolved
-  1604 still-live ship bodies from cache in 0.109s, emitted raw `ships`
-  deltas, advanced 12 game hours with `hourly_requirement.met = true`, verified
-  the replay, and reported no raw gap domains. The raw stream sidecar was large
-  (132 MB for the combined ship/OOB 12-hour run), so long-session coalescing or
-  lower-frequency ship sampling is still a recording-layer hardening item.
+  process (pid 43412) with the strict `--require-ship-raw-telemetry` proof
+  gate. The no-cold run
+  `replay/snapshots/_collector_session_air_ship_oob_gate/20260629T210118Z_pid43412`
+  hit `ship_body_cache` in 0.125s, supplied 1309 bridge rows, emitted 22249 raw
+  `ships` deltas / 22248 object rows, advanced 12 game hours in 57.297 wall
+  seconds with `hourly_requirement.met = true`, verified the replay, and
+  reported no raw gap domains. The raw stream sidecar can be large on combined
+  ship/OOB runs, so long-session coalescing or lower-frequency ship sampling is
+  still a recording-layer hardening item.
 
 Cadence:
 
