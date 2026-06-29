@@ -105,11 +105,11 @@ Current recorder-facing bridge status:
   wired through the static `CGameState+0x2B0` `CProvince*` array: state rows use
   `CProvince+0xC0` state pointers and province rows use `CProvince+0x188`
   controller tag-db ids. The older state-root and dense-array/controller
-  bridges remain fallback evidence. Live proof on the active speed-five process:
-  `collector_live_static_map_spine_probe` advanced 2 game hours with zero
-  skipped hours, stored 3 verified snapshots, emitted 3 scheduled frames with
-  1081 state rows and 10272 province rows each, supplied no map preflight
-  bridges, and verified the `.battleplan` container.
+  bridges remain fallback evidence. Current live proof on pid 43412 advanced 12
+  game hours with zero skipped hours, stored 13 verified snapshots, emitted 12
+  scheduled frames each for `state_ownership`, `state_control`, and
+  `province_control`, carried 1081 state rows and 10272 province rows per frame,
+  supplied no map preflight bridges, and verified the `.battleplan` container.
 - First state-control speed-five proof is now green. With cached state roots
   and 10 ms sampling, `collector_speed5_state_only_probe` advanced 12 game hours
   in about 9.9 wall seconds, stored 13 hourly snapshots, skipped zero hours,
@@ -1138,18 +1138,17 @@ Acceptance:
 - The replay map can scrub owner/control/buildings/resources/occupation changes
   from live collector data only.
 
-Current status: state owner/controller roots are cache-backed and live-proven
-through scheduled DLL frames. Province-control cache validation now mirrors the
-native scheduled reader more closely: it checks native bridge shape, slot-span
-readability, controller-pointer coverage, heap/range/alignment bounds, and
-tag-id limits before allowing cached province rows into normal recording.
-If a cached province base/slot candidate exists, the preflight can rebuild the
-controller-pointer bridge from current state controllers and still require the
-existing state-partition and scheduled slot-span validators before publishing.
-Cold province-array discovery remains opt-in and is not yet solved for normal
-startup; on the current new-game process, province preflight without a cache
-failed closed with `province_array_cache_unavailable` while the state bridge
-cache hit.
+Current status: state owner/controller and province controller are now
+live-proven through scheduled DLL frames without requiring map preflight
+bridges. The pid 43412 no-cold proof advanced 12 game hours in 45.734 wall
+seconds, stored 13 verified snapshots, emitted 12 scheduled frames each for
+`state_ownership`, `state_control`, and `province_control`, and carried 1081
+state rows plus 10272 province rows per frame. Province-control cache validation
+still mirrors the native scheduled reader for fallback use: it checks native
+bridge shape, slot-span readability, controller-pointer coverage, heap/range/
+alignment bounds, and tag-id limits before allowing cached province rows into
+normal recording. Cold province-array discovery remains opt-in and is not needed
+for the static-root scheduled map path.
 
 ### Phase 4: Economy And Production
 
@@ -1322,6 +1321,10 @@ adapter validates and folds these into
 `country_misc`, `politics_live`, `politics_residuals`, scheduled advisor
 leaves, typed laws, `idea_groups`, `advisor_ideas`, `ideas_other`, and
 `national_spirits` with no session errors and no worker-poll politics payloads.
+Current 12-game-hour no-cold proof on pid 43412 emitted 12 scheduled
+`politics_live` frames, 12 scheduled `politics_residuals` frames, 12 scheduled
+`tech_live` frames, up to 356 politics rows, 356 residual-politics rows, and 356
+research rows per frame, with no heavy payloads on lightweight worker polls.
 The DLL also emits scheduled
 `decisions_live` status counts and active timed-decision rows, plus scheduled
 `focus_live` core focus state from validated `CCountry` child roots; live proof

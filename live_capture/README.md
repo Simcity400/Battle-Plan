@@ -84,13 +84,14 @@ current product status and acceptance gates, and
   law / idea-group / advisor-like / non-law / national-spirit classification is
   folded when the session supplies the static `common/ideas` group contract.
   The DLL intersects those contracts with live active ideas. Missing or invalid
-  contracts omit the relevant leaves, while measured-empty `[]` is real. Live
-  hourly proof `politics_live_idea_groups_2h_proof` supplied 3722 advisor
-  tokens and a 6474-row idea-group contract, advanced 2 game hours, stored 3
-  snapshots, verified the replay, emitted 2 scheduled `politics_live` frames,
-  folded `idea_groups` for 712 country rows and positive `advisor_ideas` for
-  160 country rows, and measured Portugal as
-  `advisor_ideas.industrial_concern = companhia_uniao_fabril`.
+  contracts omit the relevant leaves, while measured-empty `[]` is real. Earlier
+  idea/advisor proof folded `idea_groups` for 712 country rows and positive
+  `advisor_ideas` for 160 country rows, and measured Portugal as
+  `advisor_ideas.industrial_concern = companhia_uniao_fabril`. Current no-cold
+  proof on pid 43412 advanced 12 game hours, stored 13 verified snapshots,
+  emitted 12 scheduled `politics_live` frames and 12 scheduled
+  `politics_residuals` frames, observed up to 356 politics rows per frame, and
+  kept worker-poll frames free of politics payloads.
   It also folds scheduled `decisions_live` rows into
   `countries.*.decisions.status_present` and `.timed_live`; measured-empty
   `timed_live = []` is protected only for tags actually measured by the
@@ -132,9 +133,9 @@ current product status and acceptance gates, and
   `CGameState+0x2B0`, derive state owner/controller rows through
   `CProvince+0xC0`, and publish province controller TAGs or raw tag-db ids
   through `CProvince+0x188`. The old bridge caches remain useful as
-  corroboration/fallback. A live speed-five probe captured 1081 state rows and
-  10272 province rows in each scheduled frame with zero skipped hours and no map
-  preflight bridges supplied.
+  corroboration/fallback. Current no-cold proof on pid 43412 captured 1081
+  state rows and 10272 province rows in each of 12 scheduled map-control frames
+  with zero skipped hours and no map preflight bridges supplied.
 - Division movement uses a cache-first `division_bodies.json` bridge. Normal
   recording validates cached body pins without scanning; use
   `--allow-division-cold-scan` only as an explicit bootstrap step because cold

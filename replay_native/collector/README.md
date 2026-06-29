@@ -131,6 +131,10 @@ Scheduled country politics:
   idea-group rows, advanced 2 game hours at speed five with zero skipped hours,
   and measured Portugal laws as `civilian_economy`, `export_focus`, and
   `volunteer_only`;
+- current no-cold proof on pid 43412 advanced 12 game hours, stored 13 verified
+  snapshots, emitted 12 scheduled `politics_live` and 12 scheduled
+  `politics_residuals` frames, observed up to 356 politics and residual rows per
+  frame, and kept worker-poll frames free of politics payloads;
 - worker-poll frames stay light and must not carry politics payloads.
 
 Scheduled country decisions:
@@ -189,6 +193,9 @@ Scheduled country research:
   of guessed;
 - progress percentage and ETA remain derived layers gated on static research
   cost and live speed inputs;
+- current no-cold proof on pid 43412 emitted 12 scheduled `tech_live` frames
+  across 12 game hours, with up to 356 research country rows and 6 active
+  research rows per country per frame;
 - worker-poll frames stay light and must not carry research payloads.
 
 Scheduled special projects:
@@ -273,6 +280,9 @@ Recorder-side map-control contract:
   array for map control: `CProvince+0xC0` yields state objects for
   `state_ownership` / `state_control`, and `CProvince+0x188` yields province
   controller tag-db ids;
+- current no-cold proof on pid 43412 emitted 12 scheduled frames each for
+  `state_ownership`, `state_control`, and `province_control` across 12 game
+  hours, with 1081 state rows and 10272 province rows per frame;
 - the older `map_control_state_roots`, dense province array, and controller
   bridges remain fallbacks if the static root is unavailable; worker-poll
   frames stay light.
