@@ -128,6 +128,18 @@ for inspection, with no ability to mutate the game.
   with up to 315 per scheduled frame, and kept politics payloads off
   worker-poll frames. Multi-entry leader vectors remain intentionally omitted
   until active-element disambiguation is proven.
+- DLL-native construction queue capture is proven through scheduled
+  `production_live`: the collector reads the production manager general-lines
+  vector at `CCountry+0xF68 -> mgr+0x70`, accepts only type-59 construction
+  lines, and folds verified rows into
+  `countries.*.production.construction_queue`. The proof
+  `replay/snapshots/_collector_session_construction_gate/20260629T172526Z_pid43412`
+  advanced 12 game hours in 40.219 wall seconds, stored 13 verified snapshots,
+  emitted 14 scheduled `production_live` frames, captured 3661 construction
+  queue rows with up to 262 rows per scheduled frame and 29 rows per country,
+  confirmed Portugal queue rows in the replay store, and kept production
+  payloads off worker-poll frames. Target state/location remains intentionally
+  unavailable until the target handle is pinned.
 - DLL-native raw `land_combats` lifecycle capture is proven at speed five for
   the raw replay stream: the 2026-06-29 pid 43412 proof
   `replay/snapshots/_collector_session_diplomacy_gate/20260629T152734Z_pid43412`

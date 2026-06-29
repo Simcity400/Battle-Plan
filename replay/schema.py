@@ -25,6 +25,7 @@ PRODUCTION_VARIANT_ID_MAX = 10_000_000
 PRODUCTION_LINE_ID_MAX = 10_000_000
 PRODUCTION_FACTORY_COUNT_MAX = 100_000
 PRODUCTION_LINE_AMOUNT_MAX = 2_147_483_647
+PRODUCTION_CONSTRUCTION_TEMPLATE_ID_MAX = 10_000_000
 PRODUCTION_FIXED_POINT_ABS_MAX = 1_000_000_000_000.0
 FUEL_MEASURE_ABS_MAX = 1_000_000_000.0
 DECISION_STATUS_MAX_KEYS = 32
@@ -92,7 +93,8 @@ DOMAINS = (
     "intel_live",            # LIVE agency scalars -> countries.*.intel.agency.* (M)
     "focus_live",            # LIVE national-focus state -> countries.*.focus.* (M; shares the
                              # save "focus" home, tracked under a DISTINCT live id)
-    "production_live",       # LIVE stockpile + production lines -> countries.*.production
+    "production_live",       # LIVE stockpile + production lines + construction queue
+                             # -> countries.*.production
                              # (C/M; a NEW live-only home, distinct from the save "production"
                              # domain which folds into economy/military)
     "diplomacy_live",        # LIVE wars/at-war/casualties/faction-group -> countries.*.diplomacy
@@ -125,10 +127,11 @@ DOMAINS = (
                              # world.scenario.{current_date_live,start_date_live} (M; the save
                              # "world" domain owns scenario, so these are DISTINCT _live keys).
                              # world_tension is COMPUTED-not-stored -> NEVER folded.
-    "construction_orders",   # LIVE construction queue + battle-plan orders + opinion-modifier
-                             # decomposition (construction_orders_live, M) -> countries.*.
-                             # production.construction_queue (NEW live-only leaf) + order_of_
-                             # battle.battle_plan_orders (NEW live-only list) + countries.*.
+    "construction_orders",   # Legacy memory-reader umbrella for battle-plan orders +
+                             # opinion-modifier decomposition; construction queue is now
+                             # promoted through scheduled `production_live`. Remaining leaves
+                             # fold into order_of_battle.battle_plan_orders (NEW live-only
+                             # list) + countries.*.
                              # diplomacy.opinion_modifiers (NEW live-only leaf). Order/modifier
                              # target geometry + token NAMES stay RESISTED (null), never invented.
     "army_orders",           # Raw in-process collector battle-plan order stream. Emits
@@ -636,19 +639,20 @@ FIELD_SOURCES: Dict[str, str] = {
     # reader measures the equipment STOCKPILE bank ({variant_id: amount}, 459/461 ids
     # EXACT fixed-point) + the military/naval PRODUCTION LINES ({id, active_factories,
     # cost, speed, produced, amount}, line count + SUM(active) EXACT) + the active-
-    # factory totals. Collector DLL and legacy memory paths can both measure this;
-    # stockpile_total is summed FROM the measured stockpile -> derived-from-live (C/M/D). ---
+    # factory totals. The scheduled collector path also measures the construction queue.
+    # Collector DLL and legacy memory paths can both measure this; stockpile_total is
+    # summed FROM the measured stockpile -> derived-from-live (C/M/D). ---
     "countries.*.production.stockpile": "C/M",
     "countries.*.production.stockpile_total": "C/M/D",   # summed from measured stockpile
     "countries.*.production.military_lines": "C/M",
     "countries.*.production.naval_lines": "C/M",
     "countries.*.production.military_factories": "C/M",
     "countries.*.production.naval_factories": "C/M",
-    # LIVE construction queue (construction_orders_live, M). DISTINCT live-only leaf: the
-    # per-country civil/military BUILDING queue in priority order, each {line_id, template_id,
-    # active_factories, cost, produced, priority}. The build target STATE/location is RESISTED
-    # (province handle behind the template def; needs a province->state map) -> never fabricated.
-    "countries.*.production.construction_queue": "M",
+    # LIVE construction queue (production_live, C/M). DISTINCT live-only leaf: the
+    # per-country civil/military BUILDING queue in priority order, each {id, template_id,
+    # active_factories, cost, produced, priority}. The build target STATE/location is not
+    # pinned yet -> never fabricated.
+    "countries.*.production.construction_queue": "C/M",
     # --- top-level designs (§11, from designs.json + live designs_live.py) ---
     # division_templates is now LIVE-first (designs_live, M) with the save as the
     # backstop; equipment_variants remains save-only until the live variant crack
@@ -1163,8 +1167,8 @@ class Production:
 
     RESISTED (absent, never fabricated — see production_offsets.draft.json open tickets):
     per-line priority / requested_factories / equipment_variant_index (not offset-pinned,
-    no distinguishing variance this frame); construction queue (state-derived, owned by
-    the state domain). null-but-present until a live read folds it.
+    no distinguishing variance this frame); construction queue target state/location.
+    null-but-present until a live read folds it.
     """
     stockpile: Optional[Dict[str, Any]] = None
     stockpile_total: Optional[float] = None
@@ -1172,13 +1176,13 @@ class Production:
     naval_lines: Optional[List[Dict[str, Any]]] = None
     military_factories: Optional[int] = None
     naval_factories: Optional[int] = None
-    # LIVE construction queue (construction_orders_live, M). DISTINCT live-only leaf: the
-    # per-country civil/military BUILDING queue in PRIORITY order, each {line_id, template_id,
+    # LIVE construction queue (production_live, C/M). DISTINCT live-only leaf: the
+    # per-country civil/military BUILDING queue in PRIORITY order, each {id, template_id,
     # active_factories, cost, produced, priority}. Defaults None (Optional) NOT [] so an
     # unmeasured country (created by another live domain) reads None and the backstop's
     # `lv is not None` guard skips it; a measured-empty [] (empty queue) is written + protected.
-    # The build target STATE/location is RESISTED (province handle; needs a province->state map)
-    # -> never fabricated. null-but-present until a live read folds it.
+    # The build target STATE/location is not pinned yet -> never fabricated.
+    # null-but-present until a live read folds it.
     construction_queue: Optional[List[Dict[str, Any]]] = None
 
 
@@ -2500,11 +2504,17 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                     problems.append(
                         f"country {tag!r}.production.{k} {v!r} "
                         "not nonnegative int|null")
-            # newly-wired LIVE construction queue (construction_orders_live, M): list|null.
+            # LIVE construction queue (production_live, C/M): list|null.
             cq = prod.get("construction_queue")
             if cq is not None and not isinstance(cq, list):
                 problems.append(
                     f"country {tag!r}.production.construction_queue {cq!r} not list|null")
+            elif isinstance(cq, list):
+                if len(cq) > 4096:
+                    problems.append(
+                        f"country {tag!r}.production.construction_queue too many entries")
+                for i, line in enumerate(cq):
+                    problems.extend(_validate_construction_line(tag, i, line))
         # newly-wired LIVE diplomacy leaves (diplomacy_live, M): at_war list|null whose
         # elements are TAG strings; casualties int|null; faction_group int|null.
         dip = c.get("diplomacy")
@@ -3068,6 +3078,46 @@ def _validate_production_line(
         )
     ):
         problems.append(f"{prefix}.amount not -1 or nonnegative int in range")
+    return problems
+
+
+def _validate_construction_line(
+    tag: str,
+    index: int,
+    line: Any,
+) -> List[str]:
+    prefix = f"country {tag!r}.production.construction_queue[{index}]"
+    if not isinstance(line, dict):
+        return [f"{prefix} not a dict"]
+    problems: List[str] = []
+    line_id = line.get("id")
+    if line_id is None:
+        problems.append(f"{prefix}.id missing")
+    elif not _valid_bounded_int(line_id, minimum=0, maximum=PRODUCTION_LINE_ID_MAX):
+        problems.append(f"{prefix}.id not int in range")
+    template_id = line.get("template_id")
+    if template_id is not None and not _valid_bounded_int(
+        template_id, minimum=0, maximum=PRODUCTION_CONSTRUCTION_TEMPLATE_ID_MAX
+    ):
+        problems.append(f"{prefix}.template_id not int|null in range")
+    active = line.get("active_factories")
+    if active is None:
+        problems.append(f"{prefix}.active_factories missing")
+    elif not _valid_bounded_int(
+        active, minimum=0, maximum=PRODUCTION_FACTORY_COUNT_MAX
+    ):
+        problems.append(f"{prefix}.active_factories not int in range")
+    for field in ("cost", "produced"):
+        measured = line.get(field)
+        if measured is None:
+            problems.append(f"{prefix}.{field} missing")
+        elif not _valid_nonnegative_measure(measured):
+            problems.append(f"{prefix}.{field} not finite nonnegative number in range")
+    priority = line.get("priority")
+    if priority is None:
+        problems.append(f"{prefix}.priority missing")
+    elif not _valid_bounded_int(priority, minimum=0, maximum=4096):
+        problems.append(f"{prefix}.priority not int in range")
     return problems
 
 

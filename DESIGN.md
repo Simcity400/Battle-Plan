@@ -234,6 +234,18 @@ Implemented in the current bridge:
   `buildings_live` on all 13 scheduled frames, captured 1081 state rows and
   10272 province rows per scheduled frame, and kept building payloads off
   worker polls;
+- DLL-native scheduled construction queue rows inside `production_live`: the
+  collector reads the production manager general-lines vector at
+  `CCountry+0xF68 -> mgr+0x70`, accepts only type-59 construction lines, and
+  folds live line id, template id, assigned factories, cost, produced progress,
+  and queue priority into `countries.*.production.construction_queue`. The
+  proof
+  `replay/snapshots/_collector_session_construction_gate/20260629T172526Z_pid43412`
+  advanced 12 game hours in 40.219 wall seconds, observed 14 scheduled
+  `production_live` frames, folded 3661 construction queue rows with up to 262
+  rows per scheduled frame, and kept production payloads off worker polls.
+  Target state/location remains intentionally unavailable until the target
+  handle is pinned;
 - state-root map preflight cache retained as corroboration/fallback evidence.
 
 Still open:
@@ -242,7 +254,7 @@ Still open:
   session;
 - classify any remaining country-record-only fields and add a speed-safe
   DLL-resident root only if replay-critical fields still need the record array;
-- promote remaining economy, active-research slot detail, diplomacy
+- promote remaining economy trade/market/lend-lease, active-research slot detail, diplomacy
   participant/war-goal/war-score detail, naval/air combat, and combat
   battle-detail from historical proof/schema coverage to live collector output
   or explicit unavailable badges. Active land-combat identity, location, age,

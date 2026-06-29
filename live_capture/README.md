@@ -192,6 +192,8 @@ python -m live_capture.collector_profile_check --pid <hoi4-pid> --profile live_c
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session --game-id collector_live_speed5_session --duration-s 8 --sample-ms 10 --dwell-s 0.25 --worker-bursts 3 --burst-interval-s 0.25 --until-game-hours 12 --max-wall-s 30
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_economy_gate --game-id production_fuel_misc_live --duration-s 180 --sample-ms 10 --dwell-s 0.25 --worker-bursts 3 --burst-interval-s 0.25 --until-game-hours 12 --max-wall-s 300
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_economy_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain production_live --require-domain fuel_live --require-domain country_misc --require-domain country_scalars
+python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_construction_gate --game-id construction_queue_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300
+python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_construction_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain production_live --require-production-construction
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_buildings_gate --game-id buildings_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_buildings_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain buildings_live
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_diplomacy_gate --game-id diplomacy_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300
@@ -268,7 +270,16 @@ For economy acceptance, require scheduled `production_live` plus snapshot
 domains `fuel_live`, `country_misc`, and `country_scalars`. The 2026-06-29 pid
 43412 proof advanced 12 game hours, stored 13 verified snapshots, emitted 12
 production frames and 12 fuel frames, and observed up to 20 military lines, 12
-naval lines, and 146 stockpile entries per production frame.
+naval lines, and 146 stockpile entries per production frame. Construction queue
+acceptance is a separate scheduled-production gate:
+`replay/snapshots/_collector_session_construction_gate/20260629T172526Z_pid43412`
+advanced 12 game hours in 40.219 wall seconds, observed 14 scheduled
+`production_live` frames, folded 3661 construction queue rows with up to 262
+rows per scheduled frame and 29 rows per country, and reported zero heavy
+payloads on lightweight worker frames. The queue rows include live line id,
+template id when readable, assigned factories, cost, produced progress, and
+priority; target state/location remains unavailable until the target handle is
+proven.
 
 For buildings acceptance, require scheduled `buildings_live` on a no-cold
 12-game-hour run. The 2026-06-29 pid 43412 proof

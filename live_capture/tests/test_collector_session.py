@@ -203,6 +203,7 @@ class TestCollectorSession(unittest.TestCase):
                             "stockpile": {"70": 12.0, "71": 0.0},
                             "military_lines": [{"id": 1}],
                             "naval_lines": [{"id": 2}, {"id": 3}],
+                            "construction_queue": [{"id": 7}, {"id": 8}],
                         },
                     },
                     "ENG": {
@@ -210,6 +211,7 @@ class TestCollectorSession(unittest.TestCase):
                             "stockpile": {},
                             "military_lines": [],
                             "naval_lines": [],
+                            "construction_queue": [],
                         },
                     },
                     "FRA": {},
@@ -224,6 +226,7 @@ class TestCollectorSession(unittest.TestCase):
                             "stockpile": {"80": 1.0, "81": 2.0, "82": 3.0},
                             "military_lines": [{"id": 4}, {"id": 5}],
                             "naval_lines": [{"id": 6}],
+                            "construction_queue": [{"id": 9}],
                         },
                     },
                 },
@@ -242,6 +245,7 @@ class TestCollectorSession(unittest.TestCase):
                             "stockpile": {"90": 4.0},
                             "military_lines": [],
                             "naval_lines": [],
+                            "construction_queue": [{"id": 10}],
                         },
                     },
                 },
@@ -258,6 +262,11 @@ class TestCollectorSession(unittest.TestCase):
         self.assertEqual(summary["max_production_stockpile_entries"], 3)
         self.assertEqual(summary["max_production_military_line_rows"], 2)
         self.assertEqual(summary["max_production_naval_line_rows"], 2)
+        self.assertEqual(summary["construction_queue_frames"], 3)
+        self.assertEqual(summary["country_rows_with_construction_queue"], 4)
+        self.assertEqual(summary["construction_queue_rows"], 4)
+        self.assertEqual(summary["max_construction_queue_rows_per_frame"], 2)
+        self.assertEqual(summary["max_construction_queue_rows_per_country"], 2)
         self.assertEqual(summary["production_on_lightweight_frames"], 1)
         self.assertEqual(summary["heavy_payload_on_lightweight_frames"], 1)
 

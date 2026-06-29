@@ -192,6 +192,52 @@ class TestCollectorProofGate(unittest.TestCase):
         self.assertIn("politics leader frames below required cadence", errors)
         self.assertIn("country politics leader rows were not observed", errors)
 
+    def test_accepts_production_construction_proof(self):
+        proof = collector_session_proof_summary(
+            _manifest(
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock", "country_identity", "production_live"],
+                    "scheduled_production_domain_frames": 12,
+                    "construction_queue_frames": 12,
+                    "country_rows_with_construction_queue": 504,
+                    "construction_queue_rows": 812,
+                    "max_construction_queue_rows_per_frame": 72,
+                    "max_construction_queue_rows_per_country": 9,
+                    "production_on_lightweight_frames": 0,
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+            ),
+            required_scheduled_snapshot_domains=["production_live"],
+            min_game_hours=12,
+            require_production_construction=True,
+        )
+
+        self.assertTrue(proof["ok"])
+        self.assertEqual(proof["errors"], [])
+        self.assertEqual(proof["construction_queue_frames"], 12)
+        self.assertEqual(proof["construction_queue_rows"], 812)
+
+    def test_rejects_missing_production_construction_rows(self):
+        errors = collector_session_proof_errors(
+            _manifest(
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock", "country_identity", "production_live"],
+                    "scheduled_production_domain_frames": 12,
+                    "construction_queue_frames": 0,
+                    "country_rows_with_construction_queue": 0,
+                    "construction_queue_rows": 0,
+                    "max_construction_queue_rows_per_frame": 0,
+                    "production_on_lightweight_frames": 0,
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+            ),
+            min_game_hours=12,
+            require_production_construction=True,
+        )
+
+        self.assertIn("construction queue frames below required cadence", errors)
+        self.assertIn("construction queue line rows were not observed", errors)
+
     def test_rejects_faction_only_diplomacy_for_war_relation_proof(self):
         errors = collector_session_proof_errors(
             _manifest(

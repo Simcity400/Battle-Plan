@@ -258,6 +258,14 @@ mod attach_log {
     const LINE_AMOUNT: usize = 0x48;
     const LINE_TYPE_MILITARY: u32 = 56;
     const LINE_TYPE_NAVAL: u32 = 57;
+    const CONSTRUCTION_BEGIN: usize = 0x70;
+    const CONSTRUCTION_CAP: usize = 0x78;
+    const CONSTRUCTION_SIZE: usize = 0x7C;
+    const CONSTRUCTION_STRIDE: usize = 0x08;
+    const LINE_TYPE_CONSTRUCTION: u32 = 59;
+    const LINE_CONSTRUCTION_SUB: usize = 0x70;
+    const CONSTRUCTION_TEMPLATE_ID: usize = 0x08;
+    const MAX_CONSTRUCTION_TEMPLATE_ID: u32 = 10_000_000;
     const MAX_PRODUCTION_VECTOR_ENTRIES: u32 = 4096;
     const MAX_PRODUCTION_STOCKPILE_AMOUNT: f64 = 1_000_000_000_000.0;
     const MAX_PRODUCTION_LINE_FIXED: f64 = 1_000_000_000.0;
@@ -8193,6 +8201,7 @@ mod attach_log {
         stockpile: Option<Vec<CountryStockpileRow>>,
         military_lines: Option<Vec<CountryProductionLineRow>>,
         naval_lines: Option<Vec<CountryProductionLineRow>>,
+        construction_queue: Option<Vec<CountryConstructionLineRow>>,
     }
 
     #[derive(Clone, Copy)]
@@ -8209,6 +8218,16 @@ mod attach_log {
         speed: f64,
         produced: f64,
         amount: i32,
+    }
+
+    #[derive(Clone, Copy)]
+    struct CountryConstructionLineRow {
+        id: u32,
+        template_id: Option<u32>,
+        active_factories: i32,
+        cost: f64,
+        produced: f64,
+        priority: u32,
     }
 
     #[derive(Clone)]
@@ -11599,7 +11618,8 @@ mod attach_log {
         }
         let stockpile = read_production_stockpile(manager, variant_vtable);
         let lines = read_production_lines(manager);
-        if stockpile.is_none() && lines.is_none() {
+        let construction_queue = read_construction_queue(manager);
+        if stockpile.is_none() && lines.is_none() && construction_queue.is_none() {
             return None;
         }
         let (military_lines, naval_lines) = match lines {
@@ -11610,6 +11630,7 @@ mod attach_log {
             stockpile,
             military_lines,
             naval_lines,
+            construction_queue,
         })
     }
 
@@ -11716,6 +11737,63 @@ mod attach_log {
             }
         }
         Some((military, naval))
+    }
+
+    fn read_construction_queue(manager: usize) -> Option<Vec<CountryConstructionLineRow>> {
+        let begin = read_u64(manager + CONSTRUCTION_BEGIN)? as usize;
+        let cap = read_u32(manager + CONSTRUCTION_CAP)?;
+        let size = read_u32(manager + CONSTRUCTION_SIZE)?;
+        if size > cap || cap > MAX_PRODUCTION_VECTOR_ENTRIES {
+            return None;
+        }
+        if size == 0 {
+            return Some(Vec::new());
+        }
+        if !is_map_control_heap_pointer(begin) {
+            return None;
+        }
+        let byte_len = (size as usize).checked_mul(CONSTRUCTION_STRIDE)?;
+        let raw = read_bytes(begin, byte_len)?;
+        let mut rows = Vec::new();
+        for k in (0..byte_len).step_by(CONSTRUCTION_STRIDE) {
+            let line_ptr = read_u64_from_slice(&raw, k)? as usize;
+            if !is_map_control_heap_pointer(line_ptr) {
+                continue;
+            }
+            let line_type = read_u32(line_ptr + LINE_TYPE)?;
+            if line_type != LINE_TYPE_CONSTRUCTION {
+                continue;
+            }
+            let active_factories = read_i32(line_ptr + LINE_ACTIVE_FACTORIES)?;
+            if !(0..=100_000).contains(&active_factories) {
+                continue;
+            }
+            let Some(cost) = read_production_fixed(line_ptr + LINE_COST).filter(|v| *v >= 0.0)
+            else {
+                continue;
+            };
+            let Some(produced) =
+                read_production_fixed(line_ptr + LINE_PRODUCED).filter(|v| *v >= 0.0)
+            else {
+                continue;
+            };
+            let sub_ptr = read_u64(line_ptr + LINE_CONSTRUCTION_SUB)? as usize;
+            let template_id = if is_map_control_heap_pointer(sub_ptr) {
+                read_u32(sub_ptr + CONSTRUCTION_TEMPLATE_ID)
+                    .filter(|id| *id <= MAX_CONSTRUCTION_TEMPLATE_ID)
+            } else {
+                None
+            };
+            rows.push(CountryConstructionLineRow {
+                id: read_u32(line_ptr + LINE_ID)?,
+                template_id,
+                active_factories,
+                cost,
+                produced,
+                priority: (k / CONSTRUCTION_STRIDE) as u32,
+            });
+        }
+        Some(rows)
     }
 
     fn read_production_fixed(addr: usize) -> Option<f64> {
@@ -12027,6 +12105,12 @@ mod attach_log {
             ));
             fields.push(format!("\"naval_factories\":{naval_factories}"));
         }
+        if let Some(construction_queue) = production.construction_queue.as_deref() {
+            fields.push(format!(
+                "\"construction_queue\":{}",
+                construction_queue_json(construction_queue)
+            ));
+        }
         format!(",\"production\":{{{}}}", fields.join(","))
     }
 
@@ -12051,6 +12135,25 @@ mod attach_log {
                     json_opt_f64(Some(line.speed)),
                     json_opt_f64(Some(line.produced)),
                     line.amount
+                )
+            })
+            .collect();
+        format!("[{}]", parts.join(","))
+    }
+
+    fn construction_queue_json(rows: &[CountryConstructionLineRow]) -> String {
+        let parts: Vec<String> = rows
+            .iter()
+            .map(|line| {
+                format!(
+                    "{{\"id\":{},\"template_id\":{},\"active_factories\":{},\
+                     \"cost\":{},\"produced\":{},\"priority\":{}}}",
+                    line.id,
+                    json_opt_u32(line.template_id),
+                    line.active_factories,
+                    json_opt_f64(Some(line.cost)),
+                    json_opt_f64(Some(line.produced)),
+                    line.priority
                 )
             })
             .collect();
@@ -16131,6 +16234,14 @@ mod attach_log {
                         amount: -1,
                     }]),
                     naval_lines: Some(Vec::new()),
+                    construction_queue: Some(vec![CountryConstructionLineRow {
+                        id: 9001,
+                        template_id: Some(20013),
+                        active_factories: 6,
+                        cost: 10800.0,
+                        produced: 125.5,
+                        priority: 0,
+                    }]),
                 }),
                 focus: None,
                 research: None,
@@ -16149,6 +16260,9 @@ mod attach_log {
             assert!(scheduled.contains("\"military_factories\":3"));
             assert!(scheduled.contains("\"naval_factories\":0"));
             assert!(scheduled.contains("\"amount\":-1"));
+            assert!(scheduled.contains("\"construction_queue\""));
+            assert!(scheduled.contains("\"template_id\":20013"));
+            assert!(scheduled.contains("\"priority\":0"));
             assert!(!worker.contains("\"production\""));
         }
 
@@ -16184,6 +16298,7 @@ mod attach_log {
                         amount: -1,
                     }]),
                     naval_lines: Some(Vec::new()),
+                    construction_queue: None,
                 }),
                 focus: None,
                 research: None,
@@ -16202,6 +16317,7 @@ mod attach_log {
             assert!(scheduled.contains("\"military_factories\":3"));
             assert!(scheduled.contains("\"naval_lines\":[]"));
             assert!(scheduled.contains("\"naval_factories\":0"));
+            assert!(!scheduled.contains("\"construction_queue\""));
         }
     }
 }

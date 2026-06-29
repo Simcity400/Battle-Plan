@@ -1184,8 +1184,15 @@ observed `country_scalars`, `country_misc`, `fuel_live`, and scheduled
 `production_live`, emitted 12 production frames and 12 fuel frames, and kept
 heavy payloads off lightweight worker polls. The same run saw 356 production
 country rows per frame, up to 20 military lines, 12 naval lines, and 146
-stockpile entries. Construction queue, market contracts, resource trade, and
-lend-lease remain separate follow-up DLL slices.
+stockpile entries. Construction queue is now also DLL-native inside scheduled
+`production_live`: proof
+`replay/snapshots/_collector_session_construction_gate/20260629T172526Z_pid43412`
+advanced 12 game hours in 40.219 wall seconds, emitted 14 scheduled production
+frames, folded 3661 queue rows with up to 262 rows per scheduled frame and 29
+rows per country, confirmed replay-store `countries.*.production.construction_queue`
+rows, and kept production payloads off worker polls. Construction target
+state/location, market contracts, resource trade, and lend-lease remain
+follow-up DLL slices.
 
 ### Phase 5: Divisions And Land OOB
 

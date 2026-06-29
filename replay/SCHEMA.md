@@ -356,7 +356,7 @@ are `null`.
 | `stockpile_total` | float\|null | C / M / D | sum of measured `stockpile`; absent when stockpile vector was unavailable |
 | `military_lines[]` / `naval_lines[]` | list\|null | C / M | each: `id`, `active_factories`, `cost`, `speed`, `produced`, `amount`; measured-empty `[]` is distinct from null |
 | `military_factories` / `naval_factories` | int\|null | C / M | sum of active factories over measured lines |
-| `construction_queue[]` | list\|null | M | live construction-order slice; not emitted by collector production manager |
+| `construction_queue[]` | list\|null | C / M | scheduled `production_live` construction queue from `CCountry+0xF68 -> mgr+0x70`; each row has `id`, optional `template_id`, `active_factories`, `cost`, `produced`, `priority`; measured-empty `[]` is distinct from null; target state/location is not yet pinned |
 
 ### 3.7 `decisions`
 | field | type | source | notes |

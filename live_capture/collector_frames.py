@@ -74,6 +74,7 @@ PRODUCTION_LINE_MAX_ENTRIES = 4096
 PRODUCTION_LINE_ID_MAX = 10_000_000
 PRODUCTION_FACTORY_COUNT_MAX = 100_000
 PRODUCTION_LINE_AMOUNT_MAX = 2_147_483_647
+PRODUCTION_CONSTRUCTION_TEMPLATE_ID_MAX = 10_000_000
 PRODUCTION_FIXED_POINT_ABS_MAX = 1_000_000_000_000.0
 BUILDING_LEVEL_MAX = 1000
 FUEL_MEASURE_ABS_MAX = 1_000_000_000.0
@@ -250,6 +251,7 @@ PRODUCTION_PAYLOAD_KEYS = frozenset((
     "naval_lines",
     "military_factories",
     "naval_factories",
+    "construction_queue",
 ))
 RAW_FRAME_TYPES = frozenset(("domain_delta", "event", "gap"))
 RAW_CONFIDENCES = frozenset(("exact", "sampled", "proxy", "gap"))
@@ -4114,6 +4116,10 @@ def _validate_country_rows(countries: Dict[str, Any]) -> List[str]:
                             f"collector frame country {tag!r}.production.{key} "
                             "not int in range|null"
                         )
+                construction_queue = production.get("construction_queue")
+                if construction_queue is not None:
+                    problems.extend(
+                        _validate_construction_queue(tag, construction_queue))
         focus = row.get("focus")
         if focus is not None:
             if not isinstance(focus, dict):
@@ -5080,6 +5086,60 @@ def _validate_production_lines(tag: str, key: str, value: Any) -> List[str]:
             )
         ):
             problems.append(f"{prefix}.amount not -1 or nonnegative int in range")
+    return problems
+
+
+def _validate_construction_queue(tag: str, value: Any) -> List[str]:
+    problems: List[str] = []
+    if not isinstance(value, list):
+        return [
+            f"collector frame country {tag!r}.production.construction_queue "
+            "not list|null"
+        ]
+    if len(value) > PRODUCTION_LINE_MAX_ENTRIES:
+        problems.append(
+            f"collector frame country {tag!r}.production.construction_queue "
+            "too many entries"
+        )
+    for i, line in enumerate(value):
+        prefix = f"collector frame country {tag!r}.production.construction_queue[{i}]"
+        if not isinstance(line, dict):
+            problems.append(f"{prefix} not a dict")
+            continue
+        line_id = line.get("id")
+        if line_id is None:
+            problems.append(f"{prefix}.id missing")
+        elif not _valid_bounded_int(
+            line_id, minimum=0, maximum=PRODUCTION_LINE_ID_MAX
+        ):
+            problems.append(f"{prefix}.id not int in range")
+        template_id = line.get("template_id")
+        if template_id is not None and not _valid_bounded_int(
+            template_id,
+            minimum=0,
+            maximum=PRODUCTION_CONSTRUCTION_TEMPLATE_ID_MAX,
+        ):
+            problems.append(f"{prefix}.template_id not int|null in range")
+        active = line.get("active_factories")
+        if active is None:
+            problems.append(f"{prefix}.active_factories missing")
+        elif not _valid_bounded_int(
+            active, minimum=0, maximum=PRODUCTION_FACTORY_COUNT_MAX
+        ):
+            problems.append(f"{prefix}.active_factories not int in range")
+        for field in ("cost", "produced"):
+            measured = line.get(field)
+            if measured is None:
+                problems.append(f"{prefix}.{field} missing")
+            elif not _valid_nonnegative_measure(measured):
+                problems.append(f"{prefix}.{field} not finite nonnegative number in range")
+        priority = line.get("priority")
+        if priority is None:
+            problems.append(f"{prefix}.priority missing")
+        elif not _valid_bounded_int(
+            priority, minimum=0, maximum=PRODUCTION_LINE_MAX_ENTRIES
+        ):
+            problems.append(f"{prefix}.priority not int in range")
     return problems
 
 
@@ -6292,6 +6352,51 @@ def _fold_country_production(
                 factories, minimum=0, maximum=PRODUCTION_FACTORY_COUNT_MAX
             ):
                 clean[key] = factories
+        construction_queue = production.get("construction_queue")
+        if isinstance(construction_queue, list):
+            clean_queue: List[Dict[str, Any]] = []
+            for line in construction_queue:
+                if not isinstance(line, dict):
+                    continue
+                line_id = line.get("id")
+                template_id = line.get("template_id")
+                active = line.get("active_factories")
+                cost = line.get("cost")
+                produced = line.get("produced")
+                priority = line.get("priority")
+                if not (
+                    _valid_bounded_int(
+                        line_id, minimum=0, maximum=PRODUCTION_LINE_ID_MAX
+                    )
+                    and (
+                        template_id is None
+                        or _valid_bounded_int(
+                            template_id,
+                            minimum=0,
+                            maximum=PRODUCTION_CONSTRUCTION_TEMPLATE_ID_MAX,
+                        )
+                    )
+                    and _valid_bounded_int(
+                        active, minimum=0, maximum=PRODUCTION_FACTORY_COUNT_MAX
+                    )
+                    and _valid_nonnegative_measure(cost)
+                    and _valid_nonnegative_measure(produced)
+                    and _valid_bounded_int(
+                        priority, minimum=0, maximum=PRODUCTION_LINE_MAX_ENTRIES
+                    )
+                ):
+                    continue
+                clean_line: Dict[str, Any] = {
+                    "id": line_id,
+                    "active_factories": active,
+                    "cost": float(cost),
+                    "produced": float(produced),
+                    "priority": priority,
+                }
+                if template_id is not None:
+                    clean_line["template_id"] = template_id
+                clean_queue.append(clean_line)
+            clean["construction_queue"] = clean_queue
         if clean:
             country = snap["countries"].setdefault(tag, schema.empty_country())
             country["production"].update(clean)

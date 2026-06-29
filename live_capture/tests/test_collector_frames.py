@@ -2658,6 +2658,14 @@ class TestCollectorFrames(unittest.TestCase):
                         "naval_lines": [],
                         "military_factories": 3,
                         "naval_factories": 0,
+                        "construction_queue": [{
+                            "id": 9001,
+                            "template_id": 20013,
+                            "active_factories": 6,
+                            "cost": 10800.0,
+                            "produced": 125.5,
+                            "priority": 0,
+                        }],
                     },
                 },
                 "SOV": {
@@ -2671,6 +2679,7 @@ class TestCollectorFrames(unittest.TestCase):
                         "naval_lines": [],
                         "military_factories": 0,
                         "naval_factories": 0,
+                        "construction_queue": [],
                     },
                 },
             },
@@ -2690,6 +2699,9 @@ class TestCollectorFrames(unittest.TestCase):
         self.assertEqual(ger["military_factories"], 3)
         self.assertEqual(ger["naval_lines"], [])
         self.assertEqual(ger["naval_factories"], 0)
+        self.assertEqual(ger["construction_queue"][0]["id"], 9001)
+        self.assertEqual(ger["construction_queue"][0]["template_id"], 20013)
+        self.assertEqual(ger["construction_queue"][0]["priority"], 0)
         sov = snap["countries"]["SOV"]["production"]
         self.assertEqual(sov["stockpile"], {})
         self.assertEqual(sov["stockpile_total"], 0.0)
@@ -2697,6 +2709,7 @@ class TestCollectorFrames(unittest.TestCase):
         self.assertEqual(sov["naval_lines"], [])
         self.assertEqual(sov["military_factories"], 0)
         self.assertEqual(sov["naval_factories"], 0)
+        self.assertEqual(sov["construction_queue"], [])
         self.assertEqual(snap["countries"]["GER"]["military"]["equipment_stockpile"], [])
 
     def test_snapshot_frame_preserves_unavailable_production_leaves(self):
@@ -2739,6 +2752,7 @@ class TestCollectorFrames(unittest.TestCase):
         self.assertEqual(prod["military_factories"], 3)
         self.assertEqual(prod["naval_lines"], [])
         self.assertEqual(prod["naval_factories"], 0)
+        self.assertIsNone(prod["construction_queue"])
 
     def test_snapshot_frame_rejects_malformed_production_live(self):
         frame = {
@@ -2768,6 +2782,13 @@ class TestCollectorFrames(unittest.TestCase):
                         "naval_lines": "bad",
                         "military_factories": 3,
                         "naval_factories": 0,
+                        "construction_queue": [{
+                            "id": 9001,
+                            "template_id": -1,
+                            "active_factories": -1,
+                            "cost": -1.0,
+                            "produced": 1.0,
+                        }],
                     },
                 },
             },
@@ -2782,6 +2803,10 @@ class TestCollectorFrames(unittest.TestCase):
         self.assertTrue(any("military_lines[0].amount" in p
                             for p in problems), problems)
         self.assertTrue(any("production.naval_lines not list" in p
+                            for p in problems), problems)
+        self.assertTrue(any("construction_queue[0].template_id" in p
+                            for p in problems), problems)
+        self.assertTrue(any("construction_queue[0].priority" in p
                             for p in problems), problems)
         with self.assertRaisesRegex(ValueError, "invalid collector frame"):
             snapshot_from_collector_frame(frame, "collector-test")

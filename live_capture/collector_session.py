@@ -1125,6 +1125,11 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     max_production_stockpile_entries = 0
     max_production_military_line_rows = 0
     max_production_naval_line_rows = 0
+    construction_queue_frames = 0
+    country_rows_with_construction_queue = 0
+    construction_queue_rows = 0
+    max_construction_queue_rows_per_frame = 0
+    max_construction_queue_rows_per_country = 0
     production_on_lightweight_frames = 0
     focus_on_lightweight_frames = 0
     tech_on_lightweight_frames = 0
@@ -1294,6 +1299,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         politics_rows_in_frame = 0
         politics_leader_rows_in_frame = 0
         politics_residual_rows_in_frame = 0
+        construction_queue_rows_in_frame = 0
         state_building_rows_in_frame = 0
         province_building_rows_in_frame = 0
         heavy_payload_in_lightweight_frame = False
@@ -1483,6 +1489,14 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
                 if isinstance(naval_lines, list):
                     max_production_naval_line_rows = max(
                         max_production_naval_line_rows, len(naval_lines))
+                construction_queue = production.get("construction_queue")
+                if isinstance(construction_queue, list):
+                    country_rows_with_construction_queue += 1
+                    construction_queue_rows_in_frame += len(construction_queue)
+                    max_construction_queue_rows_per_country = max(
+                        max_construction_queue_rows_per_country,
+                        len(construction_queue),
+                    )
         if scalar_rows_in_frame:
             country_rows_with_scalar_payloads += scalar_rows_in_frame
             max_country_scalar_rows_per_frame = max(
@@ -1495,6 +1509,13 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
             max_production_country_rows_per_frame = max(
                 max_production_country_rows_per_frame,
                 production_rows_in_frame,
+            )
+        if construction_queue_rows_in_frame:
+            construction_queue_frames += 1
+            construction_queue_rows += construction_queue_rows_in_frame
+            max_construction_queue_rows_per_frame = max(
+                max_construction_queue_rows_per_frame,
+                construction_queue_rows_in_frame,
             )
         if focus_rows_in_frame:
             frames_with_focus_payloads += 1
@@ -1729,6 +1750,14 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         "max_production_stockpile_entries": max_production_stockpile_entries,
         "max_production_military_line_rows": max_production_military_line_rows,
         "max_production_naval_line_rows": max_production_naval_line_rows,
+        "construction_queue_frames": construction_queue_frames,
+        "country_rows_with_construction_queue": (
+            country_rows_with_construction_queue),
+        "construction_queue_rows": construction_queue_rows,
+        "max_construction_queue_rows_per_frame": (
+            max_construction_queue_rows_per_frame),
+        "max_construction_queue_rows_per_country": (
+            max_construction_queue_rows_per_country),
         "production_on_lightweight_frames": production_on_lightweight_frames,
         "frames_with_focus_payloads": frames_with_focus_payloads,
         "country_rows_with_focus_payloads": country_rows_with_focus_payloads,

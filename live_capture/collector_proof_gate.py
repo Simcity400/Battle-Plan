@@ -48,6 +48,7 @@ def collector_session_proof_errors(
     require_no_lightweight_heavy_payloads: bool = True,
     require_diplomacy_war_relations: bool = False,
     require_politics_leaders: bool = False,
+    require_production_construction: bool = False,
 ) -> List[str]:
     errors: List[str] = []
     session_errors = manifest.get("session_errors")
@@ -150,6 +151,26 @@ def collector_session_proof_errors(
             errors.append("politics leader rows were empty in every frame")
         if _as_int(summary.get("politics_on_lightweight_frames")) not in (0, None):
             errors.append("politics payloads appeared on lightweight frames")
+    if require_production_construction:
+        scheduled = _scheduled_domain_frame_count(summary, "production_live")
+        required_frames = int(min_game_hours or 1)
+        if scheduled is None or scheduled < required_frames:
+            errors.append(
+                "production construction proof scheduled frames "
+                f"{scheduled!r} below required {required_frames}"
+            )
+        if _as_int(summary.get("construction_queue_frames")) is None or _as_int(
+            summary.get("construction_queue_frames")
+        ) < required_frames:
+            errors.append("construction queue frames below required cadence")
+        if _as_int(summary.get("country_rows_with_construction_queue")) in (None, 0):
+            errors.append("country construction queue rows were not observed")
+        if _as_int(summary.get("construction_queue_rows")) in (None, 0):
+            errors.append("construction queue line rows were not observed")
+        if _as_int(summary.get("max_construction_queue_rows_per_frame")) in (None, 0):
+            errors.append("construction queue rows were empty in every frame")
+        if _as_int(summary.get("production_on_lightweight_frames")) not in (0, None):
+            errors.append("production payloads appeared on lightweight frames")
     return errors
 
 
@@ -165,6 +186,7 @@ def collector_session_proof_summary(
     require_hourly: bool = True,
     require_diplomacy_war_relations: bool = False,
     require_politics_leaders: bool = False,
+    require_production_construction: bool = False,
 ) -> Dict[str, Any]:
     summary = _payload_summary(manifest)
     errors = collector_session_proof_errors(
@@ -178,6 +200,7 @@ def collector_session_proof_summary(
         require_hourly=require_hourly,
         require_diplomacy_war_relations=require_diplomacy_war_relations,
         require_politics_leaders=require_politics_leaders,
+        require_production_construction=require_production_construction,
     )
     hourly = manifest.get("hourly_requirement") or {}
     return {
@@ -219,6 +242,14 @@ def collector_session_proof_summary(
             "country_rows_with_politics_leader"),
         "max_politics_leader_rows_per_frame": summary.get(
             "max_politics_leader_rows_per_frame"),
+        "construction_queue_frames": summary.get("construction_queue_frames"),
+        "country_rows_with_construction_queue": summary.get(
+            "country_rows_with_construction_queue"),
+        "construction_queue_rows": summary.get("construction_queue_rows"),
+        "max_construction_queue_rows_per_frame": summary.get(
+            "max_construction_queue_rows_per_frame"),
+        "max_construction_queue_rows_per_country": summary.get(
+            "max_construction_queue_rows_per_country"),
     }
 
 
@@ -313,6 +344,11 @@ def _main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="require positive scheduled politics active-leader rows",
     )
+    parser.add_argument(
+        "--require-production-construction",
+        action="store_true",
+        help="require positive scheduled production construction-queue rows",
+    )
     args = parser.parse_args(argv)
 
     manifest = load_session_manifest(args.manifest)
@@ -327,6 +363,7 @@ def _main(argv: Optional[List[str]] = None) -> int:
         require_hourly=not args.allow_hourly_missing,
         require_diplomacy_war_relations=args.require_diplomacy_war_relations,
         require_politics_leaders=args.require_politics_leaders,
+        require_production_construction=args.require_production_construction,
     )
     print(json.dumps(proof, indent=2, sort_keys=True))
     return 0 if proof["ok"] else 1
