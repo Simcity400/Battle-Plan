@@ -158,15 +158,15 @@ Current measured constraint:
   hour in 9.31 wall seconds, preserved 846 division deltas and 842
   `division_movement_started` events, with zero first-observation org/combat
   noise events.
-- Current verification state for this patch: **blocked/unverified on the
-  current running process**. A no-cold-scan live gate on 2026-06-29 against pid
-  40464 advanced 1 game hour, stored 2 snapshots, verified the replay, and met
-  the hourly gate in 11.453s, but `division_body_bridge_preflight.status` was
-  `cold_scan_disabled`, `row_count = 0`, `bridge_supplied = false`, so no
-  `divisions` raw stream or `division_org_strength_delta` event was observed.
-  The code/test changes in this patch are executable scaffolding only until a
-  live run supplies a valid division bridge and captures a real org/strength
-  change.
+- Current verification state: live-verified on the restarted vanilla process
+  (pid 43412). A cold bootstrap outside the hot loop populated the
+  current-process division and army caches, then a no-cold 12-game-hour run
+  used cache hits only, advanced 12 game hours in 52.266 wall seconds, stored 13
+  verified hourly snapshots, preserved the raw stream, and emitted 6903
+  `division_org_strength_delta` events plus 85
+  `division_combat_ref_changed` events with no raw gap domains. This proves the
+  division org/strength stream at hourly-or-better replay cadence on the current
+  live process; it does not prove every possible movement mode yet.
 
 Cadence:
 
@@ -479,16 +479,22 @@ Current DLL contract:
   and `target_status`. Type-5 target-state vectors up to the bounded inline cap
   are exact; larger valid vectors are `target_status:"overflow"` with only the
   count; non-type-5 geometry is `target_status:"unsupported"`.
-- Current verification state for this patch: **executable scaffolding only,
-  blocked/unverified live**. The Rust tracker now splits same-address
-  different-army reuse into `army_order_removed` for the old
-  `army_order:<army_id>:<generation>` and `army_order_added` for a fresh
-  generation, with regression coverage and no pointer leakage. A no-cold-scan
-  live gate on 2026-06-29 against pid 40464 advanced 1 game hour, stored 2
-  snapshots, verified the replay, and met the hourly gate in 11.453s, but
-  `army_body_bridge_preflight.status` was `cold_scan_disabled`, `row_count = 0`,
-  `bridge_supplied = false`, so no `army_orders` raw stream or order transition
-  event was observed. This does not satisfy live order-transition coverage.
+- Current verification state: live-verified for raw order presence and
+  add/remove lifecycle, still unverified for in-place order edits. The Rust
+  tracker splits same-address different-army reuse into `army_order_removed` for
+  the old `army_order:<army_id>:<generation>` and `army_order_added` for a fresh
+  generation, with regression coverage and no pointer leakage. A 2026-06-29
+  cold bootstrap on pid 43412 found 456 army bodies outside the hot loop. The
+  first no-cold run exposed an all-or-nothing stale-cache failure; the preflight
+  now validates cached army bodies row-by-row and salvages still-live rows,
+  mirroring the division bridge behavior. The 12-game-hour no-cold proof then
+  resolved 417 valid army bodies from cache in 0.093s, emitted `army_orders`
+  raw deltas, observed 383 `army_order_added` events and 2
+  `army_order_removed` events, advanced 12 game hours with
+  `hourly_requirement.met = true`, verified the replay, and reported no raw gap
+  domains. No `army_order_updated` event appeared because no existing order was
+  edited during the observed window; that specific event still needs a live
+  order-edit fixture.
 
 Cadence:
 
@@ -530,6 +536,11 @@ Notes:
   `army_order_updated` for target/type/reorder edits or `army_order_removed`
   for deletion. Treat `army_order_added` as first-observation scaffolding unless
   the run already had an earlier army-order sample before the order was created.
+  For the broad raw-domain/org proof, the currently proven 12-hour gate is:
+
+  ```powershell
+  python -m live_capture.collector_proof_gate replay\snapshots\_collector_session_order_org_gate\20260629T134805Z_pid43412\session_manifest.json --min-game-hours 12 --require-raw-domain divisions --require-raw-domain army_orders --require-raw-event-type division_org_strength_delta
+  ```
 
 ### Province And State Control
 

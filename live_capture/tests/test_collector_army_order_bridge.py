@@ -24,12 +24,14 @@ class FakeArmyReader:
         armies=None,
         build_error=None,
         validate_cached=True,
+        invalid_cached_ids=None,
     ):
         self.pid = pid
         self.build_ok = build_ok
         self.armies = armies if armies is not None else {18: 0x9000, 17: 0x8000}
         self.build_error = build_error
         self.validate_cached = validate_cached
+        self.invalid_cached_ids = set(invalid_cached_ids or [])
         self.enumerate_calls = 0
         self.validate_calls = 0
         self.closed = False
@@ -45,7 +47,10 @@ class FakeArmyReader:
 
     def validate_armies(self, armies):
         self.validate_calls += 1
-        return bool(armies) and self.validate_cached
+        if not armies or not self.validate_cached:
+            return False
+        return not any(int(army_id) in self.invalid_cached_ids
+                       for army_id in armies)
 
     def close(self):
         self.closed = True
@@ -160,6 +165,42 @@ class TestCollectorArmyOrderBridge(unittest.TestCase):
         self.assertEqual(reader.enumerate_calls, 0)
         self.assertNotIn("0x8000", json.dumps(result.diagnostics, sort_keys=True))
 
+    def test_cache_hit_salvages_valid_army_rows_when_some_cached_rows_stale(self):
+        reader = FakeArmyReader(invalid_cached_ids={18})
+        identity = _identity()
+        with tempfile.TemporaryDirectory() as td:
+            cache_path = Path(td) / "army_bodies.json"
+            self.assertTrue(cab._write_army_body_cache(
+                cache_path,
+                identity,
+                [
+                    {"army_id": 17, "body_ptr": 0x8000},
+                    {"army_id": 18, "body_ptr": 0x9000},
+                    {"army_id": 19, "body_ptr": 0xA000},
+                ],
+            ))
+
+            with _patched_identity(identity):
+                result = resolve_army_body_bridge_preflight(
+                    111,
+                    reader_factory=lambda: reader,
+                    min_rows=1,
+                    cache_path=cache_path,
+                    allow_cold_scan=False,
+                )
+
+        self.assertTrue(result.usable)
+        self.assertEqual(result.encoded, "17:0x8000;19:0xA000")
+        self.assertEqual(result.row_count, 2)
+        self.assertEqual(result.diagnostics["source"], "army_body_cache")
+        self.assertEqual(result.diagnostics["cache"]["status"], "hit")
+        self.assertEqual(result.diagnostics["cache"]["cached_row_count"], 3)
+        self.assertEqual(result.diagnostics["cache"]["valid_row_count"], 2)
+        self.assertEqual(result.diagnostics["cache"]["stale_row_count"], 1)
+        self.assertEqual(reader.validate_calls, 4)
+        self.assertEqual(reader.enumerate_calls, 0)
+        self.assertNotIn("0x8000", json.dumps(result.diagnostics, sort_keys=True))
+
     def test_stale_cache_without_cold_scan_fails_closed(self):
         reader = FakeArmyReader(validate_cached=False)
         identity = _identity()
@@ -183,7 +224,10 @@ class TestCollectorArmyOrderBridge(unittest.TestCase):
         self.assertFalse(result.usable)
         self.assertEqual(result.status, "cold_scan_disabled")
         self.assertEqual(result.diagnostics["cache"]["status"], "stale")
-        self.assertEqual(reader.validate_calls, 1)
+        self.assertEqual(result.diagnostics["cache"]["cached_row_count"], 1)
+        self.assertEqual(result.diagnostics["cache"]["valid_row_count"], 0)
+        self.assertEqual(result.diagnostics["cache"]["stale_row_count"], 1)
+        self.assertEqual(reader.validate_calls, 2)
         self.assertEqual(reader.enumerate_calls, 0)
 
 

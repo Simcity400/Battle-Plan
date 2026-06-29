@@ -113,6 +113,11 @@ def resolve_army_body_bridge_preflight(
                 cache_diag["status"] = "loaded"
                 cached_armies = _coerce_cached_armies(cached.get("armies"))
                 valid_armies = _validated_cached_armies(reader, cached_armies)
+                cache_diag["cached_row_count"] = len(cached_armies)
+                cache_diag["valid_row_count"] = len(valid_armies)
+                cache_diag["stale_row_count"] = (
+                    len(cached_armies) - len(valid_armies)
+                )
                 rows = army_body_bridge_rows_from_armies(valid_armies)
                 if len(rows) >= int(min_rows):
                     cache_diag["status"] = "hit"
@@ -429,6 +434,12 @@ def _diagnostics(
             "enabled": bool(cache.get("enabled")),
             "status": str(cache.get("status") or "unknown"),
         }
+        for key in ("cached_row_count", "valid_row_count", "stale_row_count"):
+            if key in cache:
+                try:
+                    diagnostics["cache"][key] = int(cache[key])
+                except (TypeError, ValueError):
+                    pass
         diagnostics["allow_cold_scan"] = bool(cache.get("allow_cold_scan"))
     return diagnostics
 
@@ -446,8 +457,15 @@ def _validated_cached_armies(
         if validate(armies):
             return dict(sorted(armies.items()))
     except Exception:
-        return {}
-    return {}
+        pass
+    valid: Dict[int, int] = {}
+    for army_id, body_ptr in sorted(armies.items()):
+        try:
+            if validate({army_id: body_ptr}):
+                valid[army_id] = body_ptr
+        except Exception:
+            continue
+    return valid
 
 
 def _coerce_cached_armies(value: Any) -> Dict[int, int]:

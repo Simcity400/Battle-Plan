@@ -1190,16 +1190,24 @@ Current status: the DLL already consumes a `division_body_bridge` and emits raw
 cache-first and process-identity-scoped. Normal recording validates cached body
 pins through the warm `read_divisions_from_bodies()` path before emitting a
 bridge; cold body discovery is disabled unless `--allow-division-cold-scan` is
-explicitly set. Live proof on the current new-game process: no-cache normal
-preflight failed fast in 0.094s, explicit cold bootstrap found 8 divisions in
-32.25s and stored `division_bodies.json`, warm preflight resolved 8 bodies in
-0.094s, and a normal country/state/division session advanced 4 game hours in
-6.0s with 5 verified snapshots and raw `clock` + `divisions` domain deltas.
+explicitly set. Live proof on the restarted vanilla process: a cold bootstrap
+outside the hot loop found 1931 division bodies and 456 army bodies, then a
+normal no-cold run resolved 1898 division bodies from cache and 417 still-live
+army bodies from cache, advanced 12 game hours in 52.266 wall seconds, stored
+13 verified hourly snapshots, and emitted raw `clock`, `divisions`,
+`army_orders`, and `land_combats` streams with no raw gaps. The same run emitted
+6903 `division_org_strength_delta` events, 85 `division_combat_ref_changed`
+events, 383 `army_order_added` events, and 2 `army_order_removed` events.
 The DLL now also accepts an `army_body_bridge` populated by
 `--preflight-army-orders` and emits raw `army_orders` deltas/events from
 revalidated army bodies at a 250 ms sampling floor. The first slice captures
 order type, slot index, and exact type-5 target state sets; non-type-5 geometry
-is explicitly marked unsupported until those layouts are pinned.
+is explicitly marked unsupported until those layouts are pinned. The army
+preflight now salvages individually valid cached army rows instead of dropping
+the whole bridge when a few cached army objects go stale. `army_order_updated`
+remains unverified because the live soak did not edit an existing sampled order;
+it needs a fixture where an offensive order is redrawn/resized/retyped after the
+collector has taken its baseline sample.
 
 ### Phase 6: Combat And Movement High-Frequency Layer
 
@@ -1247,11 +1255,12 @@ combats already present at attach time. The next naval unlocks are live fixture
 proof, a root/hook-derived discoverer for newly born combats, optional CShip
 enrichment, damage/sinking deltas, and speed-five soak. Army orders now have
 a raw `army_orders` stream from `army_body_bridge`, with
-`army_order:<army_id>:<generation>` identities, add/update/remove events,
+`army_order:<army_id>:<generation>` identities, add/remove lifecycle proof,
 bounded bridge gaps, exact type-5 target states, and unsupported status for
-unvalidated non-type-5 geometry. The next army-order unlocks are live
-speed-five proof while issuing orders, semantic event splits, non-type-5
-geometry, and timeline/app ingestion. Air wings now have a raw `air_wings`
+unvalidated non-type-5 geometry. The next army-order unlocks are a live
+`army_order_updated` fixture while issuing/editing orders, semantic event
+splits, non-type-5 geometry, and timeline/app ingestion. Air wings now have a
+raw `air_wings`
 stream from `air_wing_body_bridge`, with
 `air_wing:<TAG>:<wing_id>:<generation>` identities, observed/update/lost
 events, bounded bridge gaps, and 250 ms sampling of count, mission mask,

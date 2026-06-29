@@ -139,6 +139,10 @@ current product status and acceptance gates, and
   recording validates cached body pins without scanning; use
   `--allow-division-cold-scan` only as an explicit bootstrap step because cold
   body discovery can take tens of seconds.
+- Army order capture uses a cache-first `army_bodies.json` bridge. Normal
+  recording salvages still-live cached army bodies row-by-row; use
+  `--allow-army-cold-scan` only as an explicit bootstrap step because the army
+  vtable sweep is outside the hot-loop budget.
 
 ## Recorder Smoke / Tests
 
@@ -150,6 +154,9 @@ python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/ta
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session --game-id collector_live_focus_decision_project_roots --duration-s 8 --sample-ms 10 --dwell-s 0.25 --worker-bursts 3 --burst-interval-s 0.25 --until-game-hours 12 --max-wall-s 30 --preflight-special-projects
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain focus_live --require-scheduled-domain decisions_live --require-scheduled-domain projects_live
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session --game-id collector_live_division_cache_bootstrap --duration-s 5 --sample-ms 20 --dwell-s 0.25 --preflight-division-movement --allow-division-cold-scan
+python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_order_org_gate --game-id order_org_strength_cache_bootstrap --duration-s 8 --sample-ms 10 --until-game-hours 1 --max-wall-s 240 --preflight-division-movement --allow-division-cold-scan --preflight-army-orders --allow-army-cold-scan
+python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_order_org_gate --game-id order_org_strength_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300 --preflight-division-movement --preflight-army-orders
+python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_order_org_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-raw-domain divisions --require-raw-domain army_orders --require-raw-event-type division_org_strength_delta
 python -m live_capture.collector_probe_record --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_probe --store-root replay/snapshots --game-id collector_live_speed5_worker --dwell-s 0.25 --worker-duration-s 8 --worker-sample-ms 10 --until-game-hours 12 --max-wall-s 15 --unique-store-hours-only
 python -m unittest live_capture.tests.test_collector_session live_capture.tests.test_collector_proof_gate live_capture.tests.test_recorder_cadence live_capture.tests.test_recorder_worker_cadence live_capture.tests.test_recorder_manifest_diagnostics live_capture.tests.test_replay_writer
 python -m pytest live_capture
@@ -176,6 +183,14 @@ passes on that run's `session_manifest.json`. If the special-project cache is
 missing, first run a cache-populating diagnostic with
 `--preflight-special-projects --allow-special-projects-cold-scan`, then rerun
 the acceptance proof without the cold-scan flag.
+
+For division org/strength plus army-order raw-stream acceptance, first populate
+same-process caches with the cold bootstrap command if needed, then rerun
+without any cold-scan flags. The 2026-06-29 pid 43412 proof advanced 12 game
+hours, verified replay output, observed raw `divisions` and `army_orders`, and
+captured `division_org_strength_delta`. `army_order_updated` is a separate live
+fixture: it requires an already-sampled offensive order to be edited/redrawn
+during the capture window.
 
 Repeated bounded workers are one logical recorder session. The raw probe
 manifest keeps every verified observation, but the replay writer processes one
