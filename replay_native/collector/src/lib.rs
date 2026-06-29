@@ -9998,7 +9998,12 @@ mod attach_log {
         if size == 0 {
             return Some("{}".to_string());
         }
-        if size > cap || size > STATE_RESOURCE_MAX_ROWS || !is_map_control_heap_pointer(data) {
+        let logical_rows = if cap != 0 && cap < size { cap } else { size };
+        if logical_rows > STATE_RESOURCE_MAX_ROWS
+            || size > STATE_RESOURCE_MAX_ROWS + 1
+            || size.saturating_sub(logical_rows) > 1
+            || !is_map_control_heap_pointer(data)
+        {
             return None;
         }
         let byte_len = (size as usize).checked_mul(STATE_RESOURCE_STRIDE)?;
@@ -10006,16 +10011,30 @@ mod attach_log {
         if rows.len() != byte_len {
             return None;
         }
+        state_resource_rows_json(size, logical_rows, &rows)
+    }
+
+    fn state_resource_rows_json(size: u32, logical_rows: u32, rows: &[u8]) -> Option<String> {
+        if logical_rows > STATE_RESOURCE_MAX_ROWS
+            || size > STATE_RESOURCE_MAX_ROWS + 1
+            || size.saturating_sub(logical_rows) > 1
+            || rows.len() != (size as usize).checked_mul(STATE_RESOURCE_STRIDE)?
+        {
+            return None;
+        }
         let mut resources: BTreeMap<String, f64> = BTreeMap::new();
         for idx in 0..size {
             let offset = (idx as usize).checked_mul(STATE_RESOURCE_STRIDE)?;
-            let amount_raw = read_i32_from_slice(&rows, offset)?;
-            if !(0..=STATE_RESOURCE_MAX_ABS_RAW).contains(&amount_raw) {
-                return None;
-            }
             let resource_id = read_u32_from_slice(&rows, offset.checked_add(8)?)?;
             if resource_id == STATE_RESOURCE_NO_ID {
                 continue;
+            }
+            if idx >= logical_rows {
+                return None;
+            }
+            let amount_raw = read_i32_from_slice(rows, offset)?;
+            if !(0..=STATE_RESOURCE_MAX_ABS_RAW).contains(&amount_raw) {
+                return None;
             }
             let name = state_resource_name_from_id(resource_id);
             resources.insert(name, amount_raw as f64 / STATE_RESOURCE_AMOUNT_SCALE);
@@ -16352,6 +16371,54 @@ mod attach_log {
                 0x0000_0005_0000_0006,
             ));
             assert!(!political_party_leader_vector_is_singleton(0, data + 8));
+        }
+
+        fn resource_row(amount_raw: i32, resource_id: u32) -> [u8; STATE_RESOURCE_STRIDE] {
+            let mut row = [0u8; STATE_RESOURCE_STRIDE];
+            row[0..4].copy_from_slice(&amount_raw.to_le_bytes());
+            row[8..12].copy_from_slice(&resource_id.to_le_bytes());
+            row
+        }
+
+        fn resource_rows(rows: &[(i32, u32)]) -> Vec<u8> {
+            rows.iter()
+                .flat_map(|(amount_raw, resource_id)| resource_row(*amount_raw, *resource_id))
+                .collect()
+        }
+
+        #[test]
+        fn state_resource_rows_accepts_trailing_no_id_sentinel_past_cap() {
+            let rows = resource_rows(&[
+                (2_400_000, 0x3E03),
+                (1_600_000, 0x4E1F),
+                (200_000, 0x3E07),
+                (100_000, 0x3E06),
+                (100_000, 0x4E25),
+                (29_816, STATE_RESOURCE_NO_ID),
+            ]);
+
+            let json = state_resource_rows_json(6, 5, &rows).expect("resource rows should parse");
+
+            assert!(json.contains("\"steel\":24"));
+            assert!(json.contains("\"aluminium\":16"));
+            assert!(json.contains("\"chromium\":2"));
+            assert!(json.contains("\"tungsten\":1"));
+            assert!(json.contains("\"coal\":1"));
+            assert!(!json.contains("tid_0xFFFFFFFF"));
+        }
+
+        #[test]
+        fn state_resource_rows_rejects_real_resource_past_logical_cap() {
+            let rows = resource_rows(&[
+                (2_400_000, 0x3E03),
+                (1_600_000, 0x4E1F),
+                (200_000, 0x3E07),
+                (100_000, 0x3E06),
+                (100_000, 0x4E25),
+                (100_000, 0x4E37),
+            ]);
+
+            assert!(state_resource_rows_json(6, 5, &rows).is_none());
         }
 
         #[test]

@@ -111,15 +111,15 @@ Current recorder-facing bridge status:
   `province_control`, carried 1081 state rows and 10272 province rows per frame,
   supplied no map preflight bridges, and verified the `.battleplan` container.
   State resource deposits now ride the same scheduled state-object path through
-  `state_detail`: the strict pid 43412 proof advanced 12 game hours in 47.453
-  wall seconds, emitted 13 scheduled `state_detail` frames, folded 14027 state
-  resource rows with 9204 resource entries, reached 1079 resource-bearing rows
-  out of 1081 state rows in one frame, and verified the replay with zero heavy
+  `state_detail`: the strict pid 43412 proof advanced 12 game hours in 44.579
+  wall seconds, emitted 13 scheduled `state_detail` frames, folded 14053 state
+  resource rows with 9334 resource entries, reached full 1081/1081
+  resource-bearing rows in one frame, and verified the replay with zero heavy
   payloads on lightweight worker frames. Unknown resource db ids are preserved
-  as `tid_0x...`; two state rows still omit `resources` fail-closed and need
-  follow-up before full 1081/1081 resource-row coverage is claimed. This covers
-  state deposit maps only; country resource produced/exported/imported totals
-  remain open.
+  as `tid_0x...`; the live reader handles the verified `size=6/cap=5`
+  trailing `NO_ID` sentinel shape for Piedmont/Liaotung without fabricating
+  rows. This covers state deposit maps only; country resource
+  produced/exported/imported totals remain open.
 - First state-control speed-five proof is now green. With cached state roots
   and 10 ms sampling, `collector_speed5_state_only_probe` advanced 12 game hours
   in about 9.9 wall seconds, stored 13 hourly snapshots, skipped zero hours,
@@ -1222,15 +1222,15 @@ alignment bounds, and tag-id limits before allowing cached province rows into
 normal recording. Cold province-array discovery remains opt-in and is not needed
 for the static-root scheduled map path. State resource deposits are also
 live-proven on this same scheduled state spine: the strict pid 43412 proof
-`replay/snapshots/_collector_session_state_resources_gate/20260629T222307Z_pid43412`
-advanced 12 game hours in 47.453 wall seconds, emitted 13 scheduled
-`state_detail` frames, folded 14027 state resource rows with 9204 resource
-entries, reached 1079 resource-bearing state rows out of 1081 state rows in one
-frame, and verified the replay with zero heavy payloads on lightweight worker
-frames. Unknown resource db ids are preserved as `tid_0x...`; two state rows
-still omit `resources` fail-closed and need follow-up before full 1081/1081
-resource-row coverage is claimed. This is raw state deposit data only, not
-country produced/exported/imported resource economy.
+`replay/snapshots/_collector_session_state_resources_gate/20260629T223450Z_pid43412`
+advanced 12 game hours in 44.579 wall seconds, emitted 13 scheduled
+`state_detail` frames, folded 14053 state resource rows with 9334 resource
+entries, reached full 1081/1081 resource-bearing state rows in one frame, and
+verified the replay with zero heavy payloads on lightweight worker frames.
+Unknown resource db ids are preserved as `tid_0x...`; the live reader handles
+the verified `size=6/cap=5` trailing `NO_ID` sentinel shape for
+Piedmont/Liaotung without fabricating rows. This is raw state deposit data
+only, not country produced/exported/imported resource economy.
 
 ### Phase 4: Economy And Production
 

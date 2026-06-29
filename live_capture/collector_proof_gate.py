@@ -343,8 +343,16 @@ def collector_session_proof_errors(
             summary.get("state_resource_frames")
         ) < required_frames:
             errors.append("state resource frames below required cadence")
+        max_state_rows = _as_int(summary.get("max_state_rows"))
+        if max_state_rows is None or max_state_rows < 1000:
+            errors.append("max state rows missing or below full-state coverage")
         resource_rows = _as_int(summary.get("state_rows_with_resources"))
-        min_resource_rows = required_frames * 1000
+        scheduled_frames = scheduled if scheduled is not None else required_frames
+        min_resource_rows = (
+            scheduled_frames * max_state_rows
+            if max_state_rows is not None
+            else required_frames * 1000
+        )
         if resource_rows is None or resource_rows < min_resource_rows:
             errors.append(
                 "state resource rows "
@@ -354,10 +362,14 @@ def collector_session_proof_errors(
             errors.append("nonempty state resource rows were not observed")
         if _as_int(summary.get("state_resource_entries")) in (None, 0):
             errors.append("state resource entries were not observed")
-        if _as_int(summary.get("max_state_resource_rows_per_frame")) is None or _as_int(
-            summary.get("max_state_resource_rows_per_frame")
-        ) < 1000:
+        max_resource_rows = _as_int(summary.get("max_state_resource_rows_per_frame"))
+        if max_resource_rows is None or max_resource_rows < 1000:
             errors.append("state resource rows per frame below full-state coverage")
+        elif max_state_rows is not None and max_resource_rows < max_state_rows:
+            errors.append(
+                "state resource rows per frame "
+                f"{max_resource_rows!r} below max state rows {max_state_rows}"
+            )
     if require_tech_live_names:
         scheduled = _scheduled_domain_frame_count(summary, "tech_live")
         required_frames = int(min_game_hours or 1)
@@ -849,6 +861,7 @@ def collector_session_proof_summary(
         "scheduled_state_detail_domain_frames": summary.get(
             "scheduled_state_detail_domain_frames"),
         "state_resource_frames": summary.get("state_resource_frames"),
+        "max_state_rows": summary.get("max_state_rows"),
         "state_rows_with_resources": summary.get("state_rows_with_resources"),
         "state_rows_with_nonempty_resources": summary.get(
             "state_rows_with_nonempty_resources"),

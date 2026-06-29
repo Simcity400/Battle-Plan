@@ -111,6 +111,7 @@ class TestCollectorProofGate(unittest.TestCase):
                 "state_detail_frames": 12,
                 "scheduled_state_detail_domain_frames": 12,
                 "state_resource_frames": 12,
+                "max_state_rows": 1081,
                 "state_rows_with_resources": 12972,
                 "state_rows_with_nonempty_resources": 4920,
                 "state_resource_entries": 5304,
@@ -130,6 +131,31 @@ class TestCollectorProofGate(unittest.TestCase):
             12,
         )
         self.assertEqual(proof["state_resource_entries"], 5304)
+        self.assertEqual(proof["max_state_rows"], 1081)
+
+    def test_rejects_state_resources_partial_state_row_coverage(self):
+        errors = collector_session_proof_errors(
+            _manifest(collector_frame_payload_summary={
+                "domains_seen": ["clock", "state_detail"],
+                "state_detail_frames": 13,
+                "scheduled_state_detail_domain_frames": 13,
+                "state_resource_frames": 13,
+                "max_state_rows": 1081,
+                "state_rows_with_resources": 14027,
+                "state_rows_with_nonempty_resources": 6060,
+                "state_resource_entries": 9204,
+                "max_state_resource_rows_per_frame": 1079,
+                "heavy_payload_on_lightweight_frames": 0,
+            }),
+            min_game_hours=12,
+            require_state_resources=True,
+        )
+
+        self.assertIn("state resource rows 14027 below required 14053", errors)
+        self.assertIn(
+            "state resource rows per frame 1079 below max state rows 1081",
+            errors,
+        )
 
     def test_rejects_state_resources_without_nonempty_entries(self):
         errors = collector_session_proof_errors(

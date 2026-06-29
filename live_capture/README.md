@@ -364,14 +364,16 @@ For state resource-deposit acceptance, require scheduled `state_detail` plus
 `--require-state-resources` on a 12-game-hour run. This proves live raw state
 resource deposits from `CState` definition tables, not country
 produced/exported/imported economy totals. The 2026-06-29 pid 43412 proof
-`replay/snapshots/_collector_session_state_resources_gate/20260629T222307Z_pid43412`
-advanced 12 game hours in 47.453 wall seconds, stored 13 verified snapshots,
-observed 13 scheduled `state_detail` frames, folded 14027 state resource rows
-with 9204 resource entries, reached 1079 resource-bearing state rows out of
-1081 state rows in a single frame, and reported zero heavy payloads on
-lightweight worker frames. Unknown resource db ids are preserved as
-`tid_0x...`; the two rows without `resources` are still fail-closed omissions
-to investigate before claiming full 1081/1081 resource-row coverage.
+`replay/snapshots/_collector_session_state_resources_gate/20260629T223450Z_pid43412`
+advanced 12 game hours in 44.579 wall seconds, stored 13 verified snapshots,
+observed 13 scheduled `state_detail` frames, folded 14053 state resource rows
+with 9334 resource entries, reached full 1081/1081 resource-bearing state rows
+in a single frame, and reported zero heavy payloads on lightweight worker
+frames. Unknown resource db ids are preserved as `tid_0x...`; the reader also
+accepts the verified `size=6/cap=5` trailing `NO_ID` sentinel shape used by
+Piedmont and Liaotung without emitting guessed rows.
+The proof gate requires the resource-bearing row count to cover every scheduled
+`state_detail` frame and rejects partial 1079/1081-style coverage.
 
 For division org/strength plus army-order raw-stream acceptance, first populate
 same-process caches with the cold bootstrap command if needed, then rerun

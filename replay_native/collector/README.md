@@ -319,12 +319,12 @@ Recorder-side map-control contract:
   `state_ownership`, `state_control`, and `province_control` across 12 game
   hours, with 1081 state rows and 10272 province rows per frame;
 - current state-resource proof on pid 43412 emitted 13 scheduled `state_detail`
-  frames across 12 game hours in 47.453 wall seconds, verified replay output,
-  folded 14027 state resource rows with 9204 resource entries, reached 1079
-  resource-bearing state rows out of 1081 state rows in one frame, preserved
-  unknown resource db ids as `tid_0x...`, and kept worker-poll frames free of
-  heavy scheduled payloads. Two state rows still omit `resources` fail-closed
-  and need follow-up before claiming full 1081/1081 resource-row coverage;
+  frames across 12 game hours in 44.579 wall seconds, verified replay output,
+  folded 14053 state resource rows with 9334 resource entries, reached full
+  1081/1081 resource-bearing state rows in one frame, preserved unknown
+  resource db ids as `tid_0x...`, handled the verified `size=6/cap=5`
+  trailing `NO_ID` sentinel shape for Piedmont/Liaotung, and kept worker-poll
+  frames free of heavy scheduled payloads;
 - the older `map_control_state_roots`, dense province array, and controller
   bridges remain fallbacks if the static root is unavailable; worker-poll
   frames stay light.
