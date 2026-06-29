@@ -98,6 +98,16 @@ current product status and acceptance gates, and
   folded 4095 `commanders.leader` rows into the replay store. Countries whose
   ruling-party leader vector has multiple entries are deliberately omitted until
   the active element can be disambiguated without guessing.
+  Current advisor-residual proof
+  `replay/snapshots/_collector_session_politics_advisor_gate/20260629T212028Z_pid43412`
+  passed `--require-politics-advisor-residuals`: it advanced 12 game hours in
+  46.047 wall seconds, verified replay output, supplied 3722 vanilla
+  `common/characters` advisor tokens, emitted 13 scheduled `politics_residuals`
+  frames, and observed 4602 country rows with `appointed_advisors`,
+  `appointed_advisor_details`, `appointed_advisor_slots`, and
+  `appointed_advisor_ledgers` fields present. The current run measured those
+  appointment lists as empty, so a non-empty hired-advisor fixture is still
+  required before claiming populated appointed-advisor values.
   It also folds scheduled `decisions_live` rows into
   `countries.*.decisions.status_present` and `.timed_live`; measured-empty
   `timed_live = []` is protected only for tags actually measured by the
@@ -234,6 +244,8 @@ python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/ta
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_diplomacy_war_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain diplomacy_live --require-diplomacy-war-relations
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_politics_idea_gate --game-id politics_idea_classification_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_politics_idea_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain politics_live --require-politics-idea-classification
+python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_politics_advisor_gate --game-id politics_advisor_residuals_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300
+python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_politics_advisor_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain politics_residuals --require-politics-advisor-residuals
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session --game-id collector_live_focus_decision_project_roots --duration-s 180 --sample-ms 10 --dwell-s 0.25 --worker-bursts 3 --burst-interval-s 0.25 --until-game-hours 12 --max-wall-s 120 --preflight-special-projects
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain focus_live --require-scheduled-domain decisions_live --require-scheduled-domain projects_live
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session/<run-dir>/session_manifest.json --min-game-hours 12 --require-raw-domain land_combats --require-raw-event-type land_combat_started --require-raw-event-type land_combat_updated --require-raw-event-type land_combat_ended

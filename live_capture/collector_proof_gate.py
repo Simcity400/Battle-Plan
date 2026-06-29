@@ -68,6 +68,7 @@ def collector_session_proof_errors(
     require_diplomacy_war_relations: bool = False,
     require_politics_leaders: bool = False,
     require_politics_idea_classification: bool = False,
+    require_politics_advisor_residuals: bool = False,
     require_production_construction: bool = False,
     require_tech_live_names: bool = False,
     require_tech_live_progress: bool = False,
@@ -262,6 +263,51 @@ def collector_session_proof_errors(
             errors.append("politics national spirits were empty in every country row")
         if _as_int(summary.get("politics_on_lightweight_frames")) not in (0, None):
             errors.append("politics payloads appeared on lightweight frames")
+    if require_politics_advisor_residuals:
+        scheduled = _scheduled_domain_frame_count(summary, "politics_residuals")
+        required_frames = int(min_game_hours or 1)
+        if scheduled is None or scheduled < required_frames:
+            errors.append(
+                "politics advisor-residual proof scheduled frames "
+                f"{scheduled!r} below required {required_frames}"
+            )
+        if manifest.get("advisor_token_filter_supplied") is not True:
+            errors.append("advisor_token_filter was not supplied")
+        if _as_int(manifest.get("advisor_token_filter_tokens")) in (None, 0):
+            errors.append("advisor_token_filter_tokens not positive")
+        if _as_int(
+            summary.get("frames_with_politics_residual_payloads")
+        ) is None or _as_int(
+            summary.get("frames_with_politics_residual_payloads")
+        ) < required_frames:
+            errors.append("politics residual payload frames below required cadence")
+        if _as_int(summary.get("country_rows_with_politics_residual_payloads")) in (
+            None,
+            0,
+        ):
+            errors.append("country politics residual rows were not observed")
+        if _as_int(summary.get("country_rows_with_appointed_advisors")) in (None, 0):
+            errors.append("appointed_advisors fields were not observed")
+        if _as_int(summary.get("country_rows_with_appointed_advisor_details")) in (
+            None,
+            0,
+        ):
+            errors.append("appointed_advisor_details fields were not observed")
+        if _as_int(summary.get("country_rows_with_appointed_advisor_slots")) in (
+            None,
+            0,
+        ):
+            errors.append("appointed_advisor_slots fields were not observed")
+        if _as_int(summary.get("country_rows_with_appointed_advisor_ledgers")) in (
+            None,
+            0,
+        ):
+            errors.append("appointed_advisor_ledgers fields were not observed")
+        if _as_int(summary.get("politics_residuals_on_lightweight_frames")) not in (
+            0,
+            None,
+        ):
+            errors.append("politics residual payloads appeared on lightweight frames")
     if require_production_construction:
         scheduled = _scheduled_domain_frame_count(summary, "production_live")
         required_frames = int(min_game_hours or 1)
@@ -571,6 +617,7 @@ def collector_session_proof_summary(
     require_diplomacy_war_relations: bool = False,
     require_politics_leaders: bool = False,
     require_politics_idea_classification: bool = False,
+    require_politics_advisor_residuals: bool = False,
     require_production_construction: bool = False,
     require_tech_live_names: bool = False,
     require_tech_live_progress: bool = False,
@@ -600,6 +647,7 @@ def collector_session_proof_summary(
         require_diplomacy_war_relations=require_diplomacy_war_relations,
         require_politics_leaders=require_politics_leaders,
         require_politics_idea_classification=require_politics_idea_classification,
+        require_politics_advisor_residuals=require_politics_advisor_residuals,
         require_production_construction=require_production_construction,
         require_tech_live_names=require_tech_live_names,
         require_tech_live_progress=require_tech_live_progress,
@@ -696,6 +744,34 @@ def collector_session_proof_summary(
             "country_rows_with_politics_national_spirits"),
         "max_politics_national_spirit_tokens_per_country": summary.get(
             "max_politics_national_spirit_tokens_per_country"),
+        "frames_with_politics_residual_payloads": summary.get(
+            "frames_with_politics_residual_payloads"),
+        "country_rows_with_politics_residual_payloads": summary.get(
+            "country_rows_with_politics_residual_payloads"),
+        "max_politics_residual_country_rows_per_frame": summary.get(
+            "max_politics_residual_country_rows_per_frame"),
+        "country_rows_with_appointed_advisors": summary.get(
+            "country_rows_with_appointed_advisors"),
+        "country_rows_with_appointed_advisor_details": summary.get(
+            "country_rows_with_appointed_advisor_details"),
+        "country_rows_with_appointed_advisor_slots": summary.get(
+            "country_rows_with_appointed_advisor_slots"),
+        "country_rows_with_appointed_advisor_ledgers": summary.get(
+            "country_rows_with_appointed_advisor_ledgers"),
+        "appointed_advisor_rows": summary.get("appointed_advisor_rows"),
+        "appointed_advisor_detail_rows": summary.get(
+            "appointed_advisor_detail_rows"),
+        "appointed_advisor_slot_rows": summary.get("appointed_advisor_slot_rows"),
+        "appointed_advisor_ledger_rows": summary.get(
+            "appointed_advisor_ledger_rows"),
+        "max_appointed_advisors_per_country": summary.get(
+            "max_appointed_advisors_per_country"),
+        "max_appointed_advisor_details_per_country": summary.get(
+            "max_appointed_advisor_details_per_country"),
+        "max_appointed_advisor_slots_per_country": summary.get(
+            "max_appointed_advisor_slots_per_country"),
+        "max_appointed_advisor_ledgers_per_country": summary.get(
+            "max_appointed_advisor_ledgers_per_country"),
         "construction_queue_frames": summary.get("construction_queue_frames"),
         "country_rows_with_construction_queue": summary.get(
             "country_rows_with_construction_queue"),
@@ -844,6 +920,11 @@ def _main(argv: Optional[List[str]] = None) -> int:
         help="require live politics idea law/advisor/spirit classification rows",
     )
     parser.add_argument(
+        "--require-politics-advisor-residuals",
+        action="store_true",
+        help="require live politics appointed-advisor residual fields",
+    )
+    parser.add_argument(
         "--require-production-construction",
         action="store_true",
         help="require positive scheduled production construction-queue rows",
@@ -931,6 +1012,7 @@ def _main(argv: Optional[List[str]] = None) -> int:
         require_politics_idea_classification=(
             args.require_politics_idea_classification
         ),
+        require_politics_advisor_residuals=args.require_politics_advisor_residuals,
         require_production_construction=args.require_production_construction,
         require_tech_live_names=args.require_tech_live_names,
         require_tech_live_progress=args.require_tech_live_progress,

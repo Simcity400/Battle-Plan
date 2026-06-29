@@ -1556,6 +1556,18 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     frames_with_politics_residual_payloads = 0
     country_rows_with_politics_residual_payloads = 0
     max_politics_residual_country_rows_per_frame = 0
+    country_rows_with_appointed_advisors = 0
+    country_rows_with_appointed_advisor_details = 0
+    country_rows_with_appointed_advisor_slots = 0
+    country_rows_with_appointed_advisor_ledgers = 0
+    appointed_advisor_rows = 0
+    appointed_advisor_detail_rows = 0
+    appointed_advisor_slot_rows = 0
+    appointed_advisor_ledger_rows = 0
+    max_appointed_advisors_per_country = 0
+    max_appointed_advisor_details_per_country = 0
+    max_appointed_advisor_slots_per_country = 0
+    max_appointed_advisor_ledgers_per_country = 0
     frames_with_building_payloads = 0
     state_rows_with_buildings = 0
     province_rows_with_buildings = 0
@@ -1879,6 +1891,48 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
                             or "elections_allowed" in politics
                         ):
                             politics_residual_rows_in_frame += 1
+                        appointed_advisors = politics.get("appointed_advisors")
+                        if isinstance(appointed_advisors, list):
+                            country_rows_with_appointed_advisors += 1
+                            appointed_advisor_rows += len(appointed_advisors)
+                            max_appointed_advisors_per_country = max(
+                                max_appointed_advisors_per_country,
+                                len(appointed_advisors),
+                            )
+                        advisor_details = politics.get("appointed_advisor_details")
+                        if isinstance(advisor_details, list):
+                            country_rows_with_appointed_advisor_details += 1
+                            appointed_advisor_detail_rows += len(advisor_details)
+                            max_appointed_advisor_details_per_country = max(
+                                max_appointed_advisor_details_per_country,
+                                len(advisor_details),
+                            )
+                        advisor_slots = politics.get("appointed_advisor_slots")
+                        if isinstance(advisor_slots, dict):
+                            token_count = sum(
+                                len(tokens)
+                                for tokens in advisor_slots.values()
+                                if isinstance(tokens, list)
+                            )
+                            country_rows_with_appointed_advisor_slots += 1
+                            appointed_advisor_slot_rows += token_count
+                            max_appointed_advisor_slots_per_country = max(
+                                max_appointed_advisor_slots_per_country,
+                                token_count,
+                            )
+                        advisor_ledgers = politics.get("appointed_advisor_ledgers")
+                        if isinstance(advisor_ledgers, dict):
+                            token_count = sum(
+                                len(tokens)
+                                for tokens in advisor_ledgers.values()
+                                if isinstance(tokens, list)
+                            )
+                            country_rows_with_appointed_advisor_ledgers += 1
+                            appointed_advisor_ledger_rows += token_count
+                            max_appointed_advisor_ledgers_per_country = max(
+                                max_appointed_advisor_ledgers_per_country,
+                                token_count,
+                            )
                         leader = politics.get("leader")
                         if isinstance(leader, dict) and isinstance(
                             leader.get("char_id"), int
@@ -2437,6 +2491,26 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
             country_rows_with_politics_residual_payloads),
         "max_politics_residual_country_rows_per_frame": (
             max_politics_residual_country_rows_per_frame),
+        "country_rows_with_appointed_advisors": (
+            country_rows_with_appointed_advisors),
+        "country_rows_with_appointed_advisor_details": (
+            country_rows_with_appointed_advisor_details),
+        "country_rows_with_appointed_advisor_slots": (
+            country_rows_with_appointed_advisor_slots),
+        "country_rows_with_appointed_advisor_ledgers": (
+            country_rows_with_appointed_advisor_ledgers),
+        "appointed_advisor_rows": appointed_advisor_rows,
+        "appointed_advisor_detail_rows": appointed_advisor_detail_rows,
+        "appointed_advisor_slot_rows": appointed_advisor_slot_rows,
+        "appointed_advisor_ledger_rows": appointed_advisor_ledger_rows,
+        "max_appointed_advisors_per_country": (
+            max_appointed_advisors_per_country),
+        "max_appointed_advisor_details_per_country": (
+            max_appointed_advisor_details_per_country),
+        "max_appointed_advisor_slots_per_country": (
+            max_appointed_advisor_slots_per_country),
+        "max_appointed_advisor_ledgers_per_country": (
+            max_appointed_advisor_ledgers_per_country),
         "politics_residuals_on_lightweight_frames": (
             politics_residuals_on_lightweight_frames),
         "frames_with_building_payloads": frames_with_building_payloads,

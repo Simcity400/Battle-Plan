@@ -301,6 +301,103 @@ class TestCollectorProofGate(unittest.TestCase):
         self.assertIn("country politics non-law idea rows were not observed", errors)
         self.assertIn("country politics national-spirit rows were not observed", errors)
 
+    def test_accepts_politics_advisor_residual_fields_proof(self):
+        proof = collector_session_proof_summary(
+            _manifest(
+                advisor_token_filter_supplied=True,
+                advisor_token_filter_tokens=3722,
+                collector_frame_payload_summary={
+                    "domains_seen": [
+                        "clock",
+                        "country_identity",
+                        "politics_residuals",
+                    ],
+                    "scheduled_politics_residuals_domain_frames": 12,
+                    "frames_with_politics_residual_payloads": 12,
+                    "country_rows_with_politics_residual_payloads": 4248,
+                    "max_politics_residual_country_rows_per_frame": 354,
+                    "country_rows_with_appointed_advisors": 4248,
+                    "country_rows_with_appointed_advisor_details": 4248,
+                    "country_rows_with_appointed_advisor_slots": 4248,
+                    "country_rows_with_appointed_advisor_ledgers": 4248,
+                    "appointed_advisor_rows": 0,
+                    "appointed_advisor_detail_rows": 0,
+                    "appointed_advisor_slot_rows": 0,
+                    "appointed_advisor_ledger_rows": 0,
+                    "politics_residuals_on_lightweight_frames": 0,
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+            ),
+            required_scheduled_snapshot_domains=["politics_residuals"],
+            min_game_hours=12,
+            require_politics_advisor_residuals=True,
+        )
+
+        self.assertTrue(proof["ok"])
+        self.assertEqual(proof["errors"], [])
+        self.assertEqual(proof["country_rows_with_appointed_advisors"], 4248)
+        self.assertEqual(proof["appointed_advisor_rows"], 0)
+
+    def test_rejects_politics_advisor_residuals_without_contract(self):
+        errors = collector_session_proof_errors(
+            _manifest(
+                advisor_token_filter_supplied=False,
+                advisor_token_filter_tokens=0,
+                collector_frame_payload_summary={
+                    "domains_seen": [
+                        "clock",
+                        "country_identity",
+                        "politics_residuals",
+                    ],
+                    "scheduled_politics_residuals_domain_frames": 12,
+                    "frames_with_politics_residual_payloads": 12,
+                    "country_rows_with_politics_residual_payloads": 4248,
+                    "country_rows_with_appointed_advisors": 4248,
+                    "country_rows_with_appointed_advisor_details": 4248,
+                    "country_rows_with_appointed_advisor_slots": 4248,
+                    "country_rows_with_appointed_advisor_ledgers": 4248,
+                    "politics_residuals_on_lightweight_frames": 0,
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+            ),
+            min_game_hours=12,
+            require_politics_advisor_residuals=True,
+        )
+
+        self.assertIn("advisor_token_filter was not supplied", errors)
+        self.assertIn("advisor_token_filter_tokens not positive", errors)
+
+    def test_rejects_politics_advisor_residuals_without_fields(self):
+        errors = collector_session_proof_errors(
+            _manifest(
+                advisor_token_filter_supplied=True,
+                advisor_token_filter_tokens=3722,
+                collector_frame_payload_summary={
+                    "domains_seen": [
+                        "clock",
+                        "country_identity",
+                        "politics_residuals",
+                    ],
+                    "scheduled_politics_residuals_domain_frames": 12,
+                    "frames_with_politics_residual_payloads": 12,
+                    "country_rows_with_politics_residual_payloads": 4248,
+                    "country_rows_with_appointed_advisors": 0,
+                    "country_rows_with_appointed_advisor_details": 0,
+                    "country_rows_with_appointed_advisor_slots": 0,
+                    "country_rows_with_appointed_advisor_ledgers": 0,
+                    "politics_residuals_on_lightweight_frames": 0,
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+            ),
+            min_game_hours=12,
+            require_politics_advisor_residuals=True,
+        )
+
+        self.assertIn("appointed_advisors fields were not observed", errors)
+        self.assertIn("appointed_advisor_details fields were not observed", errors)
+        self.assertIn("appointed_advisor_slots fields were not observed", errors)
+        self.assertIn("appointed_advisor_ledgers fields were not observed", errors)
+
     def test_accepts_production_construction_proof(self):
         proof = collector_session_proof_summary(
             _manifest(

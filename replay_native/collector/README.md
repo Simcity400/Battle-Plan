@@ -120,8 +120,15 @@ Scheduled country politics:
   `appointed_advisor_details`, `appointed_advisor_slots`, and
   `appointed_advisor_ledgers`, does not sweep `CAdvisor` heap objects in the
   hot path, omits the leaves when the contract is missing or invalid, preserves
-  measured-empty `[]` as real, and is live-proven by
-  `collector_live_politics_decisions_probe` at speed five;
+  measured-empty `[]` as real, and is live-proven by current strict proof
+  `replay/snapshots/_collector_session_politics_advisor_gate/20260629T212028Z_pid43412`.
+  That run passed `--require-politics-advisor-residuals`, supplied 3722
+  vanilla `common/characters` advisor tokens, advanced 12 game hours in 46.047
+  wall seconds, verified replay output, emitted 13 scheduled
+  `politics_residuals` frames, and observed 4602 country rows with all four
+  appointed-advisor fields present. The live values were measured-empty in this
+  run, so non-empty appointed-advisor values still need a fixture with a hired
+  advisor;
 - typed laws, non-law active ideas, and national spirits are emitted when
   collector control supplies the static `common/ideas` idea-group contract. The
   collector classifies the live active-ideas vector into `laws` groups

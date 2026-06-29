@@ -1099,6 +1099,15 @@ replay output, emitted 12 scheduled `politics_live` frames, folded 4248 active
 idea rows, 4248 law rows, 4248 complete idea-group rows, 1104 advisor/cabinet
 idea rows, 4248 broad non-law idea rows, and 4248 national-spirit rows, and
 kept worker-poll frames free of politics payloads.
+Current advisor-residual proof
+`replay/snapshots/_collector_session_politics_advisor_gate/20260629T212028Z_pid43412`
+passed `--require-politics-advisor-residuals`: it supplied 3722 vanilla
+`common/characters` advisor tokens, advanced 12 game hours in 46.047 wall
+seconds, verified replay output, emitted 13 scheduled `politics_residuals`
+frames, and observed 4602 country rows with `appointed_advisors`,
+`appointed_advisor_details`, `appointed_advisor_slots`, and
+`appointed_advisor_ledgers` fields present. The current fixture measured those
+lists/maps as empty, so a non-empty appointed-advisor fixture remains open.
 `decisions_live` is also now DLL-native: the collector validates
 `CCountry+0xFA0 -> CDecisionStatus`, checks the owner back-pointer, emits
 decision-status vector counts, and decodes active `CTimedDecision` rows. That
@@ -1425,6 +1434,14 @@ emitted 12 scheduled `politics_live` frames across 12 game hours, supplied a
 law rows, 4248 complete idea-group rows, 1104 advisor/cabinet idea rows, 4248
 broad non-law idea rows, and 4248 national-spirit rows, verified replay output,
 and kept heavy payloads off lightweight worker polls.
+The adjacent advisor-residual gate
+`replay/snapshots/_collector_session_politics_advisor_gate/20260629T212028Z_pid43412`
+emitted 13 scheduled `politics_residuals` frames across 12 game hours, supplied
+a 3722-token vanilla `common/characters` advisor contract, observed 4602 country
+rows with all appointed-advisor leaves present, verified replay output, and
+kept residual payloads off lightweight worker polls. The same proof measured
+zero populated appointed-advisor rows, so a non-empty appointment fixture is
+still required.
 Follow-up active-ruler proof
 `replay/snapshots/_collector_session_politics_leader_gate/20260629T171216Z_pid43412`
 emitted 13 scheduled `politics_live` frames across 12 game hours, folded 4095
