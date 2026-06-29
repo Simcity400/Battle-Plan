@@ -218,8 +218,16 @@ Implemented in the current bridge:
   backlink, completed-tech vector bounds, and the bounded
   `CTechnologyStatus+0xA0` `CResearchSlot*` vector before emitting, and the
   Python adapter folds the values into `countries.*.research.tech_count`,
-  `.research_slots`, and `.in_progress_live`. Tech-token resolution, progress
-  percentage, ETA, and live research speed remain separate gated layers;
+  `.research_slots`, and `.in_progress_live`. Tech-token resolution is now
+  proven through the cache-first live tech-definition bridge: the
+  `replay/snapshots/_collector_session_research_name_gate/20260629T175846Z_pid43412`
+  proof advanced 36 game hours in 49.125 wall seconds, used a no-cold cache hit
+  for 552 tech definitions, emitted 37 scheduled `tech_live` frames, captured
+  15384 named active research-slot rows, verified replay output, and kept
+  research payloads off worker polls. Progress percentage, ETA, and live
+  research speed remain separate gated layers; the same run showed
+  `progress_units` staying flat across stored named slots, so that field is not
+  yet accepted as moving research progress;
 - collector-frame adapter contract for `state_ownership`, `state_control`, and
   `province_control`, including TAG validation and session row-count summaries;
 - static DLL map-control path through `CGameState+0x2B0` `CProvince*` rows:

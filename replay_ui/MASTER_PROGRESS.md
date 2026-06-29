@@ -140,6 +140,18 @@ for inspection, with no ability to mutate the game.
   confirmed Portugal queue rows in the replay store, and kept production
   payloads off worker-poll frames. Target state/location remains intentionally
   unavailable until the target handle is pinned.
+- DLL-native active research slot identity is proven through scheduled
+  `tech_live`: the collector reads the bounded `CTechnologyStatus+0xA0`
+  research-slot vector and uses the cache-first live tech-definition bridge to
+  resolve `tech_name` without saves. The proof
+  `replay/snapshots/_collector_session_research_name_gate/20260629T175846Z_pid43412`
+  advanced 36 game hours in 49.125 wall seconds with a no-cold cache hit for
+  552 tech definitions, emitted 37 scheduled `tech_live` frames, captured
+  15384 named active research-slot rows with up to 416 named rows per frame,
+  verified replay output, and kept research payloads off worker-poll frames.
+  Research progress/ETA is not accepted yet: stored named slots showed flat
+  `progress_units` across the same 36-hour proof, so the moving progress/speed
+  source still needs to be pinned.
 - DLL-native raw `land_combats` lifecycle capture is proven at speed five for
   the raw replay stream: the 2026-06-29 pid 43412 proof
   `replay/snapshots/_collector_session_diplomacy_gate/20260629T152734Z_pid43412`

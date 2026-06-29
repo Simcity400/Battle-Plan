@@ -426,16 +426,24 @@ FIELD_SOURCES: Dict[str, str] = {
     # tech_def_filter supplies a validated live tech-definition handle map; absent for
     # an unknown handle (no fabrication).
     "countries.*.research.in_progress_live.*.tech_name": "C/M",
-    # accumulated research UNITS per in-progress slot. The scheduled DLL now emits
-    # progress_units directly from the validated CResearchSlot row.
-    # = progress_raw/1000 = accumulated research-points (NOT a completion fraction; the fraction
-    # needs the per-tech cost def + has no save GT this frame -> RESISTED, never fabricated).
+    # raw research-slot units per in-progress slot. The scheduled DLL emits
+    # progress_units directly from the validated CResearchSlot row as
+    # progress_raw/1000. Live proof has not accepted this as moving progress yet:
+    # a 36-game-hour named-slot run kept it flat, so completion fraction/ETA still
+    # need a separately verified moving progress or speed source.
     # ADDED ALONGSIDE the raw progress_raw on each slot dict (merged by slot_index).
     "countries.*.research.in_progress_live.*.progress_units": "C/M",
+    # Derived live speed from consecutive collector snapshots with the same
+    # tag/slot/tech identity. This is not a save backstop and not a direct offset:
+    # it is a replay-writer derivative from the DLL `progress_units` stream.
+    "countries.*.research.in_progress_live.*.points_factor": "D",
+    "countries.*.research.in_progress_live.*.points_factor_basis": "D",
+    "countries.*.research.in_progress_live.*.points_factor_elapsed_hours": "D",
     # Derived active-research progress/ETA (models.research_progress, D): computed only when a
     # live slot has progress_units + resolved tech_name, generated static tech defs provide a
-    # positive research_cost, and the current year/bonus context is safe. Otherwise the value
-    # stays absent and an *_unavailable_reason explains the blocker.
+    # positive research_cost, the current year/bonus context is safe, and a positive derived
+    # points_factor is available. Otherwise the value stays absent and an
+    # *_unavailable_reason explains the blocker.
     "countries.*.research.in_progress_live.*.required_points_base": "D",
     "countries.*.research.in_progress_live.*.remaining_points_base": "D",
     "countries.*.research.in_progress_live.*.progress_pct": "D",

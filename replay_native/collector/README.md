@@ -188,14 +188,19 @@ Scheduled country research:
   them into `countries.*.research.tech_count`, `.research_slots`, and
   `.in_progress_live`;
 - `progress_units = progress_raw / 1000` is emitted directly from the validated
-  slot progress. `tech_name` is emitted only when `tech_def_filter` supplies a
+  slot field. `tech_name` is emitted only when `tech_def_filter` supplies a
   validated live tech-definition handle map; missing names are omitted instead
   of guessed;
 - progress percentage and ETA remain derived layers gated on static research
-  cost and live speed inputs;
-- current no-cold proof on pid 43412 emitted 12 scheduled `tech_live` frames
-  across 12 game hours, with up to 356 research country rows and 6 active
-  research rows per country per frame;
+  cost and a verified moving live progress/speed input. Current live evidence
+  shows `progress_units` can stay flat across a 36-game-hour named-slot proof,
+  so it is not yet accepted as moving progress;
+- current no-cold proof
+  `replay/snapshots/_collector_session_research_name_gate/20260629T175846Z_pid43412`
+  used a cache hit for 552 tech definitions, emitted 37 scheduled `tech_live`
+  frames across 36 game hours, captured 15384 named active research-slot rows
+  with up to 416 named rows per frame, verified replay output, and kept
+  research payloads off worker polls;
 - worker-poll frames stay light and must not carry research payloads.
 
 Scheduled special projects:

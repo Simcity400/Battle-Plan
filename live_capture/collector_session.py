@@ -58,6 +58,8 @@ from .replay_writer import ReplayRecorder, _verify_container
 DEFAULT_OUT_ROOT = Path("replay/snapshots/_collector_session")
 DEFAULT_DWELL_S = 0.25
 DEFAULT_SAMPLE_MS = 10
+RESEARCH_LIVE_POINTS_FACTOR_BASIS = "live_progress_delta"
+RESEARCH_LIVE_POINTS_FACTOR_MAX = 1_000_000.0
 
 
 @dataclass
@@ -115,6 +117,9 @@ class CollectorFrameSession:
         self._finalize_every = max(1, int(finalize_every))
         self._results: List[CollectorFrameResult] = []
         self._last_snapshot: Optional[Dict[str, Any]] = None
+        self._research_tech_defs_loaded = False
+        self._research_tech_defs: Optional[Dict[str, Any]] = None
+        self._research_live_progress = _empty_research_live_progress_stats()
         self._sequences: List[int] = []
         self._sequence_bursts: Dict[int, List[int]] = {}
         self.invalid_frames = 0
@@ -199,6 +204,13 @@ class CollectorFrameSession:
                 skipped_reason=decision.reason,
             )
 
+        _derive_research_live_points_factor(snap, self._last_snapshot)
+        _attach_research_live_progress(snap, self._research_tech_defs_for_progress())
+        _merge_research_live_progress_stats(
+            self._research_live_progress,
+            _snapshot_research_live_progress_stats(snap),
+        )
+
         proposal = self.tracker.compute(
             process_instance_id=self.process_instance_id,
             pid=self.pid,
@@ -251,8 +263,25 @@ class CollectorFrameSession:
             "invalid_frame_errors": list(self.invalid_frame_errors[-8:]),
             "finalize_error": self.finalize_error,
             "transport_sequence": self._transport_sequence_diagnostics(),
+            "research_live_progress": dict(self._research_live_progress),
         }
         return diagnostics
+
+    def _research_tech_defs_for_progress(self) -> Optional[Dict[str, Any]]:
+        if self._research_tech_defs_loaded:
+            return self._research_tech_defs
+        self._research_tech_defs_loaded = True
+        try:
+            from models import research_progress as RP  # noqa: E402
+        except Exception:
+            self._research_tech_defs = None
+            return None
+        try:
+            tech_defs = RP.load_static_tech_defs()
+        except Exception:
+            tech_defs = None
+        self._research_tech_defs = tech_defs if isinstance(tech_defs, dict) else None
+        return self._research_tech_defs
 
     def patch_recording_diagnostics(self, replay_path: str) -> bool:
         from .recorder.manifest_diagnostics import patch_manifest_diagnostics
@@ -324,6 +353,213 @@ class CollectorFrameSession:
             "global_duplicate_sequences": duplicates,
             "burst_local": burst_local,
         }
+
+
+def _empty_research_live_progress_stats() -> Dict[str, Any]:
+    return {
+        "speed_frames": 0,
+        "speed_rows": 0,
+        "eta_frames": 0,
+        "eta_rows": 0,
+        "max_speed_rows_per_frame": 0,
+        "max_eta_rows_per_frame": 0,
+        "max_points_factor_milli": 0,
+    }
+
+
+def _merge_research_live_progress_stats(
+    target: Dict[str, Any],
+    source: Dict[str, Any],
+) -> None:
+    for key in ("speed_frames", "speed_rows", "eta_frames", "eta_rows"):
+        target[key] = int(target.get(key) or 0) + int(source.get(key) or 0)
+    for key in ("max_speed_rows_per_frame", "max_eta_rows_per_frame"):
+        target[key] = max(int(target.get(key) or 0), int(source.get(key) or 0))
+    target["max_points_factor_milli"] = max(
+        int(target.get("max_points_factor_milli") or 0),
+        int(source.get("max_points_factor_milli") or 0),
+    )
+
+
+def _derive_research_live_points_factor(
+    snap: Dict[str, Any],
+    previous: Optional[Dict[str, Any]],
+) -> None:
+    if not isinstance(previous, dict):
+        return
+    current_hour = _snapshot_hour_index(snap)
+    previous_hour = _snapshot_hour_index(previous)
+    if current_hour is None or previous_hour is None:
+        return
+    elapsed_hours = current_hour - previous_hour
+    if elapsed_hours <= 0:
+        return
+    elapsed_days = elapsed_hours / 24.0
+    if elapsed_days <= 0:
+        return
+    previous_slots = _research_slots_by_tag_and_key(previous)
+    countries = snap.get("countries")
+    if not isinstance(countries, dict):
+        return
+    for tag, country in countries.items():
+        if not isinstance(tag, str) or not isinstance(country, dict):
+            continue
+        research = country.get("research")
+        if not isinstance(research, dict):
+            continue
+        slots = research.get("in_progress_live")
+        if not isinstance(slots, list):
+            continue
+        previous_by_key = previous_slots.get(tag) or {}
+        for slot in slots:
+            if not isinstance(slot, dict):
+                continue
+            key = _research_slot_delta_key(slot)
+            if key is None:
+                continue
+            previous_progress = previous_by_key.get(key)
+            current_progress = _finite_float(slot.get("progress_units"))
+            if previous_progress is None or current_progress is None:
+                continue
+            delta = current_progress - previous_progress
+            if delta <= 0:
+                continue
+            points_factor = delta / elapsed_days
+            if not (
+                points_factor > 0
+                and points_factor <= RESEARCH_LIVE_POINTS_FACTOR_MAX
+            ):
+                continue
+            slot["points_factor"] = round(points_factor, 6)
+            slot["points_factor_basis"] = RESEARCH_LIVE_POINTS_FACTOR_BASIS
+            slot["points_factor_elapsed_hours"] = int(elapsed_hours)
+
+
+def _attach_research_live_progress(
+    snap: Dict[str, Any],
+    tech_defs: Optional[Dict[str, Any]],
+) -> None:
+    try:
+        from models import research_progress as RP  # noqa: E402
+    except Exception:
+        return
+    try:
+        RP.enrich_snapshot_research_progress(snap, tech_defs)
+    except Exception:
+        return
+
+
+def _snapshot_research_live_progress_stats(snap: Dict[str, Any]) -> Dict[str, Any]:
+    stats = _empty_research_live_progress_stats()
+    speed_rows = 0
+    eta_rows = 0
+    max_points_factor = 0.0
+    countries = snap.get("countries")
+    if not isinstance(countries, dict):
+        return stats
+    for country in countries.values():
+        if not isinstance(country, dict):
+            continue
+        research = country.get("research")
+        if not isinstance(research, dict):
+            continue
+        slots = research.get("in_progress_live")
+        if not isinstance(slots, list):
+            continue
+        for slot in slots:
+            if not isinstance(slot, dict):
+                continue
+            if slot.get("points_factor_basis") != RESEARCH_LIVE_POINTS_FACTOR_BASIS:
+                continue
+            points_factor = _finite_float(slot.get("points_factor"))
+            if points_factor is None or points_factor <= 0:
+                continue
+            speed_rows += 1
+            max_points_factor = max(max_points_factor, points_factor)
+            eta_days = slot.get("eta_days")
+            if isinstance(eta_days, int) and not isinstance(eta_days, bool):
+                eta_rows += 1
+    if speed_rows:
+        stats["speed_frames"] = 1
+        stats["speed_rows"] = speed_rows
+        stats["max_speed_rows_per_frame"] = speed_rows
+        stats["max_points_factor_milli"] = int(round(max_points_factor * 1000.0))
+    if eta_rows:
+        stats["eta_frames"] = 1
+        stats["eta_rows"] = eta_rows
+        stats["max_eta_rows_per_frame"] = eta_rows
+    return stats
+
+
+def _research_slots_by_tag_and_key(
+    snap: Dict[str, Any],
+) -> Dict[str, Dict[Tuple[int, int, int], float]]:
+    out: Dict[str, Dict[Tuple[int, int, int], float]] = {}
+    countries = snap.get("countries")
+    if not isinstance(countries, dict):
+        return out
+    for tag, country in countries.items():
+        if not isinstance(tag, str) or not isinstance(country, dict):
+            continue
+        research = country.get("research")
+        if not isinstance(research, dict):
+            continue
+        slots = research.get("in_progress_live")
+        if not isinstance(slots, list):
+            continue
+        by_key: Dict[Tuple[int, int, int], float] = {}
+        for slot in slots:
+            if not isinstance(slot, dict):
+                continue
+            key = _research_slot_delta_key(slot)
+            progress = _finite_float(slot.get("progress_units"))
+            if key is not None and progress is not None:
+                by_key[key] = progress
+        if by_key:
+            out[tag] = by_key
+    return out
+
+
+def _research_slot_delta_key(
+    slot: Dict[str, Any],
+) -> Optional[Tuple[int, int, int]]:
+    slot_index = _bounded_int(slot.get("slot_index"), minimum=0, maximum=64)
+    handle = _bounded_int(slot.get("tech_handle_raw"), minimum=0, maximum=10_000_000)
+    def_index = _bounded_int(
+        slot.get("tech_def_index_raw"), minimum=0, maximum=10_000_000)
+    if slot_index is None or handle is None or def_index is None:
+        return None
+    return (slot_index, handle, def_index)
+
+
+def _snapshot_hour_index(snap: Dict[str, Any]) -> Optional[int]:
+    value = snap.get("hour_index")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    date = snap.get("date")
+    if isinstance(date, str):
+        try:
+            return schema.date_to_hour_index(date)
+        except Exception:
+            return None
+    return None
+
+
+def _bounded_int(value: Any, *, minimum: int, maximum: int) -> Optional[int]:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if minimum <= value <= maximum:
+        return int(value)
+    return None
+
+
+def _finite_float(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    parsed = float(value)
+    if parsed != parsed or parsed in (float("inf"), float("-inf")):
+        return None
+    return parsed
 
 
 @dataclass
@@ -1076,6 +1312,11 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     country_rows_with_research_payloads = 0
     max_research_country_rows_per_frame = 0
     max_research_active_rows_per_country = 0
+    research_named_slot_frames = 0
+    research_named_slot_rows = 0
+    country_rows_with_research_named_slots = 0
+    max_research_named_slot_rows_per_frame = 0
+    max_research_named_slot_rows_per_country = 0
     frames_with_special_projects_payloads = 0
     special_project_facility_rows = 0
     special_project_rows = 0
@@ -1293,6 +1534,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         production_rows_in_frame = 0
         focus_rows_in_frame = 0
         research_rows_in_frame = 0
+        research_named_rows_in_frame = 0
         decisions_rows_in_frame = 0
         diplomacy_rows_in_frame = 0
         diplomacy_faction_groups_in_frame: set[int] = set()
@@ -1440,6 +1682,20 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
                                 max_research_active_rows_per_country,
                                 len(active_research),
                             )
+                            named_rows = 0
+                            for slot in active_research:
+                                if not isinstance(slot, dict):
+                                    continue
+                                tech_name = slot.get("tech_name")
+                                if isinstance(tech_name, str) and tech_name:
+                                    named_rows += 1
+                            if named_rows:
+                                country_rows_with_research_named_slots += 1
+                                research_named_rows_in_frame += named_rows
+                                max_research_named_slot_rows_per_country = max(
+                                    max_research_named_slot_rows_per_country,
+                                    named_rows,
+                                )
                 decisions = row.get("decisions")
                 if decisions is not None:
                     decisions_rows_in_frame += 1
@@ -1530,6 +1786,13 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
             max_research_country_rows_per_frame = max(
                 max_research_country_rows_per_frame,
                 research_rows_in_frame,
+            )
+        if research_named_rows_in_frame:
+            research_named_slot_frames += 1
+            research_named_slot_rows += research_named_rows_in_frame
+            max_research_named_slot_rows_per_frame = max(
+                max_research_named_slot_rows_per_frame,
+                research_named_rows_in_frame,
             )
         if decisions_rows_in_frame:
             frames_with_decisions_payloads += 1
@@ -1772,6 +2035,14 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
             max_research_country_rows_per_frame),
         "max_research_active_rows_per_country": (
             max_research_active_rows_per_country),
+        "research_named_slot_frames": research_named_slot_frames,
+        "research_named_slot_rows": research_named_slot_rows,
+        "country_rows_with_research_named_slots": (
+            country_rows_with_research_named_slots),
+        "max_research_named_slot_rows_per_frame": (
+            max_research_named_slot_rows_per_frame),
+        "max_research_named_slot_rows_per_country": (
+            max_research_named_slot_rows_per_country),
         "tech_on_lightweight_frames": tech_on_lightweight_frames,
         "frames_with_special_projects_payloads": (
             frames_with_special_projects_payloads),

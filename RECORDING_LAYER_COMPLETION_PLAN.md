@@ -1104,8 +1104,15 @@ validation and adapter folding into `countries.*.research.tech_count` and
 `countries.*.research.in_progress_live`. Rows now carry
 `progress_units = progress_raw / 1000`, and `tech_name` when the
 cache-first `tech_def_filter` preflight supplies a validated live
-tech-definition handle map. Progress percentage, ETA, and live research speed
-remain open gated layers.
+tech-definition handle map. Live proof
+`replay/snapshots/_collector_session_research_name_gate/20260629T175846Z_pid43412`
+advanced 36 game hours in 49.125 wall seconds with a no-cold tech-definition
+cache hit, emitted 37 scheduled `tech_live` frames, captured 15384 named active
+research-slot rows with up to 416 named rows per frame, verified replay output,
+and kept research payloads off worker-poll frames. Progress percentage, ETA,
+and live research speed remain open gated layers: the same 36-hour proof kept
+`progress_units` flat across stored named slots, so the current field is not yet
+accepted as moving research progress.
 The DLL/adapter contract for `projects_live` now supports the first top-level
 `special_projects` catalog slice: facilities, scientists, and currently worked
 project rows, all source-badged `C`. The adapter folds only scheduled frames
@@ -1128,8 +1135,8 @@ Remaining Phase 2 gaps:
   data not already available through validated `CCountry` child objects.
 - Add deeper cabinet/leader buckets and manager/root contracts where active idea
   token classification is not enough.
-- Add research token-name/progress/ETA resolution, project progress/completion
-  roots, and deeper targeted decision/cooldown roots; add focus
+- Add research progress/ETA resolution, project progress/completion roots, and
+  deeper targeted decision/cooldown roots; add focus
   pause/event-marker proof without returning to save-required capture.
 - Add longer-run pointer freshness diagnostics: accepted row count, stale row
   drops, and domain omission reasons.

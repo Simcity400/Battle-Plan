@@ -49,6 +49,8 @@ def collector_session_proof_errors(
     require_diplomacy_war_relations: bool = False,
     require_politics_leaders: bool = False,
     require_production_construction: bool = False,
+    require_tech_live_names: bool = False,
+    require_tech_live_eta: bool = False,
 ) -> List[str]:
     errors: List[str] = []
     session_errors = manifest.get("session_errors")
@@ -171,6 +173,57 @@ def collector_session_proof_errors(
             errors.append("construction queue rows were empty in every frame")
         if _as_int(summary.get("production_on_lightweight_frames")) not in (0, None):
             errors.append("production payloads appeared on lightweight frames")
+    if require_tech_live_names:
+        scheduled = _scheduled_domain_frame_count(summary, "tech_live")
+        required_frames = int(min_game_hours or 1)
+        if scheduled is None or scheduled < required_frames:
+            errors.append(
+                "tech live names proof scheduled frames "
+                f"{scheduled!r} below required {required_frames}"
+            )
+        if _as_int(summary.get("frames_with_research_payloads")) in (None, 0):
+            errors.append("research payload frames were not observed")
+        if _as_int(summary.get("country_rows_with_research_payloads")) in (None, 0):
+            errors.append("country research rows were not observed")
+        if _as_int(summary.get("max_research_active_rows_per_country")) in (None, 0):
+            errors.append("active research rows were not observed")
+        if _as_int(summary.get("research_named_slot_frames")) is None or _as_int(
+            summary.get("research_named_slot_frames")
+        ) < required_frames:
+            errors.append("research named-slot frames below required cadence")
+        if _as_int(summary.get("research_named_slot_rows")) in (None, 0):
+            errors.append("research named-slot rows were not observed")
+        if _as_int(summary.get("country_rows_with_research_named_slots")) in (None, 0):
+            errors.append("country research named-slot rows were not observed")
+        if _as_int(summary.get("max_research_named_slot_rows_per_frame")) in (None, 0):
+            errors.append("research named-slot rows were empty in every frame")
+        if _as_int(summary.get("tech_on_lightweight_frames")) not in (0, None):
+            errors.append("research payloads appeared on lightweight frames")
+    if require_tech_live_eta:
+        scheduled = _scheduled_domain_frame_count(summary, "tech_live")
+        required_frames = int(min_game_hours or 1)
+        if scheduled is None or scheduled < required_frames:
+            errors.append(
+                "tech live ETA proof scheduled frames "
+                f"{scheduled!r} below required {required_frames}"
+            )
+        if _as_int(summary.get("frames_with_research_payloads")) in (None, 0):
+            errors.append("research payload frames were not observed")
+        if _as_int(summary.get("country_rows_with_research_payloads")) in (None, 0):
+            errors.append("country research rows were not observed")
+        if _as_int(summary.get("max_research_active_rows_per_country")) in (None, 0):
+            errors.append("active research rows were not observed")
+        if _as_int(summary.get("tech_on_lightweight_frames")) not in (0, None):
+            errors.append("research payloads appeared on lightweight frames")
+        research_progress = _research_live_progress_summary(manifest)
+        if _as_int(research_progress.get("speed_frames")) in (None, 0):
+            errors.append("research live speed frames were not observed")
+        if _as_int(research_progress.get("speed_rows")) in (None, 0):
+            errors.append("research live speed rows were not observed")
+        if _as_int(research_progress.get("eta_frames")) in (None, 0):
+            errors.append("research live ETA frames were not observed")
+        if _as_int(research_progress.get("eta_rows")) in (None, 0):
+            errors.append("research live ETA rows were not observed")
     return errors
 
 
@@ -187,6 +240,8 @@ def collector_session_proof_summary(
     require_diplomacy_war_relations: bool = False,
     require_politics_leaders: bool = False,
     require_production_construction: bool = False,
+    require_tech_live_names: bool = False,
+    require_tech_live_eta: bool = False,
 ) -> Dict[str, Any]:
     summary = _payload_summary(manifest)
     errors = collector_session_proof_errors(
@@ -201,6 +256,8 @@ def collector_session_proof_summary(
         require_diplomacy_war_relations=require_diplomacy_war_relations,
         require_politics_leaders=require_politics_leaders,
         require_production_construction=require_production_construction,
+        require_tech_live_names=require_tech_live_names,
+        require_tech_live_eta=require_tech_live_eta,
     )
     hourly = manifest.get("hourly_requirement") or {}
     return {
@@ -250,12 +307,32 @@ def collector_session_proof_summary(
             "max_construction_queue_rows_per_frame"),
         "max_construction_queue_rows_per_country": summary.get(
             "max_construction_queue_rows_per_country"),
+        "research_named_slot_frames": summary.get("research_named_slot_frames"),
+        "research_named_slot_rows": summary.get("research_named_slot_rows"),
+        "country_rows_with_research_named_slots": summary.get(
+            "country_rows_with_research_named_slots"),
+        "max_research_named_slot_rows_per_frame": summary.get(
+            "max_research_named_slot_rows_per_frame"),
+        "max_research_named_slot_rows_per_country": summary.get(
+            "max_research_named_slot_rows_per_country"),
+        "research_live_progress": _research_live_progress_summary(manifest),
     }
 
 
 def _payload_summary(manifest: Dict[str, Any]) -> Dict[str, Any]:
     value = manifest.get("collector_frame_payload_summary")
     return value if isinstance(value, dict) else {}
+
+
+def _research_live_progress_summary(manifest: Dict[str, Any]) -> Dict[str, Any]:
+    diagnostics = manifest.get("recording_diagnostics")
+    if not isinstance(diagnostics, dict):
+        return {}
+    collector = diagnostics.get("collector")
+    if not isinstance(collector, dict):
+        return {}
+    progress = collector.get("research_live_progress")
+    return progress if isinstance(progress, dict) else {}
 
 
 def _string_set(value: Any) -> set[str]:
@@ -349,6 +426,16 @@ def _main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="require positive scheduled production construction-queue rows",
     )
+    parser.add_argument(
+        "--require-tech-live-names",
+        action="store_true",
+        help="require positive scheduled live research rows with resolved tech_name",
+    )
+    parser.add_argument(
+        "--require-tech-live-eta",
+        action="store_true",
+        help="require replay-written live research speed and ETA rows",
+    )
     args = parser.parse_args(argv)
 
     manifest = load_session_manifest(args.manifest)
@@ -364,6 +451,8 @@ def _main(argv: Optional[List[str]] = None) -> int:
         require_diplomacy_war_relations=args.require_diplomacy_war_relations,
         require_politics_leaders=args.require_politics_leaders,
         require_production_construction=args.require_production_construction,
+        require_tech_live_names=args.require_tech_live_names,
+        require_tech_live_eta=args.require_tech_live_eta,
     )
     print(json.dumps(proof, indent=2, sort_keys=True))
     return 0 if proof["ok"] else 1

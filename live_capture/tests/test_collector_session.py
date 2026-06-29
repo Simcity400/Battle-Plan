@@ -330,7 +330,11 @@ class TestCollectorSession(unittest.TestCase):
                             "completed_tech_count": 120,
                             "research_slot_count": 4,
                             "active_research": [
-                                {"slot_index": 0, "tech_handle_raw": 1},
+                                {
+                                    "slot_index": 0,
+                                    "tech_handle_raw": 1,
+                                    "tech_name": "basic_machine_tools",
+                                },
                                 {"slot_index": 1, "tech_handle_raw": 2},
                             ],
                         },
@@ -365,6 +369,11 @@ class TestCollectorSession(unittest.TestCase):
         self.assertEqual(summary["country_rows_with_research_payloads"], 3)
         self.assertEqual(summary["max_research_country_rows_per_frame"], 2)
         self.assertEqual(summary["max_research_active_rows_per_country"], 2)
+        self.assertEqual(summary["research_named_slot_frames"], 1)
+        self.assertEqual(summary["research_named_slot_rows"], 1)
+        self.assertEqual(summary["country_rows_with_research_named_slots"], 1)
+        self.assertEqual(summary["max_research_named_slot_rows_per_frame"], 1)
+        self.assertEqual(summary["max_research_named_slot_rows_per_country"], 1)
         self.assertEqual(summary["tech_on_lightweight_frames"], 1)
         self.assertEqual(summary["heavy_payload_on_lightweight_frames"], 1)
 
@@ -2549,6 +2558,49 @@ class TestCollectorSession(unittest.TestCase):
             self.assertTrue(
                 diagnostics["collector"]["transport_sequence"]["monotonic"])
 
+    def test_collector_frame_session_derives_research_live_eta_from_progress_delta(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            session = CollectorFrameSession(
+                game_id="research_delta",
+                store_root=root / "store",
+                replay_path=root / "research_delta.battleplan",
+                pid=555,
+                process_instance_id="proc-research",
+                finalize_every=2,
+            )
+            session._research_tech_defs_loaded = True
+            session._research_tech_defs = {
+                "basic_machine_tools": {
+                    "research_cost": 1.0,
+                    "start_year": 1936,
+                },
+            }
+
+            results = session.record_frames([
+                _research_frame("1936.1.1.1", sequence=20, progress_units=10.0),
+                _research_frame("1936.1.2.1", sequence=21, progress_units=20.0),
+            ])
+
+            self.assertEqual(sum(1 for r in results if r.written_path), 2)
+            index = _read_json(root / "store" / "research_delta" / "index.json")
+            second_snapshot_path = (
+                root / "store" / "research_delta" / index["snapshots"][1]["file"]
+            )
+            second_snapshot = _read_json(second_snapshot_path)
+            slot = second_snapshot["countries"]["GER"]["research"]["in_progress_live"][0]
+            self.assertEqual(slot["points_factor"], 10.0)
+            self.assertEqual(slot["points_factor_basis"], "live_progress_delta")
+            self.assertEqual(slot["points_factor_elapsed_hours"], 24)
+            self.assertEqual(slot["eta_days"], 9)
+            self.assertEqual(slot["progress_basis"], "live_progress_units/static_research_cost")
+
+            progress = session.diagnostics()["collector"]["research_live_progress"]
+            self.assertEqual(progress["speed_frames"], 1)
+            self.assertEqual(progress["speed_rows"], 1)
+            self.assertEqual(progress["eta_frames"], 1)
+            self.assertEqual(progress["eta_rows"], 1)
+
     def test_collector_frame_session_rejects_invalid_frame_without_write(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -2651,6 +2703,41 @@ def _frame(date, raw, *, sequence, pid, capture_boundary=None):
         frame["capture_boundary"] = capture_boundary
     return {
         **frame,
+    }
+
+
+def _research_frame(date, *, sequence, progress_units):
+    return {
+        "type": "snapshot",
+        "backend": "in_process_collector",
+        "collector_version": "0.1.0",
+        "abi_version": 1,
+        "process_id": 555,
+        "tick_ms": sequence,
+        "sequence": sequence,
+        "quality_status": "ok",
+        "date": date,
+        "capture_boundary": "scheduled_hour_snapshot",
+        "domains": ["clock", "country_identity", "tech_live"],
+        "countries": {
+            "GER": {
+                "present": True,
+                "collector_object": "0x1000",
+                "identity": {"tag_db_id": 1},
+                "research": {
+                    "completed_tech_count": 10,
+                    "research_slot_count": 4,
+                    "active_research": [{
+                        "slot_index": 0,
+                        "tech_handle_raw": 4660,
+                        "tech_def_index_raw": 9020,
+                        "progress_raw": int(progress_units * 1000),
+                        "progress_units": progress_units,
+                        "tech_name": "basic_machine_tools",
+                    }],
+                },
+            },
+        },
     }
 
 
