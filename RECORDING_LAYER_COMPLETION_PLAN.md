@@ -656,6 +656,17 @@ Tasks:
 
 - Port `diplomacy_live`, `diplo_relations`, `market`, `deployment`, and
   relevant `country_extra`/`world_events` rows into collector domains.
+- Current status: scheduled DLL `diplomacy_live` now covers faction group and
+  faction membership, and the preflighted `war_relation_bridge` covers war
+  relation rows plus per-country `at_war` and casualty folds. The current-game
+  proof
+  `replay/snapshots/_collector_session_diplomacy_war_gate/20260629T202751Z_pid43412`
+  passed `--require-diplomacy-war-relations`: it advanced 12 game hours in
+  43.984 wall seconds, verified replay output, supplied 689 bridge rows after a
+  90.422s preflight, observed 13 scheduled war frames, folded 884 country
+  `at_war` rows and 884 casualty rows, and observed max per-frame casualty sum
+  14124532. Scheduled `diplomacy_live` without `--preflight-war-relations`
+  remains faction-only and is not war/casualty proof.
 - Build wartime fixtures for peace conferences, incoming actions, governments in
   exile, collaboration governments, and civil-war-only rows.
 - Add exact event diffs for war declaration, faction join/leave, capitulation,

@@ -115,13 +115,18 @@ current product status and acceptance gates, and
   advanced 12 game hours in 48.328 wall seconds, stored 13 verified snapshots,
   observed `diplomacy_live` on 14 scheduled frames, captured 4984 diplomacy
   country rows with up to 356 countries and 9 faction groups per frame, and
-  kept diplomacy payloads off worker-poll frames. Current war/casualty proof
+  kept diplomacy payloads off worker-poll frames. War/casualty proof
   `replay/snapshots/_collector_session_diplomacy_war_gate/20260629T163650Z_pid43412`
   advanced 12 game hours in 43.203 wall seconds, stored 13 verified snapshots,
   observed 14 scheduled diplomacy war frames, captured up to 1033
   `war_relations` per frame, folded 1022 country `at_war` rows and 1022
   country casualty rows, observed a max per-frame casualty sum of 56475731,
-  and kept diplomacy payloads off worker-poll frames.
+  and kept diplomacy payloads off worker-poll frames. Current-game rerun
+  `replay/snapshots/_collector_session_diplomacy_war_gate/20260629T202751Z_pid43412`
+  passed the same strict gate after advancing 12 game hours in 43.984 wall
+  seconds, resolving 689 bridge rows in preflight, observing 13 scheduled war
+  frames, folding 884 country `at_war` rows and 884 casualty rows, and reaching
+  max per-frame casualty sum 14124532.
   It also folds scheduled `focus_live` rows into `countries.*.focus` for
   `focus_tree`, `completed`, `completed_count`, `current`,
   `current_continuous`, and `progress`; measured-empty `completed = []` is
@@ -288,7 +293,13 @@ advanced 12 game hours in 43.203 wall seconds, verified replay output, supplied
 1033 bridge rows from the live tag-table identity path, observed 14 scheduled
 diplomacy war frames, folded 1022 country `at_war` rows and 1022 country
 casualty rows, observed max per-frame `war_relations = 1033` and casualty sum
-56475731, and reported zero diplomacy payloads on lightweight worker frames.
+56475731, and reported zero diplomacy payloads on lightweight worker frames. A
+current-game rerun
+`replay/snapshots/_collector_session_diplomacy_war_gate/20260629T202751Z_pid43412`
+also passed: it advanced 12 game hours in 43.984 wall seconds, verified replay
+output, supplied 689 bridge rows after a 90.422s preflight, observed 13
+scheduled war frames, folded 884 country `at_war` rows and 884 casualty rows,
+and observed max per-frame casualty sum 14124532.
 
 For economy acceptance, require scheduled `production_live` plus snapshot
 domains `fuel_live`, `country_misc`, and `country_scalars`. The 2026-06-29 pid
