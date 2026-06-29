@@ -255,6 +255,24 @@ Notes:
 
 ### Naval Combat
 
+Current DLL contract:
+
+- The Rust collector accepts a `naval_combat_body_bridge` control contract:
+  semicolon-separated `combat_id:body_ptr` rows produced outside the hot loop.
+  It rejects malformed, duplicate, unaligned, out-of-range, or oversized bridge
+  payloads before sampling.
+- Each bridged `CNavalCombat` body is revalidated on every worker sample using
+  the known naval-combat body, registry, side, member, and leader vtables.
+  Bridge pointers stay internal; durable frames use stable
+  `naval_combat:<combat_id>:<generation>` keys.
+- The first emitted stream is the canonical `naval_air_combats` raw domain with
+  side-level summaries: location, attacker/defender TAG sets, side ship counts,
+  commander tokens when available, positioning values, side validation status,
+  and lifecycle `event` frames for started/updated/ended.
+- Validation exists on both sides: Rust bounds/sanitizes emitted rows and
+  `live_capture.collector_frames` rejects pointer/tag-db leakage, unstable keys,
+  bad TAGs, unbounded ship counts, bad positioning, and malformed gap rows.
+
 Source candidates:
 
 - `memory_reader/combat/combat_enum.py`
@@ -276,17 +294,23 @@ Cadence:
 Events/deltas:
 
 - `naval_combat_started`
-- `naval_combat_participants_changed`
-- `naval_ship_strength_delta`
-- `naval_ship_sunk`
-- `naval_combat_damage_delta`
+- `naval_combat_updated`
 - `naval_combat_ended`
+- Later per-ship streams: `naval_combat_participants_changed`,
+  `naval_ship_strength_delta`, `naval_ship_sunk`, and
+  `naval_combat_damage_delta`.
 
 Notes:
 
 - Use the newer `memory_reader/combat` CNavalCombat path for active battles.
   The older `memory_reader/naval_air` naval-combat detector is useful as a
   negative/probe path, not the primary port target.
+- The current DLL slice is bridge-gated. The remaining promotion step is a
+  normal recorder preflight/cache producer for `naval_combat_body_bridge`, then
+  a live naval-combat fixture and speed-five soak.
+- Side summaries are intentionally not per-ship combat rows. Per-ship rows need
+  a separate bounded stream keyed by ship/combat so large battle arrays do not
+  exceed the raw JSON frame envelope.
 - Damage history and hit counters need unpaused mid-tick proof before they are
   treated as exact.
 

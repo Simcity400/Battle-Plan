@@ -301,6 +301,30 @@ Land-combat raw stream status:
 - Remaining promotion work is speed-five soak and raw `land_combats` ingestion
   into the replay timeline/app.
 
+Naval-combat raw stream status:
+
+- `live_capture.collector_frames` and the Rust collector define and test a
+  bounded raw `naval_air_combats` domain-delta/event contract:
+  `naval_combat:<combat_id>:<generation>` keys, nullable location, side TAG
+  lists, side ship counts, optional commander tokens, optional positioning
+  values, side validation statuses, and no raw address leakage.
+- The Rust DLL accepts `naval_combat_body_bridge` rows in
+  `collector_control.json` as `combat_id:body_ptr` entries. The parser rejects
+  malformed, duplicate, unaligned, out-of-range, or oversized payloads and
+  reports row count/validity in control metadata.
+- Worker sampling does not sweep the heap. For each supplied bridge row, the DLL
+  revalidates the naval-combat body, registry, side, member, and leader vtables
+  before emitting a row. Invalid bridge/layout reads become bounded
+  `confidence:"gap"` rows instead of guessed combat data.
+- The current stream emits side-level combat summaries and explicit
+  `naval_combat_started`, `naval_combat_updated`, and `naval_combat_ended`
+  events. Per-ship combat participants, damage ticks, hit counters, and sinking
+  events remain separate follow-up streams so large battles do not overflow the
+  raw JSON frame envelope.
+- Remaining promotion work is a recorder-side preflight/cache producer for the
+  bridge rows, a live active-naval-combat fixture, speed-five soak, and timeline
+  ingestion.
+
 Runtime rules:
 
 - read-only observation only;

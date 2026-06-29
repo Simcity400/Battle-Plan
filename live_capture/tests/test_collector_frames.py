@@ -741,6 +741,200 @@ class TestCollectorFrames(unittest.TestCase):
         ):
             self.assertTrue(any(needle in p for p in problems), (needle, problems))
 
+    def test_raw_naval_combat_delta_frame_validates(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": None,
+                "after": {
+                    "combat_key": "naval_combat:241671:0",
+                    "combat_id": 241671,
+                    "generation": 0,
+                    "location": 1234,
+                    "attacker_tags": ["ENG", "POR"],
+                    "defender_tags": ["ITA"],
+                    "attacker_ship_count": 12,
+                    "defender_ship_count": 4,
+                    "attacker_commander": "eng_admiral",
+                    "defender_commander": None,
+                    "attacker_positioning": 0.87,
+                    "defender_positioning": None,
+                    "attacker_status": "exact",
+                    "defender_status": "validation_failed",
+                },
+                "changed_fields": [
+                    "combat_key",
+                    "combat_id",
+                    "generation",
+                    "location",
+                    "attacker_tags",
+                    "defender_tags",
+                    "attacker_ship_count",
+                    "defender_ship_count",
+                    "attacker_commander",
+                    "defender_commander",
+                    "attacker_positioning",
+                    "defender_positioning",
+                    "attacker_status",
+                    "defender_status",
+                ],
+            },
+            domain="naval_air_combats",
+            entity_key="naval_combat:241671:0",
+            confidence="sampled",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_naval_combat_lifecycle_event_frame_validates(self):
+        frame = self._raw_frame(
+            "event",
+            {
+                "event_type": "naval_combat_started",
+                "key": "naval_combat:241671:0",
+                "subject": "naval_combat",
+                "detail": {
+                    "combat_key": "naval_combat:241671:0",
+                    "combat_id": 241671,
+                    "generation": 0,
+                    "location": 1234,
+                    "attacker_tags": ["ENG", "POR"],
+                    "defender_tags": ["ITA"],
+                    "attacker_ship_count": 12,
+                    "defender_ship_count": 4,
+                    "attacker_commander": "eng_admiral",
+                    "defender_commander": "ita_admiral",
+                    "attacker_positioning": 0.87,
+                    "defender_positioning": 0.45,
+                    "attacker_status": "exact",
+                    "defender_status": "exact",
+                    "changed_fields": [
+                        "combat_key",
+                        "combat_id",
+                        "generation",
+                        "location",
+                        "attacker_tags",
+                        "defender_tags",
+                        "attacker_ship_count",
+                        "defender_ship_count",
+                        "attacker_commander",
+                        "defender_commander",
+                        "attacker_positioning",
+                        "defender_positioning",
+                        "attacker_status",
+                        "defender_status",
+                    ],
+                },
+            },
+            domain="naval_air_combats",
+            entity_key="naval_combat:241671:0",
+            confidence="sampled",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_naval_combat_ended_event_frame_validates(self):
+        frame = self._raw_frame(
+            "event",
+            {
+                "event_type": "naval_combat_ended",
+                "key": "naval_combat:241671:0",
+                "subject": "naval_combat",
+                "detail": {
+                    "combat_key": "naval_combat:241671:0",
+                    "combat_id": 241671,
+                    "generation": 0,
+                    "location": 1234,
+                    "attacker_tags": ["ENG"],
+                    "defender_tags": ["ITA"],
+                    "attacker_ship_count": 10,
+                    "defender_ship_count": 0,
+                    "attacker_commander": "eng_admiral",
+                    "defender_commander": "ita_admiral",
+                    "attacker_positioning": 0.92,
+                    "defender_positioning": 0.0,
+                    "attacker_status": "exact",
+                    "defender_status": "exact",
+                    "changed_fields": ["attacker_ship_count", "defender_ship_count"],
+                    "end_reason": "resolved",
+                },
+            },
+            domain="naval_air_combats",
+            entity_key="naval_combat:241671:0",
+            confidence="sampled",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_naval_combat_gap_delta_frame_validates(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": None,
+                "after": {
+                    "gap_key": "naval_air_combats:gap:bridge_entry_invalid",
+                    "gap_kind": "bridge_entry_invalid",
+                    "status": "validation_failed",
+                },
+                "changed_fields": ["gap_key", "gap_kind", "status"],
+            },
+            domain="naval_air_combats",
+            entity_key="naval_air_combats:gap:bridge_entry_invalid",
+            confidence="gap",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_naval_combat_delta_rejects_raw_leakage_and_bad_rows(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": None,
+                "after": {
+                    "combat_key": "naval_combat:241672:0",
+                    "combat_id": 241672,
+                    "generation": True,
+                    "location": 0,
+                    "attacker_tags": ["ENG", "ENG", "GERM"],
+                    "defender_tags": "unknown",
+                    "attacker_ship_count": -1,
+                    "defender_ship_count": 20001,
+                    "attacker_positioning": float("inf"),
+                    "defender_positioning": 100.01,
+                    "attacker_status": "measured",
+                    "body_ptr": "0x1234",
+                },
+                "changed_fields": ["location", "body_addr"],
+            },
+            domain="naval_air_combats",
+            entity_key="naval_combat:241671:0",
+            confidence="sampled",
+        )
+
+        problems = validate_collector_frame(frame)
+
+        for needle in (
+            "payload contains raw pointer/tag-db diagnostic key",
+            "changed_fields[1] raw pointer/tag-db diagnostic key",
+            "after.body_ptr unsupported",
+            "after.combat_key != entity_key",
+            "after.combat_id != entity_key",
+            "after.generation not nonnegative int|null in range",
+            "after.location not positive int|null in range",
+            "after.attacker_tags[1] duplicate TAG",
+            "after.attacker_tags[2] not valid TAG",
+            "after.defender_tags not list|null",
+            "after.attacker_ship_count not nonnegative int|null in range",
+            "after.defender_ship_count not nonnegative int|null in range",
+            "after.attacker_positioning not finite number|null in range",
+            "after.defender_positioning not finite number|null in range",
+            "after.attacker_status invalid",
+        ):
+            self.assertTrue(any(needle in p for p in problems), (needle, problems))
+
     def test_raw_domain_delta_frame_rejects_malformed_payload(self):
         frame = self._raw_frame(
             "domain_delta",

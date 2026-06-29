@@ -518,6 +518,12 @@ Tasks:
 
 - Port `ships`, `oob_command`, `naval_air`, `naval_air_combats`, and
   `naval_air_combat_stats` into collector frames.
+- Current DLL checkpoint: `naval_air_combats` now has a bridge-gated raw stream
+  from supplied `CNavalCombat` body pins. The collector revalidates bridged
+  bodies every sample and emits side-level active-combat summaries plus
+  lifecycle start/update/end events without leaking raw pointers. This does not
+  yet include the recorder preflight producer, per-ship combat rows, damage
+  ticks, or sinkings.
 - Build a live fixture with active naval combat; peacetime empty captures are
   not enough.
 - Treat region-level naval/air values as badged proxies until per-province or
@@ -1146,7 +1152,13 @@ now skipped when other rows validate, matching the Python combat reader; a
 2026-06-29 live run advanced two game hours with 406 sampled land-combat deltas,
 406 lifecycle events, and no land-combat gap frames. The remaining land-combat
 unlock is not "find the objects"; it is speed-five soak, battle-end observation,
-and timeline/app ingestion.
+and timeline/app ingestion. Naval combat now has the same raw-frame shape for
+the canonical `naval_air_combats` domain when the recorder supplies
+`naval_combat_body_bridge` rows: the DLL revalidates active `CNavalCombat`
+bodies, emits side-level summaries and started/updated/ended lifecycle events,
+and produces bounded gap rows when the bridge/layout fails closed. The next
+naval unlocks are the recorder-side bridge preflight/cache producer, live
+fixture proof, per-ship rows, damage/sinking deltas, and speed-five soak.
 
 ### Phase 7: Focus, Tech, Decisions, Projects, Politics
 
