@@ -1031,6 +1031,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     decisions_live_frames = 0
     politics_live_frames = 0
     politics_residuals_frames = 0
+    buildings_live_frames = 0
     scheduled_production_domain_frames = 0
     scheduled_focus_domain_frames = 0
     scheduled_tech_domain_frames = 0
@@ -1038,6 +1039,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     scheduled_decisions_domain_frames = 0
     scheduled_politics_domain_frames = 0
     scheduled_politics_residuals_domain_frames = 0
+    scheduled_buildings_domain_frames = 0
     country_rows_with_scalar_payloads = 0
     country_rows_with_non_null_scalar_values = 0
     max_country_scalar_rows_per_frame = 0
@@ -1076,6 +1078,14 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     frames_with_politics_residual_payloads = 0
     country_rows_with_politics_residual_payloads = 0
     max_politics_residual_country_rows_per_frame = 0
+    frames_with_building_payloads = 0
+    state_rows_with_buildings = 0
+    province_rows_with_buildings = 0
+    state_rows_with_nonempty_buildings = 0
+    province_rows_with_nonempty_buildings = 0
+    max_state_building_rows_per_frame = 0
+    max_province_building_rows_per_frame = 0
+    max_building_types_per_location = 0
     max_production_stockpile_entries = 0
     max_production_military_line_rows = 0
     max_production_naval_line_rows = 0
@@ -1086,6 +1096,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     decisions_on_lightweight_frames = 0
     politics_on_lightweight_frames = 0
     politics_residuals_on_lightweight_frames = 0
+    buildings_on_lightweight_frames = 0
     frames_by_type: Dict[str, int] = {}
     raw_event_types_seen: set[str] = set()
     raw_event_type_counts: Dict[str, int] = {}
@@ -1153,6 +1164,8 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
                 politics_live_frames += 1
             if "politics_residuals" in domains:
                 politics_residuals_frames += 1
+            if "buildings_live" in domains:
+                buildings_live_frames += 1
             production_domain_claimed = "production_live" in domains
             focus_domain_claimed = "focus_live" in domains
             tech_domain_claimed = "tech_live" in domains
@@ -1160,6 +1173,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
             decisions_domain_claimed = "decisions_live" in domains
             politics_domain_claimed = "politics_live" in domains
             politics_residuals_domain_claimed = "politics_residuals" in domains
+            buildings_domain_claimed = "buildings_live" in domains
         else:
             production_domain_claimed = False
             focus_domain_claimed = False
@@ -1168,6 +1182,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
             decisions_domain_claimed = False
             politics_domain_claimed = False
             politics_residuals_domain_claimed = False
+            buildings_domain_claimed = False
         root_probe = frame.get("root_probe")
         if isinstance(root_probe, dict):
             identity = root_probe.get("country_object_identity")
@@ -1217,6 +1232,11 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
             and boundary == "scheduled_hour_snapshot"
         ):
             scheduled_politics_residuals_domain_frames += 1
+        if (
+            buildings_domain_claimed
+            and boundary == "scheduled_hour_snapshot"
+        ):
+            scheduled_buildings_domain_frames += 1
         countries = frame.get("countries")
         scalar_rows_in_frame = 0
         production_rows_in_frame = 0
@@ -1225,6 +1245,8 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         decisions_rows_in_frame = 0
         politics_rows_in_frame = 0
         politics_residual_rows_in_frame = 0
+        state_building_rows_in_frame = 0
+        province_building_rows_in_frame = 0
         heavy_payload_in_lightweight_frame = False
         special_projects = frame.get("special_projects")
         special_projects_payload_in_frame = False
@@ -1458,14 +1480,60 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         if isinstance(states, dict):
             frames_with_states += 1
             max_state_rows = max(max_state_rows, len(states))
+            for row in states.values():
+                if not isinstance(row, dict):
+                    continue
+                buildings = row.get("buildings")
+                if isinstance(buildings, dict):
+                    state_building_rows_in_frame += 1
+                    max_building_types_per_location = max(
+                        max_building_types_per_location,
+                        len(buildings),
+                    )
+                    if buildings:
+                        state_rows_with_nonempty_buildings += 1
             if states and boundary == "worker_poll":
                 heavy_payload_in_lightweight_frame = True
         provinces = frame.get("provinces")
         if isinstance(provinces, dict):
             frames_with_provinces += 1
             max_province_rows = max(max_province_rows, len(provinces))
+            for row in provinces.values():
+                if not isinstance(row, dict):
+                    continue
+                buildings = row.get("buildings")
+                if isinstance(buildings, dict):
+                    province_building_rows_in_frame += 1
+                    max_building_types_per_location = max(
+                        max_building_types_per_location,
+                        len(buildings),
+                    )
+                    if buildings:
+                        province_rows_with_nonempty_buildings += 1
             if provinces and boundary == "worker_poll":
                 heavy_payload_in_lightweight_frame = True
+        if state_building_rows_in_frame or province_building_rows_in_frame:
+            frames_with_building_payloads += 1
+            state_rows_with_buildings += state_building_rows_in_frame
+            province_rows_with_buildings += province_building_rows_in_frame
+            max_state_building_rows_per_frame = max(
+                max_state_building_rows_per_frame,
+                state_building_rows_in_frame,
+            )
+            max_province_building_rows_per_frame = max(
+                max_province_building_rows_per_frame,
+                province_building_rows_in_frame,
+            )
+        if (
+            boundary == "worker_poll"
+            and (
+                buildings_domain_claimed
+                or state_building_rows_in_frame
+                or province_building_rows_in_frame
+            )
+        ):
+            buildings_on_lightweight_frames += 1
+            heavy_payload_in_lightweight_frame = True
         if boundary == "worker_poll" and heavy_payload_in_lightweight_frame:
             heavy_payload_on_lightweight_frames += 1
     return {
@@ -1497,6 +1565,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         "decisions_live_frames": decisions_live_frames,
         "politics_live_frames": politics_live_frames,
         "politics_residuals_frames": politics_residuals_frames,
+        "buildings_live_frames": buildings_live_frames,
         "country_rows_with_scalar_payloads": country_rows_with_scalar_payloads,
         "country_rows_with_non_null_scalar_values": (
             country_rows_with_non_null_scalar_values),
@@ -1519,6 +1588,7 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         "scheduled_politics_domain_frames": scheduled_politics_domain_frames,
         "scheduled_politics_residuals_domain_frames": (
             scheduled_politics_residuals_domain_frames),
+        "scheduled_buildings_domain_frames": scheduled_buildings_domain_frames,
         "frames_with_production_payloads": frames_with_production_payloads,
         "country_rows_with_production_payloads": (
             country_rows_with_production_payloads),
@@ -1588,6 +1658,16 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
             max_politics_residual_country_rows_per_frame),
         "politics_residuals_on_lightweight_frames": (
             politics_residuals_on_lightweight_frames),
+        "frames_with_building_payloads": frames_with_building_payloads,
+        "state_rows_with_buildings": state_rows_with_buildings,
+        "province_rows_with_buildings": province_rows_with_buildings,
+        "state_rows_with_nonempty_buildings": state_rows_with_nonempty_buildings,
+        "province_rows_with_nonempty_buildings": (
+            province_rows_with_nonempty_buildings),
+        "max_state_building_rows_per_frame": max_state_building_rows_per_frame,
+        "max_province_building_rows_per_frame": max_province_building_rows_per_frame,
+        "max_building_types_per_location": max_building_types_per_location,
+        "buildings_on_lightweight_frames": buildings_on_lightweight_frames,
     }
 
 

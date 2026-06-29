@@ -133,6 +133,13 @@ mod attach_log {
     const CPROVINCE_OFF_ID: usize = 0xA4;
     const CPROVINCE_OFF_STATE: usize = 0xC0;
     const CPROVINCE_OFF_CONTROLLER: usize = 0x188;
+    const CPROVINCE_OFF_BUILDINGS_VEC: usize = 0x1C8;
+    const CBUILDING_VTABLE_RVA: usize = 0x2963AA8;
+    const CBUILDING_OFF_TYPE: usize = 0x08;
+    const CBUILDING_OFF_LEVEL: usize = 0x40;
+    const STATE_OFF_BUILDINGS_VEC: usize = 0x158;
+    const BUILDING_VECTOR_MAX: u32 = 64;
+    const BUILDING_LEVEL_SANE_MAX: u16 = 1000;
     const OBJ_TEMPLATES_LOCKED: usize = 0x01B4;
     const OBJ_COMMAND_POWER: usize = 0x01F0;
     const OBJ_MANPOWER_POOL: usize = 0x0338;
@@ -2102,8 +2109,19 @@ mod attach_log {
         let include_scheduled_country_politics_residuals = scheduled_frame;
         let include_scheduled_country_decisions = scheduled_frame;
         let include_scheduled_projects = scheduled_frame;
-        let state_rows = scheduled_state_rows_json(state, control, include_scheduled_map);
-        let province_rows = scheduled_province_rows_json(state, control, include_scheduled_map);
+        let include_scheduled_buildings = scheduled_frame;
+        let state_rows = scheduled_state_rows_json(
+            state,
+            control,
+            include_scheduled_map,
+            include_scheduled_buildings,
+        );
+        let province_rows = scheduled_province_rows_json(
+            state,
+            control,
+            include_scheduled_map,
+            include_scheduled_buildings,
+        );
         let special_projects = scheduled_special_projects_json(state, include_scheduled_projects);
         let (probe, domains) = root_probe_json(
             state,
@@ -9275,15 +9293,17 @@ mod attach_log {
         state: Option<&CollectorState>,
         control: Option<&CollectorControl>,
         include_scheduled_map: bool,
+        include_scheduled_buildings: bool,
     ) -> Option<String> {
-        if !include_scheduled_map {
+        if !include_scheduled_map && !include_scheduled_buildings {
             return None;
         }
         let state = state?;
         if !(state.daily_match && state.long_string_match) {
             return None;
         }
-        if let Some(rows) = scheduled_cprovince_state_rows_json(state) {
+        if let Some(rows) = scheduled_cprovince_state_rows_json(state, include_scheduled_buildings)
+        {
             return Some(rows);
         }
         let control = control?;
@@ -9317,11 +9337,21 @@ mod attach_log {
             } else {
                 tag_from_table(tag_table, controller)
             };
+            let buildings = if include_scheduled_buildings {
+                building_levels_json(state.base, entry.state_ptr, STATE_OFF_BUILDINGS_VEC)
+            } else {
+                None
+            };
+            let building_field = buildings
+                .as_deref()
+                .map(|rows| format!(",\"buildings\":{rows}"))
+                .unwrap_or_default();
             rows.push(format!(
-                "\"{}\":{{\"owner\":{},\"controller\":{}}}",
+                "\"{}\":{{\"owner\":{},\"controller\":{}{}}}",
                 entry.state_id,
                 json_opt_str(owner_tag.as_deref()),
-                json_opt_str(controller_tag.as_deref())
+                json_opt_str(controller_tag.as_deref()),
+                building_field
             ));
         }
         if rows.len() >= MIN_USABLE_STATE_ROWS {
@@ -9331,7 +9361,10 @@ mod attach_log {
         }
     }
 
-    fn scheduled_cprovince_state_rows_json(state: &CollectorState) -> Option<String> {
+    fn scheduled_cprovince_state_rows_json(
+        state: &CollectorState,
+        include_scheduled_buildings: bool,
+    ) -> Option<String> {
         let (province_array, province_count, province_ptrs) = cprovince_array_snapshot(state)?;
         let tag_table = country_tag_table(state.country_database_ptr as usize)?;
         let cprovince_vtable = state.base.checked_add(CPROVINCE_VTABLE_RVA)?;
@@ -9396,11 +9429,21 @@ mod attach_log {
             } else {
                 tag_from_table(tag_table, controller)
             };
+            let buildings = if include_scheduled_buildings {
+                building_levels_json(state.base, state_ptr, STATE_OFF_BUILDINGS_VEC)
+            } else {
+                None
+            };
+            let building_field = buildings
+                .as_deref()
+                .map(|rows| format!(",\"buildings\":{rows}"))
+                .unwrap_or_default();
             rows.push(format!(
-                "\"{}\":{{\"owner\":{},\"controller\":{}}}",
+                "\"{}\":{{\"owner\":{},\"controller\":{}{}}}",
                 state_id,
                 json_opt_str(owner_tag.as_deref()),
-                json_opt_str(controller_tag.as_deref())
+                json_opt_str(controller_tag.as_deref()),
+                building_field
             ));
         }
 
@@ -9418,16 +9461,20 @@ mod attach_log {
         state: Option<&CollectorState>,
         control: Option<&CollectorControl>,
         include_scheduled_map: bool,
+        include_scheduled_buildings: bool,
     ) -> Option<String> {
-        if !include_scheduled_map {
+        if !include_scheduled_map && !include_scheduled_buildings {
             return None;
         }
         let state = state?;
         if !(state.daily_match && state.long_string_match) {
             return None;
         }
-        if let Some(rows) = scheduled_cprovince_rows_json(state) {
+        if let Some(rows) = scheduled_cprovince_rows_json(state, include_scheduled_buildings) {
             return Some(rows);
+        }
+        if include_scheduled_buildings {
+            return None;
         }
         let control = control?;
         if !(control.map_control.province_bridge_valid
@@ -9476,7 +9523,10 @@ mod attach_log {
         }
     }
 
-    fn scheduled_cprovince_rows_json(state: &CollectorState) -> Option<String> {
+    fn scheduled_cprovince_rows_json(
+        state: &CollectorState,
+        include_scheduled_buildings: bool,
+    ) -> Option<String> {
         let (province_array, province_count, province_ptrs) = cprovince_array_snapshot(state)?;
         let tag_table = country_tag_table(state.country_database_ptr as usize)?;
         let cprovince_vtable = state.base.checked_add(CPROVINCE_VTABLE_RVA)?;
@@ -9502,11 +9552,17 @@ mod attach_log {
             }
             let controller_tag = tag_from_table(tag_table, controller_tag_db_id);
             let state_id = cprovince_state_id(state.base, province_ptr);
+            let buildings = if include_scheduled_buildings {
+                building_levels_json(state.base, province_ptr, CPROVINCE_OFF_BUILDINGS_VEC)
+            } else {
+                None
+            };
             rows.push(cprovince_control_row_json(
                 province_id,
                 controller_tag.as_deref(),
                 controller_tag_db_id,
                 state_id,
+                buildings.as_deref(),
             ));
         }
         if !cprovince_array_still_current(state, province_array, province_count) {
@@ -9574,6 +9630,7 @@ mod attach_log {
         controller_tag: Option<&str>,
         controller_tag_db_id: u32,
         state_id: Option<u32>,
+        buildings: Option<&str>,
     ) -> String {
         let controller = json_opt_str(controller_tag);
         let decode_status = if controller_tag.is_some() {
@@ -9584,11 +9641,126 @@ mod attach_log {
         let state_field = state_id
             .map(|state_id| format!(",\"state_id\":{state_id}"))
             .unwrap_or_default();
+        let building_field = buildings
+            .map(|rows| format!(",\"buildings\":{rows}"))
+            .unwrap_or_default();
         format!(
             "\"{}\":{{\"controller\":{},\"controller_tag_db_id\":{},\
-             \"controller_decode_status\":\"{}\",\"controller_source\":\"cprovince_static_root\"{}}}",
-            province_id, controller, controller_tag_db_id, decode_status, state_field
+             \"controller_decode_status\":\"{}\",\"controller_source\":\"cprovince_static_root\"{}{}}}",
+            province_id, controller, controller_tag_db_id, decode_status, state_field,
+            building_field
         )
+    }
+
+    fn building_levels_json(module_base: usize, obj_base: usize, vec_off: usize) -> Option<String> {
+        if !is_map_control_heap_pointer(obj_base) {
+            return None;
+        }
+        let begin = read_u64(obj_base.checked_add(vec_off)?)? as usize;
+        let packed = read_u64(obj_base.checked_add(vec_off)?.checked_add(8)?)?;
+        let logical = (packed >> 32) as u32;
+        if logical > BUILDING_VECTOR_MAX {
+            return None;
+        }
+        if logical == 0 {
+            return Some("{}".to_string());
+        }
+        if !is_map_control_heap_pointer(begin) {
+            return None;
+        }
+        let byte_len = (logical as usize).checked_mul(8)?;
+        let ptrs = read_bytes(begin, byte_len)?;
+        if ptrs.len() != byte_len {
+            return None;
+        }
+        let cbuilding_vtable = module_base.checked_add(CBUILDING_VTABLE_RVA)?;
+        let mut levels: BTreeMap<String, u32> = BTreeMap::new();
+        for idx in 0..logical {
+            let offset = (idx as usize).checked_mul(8)?;
+            let building_ptr = read_u64_from_slice(&ptrs, offset)? as usize;
+            if !is_map_control_heap_pointer(building_ptr) {
+                continue;
+            }
+            if read_u64(building_ptr)? as usize != cbuilding_vtable {
+                continue;
+            }
+            let type_id = read_u32(building_ptr.checked_add(CBUILDING_OFF_TYPE)?)?;
+            let level = read_u16(building_ptr.checked_add(CBUILDING_OFF_LEVEL)?)?;
+            if level > BUILDING_LEVEL_SANE_MAX {
+                continue;
+            }
+            let name = building_name_from_type_id(type_id);
+            let entry = levels.entry(name).or_insert(0);
+            *entry = entry.saturating_add(level as u32);
+        }
+        let rows: Vec<String> = levels
+            .iter()
+            .map(|(key, value)| format!("{}:{}", json_str(key), value))
+            .collect();
+        Some(format!("{{{}}}", rows.join(",")))
+    }
+
+    fn building_name_from_type_id(type_id: u32) -> String {
+        match type_id {
+            0x27D2 => "naval_supply_hub".to_string(),
+            0x2FAB => "infrastructure".to_string(),
+            0x2FB6 => "air_base".to_string(),
+            0x31F6 => "naval_base".to_string(),
+            0x32B4 => "nuclear_reactor".to_string(),
+            0x3C8F => "fuel_silo".to_string(),
+            0x4BF6 => "dockyard".to_string(),
+            0x4CBE => "supply_node".to_string(),
+            0x4CC1 => "rail_way".to_string(),
+            0x4E22 => "arms_factory".to_string(),
+            0x4E2D => "industrial_complex".to_string(),
+            0x4E44 => "synthetic_refinery".to_string(),
+            0x5781 => "bunker".to_string(),
+            0x5782 => "coastal_bunker".to_string(),
+            0x6C2F => "naval_facility".to_string(),
+            0x6D5B => "anti_air_building".to_string(),
+            0x6DEF => "radar_station".to_string(),
+            0x6EB6 => "naval_headquarters".to_string(),
+            0x6F7F => "nuclear_facility".to_string(),
+            0x6FB2 => "air_facility".to_string(),
+            0x6FE4 => "land_facility".to_string(),
+            0x7016 => "dam".to_string(),
+            0x7079 => "cataract_dam_mountain".to_string(),
+            0x70AB => "canal_kiel".to_string(),
+            0x70DF => "canal_panama".to_string(),
+            0x7144 => "industrial_infrastructure".to_string(),
+            0x7176 => "landmark_big_ben".to_string(),
+            0x71A9 => "landmark_colosseum".to_string(),
+            0x720D => "landmark_eiffel_tower".to_string(),
+            0x723F => "landmark_statue_of_liberty".to_string(),
+            0x7271 => "landmark_kremlin".to_string(),
+            0x72A3 => "landmark_hofburg_palace".to_string(),
+            0x72D5 => "landmark_berlin_reichstag".to_string(),
+            0x7339 => "landmark_taj_mahal".to_string(),
+            0x736B => "landmark_sadabad_complex".to_string(),
+            0x739D => "landmark_hagia_sophia".to_string(),
+            0x73CF => "landmark_forbidden_city".to_string(),
+            0x7401 => "landmark_nanjing_presidential_palace".to_string(),
+            0x7465 => "landmark_nanjing_presidential_palace_gen".to_string(),
+            0x7497 => "landmark_great_wall_section".to_string(),
+            0x74C9 => "landmark_tokyo_imperial_palace".to_string(),
+            0x755F => "landmark_prague_castle".to_string(),
+            0x7591 => "landmark_bojnice_castle".to_string(),
+            _ => format!("type_0x{type_id:04X}"),
+        }
+    }
+
+    fn domains_json_with_extra_domain(domains: String, domain: &str) -> String {
+        let encoded = json_str(domain);
+        if domains.contains(&encoded) {
+            return domains;
+        }
+        if domains == "[]" {
+            return format!("[{encoded}]");
+        }
+        let Some(prefix) = domains.strip_suffix(']') else {
+            return domains;
+        };
+        format!("{prefix},{encoded}]")
     }
 
     fn root_probe_json(
@@ -9660,6 +9832,12 @@ mod attach_log {
             include_scheduled_country_decisions,
         );
         let identity_probe = state.country_identity.root_json();
+        let has_building_rows = scheduled_state_rows
+            .map(|rows| rows.contains("\"buildings\":"))
+            .unwrap_or(false)
+            || scheduled_province_rows
+                .map(|rows| rows.contains("\"buildings\":"))
+                .unwrap_or(false);
         let domains = state.country_identity.domains_json_from_rows(
             &current_rows,
             scheduled_state_rows.is_some(),
@@ -9673,6 +9851,11 @@ mod attach_log {
             include_scheduled_country_politics_residuals,
             include_scheduled_country_decisions,
         );
+        let domains = if has_building_rows {
+            domains_json_with_extra_domain(domains, "buildings_live")
+        } else {
+            domains
+        };
         let clock_probe = clock_probe_json(date_ptr as usize);
         let special_projects_probe = state.special_projects.root_json();
         let state_rows = scheduled_state_rows
@@ -14719,18 +14902,49 @@ mod attach_log {
 
         #[test]
         fn cprovince_row_json_preserves_raw_controller_id() {
-            let decoded = cprovince_control_row_json(11, Some("POR"), 47, Some(112));
+            let decoded = cprovince_control_row_json(11, Some("POR"), 47, Some(112), None);
             assert!(decoded.contains("\"11\":{\"controller\":\"POR\""));
             assert!(decoded.contains("\"controller_tag_db_id\":47"));
             assert!(decoded.contains("\"controller_decode_status\":\"decoded\""));
             assert!(decoded.contains("\"controller_source\":\"cprovince_static_root\""));
             assert!(decoded.contains("\"state_id\":112"));
 
-            let raw_only = cprovince_control_row_json(12, None, 454, None);
+            let raw_only = cprovince_control_row_json(12, None, 454, None, None);
             assert!(raw_only.contains("\"12\":{\"controller\":null"));
             assert!(raw_only.contains("\"controller_tag_db_id\":454"));
             assert!(raw_only.contains("\"controller_decode_status\":\"tag_table_miss\""));
             assert!(!raw_only.contains("\"state_id\""));
+        }
+
+        #[test]
+        fn cprovince_row_json_includes_measured_buildings() {
+            let row = cprovince_control_row_json(
+                11,
+                Some("POR"),
+                47,
+                Some(112),
+                Some("{\"naval_base\":10,\"rail_way\":2}"),
+            );
+
+            assert!(row.contains("\"buildings\":{\"naval_base\":10,\"rail_way\":2}"));
+        }
+
+        #[test]
+        fn domain_json_append_claims_buildings_live_once() {
+            let domains = domains_json_with_extra_domain(
+                "[\"clock\",\"country_identity\"]".to_string(),
+                "buildings_live",
+            );
+            assert_eq!(
+                domains,
+                "[\"clock\",\"country_identity\",\"buildings_live\"]"
+            );
+
+            let repeated = domains_json_with_extra_domain(domains, "buildings_live");
+            assert_eq!(
+                repeated,
+                "[\"clock\",\"country_identity\",\"buildings_live\"]"
+            );
         }
 
         #[test]

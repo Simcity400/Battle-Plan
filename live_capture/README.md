@@ -136,6 +136,18 @@ current product status and acceptance gates, and
   corroboration/fallback. Current no-cold proof on pid 43412 captured 1081
   state rows and 10272 province rows in each of 12 scheduled map-control frames
   with zero skipped hours and no map preflight bridges supplied.
+- Scheduled `buildings_live` is now DLL-native on the same static map spine.
+  The DLL reads `STATE+0x158` and `CProvince+0x1C8` `vector<CBuilding*>`
+  payloads, validates each `CBuilding` by vtable, type id, and sane level, and
+  emits measured building maps on scheduled hourly frames only. The adapter
+  folds those rows into `states.*.buildings` and `provinces.*.buildings` while
+  preserving measured-empty `{}` maps. Current no-cold proof
+  `replay/snapshots/_collector_session_buildings_gate/20260629T150353Z_pid43412`
+  advanced 12 game hours, stored 13 verified snapshots, observed
+  `buildings_live` on all 13 scheduled frames, captured 14053 state building
+  rows and 133536 province building rows, observed non-empty building maps in
+  both state and province rows, and kept building payloads off worker-poll
+  frames.
 - Division movement uses a cache-first `division_bodies.json` bridge. Normal
   recording validates cached body pins without scanning; use
   `--allow-division-cold-scan` only as an explicit bootstrap step because cold
@@ -154,6 +166,8 @@ python -m live_capture.collector_profile_check --pid <hoi4-pid> --profile live_c
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session --game-id collector_live_speed5_session --duration-s 8 --sample-ms 10 --dwell-s 0.25 --worker-bursts 3 --burst-interval-s 0.25 --until-game-hours 12 --max-wall-s 30
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_economy_gate --game-id production_fuel_misc_live --duration-s 180 --sample-ms 10 --dwell-s 0.25 --worker-bursts 3 --burst-interval-s 0.25 --until-game-hours 12 --max-wall-s 300
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_economy_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain production_live --require-domain fuel_live --require-domain country_misc --require-domain country_scalars
+python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_buildings_gate --game-id buildings_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300
+python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_buildings_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain buildings_live
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session --game-id collector_live_focus_decision_project_roots --duration-s 180 --sample-ms 10 --dwell-s 0.25 --worker-bursts 3 --burst-interval-s 0.25 --until-game-hours 12 --max-wall-s 120 --preflight-special-projects
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session/<run-dir>/session_manifest.json --min-game-hours 12 --require-scheduled-domain focus_live --require-scheduled-domain decisions_live --require-scheduled-domain projects_live
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session/<run-dir>/session_manifest.json --min-game-hours 12 --require-raw-domain land_combats --require-raw-event-type land_combat_started --require-raw-event-type land_combat_updated --require-raw-event-type land_combat_ended
@@ -210,6 +224,15 @@ domains `fuel_live`, `country_misc`, and `country_scalars`. The 2026-06-29 pid
 43412 proof advanced 12 game hours, stored 13 verified snapshots, emitted 12
 production frames and 12 fuel frames, and observed up to 20 military lines, 12
 naval lines, and 146 stockpile entries per production frame.
+
+For buildings acceptance, require scheduled `buildings_live` on a no-cold
+12-game-hour run. The 2026-06-29 pid 43412 proof
+`replay/snapshots/_collector_session_buildings_gate/20260629T150353Z_pid43412`
+advanced 12 game hours in 45.734 wall seconds, stored 13 verified snapshots,
+observed 13 scheduled `buildings_live` frames, captured 1081 state rows and
+10272 province rows per scheduled frame, captured non-empty building maps in
+13689 state rows and 50765 province rows across the run, and reported zero
+building payloads on lightweight worker frames.
 
 For division org/strength plus army-order raw-stream acceptance, first populate
 same-process caches with the cold bootstrap command if needed, then rerun

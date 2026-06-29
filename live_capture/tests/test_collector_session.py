@@ -72,6 +72,40 @@ class TestCollectorSession(unittest.TestCase):
         self.assertEqual(summary["country_scalars_frames"], 0)
         self.assertEqual(summary["country_rows_with_scalar_payloads"], 0)
 
+    def test_collector_frame_payload_summary_counts_buildings_live_rows(self):
+        summary = cs._collector_frame_payload_summary([
+            {
+                "capture_boundary": "scheduled_hour_snapshot",
+                "domains": ["clock", "buildings_live"],
+                "states": {
+                    "1": {"buildings": {"arms_factory": 2, "air_base": 1}},
+                    "2": {"buildings": {}},
+                },
+                "provinces": {
+                    "11": {"buildings": {"naval_base": 10}},
+                    "12": {"buildings": {}},
+                },
+            },
+            {
+                "capture_boundary": "worker_poll",
+                "domains": ["clock", "buildings_live"],
+            },
+        ])
+
+        self.assertEqual(summary["domains_seen"], ["buildings_live", "clock"])
+        self.assertEqual(summary["buildings_live_frames"], 2)
+        self.assertEqual(summary["scheduled_buildings_domain_frames"], 1)
+        self.assertEqual(summary["frames_with_building_payloads"], 1)
+        self.assertEqual(summary["state_rows_with_buildings"], 2)
+        self.assertEqual(summary["province_rows_with_buildings"], 2)
+        self.assertEqual(summary["state_rows_with_nonempty_buildings"], 1)
+        self.assertEqual(summary["province_rows_with_nonempty_buildings"], 1)
+        self.assertEqual(summary["max_state_building_rows_per_frame"], 2)
+        self.assertEqual(summary["max_province_building_rows_per_frame"], 2)
+        self.assertEqual(summary["max_building_types_per_location"], 2)
+        self.assertEqual(summary["buildings_on_lightweight_frames"], 1)
+        self.assertEqual(summary["heavy_payload_on_lightweight_frames"], 1)
+
     def test_collector_frame_payload_summary_counts_country_scalar_source(self):
         summary = cs._collector_frame_payload_summary([
             {

@@ -23,6 +23,7 @@ SCHEDULED_DOMAIN_FRAME_COUNT_KEYS = {
     "state_ownership": "state_ownership_frames",
     "state_control": "state_control_frames",
     "province_control": "province_control_frames",
+    "buildings_live": "scheduled_buildings_domain_frames",
 }
 
 

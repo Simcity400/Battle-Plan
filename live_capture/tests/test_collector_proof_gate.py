@@ -86,6 +86,24 @@ class TestCollectorProofGate(unittest.TestCase):
             3,
         )
 
+    def test_accepts_buildings_live_scheduled_domain_proof(self):
+        proof = collector_session_proof_summary(
+            _manifest(collector_frame_payload_summary={
+                "domains_seen": ["clock", "buildings_live"],
+                "scheduled_buildings_domain_frames": 3,
+                "heavy_payload_on_lightweight_frames": 0,
+            }),
+            required_scheduled_snapshot_domains=["buildings_live"],
+            min_game_hours=2,
+        )
+
+        self.assertTrue(proof["ok"])
+        self.assertEqual(proof["errors"], [])
+        self.assertEqual(
+            proof["scheduled_snapshot_domain_frames"]["buildings_live"],
+            3,
+        )
+
     def test_domains_seen_does_not_satisfy_scheduled_domain_gate(self):
         errors = collector_session_proof_errors(
             _manifest(collector_frame_payload_summary={

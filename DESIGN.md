@@ -183,6 +183,14 @@ Implemented in the current bridge:
   state owner/controller rows are derived through `CProvince+0xC0`, and province
   controller rows through `CProvince+0x188`, gated to canonical hourly frames
   rather than 10 ms worker polls;
+- DLL-native scheduled `buildings_live` on the same static map spine: state
+  building vectors at `STATE+0x158` and province building vectors at
+  `CProvince+0x1C8` are emitted only on scheduled hourly frames and folded into
+  `states.*.buildings` plus `provinces.*.buildings`. The current pid 43412
+  proof advanced 12 game hours, stored 13 verified snapshots, observed
+  `buildings_live` on all 13 scheduled frames, captured 1081 state rows and
+  10272 province rows per scheduled frame, and kept building payloads off
+  worker polls;
 - state-root map preflight cache retained as corroboration/fallback evidence.
 
 Still open:

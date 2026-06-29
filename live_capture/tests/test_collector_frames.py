@@ -2265,6 +2265,75 @@ class TestCollectorFrames(unittest.TestCase):
         self.assertEqual(snap["provinces"], {})
         self.assertIsNone(snap["map"]["control_by_province"])
 
+    def test_snapshot_frame_folds_scheduled_buildings_live(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock", "buildings_live"],
+            "states": {
+                "1": {"buildings": {"arms_factory": 2, "air_base": 1}},
+                "2": {"buildings": {}},
+            },
+            "provinces": {
+                "11": {"buildings": {"naval_base": 10, "rail_way": 2}},
+            },
+        }
+
+        snap = snapshot_from_collector_frame(frame, "collector-test")
+
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        self.assertEqual(
+            snap["provenance"]["collector"]["domains"],
+            ["buildings_live", "clock"],
+        )
+        self.assertEqual(snap["states"]["1"]["buildings"]["arms_factory"], 2)
+        self.assertEqual(snap["states"]["2"]["buildings"], {})
+        self.assertEqual(snap["provinces"]["11"]["buildings"]["naval_base"], 10)
+        self.assertIsNone(snap["map"]["control_by_province"])
+
+    def test_snapshot_frame_rejects_malformed_buildings_live(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock", "buildings_live"],
+            "states": {
+                "1": {"buildings": {"bad key": 2, "arms_factory": 1001}},
+            },
+        }
+
+        problems = validate_collector_frame(frame)
+
+        self.assertTrue(any("not script token" in p for p in problems), problems)
+        self.assertTrue(any("not int in range" in p for p in problems), problems)
+
+    def test_snapshot_frame_rejects_non_scheduled_buildings_live_payload(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "daily_update",
+            "domains": ["clock", "buildings_live"],
+            "states": {"1": {"buildings": {"arms_factory": 2}}},
+        }
+
+        problems = validate_collector_frame(frame)
+
+        self.assertTrue(any("buildings_live payload requires scheduled" in p
+                            for p in problems), problems)
+        with self.assertRaisesRegex(ValueError,
+                                    "buildings_live payload requires scheduled"):
+            snapshot_from_collector_frame(frame, "collector-test")
+
     def test_snapshot_frame_folds_scheduled_projects_live(self):
         frame = {
             "type": "snapshot",
@@ -3525,6 +3594,43 @@ class TestCollectorFrames(unittest.TestCase):
         )
         self.assertEqual(snap["states"]["1"]["controller"], "GER")
         self.assertEqual(snap["map"]["control_by_province"], {"11": "GER"})
+
+    def test_root_probe_frame_folds_scheduled_buildings_live(self):
+        frame = {
+            "type": "collector_started",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "process_id": 32440,
+            "tick_ms": 158373765,
+            "capture_boundary": "scheduled_hour_snapshot",
+            "quality_status": "root_probe_verified",
+            "domains": ["clock", "buildings_live"],
+            "states": {"1": {"buildings": {"arms_factory": 2}}},
+            "provinces": {"11": {"buildings": {"naval_base": 10}}},
+            "root_probe": {
+                "status": "verified",
+                "profile": "vanilla_latest_2026_06_28",
+                "daily_update_sentinel_match": True,
+                "long_string_sentinel_match": True,
+                "current_game_date": "1936.6.15.7",
+                "current_game_date_raw": 60763326,
+                "start_date": "1936.1.1.12",
+                "start_date_raw": 60759371,
+                "country_tag_count": 474,
+                "country_active_count": 440,
+                "tag_sample": ["---", "GER", "ENG"],
+                "domains": ["clock", "buildings_live"],
+            },
+        }
+
+        snap = snapshot_from_root_probe_frame(frame, "collector-test")
+
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        self.assertEqual(snap["provenance"]["collector"]["domains"],
+                         ["clock", "buildings_live"])
+        self.assertEqual(snap["states"]["1"]["buildings"], {"arms_factory": 2})
+        self.assertEqual(snap["provinces"]["11"]["buildings"], {"naval_base": 10})
 
     def test_root_probe_map_payload_without_scheduled_claim_is_not_folded(self):
         frame = {

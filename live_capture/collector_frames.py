@@ -44,6 +44,7 @@ SUPPORTED_SNAPSHOT_DOMAINS = frozenset({
     "state_ownership",
     "state_control",
     "province_control",
+    "buildings_live",
 })
 SCHEDULED_ONLY_SNAPSHOT_DOMAINS = frozenset({
     "focus_live",
@@ -57,6 +58,7 @@ SCHEDULED_ONLY_SNAPSHOT_DOMAINS = frozenset({
     "state_ownership",
     "state_control",
     "province_control",
+    "buildings_live",
 })
 MAP_CONTROL_SNAPSHOT_DOMAINS = frozenset({
     "state_ownership",
@@ -71,6 +73,7 @@ PRODUCTION_LINE_ID_MAX = 10_000_000
 PRODUCTION_FACTORY_COUNT_MAX = 100_000
 PRODUCTION_LINE_AMOUNT_MAX = 2_147_483_647
 PRODUCTION_FIXED_POINT_ABS_MAX = 1_000_000_000_000.0
+BUILDING_LEVEL_MAX = 1000
 FUEL_MEASURE_ABS_MAX = 1_000_000_000.0
 COUNTRY_MISC_ACE_COUNT_MAX = 100_000
 COUNTRY_MISC_CONVOYS_DESTROYED_MAX = 100_000_000
@@ -773,6 +776,16 @@ def validate_collector_frame(frame: Any) -> List[str]:
         and
         frame.get("capture_boundary") != "scheduled_hour_snapshot"
         and (
+            "buildings_live" in scheduled_domain_claims
+            or _has_building_rows(states, provinces)
+        )
+    ):
+        problems.append("collector buildings_live payload requires scheduled_hour_snapshot")
+    if (
+        frame.get("capture_boundary") != "worker_poll"
+        and
+        frame.get("capture_boundary") != "scheduled_hour_snapshot"
+        and (
             "projects_live" in scheduled_domain_claims
             or _has_special_projects_payload(special_projects)
         )
@@ -880,6 +893,11 @@ def snapshot_from_root_probe_frame(frame: Dict[str, Any], game_id: str) -> Dict[
         domains.append("state_control")
     if "province_control" in claimed_domains and _has_province_control_rows(frame_provinces):
         domains.append("province_control")
+    if "buildings_live" in claimed_domains and _has_building_rows(
+        frame_states,
+        frame_provinces,
+    ):
+        domains.append("buildings_live")
     if "projects_live" in claimed_domains and _has_special_projects_rows(frame_special_projects):
         domains.append("projects_live")
 
@@ -4841,6 +4859,12 @@ def _validate_state_rows(states: Dict[str, Any]) -> List[str]:
             if value is not None and not schema.valid_tag(value):
                 problems.append(
                     f"collector frame state {sid!r}.{key} not TAG|null")
+        buildings = row.get("buildings")
+        if buildings is not None:
+            problems.extend(_validate_building_map(
+                buildings,
+                f"collector frame state {sid!r}.buildings",
+            ))
     return problems
 
 
@@ -4876,6 +4900,24 @@ def _validate_province_rows(provinces: Dict[str, Any]) -> List[str]:
             elif state_id <= 0 or state_id > 100_000:
                 problems.append(
                     f"collector frame province {pid!r}.state_id out of range")
+        buildings = row.get("buildings")
+        if buildings is not None:
+            problems.extend(_validate_building_map(
+                buildings,
+                f"collector frame province {pid!r}.buildings",
+            ))
+    return problems
+
+
+def _validate_building_map(buildings: Any, prefix: str) -> List[str]:
+    if not isinstance(buildings, dict):
+        return [f"{prefix} not dict|null"]
+    problems: List[str] = []
+    for building, level in buildings.items():
+        if not schema.valid_script_token(building):
+            problems.append(f"{prefix} key {building!r} not script token")
+        if not _valid_bounded_int(level, minimum=0, maximum=BUILDING_LEVEL_MAX):
+            problems.append(f"{prefix}.{building!s} not int in range")
     return problems
 
 
@@ -6036,7 +6078,8 @@ def _fold_state_rows(
     domain_set = set(domains)
     fold_owner = "state_ownership" in domain_set
     fold_controller = "state_control" in domain_set
-    if not (fold_owner or fold_controller):
+    fold_buildings = "buildings_live" in domain_set
+    if not (fold_owner or fold_controller or fold_buildings):
         return
     for sid, row in states.items():
         if not _valid_positive_int_key(sid, max_value=100_000) or not isinstance(row, dict):
@@ -6048,6 +6091,10 @@ def _fold_state_rows(
         if fold_controller and "controller" in row:
             controller = row.get("controller")
             clean["controller"] = controller if schema.valid_tag(controller) else None
+        if fold_buildings and "buildings" in row:
+            buildings = _clean_building_map(row.get("buildings"))
+            if buildings is not None:
+                clean["buildings"] = buildings
         if clean:
             state = snap["states"].setdefault(str(int(sid)), schema.empty_state())
             state.update(clean)
@@ -6058,21 +6105,41 @@ def _fold_province_rows(
     provinces: Dict[str, Any],
     domains: Iterable[str],
 ) -> None:
-    if "province_control" not in set(domains):
+    domain_set = set(domains)
+    fold_control = "province_control" in domain_set
+    fold_buildings = "buildings_live" in domain_set
+    if not (fold_control or fold_buildings):
         return
     for pid, row in provinces.items():
         if not _valid_positive_int_key(pid, max_value=1_000_000) or not isinstance(row, dict):
             continue
         clean: Dict[str, Any] = {}
-        if "controller" in row:
+        if fold_control and "controller" in row:
             controller = row.get("controller")
             clean["controller"] = controller if schema.valid_tag(controller) else None
         state_id = row.get("state_id")
-        if isinstance(state_id, int) and not isinstance(state_id, bool):
+        if fold_control and isinstance(state_id, int) and not isinstance(state_id, bool):
             clean["state_id"] = state_id
+        if fold_buildings and "buildings" in row:
+            buildings = _clean_building_map(row.get("buildings"))
+            if buildings is not None:
+                clean["buildings"] = buildings
         if clean:
             province = snap["provinces"].setdefault(str(int(pid)), schema.empty_province())
             province.update(clean)
+
+
+def _clean_building_map(buildings: Any) -> Optional[Dict[str, int]]:
+    if not isinstance(buildings, dict):
+        return None
+    clean: Dict[str, int] = {}
+    for key, value in buildings.items():
+        if not schema.valid_script_token(key):
+            return None
+        if not _valid_bounded_int(value, minimum=0, maximum=BUILDING_LEVEL_MAX):
+            return None
+        clean[key] = int(value)
+    return clean
 
 
 def _fill_map_mirrors(snap: Dict[str, Any]) -> None:
@@ -6108,6 +6175,18 @@ def _has_province_control_rows(provinces: Any) -> bool:
     return isinstance(provinces, dict) and any(
         isinstance(row, dict) and "controller" in row
         for row in provinces.values()
+    )
+
+
+def _has_building_rows(states: Any, provinces: Any) -> bool:
+    return (
+        isinstance(states, dict)
+        and any(isinstance(row, dict) and isinstance(row.get("buildings"), dict)
+                for row in states.values())
+    ) or (
+        isinstance(provinces, dict)
+        and any(isinstance(row, dict) and isinstance(row.get("buildings"), dict)
+                for row in provinces.values())
     )
 
 

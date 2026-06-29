@@ -95,6 +95,12 @@ for inspection, with no ability to mutate the game.
 - The save-persisted `countries.*.strategic_navy` block now folds through
   `country_extra` into `countries.*.extra.strategic_navy`; live memory offsets
   for those values remain fail-closed and are not claimed.
+- DLL-native scheduled `buildings_live` is proven on the live static map spine:
+  the collector reads state/province `CBuilding` vectors on hourly frames,
+  folds into `states.*.buildings` and `provinces.*.buildings`, and passed a
+  no-cold 12-game-hour proof on pid 43412 with 13 verified scheduled building
+  frames, 1081 state rows and 10272 province rows per scheduled frame, non-empty
+  state/province building maps, and zero worker-poll building payloads.
 - Anchored land-counter stacks now compose portrait and formation-insignia
   sprites into the native fixed-footprint `UnitCounter` render plan, preserving
   four stable asset slots, sprite frame identities, and explicit missing-asset
@@ -317,6 +323,12 @@ The app is product-complete only when all applicable gates pass:
   records explicit skipped-hour diagnostics. For proof runs requested with
   `--until-game-hours`, missing hourly coverage is command failure unless the
   run is explicitly marked diagnostic-only.
+- Scheduled `buildings_live` proof passed on 2026-06-29:
+  `replay/snapshots/_collector_session_buildings_gate/20260629T150353Z_pid43412`
+  advanced 12 game hours in 45.734 wall seconds, stored 13 verified snapshots,
+  observed `buildings_live` on all 13 scheduled frames, captured non-empty state
+  and province building maps, and reported zero heavy payloads on lightweight
+  frames.
 - Every registered view opens from the in-app menu.
 - Every registered view has an interaction contract.
 - Every read-only interaction in each contract is implemented and tested.
