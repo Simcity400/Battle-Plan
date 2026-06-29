@@ -87,10 +87,10 @@ Scheduled country fuel:
 - scheduled snapshot frames may claim `fuel_live` when the preflighted country
   object bridge is still valid;
 - fuel reads are rooted at the already validated `CCountry*`, then follow
-  `CCountry+0x1580` to the fuel-status object and decode current/max as signed
-  64-bit fixed point divided by 32768;
+  `CCountry+0x1580` to the fuel-status object and decode current/max plus
+  fuel gain/cost as signed 64-bit fixed point divided by 32768;
 - malformed, non-heap, negative, or implausibly large fuel values are omitted
-  per country instead of guessed;
+  per country instead of guessed; gain/cost may be signed and are range bounded;
 - worker-poll frames stay light and must not carry fuel payloads;
 
 Scheduled country production:
@@ -140,6 +140,20 @@ State-root preflight:
 - cached state roots are scheduled `state_ownership` / `state_control` input;
 - the dense province-control array root remains unresolved/too slow for normal
   recording until its relocation/cache path is proven.
+
+Land-combat raw stream status:
+
+- `live_capture.collector_frames` defines and tests a bounded raw
+  `land_combats` domain-delta contract for future DLL output:
+  `land_combat:<combat_id>:<generation>` keys, province/age scalars, nullable
+  attacker/defender division-id lists, and no raw address leakage.
+- The Rust DLL does not emit land-combat samples yet. The current Python proof
+  discovers `CLandCombat` bodies with a heap vtable scan, which is not a valid
+  scheduled-loop source.
+- Enabling live land-combat capture requires a pinned active-combat root,
+  dynamic bridge/cache refresh contract, or reviewed lifecycle hook. Without
+  that, the collector must fail closed with raw `land_combats` gap frames
+  instead of guessed samples.
 
 Runtime rules:
 

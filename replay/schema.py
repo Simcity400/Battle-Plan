@@ -26,6 +26,7 @@ PRODUCTION_LINE_ID_MAX = 10_000_000
 PRODUCTION_FACTORY_COUNT_MAX = 100_000
 PRODUCTION_LINE_AMOUNT_MAX = 2_147_483_647
 PRODUCTION_FIXED_POINT_ABS_MAX = 1_000_000_000_000.0
+FUEL_MEASURE_ABS_MAX = 1_000_000_000.0
 
 # Canonical domain ids referenced by provenance.{collector,memory,save}.domains (SCHEMA §2).
 DOMAINS = (
@@ -61,8 +62,8 @@ DOMAINS = (
     "projects_live",     # LIVE special-projects/facilities/scientists pools (M; distinct
                          # from the SAVE-sourced per-country "projects" domain below)
     "fuel_live",         # LIVE per-country national fuel -> countries.*.economy.fuel.{current,
-                         # max} (C/M; shares the save economy.fuel home, tracked under a DISTINCT
-                         # live id). Portable Ghidra pointer chain; max_fuel 71/71 EXACT.
+                         # max,gain,cost} (C/M; shares the save economy.fuel home, tracked under
+                         # a DISTINCT live id). Portable Ghidra pointer chain; max_fuel 71/71 EXACT.
     "supply_inputs",     # LIVE supply solver INPUTS (per-province efficiency/draw) -> badged
                          # signals on snap["supply"] (M; NOT the exact per-province supply,
                          # which is provably not stored — distinct from the "supply" proxy).
@@ -196,6 +197,25 @@ COLLECTOR_DOMAIN_CONTRACTS: Dict[str, Dict[str, Any]] = {
             "move_progress", "in_combat", "supply_status",
         ),
     },
+    "land_combats": {
+        "cadence_class": "high_frequency_raw_stream",
+        "snapshot_path": None,
+        "shape": "raw_land_combat_lifecycle_and_participant_samples",
+        "root_contract_status": "blocked_pending_pinned_root_or_hook",
+        "source_marker": (
+            "C only in collector raw domain_delta/event/gap frames; do not "
+            "promote to typed combats[] snapshots until a root/bridge/hook "
+            "contract proves active-combat discovery without hot-loop heap scans"
+        ),
+        "required_raw_fields": (
+            "combat_key", "combat_id", "generation", "location",
+            "attacker_divisions", "defender_divisions",
+        ),
+        "nullable_side_fields": (
+            "attacker_divisions", "defender_divisions",
+        ),
+        "identity_rule": "land_combat:<combat_id>:<generation>",
+    },
 }
 
 def valid_tag(v: Any) -> bool:
@@ -240,9 +260,12 @@ FIELD_SOURCES: Dict[str, str] = {
     # fuel is LIVE-first via scheduled collector frames (fuel_live, C/M) with the save
     # as the backstop: the collector reads the canonical i64 fixed-point store from the
     # validated CCountry object (CCountry+0x1580 fuel_status; /32768). Worker polls stay
-    # light and must not carry fuel payloads.
+    # light and must not carry fuel payloads. gain/cost are collector-only in the current
+    # parser wiring.
     "countries.*.economy.fuel.current": "C/M/S",
     "countries.*.economy.fuel.max": "C/M/S",
+    "countries.*.economy.fuel.gain": "C",
+    "countries.*.economy.fuel.cost": "C",
     "countries.*.economy.gross_ic_by_equipment": "S/D",
     "countries.*.economy.market_stockpile": "S",
     "countries.*.economy.market_automation": "S",
@@ -2236,11 +2259,22 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                 for k in ("current", "max"):
                     v = fuel.get(k)
                     if v is not None:
-                        if isinstance(v, bool) or not isinstance(v, (int, float)):
+                        if not _is_finite_number(v):
                             problems.append(
                                 f"country {tag!r}.economy.fuel.{k} {v!r} "
                                 "not number|null")
-                        elif v < 0:
+                        elif v < 0 or v > FUEL_MEASURE_ABS_MAX:
+                            problems.append(
+                                f"country {tag!r}.economy.fuel.{k} {v!r} "
+                                "out of range")
+                for k in ("gain", "cost"):
+                    v = fuel.get(k)
+                    if v is not None:
+                        if not _is_finite_number(v):
+                            problems.append(
+                                f"country {tag!r}.economy.fuel.{k} {v!r} "
+                                "not number|null")
+                        elif abs(v) > FUEL_MEASURE_ABS_MAX:
                             problems.append(
                                 f"country {tag!r}.economy.fuel.{k} {v!r} "
                                 "out of range")

@@ -253,7 +253,87 @@ def resolve_province_control_preflight(
                                 ),
                             )
                     cache_diag["validation"] = validation_error
+                    if state_ctrl:
+                        provinces, rebuilt_ptr2tagid, bootstrap_error = (
+                            province_rows_from_state_bootstrap(
+                                proc,
+                                table,
+                                base,
+                                slots,
+                                state_ctrl,
+                                prov_to_state,
+                                pc,
+                                min_rows=int(min_rows),
+                            )
+                        )
+                        if bootstrap_error is None:
+                            cache_diag["status"] = (
+                                "rebuilt" if _write_province_array_cache(
+                                    cache_path,
+                                    identity,
+                                    base,
+                                    slots,
+                                    rebuilt_ptr2tagid,
+                                    len(provinces),
+                                )
+                                else "rebuild_store_failed"
+                            )
+                            return _province_resolved_status(
+                                provinces,
+                                base,
+                                slots,
+                                rebuilt_ptr2tagid,
+                                pc,
+                                source="province_array_cache_rebuilt_bridge",
+                                cache=cache_diag,
+                                state_bridge=state_bridge_diag,
+                            )
+                        cache_diag["bootstrap_validation"] = bootstrap_error
                     cache_diag["status"] = "stale"
+                elif state_ctrl:
+                    candidate = _load_province_array_bootstrap_candidate(
+                        cache_path,
+                        identity,
+                    )
+                    if candidate is not None:
+                        base = int(candidate["base"])
+                        slots = int(candidate["slots"])
+                        provinces, rebuilt_ptr2tagid, bootstrap_error = (
+                            province_rows_from_state_bootstrap(
+                                proc,
+                                table,
+                                base,
+                                slots,
+                                state_ctrl,
+                                prov_to_state,
+                                pc,
+                                min_rows=int(min_rows),
+                            )
+                        )
+                        if bootstrap_error is None:
+                            cache_diag["status"] = (
+                                "bootstrap_stored" if _write_province_array_cache(
+                                    cache_path,
+                                    identity,
+                                    base,
+                                    slots,
+                                    rebuilt_ptr2tagid,
+                                    len(provinces),
+                                )
+                                else "bootstrap_store_failed"
+                            )
+                            return _province_resolved_status(
+                                provinces,
+                                base,
+                                slots,
+                                rebuilt_ptr2tagid,
+                                pc,
+                                source="province_array_cache_bootstrap",
+                                cache=cache_diag,
+                                state_bridge=state_bridge_diag,
+                            )
+                        cache_diag["bootstrap_validation"] = bootstrap_error
+                        cache_diag["status"] = "bootstrap_stale"
 
             if allow_cold_scan and not state_ctrl:
                 layer = sdl.StateDetailLive.resolve(proc)
@@ -493,6 +573,143 @@ def province_ptr_bridge_from_cached_base(
     if not (min_controllers <= len(ptr2tagid) <= max_controllers):
         return {}
     return ptr2tagid
+
+
+def province_rows_from_state_bootstrap(
+    proc: Any,
+    table: Any,
+    base: int,
+    slots: int,
+    state_ctrl: Dict[int, int],
+    prov_to_state: Dict[int, int],
+    province_module: Any,
+    *,
+    min_rows: int,
+) -> tuple[Dict[str, Dict[str, Any]], Dict[int, int], Optional[str]]:
+    ptr2tagid, validation_error = province_ptr_bridge_from_state_bootstrap(
+        proc,
+        base,
+        slots,
+        state_ctrl,
+        prov_to_state,
+        province_module,
+        table,
+        min_expected=min(max(int(min_rows), 2), 100),
+    )
+    if validation_error is not None:
+        return {}, {}, validation_error
+    provinces = province_rows_from_cached_base(
+        proc,
+        table,
+        base,
+        slots,
+        ptr2tagid,
+        prov_to_state,
+        province_module,
+    )
+    if len(provinces) < int(min_rows):
+        return {}, {}, "insufficient_rows"
+    return provinces, ptr2tagid, None
+
+
+def province_ptr_bridge_from_state_bootstrap(
+    proc: Any,
+    base: int,
+    slots: int,
+    state_ctrl: Dict[int, int],
+    prov_to_state: Dict[int, int],
+    province_module: Any,
+    table: Any,
+    *,
+    min_expected: int = 100,
+) -> tuple[Dict[int, int], Optional[str]]:
+    """Rebuild ``controller pointer -> tag-db-id`` from a cached array base.
+
+    The cached base is only a candidate. It must still partition province slots
+    like the native locator expects, and the rebuilt bridge must pass the normal
+    scheduled slot-span validator before callers publish it.
+    """
+    partition_error = province_array_state_partition_validation_error(
+        proc,
+        base,
+        slots,
+        state_ctrl,
+        prov_to_state,
+        province_module,
+        min_expected=min_expected,
+    )
+    if partition_error is not None:
+        return {}, partition_error
+    ptr2tagid = province_ptr_bridge_from_cached_base(
+        proc,
+        base,
+        slots,
+        state_ctrl,
+        prov_to_state,
+        province_module,
+    )
+    validation_error = province_array_cache_validation_error(
+        proc,
+        base,
+        slots,
+        ptr2tagid,
+        table,
+        prov_to_state,
+        province_module,
+        state_ctrl=state_ctrl,
+    )
+    if validation_error is not None:
+        return {}, validation_error
+    return ptr2tagid, None
+
+
+def province_array_state_partition_validation_error(
+    proc: Any,
+    base: int,
+    slots: int,
+    state_ctrl: Dict[int, int],
+    prov_to_state: Dict[int, int],
+    province_module: Any,
+    *,
+    min_expected: int = 100,
+    mismatch_budget: int = 40,
+) -> Optional[str]:
+    """Validate a candidate array base against state-derived controller groups."""
+    if not _province_base_slots_valid(base, slots, prov_to_state, province_module):
+        return "base_slots_invalid"
+    stride = int(getattr(province_module, "PROV_STRIDE", 8))
+    heap_lo = int(getattr(province_module, "HEAP_LO", 1))
+    heap_hi = int(getattr(province_module, "HEAP_HI", 1 << 63))
+    expected = {
+        int(prov): int(state_ctrl[int(st)])
+        for prov, st in prov_to_state.items()
+        if int(prov) < int(slots) and int(state_ctrl.get(int(st), 0) or 0) > 0
+    }
+    if len(expected) < int(min_expected):
+        return "state_partition_insufficient_expected"
+    ptr_to_tag: Dict[int, int] = {}
+    tag_to_ptr: Dict[int, int] = {}
+    bad = 0
+    for prov, tag_id in sorted(expected.items()):
+        try:
+            ptr = int(proc.u64(int(base) + int(prov) * stride))
+        except Exception:
+            return "province_array_unreadable"
+        if ptr == 0 or not (heap_lo <= ptr < heap_hi):
+            bad += 1
+        elif ptr in ptr_to_tag and ptr_to_tag[ptr] != tag_id:
+            bad += 1
+        elif tag_id in tag_to_ptr and tag_to_ptr[tag_id] != ptr:
+            bad += 1
+        else:
+            ptr_to_tag[ptr] = tag_id
+            tag_to_ptr[tag_id] = ptr
+        if bad > int(mismatch_budget):
+            return "state_partition_conflict"
+    min_controllers = int(getattr(province_module, "MIN_CONTROLLERS", 2))
+    if len(ptr_to_tag) < min_controllers:
+        return "state_partition_insufficient_controllers"
+    return None
 
 
 def province_rows_from_cached_base(
@@ -813,6 +1030,34 @@ def _state_status(
     )
 
 
+def _province_resolved_status(
+    provinces: Dict[str, Dict[str, Any]],
+    base: int,
+    slots: int,
+    ptr2tagid: Dict[int, int],
+    province_module: Any,
+    *,
+    source: str,
+    cache: Optional[Dict[str, Any]] = None,
+    state_bridge: Optional[Dict[str, Any]] = None,
+) -> ProvinceControlPreflight:
+    return _province_status(
+        "resolved",
+        provinces,
+        source=source,
+        cache=cache,
+        state_bridge=state_bridge,
+        slots=slots,
+        pointer_bridge_count=len(ptr2tagid),
+        province_bridge_encoded=encode_map_control_province_bridge(
+            base,
+            slots,
+            province_module,
+        ),
+        controller_bridge_encoded=encode_map_control_controller_bridge(ptr2tagid),
+    )
+
+
 def _province_status(
     status: str,
     provinces: Dict[str, Dict[str, Any]],
@@ -951,6 +1196,9 @@ def _province_diagnostics(
             diagnostics["cache"]["tag_table_source"] = str(cache["tag_table_source"])
         if cache.get("validation"):
             diagnostics["cache"]["validation"] = str(cache["validation"])
+        if cache.get("bootstrap_validation"):
+            diagnostics["cache"]["bootstrap_validation"] = str(
+                cache["bootstrap_validation"])
     if state_bridge is not None:
         diagnostics["state_bridge"] = {
             "cache_enabled": bool(state_bridge.get("cache_enabled")),
@@ -1095,6 +1343,32 @@ def _load_province_array_cache(
     if slots <= 0 or slots > MAX_CACHED_PROVINCE_SLOTS:
         return None
     if len(_coerce_ptr_bridge(payload.get("ptr2tagid"))) < 2:
+        return None
+    return payload
+
+
+def _load_province_array_bootstrap_candidate(
+    cache_path: Path,
+    identity: _process_identity.ProcessIdentity,
+) -> Optional[Dict[str, Any]]:
+    try:
+        payload = json.loads(Path(cache_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("type") != "province_control_preflight_cache_v1":
+        return None
+    cached_hash = payload.get("exe_sha256")
+    if not identity.exe_sha256 or cached_hash != identity.exe_sha256:
+        return None
+    base = payload.get("base")
+    slots = payload.get("slots")
+    if not isinstance(base, int) or not isinstance(slots, int):
+        return None
+    if base <= 0 or base % 8 != 0:
+        return None
+    if slots <= 0 or slots > MAX_CACHED_PROVINCE_SLOTS:
         return None
     return payload
 

@@ -112,12 +112,19 @@ mod attach_log {
     const OBJ_STABILITY: usize = 0x10D0;
     const OBJ_WAR_SUPPORT: usize = 0x10D8;
     const OBJ_CONVOYS: usize = 0x1280;
+    const OBJ_ACE_COUNT: usize = 0x12E4;
     const OBJ_ORIGINAL_TAG: usize = 0x130C;
     const OBJ_NUM_SHIPS: usize = 0x1330;
+    const OBJ_CONVOYS_DESTROYED: usize = 0x1334;
+    const OBJ_COSMETIC_TAG: usize = 0x1488;
     const OBJ_RESERVED_DYNAMIC_COUNTRY: usize = 0x145D;
+    const OBJ_ACCIDENTS_SCORE: usize = 0x14E8;
     const FUEL_STATUS_CURRENT: usize = 0x08;
     const FUEL_STATUS_MAX: usize = 0x10;
+    const FUEL_STATUS_GAIN: usize = 0x18;
+    const FUEL_STATUS_COST: usize = 0x38;
     const FUEL_SCALE: f64 = 32768.0;
+    const MAX_FUEL_MEASURE: f64 = 1_000_000_000.0;
     const VARIANT_VTABLE_RVA: usize = 0x292B218;
     const VARIANT_TYPE: u32 = 70;
     const STOCK_BEGIN: usize = 0x220;
@@ -177,6 +184,10 @@ mod attach_log {
     const MAX_DIVISION_STRENGTH_RAW: u32 = 1_000_000_000;
     const DIVISION_DELTA_BUCKET_RAW: u32 = 1_000;
     const FP_SCALE: f64 = 100000.0;
+    const MAX_COUNTRY_ACE_COUNT: u32 = 100_000;
+    const MAX_COUNTRY_CONVOYS_DESTROYED: u32 = 100_000_000;
+    const MAX_COUNTRY_ACCIDENTS_SCORE: f64 = 10.0;
+    const MAX_COUNTRY_COSMETIC_TAG_LEN: usize = 96;
     const DAILY_UPDATE_SENTINEL: [u8; 16] = [
         0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8D,
         0xAC,
@@ -1662,14 +1673,34 @@ mod attach_log {
         num_ships: Option<i32>,
         manpower_pool: Option<u32>,
         convoys: Option<f64>,
+        misc: Option<CountryMiscRow>,
         fuel: Option<CountryFuelRow>,
         production: Option<CountryProductionRow>,
+    }
+
+    #[derive(Clone)]
+    struct CountryMiscRow {
+        convoys_destroyed: Option<u32>,
+        accidents_score: Option<f64>,
+        ace_count: Option<u32>,
+        cosmetic_tag: Option<Option<String>>,
+    }
+
+    impl CountryMiscRow {
+        fn has_any(&self) -> bool {
+            self.convoys_destroyed.is_some()
+                || self.accidents_score.is_some()
+                || self.ace_count.is_some()
+                || self.cosmetic_tag.is_some()
+        }
     }
 
     #[derive(Clone, Copy)]
     struct CountryFuelRow {
         current: f64,
         max: f64,
+        gain: f64,
+        cost: f64,
     }
 
     #[derive(Clone)]
@@ -1855,6 +1886,9 @@ mod attach_log {
             let mut domains = vec!["\"clock\"", "\"country_identity\""];
             if !current_rows.is_empty() {
                 domains.push("\"country_scalars\"");
+            }
+            if current_rows.iter().any(|row| row.misc.is_some()) {
+                domains.push("\"country_misc\"");
             }
             if include_scheduled_country_fuel && current_rows.iter().any(|row| row.fuel.is_some()) {
                 domains.push("\"fuel_live\"");
@@ -2360,6 +2394,7 @@ mod attach_log {
                 }
             }),
             convoys: read_fixed_nonnegative(object_ptr + OBJ_CONVOYS, 1_000_000.0),
+            misc: read_country_misc(object_ptr),
             fuel: if include_scheduled_country_fuel {
                 read_country_fuel(object_ptr)
             } else {
@@ -2420,6 +2455,27 @@ mod attach_log {
         }
     }
 
+    fn read_country_misc(object_ptr: usize) -> Option<CountryMiscRow> {
+        let row = CountryMiscRow {
+            convoys_destroyed: read_u32_stable(object_ptr + OBJ_CONVOYS_DESTROYED)
+                .filter(|v| *v <= MAX_COUNTRY_CONVOYS_DESTROYED),
+            accidents_score: read_i32_stable(object_ptr + OBJ_ACCIDENTS_SCORE)
+                .map(|v| v as f64 / FP_SCALE)
+                .filter(|v| v.is_finite() && (0.0..=MAX_COUNTRY_ACCIDENTS_SCORE).contains(v)),
+            ace_count: read_u32_stable(object_ptr + OBJ_ACE_COUNT)
+                .filter(|v| *v <= MAX_COUNTRY_ACE_COUNT),
+            cosmetic_tag: read_stable_msvc_token_nullable(
+                object_ptr + OBJ_COSMETIC_TAG,
+                MAX_COUNTRY_COSMETIC_TAG_LEN,
+            ),
+        };
+        if row.has_any() {
+            Some(row)
+        } else {
+            None
+        }
+    }
+
     fn country_record_political_power(record_ptr: usize, object_ptr: usize) -> Option<f64> {
         if read_u64(record_ptr + COUNTRY_RECORD_OBJECT_PTR)? as usize != object_ptr {
             return None;
@@ -2439,17 +2495,30 @@ mod attach_log {
         }
         let current = read_i64(fuel_status + FUEL_STATUS_CURRENT)? as f64 / FUEL_SCALE;
         let max = read_i64(fuel_status + FUEL_STATUS_MAX)? as f64 / FUEL_SCALE;
-        if current.is_finite()
-            && max.is_finite()
-            && current >= 0.0
-            && max >= 0.0
-            && current <= 1_000_000_000.0
-            && max <= 1_000_000_000.0
+        let gain = read_i64(fuel_status + FUEL_STATUS_GAIN)? as f64 / FUEL_SCALE;
+        let cost = read_i64(fuel_status + FUEL_STATUS_COST)? as f64 / FUEL_SCALE;
+        if valid_nonnegative_fuel_measure(current)
+            && valid_nonnegative_fuel_measure(max)
+            && valid_signed_fuel_measure(gain)
+            && valid_signed_fuel_measure(cost)
         {
-            Some(CountryFuelRow { current, max })
+            Some(CountryFuelRow {
+                current,
+                max,
+                gain,
+                cost,
+            })
         } else {
             None
         }
+    }
+
+    fn valid_nonnegative_fuel_measure(value: f64) -> bool {
+        value.is_finite() && (0.0..=MAX_FUEL_MEASURE).contains(&value)
+    }
+
+    fn valid_signed_fuel_measure(value: f64) -> bool {
+        value.is_finite() && value.abs() <= MAX_FUEL_MEASURE
     }
 
     fn read_country_production(
@@ -2605,13 +2674,16 @@ mod attach_log {
         let num_ships = json_opt_i32(row.num_ships);
         let manpower_pool = json_opt_u32(row.manpower_pool);
         let convoys = json_opt_f64(row.convoys);
+        let misc = row.misc.as_ref().map(country_misc_json).unwrap_or_default();
         let fuel = if include_scheduled_country_fuel {
             row.fuel
                 .map(|fuel| {
                     format!(
-                        ",\"fuel\":{{\"current\":{},\"max\":{}}}",
+                        ",\"fuel\":{{\"current\":{},\"max\":{},\"gain\":{},\"cost\":{}}}",
                         json_opt_f64(Some(fuel.current)),
-                        json_opt_f64(Some(fuel.max))
+                        json_opt_f64(Some(fuel.max)),
+                        json_opt_f64(Some(fuel.gain)),
+                        json_opt_f64(Some(fuel.cost))
                     )
                 })
                 .unwrap_or_default()
@@ -2640,9 +2712,33 @@ mod attach_log {
              \"command_power\":{command_power},\
              \"num_ships\":{num_ships},\
              \"manpower_pool\":{manpower_pool},\
-             \"convoys\":{convoys}}}{fuel}{production}}}",
+             \"convoys\":{convoys}}}{misc}{fuel}{production}}}",
             row.tag, row.object_ptr, row.tag_db_id
         )
+    }
+
+    fn country_misc_json(misc: &CountryMiscRow) -> String {
+        let mut fields = Vec::new();
+        if let Some(value) = misc.convoys_destroyed {
+            fields.push(format!("\"convoys_destroyed\":{value}"));
+        }
+        if let Some(value) = misc.accidents_score {
+            fields.push(format!("\"accidents_score\":{}", json_opt_f64(Some(value))));
+        }
+        if let Some(value) = misc.ace_count {
+            fields.push(format!("\"ace_count\":{value}"));
+        }
+        if let Some(value) = &misc.cosmetic_tag {
+            fields.push(format!(
+                "\"cosmetic_tag\":{}",
+                json_opt_str(value.as_deref())
+            ));
+        }
+        if fields.is_empty() {
+            String::new()
+        } else {
+            format!(",\"misc\":{{{}}}", fields.join(","))
+        }
     }
 
     fn country_production_json(production: &CountryProductionRow) -> String {
@@ -2731,6 +2827,26 @@ mod attach_log {
 
     fn read_i32(addr: usize) -> Option<i32> {
         read_u32(addr).map(|v| v as i32)
+    }
+
+    fn read_i32_stable(addr: usize) -> Option<i32> {
+        let first = read_i32(addr)?;
+        let second = read_i32(addr)?;
+        if first == second {
+            Some(first)
+        } else {
+            None
+        }
+    }
+
+    fn read_u32_stable(addr: usize) -> Option<u32> {
+        let first = read_u32(addr)?;
+        let second = read_u32(addr)?;
+        if first == second {
+            Some(first)
+        } else {
+            None
+        }
     }
 
     fn read_i64(addr: usize) -> Option<i64> {
@@ -2875,6 +2991,45 @@ mod attach_log {
             return None;
         }
         String::from_utf8(raw.to_vec()).ok()
+    }
+
+    fn read_stable_msvc_token_nullable(addr: usize, max_len: usize) -> Option<Option<String>> {
+        let first = read_msvc_token_nullable(addr, max_len)?;
+        let second = read_msvc_token_nullable(addr, max_len)?;
+        if first == second {
+            Some(first)
+        } else {
+            None
+        }
+    }
+
+    fn read_msvc_token_nullable(addr: usize, max_len: usize) -> Option<Option<String>> {
+        let size = read_u64(addr + 0x10)? as usize;
+        let cap = read_u64(addr + 0x18)? as usize;
+        if size > max_len || cap < size || cap > (1 << 20) {
+            return None;
+        }
+        if size == 0 {
+            return if cap < 16 { Some(None) } else { None };
+        }
+        let chars_addr = if cap < 16 {
+            addr
+        } else {
+            read_u64(addr)? as usize
+        };
+        let bytes = read_bytes(chars_addr, size + 1)?;
+        if bytes.get(size).copied() != Some(0) {
+            return None;
+        }
+        let raw = &bytes[..size];
+        if !raw.iter().all(|b| is_cosmetic_token_byte(*b)) {
+            return None;
+        }
+        Some(Some(String::from_utf8(raw.to_vec()).ok()?))
+    }
+
+    fn is_cosmetic_token_byte(value: u8) -> bool {
+        value.is_ascii_alphanumeric() || value == b'_' || value == b'-'
     }
 
     fn is_country_tag(tag: &str) -> bool {
@@ -3923,6 +4078,7 @@ mod attach_log {
                 num_ships: Some(7),
                 manpower_pool: Some(123456),
                 convoys: Some(99.0),
+                misc: None,
                 fuel: None,
                 production: None,
             };
@@ -3935,6 +4091,47 @@ mod attach_log {
             assert!(json.contains("\"political_power\":7.25"));
             assert!(json.contains("\"manpower_pool\":123456"));
             assert!(!json.contains("\"fuel\""));
+        }
+
+        #[test]
+        fn country_object_row_json_includes_country_misc_fields() {
+            let row = CountryObjectRow {
+                tag: "POR".to_string(),
+                tag_db_id: 47,
+                name: "Portugal".to_string(),
+                object_ptr: 0x1234,
+                record_ptr: Some(0x5000),
+                original_capital: None,
+                original_tag: None,
+                templates_locked: None,
+                reserved_dynamic_country: None,
+                stability: None,
+                war_support: None,
+                political_power: None,
+                command_power: None,
+                num_ships: None,
+                manpower_pool: None,
+                convoys: None,
+                misc: Some(CountryMiscRow {
+                    convoys_destroyed: Some(12),
+                    accidents_score: Some(0.5),
+                    ace_count: Some(3),
+                    cosmetic_tag: Some(None),
+                }),
+                fuel: None,
+                production: None,
+            };
+
+            let json = row_json(&row, false, false);
+
+            assert!(json.contains("\"misc\""));
+            assert!(json.contains("\"convoys_destroyed\":12"));
+            assert!(json.contains("\"accidents_score\":0.5"));
+            assert!(json.contains("\"ace_count\":3"));
+            assert!(json.contains("\"cosmetic_tag\":null"));
+            let cache = CountryIdentityCache::not_attempted("test");
+            let domains = cache.domains_json_from_rows(&[row], false, false, false, false);
+            assert!(domains.contains("\"country_misc\""));
         }
 
         #[test]
@@ -3956,9 +4153,12 @@ mod attach_log {
                 num_ships: None,
                 manpower_pool: None,
                 convoys: None,
+                misc: None,
                 fuel: Some(CountryFuelRow {
                     current: 123.5,
                     max: 456.25,
+                    gain: 7.5,
+                    cost: -2.25,
                 }),
                 production: None,
             };
@@ -3966,7 +4166,9 @@ mod attach_log {
             let scheduled = row_json(&row, true, false);
             let worker = row_json(&row, false, false);
 
-            assert!(scheduled.contains("\"fuel\":{\"current\":123.5,\"max\":456.25}"));
+            assert!(scheduled.contains(
+                "\"fuel\":{\"current\":123.5,\"max\":456.25,\"gain\":7.5,\"cost\":-2.25}"
+            ));
             assert!(!worker.contains("\"fuel\""));
         }
 
@@ -3989,6 +4191,7 @@ mod attach_log {
                 num_ships: None,
                 manpower_pool: None,
                 convoys: None,
+                misc: None,
                 fuel: None,
                 production: Some(CountryProductionRow {
                     stockpile: Some(vec![
@@ -4044,6 +4247,7 @@ mod attach_log {
                 num_ships: None,
                 manpower_pool: None,
                 convoys: None,
+                misc: None,
                 fuel: None,
                 production: Some(CountryProductionRow {
                     stockpile: None,

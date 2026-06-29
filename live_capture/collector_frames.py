@@ -31,6 +31,7 @@ FRAME_TYPES = frozenset({
 SUPPORTED_SNAPSHOT_DOMAINS = frozenset({
     "clock",
     "country_identity",
+    "country_misc",
     "country_scalars",
     "fuel_live",
     "production_live",
@@ -58,6 +59,17 @@ PRODUCTION_LINE_ID_MAX = 10_000_000
 PRODUCTION_FACTORY_COUNT_MAX = 100_000
 PRODUCTION_LINE_AMOUNT_MAX = 2_147_483_647
 PRODUCTION_FIXED_POINT_ABS_MAX = 1_000_000_000_000.0
+FUEL_MEASURE_ABS_MAX = 1_000_000_000.0
+COUNTRY_MISC_ACE_COUNT_MAX = 100_000
+COUNTRY_MISC_CONVOYS_DESTROYED_MAX = 100_000_000
+COUNTRY_MISC_ACCIDENTS_SCORE_MAX = 10.0
+COUNTRY_MISC_TOKEN_MAX_LENGTH = 96
+COUNTRY_MISC_PAYLOAD_KEYS = frozenset((
+    "convoys_destroyed",
+    "accidents_score",
+    "ace_count",
+    "cosmetic_tag",
+))
 PRODUCTION_PAYLOAD_KEYS = frozenset((
     "stockpile",
     "stockpile_total",
@@ -105,6 +117,28 @@ RAW_DIVISION_MOVEMENT_FIELDS = frozenset((
     "strength",
     "combat_ref_count",
     "in_combat",
+))
+RAW_LAND_COMBAT_ID_MAX = 2_147_483_647
+RAW_LAND_COMBAT_GENERATION_MAX = RAW_SEQUENCE_MAX
+RAW_LAND_COMBAT_PROVINCE_ID_MAX = 1_000_000
+RAW_LAND_COMBAT_AGE_DAYS_MAX = 100_000
+RAW_LAND_COMBAT_PARTICIPANTS_MAX = RAW_CONTAINER_MAX_ENTRIES
+RAW_LAND_COMBAT_SIDE_STATUSES = frozenset((
+    "exact",
+    "unknown",
+    "validation_failed",
+))
+RAW_LAND_COMBAT_FIELDS = frozenset((
+    "combat_key",
+    "combat_id",
+    "generation",
+    "location",
+    "day",
+    "duration",
+    "attacker_divisions",
+    "defender_divisions",
+    "attacker_status",
+    "defender_status",
 ))
 RAW_FORBIDDEN_KEY_NAMES = frozenset((
     "addr",
@@ -330,6 +364,8 @@ def snapshot_from_root_probe_frame(frame: Dict[str, Any], game_id: str) -> Dict[
         domains.append("country_identity")
     if _has_country_scalar_rows(frame_countries):
         domains.append("country_scalars")
+    if _has_country_misc_rows(frame_countries):
+        domains.append("country_misc")
     frame_states = frame.get("states") or {}
     frame_provinces = frame.get("provinces") or {}
     claimed_domains = _explicit_scheduled_domains(frame, root_probe)
@@ -352,6 +388,7 @@ def snapshot_from_root_probe_frame(frame: Dict[str, Any], game_id: str) -> Dict[
     snap["provenance"]["collector"]["root_probe"] = root_probe
     _fold_country_identity(snap, frame_countries)
     _fold_country_scalars(snap, frame_countries)
+    _fold_country_misc(snap, frame_countries, domains)
     _fold_country_fuel(snap, frame_countries, domains)
     _fold_country_production(snap, frame_countries, domains)
     _fold_state_rows(snap, frame_states, domains)
@@ -401,6 +438,7 @@ def snapshot_from_collector_frame(frame: Dict[str, Any], game_id: str) -> Dict[s
     snap["provenance"]["collector"] = _collector_provenance(frame, domains)
     _fold_country_identity(snap, frame.get("countries") or {})
     _fold_country_scalars(snap, frame.get("countries") or {})
+    _fold_country_misc(snap, frame.get("countries") or {}, domains)
     _fold_country_fuel(snap, frame.get("countries") or {}, domains)
     _fold_country_production(snap, frame.get("countries") or {}, domains)
     _fold_state_rows(snap, frame.get("states") or {}, domains)
@@ -580,6 +618,8 @@ def _validate_raw_domain_delta_payload(
                 )
     if _looks_like_division_movement_delta(frame, payload):
         problems.extend(_validate_raw_division_movement_delta(frame, payload))
+    if frame.get("domain") == "land_combats":
+        problems.extend(_validate_raw_land_combat_delta(frame, payload))
     return problems
 
 
@@ -725,6 +765,142 @@ def _validate_raw_division_movement_row(
     return problems
 
 
+def _validate_raw_land_combat_delta(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> List[str]:
+    problems: List[str] = []
+    entity_uid = _parse_raw_land_combat_entity_key(frame.get("entity_key"))
+    if entity_uid is None:
+        problems.append(
+            "collector land combat delta entity_key not stable land_combat key"
+        )
+    if _contains_forbidden_raw_key(payload):
+        problems.append(
+            "collector land combat delta payload contains raw pointer/tag-db "
+            "diagnostic key"
+        )
+    changed_fields = payload.get("changed_fields")
+    if isinstance(changed_fields, list):
+        for i, field in enumerate(changed_fields):
+            if _forbidden_raw_key_name(field):
+                problems.append(
+                    "collector land combat delta "
+                    f"changed_fields[{i}] raw pointer/tag-db diagnostic key"
+                )
+    for row_key in ("before", "after"):
+        row = payload.get(row_key)
+        if isinstance(row, dict):
+            problems.extend(_validate_raw_land_combat_row(
+                row,
+                f"collector land combat delta {row_key}",
+                entity_uid,
+                require_identity=(row_key == "after"),
+            ))
+    return problems
+
+
+def _validate_raw_land_combat_row(
+    row: Dict[str, Any],
+    prefix: str,
+    entity_uid: Optional[tuple[int, int]],
+    *,
+    require_identity: bool,
+) -> List[str]:
+    problems: List[str] = []
+    for key in row:
+        if key not in RAW_LAND_COMBAT_FIELDS:
+            problems.append(f"{prefix}.{key} unsupported")
+
+    combat_key = row.get("combat_key")
+    if combat_key is not None:
+        parsed_key = _parse_raw_land_combat_entity_key(combat_key)
+        if parsed_key is None:
+            problems.append(f"{prefix}.combat_key not stable land_combat key|null")
+        elif entity_uid is not None and parsed_key != entity_uid:
+            problems.append(f"{prefix}.combat_key != entity_key")
+    elif require_identity:
+        problems.append(f"{prefix}.combat_key missing")
+
+    combat_id = row.get("combat_id")
+    generation = row.get("generation")
+    if combat_id is None:
+        if require_identity:
+            problems.append(f"{prefix}.combat_id missing")
+    elif not _valid_bounded_int(
+        combat_id,
+        minimum=1,
+        maximum=RAW_LAND_COMBAT_ID_MAX,
+    ):
+        problems.append(f"{prefix}.combat_id not positive int|null in range")
+    elif entity_uid is not None and combat_id != entity_uid[0]:
+        problems.append(f"{prefix}.combat_id != entity_key")
+
+    if generation is None:
+        if require_identity:
+            problems.append(f"{prefix}.generation missing")
+    elif not _valid_bounded_int(
+        generation,
+        minimum=0,
+        maximum=RAW_LAND_COMBAT_GENERATION_MAX,
+    ):
+        problems.append(f"{prefix}.generation not nonnegative int|null in range")
+    elif entity_uid is not None and generation != entity_uid[1]:
+        problems.append(f"{prefix}.generation != entity_key")
+
+    location = row.get("location")
+    if location is not None and not _valid_bounded_int(
+        location,
+        minimum=1,
+        maximum=RAW_LAND_COMBAT_PROVINCE_ID_MAX,
+    ):
+        problems.append(f"{prefix}.location not positive int|null in range")
+    for key in ("day", "duration"):
+        value = row.get(key)
+        if value is not None and not _valid_bounded_int(
+            value,
+            minimum=0,
+            maximum=RAW_LAND_COMBAT_AGE_DAYS_MAX,
+        ):
+            problems.append(f"{prefix}.{key} not nonnegative int|null in range")
+    for key in ("attacker_divisions", "defender_divisions"):
+        problems.extend(_validate_raw_land_combat_participants(
+            row.get(key),
+            f"{prefix}.{key}",
+        ))
+    for key in ("attacker_status", "defender_status"):
+        value = row.get(key)
+        if value is not None and value not in RAW_LAND_COMBAT_SIDE_STATUSES:
+            problems.append(f"{prefix}.{key} invalid")
+    return problems
+
+
+def _validate_raw_land_combat_participants(
+    value: Any,
+    prefix: str,
+) -> List[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return [f"{prefix} not list|null"]
+    problems: List[str] = []
+    if len(value) > RAW_LAND_COMBAT_PARTICIPANTS_MAX:
+        problems.append(f"{prefix} too many entries")
+    seen: set[int] = set()
+    for i, participant in enumerate(value):
+        if not _valid_bounded_int(
+            participant,
+            minimum=1,
+            maximum=RAW_DIVISION_ID_MAX,
+        ):
+            problems.append(f"{prefix}[{i}] not positive division id")
+            continue
+        if participant in seen:
+            problems.append(f"{prefix}[{i}] duplicate division id")
+        seen.add(participant)
+    return problems
+
+
 def _validate_raw_gap_payload(
     frame: Dict[str, Any],
     payload: Dict[str, Any],
@@ -828,6 +1004,26 @@ def _parse_raw_division_entity_key(value: Any) -> Optional[tuple[int, int]]:
     if not isinstance(value, str) or not value.startswith("division:"):
         return None
     return _parse_raw_division_uid(value[len("division:"):])
+
+
+def _parse_raw_land_combat_entity_key(value: Any) -> Optional[tuple[int, int]]:
+    if not isinstance(value, str) or not value.startswith("land_combat:"):
+        return None
+    raw = value[len("land_combat:"):]
+    parts = raw.split(":")
+    if len(parts) != 2:
+        return None
+    combat_id = _parse_raw_nonnegative_int_string(
+        parts[0],
+        maximum=RAW_LAND_COMBAT_ID_MAX,
+    )
+    generation = _parse_raw_nonnegative_int_string(
+        parts[1],
+        maximum=RAW_LAND_COMBAT_GENERATION_MAX,
+    )
+    if combat_id is None or combat_id == 0 or generation is None:
+        return None
+    return (combat_id, generation)
 
 
 def _parse_raw_division_uid(value: Any) -> Optional[tuple[int, int]]:
@@ -1035,6 +1231,57 @@ def _validate_country_rows(countries: Dict[str, Any]) -> List[str]:
                 elif value is not None and value < 0:
                     problems.append(
                         f"collector frame country {tag!r}.scalars.{key} out of range")
+        misc = row.get("misc")
+        if misc is not None:
+            if not isinstance(misc, dict):
+                problems.append(f"collector frame country {tag!r}.misc not dict|null")
+            else:
+                if present is not True:
+                    problems.append(
+                        f"collector frame country {tag!r}.misc requires present=true")
+                if not _has_valid_scalar_identity(row):
+                    problems.append(
+                        f"collector frame country {tag!r}.misc requires identity.tag_db_id")
+                if collector_object is None or not _valid_hex_pointer(collector_object):
+                    problems.append(
+                        f"collector frame country {tag!r}.misc requires hex collector_object")
+                if not any(key in misc for key in COUNTRY_MISC_PAYLOAD_KEYS):
+                    problems.append(
+                        f"collector frame country {tag!r}.misc has no measured leaves")
+                for key, maximum in (
+                    ("convoys_destroyed", COUNTRY_MISC_CONVOYS_DESTROYED_MAX),
+                    ("ace_count", COUNTRY_MISC_ACE_COUNT_MAX),
+                ):
+                    value = misc.get(key)
+                    if value is not None and not _valid_bounded_int(
+                        value, minimum=0, maximum=maximum
+                    ):
+                        problems.append(
+                            f"collector frame country {tag!r}.misc.{key} "
+                            "not int in range|null"
+                        )
+                accidents_score = misc.get("accidents_score")
+                if accidents_score is not None:
+                    if not _is_finite_number(accidents_score):
+                        problems.append(
+                            f"collector frame country {tag!r}.misc.accidents_score "
+                            "not number|null"
+                        )
+                    elif not (
+                        0.0
+                        <= float(accidents_score)
+                        <= COUNTRY_MISC_ACCIDENTS_SCORE_MAX
+                    ):
+                        problems.append(
+                            f"collector frame country {tag!r}.misc.accidents_score "
+                            "out of range"
+                        )
+                cosmetic_tag = misc.get("cosmetic_tag")
+                if cosmetic_tag is not None and not _valid_country_misc_token(cosmetic_tag):
+                    problems.append(
+                        f"collector frame country {tag!r}.misc.cosmetic_tag "
+                        "not token|null"
+                    )
         fuel = row.get("fuel")
         if fuel is not None:
             if not isinstance(fuel, dict):
@@ -1055,6 +1302,17 @@ def _validate_country_rows(countries: Dict[str, Any]) -> List[str]:
                         problems.append(
                             f"collector frame country {tag!r}.fuel.{key} not number|null")
                     elif value is not None and float(value) < 0.0:
+                        problems.append(
+                            f"collector frame country {tag!r}.fuel.{key} out of range")
+                    elif value is not None and float(value) > FUEL_MEASURE_ABS_MAX:
+                        problems.append(
+                            f"collector frame country {tag!r}.fuel.{key} out of range")
+                for key in ("gain", "cost"):
+                    value = fuel.get(key)
+                    if value is not None and not _is_finite_number(value):
+                        problems.append(
+                            f"collector frame country {tag!r}.fuel.{key} not number|null")
+                    elif value is not None and abs(float(value)) > FUEL_MEASURE_ABS_MAX:
                         problems.append(
                             f"collector frame country {tag!r}.fuel.{key} out of range")
         production = row.get("production")
@@ -1117,6 +1375,20 @@ def _valid_hex_pointer(value: Any) -> bool:
         return int(value[2:], 16) > 0
     except ValueError:
         return False
+
+
+def _valid_country_misc_token(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    if not (0 < len(value) <= COUNTRY_MISC_TOKEN_MAX_LENGTH):
+        return False
+    return all(
+        ("A" <= ch <= "Z")
+        or ("a" <= ch <= "z")
+        or ("0" <= ch <= "9")
+        or ch in "_-"
+        for ch in value
+    )
 
 
 def _is_finite_number(value: Any) -> bool:
@@ -1375,6 +1647,55 @@ def _fold_country_scalars(snap: Dict[str, Any], countries: Dict[str, Any]) -> No
             military["convoys_count"] = int(round(convoys))
 
 
+def _fold_country_misc(
+    snap: Dict[str, Any],
+    countries: Dict[str, Any],
+    domains: Iterable[str],
+) -> None:
+    if "country_misc" not in set(domains):
+        return
+    for tag, row in countries.items():
+        if not schema.valid_tag(tag) or not isinstance(row, dict):
+            continue
+        if row.get("present") is not True or not _has_valid_scalar_identity(row):
+            continue
+        misc = row.get("misc")
+        if not isinstance(misc, dict):
+            continue
+        clean: Dict[str, Any] = {}
+        convoys_destroyed = misc.get("convoys_destroyed")
+        if _valid_bounded_int(
+            convoys_destroyed,
+            minimum=0,
+            maximum=COUNTRY_MISC_CONVOYS_DESTROYED_MAX,
+        ):
+            clean["convoys_destroyed"] = convoys_destroyed
+        accidents_score = misc.get("accidents_score")
+        if (
+            _is_finite_number(accidents_score)
+            and 0.0 <= float(accidents_score) <= COUNTRY_MISC_ACCIDENTS_SCORE_MAX
+        ):
+            clean["accidents_score"] = float(accidents_score)
+        ace_count = misc.get("ace_count")
+        if _valid_bounded_int(
+            ace_count,
+            minimum=0,
+            maximum=COUNTRY_MISC_ACE_COUNT_MAX,
+        ):
+            clean["ace_count"] = ace_count
+        if "cosmetic_tag" in misc:
+            cosmetic_tag = misc.get("cosmetic_tag")
+            if cosmetic_tag is None or _valid_country_misc_token(cosmetic_tag):
+                clean["cosmetic_tag"] = cosmetic_tag
+        if clean:
+            country = snap["countries"].setdefault(tag, schema.empty_country())
+            country_misc = country.get("misc")
+            if not isinstance(country_misc, dict):
+                country_misc = {}
+                country["misc"] = country_misc
+            country_misc.update(clean)
+
+
 def _fold_country_fuel(
     snap: Dict[str, Any],
     countries: Dict[str, Any],
@@ -1392,11 +1713,23 @@ def _fold_country_fuel(
             continue
         clean: Dict[str, float] = {}
         current = fuel.get("current")
-        if _is_finite_number(current) and float(current) >= 0.0:
+        if (
+            _is_finite_number(current)
+            and 0.0 <= float(current) <= FUEL_MEASURE_ABS_MAX
+        ):
             clean["current"] = float(current)
         max_fuel = fuel.get("max")
-        if _is_finite_number(max_fuel) and float(max_fuel) >= 0.0:
+        if (
+            _is_finite_number(max_fuel)
+            and 0.0 <= float(max_fuel) <= FUEL_MEASURE_ABS_MAX
+        ):
             clean["max"] = float(max_fuel)
+        gain = fuel.get("gain")
+        if _is_finite_number(gain) and abs(float(gain)) <= FUEL_MEASURE_ABS_MAX:
+            clean["gain"] = float(gain)
+        cost = fuel.get("cost")
+        if _is_finite_number(cost) and abs(float(cost)) <= FUEL_MEASURE_ABS_MAX:
+            clean["cost"] = float(cost)
         if clean:
             country = snap["countries"].setdefault(tag, schema.empty_country())
             economy = country["economy"]
@@ -1640,6 +1973,18 @@ def _has_country_scalar_rows(countries: Any) -> bool:
         and isinstance(row, dict)
         and isinstance(row.get("scalars"), dict)
         and any(value is not None for value in row["scalars"].values())
+        for tag, row in countries.items()
+    )
+
+
+def _has_country_misc_rows(countries: Any) -> bool:
+    if not isinstance(countries, dict):
+        return False
+    return any(
+        schema.valid_tag(tag)
+        and isinstance(row, dict)
+        and isinstance(row.get("misc"), dict)
+        and any(key in row["misc"] for key in COUNTRY_MISC_PAYLOAD_KEYS)
         for tag, row in countries.items()
     )
 

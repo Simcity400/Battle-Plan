@@ -434,6 +434,84 @@ class TestCollectorFrames(unittest.TestCase):
                     (needle, problems),
                 )
 
+    def test_raw_land_combat_delta_frame_validates(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": None,
+                "after": {
+                    "combat_key": "land_combat:7:0",
+                    "combat_id": 7,
+                    "generation": 0,
+                    "location": 1234,
+                    "day": 3,
+                    "duration": 3,
+                    "attacker_divisions": [100, 101],
+                    "defender_divisions": None,
+                    "attacker_status": "exact",
+                    "defender_status": "validation_failed",
+                },
+                "changed_fields": [
+                    "combat_key",
+                    "combat_id",
+                    "generation",
+                    "location",
+                    "day",
+                    "duration",
+                    "attacker_divisions",
+                    "defender_divisions",
+                    "attacker_status",
+                    "defender_status",
+                ],
+            },
+            domain="land_combats",
+            entity_key="land_combat:7:0",
+            confidence="sampled",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_land_combat_delta_rejects_raw_leakage_and_bad_rows(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": None,
+                "after": {
+                    "combat_key": "land_combat:8:0",
+                    "combat_id": 8,
+                    "generation": True,
+                    "location": 0,
+                    "attacker_divisions": [100, 100, "x"],
+                    "defender_divisions": "unknown",
+                    "attacker_status": "measured",
+                    "body_ptr": "0x1234",
+                },
+                "changed_fields": ["location", "body_addr"],
+            },
+            domain="land_combats",
+            entity_key="land_combat:7:0",
+            confidence="sampled",
+        )
+
+        problems = validate_collector_frame(frame)
+
+        for needle in (
+            "payload contains raw pointer/tag-db diagnostic key",
+            "changed_fields[1] raw pointer/tag-db diagnostic key",
+            "after.body_ptr unsupported",
+            "after.combat_key != entity_key",
+            "after.combat_id != entity_key",
+            "after.generation not nonnegative int|null in range",
+            "after.location not positive int|null in range",
+            "after.attacker_divisions[1] duplicate division id",
+            "after.attacker_divisions[2] not positive division id",
+            "after.defender_divisions not list|null",
+            "after.attacker_status invalid",
+        ):
+            self.assertTrue(any(needle in p for p in problems), (needle, problems))
+
     def test_raw_domain_delta_frame_rejects_malformed_payload(self):
         frame = self._raw_frame(
             "domain_delta",
@@ -692,6 +770,137 @@ class TestCollectorFrames(unittest.TestCase):
         self.assertEqual(por["military"]["manpower"]["available"], 123456)
         self.assertEqual(por["military"]["convoys_count"], 99)
 
+    def test_snapshot_frame_folds_country_misc(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "domains": ["clock", "country_identity", "country_misc"],
+            "countries": {
+                "GER": {
+                    "present": True,
+                    "collector_object": "0x1234",
+                    "identity": {"tag_db_id": 1},
+                    "misc": {
+                        "convoys_destroyed": 12,
+                        "accidents_score": 0.5,
+                        "ace_count": 3,
+                        "cosmetic_tag": None,
+                    },
+                },
+                "SOV": {
+                    "present": True,
+                    "collector_object": "0x2000",
+                    "identity": {"tag_db_id": 2},
+                    "misc": {
+                        "convoys_destroyed": 0,
+                        "accidents_score": 0.0,
+                        "ace_count": 0,
+                        "cosmetic_tag": "SOV_communist",
+                    },
+                },
+            },
+        }
+
+        snap = snapshot_from_collector_frame(frame, "collector-test")
+
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        self.assertEqual(
+            snap["provenance"]["collector"]["domains"],
+            ["clock", "country_identity", "country_misc"],
+        )
+        ger = snap["countries"]["GER"]["misc"]
+        self.assertEqual(ger["convoys_destroyed"], 12)
+        self.assertEqual(ger["accidents_score"], 0.5)
+        self.assertEqual(ger["ace_count"], 3)
+        self.assertIn("cosmetic_tag", ger)
+        self.assertIsNone(ger["cosmetic_tag"])
+        sov = snap["countries"]["SOV"]["misc"]
+        self.assertEqual(sov["convoys_destroyed"], 0)
+        self.assertEqual(sov["accidents_score"], 0.0)
+        self.assertEqual(sov["ace_count"], 0)
+        self.assertEqual(sov["cosmetic_tag"], "SOV_communist")
+
+    def test_root_probe_frame_derives_country_misc_domain(self):
+        frame = {
+            "type": "collector_started",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "process_id": 32440,
+            "tick_ms": 158373765,
+            "quality_status": "root_probe_verified",
+            "countries": {
+                "GER": {
+                    "present": True,
+                    "collector_object": "0x1234",
+                    "identity": {"tag_db_id": 1},
+                    "misc": {"cosmetic_tag": None},
+                },
+            },
+            "root_probe": {
+                "status": "verified",
+                "profile": "vanilla_latest_2026_06_28",
+                "daily_update_sentinel_match": True,
+                "long_string_sentinel_match": True,
+                "current_game_date": "1936.6.15.7",
+                "current_game_date_raw": 60763326,
+                "start_date": "1936.1.1.12",
+                "start_date_raw": 60759371,
+                "country_tag_count": 474,
+                "country_active_count": 440,
+                "tag_sample": ["---", "GER", "ENG"],
+                "domains": ["clock", "country_identity"],
+            },
+        }
+
+        snap = snapshot_from_root_probe_frame(frame, "collector-test")
+
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        self.assertEqual(
+            snap["provenance"]["collector"]["domains"],
+            ["clock", "country_identity", "country_misc"],
+        )
+        self.assertIn("cosmetic_tag", snap["countries"]["GER"]["misc"])
+        self.assertIsNone(snap["countries"]["GER"]["misc"]["cosmetic_tag"])
+
+    def test_country_misc_rejects_malformed_values(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "domains": ["clock", "country_identity", "country_misc"],
+            "countries": {
+                "GER": {
+                    "present": True,
+                    "collector_object": "0x1234",
+                    "identity": {"tag_db_id": 1},
+                    "misc": {
+                        "convoys_destroyed": -1,
+                        "accidents_score": float("inf"),
+                        "ace_count": True,
+                        "cosmetic_tag": "bad tag!",
+                    },
+                },
+            },
+        }
+
+        problems = validate_collector_frame(frame)
+
+        for needle in (
+            "misc.convoys_destroyed",
+            "misc.accidents_score",
+            "misc.ace_count",
+            "misc.cosmetic_tag",
+        ):
+            self.assertTrue(any(needle in p for p in problems), (needle, problems))
+        with self.assertRaisesRegex(ValueError, "misc.convoys_destroyed"):
+            snapshot_from_collector_frame(frame, "collector-test")
+
     def test_country_scalars_reject_bool_and_non_finite_numbers(self):
         frame = {
             "type": "snapshot",
@@ -905,7 +1114,12 @@ class TestCollectorFrames(unittest.TestCase):
                     "present": True,
                     "collector_object": "0x1000",
                     "identity": {"tag_db_id": 47},
-                    "fuel": {"current": 123.5, "max": 456.25},
+                    "fuel": {
+                        "current": 123.5,
+                        "max": 456.25,
+                        "gain": 7.5,
+                        "cost": -2.25,
+                    },
                 },
             },
         }
@@ -919,6 +1133,8 @@ class TestCollectorFrames(unittest.TestCase):
         )
         self.assertEqual(snap["countries"]["POR"]["economy"]["fuel"]["current"], 123.5)
         self.assertEqual(snap["countries"]["POR"]["economy"]["fuel"]["max"], 456.25)
+        self.assertEqual(snap["countries"]["POR"]["economy"]["fuel"]["gain"], 7.5)
+        self.assertEqual(snap["countries"]["POR"]["economy"]["fuel"]["cost"], -2.25)
 
     def test_snapshot_frame_rejects_non_finite_or_bool_fuel_live(self):
         bad_values = (True, float("nan"), float("inf"))
@@ -949,6 +1165,42 @@ class TestCollectorFrames(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "fuel.current"):
                 snapshot_from_collector_frame(frame, "collector-test")
+
+    def test_snapshot_frame_rejects_non_finite_fuel_gain_and_cost(self):
+        bad_cases = (
+            ("gain", float("nan")),
+            ("cost", float("inf")),
+            ("cost", True),
+        )
+        for key, value in bad_cases:
+            with self.subTest(key=key, value=value):
+                frame = {
+                    "type": "snapshot",
+                    "backend": "in_process_collector",
+                    "collector_version": "0.1.0",
+                    "abi_version": 1,
+                    "date": "1936.1.2.1",
+                    "capture_boundary": "scheduled_hour_snapshot",
+                    "domains": ["clock", "country_identity", "fuel_live"],
+                    "countries": {
+                        "POR": {
+                            "present": True,
+                            "collector_object": "0x1000",
+                            "identity": {"tag_db_id": 47},
+                            "fuel": {"current": 123.5, "max": 456.25, key: value},
+                        },
+                    },
+                }
+
+                problems = validate_collector_frame(frame)
+
+                self.assertTrue(
+                    any(f"fuel.{key}" in p and "not number|null" in p
+                        for p in problems),
+                    (key, value, problems),
+                )
+                with self.assertRaisesRegex(ValueError, f"fuel.{key}"):
+                    snapshot_from_collector_frame(frame, "collector-test")
 
     def test_snapshot_frame_rejects_non_scheduled_fuel_live(self):
         frame = {

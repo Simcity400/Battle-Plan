@@ -949,10 +949,13 @@ through scheduled DLL frames. Province-control cache validation now mirrors the
 native scheduled reader more closely: it checks native bridge shape, slot-span
 readability, controller-pointer coverage, heap/range/alignment bounds, and
 tag-id limits before allowing cached province rows into normal recording.
+If a cached province base/slot candidate exists, the preflight can rebuild the
+controller-pointer bridge from current state controllers and still require the
+existing state-partition and scheduled slot-span validators before publishing.
 Cold province-array discovery remains opt-in and is not yet solved for normal
 startup; on the current new-game process, province preflight without a cache
-failed closed in 0.078s with `province_array_cache_unavailable` while the state
-bridge cache hit.
+failed closed with `province_array_cache_unavailable` while the state bridge
+cache hit.
 
 ### Phase 4: Economy And Production
 
@@ -966,6 +969,16 @@ Acceptance:
 
 - Economy tables and graphs are live-fed at replay cadence.
 - Daily rows are labelled as rollups only.
+
+Current status: scheduled DLL economy frames already emit `production_live`
+stockpile/line/factory totals and `fuel_live` current/max from validated
+country-object bridge rows. Fuel gain/cost are now also DLL-emitted from the
+fuel-status object, validated as bounded signed fixed-point values, and folded
+into `countries.*.economy.fuel.{gain,cost}`. Live speed-five proof on the
+current Portugal process advanced 12 game hours in 11.77s, verified replay
+output, observed `fuel_live` and `production_live`, and confirmed every sampled
+fuel row carried both `gain` and `cost`. Construction queue, market contracts,
+resource trade, and lend-lease remain separate follow-up DLL slices.
 
 ### Phase 5: Divisions And Land OOB
 
@@ -1005,6 +1018,17 @@ Acceptance:
 - Battles that persist across at least one collector boundary are captured.
 - Sub-boundary misses are counted as possible misses, not fabricated.
 
+Current status: raw `divisions` movement deltas are live-proven through cached
+division body pins. Land combat now has a bounded raw `land_combats`
+`domain_delta` contract and adapter/schema validation for stable
+`land_combat:<combat_id>:<generation>` identities, province/age scalars,
+nullable attacker/defender division lists, and pointer/tag-db leak rejection.
+The DLL must not emit land-combat samples yet: the current Python proof still
+finds `CLandCombat` bodies by heap vtable scan. The next unlock is a pinned
+active-combat root, dynamic bridge/cache refresh contract, or reviewed lifecycle
+hook; until then the correct collector output is a gap, not guessed combat
+samples.
+
 ### Phase 7: Focus, Tech, Decisions, Projects, Politics
 
 Deliver:
@@ -1017,6 +1041,13 @@ Acceptance:
 
 - Country deep-dive views can scrub political/research/focus/project state from
   live data.
+
+Current status: the DLL now emits a bounded `country_misc` slice from validated
+country-object bridge rows: `convoys_destroyed`, `accidents_score`,
+`ace_count`, and nullable `cosmetic_tag`. The adapter validates and folds these
+into `countries.*.misc`, and the live speed-five proof observed `country_misc`
+with no session errors. Focus, research, timed decisions, projects, and deeper
+political state still need dedicated manager/root contracts before promotion.
 
 ### Phase 8: Diplomacy, Intel, Market, Logistics, Weather
 

@@ -712,11 +712,165 @@ class TestCollectorMapBridge(unittest.TestCase):
         )
         self.assertNotIn("0x", str(diagnostics))
 
-    def test_province_preflight_stale_cache_without_cold_scan_fails_closed(self):
+    def test_province_preflight_stale_cache_rebuilds_pointer_bridge(self):
         proc = FakeProc()
         base = 0x4000
         proc.mem[0x3000 + FakeStateModule.OFF_CTRL] = 2
         _fill_province_slots(proc, base, 20)
+        proc.mem[base + 11 * FakeProvinceModule.PROV_STRIDE] = 0x8000
+        proc.mem[base + 12 * FakeProvinceModule.PROV_STRIDE] = 0x9000
+        prov_to_state = {11: 1, 12: 2}
+        identity = SimpleNamespace(
+            pid=111,
+            create_time_100ns=222,
+            exe_sha256="a" * 64,
+            module_base=proc.module_base,
+        )
+
+        def locate_array(unused_proc, unused_expected, diagnostics=None):
+            raise AssertionError("cold locator should not run")
+
+        original_state_min = cmb.MIN_USABLE_STATE_ROWS
+        try:
+            cmb.MIN_USABLE_STATE_ROWS = 2
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                cache_path = root / "province_control.json"
+                self.assertTrue(cmb._write_state_roots_cache(
+                    root / "state_roots.json",
+                    identity,
+                    {1: 0x2000, 2: 0x3000},
+                ))
+                self.assertTrue(cmb._write_province_array_cache(
+                    cache_path,
+                    identity,
+                    base,
+                    20,
+                    {0x8000: 1, 0xA000: 2},
+                    2,
+                ))
+                with patch.dict(
+                    sys.modules,
+                    _fake_resolve_modules(proc, prov_to_state, locate_array),
+                ), patch.object(
+                    cmb._process_identity,
+                    "identify",
+                    return_value=identity,
+                ), patch.object(
+                    cmb,
+                    "tag_table_from_country_database_root",
+                    return_value=FakeTable(),
+                ):
+                    result = cmb.resolve_province_control_preflight(
+                        111,
+                        min_rows=2,
+                        cache_path=cache_path,
+                        state_cache_path=root / "state_roots.json",
+                        allow_cold_scan=False,
+                    )
+                    loaded = cmb._load_province_array_cache(cache_path, identity)
+        finally:
+            cmb.MIN_USABLE_STATE_ROWS = original_state_min
+
+        self.assertEqual(result.status, "resolved")
+        self.assertEqual(result.row_count, 2)
+        self.assertEqual(result.provinces["11"]["controller"], "GER")
+        self.assertEqual(result.provinces["12"]["controller"], "ENG")
+        self.assertEqual(result.controller_bridge_encoded, "1:0x8000;2:0x9000")
+        self.assertEqual(result.diagnostics["source"],
+                         "province_array_cache_rebuilt_bridge")
+        self.assertEqual(result.diagnostics["cache"]["status"], "rebuilt")
+        self.assertEqual(
+            result.diagnostics["cache"]["validation"],
+            "pointer_bridge_mismatch",
+        )
+        self.assertEqual(cmb._coerce_ptr_bridge(loaded["ptr2tagid"]),
+                         {0x8000: 1, 0x9000: 2})
+
+    def test_province_preflight_previous_process_cache_bootstraps_from_state(self):
+        proc = FakeProc()
+        base = 0x4000
+        proc.mem[0x3000 + FakeStateModule.OFF_CTRL] = 2
+        _fill_province_slots(proc, base, 20)
+        proc.mem[base + 11 * FakeProvinceModule.PROV_STRIDE] = 0x8000
+        proc.mem[base + 12 * FakeProvinceModule.PROV_STRIDE] = 0x9000
+        prov_to_state = {11: 1, 12: 2}
+        identity = SimpleNamespace(
+            pid=111,
+            create_time_100ns=222,
+            exe_sha256="a" * 64,
+            module_base=proc.module_base,
+        )
+        old_identity = SimpleNamespace(
+            pid=111,
+            create_time_100ns=111,
+            exe_sha256="a" * 64,
+            module_base=proc.module_base,
+        )
+
+        def locate_array(unused_proc, unused_expected, diagnostics=None):
+            raise AssertionError("cold locator should not run")
+
+        original_state_min = cmb.MIN_USABLE_STATE_ROWS
+        try:
+            cmb.MIN_USABLE_STATE_ROWS = 2
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                cache_path = root / "province_control.json"
+                self.assertTrue(cmb._write_state_roots_cache(
+                    root / "state_roots.json",
+                    identity,
+                    {1: 0x2000, 2: 0x3000},
+                ))
+                self.assertTrue(cmb._write_province_array_cache(
+                    cache_path,
+                    old_identity,
+                    base,
+                    20,
+                    {0x8000: 1, 0xA000: 2},
+                    2,
+                ))
+                with patch.dict(
+                    sys.modules,
+                    _fake_resolve_modules(proc, prov_to_state, locate_array),
+                ), patch.object(
+                    cmb._process_identity,
+                    "identify",
+                    return_value=identity,
+                ), patch.object(
+                    cmb,
+                    "tag_table_from_country_database_root",
+                    return_value=FakeTable(),
+                ):
+                    self.assertIsNone(
+                        cmb._load_province_array_cache(cache_path, identity))
+                    result = cmb.resolve_province_control_preflight(
+                        111,
+                        min_rows=2,
+                        cache_path=cache_path,
+                        state_cache_path=root / "state_roots.json",
+                        allow_cold_scan=False,
+                    )
+                    loaded = cmb._load_province_array_cache(cache_path, identity)
+        finally:
+            cmb.MIN_USABLE_STATE_ROWS = original_state_min
+
+        self.assertEqual(result.status, "resolved")
+        self.assertEqual(result.row_count, 2)
+        self.assertEqual(result.diagnostics["source"],
+                         "province_array_cache_bootstrap")
+        self.assertEqual(result.diagnostics["cache"]["status"],
+                         "bootstrap_stored")
+        self.assertEqual(result.controller_bridge_encoded, "1:0x8000;2:0x9000")
+        self.assertEqual(cmb._coerce_ptr_bridge(loaded["ptr2tagid"]),
+                         {0x8000: 1, 0x9000: 2})
+
+    def test_province_preflight_unrepairable_cache_without_cold_scan_fails_closed(self):
+        proc = FakeProc()
+        base = 0x4000
+        proc.mem[0x3000 + FakeStateModule.OFF_CTRL] = 2
+        _fill_province_slots(proc, base, 20)
+        proc.mem[base + 3 * FakeProvinceModule.PROV_STRIDE] = 0xA000
         proc.mem[base + 11 * FakeProvinceModule.PROV_STRIDE] = 0x8000
         proc.mem[base + 12 * FakeProvinceModule.PROV_STRIDE] = 0x9000
         prov_to_state = {11: 1, 12: 2}
@@ -745,7 +899,7 @@ class TestCollectorMapBridge(unittest.TestCase):
                     identity,
                     base,
                     20,
-                    {0x8000: 1, 0xA000: 2},
+                    {0x8000: 1, 0x9000: 2},
                     2,
                 ))
                 with patch.dict(
@@ -776,6 +930,10 @@ class TestCollectorMapBridge(unittest.TestCase):
         self.assertEqual(result.diagnostics["cache"]["status"], "stale")
         self.assertEqual(
             result.diagnostics["cache"]["validation"],
+            "pointer_bridge_mismatch",
+        )
+        self.assertEqual(
+            result.diagnostics["cache"]["bootstrap_validation"],
             "pointer_bridge_mismatch",
         )
 

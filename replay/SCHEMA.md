@@ -266,6 +266,7 @@ are `null`.
 | `resources.available_derived.{...}` | float\|null | S/D | produced − exported |
 | `resources.imported.{...}` | float\|null | S | reserved; null until oracle emits |
 | `fuel.current` / `fuel.max` | float\|null | C / M / S | scheduled collector `fuel_live` reads validated `CCountry+0x1580` fuel status; saves remain the backstop |
+| `fuel.gain` / `fuel.cost` | float\|null | C | scheduled collector `fuel_live` reads the validated fuel-status gain/cost fields; cost may be negative |
 | `gross_ic_by_equipment` | obj\|null | S/D | `{equip_archetype: produced_delta}`; null until production-delta pass runs |
 | `market_stockpile[]` | list | S | equipment this country placed ON the equipment market (sellable). Each: `equip_id`, `equip_type`, `archetype`, `amount`. From `market.json`. |
 | `market_automation` | obj\|null | S | market-request automation flags (`auto_accept_purchase`, `auto_accept_market_access`, …); null when none set |

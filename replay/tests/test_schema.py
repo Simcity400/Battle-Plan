@@ -58,6 +58,8 @@ class TestSourceMap(unittest.TestCase):
     def test_collector_fuel_source(self):
         self.assertEqual(schema.source_of("countries.POR.economy.fuel.current"), "C/M/S")
         self.assertEqual(schema.source_of("countries.POR.economy.fuel.max"), "C/M/S")
+        self.assertEqual(schema.source_of("countries.POR.economy.fuel.gain"), "C")
+        self.assertEqual(schema.source_of("countries.POR.economy.fuel.cost"), "C")
 
     def test_collector_production_source(self):
         self.assertEqual(schema.source_of("countries.POR.production.stockpile"), "C/M")
@@ -77,6 +79,18 @@ class TestSourceMap(unittest.TestCase):
         self.assertEqual(schema.source_of("divisions.0.move_progress"), "C/M*")
         # Equipment remains separate from the first collector `divisions` slice.
         self.assertEqual(schema.source_of("divisions.0.equipment"), "M/S")
+
+    def test_collector_land_combats_raw_contract_is_not_snapshot_promoted(self):
+        contract = schema.COLLECTOR_DOMAIN_CONTRACTS["land_combats"]
+        self.assertEqual(contract["cadence_class"], "high_frequency_raw_stream")
+        self.assertIsNone(contract["snapshot_path"])
+        self.assertEqual(
+            contract["root_contract_status"],
+            "blocked_pending_pinned_root_or_hook",
+        )
+        self.assertEqual(contract["identity_rule"], "land_combat:<combat_id>:<generation>")
+        self.assertIn("attacker_divisions", contract["nullable_side_fields"])
+        self.assertEqual(schema.source_of("combats.0.combat_id"), "M*")
 
     def test_unknown_returns_none(self):
         self.assertIsNone(schema.source_of("countries.GER.nonsense.field"))
@@ -278,12 +292,17 @@ class TestValidator(unittest.TestCase):
         snap["countries"]["POR"]["economy"]["fuel"] = {
             "current": -1.0,
             "max": "bad",
+            "gain": float("inf"),
+            "cost": -42.0,
         }
         probs = schema.validate_snapshot(snap)
         self.assertTrue(any("economy.fuel.current" in p and "out of range" in p
                             for p in probs), probs)
         self.assertTrue(any("economy.fuel.max" in p and "not number|null" in p
                             for p in probs), probs)
+        self.assertTrue(any("economy.fuel.gain" in p and "not number|null" in p
+                            for p in probs), probs)
+        self.assertFalse(any("economy.fuel.cost" in p for p in probs), probs)
 
     def test_bad_country_production_values_flagged(self):
         snap = schema.empty_snapshot("g1", "1940.9.10.13")

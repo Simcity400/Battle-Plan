@@ -183,6 +183,34 @@ Source candidates:
 - `memory_reader/combat/combat_sampler.py`
   - `BattleTracker.ingest()`
 
+Current measured constraint:
+
+- The Python proof currently reaches active land combats by heap vtable scan
+  for `CLandCombat`. That is acceptable as a development/proof reader, but it
+  must not be copied into the DLL scheduled loop.
+- The collector raw-frame adapter now accepts a bounded `land_combats`
+  `domain_delta` shape for future DLL output:
+  `entity_key = land_combat:<combat_id>:<generation>`, with `combat_id`,
+  `generation`, `location`, optional `day`/`duration`, and nullable
+  `attacker_divisions` / `defender_divisions`. A `null` side means validation
+  failed or is unknown; an empty list means a measured empty side.
+- Durable raw combat frames must not contain heap addresses, body pointers,
+  tag-db ids, or pointer-like changed fields. Body continuity, if needed, stays
+  internal and is represented only by the generation component.
+
+Bridge contract before DLL enablement:
+
+- A safe live implementation needs one of:
+  - a pinned active-combat registry/root that the DLL can validate and walk with
+    bounded reads every sample;
+  - a preflight cache/bridge that can keep the dynamic active-combat body set
+    fresh without heap discovery in the hot loop;
+  - a reviewed lifecycle hook that enqueues only bounded combat descriptors and
+    lets the worker thread serialize raw frames.
+- Until one of those exists, the DLL should emit `land_combats` gap frames such
+  as `unsupported` / `layout_invalid` / `validation_failed`, not guessed combat
+  samples.
+
 Cadence:
 
 - 10 ms raw sampling for active-combat proof mode.
