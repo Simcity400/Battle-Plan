@@ -7842,6 +7842,7 @@ mod attach_log {
         appointed_advisors: Option<Vec<String>>,
         appointed_advisor_details: Option<Vec<AppointedAdvisorRow>>,
         appointed_advisor_slots: Option<BTreeMap<String, Vec<String>>>,
+        appointed_advisor_ledgers: Option<BTreeMap<String, Vec<String>>>,
     }
 
     impl CountryPoliticsResidualsRow {
@@ -7851,6 +7852,7 @@ mod attach_log {
                 || self.appointed_advisors.is_some()
                 || self.appointed_advisor_details.is_some()
                 || self.appointed_advisor_slots.is_some()
+                || self.appointed_advisor_ledgers.is_some()
         }
     }
 
@@ -10167,25 +10169,29 @@ mod attach_log {
                     None
                 }
             });
-        let (appointed_advisors, appointed_advisor_details, appointed_advisor_slots) =
-            match advisor_token_filter {
-                Some(tokens) if !tokens.is_empty() => {
-                    match read_active_ideas(status_ptr, idea_vtable_primary, idea_vtable_secondary)
-                    {
-                        Some(ideas) => {
-                            let details = appointed_advisor_rows(&ideas, tokens);
-                            let advisors = details
-                                .iter()
-                                .map(|row| row.idea_token.clone())
-                                .collect::<Vec<String>>();
-                            let slots = appointed_advisor_slots_from_rows(&details);
-                            (Some(advisors), Some(details), Some(slots))
-                        }
-                        None => (None, None, None),
+        let (
+            appointed_advisors,
+            appointed_advisor_details,
+            appointed_advisor_slots,
+            appointed_advisor_ledgers,
+        ) = match advisor_token_filter {
+            Some(tokens) if !tokens.is_empty() => {
+                match read_active_ideas(status_ptr, idea_vtable_primary, idea_vtable_secondary) {
+                    Some(ideas) => {
+                        let details = appointed_advisor_rows(&ideas, tokens);
+                        let advisors = details
+                            .iter()
+                            .map(|row| row.idea_token.clone())
+                            .collect::<Vec<String>>();
+                        let slots = appointed_advisor_slots_from_rows(&details);
+                        let ledgers = appointed_advisor_ledgers_from_rows(&details);
+                        (Some(advisors), Some(details), Some(slots), Some(ledgers))
                     }
+                    None => (None, None, None, None),
                 }
-                _ => (None, None, None),
-            };
+            }
+            _ => (None, None, None, None),
+        };
 
         let row = CountryPoliticsResidualsRow {
             last_election,
@@ -10193,6 +10199,7 @@ mod attach_log {
             appointed_advisors,
             appointed_advisor_details,
             appointed_advisor_slots,
+            appointed_advisor_ledgers,
         };
         if row.has_any() {
             Some(row)
@@ -10232,6 +10239,21 @@ mod attach_log {
             }
         }
         slots
+    }
+
+    fn appointed_advisor_ledgers_from_rows(
+        rows: &[AppointedAdvisorRow],
+    ) -> BTreeMap<String, Vec<String>> {
+        let mut ledgers: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for row in rows {
+            if let Some(ledger) = row.ledger.as_ref() {
+                ledgers
+                    .entry(ledger.clone())
+                    .or_default()
+                    .push(row.idea_token.clone());
+            }
+        }
+        ledgers
     }
 
     fn read_country_decisions(
@@ -11040,6 +11062,20 @@ mod attach_log {
                     .collect();
                 fields.push(format!(
                     "\"appointed_advisor_slots\":{{{}}}",
+                    parts.join(",")
+                ));
+            }
+            if let Some(ledgers) = residuals.appointed_advisor_ledgers.as_ref() {
+                let parts: Vec<String> = ledgers
+                    .iter()
+                    .map(|(ledger, tokens)| {
+                        let tokens_json: Vec<String> =
+                            tokens.iter().map(|token| json_str(token)).collect();
+                        format!("{}:[{}]", json_str(ledger), tokens_json.join(","))
+                    })
+                    .collect();
+                fields.push(format!(
+                    "\"appointed_advisor_ledgers\":{{{}}}",
                     parts.join(",")
                 ));
             }
@@ -14427,6 +14463,11 @@ mod attach_log {
                         );
                         slots
                     }),
+                    appointed_advisor_ledgers: Some({
+                        let mut ledgers = BTreeMap::new();
+                        ledgers.insert("political".to_string(), vec!["POR_salazar".to_string()]);
+                        ledgers
+                    }),
                 }),
                 decisions: None,
             };
@@ -14446,6 +14487,8 @@ mod attach_log {
             assert!(scheduled.contains("\"character\":\"POR_antonio_de_oliveira_salazar\""));
             assert!(scheduled
                 .contains("\"appointed_advisor_slots\":{\"political_advisor\":[\"POR_salazar\"]}"));
+            assert!(scheduled
+                .contains("\"appointed_advisor_ledgers\":{\"political\":[\"POR_salazar\"]}"));
             assert!(!worker.contains("\"politics\""));
             let cache = CountryIdentityCache::not_attempted("test");
             let domains = cache.domains_json_from_rows(
@@ -14496,6 +14539,7 @@ mod attach_log {
                     appointed_advisors: Some(Vec::new()),
                     appointed_advisor_details: Some(Vec::new()),
                     appointed_advisor_slots: Some(BTreeMap::new()),
+                    appointed_advisor_ledgers: Some(BTreeMap::new()),
                 }),
                 decisions: None,
             };
@@ -14505,6 +14549,7 @@ mod attach_log {
             assert!(scheduled.contains("\"appointed_advisors\":[]"));
             assert!(scheduled.contains("\"appointed_advisor_details\":[]"));
             assert!(scheduled.contains("\"appointed_advisor_slots\":{}"));
+            assert!(scheduled.contains("\"appointed_advisor_ledgers\":{}"));
         }
 
         #[test]

@@ -1205,6 +1205,12 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
                     for slot, tokens in rec["appointed_advisor_slots"].items()
                     if isinstance(tokens, list)
                 }
+            if isinstance(rec.get("appointed_advisor_ledgers"), dict):
+                pol["appointed_advisor_ledgers"] = {
+                    str(ledger): list(tokens)
+                    for ledger, tokens in rec["appointed_advisor_ledgers"].items()
+                    if isinstance(tokens, list)
+                }
             _pr_tags.add(tag)
         if _pr_tags:
             _measured = snap.setdefault("_live_measured_leaf_tags", {})
@@ -1214,6 +1220,7 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
             _measured["politics.appointed_advisors"] = sorted(_pr_tags)
             _measured["politics.appointed_advisor_details"] = sorted(_pr_tags)
             _measured["politics.appointed_advisor_slots"] = sorted(_pr_tags)
+            _measured["politics.appointed_advisor_ledgers"] = sorted(_pr_tags)
         captured_domains.append("politics_residuals")
 
     # --- intel_deep: LIVE operative roster + cryptology -> country.intel.{operatives_live,
@@ -1625,7 +1632,7 @@ _LIVE_COUNTRY_DOMAIN_LEAVES = {
     "politics_residuals": (
         "politics.last_election", "politics.elections_allowed",
         "politics.appointed_advisors", "politics.appointed_advisor_details",
-        "politics.appointed_advisor_slots",
+        "politics.appointed_advisor_slots", "politics.appointed_advisor_ledgers",
     ),
     # LIVE operative roster + cryptology (intel_deep_live): both are live-only leaves (default
     # None), so the None-guard suffices for an unmeasured country.

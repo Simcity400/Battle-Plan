@@ -117,10 +117,11 @@ Scheduled country politics:
   a validated static advisor contract sourced from `game_defs` /
   `common/characters`; the collector filters the live active-ideas vector,
   enriches hired tokens with static `{slot, ledger, character}` metadata as
-  `appointed_advisor_details` and `appointed_advisor_slots`, does not sweep
-  `CAdvisor` heap objects in the hot path, omits the leaves when the contract
-  is missing or invalid, preserves measured-empty `[]` as real, and is
-  live-proven by `collector_live_politics_decisions_probe` at speed five;
+  `appointed_advisor_details`, `appointed_advisor_slots`, and
+  `appointed_advisor_ledgers`, does not sweep `CAdvisor` heap objects in the
+  hot path, omits the leaves when the contract is missing or invalid, preserves
+  measured-empty `[]` as real, and is live-proven by
+  `collector_live_politics_decisions_probe` at speed five;
 - typed laws, non-law active ideas, and national spirits are emitted when collector control
   supplies the static `common/ideas` idea-group contract. The collector
   classifies the live active-ideas vector into `laws` groups

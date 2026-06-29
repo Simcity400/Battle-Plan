@@ -75,10 +75,11 @@ current product status and acceptance gates, and
   `national_spirits`, idea count, election frequency, party count, and
   low-confidence diagnostics, and scheduled `politics_residuals` rows for
   `last_election` and `elections_allowed`. `appointed_advisors`,
-  `appointed_advisor_details`, and `appointed_advisor_slots` are folded when the
-  session supplies a validated static advisor contract built from `game_defs` /
-  `common/characters`; the details include `{idea_token, slot, ledger,
-  character}` without sweeping `CAdvisor` heap objects in the hot path. Typed
+  `appointed_advisor_details`, `appointed_advisor_slots`, and
+  `appointed_advisor_ledgers` are folded when the session supplies a validated
+  static advisor contract built from `game_defs` / `common/characters`; the
+  details include `{idea_token, slot, ledger, character}` without sweeping
+  `CAdvisor` heap objects in the hot path. Typed
   law / non-law / national-spirit classification is folded when the session
   supplies the static `common/ideas` group contract. The DLL intersects those
   contracts with live active ideas. Missing or invalid contracts omit the

@@ -104,6 +104,7 @@ COUNTRY_POLITICS_PAYLOAD_KEYS = frozenset((
     "appointed_advisors",
     "appointed_advisor_details",
     "appointed_advisor_slots",
+    "appointed_advisor_ledgers",
 ))
 COUNTRY_POLITICS_LIVE_PAYLOAD_KEYS = frozenset((
     "popularities",
@@ -123,6 +124,7 @@ COUNTRY_POLITICS_RESIDUAL_PAYLOAD_KEYS = frozenset((
     "appointed_advisors",
     "appointed_advisor_details",
     "appointed_advisor_slots",
+    "appointed_advisor_ledgers",
 ))
 COUNTRY_POLITICS_MAX_IDEAS = 400
 COUNTRY_POLITICS_MAX_LAWS = 32
@@ -4311,8 +4313,12 @@ def _validate_country_rows(countries: Dict[str, Any]) -> List[str]:
                         tag, appointed_advisor_details))
                 appointed_advisor_slots = politics.get("appointed_advisor_slots")
                 if appointed_advisor_slots is not None:
-                    problems.extend(_validate_appointed_advisor_slots(
-                        tag, appointed_advisor_slots))
+                    problems.extend(_validate_appointed_advisor_token_map(
+                        tag, appointed_advisor_slots, "appointed_advisor_slots"))
+                appointed_advisor_ledgers = politics.get("appointed_advisor_ledgers")
+                if appointed_advisor_ledgers is not None:
+                    problems.extend(_validate_appointed_advisor_token_map(
+                        tag, appointed_advisor_ledgers, "appointed_advisor_ledgers"))
         decisions = row.get("decisions")
         if decisions is not None:
             problems.extend(_validate_country_decisions_row(
@@ -4405,31 +4411,35 @@ def _validate_appointed_advisor_details(tag: str, value: Any) -> List[str]:
     return problems
 
 
-def _validate_appointed_advisor_slots(tag: str, value: Any) -> List[str]:
+def _validate_appointed_advisor_token_map(
+    tag: str,
+    value: Any,
+    field: str,
+) -> List[str]:
     problems: List[str] = []
     if not isinstance(value, dict) or len(value) > COUNTRY_POLITICS_MAX_IDEAS:
         return [
-            f"collector frame country {tag!r}.politics.appointed_advisor_slots "
+            f"collector frame country {tag!r}.politics.{field} "
             "not bounded dict|null"
         ]
-    for slot, tokens in value.items():
-        if not _valid_politics_token(slot):
+    for bucket, tokens in value.items():
+        if not _valid_politics_token(bucket):
             problems.append(
                 f"collector frame country {tag!r}.politics."
-                f"appointed_advisor_slots key {slot!r} not token"
+                f"{field} key {bucket!r} not token"
             )
             continue
         if not isinstance(tokens, list) or len(tokens) > COUNTRY_POLITICS_MAX_IDEAS:
             problems.append(
                 f"collector frame country {tag!r}.politics."
-                f"appointed_advisor_slots.{slot} not bounded list"
+                f"{field}.{bucket} not bounded list"
             )
             continue
         for idx, token in enumerate(tokens):
             if not _valid_politics_token(token):
                 problems.append(
                     f"collector frame country {tag!r}.politics."
-                    f"appointed_advisor_slots.{slot}[{idx}] not token"
+                    f"{field}.{bucket}[{idx}] not token"
                 )
                 break
     return problems
@@ -5317,6 +5327,7 @@ def _fold_country_politics(
 ) -> None:
     if "politics_live" not in set(domains):
         return
+    measured_ideas_other_tags = set()
     measured_national_spirit_tags = set()
     for tag, row in countries.items():
         if not schema.valid_tag(tag) or not isinstance(row, dict):
@@ -5355,6 +5366,7 @@ def _fold_country_politics(
             and all(_valid_politics_token(token) for token in ideas_other)
         ):
             clean["ideas_other"] = list(ideas_other)
+            measured_ideas_other_tags.add(tag)
         national_spirits = politics_payload.get("national_spirits")
         if (
             isinstance(national_spirits, list)
@@ -5391,8 +5403,11 @@ def _fold_country_politics(
                 politics = {}
                 country["politics"] = politics
             politics.update(clean)
-    if measured_national_spirit_tags:
+    if measured_ideas_other_tags or measured_national_spirit_tags:
         measured = snap.setdefault("_live_measured_leaf_tags", {})
+    if measured_ideas_other_tags:
+        measured["politics.ideas_other"] = sorted(measured_ideas_other_tags)
+    if measured_national_spirit_tags:
         measured["politics.national_spirits"] = sorted(measured_national_spirit_tags)
 
 
@@ -5430,9 +5445,13 @@ def _fold_country_politics_residuals(
         if clean_details is not None:
             clean["appointed_advisor_details"] = clean_details
         appointed_advisor_slots = politics_payload.get("appointed_advisor_slots")
-        clean_slots = _clean_appointed_advisor_slots(appointed_advisor_slots)
+        clean_slots = _clean_appointed_advisor_token_map(appointed_advisor_slots)
         if clean_slots is not None:
             clean["appointed_advisor_slots"] = clean_slots
+        appointed_advisor_ledgers = politics_payload.get("appointed_advisor_ledgers")
+        clean_ledgers = _clean_appointed_advisor_token_map(appointed_advisor_ledgers)
+        if clean_ledgers is not None:
+            clean["appointed_advisor_ledgers"] = clean_ledgers
         if clean:
             country = snap["countries"].setdefault(tag, schema.empty_country())
             politics = country.get("politics")
@@ -5465,12 +5484,12 @@ def _clean_appointed_advisor_details(value: Any) -> Optional[List[Dict[str, Any]
     return out
 
 
-def _clean_appointed_advisor_slots(value: Any) -> Optional[Dict[str, List[str]]]:
+def _clean_appointed_advisor_token_map(value: Any) -> Optional[Dict[str, List[str]]]:
     if not isinstance(value, dict) or len(value) > COUNTRY_POLITICS_MAX_IDEAS:
         return None
     out: Dict[str, List[str]] = {}
-    for slot, tokens in value.items():
-        if not _valid_politics_token(slot):
+    for bucket, tokens in value.items():
+        if not _valid_politics_token(bucket):
             return None
         if not isinstance(tokens, list) or len(tokens) > COUNTRY_POLITICS_MAX_IDEAS:
             return None
@@ -5479,7 +5498,7 @@ def _clean_appointed_advisor_slots(value: Any) -> Optional[Dict[str, List[str]]]
             if not _valid_politics_token(token):
                 return None
             clean_tokens.append(token)
-        out[slot] = clean_tokens
+        out[bucket] = clean_tokens
     return out
 
 

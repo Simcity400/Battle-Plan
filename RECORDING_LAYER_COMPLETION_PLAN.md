@@ -992,12 +992,13 @@ low-confidence diagnostics only on scheduled frames. Scheduled
 `politics_residuals` also uses the same validated `CPoliticalStatus`, decoding
 `last_election` from `+0xA0` and reading `elections_allowed` from `+0xEC`.
 `appointed_advisors`, `appointed_advisor_details`, and
-`appointed_advisor_slots` are implemented behind a validated static advisor
-contract sourced from `game_defs` / `common/characters`; live state is derived
-from the active-ideas vector, static metadata supplies `{slot, ledger,
-character}`, missing or invalid contracts omit the leaves, and a measured empty
-`[]` is real. The collector does not sweep `CAdvisor` heap objects in the hot
-path. The save-free Python country bridge remains useful for
+`appointed_advisor_slots` / `appointed_advisor_ledgers` are implemented behind
+a validated static advisor contract sourced from `game_defs` /
+`common/characters`; live state is derived from the active-ideas vector, static
+metadata supplies `{slot, ledger, character}`, missing or invalid contracts omit
+the leaves, and a measured empty `[]` is real. The collector does not sweep
+`CAdvisor` heap objects in the hot path. The save-free Python country bridge
+remains useful for
 fallback/bootstrap and for future record-only fields: it writes compact temporary
 `tag_db_id:country_object_ptr` and `tag_db_id:country_record_ptr` control
 contracts, keeps `country_object_scan` off, and lets the DLL revalidate object
@@ -1259,8 +1260,9 @@ tokens, typed law buckets, broad non-law `ideas_other`, narrower
 `national_spirits`, idea count, election frequency, party count, and
 low-confidence diagnostics, plus scheduled `politics_residuals` rows for
 `last_election`, `elections_allowed`, `appointed_advisors`,
-`appointed_advisor_details`, and `appointed_advisor_slots` when validated static
-contracts are supplied. The adapter validates and folds these into
+`appointed_advisor_details`, `appointed_advisor_slots`, and
+`appointed_advisor_ledgers` when validated static contracts are supplied. The
+adapter validates and folds these into
 `countries.*.misc` and `countries.*.politics`; live proof observed
 `country_misc`, `politics_live`, `politics_residuals`, scheduled advisor
 leaves, typed laws, `ideas_other`, and `national_spirits` with no session errors

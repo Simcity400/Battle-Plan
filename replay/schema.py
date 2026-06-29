@@ -146,7 +146,9 @@ DOMAINS = (
                              # tech-completion FRACTION + operations detail stay RESISTED (null).
     "politics_residuals",    # LIVE election residuals + appointed advisors (politics_residuals_
                              # live, M) -> countries.*.politics.{last_election,elections_allowed,
-                             # appointed_advisors} (NEW live-only leaves).
+                             # appointed_advisors,appointed_advisor_details,
+                             # appointed_advisor_slots,appointed_advisor_ledgers}
+                             # (NEW live-only leaves).
     "intel_deep",            # LIVE operative roster + cryptology (intel_deep_live, M) ->
                              # countries.*.intel.{operatives_live,cryptology_live} (NEW live-only
                              # leaves, distinct from the save-shaped intel.operatives).
@@ -364,13 +366,14 @@ FIELD_SOURCES: Dict[str, str] = {
     # LIVE election residuals + appointed advisors (politics_residuals_live, M). DISTINCT
     # live-only leaves: last_election (decoded "Y.M.D.H", 46/46 EXACT vs save), elections_allowed
     # (u8 bool, 46/46 EXACT), appointed_advisors (the idea-token list of HIRED cabinet advisors,
-    # 46/46 EXACT), plus static-contract detail/slot maps. All M; absent until a live read
-    # folds them (no fabrication).
+    # 46/46 EXACT), plus static-contract detail/slot/ledger maps. All M; absent until a
+    # live read folds them (no fabrication).
     "countries.*.politics.last_election": "M",
     "countries.*.politics.elections_allowed": "M",
     "countries.*.politics.appointed_advisors": "M",
     "countries.*.politics.appointed_advisor_details": "M",
     "countries.*.politics.appointed_advisor_slots": "M",
+    "countries.*.politics.appointed_advisor_ledgers": "M",
     "countries.*.politics.cabinet": "S",
     "countries.*.politics.is_human": "S/M",
     "countries.*.politics.is_major": "S",
@@ -1081,7 +1084,7 @@ class Politics:
     # live-only leaves: `last_election` is the decoded "Y.M.D.H" date of the last election
     # (46/46 EXACT vs save); `elections_allowed` is the u8 election-enabled bool (46/46 EXACT);
     # `appointed_advisors` is the idea-token list of HIRED cabinet advisors (the advisor roster
-    # idea tokens present in the active ideas; 46/46 EXACT); details/slots add static
+    # idea tokens present in the active ideas; 46/46 EXACT); details/slots/ledgers add static
     # `common/characters` metadata. All default None (unmeasured); a
     # measured-empty appointed_advisors [] (no advisor hired) is a real value (live-only leaf,
     # so no _SKELETON_EMPTY_CONTAINER_LEAVES entry needed — Codex).
@@ -1090,6 +1093,7 @@ class Politics:
     appointed_advisors: Optional[List[str]] = None
     appointed_advisor_details: Optional[List[Dict[str, Any]]] = None
     appointed_advisor_slots: Optional[Dict[str, List[str]]] = None
+    appointed_advisor_ledgers: Optional[Dict[str, List[str]]] = None
     cabinet: Optional[Dict[str, Any]] = None
     is_human: Optional[bool] = None
     is_major: Optional[bool] = None
@@ -2166,6 +2170,36 @@ _TOP_CONTAINERS = {
 }
 
 
+def _validate_advisor_token_map(
+    tag: str,
+    politics: Dict[str, Any],
+    field: str,
+    problems: List[str],
+) -> None:
+    value = politics.get(field)
+    if value is not None and not isinstance(value, dict):
+        problems.append(f"country {tag!r}.politics.{field} {value!r} not dict|null")
+        return
+    if not isinstance(value, dict):
+        return
+    for bucket, tokens in value.items():
+        if not valid_script_token(bucket):
+            problems.append(
+                f"country {tag!r}.politics.{field} key {bucket!r} not token"
+            )
+            continue
+        if not isinstance(tokens, list):
+            problems.append(f"country {tag!r}.politics.{field}.{bucket} not list")
+            continue
+        for token in tokens:
+            if not valid_script_token(token):
+                problems.append(
+                    f"country {tag!r}.politics.{field}.{bucket} "
+                    f"entry {token!r} not token"
+                )
+                break
+
+
 def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
     problems: List[str] = []
 
@@ -2580,29 +2614,18 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                             problems.append(
                                 f"country {tag!r}.politics."
                                 f"appointed_advisor_details[{idx}].{key} not token|null")
-            aas = pol.get("appointed_advisor_slots")
-            if aas is not None and not isinstance(aas, dict):
-                problems.append(
-                    f"country {tag!r}.politics.appointed_advisor_slots {aas!r} "
-                    "not dict|null")
-            elif isinstance(aas, dict):
-                for slot, tokens in aas.items():
-                    if not valid_script_token(slot):
-                        problems.append(
-                            f"country {tag!r}.politics.appointed_advisor_slots key "
-                            f"{slot!r} not token")
-                        continue
-                    if not isinstance(tokens, list):
-                        problems.append(
-                            f"country {tag!r}.politics.appointed_advisor_slots."
-                            f"{slot} not list")
-                        continue
-                    for token in tokens:
-                        if not valid_script_token(token):
-                            problems.append(
-                                f"country {tag!r}.politics.appointed_advisor_slots."
-                                f"{slot} entry {token!r} not token")
-                            break
+            _validate_advisor_token_map(
+                tag,
+                pol,
+                "appointed_advisor_slots",
+                problems,
+            )
+            _validate_advisor_token_map(
+                tag,
+                pol,
+                "appointed_advisor_ledgers",
+                problems,
+            )
         # newly-wired LIVE intel leaves (intel_deep_live + final_residuals_live, M):
         # operatives_live list|null, cryptology_live dict|null, operative_skill_xp dict|null.
         intl2 = c.get("intel")

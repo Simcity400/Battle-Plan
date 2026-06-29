@@ -3071,6 +3071,43 @@ class TestCollectorFrames(unittest.TestCase):
         self.assertEqual(politics["party_count"], 4)
         self.assertFalse(politics["low_confidence"])
         self.assertIsNone(politics["political_power"])
+        measured = snap["_live_measured_leaf_tags"]
+        self.assertEqual(measured["politics.ideas_other"], ["POR"])
+        self.assertEqual(measured["politics.national_spirits"], ["POR"])
+
+    def test_snapshot_frame_marks_measured_empty_politics_ideas_other(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock", "country_identity", "politics_live"],
+            "countries": {
+                "POR": {
+                    "present": True,
+                    "collector_object": "0x1000",
+                    "identity": {"tag_db_id": 47},
+                    "politics": {
+                        "ideas": [],
+                        "ideas_other": [],
+                        "national_spirits": [],
+                    },
+                },
+            },
+        }
+
+        snap = snapshot_from_collector_frame(frame, "collector-test")
+
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        politics = snap["countries"]["POR"]["politics"]
+        self.assertEqual(politics["ideas"], [])
+        self.assertEqual(politics["ideas_other"], [])
+        self.assertEqual(politics["national_spirits"], [])
+        measured = snap["_live_measured_leaf_tags"]
+        self.assertEqual(measured["politics.ideas_other"], ["POR"])
+        self.assertEqual(measured["politics.national_spirits"], ["POR"])
 
     def test_snapshot_frame_rejects_malformed_politics_live(self):
         frame = {
@@ -3298,6 +3335,9 @@ class TestCollectorFrames(unittest.TestCase):
                         "appointed_advisor_slots": {
                             "political_advisor": ["POR_salazar"],
                         },
+                        "appointed_advisor_ledgers": {
+                            "political": ["POR_salazar"],
+                        },
                     },
                 },
             },
@@ -3329,6 +3369,10 @@ class TestCollectorFrames(unittest.TestCase):
             politics["appointed_advisor_slots"],
             {"political_advisor": ["POR_salazar"]},
         )
+        self.assertEqual(
+            politics["appointed_advisor_ledgers"],
+            {"political": ["POR_salazar"]},
+        )
         self.assertIsNone(politics["ruling_party"])
 
     def test_snapshot_frame_rejects_malformed_politics_residuals(self):
@@ -3355,6 +3399,9 @@ class TestCollectorFrames(unittest.TestCase):
                         "appointed_advisor_slots": {
                             "political advisor": ["POR_salazar"],
                         },
+                        "appointed_advisor_ledgers": {
+                            "political": ["bad token!"],
+                        },
                     },
                 },
             },
@@ -3369,6 +3416,8 @@ class TestCollectorFrames(unittest.TestCase):
                             for p in problems), problems)
         self.assertTrue(any("appointed_advisor_slots key" in p for p in problems),
                         problems)
+        self.assertTrue(any("appointed_advisor_ledgers.political[0]" in p
+                            for p in problems), problems)
         with self.assertRaisesRegex(ValueError, "invalid collector frame"):
             snapshot_from_collector_frame(frame, "collector-test")
 
