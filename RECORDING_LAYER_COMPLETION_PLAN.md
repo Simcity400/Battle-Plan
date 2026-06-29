@@ -1258,7 +1258,19 @@ advanced 36 game hours in 45.266 wall seconds, resolved 580 army bodies from
 cache in 0.078s, verified replay output, emitted 519 army-order events, observed
 one `army_order_removed`, and reported zero raw gap domains. Raw-stream
 inspection found no same-army/same-slot replacement near that removal, so this
-evidence proves removals but not hidden replacement-as-update behavior.
+evidence proves removals but not hidden replacement-as-update behavior. A
+follow-up cache-backed speed-five run
+`replay/snapshots/_collector_session_raw_military_gate/20260629T201212Z_pid43412`
+advanced 48 game hours in 55.031 wall seconds, resolved 496 army bodies from
+cache in 0.078s, verified replay output, emitted 463 adds and 13 removals with
+zero raw gap domains, and still failed `--require-army-order-raw-updates`. Do
+not move this segment to done until the live fixture edits an already-sampled
+type-5 offensive order and the strict update gate passes. A second fixture
+window
+`replay/snapshots/_collector_session_raw_military_gate/20260629T201839Z_pid43412`
+advanced 49 game hours in 54.188 wall seconds, resolved 425 army bodies from
+cache in 0.078s, verified replay output, emitted 390 adds and one removal with
+zero raw gap domains, and also failed the update gate.
 
 ### Phase 6: Combat And Movement High-Frequency Layer
 

@@ -550,7 +550,19 @@ Current DLL contract:
   observed one `army_order_removed`, and reported zero raw gap domains. No
   `army_order_updated` event appeared; raw-stream inspection showed the removal
   had no same-army/same-slot replacement nearby, so in-place order edits remain
-  a live fixture gap rather than a hidden replacement case in that evidence.
+  a live fixture gap rather than a hidden replacement case in that evidence. A
+  later cache-backed speed-five run
+  `replay/snapshots/_collector_session_raw_military_gate/20260629T201212Z_pid43412`
+  advanced 48 game hours in 55.031 wall seconds, resolved 496 army bodies from
+  cache in 0.078s, verified replay output, emitted 463 adds and 13 removals with
+  zero raw gap domains, and still failed `--require-army-order-raw-updates`.
+  Promotion requires a live fixture where an already-sampled type-5 offensive
+  order is redrawn/resized during capture and the strict update gate passes. A
+  second fixture window
+  `replay/snapshots/_collector_session_raw_military_gate/20260629T201839Z_pid43412`
+  advanced 49 game hours in 54.188 wall seconds, resolved 425 army bodies from
+  cache in 0.078s, verified replay output, emitted 390 adds and one removal with
+  zero raw gap domains, and also failed the update gate.
 
 Cadence:
 

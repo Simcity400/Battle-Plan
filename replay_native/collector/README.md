@@ -376,7 +376,15 @@ Army-order raw stream status:
   bodies from cache in 0.078s, verified replay output, emitted 519 army-order
   events, observed one `army_order_removed`, and reported zero raw gap domains.
   Raw-stream inspection found no same-army/same-slot replacement near that
-  removal, so replacement-as-update remains unproven for that fixture.
+  removal, so replacement-as-update remains unproven for that fixture. A later
+  48-hour cache-backed speed-five run resolved 496 army bodies from cache in
+  0.078s, verified replay output, emitted 463 adds and 13 removals with zero raw
+  gap domains, and still failed `--require-army-order-raw-updates`. Promotion now
+  requires a live fixture that redraws/resizes an already-sampled type-5
+  offensive order during the capture window. A second 49-hour fixture window
+  resolved 425 army bodies from cache in 0.078s, verified replay output, emitted
+  390 adds and one removal with zero raw gap domains, and also failed the update
+  gate.
 - Remaining promotion work is a live speed-five order-edit fixture, semantic
   event splits, non-type-5 geometry, periodic bridge refresh for new armies, and
   timeline ingestion.
