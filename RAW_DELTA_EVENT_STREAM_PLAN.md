@@ -348,6 +348,27 @@ Notes:
   target state, and sinking semantics still need unpaused mid-tick proof before
   they are treated as exact.
 
+Fleet/task-force membership:
+
+- The first command-hierarchy DLL slice now emits raw `oob_command`
+  domain-delta rows from a cache-first `oob_command_bridge` contract. The
+  temporary control payload is semicolon-separated `kind:id:body_ptr` rows from
+  `live_capture.collector_oob_command_bridge`; manifests store only sanitized
+  counts/status.
+- The current emitted rows are deliberately narrow:
+  `oob_command:fleet:<fleet_id>` rows expose bounded `task_force_ids`,
+  `task_force_count`, and `task_force_status`; and
+  `oob_command:task_force:<task_force_id>` rows expose `fleet_id`,
+  `parent_status`, bounded `ship_ids`, `ship_count`, and `ship_status`.
+- Worker sampling does not sweep the heap. It revalidates CFleet/CTaskForce
+  vtable + handle identity, resolves `CTaskForce+0x330` against bridged fleet
+  bodies, and validates each inlined CShip pointer from
+  `CTaskForce+0x338/+0x344` before emitting ship ids.
+- This stream does not yet claim owner, fleet/task-force names, missions,
+  location, army/army-group/theatre rows, or save-shaped nested OOB records.
+  Invalid bridge/layout reads emit `oob_command:gap:<kind>` rows instead of
+  guessed hierarchy.
+
 ### Air Activity
 
 Source candidates:

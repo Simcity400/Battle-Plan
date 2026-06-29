@@ -20,6 +20,7 @@ from .collector_army_order_bridge import encode_army_body_bridge
 from .collector_division_bridge import encode_division_body_bridge
 from .collector_frames import latest_verified_root_probe, snapshot_from_root_probe_frame
 from .collector_naval_combat_bridge import encode_naval_combat_body_bridge
+from .collector_oob_command_bridge import encode_oob_command_bridge
 from .collector_ship_bridge import encode_ship_body_bridge
 from .collector_idea_groups import (
     encode_idea_group_filter,
@@ -62,6 +63,7 @@ def record_probes(
     naval_combat_body_bridge: Any = None,
     air_wing_body_bridge: Any = None,
     ship_body_bridge: Any = None,
+    oob_command_bridge: Any = None,
     map_control_state_roots: Optional[str] = None,
     map_control_province_bridge: Optional[str] = None,
     map_control_controller_bridge: Optional[str] = None,
@@ -140,6 +142,14 @@ def record_probes(
         len(encoded_ship_body_bridge.split(";"))
         if encoded_ship_body_bridge else 0
     )
+    encoded_oob_command_bridge = (
+        encode_oob_command_bridge(oob_command_bridge)
+        if oob_command_bridge is not None else None
+    )
+    oob_command_bridge_rows = (
+        len(encoded_oob_command_bridge.split(";"))
+        if encoded_oob_command_bridge else 0
+    )
     map_control_state_root_rows = _encoded_row_count(map_control_state_roots)
     map_control_controller_bridge_rows = _encoded_row_count(
         map_control_controller_bridge
@@ -210,6 +220,7 @@ def record_probes(
                 naval_combat_body_bridge=encoded_naval_combat_body_bridge,
                 air_wing_body_bridge=encoded_air_wing_body_bridge,
                 ship_body_bridge=encoded_ship_body_bridge,
+                oob_command_bridge=encoded_oob_command_bridge,
                 map_control_state_roots=map_control_state_roots,
                 map_control_province_bridge=map_control_province_bridge,
                 map_control_controller_bridge=map_control_controller_bridge,
@@ -377,6 +388,8 @@ def record_probes(
             "air_wing_body_bridge_rows": air_wing_body_bridge_rows,
             "ship_body_bridge_supplied": bool(encoded_ship_body_bridge),
             "ship_body_bridge_rows": ship_body_bridge_rows,
+            "oob_command_bridge_supplied": bool(encoded_oob_command_bridge),
+            "oob_command_bridge_rows": oob_command_bridge_rows,
             "map_control_state_roots_supplied": bool(map_control_state_roots),
             "map_control_state_root_rows": map_control_state_root_rows,
             "map_control_province_bridge_supplied": map_control_province_bridge_supplied,
@@ -458,6 +471,7 @@ def _write_worker_control(
     naval_combat_body_bridge: Optional[str] = None,
     air_wing_body_bridge: Optional[str] = None,
     ship_body_bridge: Optional[str] = None,
+    oob_command_bridge: Optional[str] = None,
     map_control_state_roots: Optional[str] = None,
     map_control_province_bridge: Optional[str] = None,
     map_control_controller_bridge: Optional[str] = None,
@@ -494,6 +508,8 @@ def _write_worker_control(
         payload["air_wing_body_bridge"] = air_wing_body_bridge
     if ship_body_bridge:
         payload["ship_body_bridge"] = ship_body_bridge
+    if oob_command_bridge:
+        payload["oob_command_bridge"] = oob_command_bridge
     if map_control_state_roots:
         payload["map_control_state_roots"] = map_control_state_roots
     if map_control_province_bridge:

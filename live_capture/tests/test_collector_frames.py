@@ -1475,6 +1475,143 @@ class TestCollectorFrames(unittest.TestCase):
         ):
             self.assertTrue(any(needle in p for p in problems), (needle, problems))
 
+    def test_raw_oob_command_fleet_delta_frame_validates(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": None,
+                "after": {
+                    "oob_key": "oob_command:fleet:61500",
+                    "entity_kind": "fleet",
+                    "fleet_id": 61500,
+                    "task_force_id": None,
+                    "task_force_ids": [61700],
+                    "task_force_count": 1,
+                    "task_force_status": "exact",
+                    "parent_status": None,
+                    "ship_ids": None,
+                    "ship_count": None,
+                    "ship_status": None,
+                },
+                "changed_fields": [
+                    "oob_key",
+                    "entity_kind",
+                    "fleet_id",
+                    "task_force_ids",
+                    "task_force_count",
+                    "task_force_status",
+                ],
+            },
+            domain="oob_command",
+            entity_key="oob_command:fleet:61500",
+            confidence="sampled",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_oob_command_task_force_delta_frame_validates(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": None,
+                "after": {
+                    "oob_key": "oob_command:task_force:61700",
+                    "entity_kind": "task_force",
+                    "fleet_id": 61500,
+                    "task_force_id": 61700,
+                    "task_force_ids": None,
+                    "task_force_count": None,
+                    "task_force_status": None,
+                    "parent_status": "exact",
+                    "ship_ids": [5001, 5002],
+                    "ship_count": 2,
+                    "ship_status": "exact",
+                },
+                "changed_fields": [
+                    "oob_key",
+                    "entity_kind",
+                    "fleet_id",
+                    "task_force_id",
+                    "parent_status",
+                    "ship_ids",
+                    "ship_count",
+                    "ship_status",
+                ],
+            },
+            domain="oob_command",
+            entity_key="oob_command:task_force:61700",
+            confidence="sampled",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_oob_command_gap_delta_frame_validates(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": None,
+                "after": {
+                    "gap_key": "oob_command:gap:bridge_entry_invalid",
+                    "gap_kind": "bridge_entry_invalid",
+                    "status": "validation_failed",
+                },
+                "changed_fields": ["gap_key", "gap_kind", "status"],
+            },
+            domain="oob_command",
+            entity_key="oob_command:gap:bridge_entry_invalid",
+            confidence="gap",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_oob_command_delta_rejects_raw_leakage_and_bad_rows(self):
+        frame = self._raw_frame(
+            "domain_delta",
+            {
+                "op": "sample",
+                "before": None,
+                "after": {
+                    "oob_key": "oob_command:task_force:61701",
+                    "entity_kind": "task_force",
+                    "fleet_id": 0,
+                    "task_force_id": 61701,
+                    "task_force_ids": [61700, 61700],
+                    "task_force_count": -1,
+                    "task_force_status": "bad",
+                    "parent_status": "exact",
+                    "ship_ids": [0],
+                    "ship_count": 20001,
+                    "ship_status": "bad",
+                    "body_ptr": "0x1234",
+                },
+                "changed_fields": ["ship_ids", "body_ptr"],
+            },
+            domain="oob_command",
+            entity_key="oob_command:task_force:61700",
+            confidence="sampled",
+        )
+
+        problems = validate_collector_frame(frame)
+
+        for needle in (
+            "payload contains raw pointer/tag-db diagnostic key",
+            "changed_fields[1] raw pointer/tag-db diagnostic key",
+            "after.body_ptr unsupported",
+            "after.oob_key != entity_key",
+            "after.fleet_id not positive int|null in range",
+            "after.task_force_id != entity_key",
+            "after.task_force_ids[1] duplicate id",
+            "after.task_force_count not nonnegative int|null in range",
+            "after.task_force_status invalid",
+            "after.ship_ids[0] not positive int in range",
+            "after.ship_count not nonnegative int|null in range",
+            "after.ship_status invalid",
+        ):
+            self.assertTrue(any(needle in p for p in problems), (needle, problems))
+
     def test_raw_domain_delta_frame_rejects_malformed_payload(self):
         frame = self._raw_frame(
             "domain_delta",

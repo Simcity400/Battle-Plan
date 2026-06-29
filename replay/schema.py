@@ -116,7 +116,8 @@ DOMAINS = (
     "oob_command",           # LIVE OOB command hierarchy -> order_of_battle.{armies,army_groups,
                              # fleets,theatres} + membership/leader/owner (M; shares the save
                              # "order_of_battle" home, tracked under a DISTINCT live id). The
-                             # per-SHIP order_of_battle.ships leaf is owned by the "ships" id.
+                             # raw DLL stream also emits fleet/task-force/ship membership deltas.
+                             # The per-SHIP order_of_battle.ships leaf is owned by the "ships" id.
     # --- LIVE EXTRACT-residual domains wired from the deep-crack push (all M; each shares a
     # save home under a DISTINCT live id OR a NEW live-only home/leaf). ---
     "world_meta",            # LIVE scenario dates (world_extract_live.read_scenario_meta) ->

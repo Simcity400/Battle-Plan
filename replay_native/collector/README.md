@@ -368,8 +368,27 @@ Naval-combat raw stream status:
   allows the slower global CShip vtable scan. Manifests store sanitized
   counts/status only.
 - Targets, aggregate attack rows, damage ticks, hit counters, sinking events,
-  fleet/task-force membership, ship names, and UI damage totals remain follow-up
+  ship names, owner attribution, missions, and UI damage totals remain follow-up
   streams pending live proof or separate command/OOB sources.
+
+OOB command raw stream status:
+
+- Fleet/task-force/ship membership now has a bridge-gated raw `oob_command`
+  stream. The Rust DLL accepts `oob_command_bridge` rows in
+  `collector_control.json` as `kind:id:body_ptr` entries. The parser rejects
+  malformed, duplicate, unaligned, out-of-range, or oversized payloads and
+  reports row count/validity in control metadata.
+- The recorder can populate that bridge with
+  `live_capture.collector_session --preflight-oob-command`; by default it is
+  cache-first and fails closed unless `--allow-oob-command-cold-scan`
+  explicitly allows the slower `oob_command_live.enumerate_command_objs()`
+  vtable sweep.
+- Current emitted rows are `oob_command:fleet:<fleet_id>` and
+  `oob_command:task_force:<task_force_id>`. Rows expose task-force membership,
+  task-force parent fleet, and bounded CShip instance-id membership from the
+  live `CTaskForce+0x338/+0x344` vector. Owner, names, missions, locations,
+  army/army-group/theatre rows, and save-shaped nested OOB records are not yet
+  claimed.
 - Remaining promotion work is a live active-naval-combat fixture, a
   root/hook-derived discoverer for combats born after preflight, speed-five
   soak, exact damage/sinking semantics, and timeline ingestion.

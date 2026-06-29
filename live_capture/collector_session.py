@@ -37,6 +37,7 @@ from .collector_division_bridge import resolve_division_body_bridge_preflight
 from .collector_naval_combat_bridge import (
     resolve_naval_combat_body_bridge_preflight,
 )
+from .collector_oob_command_bridge import resolve_oob_command_bridge_preflight
 from .collector_ship_bridge import resolve_ship_body_bridge_preflight
 from .collector_map_bridge import (
     resolve_province_control_preflight,
@@ -349,6 +350,7 @@ def record_collector_session(
     naval_combat_body_bridge: Any = None,
     air_wing_body_bridge: Any = None,
     ship_body_bridge: Any = None,
+    oob_command_bridge: Any = None,
     preflight_country_object_bridge: bool = False,
     allow_country_cold_scan: bool = False,
     preflight_division_movement: bool = False,
@@ -360,6 +362,8 @@ def record_collector_session(
     allow_air_wing_cold_scan: bool = False,
     preflight_ships: bool = False,
     allow_ship_cold_scan: bool = False,
+    preflight_oob_command: bool = False,
+    allow_oob_command_cold_scan: bool = False,
     preflight_state_control: bool = False,
     preflight_province_control: bool = False,
     allow_province_cold_scan: bool = False,
@@ -392,6 +396,8 @@ def record_collector_session(
         raise ValueError("allow_air_wing_cold_scan requires preflight_air_wings")
     if allow_ship_cold_scan and not preflight_ships:
         raise ValueError("allow_ship_cold_scan requires preflight_ships")
+    if allow_oob_command_cold_scan and not preflight_oob_command:
+        raise ValueError("allow_oob_command_cold_scan requires preflight_oob_command")
 
     started_utc = datetime.now(timezone.utc).isoformat()
     started_monotonic = time.monotonic()
@@ -506,6 +512,24 @@ def record_collector_session(
         ship_body_bridge_preflight["allow_cold_scan"] = bool(allow_ship_cold_scan)
         if preflight.usable:
             ship_body_bridge = preflight.encoded
+    oob_command_bridge_preflight = {
+        "enabled": bool(preflight_oob_command),
+        "status": "not_requested",
+        "row_count": 0,
+        "allow_cold_scan": bool(allow_oob_command_cold_scan),
+    }
+    if oob_command_bridge is None and preflight_oob_command:
+        preflight = resolve_oob_command_bridge_preflight(
+            pid,
+            cache_path=out_root / "_preflight_cache" / "oob_command_roots.json",
+            allow_cold_scan=allow_oob_command_cold_scan,
+        )
+        oob_command_bridge_preflight = preflight.diagnostics
+        oob_command_bridge_preflight["enabled"] = True
+        oob_command_bridge_preflight["allow_cold_scan"] = bool(
+            allow_oob_command_cold_scan)
+        if preflight.usable:
+            oob_command_bridge = preflight.encoded
     map_control_state_roots = None
     map_control_province_bridge = None
     map_control_controller_bridge = None
@@ -578,6 +602,7 @@ def record_collector_session(
         naval_combat_body_bridge=naval_combat_body_bridge,
         air_wing_body_bridge=air_wing_body_bridge,
         ship_body_bridge=ship_body_bridge,
+        oob_command_bridge=oob_command_bridge,
         map_control_state_roots=map_control_state_roots,
         map_control_province_bridge=map_control_province_bridge,
         map_control_controller_bridge=map_control_controller_bridge,
@@ -730,6 +755,11 @@ def record_collector_session(
                 "ship_body_bridge_supplied"),
             "ship_body_bridge_rows": probe_manifest.get(
                 "ship_body_bridge_rows"),
+            "oob_command_bridge_preflight": oob_command_bridge_preflight,
+            "oob_command_bridge_supplied": probe_manifest.get(
+                "oob_command_bridge_supplied"),
+            "oob_command_bridge_rows": probe_manifest.get(
+                "oob_command_bridge_rows"),
             "state_control_preflight": state_control_preflight,
             "province_control_preflight": province_control_preflight,
             "map_control_state_roots_supplied": probe_manifest.get(
@@ -1805,6 +1835,16 @@ def _main() -> int:
         help="allow the slow global CShip vtable scan during preflight",
     )
     parser.add_argument(
+        "--preflight-oob-command",
+        action="store_true",
+        help="resolve live command hierarchy roots before recording raw OOB deltas",
+    )
+    parser.add_argument(
+        "--allow-oob-command-cold-scan",
+        action="store_true",
+        help="allow the slow OOB command vtable scan during preflight",
+    )
+    parser.add_argument(
         "--preflight-state-control",
         action="store_true",
         help="resolve/cache live state owner/controller roots before recording",
@@ -1853,6 +1893,8 @@ def _main() -> int:
         allow_air_wing_cold_scan=args.allow_air_wing_cold_scan,
         preflight_ships=args.preflight_ships,
         allow_ship_cold_scan=args.allow_ship_cold_scan,
+        preflight_oob_command=args.preflight_oob_command,
+        allow_oob_command_cold_scan=args.allow_oob_command_cold_scan,
         preflight_state_control=args.preflight_state_control,
         preflight_province_control=args.preflight_province_control,
         allow_province_cold_scan=args.allow_province_cold_scan,

@@ -382,6 +382,20 @@ mod attach_log {
     const MAX_SHIP_EXPERIENCE_RAW: u32 = 100_000_000;
     const MAX_SHIP_DEFINITION_LEN: usize = 128;
     const SHIP_STATS_SAMPLE_MIN_MS: u64 = 250;
+    const AG_VTABLE_RVA: usize = 0x292BF58;
+    const FLEET_VTABLE_RVA: usize = 0x293C178;
+    const TASK_FORCE_VTABLE_RVA: usize = 0x293C8B0;
+    const THEATRE_VTABLE_RVA: usize = 0x294ED28;
+    const OOB_TYPE_FLEET: u32 = 61;
+    const TASK_FORCE_OFF_FLEET_PARENT: usize = 0x330;
+    const TASK_FORCE_OFF_SHIP_BEGIN: usize = 0x338;
+    const TASK_FORCE_OFF_SHIP_COUNT: usize = 0x344;
+    const MAX_OOB_COMMAND_ID: u32 = 4_000_000;
+    const MAX_OOB_COMMAND_BRIDGE_ROWS: usize = 50_000;
+    const MAX_OOB_COMMAND_BRIDGE_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
+    const MAX_OOB_INLINE_IDS: usize = 256;
+    const MAX_OOB_TASK_FORCE_SHIPS: u32 = 20_000;
+    const OOB_COMMAND_SAMPLE_MIN_MS: u64 = 250;
     const AIR_WING_VTABLE_RVA: usize = 0x29540C0;
     const AIR_WING_POOL_VTABLE_RVA: usize = 0x2954118;
     const AIR_WING_OWNER_COUNTRY_VTABLE_RVA: usize = 0x2932248;
@@ -588,6 +602,8 @@ mod attach_log {
             let mut last_air_wing_sample_elapsed_ms: Option<u64> = None;
             let mut ship_stats_tracker = ShipStatsTracker::default();
             let mut last_ship_stats_sample_elapsed_ms: Option<u64> = None;
+            let mut oob_command_tracker = OobCommandTracker::default();
+            let mut last_oob_command_sample_elapsed_ms: Option<u64> = None;
             while Instant::now() <= deadline {
                 let elapsed_wall_ms = duration_millis_u64(worker_started.elapsed());
                 let capture_boundary = capture_boundary_for_frame(
@@ -707,6 +723,24 @@ mod attach_log {
                     }
                     last_ship_stats_sample_elapsed_ms = Some(elapsed_wall_ms);
                 }
+                let sample_oob_command = last_oob_command_sample_elapsed_ms
+                    .map(|last| elapsed_wall_ms.saturating_sub(last) >= OOB_COMMAND_SAMPLE_MIN_MS)
+                    .unwrap_or(true);
+                if sample_oob_command {
+                    for line in build_oob_command_raw_domain_delta_lines(
+                        pid,
+                        state.as_ref(),
+                        &control,
+                        &mut oob_command_tracker,
+                        session_sequence,
+                        Some(elapsed_wall_ms),
+                        capture_boundary,
+                    ) {
+                        write_sinks(file.as_mut(), pipe, line.as_bytes());
+                        session_sequence = session_sequence.saturating_add(1);
+                    }
+                    last_oob_command_sample_elapsed_ms = Some(elapsed_wall_ms);
+                }
                 thread::sleep(Duration::from_millis(control.sample_ms as u64));
             }
         } else {
@@ -739,6 +773,8 @@ mod attach_log {
         air_wing_body_bridge_valid: bool,
         ship_body_bridge: Vec<ShipBodyBridgeEntry>,
         ship_body_bridge_valid: bool,
+        oob_command_bridge: Vec<OobCommandBridgeEntry>,
+        oob_command_bridge_valid: bool,
         map_control: MapControlContract,
         advisor_token_filter: BTreeMap<String, AdvisorTokenInfo>,
         advisor_token_filter_valid: bool,
@@ -784,6 +820,39 @@ mod attach_log {
     #[derive(Clone, Copy)]
     struct ShipBodyBridgeEntry {
         instance_id: u32,
+        body_ptr: usize,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    enum OobCommandKind {
+        Army,
+        ArmyGroup,
+        Fleet,
+        TaskForce,
+        Theatre,
+        Division,
+        Ship,
+    }
+
+    impl OobCommandKind {
+        fn from_str(value: &str) -> Option<Self> {
+            match value {
+                "army" => Some(Self::Army),
+                "ag" => Some(Self::ArmyGroup),
+                "fleet" => Some(Self::Fleet),
+                "tf" => Some(Self::TaskForce),
+                "theatre" => Some(Self::Theatre),
+                "div" => Some(Self::Division),
+                "ship" => Some(Self::Ship),
+                _ => None,
+            }
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct OobCommandBridgeEntry {
+        kind: OobCommandKind,
+        object_id: u32,
         body_ptr: usize,
     }
 
@@ -960,6 +1029,14 @@ mod attach_log {
                 },
                 None => (Vec::new(), true),
             };
+        let (oob_command_bridge, oob_command_bridge_valid) =
+            match parse_json_string(&text, "oob_command_bridge") {
+                Some(value) => match parse_oob_command_bridge(&value) {
+                    Some(rows) => (rows, true),
+                    None => (Vec::new(), false),
+                },
+                None => (Vec::new(), true),
+            };
         let (advisor_token_filter, advisor_token_filter_valid) =
             match parse_json_string(&text, "advisor_token_filter") {
                 Some(value) => match parse_advisor_token_filter(&value) {
@@ -999,6 +1076,8 @@ mod attach_log {
             air_wing_body_bridge_valid,
             ship_body_bridge,
             ship_body_bridge_valid,
+            oob_command_bridge,
+            oob_command_bridge_valid,
             map_control,
             advisor_token_filter,
             advisor_token_filter_valid,
@@ -1440,6 +1519,70 @@ mod attach_log {
         true
     }
 
+    fn parse_oob_command_bridge(value: &str) -> Option<Vec<OobCommandBridgeEntry>> {
+        if value.trim().is_empty() {
+            return Some(Vec::new());
+        }
+        if value.len() > MAX_OOB_COMMAND_BRIDGE_PAYLOAD_BYTES {
+            return None;
+        }
+        let mut entries = Vec::new();
+        let mut seen_keys: BTreeMap<(OobCommandKind, u32), ()> = BTreeMap::new();
+        let mut seen_body_ptrs: BTreeMap<usize, ()> = BTreeMap::new();
+        for raw in value.split(';') {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                return None;
+            }
+            let mut parts = raw.split(':');
+            let kind = OobCommandKind::from_str(parts.next()?.trim())?;
+            let object_id = parse_bridge_u32(parts.next()?.trim())?;
+            if object_id == 0 || object_id > MAX_OOB_COMMAND_ID {
+                return None;
+            }
+            let body_ptr = parse_bridge_pointer(parts.next()?.trim())?;
+            if parts.next().is_some() || !is_map_control_heap_pointer(body_ptr) {
+                return None;
+            }
+            if seen_keys.insert((kind, object_id), ()).is_some()
+                || seen_body_ptrs.insert(body_ptr, ()).is_some()
+            {
+                return None;
+            }
+            entries.push(OobCommandBridgeEntry {
+                kind,
+                object_id,
+                body_ptr,
+            });
+            if entries.len() > MAX_OOB_COMMAND_BRIDGE_ROWS {
+                return None;
+            }
+        }
+        Some(entries)
+    }
+
+    fn oob_command_bridge_well_formed(rows: &[OobCommandBridgeEntry]) -> bool {
+        if rows.len() > MAX_OOB_COMMAND_BRIDGE_ROWS {
+            return false;
+        }
+        let mut seen_keys: BTreeMap<(OobCommandKind, u32), ()> = BTreeMap::new();
+        let mut seen_body_ptrs: BTreeMap<usize, ()> = BTreeMap::new();
+        for row in rows {
+            if row.object_id == 0 || row.object_id > MAX_OOB_COMMAND_ID {
+                return false;
+            }
+            if !is_map_control_heap_pointer(row.body_ptr) {
+                return false;
+            }
+            if seen_keys.insert((row.kind, row.object_id), ()).is_some()
+                || seen_body_ptrs.insert(row.body_ptr, ()).is_some()
+            {
+                return false;
+            }
+        }
+        true
+    }
+
     fn parse_map_control_contract(text: &str) -> MapControlContract {
         let mut contract = MapControlContract::empty();
         if let Some(value) = parse_json_string(text, "map_control_state_roots") {
@@ -1837,6 +1980,7 @@ mod attach_log {
     const RAW_NAVAL_COMBAT_MEMBERS_DOMAIN: &str = "naval_combat_members";
     const RAW_AIR_WINGS_DOMAIN: &str = "air_wings";
     const RAW_SHIPS_DOMAIN: &str = "ships";
+    const RAW_OOB_COMMAND_DOMAIN: &str = "oob_command";
     const RAW_CONFIDENCE_SAMPLED: &str = "sampled";
     const LAND_COMBAT_EVENT_STARTED: &str = "land_combat_started";
     const LAND_COMBAT_EVENT_UPDATED: &str = "land_combat_updated";
@@ -2007,6 +2151,26 @@ mod attach_log {
     #[derive(Default)]
     struct ShipStatsTracker {
         previous: BTreeMap<u32, ShipStatsSample>,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct OobCommandSample {
+        oob_key: String,
+        entity_kind: &'static str,
+        fleet_id: Option<u32>,
+        task_force_id: Option<u32>,
+        task_force_ids: Option<Vec<u32>>,
+        task_force_count: Option<u32>,
+        task_force_status: Option<&'static str>,
+        parent_status: Option<&'static str>,
+        ship_ids: Option<Vec<u32>>,
+        ship_count: Option<u32>,
+        ship_status: Option<&'static str>,
+    }
+
+    #[derive(Default)]
+    struct OobCommandTracker {
+        previous: BTreeMap<String, OobCommandSample>,
     }
 
     struct RawDomainDeltaFrame<'a> {
@@ -6226,6 +6390,517 @@ mod attach_log {
         )
     }
 
+    fn build_oob_command_raw_domain_delta_lines(
+        pid: Dword,
+        state: Option<&CollectorState>,
+        control: &CollectorControl,
+        tracker: &mut OobCommandTracker,
+        first_session_sequence: u64,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+    ) -> Vec<String> {
+        let Some(state) = state else {
+            return Vec::new();
+        };
+        let Some(clock) = clock_sample_from_state(Some(state)) else {
+            return Vec::new();
+        };
+        let current_samples = match sample_oob_command(state, control) {
+            Ok(samples) => samples,
+            Err(gap_kind) => {
+                let tick_ms = unsafe { GetTickCount64() };
+                let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+                return oob_command_gap_raw_domain_delta_frame_line(
+                    pid,
+                    sequence,
+                    Some(first_session_sequence),
+                    tick_ms,
+                    control,
+                    elapsed_wall_ms,
+                    capture_boundary,
+                    &clock,
+                    gap_kind,
+                )
+                .into_iter()
+                .collect();
+            }
+        };
+        if current_samples.is_empty() && tracker.previous.is_empty() {
+            return Vec::new();
+        }
+        let mut lines = Vec::new();
+        let mut session_sequence = first_session_sequence;
+        let mut current = BTreeMap::new();
+        for sample in current_samples {
+            let key = sample.oob_key.clone();
+            let changed_fields = tracker
+                .previous
+                .get(&key)
+                .and_then(|old| oob_command_changed_fields(old, &sample))
+                .unwrap_or_else(oob_command_all_fields);
+            if !changed_fields.is_empty() {
+                push_oob_command_delta_frame(
+                    &mut lines,
+                    &mut session_sequence,
+                    pid,
+                    control,
+                    elapsed_wall_ms,
+                    capture_boundary,
+                    &clock,
+                    &sample,
+                    "sample",
+                    &changed_fields,
+                );
+            }
+            current.insert(key, sample);
+        }
+        for (key, old) in &tracker.previous {
+            if current.contains_key(key) {
+                continue;
+            }
+            push_oob_command_delta_frame(
+                &mut lines,
+                &mut session_sequence,
+                pid,
+                control,
+                elapsed_wall_ms,
+                capture_boundary,
+                &clock,
+                old,
+                "delete",
+                &["oob_key"],
+            );
+        }
+        tracker.previous = current;
+        lines
+    }
+
+    fn push_oob_command_delta_frame(
+        lines: &mut Vec<String>,
+        session_sequence: &mut u64,
+        pid: Dword,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        sample: &OobCommandSample,
+        op: &str,
+        changed_fields: &[&str],
+    ) {
+        let tick_ms = unsafe { GetTickCount64() };
+        let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        if let Some(line) = oob_command_raw_domain_delta_frame_line(
+            pid,
+            sequence,
+            Some(*session_sequence),
+            tick_ms,
+            control,
+            elapsed_wall_ms,
+            capture_boundary,
+            clock,
+            sample,
+            op,
+            changed_fields,
+        ) {
+            lines.push(line);
+            *session_sequence = session_sequence.saturating_add(1);
+        }
+    }
+
+    fn sample_oob_command(
+        state: &CollectorState,
+        control: &CollectorControl,
+    ) -> Result<Vec<OobCommandSample>, &'static str> {
+        if !(control.oob_command_bridge_valid
+            && oob_command_bridge_well_formed(&control.oob_command_bridge))
+        {
+            return Err("bridge_invalid");
+        }
+        if control.oob_command_bridge.is_empty() {
+            return Ok(Vec::new());
+        }
+        let module_base = state.base;
+        let mut fleet_ptr_to_id: BTreeMap<usize, u32> = BTreeMap::new();
+        let mut invalid_command_rows = 0u32;
+        let mut sampled_command_rows = 0u32;
+        for entry in control
+            .oob_command_bridge
+            .iter()
+            .filter(|entry| entry.kind == OobCommandKind::Fleet)
+        {
+            if validate_oob_command_bridge_entry(module_base, entry) {
+                fleet_ptr_to_id.insert(entry.body_ptr, entry.object_id);
+                sampled_command_rows = sampled_command_rows.saturating_add(1);
+            } else {
+                invalid_command_rows = invalid_command_rows.saturating_add(1);
+            }
+        }
+
+        let mut task_force_samples = Vec::new();
+        let mut task_forces_by_fleet: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+        for entry in control
+            .oob_command_bridge
+            .iter()
+            .filter(|entry| entry.kind == OobCommandKind::TaskForce)
+        {
+            match sample_task_force_oob_row(module_base, entry, &fleet_ptr_to_id) {
+                Some(sample) => {
+                    sampled_command_rows = sampled_command_rows.saturating_add(1);
+                    if sample.parent_status == Some("exact") {
+                        if let (Some(fleet_id), Some(task_force_id)) =
+                            (sample.fleet_id, sample.task_force_id)
+                        {
+                            task_forces_by_fleet
+                                .entry(fleet_id)
+                                .or_default()
+                                .push(task_force_id);
+                        }
+                    }
+                    task_force_samples.push(sample);
+                }
+                None => invalid_command_rows = invalid_command_rows.saturating_add(1),
+            }
+        }
+        if sampled_command_rows == 0 && invalid_command_rows > 0 {
+            return Err("bridge_entry_invalid");
+        }
+
+        let mut rows = Vec::new();
+        for fleet_id in fleet_ptr_to_id.values() {
+            let mut task_force_ids = task_forces_by_fleet.remove(fleet_id).unwrap_or_default();
+            task_force_ids.sort_unstable();
+            task_force_ids.dedup();
+            let task_force_count = task_force_ids.len() as u32;
+            let (task_force_ids, task_force_status) = if task_force_ids.len() > MAX_OOB_INLINE_IDS {
+                (None, "overflow")
+            } else {
+                (Some(task_force_ids), "exact")
+            };
+            rows.push(OobCommandSample {
+                oob_key: format!("oob_command:fleet:{fleet_id}"),
+                entity_kind: "fleet",
+                fleet_id: Some(*fleet_id),
+                task_force_id: None,
+                task_force_ids,
+                task_force_count: Some(task_force_count),
+                task_force_status: Some(task_force_status),
+                parent_status: None,
+                ship_ids: None,
+                ship_count: None,
+                ship_status: None,
+            });
+        }
+        rows.extend(task_force_samples);
+        rows.sort_by(|a, b| a.oob_key.cmp(&b.oob_key));
+        Ok(rows)
+    }
+
+    fn validate_oob_command_bridge_entry(
+        module_base: usize,
+        entry: &OobCommandBridgeEntry,
+    ) -> bool {
+        let Some((vtable_rva, type_tag)) = oob_command_kind_layout(entry.kind) else {
+            return false;
+        };
+        if !is_map_control_heap_pointer(entry.body_ptr) {
+            return false;
+        }
+        let Some(vtable) = module_base.checked_add(vtable_rva) else {
+            return false;
+        };
+        if read_u64(entry.body_ptr).map(|v| v as usize) != Some(vtable) {
+            return false;
+        }
+        let Some(handle_addr) = entry.body_ptr.checked_add(0x08) else {
+            return false;
+        };
+        let Some(handle) = read_u64(handle_addr) else {
+            return false;
+        };
+        (handle & 0xFFFF_FFFF) as u32 == type_tag
+            && ((handle >> 32) & 0xFFFF_FFFF) as u32 == entry.object_id
+    }
+
+    fn oob_command_kind_layout(kind: OobCommandKind) -> Option<(usize, u32)> {
+        match kind {
+            OobCommandKind::Army => Some((ARMY_VTABLE_RVA, ARMY_TYPE)),
+            OobCommandKind::ArmyGroup => Some((AG_VTABLE_RVA, ARMY_TYPE)),
+            OobCommandKind::Fleet => Some((FLEET_VTABLE_RVA, OOB_TYPE_FLEET)),
+            OobCommandKind::TaskForce => Some((TASK_FORCE_VTABLE_RVA, OOB_TYPE_FLEET)),
+            OobCommandKind::Theatre => Some((THEATRE_VTABLE_RVA, TYPE_THEATRE)),
+            OobCommandKind::Division => Some((DIVISION_VTABLE_RVA, DIVISION_TYPE)),
+            OobCommandKind::Ship => Some((CSHIP_VTABLE_RVA, CSHIP_TYPE)),
+        }
+    }
+
+    const TYPE_THEATRE: u32 = 67;
+
+    fn sample_task_force_oob_row(
+        module_base: usize,
+        entry: &OobCommandBridgeEntry,
+        fleet_ptr_to_id: &BTreeMap<usize, u32>,
+    ) -> Option<OobCommandSample> {
+        if entry.kind != OobCommandKind::TaskForce
+            || !validate_oob_command_bridge_entry(module_base, entry)
+        {
+            return None;
+        }
+        let parent_ptr =
+            read_u64(entry.body_ptr.checked_add(TASK_FORCE_OFF_FLEET_PARENT)?)? as usize;
+        let fleet_id = fleet_ptr_to_id.get(&parent_ptr).copied();
+        let parent_status = if fleet_id.is_some() {
+            "exact"
+        } else {
+            "unknown"
+        };
+        let (ship_ids, ship_count, ship_status) =
+            read_task_force_ship_ids(module_base, entry.body_ptr);
+        Some(OobCommandSample {
+            oob_key: format!("oob_command:task_force:{}", entry.object_id),
+            entity_kind: "task_force",
+            fleet_id,
+            task_force_id: Some(entry.object_id),
+            task_force_ids: None,
+            task_force_count: None,
+            task_force_status: None,
+            parent_status: Some(parent_status),
+            ship_ids,
+            ship_count,
+            ship_status: Some(ship_status),
+        })
+    }
+
+    fn read_task_force_ship_ids(
+        module_base: usize,
+        task_force_body: usize,
+    ) -> (Option<Vec<u32>>, Option<u32>, &'static str) {
+        let Some(count) = read_u32(task_force_body.saturating_add(TASK_FORCE_OFF_SHIP_COUNT))
+        else {
+            return (None, None, "validation_failed");
+        };
+        if count == 0 {
+            return (Some(Vec::new()), Some(0), "exact");
+        }
+        if count > MAX_OOB_TASK_FORCE_SHIPS {
+            return (None, None, "validation_failed");
+        }
+        if count as usize > MAX_OOB_INLINE_IDS {
+            return (None, Some(count), "overflow");
+        }
+        let Some(begin) =
+            read_u64(task_force_body.saturating_add(TASK_FORCE_OFF_SHIP_BEGIN)).map(|v| v as usize)
+        else {
+            return (None, Some(count), "validation_failed");
+        };
+        if !is_map_control_heap_pointer(begin) {
+            return (None, Some(count), "validation_failed");
+        }
+        let Some(byte_len) = (count as usize).checked_mul(8) else {
+            return (None, Some(count), "validation_failed");
+        };
+        let Some(raw) = read_bytes(begin, byte_len) else {
+            return (None, Some(count), "validation_failed");
+        };
+        if raw.len() < byte_len {
+            return (None, Some(count), "validation_failed");
+        }
+        let mut ship_ids = Vec::new();
+        let mut seen = BTreeMap::new();
+        for index in 0..count as usize {
+            let offset = index * 8;
+            let ship_ptr = u64::from_le_bytes([
+                raw[offset],
+                raw[offset + 1],
+                raw[offset + 2],
+                raw[offset + 3],
+                raw[offset + 4],
+                raw[offset + 5],
+                raw[offset + 6],
+                raw[offset + 7],
+            ]) as usize;
+            let Some(instance_id) = read_cship_instance_id(module_base, ship_ptr) else {
+                return (None, Some(count), "validation_failed");
+            };
+            if seen.insert(instance_id, ()).is_some() {
+                return (None, Some(count), "validation_failed");
+            }
+            ship_ids.push(instance_id);
+        }
+        ship_ids.sort_unstable();
+        (Some(ship_ids), Some(count), "exact")
+    }
+
+    fn read_cship_instance_id(module_base: usize, ship_ptr: usize) -> Option<u32> {
+        if !is_map_control_heap_pointer(ship_ptr)
+            || read_u64(ship_ptr)? as usize != module_base.checked_add(CSHIP_VTABLE_RVA)?
+        {
+            return None;
+        }
+        let handle = read_u64(ship_ptr.checked_add(CSHIP_OFF_HANDLE)?)?;
+        if (handle & 0xFFFF_FFFF) as u32 != CSHIP_TYPE {
+            return None;
+        }
+        let instance_id = ((handle >> 32) & 0xFFFF_FFFF) as u32;
+        if instance_id == 0 || instance_id > MAX_SHIP_INSTANCE_ID {
+            return None;
+        }
+        let ref100 = read_u32(ship_ptr.checked_add(CSHIP_OFF_REF100)?)?;
+        (ref100 == CSHIP_REF100_RAW).then_some(instance_id)
+    }
+
+    fn oob_command_all_fields() -> Vec<&'static str> {
+        vec![
+            "oob_key",
+            "entity_kind",
+            "fleet_id",
+            "task_force_id",
+            "task_force_ids",
+            "task_force_count",
+            "task_force_status",
+            "parent_status",
+            "ship_ids",
+            "ship_count",
+            "ship_status",
+        ]
+    }
+
+    fn oob_command_changed_fields(
+        old: &OobCommandSample,
+        new: &OobCommandSample,
+    ) -> Option<Vec<&'static str>> {
+        let mut changed = Vec::new();
+        if old.entity_kind != new.entity_kind {
+            changed.push("entity_kind");
+        }
+        if old.fleet_id != new.fleet_id {
+            changed.push("fleet_id");
+        }
+        if old.task_force_id != new.task_force_id {
+            changed.push("task_force_id");
+        }
+        if old.task_force_ids != new.task_force_ids {
+            changed.push("task_force_ids");
+        }
+        if old.task_force_count != new.task_force_count {
+            changed.push("task_force_count");
+        }
+        if old.task_force_status != new.task_force_status {
+            changed.push("task_force_status");
+        }
+        if old.parent_status != new.parent_status {
+            changed.push("parent_status");
+        }
+        if old.ship_ids != new.ship_ids {
+            changed.push("ship_ids");
+        }
+        if old.ship_count != new.ship_count {
+            changed.push("ship_count");
+        }
+        if old.ship_status != new.ship_status {
+            changed.push("ship_status");
+        }
+        (!changed.is_empty()).then_some(changed)
+    }
+
+    fn oob_command_raw_domain_delta_frame_line(
+        pid: Dword,
+        sequence: u64,
+        session_sequence: Option<u64>,
+        tick_ms: u64,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        sample: &OobCommandSample,
+        op: &str,
+        changed_fields: &[&str],
+    ) -> Option<String> {
+        let after_json = if op == "delete" {
+            "null".to_string()
+        } else {
+            oob_command_row_json(sample)
+        };
+        raw_domain_delta_frame_line(RawDomainDeltaFrame {
+            pid,
+            sequence,
+            session_sequence,
+            tick_ms,
+            date: &clock.date,
+            hour_index: clock.hour_index,
+            sample_ms: control.sample_ms,
+            duration_ms: Some(control.duration_ms),
+            elapsed_wall_ms,
+            capture_boundary,
+            domain: RAW_OOB_COMMAND_DOMAIN,
+            entity_key: &sample.oob_key,
+            confidence: RAW_CONFIDENCE_SAMPLED,
+            op,
+            after_json: &after_json,
+            changed_fields,
+        })
+    }
+
+    fn oob_command_gap_raw_domain_delta_frame_line(
+        pid: Dword,
+        sequence: u64,
+        session_sequence: Option<u64>,
+        tick_ms: u64,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        gap_kind: &str,
+    ) -> Option<String> {
+        if !valid_raw_short_string(gap_kind) || looks_like_hex_pointer(gap_kind) {
+            return None;
+        }
+        let gap_key = format!("oob_command:gap:{gap_kind}");
+        let after_json = format!(
+            "{{\"gap_key\":{},\"gap_kind\":{},\"status\":\"validation_failed\"}}",
+            json_str(&gap_key),
+            json_str(gap_kind)
+        );
+        raw_domain_delta_frame_line(RawDomainDeltaFrame {
+            pid,
+            sequence,
+            session_sequence,
+            tick_ms,
+            date: &clock.date,
+            hour_index: clock.hour_index,
+            sample_ms: control.sample_ms,
+            duration_ms: Some(control.duration_ms),
+            elapsed_wall_ms,
+            capture_boundary,
+            domain: RAW_OOB_COMMAND_DOMAIN,
+            entity_key: &gap_key,
+            confidence: "gap",
+            op: "sample",
+            after_json: &after_json,
+            changed_fields: &["gap_key", "gap_kind", "status"],
+        })
+    }
+
+    fn oob_command_row_json(sample: &OobCommandSample) -> String {
+        format!(
+            "{{\"oob_key\":{},\"entity_kind\":{},\"fleet_id\":{},\
+             \"task_force_id\":{},\"task_force_ids\":{},\
+             \"task_force_count\":{},\"task_force_status\":{},\
+             \"parent_status\":{},\"ship_ids\":{},\"ship_count\":{},\
+             \"ship_status\":{}}}",
+            json_str(&sample.oob_key),
+            json_str(sample.entity_kind),
+            json_opt_u32(sample.fleet_id),
+            json_opt_u32(sample.task_force_id),
+            json_opt_u32_vec(sample.task_force_ids.as_ref()),
+            json_opt_u32(sample.task_force_count),
+            json_opt_escaped_str(sample.task_force_status),
+            json_opt_escaped_str(sample.parent_status),
+            json_opt_u32_vec(sample.ship_ids.as_ref()),
+            json_opt_u32(sample.ship_count),
+            json_opt_escaped_str(sample.ship_status)
+        )
+    }
+
     fn raw_event_frame_line(frame: RawEventFrame<'_>) -> Option<String> {
         if !valid_raw_short_string(frame.date)
             || !valid_raw_short_string(frame.capture_boundary)
@@ -6356,6 +7031,7 @@ mod attach_log {
                 | RAW_NAVAL_COMBAT_MEMBERS_DOMAIN
                 | RAW_AIR_WINGS_DOMAIN
                 | RAW_SHIPS_DOMAIN
+                | RAW_OOB_COMMAND_DOMAIN
         )
     }
 
@@ -6435,6 +7111,8 @@ mod attach_log {
             && air_wing_body_bridge_well_formed(&control.air_wing_body_bridge);
         let ship_body_bridge_valid = control.ship_body_bridge_valid
             && ship_body_bridge_well_formed(&control.ship_body_bridge);
+        let oob_command_bridge_valid = control.oob_command_bridge_valid
+            && oob_command_bridge_well_formed(&control.oob_command_bridge);
         let map_control_state_roots_valid =
             control.map_control.state_roots_valid && control.map_control.state_roots_well_formed();
         let map_control_province_bridge_valid = control.map_control.province_bridge_valid
@@ -6460,6 +7138,8 @@ mod attach_log {
              \"air_wing_body_bridge_valid\":{},\
              \"ship_body_bridge_rows\":{},\
              \"ship_body_bridge_valid\":{},\
+             \"oob_command_bridge_rows\":{},\
+             \"oob_command_bridge_valid\":{},\
              \"advisor_token_filter_tokens\":{},\
              \"advisor_token_filter_valid\":{},\
              \"idea_group_filter_rows\":{},\
@@ -6488,6 +7168,8 @@ mod attach_log {
             air_wing_body_bridge_valid,
             control.ship_body_bridge.len(),
             ship_body_bridge_valid,
+            control.oob_command_bridge.len(),
+            oob_command_bridge_valid,
             control.advisor_token_filter.len(),
             control.advisor_token_filter_valid,
             control.idea_group_filter.len(),
@@ -10506,6 +11188,8 @@ mod attach_log {
                 air_wing_body_bridge_valid: true,
                 ship_body_bridge: Vec::new(),
                 ship_body_bridge_valid: true,
+                oob_command_bridge: Vec::new(),
+                oob_command_bridge_valid: true,
                 map_control: MapControlContract::empty(),
                 advisor_token_filter: BTreeMap::new(),
                 advisor_token_filter_valid: true,
@@ -10949,6 +11633,39 @@ mod attach_log {
             assert_eq!(parsed.ship_body_bridge[0].body_ptr, HEAP_LO);
             assert_eq!(parsed.ship_body_bridge[1].instance_id, 3459);
             assert_eq!(parsed.ship_body_bridge[1].body_ptr, HEAP_LO + 0x100);
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn collector_control_accepts_oob_command_bridge() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_control_oob_command_bridge_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            fs::write(
+                &control,
+                format!(
+                    r#"{{"mode":"hourly_poll","duration_ms":8000,"sample_ms":10,"oob_command_bridge":"fleet:61500:0x{:x};tf:61700:{}"}}"#,
+                    HEAP_LO,
+                    HEAP_LO + 0x100
+                ),
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert!(parsed.oob_command_bridge_valid);
+            assert_eq!(parsed.oob_command_bridge.len(), 2);
+            assert_eq!(parsed.oob_command_bridge[0].kind, OobCommandKind::Fleet);
+            assert_eq!(parsed.oob_command_bridge[0].object_id, 61500);
+            assert_eq!(parsed.oob_command_bridge[0].body_ptr, HEAP_LO);
+            assert_eq!(parsed.oob_command_bridge[1].kind, OobCommandKind::TaskForce);
+            assert_eq!(parsed.oob_command_bridge[1].object_id, 61700);
+            assert_eq!(parsed.oob_command_bridge[1].body_ptr, HEAP_LO + 0x100);
             let _ = fs::remove_dir_all(&dir);
         }
 
@@ -12777,6 +13494,8 @@ mod attach_log {
                 air_wing_body_bridge_valid: true,
                 ship_body_bridge: Vec::new(),
                 ship_body_bridge_valid: true,
+                oob_command_bridge: Vec::new(),
+                oob_command_bridge_valid: true,
                 map_control: MapControlContract::empty(),
                 advisor_token_filter: BTreeMap::new(),
                 advisor_token_filter_valid: true,

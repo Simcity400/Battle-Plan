@@ -487,6 +487,34 @@ RAW_SHIP_GAP_FIELDS = frozenset((
     "gap_kind",
     "status",
 ))
+RAW_OOB_COMMAND_ID_MAX = 4_000_000
+RAW_OOB_COMMAND_IDS_MAX = RAW_CONTAINER_MAX_ENTRIES
+RAW_OOB_COMMAND_SHIP_COUNT_MAX = 20_000
+RAW_OOB_COMMAND_ENTITY_KINDS = frozenset(("fleet", "task_force"))
+RAW_OOB_COMMAND_STATUSES = frozenset((
+    "exact",
+    "unknown",
+    "overflow",
+    "validation_failed",
+))
+RAW_OOB_COMMAND_FIELDS = frozenset((
+    "oob_key",
+    "entity_kind",
+    "fleet_id",
+    "task_force_id",
+    "task_force_ids",
+    "task_force_count",
+    "task_force_status",
+    "parent_status",
+    "ship_ids",
+    "ship_count",
+    "ship_status",
+))
+RAW_OOB_COMMAND_GAP_FIELDS = frozenset((
+    "gap_key",
+    "gap_kind",
+    "status",
+))
 RAW_FORBIDDEN_KEY_NAMES = frozenset((
     "addr",
     "address",
@@ -1225,6 +1253,8 @@ def _validate_raw_domain_delta_payload(
         problems.extend(_validate_raw_air_wing_delta(frame, payload))
     if frame.get("domain") == "ships":
         problems.extend(_validate_raw_ship_delta(frame, payload))
+    if frame.get("domain") == "oob_command":
+        problems.extend(_validate_raw_oob_command_delta(frame, payload))
     return problems
 
 
@@ -2980,6 +3010,244 @@ def _validate_raw_ship_row(
     return problems
 
 
+def _validate_raw_oob_command_delta(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> List[str]:
+    problems: List[str] = []
+    if _is_raw_oob_command_gap_delta(frame, payload):
+        return _validate_raw_oob_command_gap_delta(frame, payload)
+
+    entity = _parse_raw_oob_command_entity_key(frame.get("entity_key"))
+    if entity is None:
+        problems.append("collector oob_command delta entity_key not stable OOB key")
+    if _contains_forbidden_raw_key(payload):
+        problems.append(
+            "collector oob_command delta payload contains raw pointer/tag-db "
+            "diagnostic key"
+        )
+    changed_fields = payload.get("changed_fields")
+    if isinstance(changed_fields, list):
+        for i, field in enumerate(changed_fields):
+            if _forbidden_raw_key_name(field):
+                problems.append(
+                    "collector oob_command delta "
+                    f"changed_fields[{i}] raw pointer/tag-db diagnostic key"
+                )
+            elif field not in RAW_OOB_COMMAND_FIELDS:
+                problems.append(
+                    f"collector oob_command delta changed_fields[{i}] invalid"
+                )
+    for row_key in ("before", "after"):
+        row = payload.get(row_key)
+        if isinstance(row, dict):
+            problems.extend(_validate_raw_oob_command_row(
+                row,
+                f"collector oob_command delta {row_key}",
+                entity,
+                require_identity=(row_key == "after"),
+            ))
+    return problems
+
+
+def _is_raw_oob_command_gap_delta(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> bool:
+    return (
+        frame.get("confidence") == "gap"
+        or _parse_raw_oob_command_gap_key(frame.get("entity_key")) is not None
+        or (
+            isinstance(payload.get("after"), dict)
+            and "gap_kind" in payload["after"]
+        )
+    )
+
+
+def _validate_raw_oob_command_gap_delta(
+    frame: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> List[str]:
+    problems: List[str] = []
+    entity_key = frame.get("entity_key")
+    gap_kind = _parse_raw_oob_command_gap_key(entity_key)
+    if gap_kind is None:
+        problems.append("collector oob_command gap entity_key not stable gap key")
+    if _contains_forbidden_raw_key(payload):
+        problems.append(
+            "collector oob_command gap payload contains raw pointer/tag-db "
+            "diagnostic key"
+        )
+    changed_fields = payload.get("changed_fields")
+    if isinstance(changed_fields, list):
+        for i, field in enumerate(changed_fields):
+            if _forbidden_raw_key_name(field):
+                problems.append(
+                    "collector oob_command gap "
+                    f"changed_fields[{i}] raw pointer/tag-db diagnostic key"
+                )
+            elif field not in RAW_OOB_COMMAND_GAP_FIELDS:
+                problems.append(f"collector oob_command gap changed_fields[{i}] invalid")
+    for row_key in ("before", "after"):
+        row = payload.get(row_key)
+        if isinstance(row, dict):
+            problems.extend(_validate_raw_oob_command_gap_row(
+                row,
+                f"collector oob_command gap {row_key}",
+                entity_key if isinstance(entity_key, str) else None,
+                gap_kind,
+            ))
+    return problems
+
+
+def _validate_raw_oob_command_gap_row(
+    row: Dict[str, Any],
+    prefix: str,
+    entity_key: Optional[str],
+    entity_gap_kind: Optional[str],
+) -> List[str]:
+    problems: List[str] = []
+    for key in row:
+        if key not in RAW_OOB_COMMAND_GAP_FIELDS:
+            problems.append(f"{prefix}.{key} unsupported")
+
+    gap_key = row.get("gap_key")
+    if not _valid_raw_key(gap_key):
+        problems.append(f"{prefix}.gap_key missing or not stable str")
+    elif entity_key is not None and gap_key != entity_key:
+        problems.append(f"{prefix}.gap_key != entity_key")
+
+    gap_kind = row.get("gap_kind")
+    if not _valid_raw_string(gap_kind, max_length=RAW_SHORT_STRING_MAX_LENGTH):
+        problems.append(f"{prefix}.gap_kind missing or not bounded str")
+    elif _valid_hex_pointer(gap_kind):
+        problems.append(f"{prefix}.gap_kind looks like pointer")
+    elif entity_gap_kind is not None and gap_kind != entity_gap_kind:
+        problems.append(f"{prefix}.gap_kind != entity_key")
+
+    status = row.get("status")
+    if status not in ("validation_failed", "unsupported", "layout_invalid"):
+        problems.append(f"{prefix}.status invalid")
+    return problems
+
+
+def _validate_raw_oob_command_row(
+    row: Dict[str, Any],
+    prefix: str,
+    entity: Optional[tuple[str, int]],
+    *,
+    require_identity: bool,
+) -> List[str]:
+    problems: List[str] = []
+    for key in row:
+        if key not in RAW_OOB_COMMAND_FIELDS:
+            problems.append(f"{prefix}.{key} unsupported")
+
+    oob_key = row.get("oob_key")
+    parsed_key = None
+    if oob_key is not None:
+        parsed_key = _parse_raw_oob_command_entity_key(oob_key)
+        if parsed_key is None:
+            problems.append(f"{prefix}.oob_key not stable OOB key|null")
+        elif entity is not None and parsed_key != entity:
+            problems.append(f"{prefix}.oob_key != entity_key")
+    elif require_identity:
+        problems.append(f"{prefix}.oob_key missing")
+
+    effective_entity = entity or parsed_key
+    entity_kind = row.get("entity_kind")
+    if entity_kind is not None and entity_kind not in RAW_OOB_COMMAND_ENTITY_KINDS:
+        problems.append(f"{prefix}.entity_kind invalid")
+    elif (
+        effective_entity is not None
+        and entity_kind is not None
+        and entity_kind != effective_entity[0]
+    ):
+        problems.append(f"{prefix}.entity_kind != entity_key")
+    elif require_identity and entity_kind is None:
+        problems.append(f"{prefix}.entity_kind missing")
+
+    fleet_id = row.get("fleet_id")
+    task_force_id = row.get("task_force_id")
+    if fleet_id is not None and not _valid_bounded_int(
+        fleet_id,
+        minimum=1,
+        maximum=RAW_OOB_COMMAND_ID_MAX,
+    ):
+        problems.append(f"{prefix}.fleet_id not positive int|null in range")
+    if task_force_id is not None and not _valid_bounded_int(
+        task_force_id,
+        minimum=1,
+        maximum=RAW_OOB_COMMAND_ID_MAX,
+    ):
+        problems.append(f"{prefix}.task_force_id not positive int|null in range")
+
+    if effective_entity is not None:
+        kind, object_id = effective_entity
+        if kind == "fleet":
+            if fleet_id != object_id:
+                problems.append(f"{prefix}.fleet_id != entity_key")
+            if task_force_id is not None:
+                problems.append(f"{prefix}.task_force_id set on fleet row")
+        if kind == "task_force":
+            if task_force_id != object_id:
+                problems.append(f"{prefix}.task_force_id != entity_key")
+
+    problems.extend(_validate_oob_id_list(
+        row.get("task_force_ids"),
+        f"{prefix}.task_force_ids",
+    ))
+    problems.extend(_validate_oob_id_list(
+        row.get("ship_ids"),
+        f"{prefix}.ship_ids",
+    ))
+
+    task_force_count = row.get("task_force_count")
+    if task_force_count is not None and not _valid_bounded_int(
+        task_force_count,
+        minimum=0,
+        maximum=RAW_OOB_COMMAND_SHIP_COUNT_MAX,
+    ):
+        problems.append(f"{prefix}.task_force_count not nonnegative int|null in range")
+
+    ship_count = row.get("ship_count")
+    if ship_count is not None and not _valid_bounded_int(
+        ship_count,
+        minimum=0,
+        maximum=RAW_OOB_COMMAND_SHIP_COUNT_MAX,
+    ):
+        problems.append(f"{prefix}.ship_count not nonnegative int|null in range")
+
+    for key in ("task_force_status", "parent_status", "ship_status"):
+        status = row.get(key)
+        if status is not None and status not in RAW_OOB_COMMAND_STATUSES:
+            problems.append(f"{prefix}.{key} invalid")
+    return problems
+
+
+def _validate_oob_id_list(value: Any, prefix: str) -> List[str]:
+    problems: List[str] = []
+    if value is None:
+        return problems
+    if not isinstance(value, list):
+        return [f"{prefix} not list|null"]
+    if len(value) > RAW_OOB_COMMAND_IDS_MAX:
+        problems.append(f"{prefix} too many entries")
+    seen = set()
+    for i, item in enumerate(value):
+        if not _valid_bounded_int(
+            item,
+            minimum=1,
+            maximum=RAW_OOB_COMMAND_ID_MAX,
+        ):
+            problems.append(f"{prefix}[{i}] not positive int in range")
+        elif item in seen:
+            problems.append(f"{prefix}[{i}] duplicate id")
+        else:
+            seen.add(item)
+    return problems
+
+
 def _validate_raw_gap_payload(
     frame: Dict[str, Any],
     payload: Dict[str, Any],
@@ -3303,6 +3571,36 @@ def _parse_raw_ship_gap_key(value: Any) -> Optional[str]:
     if not isinstance(value, str) or not value.startswith("ships:gap:"):
         return None
     gap_kind = value[len("ships:gap:"):]
+    if not _valid_raw_string(gap_kind, max_length=RAW_SHORT_STRING_MAX_LENGTH):
+        return None
+    if _valid_hex_pointer(gap_kind):
+        return None
+    return gap_kind
+
+
+def _parse_raw_oob_command_entity_key(value: Any) -> Optional[tuple[str, int]]:
+    if not isinstance(value, str) or not value.startswith("oob_command:"):
+        return None
+    raw = value[len("oob_command:"):]
+    parts = raw.split(":")
+    if len(parts) != 2:
+        return None
+    kind = parts[0]
+    if kind not in RAW_OOB_COMMAND_ENTITY_KINDS:
+        return None
+    object_id = _parse_raw_nonnegative_int_string(
+        parts[1],
+        maximum=RAW_OOB_COMMAND_ID_MAX,
+    )
+    if object_id is None or object_id == 0:
+        return None
+    return (kind, object_id)
+
+
+def _parse_raw_oob_command_gap_key(value: Any) -> Optional[str]:
+    if not isinstance(value, str) or not value.startswith("oob_command:gap:"):
+        return None
+    gap_kind = value[len("oob_command:gap:"):]
     if not _valid_raw_string(gap_kind, max_length=RAW_SHORT_STRING_MAX_LENGTH):
         return None
     if _valid_hex_pointer(gap_kind):
