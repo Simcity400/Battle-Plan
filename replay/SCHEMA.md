@@ -201,7 +201,11 @@ snapshot stream still stores one selected frame per unique game hour.
 High-frequency sidecars such as `naval_combat_members`, raw `ships` CShip
 telemetry, and raw `oob_command` army/army-group/fleet/task-force/ship
 membership live in that raw collector stream, not in save-shaped
-`order_of_battle` arrays.
+`order_of_battle` arrays. Current raw `oob_command:army:<id>` rows also carry
+verified army leader id/status, bounded leader skill, assigned trait tokens,
+and trait-read status; portraits, names, naval leaders, global commander
+rosters, and save-shaped nested OOB records remain outside the canonical
+snapshot schema until separately proven.
 
 ### 2.1 `provenance.mod` — the per-replay MOD IDENTITY (additive, §K MOD AWARENESS)
 

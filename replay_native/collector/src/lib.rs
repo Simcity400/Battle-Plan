@@ -445,6 +445,15 @@ mod attach_log {
     const ARMY_OFF_AG_PARENT: usize = 0x1B8;
     const DIVISION_OFF_ARMY_PARENT: usize = 0xB0;
     const LEADER_OFF_ID: usize = 0x0C;
+    const UNIT_LEADER_TRAIT_VTABLE_RVA: usize = 0x291F3C0;
+    const UNIT_LEADER_TRAIT_TOKEN: usize = 0x10;
+    const UNIT_LEADER_SKILL_SUBOBJ_PTR: usize = 0xE60;
+    const UNIT_LEADER_SKILL_IN_SUBOBJ: usize = 0x1B8;
+    const UNIT_LEADER_TRAIT_DATA: usize = 0xDC8;
+    const UNIT_LEADER_TRAIT_CAP: usize = 0xDD0;
+    const UNIT_LEADER_TRAIT_SIZE: usize = 0xDD4;
+    const MAX_UNIT_LEADER_SKILL: u32 = 15;
+    const MAX_UNIT_LEADER_TRAITS: u32 = 64;
     const TASK_FORCE_OFF_FLEET_PARENT: usize = 0x330;
     const TASK_FORCE_OFF_SHIP_BEGIN: usize = 0x338;
     const TASK_FORCE_OFF_SHIP_COUNT: usize = 0x344;
@@ -2510,6 +2519,9 @@ mod attach_log {
         member_army_status: Option<&'static str>,
         leader_id: Option<u32>,
         leader_status: Option<&'static str>,
+        leader_skill: Option<u32>,
+        leader_traits: Option<Vec<String>>,
+        leader_trait_status: Option<&'static str>,
         member_count_engine: Option<u32>,
         missing_member_count: Option<u32>,
         task_force_ids: Option<Vec<u32>>,
@@ -7083,6 +7095,9 @@ mod attach_log {
                 member_army_status: Some(member_army_status),
                 leader_id: None,
                 leader_status: None,
+                leader_skill: None,
+                leader_traits: None,
+                leader_trait_status: None,
                 member_count_engine: None,
                 missing_member_count: None,
                 task_force_ids: None,
@@ -7120,6 +7135,9 @@ mod attach_log {
                 member_army_status: None,
                 leader_id: None,
                 leader_status: None,
+                leader_skill: None,
+                leader_traits: None,
+                leader_trait_status: None,
                 member_count_engine: None,
                 missing_member_count: None,
                 task_force_ids,
@@ -7209,7 +7227,8 @@ mod attach_log {
             } else {
                 (Some(member_division_ids), "exact")
             };
-        let (leader_id, leader_status) = read_army_oob_leader_id(module_base, entry.body_ptr);
+        let (leader_id, leader_status, leader_skill, leader_traits, leader_trait_status) =
+            read_army_oob_leader_detail(module_base, entry.body_ptr);
         Some(OobCommandSample {
             oob_key: format!("oob_command:army:{}", entry.object_id),
             entity_kind: "army",
@@ -7225,6 +7244,9 @@ mod attach_log {
             member_army_status: None,
             leader_id,
             leader_status: Some(leader_status),
+            leader_skill,
+            leader_traits,
+            leader_trait_status,
             member_count_engine,
             missing_member_count,
             task_force_ids: None,
@@ -7237,40 +7259,113 @@ mod attach_log {
         })
     }
 
-    fn read_army_oob_leader_id(
+    fn read_army_oob_leader_detail(
         module_base: usize,
         army_body: usize,
-    ) -> (Option<u32>, &'static str) {
+    ) -> (
+        Option<u32>,
+        &'static str,
+        Option<u32>,
+        Option<Vec<String>>,
+        Option<&'static str>,
+    ) {
         let Some(leader_ptr) =
             read_u64(army_body.saturating_add(ARMY_OFF_LEADER_PTR)).map(|v| v as usize)
         else {
-            return (None, "validation_failed");
+            return (None, "validation_failed", None, None, None);
         };
         if !is_map_control_heap_pointer(leader_ptr) {
-            return (None, "unknown");
+            return (None, "unknown", None, None, None);
         }
         let Some(vtable) = read_u64(leader_ptr).map(|v| v as usize) else {
-            return (None, "validation_failed");
+            return (None, "validation_failed", None, None, None);
         };
         let army_leader_vtable = module_base.saturating_add(ARMY_LEADER_VTABLE_RVA);
         let navy_leader_vtable = module_base.saturating_add(NAVY_LEADER_VTABLE_RVA);
         if vtable != army_leader_vtable && vtable != navy_leader_vtable {
-            return (None, "validation_failed");
+            return (None, "validation_failed", None, None, None);
         }
         let Some(handle_type) = read_u32(leader_ptr.saturating_add(0x08)) else {
-            return (None, "validation_failed");
+            return (None, "validation_failed", None, None, None);
         };
         if handle_type != DIVISION_TYPE {
-            return (None, "validation_failed");
+            return (None, "validation_failed", None, None, None);
         }
         let Some(leader_id) = read_u32(leader_ptr.saturating_add(LEADER_OFF_ID)) else {
-            return (None, "validation_failed");
+            return (None, "validation_failed", None, None, None);
         };
         if leader_id == 0 || leader_id > MAX_OOB_COMMAND_ID {
-            (None, "validation_failed")
+            (None, "validation_failed", None, None, None)
         } else {
-            (Some(leader_id), "exact")
+            let leader_skill = read_unit_leader_skill(leader_ptr);
+            let (leader_traits, leader_trait_status) =
+                read_unit_leader_traits(module_base, leader_ptr);
+            (
+                Some(leader_id),
+                "exact",
+                leader_skill,
+                leader_traits,
+                Some(leader_trait_status),
+            )
         }
+    }
+
+    fn read_unit_leader_skill(leader_ptr: usize) -> Option<u32> {
+        let subobj = read_u64(leader_ptr.checked_add(UNIT_LEADER_SKILL_SUBOBJ_PTR)?)? as usize;
+        if !is_map_control_heap_pointer(subobj) {
+            return None;
+        }
+        let skill = read_u32(subobj.checked_add(UNIT_LEADER_SKILL_IN_SUBOBJ)?)?;
+        (skill <= MAX_UNIT_LEADER_SKILL).then_some(skill)
+    }
+
+    fn read_unit_leader_traits(
+        module_base: usize,
+        leader_ptr: usize,
+    ) -> (Option<Vec<String>>, &'static str) {
+        let Some(data) =
+            read_u64(leader_ptr.saturating_add(UNIT_LEADER_TRAIT_DATA)).map(|v| v as usize)
+        else {
+            return (None, "validation_failed");
+        };
+        let Some(capacity) = read_u32(leader_ptr.saturating_add(UNIT_LEADER_TRAIT_CAP)) else {
+            return (None, "validation_failed");
+        };
+        let Some(size) = read_u32(leader_ptr.saturating_add(UNIT_LEADER_TRAIT_SIZE)) else {
+            return (None, "validation_failed");
+        };
+        if size == 0 {
+            return (Some(Vec::new()), "exact");
+        }
+        if size > capacity || size > MAX_UNIT_LEADER_TRAITS || !is_map_control_heap_pointer(data) {
+            return (None, "validation_failed");
+        }
+        let mut traits = Vec::new();
+        let trait_vtable = module_base.saturating_add(UNIT_LEADER_TRAIT_VTABLE_RVA) as u64;
+        for index in 0..size {
+            let Some(offset) = (index as usize).checked_mul(8) else {
+                return (None, "validation_failed");
+            };
+            let Some(def_ptr) = data
+                .checked_add(offset)
+                .and_then(read_u64)
+                .map(|v| v as usize)
+            else {
+                return (None, "validation_failed");
+            };
+            if !is_map_control_heap_pointer(def_ptr) || read_u64(def_ptr) != Some(trait_vtable) {
+                return (None, "validation_failed");
+            }
+            let Some(token) = read_msvc_string(
+                def_ptr.saturating_add(UNIT_LEADER_TRAIT_TOKEN),
+                MAX_POLITICS_TOKEN_LEN,
+            )
+            .filter(|value| is_script_token(value)) else {
+                return (None, "validation_failed");
+            };
+            traits.push(token);
+        }
+        (Some(traits), "exact")
     }
 
     fn sample_task_force_oob_row(
@@ -7308,6 +7403,9 @@ mod attach_log {
             member_army_status: None,
             leader_id: None,
             leader_status: None,
+            leader_skill: None,
+            leader_traits: None,
+            leader_trait_status: None,
             member_count_engine: None,
             missing_member_count: None,
             task_force_ids: None,
@@ -7414,6 +7512,9 @@ mod attach_log {
             "member_army_status",
             "leader_id",
             "leader_status",
+            "leader_skill",
+            "leader_traits",
+            "leader_trait_status",
             "member_count_engine",
             "missing_member_count",
             "task_force_ids",
@@ -7469,6 +7570,15 @@ mod attach_log {
         }
         if old.leader_status != new.leader_status {
             changed.push("leader_status");
+        }
+        if old.leader_skill != new.leader_skill {
+            changed.push("leader_skill");
+        }
+        if old.leader_traits != new.leader_traits {
+            changed.push("leader_traits");
+        }
+        if old.leader_trait_status != new.leader_trait_status {
+            changed.push("leader_trait_status");
         }
         if old.member_count_engine != new.member_count_engine {
             changed.push("member_count_engine");
@@ -7585,8 +7695,9 @@ mod attach_log {
              \"member_division_ids\":{},\"member_division_count\":{},\
              \"member_division_status\":{},\"member_army_ids\":{},\
              \"member_army_count\":{},\"member_army_status\":{},\
-             \"leader_id\":{},\"leader_status\":{},\"member_count_engine\":{},\
-             \"missing_member_count\":{},\"task_force_ids\":{},\
+             \"leader_id\":{},\"leader_status\":{},\"leader_skill\":{},\
+             \"leader_traits\":{},\"leader_trait_status\":{},\
+             \"member_count_engine\":{},\"missing_member_count\":{},\"task_force_ids\":{},\
              \"task_force_count\":{},\"task_force_status\":{},\
              \"parent_status\":{},\"ship_ids\":{},\"ship_count\":{},\
              \"ship_status\":{}}}",
@@ -7604,6 +7715,9 @@ mod attach_log {
             json_opt_escaped_str(sample.member_army_status),
             json_opt_u32(sample.leader_id),
             json_opt_escaped_str(sample.leader_status),
+            json_opt_u32(sample.leader_skill),
+            json_opt_string_vec(sample.leader_traits.as_ref()),
+            json_opt_escaped_str(sample.leader_trait_status),
             json_opt_u32(sample.member_count_engine),
             json_opt_u32(sample.missing_member_count),
             json_opt_u32_vec(sample.task_force_ids.as_ref()),
@@ -14903,9 +15017,9 @@ mod attach_log {
             assert!(lines[0].contains("\"entity_key\":\"army_order:17:0\""));
             assert!(lines[0].contains("\"target_states\":[107,108,109]"));
             assert!(lines[0].contains("\"target_state_count\":3"));
-            assert!(lines[0].contains(
-                "\"changed_fields\":[\"target_states\",\"target_state_count\"]"
-            ));
+            assert!(
+                lines[0].contains("\"changed_fields\":[\"target_states\",\"target_state_count\"]")
+            );
             assert!(lines[1].contains("\"event_type\":\"army_order_updated\""));
             assert!(lines[1].contains("\"entity_key\":\"army_order:17:0\""));
             assert!(!lines.join("").contains("army_order_added"));

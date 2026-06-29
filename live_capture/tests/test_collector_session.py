@@ -766,6 +766,52 @@ class TestCollectorSession(unittest.TestCase):
         self.assertEqual(summary["raw_gap_domains_seen"], ["land_combats"])
         self.assertEqual(summary["raw_gap_domain_counts"], {"land_combats": 1})
 
+    def test_collector_frame_payload_summary_counts_oob_leader_detail(self):
+        summary = cs._collector_frame_payload_summary([
+            {
+                "type": "domain_delta",
+                "capture_boundary": "worker_poll",
+                "domain": "oob_command",
+                "entity_key": "oob_command:army:82000",
+                "confidence": "sampled",
+                "payload": {
+                    "op": "sample",
+                    "after": {
+                        "oob_key": "oob_command:army:82000",
+                        "entity_kind": "army",
+                        "army_id": 82000,
+                        "leader_id": 305,
+                        "leader_status": "exact",
+                        "leader_skill": 6,
+                        "leader_traits": ["panzer_leader", "organizer"],
+                        "leader_trait_status": "exact",
+                    },
+                    "changed_fields": [
+                        "leader_skill",
+                        "leader_traits",
+                        "leader_trait_status",
+                    ],
+                },
+            },
+        ])
+
+        self.assertEqual(summary["raw_delta_domain_counts"], {"oob_command": 1})
+        self.assertEqual(
+            summary["raw_delta_domain_object_counts"],
+            {"oob_command": 1},
+        )
+        self.assertEqual(summary["oob_command_leader_skill_rows"], 1)
+        self.assertEqual(summary["oob_command_leader_traits_rows"], 1)
+        self.assertEqual(summary["oob_command_leader_trait_tokens"], 2)
+        self.assertEqual(summary["oob_command_leader_trait_exact_rows"], 1)
+        self.assertEqual(summary["max_oob_command_leader_trait_tokens_per_row"], 2)
+        self.assertEqual(summary["oob_command_exact_army_leader_detail_rows"], 1)
+        self.assertEqual(summary["oob_command_exact_army_leader_trait_tokens"], 2)
+        self.assertEqual(
+            summary["max_oob_command_exact_army_leader_trait_tokens_per_row"],
+            2,
+        )
+
     def test_collector_stream_transport_summary_counts_raw_frame_sequences(self):
         summary = cs._collector_stream_transport_summary([
             {

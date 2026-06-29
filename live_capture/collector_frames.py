@@ -532,6 +532,8 @@ RAW_OOB_COMMAND_ID_MAX = 4_000_000
 RAW_OOB_COMMAND_IDS_MAX = RAW_CONTAINER_MAX_ENTRIES
 RAW_OOB_COMMAND_SHIP_COUNT_MAX = 20_000
 RAW_OOB_COMMAND_MEMBER_COUNT_MAX = 20_000
+RAW_OOB_COMMAND_LEADER_SKILL_MAX = 15
+RAW_OOB_COMMAND_LEADER_TRAITS_MAX = 64
 RAW_OOB_COMMAND_ENTITY_KINDS = frozenset((
     "army",
     "army_group",
@@ -568,6 +570,9 @@ RAW_OOB_COMMAND_FIELDS = frozenset((
     "ship_ids",
     "ship_count",
     "ship_status",
+    "leader_skill",
+    "leader_traits",
+    "leader_trait_status",
 ))
 RAW_OOB_COMMAND_GAP_FIELDS = frozenset((
     "gap_key",
@@ -3392,6 +3397,7 @@ def _validate_raw_oob_command_row(
         "member_division_status",
         "member_army_status",
         "leader_status",
+        "leader_trait_status",
         "task_force_status",
         "parent_status",
         "ship_status",
@@ -3399,6 +3405,30 @@ def _validate_raw_oob_command_row(
         status = row.get(key)
         if status is not None and status not in RAW_OOB_COMMAND_STATUSES:
             problems.append(f"{prefix}.{key} invalid")
+
+    leader_skill = row.get("leader_skill")
+    if leader_skill is not None and not _valid_bounded_int(
+        leader_skill,
+        minimum=0,
+        maximum=RAW_OOB_COMMAND_LEADER_SKILL_MAX,
+    ):
+        problems.append(f"{prefix}.leader_skill not nonnegative int|null in range")
+
+    leader_traits = row.get("leader_traits")
+    if leader_traits is not None:
+        if not isinstance(leader_traits, list):
+            problems.append(f"{prefix}.leader_traits not list|null")
+        elif len(leader_traits) > RAW_OOB_COMMAND_LEADER_TRAITS_MAX:
+            problems.append(f"{prefix}.leader_traits too many entries")
+        else:
+            seen_traits = set()
+            for i, trait in enumerate(leader_traits):
+                if not isinstance(trait, str) or not schema.valid_script_token(trait):
+                    problems.append(f"{prefix}.leader_traits[{i}] invalid token")
+                elif trait in seen_traits:
+                    problems.append(f"{prefix}.leader_traits[{i}] duplicate token")
+                else:
+                    seen_traits.add(trait)
     return problems
 
 

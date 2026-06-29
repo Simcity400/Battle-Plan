@@ -256,6 +256,9 @@ python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_air_ship_oob_gate --game-id ship_oob_cache_bootstrap --duration-s 8 --sample-ms 10 --until-game-hours 1 --max-wall-s 360 --preflight-ships --allow-ship-cold-scan --preflight-oob-command --allow-oob-command-cold-scan
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_air_ship_oob_gate --game-id ship_oob_live --duration-s 300 --sample-ms 10 --until-game-hours 12 --max-wall-s 420 --preflight-ships --preflight-oob-command
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_air_ship_oob_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-raw-domain ships --require-ship-raw-telemetry --require-raw-domain oob_command --require-oob-command-raw-telemetry
+python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_oob_leader_gate --game-id oob_leader_cache_bootstrap --duration-s 8 --sample-ms 10 --until-game-hours 1 --max-wall-s 360 --preflight-oob-command --allow-oob-command-cold-scan
+python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_oob_leader_gate --game-id oob_leader_detail_warm_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300 --preflight-oob-command
+python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_oob_leader_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-raw-domain oob_command --require-oob-command-raw-telemetry --require-oob-command-leader-detail
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_naval_combat_gate --game-id naval_combat_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300 --preflight-naval-combat
 python -m live_capture.collector_proof_gate replay/snapshots/_collector_session_naval_combat_gate/<run-dir>/session_manifest.json --min-game-hours 12 --require-raw-domain naval_air_combats --require-raw-domain naval_combat_members --require-raw-event-type naval_combat_started --require-raw-event-type naval_combat_updated
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session_air_wing_gate --game-id air_wing_live --duration-s 180 --sample-ms 10 --until-game-hours 12 --max-wall-s 300 --preflight-air-wings
@@ -409,6 +412,20 @@ over 12 game hours with zero raw gap domains after an intentionally allowed
 135.703s cold preflight. That cold discovery time is not acceptable for normal
 startup and should be treated as cache/root-refresh work, not hot-loop
 recording cost.
+
+OOB army leader-detail acceptance has its own stricter gate. It is not enough
+to observe generic `oob_command` rows: `--require-oob-command-leader-detail`
+requires exact army rows where `leader_id`, `leader_status`, `leader_skill`,
+`leader_traits`, and `leader_trait_status` are co-present. The 2026-06-29 pid
+43412 proof first populated `oob_command_roots` with an intentionally cold
+139.688s bootstrap, then the no-cold run
+`replay/snapshots/_collector_session_oob_leader_gate/20260629T215306Z_pid43412`
+advanced 12 game hours in 54.110 wall seconds, verified replay output, emitted
+19842 raw `oob_command` deltas, reported zero raw OOB gap domains, and captured
+7485 exact army leader-detail rows with 15911 trait tokens. This raw stream
+currently proves army leader skill and assigned trait tokens only; portraits,
+names, temporary/captured traits, naval leaders, global commander rosters, and
+save-shaped OOB nesting remain separate segments.
 
 For naval-combat acceptance, `--preflight-naval-combat` must find at least one
 active battle at attach time; this bridge does not yet discover battles born

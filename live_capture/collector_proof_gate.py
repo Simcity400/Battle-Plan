@@ -83,6 +83,7 @@ def collector_session_proof_errors(
     require_air_wing_raw_telemetry: bool = False,
     require_ship_raw_telemetry: bool = False,
     require_oob_command_raw_telemetry: bool = False,
+    require_oob_command_leader_detail: bool = False,
 ) -> List[str]:
     errors: List[str] = []
     session_errors = manifest.get("session_errors")
@@ -589,7 +590,7 @@ def collector_session_proof_errors(
             errors.append("ship raw telemetry object rows were not observed")
         if _map_int(summary, "raw_gap_domain_counts", "ships") > 0:
             errors.append("ship raw telemetry gap frames observed")
-    if require_oob_command_raw_telemetry:
+    if require_oob_command_raw_telemetry or require_oob_command_leader_detail:
         if manifest.get("oob_command_bridge_supplied") is not True:
             errors.append("OOB command bridge was not supplied")
         if _as_int(manifest.get("oob_command_bridge_rows")) in (None, 0):
@@ -600,6 +601,21 @@ def collector_session_proof_errors(
             errors.append("OOB command raw telemetry object rows were not observed")
         if _map_int(summary, "raw_gap_domain_counts", "oob_command") > 0:
             errors.append("OOB command raw telemetry gap frames observed")
+    if require_oob_command_leader_detail:
+        if _as_int(summary.get("oob_command_exact_army_leader_detail_rows")) in (
+            None,
+            0,
+        ):
+            errors.append(
+                "OOB command exact army leader detail rows were not observed"
+            )
+        if _as_int(summary.get("oob_command_exact_army_leader_trait_tokens")) in (
+            None,
+            0,
+        ):
+            errors.append(
+                "OOB command exact army leader trait tokens were not observed"
+            )
     return errors
 
 
@@ -632,6 +648,7 @@ def collector_session_proof_summary(
     require_air_wing_raw_telemetry: bool = False,
     require_ship_raw_telemetry: bool = False,
     require_oob_command_raw_telemetry: bool = False,
+    require_oob_command_leader_detail: bool = False,
 ) -> Dict[str, Any]:
     summary = _payload_summary(manifest)
     errors = collector_session_proof_errors(
@@ -662,6 +679,7 @@ def collector_session_proof_summary(
         require_air_wing_raw_telemetry=require_air_wing_raw_telemetry,
         require_ship_raw_telemetry=require_ship_raw_telemetry,
         require_oob_command_raw_telemetry=require_oob_command_raw_telemetry,
+        require_oob_command_leader_detail=require_oob_command_leader_detail,
     )
     hourly = manifest.get("hourly_requirement") or {}
     return {
@@ -758,6 +776,22 @@ def collector_session_proof_summary(
             "country_rows_with_appointed_advisor_slots"),
         "country_rows_with_appointed_advisor_ledgers": summary.get(
             "country_rows_with_appointed_advisor_ledgers"),
+        "oob_command_leader_skill_rows": summary.get(
+            "oob_command_leader_skill_rows"),
+        "oob_command_leader_traits_rows": summary.get(
+            "oob_command_leader_traits_rows"),
+        "oob_command_leader_trait_tokens": summary.get(
+            "oob_command_leader_trait_tokens"),
+        "oob_command_leader_trait_exact_rows": summary.get(
+            "oob_command_leader_trait_exact_rows"),
+        "max_oob_command_leader_trait_tokens_per_row": summary.get(
+            "max_oob_command_leader_trait_tokens_per_row"),
+        "oob_command_exact_army_leader_detail_rows": summary.get(
+            "oob_command_exact_army_leader_detail_rows"),
+        "oob_command_exact_army_leader_trait_tokens": summary.get(
+            "oob_command_exact_army_leader_trait_tokens"),
+        "max_oob_command_exact_army_leader_trait_tokens_per_row": summary.get(
+            "max_oob_command_exact_army_leader_trait_tokens_per_row"),
         "appointed_advisor_rows": summary.get("appointed_advisor_rows"),
         "appointed_advisor_detail_rows": summary.get(
             "appointed_advisor_detail_rows"),
@@ -994,6 +1028,11 @@ def _main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="require live DLL OOB command hierarchy rows",
     )
+    parser.add_argument(
+        "--require-oob-command-leader-detail",
+        action="store_true",
+        help="require live DLL OOB army leader skill and trait rows",
+    )
     args = parser.parse_args(argv)
 
     manifest = load_session_manifest(args.manifest)
@@ -1029,6 +1068,7 @@ def _main(argv: Optional[List[str]] = None) -> int:
         require_air_wing_raw_telemetry=args.require_air_wing_raw_telemetry,
         require_ship_raw_telemetry=args.require_ship_raw_telemetry,
         require_oob_command_raw_telemetry=args.require_oob_command_raw_telemetry,
+        require_oob_command_leader_detail=args.require_oob_command_leader_detail,
     )
     print(json.dumps(proof, indent=2, sort_keys=True))
     return 0 if proof["ok"] else 1

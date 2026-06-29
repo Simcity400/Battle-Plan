@@ -407,6 +407,7 @@ Command-hierarchy membership:
   `oob_command:army:<army_id>` rows expose `army_group_id`, `parent_status`,
   bounded `member_division_ids`, `member_division_count`,
   `member_division_status`, `leader_id`, `leader_status`,
+  `leader_skill`, `leader_traits`, `leader_trait_status`,
   `member_count_engine`, and `missing_member_count`;
   `oob_command:fleet:<fleet_id>` rows expose bounded `task_force_ids`,
   `task_force_count`, and `task_force_status`; and
@@ -418,11 +419,12 @@ Command-hierarchy membership:
   `CTaskForce+0x338/+0x344` before emitting ship ids. Land rows revalidate
   army/army-group/division roots, map `CDivision+0xB0` parent armies, map
   `CArmy+0x1B8` parent army groups, and validate `CArmy+0x88` leader pointers
-  before emitting leader ids.
+  before emitting leader ids, bounded skill values, and assigned trait tokens.
 - This stream does not yet claim owner, command names, missions, locations,
-  theatre membership, naval leaders, or save-shaped nested OOB records. Invalid
-  bridge/layout reads emit `oob_command:gap:<kind>` rows instead of guessed
-  hierarchy.
+  theatre membership, leader portraits, temporary/captured trait state, naval
+  leaders, global commander rosters, or save-shaped nested OOB records.
+  Invalid bridge/layout reads emit `oob_command:gap:<kind>` rows instead of
+  guessed hierarchy.
 - Current `oob_command` verification state: live-verified on the restarted
   vanilla process (pid 43412). A cold bootstrap outside the hot loop found 4897
   command roots and stored `oob_command_roots.json`; the 12-game-hour no-cold
@@ -437,6 +439,16 @@ Command-hierarchy membership:
   domains and verified replay output. The cold discovery timing is not
   acceptable for the normal path; it confirms cache/root refresh work is still
   required before full-game capture.
+- Army leader-detail verification is stricter than generic OOB membership. The
+  proof gate `--require-oob-command-leader-detail` requires exact army rows
+  where leader id/status, skill, trait list, and exact trait status are
+  co-present. The no-cold proof
+  `replay/snapshots/_collector_session_oob_leader_gate/20260629T215306Z_pid43412`
+  advanced 12 game hours in 54.110 wall seconds, verified replay output,
+  emitted 19842 raw `oob_command` deltas, reported zero raw OOB gap domains,
+  and captured 7485 exact army leader-detail rows with 15911 trait tokens. This
+  proves raw army leader skill and assigned trait tokens only; save-shaped OOB
+  nesting and wider commander detail remain follow-up segments.
 
 ### Air Activity
 

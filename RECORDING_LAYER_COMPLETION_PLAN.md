@@ -241,9 +241,11 @@ Current recorder-facing bridge status:
   `oob_command:fleet:<id>`, and `oob_command:task_force:<id>`. The Python
   recorder can populate the bridge with `--preflight-oob-command`; cache hits
   validate cached roots and the expensive command-object vtable scan is gated by
-  `--allow-oob-command-cold-scan`. This captures live membership joins and army
-  leader ids, not owner, names, missions, locations, theatre rows, naval
-  leaders, or save-shaped OOB nesting.
+  `--allow-oob-command-cold-scan`. This captures live membership joins, army
+  leader ids, bounded army leader skill, and assigned army leader trait tokens;
+  it does not yet claim owner, names, missions, locations, theatre rows, leader
+  portraits, temporary/captured trait state, naval leaders, global commander
+  rosters, or save-shaped OOB nesting.
 
 ## Definition Of Done
 
@@ -1375,7 +1377,15 @@ own strict proof from the same pid family: 4704 OOB command roots, 17705
 `oob_command` deltas over 12 game hours, and zero raw gap domains after an
 intentionally cold 135.703s discovery. The generated raw sidecars can be large,
 so this slice is verified for extraction but still needs coalescing/backpressure
-policy before full-length recording. Army orders now have a raw `army_orders`
+policy before full-length recording. Army leader detail now has a stricter
+same-row proof: `--require-oob-command-leader-detail` passed on the no-cold run
+`replay/snapshots/_collector_session_oob_leader_gate/20260629T215306Z_pid43412`,
+which advanced 12 game hours in 54.110 wall seconds, verified replay output,
+emitted 19842 raw `oob_command` deltas with zero raw OOB gaps, and captured
+7485 exact army leader-detail rows with 15911 trait tokens. This proves raw
+army leader id/status, skill, and assigned trait tokens only; save-shaped OOB
+nesting, portraits, names, temporary/captured traits, naval leaders, and global
+commander rosters remain open. Army orders now have a raw `army_orders`
 stream from `army_body_bridge`, with
 `army_order:<army_id>:<generation>` identities, add/remove lifecycle proof,
 bounded bridge gaps, exact type-5 target states, and unsupported status for

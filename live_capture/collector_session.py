@@ -1606,6 +1606,14 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     raw_delta_domain_scheduled_counts: Dict[str, int] = {}
     raw_gap_domains_seen: set[str] = set()
     raw_gap_domain_counts: Dict[str, int] = {}
+    oob_command_leader_skill_rows = 0
+    oob_command_leader_traits_rows = 0
+    oob_command_leader_trait_tokens = 0
+    oob_command_leader_trait_exact_rows = 0
+    max_oob_command_leader_trait_tokens_per_row = 0
+    oob_command_exact_army_leader_detail_rows = 0
+    oob_command_exact_army_leader_trait_tokens = 0
+    max_oob_command_exact_army_leader_trait_tokens_per_row = 0
     country_object_identity_statuses: Dict[str, int] = {}
     country_object_identity_max_object_count = 0
     country_object_identity_max_scan_ms = 0
@@ -1658,6 +1666,39 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
                         raw_delta_domain_object_counts[domain] = (
                             raw_delta_domain_object_counts.get(domain, 0) + 1
                         )
+                        if domain == "oob_command":
+                            leader_skill = after.get("leader_skill")
+                            if isinstance(leader_skill, int) and not isinstance(
+                                leader_skill, bool
+                            ):
+                                oob_command_leader_skill_rows += 1
+                            leader_traits = after.get("leader_traits")
+                            if isinstance(leader_traits, list):
+                                oob_command_leader_traits_rows += 1
+                                oob_command_leader_trait_tokens += len(leader_traits)
+                                max_oob_command_leader_trait_tokens_per_row = max(
+                                    max_oob_command_leader_trait_tokens_per_row,
+                                    len(leader_traits),
+                                )
+                            if after.get("leader_trait_status") == "exact":
+                                oob_command_leader_trait_exact_rows += 1
+                            if (
+                                after.get("entity_kind") == "army"
+                                and isinstance(after.get("leader_id"), int)
+                                and not isinstance(after.get("leader_id"), bool)
+                                and after.get("leader_status") == "exact"
+                                and isinstance(leader_skill, int)
+                                and not isinstance(leader_skill, bool)
+                                and isinstance(leader_traits, list)
+                                and after.get("leader_trait_status") == "exact"
+                            ):
+                                oob_command_exact_army_leader_detail_rows += 1
+                                oob_command_exact_army_leader_trait_tokens += (
+                                    len(leader_traits))
+                                max_oob_command_exact_army_leader_trait_tokens_per_row = max(
+                                    max_oob_command_exact_army_leader_trait_tokens_per_row,
+                                    len(leader_traits),
+                                )
                     elif after is None:
                         raw_delta_domain_null_counts[domain] = (
                             raw_delta_domain_null_counts.get(domain, 0) + 1
@@ -2316,6 +2357,19 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
             sorted(raw_delta_domain_scheduled_counts.items())),
         "raw_gap_domains_seen": sorted(raw_gap_domains_seen),
         "raw_gap_domain_counts": dict(sorted(raw_gap_domain_counts.items())),
+        "oob_command_leader_skill_rows": oob_command_leader_skill_rows,
+        "oob_command_leader_traits_rows": oob_command_leader_traits_rows,
+        "oob_command_leader_trait_tokens": oob_command_leader_trait_tokens,
+        "oob_command_leader_trait_exact_rows": (
+            oob_command_leader_trait_exact_rows),
+        "max_oob_command_leader_trait_tokens_per_row": (
+            max_oob_command_leader_trait_tokens_per_row),
+        "oob_command_exact_army_leader_detail_rows": (
+            oob_command_exact_army_leader_detail_rows),
+        "oob_command_exact_army_leader_trait_tokens": (
+            oob_command_exact_army_leader_trait_tokens),
+        "max_oob_command_exact_army_leader_trait_tokens_per_row": (
+            max_oob_command_exact_army_leader_trait_tokens_per_row),
         "domains_seen": sorted(domains_seen),
         "frames_by_capture_boundary": dict(sorted(frames_by_capture_boundary.items())),
         "scheduled_snapshot_frame_count": frames_by_capture_boundary.get(

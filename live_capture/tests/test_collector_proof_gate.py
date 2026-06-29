@@ -855,6 +855,14 @@ class TestCollectorProofGate(unittest.TestCase):
                         "oob_command": 4704,
                     },
                     "raw_gap_domain_counts": {},
+                    "oob_command_leader_skill_rows": 128,
+                    "oob_command_leader_traits_rows": 128,
+                    "oob_command_leader_trait_tokens": 312,
+                    "oob_command_leader_trait_exact_rows": 128,
+                    "max_oob_command_leader_trait_tokens_per_row": 8,
+                    "oob_command_exact_army_leader_detail_rows": 128,
+                    "oob_command_exact_army_leader_trait_tokens": 312,
+                    "max_oob_command_exact_army_leader_trait_tokens_per_row": 8,
                     "heavy_payload_on_lightweight_frames": 0,
                 },
             ),
@@ -864,11 +872,48 @@ class TestCollectorProofGate(unittest.TestCase):
             require_army_order_raw_telemetry=True,
             require_army_order_raw_updates=True,
             require_oob_command_raw_telemetry=True,
+            require_oob_command_leader_detail=True,
         )
 
         self.assertTrue(proof["ok"])
         self.assertEqual(proof["errors"], [])
         self.assertEqual(proof["raw_delta_domain_counts"]["land_combats"], 6762)
+        self.assertEqual(proof["oob_command_leader_trait_tokens"], 312)
+        self.assertEqual(proof["oob_command_exact_army_leader_detail_rows"], 128)
+
+    def test_rejects_oob_leader_detail_without_skill_and_traits(self):
+        errors = collector_session_proof_errors(
+            _manifest(
+                game_hours_advanced=12,
+                oob_command_bridge_supplied=True,
+                oob_command_bridge_rows=4704,
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock"],
+                    "raw_delta_domains_seen": ["oob_command"],
+                    "raw_delta_domain_counts": {"oob_command": 4704},
+                    "raw_delta_domain_object_counts": {"oob_command": 4704},
+                    "raw_gap_domain_counts": {},
+                    "oob_command_leader_skill_rows": 0,
+                    "oob_command_leader_traits_rows": 0,
+                    "oob_command_leader_trait_tokens": 0,
+                    "oob_command_leader_trait_exact_rows": 0,
+                    "oob_command_exact_army_leader_detail_rows": 0,
+                    "oob_command_exact_army_leader_trait_tokens": 0,
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+            ),
+            min_game_hours=12,
+            require_oob_command_leader_detail=True,
+        )
+
+        self.assertIn(
+            "OOB command exact army leader detail rows were not observed",
+            errors,
+        )
+        self.assertIn(
+            "OOB command exact army leader trait tokens were not observed",
+            errors,
+        )
 
     def test_rejects_required_raw_domain_gap_deltas_by_default(self):
         errors = collector_session_proof_errors(

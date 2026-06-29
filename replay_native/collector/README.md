@@ -482,11 +482,13 @@ OOB command raw stream status:
 - Current emitted rows are `oob_command:army_group:<army_group_id>`,
   `oob_command:army:<army_id>`, `oob_command:fleet:<fleet_id>`, and
   `oob_command:task_force:<task_force_id>`. Rows expose army-group member
-  armies, army member divisions, army parent groups, army leader ids, engine
+  armies, army member divisions, army parent groups, army leader ids, bounded
+  army leader skill values, assigned army leader trait tokens, engine
   member-count diagnostics, fleet task-force membership, task-force parent
   fleet, and bounded CShip instance-id membership from the live
   `CTaskForce+0x338/+0x344` vector. Owner, names, missions, locations, theatre
-  membership, naval leaders, and save-shaped nested OOB records are not yet
+  membership, leader portraits, temporary/captured trait state, naval leaders,
+  global commander rosters, and save-shaped nested OOB records are not yet
   claimed.
 - Remaining promotion work is a live active-naval-combat fixture, a
   root/hook-derived discoverer for combats born after preflight, speed-five
@@ -498,6 +500,14 @@ OOB command raw stream status:
   captured 17705 `oob_command` deltas across 12 game hours with zero raw gap
   domains after an intentionally allowed 135.703s cold preflight. Treat that
   cold discovery time as cache/root-refresh work, not normal hot-loop cost.
+  Army leader-detail proof is stricter than generic OOB membership:
+  `--require-oob-command-leader-detail` requires exact army rows with
+  leader id/status, skill, trait list, and exact trait status co-present. The
+  no-cold run
+  `replay/snapshots/_collector_session_oob_leader_gate/20260629T215306Z_pid43412`
+  advanced 12 game hours in 54.110 wall seconds, verified replay output,
+  emitted 19842 raw `oob_command` deltas with zero raw OOB gaps, and captured
+  7485 exact army leader-detail rows with 15911 trait tokens.
 
 Air-wing raw stream status:
 
