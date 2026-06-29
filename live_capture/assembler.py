@@ -669,13 +669,16 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
 
     # --- politics_live: LIVE per-country politics -> country.politics (M). Folds onto the
     # SAME save leaves (party_popularities/ruling_party) under the DISTINCT "politics_live"
-    # provenance id, plus the NEW live leaves ideas/idea_count/election_frequency/party_count/
-    # low_confidence. political_power is RESISTED here (country_scalars owns it; we never
-    # double-write the protected PP leaf). A measured value (incl. a measured-empty ideas []
-    # / a measured 0 popularity) is written through; an UNMEASURED None is left so the save
-    # backstop can fill it (ruling_party/party_popularities are save-shared). ---
+    # provenance id, plus the NEW live leaves ideas/ideas_other/national_spirits/laws/
+    # idea_count/election_frequency/party_count/low_confidence. political_power is RESISTED here
+    # (country_scalars owns it; we never double-write the protected PP leaf). A measured
+    # value (incl. a measured-empty ideas [] / ideas_other [] / a measured 0 popularity)
+    # is written through; an UNMEASURED None is left so the save backstop can fill it
+    # (ruling_party/party_popularities/laws/ideas_other are save-shared). ---
     polv = captured("politics_live")
     if polv is not None:
+        _ideas_other_tags = set()
+        _national_spirit_tags = set()
         for tag, rec in (polv.get("countries") or {}).items():
             if not schema.valid_tag(tag):
                 continue
@@ -693,6 +696,17 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
             ideas = rec.get("ideas")
             if ideas is not None:
                 pol["ideas"] = list(ideas)
+            # ideas_other: live-classified non-law active ideas. This leaf's schema default
+            # is [], so measured-empty [] needs a measured-TAG sidecar before save backstop
+            # can safely protect it from a stale save list.
+            ideas_other = rec.get("ideas_other")
+            if isinstance(ideas_other, list):
+                pol["ideas_other"] = list(ideas_other)
+                _ideas_other_tags.add(tag)
+            national_spirits = rec.get("national_spirits")
+            if isinstance(national_spirits, list):
+                pol["national_spirits"] = list(national_spirits)
+                _national_spirit_tags.add(tag)
             # the remaining live-only scalars: a measured value (incl. 0 / False) is written.
             for src, dst in (("idea_count", "idea_count"),
                              ("election_frequency", "election_frequency"),
@@ -703,11 +717,18 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
                     pol[dst] = v
             # laws: the typed {economy/trade_laws/mobilization_laws} triple classified from the
             # MEASURED idea tokens by defnames (M, additive enrichment; present only when the
-            # name-resolution opt-in ran). Plug-emitted but previously dropped at the fold.
+            # name-resolution opt-in ran). Deliberately NOT protected as a whole leaf: laws
+            # defaults to {}, so a live empty dict must never overwrite save-derived laws.
             laws = rec.get("laws")
-            if laws is not None:
-                pol["laws"] = laws
+            if isinstance(laws, dict):
+                pol["laws"] = dict(laws)
             # political_power: NOT written here (country_scalars owns the protected leaf).
+        if _ideas_other_tags:
+            _measured = snap.setdefault("_live_measured_leaf_tags", {})
+            _measured["politics.ideas_other"] = sorted(_ideas_other_tags)
+        if _national_spirit_tags:
+            _measured = snap.setdefault("_live_measured_leaf_tags", {})
+            _measured["politics.national_spirits"] = sorted(_national_spirit_tags)
         captured_domains.append("politics_live")
 
     # --- fuel_live: LIVE per-country national FUEL -> country.economy.fuel.{current,max} (M).
@@ -715,7 +736,7 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
     # DISTINCT "fuel_live" provenance id (live-first; protected via _LIVE_COUNTRY_DOMAIN_LEAVES).
     # We write the INDIVIDUAL scalar leaves current/max -- whose own skeleton default is absent
     # (the dict is {}), so the `lv is not None` guard in _merge_country suffices and no
-    # _SKELETON_EMPTY_CONTAINER_LEAVES entry is needed (Codex). A measured value (incl. a
+    # measured-empty container guard is needed. A measured value (incl. a
     # measured 0.0 = empty tank) is written through with a `is not None` guard, NEVER truthiness;
     # an unmeasured None is left so the save backstop can fill it. NO save-relative range gate on
     # current fuel (it legitimately reads below the save: live post-clamp + live!=save frame). ---
@@ -1173,6 +1194,17 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
                 pol["elections_allowed"] = rec["elections_allowed"]
             if isinstance(rec.get("appointed_advisors"), list):
                 pol["appointed_advisors"] = list(rec["appointed_advisors"])
+            if isinstance(rec.get("appointed_advisor_details"), list):
+                pol["appointed_advisor_details"] = [
+                    dict(row) for row in rec["appointed_advisor_details"]
+                    if isinstance(row, dict)
+                ]
+            if isinstance(rec.get("appointed_advisor_slots"), dict):
+                pol["appointed_advisor_slots"] = {
+                    str(slot): list(tokens)
+                    for slot, tokens in rec["appointed_advisor_slots"].items()
+                    if isinstance(tokens, list)
+                }
             _pr_tags.add(tag)
         if _pr_tags:
             _measured = snap.setdefault("_live_measured_leaf_tags", {})
@@ -1180,6 +1212,8 @@ def assemble_snapshot(results: Dict[str, Any], *, game_id: str,
             # skeleton container; but the leaf default is None (Optional), so the None-guard
             # suffices. We still record the measured set for fold-bundle protection symmetry.
             _measured["politics.appointed_advisors"] = sorted(_pr_tags)
+            _measured["politics.appointed_advisor_details"] = sorted(_pr_tags)
+            _measured["politics.appointed_advisor_slots"] = sorted(_pr_tags)
         captured_domains.append("politics_residuals")
 
     # --- intel_deep: LIVE operative roster + cryptology -> country.intel.{operatives_live,
@@ -1455,7 +1489,7 @@ def _backstop_merge(live: Any, save: Any) -> Any:
     return live if not _is_empty(live) else save
 
 
-# Map a LIVE memory domain to the EXACT country leaf paths it MEASURES (dotted,
+# Map a LIVE memory/collector domain to the EXACT country leaf paths it MEASURES (dotted,
 # relative to the country object), so the fold protects a measured value/empty there
 # from save overwrite WITHOUT over-protecting sibling leaves the domain did NOT
 # measure (Codex P1). country_scalars measures only these specific scalars; a future
@@ -1529,7 +1563,7 @@ _LIVE_COUNTRY_DOMAIN_LEAVES = {
     # diplomacy.opinion leaf (live wins on the measured matrix); relation_flags + overlord/
     # autonomy_state/autonomy_ratio are live-only leaves. ALL default None (NOT {}), so the
     # `lv is not None` guard in _merge_country already skips an unmeasured country -- no
-    # _SKELETON_EMPTY_CONTAINER_LEAVES entry is needed (a measured-empty {} is never emitted by
+    # measured-empty container guard is needed (a measured-empty {} is never emitted by
     # the plug; it only keys a country that carries a measured leaf). Protecting opinion keeps a
     # live measured matrix from being clobbered by a stale save opinion map (Codex).
     "diplo_relations": (
@@ -1539,18 +1573,23 @@ _LIVE_COUNTRY_DOMAIN_LEAVES = {
     # LIVE politics (politics_live): country.politics is a SAVE-SHARED home. party_popularities
     # + ruling_party fold onto the save leaves (live wins on the measured value); ideas/
     # idea_count/election_frequency/party_count/low_confidence are live leaves (ideas default
-    # None, NOT [], so the None-guard suffices -- no skeleton-empty machinery). political_power
-    # is DELIBERATELY NOT here (country_scalars owns + protects it; a single live owner).
+    # None, NOT [], so the None-guard suffices). ideas_other and national_spirits are
+    # save-shared and default [], so measured-empty [] is protected only for TAGs recorded
+    # in _live_measured_leaf_tags.
+    # laws is deliberately NOT protected because an empty live {} must not erase save laws.
+    # political_power is DELIBERATELY NOT here (country_scalars owns + protects it; a single
+    # live owner).
     "politics_live": (
         "politics.party_popularities", "politics.ruling_party", "politics.ideas",
         "politics.idea_count", "politics.election_frequency", "politics.party_count",
-        "politics.low_confidence",
+        "politics.low_confidence", "politics.ideas_other",
+        "politics.national_spirits",
     ),
     # LIVE national fuel (fuel_live): country.economy.fuel is a SAVE-SHARED dict home. We
     # protect ONLY the two scalar leaves the live read measures (current/max). Their own
     # skeleton default is ABSENT (economy.fuel defaults to {}), so a country fuel_live did
     # NOT measure carries None at fuel.current/fuel.max and the None-guard in _merge_country
-    # already skips it -- no _SKELETON_EMPTY_CONTAINER_LEAVES entry is needed (the {} parent
+    # already skips it -- no measured-empty container guard is needed (the {} parent
     # is itself never protected as a measurement). A measured 0.0 fuel is protected here so a
     # stale save value cannot overwrite a live empty tank (Codex).
     "fuel_live": (
@@ -1569,6 +1608,12 @@ _LIVE_COUNTRY_DOMAIN_LEAVES = {
     "decisions_market": (
         "decisions.timed_live",
     ),
+    # Scheduled in-process collector decision rows: status-vector presence counts and
+    # active timed decisions. timed_live=[] is a measured "no active timed decision"
+    # only for TAGs recorded by the collector fold.
+    "decisions_live": (
+        "decisions.status_present", "decisions.timed_live",
+    ),
     # LIVE operative skill/xp (final_residuals_live): a live-only leaf (default None), so the
     # None-guard suffices for an unmeasured country.
     "operative_xp": (
@@ -1579,7 +1624,8 @@ _LIVE_COUNTRY_DOMAIN_LEAVES = {
     # None-guard in _merge_country already skips an unmeasured country.
     "politics_residuals": (
         "politics.last_election", "politics.elections_allowed",
-        "politics.appointed_advisors",
+        "politics.appointed_advisors", "politics.appointed_advisor_details",
+        "politics.appointed_advisor_slots",
     ),
     # LIVE operative roster + cryptology (intel_deep_live): both are live-only leaves (default
     # None), so the None-guard suffices for an unmeasured country.
@@ -1620,7 +1666,7 @@ _LIVE_STATE_DOMAIN_LEAVES = {
 }
 
 # Protected STATE leaves whose schema SKELETON DEFAULT is a non-None empty container
-# (analogous to _SKELETON_EMPTY_CONTAINER_LEAVES for countries). victory_points_by_province
+# (analogous to _MEASURED_EMPTY_CONTAINER_LEAVES for countries). victory_points_by_province
 # defaults to None (NOT {}), so it is NOT listed here -- a state the live domain did not
 # measure carries None there and the None-guard skips it. This frozenset is the hook for
 # any future live state leaf whose default is []/{} (none today).
@@ -1654,17 +1700,17 @@ def _get_leaf(d: Dict[str, Any], path: str) -> Any:
     return cur
 
 
-# Protected save-shared leaves whose SCHEMA SKELETON DEFAULT is a non-None empty
-# container ([] / {}). For every OTHER protected leaf the skeleton default is None, so a
-# country a domain did NOT measure carries None there and the `lv is not None` guard
-# already skips it. But a leaf defaulting to [] (e.g. country.focus.completed -- a save-
-# SHARED home) reads as a non-None []  even on a country the live domain never measured
-# (the country was created by ANOTHER live domain, so empty_country() gave it the
-# skeleton []). Re-asserting that skeleton [] over the save would FABRICATE a measured-
-# empty zero (Codex cross-domain review). For these leaves we therefore re-assert ONLY
-# when the live domain actually MEASURED that TAG (tracked via measured_leaf_tags).
-_SKELETON_EMPTY_CONTAINER_LEAVES = frozenset((
-    "focus.completed",   # Focus.completed defaults [] (save-shared list home)
+# Protected leaves whose empty []/{} value must be proven measured before it can
+# be re-asserted over the save. This includes save-shared leaves whose schema
+# skeleton default is an empty container, plus live leaves like decisions.timed_live
+# where [] is a real "measured empty" and not just a generic no-information value.
+_MEASURED_EMPTY_CONTAINER_LEAVES = frozenset((
+    "focus.completed",       # Focus.completed defaults [] (save-shared list home)
+    "politics.ideas_other",  # Politics.ideas_other defaults [] (save-shared list home)
+    "politics.national_spirits",
+    # Decisions.timed_live defaults None, but an empty timed_live=[] still needs proof
+    # that this TAG was actually measured before it may overwrite a backstop value.
+    "decisions.timed_live",
 ))
 
 
@@ -1678,7 +1724,8 @@ def _merge_country(live_c: Dict[str, Any], save_c: Dict[str, Any],
 
     ``measured_leaf_tags`` (optional) maps a protected leaf path -> the set of TAGs the
     owning live domain MEASURED. It is consulted ONLY for leaves whose skeleton default
-    is a non-None empty container (``_SKELETON_EMPTY_CONTAINER_LEAVES``): for those, a
+    is or may carry a measured empty container (``_MEASURED_EMPTY_CONTAINER_LEAVES``):
+    for those, a
     non-None [] is re-asserted only when ``tag`` is in the leaf's measured set, so a
     cross-domain skeleton [] on an UN-measured country can never masquerade as a measured
     zero and overwrite the save (Codex cross-domain review). When the map is absent (the
@@ -1698,7 +1745,7 @@ def _merge_country(live_c: Dict[str, Any], save_c: Dict[str, Any],
         # skeleton [] must never overwrite the save (Codex cross-domain review + legacy-
         # snapshot edge). The normal assembler path always supplies the map + entry, so a
         # genuinely-measured country is still protected; only an un-provable [] is skipped.
-        if path in _SKELETON_EMPTY_CONTAINER_LEAVES:
+        if path in _MEASURED_EMPTY_CONTAINER_LEAVES and lv in ([], {}):
             measured = (measured_leaf_tags or {}).get(path)
             if measured is None or tag is None or tag not in measured:
                 continue  # cannot prove this [] was measured -> do NOT protect (fail-closed)
@@ -1774,12 +1821,15 @@ def fold_save_bundle(snap: Dict[str, Any], output_dir: str, *,
     if not save_domains and not doctrine_has_payload:
         return snap  # nothing to fold (empty/absent oracle) -> no fabrication
 
-    # Which exact country LEAVES did the LIVE memory channel measure? Those values
+    # Which exact country LEAVES did the LIVE memory/collector channel measure? Those values
     # (incl. a measured-empty []/{}) must be protected from save overwrite (Codex P1).
     live_mem_domains = ((snap.get("provenance") or {}).get("memory") or {}).get(
         "domains") or []
+    live_collector_domains = (
+        ((snap.get("provenance") or {}).get("collector") or {}).get("domains") or []
+    )
     protected_leaves = []
-    for dom in live_mem_domains:
+    for dom in list(live_mem_domains) + list(live_collector_domains):
         protected_leaves.extend(_LIVE_COUNTRY_DOMAIN_LEAVES.get(dom, ()))
 
     # Per-leaf MEASURED-TAG sets for the masquerade guard: a protected save-shared leaf

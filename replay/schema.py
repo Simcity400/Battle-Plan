@@ -27,6 +27,12 @@ PRODUCTION_FACTORY_COUNT_MAX = 100_000
 PRODUCTION_LINE_AMOUNT_MAX = 2_147_483_647
 PRODUCTION_FIXED_POINT_ABS_MAX = 1_000_000_000_000.0
 FUEL_MEASURE_ABS_MAX = 1_000_000_000.0
+DECISION_STATUS_MAX_KEYS = 32
+DECISION_STATUS_COUNT_MAX = 4096
+DECISION_TIMED_LIVE_MAX_ENTRIES = 4096
+DECISION_TIMED_DAYS_MAX = 100_000
+DECISION_TIMED_STATE_MAX = 1024
+SCRIPT_TOKEN_MAX_LENGTH = 160
 
 # Canonical domain ids referenced by provenance.{collector,memory,save}.domains (SCHEMA §2).
 DOMAINS = (
@@ -59,7 +65,7 @@ DOMAINS = (
     "naval_air",         # naval region control + air superiority (live, proxy/region)
     "supply",            # live supply proxy (where troops are; confidence-badged)
     "weather",           # live per-region temperature + phenomenon (M; no save oracle)
-    "projects_live",     # LIVE special-projects/facilities/scientists pools (M; distinct
+    "projects_live",     # LIVE special-projects/facilities/scientists pools (C/M; distinct
                          # from the SAVE-sourced per-country "projects" domain below)
     "fuel_live",         # LIVE per-country national fuel -> countries.*.economy.fuel.{current,
                          # max,gain,cost} (C/M; shares the save economy.fuel home, tracked under
@@ -77,7 +83,9 @@ DOMAINS = (
     # (research/commanders/intel) but are tracked under DISTINCT *_live provenance
     # ids so the live memory channel never collides with the save channel's
     # canonical "tech"/"commanders"/"intel" ids (Codex: distinct-live-id strategy).
-    "tech_live",             # LIVE research counts + active_research -> countries.*.research (M)
+    "tech_live",             # LIVE research counts/slots -> countries.*.research (C/M);
+                             # DLL collector emits raw active_research rows from the bounded
+                             # CTechnologyStatus+0xA0 CResearchSlot* vector on scheduled frames.
     "commanders_live",       # LIVE unit-leaders -> countries.*.commanders.{army,navy}_leaders (M)
     "intel_live",            # LIVE agency scalars -> countries.*.intel.agency.* (M)
     "focus_live",            # LIVE national-focus state -> countries.*.focus.* (M; shares the
@@ -123,6 +131,9 @@ DOMAINS = (
                              # (decisions_market_live, M) -> countries.*.decisions.timed_live
                              # (NEW live-only leaf) + the NEW top-level snap["market_live"]
                              # sidecar (distinct from the SAVE "market" domain).
+    "decisions_live",        # scheduled in-process collector decision-status/timed-decision
+                             # rows -> countries.*.decisions.{status_present,timed_live}
+                             # (C; distinct from the market sidecar domain).
     "operative_xp",          # LIVE operative SKILL + XP + tech in-progress UNITS (final_residuals_
                              # live, M) -> countries.*.intel.operative_skill_xp (NEW live-only leaf)
                              # + merged onto research.in_progress_live slots (progress_units). The
@@ -201,11 +212,11 @@ COLLECTOR_DOMAIN_CONTRACTS: Dict[str, Dict[str, Any]] = {
         "cadence_class": "high_frequency_raw_stream",
         "snapshot_path": None,
         "shape": "raw_land_combat_lifecycle_and_participant_samples",
-        "root_contract_status": "blocked_pending_pinned_root_or_hook",
+        "root_contract_status": "pinned_live_raw_stream",
         "source_marker": (
             "C only in collector raw domain_delta/event/gap frames; do not "
-            "promote to typed combats[] snapshots until a root/bridge/hook "
-            "contract proves active-combat discovery without hot-loop heap scans"
+            "promote to typed combats[] snapshots until replay ingestion for "
+            "the lifecycle stream is implemented"
         ),
         "required_raw_fields": (
             "combat_key", "combat_id", "generation", "location",
@@ -226,6 +237,20 @@ def valid_tag(v: Any) -> bool:
     identity in an owner/controller/*_tag field (Codex review #5)."""
     return (isinstance(v, str) and len(v) == 3 and v.isalnum()
             and v.isupper() and not v.isdigit())
+
+
+def valid_script_token(v: Any) -> bool:
+    return (
+        isinstance(v, str)
+        and 0 < len(v) <= SCRIPT_TOKEN_MAX_LENGTH
+        and all(
+            ("A" <= ch <= "Z")
+            or ("a" <= ch <= "z")
+            or ("0" <= ch <= "9")
+            or ch in "_-.:"
+            for ch in v
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -303,12 +328,14 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.politics.laws.trade": "S",
     "countries.*.politics.laws.conscription": "S",
     "countries.*.politics.ideas_all": "S",
-    "countries.*.politics.ideas_other": "S",
+    "countries.*.politics.ideas_other": "M/S",
+    "countries.*.politics.national_spirits": "M/S",
     # LIVE active-ideas list + cadence (politics_live, M). `ideas` is the ordered full
     # active-ideas/spirits set (incl. law ideas by id; set AND order EXACT vs save);
+    # ideas_other is the ordered broad active non-law subset when live classification is
+    # available; national_spirits is the narrower `common/ideas` category=country subset.
     # election_frequency (months, EXACT) + party_count + low_confidence are live-only
-    # read-quality/cadence leaves. LAW sub-typing (economy/trade/mob) stays RESISTED (the
-    # law ideas are present in `ideas` by id but not classified; see laws.* save leaves).
+    # read-quality/cadence leaves.
     "countries.*.politics.ideas": "M",
     "countries.*.politics.idea_count": "M",
     "countries.*.politics.election_frequency": "M",
@@ -320,14 +347,17 @@ FIELD_SOURCES: Dict[str, str] = {
     # token. DISTINCT from the save-derived laws.{economy,trade,conscription} above (different
     # group naming + source). Absent for a country whose law group could not be classified
     # (no fabrication). Only present when name resolution is enabled.
-    "countries.*.politics.laws": "M",
+    "countries.*.politics.laws": "M/S",
     # LIVE election residuals + appointed advisors (politics_residuals_live, M). DISTINCT
     # live-only leaves: last_election (decoded "Y.M.D.H", 46/46 EXACT vs save), elections_allowed
     # (u8 bool, 46/46 EXACT), appointed_advisors (the idea-token list of HIRED cabinet advisors,
-    # 46/46 EXACT). All M; absent until a live read folds them (no fabrication).
+    # 46/46 EXACT), plus static-contract detail/slot maps. All M; absent until a live read
+    # folds them (no fabrication).
     "countries.*.politics.last_election": "M",
     "countries.*.politics.elections_allowed": "M",
     "countries.*.politics.appointed_advisors": "M",
+    "countries.*.politics.appointed_advisor_details": "M",
+    "countries.*.politics.appointed_advisor_slots": "M",
     "countries.*.politics.cabinet": "S",
     "countries.*.politics.is_human": "S/M",
     "countries.*.politics.is_major": "S",
@@ -335,10 +365,11 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.politics.autonomy": "S",
     "countries.*.politics.faction": "S",
     # --- country.research (§3.4) ---
-    # tech_count + research_slots are now LIVE-first (tech_live, M) with the save as
-    # the backstop; the live reader measures the completed-tech VECTOR SIZE and the
-    # current slot capacity exactly (43/43, 45/46 vs save).
-    "countries.*.research.tech_count": "M/S",
+    # tech_count + research_slots + raw active-research rows are now LIVE-first
+    # (tech_live, C/M) with the save as the backstop. The collector reads the
+    # CTechnologyStatus completed-tech vector size, slot vector size, and bounded
+    # CResearchSlot* vector through CCountry+0xF60 on scheduled frames.
+    "countries.*.research.tech_count": "C/M/S",
     "countries.*.research.technologies": "S/D",
     "countries.*.research.in_progress": "S/M*",
     # Save-backed doctrine manager fold (parse_doctrine -> doctrine.json, D/S): TAG-keyed
@@ -360,8 +391,10 @@ FIELD_SOURCES: Dict[str, str] = {
     # LIVE active-research rows live in a SEPARATE leaf (raw-handle shape, distinct
     # from the save's {name, points_factor} in_progress) so the two shapes never mix
     # (Codex). Carries {slot_index, tech_handle_raw, tech_def_index_raw, progress_raw};
-    # tech NAMES + the progress SCALE are RESISTED (unresolved registry / unvalidated).
-    "countries.*.research.in_progress_live": "M",
+    # scheduled DLL frames now emit the raw rows from the bounded CResearchSlot vector,
+    # while legacy memory remains a fallback. Tech NAMES + completion fraction/ETA are
+    # resisted until the registry/cost/speed inputs are safe.
+    "countries.*.research.in_progress_live": "C/M",
     # resolved tech TOKEN per in-progress slot (tech_live + defnames_live, M-derived). ADDED
     # ALONGSIDE the raw tech_handle_raw/tech_def_index_raw; absent for an unknown handle (no
     # fabrication). Only present when name resolution is enabled.
@@ -382,30 +415,29 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.research.in_progress_live.*.progress_basis": "D",
     "countries.*.research.in_progress_live.*.progress_unavailable_reason": "D",
     "countries.*.research.in_progress_live.*.eta_unavailable_reason": "D",
-    "countries.*.research.research_slots": "M/S",
+    "countries.*.research.research_slots": "C/M/S",
     "countries.*.research.original_research_slots": "S",
     "countries.*.research.research_bonuses": "S",
     # --- country.focus (§3.5) ---
-    # focus_tree / completed / completed_count / current / progress are now LIVE-first
-    # (focus_live, M) with the save as the backstop: the live reader measures the focus
-    # tree id (20/20 EXACT), the completed vector (set AND order, 22/22 EXACT), the
-    # active national focus (9/9), and progress in days (19/19 EXACT, same days-elapsed
-    # semantic as the save `progress`). current_continuous is a NEW live-only leaf (the
-    # save Focus dataclass has no such field). paused stays save-only (open ticket: no
-    # paused=yes ground truth this frame, so the live byte is unpinned -> reader None).
-    "countries.*.focus.focus_tree": "M/S",
+    # focus_tree / completed / completed_count / current / progress are LIVE-first via
+    # scheduled collector focus_live (C) and legacy memory focus_live (M), with the save
+    # as the backstop. The collector reads focus_tree from CCountry+0x1370 and the focus
+    # submanager from CCountry+0x1380. current_continuous is a live-only leaf. paused
+    # stays save-only until a live byte is pinned.
+    "countries.*.focus.focus_tree": "C/M/S",
     "countries.*.focus.continuous_focus_palette": "S",
-    "countries.*.focus.completed": "M/S",
-    "countries.*.focus.completed_count": "M/S",
-    "countries.*.focus.current": "M/S",
-    "countries.*.focus.current_continuous": "M",   # active CONTINUOUS focus (live-only leaf)
-    "countries.*.focus.progress": "M/S",           # days into the active focus (same unit as save)
+    "countries.*.focus.completed": "C/M/S",
+    "countries.*.focus.completed_count": "C/M/S",
+    "countries.*.focus.current": "C/M/S",
+    "countries.*.focus.current_continuous": "C/M",  # active CONTINUOUS focus (live-only leaf)
+    "countries.*.focus.progress": "C/M/S",          # days into the active focus (same unit as save)
     "countries.*.focus.paused": "S",
     # --- country.decisions / diplomacy / intel (§3.6-3.8) ---
     "countries.*.decisions": "S",
-    # LIVE active timed decisions (decisions_market_live, M). DISTINCT live-only leaf from the
-    # save-shaped decisions.{active,timed,missions}: each {decision, days, state, state_name}.
-    "countries.*.decisions.timed_live": "M",
+    # LIVE decision status/timed decisions (decisions_live, C; decisions_market_live, M).
+    # DISTINCT live-only leaf from the save-shaped decisions.{active,timed,missions}:
+    # each timed row is {decision, days, state, state_name}.
+    "countries.*.decisions.timed_live": "C/M",
     "countries.*.diplomacy.wars": "S",
     # opinion is now LIVE-first (diplo_relations_live, M) with the save as the backstop: the
     # live reader measures the bilateral cached_sum net opinion (1113/1113 real ordered pairs
@@ -561,9 +593,9 @@ FIELD_SOURCES: Dict[str, str] = {
     "countries.*.identity.cores": "M",
     "countries.*.identity.claims": "M",
     "countries.*.identity.naval_headquarter_status": "M",
-    # country.decisions.status_present (live country_containers_live): which decision-status
-    # keys are non-empty + their counts (29-country presence set EXACT). M (presence only).
-    "countries.*.decisions.status_present": "M",
+    # country.decisions.status_present (live country_containers_live / collector decisions_live):
+    # which decision-status keys are non-empty + their counts. C/M (presence only).
+    "countries.*.decisions.status_present": "C/M",
     # country.country_reports (live country_containers_live): latest-report scalar header
     # {days, index, date_raw} (140/140 EXACT). M.
     "countries.*.country_reports": "M",
@@ -636,13 +668,14 @@ FIELD_SOURCES: Dict[str, str] = {
     # (no fabrication). Icon token (GFX_mio_policy_<suffix>), not the unique script name.
     "mio_live.by_id.*.policies": "M",
     "mio_live.by_tag.*.policies": "M",
-    # --- top-level live special-projects catalog (§11c, projects_live.py). All M.
+    # --- top-level live special-projects catalog (§11c, projects_live.py / DLL
+    # projects_live). Catalog rows are C/M; resolved traits remain memory-derived.
     # Raw static-def db-id HANDLES (active_project_handle / static_def_handle) are
-    # measured ids, not resolved names (M). project_progress/phase_progress/
+    # measured ids, not resolved names. project_progress/phase_progress/
     # current_state are serialize-COMPUTED and intentionally NOT carried. ---
-    "special_projects.facilities": "M",
-    "special_projects.projects": "M",
-    "special_projects.scientists": "M",
+    "special_projects.facilities": "C/M",
+    "special_projects.projects": "C/M",
+    "special_projects.scientists": "C/M",
     # resolved scientist TRAIT tokens (projects_live + defnames_live, M-derived). ADDED
     # ALONGSIDE trait_count via the direct trait def-pointer walk; absent when resolution is
     # off or the walk fails closed (no fabrication). A measured-empty [] = a traitless scientist.
@@ -1012,9 +1045,10 @@ class Politics:
     laws: Dict[str, Any] = field(default_factory=_none_dict)
     ideas_all: List[str] = field(default_factory=list)
     ideas_other: List[str] = field(default_factory=list)
+    national_spirits: List[str] = field(default_factory=list)
     # LIVE active-ideas list (politics_live, M). DISTINCT live-only leaf, separate from the
-    # save-derived ideas_all / ideas_other above: the ORDERED full active-ideas/spirits set
-    # (incl. the economy/trade/mobilisation LAW ideas, by id) read straight from the live
+    # save-derived ideas_all / ideas_other/national_spirits above: the ORDERED full
+    # active-ideas/spirits set (incl. the economy/trade/mobilisation LAW ideas, by id) read straight from the live
     # CPoliticalStatus ideas vector (set AND order EXACT vs save). Defaults None (Optional)
     # NOT [] so an unmeasured country reads None (skipped by the backstop's `lv is not None`
     # guard); a measured-empty [] is a real "no active ideas" and is written + protected, so
@@ -1032,12 +1066,15 @@ class Politics:
     # live-only leaves: `last_election` is the decoded "Y.M.D.H" date of the last election
     # (46/46 EXACT vs save); `elections_allowed` is the u8 election-enabled bool (46/46 EXACT);
     # `appointed_advisors` is the idea-token list of HIRED cabinet advisors (the advisor roster
-    # idea tokens present in the active ideas; 46/46 EXACT). All default None (unmeasured); a
+    # idea tokens present in the active ideas; 46/46 EXACT); details/slots add static
+    # `common/characters` metadata. All default None (unmeasured); a
     # measured-empty appointed_advisors [] (no advisor hired) is a real value (live-only leaf,
     # so no _SKELETON_EMPTY_CONTAINER_LEAVES entry needed — Codex).
     last_election: Optional[str] = None
     elections_allowed: Optional[bool] = None
     appointed_advisors: Optional[List[str]] = None
+    appointed_advisor_details: Optional[List[Dict[str, Any]]] = None
+    appointed_advisor_slots: Optional[Dict[str, List[str]]] = None
     cabinet: Optional[Dict[str, Any]] = None
     is_human: Optional[bool] = None
     is_major: Optional[bool] = None
@@ -1051,7 +1088,7 @@ class Research:
     tech_count: Optional[int] = None
     technologies: List[Dict[str, Any]] = field(default_factory=list)
     in_progress: List[Dict[str, Any]] = field(default_factory=list)
-    # LIVE active-research rows (tech_live, M). DISTINCT leaf from the save-shaped
+    # LIVE active-research rows (tech_live, C/M). DISTINCT leaf from the save-shaped
     # `in_progress` (whose elements are {name, points_factor}); these carry the raw
     # engine shape {slot_index, tech_handle_raw, tech_def_index_raw, progress_raw}.
     # null-but-present until a live read folds it (None != a measured-empty []).
@@ -1682,7 +1719,8 @@ class MarketLive:
 @dataclass
 class SpecialProjects:
     """Top-level LIVE special-projects / facilities / scientists catalog (§11c,
-    projects_live.py). M = process memory.
+    projects_live.py / scheduled collector projects_live). C/M = in-process collector
+    or legacy process-memory reader.
 
     NEW first-class LIVE container, distinct from the SAVE-sourced per-country
     Country.projects / Country.scientists (§3.16, S) — different shape AND
@@ -1702,13 +1740,13 @@ class SpecialProjects:
     skills{specialization_nuclear/_naval/_air/_land: int}, trait_count(int|None)}.
     Trait NAMES are unresolved registry handles -> only the count is carried.
 
-    null-but-present until a live read folds it; ``source`` self-badges "M".
+    null-but-present until a live read folds it; ``source`` self-badges "C" or "M".
     """
     facilities: Optional[List[Dict[str, Any]]] = None
     projects: Optional[List[Dict[str, Any]]] = None
     scientists: Optional[List[Dict[str, Any]]] = None
     count: Optional[Dict[str, int]] = None   # {facilities, projects, scientists}
-    source: Optional[str] = None             # "M" when a live read filled it, else null
+    source: Optional[str] = None             # "C"/"M" when a live read filled it
 
 
 @dataclass
@@ -2090,7 +2128,7 @@ _TOP_CONTAINERS = {
     "divisions": list, "combats": list, "events": list, "map": dict,
     "provenance": dict, "diplomacy_world": dict,
     "designs": dict, "order_of_battle": dict,
-    # top-level LIVE catalogs (§11b mio_live, §11c special_projects), source M.
+    # top-level LIVE catalogs (§11b mio_live source M, §11c special_projects source C/M).
     # Always present (null-but-present block); validated as a dict so a malformed
     # payload can't pass as an ignored unknown key (Codex: close the validator
     # blind spot — mio_live was missing here from a prior pass).
@@ -2295,6 +2333,10 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
             if tcc is not None and not isinstance(tcc, int):
                 problems.append(
                     f"country {tag!r}.research.tech_count {tcc!r} not int|null")
+            slots = rsh.get("research_slots")
+            if slots is not None and not isinstance(slots, int):
+                problems.append(
+                    f"country {tag!r}.research.research_slots {slots!r} not int|null")
         cmd = c.get("commanders")
         if isinstance(cmd, dict):
             for k in ("army_leaders", "navy_leaders"):
@@ -2423,18 +2465,59 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                 problems.append(
                     f"country {tag!r}.diplomacy.opinion_modifiers {om!r} not dict|null")
         # newly-wired LIVE politics leaves (politics_live, M): party_popularities dict|null,
-        # ideas list|null, idea_count/election_frequency/party_count int|null, low_confidence
-        # bool|null. (political_power stays country_scalars-owned; not re-validated here.)
+        # ideas/ideas_other/national_spirits list|null, laws dict|null,
+        # idea_count/election_frequency/party_count int|null, low_confidence bool|null.
+        # (political_power stays country_scalars-owned;
+        # not re-validated here.)
         pol = c.get("politics")
         if isinstance(pol, dict):
             pp = pol.get("party_popularities")
             if pp is not None and not isinstance(pp, dict):
                 problems.append(
                     f"country {tag!r}.politics.party_popularities {pp!r} not dict|null")
+            laws = pol.get("laws")
+            if laws is not None and not isinstance(laws, dict):
+                problems.append(
+                    f"country {tag!r}.politics.laws {laws!r} not dict|null")
+            elif isinstance(laws, dict):
+                for group, token in laws.items():
+                    if not valid_script_token(group):
+                        problems.append(
+                            f"country {tag!r}.politics.laws key {group!r} not token")
+                        continue
+                    if token is not None and not valid_script_token(token):
+                        problems.append(
+                            f"country {tag!r}.politics.laws.{group} {token!r} not token")
             idl = pol.get("ideas")
             if idl is not None and not isinstance(idl, list):
                 problems.append(
                     f"country {tag!r}.politics.ideas {idl!r} not list|null")
+            elif isinstance(idl, list):
+                for token in idl:
+                    if not valid_script_token(token):
+                        problems.append(
+                            f"country {tag!r}.politics.ideas entry {token!r} not token")
+                        break
+            io = pol.get("ideas_other")
+            if io is not None and not isinstance(io, list):
+                problems.append(
+                    f"country {tag!r}.politics.ideas_other {io!r} not list|null")
+            elif isinstance(io, list):
+                for token in io:
+                    if not valid_script_token(token):
+                        problems.append(
+                            f"country {tag!r}.politics.ideas_other entry {token!r} not token")
+                        break
+            ns = pol.get("national_spirits")
+            if ns is not None and not isinstance(ns, list):
+                problems.append(
+                    f"country {tag!r}.politics.national_spirits {ns!r} not list|null")
+            elif isinstance(ns, list):
+                for token in ns:
+                    if not valid_script_token(token):
+                        problems.append(
+                            f"country {tag!r}.politics.national_spirits entry {token!r} not token")
+                        break
             for k in ("idea_count", "election_frequency", "party_count"):
                 v = pol.get(k)
                 if v is not None and not isinstance(v, int):
@@ -2445,7 +2528,7 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
                 problems.append(
                     f"country {tag!r}.politics.low_confidence {lc!r} not bool|null")
             # newly-wired LIVE election residuals (politics_residuals_live, M): last_election
-            # str|null, elections_allowed bool|null, appointed_advisors list|null.
+            # str|null, elections_allowed bool|null, appointed advisor lists/maps|null.
             le = pol.get("last_election")
             if le is not None and not isinstance(le, str):
                 problems.append(
@@ -2458,6 +2541,52 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
             if aa is not None and not isinstance(aa, list):
                 problems.append(
                     f"country {tag!r}.politics.appointed_advisors {aa!r} not list|null")
+            aad = pol.get("appointed_advisor_details")
+            if aad is not None and not isinstance(aad, list):
+                problems.append(
+                    f"country {tag!r}.politics.appointed_advisor_details {aad!r} "
+                    "not list|null")
+            elif isinstance(aad, list):
+                for idx, row in enumerate(aad):
+                    if not isinstance(row, dict):
+                        problems.append(
+                            f"country {tag!r}.politics.appointed_advisor_details[{idx}] "
+                            "not dict")
+                        continue
+                    token = row.get("idea_token")
+                    if not valid_script_token(token):
+                        problems.append(
+                            f"country {tag!r}.politics.appointed_advisor_details[{idx}]."
+                            "idea_token not token")
+                    for key in ("slot", "ledger", "character"):
+                        value = row.get(key)
+                        if value is not None and not valid_script_token(value):
+                            problems.append(
+                                f"country {tag!r}.politics."
+                                f"appointed_advisor_details[{idx}].{key} not token|null")
+            aas = pol.get("appointed_advisor_slots")
+            if aas is not None and not isinstance(aas, dict):
+                problems.append(
+                    f"country {tag!r}.politics.appointed_advisor_slots {aas!r} "
+                    "not dict|null")
+            elif isinstance(aas, dict):
+                for slot, tokens in aas.items():
+                    if not valid_script_token(slot):
+                        problems.append(
+                            f"country {tag!r}.politics.appointed_advisor_slots key "
+                            f"{slot!r} not token")
+                        continue
+                    if not isinstance(tokens, list):
+                        problems.append(
+                            f"country {tag!r}.politics.appointed_advisor_slots."
+                            f"{slot} not list")
+                        continue
+                    for token in tokens:
+                        if not valid_script_token(token):
+                            problems.append(
+                                f"country {tag!r}.politics.appointed_advisor_slots."
+                                f"{slot} entry {token!r} not token")
+                            break
         # newly-wired LIVE intel leaves (intel_deep_live + final_residuals_live, M):
         # operatives_live list|null, cryptology_live dict|null, operative_skill_xp dict|null.
         intl2 = c.get("intel")
@@ -2474,13 +2603,72 @@ def validate_snapshot(snap: Dict[str, Any]) -> List[str]:
             if osx is not None and not isinstance(osx, dict):
                 problems.append(
                     f"country {tag!r}.intel.operative_skill_xp {osx!r} not dict|null")
-        # newly-wired LIVE decisions leaf (decisions_market_live, M): timed_live list|null.
+        # newly-wired LIVE decisions leaves (decisions_live, C; decisions_market_live, M):
+        # status_present dict|null and timed_live list|null.
         dec = c.get("decisions")
         if isinstance(dec, dict):
+            status_present = dec.get("status_present")
+            if status_present is not None and not isinstance(status_present, dict):
+                problems.append(
+                    f"country {tag!r}.decisions.status_present {status_present!r} "
+                    "not dict|null"
+                )
+            elif isinstance(status_present, dict):
+                if len(status_present) > DECISION_STATUS_MAX_KEYS:
+                    problems.append(
+                        f"country {tag!r}.decisions.status_present too many entries")
+                for key, value in status_present.items():
+                    if not valid_script_token(key):
+                        problems.append(
+                            f"country {tag!r}.decisions.status_present key {key!r} "
+                            "not token"
+                        )
+                        continue
+                    if not _valid_bounded_int(
+                        value,
+                        minimum=0,
+                        maximum=DECISION_STATUS_COUNT_MAX,
+                    ):
+                        problems.append(
+                            f"country {tag!r}.decisions.status_present.{key} "
+                            f"{value!r} not int in range"
+                        )
             tlv = dec.get("timed_live")
             if tlv is not None and not isinstance(tlv, list):
                 problems.append(
                     f"country {tag!r}.decisions.timed_live {tlv!r} not list|null")
+            elif isinstance(tlv, list):
+                if len(tlv) > DECISION_TIMED_LIVE_MAX_ENTRIES:
+                    problems.append(
+                        f"country {tag!r}.decisions.timed_live too many entries")
+                for idx, row in enumerate(tlv):
+                    prefix = f"country {tag!r}.decisions.timed_live[{idx}]"
+                    if not isinstance(row, dict):
+                        problems.append(f"{prefix} {row!r} not dict")
+                        break
+                    decision = row.get("decision")
+                    if not valid_script_token(decision):
+                        problems.append(f"{prefix}.decision {decision!r} not token")
+                    days = row.get("days")
+                    if not _valid_bounded_int(
+                        days,
+                        minimum=0,
+                        maximum=DECISION_TIMED_DAYS_MAX,
+                    ):
+                        problems.append(f"{prefix}.days {days!r} not int in range")
+                    state = row.get("state")
+                    if not _valid_bounded_int(
+                        state,
+                        minimum=0,
+                        maximum=DECISION_TIMED_STATE_MAX,
+                    ):
+                        problems.append(f"{prefix}.state {state!r} not int in range")
+                    state_name = row.get("state_name")
+                    if state_name is not None and not valid_script_token(state_name):
+                        problems.append(
+                            f"{prefix}.state_name {state_name!r} not token|null")
+                    if problems and any(f"timed_live[{idx}]" in p for p in problems):
+                        break
         st = c.get("politics", {}).get("stability")
         if st is not None and not (isinstance(st, (int, float)) and -0.01 <= st <= 1.01):
             problems.append(f"country {tag!r} stability {st!r} out of 0..1")

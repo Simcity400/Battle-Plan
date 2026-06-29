@@ -90,6 +90,11 @@ mod attach_log {
     const COUNTRY_DATABASE_OFFSET: usize = 0x33063F8;
     const GET_LONG_STRING_OFFSET: usize = 0x5269B0;
     const COUNTRY_VTABLE_RVA: usize = 0x27C0E80;
+    const POLITICAL_STATUS_VTABLE_RVA: usize = 0x29299C8;
+    const POLITICAL_PARTY_VTABLE_RVA: usize = 0x2976EE0;
+    const IDEA_VTABLE_RVA_PRIMARY: usize = 0x295A8C0;
+    const IDEA_VTABLE_RVA_SECONDARY: usize = 0x295A910;
+    const IDEOLOGY_GROUP_VTABLE_RVA: usize = 0x29162E0;
     const GS_CURRENT_DATE_OFFSET: usize = 0x468;
     const GS_START_DATE_OFFSET: usize = 0x4A8;
     const DATE_EPOCH_CONST: i32 = 43_799_999;
@@ -97,12 +102,37 @@ mod attach_log {
     const HEAP_HI: usize = 0x7FF000000000;
     const OBJ_TAG_DB_ID: usize = 0x08;
     const OBJ_NAME: usize = 0x10;
+    const OBJ_TECH_STATUS: usize = 0x0F60;
+    const OBJ_POLITICAL_STATUS: usize = 0x0F90;
     const COUNTRY_RECORD_OBJECT_PTR: usize = 0x08;
     const COUNTRY_RECORD_POLITICAL_POWER: usize = 0x20;
+    const POLITICAL_STATUS_PARTIES_DATA: usize = 0x20;
+    const POLITICAL_STATUS_PARTIES_SIZE: usize = 0x28;
+    const POLITICAL_STATUS_PARTIES_CAP: usize = 0x2C;
+    const POLITICAL_STATUS_IDEAS_DATA: usize = 0x50;
+    const POLITICAL_STATUS_IDEAS_CAP: usize = 0x58;
+    const POLITICAL_STATUS_IDEAS_SIZE: usize = 0x5C;
+    const POLITICAL_STATUS_COUNTRY_BACKLINK: usize = 0x0C8;
+    const POLITICAL_STATUS_RULING_PARTY: usize = 0x0D0;
+    const POLITICAL_STATUS_LAST_ELECTION: usize = 0x0A0;
+    const POLITICAL_STATUS_POLITICAL_POWER: usize = 0x0E0;
+    const POLITICAL_STATUS_ELECTION_FREQUENCY: usize = 0x0E8;
+    const POLITICAL_STATUS_ELECTIONS_ALLOWED: usize = 0x0EC;
+    const POLITICAL_PARTY_IDEOLOGY_GROUP: usize = 0x18;
+    const POLITICAL_PARTY_POPULARITY: usize = 0x88;
+    const IDEOLOGY_GROUP_ID: usize = 0x18;
+    const IDEA_ID: usize = 0x18;
     const STATE_VTABLE_RVA: usize = 0x2910920;
     const STATE_OFF_SID: usize = 0x58;
     const STATE_OFF_OWNER: usize = 0xC8;
     const STATE_OFF_CTRL: usize = 0xCC;
+    const CGAMESTATE_COUNTRY_TABLE: usize = 0x310;
+    const CGAMESTATE_CPROVINCE_ARRAY: usize = 0x2B0;
+    const CGAMESTATE_CPROVINCE_COUNT: usize = 0x2BC;
+    const CPROVINCE_VTABLE_RVA: usize = 0x294AE78;
+    const CPROVINCE_OFF_ID: usize = 0xA4;
+    const CPROVINCE_OFF_STATE: usize = 0xC0;
+    const CPROVINCE_OFF_CONTROLLER: usize = 0x188;
     const OBJ_TEMPLATES_LOCKED: usize = 0x01B4;
     const OBJ_COMMAND_POWER: usize = 0x01F0;
     const OBJ_MANPOWER_POOL: usize = 0x0338;
@@ -116,9 +146,58 @@ mod attach_log {
     const OBJ_ORIGINAL_TAG: usize = 0x130C;
     const OBJ_NUM_SHIPS: usize = 0x1330;
     const OBJ_CONVOYS_DESTROYED: usize = 0x1334;
+    const OBJ_FOCUS_TREE: usize = 0x1370;
+    const OBJ_FOCUS_STATUS: usize = 0x1380;
     const OBJ_COSMETIC_TAG: usize = 0x1488;
     const OBJ_RESERVED_DYNAMIC_COUNTRY: usize = 0x145D;
     const OBJ_ACCIDENTS_SCORE: usize = 0x14E8;
+    const OBJ_DECISION_STATUS: usize = 0x0FA0;
+    const DECISION_STATUS_OWNER: usize = 0x08;
+    const DECISION_STATUS_RE_ENABLE: usize = 0x40;
+    const DECISION_STATUS_TARGETED: usize = 0x88;
+    const DECISION_STATUS_ACTIVE_TIMED: usize = 0xA0;
+    const DECISION_STATUS_TARGETED_TIMED: usize = 0xE8;
+    const DECISION_STATUS_RE_ENABLE_ALT: usize = 0x130;
+    const DECISION_STATUS_VTABLE_RVA: usize = 0x27C50E0;
+    const TIMED_DECISION_VTABLE_RVA: usize = 0x27C4FC0;
+    const TIMED_DECISION_DEF: usize = 0x10;
+    const TIMED_DECISION_DAYS: usize = 0x18;
+    const TIMED_DECISION_STATE: usize = 0x1C;
+    const DECISION_DEF_NAME: usize = 0x120;
+    const DECISION_STATE_ACTIVE: i32 = 0;
+    const MAX_DECISION_STATUS_LIST: u32 = 4096;
+    const MAX_TIMED_DECISIONS: usize = 256;
+    const MAX_DECISION_DAYS: i32 = 100_000;
+    const FOCUS_TREE_ID: usize = 0x08;
+    const FOCUS_STATUS_CURRENT: usize = 0x10;
+    const FOCUS_STATUS_CONTINUOUS: usize = 0x18;
+    const FOCUS_STATUS_PROGRESS: usize = 0x38;
+    const FOCUS_STATUS_COMPLETED_DATA: usize = 0x40;
+    const FOCUS_STATUS_COMPLETED_CAP: usize = 0x48;
+    const FOCUS_STATUS_COMPLETED_SIZE: usize = 0x4C;
+    const FOCUS_OBJECT_ID: usize = 0x18;
+    const MAX_FOCUS_COUNT: u32 = 4000;
+    const MAX_FOCUS_ID_LEN: usize = 128;
+    const TECH_STATUS_VTABLE_RVA: usize = 0x294E288;
+    const TECH_STATUS_RESEARCHED_DATA: usize = 0x40;
+    const TECH_STATUS_RESEARCHED_CAP: usize = 0x48;
+    const TECH_STATUS_RESEARCHED_SIZE: usize = 0x4C;
+    const TECH_STATUS_RESEARCH_SLOTS_DATA: usize = 0xA0;
+    const TECH_STATUS_RESEARCH_SLOTS_CAP: usize = 0xA8;
+    const TECH_STATUS_RESEARCH_SLOT_COUNT: usize = 0xAC;
+    const TECH_STATUS_COUNTRY_BACKLINK: usize = 0x130;
+    const RESEARCH_SLOT_VTABLE_RVA: usize = 0x294E238;
+    const RESEARCH_SLOT_TECH_HANDLE: usize = 0x08;
+    const RESEARCH_SLOT_OWNER: usize = 0x10;
+    const RESEARCH_SLOT_TECH_PTR: usize = 0x18;
+    const RESEARCH_SLOT_PROGRESS: usize = 0x38;
+    const RESEARCH_SLOT_INDEX: usize = 0x40;
+    const RESEARCH_SLOT_IDLE_HANDLE: u32 = 0x2A4E;
+    const TECHNOLOGY_VTABLE_RVA_PRIMARY: usize = 0x294E218;
+    const TECHNOLOGY_VTABLE_RVA_SECONDARY: usize = 0x294E1C8;
+    const TECHNOLOGY_DEF_INDEX: usize = 0x08;
+    const MAX_COMPLETED_TECH_COUNT: u32 = 2000;
+    const MAX_RESEARCH_SLOT_COUNT: u32 = 32;
     const FUEL_STATUS_CURRENT: usize = 0x08;
     const FUEL_STATUS_MAX: usize = 0x10;
     const FUEL_STATUS_GAIN: usize = 0x18;
@@ -151,6 +230,15 @@ mod attach_log {
     const MAX_PRODUCTION_VECTOR_ENTRIES: u32 = 4096;
     const MAX_PRODUCTION_STOCKPILE_AMOUNT: f64 = 1_000_000_000_000.0;
     const MAX_PRODUCTION_LINE_FIXED: f64 = 1_000_000_000.0;
+    const MAX_POLITICAL_PARTIES: u32 = 16;
+    const MAX_ACTIVE_IDEAS: u32 = 400;
+    const MAX_POLITICS_TOKEN_LEN: usize = 160;
+    const MAX_ADVISOR_TOKEN_FILTER_TOKENS: usize = 8192;
+    const MAX_ADVISOR_TOKEN_FILTER_PAYLOAD_BYTES: usize = 512 * 1024;
+    const MAX_IDEA_GROUP_FILTER_ROWS: usize = 8192;
+    const MAX_IDEA_GROUP_FILTER_PAYLOAD_BYTES: usize = 512 * 1024;
+    const MIN_USABLE_COUNTRY_OBJECT_ROWS: usize = 40;
+    const COUNTRY_DATABASE_OBJECT_ARRAY_SEARCH_SPAN: usize = 0x1000;
     const MAX_COUNTRY_OBJECT_BRIDGE_ROWS: usize = 512;
     const MAX_MAP_CONTROL_STATE_ROOT_ROWS: usize = 4096;
     const MAX_MAP_CONTROL_STATE_ROOT_PAYLOAD_BYTES: usize = 131_072;
@@ -212,6 +300,51 @@ mod attach_log {
     const MAX_LAND_COMBAT_SIDE_UNITS: u32 = 128;
     const MAX_LAND_COMBAT_AGE_DAYS: u32 = 100_000;
     const MAX_LAND_COMBAT_PROVINCE_ID: u32 = 1_000_000;
+    const PROJECT_FACILITY_VTABLE_RVA: usize = 0x294AB40;
+    const PROJECT_CPROJECT_VTABLE_RVA: usize = 0x295C190;
+    const PROJECT_CHARACTER_VTABLE_RVA: usize = 0x2957D40;
+    const PROJECT_SCIENTIST_VTABLE_RVA: usize = 0x2957D98;
+    const PROJECT_FACILITY_TYPE: u32 = 83;
+    const PROJECT_PROJECT_TYPE: u32 = 86;
+    const PROJECT_CHARACTER_TYPE: u32 = 73;
+    const PROJECT_FACILITY_OFF_TYPE: usize = 0x08;
+    const PROJECT_FACILITY_OFF_ID: usize = 0x0C;
+    const PROJECT_FACILITY_OFF_PROVINCE: usize = 0x1C;
+    const PROJECT_FACILITY_OFF_BUILDING: usize = 0x20;
+    const PROJECT_FACILITY_OFF_ACTIVE_HANDLE: usize = 0x50;
+    const PROJECT_FACILITY_OFF_ACTIVE_FLAG: usize = 0x54;
+    const PROJECT_FACILITY_OFF_SCIENTIST_TYPE: usize = 0x58;
+    const PROJECT_FACILITY_OFF_SCIENTIST_ID: usize = 0x5C;
+    const PROJECT_FACILITY_OFF_UNREAD_REWARDS: usize = 0x178;
+    const PROJECT_PROJECT_OFF_TYPE: usize = 0x08;
+    const PROJECT_PROJECT_OFF_ID: usize = 0x0C;
+    const PROJECT_PROJECT_OFF_DEF_HANDLE: usize = 0x18;
+    const PROJECT_PROJECT_OFF_OWNER_TAG: usize = 0x60;
+    const PROJECT_PROJECT_OFF_OWNER_FACILITY: usize = 0x64;
+    const PROJECT_PROJECT_OFF_ITERATIONS: usize = 0x74;
+    const PROJECT_CHARACTER_OFF_TYPE: usize = 0x08;
+    const PROJECT_CHARACTER_OFF_ID: usize = 0x0C;
+    const PROJECT_CHARACTER_OFF_DISPLAY: usize = 0x28;
+    const PROJECT_CHARACTER_OFF_TOKEN: usize = 0x48;
+    const PROJECT_CHARACTER_OFF_SCIENTIST_PTR: usize = 0xC0;
+    const PROJECT_SCIENTIST_OFF_TRAIT_COUNT: usize = 0x38;
+    const PROJECT_SCIENTIST_OFF_SKILLS_PTR: usize = 0x110;
+    const PROJECT_SKILL_STRIDE: usize = 0x20;
+    const PROJECT_SKILL_LEVEL_OFF: usize = 0x18;
+    const PROJECT_SKILL_HEADER_BASE: u16 = 0x56F7;
+    const MAX_PROJECT_FACILITIES: usize = 4_096;
+    const MAX_PROJECT_ACTIVE_PROJECTS: usize = 4_096;
+    const MAX_PROJECT_PROJECT_PINS: usize = 20_000;
+    const MAX_PROJECT_SCIENTISTS: usize = 4_096;
+    const MAX_PROJECT_ID: u32 = 10_000_000;
+    const MAX_PROJECT_PROVINCE_ID: u32 = 1_000_000;
+    const MAX_PROJECT_HANDLE: u32 = 10_000_000;
+    const MAX_PROJECT_ITERATIONS: u32 = 1_000_000;
+    const MAX_PROJECT_TRAITS: u32 = 256;
+    const MAX_PROJECT_SKILL_LEVEL: i32 = 1_000;
+    const MAX_PROJECT_BUILDING_LEN: usize = 96;
+    const MAX_PROJECT_SCIENTIST_TOKEN_LEN: usize = 160;
+    const MAX_PROJECT_SCIENTIST_DISPLAY_LEN: usize = 160;
     const FP_SCALE: f64 = 100000.0;
     const MAX_COUNTRY_ACE_COUNT: u32 = 100_000;
     const MAX_COUNTRY_CONVOYS_DESTROYED: u32 = 100_000_000;
@@ -412,6 +545,7 @@ mod attach_log {
         duration_ms: u32,
         sample_ms: u32,
         country_object_scan: bool,
+        special_projects_scan: bool,
         country_object_bridge: Vec<CountryObjectBridgeEntry>,
         country_object_bridge_valid: bool,
         country_record_bridge: Vec<CountryObjectBridgeEntry>,
@@ -419,6 +553,10 @@ mod attach_log {
         division_body_bridge: Vec<DivisionBodyBridgeEntry>,
         division_body_bridge_valid: bool,
         map_control: MapControlContract,
+        advisor_token_filter: BTreeMap<String, AdvisorTokenInfo>,
+        advisor_token_filter_valid: bool,
+        idea_group_filter: BTreeMap<String, String>,
+        idea_group_filter_valid: bool,
         scheduled_snapshot_step_hours: u32,
         pipe_token: Option<String>,
         session_id: Option<String>,
@@ -435,6 +573,13 @@ mod attach_log {
     struct DivisionBodyBridgeEntry {
         div_id: u32,
         body_ptr: usize,
+    }
+
+    #[derive(Clone, PartialEq, Eq)]
+    struct AdvisorTokenInfo {
+        slot: Option<String>,
+        ledger: Option<String>,
+        character: Option<String>,
     }
 
     #[derive(Clone)]
@@ -545,6 +690,8 @@ mod attach_log {
         let scheduled_snapshot_step_hours =
             parse_json_u32(&text, "scheduled_snapshot_step_hours").unwrap_or(1);
         let country_object_scan = parse_json_bool(&text, "country_object_scan").unwrap_or(false);
+        let special_projects_scan =
+            parse_json_bool(&text, "special_projects_scan").unwrap_or(false);
         let (country_object_bridge, country_object_bridge_valid) =
             match parse_json_string(&text, "country_object_bridge") {
                 Some(value) => match parse_country_object_bridge(&value) {
@@ -569,6 +716,22 @@ mod attach_log {
                 },
                 None => (Vec::new(), true),
             };
+        let (advisor_token_filter, advisor_token_filter_valid) =
+            match parse_json_string(&text, "advisor_token_filter") {
+                Some(value) => match parse_advisor_token_filter(&value) {
+                    Some(tokens) => (tokens, true),
+                    None => (BTreeMap::new(), false),
+                },
+                None => (BTreeMap::new(), true),
+            };
+        let (idea_group_filter, idea_group_filter_valid) =
+            match parse_json_string(&text, "idea_group_filter") {
+                Some(value) => match parse_idea_group_filter(&value) {
+                    Some(rows) => (rows, true),
+                    None => (BTreeMap::new(), false),
+                },
+                None => (BTreeMap::new(), true),
+            };
         let map_control = parse_map_control_contract(&text);
         let pipe_token = parse_json_string(&text, "pipe_token").and_then(clean_pipe_token);
         let session_id = parse_json_string(&text, "session_id").and_then(clean_session_id);
@@ -577,6 +740,7 @@ mod attach_log {
             duration_ms: duration_ms.clamp(100, 30_000),
             sample_ms: sample_ms.clamp(10, 5_000),
             country_object_scan,
+            special_projects_scan,
             country_object_bridge,
             country_object_bridge_valid,
             country_record_bridge,
@@ -584,6 +748,10 @@ mod attach_log {
             division_body_bridge,
             division_body_bridge_valid,
             map_control,
+            advisor_token_filter,
+            advisor_token_filter_valid,
+            idea_group_filter,
+            idea_group_filter_valid,
             scheduled_snapshot_step_hours: scheduled_snapshot_step_hours.clamp(1, 24),
             pipe_token,
             session_id,
@@ -782,6 +950,102 @@ mod attach_log {
             }
         }
         contract
+    }
+
+    fn parse_advisor_token_filter(value: &str) -> Option<BTreeMap<String, AdvisorTokenInfo>> {
+        if value.trim().is_empty() {
+            return Some(BTreeMap::new());
+        }
+        if value.len() > MAX_ADVISOR_TOKEN_FILTER_PAYLOAD_BYTES {
+            return None;
+        }
+        let mut tokens = BTreeMap::new();
+        for raw in value.split(';') {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                return None;
+            }
+            let (token, info) = parse_advisor_token_filter_row(raw)?;
+            if !is_script_token(token) {
+                return None;
+            }
+            if let Some(previous) = tokens.insert(token.to_string(), info) {
+                if previous != *tokens.get(token)? {
+                    return None;
+                }
+            }
+            if tokens.len() > MAX_ADVISOR_TOKEN_FILTER_TOKENS {
+                return None;
+            }
+        }
+        Some(tokens)
+    }
+
+    fn parse_advisor_token_filter_row(raw: &str) -> Option<(&str, AdvisorTokenInfo)> {
+        let Some((token_raw, meta_raw)) = raw.split_once('=') else {
+            return Some((
+                raw.trim(),
+                AdvisorTokenInfo {
+                    slot: None,
+                    ledger: None,
+                    character: None,
+                },
+            ));
+        };
+        let token = token_raw.trim();
+        let mut parts = meta_raw.split('|');
+        let slot = clean_optional_script_token(parts.next().unwrap_or("").trim())?;
+        let ledger = clean_optional_script_token(parts.next().unwrap_or("").trim())?;
+        let character = clean_optional_script_token(parts.next().unwrap_or("").trim())?;
+        if parts.next().is_some() {
+            return None;
+        }
+        Some((
+            token,
+            AdvisorTokenInfo {
+                slot,
+                ledger,
+                character,
+            },
+        ))
+    }
+
+    fn clean_optional_script_token(value: &str) -> Option<Option<String>> {
+        if value.is_empty() {
+            return Some(None);
+        }
+        if is_script_token(value) {
+            Some(Some(value.to_string()))
+        } else {
+            None
+        }
+    }
+
+    fn parse_idea_group_filter(value: &str) -> Option<BTreeMap<String, String>> {
+        if value.trim().is_empty() {
+            return Some(BTreeMap::new());
+        }
+        if value.len() > MAX_IDEA_GROUP_FILTER_PAYLOAD_BYTES {
+            return None;
+        }
+        let mut rows = BTreeMap::new();
+        for raw in value.split(';') {
+            let (token_raw, group_raw) = raw.split_once('=')?;
+            let token = token_raw.trim();
+            let group = group_raw.trim();
+            if !is_script_token(token) || !is_script_token(group) {
+                return None;
+            }
+            if let Some(previous) = rows.insert(token.to_string(), group.to_string()) {
+                if previous != group {
+                    return None;
+                }
+            }
+            if rows.len() > MAX_IDEA_GROUP_FILTER_ROWS {
+                return None;
+            }
+        }
+        Some(rows)
     }
 
     fn parse_map_control_state_roots(value: &str) -> Option<Vec<MapControlStateRootEntry>> {
@@ -995,14 +1259,29 @@ mod attach_log {
         let include_scheduled_map = scheduled_frame;
         let include_scheduled_country_fuel = scheduled_frame;
         let include_scheduled_country_production = scheduled_frame;
+        let include_scheduled_country_focus = scheduled_frame;
+        let include_scheduled_country_research = scheduled_frame;
+        let include_scheduled_country_politics = scheduled_frame;
+        let include_scheduled_country_politics_residuals = scheduled_frame;
+        let include_scheduled_country_decisions = scheduled_frame;
+        let include_scheduled_projects = scheduled_frame;
         let state_rows = scheduled_state_rows_json(state, control, include_scheduled_map);
         let province_rows = scheduled_province_rows_json(state, control, include_scheduled_map);
+        let special_projects = scheduled_special_projects_json(state, include_scheduled_projects);
         let (probe, domains) = root_probe_json(
             state,
             state_rows.as_deref(),
             province_rows.as_deref(),
+            special_projects.as_deref(),
             include_scheduled_country_fuel,
             include_scheduled_country_production,
+            include_scheduled_country_focus,
+            include_scheduled_country_research,
+            include_scheduled_country_politics,
+            include_scheduled_country_politics_residuals,
+            include_scheduled_country_decisions,
+            control.map(|control| &control.advisor_token_filter),
+            control.map(|control| &control.idea_group_filter),
         );
         let control_meta =
             control_metadata_json(control, session_sequence, elapsed_wall_ms, capture_boundary);
@@ -1013,11 +1292,14 @@ mod attach_log {
         } else {
             "attach_noop"
         };
+        let special_projects_field = special_projects
+            .map(|rows| format!(",\"special_projects\":{rows}"))
+            .unwrap_or_default();
         format!(
             "{{\"type\":\"collector_started\",\"backend\":\"in_process_collector\",\
              \"collector_version\":\"{}\",\"abi_version\":{},\"process_id\":{},\
              \"tick_ms\":{},\"sequence\":{},\"profile_id\":\"{}\",\
-             \"domains\":{},{}\"quality_status\":\"{}\",{}}}\n",
+             \"domains\":{},{}\"quality_status\":\"{}\",{}{} }}\n",
             super::COLLECTOR_VERSION,
             super::ABI_VERSION,
             pid,
@@ -1027,7 +1309,8 @@ mod attach_log {
             domains,
             control_meta,
             quality,
-            probe
+            probe,
+            special_projects_field
         )
     }
 
@@ -1037,6 +1320,13 @@ mod attach_log {
     const RAW_DIVISIONS_DOMAIN: &str = "divisions";
     const RAW_LAND_COMBATS_DOMAIN: &str = "land_combats";
     const RAW_CONFIDENCE_SAMPLED: &str = "sampled";
+    const LAND_COMBAT_EVENT_STARTED: &str = "land_combat_started";
+    const LAND_COMBAT_EVENT_UPDATED: &str = "land_combat_updated";
+    const LAND_COMBAT_EVENT_ENDED: &str = "land_combat_ended";
+    const DIVISION_EVENT_MOVEMENT_STARTED: &str = "division_movement_started";
+    const DIVISION_EVENT_MOVEMENT_STOPPED: &str = "division_movement_stopped";
+    const DIVISION_EVENT_ORG_STRENGTH_DELTA: &str = "division_org_strength_delta";
+    const DIVISION_EVENT_COMBAT_REF_CHANGED: &str = "division_combat_ref_changed";
     const RAW_SHORT_STRING_MAX_LENGTH: usize = 128;
     const RAW_STRING_MAX_LENGTH: usize = 512;
     const RAW_JSON_OBJECT_MAX_LENGTH: usize = 4096;
@@ -1101,6 +1391,25 @@ mod attach_log {
         op: &'a str,
         after_json: &'a str,
         changed_fields: &'a [&'a str],
+    }
+
+    struct RawEventFrame<'a> {
+        pid: Dword,
+        sequence: u64,
+        session_sequence: Option<u64>,
+        tick_ms: u64,
+        date: &'a str,
+        hour_index: u64,
+        sample_ms: u32,
+        duration_ms: Option<u32>,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &'a str,
+        domain: &'a str,
+        entity_key: &'a str,
+        confidence: &'a str,
+        event_type: &'a str,
+        subject: &'a str,
+        detail_json: &'a str,
     }
 
     fn build_clock_raw_domain_delta_line(
@@ -1202,6 +1511,7 @@ mod attach_log {
             let Some(sample) = sample_division_movement(state.base, entry) else {
                 continue;
             };
+            let old = previous.get(&sample.div_id).cloned();
             let Some(changed_fields) = track_division_movement_sample(previous, &sample) else {
                 continue;
             };
@@ -1222,6 +1532,18 @@ mod attach_log {
                 lines.push(line);
                 session_sequence = session_sequence.saturating_add(1);
             }
+            push_division_event_frames(
+                &mut lines,
+                &mut session_sequence,
+                pid,
+                control,
+                elapsed_wall_ms,
+                capture_boundary,
+                &clock,
+                old.as_ref(),
+                &sample,
+                &changed_fields,
+            );
         }
         lines
     }
@@ -1389,31 +1711,9 @@ mod attach_log {
         sample: &DivisionMovementSample,
         changed_fields: &[&str],
     ) -> Option<String> {
-        let movement_progress = sample.raw_movement_progress.map(division_fixed_value);
-        let organisation = division_fixed_value(sample.raw_organisation);
-        let strength = division_fixed_value(sample.raw_strength);
         let div_uid = format!("{}:{}", sample.div_id, DIVISION_TYPE);
         let entity_key = format!("division:{div_uid}");
-        let after_json = format!(
-            "{{\"div_uid\":{},\"div_id\":{},\"div_type\":{},\
-             \"moving\":{},\"movement_progress\":{},\"progress_bucket\":{},\
-             \"location\":{},\"move_target_province\":{},\
-             \"movement_source_province\":{},\"organisation\":{},\
-             \"strength\":{},\"combat_ref_count\":{},\"in_combat\":{}}}",
-            json_str(&div_uid),
-            sample.div_id,
-            DIVISION_TYPE,
-            sample.moving,
-            json_opt_f64(movement_progress),
-            json_opt_u32(sample.progress_bucket),
-            sample.location,
-            json_opt_u32(sample.move_target_province),
-            json_opt_u32(sample.movement_source_province),
-            json_opt_f64(Some(organisation)),
-            json_opt_f64(Some(strength)),
-            sample.combat_ref_count,
-            sample.in_combat
-        );
+        let after_json = format!("{{{}}}", division_sample_fields_json(sample));
         raw_domain_delta_frame_line(RawDomainDeltaFrame {
             pid,
             sequence,
@@ -1431,6 +1731,196 @@ mod attach_log {
             op: "sample",
             after_json: &after_json,
             changed_fields,
+        })
+    }
+
+    fn division_sample_fields_json(sample: &DivisionMovementSample) -> String {
+        let div_uid = format!("{}:{}", sample.div_id, DIVISION_TYPE);
+        let movement_progress = sample.raw_movement_progress.map(division_fixed_value);
+        let organisation = division_fixed_value(sample.raw_organisation);
+        let strength = division_fixed_value(sample.raw_strength);
+        format!(
+            "\"div_uid\":{},\"div_id\":{},\"div_type\":{},\
+             \"moving\":{},\"movement_progress\":{},\"progress_bucket\":{},\
+             \"location\":{},\"move_target_province\":{},\
+             \"movement_source_province\":{},\"organisation\":{},\
+             \"strength\":{},\"combat_ref_count\":{},\"in_combat\":{}",
+            json_str(&div_uid),
+            sample.div_id,
+            DIVISION_TYPE,
+            sample.moving,
+            json_opt_f64(movement_progress),
+            json_opt_u32(sample.progress_bucket),
+            sample.location,
+            json_opt_u32(sample.move_target_province),
+            json_opt_u32(sample.movement_source_province),
+            json_opt_f64(Some(organisation)),
+            json_opt_f64(Some(strength)),
+            sample.combat_ref_count,
+            sample.in_combat
+        )
+    }
+
+    fn push_division_event_frames(
+        lines: &mut Vec<String>,
+        session_sequence: &mut u64,
+        pid: Dword,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        old: Option<&DivisionMovementSample>,
+        sample: &DivisionMovementSample,
+        changed_fields: &[&str],
+    ) {
+        let old_moving = old.map(|old| old.moving).unwrap_or(false);
+        if !old_moving && sample.moving {
+            push_division_event_frame(
+                lines,
+                session_sequence,
+                pid,
+                control,
+                elapsed_wall_ms,
+                capture_boundary,
+                clock,
+                sample,
+                DIVISION_EVENT_MOVEMENT_STARTED,
+                changed_fields,
+            );
+        } else if old_moving && !sample.moving {
+            push_division_event_frame(
+                lines,
+                session_sequence,
+                pid,
+                control,
+                elapsed_wall_ms,
+                capture_boundary,
+                clock,
+                sample,
+                DIVISION_EVENT_MOVEMENT_STOPPED,
+                changed_fields,
+            );
+        }
+
+        if old.is_none() {
+            return;
+        }
+
+        let org_strength_fields = changed_fields
+            .iter()
+            .copied()
+            .filter(|field| *field == "organisation" || *field == "strength")
+            .collect::<Vec<_>>();
+        if !org_strength_fields.is_empty() {
+            push_division_event_frame(
+                lines,
+                session_sequence,
+                pid,
+                control,
+                elapsed_wall_ms,
+                capture_boundary,
+                clock,
+                sample,
+                DIVISION_EVENT_ORG_STRENGTH_DELTA,
+                &org_strength_fields,
+            );
+        }
+
+        let combat_ref_fields = changed_fields
+            .iter()
+            .copied()
+            .filter(|field| *field == "combat_ref_count" || *field == "in_combat")
+            .collect::<Vec<_>>();
+        if !combat_ref_fields.is_empty() {
+            push_division_event_frame(
+                lines,
+                session_sequence,
+                pid,
+                control,
+                elapsed_wall_ms,
+                capture_boundary,
+                clock,
+                sample,
+                DIVISION_EVENT_COMBAT_REF_CHANGED,
+                &combat_ref_fields,
+            );
+        }
+    }
+
+    fn push_division_event_frame(
+        lines: &mut Vec<String>,
+        session_sequence: &mut u64,
+        pid: Dword,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        sample: &DivisionMovementSample,
+        event_type: &str,
+        changed_fields: &[&str],
+    ) {
+        let tick_ms = unsafe { GetTickCount64() };
+        let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        if let Some(line) = division_raw_event_frame_line(
+            pid,
+            sequence,
+            Some(*session_sequence),
+            tick_ms,
+            control,
+            elapsed_wall_ms,
+            capture_boundary,
+            clock,
+            sample,
+            event_type,
+            changed_fields,
+        ) {
+            lines.push(line);
+            *session_sequence = (*session_sequence).saturating_add(1);
+        }
+    }
+
+    fn division_raw_event_frame_line(
+        pid: Dword,
+        sequence: u64,
+        session_sequence: Option<u64>,
+        tick_ms: u64,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        sample: &DivisionMovementSample,
+        event_type: &str,
+        changed_fields: &[&str],
+    ) -> Option<String> {
+        let div_uid = format!("{}:{}", sample.div_id, DIVISION_TYPE);
+        let entity_key = format!("division:{div_uid}");
+        let changed_fields_json = changed_fields
+            .iter()
+            .map(|field| json_str(field))
+            .collect::<Vec<_>>()
+            .join(",");
+        let detail_json = format!(
+            "{{{},\"changed_fields\":[{}]}}",
+            division_sample_fields_json(sample),
+            changed_fields_json
+        );
+        raw_event_frame_line(RawEventFrame {
+            pid,
+            sequence,
+            session_sequence,
+            tick_ms,
+            date: &clock.date,
+            hour_index: clock.hour_index,
+            sample_ms: control.sample_ms,
+            duration_ms: Some(control.duration_ms),
+            elapsed_wall_ms,
+            capture_boundary,
+            domain: RAW_DIVISIONS_DOMAIN,
+            entity_key: &entity_key,
+            confidence: RAW_CONFIDENCE_SAMPLED,
+            event_type,
+            subject: "division",
+            detail_json: &detail_json,
         })
     }
 
@@ -1473,13 +1963,36 @@ mod attach_log {
             return Vec::new();
         }
 
+        build_land_combat_raw_lines_from_samples(
+            pid,
+            control,
+            tracker,
+            first_session_sequence,
+            elapsed_wall_ms,
+            capture_boundary,
+            &clock,
+            current_samples,
+        )
+    }
+
+    fn build_land_combat_raw_lines_from_samples(
+        pid: Dword,
+        control: &CollectorControl,
+        tracker: &mut LandCombatTracker,
+        first_session_sequence: u64,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        current_samples: Vec<LandCombatSample>,
+    ) -> Vec<String> {
         let mut lines = Vec::new();
         let mut session_sequence = first_session_sequence;
         let mut current = BTreeMap::new();
         for mut sample in current_samples {
-            let old = tracker.previous.get(&sample.combat_id);
-            let generation = if land_combat_continues(old, &sample) {
-                old.map(|old| old.generation).unwrap_or_else(|| {
+            let old = tracker.previous.get(&sample.combat_id).cloned();
+            let continues = land_combat_continues(old.as_ref(), &sample);
+            let generation = if continues {
+                old.as_ref().map(|old| old.generation).unwrap_or_else(|| {
                     let generation = tracker.next_generation;
                     tracker.next_generation = tracker.next_generation.saturating_add(1);
                     generation
@@ -1489,30 +2002,72 @@ mod attach_log {
                 tracker.next_generation = tracker.next_generation.saturating_add(1);
                 generation
             };
-            sample.generation = generation;
-            let changed_fields = old
-                .filter(|old| old.generation == generation)
-                .and_then(|old| land_combat_changed_fields(old, &sample))
-                .unwrap_or_else(land_combat_all_fields);
-            if !changed_fields.is_empty() {
-                let tick_ms = unsafe { GetTickCount64() };
-                let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-                if let Some(line) = land_combat_raw_domain_delta_frame_line(
+            if let Some(old_sample) = old.as_ref().filter(|_| !continues) {
+                let end_reason = land_combat_split_end_reason(old_sample, &sample);
+                push_land_combat_delta_frame(
+                    &mut lines,
+                    &mut session_sequence,
                     pid,
-                    sequence,
-                    Some(session_sequence),
-                    tick_ms,
                     control,
                     elapsed_wall_ms,
                     capture_boundary,
-                    &clock,
+                    clock,
+                    old_sample,
+                    "delete",
+                    &["combat_key"],
+                );
+                push_land_combat_event_frame(
+                    &mut lines,
+                    &mut session_sequence,
+                    pid,
+                    control,
+                    elapsed_wall_ms,
+                    capture_boundary,
+                    clock,
+                    old_sample,
+                    LAND_COMBAT_EVENT_ENDED,
+                    &["combat_key"],
+                    Some(end_reason),
+                );
+            }
+            sample.generation = generation;
+            let previous_same_generation = old
+                .as_ref()
+                .filter(|old| old.generation == generation && continues);
+            let changed_fields = previous_same_generation
+                .and_then(|old| land_combat_changed_fields(old, &sample))
+                .unwrap_or_else(land_combat_all_fields);
+            if !changed_fields.is_empty() {
+                push_land_combat_delta_frame(
+                    &mut lines,
+                    &mut session_sequence,
+                    pid,
+                    control,
+                    elapsed_wall_ms,
+                    capture_boundary,
+                    clock,
                     &sample,
                     "sample",
                     &changed_fields,
-                ) {
-                    lines.push(line);
-                    session_sequence = session_sequence.saturating_add(1);
-                }
+                );
+                let event_type = if previous_same_generation.is_some() {
+                    LAND_COMBAT_EVENT_UPDATED
+                } else {
+                    LAND_COMBAT_EVENT_STARTED
+                };
+                push_land_combat_event_frame(
+                    &mut lines,
+                    &mut session_sequence,
+                    pid,
+                    control,
+                    elapsed_wall_ms,
+                    capture_boundary,
+                    clock,
+                    &sample,
+                    event_type,
+                    &changed_fields,
+                    None,
+                );
             }
             current.insert(sample.combat_id, sample);
         }
@@ -1521,28 +2076,101 @@ mod attach_log {
             if current.contains_key(&old.combat_id) {
                 continue;
             }
-            let tick_ms = unsafe { GetTickCount64() };
-            let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            if let Some(line) = land_combat_raw_domain_delta_frame_line(
+            push_land_combat_delta_frame(
+                &mut lines,
+                &mut session_sequence,
                 pid,
-                sequence,
-                Some(session_sequence),
-                tick_ms,
                 control,
                 elapsed_wall_ms,
                 capture_boundary,
-                &clock,
+                clock,
                 old,
                 "delete",
                 &["combat_key"],
-            ) {
-                lines.push(line);
-                session_sequence = session_sequence.saturating_add(1);
-            }
+            );
+            push_land_combat_event_frame(
+                &mut lines,
+                &mut session_sequence,
+                pid,
+                control,
+                elapsed_wall_ms,
+                capture_boundary,
+                clock,
+                old,
+                LAND_COMBAT_EVENT_ENDED,
+                &["combat_key"],
+                Some("resolved"),
+            );
         }
 
         tracker.previous = current;
         lines
+    }
+
+    fn push_land_combat_delta_frame(
+        lines: &mut Vec<String>,
+        session_sequence: &mut u64,
+        pid: Dword,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        sample: &LandCombatSample,
+        op: &str,
+        changed_fields: &[&str],
+    ) {
+        let tick_ms = unsafe { GetTickCount64() };
+        let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        if let Some(line) = land_combat_raw_domain_delta_frame_line(
+            pid,
+            sequence,
+            Some(*session_sequence),
+            tick_ms,
+            control,
+            elapsed_wall_ms,
+            capture_boundary,
+            clock,
+            sample,
+            op,
+            changed_fields,
+        ) {
+            lines.push(line);
+            *session_sequence = session_sequence.saturating_add(1);
+        }
+    }
+
+    fn push_land_combat_event_frame(
+        lines: &mut Vec<String>,
+        session_sequence: &mut u64,
+        pid: Dword,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        sample: &LandCombatSample,
+        event_type: &str,
+        changed_fields: &[&str],
+        end_reason: Option<&str>,
+    ) {
+        let tick_ms = unsafe { GetTickCount64() };
+        let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        if let Some(line) = land_combat_raw_event_frame_line(
+            pid,
+            sequence,
+            Some(*session_sequence),
+            tick_ms,
+            control,
+            elapsed_wall_ms,
+            capture_boundary,
+            clock,
+            sample,
+            event_type,
+            changed_fields,
+            end_reason,
+        ) {
+            lines.push(line);
+            *session_sequence = session_sequence.saturating_add(1);
+        }
     }
 
     fn sample_land_combats(state: &CollectorState) -> Result<Vec<LandCombatSample>, &'static str> {
@@ -1593,10 +2221,17 @@ mod attach_log {
         if data2 != Some(data as u64) || count2 != Some(count) {
             return Err("manager_changed_during_read");
         }
-        if invalid_entries > 0 {
+        land_combat_manager_samples_result(by_id, invalid_entries)
+    }
+
+    fn land_combat_manager_samples_result(
+        samples: BTreeMap<u32, LandCombatSample>,
+        invalid_entries: u32,
+    ) -> Result<Vec<LandCombatSample>, &'static str> {
+        if samples.is_empty() && invalid_entries > 0 {
             return Err("manager_entry_invalid");
         }
-        Ok(by_id.into_values().collect())
+        Ok(samples.into_values().collect())
     }
 
     fn sample_land_combat_from_manager_entry(
@@ -1794,6 +2429,17 @@ mod attach_log {
         }
     }
 
+    fn land_combat_split_end_reason(
+        old: &LandCombatSample,
+        new: &LandCombatSample,
+    ) -> &'static str {
+        if old.body_addr != new.body_addr {
+            "body_changed"
+        } else {
+            "id_reuse"
+        }
+    }
+
     fn land_combat_all_fields() -> Vec<&'static str> {
         vec![
             "combat_key",
@@ -1917,6 +2563,49 @@ mod attach_log {
         })
     }
 
+    fn land_combat_raw_event_frame_line(
+        pid: Dword,
+        sequence: u64,
+        session_sequence: Option<u64>,
+        tick_ms: u64,
+        control: &CollectorControl,
+        elapsed_wall_ms: Option<u64>,
+        capture_boundary: &str,
+        clock: &ClockSample,
+        sample: &LandCombatSample,
+        event_type: &str,
+        changed_fields: &[&str],
+        end_reason: Option<&str>,
+    ) -> Option<String> {
+        if !matches!(
+            event_type,
+            LAND_COMBAT_EVENT_STARTED | LAND_COMBAT_EVENT_UPDATED | LAND_COMBAT_EVENT_ENDED
+        ) {
+            return None;
+        }
+        let combat_key = format!("land_combat:{}:{}", sample.combat_id, sample.generation);
+        let detail_json =
+            land_combat_event_detail_json(sample, &combat_key, changed_fields, end_reason)?;
+        raw_event_frame_line(RawEventFrame {
+            pid,
+            sequence,
+            session_sequence,
+            tick_ms,
+            date: &clock.date,
+            hour_index: clock.hour_index,
+            sample_ms: control.sample_ms,
+            duration_ms: Some(control.duration_ms),
+            elapsed_wall_ms,
+            capture_boundary,
+            domain: RAW_LAND_COMBATS_DOMAIN,
+            entity_key: &combat_key,
+            confidence: RAW_CONFIDENCE_SAMPLED,
+            event_type,
+            subject: "land_combat",
+            detail_json: &detail_json,
+        })
+    }
+
     fn land_combat_row_json(sample: &LandCombatSample, combat_key: &str) -> String {
         format!(
             "{{\"combat_key\":{},\"combat_id\":{},\"generation\":{},\
@@ -1934,6 +2623,106 @@ mod attach_log {
             json_str(sample.attacker_status),
             json_str(sample.defender_status)
         )
+    }
+
+    fn land_combat_event_detail_json(
+        sample: &LandCombatSample,
+        combat_key: &str,
+        changed_fields: &[&str],
+        end_reason: Option<&str>,
+    ) -> Option<String> {
+        if changed_fields.len() > 256
+            || changed_fields
+                .iter()
+                .any(|field| !valid_raw_short_string(field))
+        {
+            return None;
+        }
+        if end_reason
+            .map(|reason| !valid_raw_short_string(reason) || looks_like_hex_pointer(reason))
+            .unwrap_or(false)
+        {
+            return None;
+        }
+        let changed_fields = changed_fields
+            .iter()
+            .map(|field| json_str(field))
+            .collect::<Vec<_>>()
+            .join(",");
+        let end_reason = end_reason
+            .map(|reason| format!(",\"end_reason\":{}", json_str(reason)))
+            .unwrap_or_default();
+        Some(format!(
+            "{{\"combat_key\":{},\"combat_id\":{},\"generation\":{},\
+             \"location\":{},\"day\":{},\"duration\":{},\
+             \"attacker_divisions\":{},\"defender_divisions\":{},\
+             \"attacker_status\":{},\"defender_status\":{},\
+             \"changed_fields\":[{}]{} }}",
+            json_str(combat_key),
+            sample.combat_id,
+            sample.generation,
+            json_opt_u32(sample.location),
+            json_opt_u32(sample.day),
+            json_opt_u32(sample.duration),
+            json_opt_u32_vec(sample.attacker_divisions.as_ref()),
+            json_opt_u32_vec(sample.defender_divisions.as_ref()),
+            json_str(sample.attacker_status),
+            json_str(sample.defender_status),
+            changed_fields,
+            end_reason
+        ))
+    }
+
+    fn raw_event_frame_line(frame: RawEventFrame<'_>) -> Option<String> {
+        if !valid_raw_short_string(frame.date)
+            || !valid_raw_short_string(frame.capture_boundary)
+            || !valid_raw_domain(frame.domain)
+            || !valid_raw_key(frame.entity_key)
+            || !valid_raw_confidence(frame.confidence)
+            || !valid_raw_short_string(frame.event_type)
+            || looks_like_hex_pointer(frame.event_type)
+            || !valid_raw_short_string(frame.subject)
+            || looks_like_hex_pointer(frame.subject)
+            || !valid_raw_after_json(frame.detail_json)
+        {
+            return None;
+        }
+
+        let mut fields = vec![
+            "\"type\":\"event\"".to_string(),
+            "\"backend\":\"in_process_collector\"".to_string(),
+            format!("\"collector_version\":\"{}\"", super::COLLECTOR_VERSION),
+            format!("\"abi_version\":{}", super::ABI_VERSION),
+            format!("\"process_id\":{}", frame.pid),
+            format!("\"tick_ms\":{}", frame.tick_ms),
+            format!("\"sequence\":{}", frame.sequence),
+            format!("\"profile_id\":\"{}\"", super::COLLECTOR_PROFILE_ID),
+            format!("\"date\":{}", json_str(frame.date)),
+            format!("\"hour_index\":{}", frame.hour_index),
+            format!("\"sample_ms\":{}", frame.sample_ms),
+            format!("\"capture_boundary\":{}", json_str(frame.capture_boundary)),
+            format!("\"domain\":{}", json_str(frame.domain)),
+            format!("\"entity_key\":{}", json_str(frame.entity_key)),
+            format!("\"source\":\"{}\"", RAW_SOURCE),
+            format!("\"confidence\":{}", json_str(frame.confidence)),
+        ];
+        if let Some(session_sequence) = frame.session_sequence {
+            fields.push(format!("\"session_sequence\":{session_sequence}"));
+        }
+        if let Some(duration_ms) = frame.duration_ms {
+            fields.push(format!("\"duration_ms\":{duration_ms}"));
+        }
+        if let Some(elapsed_wall_ms) = frame.elapsed_wall_ms {
+            fields.push(format!("\"elapsed_wall_ms\":{elapsed_wall_ms}"));
+        }
+        fields.push(format!(
+            "\"payload\":{{\"event_type\":{},\"key\":{},\"subject\":{},\"detail\":{}}}",
+            json_str(frame.event_type),
+            json_str(frame.entity_key),
+            json_str(frame.subject),
+            frame.detail_json
+        ));
+        Some(format!("{{{}}}\n", fields.join(",")))
     }
 
     fn raw_domain_delta_frame_line(frame: RawDomainDeltaFrame<'_>) -> Option<String> {
@@ -2087,6 +2876,7 @@ mod attach_log {
         format!(
             "{session}{session_sequence}{elapsed_wall_ms}\"capture_boundary\":\"{capture_boundary}\",\
              \"duration_ms\":{},\"sample_ms\":{},\
+             \"special_projects_scan\":{},\
              \"scheduled_snapshot_step_hours\":{},\
              \"country_object_bridge_rows\":{},\
              \"country_object_bridge_valid\":{},\
@@ -2094,6 +2884,10 @@ mod attach_log {
              \"country_record_bridge_valid\":{},\
              \"division_body_bridge_rows\":{},\
              \"division_body_bridge_valid\":{},\
+             \"advisor_token_filter_tokens\":{},\
+             \"advisor_token_filter_valid\":{},\
+             \"idea_group_filter_rows\":{},\
+             \"idea_group_filter_valid\":{},\
              \"map_control_state_root_rows\":{},\
              \"map_control_state_roots_valid\":{},\
              \"map_control_province_bridge_present\":{},\
@@ -2102,6 +2896,7 @@ mod attach_log {
              \"map_control_controller_bridge_valid\":{},",
             control.duration_ms,
             control.sample_ms,
+            control.special_projects_scan,
             control.scheduled_snapshot_step_hours,
             control.country_object_bridge.len(),
             control.country_object_bridge_valid,
@@ -2109,6 +2904,10 @@ mod attach_log {
             control.country_record_bridge_valid,
             control.division_body_bridge.len(),
             division_body_bridge_valid,
+            control.advisor_token_filter.len(),
+            control.advisor_token_filter_valid,
+            control.idea_group_filter.len(),
+            control.idea_group_filter_valid,
             control.map_control.state_roots.len(),
             map_control_state_roots_valid,
             control.map_control.province_bridge.is_some(),
@@ -2162,6 +2961,7 @@ mod attach_log {
         date_ptr: u64,
         country_database_ptr: u64,
         country_identity: CountryIdentityCache,
+        special_projects: SpecialProjectsCache,
     }
 
     impl CollectorState {
@@ -2217,7 +3017,24 @@ mod attach_log {
             {
                 CountryIdentityCache::resolve(base, country_database_ptr as usize)
             } else if daily_match && long_string_match {
-                CountryIdentityCache::not_attempted("disabled_speed_safe")
+                let gamestate_rows = CountryIdentityCache::from_gamestate_country_table(
+                    base,
+                    date_ptr as usize,
+                    country_database_ptr as usize,
+                );
+                if gamestate_rows.has_scalar_source() {
+                    gamestate_rows
+                } else {
+                    let database_rows = CountryIdentityCache::from_country_database_root(
+                        base,
+                        country_database_ptr as usize,
+                    );
+                    if database_rows.has_scalar_source() {
+                        database_rows
+                    } else {
+                        gamestate_rows
+                    }
+                }
             } else {
                 CountryIdentityCache::not_attempted("profile_mismatch")
             };
@@ -2230,8 +3047,76 @@ mod attach_log {
                 date_ptr,
                 country_database_ptr,
                 country_identity,
+                special_projects: if daily_match
+                    && long_string_match
+                    && control
+                        .map(|control| control.special_projects_scan)
+                        .unwrap_or(false)
+                {
+                    SpecialProjectsCache::resolve(base)
+                } else {
+                    SpecialProjectsCache::not_attempted("disabled")
+                },
             }
         }
+    }
+
+    #[derive(Clone, Copy)]
+    struct ProjectFacilityPin {
+        addr: usize,
+        facility_id: u32,
+        province_id: u32,
+    }
+
+    #[derive(Clone, Copy)]
+    struct ProjectPin {
+        addr: usize,
+        project_id: u32,
+        static_def_handle: u32,
+    }
+
+    #[derive(Clone, Copy)]
+    struct ProjectScientistPin {
+        addr: usize,
+        char_id: u32,
+    }
+
+    #[derive(Clone)]
+    struct SpecialProjectsCache {
+        status: &'static str,
+        scan_ms: u64,
+        facilities: Vec<ProjectFacilityPin>,
+        projects: Vec<ProjectPin>,
+        scientists: Vec<ProjectScientistPin>,
+        too_many: bool,
+    }
+
+    #[derive(Clone)]
+    struct ProjectFacilityRow {
+        id: u32,
+        province: u32,
+        building: Option<String>,
+        active_project_handle: u32,
+        active: bool,
+        scientist_char_id: Option<u32>,
+        unread_prototype_rewards: u32,
+    }
+
+    #[derive(Clone)]
+    struct ProjectRow {
+        id: u32,
+        static_def_handle: u32,
+        iterations: u32,
+        worked_at_facility: Option<u32>,
+    }
+
+    #[derive(Clone)]
+    struct ProjectScientistRow {
+        char_id: u32,
+        name_token: Option<String>,
+        display_name: Option<String>,
+        skills: BTreeMap<&'static str, i32>,
+        trait_count: Option<u32>,
     }
 
     #[derive(Clone)]
@@ -2255,6 +3140,11 @@ mod attach_log {
         misc: Option<CountryMiscRow>,
         fuel: Option<CountryFuelRow>,
         production: Option<CountryProductionRow>,
+        focus: Option<CountryFocusRow>,
+        research: Option<CountryResearchRow>,
+        politics: Option<CountryPoliticsRow>,
+        politics_residuals: Option<CountryPoliticsResidualsRow>,
+        decisions: Option<CountryDecisionsRow>,
     }
 
     #[derive(Clone)]
@@ -2305,6 +3195,132 @@ mod attach_log {
         amount: i32,
     }
 
+    #[derive(Clone)]
+    struct CountryFocusRow {
+        focus_tree: Option<String>,
+        completed: Option<Vec<String>>,
+        completed_count: Option<u32>,
+        current: Option<String>,
+        current_continuous: Option<String>,
+        progress: Option<f64>,
+    }
+
+    impl CountryFocusRow {
+        fn has_any(&self) -> bool {
+            self.focus_tree.is_some()
+                || self.completed.is_some()
+                || self.completed_count.is_some()
+                || self.current.is_some()
+                || self.current_continuous.is_some()
+                || self.progress.is_some()
+        }
+    }
+
+    #[derive(Clone)]
+    struct CountryResearchRow {
+        completed_tech_count: Option<u32>,
+        research_slot_count: Option<u32>,
+        active_research: Option<Vec<CountryResearchSlotRow>>,
+    }
+
+    impl CountryResearchRow {
+        fn has_any(&self) -> bool {
+            self.completed_tech_count.is_some()
+                || self.research_slot_count.is_some()
+                || self.active_research.is_some()
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct CountryResearchSlotRow {
+        slot_index: u32,
+        tech_handle_raw: u32,
+        tech_def_index_raw: u32,
+        progress_raw: u32,
+    }
+
+    #[derive(Clone)]
+    struct CountryPoliticsRow {
+        popularities: Option<BTreeMap<String, f64>>,
+        ruling_party: Option<String>,
+        ideas: Option<Vec<String>>,
+        laws: Option<BTreeMap<String, String>>,
+        ideas_other: Option<Vec<String>>,
+        national_spirits: Option<Vec<String>>,
+        idea_count: Option<u32>,
+        election_frequency: Option<u32>,
+        party_count: Option<u32>,
+        low_confidence: Option<bool>,
+    }
+
+    impl CountryPoliticsRow {
+        fn has_any(&self) -> bool {
+            self.popularities.is_some()
+                || self.ruling_party.is_some()
+                || self.ideas.is_some()
+                || self.laws.is_some()
+                || self.ideas_other.is_some()
+                || self.national_spirits.is_some()
+                || self.idea_count.is_some()
+                || self.election_frequency.is_some()
+                || self.party_count.is_some()
+                || self.low_confidence.is_some()
+        }
+    }
+
+    #[derive(Clone)]
+    struct CountryPoliticsResidualsRow {
+        last_election: Option<String>,
+        elections_allowed: Option<bool>,
+        appointed_advisors: Option<Vec<String>>,
+        appointed_advisor_details: Option<Vec<AppointedAdvisorRow>>,
+        appointed_advisor_slots: Option<BTreeMap<String, Vec<String>>>,
+    }
+
+    impl CountryPoliticsResidualsRow {
+        fn has_any(&self) -> bool {
+            self.last_election.is_some()
+                || self.elections_allowed.is_some()
+                || self.appointed_advisors.is_some()
+                || self.appointed_advisor_details.is_some()
+                || self.appointed_advisor_slots.is_some()
+        }
+    }
+
+    #[derive(Clone)]
+    struct AppointedAdvisorRow {
+        idea_token: String,
+        slot: Option<String>,
+        ledger: Option<String>,
+        character: Option<String>,
+    }
+
+    #[derive(Clone)]
+    struct CountryDecisionsRow {
+        status_present: Option<BTreeMap<String, u32>>,
+        timed_live: Option<Vec<TimedDecisionRow>>,
+    }
+
+    impl CountryDecisionsRow {
+        fn has_any(&self) -> bool {
+            self.status_present.is_some() || self.timed_live.is_some()
+        }
+    }
+
+    #[derive(Clone)]
+    struct TimedDecisionRow {
+        decision: String,
+        days: i32,
+        state: i32,
+        state_name: String,
+    }
+
+    struct CountryPartyRead {
+        popularities: BTreeMap<String, f64>,
+        party_ptrs: Vec<usize>,
+        party_count: u32,
+    }
+
     struct CountryIdentityCache {
         status: &'static str,
         scan_ms: u64,
@@ -2340,9 +3356,21 @@ mod attach_log {
             let mut rejected_objects = 0u32;
             let mut duplicate_tags = 0u32;
             for object_ptr in scan_qword_hits(country_vtable, HEAP_LO, HEAP_HI) {
-                let Some(row) =
-                    country_object_row(object_ptr, country_vtable, tag_table, None, false, false)
-                else {
+                let Some(row) = country_object_row(
+                    object_ptr,
+                    country_vtable,
+                    tag_table,
+                    None,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    None,
+                    None,
+                ) else {
                     rejected_objects = rejected_objects.saturating_add(1);
                     continue;
                 };
@@ -2352,7 +3380,7 @@ mod attach_log {
             }
             let scan_ms = unsafe { GetTickCount64() }.saturating_sub(started);
             let rows: Vec<CountryObjectRow> = rows_by_tag.into_values().collect();
-            let status = if rows.len() >= 40 {
+            let status = if rows.len() >= MIN_USABLE_COUNTRY_OBJECT_ROWS {
                 "verified"
             } else {
                 "insufficient_country_objects"
@@ -2395,6 +3423,13 @@ mod attach_log {
                     records_by_tag_id.get(&entry.tag_db_id).copied(),
                     false,
                     false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    None,
+                    None,
                 ) else {
                     rejected_objects = rejected_objects.saturating_add(1);
                     continue;
@@ -2404,7 +3439,7 @@ mod attach_log {
                 }
             }
             let rows: Vec<CountryObjectRow> = rows_by_tag.into_values().collect();
-            let status = if rows.len() >= 40 {
+            let status = if rows.len() >= MIN_USABLE_COUNTRY_OBJECT_ROWS {
                 "control_bridge_verified"
             } else {
                 "insufficient_control_bridge"
@@ -2421,8 +3456,185 @@ mod attach_log {
             }
         }
 
+        fn from_country_database_root(
+            base: usize,
+            country_database_ptr: usize,
+        ) -> CountryIdentityCache {
+            let started = unsafe { GetTickCount64() };
+            let Some(tag_table) = country_tag_table(country_database_ptr) else {
+                return CountryIdentityCache::not_attempted("tag_table_unavailable");
+            };
+            let Some(tag_row_count) = country_tag_row_count(country_database_ptr) else {
+                return CountryIdentityCache::not_attempted("tag_table_unavailable");
+            };
+            let Some(country_vtable) = base.checked_add(COUNTRY_VTABLE_RVA) else {
+                return CountryIdentityCache::not_attempted("profile_mismatch");
+            };
+
+            let mut seen_bases: BTreeMap<usize, ()> = BTreeMap::new();
+            let mut candidates: BTreeMap<usize, Vec<CountryObjectRow>> = BTreeMap::new();
+            for off in (0..COUNTRY_DATABASE_OBJECT_ARRAY_SEARCH_SPAN).step_by(8) {
+                let Some(field_addr) = country_database_ptr.checked_add(off) else {
+                    break;
+                };
+                for array_base in country_object_array_base_candidates(field_addr) {
+                    if seen_bases.insert(array_base, ()).is_some() {
+                        continue;
+                    }
+                    if let Some(rows) = country_rows_from_tag_indexed_array(
+                        array_base,
+                        country_vtable,
+                        tag_table,
+                        tag_row_count,
+                    ) {
+                        candidates.insert(array_base, rows);
+                    }
+                }
+            }
+
+            let scan_ms = unsafe { GetTickCount64() }.saturating_sub(started);
+            if candidates.is_empty() {
+                return CountryIdentityCache {
+                    status: "country_database_root_insufficient",
+                    scan_ms,
+                    country_vtable,
+                    bridge_rows_supplied: 0,
+                    record_rows_supplied: 0,
+                    rows: Vec::new(),
+                    rejected_objects: 0,
+                    duplicate_tags: 0,
+                };
+            }
+
+            let bases: Vec<usize> = candidates.keys().copied().collect();
+            let ref_map = country_tag_object_map(
+                candidates
+                    .get(&bases[0])
+                    .expect("non-empty candidate map has first candidate"),
+            );
+            for base in bases.iter().skip(1) {
+                let other_map = country_tag_object_map(
+                    candidates
+                        .get(base)
+                        .expect("candidate key came from candidate map"),
+                );
+                if !country_tag_object_maps_agree(&ref_map, &other_map) {
+                    return CountryIdentityCache {
+                        status: "country_database_root_ambiguous",
+                        scan_ms,
+                        country_vtable,
+                        bridge_rows_supplied: 0,
+                        record_rows_supplied: 0,
+                        rows: Vec::new(),
+                        rejected_objects: 0,
+                        duplicate_tags: 0,
+                    };
+                }
+            }
+
+            let rows = candidates.remove(&bases[0]).unwrap_or_default();
+            CountryIdentityCache {
+                status: "country_database_root_verified",
+                scan_ms,
+                country_vtable,
+                bridge_rows_supplied: 0,
+                record_rows_supplied: 0,
+                rows,
+                rejected_objects: 0,
+                duplicate_tags: 0,
+            }
+        }
+
+        fn from_gamestate_country_table(
+            base: usize,
+            gamestate_ptr: usize,
+            country_database_ptr: usize,
+        ) -> CountryIdentityCache {
+            let started = unsafe { GetTickCount64() };
+            let Some(tag_table) = country_tag_table(country_database_ptr) else {
+                return CountryIdentityCache::not_attempted("tag_table_unavailable");
+            };
+            let Some(tag_row_count) = country_tag_row_count(country_database_ptr) else {
+                return CountryIdentityCache::not_attempted("tag_table_unavailable");
+            };
+            let Some(country_vtable) = base.checked_add(COUNTRY_VTABLE_RVA) else {
+                return CountryIdentityCache::not_attempted("profile_mismatch");
+            };
+            let Some(country_table) =
+                read_u64(gamestate_ptr.saturating_add(CGAMESTATE_COUNTRY_TABLE))
+                    .map(|value| value as usize)
+            else {
+                return CountryIdentityCache::not_attempted("gamestate_country_table_unavailable");
+            };
+            if !is_map_control_heap_pointer(country_table) {
+                return CountryIdentityCache::not_attempted("gamestate_country_table_unavailable");
+            }
+
+            let mut rows = Vec::new();
+            let mut seen_objects: BTreeMap<usize, ()> = BTreeMap::new();
+            let mut rejected_objects = 0u32;
+            let mut duplicate_tags = 0u32;
+            for tag_db_id in 1..tag_row_count {
+                let Some(slot_addr) = country_table.checked_add(tag_db_id as usize * 8) else {
+                    break;
+                };
+                let object_ptr = read_u64(slot_addr).unwrap_or(0) as usize;
+                if object_ptr == 0 {
+                    continue;
+                }
+                if !is_map_control_heap_pointer(object_ptr) {
+                    rejected_objects = rejected_objects.saturating_add(1);
+                    continue;
+                }
+                let Some(row) = country_object_row_expected(
+                    object_ptr,
+                    country_vtable,
+                    tag_table,
+                    tag_db_id,
+                    None,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    None,
+                    None,
+                ) else {
+                    rejected_objects = rejected_objects.saturating_add(1);
+                    continue;
+                };
+                if seen_objects.insert(row.object_ptr, ()).is_some() {
+                    duplicate_tags = duplicate_tags.saturating_add(1);
+                    continue;
+                }
+                rows.push(row);
+            }
+
+            let scan_ms = unsafe { GetTickCount64() }.saturating_sub(started);
+            let status = if rows.len() >= MIN_USABLE_COUNTRY_OBJECT_ROWS {
+                "gamestate_country_table_verified"
+            } else {
+                "gamestate_country_table_insufficient"
+            };
+            CountryIdentityCache {
+                status,
+                scan_ms,
+                country_vtable,
+                bridge_rows_supplied: 0,
+                record_rows_supplied: 0,
+                rows,
+                rejected_objects,
+                duplicate_tags,
+            }
+        }
+
         fn has_scalar_source(&self) -> bool {
-            (self.status == "verified" || self.status == "control_bridge_verified")
+            (self.status == "verified"
+                || self.status == "control_bridge_verified"
+                || self.status == "country_database_root_verified"
+                || self.status == "gamestate_country_table_verified")
                 && self.country_vtable != 0
                 && !self.rows.is_empty()
         }
@@ -2432,6 +3644,13 @@ mod attach_log {
             country_database_ptr: usize,
             include_scheduled_country_fuel: bool,
             include_scheduled_country_production: bool,
+            include_scheduled_country_focus: bool,
+            include_scheduled_country_research: bool,
+            include_scheduled_country_politics: bool,
+            include_scheduled_country_politics_residuals: bool,
+            include_scheduled_country_decisions: bool,
+            advisor_token_filter: Option<&BTreeMap<String, AdvisorTokenInfo>>,
+            idea_group_filter: Option<&BTreeMap<String, String>>,
         ) -> Vec<CountryObjectRow> {
             if !self.has_scalar_source() {
                 return Vec::new();
@@ -2447,6 +3666,13 @@ mod attach_log {
                     tag_table,
                     include_scheduled_country_fuel,
                     include_scheduled_country_production,
+                    include_scheduled_country_focus,
+                    include_scheduled_country_research,
+                    include_scheduled_country_politics,
+                    include_scheduled_country_politics_residuals,
+                    include_scheduled_country_decisions,
+                    advisor_token_filter,
+                    idea_group_filter,
                 ) {
                     rows.push(fresh);
                 }
@@ -2459,8 +3685,14 @@ mod attach_log {
             current_rows: &[CountryObjectRow],
             has_state_rows: bool,
             has_province_rows: bool,
+            has_special_projects: bool,
             include_scheduled_country_fuel: bool,
             include_scheduled_country_production: bool,
+            include_scheduled_country_focus: bool,
+            include_scheduled_country_research: bool,
+            include_scheduled_country_politics: bool,
+            include_scheduled_country_politics_residuals: bool,
+            include_scheduled_country_decisions: bool,
         ) -> String {
             let mut domains = vec!["\"clock\"", "\"country_identity\""];
             if !current_rows.is_empty() {
@@ -2477,12 +3709,41 @@ mod attach_log {
             {
                 domains.push("\"production_live\"");
             }
+            if include_scheduled_country_focus && current_rows.iter().any(|row| row.focus.is_some())
+            {
+                domains.push("\"focus_live\"");
+            }
+            if include_scheduled_country_research
+                && current_rows.iter().any(|row| row.research.is_some())
+            {
+                domains.push("\"tech_live\"");
+            }
+            if include_scheduled_country_politics
+                && current_rows.iter().any(|row| row.politics.is_some())
+            {
+                domains.push("\"politics_live\"");
+            }
+            if include_scheduled_country_politics_residuals
+                && current_rows
+                    .iter()
+                    .any(|row| row.politics_residuals.is_some())
+            {
+                domains.push("\"politics_residuals\"");
+            }
+            if include_scheduled_country_decisions
+                && current_rows.iter().any(|row| row.decisions.is_some())
+            {
+                domains.push("\"decisions_live\"");
+            }
             if has_state_rows {
                 domains.push("\"state_ownership\"");
                 domains.push("\"state_control\"");
             }
             if has_province_rows {
                 domains.push("\"province_control\"");
+            }
+            if has_special_projects {
+                domains.push("\"projects_live\"");
             }
             format!("[{}]", domains.join(","))
         }
@@ -2510,6 +3771,11 @@ mod attach_log {
             current_rows: &[CountryObjectRow],
             include_scheduled_country_fuel: bool,
             include_scheduled_country_production: bool,
+            include_scheduled_country_focus: bool,
+            include_scheduled_country_research: bool,
+            include_scheduled_country_politics: bool,
+            include_scheduled_country_politics_residuals: bool,
+            include_scheduled_country_decisions: bool,
         ) -> String {
             if !current_rows.is_empty() {
                 let rows: Vec<String> = current_rows
@@ -2519,6 +3785,11 @@ mod attach_log {
                             row,
                             include_scheduled_country_fuel,
                             include_scheduled_country_production,
+                            include_scheduled_country_focus,
+                            include_scheduled_country_research,
+                            include_scheduled_country_politics,
+                            include_scheduled_country_politics_residuals,
+                            include_scheduled_country_decisions,
                         )
                     })
                     .collect();
@@ -2526,6 +3797,271 @@ mod attach_log {
             }
             country_rows_from_tag_table_json(country_database_ptr)
         }
+    }
+
+    impl SpecialProjectsCache {
+        fn not_attempted(status: &'static str) -> Self {
+            Self {
+                status,
+                scan_ms: 0,
+                facilities: Vec::new(),
+                projects: Vec::new(),
+                scientists: Vec::new(),
+                too_many: false,
+            }
+        }
+
+        fn resolve(base: usize) -> Self {
+            if base == 0 {
+                return Self::not_attempted("profile_mismatch");
+            }
+            let started = unsafe { GetTickCount64() };
+            let hits = scan_special_project_pool_hits(base);
+            let scan_ms = unsafe { GetTickCount64() }.saturating_sub(started);
+            if hits.too_many {
+                return Self {
+                    status: "too_many",
+                    scan_ms,
+                    facilities: Vec::new(),
+                    projects: Vec::new(),
+                    scientists: Vec::new(),
+                    too_many: true,
+                };
+            }
+            let facility_vtable = base.saturating_add(PROJECT_FACILITY_VTABLE_RVA);
+            let project_vtable = base.saturating_add(PROJECT_CPROJECT_VTABLE_RVA);
+            let character_vtable = base.saturating_add(PROJECT_CHARACTER_VTABLE_RVA);
+            let scientist_vtable = base.saturating_add(PROJECT_SCIENTIST_VTABLE_RVA);
+            let mut facilities = Vec::new();
+            for addr in hits.facilities {
+                if let Some(pin) = project_facility_pin(addr, facility_vtable) {
+                    facilities.push(pin);
+                }
+            }
+            let mut projects = Vec::new();
+            for addr in hits.projects {
+                if let Some(pin) = project_pin(addr, project_vtable) {
+                    projects.push(pin);
+                }
+            }
+            let mut scientists = Vec::new();
+            for addr in hits.scientists {
+                if let Some(pin) = project_scientist_pin(addr, character_vtable, scientist_vtable) {
+                    scientists.push(pin);
+                }
+            }
+            let status = if facilities.is_empty() && projects.is_empty() && scientists.is_empty() {
+                "not_found"
+            } else {
+                "verified"
+            };
+            Self {
+                status,
+                scan_ms,
+                facilities,
+                projects,
+                scientists,
+                too_many: false,
+            }
+        }
+
+        fn rows(
+            &self,
+            base: usize,
+        ) -> (
+            Vec<ProjectFacilityRow>,
+            Vec<ProjectRow>,
+            Vec<ProjectScientistRow>,
+        ) {
+            if self.status != "verified" || self.too_many {
+                return (Vec::new(), Vec::new(), Vec::new());
+            }
+            let facility_vtable = base.saturating_add(PROJECT_FACILITY_VTABLE_RVA);
+            let project_vtable = base.saturating_add(PROJECT_CPROJECT_VTABLE_RVA);
+            let character_vtable = base.saturating_add(PROJECT_CHARACTER_VTABLE_RVA);
+            let scientist_vtable = base.saturating_add(PROJECT_SCIENTIST_VTABLE_RVA);
+
+            let mut facilities = Vec::new();
+            for pin in &self.facilities {
+                if let Some(row) = read_project_facility_row(*pin, facility_vtable) {
+                    facilities.push(row);
+                    if facilities.len() >= MAX_PROJECT_FACILITIES {
+                        break;
+                    }
+                }
+            }
+            let mut projects = Vec::new();
+            for pin in &self.projects {
+                if let Some(row) = read_project_row(*pin, project_vtable) {
+                    projects.push(row);
+                    if projects.len() >= MAX_PROJECT_ACTIVE_PROJECTS {
+                        break;
+                    }
+                }
+            }
+            let mut scientists = Vec::new();
+            for pin in &self.scientists {
+                if let Some(row) =
+                    read_project_scientist_row(*pin, character_vtable, scientist_vtable)
+                {
+                    scientists.push(row);
+                    if scientists.len() >= MAX_PROJECT_SCIENTISTS {
+                        break;
+                    }
+                }
+            }
+            (facilities, projects, scientists)
+        }
+
+        fn root_json(&self) -> String {
+            format!(
+                "\"special_projects_identity\":{{\"status\":\"{}\",\
+                 \"scan_ms\":{},\"facility_pins\":{},\"project_pins\":{},\
+                 \"scientist_pins\":{},\"too_many\":{}}}",
+                self.status,
+                self.scan_ms,
+                self.facilities.len(),
+                self.projects.len(),
+                self.scientists.len(),
+                self.too_many
+            )
+        }
+    }
+
+    struct SpecialProjectPoolHits {
+        facilities: Vec<usize>,
+        projects: Vec<usize>,
+        scientists: Vec<usize>,
+        too_many: bool,
+    }
+
+    fn scan_special_project_pool_hits(base: usize) -> SpecialProjectPoolHits {
+        let facility_vtable = base.saturating_add(PROJECT_FACILITY_VTABLE_RVA) as u64;
+        let project_vtable = base.saturating_add(PROJECT_CPROJECT_VTABLE_RVA) as u64;
+        let character_vtable = base.saturating_add(PROJECT_CHARACTER_VTABLE_RVA) as u64;
+        let mut hits = SpecialProjectPoolHits {
+            facilities: Vec::new(),
+            projects: Vec::new(),
+            scientists: Vec::new(),
+            too_many: false,
+        };
+        let mut addr = HEAP_LO;
+        const CHUNK: usize = 16 << 20;
+        const OVERLAP: usize = 16;
+        while addr < HEAP_HI {
+            let Some((region_start, region_size)) = readable_region(addr) else {
+                addr = addr.saturating_add(0x1000);
+                continue;
+            };
+            let region_end = region_start.saturating_add(region_size).min(HEAP_HI);
+            let mut pos = region_start.max(addr);
+            while pos < region_end {
+                let want = CHUNK.min(region_end - pos);
+                let Some(blob) = read_bytes(pos, want) else {
+                    pos = pos.saturating_add(want.max(0x1000));
+                    continue;
+                };
+                let mut i = (8 - (pos & 7)) & 7;
+                while i + 8 <= blob.len() {
+                    let mut arr = [0u8; 8];
+                    arr.copy_from_slice(&blob[i..i + 8]);
+                    let value = u64::from_le_bytes(arr);
+                    let hit_addr = pos + i;
+                    if value == facility_vtable {
+                        hits.facilities.push(hit_addr);
+                    } else if value == project_vtable {
+                        hits.projects.push(hit_addr);
+                    } else if value == character_vtable {
+                        hits.scientists.push(hit_addr);
+                    }
+                    if hits.facilities.len() > MAX_PROJECT_FACILITIES
+                        || hits.projects.len() > MAX_PROJECT_PROJECT_PINS
+                        || hits.scientists.len() > MAX_PROJECT_SCIENTISTS
+                    {
+                        hits.too_many = true;
+                        return hits;
+                    }
+                    i += 8;
+                }
+                if pos + blob.len() >= region_end || blob.len() < want {
+                    pos = pos.saturating_add(blob.len().max(0x1000));
+                } else {
+                    pos = pos.saturating_add(blob.len().saturating_sub(OVERLAP));
+                }
+            }
+            addr = region_end.saturating_add(0x1000);
+        }
+        hits
+    }
+
+    fn project_facility_pin(addr: usize, facility_vtable: usize) -> Option<ProjectFacilityPin> {
+        if !is_map_control_heap_pointer(addr) || read_u64(addr)? as usize != facility_vtable {
+            return None;
+        }
+        if read_u32(addr + PROJECT_FACILITY_OFF_TYPE)? != PROJECT_FACILITY_TYPE {
+            return None;
+        }
+        let facility_id = read_u32(addr + PROJECT_FACILITY_OFF_ID)?;
+        let province_id = read_u32(addr + PROJECT_FACILITY_OFF_PROVINCE)?;
+        if facility_id == 0
+            || facility_id > MAX_PROJECT_ID
+            || province_id == 0
+            || province_id > MAX_PROJECT_PROVINCE_ID
+        {
+            return None;
+        }
+        Some(ProjectFacilityPin {
+            addr,
+            facility_id,
+            province_id,
+        })
+    }
+
+    fn project_pin(addr: usize, project_vtable: usize) -> Option<ProjectPin> {
+        if !is_map_control_heap_pointer(addr) || read_u64(addr)? as usize != project_vtable {
+            return None;
+        }
+        if read_u32(addr + PROJECT_PROJECT_OFF_TYPE)? != PROJECT_PROJECT_TYPE {
+            return None;
+        }
+        let project_id = read_u32(addr + PROJECT_PROJECT_OFF_ID)?;
+        let static_def_handle = read_u32(addr + PROJECT_PROJECT_OFF_DEF_HANDLE)?;
+        if project_id == 0
+            || project_id > MAX_PROJECT_ID
+            || static_def_handle == 0
+            || static_def_handle > MAX_PROJECT_HANDLE
+        {
+            return None;
+        }
+        Some(ProjectPin {
+            addr,
+            project_id,
+            static_def_handle,
+        })
+    }
+
+    fn project_scientist_pin(
+        addr: usize,
+        character_vtable: usize,
+        scientist_vtable: usize,
+    ) -> Option<ProjectScientistPin> {
+        if !is_map_control_heap_pointer(addr) || read_u64(addr)? as usize != character_vtable {
+            return None;
+        }
+        if read_u32(addr + PROJECT_CHARACTER_OFF_TYPE)? != PROJECT_CHARACTER_TYPE {
+            return None;
+        }
+        let scientist_ptr = read_u64(addr + PROJECT_CHARACTER_OFF_SCIENTIST_PTR)? as usize;
+        if !is_map_control_heap_pointer(scientist_ptr)
+            || read_u64(scientist_ptr)? as usize != scientist_vtable
+        {
+            return None;
+        }
+        let char_id = read_u32(addr + PROJECT_CHARACTER_OFF_ID)?;
+        if char_id == 0 || char_id > MAX_PROJECT_ID {
+            return None;
+        }
+        Some(ProjectScientistPin { addr, char_id })
     }
 
     fn write_sinks(file: Option<&mut std::fs::File>, pipe: Option<Handle>, bytes: &[u8]) {
@@ -2600,6 +4136,211 @@ mod attach_log {
         }
     }
 
+    fn scheduled_special_projects_json(
+        state: Option<&CollectorState>,
+        include_scheduled_projects: bool,
+    ) -> Option<String> {
+        if !include_scheduled_projects {
+            return None;
+        }
+        let state = state?;
+        if !(state.daily_match && state.long_string_match) {
+            return None;
+        }
+        let (facilities, projects, scientists) = state.special_projects.rows(state.base);
+        if facilities.is_empty() && projects.is_empty() && scientists.is_empty() {
+            return None;
+        }
+        Some(special_projects_json(&facilities, &projects, &scientists))
+    }
+
+    fn read_project_facility_row(
+        pin: ProjectFacilityPin,
+        facility_vtable: usize,
+    ) -> Option<ProjectFacilityRow> {
+        let current_pin = project_facility_pin(pin.addr, facility_vtable)?;
+        if current_pin.facility_id != pin.facility_id || current_pin.province_id != pin.province_id
+        {
+            return None;
+        }
+        let active_project_handle = read_u32(pin.addr + PROJECT_FACILITY_OFF_ACTIVE_HANDLE)
+            .filter(|value| *value <= MAX_PROJECT_HANDLE)?;
+        let active_flag = read_u32(pin.addr + PROJECT_FACILITY_OFF_ACTIVE_FLAG)?;
+        if active_flag > 1 {
+            return None;
+        }
+        let scientist_type = read_u32(pin.addr + PROJECT_FACILITY_OFF_SCIENTIST_TYPE).unwrap_or(0);
+        let scientist_id = read_u32(pin.addr + PROJECT_FACILITY_OFF_SCIENTIST_ID)
+            .filter(|value| *value <= MAX_PROJECT_ID)?;
+        let scientist_char_id = if scientist_id == 0 {
+            None
+        } else if scientist_type == PROJECT_CHARACTER_TYPE {
+            Some(scientist_id)
+        } else {
+            return None;
+        };
+        let unread_prototype_rewards = read_u32(pin.addr + PROJECT_FACILITY_OFF_UNREAD_REWARDS)
+            .filter(|value| *value <= MAX_PROJECT_ITERATIONS)?;
+        let building = read_msvc_string(
+            pin.addr + PROJECT_FACILITY_OFF_BUILDING,
+            MAX_PROJECT_BUILDING_LEN,
+        )
+        .filter(|value| is_script_token(value));
+        Some(ProjectFacilityRow {
+            id: pin.facility_id,
+            province: pin.province_id,
+            building,
+            active_project_handle,
+            active: active_flag == 1,
+            scientist_char_id,
+            unread_prototype_rewards,
+        })
+    }
+
+    fn read_project_row(pin: ProjectPin, project_vtable: usize) -> Option<ProjectRow> {
+        let current_pin = project_pin(pin.addr, project_vtable)?;
+        if current_pin.project_id != pin.project_id
+            || current_pin.static_def_handle != pin.static_def_handle
+        {
+            return None;
+        }
+        let owner_tag = read_u32(pin.addr + PROJECT_PROJECT_OFF_OWNER_TAG).unwrap_or(0);
+        let owner_fid = read_u32(pin.addr + PROJECT_PROJECT_OFF_OWNER_FACILITY).unwrap_or(0);
+        if owner_tag != PROJECT_FACILITY_TYPE || owner_fid == 0 || owner_fid > MAX_PROJECT_ID {
+            return None;
+        }
+        let iterations = read_u32(pin.addr + PROJECT_PROJECT_OFF_ITERATIONS)
+            .filter(|value| *value <= MAX_PROJECT_ITERATIONS)?;
+        Some(ProjectRow {
+            id: pin.project_id,
+            static_def_handle: pin.static_def_handle,
+            iterations,
+            worked_at_facility: Some(owner_fid),
+        })
+    }
+
+    fn read_project_scientist_row(
+        pin: ProjectScientistPin,
+        character_vtable: usize,
+        scientist_vtable: usize,
+    ) -> Option<ProjectScientistRow> {
+        let current_pin = project_scientist_pin(pin.addr, character_vtable, scientist_vtable)?;
+        if current_pin.char_id != pin.char_id {
+            return None;
+        }
+        let name_token = read_msvc_string(
+            pin.addr + PROJECT_CHARACTER_OFF_TOKEN,
+            MAX_PROJECT_SCIENTIST_TOKEN_LEN,
+        )
+        .filter(|value| is_script_token(value));
+        let display_name = read_msvc_string(
+            pin.addr + PROJECT_CHARACTER_OFF_DISPLAY,
+            MAX_PROJECT_SCIENTIST_DISPLAY_LEN,
+        );
+        let scientist_ptr = read_u64(pin.addr + PROJECT_CHARACTER_OFF_SCIENTIST_PTR)? as usize;
+        let trait_count = read_u32(scientist_ptr + PROJECT_SCIENTIST_OFF_TRAIT_COUNT)
+            .filter(|value| *value <= MAX_PROJECT_TRAITS);
+        let skills = read_project_scientist_skills(scientist_ptr)?;
+        Some(ProjectScientistRow {
+            char_id: pin.char_id,
+            name_token,
+            display_name,
+            skills,
+            trait_count,
+        })
+    }
+
+    fn read_project_scientist_skills(scientist_ptr: usize) -> Option<BTreeMap<&'static str, i32>> {
+        let skills_ptr = read_u64(scientist_ptr + PROJECT_SCIENTIST_OFF_SKILLS_PTR)? as usize;
+        if !is_map_control_heap_pointer(skills_ptr) {
+            return None;
+        }
+        let names = [
+            "specialization_nuclear",
+            "specialization_naval",
+            "specialization_air",
+            "specialization_land",
+        ];
+        let mut skills = BTreeMap::new();
+        for (idx, name) in names.iter().enumerate() {
+            let rec = skills_ptr.checked_add(idx.checked_mul(PROJECT_SKILL_STRIDE)?)?;
+            let expected = PROJECT_SKILL_HEADER_BASE.checked_add(idx as u16)?;
+            if read_u16(rec)? != expected {
+                return None;
+            }
+            let level = read_i32(rec + PROJECT_SKILL_LEVEL_OFF)?;
+            if !(0..=MAX_PROJECT_SKILL_LEVEL).contains(&level) {
+                return None;
+            }
+            skills.insert(*name, level);
+        }
+        Some(skills)
+    }
+
+    fn special_projects_json(
+        facilities: &[ProjectFacilityRow],
+        projects: &[ProjectRow],
+        scientists: &[ProjectScientistRow],
+    ) -> String {
+        let facility_rows: Vec<String> = facilities.iter().map(project_facility_json).collect();
+        let project_rows: Vec<String> = projects.iter().map(project_row_json).collect();
+        let scientist_rows: Vec<String> = scientists.iter().map(project_scientist_json).collect();
+        format!(
+            "{{\"facilities\":[{}],\"projects\":[{}],\"scientists\":[{}],\
+             \"count\":{{\"facilities\":{},\"projects\":{},\"scientists\":{}}},\
+             \"source\":\"C\"}}",
+            facility_rows.join(","),
+            project_rows.join(","),
+            scientist_rows.join(","),
+            facilities.len(),
+            projects.len(),
+            scientists.len()
+        )
+    }
+
+    fn project_facility_json(row: &ProjectFacilityRow) -> String {
+        format!(
+            "{{\"id\":{},\"province\":{},\"building\":{},\
+             \"active_project_handle\":{},\"active\":{},\
+             \"scientist_char_id\":{},\"unread_prototype_rewards\":{}}}",
+            row.id,
+            row.province,
+            json_opt_escaped_str(row.building.as_deref()),
+            row.active_project_handle,
+            row.active,
+            json_opt_u32(row.scientist_char_id),
+            row.unread_prototype_rewards
+        )
+    }
+
+    fn project_row_json(row: &ProjectRow) -> String {
+        format!(
+            "{{\"id\":{},\"static_def_handle\":{},\"iterations\":{},\
+             \"worked_at_facility\":{}}}",
+            row.id,
+            row.static_def_handle,
+            row.iterations,
+            json_opt_u32(row.worked_at_facility)
+        )
+    }
+
+    fn project_scientist_json(row: &ProjectScientistRow) -> String {
+        let skill_rows: Vec<String> = row
+            .skills
+            .iter()
+            .map(|(key, value)| format!("{}:{}", json_str(key), value))
+            .collect();
+        format!(
+            "{{\"char_id\":{},\"name_token\":{},\"display_name\":{},\
+             \"skills\":{{{}}},\"trait_count\":{}}}",
+            row.char_id,
+            json_opt_escaped_str(row.name_token.as_deref()),
+            json_opt_escaped_str(row.display_name.as_deref()),
+            skill_rows.join(","),
+            json_opt_u32(row.trait_count)
+        )
+    }
+
     fn scheduled_state_rows_json(
         state: Option<&CollectorState>,
         control: Option<&CollectorControl>,
@@ -2611,6 +4352,9 @@ mod attach_log {
         let state = state?;
         if !(state.daily_match && state.long_string_match) {
             return None;
+        }
+        if let Some(rows) = scheduled_cprovince_state_rows_json(state) {
+            return Some(rows);
         }
         let control = control?;
         if !(control.map_control.state_roots_valid && control.map_control.state_roots_well_formed())
@@ -2657,6 +4401,89 @@ mod attach_log {
         }
     }
 
+    fn scheduled_cprovince_state_rows_json(state: &CollectorState) -> Option<String> {
+        let (province_array, province_count, province_ptrs) = cprovince_array_snapshot(state)?;
+        let tag_table = country_tag_table(state.country_database_ptr as usize)?;
+        let cprovince_vtable = state.base.checked_add(CPROVINCE_VTABLE_RVA)?;
+        let state_vtable = state.base.checked_add(STATE_VTABLE_RVA)?;
+        let mut state_ptrs: BTreeMap<u32, usize> = BTreeMap::new();
+
+        for province_id in 1..province_count {
+            let province_ptr = cprovince_ptr_from_snapshot(&province_ptrs, province_id)?;
+            if province_ptr == 0 {
+                continue;
+            }
+            if !is_map_control_heap_pointer(province_ptr) {
+                return None;
+            }
+            if read_u64(province_ptr)? as usize != cprovince_vtable {
+                return None;
+            }
+            if read_u32(province_ptr.checked_add(CPROVINCE_OFF_ID)?)? != province_id {
+                return None;
+            }
+            let state_ptr = read_u64(province_ptr.checked_add(CPROVINCE_OFF_STATE)?)? as usize;
+            if state_ptr == 0 {
+                continue;
+            }
+            if !is_map_control_heap_pointer(state_ptr) {
+                return None;
+            }
+            if read_u64(state_ptr)? as usize != state_vtable {
+                return None;
+            }
+            let state_id = read_u32(state_ptr.checked_add(STATE_OFF_SID)?)?;
+            if state_id == 0 || state_id > MAX_MAP_CONTROL_STATE_ID {
+                return None;
+            }
+            if let Some(previous) = state_ptrs.insert(state_id, state_ptr) {
+                if previous != state_ptr {
+                    return None;
+                }
+            }
+        }
+
+        if state_ptrs.len() < MIN_USABLE_STATE_ROWS {
+            return None;
+        }
+        let mut rows = Vec::new();
+        for (state_id, state_ptr) in state_ptrs {
+            if read_u64(state_ptr)? as usize != state_vtable {
+                return None;
+            }
+            if read_u32(state_ptr.checked_add(STATE_OFF_SID)?)? != state_id {
+                return None;
+            }
+            let owner = read_u32(state_ptr.checked_add(STATE_OFF_OWNER)?).unwrap_or(0);
+            let controller = read_u32(state_ptr.checked_add(STATE_OFF_CTRL)?).unwrap_or(0);
+            let owner_tag = if owner == 0 {
+                None
+            } else {
+                tag_from_table(tag_table, owner)
+            };
+            let controller_tag = if controller == 0 {
+                None
+            } else {
+                tag_from_table(tag_table, controller)
+            };
+            rows.push(format!(
+                "\"{}\":{{\"owner\":{},\"controller\":{}}}",
+                state_id,
+                json_opt_str(owner_tag.as_deref()),
+                json_opt_str(controller_tag.as_deref())
+            ));
+        }
+
+        if !cprovince_array_still_current(state, province_array, province_count) {
+            return None;
+        }
+        if rows.len() >= MIN_USABLE_STATE_ROWS {
+            Some(format!("{{{}}}", rows.join(",")))
+        } else {
+            None
+        }
+    }
+
     fn scheduled_province_rows_json(
         state: Option<&CollectorState>,
         control: Option<&CollectorControl>,
@@ -2668,6 +4495,9 @@ mod attach_log {
         let state = state?;
         if !(state.daily_match && state.long_string_match) {
             return None;
+        }
+        if let Some(rows) = scheduled_cprovince_rows_json(state) {
+            return Some(rows);
         }
         let control = control?;
         if !(control.map_control.province_bridge_valid
@@ -2716,12 +4546,135 @@ mod attach_log {
         }
     }
 
+    fn scheduled_cprovince_rows_json(state: &CollectorState) -> Option<String> {
+        let (province_array, province_count, province_ptrs) = cprovince_array_snapshot(state)?;
+        let tag_table = country_tag_table(state.country_database_ptr as usize)?;
+        let cprovince_vtable = state.base.checked_add(CPROVINCE_VTABLE_RVA)?;
+        let mut rows = Vec::new();
+        for province_id in 1..province_count {
+            let province_ptr = cprovince_ptr_from_snapshot(&province_ptrs, province_id)?;
+            if province_ptr == 0 {
+                continue;
+            }
+            if !is_map_control_heap_pointer(province_ptr) {
+                return None;
+            }
+            if read_u64(province_ptr)? as usize != cprovince_vtable {
+                return None;
+            }
+            if read_u32(province_ptr.checked_add(CPROVINCE_OFF_ID)?)? != province_id {
+                return None;
+            }
+            let controller_tag_db_id =
+                read_u32(province_ptr.checked_add(CPROVINCE_OFF_CONTROLLER)?).unwrap_or(0);
+            if controller_tag_db_id == 0 {
+                continue;
+            }
+            let controller_tag = tag_from_table(tag_table, controller_tag_db_id);
+            let state_id = cprovince_state_id(state.base, province_ptr);
+            rows.push(cprovince_control_row_json(
+                province_id,
+                controller_tag.as_deref(),
+                controller_tag_db_id,
+                state_id,
+            ));
+        }
+        if !cprovince_array_still_current(state, province_array, province_count) {
+            return None;
+        }
+        if rows.len() >= MIN_USABLE_PROVINCE_ROWS {
+            Some(format!("{{{}}}", rows.join(",")))
+        } else {
+            None
+        }
+    }
+
+    fn cprovince_array_snapshot(state: &CollectorState) -> Option<(usize, u32, Vec<u8>)> {
+        let gamestate = state.date_ptr as usize;
+        if !is_map_control_heap_pointer(gamestate) {
+            return None;
+        }
+        let province_array = read_u64(gamestate.checked_add(CGAMESTATE_CPROVINCE_ARRAY)?)? as usize;
+        let province_count = read_u32(gamestate.checked_add(CGAMESTATE_CPROVINCE_COUNT)?)?;
+        if province_count < MIN_USABLE_PROVINCE_ROWS as u32
+            || province_count > MAX_MAP_CONTROL_PROVINCE_COUNT
+            || !is_map_control_heap_pointer(province_array)
+        {
+            return None;
+        }
+        let byte_len = (province_count as usize).checked_mul(8)?;
+        let province_ptrs = read_bytes(province_array, byte_len)?;
+        if province_ptrs.len() != byte_len {
+            return None;
+        }
+        Some((province_array, province_count, province_ptrs))
+    }
+
+    fn cprovince_ptr_from_snapshot(province_ptrs: &[u8], province_id: u32) -> Option<usize> {
+        let slot_offset = (province_id as usize).checked_mul(8)?;
+        read_u64_from_slice(province_ptrs, slot_offset).map(|ptr| ptr as usize)
+    }
+
+    fn cprovince_array_still_current(
+        state: &CollectorState,
+        province_array: usize,
+        province_count: u32,
+    ) -> bool {
+        let gamestate = state.date_ptr as usize;
+        read_u64(gamestate.saturating_add(CGAMESTATE_CPROVINCE_ARRAY)).map(|v| v as usize)
+            == Some(province_array)
+            && read_u32(gamestate.saturating_add(CGAMESTATE_CPROVINCE_COUNT))
+                == Some(province_count)
+    }
+
+    fn cprovince_state_id(module_base: usize, province_ptr: usize) -> Option<u32> {
+        let state_ptr = read_u64(province_ptr.checked_add(CPROVINCE_OFF_STATE)?)? as usize;
+        if !is_map_control_heap_pointer(state_ptr) {
+            return None;
+        }
+        if read_u64(state_ptr)? as usize != module_base.checked_add(STATE_VTABLE_RVA)? {
+            return None;
+        }
+        read_u32(state_ptr.checked_add(STATE_OFF_SID)?)
+            .filter(|state_id| *state_id > 0 && *state_id <= MAX_MAP_CONTROL_STATE_ID)
+    }
+
+    fn cprovince_control_row_json(
+        province_id: u32,
+        controller_tag: Option<&str>,
+        controller_tag_db_id: u32,
+        state_id: Option<u32>,
+    ) -> String {
+        let controller = json_opt_str(controller_tag);
+        let decode_status = if controller_tag.is_some() {
+            "decoded"
+        } else {
+            "tag_table_miss"
+        };
+        let state_field = state_id
+            .map(|state_id| format!(",\"state_id\":{state_id}"))
+            .unwrap_or_default();
+        format!(
+            "\"{}\":{{\"controller\":{},\"controller_tag_db_id\":{},\
+             \"controller_decode_status\":\"{}\",\"controller_source\":\"cprovince_static_root\"{}}}",
+            province_id, controller, controller_tag_db_id, decode_status, state_field
+        )
+    }
+
     fn root_probe_json(
         state: Option<&CollectorState>,
         scheduled_state_rows: Option<&str>,
         scheduled_province_rows: Option<&str>,
+        scheduled_special_projects: Option<&str>,
         include_scheduled_country_fuel: bool,
         include_scheduled_country_production: bool,
+        include_scheduled_country_focus: bool,
+        include_scheduled_country_research: bool,
+        include_scheduled_country_politics: bool,
+        include_scheduled_country_politics_residuals: bool,
+        include_scheduled_country_decisions: bool,
+        advisor_token_filter: Option<&BTreeMap<String, AdvisorTokenInfo>>,
+        idea_group_filter: Option<&BTreeMap<String, String>>,
     ) -> (String, String) {
         let Some(state) = state else {
             return ("\"root_probe\":null".to_string(), "[]".to_string());
@@ -2755,22 +4708,41 @@ mod attach_log {
             country_database_ptr as usize,
             include_scheduled_country_fuel,
             include_scheduled_country_production,
+            include_scheduled_country_focus,
+            include_scheduled_country_research,
+            include_scheduled_country_politics,
+            include_scheduled_country_politics_residuals,
+            include_scheduled_country_decisions,
+            advisor_token_filter,
+            idea_group_filter,
         );
         let country_rows = state.country_identity.countries_json_from_rows(
             country_database_ptr as usize,
             &current_rows,
             include_scheduled_country_fuel,
             include_scheduled_country_production,
+            include_scheduled_country_focus,
+            include_scheduled_country_research,
+            include_scheduled_country_politics,
+            include_scheduled_country_politics_residuals,
+            include_scheduled_country_decisions,
         );
         let identity_probe = state.country_identity.root_json();
         let domains = state.country_identity.domains_json_from_rows(
             &current_rows,
             scheduled_state_rows.is_some(),
             scheduled_province_rows.is_some(),
+            scheduled_special_projects.is_some(),
             include_scheduled_country_fuel,
             include_scheduled_country_production,
+            include_scheduled_country_focus,
+            include_scheduled_country_research,
+            include_scheduled_country_politics,
+            include_scheduled_country_politics_residuals,
+            include_scheduled_country_decisions,
         );
         let clock_probe = clock_probe_json(date_ptr as usize);
+        let special_projects_probe = state.special_projects.root_json();
         let state_rows = scheduled_state_rows
             .map(|rows| format!(",\"states\":{rows}"))
             .unwrap_or_default();
@@ -2791,6 +4763,7 @@ mod attach_log {
                  {clock_probe},\
                  {country_probe},\
                  {identity_probe},\
+                 {special_projects_probe},\
                  \"domains\":{domains}}},\
                  \"countries\":{country_rows}{state_rows}{province_rows}",
                 super::COLLECTOR_PROFILE_ID,
@@ -2903,6 +4876,112 @@ mod attach_log {
         Some(tag_table)
     }
 
+    fn country_tag_row_count(country_database_ptr: usize) -> Option<u32> {
+        if country_database_ptr == 0 {
+            return None;
+        }
+        let tag_count = read_u32(country_database_ptr + 8)?;
+        let active_count = read_u32(country_database_ptr + 12)?;
+        if active_count == 0 || active_count > tag_count || tag_count > 1024 {
+            return None;
+        }
+        let row_count = tag_count.min(active_count).min(1024);
+        if row_count <= MIN_USABLE_COUNTRY_OBJECT_ROWS as u32 {
+            return None;
+        }
+        Some(row_count)
+    }
+
+    fn country_object_array_base_candidates(field_addr: usize) -> Vec<usize> {
+        let mut candidates = vec![field_addr];
+        if let Some(ptr) = read_u64(field_addr).map(|value| value as usize) {
+            if ptr > 0 && ptr % 8 == 0 && ptr != field_addr {
+                candidates.push(ptr);
+            }
+        }
+        candidates
+    }
+
+    fn country_rows_from_tag_indexed_array(
+        array_base: usize,
+        country_vtable: usize,
+        tag_table: usize,
+        tag_row_count: u32,
+    ) -> Option<Vec<CountryObjectRow>> {
+        if !is_map_control_heap_pointer(array_base)
+            || tag_row_count <= MIN_USABLE_COUNTRY_OBJECT_ROWS as u32
+            || tag_row_count > 1024
+        {
+            return None;
+        }
+
+        let mut rows = Vec::new();
+        let mut seen_objects: BTreeMap<usize, ()> = BTreeMap::new();
+        let mut holes = 0usize;
+        for tag_db_id in 1..tag_row_count {
+            let slot_addr = array_base.checked_add(tag_db_id as usize * 8)?;
+            let object_ptr = read_u64(slot_addr).unwrap_or(0) as usize;
+            if object_ptr == 0 {
+                holes += 1;
+                if holes >= 16 && tag_db_id as usize > MIN_USABLE_COUNTRY_OBJECT_ROWS {
+                    break;
+                }
+                continue;
+            }
+            holes = 0;
+            if !is_map_control_heap_pointer(object_ptr)
+                || seen_objects.insert(object_ptr, ()).is_some()
+            {
+                return None;
+            }
+            let row = country_object_row_expected(
+                object_ptr,
+                country_vtable,
+                tag_table,
+                tag_db_id,
+                None,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                None,
+                None,
+            )?;
+            rows.push(row);
+        }
+
+        if rows.len() >= MIN_USABLE_COUNTRY_OBJECT_ROWS {
+            Some(rows)
+        } else {
+            None
+        }
+    }
+
+    fn country_tag_object_map(rows: &[CountryObjectRow]) -> BTreeMap<u32, usize> {
+        rows.iter()
+            .map(|row| (row.tag_db_id, row.object_ptr))
+            .collect()
+    }
+
+    fn country_tag_object_maps_agree(
+        left: &BTreeMap<u32, usize>,
+        right: &BTreeMap<u32, usize>,
+    ) -> bool {
+        let mut shared = 0usize;
+        for (tag_db_id, object_ptr) in left {
+            if let Some(other_object_ptr) = right.get(tag_db_id) {
+                shared += 1;
+                if object_ptr != other_object_ptr {
+                    return false;
+                }
+            }
+        }
+        shared >= MIN_USABLE_COUNTRY_OBJECT_ROWS
+    }
+
     fn tag_from_table(tag_table: usize, tag_db_id: u32) -> Option<String> {
         if tag_db_id > 1024 {
             return None;
@@ -2918,6 +4997,13 @@ mod attach_log {
         record_ptr: Option<usize>,
         include_scheduled_country_fuel: bool,
         include_scheduled_country_production: bool,
+        include_scheduled_country_focus: bool,
+        include_scheduled_country_research: bool,
+        include_scheduled_country_politics: bool,
+        include_scheduled_country_politics_residuals: bool,
+        include_scheduled_country_decisions: bool,
+        advisor_token_filter: Option<&BTreeMap<String, AdvisorTokenInfo>>,
+        idea_group_filter: Option<&BTreeMap<String, String>>,
     ) -> Option<CountryObjectRow> {
         if read_u64(object_ptr)? as usize != country_vtable {
             return None;
@@ -2955,8 +5041,7 @@ mod attach_log {
                 .map(|v| v == 1),
             stability: read_fixed_0_1(object_ptr + OBJ_STABILITY),
             war_support: read_fixed_0_1(object_ptr + OBJ_WAR_SUPPORT),
-            political_power: record_ptr
-                .and_then(|record_ptr| country_record_political_power(record_ptr, object_ptr)),
+            political_power: country_object_political_power(object_ptr, country_vtable, record_ptr),
             command_power: read_fixed_nonnegative(object_ptr + OBJ_COMMAND_POWER, 1000.0),
             num_ships: read_i32(object_ptr + OBJ_NUM_SHIPS).and_then(|v| {
                 if (0..=100_000).contains(&v) {
@@ -2984,6 +5069,31 @@ mod attach_log {
             } else {
                 None
             },
+            focus: if include_scheduled_country_focus {
+                read_country_focus(object_ptr)
+            } else {
+                None
+            },
+            research: if include_scheduled_country_research {
+                read_country_research(object_ptr, country_vtable)
+            } else {
+                None
+            },
+            politics: if include_scheduled_country_politics {
+                read_country_politics(object_ptr, country_vtable, idea_group_filter)
+            } else {
+                None
+            },
+            politics_residuals: if include_scheduled_country_politics_residuals {
+                read_country_politics_residuals(object_ptr, country_vtable, advisor_token_filter)
+            } else {
+                None
+            },
+            decisions: if include_scheduled_country_decisions {
+                read_country_decisions(object_ptr, country_vtable)
+            } else {
+                None
+            },
         })
     }
 
@@ -2995,6 +5105,13 @@ mod attach_log {
         record_ptr: Option<usize>,
         include_scheduled_country_fuel: bool,
         include_scheduled_country_production: bool,
+        include_scheduled_country_focus: bool,
+        include_scheduled_country_research: bool,
+        include_scheduled_country_politics: bool,
+        include_scheduled_country_politics_residuals: bool,
+        include_scheduled_country_decisions: bool,
+        advisor_token_filter: Option<&BTreeMap<String, AdvisorTokenInfo>>,
+        idea_group_filter: Option<&BTreeMap<String, String>>,
     ) -> Option<CountryObjectRow> {
         let row = country_object_row(
             object_ptr,
@@ -3003,6 +5120,13 @@ mod attach_log {
             record_ptr,
             include_scheduled_country_fuel,
             include_scheduled_country_production,
+            include_scheduled_country_focus,
+            include_scheduled_country_research,
+            include_scheduled_country_politics,
+            include_scheduled_country_politics_residuals,
+            include_scheduled_country_decisions,
+            advisor_token_filter,
+            idea_group_filter,
         )?;
         if row.tag_db_id == expected_tag_db_id {
             Some(row)
@@ -3017,6 +5141,13 @@ mod attach_log {
         tag_table: usize,
         include_scheduled_country_fuel: bool,
         include_scheduled_country_production: bool,
+        include_scheduled_country_focus: bool,
+        include_scheduled_country_research: bool,
+        include_scheduled_country_politics: bool,
+        include_scheduled_country_politics_residuals: bool,
+        include_scheduled_country_decisions: bool,
+        advisor_token_filter: Option<&BTreeMap<String, AdvisorTokenInfo>>,
+        idea_group_filter: Option<&BTreeMap<String, String>>,
     ) -> Option<CountryObjectRow> {
         let row = country_object_row_expected(
             expected.object_ptr,
@@ -3026,6 +5157,13 @@ mod attach_log {
             expected.record_ptr,
             include_scheduled_country_fuel,
             include_scheduled_country_production,
+            include_scheduled_country_focus,
+            include_scheduled_country_research,
+            include_scheduled_country_politics,
+            include_scheduled_country_politics_residuals,
+            include_scheduled_country_decisions,
+            advisor_token_filter,
+            idea_group_filter,
         )?;
         if row.tag == expected.tag && row.name == expected.name {
             Some(row)
@@ -3065,6 +5203,761 @@ mod attach_log {
         } else {
             None
         }
+    }
+
+    fn read_country_focus(object_ptr: usize) -> Option<CountryFocusRow> {
+        let tree_def = read_u64(object_ptr + OBJ_FOCUS_TREE).unwrap_or(0) as usize;
+        let focus_tree = read_focus_id(tree_def, FOCUS_TREE_ID);
+        let submgr = read_u64(object_ptr + OBJ_FOCUS_STATUS)? as usize;
+        if !is_readable_range(submgr, 0x70) {
+            return None;
+        }
+
+        let completed_count = read_u32_stable(submgr + FOCUS_STATUS_COMPLETED_SIZE)
+            .filter(|value| *value <= MAX_FOCUS_COUNT);
+        let completed = completed_count.and_then(|size| read_focus_completed_vector(submgr, size));
+        let current_ptr = read_u64(submgr + FOCUS_STATUS_CURRENT).unwrap_or(0) as usize;
+        let continuous_ptr = read_u64(submgr + FOCUS_STATUS_CONTINUOUS).unwrap_or(0) as usize;
+        let current = read_focus_id(current_ptr, FOCUS_OBJECT_ID);
+        let current_continuous = read_focus_id(continuous_ptr, FOCUS_OBJECT_ID);
+        let progress = if current.is_some() ^ current_continuous.is_some() {
+            read_i32_stable(submgr + FOCUS_STATUS_PROGRESS)
+                .map(|value| value as f64 / FP_SCALE)
+                .filter(|value| value.is_finite() && (0.0..=10_000.0).contains(value))
+        } else {
+            None
+        };
+
+        let row = CountryFocusRow {
+            focus_tree,
+            completed,
+            completed_count,
+            current,
+            current_continuous,
+            progress,
+        };
+        if row.has_any() {
+            Some(row)
+        } else {
+            None
+        }
+    }
+
+    fn read_focus_completed_vector(submgr: usize, size: u32) -> Option<Vec<String>> {
+        let cap = read_u32_stable(submgr + FOCUS_STATUS_COMPLETED_CAP)?;
+        if cap < size || cap > MAX_FOCUS_COUNT {
+            return None;
+        }
+        if size == 0 {
+            return Some(Vec::new());
+        }
+        let data = read_u64(submgr + FOCUS_STATUS_COMPLETED_DATA)? as usize;
+        let bytes = (size as usize).checked_mul(8)?;
+        if !is_readable_range(data, bytes) {
+            return None;
+        }
+        let mut out = Vec::new();
+        for idx in 0..size as usize {
+            let def_ptr = read_u64(data + idx * 8)? as usize;
+            let focus_id = read_focus_id(def_ptr, FOCUS_OBJECT_ID)?;
+            out.push(focus_id);
+        }
+        Some(out)
+    }
+
+    fn read_focus_id(ptr: usize, id_offset: usize) -> Option<String> {
+        if ptr == 0 || !is_readable_range(ptr, id_offset + 0x20) {
+            return None;
+        }
+        let value = read_msvc_string(ptr + id_offset, MAX_FOCUS_ID_LEN)?;
+        if is_script_token(&value) {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn read_country_research(
+        object_ptr: usize,
+        country_vtable: usize,
+    ) -> Option<CountryResearchRow> {
+        let module_base = country_vtable.checked_sub(COUNTRY_VTABLE_RVA)?;
+        let status_vtable = module_base.checked_add(TECH_STATUS_VTABLE_RVA)?;
+        let slot_vtable = module_base.checked_add(RESEARCH_SLOT_VTABLE_RVA)?;
+        let tech_vtables = [
+            module_base.checked_add(TECHNOLOGY_VTABLE_RVA_PRIMARY)?,
+            module_base.checked_add(TECHNOLOGY_VTABLE_RVA_SECONDARY)?,
+        ];
+        let status_ptr = read_u64(object_ptr + OBJ_TECH_STATUS)? as usize;
+        if !is_readable_range(status_ptr, TECH_STATUS_COUNTRY_BACKLINK + 8) {
+            return None;
+        }
+        if read_u64(status_ptr)? as usize != status_vtable {
+            return None;
+        }
+        if read_u64(status_ptr + TECH_STATUS_COUNTRY_BACKLINK)? as usize != object_ptr {
+            return None;
+        }
+
+        let completed_tech_count = read_u32_stable(status_ptr + TECH_STATUS_RESEARCHED_SIZE)
+            .filter(|count| *count <= MAX_COMPLETED_TECH_COUNT)
+            .and_then(|count| {
+                let cap = read_u32_stable(status_ptr + TECH_STATUS_RESEARCHED_CAP)?;
+                if cap < count || cap > MAX_COMPLETED_TECH_COUNT {
+                    return None;
+                }
+                if count == 0 {
+                    return Some(count);
+                }
+                let data = read_u64(status_ptr + TECH_STATUS_RESEARCHED_DATA)? as usize;
+                let bytes = (count as usize).checked_mul(8)?;
+                if is_readable_range(data, bytes) {
+                    Some(count)
+                } else {
+                    None
+                }
+            });
+        let research_slot_count = read_u32_stable(status_ptr + TECH_STATUS_RESEARCH_SLOT_COUNT)
+            .filter(|count| *count <= MAX_RESEARCH_SLOT_COUNT);
+        let active_research = research_slot_count.and_then(|count| {
+            read_country_active_research_slots(status_ptr, slot_vtable, tech_vtables, count)
+        });
+
+        let row = CountryResearchRow {
+            completed_tech_count,
+            research_slot_count,
+            active_research,
+        };
+        if row.has_any() {
+            Some(row)
+        } else {
+            None
+        }
+    }
+
+    fn read_country_active_research_slots(
+        status_ptr: usize,
+        slot_vtable: usize,
+        tech_vtables: [usize; 2],
+        slot_count: u32,
+    ) -> Option<Vec<CountryResearchSlotRow>> {
+        let cap = read_u32_stable(status_ptr + TECH_STATUS_RESEARCH_SLOTS_CAP)?;
+        if cap < slot_count || cap > MAX_RESEARCH_SLOT_COUNT {
+            return None;
+        }
+        if slot_count == 0 {
+            return Some(Vec::new());
+        }
+        let data = read_u64_stable(status_ptr + TECH_STATUS_RESEARCH_SLOTS_DATA)? as usize;
+        let bytes = (slot_count as usize).checked_mul(8)?;
+        if !is_readable_range(data, bytes) {
+            return None;
+        }
+
+        let mut active = Vec::new();
+        let mut seen_slot_indices = 0u64;
+        for idx in 0..slot_count as usize {
+            let slot_ptr = read_u64(data + idx * 8)? as usize;
+            if !is_readable_range(slot_ptr, RESEARCH_SLOT_INDEX + 4) {
+                return None;
+            }
+            if read_u64(slot_ptr)? as usize != slot_vtable {
+                return None;
+            }
+            if read_u64(slot_ptr + RESEARCH_SLOT_OWNER)? as usize != status_ptr {
+                return None;
+            }
+            let slot_index = read_u32_stable(slot_ptr + RESEARCH_SLOT_INDEX)?;
+            if slot_index >= slot_count || slot_index >= MAX_RESEARCH_SLOT_COUNT {
+                return None;
+            }
+            let bit = 1u64.checked_shl(slot_index)?;
+            if (seen_slot_indices & bit) != 0 {
+                return None;
+            }
+            seen_slot_indices |= bit;
+
+            let handle = read_u32_stable(slot_ptr + RESEARCH_SLOT_TECH_HANDLE)?;
+            let tech_ptr = read_u64_stable(slot_ptr + RESEARCH_SLOT_TECH_PTR)? as usize;
+            if handle == RESEARCH_SLOT_IDLE_HANDLE || tech_ptr == 0 {
+                continue;
+            }
+            if !is_readable_range(tech_ptr, TECHNOLOGY_DEF_INDEX + 4) {
+                continue;
+            }
+            let tech_vtable = read_u64(tech_ptr)? as usize;
+            if tech_vtable != tech_vtables[0] && tech_vtable != tech_vtables[1] {
+                continue;
+            }
+            let def_index = read_u32_stable(tech_ptr + TECHNOLOGY_DEF_INDEX)?;
+            if def_index != handle {
+                continue;
+            }
+            let progress = read_u32_stable(slot_ptr + RESEARCH_SLOT_PROGRESS)?;
+            active.push(CountryResearchSlotRow {
+                slot_index,
+                tech_handle_raw: handle,
+                tech_def_index_raw: def_index,
+                progress_raw: progress,
+            });
+        }
+        active.sort_by_key(|slot| slot.slot_index);
+        Some(active)
+    }
+
+    fn country_object_political_power(
+        object_ptr: usize,
+        country_vtable: usize,
+        record_ptr: Option<usize>,
+    ) -> Option<f64> {
+        let module_base = country_vtable.checked_sub(COUNTRY_VTABLE_RVA)?;
+        let political_status_vtable = module_base.checked_add(POLITICAL_STATUS_VTABLE_RVA)?;
+        if let Some(value) = country_political_status_power(object_ptr, political_status_vtable) {
+            return Some(value);
+        }
+        record_ptr.and_then(|record_ptr| country_record_political_power(record_ptr, object_ptr))
+    }
+
+    fn country_political_status_power(
+        object_ptr: usize,
+        political_status_vtable: usize,
+    ) -> Option<f64> {
+        let status_ptr = validated_political_status_ptr(object_ptr, political_status_vtable)?;
+        let value =
+            read_i32_stable(status_ptr + POLITICAL_STATUS_POLITICAL_POWER)? as f64 / FP_SCALE;
+        if (-1_000_000.0..=1_000_000.0).contains(&value) {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn validated_political_status_ptr(
+        object_ptr: usize,
+        political_status_vtable: usize,
+    ) -> Option<usize> {
+        let status_ptr = read_u64(object_ptr + OBJ_POLITICAL_STATUS)? as usize;
+        if !is_map_control_heap_pointer(status_ptr) {
+            return None;
+        }
+        if read_u64(status_ptr)? as usize != political_status_vtable {
+            return None;
+        }
+        if read_u64(status_ptr + POLITICAL_STATUS_COUNTRY_BACKLINK)? as usize != object_ptr {
+            return None;
+        }
+        Some(status_ptr)
+    }
+
+    fn read_country_politics(
+        object_ptr: usize,
+        country_vtable: usize,
+        idea_group_filter: Option<&BTreeMap<String, String>>,
+    ) -> Option<CountryPoliticsRow> {
+        let module_base = country_vtable.checked_sub(COUNTRY_VTABLE_RVA)?;
+        let status_vtable = module_base.checked_add(POLITICAL_STATUS_VTABLE_RVA)?;
+        let party_vtable = module_base.checked_add(POLITICAL_PARTY_VTABLE_RVA)?;
+        let ideology_group_vtable = module_base.checked_add(IDEOLOGY_GROUP_VTABLE_RVA)?;
+        let idea_vtable_primary = module_base.checked_add(IDEA_VTABLE_RVA_PRIMARY)?;
+        let idea_vtable_secondary = module_base.checked_add(IDEA_VTABLE_RVA_SECONDARY)?;
+        let status_ptr = validated_political_status_ptr(object_ptr, status_vtable)?;
+
+        let parties = read_political_parties(status_ptr, party_vtable, ideology_group_vtable);
+        let ruling_party_ptr =
+            read_u64(status_ptr + POLITICAL_STATUS_RULING_PARTY).unwrap_or(0) as usize;
+        let ruling_party =
+            read_political_party_ideology(ruling_party_ptr, party_vtable, ideology_group_vtable);
+        let ideas = read_active_ideas(status_ptr, idea_vtable_primary, idea_vtable_secondary);
+        let election_frequency = read_u32_stable(status_ptr + POLITICAL_STATUS_ELECTION_FREQUENCY)
+            .filter(|v| (1..=600).contains(v));
+
+        let party_count = parties.as_ref().map(|read| read.party_count);
+        let low_confidence = parties.as_ref().map(|read| {
+            read.party_count != 4
+                || !is_map_control_heap_pointer(ruling_party_ptr)
+                || !read.party_ptrs.contains(&ruling_party_ptr)
+        });
+        let popularities = parties.map(|read| read.popularities);
+        let idea_count = ideas.as_ref().map(|values| values.len() as u32);
+        let laws = ideas
+            .as_ref()
+            .and_then(|values| classify_idea_laws(values, idea_group_filter));
+        let ideas_other = ideas
+            .as_ref()
+            .and_then(|values| classify_ideas_other(values, idea_group_filter));
+        let national_spirits = ideas
+            .as_ref()
+            .and_then(|values| classify_national_spirits(values, idea_group_filter));
+
+        let row = CountryPoliticsRow {
+            popularities,
+            ruling_party,
+            ideas,
+            laws,
+            ideas_other,
+            national_spirits,
+            idea_count,
+            election_frequency,
+            party_count,
+            low_confidence,
+        };
+        if row.has_any() {
+            Some(row)
+        } else {
+            None
+        }
+    }
+
+    fn classify_idea_laws(
+        ideas: &[String],
+        idea_group_filter: Option<&BTreeMap<String, String>>,
+    ) -> Option<BTreeMap<String, String>> {
+        let groups = idea_group_filter?;
+        if groups.is_empty() {
+            return None;
+        }
+        let mut laws = BTreeMap::new();
+        for idea in ideas {
+            if let Some(group) = groups.get(idea) {
+                if is_law_group(group) {
+                    laws.insert(group.clone(), idea.clone());
+                }
+            }
+        }
+        if laws.is_empty() {
+            None
+        } else {
+            Some(laws)
+        }
+    }
+
+    fn classify_ideas_other(
+        ideas: &[String],
+        idea_group_filter: Option<&BTreeMap<String, String>>,
+    ) -> Option<Vec<String>> {
+        let groups = idea_group_filter?;
+        if groups.is_empty() {
+            return None;
+        }
+        let mut out = Vec::new();
+        for idea in ideas {
+            if groups
+                .get(idea)
+                .map(|group| !is_law_group(group))
+                .unwrap_or(true)
+            {
+                out.push(idea.clone());
+            }
+        }
+        Some(out)
+    }
+
+    fn is_law_group(group: &str) -> bool {
+        matches!(group, "economy" | "trade_laws" | "mobilization_laws")
+    }
+
+    fn classify_national_spirits(
+        ideas: &[String],
+        idea_group_filter: Option<&BTreeMap<String, String>>,
+    ) -> Option<Vec<String>> {
+        let groups = idea_group_filter?;
+        if groups.is_empty() {
+            return None;
+        }
+        let out: Vec<String> = ideas
+            .iter()
+            .filter(|idea| {
+                groups
+                    .get(*idea)
+                    .map(|group| group == "country")
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+        Some(out)
+    }
+
+    fn read_country_politics_residuals(
+        object_ptr: usize,
+        country_vtable: usize,
+        advisor_token_filter: Option<&BTreeMap<String, AdvisorTokenInfo>>,
+    ) -> Option<CountryPoliticsResidualsRow> {
+        let module_base = country_vtable.checked_sub(COUNTRY_VTABLE_RVA)?;
+        let status_vtable = module_base.checked_add(POLITICAL_STATUS_VTABLE_RVA)?;
+        let idea_vtable_primary = module_base.checked_add(IDEA_VTABLE_RVA_PRIMARY)?;
+        let idea_vtable_secondary = module_base.checked_add(IDEA_VTABLE_RVA_SECONDARY)?;
+        let status_ptr = validated_political_status_ptr(object_ptr, status_vtable)?;
+
+        let last_election =
+            read_i32_stable(status_ptr + POLITICAL_STATUS_LAST_ELECTION).and_then(decode_datehour);
+        let elections_allowed = read_u8_stable(status_ptr + POLITICAL_STATUS_ELECTIONS_ALLOWED)
+            .and_then(|value| {
+                if value == 0 {
+                    Some(false)
+                } else if value == 1 {
+                    Some(true)
+                } else {
+                    None
+                }
+            });
+        let (appointed_advisors, appointed_advisor_details, appointed_advisor_slots) =
+            match advisor_token_filter {
+                Some(tokens) if !tokens.is_empty() => {
+                    match read_active_ideas(status_ptr, idea_vtable_primary, idea_vtable_secondary)
+                    {
+                        Some(ideas) => {
+                            let details = appointed_advisor_rows(&ideas, tokens);
+                            let advisors = details
+                                .iter()
+                                .map(|row| row.idea_token.clone())
+                                .collect::<Vec<String>>();
+                            let slots = appointed_advisor_slots_from_rows(&details);
+                            (Some(advisors), Some(details), Some(slots))
+                        }
+                        None => (None, None, None),
+                    }
+                }
+                _ => (None, None, None),
+            };
+
+        let row = CountryPoliticsResidualsRow {
+            last_election,
+            elections_allowed,
+            appointed_advisors,
+            appointed_advisor_details,
+            appointed_advisor_slots,
+        };
+        if row.has_any() {
+            Some(row)
+        } else {
+            None
+        }
+    }
+
+    fn appointed_advisor_rows(
+        ideas: &[String],
+        advisor_token_filter: &BTreeMap<String, AdvisorTokenInfo>,
+    ) -> Vec<AppointedAdvisorRow> {
+        let mut rows = Vec::new();
+        for idea in ideas {
+            if let Some(info) = advisor_token_filter.get(idea) {
+                rows.push(AppointedAdvisorRow {
+                    idea_token: idea.clone(),
+                    slot: info.slot.clone(),
+                    ledger: info.ledger.clone(),
+                    character: info.character.clone(),
+                });
+            }
+        }
+        rows
+    }
+
+    fn appointed_advisor_slots_from_rows(
+        rows: &[AppointedAdvisorRow],
+    ) -> BTreeMap<String, Vec<String>> {
+        let mut slots: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for row in rows {
+            if let Some(slot) = row.slot.as_ref() {
+                slots
+                    .entry(slot.clone())
+                    .or_default()
+                    .push(row.idea_token.clone());
+            }
+        }
+        slots
+    }
+
+    fn read_country_decisions(
+        object_ptr: usize,
+        country_vtable: usize,
+    ) -> Option<CountryDecisionsRow> {
+        let module_base = country_vtable.checked_sub(COUNTRY_VTABLE_RVA)?;
+        let status_vtable = module_base.checked_add(DECISION_STATUS_VTABLE_RVA)?;
+        let timed_decision_vtable = module_base.checked_add(TIMED_DECISION_VTABLE_RVA)?;
+        let status_ptr = read_u64(object_ptr + OBJ_DECISION_STATUS)? as usize;
+        if !is_map_control_heap_pointer(status_ptr) {
+            return None;
+        }
+        if read_u64(status_ptr)? as usize != status_vtable {
+            return None;
+        }
+        if read_u64(status_ptr + DECISION_STATUS_OWNER)? as usize != object_ptr {
+            return None;
+        }
+
+        let status_present = decision_status_present(status_ptr);
+        let timed_live = read_active_timed_decisions(status_ptr, timed_decision_vtable);
+        let row = CountryDecisionsRow {
+            status_present,
+            timed_live,
+        };
+        if row.has_any() {
+            Some(row)
+        } else {
+            None
+        }
+    }
+
+    fn decision_status_present(status_ptr: usize) -> Option<BTreeMap<String, u32>> {
+        let mut present = BTreeMap::new();
+        for (key, offset) in [
+            ("active_timed_decision", DECISION_STATUS_ACTIVE_TIMED),
+            ("active_targeted_decision", DECISION_STATUS_TARGETED),
+            (
+                "active_targeted_timed_decision",
+                DECISION_STATUS_TARGETED_TIMED,
+            ),
+            ("decisions_taken_bucket", DECISION_STATUS_RE_ENABLE),
+            ("decision_to_re_enable", DECISION_STATUS_RE_ENABLE_ALT),
+        ] {
+            if let Some(size) = decision_vector_size(status_ptr + offset) {
+                if size > 0 {
+                    present.insert(key.to_string(), size);
+                }
+            }
+        }
+        if present.is_empty() {
+            None
+        } else {
+            Some(present)
+        }
+    }
+
+    fn decision_vector_size(header_addr: usize) -> Option<u32> {
+        let (data, size, cap) = read_stable_vector_header(header_addr, 0, 0x0C, 0x08)?;
+        if size > cap || cap > MAX_DECISION_STATUS_LIST {
+            return None;
+        }
+        if size == 0 {
+            return Some(0);
+        }
+        if is_map_control_heap_pointer(data) {
+            Some(size)
+        } else {
+            None
+        }
+    }
+
+    fn read_active_timed_decisions(
+        status_ptr: usize,
+        timed_decision_vtable: usize,
+    ) -> Option<Vec<TimedDecisionRow>> {
+        let header_addr = status_ptr.checked_add(DECISION_STATUS_ACTIVE_TIMED)?;
+        let (data, size, cap) = read_stable_vector_header(header_addr, 0, 0x0C, 0x08)?;
+        if size > cap || cap > MAX_DECISION_STATUS_LIST || size as usize > MAX_TIMED_DECISIONS {
+            return None;
+        }
+        if size == 0 {
+            return Some(Vec::new());
+        }
+        if !is_map_control_heap_pointer(data) {
+            return None;
+        }
+        let mut rows = Vec::new();
+        for index in 0..size as usize {
+            let rec_ptr = read_u64(data + index * 8)? as usize;
+            let row = read_timed_decision_record(rec_ptr, timed_decision_vtable)?;
+            if row.state == DECISION_STATE_ACTIVE {
+                rows.push(row);
+            }
+        }
+        Some(rows)
+    }
+
+    fn read_timed_decision_record(
+        rec_ptr: usize,
+        timed_decision_vtable: usize,
+    ) -> Option<TimedDecisionRow> {
+        if !is_map_control_heap_pointer(rec_ptr) {
+            return None;
+        }
+        if read_u64(rec_ptr)? as usize != timed_decision_vtable {
+            return None;
+        }
+        let def_ptr = read_u64(rec_ptr + TIMED_DECISION_DEF)? as usize;
+        if !is_map_control_heap_pointer(def_ptr) {
+            return None;
+        }
+        let decision = read_msvc_string(def_ptr + DECISION_DEF_NAME, MAX_POLITICS_TOKEN_LEN)?;
+        if !is_script_token(&decision) {
+            return None;
+        }
+        let days = read_i32_stable(rec_ptr + TIMED_DECISION_DAYS)?;
+        if !(0..=MAX_DECISION_DAYS).contains(&days) {
+            return None;
+        }
+        let state = read_i32_stable(rec_ptr + TIMED_DECISION_STATE)?;
+        if !(0..=16).contains(&state) {
+            return None;
+        }
+        Some(TimedDecisionRow {
+            decision,
+            days,
+            state,
+            state_name: decision_state_name(state).to_string(),
+        })
+    }
+
+    fn decision_state_name(state: i32) -> &'static str {
+        match state {
+            0 => "active",
+            4 => "re_enable_cooldown",
+            _ => "unknown",
+        }
+    }
+
+    fn read_stable_vector_header(
+        base: usize,
+        data_offset: usize,
+        size_offset: usize,
+        cap_offset: usize,
+    ) -> Option<(usize, u32, u32)> {
+        let first = (
+            read_u64(base + data_offset)? as usize,
+            read_u32(base + size_offset)?,
+            read_u32(base + cap_offset)?,
+        );
+        let second = (
+            read_u64(base + data_offset)? as usize,
+            read_u32(base + size_offset)?,
+            read_u32(base + cap_offset)?,
+        );
+        if first == second {
+            Some(first)
+        } else {
+            None
+        }
+    }
+
+    fn read_political_parties(
+        status_ptr: usize,
+        party_vtable: usize,
+        ideology_group_vtable: usize,
+    ) -> Option<CountryPartyRead> {
+        let (data, size, cap) = read_stable_vector_header(
+            status_ptr,
+            POLITICAL_STATUS_PARTIES_DATA,
+            POLITICAL_STATUS_PARTIES_SIZE,
+            POLITICAL_STATUS_PARTIES_CAP,
+        )?;
+        if !is_map_control_heap_pointer(data)
+            || size == 0
+            || size > MAX_POLITICAL_PARTIES
+            || size > cap
+        {
+            return None;
+        }
+        let mut observed = BTreeMap::new();
+        let mut party_ptrs = Vec::new();
+        for index in 0..size as usize {
+            let party_ptr = read_u64(data + index * 8)? as usize;
+            if !is_map_control_heap_pointer(party_ptr) {
+                return None;
+            }
+            let ideology =
+                read_political_party_ideology(party_ptr, party_vtable, ideology_group_vtable)?;
+            if observed.contains_key(&ideology) {
+                return None;
+            }
+            let popularity =
+                read_i32_stable(party_ptr + POLITICAL_PARTY_POPULARITY)? as f64 / FP_SCALE;
+            if !popularity.is_finite() || !(0.0..=100.0001).contains(&popularity) {
+                return None;
+            }
+            observed.insert(ideology, popularity);
+            party_ptrs.push(party_ptr);
+        }
+
+        let mut popularities = BTreeMap::new();
+        for ideology in ["democratic", "communism", "fascism", "neutrality"] {
+            popularities.insert(
+                ideology.to_string(),
+                *observed.get(ideology).unwrap_or(&0.0),
+            );
+        }
+        Some(CountryPartyRead {
+            popularities,
+            party_ptrs,
+            party_count: size,
+        })
+    }
+
+    fn read_political_party_ideology(
+        party_ptr: usize,
+        party_vtable: usize,
+        ideology_group_vtable: usize,
+    ) -> Option<String> {
+        if !is_map_control_heap_pointer(party_ptr) || read_u64(party_ptr)? as usize != party_vtable
+        {
+            return None;
+        }
+        let group_ptr = read_u64(party_ptr + POLITICAL_PARTY_IDEOLOGY_GROUP)? as usize;
+        if !is_map_control_heap_pointer(group_ptr)
+            || read_u64(group_ptr)? as usize != ideology_group_vtable
+        {
+            return None;
+        }
+        let ideology = read_msvc_string(group_ptr + IDEOLOGY_GROUP_ID, MAX_POLITICS_TOKEN_LEN)?;
+        if is_ideology_group_token(&ideology) {
+            Some(ideology)
+        } else {
+            None
+        }
+    }
+
+    fn read_active_ideas(
+        status_ptr: usize,
+        idea_vtable_primary: usize,
+        idea_vtable_secondary: usize,
+    ) -> Option<Vec<String>> {
+        let (data, size, cap) = read_stable_vector_header(
+            status_ptr,
+            POLITICAL_STATUS_IDEAS_DATA,
+            POLITICAL_STATUS_IDEAS_SIZE,
+            POLITICAL_STATUS_IDEAS_CAP,
+        )?;
+        if size > cap || size > MAX_ACTIVE_IDEAS {
+            return None;
+        }
+        if size == 0 {
+            return Some(Vec::new());
+        }
+        if !is_map_control_heap_pointer(data) {
+            return None;
+        }
+        let mut ideas = Vec::new();
+        for index in 0..size as usize {
+            let idea_ptr = read_u64(data + index * 8)? as usize;
+            if !is_map_control_heap_pointer(idea_ptr) {
+                return None;
+            }
+            let vtable = read_u64(idea_ptr)? as usize;
+            if vtable != idea_vtable_primary && vtable != idea_vtable_secondary {
+                return None;
+            }
+            let idea = read_msvc_string(idea_ptr + IDEA_ID, MAX_POLITICS_TOKEN_LEN)?;
+            if !is_script_token(&idea) {
+                return None;
+            }
+            ideas.push(idea);
+        }
+        Some(ideas)
+    }
+
+    fn is_ideology_group_token(value: &str) -> bool {
+        matches!(value, "democratic" | "communism" | "fascism" | "neutrality")
+    }
+
+    fn is_script_token(value: &str) -> bool {
+        !value.is_empty()
+            && value.len() <= MAX_POLITICS_TOKEN_LEN
+            && value.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric()
+                    || byte == b'_'
+                    || byte == b'-'
+                    || byte == b'.'
+                    || byte == b':'
+            })
     }
 
     fn read_country_fuel(object_ptr: usize) -> Option<CountryFuelRow> {
@@ -3241,6 +6134,11 @@ mod attach_log {
         row: &CountryObjectRow,
         include_scheduled_country_fuel: bool,
         include_scheduled_country_production: bool,
+        include_scheduled_country_focus: bool,
+        include_scheduled_country_research: bool,
+        include_scheduled_country_politics: bool,
+        include_scheduled_country_politics_residuals: bool,
+        include_scheduled_country_decisions: bool,
     ) -> String {
         let original_capital = json_opt_i32(row.original_capital);
         let original_tag = json_opt_str(row.original_tag.as_deref());
@@ -3277,6 +6175,42 @@ mod attach_log {
         } else {
             String::new()
         };
+        let focus = if include_scheduled_country_focus {
+            row.focus
+                .as_ref()
+                .map(country_focus_json)
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let research = if include_scheduled_country_research {
+            row.research
+                .as_ref()
+                .map(country_research_json)
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let politics = country_politics_json(
+            if include_scheduled_country_politics {
+                row.politics.as_ref()
+            } else {
+                None
+            },
+            if include_scheduled_country_politics_residuals {
+                row.politics_residuals.as_ref()
+            } else {
+                None
+            },
+        );
+        let decisions = if include_scheduled_country_decisions {
+            row.decisions
+                .as_ref()
+                .map(country_decisions_json)
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
         format!(
             "\"{}\":{{\"present\":true,\
              \"collector_object\":\"0x{:X}\",\
@@ -3291,9 +6225,72 @@ mod attach_log {
              \"command_power\":{command_power},\
              \"num_ships\":{num_ships},\
              \"manpower_pool\":{manpower_pool},\
-             \"convoys\":{convoys}}}{misc}{fuel}{production}}}",
+             \"convoys\":{convoys}}}{misc}{fuel}{production}{focus}{research}{politics}{decisions}}}",
             row.tag, row.object_ptr, row.tag_db_id
         )
+    }
+
+    fn country_research_json(research: &CountryResearchRow) -> String {
+        let mut fields = Vec::new();
+        if let Some(completed_tech_count) = research.completed_tech_count {
+            fields.push(format!("\"completed_tech_count\":{completed_tech_count}"));
+        }
+        if let Some(research_slot_count) = research.research_slot_count {
+            fields.push(format!("\"research_slot_count\":{research_slot_count}"));
+        }
+        if let Some(active_research) = research.active_research.as_ref() {
+            let rows = active_research
+                .iter()
+                .map(|slot| {
+                    format!(
+                        "{{\"slot_index\":{},\"tech_handle_raw\":{},\
+                         \"tech_def_index_raw\":{},\"progress_raw\":{}}}",
+                        slot.slot_index,
+                        slot.tech_handle_raw,
+                        slot.tech_def_index_raw,
+                        slot.progress_raw
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            fields.push(format!("\"active_research\":[{rows}]"));
+        }
+        if fields.is_empty() {
+            String::new()
+        } else {
+            format!(",\"research\":{{{}}}", fields.join(","))
+        }
+    }
+
+    fn country_focus_json(focus: &CountryFocusRow) -> String {
+        let mut fields = Vec::new();
+        if let Some(focus_tree) = focus.focus_tree.as_ref() {
+            fields.push(format!("\"focus_tree\":{}", json_str(focus_tree)));
+        }
+        if let Some(completed) = focus.completed.as_ref() {
+            let parts: Vec<String> = completed.iter().map(|token| json_str(token)).collect();
+            fields.push(format!("\"completed\":[{}]", parts.join(",")));
+        }
+        if let Some(completed_count) = focus.completed_count {
+            fields.push(format!("\"completed_count\":{completed_count}"));
+        }
+        if let Some(current) = focus.current.as_ref() {
+            fields.push(format!("\"current\":{}", json_str(current)));
+        }
+        if let Some(current_continuous) = focus.current_continuous.as_ref() {
+            fields.push(format!(
+                "\"current_continuous\":{}",
+                json_str(current_continuous)
+            ));
+        }
+        if let Some(progress) = focus.progress {
+            fields.push(format!("\"progress\":{}", json_opt_f64(Some(progress))));
+        }
+        if fields.is_empty() {
+            String::new()
+        } else {
+            format!(",\"focus\":{{{}}}", fields.join(","))
+        }
     }
 
     fn country_misc_json(misc: &CountryMiscRow) -> String {
@@ -3382,6 +6379,142 @@ mod attach_log {
         format!("[{}]", parts.join(","))
     }
 
+    fn country_politics_json(
+        politics: Option<&CountryPoliticsRow>,
+        residuals: Option<&CountryPoliticsResidualsRow>,
+    ) -> String {
+        let mut fields = Vec::new();
+        if let Some(politics) = politics {
+            if let Some(popularities) = politics.popularities.as_ref() {
+                let parts: Vec<String> = popularities
+                    .iter()
+                    .map(|(ideology, value)| {
+                        format!("{}:{}", json_str(ideology), json_opt_f64(Some(*value)))
+                    })
+                    .collect();
+                fields.push(format!("\"popularities\":{{{}}}", parts.join(",")));
+            }
+            if let Some(ruling_party) = politics.ruling_party.as_ref() {
+                fields.push(format!("\"ruling_party\":{}", json_str(ruling_party)));
+            }
+            if let Some(ideas) = politics.ideas.as_ref() {
+                let parts: Vec<String> = ideas.iter().map(|idea| json_str(idea)).collect();
+                fields.push(format!("\"ideas\":[{}]", parts.join(",")));
+            }
+            if let Some(laws) = politics.laws.as_ref() {
+                let parts: Vec<String> = laws
+                    .iter()
+                    .map(|(group, token)| format!("{}:{}", json_str(group), json_str(token)))
+                    .collect();
+                fields.push(format!("\"laws\":{{{}}}", parts.join(",")));
+            }
+            if let Some(ideas_other) = politics.ideas_other.as_ref() {
+                let parts: Vec<String> = ideas_other.iter().map(|idea| json_str(idea)).collect();
+                fields.push(format!("\"ideas_other\":[{}]", parts.join(",")));
+            }
+            if let Some(national_spirits) = politics.national_spirits.as_ref() {
+                let parts: Vec<String> =
+                    national_spirits.iter().map(|idea| json_str(idea)).collect();
+                fields.push(format!("\"national_spirits\":[{}]", parts.join(",")));
+            }
+            if let Some(idea_count) = politics.idea_count {
+                fields.push(format!("\"idea_count\":{idea_count}"));
+            }
+            if let Some(election_frequency) = politics.election_frequency {
+                fields.push(format!("\"election_frequency\":{election_frequency}"));
+            }
+            if let Some(party_count) = politics.party_count {
+                fields.push(format!("\"party_count\":{party_count}"));
+            }
+            if let Some(low_confidence) = politics.low_confidence {
+                fields.push(format!("\"low_confidence\":{low_confidence}"));
+            }
+        }
+        if let Some(residuals) = residuals {
+            if let Some(last_election) = residuals.last_election.as_ref() {
+                fields.push(format!("\"last_election\":{}", json_str(last_election)));
+            }
+            if let Some(elections_allowed) = residuals.elections_allowed {
+                fields.push(format!("\"elections_allowed\":{elections_allowed}"));
+            }
+            if let Some(appointed_advisors) = residuals.appointed_advisors.as_ref() {
+                let parts: Vec<String> = appointed_advisors
+                    .iter()
+                    .map(|token| json_str(token))
+                    .collect();
+                fields.push(format!("\"appointed_advisors\":[{}]", parts.join(",")));
+            }
+            if let Some(details) = residuals.appointed_advisor_details.as_ref() {
+                let parts: Vec<String> = details
+                    .iter()
+                    .map(|row| {
+                        format!(
+                            "{{\"idea_token\":{},\"slot\":{},\"ledger\":{},\"character\":{}}}",
+                            json_str(&row.idea_token),
+                            json_opt_str(row.slot.as_deref()),
+                            json_opt_str(row.ledger.as_deref()),
+                            json_opt_str(row.character.as_deref())
+                        )
+                    })
+                    .collect();
+                fields.push(format!(
+                    "\"appointed_advisor_details\":[{}]",
+                    parts.join(",")
+                ));
+            }
+            if let Some(slots) = residuals.appointed_advisor_slots.as_ref() {
+                let parts: Vec<String> = slots
+                    .iter()
+                    .map(|(slot, tokens)| {
+                        let tokens_json: Vec<String> =
+                            tokens.iter().map(|token| json_str(token)).collect();
+                        format!("{}:[{}]", json_str(slot), tokens_json.join(","))
+                    })
+                    .collect();
+                fields.push(format!(
+                    "\"appointed_advisor_slots\":{{{}}}",
+                    parts.join(",")
+                ));
+            }
+        }
+        if fields.is_empty() {
+            String::new()
+        } else {
+            format!(",\"politics\":{{{}}}", fields.join(","))
+        }
+    }
+
+    fn country_decisions_json(decisions: &CountryDecisionsRow) -> String {
+        let mut fields = Vec::new();
+        if let Some(status_present) = decisions.status_present.as_ref() {
+            let parts: Vec<String> = status_present
+                .iter()
+                .map(|(key, count)| format!("{}:{}", json_str(key), count))
+                .collect();
+            fields.push(format!("\"status_present\":{{{}}}", parts.join(",")));
+        }
+        if let Some(timed_live) = decisions.timed_live.as_ref() {
+            let parts: Vec<String> = timed_live
+                .iter()
+                .map(|row| {
+                    format!(
+                        "{{\"decision\":{},\"days\":{},\"state\":{},\"state_name\":{}}}",
+                        json_str(&row.decision),
+                        row.days,
+                        row.state,
+                        json_str(&row.state_name)
+                    )
+                })
+                .collect();
+            fields.push(format!("\"timed_live\":[{}]", parts.join(",")));
+        }
+        if fields.is_empty() {
+            String::new()
+        } else {
+            format!(",\"decisions\":{{{}}}", fields.join(","))
+        }
+    }
+
     fn clock_probe_json(gamestate_ptr: usize) -> String {
         if gamestate_ptr == 0 {
             return "\"current_game_date\":null,\"current_game_date_raw\":null,\
@@ -3418,9 +6551,29 @@ mod attach_log {
         }
     }
 
+    fn read_u8_stable(addr: usize) -> Option<u8> {
+        let first = read_u8(addr)?;
+        let second = read_u8(addr)?;
+        if first == second {
+            Some(first)
+        } else {
+            None
+        }
+    }
+
     fn read_u32_stable(addr: usize) -> Option<u32> {
         let first = read_u32(addr)?;
         let second = read_u32(addr)?;
+        if first == second {
+            Some(first)
+        } else {
+            None
+        }
+    }
+
+    fn read_u64_stable(addr: usize) -> Option<u64> {
+        let first = read_u64(addr)?;
+        let second = read_u64(addr)?;
         if first == second {
             Some(first)
         } else {
@@ -3489,6 +6642,13 @@ mod attach_log {
     fn json_opt_str(value: Option<&str>) -> String {
         match value {
             Some(v) => format!("\"{v}\""),
+            None => "null".to_string(),
+        }
+    }
+
+    fn json_opt_escaped_str(value: Option<&str>) -> String {
+        match value {
+            Some(v) => json_str(v),
             None => "null".to_string(),
         }
     }
@@ -3726,6 +6886,7 @@ mod attach_log {
                 duration_ms: 8000,
                 sample_ms: 10,
                 country_object_scan: false,
+                special_projects_scan: false,
                 country_object_bridge: Vec::new(),
                 country_object_bridge_valid: true,
                 country_record_bridge: Vec::new(),
@@ -3733,6 +6894,10 @@ mod attach_log {
                 division_body_bridge: Vec::new(),
                 division_body_bridge_valid: true,
                 map_control: MapControlContract::empty(),
+                advisor_token_filter: BTreeMap::new(),
+                advisor_token_filter_valid: true,
+                idea_group_filter: BTreeMap::new(),
+                idea_group_filter_valid: true,
                 scheduled_snapshot_step_hours: 1,
                 pipe_token: Some("abc".to_string()),
                 session_id: Some("run_1".to_string()),
@@ -3757,6 +6922,35 @@ mod attach_log {
                 strength_bucket: division_delta_bucket(raw_strength),
                 combat_ref_count: 0,
                 in_combat: false,
+            }
+        }
+
+        fn test_country_row(tag: &str, tag_db_id: u32, object_ptr: usize) -> CountryObjectRow {
+            CountryObjectRow {
+                tag: tag.to_string(),
+                tag_db_id,
+                name: tag.to_string(),
+                object_ptr,
+                record_ptr: None,
+                original_capital: None,
+                original_tag: None,
+                templates_locked: None,
+                reserved_dynamic_country: None,
+                stability: Some(0.5),
+                war_support: None,
+                political_power: None,
+                command_power: None,
+                num_ships: None,
+                manpower_pool: None,
+                convoys: None,
+                misc: None,
+                fuel: None,
+                production: None,
+                focus: None,
+                research: None,
+                politics: None,
+                politics_residuals: None,
+                decisions: None,
             }
         }
 
@@ -3794,7 +6988,135 @@ mod attach_log {
             assert!(parsed.map_control.province_bridge_valid);
             assert!(parsed.map_control.controller_bridge.is_empty());
             assert!(parsed.map_control.controller_bridge_valid);
+            assert!(parsed.advisor_token_filter.is_empty());
+            assert!(parsed.advisor_token_filter_valid);
+            assert!(parsed.idea_group_filter.is_empty());
+            assert!(parsed.idea_group_filter_valid);
+            assert!(!parsed.special_projects_scan);
             assert!(!parsed.sidecar_log);
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn collector_control_accepts_special_projects_scan_flag() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_control_projects_scan_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            fs::write(
+                &control,
+                r#"{"mode":"hourly_poll","duration_ms":8000,"sample_ms":10,"special_projects_scan":true}"#,
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert!(parsed.special_projects_scan);
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn collector_control_accepts_advisor_token_filter() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_control_advisor_filter_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            fs::write(
+                &control,
+                r#"{"mode":"hourly_poll","duration_ms":8000,"sample_ms":10,"advisor_token_filter":"POR_salazar;ENG_maxwell_aitken;POR_salazar"}"#,
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert!(parsed.advisor_token_filter_valid);
+            assert_eq!(parsed.advisor_token_filter.len(), 2);
+            assert!(parsed.advisor_token_filter.contains_key("POR_salazar"));
+            assert!(parsed
+                .advisor_token_filter
+                .contains_key("ENG_maxwell_aitken"));
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn collector_control_accepts_advisor_token_filter_metadata() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_control_advisor_filter_meta_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            fs::write(
+                &control,
+                r#"{"mode":"hourly_poll","duration_ms":8000,"sample_ms":10,"advisor_token_filter":"POR_salazar=political_advisor|political|POR_antonio_de_oliveira_salazar;ENG_maxwell_aitken=high_command||ENG_maxwell_aitken"}"#,
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert!(parsed.advisor_token_filter_valid);
+            assert_eq!(parsed.advisor_token_filter.len(), 2);
+            let salazar = parsed.advisor_token_filter.get("POR_salazar").unwrap();
+            assert_eq!(salazar.slot.as_deref(), Some("political_advisor"));
+            assert_eq!(salazar.ledger.as_deref(), Some("political"));
+            assert_eq!(
+                salazar.character.as_deref(),
+                Some("POR_antonio_de_oliveira_salazar")
+            );
+            let aitken = parsed
+                .advisor_token_filter
+                .get("ENG_maxwell_aitken")
+                .unwrap();
+            assert_eq!(aitken.slot.as_deref(), Some("high_command"));
+            assert_eq!(aitken.ledger.as_deref(), None);
+            assert_eq!(aitken.character.as_deref(), Some("ENG_maxwell_aitken"));
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn collector_control_accepts_idea_group_filter() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_control_idea_group_filter_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            fs::write(
+                &control,
+                r#"{"mode":"hourly_poll","duration_ms":8000,"sample_ms":10,"idea_group_filter":"war_economy=economy;free_trade=trade_laws;volunteer_only=mobilization_laws"}"#,
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert!(parsed.idea_group_filter_valid);
+            assert_eq!(parsed.idea_group_filter.len(), 3);
+            assert_eq!(
+                parsed
+                    .idea_group_filter
+                    .get("war_economy")
+                    .map(String::as_str),
+                Some("economy")
+            );
+            assert_eq!(
+                parsed
+                    .idea_group_filter
+                    .get("free_trade")
+                    .map(String::as_str),
+                Some("trade_laws")
+            );
             let _ = fs::remove_dir_all(&dir);
         }
 
@@ -3958,6 +7280,52 @@ mod attach_log {
 
             assert!(parsed.country_object_bridge.is_empty());
             assert!(!parsed.country_object_bridge_valid);
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn collector_control_marks_bad_advisor_token_filter_invalid() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_control_bad_advisor_filter_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            fs::write(
+                &control,
+                r#"{"mode":"hourly_poll","duration_ms":8000,"sample_ms":10,"advisor_token_filter":"POR_salazar;bad token!"}"#,
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert!(parsed.advisor_token_filter.is_empty());
+            assert!(!parsed.advisor_token_filter_valid);
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn collector_control_marks_bad_idea_group_filter_invalid() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_control_bad_idea_group_filter_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            fs::write(
+                &control,
+                r#"{"mode":"hourly_poll","duration_ms":8000,"sample_ms":10,"idea_group_filter":"war_economy=economy;bad token!=trade_laws"}"#,
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert!(parsed.idea_group_filter.is_empty());
+            assert!(!parsed.idea_group_filter_valid);
             let _ = fs::remove_dir_all(&dir);
         }
 
@@ -4617,6 +7985,101 @@ mod attach_log {
         }
 
         #[test]
+        fn division_event_frame_builder_emits_sanitized_raw_event() {
+            let control = raw_test_control();
+            let clock = ClockSample {
+                date: "1936.1.1.12".to_string(),
+                hour_index: ((1936 * 365) * 24 + 12) as u64,
+                raw_date: DATE_EPOCH_CONST + ((1936 * 365) * 24 + 12),
+            };
+            let sample = DivisionMovementSample {
+                div_id: 7,
+                moving: true,
+                raw_movement_progress: Some(12000),
+                progress_bucket: Some(division_delta_bucket(12000)),
+                location: 11597,
+                move_target_province: Some(11597),
+                movement_source_province: Some(11333),
+                raw_organisation: 7_654_321,
+                organisation_bucket: division_delta_bucket(7_654_321),
+                raw_strength: 98_765,
+                strength_bucket: division_delta_bucket(98_765),
+                combat_ref_count: 2,
+                in_combat: true,
+            };
+
+            let frame = division_raw_event_frame_line(
+                1234,
+                12,
+                Some(6),
+                123456,
+                &control,
+                Some(125),
+                "worker_poll",
+                &clock,
+                &sample,
+                DIVISION_EVENT_ORG_STRENGTH_DELTA,
+                &["organisation", "strength"],
+            )
+            .unwrap();
+
+            assert!(frame.contains("\"type\":\"event\""));
+            assert!(frame.contains("\"domain\":\"divisions\""));
+            assert!(frame.contains("\"entity_key\":\"division:7:4713\""));
+            assert!(frame.contains("\"event_type\":\"division_org_strength_delta\""));
+            assert!(frame.contains("\"subject\":\"division\""));
+            assert!(frame.contains("\"div_uid\":\"7:4713\""));
+            assert!(frame.contains("\"organisation\":76.54321"));
+            assert!(frame.contains("\"strength\":0.98765"));
+            assert!(frame.contains("\"changed_fields\":[\"organisation\",\"strength\"]"));
+            assert!(!frame.contains("body_ptr"));
+            assert!(!frame.contains("body_addr"));
+            assert!(!frame.contains("tag_db_id"));
+            assert!(!frame.contains("\"owner\""));
+            assert!(!frame.contains("0x"));
+        }
+
+        #[test]
+        fn first_seen_division_only_emits_movement_start_event() {
+            let control = raw_test_control();
+            let clock = ClockSample {
+                date: "1936.1.1.12".to_string(),
+                hour_index: ((1936 * 365) * 24 + 12) as u64,
+                raw_date: DATE_EPOCH_CONST + ((1936 * 365) * 24 + 12),
+            };
+            let sample = DivisionMovementSample {
+                moving: true,
+                raw_movement_progress: Some(12000),
+                progress_bucket: Some(division_delta_bucket(12000)),
+                move_target_province: Some(11597),
+                movement_source_province: Some(11333),
+                combat_ref_count: 2,
+                in_combat: true,
+                ..stationary_division_sample()
+            };
+            let mut lines = Vec::new();
+            let mut session_sequence = 1;
+
+            push_division_event_frames(
+                &mut lines,
+                &mut session_sequence,
+                1234,
+                &control,
+                Some(125),
+                "worker_poll",
+                &clock,
+                None,
+                &sample,
+                &division_movement_all_fields(),
+            );
+
+            assert_eq!(lines.len(), 1);
+            assert!(lines[0].contains("\"event_type\":\"division_movement_started\""));
+            assert!(!lines[0].contains("\"event_type\":\"division_org_strength_delta\""));
+            assert!(!lines[0].contains("\"event_type\":\"division_combat_ref_changed\""));
+        }
+
+        #[test]
         fn land_combat_frame_builder_emits_sanitized_raw_delta() {
             let control = raw_test_control();
             let clock = ClockSample {
@@ -4672,6 +8135,216 @@ mod attach_log {
             assert!(!frame.contains("body_addr"));
             assert!(!frame.contains("manager"));
             assert!(!frame.contains("0x"));
+        }
+
+        #[test]
+        fn land_combat_event_builder_emits_sanitized_lifecycle_event() {
+            let control = raw_test_control();
+            let clock = ClockSample {
+                date: "1936.1.1.12".to_string(),
+                hour_index: ((1936 * 365) * 24 + 12) as u64,
+                raw_date: DATE_EPOCH_CONST + ((1936 * 365) * 24 + 12),
+            };
+            let sample = LandCombatSample {
+                combat_id: 271,
+                generation: 2,
+                body_addr: HEAP_LO + 0x12000,
+                location: Some(3986),
+                day: Some(4618),
+                duration: Some(17),
+                attacker_divisions: Some(vec![1053, 2837]),
+                defender_divisions: Some(vec![465]),
+                attacker_status: "exact",
+                defender_status: "exact",
+            };
+            let changed_fields = land_combat_all_fields();
+
+            let frame = land_combat_raw_event_frame_line(
+                1234,
+                25,
+                Some(12),
+                123456,
+                &control,
+                Some(125),
+                "worker_poll",
+                &clock,
+                &sample,
+                LAND_COMBAT_EVENT_STARTED,
+                &changed_fields,
+                None,
+            )
+            .unwrap();
+
+            assert!(frame.contains("\"type\":\"event\""));
+            assert!(frame.contains("\"domain\":\"land_combats\""));
+            assert!(frame.contains("\"entity_key\":\"land_combat:271:2\""));
+            assert!(frame.contains("\"event_type\":\"land_combat_started\""));
+            assert!(frame.contains("\"subject\":\"land_combat\""));
+            assert!(frame.contains("\"detail\":{\"combat_key\":\"land_combat:271:2\""));
+            assert!(frame.contains("\"changed_fields\":[\"combat_key\",\"combat_id\",\"generation\",\"location\",\"day\",\"duration\",\"attacker_divisions\",\"defender_divisions\",\"attacker_status\",\"defender_status\"]"));
+            assert!(!frame.contains("body_ptr"));
+            assert!(!frame.contains("body_addr"));
+            assert!(!frame.contains("tag_db_id"));
+            assert!(!frame.contains("0x"));
+        }
+
+        #[test]
+        fn land_combat_manager_keeps_valid_rows_when_some_slots_fail() {
+            let sample = LandCombatSample {
+                combat_id: 271,
+                generation: 0,
+                body_addr: HEAP_LO + 0x12000,
+                location: Some(3986),
+                day: Some(4618),
+                duration: Some(17),
+                attacker_divisions: Some(vec![1053, 2837]),
+                defender_divisions: Some(vec![465]),
+                attacker_status: "exact",
+                defender_status: "exact",
+            };
+            let mut samples = BTreeMap::new();
+            samples.insert(sample.combat_id, sample);
+
+            let kept = land_combat_manager_samples_result(samples, 3).unwrap();
+
+            assert_eq!(kept.len(), 1);
+            assert_eq!(kept[0].combat_id, 271);
+        }
+
+        #[test]
+        fn land_combat_manager_reports_gap_when_only_invalid_slots_remain() {
+            let samples = BTreeMap::new();
+
+            let err = land_combat_manager_samples_result(samples, 3).unwrap_err();
+
+            assert_eq!(err, "manager_entry_invalid");
+        }
+
+        #[test]
+        fn land_combat_tracker_emits_start_update_and_end_events() {
+            let control = raw_test_control();
+            let clock = ClockSample {
+                date: "1936.1.1.12".to_string(),
+                hour_index: ((1936 * 365) * 24 + 12) as u64,
+                raw_date: DATE_EPOCH_CONST + ((1936 * 365) * 24 + 12),
+            };
+            let mut tracker = LandCombatTracker::default();
+            let sample = LandCombatSample {
+                combat_id: 271,
+                generation: 0,
+                body_addr: HEAP_LO + 0x12000,
+                location: Some(3986),
+                day: Some(4618),
+                duration: Some(17),
+                attacker_divisions: Some(vec![1053]),
+                defender_divisions: Some(vec![465]),
+                attacker_status: "exact",
+                defender_status: "exact",
+            };
+
+            let started = build_land_combat_raw_lines_from_samples(
+                1234,
+                &control,
+                &mut tracker,
+                10,
+                Some(125),
+                "worker_poll",
+                &clock,
+                vec![sample.clone()],
+            );
+            assert_eq!(started.len(), 2);
+            assert!(started[0].contains("\"type\":\"domain_delta\""));
+            assert!(started[1].contains("\"event_type\":\"land_combat_started\""));
+            assert!(started[1].contains("\"entity_key\":\"land_combat:271:0\""));
+
+            let mut updated_sample = sample.clone();
+            updated_sample.duration = Some(18);
+            updated_sample.attacker_divisions = Some(vec![1053, 2837]);
+            let updated = build_land_combat_raw_lines_from_samples(
+                1234,
+                &control,
+                &mut tracker,
+                20,
+                Some(225),
+                "worker_poll",
+                &clock,
+                vec![updated_sample],
+            );
+            assert_eq!(updated.len(), 2);
+            assert!(updated[0].contains("\"changed_fields\":[\"duration\",\"attacker_divisions\"]"));
+            assert!(updated[1].contains("\"event_type\":\"land_combat_updated\""));
+            assert!(updated[1].contains("\"changed_fields\":[\"duration\",\"attacker_divisions\"]"));
+
+            let ended = build_land_combat_raw_lines_from_samples(
+                1234,
+                &control,
+                &mut tracker,
+                30,
+                Some(325),
+                "worker_poll",
+                &clock,
+                Vec::new(),
+            );
+            assert_eq!(ended.len(), 2);
+            assert!(ended[0].contains("\"payload\":{\"op\":\"delete\",\"after\":null"));
+            assert!(ended[1].contains("\"event_type\":\"land_combat_ended\""));
+            assert!(ended[1].contains("\"end_reason\":\"resolved\""));
+        }
+
+        #[test]
+        fn land_combat_tracker_splits_generation_on_body_change() {
+            let control = raw_test_control();
+            let clock = ClockSample {
+                date: "1936.1.1.12".to_string(),
+                hour_index: ((1936 * 365) * 24 + 12) as u64,
+                raw_date: DATE_EPOCH_CONST + ((1936 * 365) * 24 + 12),
+            };
+            let mut tracker = LandCombatTracker::default();
+            let sample = LandCombatSample {
+                combat_id: 271,
+                generation: 0,
+                body_addr: HEAP_LO + 0x12000,
+                location: Some(3986),
+                day: Some(10),
+                duration: Some(10),
+                attacker_divisions: Some(vec![1053]),
+                defender_divisions: Some(vec![465]),
+                attacker_status: "exact",
+                defender_status: "exact",
+            };
+            let _ = build_land_combat_raw_lines_from_samples(
+                1234,
+                &control,
+                &mut tracker,
+                10,
+                Some(125),
+                "worker_poll",
+                &clock,
+                vec![sample.clone()],
+            );
+
+            let mut reused = sample;
+            reused.body_addr = HEAP_LO + 0x22000;
+            reused.day = Some(1);
+            let split = build_land_combat_raw_lines_from_samples(
+                1234,
+                &control,
+                &mut tracker,
+                20,
+                Some(225),
+                "worker_poll",
+                &clock,
+                vec![reused],
+            );
+
+            assert_eq!(split.len(), 4);
+            assert!(split[0].contains("\"entity_key\":\"land_combat:271:0\""));
+            assert!(split[0].contains("\"payload\":{\"op\":\"delete\",\"after\":null"));
+            assert!(split[1].contains("\"event_type\":\"land_combat_ended\""));
+            assert!(split[1].contains("\"end_reason\":\"body_changed\""));
+            assert!(split[2].contains("\"entity_key\":\"land_combat:271:1\""));
+            assert!(split[3].contains("\"event_type\":\"land_combat_started\""));
+            assert!(split[3].contains("\"entity_key\":\"land_combat:271:1\""));
         }
 
         #[test]
@@ -4783,6 +8456,7 @@ mod attach_log {
                 duration_ms: 8000,
                 sample_ms: 10,
                 country_object_scan: false,
+                special_projects_scan: false,
                 country_object_bridge: Vec::new(),
                 country_object_bridge_valid: true,
                 country_record_bridge: Vec::new(),
@@ -4790,6 +8464,10 @@ mod attach_log {
                 division_body_bridge: Vec::new(),
                 division_body_bridge_valid: true,
                 map_control: MapControlContract::empty(),
+                advisor_token_filter: BTreeMap::new(),
+                advisor_token_filter_valid: true,
+                idea_group_filter: BTreeMap::new(),
+                idea_group_filter_valid: true,
                 scheduled_snapshot_step_hours: 1,
                 pipe_token: Some("abc".to_string()),
                 session_id: Some("run_1".to_string()),
@@ -4812,6 +8490,7 @@ mod attach_log {
             assert!(frame.contains("\"capture_boundary\":\"worker_poll\""));
             assert!(frame.contains("\"duration_ms\":8000"));
             assert!(frame.contains("\"sample_ms\":10"));
+            assert!(frame.contains("\"special_projects_scan\":false"));
             assert!(frame.contains("\"scheduled_snapshot_step_hours\":1"));
             assert!(frame.contains("\"map_control_state_root_rows\":0"));
             assert!(frame.contains("\"map_control_state_roots_valid\":true"));
@@ -4830,14 +8509,211 @@ mod attach_log {
         fn domain_list_claims_province_control_only_with_province_rows() {
             let cache = CountryIdentityCache::not_attempted("test");
 
-            let without_provinces = cache.domains_json_from_rows(&[], true, false, false, false);
+            let without_provinces = cache.domains_json_from_rows(
+                &[],
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+            );
             assert!(without_provinces.contains("\"state_ownership\""));
             assert!(without_provinces.contains("\"state_control\""));
             assert!(!without_provinces.contains("\"province_control\""));
 
-            let with_provinces = cache.domains_json_from_rows(&[], false, true, false, false);
+            let with_provinces = cache.domains_json_from_rows(
+                &[],
+                false,
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+            );
             assert!(!with_provinces.contains("\"state_control\""));
             assert!(with_provinces.contains("\"province_control\""));
+        }
+
+        #[test]
+        fn domain_list_claims_projects_live_only_with_special_projects() {
+            let cache = CountryIdentityCache::not_attempted("test");
+
+            let without_projects = cache.domains_json_from_rows(
+                &[],
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+            );
+            assert!(!without_projects.contains("\"projects_live\""));
+
+            let with_projects = cache.domains_json_from_rows(
+                &[],
+                false,
+                false,
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+            );
+            assert!(with_projects.contains("\"projects_live\""));
+        }
+
+        #[test]
+        fn special_projects_json_emits_top_level_collector_catalog() {
+            let mut skills = BTreeMap::new();
+            skills.insert("specialization_air", 2);
+            skills.insert("specialization_land", 3);
+            let json = special_projects_json(
+                &[ProjectFacilityRow {
+                    id: 1,
+                    province: 118,
+                    building: Some("facility_alpha".to_string()),
+                    active_project_handle: 9001,
+                    active: true,
+                    scientist_char_id: Some(44),
+                    unread_prototype_rewards: 0,
+                }],
+                &[ProjectRow {
+                    id: 77,
+                    static_def_handle: 9001,
+                    iterations: 2,
+                    worked_at_facility: Some(1),
+                }],
+                &[ProjectScientistRow {
+                    char_id: 44,
+                    name_token: Some("POR_scientist_a".to_string()),
+                    display_name: Some("Ada \"Ace\"".to_string()),
+                    skills,
+                    trait_count: Some(1),
+                }],
+            );
+
+            assert!(json.contains("\"facilities\":["));
+            assert!(json.contains("\"active_project_handle\":9001"));
+            assert!(json.contains("\"projects\":["));
+            assert!(json.contains("\"worked_at_facility\":1"));
+            assert!(json.contains("\"scientists\":["));
+            assert!(json.contains("\"display_name\":\"Ada \\\"Ace\\\"\""));
+            assert!(json.contains("\"count\":{\"facilities\":1,\"projects\":1,\"scientists\":1}"));
+            assert!(json.contains("\"source\":\"C\""));
+        }
+
+        #[test]
+        fn country_database_root_status_enables_country_scalars() {
+            let row = test_country_row("POR", 47, HEAP_LO + 0x4700);
+            let cache = CountryIdentityCache {
+                status: "country_database_root_verified",
+                scan_ms: 1,
+                country_vtable: HEAP_LO + 0x1000,
+                bridge_rows_supplied: 0,
+                record_rows_supplied: 0,
+                rows: vec![row.clone()],
+                rejected_objects: 0,
+                duplicate_tags: 0,
+            };
+
+            assert!(cache.has_scalar_source());
+            assert!(cache
+                .domains_json_from_rows(
+                    &[row],
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false
+                )
+                .contains("\"country_scalars\""));
+            assert!(cache
+                .root_json()
+                .contains("\"status\":\"country_database_root_verified\""));
+
+            let gamestate_cache = CountryIdentityCache {
+                status: "gamestate_country_table_verified",
+                scan_ms: 1,
+                country_vtable: HEAP_LO + 0x1000,
+                bridge_rows_supplied: 0,
+                record_rows_supplied: 0,
+                rows: vec![test_country_row("GER", 1, HEAP_LO + 0x100)],
+                rejected_objects: 0,
+                duplicate_tags: 0,
+            };
+            assert!(gamestate_cache.has_scalar_source());
+            assert!(gamestate_cache
+                .domains_json_from_rows(
+                    &gamestate_cache.rows,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false
+                )
+                .contains("\"country_scalars\""));
+        }
+
+        #[test]
+        fn country_tag_object_maps_require_shared_agreement() {
+            let mut left = BTreeMap::new();
+            let mut right = BTreeMap::new();
+            for tag_db_id in 1..=MIN_USABLE_COUNTRY_OBJECT_ROWS as u32 {
+                left.insert(tag_db_id, HEAP_LO + tag_db_id as usize * 0x100);
+                right.insert(tag_db_id, HEAP_LO + tag_db_id as usize * 0x100);
+            }
+            assert!(country_tag_object_maps_agree(&left, &right));
+
+            right.insert(7, HEAP_LO + 0xDEAD);
+            assert!(!country_tag_object_maps_agree(&left, &right));
+
+            right.clear();
+            for tag_db_id in 1..MIN_USABLE_COUNTRY_OBJECT_ROWS as u32 {
+                right.insert(tag_db_id, HEAP_LO + tag_db_id as usize * 0x100);
+            }
+            assert!(!country_tag_object_maps_agree(&left, &right));
+        }
+
+        #[test]
+        fn cprovince_row_json_preserves_raw_controller_id() {
+            let decoded = cprovince_control_row_json(11, Some("POR"), 47, Some(112));
+            assert!(decoded.contains("\"11\":{\"controller\":\"POR\""));
+            assert!(decoded.contains("\"controller_tag_db_id\":47"));
+            assert!(decoded.contains("\"controller_decode_status\":\"decoded\""));
+            assert!(decoded.contains("\"controller_source\":\"cprovince_static_root\""));
+            assert!(decoded.contains("\"state_id\":112"));
+
+            let raw_only = cprovince_control_row_json(12, None, 454, None);
+            assert!(raw_only.contains("\"12\":{\"controller\":null"));
+            assert!(raw_only.contains("\"controller_tag_db_id\":454"));
+            assert!(raw_only.contains("\"controller_decode_status\":\"tag_table_miss\""));
+            assert!(!raw_only.contains("\"state_id\""));
         }
 
         #[test]
@@ -4862,9 +8738,14 @@ mod attach_log {
                 misc: None,
                 fuel: None,
                 production: None,
+                focus: None,
+                research: None,
+                politics: None,
+                politics_residuals: None,
+                decisions: None,
             };
 
-            let json = row_json(&row, false, false);
+            let json = row_json(&row, false, false, false, false, false, false, false);
 
             assert!(json.contains("\"POR\""));
             assert!(json.contains("\"tag_db_id\":47"));
@@ -4901,9 +8782,14 @@ mod attach_log {
                 }),
                 fuel: None,
                 production: None,
+                focus: None,
+                research: None,
+                politics: None,
+                politics_residuals: None,
+                decisions: None,
             };
 
-            let json = row_json(&row, false, false);
+            let json = row_json(&row, false, false, false, false, false, false, false);
 
             assert!(json.contains("\"misc\""));
             assert!(json.contains("\"convoys_destroyed\":12"));
@@ -4911,7 +8797,19 @@ mod attach_log {
             assert!(json.contains("\"ace_count\":3"));
             assert!(json.contains("\"cosmetic_tag\":null"));
             let cache = CountryIdentityCache::not_attempted("test");
-            let domains = cache.domains_json_from_rows(&[row], false, false, false, false);
+            let domains = cache.domains_json_from_rows(
+                &[row],
+                false, // state rows
+                false, // province rows
+                false, // special-project rows
+                false, // fuel
+                false, // production
+                false, // focus
+                false, // research
+                false, // politics
+                false, // politics residuals
+                false, // decisions
+            );
             assert!(domains.contains("\"country_misc\""));
         }
 
@@ -4942,15 +8840,404 @@ mod attach_log {
                     cost: -2.25,
                 }),
                 production: None,
+                focus: None,
+                research: None,
+                politics: None,
+                politics_residuals: None,
+                decisions: None,
             };
 
-            let scheduled = row_json(&row, true, false);
-            let worker = row_json(&row, false, false);
+            let scheduled = row_json(&row, true, false, false, false, false, false, false);
+            let worker = row_json(&row, false, false, false, false, false, false, false);
 
             assert!(scheduled.contains(
                 "\"fuel\":{\"current\":123.5,\"max\":456.25,\"gain\":7.5,\"cost\":-2.25}"
             ));
             assert!(!worker.contains("\"fuel\""));
+        }
+
+        #[test]
+        fn country_object_row_json_includes_scheduled_focus() {
+            let row = CountryObjectRow {
+                tag: "POR".to_string(),
+                tag_db_id: 47,
+                name: "Portugal".to_string(),
+                object_ptr: 0x1234,
+                record_ptr: None,
+                original_capital: None,
+                original_tag: None,
+                templates_locked: None,
+                reserved_dynamic_country: None,
+                stability: None,
+                war_support: None,
+                political_power: None,
+                command_power: None,
+                num_ships: None,
+                manpower_pool: None,
+                convoys: None,
+                misc: None,
+                fuel: None,
+                production: None,
+                focus: Some(CountryFocusRow {
+                    focus_tree: Some("portugal_focus".to_string()),
+                    completed: Some(vec![
+                        "POR_estado_novo".to_string(),
+                        "POR_army_reorganization".to_string(),
+                    ]),
+                    completed_count: Some(2),
+                    current: Some("POR_industrial_focus".to_string()),
+                    current_continuous: Some("continuous_naval_production".to_string()),
+                    progress: Some(12.5),
+                }),
+                research: None,
+                politics: None,
+                politics_residuals: None,
+                decisions: None,
+            };
+
+            let scheduled = row_json(&row, false, false, true, false, false, false, false);
+            let worker = row_json(&row, false, false, false, false, false, false, false);
+
+            assert!(scheduled.contains("\"focus\""));
+            assert!(scheduled.contains("\"focus_tree\":\"portugal_focus\""));
+            assert!(scheduled
+                .contains("\"completed\":[\"POR_estado_novo\",\"POR_army_reorganization\"]"));
+            assert!(scheduled.contains("\"completed_count\":2"));
+            assert!(scheduled.contains("\"current\":\"POR_industrial_focus\""));
+            assert!(scheduled.contains("\"current_continuous\":\"continuous_naval_production\""));
+            assert!(scheduled.contains("\"progress\":12.5"));
+            assert!(!worker.contains("\"focus\""));
+            let cache = CountryIdentityCache::not_attempted("test");
+            let domains = cache.domains_json_from_rows(
+                &[row],
+                false, // state rows
+                false, // province rows
+                false, // special-project rows
+                false, // fuel
+                false, // production
+                true,  // focus
+                false, // research
+                false, // politics
+                false, // politics residuals
+                false, // decisions
+            );
+            assert!(domains.contains("\"focus_live\""));
+        }
+
+        #[test]
+        fn country_object_row_json_includes_scheduled_research() {
+            let mut row = test_country_row("POR", 47, 0x1234);
+            row.research = Some(CountryResearchRow {
+                completed_tech_count: Some(123),
+                research_slot_count: Some(5),
+                active_research: Some(vec![CountryResearchSlotRow {
+                    slot_index: 0,
+                    tech_handle_raw: 0x9020,
+                    tech_def_index_raw: 0x9020,
+                    progress_raw: 117_000,
+                }]),
+            });
+
+            let scheduled = row_json(&row, false, false, false, true, false, false, false);
+            let worker = row_json(&row, false, false, false, false, false, false, false);
+
+            assert!(scheduled.contains("\"research\""));
+            assert!(scheduled.contains("\"completed_tech_count\":123"));
+            assert!(scheduled.contains("\"research_slot_count\":5"));
+            assert!(scheduled.contains("\"active_research\":[{\"slot_index\":0"));
+            assert!(scheduled.contains("\"tech_handle_raw\":36896"));
+            assert!(scheduled.contains("\"progress_raw\":117000"));
+            assert!(!worker.contains("\"research\""));
+
+            let cache = CountryIdentityCache::not_attempted("test");
+            let domains = cache.domains_json_from_rows(
+                &[row],
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                true,
+                false,
+                false,
+                false,
+            );
+            assert!(domains.contains("\"tech_live\""));
+        }
+
+        #[test]
+        fn country_object_row_json_includes_scheduled_politics() {
+            let mut popularities = BTreeMap::new();
+            popularities.insert("democratic".to_string(), 72.5);
+            popularities.insert("communism".to_string(), 0.0);
+            popularities.insert("fascism".to_string(), 12.5);
+            popularities.insert("neutrality".to_string(), 15.0);
+            let mut laws = BTreeMap::new();
+            laws.insert("economy".to_string(), "war_economy".to_string());
+            laws.insert("trade_laws".to_string(), "free_trade".to_string());
+            let row = CountryObjectRow {
+                tag: "POR".to_string(),
+                tag_db_id: 47,
+                name: "Portugal".to_string(),
+                object_ptr: 0x1234,
+                record_ptr: None,
+                original_capital: None,
+                original_tag: None,
+                templates_locked: None,
+                reserved_dynamic_country: None,
+                stability: None,
+                war_support: None,
+                political_power: None,
+                command_power: None,
+                num_ships: None,
+                manpower_pool: None,
+                convoys: None,
+                misc: None,
+                fuel: None,
+                production: None,
+                focus: None,
+                research: None,
+                politics: Some(CountryPoliticsRow {
+                    popularities: Some(popularities),
+                    ruling_party: Some("neutrality".to_string()),
+                    ideas: Some(vec![
+                        "war_economy".to_string(),
+                        "free_trade".to_string(),
+                        "sour_loser".to_string(),
+                    ]),
+                    laws: Some(laws),
+                    ideas_other: Some(vec!["sour_loser".to_string()]),
+                    national_spirits: Some(vec!["sour_loser".to_string()]),
+                    idea_count: Some(3),
+                    election_frequency: Some(48),
+                    party_count: Some(4),
+                    low_confidence: Some(false),
+                }),
+                politics_residuals: None,
+                decisions: None,
+            };
+
+            let scheduled = row_json(&row, false, false, false, false, true, false, false);
+            let worker = row_json(&row, false, false, false, false, false, false, false);
+
+            assert!(scheduled.contains("\"politics\""));
+            assert!(scheduled.contains("\"ruling_party\":\"neutrality\""));
+            assert!(scheduled.contains("\"war_economy\""));
+            assert!(scheduled.contains("\"laws\":{\"economy\":\"war_economy\""));
+            assert!(scheduled.contains("\"trade_laws\":\"free_trade\""));
+            assert!(scheduled.contains("\"ideas_other\":[\"sour_loser\"]"));
+            assert!(scheduled.contains("\"national_spirits\":[\"sour_loser\"]"));
+            assert!(scheduled.contains("\"party_count\":4"));
+            assert!(!worker.contains("\"politics\""));
+            let cache = CountryIdentityCache::not_attempted("test");
+            let domains = cache.domains_json_from_rows(
+                &[row],
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                true,
+                false,
+                false,
+            );
+            assert!(domains.contains("\"politics_live\""));
+        }
+
+        #[test]
+        fn country_object_row_json_includes_scheduled_politics_residuals() {
+            let row = CountryObjectRow {
+                tag: "POR".to_string(),
+                tag_db_id: 47,
+                name: "Portugal".to_string(),
+                object_ptr: 0x1234,
+                record_ptr: None,
+                original_capital: None,
+                original_tag: None,
+                templates_locked: None,
+                reserved_dynamic_country: None,
+                stability: None,
+                war_support: None,
+                political_power: None,
+                command_power: None,
+                num_ships: None,
+                manpower_pool: None,
+                convoys: None,
+                misc: None,
+                fuel: None,
+                production: None,
+                focus: None,
+                research: None,
+                politics: None,
+                politics_residuals: Some(CountryPoliticsResidualsRow {
+                    last_election: Some("1933.7.1.1".to_string()),
+                    elections_allowed: Some(false),
+                    appointed_advisors: Some(vec![
+                        "ENG_maxwell_aitken".to_string(),
+                        "POR_salazar".to_string(),
+                    ]),
+                    appointed_advisor_details: Some(vec![AppointedAdvisorRow {
+                        idea_token: "POR_salazar".to_string(),
+                        slot: Some("political_advisor".to_string()),
+                        ledger: Some("political".to_string()),
+                        character: Some("POR_antonio_de_oliveira_salazar".to_string()),
+                    }]),
+                    appointed_advisor_slots: Some({
+                        let mut slots = BTreeMap::new();
+                        slots.insert(
+                            "political_advisor".to_string(),
+                            vec!["POR_salazar".to_string()],
+                        );
+                        slots
+                    }),
+                }),
+                decisions: None,
+            };
+
+            let scheduled = row_json(&row, false, false, false, false, false, true, false);
+            let worker = row_json(&row, false, false, false, false, false, false, false);
+
+            assert!(scheduled.contains("\"politics\""));
+            assert!(scheduled.contains("\"last_election\":\"1933.7.1.1\""));
+            assert!(scheduled.contains("\"elections_allowed\":false"));
+            assert!(scheduled
+                .contains("\"appointed_advisors\":[\"ENG_maxwell_aitken\",\"POR_salazar\"]"));
+            assert!(scheduled.contains("\"appointed_advisor_details\""));
+            assert!(scheduled.contains("\"idea_token\":\"POR_salazar\""));
+            assert!(scheduled.contains("\"slot\":\"political_advisor\""));
+            assert!(scheduled.contains("\"ledger\":\"political\""));
+            assert!(scheduled.contains("\"character\":\"POR_antonio_de_oliveira_salazar\""));
+            assert!(scheduled
+                .contains("\"appointed_advisor_slots\":{\"political_advisor\":[\"POR_salazar\"]}"));
+            assert!(!worker.contains("\"politics\""));
+            let cache = CountryIdentityCache::not_attempted("test");
+            let domains = cache.domains_json_from_rows(
+                &[row],
+                false, // state rows
+                false, // province rows
+                false, // special-project rows
+                false, // fuel
+                false, // production
+                false, // focus
+                false, // research
+                false, // politics
+                true,  // politics residuals
+                false, // decisions
+            );
+            assert!(domains.contains("\"politics_residuals\""));
+            assert!(!domains.contains("\"politics_live\""));
+        }
+
+        #[test]
+        fn country_object_row_json_preserves_empty_appointed_advisors() {
+            let row = CountryObjectRow {
+                tag: "POR".to_string(),
+                tag_db_id: 47,
+                name: "Portugal".to_string(),
+                object_ptr: 0x1234,
+                record_ptr: None,
+                original_capital: None,
+                original_tag: None,
+                templates_locked: None,
+                reserved_dynamic_country: None,
+                stability: None,
+                war_support: None,
+                political_power: None,
+                command_power: None,
+                num_ships: None,
+                manpower_pool: None,
+                convoys: None,
+                misc: None,
+                fuel: None,
+                production: None,
+                focus: None,
+                research: None,
+                politics: None,
+                politics_residuals: Some(CountryPoliticsResidualsRow {
+                    last_election: None,
+                    elections_allowed: None,
+                    appointed_advisors: Some(Vec::new()),
+                    appointed_advisor_details: Some(Vec::new()),
+                    appointed_advisor_slots: Some(BTreeMap::new()),
+                }),
+                decisions: None,
+            };
+
+            let scheduled = row_json(&row, false, false, false, false, false, true, false);
+
+            assert!(scheduled.contains("\"appointed_advisors\":[]"));
+            assert!(scheduled.contains("\"appointed_advisor_details\":[]"));
+            assert!(scheduled.contains("\"appointed_advisor_slots\":{}"));
+        }
+
+        #[test]
+        fn country_object_row_json_includes_scheduled_decisions() {
+            let mut status_present = BTreeMap::new();
+            status_present.insert("active_timed_decision".to_string(), 1);
+            status_present.insert("decision_to_re_enable".to_string(), 2);
+            let row = CountryObjectRow {
+                tag: "POR".to_string(),
+                tag_db_id: 47,
+                name: "Portugal".to_string(),
+                object_ptr: 0x1234,
+                record_ptr: None,
+                original_capital: None,
+                original_tag: None,
+                templates_locked: None,
+                reserved_dynamic_country: None,
+                stability: None,
+                war_support: None,
+                political_power: None,
+                command_power: None,
+                num_ships: None,
+                manpower_pool: None,
+                convoys: None,
+                misc: None,
+                fuel: None,
+                production: None,
+                focus: None,
+                research: None,
+                politics: None,
+                politics_residuals: None,
+                decisions: Some(CountryDecisionsRow {
+                    status_present: Some(status_present),
+                    timed_live: Some(vec![TimedDecisionRow {
+                        decision: "POR_countdown_mission".to_string(),
+                        days: 43,
+                        state: 0,
+                        state_name: "active".to_string(),
+                    }]),
+                }),
+            };
+
+            let scheduled = row_json(&row, false, false, false, false, false, false, true);
+            let worker = row_json(&row, false, false, false, false, false, false, false);
+
+            assert!(scheduled.contains("\"decisions\""));
+            assert!(scheduled.contains("\"status_present\""));
+            assert!(scheduled.contains("\"active_timed_decision\":1"));
+            assert!(scheduled.contains("\"decision\":\"POR_countdown_mission\""));
+            assert!(scheduled.contains("\"days\":43"));
+            assert!(scheduled.contains("\"state_name\":\"active\""));
+            assert!(!worker.contains("\"decisions\""));
+            let cache = CountryIdentityCache::not_attempted("test");
+            let domains = cache.domains_json_from_rows(
+                &[row],
+                false, // state rows
+                false, // province rows
+                false, // special-project rows
+                false, // fuel
+                false, // production
+                false, // focus
+                false, // research
+                false, // politics
+                false, // politics residuals
+                true,  // decisions
+            );
+            assert!(domains.contains("\"decisions_live\""));
         }
 
         #[test]
@@ -4995,10 +9282,15 @@ mod attach_log {
                     }]),
                     naval_lines: Some(Vec::new()),
                 }),
+                focus: None,
+                research: None,
+                politics: None,
+                politics_residuals: None,
+                decisions: None,
             };
 
-            let scheduled = row_json(&row, false, true);
-            let worker = row_json(&row, false, false);
+            let scheduled = row_json(&row, false, true, false, false, false, false, false);
+            let worker = row_json(&row, false, false, false, false, false, false, false);
 
             assert!(scheduled.contains("\"production\""));
             assert!(scheduled.contains("\"stockpile\":{\"70\":123.5,\"71\":-0.25}"));
@@ -5042,9 +9334,14 @@ mod attach_log {
                     }]),
                     naval_lines: Some(Vec::new()),
                 }),
+                focus: None,
+                research: None,
+                politics: None,
+                politics_residuals: None,
+                decisions: None,
             };
 
-            let scheduled = row_json(&row, false, true);
+            let scheduled = row_json(&row, false, true, false, false, false, false, false);
 
             assert!(scheduled.contains("\"production\""));
             assert!(!scheduled.contains("\"stockpile\""));

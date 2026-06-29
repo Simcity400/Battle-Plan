@@ -18,6 +18,12 @@ from live_capture.collector_probe_record import (  # noqa: E402
 from live_capture.collector_division_bridge import (  # noqa: E402
     encode_division_body_bridge,
 )
+from live_capture.collector_advisor_tokens import (  # noqa: E402
+    encode_advisor_token_filter,
+)
+from live_capture.collector_idea_groups import (  # noqa: E402
+    encode_idea_group_filter,
+)
 import live_capture.collector_probe_record as cpr  # noqa: E402
 
 
@@ -48,6 +54,56 @@ class TestCollectorProbeRecord(unittest.TestCase):
         self.assertFalse(summary["hourly_cadence_ok"])
         self.assertEqual(summary["duplicate_game_hour_samples"], 1)
         self.assertEqual(summary["duplicate_hour_store_skips"], 1)
+
+    def test_summary_counts_country_object_identity_status(self):
+        first = _sample("1936.1.1.1", 100, sequence=10, stored=True)
+        first.update({
+            "domains": ["clock", "country_identity"],
+            "country_object_identity_status": "country_database_root_insufficient",
+            "country_object_identity_object_count": 0,
+            "country_object_identity_scan_ms": 15,
+            "country_scalars_domain_present": False,
+            "politics_live_domain_present": False,
+            "politics_residuals_domain_present": False,
+        })
+        second = _sample("1936.1.1.2", 101, sequence=11, stored=True)
+        second.update({
+            "domains": [
+                "clock",
+                "country_identity",
+                "country_scalars",
+                "politics_live",
+                "politics_residuals",
+            ],
+            "country_object_identity_status": "country_database_root_verified",
+            "country_object_identity_object_count": 88,
+            "country_object_identity_scan_ms": 3,
+            "country_scalars_domain_present": True,
+            "politics_live_domain_present": True,
+            "politics_residuals_domain_present": True,
+        })
+
+        summary = summarize_probe_samples([first, second])
+
+        self.assertEqual(
+            summary["domains_seen"],
+            [
+                "clock",
+                "country_identity",
+                "country_scalars",
+                "politics_live",
+                "politics_residuals",
+            ],
+        )
+        self.assertEqual(summary["country_object_identity_statuses"], {
+            "country_database_root_insufficient": 1,
+            "country_database_root_verified": 1,
+        })
+        self.assertEqual(summary["country_object_identity_max_object_count"], 88)
+        self.assertEqual(summary["country_object_identity_max_scan_ms"], 15)
+        self.assertEqual(summary["country_scalars_samples"], 1)
+        self.assertEqual(summary["politics_live_samples"], 1)
+        self.assertEqual(summary["politics_residuals_samples"], 1)
 
     def test_hourly_requirement_passes_for_requested_consecutive_hours(self):
         summary = summarize_probe_samples([
@@ -143,6 +199,7 @@ class TestCollectorProbeRecord(unittest.TestCase):
         self.assertEqual(payload["pipe_token"], pipe_token)
         self.assertEqual(payload["session_id"], "session-1")
         self.assertFalse(payload["country_object_scan"])
+        self.assertFalse(payload["special_projects_scan"])
         self.assertFalse(payload["sidecar_log"])
         self.assertEqual(payload["sample_ms"], 25)
         self.assertEqual(payload["scheduled_snapshot_step_hours"], 1)
@@ -171,6 +228,60 @@ class TestCollectorProbeRecord(unittest.TestCase):
 
         self.assertEqual(encoded, "17:0x8000;18:0x9000")
 
+    def test_encode_advisor_token_filter_sorts_dedupes_and_rejects_bad_tokens(self):
+        encoded = encode_advisor_token_filter([
+            "POR_salazar",
+            "ENG_maxwell_aitken",
+            "POR_salazar",
+        ])
+
+        self.assertEqual(encoded, "ENG_maxwell_aitken;POR_salazar")
+        with self.assertRaises(ValueError):
+            encode_advisor_token_filter(["POR_salazar", "bad token!"])
+
+    def test_encode_advisor_token_filter_preserves_static_metadata(self):
+        encoded = encode_advisor_token_filter({
+            "POR_salazar": {
+                "slot": "political_advisor",
+                "ledger": "political",
+                "character": "POR_antonio_de_oliveira_salazar",
+            },
+            "ENG_maxwell_aitken": {
+                "slot": "high_command",
+                "ledger": None,
+                "character": "ENG_maxwell_aitken",
+            },
+        })
+
+        self.assertEqual(
+            encoded,
+            (
+                "ENG_maxwell_aitken=high_command||ENG_maxwell_aitken;"
+                "POR_salazar=political_advisor|political|"
+                "POR_antonio_de_oliveira_salazar"
+            ),
+        )
+        with self.assertRaises(ValueError):
+            encode_advisor_token_filter({
+                "POR_salazar": {"slot": "bad slot!"},
+            })
+
+    def test_encode_idea_group_filter_sorts_dedupes_and_rejects_bad_rows(self):
+        encoded = encode_idea_group_filter([
+            ("free_trade", "trade_laws"),
+            ("war_economy", "economy"),
+            ("free_trade", "trade_laws"),
+        ])
+
+        self.assertEqual(encoded, "free_trade=trade_laws;war_economy=economy")
+        with self.assertRaises(ValueError):
+            encode_idea_group_filter([("war_economy", "bad group!")])
+        with self.assertRaises(ValueError):
+            encode_idea_group_filter([
+                ("war_economy", "economy"),
+                ("war_economy", "trade_laws"),
+            ])
+
     def test_encode_country_object_bridge_rejects_bad_rows(self):
         with self.assertRaises(ValueError):
             encode_country_object_bridge([(1, 0x1001)])
@@ -197,6 +308,8 @@ class TestCollectorProbeRecord(unittest.TestCase):
                 ),
                 map_control_controller_bridge="1:0x6000;2:0x7000",
                 scheduled_snapshot_step_hours=1,
+                advisor_token_filter="ENG_maxwell_aitken;POR_salazar",
+                idea_group_filter="free_trade=trade_laws;war_economy=economy",
             )
             payload = json.loads(control_path.read_text(encoding="utf-8"))
 
@@ -210,6 +323,14 @@ class TestCollectorProbeRecord(unittest.TestCase):
             "province_stride=8;controller_ptr_offset=0",
         )
         self.assertEqual(payload["map_control_controller_bridge"], "1:0x6000;2:0x7000")
+        self.assertEqual(
+            payload["advisor_token_filter"],
+            "ENG_maxwell_aitken;POR_salazar",
+        )
+        self.assertEqual(
+            payload["idea_group_filter"],
+            "free_trade=trade_laws;war_economy=economy",
+        )
         self.assertFalse(payload["country_object_scan"])
 
     def test_record_probes_manifest_tracks_worker_session_id(self):
@@ -234,12 +355,19 @@ class TestCollectorProbeRecord(unittest.TestCase):
         self.assertEqual(manifest["session_id"], run_dir.name)
         self.assertEqual(manifest["dll"], "collector.dll")
         self.assertFalse(manifest["country_object_scan"])
+        self.assertFalse(manifest["special_projects_scan"])
         self.assertFalse(manifest["country_object_bridge_supplied"])
         self.assertEqual(manifest["country_object_bridge_rows"], 0)
         self.assertFalse(manifest["country_record_bridge_supplied"])
         self.assertEqual(manifest["country_record_bridge_rows"], 0)
         self.assertFalse(manifest["division_body_bridge_supplied"])
         self.assertEqual(manifest["division_body_bridge_rows"], 0)
+        self.assertFalse(manifest["advisor_token_filter_supplied"])
+        self.assertEqual(manifest["advisor_token_filter_tokens"], 0)
+        self.assertIsNone(manifest["advisor_token_filter_sha256"])
+        self.assertFalse(manifest["idea_group_filter_supplied"])
+        self.assertEqual(manifest["idea_group_filter_rows"], 0)
+        self.assertIsNone(manifest["idea_group_filter_sha256"])
         self.assertNotIn(str(Path("collector.dll").resolve().parent),
                          json.dumps(manifest, sort_keys=True))
 
@@ -266,6 +394,15 @@ class TestCollectorProbeRecord(unittest.TestCase):
                         "province_stride=8;controller_ptr_offset=0"
                     ),
                     map_control_controller_bridge="1:0x6000;2:0x7000",
+                    advisor_token_filter=[
+                        "POR_salazar",
+                        "ENG_maxwell_aitken",
+                        "POR_salazar",
+                    ],
+                    idea_group_filter={
+                        "war_economy": "economy",
+                        "free_trade": "trade_laws",
+                    },
                 )
                 manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
         finally:
@@ -282,6 +419,12 @@ class TestCollectorProbeRecord(unittest.TestCase):
         self.assertTrue(manifest["map_control_province_bridge_supplied"])
         self.assertTrue(manifest["map_control_controller_bridge_supplied"])
         self.assertEqual(manifest["map_control_controller_bridge_rows"], 2)
+        self.assertTrue(manifest["advisor_token_filter_supplied"])
+        self.assertEqual(manifest["advisor_token_filter_tokens"], 2)
+        self.assertEqual(len(manifest["advisor_token_filter_sha256"]), 64)
+        self.assertTrue(manifest["idea_group_filter_supplied"])
+        self.assertEqual(manifest["idea_group_filter_rows"], 2)
+        self.assertEqual(len(manifest["idea_group_filter_sha256"]), 64)
         self.assertNotIn("0x1000", json.dumps(manifest, sort_keys=True))
         self.assertNotIn("0x1200", json.dumps(manifest, sort_keys=True))
         self.assertNotIn("0x8000", json.dumps(manifest, sort_keys=True))
@@ -289,6 +432,10 @@ class TestCollectorProbeRecord(unittest.TestCase):
         self.assertNotIn("0x3000", json.dumps(manifest, sort_keys=True))
         self.assertNotIn("0x5000", json.dumps(manifest, sort_keys=True))
         self.assertNotIn("0x6000", json.dumps(manifest, sort_keys=True))
+        self.assertNotIn("POR_salazar", json.dumps(manifest, sort_keys=True))
+        self.assertNotIn("ENG_maxwell_aitken", json.dumps(manifest, sort_keys=True))
+        self.assertNotIn("war_economy", json.dumps(manifest, sort_keys=True))
+        self.assertNotIn("free_trade", json.dumps(manifest, sort_keys=True))
 
     def test_record_probes_can_skip_snapshot_sidecar_artifacts(self):
         original_attach = cpr._attach_with_retries

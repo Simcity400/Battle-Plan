@@ -127,25 +127,76 @@ Implemented in the current bridge:
   contract, with same-process country-array, country-object, and
   country-record caches, explicit cold object/record-scan bootstrap only, warm
   cache validation during recording, and `country_object_scan = false`;
+- DLL-native country object rooting through the `CGameState+0x310` `CCountry*`
+  table: object-backed country scalars now run without country preflight, with
+  per-row validation by heap range, country vtable, object-owned `tag_db_id`,
+  tag-table decode, stable name, and duplicate checks;
+- DLL-native political power through `CCountry+0xF90 -> CPoliticalStatus`:
+  the collector validates the political-status vtable and country backlink,
+  then reads `CPoliticalStatus+0xE0` without a country-record preflight bridge;
+- DLL-native scheduled politics through the same validated `CPoliticalStatus`:
+  `politics_live` emits ruling party, party popularities, ordered active idea
+  tokens, typed law buckets, broad non-law `ideas_other`, narrower
+  `national_spirits`, counts, election frequency, and confidence diagnostics;
+  and `politics_residuals` emits `last_election`, `elections_allowed`,
+  `appointed_advisors`, `appointed_advisor_details`, and
+  `appointed_advisor_slots` when validated static contracts are supplied. The
+  advisor catalog comes from `game_defs` / `common/characters` and supplies
+  `{slot, ledger, character}` metadata; the law/spirit classifier uses
+  `common/ideas` group metadata; live state comes from the active-ideas vector.
+  Missing or invalid token contracts omit the relevant leaves, while a measured
+  empty `[]` is real. The hot path does not sweep the `CAdvisor` heap. The live
+  speed-five proof
+  `collector_live_politics_decisions_probe` supplied a 3722-token advisor
+  contract and 6474 idea-group rows, advanced 2 game hours with zero skipped
+  hours, emitted 3 scheduled politics frames, and emitted zero worker-poll
+  politics payloads;
+- DLL-native scheduled `decisions_live` through
+  `CCountry+0xFA0 -> CDecisionStatus`: the collector validates the status
+  vtable and owner back-pointer, emits non-empty status-vector counts, and
+  decodes active `CTimedDecision` rows from the `+0xA0` list. The same proof
+  measured Portugal as `timed_live = []` and decoded non-empty active timed
+  decisions for 7 other countries;
+- DLL-native scheduled `focus_live` through validated `CCountry` child roots:
+  `CCountry+0x1370 -> CFocusTree` supplies `focus_tree`, while
+  `CCountry+0x1380` supplies completed focuses, completed count, current
+  national focus, current continuous focus, and progress days. The frame
+  adapter preserves measured-empty `completed = []` by measured TAG and leaves
+  `paused` save-only until a live byte is pinned. Live proof
+  `collector_live_focus_probe` advanced 2 game hours with zero skipped hours,
+  emitted 3 scheduled `focus_live` frames, emitted 1065 country focus rows,
+  kept focus payloads off worker polls, and measured Portugal on
+  `portuguese_focus` with 22 completed focuses and current
+  `POR_standardization`;
+- DLL-native scheduled `tech_live` first slice through validated `CCountry`
+  child roots: `CCountry+0xF60 -> CTechnologyStatus` supplies completed
+  technology count, current research slot capacity, and raw active-research
+  slot rows. The collector validates the technology-status vtable, owner
+  backlink, completed-tech vector bounds, and the bounded
+  `CTechnologyStatus+0xA0` `CResearchSlot*` vector before emitting, and the
+  Python adapter folds the values into `countries.*.research.tech_count`,
+  `.research_slots`, and `.in_progress_live`. Tech-token resolution, progress
+  percentage, ETA, and live research speed remain separate gated layers;
 - collector-frame adapter contract for `state_ownership`, `state_control`, and
   `province_control`, including TAG validation and session row-count summaries;
-- state-root map preflight cache: all 1081 state owner/controller rows are slow
-  cold, but fast once cached and revalidated;
-- scheduled DLL emission path for state owner/controller rows from preflighted
-  state roots, gated to canonical hourly frames rather than 10 ms worker polls.
+- static DLL map-control path through `CGameState+0x2B0` `CProvince*` rows:
+  state owner/controller rows are derived through `CProvince+0xC0`, and province
+  controller rows through `CProvince+0x188`, gated to canonical hourly frames
+  rather than 10 ms worker polls;
+- state-root map preflight cache retained as corroboration/fallback evidence.
 
 Still open:
 
 - replace repeated bounded-worker attaches with a true long-running collector
   session;
-- complete live speed-five proof for scheduled state owner/controller rows;
-- solve province-control dense-array relocation/cache well enough for normal
-  recording;
-- promote economy, production, focus/research, diplomacy, naval/air combat, and
+- classify any remaining country-record-only fields and add a speed-safe
+  DLL-resident root only if replay-critical fields still need the record array;
+- promote remaining economy, active-research slot detail, diplomacy, naval/air combat, and
   combat battle-detail from historical proof/schema coverage to live collector
   output or explicit unavailable badges. Active land-combat identity, location,
-  age, and attacker/defender division lists now have a live raw collector stream;
-  they still need speed-five soak, lifecycle promotion, and app ingestion.
+  age, attacker/defender division lists, and lifecycle events now have a live
+  raw collector stream; focus still needs pause-state proof and optional event
+  markers; the combat stream still needs speed-five soak and app ingestion.
 
 ### Historical feasibility evidence (memory-reader and save-oracle research snapshot)
 
@@ -178,11 +229,14 @@ unavailable.
 **Caveat — country id spaces and collector status:** owner/controller/division-owner
 use a 1-based **tag-db id** distinct from the country-array running index. The
 tag-db-id->TAG table is cracked and the current collector emits live `tag_db_id`
-identity rows without a save. Country scalar capture now uses a bounded
-preflight/cache bridge instead of a normal heap scan. State owner/controller
-roots are preflight-cache proven and scheduled collector emission is wired, with
-live speed-five proof still pending. Dense province-control array relocation
-remains the unresolved map blocker.
+identity rows without a save. Object-backed country scalar capture is now rooted
+inside the DLL through the `CGameState+0x310` country table; political power is
+read through the validated `CCountry+0xF90 -> CPoliticalStatus+0xE0` path. The
+older country-object/country-record preflight cache bridge is fallback evidence,
+not the normal source for current scalar capture. State owner/controller and
+province-control scheduled collector emission are wired
+through the static `CProvince` map spine with live speed-five proof and no map
+preflight bridges required.
 
 ### Historical build status (2026-06-24; superseded)
 
@@ -293,13 +347,15 @@ split `S/M*`; army/navy/air XP `S`; equipment held by type+variant `S`; ships by
 type + tonnage `S/D`; planes by type `S`; division templates in use `M/S`; **casualties
 (killed/captured) → K/D** `S/D`; command power `M`.
 
-**Country — politics:** ideology + party popularities `S`; **stability `M`, war support
-`M`, political power (+growth) `M`, command power `M`**; national spirits/ideas `S`;
-cabinet (leaders, advisors, theorists) `S`; laws (conscription / economy / trade) `S`;
-autonomy / subject-overlord `S`; faction membership + leader `S`.
+**Country — politics:** ruling ideology + party popularities `M/S`; **stability `M`,
+war support `M`, political power (+growth) `M`, command power `M`**; active
+national spirits/ideas `M/S`; cabinet (leaders, advisors, theorists) `S`;
+laws (conscription / economy / trade) `S/M*`; autonomy / subject-overlord `S`;
+faction membership + leader `S`.
 
-**Country — research:** technologies researched **+ when** `S/D`; research slots, what's
-in progress + % `S/M*`; research bonuses / ahead-of-time penalties `S`.
+**Country — research:** technologies researched **+ when** `S/D`; completed-tech
+count and research-slot capacity `C/M/S`; what's in progress + % `S/M*`;
+research bonuses / ahead-of-time penalties `S`.
 
 **Country — focus:** current focus + progress `S/M*`; **completed focuses + timeline**
 `S/D`; full focus tree state `S`.
@@ -444,8 +500,9 @@ the same data model at different cadences.
 5. **Division/OOB closure** — divisions, templates, equipment, org/strength,
    movement, army/fleet/air command graphs, and UI counter anchors.
 6. **Deep-domain promotion** — focus/research, production, stockpiles, diplomacy,
-   intel, decisions/missions, projects, market, and special systems move from
-   save-proven schema to live collector output or explicit unavailable badges.
+   intel, decisions/missions, project depth beyond the first live catalog
+   slice, market, and special systems move from save-proven schema to live
+   collector output or explicit unavailable badges.
 7. **High-frequency combat capture** — hook/sample land/naval/air combat
    lifecycles at the highest sustainable cadence, reconstruct events from live
    state deltas, and emit coverage confidence.

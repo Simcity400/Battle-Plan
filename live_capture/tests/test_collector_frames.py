@@ -40,6 +40,39 @@ class TestCollectorFrames(unittest.TestCase):
         frame.update(overrides)
         return frame
 
+    def _special_projects_payload(self):
+        return {
+            "facilities": [{
+                "id": 1,
+                "province": 118,
+                "building": "special_project_facility",
+                "active_project_handle": 9001,
+                "active": True,
+                "scientist_char_id": 44,
+                "unread_prototype_rewards": 0,
+            }],
+            "projects": [{
+                "id": 77,
+                "static_def_handle": 9001,
+                "iterations": 2,
+                "worked_at_facility": 1,
+            }],
+            "scientists": [{
+                "char_id": 44,
+                "name_token": "POR_scientist_a",
+                "display_name": "Test Scientist",
+                "skills": {
+                    "specialization_nuclear": 1,
+                    "specialization_naval": 0,
+                    "specialization_air": 2,
+                    "specialization_land": 3,
+                },
+                "trait_count": 1,
+            }],
+            "count": {"facilities": 1, "projects": 1, "scientists": 1},
+            "source": "C",
+        }
+
     def test_synthetic_snapshot_frame_validates(self):
         frame = {
             "type": "snapshot",
@@ -176,12 +209,14 @@ class TestCollectorFrames(unittest.TestCase):
             "event",
             {
                 "event_type": "movement_started",
-                "key": "division:GER:1",
+                "key": "combat:2",
                 "from": None,
                 "to": {"province_id": 42},
                 "subject": "GER",
                 "detail": {"order_generation": 3, "path": [1, 2, 3]},
             },
+            domain="combats",
+            entity_key="combat:2",
         )
 
         self.assertEqual(validate_collector_frame(frame), [])
@@ -304,6 +339,68 @@ class TestCollectorFrames(unittest.TestCase):
         )
 
         self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_division_event_frame_validates(self):
+        frame = self._raw_frame(
+            "event",
+            {
+                "event_type": "division_org_strength_delta",
+                "key": "division:100:4713",
+                "subject": "division",
+                "detail": {
+                    "div_uid": "100:4713",
+                    "div_id": 100,
+                    "div_type": 4713,
+                    "moving": True,
+                    "movement_source_province": 3324,
+                    "move_target_province": 3325,
+                    "location": 3325,
+                    "movement_progress": 6.013,
+                    "progress_bucket": 601,
+                    "organisation": 84.5,
+                    "strength": 91.25,
+                    "combat_ref_count": 2,
+                    "in_combat": True,
+                    "changed_fields": ["organisation", "strength"],
+                },
+            },
+            entity_key="division:100:4713",
+            confidence="sampled",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_division_event_rejects_bad_detail(self):
+        frame = self._raw_frame(
+            "event",
+            {
+                "event_type": "division_order_changed",
+                "key": "division:100:4713",
+                "subject": "unit",
+                "detail": {
+                    "div_uid": "101:4713",
+                    "div_id": 101,
+                    "div_type": 4713,
+                    "body_ptr": "0x1234",
+                    "changed_fields": ["organisation", "body_addr"],
+                },
+            },
+            entity_key="division:100:4713",
+            confidence="sampled",
+        )
+
+        problems = validate_collector_frame(frame)
+
+        for needle in (
+            "event_type 'division_order_changed' invalid",
+            "subject != 'division'",
+            "payload contains raw pointer/tag-db diagnostic key",
+            "detail.body_ptr unsupported",
+            "detail.div_uid != entity_key",
+            "detail.div_id != entity_key",
+            "detail.changed_fields[1] invalid",
+        ):
+            self.assertTrue(any(needle in p for p in problems), (needle, problems))
 
     def test_raw_division_movement_delta_rejects_raw_leakage(self):
         frame = self._raw_frame(
@@ -471,6 +568,118 @@ class TestCollectorFrames(unittest.TestCase):
         )
 
         self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_land_combat_lifecycle_event_frame_validates(self):
+        frame = self._raw_frame(
+            "event",
+            {
+                "event_type": "land_combat_started",
+                "key": "land_combat:7:0",
+                "subject": "land_combat",
+                "detail": {
+                    "combat_key": "land_combat:7:0",
+                    "combat_id": 7,
+                    "generation": 0,
+                    "location": 1234,
+                    "day": 3,
+                    "duration": 3,
+                    "attacker_divisions": [100, 101],
+                    "defender_divisions": [200],
+                    "attacker_status": "exact",
+                    "defender_status": "exact",
+                    "changed_fields": [
+                        "combat_key",
+                        "combat_id",
+                        "generation",
+                        "location",
+                        "day",
+                        "duration",
+                        "attacker_divisions",
+                        "defender_divisions",
+                        "attacker_status",
+                        "defender_status",
+                    ],
+                },
+            },
+            domain="land_combats",
+            entity_key="land_combat:7:0",
+            confidence="sampled",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_land_combat_ended_event_frame_validates(self):
+        frame = self._raw_frame(
+            "event",
+            {
+                "event_type": "land_combat_ended",
+                "key": "land_combat:7:0",
+                "subject": "land_combat",
+                "detail": {
+                    "combat_key": "land_combat:7:0",
+                    "combat_id": 7,
+                    "generation": 0,
+                    "location": 1234,
+                    "day": 3,
+                    "duration": 3,
+                    "attacker_divisions": [100],
+                    "defender_divisions": [200],
+                    "attacker_status": "exact",
+                    "defender_status": "exact",
+                    "changed_fields": ["combat_key"],
+                    "end_reason": "resolved",
+                },
+            },
+            domain="land_combats",
+            entity_key="land_combat:7:0",
+            confidence="sampled",
+        )
+
+        self.assertEqual(validate_collector_frame(frame), [])
+
+    def test_raw_land_combat_lifecycle_event_rejects_bad_detail(self):
+        frame = self._raw_frame(
+            "event",
+            {
+                "event_type": "land_combat_finished",
+                "key": "land_combat:8:0",
+                "subject": "combat",
+                "detail": {
+                    "combat_key": "land_combat:8:0",
+                    "combat_id": 8,
+                    "generation": 0,
+                    "location": 0,
+                    "attacker_divisions": [100, 100],
+                    "defender_divisions": "unknown",
+                    "attacker_status": "measured",
+                    "changed_fields": ["location", "body_addr"],
+                    "end_reason": "because",
+                    "body_ptr": "0x1234",
+                },
+            },
+            domain="land_combats",
+            entity_key="land_combat:7:0",
+            confidence="sampled",
+        )
+
+        problems = validate_collector_frame(frame)
+
+        for needle in (
+            "payload key != entity_key",
+            "event_type 'land_combat_finished' invalid",
+            "subject != 'land_combat'",
+            "payload contains raw pointer/tag-db diagnostic key",
+            "detail.body_ptr unsupported",
+            "detail.combat_key != entity_key",
+            "detail.combat_id != entity_key",
+            "detail.location not positive int|null in range",
+            "detail.attacker_divisions[1] duplicate division id",
+            "detail.defender_divisions not list|null",
+            "detail.attacker_status invalid",
+            "detail.changed_fields[1] invalid",
+            "detail.end_reason set for non-ended event",
+        ):
+            self.assertTrue(any(needle in p for p in problems), (needle, problems))
 
     def test_raw_land_combat_gap_delta_frame_validates(self):
         frame = self._raw_frame(
@@ -1085,6 +1294,143 @@ class TestCollectorFrames(unittest.TestCase):
         self.assertEqual(snap["provinces"], {})
         self.assertIsNone(snap["map"]["control_by_province"])
 
+    def test_snapshot_frame_folds_scheduled_projects_live(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock", "projects_live"],
+            "special_projects": self._special_projects_payload(),
+        }
+
+        snap = snapshot_from_collector_frame(frame, "collector-test")
+
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        self.assertEqual(
+            snap["provenance"]["collector"]["domains"],
+            ["clock", "projects_live"],
+        )
+        self.assertEqual(snap["special_projects"]["source"], "C")
+        self.assertEqual(snap["special_projects"]["count"]["facilities"], 1)
+        self.assertEqual(snap["special_projects"]["facilities"][0]["province"], 118)
+        self.assertEqual(
+            snap["special_projects"]["projects"][0]["worked_at_facility"], 1)
+        self.assertEqual(
+            snap["special_projects"]["scientists"][0]["skills"]
+            ["specialization_land"],
+            3,
+        )
+
+    def test_root_probe_frame_folds_scheduled_projects_live(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock", "projects_live"],
+            "special_projects": {
+                "facilities": [],
+                "projects": [],
+                "scientists": [],
+                "count": {"facilities": 0, "projects": 0, "scientists": 0},
+                "source": "C",
+            },
+            "root_probe": {
+                "status": "verified",
+                "daily_update_sentinel_match": True,
+                "long_string_sentinel_match": True,
+                "current_game_date": "1936.1.2.1",
+                "start_date": "1936.1.1.12",
+                "domains": ["clock", "projects_live"],
+            },
+        }
+
+        snap = snapshot_from_root_probe_frame(frame, "collector-test")
+
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        self.assertEqual(snap["provenance"]["collector"]["domains"],
+                         ["clock", "projects_live"])
+        self.assertEqual(snap["special_projects"]["source"], "C")
+        self.assertEqual(snap["special_projects"]["facilities"], [])
+
+    def test_projects_payload_without_domain_claim_is_not_folded(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock"],
+            "special_projects": self._special_projects_payload(),
+        }
+
+        snap = snapshot_from_collector_frame(frame, "collector-test")
+
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        self.assertIsNone(snap["special_projects"]["facilities"])
+        self.assertIsNone(snap["special_projects"]["source"])
+
+    def test_snapshot_frame_rejects_non_scheduled_projects_live_payload(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "daily_update",
+            "domains": ["clock", "projects_live"],
+            "special_projects": self._special_projects_payload(),
+        }
+
+        problems = validate_collector_frame(frame)
+
+        self.assertTrue(any("projects_live payload requires scheduled" in p
+                            for p in problems), problems)
+        with self.assertRaisesRegex(ValueError,
+                                    "projects_live payload requires scheduled"):
+            snapshot_from_collector_frame(frame, "collector-test")
+
+    def test_worker_poll_rejects_special_projects_payload(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "worker_poll",
+            "domains": ["clock"],
+            "special_projects": self._special_projects_payload(),
+        }
+
+        problems = validate_collector_frame(frame)
+
+        self.assertTrue(any("worker_poll frame must not carry special_projects" in p
+                            for p in problems), problems)
+
+    def test_special_projects_rejects_raw_pointer_diagnostics(self):
+        payload = self._special_projects_payload()
+        payload["facilities"][0]["body_addr"] = "0x1234"
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock", "projects_live"],
+            "special_projects": payload,
+        }
+
+        problems = validate_collector_frame(frame)
+
+        self.assertTrue(any("raw pointer/tag-db" in p for p in problems), problems)
+
     def test_snapshot_frame_rejects_non_scheduled_map_control_payload(self):
         frame = {
             "type": "snapshot",
@@ -1429,6 +1775,657 @@ class TestCollectorFrames(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "production_live payload requires scheduled"):
             snapshot_from_collector_frame(frame, "collector-test")
 
+    def test_snapshot_frame_folds_scheduled_focus_live(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock", "country_identity", "focus_live"],
+            "countries": {
+                "GER": {
+                    "present": True,
+                    "collector_object": "0x1000",
+                    "identity": {"tag_db_id": 1},
+                    "focus": {
+                        "focus_tree": "german_focus",
+                        "completed": ["GER_autarky", "GER_army_innovation"],
+                        "completed_count": 2,
+                        "current": "GER_west_wall",
+                        "progress": 12.5,
+                    },
+                },
+                "SOV": {
+                    "present": True,
+                    "collector_object": "0x2000",
+                    "identity": {"tag_db_id": 2},
+                    "focus": {
+                        "focus_tree": "soviet_focus",
+                        "completed": [],
+                        "completed_count": 0,
+                        "current_continuous": "continuous_repair",
+                        "progress": 0.0,
+                    },
+                },
+            },
+        }
+
+        snap = snapshot_from_collector_frame(frame, "collector-test")
+
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        self.assertEqual(
+            snap["provenance"]["collector"]["domains"],
+            ["clock", "country_identity", "focus_live"],
+        )
+        ger = snap["countries"]["GER"]["focus"]
+        self.assertEqual(ger["focus_tree"], "german_focus")
+        self.assertEqual(ger["completed"], ["GER_autarky", "GER_army_innovation"])
+        self.assertEqual(ger["completed_count"], 2)
+        self.assertEqual(ger["current"], "GER_west_wall")
+        self.assertEqual(ger["progress"], 12.5)
+        sov = snap["countries"]["SOV"]["focus"]
+        self.assertEqual(sov["completed"], [])
+        self.assertEqual(sov["completed_count"], 0)
+        self.assertEqual(sov["current_continuous"], "continuous_repair")
+        self.assertEqual(
+            set(snap["_live_measured_leaf_tags"]["focus.completed"]),
+            {"GER", "SOV"},
+        )
+
+    def test_snapshot_frame_rejects_malformed_focus_live(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock", "country_identity", "focus_live"],
+            "countries": {
+                "GER": {
+                    "present": True,
+                    "collector_object": "0x1000",
+                    "identity": {"tag_db_id": 1},
+                    "focus": {
+                        "focus_tree": "bad token!",
+                        "completed": ["GER_autarky", "bad token!"],
+                        "completed_count": 3,
+                        "current": "GER_west_wall",
+                        "current_continuous": "continuous_repair",
+                        "progress": -1.0,
+                    },
+                },
+            },
+        }
+
+        problems = validate_collector_frame(frame)
+
+        for needle in (
+            "focus.focus_tree",
+            "focus.completed[1]",
+            "focus.completed_count does not match",
+            "current and current_continuous both set",
+            "focus.progress out of range",
+        ):
+            self.assertTrue(any(needle in p for p in problems), (needle, problems))
+        with self.assertRaisesRegex(ValueError, "invalid collector frame"):
+            snapshot_from_collector_frame(frame, "collector-test")
+
+    def test_snapshot_frame_rejects_non_scheduled_focus_live(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "daily_update",
+            "domains": ["clock", "country_identity", "focus_live"],
+            "countries": {
+                "GER": {
+                    "present": True,
+                    "collector_object": "0x1000",
+                    "identity": {"tag_db_id": 1},
+                    "focus": {
+                        "focus_tree": "german_focus",
+                        "completed": [],
+                        "completed_count": 0,
+                    },
+                },
+            },
+        }
+
+        with self.assertRaisesRegex(ValueError, "focus_live payload requires scheduled"):
+            snapshot_from_collector_frame(frame, "collector-test")
+
+    def test_snapshot_frame_folds_scheduled_tech_live(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock", "country_identity", "tech_live"],
+            "countries": {
+                "GER": {
+                    "present": True,
+                    "collector_object": "0x1000",
+                    "identity": {"tag_db_id": 1},
+                    "research": {
+                        "completed_tech_count": 120,
+                        "research_slot_count": 4,
+                        "active_research": [{
+                            "slot_index": 0,
+                            "tech_handle_raw": 0x1234,
+                            "tech_def_index_raw": 5,
+                            "progress_raw": 9000,
+                        }],
+                    },
+                },
+                "SOV": {
+                    "present": True,
+                    "collector_object": "0x2000",
+                    "identity": {"tag_db_id": 2},
+                    "research": {
+                        "completed_tech_count": 0,
+                        "research_slot_count": 3,
+                        "active_research": [],
+                    },
+                },
+            },
+        }
+
+        snap = snapshot_from_collector_frame(frame, "collector-test")
+
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        self.assertEqual(
+            snap["provenance"]["collector"]["domains"],
+            ["clock", "country_identity", "tech_live"],
+        )
+        ger = snap["countries"]["GER"]["research"]
+        self.assertEqual(ger["tech_count"], 120)
+        self.assertEqual(ger["research_slots"], 4)
+        self.assertEqual(ger["in_progress_live"][0]["tech_handle_raw"], 0x1234)
+        self.assertEqual(ger["in_progress"], [])
+        sov = snap["countries"]["SOV"]["research"]
+        self.assertEqual(sov["tech_count"], 0)
+        self.assertEqual(sov["research_slots"], 3)
+        self.assertEqual(sov["in_progress_live"], [])
+        self.assertEqual(
+            set(snap["_live_measured_leaf_tags"]["research.in_progress_live"]),
+            {"GER", "SOV"},
+        )
+
+    def test_snapshot_frame_rejects_malformed_tech_live(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock", "country_identity", "tech_live"],
+            "countries": {
+                "GER": {
+                    "present": True,
+                    "collector_object": "0x1000",
+                    "identity": {"tag_db_id": 1},
+                    "research": {
+                        "completed_tech_count": True,
+                        "research_slot_count": 33,
+                        "active_research": [
+                            {
+                                "slot_index": 32,
+                                "tech_handle_raw": -1,
+                                "unexpected": 1,
+                            },
+                            "not a dict",
+                        ],
+                    },
+                },
+            },
+        }
+
+        problems = validate_collector_frame(frame)
+
+        for needle in (
+            "research.completed_tech_count",
+            "research.research_slot_count",
+            "active_research[0].slot_index",
+            "active_research[0].tech_handle_raw",
+            "active_research[0].unexpected unsupported",
+            "active_research[1] not dict",
+        ):
+            self.assertTrue(any(needle in p for p in problems), (needle, problems))
+        with self.assertRaisesRegex(ValueError, "invalid collector frame"):
+            snapshot_from_collector_frame(frame, "collector-test")
+
+    def test_snapshot_frame_rejects_non_scheduled_tech_live(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "daily_update",
+            "domains": ["clock", "country_identity", "tech_live"],
+            "countries": {
+                "GER": {
+                    "present": True,
+                    "collector_object": "0x1000",
+                    "identity": {"tag_db_id": 1},
+                    "research": {
+                        "completed_tech_count": 12,
+                        "research_slot_count": 4,
+                    },
+                },
+            },
+        }
+
+        with self.assertRaisesRegex(ValueError, "tech_live payload requires scheduled"):
+            snapshot_from_collector_frame(frame, "collector-test")
+
+    def test_snapshot_frame_folds_scheduled_politics_live(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock", "country_identity", "politics_live"],
+            "countries": {
+                "POR": {
+                    "present": True,
+                    "collector_object": "0x1000",
+                    "identity": {"tag_db_id": 47},
+                    "politics": {
+                        "popularities": {
+                            "democratic": 72.5,
+                            "communism": 0.0,
+                            "fascism": 12.5,
+                            "neutrality": 15.0,
+                        },
+                        "ruling_party": "neutrality",
+                        "ideas": [
+                            "war_economy",
+                            "free_trade",
+                            "volunteer_only",
+                            "sour_loser",
+                        ],
+                        "ideas_other": ["sour_loser"],
+                        "national_spirits": ["sour_loser"],
+                        "laws": {
+                            "economy": "war_economy",
+                            "trade_laws": "free_trade",
+                            "mobilization_laws": "volunteer_only",
+                        },
+                        "idea_count": 4,
+                        "election_frequency": 48,
+                        "party_count": 4,
+                        "low_confidence": False,
+                    },
+                },
+            },
+        }
+
+        snap = snapshot_from_collector_frame(frame, "collector-test")
+
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        self.assertEqual(
+            snap["provenance"]["collector"]["domains"],
+            ["clock", "country_identity", "politics_live"],
+        )
+        politics = snap["countries"]["POR"]["politics"]
+        self.assertEqual(politics["ruling_party"], "neutrality")
+        self.assertEqual(politics["party_popularities"]["democratic"], 72.5)
+        self.assertEqual(
+            politics["ideas"],
+            ["war_economy", "free_trade", "volunteer_only", "sour_loser"],
+        )
+        self.assertEqual(politics["ideas_other"], ["sour_loser"])
+        self.assertEqual(politics["national_spirits"], ["sour_loser"])
+        self.assertEqual(
+            politics["laws"],
+            {
+                "economy": "war_economy",
+                "trade_laws": "free_trade",
+                "mobilization_laws": "volunteer_only",
+            },
+        )
+        self.assertEqual(politics["idea_count"], 4)
+        self.assertEqual(politics["election_frequency"], 48)
+        self.assertEqual(politics["party_count"], 4)
+        self.assertFalse(politics["low_confidence"])
+        self.assertIsNone(politics["political_power"])
+
+    def test_snapshot_frame_rejects_malformed_politics_live(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock", "country_identity", "politics_live"],
+            "countries": {
+                "POR": {
+                    "present": True,
+                    "collector_object": "0x1000",
+                    "identity": {"tag_db_id": 47},
+                    "politics": {
+                        "popularities": {"bad": 1.0, "democratic": float("inf")},
+                        "ruling_party": "bad",
+                        "ideas": ["ok", "bad token!"],
+                        "ideas_other": ["ok", "bad token!"],
+                        "national_spirits": ["ok", "bad token!"],
+                        "laws": {
+                            "bad key!": "ok",
+                            "economy": "bad token!",
+                        },
+                        "idea_count": 401,
+                        "election_frequency": 0,
+                        "party_count": 17,
+                        "low_confidence": 1,
+                    },
+                },
+            },
+        }
+
+        problems = validate_collector_frame(frame)
+
+        for needle in (
+            "popularities key",
+            "popularities.democratic",
+            "ruling_party",
+            "ideas[1]",
+            "ideas_other[1]",
+            "national_spirits[1]",
+            "laws key",
+            "laws.economy",
+            "idea_count",
+            "election_frequency",
+            "party_count",
+            "low_confidence",
+        ):
+            self.assertTrue(any(needle in p for p in problems), (needle, problems))
+        with self.assertRaisesRegex(ValueError, "invalid collector frame"):
+            snapshot_from_collector_frame(frame, "collector-test")
+
+    def test_snapshot_frame_rejects_non_scheduled_politics_live(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "daily_update",
+            "domains": ["clock", "country_identity", "politics_live"],
+            "countries": {
+                "POR": {
+                    "present": True,
+                    "collector_object": "0x1000",
+                    "identity": {"tag_db_id": 47},
+                    "politics": {
+                        "popularities": {"neutrality": 100.0},
+                        "ruling_party": "neutrality",
+                    },
+                },
+            },
+        }
+
+        with self.assertRaisesRegex(ValueError, "politics_live payload requires scheduled"):
+            snapshot_from_collector_frame(frame, "collector-test")
+
+    def test_snapshot_frame_folds_scheduled_decisions_live(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock", "country_identity", "decisions_live"],
+            "countries": {
+                "POR": {
+                    "present": True,
+                    "collector_object": "0x1000",
+                    "identity": {"tag_db_id": 47},
+                    "decisions": {
+                        "status_present": {
+                            "active_timed_decision": 1,
+                            "active_targeted_decision": 2,
+                            "decision_to_re_enable": 1,
+                        },
+                        "timed_live": [
+                            {
+                                "decision": "POR_expand_aluminium_mines",
+                                "days": 43,
+                                "state": 0,
+                                "state_name": "active",
+                            },
+                        ],
+                    },
+                },
+                "ENG": {
+                    "present": True,
+                    "collector_object": "0x2000",
+                    "identity": {"tag_db_id": 2},
+                    "decisions": {
+                        "status_present": {},
+                        "timed_live": [],
+                    },
+                },
+            },
+        }
+
+        snap = snapshot_from_collector_frame(frame, "collector-test")
+
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        self.assertEqual(
+            snap["provenance"]["collector"]["domains"],
+            ["clock", "country_identity", "decisions_live"],
+        )
+        decisions = snap["countries"]["POR"]["decisions"]
+        self.assertEqual(
+            decisions["status_present"],
+            {
+                "active_timed_decision": 1,
+                "active_targeted_decision": 2,
+                "decision_to_re_enable": 1,
+            },
+        )
+        self.assertEqual(
+            decisions["timed_live"],
+            [{
+                "decision": "POR_expand_aluminium_mines",
+                "days": 43,
+                "state": 0,
+                "state_name": "active",
+            }],
+        )
+        self.assertEqual(snap["countries"]["ENG"]["decisions"]["timed_live"], [])
+        self.assertEqual(
+            set(snap["_live_measured_leaf_tags"]["decisions.timed_live"]),
+            {"POR", "ENG"},
+        )
+
+    def test_snapshot_frame_rejects_malformed_decisions_live(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock", "country_identity", "decisions_live"],
+            "countries": {
+                "POR": {
+                    "present": True,
+                    "collector_object": "0x1000",
+                    "identity": {"tag_db_id": 47},
+                    "decisions": {
+                        "status_present": {
+                            "bad key!": 1,
+                            "active_timed_decision": -1,
+                        },
+                        "timed_live": [
+                            {
+                                "decision": "bad token!",
+                                "days": True,
+                                "state": -1,
+                                "state_name": "not active",
+                            },
+                        ],
+                    },
+                },
+            },
+        }
+
+        problems = validate_collector_frame(frame)
+
+        for needle in (
+            "status_present key",
+            "status_present.active_timed_decision",
+            "timed_live[0].decision",
+            "timed_live[0].days",
+            "timed_live[0].state",
+            "timed_live[0].state_name",
+        ):
+            self.assertTrue(any(needle in p for p in problems), (needle, problems))
+        with self.assertRaisesRegex(ValueError, "invalid collector frame"):
+            snapshot_from_collector_frame(frame, "collector-test")
+
+    def test_snapshot_frame_folds_scheduled_politics_residuals(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock", "country_identity", "politics_residuals"],
+            "countries": {
+                "POR": {
+                    "present": True,
+                    "collector_object": "0x1000",
+                    "identity": {"tag_db_id": 47},
+                    "politics": {
+                        "last_election": "1933.7.1.1",
+                        "elections_allowed": False,
+                        "appointed_advisors": [],
+                        "appointed_advisor_details": [
+                            {
+                                "idea_token": "POR_salazar",
+                                "slot": "political_advisor",
+                                "ledger": "political",
+                                "character": "POR_antonio_de_oliveira_salazar",
+                            }
+                        ],
+                        "appointed_advisor_slots": {
+                            "political_advisor": ["POR_salazar"],
+                        },
+                    },
+                },
+            },
+        }
+
+        snap = snapshot_from_collector_frame(frame, "collector-test")
+
+        self.assertEqual(schema.validate_snapshot(snap), [])
+        self.assertEqual(
+            snap["provenance"]["collector"]["domains"],
+            ["clock", "country_identity", "politics_residuals"],
+        )
+        politics = snap["countries"]["POR"]["politics"]
+        self.assertEqual(politics["last_election"], "1933.7.1.1")
+        self.assertFalse(politics["elections_allowed"])
+        self.assertEqual(politics["appointed_advisors"], [])
+        self.assertEqual(
+            politics["appointed_advisor_details"],
+            [
+                {
+                    "idea_token": "POR_salazar",
+                    "slot": "political_advisor",
+                    "ledger": "political",
+                    "character": "POR_antonio_de_oliveira_salazar",
+                }
+            ],
+        )
+        self.assertEqual(
+            politics["appointed_advisor_slots"],
+            {"political_advisor": ["POR_salazar"]},
+        )
+        self.assertIsNone(politics["ruling_party"])
+
+    def test_snapshot_frame_rejects_malformed_politics_residuals(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "scheduled_hour_snapshot",
+            "domains": ["clock", "country_identity", "politics_residuals"],
+            "countries": {
+                "POR": {
+                    "present": True,
+                    "collector_object": "0x1000",
+                    "identity": {"tag_db_id": 47},
+                    "politics": {
+                        "last_election": "1933-7-1",
+                        "elections_allowed": 0,
+                        "appointed_advisors": ["POR_salazar", "bad token!"],
+                        "appointed_advisor_details": [
+                            {"idea_token": "POR_salazar", "slot": "bad slot!"}
+                        ],
+                        "appointed_advisor_slots": {
+                            "political advisor": ["POR_salazar"],
+                        },
+                    },
+                },
+            },
+        }
+
+        problems = validate_collector_frame(frame)
+
+        self.assertTrue(any("last_election" in p for p in problems), problems)
+        self.assertTrue(any("elections_allowed" in p for p in problems), problems)
+        self.assertTrue(any("appointed_advisors[1]" in p for p in problems), problems)
+        self.assertTrue(any("appointed_advisor_details[0].slot" in p
+                            for p in problems), problems)
+        self.assertTrue(any("appointed_advisor_slots key" in p for p in problems),
+                        problems)
+        with self.assertRaisesRegex(ValueError, "invalid collector frame"):
+            snapshot_from_collector_frame(frame, "collector-test")
+
+    def test_snapshot_frame_rejects_non_scheduled_politics_residuals(self):
+        frame = {
+            "type": "snapshot",
+            "backend": "in_process_collector",
+            "collector_version": "0.1.0",
+            "abi_version": 1,
+            "date": "1936.1.2.1",
+            "capture_boundary": "daily_update",
+            "domains": ["clock", "country_identity", "politics_residuals"],
+            "countries": {
+                "POR": {
+                    "present": True,
+                    "collector_object": "0x1000",
+                    "identity": {"tag_db_id": 47},
+                    "politics": {
+                        "last_election": "1933.7.1.1",
+                        "elections_allowed": True,
+                    },
+                },
+            },
+        }
+
+        with self.assertRaisesRegex(ValueError, "politics_residuals payload requires scheduled"):
+            snapshot_from_collector_frame(frame, "collector-test")
+
     def test_root_probe_frame_requires_scheduled_map_domain_claims(self):
         frame = {
             "type": "collector_started",
@@ -1557,6 +2554,16 @@ class TestCollectorFrames(unittest.TestCase):
                         "military_factories": 0,
                         "naval_factories": 0,
                     },
+                    "research": {
+                        "completed_tech_count": 12,
+                        "research_slot_count": 4,
+                    },
+                    "politics": {
+                        "popularities": {"neutrality": 100.0},
+                        "ruling_party": "neutrality",
+                        "last_election": "1933.7.1.1",
+                        "elections_allowed": False,
+                    },
                 },
             },
             "states": {"1": {"controller": "GER"}},
@@ -1568,6 +2575,10 @@ class TestCollectorFrames(unittest.TestCase):
         self.assertTrue(any("worker_poll frame must not carry fuel" in p
                             for p in problems), problems)
         self.assertTrue(any("worker_poll frame must not carry production" in p
+                            for p in problems), problems)
+        self.assertTrue(any("worker_poll frame must not carry research" in p
+                            for p in problems), problems)
+        self.assertTrue(any("worker_poll frame must not carry politics" in p
                             for p in problems), problems)
         self.assertTrue(any("worker_poll frame must not carry states" in p
                             for p in problems), problems)
@@ -1582,7 +2593,15 @@ class TestCollectorFrames(unittest.TestCase):
             "abi_version": 1,
             "date": "1936.1.2.1",
             "capture_boundary": "worker_poll",
-            "domains": ["clock", "fuel_live", "production_live", "state_control"],
+            "domains": [
+                "clock",
+                "fuel_live",
+                "tech_live",
+                "politics_live",
+                "politics_residuals",
+                "production_live",
+                "state_control",
+            ],
         }
 
         problems = validate_collector_frame(frame)
@@ -1603,6 +2622,7 @@ class TestCollectorFrames(unittest.TestCase):
             "provinces": {
                 "11": {"controller": "Germany"},
                 "12": {"controller": "GER", "state_id": "1"},
+                "13": {"controller": None, "controller_tag_db_id": "454"},
             },
         }
 
@@ -1614,6 +2634,8 @@ class TestCollectorFrames(unittest.TestCase):
                         problems)
         self.assertTrue(any("province '12'.state_id" in p for p in problems),
                         problems)
+        self.assertTrue(any("province '13'.controller_tag_db_id" in p
+                            for p in problems), problems)
 
     def test_transport_metadata_types_validate(self):
         frame = {

@@ -53,25 +53,82 @@ current product status and acceptance gates, and
   every accepted DLL frame and embeds the same byte stream into finalized
   `.battleplan` files at `payload/<game>/collector_raw/collector_frames.jsonl`.
   The replay store still keeps one canonical snapshot per unique game hour, so
-  the raw stream is where duplicate 10 ms samples survive for future combat,
-  movement, and event extraction.
-- Country identity/scalars use a preflight cache/control-contract path:
-  `tag_db_id:country_object_ptr` plus `tag_db_id:country_record_ptr`, validated
-  by the DLL per frame. Warm startup validates `country_objects.json` for
-  object-backed scalars and `country_records.json` for record-backed political
-  power; record rows are additive and must not reduce object-row coverage.
-  `country_object_scan` must stay false for normal and speed-five proof runs.
+  the raw stream is where duplicate 10 ms samples survive for movement,
+  land-combat lifecycle events/deltas, and future event extraction.
+- Country identity/scalars are now DLL-native for object-backed fields. The DLL
+  reads the `CGameState+0x310` tag-db-id-indexed `CCountry*` table, validates
+  each candidate by heap range, country vtable, object-owned `tag_db_id`,
+  tag-table decode, stable name, and duplicate checks, then emits
+  `country_scalars` without a country preflight bridge. Political power is also
+  emitted on this path by validating `CCountry+0xF90 -> CPoliticalStatus` and
+  reading `CPoliticalStatus+0xE0`.
+- The preflight cache/control-contract path remains for fallback/bootstrap and
+  for any future record-only fields: `tag_db_id:country_object_ptr` plus
+  `tag_db_id:country_record_ptr`, validated by the DLL per frame. Record rows
+  are additive and must not reduce object-row coverage. `country_object_scan`
+  must stay false for normal and speed-five proof runs.
 - The collector-frame adapter can fold `state_ownership`, `state_control`, and
   `province_control` rows when a collector frame explicitly claims those
-  domains. Session manifests summarize raw-frame country/state/province row
-  counts.
-- `collector_map_bridge` can preflight and cache all state owner/controller
-  roots; same-process cache hits are fast enough for recording setup. Scheduled
-  DLL emission of those rows is wired and should be proven in live speed-five
-  sessions before treating it as fully accepted.
-- Province-control dense-array relocation/cache is not yet a normal recording
-  source. Cache validation is stricter now, but cold discovery is still opt-in
-  and unavailable cache paths fail closed quickly.
+  domains. It also folds scheduled `politics_live` rows from the DLL into
+  `countries.*.politics` for ruling party, party popularities, active idea
+  tokens, typed `laws`, broad non-law `ideas_other`, narrower
+  `national_spirits`, idea count, election frequency, party count, and
+  low-confidence diagnostics, and scheduled `politics_residuals` rows for
+  `last_election` and `elections_allowed`. `appointed_advisors`,
+  `appointed_advisor_details`, and `appointed_advisor_slots` are folded when the
+  session supplies a validated static advisor contract built from `game_defs` /
+  `common/characters`; the details include `{idea_token, slot, ledger,
+  character}` without sweeping `CAdvisor` heap objects in the hot path. Typed
+  law / non-law / national-spirit classification is folded when the session
+  supplies the static `common/ideas` group contract. The DLL intersects those
+  contracts with live active ideas. Missing or invalid contracts omit the
+  relevant leaves, while measured-empty `[]` is real. Live speed-five proof
+  `collector_live_politics_decisions_probe` supplied 3722 advisor tokens and a
+  6474-row idea-group contract, advanced 2 game hours with zero skipped hours,
+  emitted 3 scheduled politics/decisions frames, and kept worker-poll politics
+  payloads at zero.
+  It also folds scheduled `decisions_live` rows into
+  `countries.*.decisions.status_present` and `.timed_live`; measured-empty
+  `timed_live = []` is protected only for tags actually measured by the
+  collector.
+  It also folds scheduled `focus_live` rows into `countries.*.focus` for
+  `focus_tree`, `completed`, `completed_count`, `current`,
+  `current_continuous`, and `progress`; measured-empty `completed = []` is
+  protected only for tags actually measured by `focus_live`, and `paused`
+  remains save-only until a live byte is pinned. Live proof
+  `collector_live_focus_probe` advanced 2 game hours with zero skipped hours,
+  emitted 3 scheduled `focus_live` frames, emitted 1065 country focus rows, and
+  kept worker-poll focus payloads at zero.
+  It also folds scheduled `tech_live` rows into
+  `countries.*.research.tech_count`, `.research_slots`, and
+  `.in_progress_live` from the DLL `CCountry+0xF60 -> CTechnologyStatus`
+  slice. The DLL reads the bounded `CTechnologyStatus+0xA0` `CResearchSlot*`
+  vector and emits raw slot rows only; tech-token resolution, progress
+  percentage, and ETA remain gated on separate validated inputs. Worker polls
+  must not carry research payloads.
+  It can fold scheduled `projects_live` frames into top-level
+  `special_projects` with `source = "C"`. The first DLL project slice emits
+  validated facilities, scientists, and currently worked project rows from the
+  special-project heap pool, but `special_projects_scan` is disabled by default
+  because the cold heap-scan proof exceeded its wall cap before any persisted
+  frame/manifest and the HOI4 process was gone afterward. Project
+  progress/completion, owner attribution, resolved project definition tokens,
+  and a bounded root/cache path remain open. Worker polls must not carry
+  `special_projects`, and pointer/tag-db diagnostics are rejected before
+  folding.
+  Session/probe manifests summarize
+  country-object identity status, scalar-frame counts, focus-domain sample
+  counts, tech-domain sample counts, project-domain sample counts, politics-
+  domain sample counts, residual politics-domain sample counts, and raw-frame
+  country/state/province row counts.
+- Normal map-control recording no longer depends on the old state/province
+  preflight caches: the DLL can read the static `CProvince*` array from
+  `CGameState+0x2B0`, derive state owner/controller rows through
+  `CProvince+0xC0`, and publish province controller TAGs or raw tag-db ids
+  through `CProvince+0x188`. The old bridge caches remain useful as
+  corroboration/fallback. A live speed-five probe captured 1081 state rows and
+  10272 province rows in each scheduled frame with zero skipped hours and no map
+  preflight bridges supplied.
 - Division movement uses a cache-first `division_bodies.json` bridge. Normal
   recording validates cached body pins without scanning; use
   `--allow-division-cold-scan` only as an explicit bootstrap step because cold
@@ -111,11 +168,15 @@ later worker burst fails after earlier verified frames, the session writes the
 prefix replay and manifest, then exits fail-closed with the attach error.
 
 Country identity rows include the live `tag_db_id` from the collector tag table
-even when country-object scalar scanning is disabled. Treat that id as the safe
-join key for future state/province/division/country-object work; do not enable
+even when country scalar capture is unavailable. Treat that id as the safe join
+key for future state/province/division/country-object work; do not enable
 heap-wide country-object scans in normal recorder runs.
 The worker control file and probe manifest explicitly record
-`country_object_scan: false` for this reason.
+`country_object_scan: false` for this reason. A current successful scalar run
+should show `country_object_identity_statuses` containing
+`gamestate_country_table_verified` and nonzero `country_scalars_frames`; if a
+run only has `country_identity`, it captured identity but not live country
+scalars.
 
 When `collector_probe_record` is asked for `--until-game-hours`, hourly cadence
 is a required proof: the run must advance at least the requested number of

@@ -67,6 +67,28 @@ class TestSourceMap(unittest.TestCase):
         self.assertEqual(schema.source_of("countries.POR.production.military_lines"), "C/M")
         self.assertEqual(schema.source_of("countries.POR.production.naval_factories"), "C/M")
 
+    def test_collector_focus_source(self):
+        self.assertEqual(schema.source_of("countries.POR.focus.focus_tree"), "C/M/S")
+        self.assertEqual(schema.source_of("countries.POR.focus.completed"), "C/M/S")
+        self.assertEqual(schema.source_of("countries.POR.focus.current"), "C/M/S")
+        self.assertEqual(
+            schema.source_of("countries.POR.focus.current_continuous"), "C/M")
+        self.assertEqual(schema.source_of("countries.POR.focus.progress"), "C/M/S")
+
+    def test_collector_research_source(self):
+        self.assertEqual(schema.source_of("countries.POR.research.tech_count"), "C/M/S")
+        self.assertEqual(
+            schema.source_of("countries.POR.research.research_slots"), "C/M/S")
+        self.assertEqual(
+            schema.source_of("countries.POR.research.in_progress_live"), "C/M")
+
+    def test_collector_special_projects_source(self):
+        self.assertEqual(schema.source_of("special_projects.facilities"), "C/M")
+        self.assertEqual(schema.source_of("special_projects.projects"), "C/M")
+        self.assertEqual(schema.source_of("special_projects.scientists"), "C/M")
+        self.assertEqual(
+            schema.source_of("special_projects.scientists.0.traits"), "M")
+
     def test_collector_divisions_contract_source(self):
         contract = schema.COLLECTOR_DOMAIN_CONTRACTS["divisions"]
         self.assertEqual(contract["cadence_class"], "scheduled_hourly_snapshot")
@@ -86,7 +108,7 @@ class TestSourceMap(unittest.TestCase):
         self.assertIsNone(contract["snapshot_path"])
         self.assertEqual(
             contract["root_contract_status"],
-            "blocked_pending_pinned_root_or_hook",
+            "pinned_live_raw_stream",
         )
         self.assertEqual(contract["identity_rule"], "land_combat:<combat_id>:<generation>")
         self.assertIn("attacker_divisions", contract["nullable_side_fields"])

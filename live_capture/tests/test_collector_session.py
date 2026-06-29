@@ -69,6 +69,94 @@ class TestCollectorSession(unittest.TestCase):
         self.assertEqual(summary["state_control_frames"], 1)
         self.assertEqual(summary["province_control_frames"], 1)
         self.assertEqual(summary["state_ownership_frames"], 1)
+        self.assertEqual(summary["country_scalars_frames"], 0)
+        self.assertEqual(summary["country_rows_with_scalar_payloads"], 0)
+
+    def test_collector_frame_payload_summary_counts_country_scalar_source(self):
+        summary = cs._collector_frame_payload_summary([
+            {
+                "domains": ["clock", "country_identity"],
+                "root_probe": {
+                    "country_object_identity": {
+                        "status": "country_database_root_insufficient",
+                        "object_count": 0,
+                        "scan_ms": 15,
+                    },
+                },
+                "countries": {
+                    "GER": {"present": True, "identity": {"tag_db_id": 1}},
+                },
+            },
+            {
+                "domains": [
+                    "clock",
+                    "country_identity",
+                    "country_scalars",
+                    "country_misc",
+                    "fuel_live",
+                ],
+                "root_probe": {
+                    "country_object_identity": {
+                        "status": "country_database_root_verified",
+                        "object_count": 88,
+                        "scan_ms": 3,
+                    },
+                },
+                "countries": {
+                    "POR": {
+                        "collector_object": "0x10000001000",
+                        "identity": {"tag_db_id": 47},
+                        "scalars": {
+                            "stability": 0.61,
+                            "war_support": None,
+                            "political_power": None,
+                        },
+                        "misc": {"ace_count": 1},
+                        "fuel": {"current": 10.0, "max": 20.0},
+                    },
+                    "ENG": {
+                        "collector_object": "0x10000002000",
+                        "identity": {"tag_db_id": 2},
+                        "scalars": {
+                            "stability": None,
+                            "war_support": None,
+                        },
+                    },
+                },
+            },
+        ])
+
+        self.assertEqual(summary["country_scalars_frames"], 1)
+        self.assertEqual(summary["country_misc_frames"], 1)
+        self.assertEqual(summary["fuel_live_frames"], 1)
+        self.assertEqual(summary["country_rows_with_scalar_payloads"], 2)
+        self.assertEqual(summary["country_rows_with_non_null_scalar_values"], 1)
+        self.assertEqual(summary["max_country_scalar_rows_per_frame"], 2)
+        self.assertEqual(summary["country_object_identity_statuses"], {
+            "country_database_root_insufficient": 1,
+            "country_database_root_verified": 1,
+        })
+        self.assertEqual(summary["country_object_identity_max_object_count"], 88)
+        self.assertEqual(summary["country_object_identity_max_scan_ms"], 15)
+
+    def test_map_control_quality_counts_static_province_frames_without_preflight(self):
+        quality = cs._map_control_quality_summary(
+            state_control_preflight={"enabled": False},
+            province_control_preflight={"enabled": False},
+            probe_manifest={},
+            payload_summary={
+                "scheduled_snapshot_frame_count": 3,
+                "state_ownership_frames": 0,
+                "state_control_frames": 0,
+                "province_control_frames": 3,
+                "heavy_payload_on_lightweight_frames": 0,
+            },
+        )
+
+        self.assertEqual(quality["requested_domains"], [])
+        self.assertEqual(quality["captured_domains"], ["province_control"])
+        self.assertEqual(quality["omitted_domains"], {})
+        self.assertFalse(quality["fail_closed"])
 
     def test_collector_frame_payload_summary_counts_production_live_coverage(self):
         summary = cs._collector_frame_payload_summary([
@@ -137,6 +225,249 @@ class TestCollectorSession(unittest.TestCase):
         self.assertEqual(summary["max_production_military_line_rows"], 2)
         self.assertEqual(summary["max_production_naval_line_rows"], 2)
         self.assertEqual(summary["production_on_lightweight_frames"], 1)
+        self.assertEqual(summary["heavy_payload_on_lightweight_frames"], 1)
+
+    def test_collector_frame_payload_summary_counts_focus_live_coverage(self):
+        summary = cs._collector_frame_payload_summary([
+            {
+                "capture_boundary": "scheduled_hour_snapshot",
+                "domains": ["clock", "focus_live"],
+                "countries": {
+                    "GER": {
+                        "focus": {
+                            "focus_tree": "german_focus",
+                            "completed": ["GER_autarky", "GER_west_wall"],
+                            "completed_count": 2,
+                            "current": "GER_air_innovation",
+                        },
+                    },
+                    "SOV": {
+                        "focus": {
+                            "focus_tree": "soviet_focus",
+                            "completed": [],
+                            "completed_count": 0,
+                            "current_continuous": "continuous_repair",
+                        },
+                    },
+                },
+            },
+            {
+                "capture_boundary": "worker_poll",
+                "domains": ["clock"],
+                "countries": {
+                    "ITA": {
+                        "focus": {
+                            "focus_tree": "italy_focus",
+                            "completed": ["ITA_army_effort"],
+                            "completed_count": 1,
+                        },
+                    },
+                },
+            },
+        ])
+
+        self.assertEqual(summary["domains_seen"], ["clock", "focus_live"])
+        self.assertEqual(summary["focus_live_frames"], 1)
+        self.assertEqual(summary["scheduled_focus_domain_frames"], 1)
+        self.assertEqual(summary["frames_with_focus_payloads"], 2)
+        self.assertEqual(summary["country_rows_with_focus_payloads"], 3)
+        self.assertEqual(summary["max_focus_country_rows_per_frame"], 2)
+        self.assertEqual(summary["max_focus_completed_rows_per_country"], 2)
+        self.assertEqual(summary["focus_on_lightweight_frames"], 1)
+        self.assertEqual(summary["heavy_payload_on_lightweight_frames"], 1)
+
+    def test_collector_frame_payload_summary_counts_tech_live_coverage(self):
+        summary = cs._collector_frame_payload_summary([
+            {
+                "capture_boundary": "scheduled_hour_snapshot",
+                "domains": ["clock", "tech_live"],
+                "countries": {
+                    "GER": {
+                        "research": {
+                            "completed_tech_count": 120,
+                            "research_slot_count": 4,
+                            "active_research": [
+                                {"slot_index": 0, "tech_handle_raw": 1},
+                                {"slot_index": 1, "tech_handle_raw": 2},
+                            ],
+                        },
+                    },
+                    "SOV": {
+                        "research": {
+                            "completed_tech_count": 0,
+                            "research_slot_count": 3,
+                            "active_research": [],
+                        },
+                    },
+                },
+            },
+            {
+                "capture_boundary": "worker_poll",
+                "domains": ["clock"],
+                "countries": {
+                    "ITA": {
+                        "research": {
+                            "completed_tech_count": 18,
+                            "research_slot_count": 4,
+                        },
+                    },
+                },
+            },
+        ])
+
+        self.assertEqual(summary["domains_seen"], ["clock", "tech_live"])
+        self.assertEqual(summary["tech_live_frames"], 1)
+        self.assertEqual(summary["scheduled_tech_domain_frames"], 1)
+        self.assertEqual(summary["frames_with_research_payloads"], 2)
+        self.assertEqual(summary["country_rows_with_research_payloads"], 3)
+        self.assertEqual(summary["max_research_country_rows_per_frame"], 2)
+        self.assertEqual(summary["max_research_active_rows_per_country"], 2)
+        self.assertEqual(summary["tech_on_lightweight_frames"], 1)
+        self.assertEqual(summary["heavy_payload_on_lightweight_frames"], 1)
+
+    def test_collector_frame_payload_summary_counts_projects_live_coverage(self):
+        summary = cs._collector_frame_payload_summary([
+            {
+                "capture_boundary": "scheduled_hour_snapshot",
+                "domains": ["clock", "projects_live"],
+                "special_projects": {
+                    "facilities": [
+                        {"id": 1},
+                        {"id": 2},
+                    ],
+                    "projects": [
+                        {"id": 10},
+                    ],
+                    "scientists": [
+                        {"char_id": 100},
+                        {"char_id": 101},
+                        {"char_id": 102},
+                    ],
+                    "source": "C",
+                },
+            },
+            {
+                "capture_boundary": "scheduled_hour_snapshot",
+                "domains": ["clock", "projects_live"],
+                "special_projects": {
+                    "facilities": [],
+                    "projects": [],
+                    "scientists": [],
+                    "source": "C",
+                },
+            },
+            {
+                "capture_boundary": "worker_poll",
+                "domains": ["clock"],
+                "special_projects": {
+                    "facilities": [{"id": 3}],
+                    "projects": [],
+                    "scientists": [],
+                    "source": "C",
+                },
+            },
+        ])
+
+        self.assertEqual(summary["domains_seen"], ["clock", "projects_live"])
+        self.assertEqual(summary["projects_live_frames"], 2)
+        self.assertEqual(summary["scheduled_projects_domain_frames"], 2)
+        self.assertEqual(summary["frames_with_special_projects_payloads"], 3)
+        self.assertEqual(summary["special_project_facility_rows"], 3)
+        self.assertEqual(summary["special_project_rows"], 1)
+        self.assertEqual(summary["special_project_scientist_rows"], 3)
+        self.assertEqual(summary["max_special_project_facilities_per_frame"], 2)
+        self.assertEqual(summary["max_special_project_rows_per_frame"], 1)
+        self.assertEqual(summary["max_special_project_scientists_per_frame"], 3)
+        self.assertEqual(summary["projects_on_lightweight_frames"], 1)
+        self.assertEqual(summary["heavy_payload_on_lightweight_frames"], 1)
+
+    def test_collector_frame_payload_summary_counts_politics_live_coverage(self):
+        summary = cs._collector_frame_payload_summary([
+            {
+                "capture_boundary": "scheduled_hour_snapshot",
+                "domains": ["clock", "politics_live"],
+                "countries": {
+                    "POR": {
+                        "politics": {
+                            "popularities": {"neutrality": 100.0},
+                            "ruling_party": "neutrality",
+                            "ideas": ["war_economy", "sour_loser"],
+                        },
+                    },
+                    "GER": {
+                        "politics": {
+                            "popularities": {"fascism": 80.0},
+                            "ruling_party": "fascism",
+                            "ideas": ["autarky"],
+                        },
+                    },
+                },
+            },
+            {
+                "capture_boundary": "worker_poll",
+                "domains": ["clock"],
+                "countries": {
+                    "ITA": {
+                        "politics": {
+                            "popularities": {"fascism": 60.0},
+                            "ruling_party": "fascism",
+                            "ideas": ["idea_a", "idea_b", "idea_c"],
+                        },
+                    },
+                },
+            },
+        ])
+
+        self.assertEqual(summary["domains_seen"], ["clock", "politics_live"])
+        self.assertEqual(summary["politics_live_frames"], 1)
+        self.assertEqual(summary["scheduled_politics_domain_frames"], 1)
+        self.assertEqual(summary["frames_with_politics_payloads"], 2)
+        self.assertEqual(summary["country_rows_with_politics_payloads"], 3)
+        self.assertEqual(summary["max_politics_country_rows_per_frame"], 2)
+        self.assertEqual(summary["max_politics_idea_rows_per_country"], 3)
+        self.assertEqual(summary["politics_on_lightweight_frames"], 1)
+        self.assertEqual(summary["heavy_payload_on_lightweight_frames"], 1)
+
+    def test_collector_frame_payload_summary_counts_politics_residuals_coverage(self):
+        summary = cs._collector_frame_payload_summary([
+            {
+                "capture_boundary": "scheduled_hour_snapshot",
+                "domains": ["clock", "politics_residuals"],
+                "countries": {
+                    "POR": {
+                        "politics": {
+                            "last_election": "1933.7.1.1",
+                            "elections_allowed": False,
+                        },
+                    },
+                    "GER": {
+                        "politics": {
+                            "last_election": "1933.3.5.1",
+                            "elections_allowed": True,
+                        },
+                    },
+                },
+            },
+            {
+                "capture_boundary": "worker_poll",
+                "domains": ["clock", "politics_residuals"],
+                "countries": {
+                    "ITA": {
+                        "politics": {
+                            "elections_allowed": False,
+                        },
+                    },
+                },
+            },
+        ])
+
+        self.assertEqual(summary["domains_seen"], ["clock", "politics_residuals"])
+        self.assertEqual(summary["politics_residuals_frames"], 2)
+        self.assertEqual(summary["scheduled_politics_residuals_domain_frames"], 1)
+        self.assertEqual(summary["frames_with_politics_residual_payloads"], 2)
+        self.assertEqual(summary["country_rows_with_politics_residual_payloads"], 3)
+        self.assertEqual(summary["max_politics_residual_country_rows_per_frame"], 2)
+        self.assertEqual(summary["politics_residuals_on_lightweight_frames"], 1)
         self.assertEqual(summary["heavy_payload_on_lightweight_frames"], 1)
 
     def test_collector_frame_payload_summary_counts_raw_stream_frames(self):
@@ -346,6 +677,138 @@ class TestCollectorSession(unittest.TestCase):
         self.assertEqual(
             session_manifest["map_control_quality"]["omitted_domains"], {})
         self.assertFalse(session_manifest["map_control_quality"]["fail_closed"])
+
+    def test_session_passes_advisor_token_filter_preflight_to_probe(self):
+        original_record_probes = cs.record_probes
+        original_advisor_preflight = cs.resolve_advisor_token_filter_preflight
+        original_idea_group_preflight = cs.resolve_idea_group_filter_preflight
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+
+                def fake_advisor_preflight(pid):
+                    self.assertEqual(pid, 557)
+                    return _AdvisorPreflightResult(
+                        {
+                            "enabled": True,
+                            "status": "resolved",
+                            "source": "game_defs.common_characters.vanilla",
+                            "token_count": 2,
+                            "sha256": "a" * 64,
+                        },
+                        encoded="ENG_maxwell_aitken;POR_salazar",
+                    )
+
+                def fake_idea_group_preflight(pid):
+                    self.assertEqual(pid, 557)
+                    return _AdvisorPreflightResult(
+                        {
+                            "enabled": True,
+                            "status": "resolved",
+                            "source": "game_defs.common_ideas.vanilla",
+                            "row_count": 2,
+                            "sha256": "b" * 64,
+                        },
+                        encoded="free_trade=trade_laws;war_economy=economy",
+                    )
+
+                def fake_record_probes(pid, dll, out_root, **kwargs):
+                    del dll
+                    self.assertEqual(pid, 557)
+                    self.assertEqual(
+                        kwargs.get("advisor_token_filter"),
+                        "ENG_maxwell_aitken;POR_salazar",
+                    )
+                    self.assertEqual(
+                        kwargs.get("idea_group_filter"),
+                        "free_trade=trade_laws;war_economy=economy",
+                    )
+                    run_dir = Path(out_root) / ("20260628T031000Z_pid%d" % pid)
+                    run_dir.mkdir(parents=True)
+                    frame = _frame(
+                        "1936.1.1.1",
+                        100,
+                        sequence=1,
+                        pid=pid,
+                        capture_boundary="scheduled_hour_snapshot",
+                    )
+                    frame_name = "collector_started_0000.json"
+                    _write_json(run_dir / frame_name, frame)
+                    _write_json(run_dir / "manifest.json", {
+                        "type": "collector_probe_manifest",
+                        "session_id": run_dir.name,
+                        "pid": pid,
+                        "game_id": "advisor_preflight",
+                        "stop_reason": "repeat_exhausted",
+                        "sample_count": 1,
+                        "unique_game_date_count": 1,
+                        "game_hours_advanced": 0,
+                        "skipped_game_hours": 0,
+                        "advisor_token_filter_supplied": True,
+                        "advisor_token_filter_tokens": 2,
+                        "advisor_token_filter_sha256": "a" * 64,
+                        "idea_group_filter_supplied": True,
+                        "idea_group_filter_rows": 2,
+                        "idea_group_filter_sha256": "b" * 64,
+                        "worker_pipe_tokens": ["token"],
+                        "monotonic_transport_sequence": True,
+                        "duplicate_transport_sequences": 0,
+                        "first_sequence": 1,
+                        "last_sequence": 1,
+                        "samples": [{
+                            "frame": frame_name,
+                            "current_game_date": frame["root_probe"]["current_game_date"],
+                            "current_game_date_raw": frame["root_probe"]["current_game_date_raw"],
+                            "sequence": frame["sequence"],
+                        }],
+                        "hourly_requirement": {
+                            "required": False,
+                            "requested_game_hours": None,
+                            "met": True,
+                            "problems": [],
+                        },
+                    })
+                    return run_dir
+
+                cs.resolve_advisor_token_filter_preflight = fake_advisor_preflight
+                cs.resolve_idea_group_filter_preflight = fake_idea_group_preflight
+                cs.record_probes = fake_record_probes
+
+                run_dir = record_collector_session(
+                    557,
+                    Path("collector.dll"),
+                    root / "out",
+                    game_id="advisor_preflight",
+                    duration_s=1.0,
+                )
+                session_manifest = _read_json(run_dir / "session_manifest.json")
+        finally:
+            cs.record_probes = original_record_probes
+            cs.resolve_advisor_token_filter_preflight = original_advisor_preflight
+            cs.resolve_idea_group_filter_preflight = original_idea_group_preflight
+
+        self.assertEqual(
+            session_manifest["advisor_token_filter_preflight"]["status"],
+            "resolved",
+        )
+        self.assertTrue(session_manifest["advisor_token_filter_supplied"])
+        self.assertEqual(session_manifest["advisor_token_filter_tokens"], 2)
+        self.assertEqual(len(session_manifest["advisor_token_filter_sha256"]), 64)
+        self.assertEqual(
+            session_manifest["idea_group_filter_preflight"]["status"],
+            "resolved",
+        )
+        self.assertTrue(session_manifest["idea_group_filter_supplied"])
+        self.assertEqual(session_manifest["idea_group_filter_rows"], 2)
+        self.assertEqual(len(session_manifest["idea_group_filter_sha256"]), 64)
+        self.assertNotIn(
+            "POR_salazar",
+            json.dumps(session_manifest, sort_keys=True),
+        )
+        self.assertNotIn(
+            "war_economy",
+            json.dumps(session_manifest, sort_keys=True),
+        )
 
     def test_session_fails_closed_when_requested_state_control_is_omitted(self):
         original_record_probes = cs.record_probes
@@ -1229,6 +1692,18 @@ class _DivisionPreflightResult:
         self.diagnostics = diagnostics
         self.status = diagnostics.get("status")
         self.row_count = diagnostics.get("row_count", 0)
+        self.encoded = encoded
+
+    @property
+    def usable(self):
+        return self.status == "resolved" and bool(self.encoded)
+
+
+class _AdvisorPreflightResult:
+    def __init__(self, diagnostics, *, encoded):
+        self.diagnostics = diagnostics
+        self.status = diagnostics.get("status")
+        self.token_count = diagnostics.get("token_count", 0)
         self.encoded = encoded
 
     @property

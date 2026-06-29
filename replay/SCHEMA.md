@@ -60,7 +60,11 @@ cadence. The source is documented per-field in the tables below using these tags
 fixtures, but a shipped live replay must not require save input or silently fill
 collector gaps from saves. A row counts as `C` only when the snapshot provenance
 claims the corresponding collector domain; preflight/cache success by itself is
-not captured replay state.
+not captured replay state. For country rows, `country_identity` alone means the
+tag table was captured. `country_scalars` requires a validated `CCountry*`
+source; `gamestate_country_table_verified` is the current DLL source for
+object-backed scalars, while `country_database_root_insufficient` is fallback
+evidence only and does not by itself prove live scalar coverage.
 
 A snapshot does **not** repeat the tag on every value at runtime — that would bloat
 every file. Instead each snapshot records, **once**, which domains were populated and
@@ -290,15 +294,23 @@ are `null`.
 ### 3.3 `politics`
 | field | type | source | notes |
 |-------|------|--------|-------|
-| `stability` | float\|null | C / M | 0..1; `C` through the country-object preflight bridge |
-| `war_support` | float\|null | C / M | 0..1; `C` through the country-object preflight bridge |
-| `political_power` | float\|null | C / M | `C` through the country-record preflight bridge |
-| `command_power` | float\|null | C / M | `C` through the country-object preflight bridge |
-| `ruling_party` | str\|null | S | e.g. `"fascism"` |
-| `party_popularities` | obj\|null | S | `{ideology: fraction}`; null until parsed |
-| `laws.economy` / `.trade` / `.conscription` | str\|null | S | token or null |
-| `ideas_all[]` | list[str] | S | every active idea token |
-| `ideas_other[]` | list[str] | S | spirits/advisors/traits (laws stripped) |
+| `stability` | float\|null | C / M | 0..1; `C` through the validated `CCountry*` source, normally `CGameState+0x310` |
+| `war_support` | float\|null | C / M | 0..1; `C` through the validated `CCountry*` source, normally `CGameState+0x310` |
+| `political_power` | float\|null | C / M | `C` normally validates `CCountry+0xF90 -> CPoliticalStatus` and reads `+0xE0`; record bridge is fallback only |
+| `command_power` | float\|null | C / M | `C` through the validated `CCountry*` source, normally `CGameState+0x310` |
+| `ruling_party` | str\|null | C / M / S | e.g. `"fascism"`; `C` scheduled through `CCountry+0xF90 -> CPoliticalStatus+0xD0` |
+| `party_popularities` | obj\|null | C / M / S | `{ideology: percent}`; `C` scheduled from the `CPoliticalStatus+0x20` party vector |
+| `ideas[]` | list[str]\|null | C / M | ordered active idea tokens, including law ideas; `C` scheduled from the `CPoliticalStatus+0x50` ideas vector |
+| `idea_count` / `party_count` / `election_frequency` / `low_confidence` | int/bool\|null | C / M | scheduled politics diagnostics and election cadence |
+| `last_election` / `elections_allowed` | str/bool\|null | C / M | scheduled `politics_residuals`; `C` decodes `CPoliticalStatus+0xA0` DateHour and reads `+0xEC` bool |
+| `appointed_advisors[]` | list[str]\|null | C / M | `C` scheduled under `politics_residuals` when a validated static advisor-token contract is supplied; static catalog comes from `game_defs` / `common/characters`, live state comes from active ideas, missing/invalid contracts omit the leaf, measured-empty `[]` is real, and speed-five proof `collector_live_politics_decisions_probe` emitted scheduled advisor leaves with zero worker-poll politics payloads |
+| `appointed_advisor_details[]` | list[obj]\|null | C / M | hired advisor rows enriched from the static `common/characters` contract: `{idea_token, slot, ledger, character}`; this is not full runtime `CAdvisor` identity, but gives replay consumers typed cabinet buckets without a heap sweep |
+| `appointed_advisor_slots` | obj\|null | C / M | `{slot: [idea_token...]}` convenience index derived from `appointed_advisor_details[]` |
+| `laws.economy` / `.trade` / `.conscription` | str\|null | S / M* | save/oracle law slots, token or null |
+| `laws.economy` / `.trade_laws` / `.mobilization_laws` | str\|null | C / M | collector-classified live law buckets from the active ideas vector when a validated static `common/ideas` group contract is supplied; measured in `collector_live_politics_decisions_probe` |
+| `ideas_all[]` | list[str] | S | save/oracle active idea list; live `ideas[]` is the ordered collector list |
+| `ideas_other[]` | list[str] | C / M / S | broad non-law active ideas (laws stripped); collector emits this ordered list when the idea-group contract is supplied, with measured-empty `[]` protected only for measured tags |
+| `national_spirits[]` | list[str] | C / M / S | active `common/ideas` category `country` tokens; this is the narrower national-spirit subset of `ideas_other[]`, with measured-empty `[]` protected only for measured tags |
 | `cabinet` | obj\|null | S | `{leader, advisors[], theorists[]}`; null until parsed |
 | `is_human` | bool\|null | S/M | `is_ai = no` at start (DESIGN §4 — humans flagged) |
 | `is_major` | bool\|null | S | |
@@ -309,25 +321,26 @@ are `null`.
 ### 3.4 `research`
 | field | type | source | notes |
 |-------|------|--------|-------|
-| `tech_count` | int\|null | S | |
+| `tech_count` | int\|null | C / M / S | completed technology count; scheduled collector `tech_live` reads `CCountry+0xF60 -> CTechnologyStatus` completed-vector size, legacy memory and save remain fallbacks |
 | `technologies[]` | list | S/D | each: `name`, `level`, `date` (completion, Clausewitz), `research_points` |
 | `in_progress[]` | list | S/D / M\* | each: `name`, `points_factor`; derived fields may include `progress_points`, `required_points_base`, `remaining_points_base`, `progress_pct`, `eta_days`, `progress_basis`, or an unavailable reason when the active progress row / static cost / speed input is absent |
-| `in_progress_live[]` | list\|null | M/D | live raw slots: `slot_index`, raw tech handles, `progress_raw`, optional `tech_name` / `progress_units`; derived `progress_pct` only when live progress + static cost are safe; live ETA requires live `points_factor` and otherwise gets `eta_unavailable_reason` |
+| `in_progress_live[]` | list\|null | C / M / D | live raw slots: `slot_index`, raw tech handles, `progress_raw`; scheduled collector `tech_live` reads the bounded `CTechnologyStatus+0xA0` `CResearchSlot*` vector, legacy memory remains a fallback, optional `tech_name` / `progress_units` and derived `progress_pct` appear only when registry/static-cost/speed inputs are safe |
 | `doctrine` | obj\|null | S/D | optional save-backed doctrine manager fold from `doctrine.json`; TAG rows expose `{raw, completed[], completed_count, in_progress[], source}` under the country research surface. Numeric/non-TAG save keys stay in top-level `doctrine_save` without an inferred country bridge. No live doctrine-manager root is claimed. |
-| `research_slots` | int\|null | S | |
+| `research_slots` | int\|null | C / M / S | current research slot capacity; scheduled collector `tech_live` reads the bounded `CTechnologyStatus` slot count, legacy memory and save remain fallbacks |
 | `original_research_slots` | int\|null | S | |
 | `research_bonuses[]` | list | S | each: `name`, `categories[]`, `bonus`, `kind` |
 
 ### 3.5 `focus`
 | field | type | source | notes |
 |-------|------|--------|-------|
-| `focus_tree` | str\|null | S | id of the active tree |
+| `focus_tree` | str\|null | C / M / S | id of the active tree; scheduled collector `focus_live` reads `CCountry+0x1370 -> CFocusTree` |
 | `continuous_focus_palette` | str\|null | S | |
-| `completed[]` | list[str] | S/D | completed focus ids (diff → completion timeline) |
-| `completed_count` | int\|null | S | |
-| `current` | str\|null | S / M\* | focus in progress |
-| `progress` | number\|null | S / M\* | progress on `current` |
-| `paused` | bool\|null | S | |
+| `completed[]` | list[str] | C / M / S / D | completed focus ids (diff -> completion timeline); scheduled collector `focus_live` reads the completed compact vector and measured-empty `[]` is protected by measured TAG |
+| `completed_count` | int\|null | C / M / S | scheduled collector `focus_live` reads the completed-vector size |
+| `current` | str\|null | C / M / S | focus in progress |
+| `current_continuous` | str\|null | C / M | active continuous focus; live-only leaf, mutually exclusive with `current` |
+| `progress` | number\|null | C / M / S | progress days on the active national or continuous focus |
+| `paused` | bool\|null | S | live pause byte is not pinned; save-only for now |
 
 ### 3.6 `production`
 | field | type | source | notes |
@@ -344,6 +357,8 @@ are `null`.
 | `active[]` | list | S | active decisions/categories; null until parsed → `[]` ok |
 | `timed[]` | list | S | timed decisions + cooldowns |
 | `missions[]` | list | S | ongoing missions |
+| `status_present` | obj\|null | C / M | non-empty `CDecisionStatus` vector counts from scheduled `decisions_live` |
+| `timed_live[]` | list\|null | C / M | active timed decisions from scheduled `decisions_live` or legacy `decisions_market`; each row has `decision`, `days`, `state`, `state_name`; measured-empty `[]` means no active timed decision for that measured tag |
 
 > One-shot decision **clicks** are not stored here (DESIGN §4 — only recoverable when
 > they persist state or fire a log marker; surfaced as derived events §9, not country
@@ -379,7 +394,7 @@ The the game 1.19 unified CHARACTER system, resolved to names + assignments by t
 |-------|------|--------|-------|
 | `leader` | obj\|null | S | active country leader (ruling party): `{name, token, ideology, traits[], expire, portrait_gfx, char_id}` |
 | `party_leaders[]` | list | S | all ideology-group leaders + `party`, `popularity` (the political picture) |
-| `ruling_party` | str\|null | S | ideology group currently in power |
+| `ruling_party` | str\|null | C / M / S | ideology group currently in power; collector politics is authoritative when present |
 | `generals[]` / `field_marshals[]` / `admirals[]` | list | S | military leaders. Each: `name`, `token`, `role`, `level` (`skill`), `experience`, `attack`/`defense`/`planning`/`logistics` (army) or `maneuvering`/`coordination` (navy), `traits[]`, `preferred_tactic`, `penalty`, `captured`, `unit_leader_id`, `assignment` (`{kind: army_group/army/fleet, name}` or `null` = reserve), `portrait_gfx` |
 | `advisors[]` | list | S | cabinet / high command / theorists / chiefs: `{name, token, slot, ledger, idea_token, political_power, traits[], portrait_gfx}` |
 | `counts` | obj\|null | S/D | `{generals, field_marshals, admirals, advisors, roster_size}` |
@@ -435,8 +450,8 @@ stays `0`, e.g. a nuke RECORD with `amount=0` yields `nukes_total=0`).
 
 | field | type | source | notes |
 |-------|------|--------|-------|
-| `owner` | str\|null | C / M / S | TAG; `null` = genuinely ownerless. `C` only when a collector `state_ownership` frame/domain supplied it. |
-| `controller` | str\|null | C / M / S | TAG. `C` only when a collector `state_control` frame/domain supplied it. |
+| `owner` | str\|null | C / M / S | TAG; `null` = genuinely ownerless. `C` only when a collector `state_ownership` frame/domain supplied it; normal DLL frames derive state objects from `CProvince+0xC0`. |
+| `controller` | str\|null | C / M / S | TAG. `C` only when a collector `state_control` frame/domain supplied it; normal DLL frames derive state objects from `CProvince+0xC0`. |
 | `is_core_of[]` | list[str] | S | cores; null until parsed → `[]` ok |
 | `is_claimed_by[]` | list[str] | S | |
 | `buildings` | obj\|null | S / M\* | state-scoped levels (`infrastructure, industrial_complex, arms_factory, dockyard, air_base, land_fort, ...`) |
@@ -457,7 +472,7 @@ stays `0`, e.g. a nuke RECORD with `amount=0` yields `nukes_total=0`).
 
 | field | type | source | notes |
 |-------|------|--------|-------|
-| `controller` | str\|null | C / S/D / M\* | TAG. `C` only when a collector `province_control` frame/domain supplied it; the live dense-array root is still not a closed normal-recording path. |
+| `controller` | str\|null | C / S/D / M\* | TAG. `C` only when a collector `province_control` frame/domain supplied it; scheduled DLL frames now prefer the static `CProvince` controller tag-db-id root and normalize through the live tag table. |
 | `state_id` | int\|null | D | join from province→state map |
 | `supply` | float\|null | S | |
 | `rail_usage` / `route_usage` | float\|null | S | |
@@ -469,9 +484,10 @@ stays `0`, e.g. a nuke RECORD with `amount=0` yields `nukes_total=0`).
 > (sea/lake) are simply omitted — only land provinces with a controller appear.
 >
 > Collector frames may also populate this table directly. In that path the frame
-> must explicitly claim `province_control`, emit normalized TAG controllers (no
-> raw tag-db ids), and the adapter mirrors the result into
-> `map.control_by_province`.
+> must explicitly claim `province_control` and emit normalized TAG controllers.
+> Raw frames may additionally retain `controller_tag_db_id` as non-canonical
+> evidence when TAG decode misses; the adapter never folds that raw id into
+> `controller`, and only normalized TAGs are mirrored into `map.control_by_province`.
 
 ---
 
@@ -667,6 +683,29 @@ Always present; `null`-but-present until a live read folds them.
 > (`naval_air` / `supply`) AND keeps the raw plug payload in a `_live_naval_air` /
 > `_live_supply` sidecar for back-compat. No diff-engine events are derived from them
 > (region-proxy data is not eventized — it would be noisy and non-authoritative).
+
+---
+
+## 13b. `special_projects` (top-level live project catalog)
+
+World-scoped live catalog for special-project facilities, active project rows,
+and scientists. This is distinct from save-sourced country
+`extra.special_projects`; it carries engine identities that are not yet safely
+attributed back to country ownership. Always present; `null`-but-present until
+a live read folds it.
+
+| field | type | source | notes |
+|-------|------|--------|-------|
+| `facilities` | list\|null | C/M | each: `{id, province, building, active_project_handle, active, scientist_char_id, unread_prototype_rewards}` |
+| `projects` | list\|null | C/M | currently worked project rows only in the first DLL slice: `{id, static_def_handle, iterations, worked_at_facility}` |
+| `scientists` | list\|null | C/M | each: `{char_id, name_token, display_name, skills{specialization_*:int}, trait_count}` |
+| `count` | obj\|null | C/M/D | `{facilities, projects, scientists}` matching measured list lengths |
+| `source` | str\|null | - | `"C"` for scheduled DLL `projects_live`, `"M"` for legacy memory-reader folds, else `null` |
+
+The collector slice does **not** yet carry project progress/completion, owner
+attribution, or resolved project definition tokens. Scientist trait token names
+remain memory/definition-derived until the DLL emits them; `trait_count` is the
+only DLL scientist-trait field in this slice.
 
 ---
 

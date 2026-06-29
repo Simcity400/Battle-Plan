@@ -52,14 +52,26 @@ defaults off, and is not speed-five safe. Runtime country/economy capture must b
 root-anchored or hook-derived, cached before the hot loop, and reduced to bounded
 pointer validation plus direct reads during recording.
 
-Current country-scalar bridge:
+The normal DLL country-scalar source is the `CGameState+0x310` tag-db-id-indexed
+`CCountry*` table. Each candidate object is accepted only after heap/alignment
+checks, country vtable validation, object-owned `tag_db_id` validation, tag-table
+decode, stable name checks, and duplicate rejection. The older bounded
+`CountryDataBase` object-local scan still exists as fallback evidence; on the
+current live Portugal process it fails closed as
+`country_database_root_insufficient`. Political power is read on the same
+validated country-object path by following `CCountry+0xF90` to
+`CPoliticalStatus`, validating the political-status vtable and
+`CPoliticalStatus+0xC8` country backlink, then decoding fixed-point
+`CPoliticalStatus+0xE0`.
+
+Fallback country-scalar / record bridge:
 
 - the Python recorder may run `live_capture.collector_country_bridge` as a
   preflight step before bounded worker recording;
 - normal recording first reuses bounded same-process caches; `country_array.json`
   stores the located record-array token, `country_objects.json` is for
-  object-backed scalars, and `country_records.json` is for record-backed
-  political power;
+  object-backed scalars, and `country_records.json` is fallback evidence for
+  future record-only fields;
 - object-cache hits revalidate each cached country object against the country
   vtable, its own `tag_db_id`, and the live tag table before any row is passed
   to the DLL;
@@ -79,13 +91,131 @@ Current country-scalar bridge:
   emitted frame;
 - `country_object_scan` remains false for this path.
 
-Political power uses the separate country-record bridge. It is emitted only when
-the record pointer still points at the same validated country object.
+The record bridge is no longer required for political power. It remains a
+bootstrap/fallback route and should only become a normal dependency again if a
+replay-critical country value proves to exist only in the record array.
+
+Scheduled country politics:
+
+- scheduled snapshot frames may claim `politics_live` when the validated country
+  object source is still valid;
+- politics reads are rooted at the already validated `CCountry*`, then follow
+  `CCountry+0xF90` to `CPoliticalStatus`;
+- the collector validates the political-status vtable and owner backlink,
+  validates each `CPoliticalParty*` through the party vtable and its
+  `CIdeologyGroup`, reads popularity from `party+0x88`, and requires the
+  ruling-party pointer at `CPoliticalStatus+0xD0` to be a member of the parties
+  vector for the low-confidence flag to remain false;
+- active idea tokens are read from the `CPoliticalStatus+0x50` vector by exact
+  size, with each `CIdea*` gated by the known CIdea vtables before reading
+  `CIdea+0x18`;
+- scheduled snapshot frames may also claim `politics_residuals` from the same
+  validated `CPoliticalStatus`: `last_election` is decoded from the stable
+  Jomini DateHour `i32` at `+0xA0`, and `elections_allowed` is read as a stable
+  `0/1` byte at `+0xEC`;
+- appointed-advisor extraction is emitted only when collector control supplies
+  a validated static advisor contract sourced from `game_defs` /
+  `common/characters`; the collector filters the live active-ideas vector,
+  enriches hired tokens with static `{slot, ledger, character}` metadata as
+  `appointed_advisor_details` and `appointed_advisor_slots`, does not sweep
+  `CAdvisor` heap objects in the hot path, omits the leaves when the contract
+  is missing or invalid, preserves measured-empty `[]` as real, and is
+  live-proven by `collector_live_politics_decisions_probe` at speed five;
+- typed laws, non-law active ideas, and national spirits are emitted when collector control
+  supplies the static `common/ideas` idea-group contract. The collector
+  classifies the live active-ideas vector into `laws` groups
+  (`economy`, `trade_laws`, `mobilization_laws`), ordered broad `ideas_other`,
+  and narrower `national_spirits` for `common/ideas` category `country` without
+  requiring a save. `collector_live_politics_decisions_probe` supplied 6474
+  idea-group rows, advanced 2 game hours at speed five with zero skipped hours,
+  and measured Portugal laws as `civilian_economy`, `export_focus`, and
+  `volunteer_only`;
+- worker-poll frames stay light and must not carry politics payloads.
+
+Scheduled country decisions:
+
+- scheduled snapshot frames may claim `decisions_live` when the validated
+  country object source is still valid;
+- decisions are rooted at `CCountry+0xFA0 -> CDecisionStatus`; the collector
+  validates the status vtable and owner back-pointer before accepting a row;
+- `status_present` carries non-empty decision-status vector counts, and
+  `timed_live` decodes active `CTimedDecision` rows from the `+0xA0` list using
+  `CDecision+0x120` definition names, nonnegative days, state, and state name;
+- measured-empty `timed_live = []` is a real result, protected by the Python
+  frame adapter only for tags actually measured by `decisions_live`;
+- `collector_live_politics_decisions_probe` found non-empty active timed
+  decisions for 7 countries while Portugal had measured-empty `timed_live = []`.
+
+Scheduled country focus:
+
+- scheduled snapshot frames may claim `focus_live` when the validated country
+  object source is still valid;
+- focus-tree id reads follow `CCountry+0x1370 -> CFocusTree` and decode the
+  tree id from the definition string at `+0x08`;
+- focus status reads follow `CCountry+0x1380` to the focus submanager, then
+  decode the completed-focus compact vector at `+0x40/+0x48/+0x4C`, current
+  national focus at `+0x10`, current continuous focus at `+0x18`, focus ids at
+  `+0x18`, and progress days from `+0x38`;
+- completed-focus `[]` and `completed_count = 0` are measured values, not
+  missing data. The Python frame adapter records the TAGs measured by
+  `focus_live` so save backfill cannot overwrite a real measured-empty list;
+- `current` and `current_continuous` are treated as mutually exclusive by the
+  adapter. `paused` remains save-only until a live byte is pinned;
+- live proof `collector_live_focus_probe` advanced 2 game hours with zero
+  skipped hours, emitted 3 scheduled `focus_live` frames, 1065 country focus
+  rows, and zero focus payloads on worker-poll frames; Portugal measured
+  `focus_tree = portuguese_focus`, `completed_count = 22`, current
+  `POR_standardization`, and progress `69`;
+- worker-poll frames stay light and must not carry focus payloads.
+
+Scheduled country research:
+
+- scheduled snapshot frames may claim `tech_live` when the validated country
+  object source is still valid;
+- the first DLL research slice is rooted at `CCountry+0xF60 ->
+  CTechnologyStatus`; the collector validates the technology-status vtable,
+  owner backlink at `+0x130`, completed-tech vector header
+  `+0x40/+0x48/+0x4C`, and the bounded research-slot pointer vector
+  `+0xA0/+0xA8/+0xAC`;
+- emitted leaves are `completed_tech_count`, `research_slot_count`, and
+  `active_research[]` rows `{slot_index, tech_handle_raw, tech_def_index_raw,
+  progress_raw}`. The Python frame adapter folds them into
+  `countries.*.research.tech_count`, `.research_slots`, and
+  `.in_progress_live`;
+- active research rows are raw engine rows only. Tech-token resolution,
+  progress percentage, and ETA remain gated on validated tech-def registry,
+  static research cost, and live speed inputs;
+- worker-poll frames stay light and must not carry research payloads.
+
+Scheduled special projects:
+
+- scheduled snapshot frames may claim `projects_live` only when the profile
+  sentinels match and `special_projects_scan = true` is supplied in
+  `collector_control.json`;
+- the first DLL project slice scans for `CProjectFacility`, `CProject`, and
+  scientist-backed `CCharacter` objects once per collector worker, pins
+  validated identities, then revalidates and rereads those pins on scheduled
+  frames instead of sweeping the heap in the hot path;
+- emitted top-level `special_projects` rows have `source = "C"` and include
+  facilities, scientists, and currently worked project rows. Facility active
+  project handles and project static-def handles are raw engine ids, not
+  resolved tokens;
+- the slice intentionally omits project progress/completion, owner attribution,
+  and resolved project definition names until those roots/joins are separately
+  pinned;
+- the Python adapter rejects pointer/tag-db diagnostic keys, folds only frames
+  that explicitly claim `projects_live`, and preserves measured-empty `[]`
+  payloads when the DLL emits them;
+- this cold scan is disabled by default because the first live attempt exceeded
+  its wall cap before any manifest/frame output and the HOI4 process was no
+  longer present afterward. Replace it with a bounded root/cache path before
+  enabling it in normal or speed-five recording;
+- worker-poll frames stay light and must not carry `special_projects`.
 
 Scheduled country fuel:
 
-- scheduled snapshot frames may claim `fuel_live` when the preflighted country
-  object bridge is still valid;
+- scheduled snapshot frames may claim `fuel_live` when the validated country
+  object source is still valid;
 - fuel reads are rooted at the already validated `CCountry*`, then follow
   `CCountry+0x1580` to the fuel-status object and decode current/max plus
   fuel gain/cost as signed 64-bit fixed point divided by 32768;
@@ -95,8 +225,8 @@ Scheduled country fuel:
 
 Scheduled country production:
 
-- scheduled snapshot frames may claim `production_live` when the preflighted
-  country object bridge is still valid;
+- scheduled snapshot frames may claim `production_live` when the validated
+  country object source is still valid;
 - production reads are rooted at the already validated `CCountry*`, then follow
   `CCountry+0xF68` to the production manager;
 - stockpile reads use the compact vector at manager `+0x220/+0x228/+0x22C`
@@ -123,10 +253,13 @@ Recorder-side map-control contract:
   `map_control_province_bridge`, and `map_control_controller_bridge`;
 - the Rust side parses those control contracts, rejects malformed/duplicate/
   out-of-range rows, and reports validity/row counts in frame control metadata;
-- scheduled frames can emit state owner/controller rows from validated
-  `map_control_state_roots`; worker-poll frames stay light;
-- province rows still need a bounded dense-array reader/cache before the
-  `province_control` domain is enabled.
+- scheduled frames now prefer the static `CGameState+0x2B0` `CProvince*`
+  array for map control: `CProvince+0xC0` yields state objects for
+  `state_ownership` / `state_control`, and `CProvince+0x188` yields province
+  controller tag-db ids;
+- the older `map_control_state_roots`, dense province array, and controller
+  bridges remain fallbacks if the static root is unavailable; worker-poll
+  frames stay light.
 
 State-root preflight:
 
@@ -144,7 +277,7 @@ State-root preflight:
 Land-combat raw stream status:
 
 - `live_capture.collector_frames` and the Rust collector define and test a
-  bounded raw `land_combats` domain-delta contract:
+  bounded raw `land_combats` domain-delta/event contract:
   `land_combat:<combat_id>:<generation>` keys, province/age scalars, nullable
   attacker/defender division-id lists, and no raw address leakage.
 - The Rust DLL now samples active land combats from the pinned manager root
@@ -155,11 +288,18 @@ Land-combat raw stream status:
   registry identity, side vtables/counts, and division participant references
   before emitting samples. Body addresses stay internal and are represented only
   by the generation component of the replay key.
-- Manager/layout validation failures emit bounded `confidence:"gap"` markers
-  instead of disappearing silently; ended combats emit `delete` ops with
-  `after:null`.
-- Remaining promotion work is speed-five soak, battle-end/delete lifecycle
-  validation, and raw `land_combats` ingestion into the replay timeline/app.
+- Invalid manager slots are skipped when at least one active combat row validates,
+  matching the existing Python reader's fail-closed partial enumeration. If no
+  combat rows validate, manager/layout failures emit bounded `confidence:"gap"`
+  markers instead of disappearing silently.
+- Combat starts/participant or age updates, generation splits, and ends now emit
+  explicit `event` frames alongside the existing `domain_delta` samples/deletes,
+  so downstream replay code does not have to infer lifecycle transitions from
+  deltas alone. A 2026-06-29 live probe against the running vanilla game advanced
+  two game hours with 406 sampled land-combat deltas, 406 lifecycle events, and
+  no land-combat gap frames.
+- Remaining promotion work is speed-five soak and raw `land_combats` ingestion
+  into the replay timeline/app.
 
 Runtime rules:
 

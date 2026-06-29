@@ -11,8 +11,16 @@ import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .collector_attach import AttachError, attach_noop
+from .collector_advisor_tokens import (
+    advisor_token_filter_metadata,
+    encode_advisor_token_filter,
+)
 from .collector_division_bridge import encode_division_body_bridge
 from .collector_frames import latest_verified_root_probe, snapshot_from_root_probe_frame
+from .collector_idea_groups import (
+    encode_idea_group_filter,
+    idea_group_filter_metadata,
+)
 from .durable_store import DurableCaptureStore
 
 
@@ -50,6 +58,9 @@ def record_probes(
     map_control_province_bridge: Optional[str] = None,
     map_control_controller_bridge: Optional[str] = None,
     scheduled_snapshot_step_hours: int = 1,
+    advisor_token_filter: Any = None,
+    idea_group_filter: Any = None,
+    special_projects_scan: bool = False,
 ) -> Path:
     if repeat < 1:
         raise ValueError("repeat must be >= 1")
@@ -94,6 +105,18 @@ def record_probes(
         map_control_controller_bridge
     )
     map_control_province_bridge_supplied = bool(map_control_province_bridge)
+    encoded_advisor_token_filter = (
+        encode_advisor_token_filter(advisor_token_filter)
+        if advisor_token_filter is not None else None
+    )
+    advisor_token_filter_meta = advisor_token_filter_metadata(
+        encoded_advisor_token_filter
+    )
+    encoded_idea_group_filter = (
+        encode_idea_group_filter(idea_group_filter)
+        if idea_group_filter is not None else None
+    )
+    idea_group_filter_meta = idea_group_filter_metadata(encoded_idea_group_filter)
 
     run_id = _run_id(pid)
     effective_session_id = session_id or run_id
@@ -147,6 +170,9 @@ def record_probes(
                 map_control_province_bridge=map_control_province_bridge,
                 map_control_controller_bridge=map_control_controller_bridge,
                 scheduled_snapshot_step_hours=scheduled_snapshot_step_hours,
+                advisor_token_filter=encoded_advisor_token_filter,
+                idea_group_filter=encoded_idea_group_filter,
+                special_projects_scan=special_projects_scan,
             )
             worker_pipe_tokens.append(pipe_token)
         try:
@@ -289,6 +315,9 @@ def record_probes(
             "worker_duration_s": worker_duration_s,
             "worker_sample_ms": worker_sample_ms if worker_duration_s is not None else None,
             "country_object_scan": False,
+            "special_projects_scan": (
+                bool(special_projects_scan) if worker_duration_s is not None else False
+            ),
             "country_object_bridge_supplied": bool(encoded_country_object_bridge),
             "country_object_bridge_rows": country_object_bridge_rows,
             "country_record_bridge_supplied": bool(encoded_country_record_bridge),
@@ -300,6 +329,8 @@ def record_probes(
             "map_control_province_bridge_supplied": map_control_province_bridge_supplied,
             "map_control_controller_bridge_supplied": bool(map_control_controller_bridge),
             "map_control_controller_bridge_rows": map_control_controller_bridge_rows,
+            **advisor_token_filter_meta,
+            **idea_group_filter_meta,
             "scheduled_snapshot_step_hours": (
                 scheduled_snapshot_step_hours if worker_duration_s is not None else None
             ),
@@ -374,6 +405,9 @@ def _write_worker_control(
     map_control_province_bridge: Optional[str] = None,
     map_control_controller_bridge: Optional[str] = None,
     scheduled_snapshot_step_hours: int = 1,
+    advisor_token_filter: Optional[str] = None,
+    idea_group_filter: Optional[str] = None,
+    special_projects_scan: bool = False,
 ) -> tuple[Path, str]:
     control_path = Path(dll).resolve().with_name("collector_control.json")
     pipe_token = f"{time.monotonic_ns():x}"
@@ -383,6 +417,7 @@ def _write_worker_control(
         "pipe_token": pipe_token,
         "sample_ms": int(sample_ms),
         "country_object_scan": False,
+        "special_projects_scan": bool(special_projects_scan),
         "scheduled_snapshot_step_hours": int(scheduled_snapshot_step_hours),
         "sidecar_log": False,
     }
@@ -400,6 +435,10 @@ def _write_worker_control(
         payload["map_control_province_bridge"] = map_control_province_bridge
     if map_control_controller_bridge:
         payload["map_control_controller_bridge"] = map_control_controller_bridge
+    if advisor_token_filter:
+        payload["advisor_token_filter"] = advisor_token_filter
+    if idea_group_filter:
+        payload["idea_group_filter"] = idea_group_filter
     control_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
     return control_path, pipe_token
 
@@ -543,6 +582,10 @@ def _sample_manifest(
     worker_pipe_token: Optional[str],
     elapsed_wall_s: float,
 ) -> Dict[str, Any]:
+    identity = root_probe.get("country_object_identity")
+    if not isinstance(identity, dict):
+        identity = {}
+    domains = root_probe.get("domains") or []
     return {
         "sample_index": sample_index,
         "worker_burst_index": worker_burst_index,
@@ -556,13 +599,19 @@ def _sample_manifest(
         "transport_crc32": frame.get("transport_crc32"),
         "transport_bytes": frame.get("transport_bytes"),
         "profile": root_probe.get("profile"),
-        "domains": root_probe.get("domains") or [],
+        "domains": domains,
         "current_game_date": root_probe.get("current_game_date"),
         "current_game_date_raw": root_probe.get("current_game_date_raw"),
         "start_date": root_probe.get("start_date"),
         "start_date_raw": root_probe.get("start_date_raw"),
         "country_tag_count": root_probe.get("country_tag_count"),
         "country_active_count": root_probe.get("country_active_count"),
+        "country_object_identity_status": identity.get("status"),
+        "country_object_identity_object_count": identity.get("object_count"),
+        "country_object_identity_scan_ms": identity.get("scan_ms"),
+        "country_scalars_domain_present": "country_scalars" in domains,
+        "politics_live_domain_present": "politics_live" in domains,
+        "politics_residuals_domain_present": "politics_residuals" in domains,
         "tag_sample": root_probe.get("tag_sample") or [],
         "frame": frame_name,
         "snapshot": snapshot_name,
@@ -648,8 +697,48 @@ def summarize_probe_samples(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
     duplicate_hour_store_skips = sum(
         1 for s in samples if s.get("store_skipped_reason") == "duplicate_hour"
     )
+    domains_seen = sorted({
+        domain
+        for sample in samples
+        for domain in (sample.get("domains") or [])
+        if isinstance(domain, str)
+    })
+    country_identity_statuses: Dict[str, int] = {}
+    country_identity_max_object_count = 0
+    country_identity_max_scan_ms = 0
+    country_scalars_samples = 0
+    politics_live_samples = 0
+    politics_residuals_samples = 0
+    for sample in samples:
+        status = sample.get("country_object_identity_status")
+        if isinstance(status, str):
+            country_identity_statuses[status] = (
+                country_identity_statuses.get(status, 0) + 1)
+        object_count = sample.get("country_object_identity_object_count")
+        if isinstance(object_count, int) and not isinstance(object_count, bool):
+            country_identity_max_object_count = max(
+                country_identity_max_object_count, object_count)
+        scan_ms = sample.get("country_object_identity_scan_ms")
+        if isinstance(scan_ms, int) and not isinstance(scan_ms, bool):
+            country_identity_max_scan_ms = max(
+                country_identity_max_scan_ms, scan_ms)
+        if sample.get("country_scalars_domain_present") is True:
+            country_scalars_samples += 1
+        if sample.get("politics_live_domain_present") is True:
+            politics_live_samples += 1
+        if sample.get("politics_residuals_domain_present") is True:
+            politics_residuals_samples += 1
     return {
         "sample_count": len(samples),
+        "domains_seen": domains_seen,
+        "country_object_identity_statuses": dict(sorted(
+            country_identity_statuses.items())),
+        "country_object_identity_max_object_count": (
+            country_identity_max_object_count),
+        "country_object_identity_max_scan_ms": country_identity_max_scan_ms,
+        "country_scalars_samples": country_scalars_samples,
+        "politics_live_samples": politics_live_samples,
+        "politics_residuals_samples": politics_residuals_samples,
         "first_game_date": dates[0] if dates else None,
         "last_game_date": dates[-1] if dates else None,
         "unique_game_dates": unique_dates,

@@ -148,6 +148,16 @@ Current measured constraint:
   preserved 3229 division frames with those fields present and no raw-stream
   sequence gaps. Treat `in_combat` as body-ref telemetry until joined with the
   combat object stream.
+- Division lifecycle event proof: the DLL now emits explicit division raw
+  `event` frames for `division_movement_started`,
+  `division_movement_stopped`, `division_org_strength_delta`, and
+  `division_combat_ref_changed` from the same cached body samples. First-seen
+  moving divisions emit only the movement-start event, so org/strength and
+  combat-ref events are not duplicated from initial all-field samples. Live
+  2026-06-29 warm-cache proof bridged 1564 division bodies, advanced one game
+  hour in 9.31 wall seconds, preserved 846 division deltas and 842
+  `division_movement_started` events, with zero first-observation org/combat
+  noise events.
 
 Cadence:
 
@@ -160,9 +170,9 @@ Cadence:
 
 Events/deltas:
 
-- `movement_started`
+- `division_movement_started`
 - `movement_progress`
-- `movement_stopped`
+- `division_movement_stopped`
 - `movement_arrived`
 - `movement_cancelled_or_retargeted`
 - `division_combat_ref_changed`
@@ -207,9 +217,15 @@ Bridge contract now implemented for the first land-combat slice:
 - The collector keeps body continuity internal and emits only stable
   `land_combat:<combat_id>:<generation>` keys. Missing/disappeared combats emit
   a `delete` op with `after:null` for the last known generation.
-- Active-manager validation failures emit bounded `confidence:"gap"` samples
-  keyed as `land_combats:gap:<gap_kind>` instead of silently producing no
-  coverage marker.
+- Invalid active-manager slots are skipped when other rows validate, matching the
+  Python proof reader. If no rows validate, active-manager validation failures
+  emit bounded `confidence:"gap"` samples keyed as
+  `land_combats:gap:<gap_kind>` instead of silently producing no coverage marker.
+- The current DLL also emits explicit lifecycle `event` frames for
+  `land_combat_started`, `land_combat_updated`, and `land_combat_ended`. A
+  2026-06-29 live probe against the running vanilla game advanced two game hours
+  with 406 sampled land-combat deltas, 406 lifecycle events, and no land-combat
+  gap frames.
 - Remaining hardening before promotion to replay truth: speed-five live soak,
   end/delete lifecycle validation across real battle endings, and timeline/app
   ingestion for the `land_combats` raw stream.

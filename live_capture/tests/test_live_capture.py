@@ -338,8 +338,8 @@ class TestNewDomains(unittest.TestCase):
             "source": "save", "from": "buildings_save",
             "rail_by_province": {"1": 1},
             # both the redacted-key form AND a raw *_path alias, bypassing the reader
-            "melt_file": "C:" + "\\Users\\someone\\saves\\autosave.hoi4",
-            "state_detail_path": "/home/user/secret/state_detail.json"})}
+            "melt_file": "X:" + "\\redacted\\saves\\autosave.hoi4",
+            "state_detail_path": "/redacted/secret/state_detail.json"})}
         snap = asm.assemble_snapshot(res, game_id="g", date="1940.9.10.13",
                                      identity=FakeIdentity())
         # sidecar payload itself is scrubbed to basenames; raw *_path alias dropped
@@ -353,8 +353,8 @@ class TestNewDomains(unittest.TestCase):
         # the HARD guarantee: NO user path anywhere in the persisted snapshot
         blob = repr(snap)
         self.assertNotIn("Users", blob)
-        self.assertNotIn("someone", blob)
-        self.assertNotIn("/home/user", blob)
+        self.assertNotIn("redacted", blob)
+        self.assertNotIn("/" + "home/u", blob)
         self.assertNotIn("\\", blob)
 
     def test_pure_live_capture_has_null_save_provenance(self):
@@ -387,8 +387,8 @@ class TestNewDomains(unittest.TestCase):
         # feed FULL user-directory paths; the output must store BASENAMES ONLY
         # (HARD redaction rule -- no user path may leak into tracked snapshot data).
         ctx = reg.CaptureContext(extras={
-            "melt_path": "C:" + "\\Users\\someone\\saves\\autosave.hoi4",
-            "state_detail_path": "/home/user/out/state_detail.json"})
+            "melt_path": "X:" + "\\redacted\\saves\\autosave.hoi4",
+            "state_detail_path": "/redacted/out/state_detail.json"})
         plugs = {p.name: p for p in reg.default_registry()}
         out = plugs["buildings"]._reader(ctx, _FakeBS)
         self.assertEqual(out["supply_node_by_province"]["2068"], 2)
@@ -399,8 +399,9 @@ class TestNewDomains(unittest.TestCase):
         self.assertEqual(out["state_detail_file"], "state_detail.json")
         blob = repr(out)
         self.assertNotIn("Users", blob)
+        self.assertNotIn("redacted", blob)
         self.assertNotIn("\\", blob)
-        self.assertNotIn("/home", blob)
+        self.assertNotIn("/" + "home", blob)
 
     def test_save_buildings_absent_by_default(self):
         snap = asm.assemble_snapshot({}, game_id="g", date="1940.9.10.13",
@@ -1829,9 +1830,9 @@ class TestDiplomacyPoliticsLiveDomains(unittest.TestCase):
         None-guard avoids the cross-domain skeleton-[] masquerade (no _SKELETON_EMPTY_
         CONTAINER_LEAVES needed).
       * politics_live -> country.politics (party_popularities/ruling_party folded onto the
-        save-shared leaves; ideas/idea_count/election_frequency/party_count/low_confidence
-        live leaves). political_power is RESISTED here (country_scalars owns the protected
-        leaf -- the PP-overlap reconciliation).
+        save-shared leaves; ideas/ideas_other/laws/idea_count/election_frequency/party_count/
+        low_confidence live/classified leaves). political_power is RESISTED here
+        (country_scalars owns the protected leaf -- the PP-overlap reconciliation).
     NO live memory -- every reader output is a canned DomainResult. Asserts the fields land
     where Codex blessed them, measured 0 / measured-empty survive, every TAG is valid_tag-
     checked, political_power is NOT double-written, the save backstop cannot overwrite a
@@ -1861,13 +1862,19 @@ class TestDiplomacyPoliticsLiveDomains(unittest.TestCase):
                 "countries": {
                     "GER": {"popularities": {"democratic": 10.0, "communism": 5.0,
                                              "fascism": 80.0, "neutrality": 5.0},
-                            "ruling_party": "fascism", "ideas": ["a", "b"],
-                            "idea_count": 2, "election_frequency": 48,
+                            "ruling_party": "fascism",
+                            "ideas": ["war_economy", "free_trade", "sour_loser"],
+                            "ideas_other": ["sour_loser"],
+                            "national_spirits": ["sour_loser"],
+                            "laws": {"economy": "war_economy",
+                                     "trade_laws": "free_trade"},
+                            "idea_count": 3, "election_frequency": 48,
                             "party_count": 4, "low_confidence": False},
                     # measured zeros: 0 ideas (measured-empty), no elections (freq None)
                     "SOV": {"popularities": {"democratic": 0.0, "communism": 100.0,
-                                             "fascism": 0.0, "neutrality": 0.0},
-                            "ruling_party": "communism", "ideas": [],
+                            "fascism": 0.0, "neutrality": 0.0},
+                            "ruling_party": "communism", "ideas": [], "ideas_other": [],
+                            "national_spirits": [],
                             "idea_count": 0, "election_frequency": None,
                             "party_count": 4, "low_confidence": True},
                 },
@@ -1916,8 +1923,12 @@ class TestDiplomacyPoliticsLiveDomains(unittest.TestCase):
                          {"democratic": 10.0, "communism": 5.0,
                           "fascism": 80.0, "neutrality": 5.0})
         self.assertEqual(ger["ruling_party"], "fascism")
-        self.assertEqual(ger["ideas"], ["a", "b"])
-        self.assertEqual(ger["idea_count"], 2)
+        self.assertEqual(ger["ideas"], ["war_economy", "free_trade", "sour_loser"])
+        self.assertEqual(ger["ideas_other"], ["sour_loser"])
+        self.assertEqual(ger["national_spirits"], ["sour_loser"])
+        self.assertEqual(ger["laws"], {"economy": "war_economy",
+                                       "trade_laws": "free_trade"})
+        self.assertEqual(ger["idea_count"], 3)
         self.assertEqual(ger["election_frequency"], 48)
         self.assertEqual(ger["party_count"], 4)
         self.assertFalse(ger["low_confidence"])
@@ -1926,12 +1937,14 @@ class TestDiplomacyPoliticsLiveDomains(unittest.TestCase):
         self.assertIsNone(ger["political_power"])
         # measured zeros survive: 0 ideas (measured-empty []), low_confidence True, no freq
         self.assertEqual(sov["ideas"], [])
+        self.assertEqual(sov["national_spirits"], [])
         self.assertEqual(sov["idea_count"], 0)
         self.assertTrue(sov["low_confidence"])
         self.assertIsNone(sov["election_frequency"])
-        # the save-side ideas_all / ideas_other leaves are NOT polluted by the live fold
+        # save-only ideas_all is not polluted by the live fold; ideas_other is now the
+        # live-classified non-law subset when the collector emits it.
         self.assertEqual(ger["ideas_all"], [])
-        self.assertEqual(ger["ideas_other"], [])
+        self.assertEqual(ger["ideas_other"], ["sour_loser"])
 
     def test_pp_reconciliation_country_scalars_still_owns_pp(self):
         # When BOTH country_scalars AND politics_live run, country_scalars writes PP and
@@ -1946,7 +1959,7 @@ class TestDiplomacyPoliticsLiveDomains(unittest.TestCase):
         # country_scalars set PP; politics_live set ruling/ideas/etc. (no PP clobber)
         self.assertEqual(ger["political_power"], 120.5)
         self.assertEqual(ger["ruling_party"], "fascism")
-        self.assertEqual(ger["ideas"], ["a", "b"])
+        self.assertEqual(ger["ideas"], ["war_economy", "free_trade", "sour_loser"])
 
     def test_save_backstop_cannot_overwrite_live_measured_leaves(self):
         # _merge_country must re-assert every live-measured leaf AFTER the merge, incl. a
@@ -1989,6 +2002,47 @@ class TestDiplomacyPoliticsLiveDomains(unittest.TestCase):
         self.assertEqual(p["ideas_all"], ["save_idea"])      # save-only sibling preserved
         self.assertEqual(p["political_power"], 55.0)         # live unmeasured -> save filled
         self.assertEqual(p["laws"], {"economy": "war_economy"})  # save-only preserved
+
+    def test_politics_ideas_other_empty_requires_measured_tag_proof(self):
+        prot = list(asm._LIVE_COUNTRY_DOMAIN_LEAVES["politics_live"])
+        live_c = schema.empty_country()
+        live_c["politics"]["ideas_other"] = []
+        save_c = schema.empty_country()
+        save_c["politics"]["ideas_other"] = ["save_non_law_spirit"]
+
+        unproved = asm._merge_country(live_c, save_c, prot, tag="GER",
+                                      measured_leaf_tags={})
+        self.assertEqual(unproved["politics"]["ideas_other"],
+                         ["save_non_law_spirit"])
+
+        proved = asm._merge_country(
+            live_c,
+            save_c,
+            prot,
+            tag="GER",
+            measured_leaf_tags={"politics.ideas_other": {"GER"}},
+        )
+        self.assertEqual(proved["politics"]["ideas_other"], [])
+
+    def test_politics_national_spirits_empty_requires_measured_tag_proof(self):
+        prot = list(asm._LIVE_COUNTRY_DOMAIN_LEAVES["politics_live"])
+        live_c = schema.empty_country()
+        live_c["politics"]["national_spirits"] = []
+        save_c = schema.empty_country()
+        save_c["politics"]["national_spirits"] = ["save_spirit"]
+
+        unproved = asm._merge_country(live_c, save_c, prot, tag="GER",
+                                      measured_leaf_tags={})
+        self.assertEqual(unproved["politics"]["national_spirits"], ["save_spirit"])
+
+        proved = asm._merge_country(
+            live_c,
+            save_c,
+            prot,
+            tag="GER",
+            measured_leaf_tags={"politics.national_spirits": {"GER"}},
+        )
+        self.assertEqual(proved["politics"]["national_spirits"], [])
 
     def test_unmeasured_country_keeps_none_no_skeleton_masquerade(self):
         # CROSS-DOMAIN no-fabrication: at_war + ideas default None (NOT []), so a TAG created
@@ -2126,6 +2180,46 @@ class TestDiplomacyPoliticsLiveDomains(unittest.TestCase):
                          snap["provenance"]["memory"]["domains"])
         self.assertEqual(snap["countries"], {})
         self.assertIsNone(snap["diplomacy_live"]["source"])
+
+
+class TestCollectorDecisionsLiveBackstop(unittest.TestCase):
+    def test_decisions_live_timed_empty_requires_measured_tag_proof(self):
+        prot = list(asm._LIVE_COUNTRY_DOMAIN_LEAVES["decisions_live"])
+        live_c = schema.empty_country()
+        live_c["decisions"]["timed_live"] = []
+        save_c = schema.empty_country()
+        save_c["decisions"]["timed_live"] = [{
+            "decision": "save_backstop_decision",
+            "days": 7,
+            "state": 0,
+            "state_name": "active",
+        }]
+
+        unproved = asm._merge_country(
+            live_c,
+            save_c,
+            prot,
+            tag="POR",
+            measured_leaf_tags={},
+        )
+        self.assertEqual(
+            unproved["decisions"]["timed_live"],
+            [{
+                "decision": "save_backstop_decision",
+                "days": 7,
+                "state": 0,
+                "state_name": "active",
+            }],
+        )
+
+        proved = asm._merge_country(
+            live_c,
+            save_c,
+            prot,
+            tag="POR",
+            measured_leaf_tags={"decisions.timed_live": {"POR"}},
+        )
+        self.assertEqual(proved["decisions"]["timed_live"], [])
 
 
 class TestDiploRelationsLiveDomain(unittest.TestCase):
@@ -2844,11 +2938,11 @@ class TestEndToEndDryRun(unittest.TestCase):
         res = loop.capture_from_results(
             _stub_results(), identity=FakeIdentity(),
             date_info=DateInfo("1940.9.10.13", trusted=False,
-                               source="C:" + "\\Users\\someone\\private\\path.log"))
+                               source="X:" + "\\redacted\\private\\path.log"))
         notes = " ".join(res.snapshot["provenance"]["notes"])
         self.assertIn("other", notes)
         self.assertNotIn("Users", notes)
-        self.assertNotIn("someone", notes)
+        self.assertNotIn("redacted", notes)
         # a KNOWN source is still echoed verbatim (it is safe)
         res2 = loop.capture_from_results(
             _stub_results(), identity=FakeIdentity(),

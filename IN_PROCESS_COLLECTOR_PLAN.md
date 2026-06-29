@@ -381,8 +381,9 @@ Completed in the first repo/live proof pass:
     older localized-anchor `CountryIndexBridge` scan remains a fallback only.
     The DLL validates the expected vtable and `tag_db_id` before accepting an
     object row, validates record rows by checking they still point at the same
-    country object, and re-reads scalar values per emitted frame. This proves the
-    contract for save-free country scalars including political power.
+    country object, and re-reads scalar values per emitted frame. This remains
+    useful as fallback/bootstrap evidence; political power later moved to a
+    DLL-native `CPoliticalStatus` path.
 25. Same-process preflight cache added: repeated recordings against the same
     running `hoi4.exe` validate the cached country-array token with
     `locate.resolve_cached`, read the tag table from `CountryDataBase`, and avoid
@@ -402,8 +403,7 @@ Completed in the first repo/live proof pass:
     `state_control`, and `province_control` domains, mirrors province control
     into `map.control_by_province`, and refuses raw numeric/non-TAG controller
     values. Session manifests summarize max country/state/province row counts
-    across the raw frame stream. The DLL still needs a bounded root/preflight
-    source before live map-control emission is enabled.
+    across the raw frame stream.
 28. State-root map preflight cache added: `live_capture.collector_map_bridge`
     resolves the live state-object roots once, stores them under the same
     process-identity cache model as the country bridge, validates vtable +
@@ -414,26 +414,155 @@ Completed in the first repo/live proof pass:
     diagnostics. This is still a preflight bridge; cold discovery remains too
     slow for first-session speed-five startup, and province-control array roots
     still need the same cache/root treatment.
+29. Static map-control root added: the DLL can read the `CGameState+0x2B0`
+    `CProvince*` array directly, derive state rows through `CProvince+0xC0`,
+    and read province controller tag-db ids from `CProvince+0x188`. A live
+    speed-five probe emitted 1081 state rows and 10272 province rows per
+    scheduled frame with no map preflight bridges supplied and zero skipped
+    hours.
+30. Country-object root attempt added but not solved: the DLL now tries a
+    bounded `CountryDataBase` object-local scan for tag-indexed `CCountry*`
+    arrays and fails closed before emitting scalars. On the current Portugal
+    process, `collector_live_country_root_probe` advanced 4 game hours with zero
+    skipped hours and verified the replay, but the root status remained
+    `country_database_root_insufficient` and no `country_scalars` domain was
+    claimed. A cold `--allow-country-cold-scan` check did resolve 355 objects,
+    but took about 144.17 seconds, so it remains bootstrap/cache-only.
+31. Gamestate country table root added: existing memory research showed
+    `CGameState+0x310` as a tag-db-id-indexed `CCountry*` table. The DLL now
+    validates that table directly, checks each candidate by country vtable,
+    object-owned `tag_db_id`, tag-table decode, stable name, and duplicates, and
+    emits object-backed country scalars without country preflight. Live proof
+    `collector_live_gamestate_country_table_probe` supplied no country bridge,
+    advanced 2 game hours at speed five with zero skipped hours, verified the
+    replay, reported `gamestate_country_table_verified` on every frame, emitted
+    355 country scalar rows, and kept fuel/production scheduled only.
+32. Political power moved off the country-record bridge: existing politics
+    research showed `CCountry+0xF90 -> CPoliticalStatus`, with
+    `CPoliticalStatus+0xC8` backlinking the owning `CCountry` and
+    `CPoliticalStatus+0xE0` storing fixed-point political power. The DLL now
+    derives the module base from the validated country vtable, validates the
+    political-status vtable/backlink, and emits `political_power` without a
+    country preflight or record bridge. Live proof
+    `collector_live_political_status_pp_probe` supplied no country bridge,
+    advanced 2 game hours with zero skipped hours, verified the replay, emitted
+    355 scalar rows per scheduled frame, and reported Portugal
+    `political_power = 28.069` on the first scheduled frame.
+33. Scheduled country politics core moved into the DLL: the collector now emits
+    `politics_live` on scheduled frames from the same validated
+    `CGameState+0x310 -> CCountry* -> CPoliticalStatus` path. It reads the
+    parties vector, ruling-party pointer, party popularities, exact-size active
+    idea list, idea count, election frequency, party count, and a
+    low-confidence flag while keeping worker polls light. Live proof
+    `collector_live_politics_core_probe` supplied no country bridge, advanced 2
+    game hours with zero skipped hours, emitted 2 scheduled `politics_live`
+    frames, and reported Portugal as `neutrality` with 12 active ideas,
+    party_count 4, and low_confidence false.
+34. Scheduled politics residual scalars moved into the DLL: the collector now
+    emits `politics_residuals` on scheduled frames by reusing the validated
+    `CCountry+0xF90 -> CPoliticalStatus` pointer, double-reading
+    `CPoliticalStatus+0xA0` as a Jomini DateHour `last_election` and
+    `CPoliticalStatus+0xEC` as the stable `elections_allowed` bool. The
+    collector-frame adapter folds those measured leaves into
+    `countries.*.politics` while preserving `elections_allowed = false`.
+    Live proof `collector_live_politics_residuals_probe` supplied no country
+    bridge, advanced 2 game hours with zero skipped hours, emitted 2 scheduled
+    `politics_residuals` frames, emitted zero worker-poll politics payloads, and
+    reported Portugal `last_election = 1933.3.5.1` with
+    `elections_allowed = false`.
+35. DLL-native appointed advisors are implemented behind a validated static
+    advisor-token contract. The token catalog is sourced from `game_defs` /
+    `common/characters`, while live appointment state is derived by
+    intersecting that catalog with the validated `CPoliticalStatus+0x50`
+    active-ideas vector. This deliberately avoids a `CAdvisor` heap sweep in
+    the hot path. Missing or invalid token contracts omit
+    `appointed_advisors`; a measured empty `[]` is a real "no appointed
+    advisors" result. Live proof `collector_live_appointed_advisors_probe`
+    supplied a 3722-token vanilla advisor contract, advanced 2 game hours in
+    5.59 collector seconds with zero skipped hours, emitted 3 scheduled
+    `politics_residuals` frames, emitted 1065 scheduled country rows carrying
+    `appointed_advisors`, kept worker-poll politics payloads at zero, and
+    measured Portugal as `appointed_advisors = []`.
+36. Typed law / advisor bucket / spirit classification and active timed decisions are now
+    DLL-scheduled. A static idea-group contract from `game_defs` /
+    `common/ideas` is passed into collector control so the DLL can classify the
+    live active-ideas vector into `politics.laws`, broad
+    `politics.ideas_other`, and narrower `politics.national_spirits` without a
+    save. The static advisor contract from `game_defs` / `common/characters`
+    enriches hired active advisor tokens into `appointed_advisor_details` and
+    `appointed_advisor_slots` without sweeping `CAdvisor` heap objects. The
+    same scheduled frame now emits `decisions_live` from the validated
+    `CCountry+0xFA0 -> CDecisionStatus` pointer, checks the status vtable plus
+    owner back-pointer, records non-empty decision-status vector counts, and
+    decodes active `CTimedDecision` rows from the `+0xA0` list. Live proof
+    `collector_live_politics_decisions_probe` supplied a 6474-row idea-group
+    contract, advanced 2 game hours at speed five with zero skipped hours,
+    emitted 3 scheduled frames with `politics_live`, `politics_residuals`, and
+    `decisions_live`, measured Portugal laws as `civilian_economy` /
+    `export_focus` / `volunteer_only`, measured Portugal 12 active ideas and 9
+    `ideas_other`, and decoded non-empty active timed decisions for 7 countries.
+37. Scheduled focus core moved into the DLL: the collector now emits
+    `focus_live` on scheduled frames from the validated
+    `CGameState+0x310 -> CCountry*` table. It reads `focus_tree` through
+    `CCountry+0x1370 -> CFocusTree`, reads the focus submanager through
+    `CCountry+0x1380`, emits completed focuses, completed count, current
+    national focus, current continuous focus, and progress days, and keeps
+    worker polls light. The Python adapter folds those rows into
+    `countries.*.focus`, protects measured-empty completed lists by measured
+    TAG, and rejects impossible rows where `current` and `current_continuous`
+    are both set. `paused` remains save-only until pinned. Live proof
+    `collector_live_focus_probe` advanced 2 game hours with zero skipped hours,
+    emitted 3 scheduled `focus_live` frames, 1065 country focus rows, and zero
+    focus payloads on worker-poll frames. Portugal measured
+    `focus_tree = portuguese_focus`, `completed_count = 22`, current
+    `POR_standardization`, and progress `69`.
+38. Scheduled research counts and raw active slots moved into the DLL as the
+    first `tech_live`
+    slice: the collector follows `CCountry+0xF60 -> CTechnologyStatus`,
+    validates the technology-status vtable and owner backlink, gates the
+    completed-tech compact vector and bounded `CTechnologyStatus+0xA0`
+    `CResearchSlot*` vector, and emits `completed_tech_count`,
+    `research_slot_count`, and raw `active_research[]` rows only on scheduled
+    frames. The Python adapter folds these into
+    `countries.*.research.tech_count`, `.research_slots`, and
+    `.in_progress_live`, rejects non-scheduled research payloads, and reports
+    `tech_live` diagnostics in the session manifest. Tech-token resolution,
+    progress percentage, ETA, and live research speed remain separate gated
+    layers.
+39. Scheduled special-project catalogs moved into the DLL as the first
+    `projects_live` slice: the collector scans once for project facilities,
+    projects, and scientist-backed characters, pins validated identities, and
+    rereads those pins on scheduled frames. The Python adapter folds top-level
+    `special_projects` with `source = "C"`, rejects pointer/tag-db diagnostic
+    leakage, and records project-domain counts in the session manifest. The
+    scan is now gated behind `special_projects_scan = true` and remains disabled
+    for normal runs: the first live cold-scan proof exceeded its wall cap before
+    any persisted frame/manifest, and the game process was gone afterward. This
+    is catalog/state contract proof only until a bounded root/cache path
+    replaces the heap sweep; progress/completion, owner attribution, and
+    resolved project definition tokens remain open.
 
 Next:
 
 1. Turn the bounded hourly worker proof into the recorder's normal long-running
    capture mode with explicit session start/stop, manifest gap entries, and
    backpressure counters.
-2. Replace heap-scan identity discovery with a bounded, root-anchored or
-   hook-derived country-object identity path. Normal capture must reduce this to
-   cached pointer validation plus direct reads; no heap-wide scans in the
-   recorder loop.
-3. Feed `state_ownership` and `state_control` from cached state roots into the
-   DLL/session path, emitted on scheduled-hour frames rather than every 10 ms raw
-   clock sample.
-4. Add province-control array root caching and validation, then feed
-   `province_control` through the same scheduled-hour path.
-5. Promote the speed-five bounded-worker proof into the normal long-running
+2. Audit whether any replay-critical fields remain country-record-only; add a
+   bounded root-anchored record identity path only for those fields, keeping the
+   record bridge as fallback/bootstrap evidence otherwise.
+3. Promote the remaining politics/country-system leaves: deeper cabinet/leader
+   buckets, active research slot detail/progress, project progress/definition
+   joins, and deeper targeted decision/cooldown internals where the record
+   layout is still unverified.
+4. Widen the raw DLL stream beyond clock and division telemetry into combat,
+   orders, org/strength transitions, and other sub-hour events.
+5. Keep map-control on the static `CProvince` route and use the older preflight
+   caches only as corroboration/fallback evidence.
+6. Promote the speed-five bounded-worker proof into the normal long-running
    recorder path, preserving per-run pipe tokens, sidecar-off worker mode,
    monotonic producer sequence, duplicate snapshot suppression, and manifest
    failure on skipped scheduled hours.
-5. Because the IC-Graphs repo is binary-only for the hook, do not patch the live
+7. Because the IC-Graphs repo is binary-only for the hook, do not patch the live
    game until our own trampoline/calling-convention plan is reviewed and the
    crash-risk step is intentional. Daily update hooks are not sufficient for
    replay cadence; they are only candidates for daily economy rollups.
