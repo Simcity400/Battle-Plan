@@ -76,10 +76,18 @@ class HighIdTable(FakeTable):
 
 class FakeProvinceModule:
     PROV_STRIDE = 8
-    HEAP_LO = 0x7000
+    HEAP_LO = 0x4000
     HEAP_HI = 0xB000
     MIN_CONTROLLERS = 2
     MAX_CONTROLLERS = 250
+
+
+def _fill_province_slots(proc, base, slots):
+    for province_id in range(1, slots):
+        proc.mem.setdefault(
+            base + province_id * FakeProvinceModule.PROV_STRIDE,
+            0,
+        )
 
 
 def _fake_resolve_modules(proc, prov_to_state, locate_array):
@@ -314,6 +322,7 @@ class TestCollectorMapBridge(unittest.TestCase):
         base = 0x4000
         prov_to_state = {11: 1, 12: 1, 13: 2}
         state_ctrl = {1: 1, 2: 2}
+        _fill_province_slots(proc, base, 20)
         proc.mem[base + 11 * FakeProvinceModule.PROV_STRIDE] = 0x8000
         proc.mem[base + 12 * FakeProvinceModule.PROV_STRIDE] = 0x8000
         proc.mem[base + 13 * FakeProvinceModule.PROV_STRIDE] = 0xA000
@@ -345,6 +354,7 @@ class TestCollectorMapBridge(unittest.TestCase):
         proc = FakeProc()
         base = 0x4000
         prov_to_state = {11: 1, 12: 2}
+        _fill_province_slots(proc, base, 20)
         proc.mem[base + 11 * FakeProvinceModule.PROV_STRIDE] = 0x8000
         proc.mem[base + 12 * FakeProvinceModule.PROV_STRIDE] = 0xA000
 
@@ -373,6 +383,7 @@ class TestCollectorMapBridge(unittest.TestCase):
         proc = FakeProc()
         base = 0x4000
         prov_to_state = {11: 1, 12: 2}
+        _fill_province_slots(proc, base, 20)
         proc.mem[base + 11 * FakeProvinceModule.PROV_STRIDE] = 0x8000
         proc.mem[base + 12 * FakeProvinceModule.PROV_STRIDE] = 0x9000
 
@@ -387,6 +398,46 @@ class TestCollectorMapBridge(unittest.TestCase):
         )
 
         self.assertIsNone(reason)
+
+    def test_province_array_cache_validation_requires_dll_slot_span_readable(self):
+        proc = FakeProc()
+        base = 0x4000
+        prov_to_state = {11: 1, 12: 2}
+        proc.mem[base + 11 * FakeProvinceModule.PROV_STRIDE] = 0x8000
+        proc.mem[base + 12 * FakeProvinceModule.PROV_STRIDE] = 0x9000
+
+        reason = cmb.province_array_cache_validation_error(
+            proc,
+            base,
+            20,
+            {0x8000: 1, 0x9000: 2},
+            FakeTable(),
+            prov_to_state,
+            FakeProvinceModule,
+        )
+
+        self.assertEqual(reason, "province_array_unreadable")
+
+    def test_province_array_cache_validation_rejects_unbridged_dll_slot_pointer(self):
+        proc = FakeProc()
+        base = 0x4000
+        prov_to_state = {11: 1, 12: 2}
+        _fill_province_slots(proc, base, 20)
+        proc.mem[base + 3 * FakeProvinceModule.PROV_STRIDE] = 0xA000
+        proc.mem[base + 11 * FakeProvinceModule.PROV_STRIDE] = 0x8000
+        proc.mem[base + 12 * FakeProvinceModule.PROV_STRIDE] = 0x9000
+
+        reason = cmb.province_array_cache_validation_error(
+            proc,
+            base,
+            20,
+            {0x8000: 1, 0x9000: 2},
+            FakeTable(),
+            prov_to_state,
+            FakeProvinceModule,
+        )
+
+        self.assertEqual(reason, "pointer_bridge_mismatch")
 
     def test_province_preflight_cache_miss_without_cold_scan_fails_closed(self):
         proc = FakeProc()
@@ -444,6 +495,7 @@ class TestCollectorMapBridge(unittest.TestCase):
         proc = FakeProc()
         base = 0x4000
         proc.mem[0x3000 + FakeStateModule.OFF_CTRL] = 2
+        _fill_province_slots(proc, base, 20)
         proc.mem[base + 11 * FakeProvinceModule.PROV_STRIDE] = 0x8000
         proc.mem[base + 12 * FakeProvinceModule.PROV_STRIDE] = 0x9000
         prov_to_state = {11: 1, 12: 2}
@@ -664,6 +716,7 @@ class TestCollectorMapBridge(unittest.TestCase):
         proc = FakeProc()
         base = 0x4000
         proc.mem[0x3000 + FakeStateModule.OFF_CTRL] = 2
+        _fill_province_slots(proc, base, 20)
         proc.mem[base + 11 * FakeProvinceModule.PROV_STRIDE] = 0x8000
         proc.mem[base + 12 * FakeProvinceModule.PROV_STRIDE] = 0x9000
         prov_to_state = {11: 1, 12: 2}

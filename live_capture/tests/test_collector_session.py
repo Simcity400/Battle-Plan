@@ -456,8 +456,10 @@ class TestCollectorSession(unittest.TestCase):
             with tempfile.TemporaryDirectory() as td:
                 root = Path(td)
 
-                def fake_preflight(pid):
+                def fake_preflight(pid, *, cache_path, allow_cold_scan):
                     self.assertEqual(pid, 555)
+                    self.assertEqual(cache_path.name, "division_bodies.json")
+                    self.assertFalse(allow_cold_scan)
                     return _DivisionPreflightResult(
                         {
                             "enabled": True,
@@ -467,6 +469,11 @@ class TestCollectorSession(unittest.TestCase):
                             "pid_match": True,
                             "elapsed_s": 0.25,
                             "cold_locate_s": 0.20,
+                            "allow_cold_scan": False,
+                            "cache": {
+                                "enabled": True,
+                                "status": "hit",
+                            },
                             "address_manifest_policy": "omitted",
                         },
                         encoded="17:0x8000;18:0x9000",
@@ -544,6 +551,14 @@ class TestCollectorSession(unittest.TestCase):
             session_manifest["division_body_bridge_preflight"]
             ["address_manifest_policy"],
             "omitted",
+        )
+        self.assertFalse(
+            session_manifest["division_body_bridge_preflight"]
+            ["allow_cold_scan"],
+        )
+        self.assertEqual(
+            session_manifest["division_body_bridge_preflight"]["cache"]["status"],
+            "hit",
         )
         self.assertTrue(session_manifest["division_body_bridge_supplied"])
         self.assertEqual(session_manifest["division_body_bridge_rows"], 2)

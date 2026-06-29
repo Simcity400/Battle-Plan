@@ -35,6 +35,9 @@ MIN_USABLE_STATE_ROWS = 1000
 MIN_USABLE_PROVINCE_ROWS = 10000
 MAX_CACHED_CONTROLLER_TAG_ID = 4096
 MAX_CACHED_PROVINCE_SLOTS = 20000
+MAX_NATIVE_CONTROLLER_TAG_ID = 1024
+MAX_NATIVE_PROVINCE_STRIDE = 64
+MAP_CONTROL_POINTER_WIDTH = 8
 
 
 @dataclass(frozen=True)
@@ -621,20 +624,22 @@ def province_array_cache_validation_error(
     state_ctrl: Optional[Dict[int, int]] = None,
 ) -> Optional[str]:
     """Return a sanitized fail-closed reason for a cached province array."""
-    if not _province_base_slots_valid(base, slots, prov_to_state):
+    if not _province_base_slots_valid(base, slots, prov_to_state, province_module):
         return "base_slots_invalid"
     if not ptr2tagid:
         return "pointer_bridge_empty"
     if len(ptr2tagid.values()) != len(set(ptr2tagid.values())):
         return "pointer_bridge_not_injective"
+    bridge_shape_error = _controller_bridge_shape_error(ptr2tagid, province_module)
+    if bridge_shape_error is not None:
+        return bridge_shape_error
     if not _tag_table_covers(table, set(ptr2tagid.values())):
         return "tag_table_uncovered"
 
-    distinct_ptrs = _distinct_province_controller_ptrs(
+    distinct_ptrs = _distinct_scheduled_province_controller_ptrs(
         proc,
         base,
         slots,
-        prov_to_state,
         province_module,
     )
     if distinct_ptrs is None:
@@ -661,27 +666,60 @@ def _province_base_slots_valid(
     base: int,
     slots: int,
     prov_to_state: Dict[int, int],
+    province_module: Any,
 ) -> bool:
     if not prov_to_state:
         return False
     try:
         base_i = int(base)
         slots_i = int(slots)
+        stride_i = int(getattr(province_module, "PROV_STRIDE", 8))
     except (TypeError, ValueError):
         return False
-    if base_i <= 0 or base_i % 8 != 0:
+    if base_i <= 0 or base_i % MAP_CONTROL_POINTER_WIDTH != 0:
+        return False
+    if (
+        stride_i < MAP_CONTROL_POINTER_WIDTH
+        or stride_i > MAX_NATIVE_PROVINCE_STRIDE
+        or stride_i % MAP_CONTROL_POINTER_WIDTH != 0
+    ):
         return False
     max_prov = max(int(k) for k in prov_to_state)
     if slots_i <= max_prov or slots_i > MAX_CACHED_PROVINCE_SLOTS:
         return False
+    heap_lo = int(getattr(province_module, "HEAP_LO", 1))
+    heap_hi = int(getattr(province_module, "HEAP_HI", 1 << 63))
+    if not (heap_lo <= base_i < heap_hi):
+        return False
+    try:
+        end = base_i + slots_i * stride_i
+    except OverflowError:
+        return False
+    if end > heap_hi:
+        return False
     return True
 
 
-def _distinct_province_controller_ptrs(
+def _controller_bridge_shape_error(
+    ptr2tagid: Dict[int, int],
+    province_module: Any,
+) -> Optional[str]:
+    heap_lo = int(getattr(province_module, "HEAP_LO", 1))
+    heap_hi = int(getattr(province_module, "HEAP_HI", 1 << 63))
+    for ptr, tag_id in ptr2tagid.items():
+        if int(tag_id) <= 0 or int(tag_id) > MAX_NATIVE_CONTROLLER_TAG_ID:
+            return "pointer_bridge_out_of_range"
+        if int(ptr) % MAP_CONTROL_POINTER_WIDTH != 0:
+            return "pointer_bridge_out_of_range"
+        if not (heap_lo <= int(ptr) < heap_hi):
+            return "pointer_bridge_out_of_range"
+    return None
+
+
+def _distinct_scheduled_province_controller_ptrs(
     proc: Any,
     base: int,
     slots: int,
-    prov_to_state: Dict[int, int],
     province_module: Any,
 ) -> Optional[set[int]]:
     stride = int(getattr(province_module, "PROV_STRIDE", 8))
@@ -689,13 +727,10 @@ def _distinct_province_controller_ptrs(
     heap_hi = int(getattr(province_module, "HEAP_HI", 1 << 63))
     distinct: set[int] = set()
     try:
-        for prov in prov_to_state:
-            pid = int(prov)
-            if pid < 0 or pid >= int(slots):
-                return None
+        for pid in range(1, int(slots)):
             ptr = int(proc.u64(int(base) + pid * stride))
-            if ptr <= 0:
-                return None
+            if ptr == 0:
+                continue
             if not (heap_lo <= ptr < heap_hi):
                 return None
             distinct.add(ptr)

@@ -340,6 +340,7 @@ def record_collector_session(
     preflight_country_object_bridge: bool = False,
     allow_country_cold_scan: bool = False,
     preflight_division_movement: bool = False,
+    allow_division_cold_scan: bool = False,
     preflight_state_control: bool = False,
     preflight_province_control: bool = False,
     allow_province_cold_scan: bool = False,
@@ -364,6 +365,8 @@ def record_collector_session(
         raise ValueError("allow_province_cold_scan requires preflight_province_control")
     if allow_country_cold_scan and not preflight_country_object_bridge:
         raise ValueError("allow_country_cold_scan requires preflight_country_object_bridge")
+    if allow_division_cold_scan and not preflight_division_movement:
+        raise ValueError("allow_division_cold_scan requires preflight_division_movement")
 
     started_utc = datetime.now(timezone.utc).isoformat()
     started_monotonic = time.monotonic()
@@ -401,11 +404,18 @@ def record_collector_session(
         "enabled": bool(preflight_division_movement),
         "status": "not_requested",
         "row_count": 0,
+        "allow_cold_scan": bool(allow_division_cold_scan),
     }
     if division_body_bridge is None and preflight_division_movement:
-        preflight = resolve_division_body_bridge_preflight(pid)
+        preflight = resolve_division_body_bridge_preflight(
+            pid,
+            cache_path=out_root / "_preflight_cache" / "division_bodies.json",
+            allow_cold_scan=allow_division_cold_scan,
+        )
         division_body_bridge_preflight = preflight.diagnostics
         division_body_bridge_preflight["enabled"] = True
+        division_body_bridge_preflight["allow_cold_scan"] = bool(
+            allow_division_cold_scan)
         if preflight.usable:
             division_body_bridge = preflight.encoded
     map_control_state_roots = None
@@ -1289,6 +1299,11 @@ def _main() -> int:
         help="resolve live division bodies before recording movement deltas",
     )
     parser.add_argument(
+        "--allow-division-cold-scan",
+        action="store_true",
+        help="allow the slow division body locator during preflight",
+    )
+    parser.add_argument(
         "--preflight-state-control",
         action="store_true",
         help="resolve/cache live state owner/controller roots before recording",
@@ -1329,6 +1344,7 @@ def _main() -> int:
         preflight_country_object_bridge=args.preflight_country_object_bridge,
         allow_country_cold_scan=args.allow_country_cold_scan,
         preflight_division_movement=args.preflight_division_movement,
+        allow_division_cold_scan=args.allow_division_cold_scan,
         preflight_state_control=args.preflight_state_control,
         preflight_province_control=args.preflight_province_control,
         allow_province_cold_scan=args.allow_province_cold_scan,

@@ -70,8 +70,12 @@ current product status and acceptance gates, and
   DLL emission of those rows is wired and should be proven in live speed-five
   sessions before treating it as fully accepted.
 - Province-control dense-array relocation/cache is not yet a normal recording
-  source. Do not treat save fallback or slow cold discovery as live replay
-  coverage.
+  source. Cache validation is stricter now, but cold discovery is still opt-in
+  and unavailable cache paths fail closed quickly.
+- Division movement uses a cache-first `division_bodies.json` bridge. Normal
+  recording validates cached body pins without scanning; use
+  `--allow-division-cold-scan` only as an explicit bootstrap step because cold
+  body discovery can take tens of seconds.
 
 ## Recorder Smoke / Tests
 
@@ -80,6 +84,7 @@ python live_capture/recorder/recorder_main.py --smoke
 python -m live_capture.collector_attach --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --pipe
 python -m live_capture.collector_profile_check --pid <hoi4-pid> --profile live_capture/collector_profiles/vanilla_latest_2026_06_28.json --dll replay_native/target/debug/collector.dll
 python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session --game-id collector_live_speed5_session --duration-s 8 --sample-ms 10 --dwell-s 0.25 --worker-bursts 3 --burst-interval-s 0.25 --until-game-hours 12 --max-wall-s 30
+python -m live_capture.collector_session --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_session --game-id collector_live_division_cache_bootstrap --duration-s 5 --sample-ms 20 --dwell-s 0.25 --preflight-division-movement --allow-division-cold-scan
 python -m live_capture.collector_probe_record --pid <hoi4-pid> --dll replay_native/target/debug/collector.dll --out-root replay/snapshots/_collector_probe --store-root replay/snapshots --game-id collector_live_speed5_worker --dwell-s 0.25 --worker-duration-s 8 --worker-sample-ms 10 --until-game-hours 12 --max-wall-s 15 --unique-store-hours-only
 python -m unittest live_capture.tests.test_collector_session live_capture.tests.test_recorder_cadence live_capture.tests.test_recorder_worker_cadence live_capture.tests.test_recorder_manifest_diagnostics live_capture.tests.test_replay_writer
 python -m pytest live_capture

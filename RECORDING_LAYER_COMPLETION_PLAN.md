@@ -944,6 +944,16 @@ Acceptance:
 - The replay map can scrub owner/control/buildings/resources/occupation changes
   from live collector data only.
 
+Current status: state owner/controller roots are cache-backed and live-proven
+through scheduled DLL frames. Province-control cache validation now mirrors the
+native scheduled reader more closely: it checks native bridge shape, slot-span
+readability, controller-pointer coverage, heap/range/alignment bounds, and
+tag-id limits before allowing cached province rows into normal recording.
+Cold province-array discovery remains opt-in and is not yet solved for normal
+startup; on the current new-game process, province preflight without a cache
+failed closed in 0.078s with `province_array_cache_unavailable` while the state
+bridge cache hit.
+
 ### Phase 4: Economy And Production
 
 Deliver:
@@ -968,6 +978,17 @@ Acceptance:
 
 - Unit counters can scrub positions and strength/org at replay cadence.
 - Movement/order deltas are captured faster than hourly when possible.
+
+Current status: the DLL already consumes a `division_body_bridge` and emits raw
+`divisions` domain deltas from cached body pointers. The Python preflight is now
+cache-first and process-identity-scoped. Normal recording validates cached body
+pins through the warm `read_divisions_from_bodies()` path before emitting a
+bridge; cold body discovery is disabled unless `--allow-division-cold-scan` is
+explicitly set. Live proof on the current new-game process: no-cache normal
+preflight failed fast in 0.094s, explicit cold bootstrap found 8 divisions in
+32.25s and stored `division_bodies.json`, warm preflight resolved 8 bodies in
+0.094s, and a normal country/state/division session advanced 4 game hours in
+6.0s with 5 verified snapshots and raw `clock` + `divisions` domain deltas.
 
 ### Phase 6: Combat And Movement High-Frequency Layer
 
