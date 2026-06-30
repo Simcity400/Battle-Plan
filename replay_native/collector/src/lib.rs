@@ -2665,6 +2665,7 @@ mod attach_log {
             || scheduled_domain_enabled(Some(control), "politics_residuals")
             || scheduled_domain_enabled(Some(control), "decisions_live")
             || scheduled_domain_enabled(Some(control), "diplomacy_live")
+            || scheduled_domain_enabled(Some(control), RAW_AIR_VARIANT_RESERVES_DOMAIN)
     }
 
     fn build_frame_line(
@@ -2805,6 +2806,7 @@ mod attach_log {
     const RAW_AIR_WING_LOADOUTS_DOMAIN: &str = "air_wing_loadouts";
     const RAW_AIR_VARIANT_DEFS_DOMAIN: &str = "air_variant_defs";
     const RAW_AIR_VARIANT_STATS_DOMAIN: &str = "air_variant_stats";
+    const RAW_AIR_VARIANT_RESERVES_DOMAIN: &str = "air_variant_reserves";
     const RAW_AIR_BASE_STATUS_DOMAIN: &str = "air_base_status";
     const RAW_SHIPS_DOMAIN: &str = "ships";
     const RAW_OOB_COMMAND_DOMAIN: &str = "oob_command";
@@ -2858,6 +2860,7 @@ mod attach_log {
     const COMPACT_DOMAIN_AIR_VARIANT_DEFS: u16 = 33;
     const COMPACT_DOMAIN_AIR_BASE_STATUS: u16 = 34;
     const COMPACT_DOMAIN_AIR_VARIANT_STATS: u16 = 35;
+    const COMPACT_DOMAIN_AIR_VARIANT_RESERVES: u16 = 36;
     const COMPACT_STATUS_STATE_UNAVAILABLE: u32 = 1 << 0;
     const COMPACT_STATUS_PROFILE_MISMATCH: u32 = 1 << 1;
     const COMPACT_STATUS_NO_CLOCK: u32 = 1 << 2;
@@ -2904,6 +2907,7 @@ mod attach_log {
     const COMPACT_AIR_VARIANT_DEF_ROW_FLAG_VARIANT_NAME: u32 = 1 << 1;
     const COMPACT_AIR_VARIANT_DEF_ROW_FLAG_MODULES: u32 = 1 << 2;
     const COMPACT_AIR_BASE_STATUS_ROW_FLAG_DELETED: u32 = 1;
+    const COMPACT_AIR_VARIANT_RESERVE_ROW_FLAG_DELETED: u32 = 1;
     const COMPACT_OOB_STATUS_NONE: u32 = 0;
     const COMPACT_OOB_STATUS_EXACT: u32 = 1;
     const COMPACT_OOB_STATUS_UNKNOWN: u32 = 2;
@@ -3006,6 +3010,7 @@ mod attach_log {
         air_wing_loadouts: CompactAirWingLoadoutTracker,
         air_variant_defs: CompactAirVariantDefTracker,
         air_variant_stats: CompactAirVariantStatsTracker,
+        air_variant_reserves: CompactAirVariantReserveTracker,
         air_base_status: CompactAirBaseStatusTracker,
         land_combat: LandCombatTracker,
         map_control: CompactMapControlTracker,
@@ -3136,6 +3141,19 @@ mod attach_log {
         status_flags: u32,
         observed_variant_rows: u32,
         invalid_variant_rows: u32,
+    }
+
+    struct CompactAirVariantReserveRead {
+        rows: Vec<CompactAirVariantReserveRow>,
+        read_time_us: u64,
+        changed_rows: u32,
+        status_flags: u32,
+        observed_country_rows: u32,
+        observed_stockpile_rows: u32,
+        observed_air_variant_rows: u32,
+        matched_stockpile_rows: u32,
+        invalid_country_rows: u32,
+        deleted_rows: u32,
     }
 
     struct CompactAirBaseStatusRead {
@@ -3425,6 +3443,11 @@ mod attach_log {
     }
 
     #[derive(Default)]
+    struct CompactAirVariantReserveTracker {
+        previous: BTreeMap<(u32, u32), CompactAirVariantReserveRow>,
+    }
+
+    #[derive(Default)]
     struct CompactAirBaseStatusTracker {
         previous: BTreeMap<u32, CompactAirBaseStatusRow>,
     }
@@ -3543,6 +3566,14 @@ mod attach_log {
         thrust_raw: i32,
         fuel_consumption_raw: i32,
         build_cost_ic_raw: i32,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct CompactAirVariantReserveRow {
+        tag_db_id: u32,
+        variant_id: u32,
+        deleted: bool,
+        amount_raw: i64,
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -9782,6 +9813,8 @@ mod attach_log {
             compact_explicit_domain_enabled(control, RAW_AIR_VARIANT_DEFS_DOMAIN);
         let air_variant_stats_enabled =
             compact_explicit_domain_enabled(control, RAW_AIR_VARIANT_STATS_DOMAIN);
+        let air_variant_reserves_enabled =
+            compact_explicit_domain_enabled(control, RAW_AIR_VARIANT_RESERVES_DOMAIN);
         let air_base_status_enabled =
             compact_explicit_domain_enabled(control, RAW_AIR_BASE_STATUS_DOMAIN);
         let land_combats_enabled =
@@ -9802,6 +9835,7 @@ mod attach_log {
         let mut air_wing_loadout_read = None;
         let mut air_variant_def_read = None;
         let mut air_variant_stats_read = None;
+        let mut air_variant_reserve_read = None;
         let mut air_base_status_read = None;
         let mut land_combat_read = None;
         let mut map_control_read = None;
@@ -9831,6 +9865,7 @@ mod attach_log {
         let air_wing_loadout_tracker = &mut trackers.air_wing_loadouts;
         let air_variant_def_tracker = &mut trackers.air_variant_defs;
         let air_variant_stats_tracker = &mut trackers.air_variant_stats;
+        let air_variant_reserve_tracker = &mut trackers.air_variant_reserves;
         let air_base_status_tracker = &mut trackers.air_base_status;
         let division_roots = &trackers.division_roots;
         let land_combat_tracker = &mut trackers.land_combat;
@@ -9946,6 +9981,17 @@ mod attach_log {
             } else {
                 None
             };
+            let air_variant_reserve_handle = if air_variant_reserves_enabled {
+                Some(scope.spawn(move || {
+                    read_compact_air_variant_reserves(
+                        state,
+                        status_flags,
+                        air_variant_reserve_tracker,
+                    )
+                }))
+            } else {
+                None
+            };
             let air_base_status_handle = if air_base_status_enabled {
                 Some(scope.spawn(move || {
                     read_compact_air_base_status(state, status_flags, air_base_status_tracker)
@@ -10055,6 +10101,12 @@ mod attach_log {
                 air_variant_stats_read = Some(match handle.join() {
                     Ok(read) => read,
                     Err(_) => compact_air_variant_stats_worker_panic_read(status_flags),
+                });
+            }
+            if let Some(handle) = air_variant_reserve_handle {
+                air_variant_reserve_read = Some(match handle.join() {
+                    Ok(read) => read,
+                    Err(_) => compact_air_variant_reserve_worker_panic_read(status_flags),
                 });
             }
             if let Some(handle) = air_base_status_handle {
@@ -10509,6 +10561,41 @@ mod attach_log {
                 read.changed_rows,
                 read.observed_variant_rows,
                 read.invalid_variant_rows,
+            );
+            sequence = sequence.saturating_add(1);
+            emitted_domains = emitted_domains.saturating_add(1);
+        }
+        if let Some(read) = air_variant_reserve_read {
+            append_compact_domain_perf_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                CompactDomainPerfRecord {
+                    domain_id: COMPACT_DOMAIN_AIR_VARIANT_RESERVES,
+                    read_time_us: read.read_time_us,
+                    row_count: read.observed_country_rows,
+                    changed_rows: read.changed_rows,
+                    unit_count: read.observed_stockpile_rows,
+                    changed_unit_count: read.matched_stockpile_rows,
+                    status_flags: read.status_flags,
+                },
+                elapsed_wall_ms,
+            );
+            sequence = sequence.saturating_add(1);
+            append_compact_air_variant_reserves_data_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                &read.rows,
+                elapsed_wall_ms,
+                read.status_flags,
+                read.changed_rows,
+                read.observed_country_rows,
+                read.observed_stockpile_rows,
+                read.observed_air_variant_rows,
+                read.matched_stockpile_rows,
+                read.invalid_country_rows,
+                read.deleted_rows,
             );
             sequence = sequence.saturating_add(1);
             emitted_domains = emitted_domains.saturating_add(1);
@@ -11284,6 +11371,23 @@ mod attach_log {
             status_flags: status_flags | COMPACT_STATUS_WORKER_PANIC,
             observed_variant_rows: 0,
             invalid_variant_rows: 0,
+        }
+    }
+
+    fn compact_air_variant_reserve_worker_panic_read(
+        status_flags: u32,
+    ) -> CompactAirVariantReserveRead {
+        CompactAirVariantReserveRead {
+            rows: Vec::new(),
+            read_time_us: 0,
+            changed_rows: 0,
+            status_flags: status_flags | COMPACT_STATUS_WORKER_PANIC,
+            observed_country_rows: 0,
+            observed_stockpile_rows: 0,
+            observed_air_variant_rows: 0,
+            matched_stockpile_rows: 0,
+            invalid_country_rows: 0,
+            deleted_rows: 0,
         }
     }
 
@@ -13187,6 +13291,147 @@ mod attach_log {
             status_flags,
             observed_variant_rows,
             invalid_variant_rows,
+        }
+    }
+
+    fn read_compact_air_variant_reserves(
+        state: &CollectorState,
+        status_flags: u32,
+        tracker: &mut CompactAirVariantReserveTracker,
+    ) -> CompactAirVariantReserveRead {
+        let read_started = Instant::now();
+        let mut status_flags = status_flags;
+        let Some(native) = sample_compact_air_variant_defs_native(state) else {
+            return CompactAirVariantReserveRead {
+                rows: Vec::new(),
+                read_time_us: duration_micros_u64(read_started.elapsed()),
+                changed_rows: 0,
+                status_flags: status_flags | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                observed_country_rows: 0,
+                observed_stockpile_rows: 0,
+                observed_air_variant_rows: 0,
+                matched_stockpile_rows: 0,
+                invalid_country_rows: 0,
+                deleted_rows: 0,
+            };
+        };
+        let active_air_variants = native
+            .variant_ptrs
+            .keys()
+            .copied()
+            .map(|variant_id| (variant_id, ()))
+            .collect::<BTreeMap<u32, ()>>();
+        if active_air_variants.is_empty() || !state.country_identity.has_scalar_source() {
+            return CompactAirVariantReserveRead {
+                rows: Vec::new(),
+                read_time_us: duration_micros_u64(read_started.elapsed()),
+                changed_rows: 0,
+                status_flags: status_flags | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                observed_country_rows: 0,
+                observed_stockpile_rows: 0,
+                observed_air_variant_rows: active_air_variants.len().min(u32::MAX as usize) as u32,
+                matched_stockpile_rows: 0,
+                invalid_country_rows: 0,
+                deleted_rows: 0,
+            };
+        }
+        if native.invalid_air_wing_rows > 0 {
+            status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+        }
+        let country_vtable = state.country_identity.country_vtable;
+        let mut current_rows = Vec::new();
+        let mut observed_stockpile_rows = 0u32;
+        let mut invalid_country_rows = 0u32;
+        for country in &state.country_identity.rows {
+            let object_ptr = country.object_ptr;
+            let valid_country = is_map_control_heap_pointer(object_ptr)
+                && read_u64(object_ptr).is_some_and(|vtable| vtable as usize == country_vtable)
+                && read_u32(object_ptr + OBJ_TAG_DB_ID) == Some(country.tag_db_id);
+            if !valid_country {
+                invalid_country_rows = invalid_country_rows.saturating_add(1);
+                continue;
+            }
+            let Some(stockpile) = read_country_stockpile_raw(object_ptr, country_vtable) else {
+                invalid_country_rows = invalid_country_rows.saturating_add(1);
+                continue;
+            };
+            observed_stockpile_rows = observed_stockpile_rows
+                .saturating_add(stockpile.len().min(u32::MAX as usize) as u32);
+            for stock in stockpile {
+                if active_air_variants.contains_key(&stock.variant_id) {
+                    current_rows.push(CompactAirVariantReserveRow {
+                        tag_db_id: country.tag_db_id,
+                        variant_id: stock.variant_id,
+                        deleted: false,
+                        amount_raw: stock.amount_raw,
+                    });
+                }
+            }
+        }
+        if invalid_country_rows > 0 {
+            status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+        }
+        let matched_stockpile_rows = current_rows.len().min(u32::MAX as usize) as u32;
+        let (rows, changed_rows, deleted_rows) =
+            compact_air_variant_reserve_delta_rows(tracker, current_rows);
+        CompactAirVariantReserveRead {
+            rows,
+            read_time_us: duration_micros_u64(read_started.elapsed()),
+            changed_rows,
+            status_flags,
+            observed_country_rows: state.country_identity.rows.len().min(u32::MAX as usize) as u32,
+            observed_stockpile_rows,
+            observed_air_variant_rows: active_air_variants.len().min(u32::MAX as usize) as u32,
+            matched_stockpile_rows,
+            invalid_country_rows,
+            deleted_rows,
+        }
+    }
+
+    fn compact_air_variant_reserve_delta_rows(
+        tracker: &mut CompactAirVariantReserveTracker,
+        current_rows: Vec<CompactAirVariantReserveRow>,
+    ) -> (Vec<CompactAirVariantReserveRow>, u32, u32) {
+        let emit_full_snapshot = tracker.previous.is_empty();
+        let mut current = BTreeMap::new();
+        let mut emitted = Vec::new();
+        let mut deleted_rows = 0u32;
+        for row in current_rows {
+            let key = (row.tag_db_id, row.variant_id);
+            if emit_full_snapshot || tracker.previous.get(&key) != Some(&row) {
+                emitted.push(row);
+            }
+            current.insert(key, row);
+        }
+        if !emit_full_snapshot {
+            for key in tracker.previous.keys().copied().collect::<Vec<_>>() {
+                if current.contains_key(&key) {
+                    continue;
+                }
+                if let Some(old) = tracker.previous.get(&key) {
+                    emitted.push(deleted_compact_air_variant_reserve_row(old));
+                    deleted_rows = deleted_rows.saturating_add(1);
+                }
+            }
+        }
+        emitted.sort_by_key(|row| (row.tag_db_id, row.variant_id, row.deleted));
+        tracker.previous = current;
+        let changed_rows = emitted.len().min(u32::MAX as usize) as u32;
+        if changed_rows > 0 {
+            (emitted, changed_rows, deleted_rows)
+        } else {
+            (Vec::new(), 0, deleted_rows)
+        }
+    }
+
+    fn deleted_compact_air_variant_reserve_row(
+        old: &CompactAirVariantReserveRow,
+    ) -> CompactAirVariantReserveRow {
+        CompactAirVariantReserveRow {
+            tag_db_id: old.tag_db_id,
+            variant_id: old.variant_id,
+            deleted: true,
+            amount_raw: 0,
         }
     }
 
@@ -16599,6 +16844,44 @@ mod attach_log {
         );
     }
 
+    fn append_compact_air_variant_reserves_data_record(
+        out: &mut Vec<u8>,
+        sequence: u64,
+        game_hour_raw: i32,
+        rows: &[CompactAirVariantReserveRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        observed_country_rows: u32,
+        observed_stockpile_rows: u32,
+        observed_air_variant_rows: u32,
+        matched_stockpile_rows: u32,
+        invalid_country_rows: u32,
+        deleted_rows: u32,
+    ) {
+        let payload = compact_air_variant_reserves_data_payload(
+            rows,
+            elapsed_wall_ms,
+            status_flags,
+            changed_rows,
+            observed_country_rows,
+            observed_stockpile_rows,
+            observed_air_variant_rows,
+            matched_stockpile_rows,
+            invalid_country_rows,
+            deleted_rows,
+        );
+        append_compact_record(
+            out,
+            sequence,
+            game_hour_raw,
+            COMPACT_DOMAIN_AIR_VARIANT_RESERVES,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+    }
+
     fn append_compact_air_base_status_data_record(
         out: &mut Vec<u8>,
         sequence: u64,
@@ -18041,6 +18324,45 @@ mod attach_log {
         payload
     }
 
+    fn compact_air_variant_reserves_data_payload(
+        rows: &[CompactAirVariantReserveRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        observed_country_rows: u32,
+        observed_stockpile_rows: u32,
+        observed_air_variant_rows: u32,
+        matched_stockpile_rows: u32,
+        invalid_country_rows: u32,
+        deleted_rows: u32,
+    ) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(48usize.saturating_add(rows.len().saturating_mul(24)));
+        payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
+        payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+        payload.extend_from_slice(&changed_rows.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&observed_country_rows.to_le_bytes());
+        payload.extend_from_slice(&observed_stockpile_rows.to_le_bytes());
+        payload.extend_from_slice(&observed_air_variant_rows.to_le_bytes());
+        payload.extend_from_slice(&matched_stockpile_rows.to_le_bytes());
+        payload.extend_from_slice(&invalid_country_rows.to_le_bytes());
+        payload.extend_from_slice(&deleted_rows.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_PRODUCTION_SCALE_RAW.to_le_bytes());
+        for row in rows {
+            let flags = if row.deleted {
+                COMPACT_AIR_VARIANT_RESERVE_ROW_FLAG_DELETED
+            } else {
+                0
+            };
+            payload.extend_from_slice(&row.tag_db_id.to_le_bytes());
+            payload.extend_from_slice(&row.variant_id.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&row.amount_raw.to_le_bytes());
+        }
+        payload
+    }
+
     fn compact_air_base_status_data_payload(
         rows: &[CompactAirBaseStatusRow],
         elapsed_wall_ms: u64,
@@ -18764,6 +19086,12 @@ mod attach_log {
     struct CountryStockpileRow {
         variant_id: u32,
         amount: f64,
+    }
+
+    #[derive(Clone, Copy)]
+    struct CountryStockpileRawRow {
+        variant_id: u32,
+        amount_raw: i64,
     }
 
     #[derive(Clone, Copy)]
@@ -24376,6 +24704,69 @@ mod attach_log {
         })
     }
 
+    fn read_country_stockpile_raw(
+        object_ptr: usize,
+        country_vtable: usize,
+    ) -> Option<Vec<CountryStockpileRawRow>> {
+        let base = country_vtable.checked_sub(COUNTRY_VTABLE_RVA)?;
+        let variant_vtable = base.checked_add(VARIANT_VTABLE_RVA)?;
+        let manager = read_u64(object_ptr + OBJ_PROD_MANAGER)? as usize;
+        if !is_map_control_heap_pointer(manager) {
+            return None;
+        }
+        read_production_stockpile_raw(manager, variant_vtable)
+    }
+
+    fn read_production_stockpile_raw(
+        manager: usize,
+        variant_vtable: usize,
+    ) -> Option<Vec<CountryStockpileRawRow>> {
+        let begin = read_u64(manager + STOCK_BEGIN)? as usize;
+        let cap = read_u32(manager + STOCK_CAP)?;
+        let size = read_u32(manager + STOCK_SIZE)?;
+        if size > cap || cap > MAX_PRODUCTION_VECTOR_ENTRIES {
+            return None;
+        }
+        if size == 0 {
+            return Some(Vec::new());
+        }
+        if !is_map_control_heap_pointer(begin) {
+            return None;
+        }
+        let byte_len = (size as usize).checked_mul(STOCK_STRIDE)?;
+        let raw = read_bytes(begin, byte_len)?;
+        let mut rows_by_variant: BTreeMap<u32, i64> = BTreeMap::new();
+        for k in (0..byte_len).step_by(STOCK_STRIDE) {
+            let def_ptr = read_u64_from_slice(&raw, k + STOCK_ENTRY_DEF)? as usize;
+            let amount_raw = read_i64_from_slice(&raw, k + STOCK_ENTRY_AMOUNT)?;
+            if !is_map_control_heap_pointer(def_ptr) {
+                continue;
+            }
+            let def_vtable = read_u64(def_ptr)? as usize;
+            let def_type = read_u32(def_ptr + VARIANT_DEF_TYPE)?;
+            if def_vtable != variant_vtable || def_type != VARIANT_TYPE {
+                return None;
+            }
+            let variant_id = read_u32(def_ptr + VARIANT_DEF_ID)?;
+            let amount = amount_raw as f64 / FP_SCALE;
+            if !amount.is_finite() || amount.abs() > MAX_PRODUCTION_STOCKPILE_AMOUNT {
+                return None;
+            }
+            if rows_by_variant.insert(variant_id, amount_raw).is_some() {
+                return None;
+            }
+        }
+        Some(
+            rows_by_variant
+                .into_iter()
+                .map(|(variant_id, amount_raw)| CountryStockpileRawRow {
+                    variant_id,
+                    amount_raw,
+                })
+                .collect(),
+        )
+    }
+
     fn read_production_stockpile(
         manager: usize,
         variant_vtable: usize,
@@ -27187,6 +27578,106 @@ mod attach_log {
         }
 
         #[test]
+        fn compact_air_variant_reserves_pack_amount_rows_and_deletes() {
+            let rows = vec![
+                CompactAirVariantReserveRow {
+                    tag_db_id: 1,
+                    variant_id: 1375,
+                    deleted: false,
+                    amount_raw: 8_400_000,
+                },
+                CompactAirVariantReserveRow {
+                    tag_db_id: 2,
+                    variant_id: 5578,
+                    deleted: true,
+                    amount_raw: 0,
+                },
+            ];
+
+            let payload = compact_air_variant_reserves_data_payload(
+                &rows,
+                85,
+                COMPACT_STATUS_EXTRACTION_PERF_GATE | COMPACT_STATUS_DELTA_DATA,
+                2,
+                227,
+                1_472,
+                166,
+                2,
+                0,
+                1,
+            );
+
+            assert_eq!(payload.len(), 48 + 2 * 24);
+            assert_eq!(u64::from_le_bytes(payload[0..8].try_into().unwrap()), 85);
+            assert_eq!(u32::from_le_bytes(payload[8..12].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[12..16].try_into().unwrap()), 2);
+            assert_eq!(
+                u32::from_le_bytes(payload[16..20].try_into().unwrap()),
+                COMPACT_STATUS_EXTRACTION_PERF_GATE | COMPACT_STATUS_DELTA_DATA
+            );
+            assert_eq!(u32::from_le_bytes(payload[20..24].try_into().unwrap()), 227);
+            assert_eq!(
+                u32::from_le_bytes(payload[24..28].try_into().unwrap()),
+                1_472
+            );
+            assert_eq!(u32::from_le_bytes(payload[28..32].try_into().unwrap()), 166);
+            assert_eq!(u32::from_le_bytes(payload[32..36].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[36..40].try_into().unwrap()), 0);
+            assert_eq!(u32::from_le_bytes(payload[40..44].try_into().unwrap()), 1);
+            assert_eq!(
+                u32::from_le_bytes(payload[44..48].try_into().unwrap()),
+                COMPACT_PRODUCTION_SCALE_RAW
+            );
+            assert_eq!(u32::from_le_bytes(payload[48..52].try_into().unwrap()), 1);
+            assert_eq!(
+                u32::from_le_bytes(payload[52..56].try_into().unwrap()),
+                1375
+            );
+            assert_eq!(u32::from_le_bytes(payload[56..60].try_into().unwrap()), 0);
+            assert_eq!(u32::from_le_bytes(payload[60..64].try_into().unwrap()), 0);
+            assert_eq!(
+                i64::from_le_bytes(payload[64..72].try_into().unwrap()),
+                8_400_000
+            );
+            assert_eq!(u32::from_le_bytes(payload[72..76].try_into().unwrap()), 2);
+            assert_eq!(
+                u32::from_le_bytes(payload[76..80].try_into().unwrap()),
+                5578
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[80..84].try_into().unwrap()),
+                COMPACT_AIR_VARIANT_RESERVE_ROW_FLAG_DELETED
+            );
+            assert_eq!(i64::from_le_bytes(payload[88..96].try_into().unwrap()), 0);
+        }
+
+        #[test]
+        fn compact_air_variant_reserve_delta_rows_emit_tombstones() {
+            let mut tracker = CompactAirVariantReserveTracker::default();
+            let initial = CompactAirVariantReserveRow {
+                tag_db_id: 1,
+                variant_id: 1375,
+                deleted: false,
+                amount_raw: 8_400_000,
+            };
+
+            let (rows, changed_rows, deleted_rows) =
+                compact_air_variant_reserve_delta_rows(&mut tracker, vec![initial]);
+            assert_eq!(changed_rows, 1);
+            assert_eq!(deleted_rows, 0);
+            assert_eq!(rows[0], initial);
+
+            let (rows, changed_rows, deleted_rows) =
+                compact_air_variant_reserve_delta_rows(&mut tracker, Vec::new());
+            assert_eq!(changed_rows, 1);
+            assert_eq!(deleted_rows, 1);
+            assert!(rows[0].deleted);
+            assert_eq!(rows[0].tag_db_id, 1);
+            assert_eq!(rows[0].variant_id, 1375);
+            assert_eq!(rows[0].amount_raw, 0);
+        }
+
+        #[test]
         fn compact_air_wing_loadout_delta_rows_preserve_generation() {
             let mut tracker = CompactAirWingLoadoutTracker::default();
             let initial = CompactAirWingLoadoutRow {
@@ -27782,6 +28273,9 @@ mod attach_log {
             assert!(!lightweight_root_needs_country_identity(&control));
 
             control.scheduled_domains.push("focus_live".to_string());
+            assert!(lightweight_root_needs_country_identity(&control));
+
+            control.scheduled_domains = vec![RAW_AIR_VARIANT_RESERVES_DOMAIN.to_string()];
             assert!(lightweight_root_needs_country_identity(&control));
 
             control.scheduled_domains = Vec::new();

@@ -151,6 +151,11 @@ const COMPACT_AIR_VARIANT_DEF_MAX_STRING_LEN: usize = 160;
 const COMPACT_AIR_VARIANT_STATS_ROW_LEN: usize = 64;
 const COMPACT_AIR_VARIANT_STATS_MAX_VARIANT_ID: u32 = i32::MAX as u32;
 const COMPACT_AIR_VARIANT_STATS_MAX_RAW: i32 = 1_000_000_000;
+const COMPACT_AIR_VARIANT_RESERVE_ROW_LEN: usize = 24;
+const COMPACT_AIR_VARIANT_RESERVE_ROW_FLAG_DELETED: u32 = 1;
+const COMPACT_AIR_VARIANT_RESERVE_MAX_TAG_DB_ID: u32 = 1_024;
+const COMPACT_AIR_VARIANT_RESERVE_MAX_VARIANT_ID: u32 = i32::MAX as u32;
+const COMPACT_AIR_VARIANT_RESERVE_MAX_AMOUNT_RAW: i64 = 100_000_000_000_000_000;
 const COMPACT_AIR_BASE_STATUS_ROW_LEN: usize = 32;
 const COMPACT_AIR_BASE_STATUS_ROW_FLAG_DELETED: u32 = 1;
 const COMPACT_AIR_BASE_STATUS_MAX_AIR_BASE_ID: u32 = i32::MAX as u32;
@@ -1291,6 +1296,11 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     35 => {
                         decode_compact_air_variant_stats_data_payload(offset, payload, &mut summary)
                     }
+                    36 => decode_compact_air_variant_reserves_data_payload(
+                        offset,
+                        payload,
+                        &mut summary,
+                    ),
                     other => summary.parse_errors.push(format!(
                         "offset {offset}: unsupported domain data payload for {}",
                         compact_domain_name(other)
@@ -4797,6 +4807,178 @@ fn decode_compact_air_variant_stats_data_payload(
     );
 }
 
+fn decode_compact_air_variant_reserves_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < 48 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air variant reserves data payload is {} byte(s), expected at least 48",
+            payload.len()
+        ));
+        return;
+    }
+    let row_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let observed_country_rows = read_u32_le(payload, 20) as usize;
+    let observed_stockpile_rows = read_u32_le(payload, 24) as usize;
+    let observed_air_variant_rows = read_u32_le(payload, 28) as usize;
+    let matched_stockpile_rows = read_u32_le(payload, 32) as usize;
+    let invalid_country_rows = read_u32_le(payload, 36) as usize;
+    let deleted_rows = read_u32_le(payload, 40) as usize;
+    let scale_raw = read_u32_le(payload, 44);
+    summary.status_flags_or |= status_flags;
+    if changed_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air variant reserves changed_rows {changed_rows} > row_count {row_count}"
+        ));
+    }
+    if matched_stockpile_rows > observed_stockpile_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air variant reserves matched_stockpile_rows {matched_stockpile_rows} > observed_stockpile_rows {observed_stockpile_rows}"
+        ));
+    }
+    if invalid_country_rows > observed_country_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air variant reserves invalid_country_rows {invalid_country_rows} > observed_country_rows {observed_country_rows}"
+        ));
+    }
+    if deleted_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air variant reserves deleted_rows {deleted_rows} > row_count {row_count}"
+        ));
+    }
+    if scale_raw != COMPACT_PRODUCTION_SCALE_RAW {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air variant reserves scale {scale_raw} != expected {COMPACT_PRODUCTION_SCALE_RAW}"
+        ));
+    }
+    let expected_len =
+        48usize.saturating_add(row_count.saturating_mul(COMPACT_AIR_VARIANT_RESERVE_ROW_LEN));
+    if payload.len() != expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air variant reserves data payload is {} byte(s), expected {expected_len}",
+            payload.len()
+        ));
+        return;
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&36) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    add_compact_domain_data_unit(summary, 36, "air_variant_reserve_rows", row_count);
+    add_compact_domain_data_unit(
+        summary,
+        36,
+        "air_variant_reserve_observed_country_rows",
+        observed_country_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        36,
+        "air_variant_reserve_observed_stockpile_rows",
+        observed_stockpile_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        36,
+        "air_variant_reserve_observed_air_variant_rows",
+        observed_air_variant_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        36,
+        "air_variant_reserve_matched_stockpile_rows",
+        matched_stockpile_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        36,
+        "air_variant_reserve_invalid_country_rows",
+        invalid_country_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        36,
+        "air_variant_reserve_deleted_rows",
+        deleted_rows,
+    );
+
+    let mut seen_rows = BTreeSet::new();
+    let mut amount_raw_sum = 0i128;
+    let mut cursor = 48usize;
+    for row_index in 0..row_count {
+        if let Err(err) = require_compact_remaining(
+            payload,
+            cursor,
+            COMPACT_AIR_VARIANT_RESERVE_ROW_LEN,
+            "air variant reserves row",
+        ) {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let tag_db_id = read_u32_le(payload, cursor);
+        let variant_id = read_u32_le(payload, cursor + 4);
+        let flags = read_u32_le(payload, cursor + 8);
+        let row_reserved = read_u32_le(payload, cursor + 12);
+        let amount_raw = read_i64_le(payload, cursor + 16);
+        cursor += COMPACT_AIR_VARIANT_RESERVE_ROW_LEN;
+        let deleted = flags & COMPACT_AIR_VARIANT_RESERVE_ROW_FLAG_DELETED != 0;
+        if tag_db_id == 0 || tag_db_id > COMPACT_AIR_VARIANT_RESERVE_MAX_TAG_DB_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air variant reserves row {row_index} has invalid tag_db_id {tag_db_id}"
+            ));
+        }
+        if variant_id == 0 || variant_id > COMPACT_AIR_VARIANT_RESERVE_MAX_VARIANT_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air variant reserves row {row_index} has invalid variant_id {variant_id}"
+            ));
+        }
+        if !seen_rows.insert((tag_db_id, variant_id)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air variant reserves row {row_index} duplicates tag_db_id {tag_db_id} variant_id {variant_id}"
+            ));
+        }
+        if flags & !COMPACT_AIR_VARIANT_RESERVE_ROW_FLAG_DELETED != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air variant reserves row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if row_reserved != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air variant reserves row {row_index} reserved field is nonzero"
+            ));
+        }
+        if !(-COMPACT_AIR_VARIANT_RESERVE_MAX_AMOUNT_RAW
+            ..=COMPACT_AIR_VARIANT_RESERVE_MAX_AMOUNT_RAW)
+            .contains(&amount_raw)
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air variant reserves row {row_index} has invalid amount_raw {amount_raw}"
+            ));
+        }
+        if deleted && amount_raw != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air variant reserves deleted row {row_index} carries nonzero amount"
+            ));
+        }
+        if !deleted {
+            amount_raw_sum = amount_raw_sum.saturating_add(amount_raw as i128);
+        }
+    }
+    add_compact_domain_data_unit(
+        summary,
+        36,
+        "air_variant_reserve_amount_raw_sum",
+        amount_raw_sum.max(0).min(usize::MAX as i128) as usize,
+    );
+}
+
 fn decode_compact_air_base_status_data_payload(
     offset: usize,
     payload: &[u8],
@@ -5984,6 +6166,7 @@ fn compact_domain_id(domain: &str) -> Option<u16> {
         "air_variant_defs" => Some(33),
         "air_base_status" => Some(34),
         "air_variant_stats" => Some(35),
+        "air_variant_reserves" => Some(36),
         _ => None,
     }
 }
@@ -6014,6 +6197,7 @@ fn compact_domain_name(domain_id: u16) -> &'static str {
         33 => "air_variant_defs",
         34 => "air_base_status",
         35 => "air_variant_stats",
+        36 => "air_variant_reserves",
         1000 => "frame",
         _ => "unknown",
     }
@@ -6099,6 +6283,7 @@ fn compact_domain_requires_data_record(domain_id: u16) -> bool {
             | 33
             | 34
             | 35
+            | 36
     )
 }
 
@@ -7626,6 +7811,101 @@ mod tests {
         );
         assert_eq!(compact_domain_id("air_variant_stats"), Some(35));
         assert_eq!(compact_domain_name(35), "air_variant_stats");
+    }
+
+    #[test]
+    fn compact_summary_decodes_air_variant_reserves_data_record() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            36,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(450, 227, 2, 1_472, 2, COMPACT_STATUS_DELTA_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            36,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_air_variant_reserves_data_payload(COMPACT_STATUS_DELTA_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(&summary, &[36]).is_empty());
+        let reserves = summary.per_domain.get(&36).unwrap();
+        assert_eq!(reserves.row_count_total, 227);
+        assert_eq!(reserves.unit_count_total, 1_472);
+        assert_eq!(reserves.data_record_count, 1);
+        assert_eq!(reserves.data_rows_total, 2);
+        assert_eq!(reserves.data_changed_rows_total, 2);
+        assert_eq!(
+            reserves
+                .data_units_total
+                .get("air_variant_reserve_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            reserves
+                .data_units_total
+                .get("air_variant_reserve_observed_country_rows")
+                .copied(),
+            Some(227)
+        );
+        assert_eq!(
+            reserves
+                .data_units_total
+                .get("air_variant_reserve_observed_stockpile_rows")
+                .copied(),
+            Some(1_472)
+        );
+        assert_eq!(
+            reserves
+                .data_units_total
+                .get("air_variant_reserve_observed_air_variant_rows")
+                .copied(),
+            Some(166)
+        );
+        assert_eq!(
+            reserves
+                .data_units_total
+                .get("air_variant_reserve_matched_stockpile_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            reserves
+                .data_units_total
+                .get("air_variant_reserve_deleted_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            reserves
+                .data_units_total
+                .get("air_variant_reserve_amount_raw_sum")
+                .copied(),
+            Some(8_400_000)
+        );
+        assert_eq!(compact_domain_id("air_variant_reserves"), Some(36));
+        assert_eq!(compact_domain_name(36), "air_variant_reserves");
     }
 
     #[test]
@@ -9469,6 +9749,38 @@ mod tests {
             payload.extend_from_slice(&fuel_consumption_raw.to_le_bytes());
             payload.extend_from_slice(&build_cost_ic_raw.to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        payload
+    }
+
+    fn test_air_variant_reserves_data_payload(status_flags: u32) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&227u32.to_le_bytes());
+        payload.extend_from_slice(&1_472u32.to_le_bytes());
+        payload.extend_from_slice(&166u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_PRODUCTION_SCALE_RAW.to_le_bytes());
+
+        for (tag_db_id, variant_id, flags, amount_raw) in [
+            (1u32, 1375u32, 0u32, 8_400_000i64),
+            (
+                2u32,
+                5578u32,
+                COMPACT_AIR_VARIANT_RESERVE_ROW_FLAG_DELETED,
+                0i64,
+            ),
+        ] {
+            payload.extend_from_slice(&tag_db_id.to_le_bytes());
+            payload.extend_from_slice(&variant_id.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&amount_raw.to_le_bytes());
         }
         payload
     }

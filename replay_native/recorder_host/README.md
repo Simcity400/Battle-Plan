@@ -174,6 +174,25 @@ failures while scheduling `air_wings`, `air_region_activity`,
 `air_base_status` together. The generated `.battleplan` also passed an
 independent `pack_replay verify`.
 
+`air_variant_reserves` is compact domain id 36. It decodes DLL-derived country
+stockpile rows from the anchored country production-manager stockpile and
+filters them to aircraft `variant_id`s observed in live air-wing equipment
+banks. Rows are keyed by `(tag_db_id, variant_id)` and carry raw fixed-point
+stockpile amount plus delete markers. The host rejects malformed lengths,
+duplicate country/variant rows, impossible country or variant ids, out-of-range
+amounts, unknown flags, non-zero reserved bytes, deleted rows with non-zero
+amounts, bad scale metadata, and trailing bytes. Proof
+`replay_native/runs/compact_air_variant_reserves_870ebf_20260701_v2/native_session_manifest.json`
+advanced 103 game hours with 0 skipped and no source/partial/bridge/worker
+failures while scheduling `air_wings`, `air_region_activity`,
+`air_wing_loadouts`, `air_variant_defs`, `air_variant_stats`,
+`air_variant_reserves`, and `air_base_status` together. The generated
+`.battleplan` also passed an independent `pack_replay verify`. This proves
+stockpile amounts for aircraft variants already discovered through active live
+air wings; reserve-only aircraft variants still need a broader equipment
+catalog root before the reserve slice can claim complete aircraft inventory
+coverage.
+
 `air_base_status` is compact domain id 34. It decodes DLL-derived air-base rows
 from the anchored strategic-air state-indexed air-base table. Rows are keyed by
 airbase id and carry state id, materialized capacity, state air-base building

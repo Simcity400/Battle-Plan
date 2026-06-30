@@ -910,6 +910,16 @@ Air-wing raw stream status:
   current-build discovery/validation; the runtime reader is DLL-only and fails
   closed on vtable/type/id or stat-bound mismatches. Archetype/base-airframe
   naming is still separate follow-up work.
+- Compact `air_variant_reserves` is domain id 36. It reads the anchored country
+  production-manager stockpile for each resolved country object, validates
+  type-70 equipment definitions by vtable/type/id, and emits pointer-free rows
+  keyed by `(tag_db_id, variant_id)` with raw fixed-point reserve amounts for
+  aircraft variants discovered through active live air-wing equipment banks.
+  The compact stream includes tombstones for country/variant reserve rows that
+  disappear. This is DLL-only runtime capture and fails closed on missing
+  country identity, invalid stockpile vectors, invalid variant definitions, or
+  impossible amounts. Reserve-only aircraft variants that are not currently
+  present in any live air wing still need a broader equipment catalog root.
 - Compact `air_base_status` is domain id 34. It walks the live strategic-air
   state-indexed air-base table at `strategic_air+0x90`, validates air-base
   records by vtable `MODULE+0x2941FA0`, `{air_base_id,type=65}` handle at
@@ -992,11 +1002,23 @@ Air-wing raw stream status:
   based-plane count sum, and reported no source-unavailable, partial-data,
   bridge-unavailable, or worker-panic flags. Frame p95 was 17174 us; air-base
   status read p95 was 10588 us.
+- Current air-variant reserves compact proof:
+  `replay_native/runs/compact_air_variant_reserves_870ebf_20260701_v2/native_session_manifest.json`
+  scheduled `air_wings`, `air_region_activity`, `air_wing_loadouts`,
+  `air_variant_defs`, `air_variant_stats`, `air_variant_reserves`, and
+  `air_base_status` together for 60 seconds at no-sleep compact sampling,
+  advanced 103 game hours, skipped 0, emitted ordered/decodable compact records,
+  wrote 319348 total bytes, captured 36920 observed country rows, 278718
+  observed stockpile rows, 27988 matched active-air-variant stockpile rows, 393
+  emitted reserve rows, and reported no source-unavailable, partial-data,
+  bridge-unavailable, or worker-panic flags. Frame cadence stayed hourly clean;
+  air-variant-reserve read p95 was 26106 us, and an independent `pack_replay
+  verify` pass accepted the generated `.battleplan`.
 - Remaining promotion work is live proof while changing missions/rebasing,
   airbase capacity modifiers/penalty semantics, aircraft archetype/base-airframe
-  classification, reserves/aces, air-loss/attrition proof, air-combat
-  resolution, exact displayed air-superiority percent classification, and
-  timeline ingestion.
+  classification, reserve-only aircraft catalog roots, aces, air-loss/attrition
+  proof, air-combat resolution, exact displayed air-superiority percent
+  classification, and timeline ingestion.
 
 Runtime rules:
 
