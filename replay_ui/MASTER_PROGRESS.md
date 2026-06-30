@@ -617,8 +617,17 @@ The app is product-complete only when all applicable gates pass:
   conditions, supplied 0 air-wing bridge rows, verified the replay container,
   emitted 8640 raw `air_wings` deltas, observed 360 `air_wing_observed` and
   8280 `air_wing_updated` events, and reported zero skipped game hours and zero
-  raw gap frames. Compact binary air-wing emission remains the production
-  promotion step.
+  raw gap frames.
+- Compact `air_wings` proof passed on 2026-07-01:
+  `replay_native/runs/compact_air_wings_870ebf_20260701_v3/native_session_manifest.json`
+  ran the production-shaped compact gate for 60 seconds at 10 ms sampling,
+  advanced 110 game hours, skipped 0 game hours, emitted ordered/decodable
+  compact records, wrote 47884 total bytes / 37228 payload bytes, captured 41474
+  observed air-wing rows, 631 changed rows, and 296 mission-region rows, and
+  reported no source-unavailable, partial-data, bridge-unavailable, or worker
+  panic flags. Remaining air-system capture gaps are variants, airbase joins,
+  reserves, aces, capacity, exact region superiority, losses, and air-combat
+  resolution.
 - Every registered view opens from the in-app menu.
 - Every registered view has an interaction contract.
 - Every read-only interaction in each contract is implemented and tested.

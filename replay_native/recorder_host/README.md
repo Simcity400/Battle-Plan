@@ -121,11 +121,12 @@ the same rule for filtered sessions: request `--scheduled-domain clock` when a
 raw clock sidecar is the thing under test. With no domain filter, the DLL keeps
 the legacy default of enabling all domains.
 
-`air_wings` is still a bridge-backed debug/proof stream, not a production
-no-bridge compact source. Current 870ebf collector guards validate the wing
-body, pool, airbase/owner, and mission-region layout, and the native
-strategic-air manager/airbase/pool roots are pinned, but the full anchored wing
-roster walk is still open.
+`air_wings` now has a no-bridge compact source for the verified 870ebf build.
+Compact domain id 30 decodes packed owner/wing/generation/count/mission/effective
+plane rows plus delete rows, and rejects malformed lengths, impossible bounds,
+mission-region flag mismatches, non-zero deleted-row live fields, and non-zero
+reserved bytes. The legacy `air_wing_body_bridge` remains debug/proof fallback
+only; it is not part of the production recording path.
 
 Compact extraction gate example:
 

@@ -2796,6 +2796,7 @@ mod attach_log {
     const COMPACT_DOMAIN_ARMY_ORDERS: u16 = 27;
     const COMPACT_DOMAIN_OOB_COMMAND: u16 = 28;
     const COMPACT_DOMAIN_SHIPS: u16 = 29;
+    const COMPACT_DOMAIN_AIR_WINGS: u16 = 30;
     const COMPACT_STATUS_STATE_UNAVAILABLE: u32 = 1 << 0;
     const COMPACT_STATUS_PROFILE_MISMATCH: u32 = 1 << 1;
     const COMPACT_STATUS_NO_CLOCK: u32 = 1 << 2;
@@ -2834,6 +2835,8 @@ mod attach_log {
     const COMPACT_SHIP_ROW_FLAG_TASK_FORCE: u32 = 1 << 1;
     const COMPACT_SHIP_ROW_FLAG_DEFINITION: u32 = 1 << 2;
     const COMPACT_SHIP_ROW_FLAG_OWNER: u32 = 1 << 3;
+    const COMPACT_AIR_WING_ROW_FLAG_DELETED: u32 = 1;
+    const COMPACT_AIR_WING_ROW_FLAG_MISSION_REGION: u32 = 1 << 1;
     const COMPACT_OOB_STATUS_NONE: u32 = 0;
     const COMPACT_OOB_STATUS_EXACT: u32 = 1;
     const COMPACT_OOB_STATUS_UNKNOWN: u32 = 2;
@@ -2931,6 +2934,7 @@ mod attach_log {
         army_order: ArmyOrderTracker,
         oob_command: CompactOobCommandTracker,
         ships: CompactShipTracker,
+        air_wings: CompactAirWingTracker,
         land_combat: LandCombatTracker,
         map_control: CompactMapControlTracker,
         map_detail: CompactMapDetailTracker,
@@ -3009,6 +3013,15 @@ mod attach_log {
         status_flags: u32,
         observed_ship_rows: u32,
         observed_task_force_rows: u32,
+        deleted_rows: u32,
+    }
+
+    struct CompactAirWingRead {
+        rows: Vec<CompactAirWingRow>,
+        read_time_us: u64,
+        changed_rows: u32,
+        status_flags: u32,
+        observed_air_wing_rows: u32,
         deleted_rows: u32,
     }
 
@@ -3261,6 +3274,12 @@ mod attach_log {
         previous: BTreeMap<u32, CompactShipRow>,
     }
 
+    #[derive(Default)]
+    struct CompactAirWingTracker {
+        previous: BTreeMap<usize, CompactAirWingRow>,
+        next_generation: u64,
+    }
+
     #[derive(Clone, Debug, PartialEq, Eq)]
     struct CompactOobCommandRow {
         kind: u32,
@@ -3297,6 +3316,19 @@ mod attach_log {
         sunk_convoys: u32,
     }
 
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct CompactAirWingRow {
+        owner_tag_db_id: u32,
+        wing_id: u32,
+        generation: u64,
+        body_addr: usize,
+        deleted: bool,
+        count: u32,
+        mission_mask: u32,
+        mission_region: Option<u32>,
+        effective_planes: u32,
+    }
+
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     struct CompactFleetRoot {
         fleet_id: u32,
@@ -3322,6 +3354,11 @@ mod attach_log {
         rows: Vec<CompactShipRow>,
         observed_task_force_rows: u32,
         invalid_task_force_rows: u32,
+    }
+
+    struct CompactAirWingNativeRead {
+        rows: Vec<CompactAirWingRow>,
+        invalid_air_wing_rows: u32,
     }
 
     #[derive(Clone, Debug, PartialEq)]
@@ -9491,6 +9528,7 @@ mod attach_log {
         let army_orders_enabled = compact_explicit_domain_enabled(control, RAW_ARMY_ORDERS_DOMAIN);
         let oob_command_enabled = compact_explicit_domain_enabled(control, RAW_OOB_COMMAND_DOMAIN);
         let ships_enabled = compact_explicit_domain_enabled(control, RAW_SHIPS_DOMAIN);
+        let air_wings_enabled = compact_explicit_domain_enabled(control, RAW_AIR_WINGS_DOMAIN);
         let land_combats_enabled =
             compact_explicit_domain_enabled(control, RAW_LAND_COMBATS_DOMAIN);
         let map_control_enabled = compact_map_control_enabled(control);
@@ -9504,6 +9542,7 @@ mod attach_log {
         let mut army_order_read = None;
         let mut oob_command_read = None;
         let mut ship_read = None;
+        let mut air_wing_read = None;
         let mut land_combat_read = None;
         let mut map_control_read = None;
         let mut map_detail_read = None;
@@ -9527,6 +9566,7 @@ mod attach_log {
         let army_order_tracker = &mut trackers.army_order;
         let oob_command_tracker = &mut trackers.oob_command;
         let ship_tracker = &mut trackers.ships;
+        let air_wing_tracker = &mut trackers.air_wings;
         let division_roots = &trackers.division_roots;
         let land_combat_tracker = &mut trackers.land_combat;
         let map_control_tracker = &mut trackers.map_control;
@@ -9601,6 +9641,14 @@ mod attach_log {
             } else {
                 None
             };
+            let air_wing_handle =
+                if air_wings_enabled {
+                    Some(scope.spawn(move || {
+                        read_compact_air_wings(state, status_flags, air_wing_tracker)
+                    }))
+                } else {
+                    None
+                };
             let land_combat_handle = if land_combats_enabled {
                 Some(scope.spawn(move || {
                     read_compact_land_combats(state, status_flags, land_combat_tracker)
@@ -9673,6 +9721,12 @@ mod attach_log {
                 ship_read = Some(match handle.join() {
                     Ok(read) => read,
                     Err(_) => compact_ship_worker_panic_read(status_flags),
+                });
+            }
+            if let Some(handle) = air_wing_handle {
+                air_wing_read = Some(match handle.join() {
+                    Ok(read) => read,
+                    Err(_) => compact_air_wing_worker_panic_read(status_flags),
                 });
             }
             if let Some(handle) = land_combat_handle {
@@ -9960,6 +10014,37 @@ mod attach_log {
                 read.changed_rows,
                 read.observed_ship_rows,
                 read.observed_task_force_rows,
+                read.deleted_rows,
+            );
+            sequence = sequence.saturating_add(1);
+            emitted_domains = emitted_domains.saturating_add(1);
+        }
+        if let Some(read) = air_wing_read {
+            append_compact_domain_perf_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                CompactDomainPerfRecord {
+                    domain_id: COMPACT_DOMAIN_AIR_WINGS,
+                    read_time_us: read.read_time_us,
+                    row_count: read.observed_air_wing_rows,
+                    changed_rows: read.changed_rows,
+                    unit_count: read.observed_air_wing_rows,
+                    changed_unit_count: read.changed_rows,
+                    status_flags: read.status_flags,
+                },
+                elapsed_wall_ms,
+            );
+            sequence = sequence.saturating_add(1);
+            append_compact_air_wings_data_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                &read.rows,
+                elapsed_wall_ms,
+                read.status_flags,
+                read.changed_rows,
+                read.observed_air_wing_rows,
                 read.deleted_rows,
             );
             sequence = sequence.saturating_add(1);
@@ -10639,6 +10724,17 @@ mod attach_log {
             status_flags: status_flags | COMPACT_STATUS_WORKER_PANIC,
             observed_ship_rows: 0,
             observed_task_force_rows: 0,
+            deleted_rows: 0,
+        }
+    }
+
+    fn compact_air_wing_worker_panic_read(status_flags: u32) -> CompactAirWingRead {
+        CompactAirWingRead {
+            rows: Vec::new(),
+            read_time_us: 0,
+            changed_rows: 0,
+            status_flags: status_flags | COMPACT_STATUS_WORKER_PANIC,
+            observed_air_wing_rows: 0,
             deleted_rows: 0,
         }
     }
@@ -12285,6 +12381,276 @@ mod attach_log {
             organisation_raw: 0,
             experience_raw: 0,
             sunk_convoys: 0,
+        }
+    }
+
+    fn read_compact_air_wings(
+        state: &CollectorState,
+        status_flags: u32,
+        tracker: &mut CompactAirWingTracker,
+    ) -> CompactAirWingRead {
+        let read_started = Instant::now();
+        let mut status_flags = status_flags;
+        let Some(native) = sample_compact_air_wings_native(state) else {
+            return CompactAirWingRead {
+                rows: Vec::new(),
+                read_time_us: duration_micros_u64(read_started.elapsed()),
+                changed_rows: 0,
+                status_flags: status_flags | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                observed_air_wing_rows: 0,
+                deleted_rows: 0,
+            };
+        };
+        if native.rows.is_empty() {
+            status_flags |= COMPACT_STATUS_SOURCE_UNAVAILABLE;
+        }
+        if native.invalid_air_wing_rows > 0 {
+            status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+        }
+        let observed_air_wing_rows = native.rows.len().min(u32::MAX as usize) as u32;
+        let (rows, changed_rows, deleted_rows) = compact_air_wing_delta_rows(tracker, native.rows);
+        CompactAirWingRead {
+            rows,
+            read_time_us: duration_micros_u64(read_started.elapsed()),
+            changed_rows,
+            status_flags,
+            observed_air_wing_rows,
+            deleted_rows,
+        }
+    }
+
+    fn sample_compact_air_wings_native(state: &CollectorState) -> Option<CompactAirWingNativeRead> {
+        if state.base == 0 || !state.daily_match || !state.long_string_match {
+            return None;
+        }
+        let module_base = state.base;
+        let game_state = state.date_ptr as usize;
+        if !is_map_control_heap_pointer(game_state) {
+            return None;
+        }
+        let strategic_air =
+            read_u64(game_state.checked_add(CGAMESTATE_OFF_STRATEGIC_AIR_MANAGER)?)? as usize;
+        if !is_map_control_heap_pointer(strategic_air)
+            || read_u64(strategic_air)? as usize
+                != module_base.checked_add(STRATEGIC_AIR_MANAGER_VTABLE_RVA)?
+        {
+            return None;
+        }
+        let container_begin =
+            read_u64(strategic_air.checked_add(STRATEGIC_AIR_MANAGER_OFF_COUNTRY_CONTAINERS)?)?
+                as usize;
+        let container_count = read_u32(
+            strategic_air.checked_add(STRATEGIC_AIR_MANAGER_OFF_COUNTRY_CONTAINER_COUNT)?,
+        )?;
+        if container_count > MAX_STRATEGIC_AIR_CONTAINERS {
+            return None;
+        }
+        if container_count > 0 && !is_map_control_heap_pointer(container_begin) {
+            return None;
+        }
+        let mut rows_by_body = BTreeMap::new();
+        let mut invalid_rows = 0u32;
+        for container_index in 0..(container_count as usize) {
+            let container =
+                read_u64(container_begin.checked_add(container_index.checked_mul(8)?)?)? as usize;
+            if container == 0 {
+                continue;
+            }
+            if !is_map_control_heap_pointer(container)
+                || read_u64(container)? as usize
+                    != module_base.checked_add(AIR_WING_AIRBASE_OWNER_VTABLE_RVA)?
+            {
+                invalid_rows = invalid_rows.saturating_add(1);
+                continue;
+            }
+            let owner_tag_db_id = valid_compact_air_wing_owner_tag_db_id(read_u32(
+                container.checked_add(AIR_WING_AIRBASE_OWNER_OFF_TAG)?,
+            )?)
+            .unwrap_or(0);
+            if owner_tag_db_id == 0 {
+                invalid_rows = invalid_rows.saturating_add(1);
+                continue;
+            }
+            let pool_begin =
+                read_u64(container.checked_add(AIR_WING_AIRBASE_OWNER_OFF_POOL_BEGIN)?)? as usize;
+            let pool_count =
+                read_u32(container.checked_add(AIR_WING_AIRBASE_OWNER_OFF_POOL_COUNT)?)?;
+            if pool_count > MAX_AIR_WING_POOLS_PER_OWNER {
+                invalid_rows = invalid_rows.saturating_add(1);
+                continue;
+            }
+            if pool_count > 0 && !is_map_control_heap_pointer(pool_begin) {
+                invalid_rows = invalid_rows.saturating_add(1);
+                continue;
+            }
+            for pool_index in 0..(pool_count as usize) {
+                let pool = read_u64(pool_begin.checked_add(pool_index.checked_mul(8)?)?)? as usize;
+                if !is_map_control_heap_pointer(pool)
+                    || read_u64(pool)? as usize
+                        != module_base.checked_add(AIR_WING_POOL_VTABLE_RVA)?
+                {
+                    invalid_rows = invalid_rows.saturating_add(1);
+                    continue;
+                }
+                if read_u64(pool.checked_add(AIR_WING_POOL_OFF_AIRBASE_OWNER)?)? as usize
+                    != container
+                {
+                    invalid_rows = invalid_rows.saturating_add(1);
+                    continue;
+                }
+                let object_begin =
+                    read_u64(pool.checked_add(AIR_WING_POOL_OFF_WING_OBJECT_BEGIN)?)? as usize;
+                let object_count =
+                    read_u32(pool.checked_add(AIR_WING_POOL_OFF_WING_OBJECT_COUNT)?)?;
+                if object_count > MAX_AIR_WING_OBJECTS_PER_POOL {
+                    invalid_rows = invalid_rows.saturating_add(1);
+                    continue;
+                }
+                if object_count > 0 && !is_map_control_heap_pointer(object_begin) {
+                    invalid_rows = invalid_rows.saturating_add(1);
+                    continue;
+                }
+                for object_index in 0..(object_count as usize) {
+                    let object =
+                        read_u64(object_begin.checked_add(object_index.checked_mul(8)?)?)? as usize;
+                    let Some(row) =
+                        sample_compact_air_wing_object(module_base, object, pool, owner_tag_db_id)
+                    else {
+                        invalid_rows = invalid_rows.saturating_add(1);
+                        continue;
+                    };
+                    rows_by_body.entry(row.body_addr).or_insert(row);
+                    if rows_by_body.len() > MAX_NATIVE_AIR_WING_ROWS {
+                        return None;
+                    }
+                }
+            }
+        }
+        Some(CompactAirWingNativeRead {
+            rows: rows_by_body.into_values().collect(),
+            invalid_air_wing_rows: invalid_rows,
+        })
+    }
+
+    fn sample_compact_air_wing_object(
+        module_base: usize,
+        object: usize,
+        expected_pool: usize,
+        owner_tag_db_id: u32,
+    ) -> Option<CompactAirWingRow> {
+        if !is_map_control_heap_pointer(object)
+            || read_u64(object)? as usize != module_base.checked_add(AIR_WING_OBJECT_VTABLE_RVA)?
+        {
+            return None;
+        }
+        let body = object.checked_add(AIR_WING_OBJECT_OFF_BODY)?;
+        if read_u64(body)? as usize != module_base.checked_add(AIR_WING_VTABLE_RVA)? {
+            return None;
+        }
+        if read_u32(body.checked_add(AIR_WING_OFF_TYPE)?)? != AIR_WING_TYPE {
+            return None;
+        }
+        let pool = read_u64(body.checked_add(AIR_WING_OFF_POOL)?)? as usize;
+        if pool != expected_pool {
+            return None;
+        }
+        let resolved_owner = read_air_wing_owner_tag_db_id(module_base, body)?;
+        if resolved_owner != owner_tag_db_id {
+            return None;
+        }
+        let wing_id = read_u32(body.checked_add(AIR_WING_OFF_ID)?)?;
+        if wing_id == 0 || wing_id > MAX_AIR_WING_ID {
+            return None;
+        }
+        let count = read_u32(body.checked_add(AIR_WING_OFF_COUNT)?)?;
+        let effective_planes = read_u32(body.checked_add(AIR_WING_OFF_EFFECTIVE_PLANES)?)?;
+        if count > MAX_AIR_WING_PLANES || effective_planes > MAX_AIR_WING_PLANES {
+            return None;
+        }
+        Some(CompactAirWingRow {
+            owner_tag_db_id,
+            wing_id,
+            generation: 0,
+            body_addr: body,
+            deleted: false,
+            count,
+            mission_mask: read_u32(body.checked_add(AIR_WING_OFF_MISSION_MASK)?)?,
+            mission_region: read_air_wing_mission_region(module_base, body),
+            effective_planes,
+        })
+    }
+
+    fn valid_compact_air_wing_owner_tag_db_id(value: u32) -> Option<u32> {
+        (value > 0 && value <= 1024).then_some(value)
+    }
+
+    fn compact_air_wing_delta_rows(
+        tracker: &mut CompactAirWingTracker,
+        current_rows: Vec<CompactAirWingRow>,
+    ) -> (Vec<CompactAirWingRow>, u32, u32) {
+        let emit_full_snapshot = tracker.previous.is_empty();
+        let mut current = BTreeMap::new();
+        let mut emitted = Vec::new();
+        let mut deleted_rows = 0u32;
+        for mut row in current_rows {
+            let key = row.body_addr;
+            let old = tracker.previous.get(&key).cloned();
+            if let Some(old) = old {
+                row.generation = old.generation;
+                if emit_full_snapshot || old != row {
+                    emitted.push(row.clone());
+                }
+            } else {
+                row.generation = next_compact_air_wing_generation(tracker);
+                emitted.push(row.clone());
+            }
+            current.insert(key, row);
+        }
+        if !emit_full_snapshot {
+            for key in tracker.previous.keys().copied().collect::<Vec<_>>() {
+                if current.contains_key(&key) {
+                    continue;
+                }
+                if let Some(old) = tracker.previous.get(&key) {
+                    emitted.push(deleted_compact_air_wing_row(old));
+                    deleted_rows = deleted_rows.saturating_add(1);
+                }
+            }
+        }
+        emitted.sort_by_key(|row| {
+            (
+                row.owner_tag_db_id,
+                row.wing_id,
+                row.generation,
+                row.deleted,
+            )
+        });
+        tracker.previous = current;
+        let changed_rows = emitted.len().min(u32::MAX as usize) as u32;
+        if changed_rows > 0 {
+            (emitted, changed_rows, deleted_rows)
+        } else {
+            (Vec::new(), 0, deleted_rows)
+        }
+    }
+
+    fn next_compact_air_wing_generation(tracker: &mut CompactAirWingTracker) -> u64 {
+        let generation = tracker.next_generation;
+        tracker.next_generation = tracker.next_generation.saturating_add(1);
+        generation
+    }
+
+    fn deleted_compact_air_wing_row(old: &CompactAirWingRow) -> CompactAirWingRow {
+        CompactAirWingRow {
+            owner_tag_db_id: old.owner_tag_db_id,
+            wing_id: old.wing_id,
+            generation: old.generation,
+            body_addr: old.body_addr,
+            deleted: true,
+            count: 0,
+            mission_mask: 0,
+            mission_region: None,
+            effective_planes: 0,
         }
     }
 
@@ -14176,6 +14542,36 @@ mod attach_log {
         );
     }
 
+    fn append_compact_air_wings_data_record(
+        out: &mut Vec<u8>,
+        sequence: u64,
+        game_hour_raw: i32,
+        rows: &[CompactAirWingRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        observed_air_wing_rows: u32,
+        deleted_rows: u32,
+    ) {
+        let payload = compact_air_wings_data_payload(
+            rows,
+            elapsed_wall_ms,
+            status_flags,
+            changed_rows,
+            observed_air_wing_rows,
+            deleted_rows,
+        );
+        append_compact_record(
+            out,
+            sequence,
+            game_hour_raw,
+            COMPACT_DOMAIN_AIR_WINGS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+    }
+
     fn append_compact_land_combats_data_record(
         out: &mut Vec<u8>,
         sequence: u64,
@@ -15347,6 +15743,44 @@ mod attach_log {
             payload.extend_from_slice(&row.owner_tag_db_id.unwrap_or(0).to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
             append_compact_string(&mut payload, row.definition.as_deref());
+        }
+        payload
+    }
+
+    fn compact_air_wings_data_payload(
+        rows: &[CompactAirWingRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        observed_air_wing_rows: u32,
+        deleted_rows: u32,
+    ) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(36usize.saturating_add(rows.len().saturating_mul(40)));
+        payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
+        payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+        payload.extend_from_slice(&changed_rows.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&observed_air_wing_rows.to_le_bytes());
+        payload.extend_from_slice(&deleted_rows.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        for row in rows {
+            let mut flags = 0u32;
+            if row.deleted {
+                flags |= COMPACT_AIR_WING_ROW_FLAG_DELETED;
+            }
+            if row.mission_region.is_some() {
+                flags |= COMPACT_AIR_WING_ROW_FLAG_MISSION_REGION;
+            }
+            payload.extend_from_slice(&row.owner_tag_db_id.to_le_bytes());
+            payload.extend_from_slice(&row.wing_id.to_le_bytes());
+            payload.extend_from_slice(&row.generation.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&row.count.to_le_bytes());
+            payload.extend_from_slice(&row.mission_mask.to_le_bytes());
+            payload.extend_from_slice(&row.mission_region.unwrap_or(0).to_le_bytes());
+            payload.extend_from_slice(&row.effective_planes.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
         }
         payload
     }

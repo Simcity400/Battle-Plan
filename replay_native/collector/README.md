@@ -869,6 +869,12 @@ Air-wing raw stream status:
   `air_wing_lost`. `effective_planes` is the live active/effective plane count
   used for later aggregation; it is not the final displayed air-superiority
   percent.
+- Compact `air_wings` is domain id 30. It emits pointer-free packed rows with
+  owner tag-db id, wing id, generation, count, mission mask, nullable mission
+  region, effective active planes, and delete rows. The Rust recorder host
+  validates ordering, payload length, row bounds, mission-region flag
+  consistency, deleted-row zeroing, and reserved bytes before accepting the
+  stream.
 - Previous bridge fixture status: live-proven by no-cold cache-backed run
   `replay/snapshots/_collector_session_air_wing_gate/20260629T205254Z_pid43412`.
   The run advanced 12 game hours in 55.875 wall seconds, verified replay output,
@@ -884,9 +890,18 @@ Air-wing raw stream status:
   emitted 8640 raw `air_wings` deltas, observed 360 `air_wing_observed` and
   8280 `air_wing_updated` events, and reported zero skipped game hours and zero
   raw air-wing gaps.
-- Remaining promotion work is compact binary air-wing records, live proof while
-  changing missions, exact airbase/variant joins, derived region aggregate rows,
-  air-loss/attrition proof, and timeline ingestion.
+- Current compact proof:
+  `replay_native/runs/compact_air_wings_870ebf_20260701_v3/native_session_manifest.json`
+  ran the production-shaped compact gate for 60 seconds at 10 ms sampling,
+  advanced 110 game hours, skipped 0 game hours, emitted 111 ordered/decodable
+  frame/data records, wrote 47884 total bytes / 37228 payload bytes, observed
+  41474 air-wing rows, emitted 631 changed rows and 296 mission-region rows, and
+  reported no source-unavailable, partial-data, bridge-unavailable, or worker
+  panic flags. Frame time p95 was 8205 us; air-wing read p95 was 7014 us.
+- Remaining promotion work is live proof while changing missions, exact
+  airbase/variant joins, derived region aggregate rows, air-loss/attrition
+  proof, air-combat resolution, aces/reserves/capacity joins, and timeline
+  ingestion.
 
 Runtime rules:
 

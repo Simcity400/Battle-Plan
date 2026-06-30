@@ -319,27 +319,23 @@ Current recorder-facing bridge status:
   all-field sample. A 2026-06-29 warm-cache live proof bridged 1564 division
   bodies, preserved 846 division deltas and 842 `division_movement_started`
   events in one game hour, and met the wall cap in 9.31 seconds.
-- Air-wing telemetry now has the same bridge-gated raw-stream shape. The DLL
-  accepts `air_wing_body_bridge` rows (`owner_tag_db_id:wing_id:body_ptr`),
-  revalidates the wing body, pool, airbase-owner object, tag-table decode, and
-  optional mission-region object every sample, and emits pointer-free raw
-  `air_wings` deltas/events keyed as `air_wing:<TAG>:<wing_id>:<generation>`.
-  The Python proof harness can populate the bridge with
-  `--preflight-air-wings`; cache hits reread cached bodies and the expensive
-  `NavalAirReader.enumerate_air_wings()` scan is gated by
-  `--allow-air-wing-cold-scan`. This remains production debt until native
-  discovery replaces the Python preflight. It captures count, mission mask,
-  mission region, and effective active planes, not the final UI air-superiority
-  percent.
-- Current 870ebf air-wing discovery refreshed the body guards and pinned part
-  of the native root chain: `CAirWing` vtable `module+0x29641B0`,
-  `CAirWingPool` vtable `module+0x2964208`, airbase/owner vtable
-  `module+0x2941FF8`, strategic-region vtables `module+0x29569A8` and
-  `module+0x29569F8`, `CGameState+0x690` to strategic-air manager,
-  `strategic_air+0x30` to the airbase/owner vector, and `airbase+0x58` to
-  owned air-wing pool vectors. Live wing records appear as value-array rows with
-  observed stride `0xA90`; the anchored roster/table parent is still open, so
-  this segment is not DLL-complete.
+- Air-wing telemetry now has no-bridge DLL raw and compact streams for the
+  current 870ebf build. The production path walks anchored strategic-air roots,
+  revalidates the wing object/body/pool/owner/mission-region layout every
+  sample, and emits pointer-free rows keyed as
+  `air_wing:<TAG>:<wing_id>:<generation>` in raw mode and packed domain id 30
+  records in compact mode. It captures count, mission mask, mission region, and
+  effective active planes, not the final UI air-superiority percent.
+- The legacy `air_wing_body_bridge` remains a debug/proof fallback only. The
+  Python proof harness can still populate it with `--preflight-air-wings`, but
+  bridge rows, save files, and Python heap scans are no longer part of the
+  production proof for the current air-wing roster slice.
+- Current 870ebf air-wing discovery refreshed the body guards and pinned the
+  native root chain: `CAirWing` vtable `module+0x29641B0`, `CAirWingPool`
+  vtable `module+0x2964208`, airbase/owner vtable `module+0x2941FF8`,
+  strategic-region vtables `module+0x29569A8` and `module+0x29569F8`,
+  `CGameState+0x690 -> strategic_air+0x30/+0x3C ->
+  airbase_owner+0x58/+0x64 -> pool+0x28/+0x34 -> air_wing_object+0x10`.
 - Active naval combat now has the first per-member DLL stream. The existing
   `naval_combat_body_bridge` roots `CNavalCombat` bodies; the DLL revalidates
   body, registry, side, group, and `CFEXMember` vtables, then emits bounded
@@ -817,8 +813,16 @@ Tasks:
   conditions, supplied 0 air-wing bridge rows, verified the replay output,
   emitted 8640 raw `air_wings` deltas, observed 360 `air_wing_observed` and
   8280 `air_wing_updated` events, and reported zero skipped game hours and zero
-  raw air-wing gaps. Do not mark the segment fully production-complete until the
-  same roster is emitted through compact binary air-wing records.
+  raw air-wing gaps.
+- Current compact proof:
+  `replay_native/runs/compact_air_wings_870ebf_20260701_v3/native_session_manifest.json`
+  ran for 60 seconds at 10 ms sampling, advanced 110 game hours with 0 skipped,
+  emitted ordered/decodable compact records, wrote 47884 total bytes / 37228
+  payload bytes, captured 41474 observed air-wing rows, 631 changed rows, and
+  296 mission-region rows, and reported no source-unavailable, partial-data,
+  bridge-unavailable, or worker-panic flags. Frame p95 was 8205 us; air-wing
+  read p95 was 7014 us. This completes the first production-shaped compact
+  roster slice, but not the wider air system.
 - Build an active air-combat fixture for validation.
 - Resolve `airwing_effective_planes_denom` or badge it.
 - Decide which air-superiority values are exact live state and which are
