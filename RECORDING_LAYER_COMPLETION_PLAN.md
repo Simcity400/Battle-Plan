@@ -864,6 +864,16 @@ Tasks:
   wing count, and based plane count. This closes the no-save airbase-id ->
   state/capacity/usage join for the verified `870ebf` build. It does not yet
   explain all capacity modifier/penalty semantics.
+- Current DLL checkpoint: `air_superiority_inputs` is compact domain id 38. It
+  joins anchored live air-wing activity to live wing loadout equipment and
+  validated type-70 variant stats, then emits rows keyed by
+  `(mission_region, owner_tag_db_id, mission_mask, variant_id)` with raw
+  equipment token/type/interface classifiers, source wing count, raw
+  fixed-point equipment amount, and tombstones. This closes production-shaped
+  live capture of the region/side/mission/variant inputs needed for replay-side
+  air-power reconstruction/modeling on the verified `870ebf` build. It does not
+  claim the exact cached displayed the game air-superiority percent; that remains a
+  separate denominator/cache-root reverse-engineering task.
 - Current no-bridge proof:
   `replay/snapshots/_collector_session_air_wing_native_gate/20260630T172419Z_pid45880`
   advanced 12 game hours in 83.860 wall seconds with speed-five/current game
@@ -955,6 +965,20 @@ Tasks:
   source-unavailable, partial-data, bridge-unavailable, or worker-panic flags.
   `stockpile_variant_defs` read p95 was 11695 us, and an independent
   `pack_replay verify` pass accepted the generated `.battleplan`.
+- Current air-superiority input compact proof:
+  `replay_native/runs/compact_air_superiority_inputs_870ebf_20260701_v2/native_session_manifest.json`
+  scheduled `air_wings`, `air_region_activity`, `air_wing_loadouts`,
+  `air_variant_defs`, `air_variant_stats`, `air_variant_reserves`,
+  `air_base_status`, `stockpile_variant_defs`, and `air_superiority_inputs` for
+  60 seconds at no-sleep compact sampling, advanced 103 game hours with 0
+  skipped, emitted ordered/decodable compact records, wrote 459226 total bytes,
+  captured 54469 observed wing/loadout rows, 158532 observed equipment rows,
+  18616 observed variant rows, 514 emitted superiority-input rows, 330
+  mission-bucket rows, 1386 source-wing count sum, and 8976300000 raw equipment
+  amount sum, and reported no source-unavailable, partial-data,
+  bridge-unavailable, or worker-panic flags. `air_superiority_inputs` read p95
+  was 40651 us, frame p95 was 50067 us, and an independent `pack_replay verify`
+  pass accepted the generated `.battleplan`.
 - Build an active air-combat fixture for validation.
 - Resolve `airwing_effective_planes_denom` or badge it.
 - Decide which air-superiority values are exact live state and which are

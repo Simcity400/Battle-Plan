@@ -2810,6 +2810,7 @@ mod attach_log {
     const RAW_AIR_VARIANT_RESERVES_DOMAIN: &str = "air_variant_reserves";
     const RAW_AIR_BASE_STATUS_DOMAIN: &str = "air_base_status";
     const RAW_STOCKPILE_VARIANT_DEFS_DOMAIN: &str = "stockpile_variant_defs";
+    const RAW_AIR_SUPERIORITY_INPUTS_DOMAIN: &str = "air_superiority_inputs";
     const RAW_SHIPS_DOMAIN: &str = "ships";
     const RAW_OOB_COMMAND_DOMAIN: &str = "oob_command";
     const RAW_CONFIDENCE_SAMPLED: &str = "sampled";
@@ -2864,6 +2865,7 @@ mod attach_log {
     const COMPACT_DOMAIN_AIR_VARIANT_STATS: u16 = 35;
     const COMPACT_DOMAIN_AIR_VARIANT_RESERVES: u16 = 36;
     const COMPACT_DOMAIN_STOCKPILE_VARIANT_DEFS: u16 = 37;
+    const COMPACT_DOMAIN_AIR_SUPERIORITY_INPUTS: u16 = 38;
     const COMPACT_STATUS_STATE_UNAVAILABLE: u32 = 1 << 0;
     const COMPACT_STATUS_PROFILE_MISMATCH: u32 = 1 << 1;
     const COMPACT_STATUS_NO_CLOCK: u32 = 1 << 2;
@@ -2911,6 +2913,7 @@ mod attach_log {
     const COMPACT_AIR_VARIANT_DEF_ROW_FLAG_MODULES: u32 = 1 << 2;
     const COMPACT_AIR_BASE_STATUS_ROW_FLAG_DELETED: u32 = 1;
     const COMPACT_AIR_VARIANT_RESERVE_ROW_FLAG_DELETED: u32 = 1;
+    const COMPACT_AIR_SUPERIORITY_INPUT_ROW_FLAG_DELETED: u32 = 1;
     const COMPACT_OOB_STATUS_NONE: u32 = 0;
     const COMPACT_OOB_STATUS_EXACT: u32 = 1;
     const COMPACT_OOB_STATUS_UNKNOWN: u32 = 2;
@@ -3016,6 +3019,7 @@ mod attach_log {
         air_variant_reserves: CompactAirVariantReserveTracker,
         air_base_status: CompactAirBaseStatusTracker,
         stockpile_variant_defs: CompactAirVariantDefTracker,
+        air_superiority_inputs: CompactAirSuperiorityInputTracker,
         land_combat: LandCombatTracker,
         map_control: CompactMapControlTracker,
         map_detail: CompactMapDetailTracker,
@@ -3167,6 +3171,20 @@ mod attach_log {
         status_flags: u32,
         observed_air_base_rows: u32,
         observed_pool_rows: u32,
+        deleted_rows: u32,
+    }
+
+    struct CompactAirSuperiorityInputRead {
+        rows: Vec<CompactAirSuperiorityInputRow>,
+        read_time_us: u64,
+        changed_rows: u32,
+        status_flags: u32,
+        observed_air_wing_rows: u32,
+        observed_loadout_rows: u32,
+        observed_equipment_rows: u32,
+        observed_variant_rows: u32,
+        invalid_air_wing_rows: u32,
+        invalid_variant_rows: u32,
         deleted_rows: u32,
     }
 
@@ -3437,6 +3455,11 @@ mod attach_log {
     }
 
     #[derive(Default)]
+    struct CompactAirSuperiorityInputTracker {
+        previous: BTreeMap<(u32, u32, u32, u32), CompactAirSuperiorityInputRow>,
+    }
+
+    #[derive(Default)]
     struct CompactAirVariantDefTracker {
         known: BTreeMap<u32, CompactAirVariantDefRow>,
     }
@@ -3577,6 +3600,20 @@ mod attach_log {
         tag_db_id: u32,
         variant_id: u32,
         deleted: bool,
+        amount_raw: i64,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct CompactAirSuperiorityInputRow {
+        region_id: u32,
+        owner_tag_db_id: u32,
+        mission_mask: u32,
+        variant_id: u32,
+        deleted: bool,
+        equipment_token_raw: u32,
+        equipment_type_token_raw: u32,
+        interface_type_raw: u32,
+        wing_count: u32,
         amount_raw: i64,
     }
 
@@ -9823,6 +9860,8 @@ mod attach_log {
             compact_explicit_domain_enabled(control, RAW_AIR_BASE_STATUS_DOMAIN);
         let stockpile_variant_defs_enabled =
             compact_explicit_domain_enabled(control, RAW_STOCKPILE_VARIANT_DEFS_DOMAIN);
+        let air_superiority_inputs_enabled =
+            compact_explicit_domain_enabled(control, RAW_AIR_SUPERIORITY_INPUTS_DOMAIN);
         let land_combats_enabled =
             compact_explicit_domain_enabled(control, RAW_LAND_COMBATS_DOMAIN);
         let map_control_enabled = compact_map_control_enabled(control);
@@ -9844,6 +9883,7 @@ mod attach_log {
         let mut air_variant_reserve_read = None;
         let mut air_base_status_read = None;
         let mut stockpile_variant_def_read = None;
+        let mut air_superiority_input_read = None;
         let mut land_combat_read = None;
         let mut map_control_read = None;
         let mut map_detail_read = None;
@@ -9875,6 +9915,7 @@ mod attach_log {
         let air_variant_reserve_tracker = &mut trackers.air_variant_reserves;
         let air_base_status_tracker = &mut trackers.air_base_status;
         let stockpile_variant_def_tracker = &mut trackers.stockpile_variant_defs;
+        let air_superiority_input_tracker = &mut trackers.air_superiority_inputs;
         let division_roots = &trackers.division_roots;
         let land_combat_tracker = &mut trackers.land_combat;
         let map_control_tracker = &mut trackers.map_control;
@@ -10018,6 +10059,17 @@ mod attach_log {
             } else {
                 None
             };
+            let air_superiority_input_handle = if air_superiority_inputs_enabled {
+                Some(scope.spawn(move || {
+                    read_compact_air_superiority_inputs(
+                        state,
+                        status_flags,
+                        air_superiority_input_tracker,
+                    )
+                }))
+            } else {
+                None
+            };
             let land_combat_handle = if land_combats_enabled {
                 Some(scope.spawn(move || {
                     read_compact_land_combats(state, status_flags, land_combat_tracker)
@@ -10138,6 +10190,12 @@ mod attach_log {
                 stockpile_variant_def_read = Some(match handle.join() {
                     Ok(read) => read,
                     Err(_) => compact_air_variant_def_worker_panic_read(status_flags),
+                });
+            }
+            if let Some(handle) = air_superiority_input_handle {
+                air_superiority_input_read = Some(match handle.join() {
+                    Ok(read) => read,
+                    Err(_) => compact_air_superiority_input_worker_panic_read(status_flags),
                 });
             }
             if let Some(handle) = land_combat_handle {
@@ -10687,6 +10745,42 @@ mod attach_log {
                 read.observed_module_rows,
                 read.emitted_module_rows,
                 read.invalid_variant_rows,
+            );
+            sequence = sequence.saturating_add(1);
+            emitted_domains = emitted_domains.saturating_add(1);
+        }
+        if let Some(read) = air_superiority_input_read {
+            append_compact_domain_perf_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                CompactDomainPerfRecord {
+                    domain_id: COMPACT_DOMAIN_AIR_SUPERIORITY_INPUTS,
+                    read_time_us: read.read_time_us,
+                    row_count: read.observed_loadout_rows,
+                    changed_rows: read.changed_rows,
+                    unit_count: read.observed_equipment_rows,
+                    changed_unit_count: read.changed_rows,
+                    status_flags: read.status_flags,
+                },
+                elapsed_wall_ms,
+            );
+            sequence = sequence.saturating_add(1);
+            append_compact_air_superiority_inputs_data_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                &read.rows,
+                elapsed_wall_ms,
+                read.status_flags,
+                read.changed_rows,
+                read.observed_air_wing_rows,
+                read.observed_loadout_rows,
+                read.observed_equipment_rows,
+                read.observed_variant_rows,
+                read.invalid_air_wing_rows,
+                read.invalid_variant_rows,
+                read.deleted_rows,
             );
             sequence = sequence.saturating_add(1);
             emitted_domains = emitted_domains.saturating_add(1);
@@ -11446,6 +11540,24 @@ mod attach_log {
             observed_air_variant_rows: 0,
             matched_stockpile_rows: 0,
             invalid_country_rows: 0,
+            deleted_rows: 0,
+        }
+    }
+
+    fn compact_air_superiority_input_worker_panic_read(
+        status_flags: u32,
+    ) -> CompactAirSuperiorityInputRead {
+        CompactAirSuperiorityInputRead {
+            rows: Vec::new(),
+            read_time_us: 0,
+            changed_rows: 0,
+            status_flags: status_flags | COMPACT_STATUS_WORKER_PANIC,
+            observed_air_wing_rows: 0,
+            observed_loadout_rows: 0,
+            observed_equipment_rows: 0,
+            observed_variant_rows: 0,
+            invalid_air_wing_rows: 0,
+            invalid_variant_rows: 0,
             deleted_rows: 0,
         }
     }
@@ -13592,6 +13704,240 @@ mod attach_log {
             tag_db_id: old.tag_db_id,
             variant_id: old.variant_id,
             deleted: true,
+            amount_raw: 0,
+        }
+    }
+
+    fn read_compact_air_superiority_inputs(
+        state: &CollectorState,
+        status_flags: u32,
+        tracker: &mut CompactAirSuperiorityInputTracker,
+    ) -> CompactAirSuperiorityInputRead {
+        let read_started = Instant::now();
+        let mut status_flags = status_flags;
+        let Some(wing_native) = sample_compact_air_wings_native(state) else {
+            return compact_air_superiority_inputs_source_unavailable_read(
+                read_started,
+                status_flags,
+            );
+        };
+        let Some(loadout_native) = sample_compact_air_wing_loadouts_native(state) else {
+            return compact_air_superiority_inputs_source_unavailable_read(
+                read_started,
+                status_flags,
+            );
+        };
+        let Some(variant_native) = sample_compact_air_variant_defs_native(state) else {
+            return compact_air_superiority_inputs_source_unavailable_read(
+                read_started,
+                status_flags,
+            );
+        };
+
+        let observed_air_wing_rows = wing_native.rows.len().min(u32::MAX as usize) as u32;
+        let observed_loadout_rows = loadout_native.rows.len().min(u32::MAX as usize) as u32;
+        let observed_equipment_rows = loadout_native.observed_equipment_rows;
+        let observed_variant_rows = variant_native.variant_ptrs.len().min(u32::MAX as usize) as u32;
+        let mut invalid_air_wing_rows = wing_native
+            .invalid_air_wing_rows
+            .saturating_add(loadout_native.invalid_air_wing_rows)
+            .saturating_add(variant_native.invalid_air_wing_rows);
+        let mut invalid_variant_rows = 0u32;
+
+        let mut active_wings = BTreeMap::new();
+        for wing in &wing_native.rows {
+            if wing.deleted || wing.mission_mask == 0 {
+                continue;
+            }
+            let Some(region_id) = wing.mission_region else {
+                continue;
+            };
+            if region_id == 0 || region_id > MAX_AIR_WING_MISSION_REGION_ID {
+                invalid_air_wing_rows = invalid_air_wing_rows.saturating_add(1);
+                continue;
+            }
+            active_wings.insert(
+                (wing.owner_tag_db_id, wing.wing_id, wing.body_addr),
+                (region_id, wing.mission_mask),
+            );
+        }
+
+        let mut variant_stats_by_id = BTreeMap::new();
+        let mut current = BTreeMap::new();
+        for loadout in &loadout_native.rows {
+            if loadout.deleted || loadout.equipment.is_empty() {
+                continue;
+            }
+            let Some((region_id, mission_mask)) =
+                active_wings.get(&(loadout.owner_tag_db_id, loadout.wing_id, loadout.body_addr))
+            else {
+                continue;
+            };
+            for entry in &loadout.equipment {
+                if entry.amount_raw <= 0 {
+                    continue;
+                }
+                let stats = if let Some(stats) = variant_stats_by_id.get(&entry.variant_id).copied()
+                {
+                    stats
+                } else {
+                    let Some(variant_ptr) = variant_native.variant_ptrs.get(&entry.variant_id)
+                    else {
+                        invalid_variant_rows = invalid_variant_rows.saturating_add(1);
+                        continue;
+                    };
+                    let Some(stats) = read_compact_air_variant_stats_row(
+                        state.base,
+                        entry.variant_id,
+                        *variant_ptr,
+                    ) else {
+                        invalid_variant_rows = invalid_variant_rows.saturating_add(1);
+                        continue;
+                    };
+                    variant_stats_by_id.insert(entry.variant_id, stats);
+                    stats
+                };
+                let key = (
+                    *region_id,
+                    loadout.owner_tag_db_id,
+                    *mission_mask,
+                    entry.variant_id,
+                );
+                let row = current.entry(key).or_insert(CompactAirSuperiorityInputRow {
+                    region_id: *region_id,
+                    owner_tag_db_id: loadout.owner_tag_db_id,
+                    mission_mask: *mission_mask,
+                    variant_id: entry.variant_id,
+                    deleted: false,
+                    equipment_token_raw: stats.equipment_token_raw,
+                    equipment_type_token_raw: stats.equipment_type_token_raw,
+                    interface_type_raw: stats.interface_type_raw,
+                    wing_count: 0,
+                    amount_raw: 0,
+                });
+                if row.equipment_token_raw != stats.equipment_token_raw
+                    || row.equipment_type_token_raw != stats.equipment_type_token_raw
+                    || row.interface_type_raw != stats.interface_type_raw
+                {
+                    invalid_variant_rows = invalid_variant_rows.saturating_add(1);
+                    continue;
+                }
+                row.wing_count = row.wing_count.saturating_add(1);
+                row.amount_raw = match row.amount_raw.checked_add(entry.amount_raw) {
+                    Some(value) if value <= MAX_AIR_WING_EQUIPMENT_AMOUNT_RAW => value,
+                    _ => {
+                        invalid_variant_rows = invalid_variant_rows.saturating_add(1);
+                        MAX_AIR_WING_EQUIPMENT_AMOUNT_RAW
+                    }
+                };
+            }
+        }
+
+        if current.is_empty() {
+            status_flags |= COMPACT_STATUS_SOURCE_UNAVAILABLE;
+        }
+        if invalid_air_wing_rows > 0 || invalid_variant_rows > 0 {
+            status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+        }
+        let current_rows = current.into_values().collect::<Vec<_>>();
+        let (rows, changed_rows, deleted_rows) =
+            compact_air_superiority_input_delta_rows(tracker, current_rows);
+        CompactAirSuperiorityInputRead {
+            rows,
+            read_time_us: duration_micros_u64(read_started.elapsed()),
+            changed_rows,
+            status_flags,
+            observed_air_wing_rows,
+            observed_loadout_rows,
+            observed_equipment_rows,
+            observed_variant_rows,
+            invalid_air_wing_rows,
+            invalid_variant_rows,
+            deleted_rows,
+        }
+    }
+
+    fn compact_air_superiority_inputs_source_unavailable_read(
+        read_started: Instant,
+        status_flags: u32,
+    ) -> CompactAirSuperiorityInputRead {
+        CompactAirSuperiorityInputRead {
+            rows: Vec::new(),
+            read_time_us: duration_micros_u64(read_started.elapsed()),
+            changed_rows: 0,
+            status_flags: status_flags | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            observed_air_wing_rows: 0,
+            observed_loadout_rows: 0,
+            observed_equipment_rows: 0,
+            observed_variant_rows: 0,
+            invalid_air_wing_rows: 0,
+            invalid_variant_rows: 0,
+            deleted_rows: 0,
+        }
+    }
+
+    fn compact_air_superiority_input_delta_rows(
+        tracker: &mut CompactAirSuperiorityInputTracker,
+        current_rows: Vec<CompactAirSuperiorityInputRow>,
+    ) -> (Vec<CompactAirSuperiorityInputRow>, u32, u32) {
+        let emit_full_snapshot = tracker.previous.is_empty();
+        let mut current = BTreeMap::new();
+        let mut emitted = Vec::new();
+        let mut deleted_rows = 0u32;
+        for row in current_rows {
+            let key = (
+                row.region_id,
+                row.owner_tag_db_id,
+                row.mission_mask,
+                row.variant_id,
+            );
+            if emit_full_snapshot || tracker.previous.get(&key) != Some(&row) {
+                emitted.push(row);
+            }
+            current.insert(key, row);
+        }
+        if !emit_full_snapshot {
+            for key in tracker.previous.keys().copied().collect::<Vec<_>>() {
+                if current.contains_key(&key) {
+                    continue;
+                }
+                if let Some(old) = tracker.previous.get(&key) {
+                    emitted.push(deleted_compact_air_superiority_input_row(old));
+                    deleted_rows = deleted_rows.saturating_add(1);
+                }
+            }
+        }
+        emitted.sort_by_key(|row| {
+            (
+                row.region_id,
+                row.owner_tag_db_id,
+                row.mission_mask,
+                row.variant_id,
+                row.deleted,
+            )
+        });
+        tracker.previous = current;
+        let changed_rows = emitted.len().min(u32::MAX as usize) as u32;
+        if changed_rows > 0 {
+            (emitted, changed_rows, deleted_rows)
+        } else {
+            (Vec::new(), 0, deleted_rows)
+        }
+    }
+
+    fn deleted_compact_air_superiority_input_row(
+        old: &CompactAirSuperiorityInputRow,
+    ) -> CompactAirSuperiorityInputRow {
+        CompactAirSuperiorityInputRow {
+            region_id: old.region_id,
+            owner_tag_db_id: old.owner_tag_db_id,
+            mission_mask: old.mission_mask,
+            variant_id: old.variant_id,
+            deleted: true,
+            equipment_token_raw: 0,
+            equipment_type_token_raw: 0,
+            interface_type_raw: 0,
+            wing_count: 0,
             amount_raw: 0,
         }
     }
@@ -17073,6 +17419,46 @@ mod attach_log {
         );
     }
 
+    fn append_compact_air_superiority_inputs_data_record(
+        out: &mut Vec<u8>,
+        sequence: u64,
+        game_hour_raw: i32,
+        rows: &[CompactAirSuperiorityInputRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        observed_air_wing_rows: u32,
+        observed_loadout_rows: u32,
+        observed_equipment_rows: u32,
+        observed_variant_rows: u32,
+        invalid_air_wing_rows: u32,
+        invalid_variant_rows: u32,
+        deleted_rows: u32,
+    ) {
+        let payload = compact_air_superiority_inputs_data_payload(
+            rows,
+            elapsed_wall_ms,
+            status_flags,
+            changed_rows,
+            observed_air_wing_rows,
+            observed_loadout_rows,
+            observed_equipment_rows,
+            observed_variant_rows,
+            invalid_air_wing_rows,
+            invalid_variant_rows,
+            deleted_rows,
+        );
+        append_compact_record(
+            out,
+            sequence,
+            game_hour_raw,
+            COMPACT_DOMAIN_AIR_SUPERIORITY_INPUTS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+    }
+
     fn append_compact_air_base_status_data_record(
         out: &mut Vec<u8>,
         sequence: u64,
@@ -18548,6 +18934,53 @@ mod attach_log {
             payload.extend_from_slice(&row.tag_db_id.to_le_bytes());
             payload.extend_from_slice(&row.variant_id.to_le_bytes());
             payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&row.amount_raw.to_le_bytes());
+        }
+        payload
+    }
+
+    fn compact_air_superiority_inputs_data_payload(
+        rows: &[CompactAirSuperiorityInputRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        observed_air_wing_rows: u32,
+        observed_loadout_rows: u32,
+        observed_equipment_rows: u32,
+        observed_variant_rows: u32,
+        invalid_air_wing_rows: u32,
+        invalid_variant_rows: u32,
+        deleted_rows: u32,
+    ) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(52usize.saturating_add(rows.len().saturating_mul(48)));
+        payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
+        payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+        payload.extend_from_slice(&changed_rows.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&observed_air_wing_rows.to_le_bytes());
+        payload.extend_from_slice(&observed_loadout_rows.to_le_bytes());
+        payload.extend_from_slice(&observed_equipment_rows.to_le_bytes());
+        payload.extend_from_slice(&observed_variant_rows.to_le_bytes());
+        payload.extend_from_slice(&invalid_air_wing_rows.to_le_bytes());
+        payload.extend_from_slice(&invalid_variant_rows.to_le_bytes());
+        payload.extend_from_slice(&deleted_rows.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
+        for row in rows {
+            let flags = if row.deleted {
+                COMPACT_AIR_SUPERIORITY_INPUT_ROW_FLAG_DELETED
+            } else {
+                0
+            };
+            payload.extend_from_slice(&row.region_id.to_le_bytes());
+            payload.extend_from_slice(&row.owner_tag_db_id.to_le_bytes());
+            payload.extend_from_slice(&row.mission_mask.to_le_bytes());
+            payload.extend_from_slice(&row.variant_id.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&row.equipment_token_raw.to_le_bytes());
+            payload.extend_from_slice(&row.equipment_type_token_raw.to_le_bytes());
+            payload.extend_from_slice(&row.interface_type_raw.to_le_bytes());
+            payload.extend_from_slice(&row.wing_count.to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
             payload.extend_from_slice(&row.amount_raw.to_le_bytes());
         }
@@ -27395,6 +27828,102 @@ mod attach_log {
             assert_eq!(deleted[0].wing_count, 0);
             assert_eq!(deleted[0].plane_count, 0);
             assert_eq!(deleted[0].effective_planes, 0);
+        }
+
+        #[test]
+        fn compact_air_superiority_inputs_pack_and_delete_variant_buckets() {
+            let initial = vec![
+                CompactAirSuperiorityInputRow {
+                    region_id: 154,
+                    owner_tag_db_id: 1,
+                    mission_mask: 1,
+                    variant_id: 1375,
+                    deleted: false,
+                    equipment_token_raw: 18_208,
+                    equipment_type_token_raw: 70,
+                    interface_type_raw: 7,
+                    wing_count: 2,
+                    amount_raw: 8_400_000,
+                },
+                CompactAirSuperiorityInputRow {
+                    region_id: 154,
+                    owner_tag_db_id: 1,
+                    mission_mask: 4,
+                    variant_id: 5578,
+                    deleted: false,
+                    equipment_token_raw: 18_209,
+                    equipment_type_token_raw: 70,
+                    interface_type_raw: 7,
+                    wing_count: 1,
+                    amount_raw: 1_600_000,
+                },
+            ];
+            let mut tracker = CompactAirSuperiorityInputTracker::default();
+            let (rows, changed_rows, deleted_rows) =
+                compact_air_superiority_input_delta_rows(&mut tracker, initial);
+            assert_eq!(changed_rows, 2);
+            assert_eq!(deleted_rows, 0);
+
+            let payload = compact_air_superiority_inputs_data_payload(
+                &rows,
+                84,
+                COMPACT_STATUS_EXTRACTION_PERF_GATE | COMPACT_STATUS_DELTA_DATA,
+                changed_rows,
+                3,
+                3,
+                4,
+                2,
+                0,
+                0,
+                deleted_rows,
+            );
+
+            assert_eq!(payload.len(), 52 + 2 * 48);
+            assert_eq!(u64::from_le_bytes(payload[0..8].try_into().unwrap()), 84);
+            assert_eq!(u32::from_le_bytes(payload[8..12].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[12..16].try_into().unwrap()), 2);
+            assert_eq!(
+                u32::from_le_bytes(payload[16..20].try_into().unwrap()),
+                COMPACT_STATUS_EXTRACTION_PERF_GATE | COMPACT_STATUS_DELTA_DATA
+            );
+            assert_eq!(u32::from_le_bytes(payload[20..24].try_into().unwrap()), 3);
+            assert_eq!(u32::from_le_bytes(payload[24..28].try_into().unwrap()), 3);
+            assert_eq!(u32::from_le_bytes(payload[28..32].try_into().unwrap()), 4);
+            assert_eq!(u32::from_le_bytes(payload[32..36].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[36..40].try_into().unwrap()), 0);
+            assert_eq!(u32::from_le_bytes(payload[40..44].try_into().unwrap()), 0);
+            assert_eq!(u32::from_le_bytes(payload[44..48].try_into().unwrap()), 0);
+            assert_eq!(
+                u32::from_le_bytes(payload[48..52].try_into().unwrap()),
+                COMPACT_FIXED_SCALE_RAW
+            );
+            assert_eq!(u32::from_le_bytes(payload[52..56].try_into().unwrap()), 154);
+            assert_eq!(u32::from_le_bytes(payload[56..60].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[60..64].try_into().unwrap()), 1);
+            assert_eq!(
+                u32::from_le_bytes(payload[64..68].try_into().unwrap()),
+                1375
+            );
+            assert_eq!(u32::from_le_bytes(payload[68..72].try_into().unwrap()), 0);
+            assert_eq!(
+                u32::from_le_bytes(payload[72..76].try_into().unwrap()),
+                18_208
+            );
+            assert_eq!(u32::from_le_bytes(payload[76..80].try_into().unwrap()), 70);
+            assert_eq!(u32::from_le_bytes(payload[80..84].try_into().unwrap()), 7);
+            assert_eq!(u32::from_le_bytes(payload[84..88].try_into().unwrap()), 2);
+            assert_eq!(
+                i64::from_le_bytes(payload[92..100].try_into().unwrap()),
+                8_400_000
+            );
+
+            let (deleted, changed_rows, deleted_rows) =
+                compact_air_superiority_input_delta_rows(&mut tracker, Vec::new());
+            assert_eq!(changed_rows, 2);
+            assert_eq!(deleted_rows, 2);
+            assert!(deleted.iter().all(|row| row.deleted));
+            assert!(deleted.iter().all(|row| row.amount_raw == 0));
+            assert!(deleted.iter().all(|row| row.wing_count == 0));
         }
 
         #[test]

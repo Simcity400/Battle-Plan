@@ -206,6 +206,23 @@ failures while scheduling the full current air bundle plus
 `stockpile_variant_defs`; the generated `.battleplan` also passed an independent
 `pack_replay verify`.
 
+`air_superiority_inputs` is compact domain id 38. It decodes DLL-derived
+region/owner/mission/variant input rows joined from the anchored live air-wing
+activity snapshot, live wing loadout equipment banks, and validated type-70
+variant stat rows. Rows are keyed by `(region_id, owner_tag_db_id,
+mission_mask, variant_id)` and carry raw equipment token/type/interface
+classifiers, source wing count, raw fixed-point equipment amount, and delete
+markers. The host rejects malformed lengths, duplicate keys, invalid ids/counts
+or amounts, zero equipment token/type handles, bad scale metadata, unknown
+flags, non-zero reserved bytes, and deleted rows carrying live fields. This is
+input capture for reconstructing/modeling region air power; it does not claim
+the exact cached displayed HOI4 air-superiority percent. Proof
+`replay_native/runs/compact_air_superiority_inputs_870ebf_20260701_v2/native_session_manifest.json`
+advanced 103 game hours with 0 skipped and no source/partial/bridge/worker
+failures while scheduling the full current air bundle plus
+`air_superiority_inputs`; the generated `.battleplan` also passed an
+independent `pack_replay verify`.
+
 `air_base_status` is compact domain id 34. It decodes DLL-derived air-base rows
 from the anchored strategic-air state-indexed air-base table. Rows are keyed by
 airbase id and carry state id, materialized capacity, state air-base building

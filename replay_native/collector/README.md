@@ -929,6 +929,14 @@ Air-wing raw stream status:
   including variants not currently assigned to an active air wing. It is still a
   stockpile-derived catalog, not a proven global equipment registry for variants
   that exist only in designer/history/catalog data and in no country stockpile.
+- Compact `air_superiority_inputs` is domain id 38. It joins the anchored live
+  air-wing activity snapshot to live wing loadout equipment and validated
+  type-70 variant stat rows, then emits pointer-free rows keyed by
+  `(mission_region, owner_tag_db_id, mission_mask, variant_id)` with raw
+  equipment token/type/interface classifiers, source wing count, raw
+  fixed-point equipment amount, and tombstones. This captures the production
+  inputs needed to reconstruct/model per-region air power; it intentionally does
+  not claim the exact cached displayed HOI4 air-superiority percent.
 - Compact `air_base_status` is domain id 34. It walks the live strategic-air
   state-indexed air-base table at `strategic_air+0x90`, validates air-base
   records by vtable `MODULE+0x2941FA0`, `{air_base_id,type=65}` handle at
@@ -1035,6 +1043,20 @@ Air-wing raw stream status:
   reported no source-unavailable, partial-data, bridge-unavailable, or
   worker-panic flags. `stockpile_variant_defs` read p95 was 11695 us, and an
   independent `pack_replay verify` pass accepted the generated `.battleplan`.
+- Current air-superiority input compact proof:
+  `replay_native/runs/compact_air_superiority_inputs_870ebf_20260701_v2/native_session_manifest.json`
+  scheduled `air_wings`, `air_region_activity`, `air_wing_loadouts`,
+  `air_variant_defs`, `air_variant_stats`, `air_variant_reserves`,
+  `air_base_status`, `stockpile_variant_defs`, and `air_superiority_inputs`
+  together for 60 seconds at no-sleep compact sampling, advanced 103 game hours,
+  skipped 0, emitted ordered/decodable compact records, wrote 459226 total bytes,
+  captured 54469 observed wing/loadout rows, 158532 observed equipment rows,
+  18616 observed variant rows, 514 emitted superiority-input rows, 330
+  mission-bucket rows, 1386 source-wing count sum, and 8976300000 raw equipment
+  amount sum, and reported no source-unavailable, partial-data,
+  bridge-unavailable, or worker-panic flags. `air_superiority_inputs` read p95
+  was 40651 us, frame p95 was 50067 us, and an independent `pack_replay verify`
+  pass accepted the generated `.battleplan`.
 - Remaining promotion work is live proof while changing missions/rebasing,
   airbase capacity modifiers/penalty semantics, aircraft archetype/base-airframe
   classification, true global equipment registry roots beyond stockpiles, aces,
