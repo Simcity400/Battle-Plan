@@ -166,13 +166,15 @@ Current recorder-facing bridge status:
   preflight; moving that static game-definition cache generation into Rust host
   startup remains temporary debt before politics can be called fully
   production-self-contained.
-- `projects_live` is also not complete. A lightweight run without project
-  scanning kept cadence but emitted only clock domains, so it was correctly
-  rejected as false completion. The native host now exposes
-  `--special-projects-scan`; enabling it caused the project scan to exceed a
-  bounded live proof window, and the target process was no longer present before
-  a manifest was written. Project extraction needs bounded root discovery or a
-  cached DLL/Rust project contract before it can be retried as a hot segment.
+- `projects_live` now has a production-shaped compact read proof, but still not
+  DLL-complete root discovery. On 2026-07-01
+  `compact_projects_bridge_20260701_v4` advanced 35 game hours with zero
+  skipped hours, covered `projects_live`, `focus_live`, and `decisions_live`,
+  emitted 36 project data records, verified `.battleplan`, and showed no
+  source/partial/bridge/worker failures. The manifest correctly reports
+  `projects_root_source = control_bridge`, so the remaining work is to replace
+  the bounded preflight/cache bridge with an anchored project root/container in
+  the DLL/Rust production path.
 - A live vanilla run on 2026-06-28 processed 2 bounded worker bursts: 359 raw
   collector observations became 10 unique hourly replay snapshots, advanced 9
   in-game hours with zero skipped hours, verified the replay container, and left
@@ -1576,6 +1578,24 @@ The older `special_projects_scan = true` heap sweep remains available but is
 not the normal/speed-five path. Project progress/completion, owner attribution,
 and resolved project definition tokens remain open.
 
+2026-07-01 compact update for the current `870ebf` vanilla build: the
+`projects_live` compact stream is now domain id 41 and the Rust host accepts
+`--special-projects-bridge` / `--special-projects-bridge-file` so bounded
+preflight/cache discovery can feed the DLL without placing Python in the hourly
+recording loop. A quick RTTI pass refreshed the project vtables for `870ebf`
+(`CProgram` 0x295AC30, `CProject` 0x296C270, `CCharacter` 0x272B088,
+`CScientist` 0x2967E88), and the cache preflight hit in 0.391s after one
+87.344s cold bootstrap. The live compact proof
+`replay_native/runs/compact_projects_bridge_20260701_v4` advanced 35 game
+hours with zero skipped hours, covered `projects_live`, `focus_live`, and
+`decisions_live` on every frame, emitted 36 project data records, captured 864
+facility rows and 324 currently worked project rows, had no source/partial/
+bridge/worker failures, kept the compact stream ordered and decodable, and
+verified `native_session.battleplan`. The proof is hourly compact read proof
+only: `projects_root_source = control_bridge`, so this segment remains
+temporary discovery debt until the project root/container is anchored inside
+the DLL/Rust production path.
+
 Remaining Phase 2 gaps:
 
 - Audit whether any replay-critical values remain country-record-only; add a
@@ -2138,6 +2158,20 @@ rows, 4236 decision country rows, 288 facility rows, 348 worked-project rows,
 0 scientist rows, and kept project payloads off lightweight frames. This keeps
 the focus/decision/project root segment classified as hourly-or-better verified
 only for cache-backed no-cold recorder runs.
+
+2026-07-01 compact follow-up on the current `870ebf` build moved this slice
+into the production-shaped DLL/Rust stream. The preflight cache supplied 21535
+project bridge rows from a current-build cache hit (`elapsed_s = 0.391`,
+`hot_loop_heap_scan = false`) after an explicit cold bootstrap. The compact
+proof `replay_native/runs/compact_projects_bridge_20260701_v4` used no
+DLL-side heap scan, advanced 35 game hours with zero skipped hours, emitted 36
+typed `projects_live` data records with 864 facility rows and 324 currently
+worked project rows, covered `focus_live` and `decisions_live` in the same run,
+had no source/partial/bridge/worker failures, and passed `.battleplan`
+verification. This supersedes the older JSON proof for compact-stream
+feasibility, but does not close project root discovery: the manifest correctly
+records `projects_root_source = "control_bridge"` and temporary bounded
+preflight/cache debt.
 
 ### Phase 8: Diplomacy, Intel, Market, Logistics, Weather
 

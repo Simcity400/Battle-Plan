@@ -644,10 +644,10 @@ mod attach_log {
     const MAX_AIR_VARIANT_CACHE_RAW: i32 = 1_000_000_000;
     const AIR_VARIANT_STAT_FIXED_SCALE_RAW: u32 = 100_000;
     const AIR_VARIANT_STAT_RANGE_SCALE_RAW: u32 = 1_000;
-    const PROJECT_FACILITY_VTABLE_RVA: usize = 0x294AB40;
-    const PROJECT_CPROJECT_VTABLE_RVA: usize = 0x295C190;
-    const PROJECT_CHARACTER_VTABLE_RVA: usize = 0x2957D40;
-    const PROJECT_SCIENTIST_VTABLE_RVA: usize = 0x2957D98;
+    const PROJECT_FACILITY_VTABLE_RVA: usize = 0x295AC30;
+    const PROJECT_CPROJECT_VTABLE_RVA: usize = 0x296C270;
+    const PROJECT_CHARACTER_VTABLE_RVA: usize = 0x272B088;
+    const PROJECT_SCIENTIST_VTABLE_RVA: usize = 0x2967E88;
     const PROJECT_FACILITY_TYPE: u32 = 83;
     const PROJECT_PROJECT_TYPE: u32 = 86;
     const PROJECT_CHARACTER_TYPE: u32 = 73;
@@ -691,6 +691,7 @@ mod attach_log {
     const MAX_PROJECT_BUILDING_LEN: usize = 96;
     const MAX_PROJECT_SCIENTIST_TOKEN_LEN: usize = 160;
     const MAX_PROJECT_SCIENTIST_DISPLAY_LEN: usize = 160;
+    const SPECIAL_PROJECT_SCAN_BUDGET_MS: u64 = 5_000;
     const FP_SCALE: f64 = 100000.0;
     const MAX_COUNTRY_ACE_COUNT: u32 = 100_000;
     const MAX_COUNTRY_CONVOYS_DESTROYED: u32 = 100_000_000;
@@ -862,11 +863,6 @@ mod attach_log {
         } else {
             None
         };
-        let state = if is_hoi4_process() {
-            Some(CollectorState::resolve(control.as_ref()))
-        } else {
-            None
-        };
         let pid = unsafe { GetCurrentProcessId() };
         let sidecar_log = control
             .as_ref()
@@ -884,6 +880,11 @@ mod attach_log {
                 .as_ref()
                 .and_then(|control| control.pipe_token.as_deref()),
         );
+        let state = if is_hoi4_process() {
+            Some(CollectorState::resolve(control.as_ref()))
+        } else {
+            None
+        };
         if let Some(control) = control {
             let mut compact_perf_gate_trackers = CompactPerfGateTrackers::default();
             prewarm_compact_division_roots(
@@ -2822,6 +2823,7 @@ mod attach_log {
     const RAW_AIR_SUPERIORITY_INPUTS_DOMAIN: &str = "air_superiority_inputs";
     const RAW_AIR_VARIANT_UPGRADES_DOMAIN: &str = "air_variant_upgrades";
     const RAW_STOCKPILE_VARIANT_UPGRADES_DOMAIN: &str = "stockpile_variant_upgrades";
+    const RAW_PROJECTS_DOMAIN: &str = "projects_live";
     const RAW_SHIPS_DOMAIN: &str = "ships";
     const RAW_OOB_COMMAND_DOMAIN: &str = "oob_command";
     const RAW_CONFIDENCE_SAMPLED: &str = "sampled";
@@ -2879,6 +2881,7 @@ mod attach_log {
     const COMPACT_DOMAIN_AIR_SUPERIORITY_INPUTS: u16 = 38;
     const COMPACT_DOMAIN_AIR_VARIANT_UPGRADES: u16 = 39;
     const COMPACT_DOMAIN_STOCKPILE_VARIANT_UPGRADES: u16 = 40;
+    const COMPACT_DOMAIN_PROJECTS: u16 = 41;
     const COMPACT_STATUS_STATE_UNAVAILABLE: u32 = 1 << 0;
     const COMPACT_STATUS_PROFILE_MISMATCH: u32 = 1 << 1;
     const COMPACT_STATUS_NO_CLOCK: u32 = 1 << 2;
@@ -2935,6 +2938,16 @@ mod attach_log {
     const COMPACT_OOB_STATUS_MIXED: u32 = 5;
     const COMPACT_DIVISION_SAMPLE_MIN_ROWS: usize = 512;
     const COMPACT_DIVISION_SAMPLE_MAX_WORKERS: usize = 4;
+    const COMPACT_PROJECT_SOURCE_SCAN: u32 = 1;
+    const COMPACT_PROJECT_SOURCE_BRIDGE: u32 = 2;
+    const COMPACT_PROJECT_FACILITY_ROW_FLAG_ACTIVE: u32 = 1;
+    const COMPACT_PROJECT_FACILITY_ROW_FLAG_SCIENTIST: u32 = 1 << 1;
+    const COMPACT_PROJECT_FACILITY_ROW_FLAG_BUILDING: u32 = 1 << 2;
+    const COMPACT_PROJECT_ROW_FLAG_WORKED_AT_FACILITY: u32 = 1;
+    const COMPACT_PROJECT_SCIENTIST_ROW_FLAG_NAME_TOKEN: u32 = 1;
+    const COMPACT_PROJECT_SCIENTIST_ROW_FLAG_DISPLAY_NAME: u32 = 1 << 1;
+    const COMPACT_PROJECT_SCIENTIST_ROW_FLAG_TRAIT_COUNT: u32 = 1 << 2;
+    const COMPACT_PROJECT_SCIENTIST_ROW_FLAG_SKILLS: u32 = 1 << 3;
     const COMPACT_MAP_DETAIL_SAMPLE_MIN_ROWS: usize = 512;
     const COMPACT_MAP_DETAIL_SAMPLE_MAX_WORKERS: usize = 8;
     const COMPACT_POLITICS_SHARD_MIN_ROWS: usize = 96;
@@ -3175,6 +3188,21 @@ mod attach_log {
         observed_upgrade_rows: u32,
         emitted_upgrade_rows: u32,
         invalid_variant_rows: u32,
+    }
+
+    struct CompactProjectsRead {
+        facilities: Vec<ProjectFacilityRow>,
+        projects: Vec<ProjectRow>,
+        scientists: Vec<ProjectScientistRow>,
+        read_time_us: u64,
+        changed_rows: u32,
+        status_flags: u32,
+        observed_facility_rows: u32,
+        observed_project_rows: u32,
+        observed_scientist_rows: u32,
+        scan_ms: u64,
+        bridge_rows_supplied: u32,
+        source_kind: u32,
     }
 
     struct CompactAirVariantReserveRead {
@@ -9909,6 +9937,7 @@ mod attach_log {
             compact_explicit_domain_enabled(control, RAW_AIR_VARIANT_UPGRADES_DOMAIN);
         let stockpile_variant_upgrades_enabled =
             compact_explicit_domain_enabled(control, RAW_STOCKPILE_VARIANT_UPGRADES_DOMAIN);
+        let projects_enabled = compact_projects_enabled(control);
         let land_combats_enabled =
             compact_explicit_domain_enabled(control, RAW_LAND_COMBATS_DOMAIN);
         let map_control_enabled = compact_map_control_enabled(control);
@@ -9933,6 +9962,7 @@ mod attach_log {
         let mut air_superiority_input_read = None;
         let mut air_variant_upgrade_read = None;
         let mut stockpile_variant_upgrade_read = None;
+        let mut projects_read = None;
         let mut land_combat_read = None;
         let mut map_control_read = None;
         let mut map_detail_read = None;
@@ -10143,6 +10173,11 @@ mod attach_log {
             } else {
                 None
             };
+            let projects_handle = if projects_enabled {
+                Some(scope.spawn(move || read_compact_projects(state, status_flags)))
+            } else {
+                None
+            };
             let land_combat_handle = if land_combats_enabled {
                 Some(scope.spawn(move || {
                     read_compact_land_combats(state, status_flags, land_combat_tracker)
@@ -10281,6 +10316,12 @@ mod attach_log {
                 stockpile_variant_upgrade_read = Some(match handle.join() {
                     Ok(read) => read,
                     Err(_) => compact_air_variant_upgrade_worker_panic_read(status_flags),
+                });
+            }
+            if let Some(handle) = projects_handle {
+                projects_read = Some(match handle.join() {
+                    Ok(read) => read,
+                    Err(_) => compact_projects_worker_panic_read(status_flags),
                 });
             }
             if let Some(handle) = land_combat_handle {
@@ -10938,6 +10979,43 @@ mod attach_log {
             sequence = sequence.saturating_add(1);
             emitted_domains = emitted_domains.saturating_add(1);
         }
+        if let Some(read) = projects_read {
+            let row_count = read
+                .observed_facility_rows
+                .saturating_add(read.observed_project_rows)
+                .saturating_add(read.observed_scientist_rows);
+            let emitted_row_count = read
+                .facilities
+                .len()
+                .saturating_add(read.projects.len())
+                .saturating_add(read.scientists.len())
+                .min(u32::MAX as usize) as u32;
+            append_compact_domain_perf_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                CompactDomainPerfRecord {
+                    domain_id: COMPACT_DOMAIN_PROJECTS,
+                    read_time_us: read.read_time_us,
+                    row_count,
+                    changed_rows: read.changed_rows,
+                    unit_count: emitted_row_count,
+                    changed_unit_count: read.changed_rows,
+                    status_flags: read.status_flags,
+                },
+                elapsed_wall_ms,
+            );
+            sequence = sequence.saturating_add(1);
+            append_compact_projects_data_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                &read,
+                elapsed_wall_ms,
+            );
+            sequence = sequence.saturating_add(1);
+            emitted_domains = emitted_domains.saturating_add(1);
+        }
         if let Some(read) = map_detail_read {
             append_compact_domain_perf_record(
                 &mut out,
@@ -11119,6 +11197,14 @@ mod attach_log {
                 .scheduled_domains
                 .iter()
                 .any(|scheduled| scheduled == "weather_live")
+    }
+
+    fn compact_projects_enabled(control: &CollectorControl) -> bool {
+        control.scheduled_domains_valid
+            && control
+                .scheduled_domains
+                .iter()
+                .any(|scheduled| scheduled == RAW_PROJECTS_DOMAIN)
     }
 
     fn compact_map_detail_include_buildings(control: &CollectorControl) -> bool {
@@ -11692,6 +11778,23 @@ mod attach_log {
             observed_upgrade_rows: 0,
             emitted_upgrade_rows: 0,
             invalid_variant_rows: 0,
+        }
+    }
+
+    fn compact_projects_worker_panic_read(status_flags: u32) -> CompactProjectsRead {
+        CompactProjectsRead {
+            facilities: Vec::new(),
+            projects: Vec::new(),
+            scientists: Vec::new(),
+            read_time_us: 0,
+            changed_rows: 0,
+            status_flags: status_flags | COMPACT_STATUS_WORKER_PANIC,
+            observed_facility_rows: 0,
+            observed_project_rows: 0,
+            observed_scientist_rows: 0,
+            scan_ms: 0,
+            bridge_rows_supplied: 0,
+            source_kind: 0,
         }
     }
 
@@ -13891,6 +13994,78 @@ mod attach_log {
             observed_upgrade_rows,
             emitted_upgrade_rows,
             invalid_variant_rows,
+        }
+    }
+
+    fn read_compact_projects(state: &CollectorState, status_flags: u32) -> CompactProjectsRead {
+        let read_started = Instant::now();
+        let mut status_flags = status_flags;
+        let observed_facility_rows = state
+            .special_projects
+            .facilities
+            .len()
+            .min(u32::MAX as usize) as u32;
+        let observed_project_rows =
+            state.special_projects.projects.len().min(u32::MAX as usize) as u32;
+        let observed_scientist_rows = state
+            .special_projects
+            .scientists
+            .len()
+            .min(u32::MAX as usize) as u32;
+        let source_kind = compact_projects_source_kind(&state.special_projects);
+        if source_kind == 0 || state.special_projects.too_many {
+            return CompactProjectsRead {
+                facilities: Vec::new(),
+                projects: Vec::new(),
+                scientists: Vec::new(),
+                read_time_us: duration_micros_u64(read_started.elapsed()),
+                changed_rows: 0,
+                status_flags: status_flags | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                observed_facility_rows,
+                observed_project_rows,
+                observed_scientist_rows,
+                scan_ms: state.special_projects.scan_ms,
+                bridge_rows_supplied: state.special_projects.bridge_rows_supplied,
+                source_kind,
+            };
+        }
+
+        let (facilities, projects, scientists) = state.special_projects.rows(state.base);
+        let observed_project_rows = projects.len().min(u32::MAX as usize) as u32;
+        if facilities.is_empty() && projects.is_empty() && scientists.is_empty() {
+            status_flags |= COMPACT_STATUS_SOURCE_UNAVAILABLE;
+        }
+        if facilities.len() < observed_facility_rows as usize
+            || scientists.len() < observed_scientist_rows as usize
+        {
+            status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+        }
+        let changed_rows = facilities
+            .len()
+            .saturating_add(projects.len())
+            .saturating_add(scientists.len())
+            .min(u32::MAX as usize) as u32;
+        CompactProjectsRead {
+            facilities,
+            projects,
+            scientists,
+            read_time_us: duration_micros_u64(read_started.elapsed()),
+            changed_rows,
+            status_flags,
+            observed_facility_rows,
+            observed_project_rows,
+            observed_scientist_rows,
+            scan_ms: state.special_projects.scan_ms,
+            bridge_rows_supplied: state.special_projects.bridge_rows_supplied,
+            source_kind,
+        }
+    }
+
+    fn compact_projects_source_kind(cache: &SpecialProjectsCache) -> u32 {
+        match cache.status {
+            "verified" => COMPACT_PROJECT_SOURCE_SCAN,
+            "bridge_verified" => COMPACT_PROJECT_SOURCE_BRIDGE,
+            _ => 0,
         }
     }
 
@@ -17810,6 +17985,25 @@ mod attach_log {
         );
     }
 
+    fn append_compact_projects_data_record(
+        out: &mut Vec<u8>,
+        sequence: u64,
+        game_hour_raw: i32,
+        read: &CompactProjectsRead,
+        elapsed_wall_ms: u64,
+    ) {
+        let payload = compact_projects_data_payload(read, elapsed_wall_ms);
+        append_compact_record(
+            out,
+            sequence,
+            game_hour_raw,
+            COMPACT_DOMAIN_PROJECTS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+    }
+
     fn append_compact_air_variant_reserves_data_record(
         out: &mut Vec<u8>,
         sequence: u64,
@@ -19376,6 +19570,100 @@ mod attach_log {
             }
         }
         payload
+    }
+
+    fn compact_projects_data_payload(read: &CompactProjectsRead, elapsed_wall_ms: u64) -> Vec<u8> {
+        let facility_count = read.facilities.len().min(u32::MAX as usize) as u32;
+        let project_count = read.projects.len().min(u32::MAX as usize) as u32;
+        let scientist_count = read.scientists.len().min(u32::MAX as usize) as u32;
+        let row_count = facility_count
+            .saturating_add(project_count)
+            .saturating_add(scientist_count);
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
+        payload.extend_from_slice(&row_count.to_le_bytes());
+        payload.extend_from_slice(&read.changed_rows.to_le_bytes());
+        payload.extend_from_slice(&read.status_flags.to_le_bytes());
+        payload.extend_from_slice(&facility_count.to_le_bytes());
+        payload.extend_from_slice(&project_count.to_le_bytes());
+        payload.extend_from_slice(&scientist_count.to_le_bytes());
+        payload.extend_from_slice(&read.observed_facility_rows.to_le_bytes());
+        payload.extend_from_slice(&read.observed_project_rows.to_le_bytes());
+        payload.extend_from_slice(&read.observed_scientist_rows.to_le_bytes());
+        payload.extend_from_slice(&read.bridge_rows_supplied.to_le_bytes());
+        payload.extend_from_slice(&read.source_kind.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&read.scan_ms.to_le_bytes());
+
+        for row in &read.facilities {
+            let mut flags = 0u32;
+            if row.active {
+                flags |= COMPACT_PROJECT_FACILITY_ROW_FLAG_ACTIVE;
+            }
+            if row.scientist_char_id.is_some() {
+                flags |= COMPACT_PROJECT_FACILITY_ROW_FLAG_SCIENTIST;
+            }
+            if row.building.is_some() {
+                flags |= COMPACT_PROJECT_FACILITY_ROW_FLAG_BUILDING;
+            }
+            payload.extend_from_slice(&row.id.to_le_bytes());
+            payload.extend_from_slice(&row.province.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&row.active_project_handle.to_le_bytes());
+            payload.extend_from_slice(&row.scientist_char_id.unwrap_or(0).to_le_bytes());
+            payload.extend_from_slice(&row.unread_prototype_rewards.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        for row in &read.projects {
+            let mut flags = 0u32;
+            if row.worked_at_facility.is_some() {
+                flags |= COMPACT_PROJECT_ROW_FLAG_WORKED_AT_FACILITY;
+            }
+            payload.extend_from_slice(&row.id.to_le_bytes());
+            payload.extend_from_slice(&row.static_def_handle.to_le_bytes());
+            payload.extend_from_slice(&row.iterations.to_le_bytes());
+            payload.extend_from_slice(&row.worked_at_facility.unwrap_or(0).to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        for row in &read.scientists {
+            let mut flags = COMPACT_PROJECT_SCIENTIST_ROW_FLAG_SKILLS;
+            if row.name_token.is_some() {
+                flags |= COMPACT_PROJECT_SCIENTIST_ROW_FLAG_NAME_TOKEN;
+            }
+            if row.display_name.is_some() {
+                flags |= COMPACT_PROJECT_SCIENTIST_ROW_FLAG_DISPLAY_NAME;
+            }
+            if row.trait_count.is_some() {
+                flags |= COMPACT_PROJECT_SCIENTIST_ROW_FLAG_TRAIT_COUNT;
+            }
+            payload.extend_from_slice(&row.char_id.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&row.trait_count.unwrap_or(u32::MAX).to_le_bytes());
+            payload.extend_from_slice(
+                &project_skill_level(row, "specialization_nuclear").to_le_bytes(),
+            );
+            payload
+                .extend_from_slice(&project_skill_level(row, "specialization_naval").to_le_bytes());
+            payload
+                .extend_from_slice(&project_skill_level(row, "specialization_air").to_le_bytes());
+            payload
+                .extend_from_slice(&project_skill_level(row, "specialization_land").to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        for row in &read.facilities {
+            append_compact_string(&mut payload, row.building.as_deref());
+        }
+        for row in &read.scientists {
+            append_compact_string(&mut payload, row.name_token.as_deref());
+            append_compact_string(&mut payload, row.display_name.as_deref());
+        }
+        payload
+    }
+
+    fn project_skill_level(row: &ProjectScientistRow, key: &'static str) -> i32 {
+        row.skills.get(key).copied().unwrap_or(0)
     }
 
     fn compact_air_variant_reserves_data_payload(
@@ -20978,6 +21266,17 @@ mod attach_log {
             let started = unsafe { GetTickCount64() };
             let hits = scan_special_project_pool_hits(base);
             let scan_ms = unsafe { GetTickCount64() }.saturating_sub(started);
+            if hits.timed_out {
+                return Self {
+                    status: "scan_timeout",
+                    scan_ms,
+                    bridge_rows_supplied: 0,
+                    facilities: Vec::new(),
+                    projects: Vec::new(),
+                    scientists: Vec::new(),
+                    too_many: false,
+                };
+            }
             if hits.too_many {
                 return Self {
                     status: "too_many",
@@ -21159,9 +21458,11 @@ mod attach_log {
         projects: Vec<usize>,
         scientists: Vec<usize>,
         too_many: bool,
+        timed_out: bool,
     }
 
     fn scan_special_project_pool_hits(base: usize) -> SpecialProjectPoolHits {
+        let started = unsafe { GetTickCount64() };
         let facility_vtable = base.saturating_add(PROJECT_FACILITY_VTABLE_RVA) as u64;
         let project_vtable = base.saturating_add(PROJECT_CPROJECT_VTABLE_RVA) as u64;
         let character_vtable = base.saturating_add(PROJECT_CHARACTER_VTABLE_RVA) as u64;
@@ -21170,11 +21471,17 @@ mod attach_log {
             projects: Vec::new(),
             scientists: Vec::new(),
             too_many: false,
+            timed_out: false,
         };
         let mut addr = HEAP_LO;
         const CHUNK: usize = 16 << 20;
         const OVERLAP: usize = 16;
         while addr < HEAP_HI {
+            if unsafe { GetTickCount64() }.saturating_sub(started) > SPECIAL_PROJECT_SCAN_BUDGET_MS
+            {
+                hits.timed_out = true;
+                return hits;
+            }
             let Some((region_start, region_size)) = readable_region(addr) else {
                 addr = addr.saturating_add(0x1000);
                 continue;
@@ -21213,6 +21520,12 @@ mod attach_log {
                     pos = pos.saturating_add(blob.len().max(0x1000));
                 } else {
                     pos = pos.saturating_add(blob.len().saturating_sub(OVERLAP));
+                }
+                if unsafe { GetTickCount64() }.saturating_sub(started)
+                    > SPECIAL_PROJECT_SCAN_BUDGET_MS
+                {
+                    hits.timed_out = true;
+                    return hits;
                 }
             }
             addr = region_end.saturating_add(0x1000);
@@ -21389,12 +21702,15 @@ mod attach_log {
         {
             return None;
         }
-        let active_project_handle = read_u32(pin.addr + PROJECT_FACILITY_OFF_ACTIVE_HANDLE)
-            .filter(|value| *value <= MAX_PROJECT_HANDLE)?;
+        let raw_active_project_handle = read_u32(pin.addr + PROJECT_FACILITY_OFF_ACTIVE_HANDLE)?;
         let active_flag = read_u32(pin.addr + PROJECT_FACILITY_OFF_ACTIVE_FLAG)?;
-        if active_flag > 1 {
+        let active = active_flag == 1
+            && raw_active_project_handle > 0
+            && raw_active_project_handle <= MAX_PROJECT_HANDLE;
+        if active_flag != 0 && !active && raw_active_project_handle <= MAX_PROJECT_HANDLE {
             return None;
         }
+        let active_project_handle = if active { raw_active_project_handle } else { 0 };
         let scientist_type = read_u32(pin.addr + PROJECT_FACILITY_OFF_SCIENTIST_TYPE).unwrap_or(0);
         let scientist_id = read_u32(pin.addr + PROJECT_FACILITY_OFF_SCIENTIST_ID)
             .filter(|value| *value <= MAX_PROJECT_ID)?;
@@ -21417,7 +21733,7 @@ mod attach_log {
             province: pin.province_id,
             building,
             active_project_handle,
-            active: active_flag == 1,
+            active,
             scientist_char_id,
             unread_prototype_rewards,
         })
@@ -28463,6 +28779,88 @@ mod attach_log {
             assert_eq!(u32::from_le_bytes(payload[80..84].try_into().unwrap()), 3);
             assert_eq!(u32::from_le_bytes(payload[84..88].try_into().unwrap()), 1);
             assert_eq!(u32::from_le_bytes(payload[88..92].try_into().unwrap()), 2);
+        }
+
+        #[test]
+        fn compact_projects_data_payload_packs_catalog_rows() {
+            let mut skills = BTreeMap::new();
+            skills.insert("specialization_nuclear", 4);
+            skills.insert("specialization_naval", 0);
+            skills.insert("specialization_air", 1);
+            skills.insert("specialization_land", 2);
+            let read = CompactProjectsRead {
+                facilities: vec![ProjectFacilityRow {
+                    id: 118,
+                    province: 341,
+                    building: Some("facility_laboratory".to_string()),
+                    active_project_handle: 91_234,
+                    active: true,
+                    scientist_char_id: Some(44),
+                    unread_prototype_rewards: 2,
+                }],
+                projects: vec![ProjectRow {
+                    id: 91_234,
+                    static_def_handle: 6_655,
+                    iterations: 7,
+                    worked_at_facility: Some(118),
+                }],
+                scientists: vec![ProjectScientistRow {
+                    char_id: 44,
+                    name_token: Some("POR_scientist".to_string()),
+                    display_name: Some("Ana Ferreira".to_string()),
+                    skills,
+                    trait_count: Some(3),
+                }],
+                read_time_us: 0,
+                changed_rows: 3,
+                status_flags: COMPACT_STATUS_EXTRACTION_PERF_GATE,
+                observed_facility_rows: 1,
+                observed_project_rows: 1,
+                observed_scientist_rows: 1,
+                scan_ms: 77,
+                bridge_rows_supplied: 0,
+                source_kind: COMPACT_PROJECT_SOURCE_SCAN,
+            };
+            let payload = compact_projects_data_payload(&read, 96);
+
+            assert_eq!(u64::from_le_bytes(payload[0..8].try_into().unwrap()), 96);
+            assert_eq!(u32::from_le_bytes(payload[8..12].try_into().unwrap()), 3);
+            assert_eq!(u32::from_le_bytes(payload[12..16].try_into().unwrap()), 3);
+            assert_eq!(
+                u32::from_le_bytes(payload[16..20].try_into().unwrap()),
+                COMPACT_STATUS_EXTRACTION_PERF_GATE
+            );
+            assert_eq!(u32::from_le_bytes(payload[20..24].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[24..28].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[28..32].try_into().unwrap()), 1);
+            assert_eq!(u64::from_le_bytes(payload[56..64].try_into().unwrap()), 77);
+            assert_eq!(u32::from_le_bytes(payload[64..68].try_into().unwrap()), 118);
+            assert_eq!(u32::from_le_bytes(payload[68..72].try_into().unwrap()), 341);
+            assert_eq!(
+                u32::from_le_bytes(payload[72..76].try_into().unwrap()),
+                COMPACT_PROJECT_FACILITY_ROW_FLAG_ACTIVE
+                    | COMPACT_PROJECT_FACILITY_ROW_FLAG_SCIENTIST
+                    | COMPACT_PROJECT_FACILITY_ROW_FLAG_BUILDING
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[96..100].try_into().unwrap()),
+                91_234
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[120..124].try_into().unwrap()),
+                44
+            );
+            assert_eq!(u32::from_le_bytes(payload[128..132].try_into().unwrap()), 3);
+            assert_eq!(i32::from_le_bytes(payload[132..136].try_into().unwrap()), 4);
+            let string_start = 64 + 32 + 24 + 32;
+            assert_eq!(
+                u16::from_le_bytes(payload[string_start..string_start + 2].try_into().unwrap()),
+                19
+            );
+            assert_eq!(
+                &payload[string_start + 2..string_start + 21],
+                b"facility_laboratory"
+            );
         }
 
         #[test]

@@ -69,6 +69,38 @@ PROJ_VT_RVA = 0x295C190   # CProject
 CHAR_VT_RVA = 0x2957D40   # CCharacter
 SCI_VT_RVA = 0x2957D98    # CScientist (sub-object off char+0xC0)
 
+BUILD_PROFILES = {
+    "16022851eaa571728aa3a0b5fd5f990a56da57e2249a4c1b9cfb30336f59b120": {
+        "facility_vtable_rva": 0x294AB40,
+        "project_vtable_rva": 0x295C190,
+        "character_vtable_rva": 0x2957D40,
+        "scientist_vtable_rva": 0x2957D98,
+    },
+    # RTTI-derived on the current vanilla_latest_2026_06_30 executable. Field
+    # offsets are inherited from the 16022851 ledger and must still be validated
+    # by the compact DLL proof before this profile is treated as replay-complete.
+    "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad": {
+        "facility_vtable_rva": 0x295AC30,
+        "project_vtable_rva": 0x296C270,
+        "character_vtable_rva": 0x272B088,
+        "scientist_vtable_rva": 0x2967E88,
+    },
+}
+
+
+def apply_build_profile(sha256):
+    key = str(sha256 or "").lower()
+    profile = BUILD_PROFILES.get(key)
+    if not profile:
+        return False
+    global EXPECTED_SHA256, FAC_VT_RVA, PROJ_VT_RVA, CHAR_VT_RVA, SCI_VT_RVA
+    EXPECTED_SHA256 = key
+    FAC_VT_RVA = profile["facility_vtable_rva"]
+    PROJ_VT_RVA = profile["project_vtable_rva"]
+    CHAR_VT_RVA = profile["character_vtable_rva"]
+    SCI_VT_RVA = profile["scientist_vtable_rva"]
+    return True
+
 # ----- facility (CProgram) offsets -----
 FAC_TYPE = 0x08            # u32 == 83
 FAC_ID = 0x0C             # u32
@@ -115,6 +147,7 @@ SCI_TRAIT_STRIDE = 8
 # ---------------------------------------------------------------------------
 def _verify_build(p):
     sha = p.fingerprint().get("sha256")
+    apply_build_profile(sha)
     if sha != EXPECTED_SHA256:
         raise SystemExit(
             "BUILD MISMATCH: live hoi4.exe sha256=%s != expected %s. "

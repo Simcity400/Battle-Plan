@@ -156,6 +156,29 @@ const COMPACT_AIR_VARIANT_UPGRADE_ENTRY_ROW_LEN: usize = 8;
 const COMPACT_AIR_VARIANT_UPGRADE_MAX_VARIANT_ID: u32 = i32::MAX as u32;
 const COMPACT_AIR_VARIANT_UPGRADE_MAX_INDEX: u32 = 256;
 const COMPACT_AIR_VARIANT_UPGRADE_MAX_LEVEL: u32 = 255;
+const COMPACT_PROJECT_HEADER_LEN: usize = 64;
+const COMPACT_PROJECT_FACILITY_ROW_LEN: usize = 32;
+const COMPACT_PROJECT_ROW_LEN: usize = 24;
+const COMPACT_PROJECT_SCIENTIST_ROW_LEN: usize = 32;
+const COMPACT_PROJECT_SOURCE_SCAN: u32 = 1;
+const COMPACT_PROJECT_SOURCE_BRIDGE: u32 = 2;
+const COMPACT_PROJECT_FACILITY_ROW_FLAG_ACTIVE: u32 = 1;
+const COMPACT_PROJECT_FACILITY_ROW_FLAG_SCIENTIST: u32 = 1 << 1;
+const COMPACT_PROJECT_FACILITY_ROW_FLAG_BUILDING: u32 = 1 << 2;
+const COMPACT_PROJECT_ROW_FLAG_WORKED_AT_FACILITY: u32 = 1;
+const COMPACT_PROJECT_SCIENTIST_ROW_FLAG_NAME_TOKEN: u32 = 1;
+const COMPACT_PROJECT_SCIENTIST_ROW_FLAG_DISPLAY_NAME: u32 = 1 << 1;
+const COMPACT_PROJECT_SCIENTIST_ROW_FLAG_TRAIT_COUNT: u32 = 1 << 2;
+const COMPACT_PROJECT_SCIENTIST_ROW_FLAG_SKILLS: u32 = 1 << 3;
+const COMPACT_PROJECT_MAX_ID: u32 = 10_000_000;
+const COMPACT_PROJECT_MAX_PROVINCE_ID: u32 = 1_000_000;
+const COMPACT_PROJECT_MAX_HANDLE: u32 = 10_000_000;
+const COMPACT_PROJECT_MAX_ITERATIONS: u32 = 1_000_000;
+const COMPACT_PROJECT_MAX_TRAITS: u32 = 256;
+const COMPACT_PROJECT_MAX_SKILL_LEVEL: i32 = 1_000;
+const COMPACT_PROJECT_MAX_BUILDING_LEN: usize = 96;
+const COMPACT_PROJECT_MAX_SCIENTIST_TOKEN_LEN: usize = 160;
+const COMPACT_PROJECT_MAX_SCIENTIST_DISPLAY_LEN: usize = 160;
 const COMPACT_AIR_VARIANT_RESERVE_ROW_LEN: usize = 24;
 const COMPACT_AIR_VARIANT_RESERVE_ROW_FLAG_DELETED: u32 = 1;
 const COMPACT_AIR_VARIANT_RESERVE_MAX_TAG_DB_ID: u32 = 1_024;
@@ -255,6 +278,7 @@ struct Config {
     special_projects_scan: bool,
     compact_country_frame: bool,
     division_body_bridge: Option<String>,
+    special_projects_bridge: Option<String>,
     idea_group_filter: Option<String>,
     advisor_token_filter: Option<String>,
     session_id: String,
@@ -359,6 +383,7 @@ fn run() -> Result<(), String> {
     let hook_hold_ms = u64::from(cfg.duration_ms)
         .saturating_add(cfg.dwell_ms)
         .saturating_add(native_division_root_prewarm_budget_ms(&cfg))
+        .saturating_add(native_special_projects_prewarm_budget_ms(&cfg))
         .saturating_add(1_000);
     let pipe_timeout_ms = hook_hold_ms.saturating_add(3_000);
     let pipe_name = format!(r"\\.\pipe\battle-plan_collector_{}_{}", cfg.pid, pipe_token);
@@ -393,11 +418,14 @@ fn run() -> Result<(), String> {
                     "special_projects_scan": cfg.special_projects_scan,
                     "compact_country_frame": cfg.compact_country_frame,
                     "division_body_bridge_rows": encoded_row_count(cfg.division_body_bridge.as_deref()),
+                    "special_projects_bridge_rows": encoded_row_count(cfg.special_projects_bridge.as_deref()),
                     "division_root_source": "not_applicable_json_debug_stream",
                     "division_root_discovery_debt": cfg.division_body_bridge.as_ref().map(|_| "temporary bounded preflight/cache input; JSON is not the production compact proof path").unwrap_or("not_applicable_json_debug_stream"),
                     "division_body_bridge_preflight_debt": cfg.division_body_bridge.as_ref().map(|_| "temporary bounded preflight/cache input; JSON is not the production compact proof path").unwrap_or("not_applicable_json_debug_stream"),
                     "ship_root_source": "not_applicable_json_debug_stream",
                     "ship_root_discovery_debt": "not_applicable_json_debug_stream",
+                    "projects_root_source": "not_applicable_json_debug_stream",
+                    "projects_root_discovery_debt": "not_applicable_json_debug_stream",
                     "stream_format": cfg.stream_format.as_str(),
                     "extraction_perf_gate": cfg.extraction_perf_gate,
                     "idea_group_filter_rows": encoded_row_count(cfg.idea_group_filter.as_deref()),
@@ -443,6 +471,9 @@ fn run() -> Result<(), String> {
                 compact_division_root_discovery_debt(division_root_source);
             let ship_root_source = compact_ship_root_source(&cfg, &summary);
             let ship_root_discovery_debt = compact_ship_root_discovery_debt(ship_root_source);
+            let projects_root_source = compact_projects_root_source(&cfg, &summary);
+            let projects_root_discovery_debt =
+                compact_projects_root_discovery_debt(projects_root_source);
             let hourly_met = decodable
                 && ordered
                 && !worker_panic_seen
@@ -471,11 +502,14 @@ fn run() -> Result<(), String> {
                     "special_projects_scan": cfg.special_projects_scan,
                     "compact_country_frame": cfg.compact_country_frame,
                     "division_body_bridge_rows": encoded_row_count(cfg.division_body_bridge.as_deref()),
+                    "special_projects_bridge_rows": encoded_row_count(cfg.special_projects_bridge.as_deref()),
                     "division_root_source": division_root_source,
                     "division_root_discovery_debt": division_root_discovery_debt,
                     "division_body_bridge_preflight_debt": division_root_discovery_debt,
                     "ship_root_source": ship_root_source,
                     "ship_root_discovery_debt": ship_root_discovery_debt,
+                    "projects_root_source": projects_root_source,
+                    "projects_root_discovery_debt": projects_root_discovery_debt,
                     "stream_format": cfg.stream_format.as_str(),
                     "extraction_perf_gate": cfg.extraction_perf_gate,
                     "idea_group_filter_rows": encoded_row_count(cfg.idea_group_filter.as_deref()),
@@ -576,6 +610,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut special_projects_scan = false;
     let mut compact_country_frame = false;
     let mut division_body_bridge = None;
+    let mut special_projects_bridge = None;
     let mut idea_group_filter = None;
     let mut advisor_token_filter = None;
     let mut session_id = None;
@@ -634,6 +669,17 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                     "--division-body-bridge-file",
                 )?);
             }
+            "--special-projects-bridge" => {
+                i += 1;
+                special_projects_bridge = Some(required(args.get(i), "--special-projects-bridge")?);
+            }
+            "--special-projects-bridge-file" => {
+                i += 1;
+                special_projects_bridge = Some(read_filter_file(
+                    args.get(i),
+                    "--special-projects-bridge-file",
+                )?);
+            }
             "--idea-group-filter-file" => {
                 i += 1;
                 idea_group_filter =
@@ -675,6 +721,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         special_projects_scan,
         compact_country_frame,
         division_body_bridge,
+        special_projects_bridge,
         idea_group_filter,
         advisor_token_filter,
         session_id: session_id.unwrap_or_else(|| format!("native_{}", pipe_token())),
@@ -684,7 +731,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
 }
 
 fn usage() -> String {
-    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--stream-format json|compact] [--extraction-perf-gate] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--division-body-bridge value|--division-body-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path]".to_string()
+    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--stream-format json|compact] [--extraction-perf-gate] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path]".to_string()
 }
 
 fn required(value: Option<&String>, flag: &str) -> Result<String, String> {
@@ -910,6 +957,7 @@ fn write_control_file(cfg: &Config, pipe_token: &str) -> Result<(), String> {
         "session_id": cfg.session_id,
         "scheduled_domains": scheduled_domains,
         "division_body_bridge": cfg.division_body_bridge.as_deref(),
+        "special_projects_bridge": cfg.special_projects_bridge.as_deref(),
         "idea_group_filter": cfg.idea_group_filter.as_deref(),
         "advisor_token_filter": cfg.advisor_token_filter.as_deref(),
     });
@@ -1333,6 +1381,7 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                         payload,
                         &mut summary,
                     ),
+                    41 => decode_compact_projects_data_payload(offset, payload, &mut summary),
                     other => summary.parse_errors.push(format!(
                         "offset {offset}: unsupported domain data payload for {}",
                         compact_domain_name(other)
@@ -5104,6 +5153,401 @@ fn decode_compact_variant_upgrades_data_payload(
     );
 }
 
+fn decode_compact_projects_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < COMPACT_PROJECT_HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: projects data payload is {} byte(s), expected at least {COMPACT_PROJECT_HEADER_LEN}",
+            payload.len()
+        ));
+        return;
+    }
+    let row_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let facility_count = read_u32_le(payload, 20) as usize;
+    let project_count = read_u32_le(payload, 24) as usize;
+    let scientist_count = read_u32_le(payload, 28) as usize;
+    let observed_facility_rows = read_u32_le(payload, 32) as usize;
+    let observed_project_rows = read_u32_le(payload, 36) as usize;
+    let observed_scientist_rows = read_u32_le(payload, 40) as usize;
+    let bridge_rows_supplied = read_u32_le(payload, 44) as usize;
+    let source_kind = read_u32_le(payload, 48);
+    let reserved = read_u32_le(payload, 52);
+    let scan_ms = read_u64_le(payload, 56);
+    summary.status_flags_or |= status_flags;
+    if row_count
+        != facility_count
+            .saturating_add(project_count)
+            .saturating_add(scientist_count)
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: projects row_count {row_count} does not match facility/project/scientist totals"
+        ));
+    }
+    if changed_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: projects changed_rows {changed_rows} > row_count {row_count}"
+        ));
+    }
+    if facility_count > observed_facility_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: projects facility_count {facility_count} > observed_facility_rows {observed_facility_rows}"
+        ));
+    }
+    if project_count > observed_project_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: projects project_count {project_count} > observed_project_rows {observed_project_rows}"
+        ));
+    }
+    if scientist_count > observed_scientist_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: projects scientist_count {scientist_count} > observed_scientist_rows {observed_scientist_rows}"
+        ));
+    }
+    if !matches!(
+        source_kind,
+        COMPACT_PROJECT_SOURCE_SCAN | COMPACT_PROJECT_SOURCE_BRIDGE
+    ) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: projects has unknown source_kind {source_kind}"
+        ));
+    }
+    if source_kind == COMPACT_PROJECT_SOURCE_BRIDGE && bridge_rows_supplied == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: projects bridge source has zero bridge_rows_supplied"
+        ));
+    }
+    if reserved != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: projects header reserved field is nonzero"
+        ));
+    }
+    let Some(facility_bytes) = facility_count.checked_mul(COMPACT_PROJECT_FACILITY_ROW_LEN) else {
+        summary.parse_errors.push(format!(
+            "offset {offset}: projects facility byte count overflow"
+        ));
+        return;
+    };
+    let Some(project_bytes) = project_count.checked_mul(COMPACT_PROJECT_ROW_LEN) else {
+        summary.parse_errors.push(format!(
+            "offset {offset}: projects project byte count overflow"
+        ));
+        return;
+    };
+    let Some(scientist_bytes) = scientist_count.checked_mul(COMPACT_PROJECT_SCIENTIST_ROW_LEN)
+    else {
+        summary.parse_errors.push(format!(
+            "offset {offset}: projects scientist byte count overflow"
+        ));
+        return;
+    };
+    let fixed_end = COMPACT_PROJECT_HEADER_LEN
+        .saturating_add(facility_bytes)
+        .saturating_add(project_bytes)
+        .saturating_add(scientist_bytes);
+    if payload.len() < fixed_end {
+        summary.parse_errors.push(format!(
+            "offset {offset}: projects data payload is {} byte(s), expected at least {fixed_end}",
+            payload.len()
+        ));
+        return;
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&41) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    add_compact_domain_data_unit(summary, 41, "project_facility_rows", facility_count);
+    add_compact_domain_data_unit(summary, 41, "project_rows", project_count);
+    add_compact_domain_data_unit(summary, 41, "project_scientist_rows", scientist_count);
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_observed_facility_rows",
+        observed_facility_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_observed_project_rows",
+        observed_project_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_observed_scientist_rows",
+        observed_scientist_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_bridge_rows_supplied",
+        bridge_rows_supplied,
+    );
+    add_compact_domain_data_unit(summary, 41, "project_scan_ms", scan_ms as usize);
+
+    let mut cursor = COMPACT_PROJECT_HEADER_LEN;
+    let mut facility_flags = Vec::with_capacity(facility_count);
+    let mut seen_facilities = BTreeSet::new();
+    for row_index in 0..facility_count {
+        let id = read_u32_le(payload, cursor);
+        let province = read_u32_le(payload, cursor + 4);
+        let flags = read_u32_le(payload, cursor + 8);
+        let active_project_handle = read_u32_le(payload, cursor + 12);
+        let scientist_char_id = read_u32_le(payload, cursor + 16);
+        let unread_rewards = read_u32_le(payload, cursor + 20);
+        let reserved0 = read_u32_le(payload, cursor + 24);
+        let reserved1 = read_u32_le(payload, cursor + 28);
+        cursor += COMPACT_PROJECT_FACILITY_ROW_LEN;
+        if id == 0 || id > COMPACT_PROJECT_MAX_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects facility row {row_index} has invalid id {id}"
+            ));
+        } else if !seen_facilities.insert(id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects facility row {row_index} duplicates id {id}"
+            ));
+        }
+        if province == 0 || province > COMPACT_PROJECT_MAX_PROVINCE_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects facility row {row_index} has invalid province {province}"
+            ));
+        }
+        let known_flags = COMPACT_PROJECT_FACILITY_ROW_FLAG_ACTIVE
+            | COMPACT_PROJECT_FACILITY_ROW_FLAG_SCIENTIST
+            | COMPACT_PROJECT_FACILITY_ROW_FLAG_BUILDING;
+        if flags & !known_flags != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects facility row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if active_project_handle > COMPACT_PROJECT_MAX_HANDLE {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects facility row {row_index} has invalid active_project_handle {active_project_handle}"
+            ));
+        }
+        if scientist_char_id > COMPACT_PROJECT_MAX_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects facility row {row_index} has invalid scientist_char_id {scientist_char_id}"
+            ));
+        }
+        if scientist_char_id == 0 && flags & COMPACT_PROJECT_FACILITY_ROW_FLAG_SCIENTIST != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects facility row {row_index} has scientist flag without scientist id"
+            ));
+        }
+        if scientist_char_id > 0 && flags & COMPACT_PROJECT_FACILITY_ROW_FLAG_SCIENTIST == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects facility row {row_index} has scientist id without scientist flag"
+            ));
+        }
+        if unread_rewards > COMPACT_PROJECT_MAX_ITERATIONS {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects facility row {row_index} has invalid unread rewards {unread_rewards}"
+            ));
+        }
+        if reserved0 != 0 || reserved1 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects facility row {row_index} reserved fields are nonzero"
+            ));
+        }
+        facility_flags.push(flags);
+    }
+
+    let mut seen_projects = BTreeSet::new();
+    for row_index in 0..project_count {
+        let id = read_u32_le(payload, cursor);
+        let static_def_handle = read_u32_le(payload, cursor + 4);
+        let iterations = read_u32_le(payload, cursor + 8);
+        let worked_at_facility = read_u32_le(payload, cursor + 12);
+        let flags = read_u32_le(payload, cursor + 16);
+        let reserved0 = read_u32_le(payload, cursor + 20);
+        cursor += COMPACT_PROJECT_ROW_LEN;
+        if id == 0 || id > COMPACT_PROJECT_MAX_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects row {row_index} has invalid id {id}"
+            ));
+        } else if !seen_projects.insert(id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects row {row_index} duplicates id {id}"
+            ));
+        }
+        if static_def_handle == 0 || static_def_handle > COMPACT_PROJECT_MAX_HANDLE {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects row {row_index} has invalid static_def_handle {static_def_handle}"
+            ));
+        }
+        if iterations > COMPACT_PROJECT_MAX_ITERATIONS {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects row {row_index} has invalid iterations {iterations}"
+            ));
+        }
+        if flags & !COMPACT_PROJECT_ROW_FLAG_WORKED_AT_FACILITY != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if worked_at_facility == 0 && flags & COMPACT_PROJECT_ROW_FLAG_WORKED_AT_FACILITY != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects row {row_index} has worked-at flag without facility"
+            ));
+        }
+        if worked_at_facility > COMPACT_PROJECT_MAX_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects row {row_index} has invalid worked_at_facility {worked_at_facility}"
+            ));
+        }
+        if reserved0 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects row {row_index} reserved field is nonzero"
+            ));
+        }
+    }
+
+    let mut scientist_flags = Vec::with_capacity(scientist_count);
+    let mut seen_scientists = BTreeSet::new();
+    for row_index in 0..scientist_count {
+        let char_id = read_u32_le(payload, cursor);
+        let flags = read_u32_le(payload, cursor + 4);
+        let trait_count = read_u32_le(payload, cursor + 8);
+        let skills = [
+            read_i32_le(payload, cursor + 12),
+            read_i32_le(payload, cursor + 16),
+            read_i32_le(payload, cursor + 20),
+            read_i32_le(payload, cursor + 24),
+        ];
+        let reserved0 = read_u32_le(payload, cursor + 28);
+        cursor += COMPACT_PROJECT_SCIENTIST_ROW_LEN;
+        if char_id == 0 || char_id > COMPACT_PROJECT_MAX_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects scientist row {row_index} has invalid char_id {char_id}"
+            ));
+        } else if !seen_scientists.insert(char_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects scientist row {row_index} duplicates char_id {char_id}"
+            ));
+        }
+        let known_flags = COMPACT_PROJECT_SCIENTIST_ROW_FLAG_NAME_TOKEN
+            | COMPACT_PROJECT_SCIENTIST_ROW_FLAG_DISPLAY_NAME
+            | COMPACT_PROJECT_SCIENTIST_ROW_FLAG_TRAIT_COUNT
+            | COMPACT_PROJECT_SCIENTIST_ROW_FLAG_SKILLS;
+        if flags & !known_flags != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects scientist row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if trait_count != u32::MAX && trait_count > COMPACT_PROJECT_MAX_TRAITS {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects scientist row {row_index} has invalid trait_count {trait_count}"
+            ));
+        }
+        if trait_count == u32::MAX && flags & COMPACT_PROJECT_SCIENTIST_ROW_FLAG_TRAIT_COUNT != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects scientist row {row_index} has trait flag without trait_count"
+            ));
+        }
+        for skill in skills {
+            if !(0..=COMPACT_PROJECT_MAX_SKILL_LEVEL).contains(&skill) {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: projects scientist row {row_index} has invalid skill level {skill}"
+                ));
+            }
+        }
+        if reserved0 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects scientist row {row_index} reserved field is nonzero"
+            ));
+        }
+        scientist_flags.push(flags);
+    }
+
+    for (row_index, flags) in facility_flags.iter().copied().enumerate() {
+        let len = match skip_compact_string_len(payload, &mut cursor, "projects facility building")
+        {
+            Ok(len) => len,
+            Err(err) => {
+                summary.parse_errors.push(format!("offset {offset}: {err}"));
+                return;
+            }
+        };
+        if len > COMPACT_PROJECT_MAX_BUILDING_LEN {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects facility row {row_index} building token is too long ({len})"
+            ));
+        }
+        if len == 0 && flags & COMPACT_PROJECT_FACILITY_ROW_FLAG_BUILDING != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects facility row {row_index} has building flag with empty string"
+            ));
+        }
+        if len > 0 && flags & COMPACT_PROJECT_FACILITY_ROW_FLAG_BUILDING == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects facility row {row_index} has building string without flag"
+            ));
+        }
+    }
+    for (row_index, flags) in scientist_flags.iter().copied().enumerate() {
+        let token_len =
+            match skip_compact_string_len(payload, &mut cursor, "projects scientist token") {
+                Ok(len) => len,
+                Err(err) => {
+                    summary.parse_errors.push(format!("offset {offset}: {err}"));
+                    return;
+                }
+            };
+        if token_len > COMPACT_PROJECT_MAX_SCIENTIST_TOKEN_LEN {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects scientist row {row_index} token is too long ({token_len})"
+            ));
+        }
+        if token_len == 0 && flags & COMPACT_PROJECT_SCIENTIST_ROW_FLAG_NAME_TOKEN != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects scientist row {row_index} has token flag with empty string"
+            ));
+        }
+        if token_len > 0 && flags & COMPACT_PROJECT_SCIENTIST_ROW_FLAG_NAME_TOKEN == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects scientist row {row_index} has token string without flag"
+            ));
+        }
+        let display_len =
+            match skip_compact_string_len(payload, &mut cursor, "projects scientist display") {
+                Ok(len) => len,
+                Err(err) => {
+                    summary.parse_errors.push(format!("offset {offset}: {err}"));
+                    return;
+                }
+            };
+        if display_len > COMPACT_PROJECT_MAX_SCIENTIST_DISPLAY_LEN {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects scientist row {row_index} display name is too long ({display_len})"
+            ));
+        }
+        if display_len == 0 && flags & COMPACT_PROJECT_SCIENTIST_ROW_FLAG_DISPLAY_NAME != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects scientist row {row_index} has display flag with empty string"
+            ));
+        }
+        if display_len > 0 && flags & COMPACT_PROJECT_SCIENTIST_ROW_FLAG_DISPLAY_NAME == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects scientist row {row_index} has display string without flag"
+            ));
+        }
+    }
+    if cursor != payload.len() {
+        summary.parse_errors.push(format!(
+            "offset {offset}: projects payload has {} trailing byte(s)",
+            payload.len().saturating_sub(cursor)
+        ));
+    }
+}
+
 fn decode_compact_air_variant_reserves_data_payload(
     offset: usize,
     payload: &[u8],
@@ -6700,6 +7144,7 @@ fn compact_domain_id(domain: &str) -> Option<u16> {
         "air_superiority_inputs" => Some(38),
         "air_variant_upgrades" => Some(39),
         "stockpile_variant_upgrades" => Some(40),
+        "projects_live" => Some(41),
         _ => None,
     }
 }
@@ -6735,6 +7180,7 @@ fn compact_domain_name(domain_id: u16) -> &'static str {
         38 => "air_superiority_inputs",
         39 => "air_variant_upgrades",
         40 => "stockpile_variant_upgrades",
+        41 => "projects_live",
         1000 => "frame",
         _ => "unknown",
     }
@@ -6823,11 +7269,27 @@ fn compact_domain_requires_data_record(domain_id: u16) -> bool {
             | 36
             | 37
             | 38
+            | 39
+            | 40
+            | 41
     )
 }
 
 fn native_division_root_prewarm_budget_ms(_cfg: &Config) -> u64 {
     0
+}
+
+fn native_special_projects_prewarm_budget_ms(cfg: &Config) -> u64 {
+    if cfg.special_projects_scan
+        && cfg
+            .scheduled_domains
+            .iter()
+            .any(|domain| domain == "projects_live")
+    {
+        10_000
+    } else {
+        0
+    }
 }
 
 fn duration_millis_u64(duration: Duration) -> u64 {
@@ -6907,6 +7369,55 @@ fn compact_ship_root_discovery_debt(source: &str) -> &'static str {
         "not_scheduled" => "not_scheduled",
         "unseen" => "ships domain was scheduled but no compact ship records were seen",
         _ => "anchored CTaskForce/CShip root/container did not resolve; ship bridges and heap scans are excluded from production capture",
+    }
+}
+
+fn compact_projects_root_source(cfg: &Config, summary: &CompactSummary) -> &'static str {
+    if !cfg
+        .scheduled_domains
+        .iter()
+        .any(|domain| domain == "projects_live")
+    {
+        return "not_scheduled";
+    }
+    let Some(domain) = summary.per_domain.get(&41) else {
+        return "unseen";
+    };
+    let blocked = (domain.status_flags_or
+        & (COMPACT_STATUS_SOURCE_UNAVAILABLE
+            | COMPACT_STATUS_PARTIAL_DATA
+            | COMPACT_STATUS_WORKER_PANIC))
+        != 0;
+    if blocked || domain.data_rows_total == 0 {
+        return "unresolved";
+    }
+    if domain
+        .data_units_total
+        .get("project_bridge_rows_supplied")
+        .copied()
+        .unwrap_or(0)
+        > 0
+    {
+        "control_bridge"
+    } else if cfg.special_projects_scan {
+        "dll_startup_heap_scan"
+    } else {
+        "dll_project_cache"
+    }
+}
+
+fn compact_projects_root_discovery_debt(source: &str) -> &'static str {
+    match source {
+        "dll_project_cache" => "none; compact stream used a DLL-owned project cache",
+        "dll_startup_heap_scan" => {
+            "temporary debt: one-time DLL startup heap scan is outside the hot loop, but projects still need an anchored root/container or cached Rust-host discovery before full DLL-complete status"
+        }
+        "control_bridge" => {
+            "temporary bounded preflight/cache input; not DLL-complete project root discovery"
+        }
+        "not_scheduled" => "not_scheduled",
+        "unseen" => "projects_live domain was scheduled but no compact project records were seen",
+        _ => "project root/container did not resolve; no project segment completion claimed",
     }
 }
 
@@ -8568,6 +9079,79 @@ mod tests {
     }
 
     #[test]
+    fn compact_summary_decodes_projects_data_record() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            41,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(900, 3, 3, 3, 3, 0),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            41,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_projects_data_payload(0),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(&summary, &[41]).is_empty());
+        let projects = summary.per_domain.get(&41).unwrap();
+        assert_eq!(projects.data_record_count, 1);
+        assert_eq!(projects.data_rows_total, 3);
+        assert_eq!(projects.data_changed_rows_total, 3);
+        assert_eq!(
+            projects
+                .data_units_total
+                .get("project_facility_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            projects.data_units_total.get("project_rows").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            projects
+                .data_units_total
+                .get("project_scientist_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            projects.data_units_total.get("project_scan_ms").copied(),
+            Some(77)
+        );
+        assert_eq!(compact_domain_id("projects_live"), Some(41));
+        assert_eq!(compact_domain_name(41), "projects_live");
+        let mut cfg = test_config(vec!["projects_live"], None);
+        cfg.special_projects_scan = true;
+        let source = compact_projects_root_source(&cfg, &summary);
+        assert_eq!(source, "dll_startup_heap_scan");
+        assert!(
+            compact_projects_root_discovery_debt(source).contains("one-time DLL startup heap scan")
+        );
+    }
+
+    #[test]
     fn compact_summary_rejects_duplicate_air_variant_upgrade_indexes() {
         let mut payload = test_air_variant_upgrades_data_payload(COMPACT_STATUS_DELTA_DATA);
         let duplicate_entry = 44
@@ -9446,6 +10030,7 @@ mod tests {
             special_projects_scan: false,
             compact_country_frame: true,
             division_body_bridge: None,
+            special_projects_bridge: None,
             idea_group_filter: None,
             advisor_token_filter: None,
             session_id: "pack test/session".to_string(),
@@ -9478,6 +10063,7 @@ mod tests {
         let idea_groups = dir.join("idea_groups.txt");
         let advisor_tokens = dir.join("advisor_tokens.txt");
         let division_bridge = dir.join("division_bridge.txt");
+        let special_projects_bridge = dir.join("special_projects_bridge.txt");
         fs::write(&idea_groups, b"war_economy=economy\n").unwrap();
         fs::write(
             &advisor_tokens,
@@ -9485,6 +10071,7 @@ mod tests {
         )
         .unwrap();
         fs::write(&division_bridge, b"17:0x10000000000\n").unwrap();
+        fs::write(&special_projects_bridge, b"facility:1:118:0x10000000000\n").unwrap();
 
         let cfg = parse_args(vec![
             "--pid".to_string(),
@@ -9500,6 +10087,8 @@ mod tests {
             "--compact-country-frame".to_string(),
             "--division-body-bridge-file".to_string(),
             division_bridge.display().to_string(),
+            "--special-projects-bridge-file".to_string(),
+            special_projects_bridge.display().to_string(),
             "--idea-group-filter-file".to_string(),
             idea_groups.display().to_string(),
             "--advisor-token-filter-file".to_string(),
@@ -9516,6 +10105,10 @@ mod tests {
         assert_eq!(
             cfg.division_body_bridge.as_deref(),
             Some("17:0x10000000000")
+        );
+        assert_eq!(
+            cfg.special_projects_bridge.as_deref(),
+            Some("facility:1:118:0x10000000000")
         );
         assert_eq!(cfg.stream_format, StreamFormat::Compact);
         assert!(cfg.extraction_perf_gate);
@@ -9565,6 +10158,7 @@ mod tests {
             special_projects_scan: false,
             compact_country_frame: true,
             division_body_bridge: division_body_bridge.map(str::to_string),
+            special_projects_bridge: None,
             idea_group_filter: None,
             advisor_token_filter: None,
             session_id: "test-session".to_string(),
@@ -10689,6 +11283,64 @@ mod tests {
             payload.extend_from_slice(&upgrade_index.to_le_bytes());
             payload.extend_from_slice(&level.to_le_bytes());
         }
+        payload
+    }
+
+    fn test_projects_data_payload(status_flags: u32) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&3u32.to_le_bytes());
+        payload.extend_from_slice(&3u32.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_PROJECT_SOURCE_SCAN.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&77u64.to_le_bytes());
+
+        payload.extend_from_slice(&118u32.to_le_bytes());
+        payload.extend_from_slice(&341u32.to_le_bytes());
+        payload.extend_from_slice(
+            &(COMPACT_PROJECT_FACILITY_ROW_FLAG_ACTIVE
+                | COMPACT_PROJECT_FACILITY_ROW_FLAG_SCIENTIST
+                | COMPACT_PROJECT_FACILITY_ROW_FLAG_BUILDING)
+                .to_le_bytes(),
+        );
+        payload.extend_from_slice(&91234u32.to_le_bytes());
+        payload.extend_from_slice(&44u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+
+        payload.extend_from_slice(&91234u32.to_le_bytes());
+        payload.extend_from_slice(&6655u32.to_le_bytes());
+        payload.extend_from_slice(&7u32.to_le_bytes());
+        payload.extend_from_slice(&118u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_PROJECT_ROW_FLAG_WORKED_AT_FACILITY.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+
+        payload.extend_from_slice(&44u32.to_le_bytes());
+        payload.extend_from_slice(
+            &(COMPACT_PROJECT_SCIENTIST_ROW_FLAG_NAME_TOKEN
+                | COMPACT_PROJECT_SCIENTIST_ROW_FLAG_DISPLAY_NAME
+                | COMPACT_PROJECT_SCIENTIST_ROW_FLAG_TRAIT_COUNT
+                | COMPACT_PROJECT_SCIENTIST_ROW_FLAG_SKILLS)
+                .to_le_bytes(),
+        );
+        payload.extend_from_slice(&3u32.to_le_bytes());
+        for skill in [4i32, 0, 1, 2] {
+            payload.extend_from_slice(&skill.to_le_bytes());
+        }
+        payload.extend_from_slice(&0u32.to_le_bytes());
+
+        append_test_compact_string(&mut payload, "facility_laboratory");
+        append_test_compact_string(&mut payload, "POR_scientist");
+        append_test_compact_string(&mut payload, "Ana Ferreira");
         payload
     }
 

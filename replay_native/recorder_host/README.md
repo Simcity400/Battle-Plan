@@ -34,8 +34,11 @@ Current scope:
   rows plus state/province building-level rows from the same native CProvince /
   CState topology; it emits a full baseline followed by deltas and uses bounded
   province workers with batched building-vector metadata reads.
-- Optional DLL-side project scanning through `--special-projects-scan`; current
-  live evidence shows this is not yet bounded enough for production capture.
+- Project capture now supports `--special-projects-bridge` /
+  `--special-projects-bridge-file` for bounded cache/preflight discovery outside
+  the hot loop. The DLL/Rust compact path then rereads and validates those
+  roots hourly. `--special-projects-scan` remains a debug fallback only; scan
+  failure or timeout is not production completion.
 - Compact country-frame recording through `--compact-country-frame`; filtered
   sessions emit root snapshots only at scheduled game-hour boundaries and keep
   worker polls to explicitly requested raw domains. Filtered country sessions no
@@ -88,10 +91,37 @@ cargo run --manifest-path replay_native/Cargo.toml -p recorder_host --bin collec
   --min-game-hours 120 `
   --scheduled-domain projects_live `
   --lightweight-root-frame `
-  --special-projects-scan
+  --special-projects-bridge-file replay_native\runs\<run>\special_projects_bridge.txt
 ```
 
 The command exits nonzero when the manifest fails the requested hourly gate.
+
+Current compact project proof:
+
+```powershell
+cargo run -p recorder_host --release --target-dir target_projects_bridge_v4 -- `
+  --pid 45880 `
+  --dll target_projects_bridge_v4\release\collector.dll `
+  --out-dir runs\compact_projects_bridge_20260701_v4 `
+  --duration-s 20 `
+  --sample-ms 0 `
+  --min-game-hours 20 `
+  --stream-format compact `
+  --extraction-perf-gate `
+  --special-projects-bridge-file runs\compact_projects_bridge_20260701_v1\special_projects_bridge.txt `
+  --scheduled-domain projects_live `
+  --scheduled-domain focus_live `
+  --scheduled-domain decisions_live
+```
+
+`compact_projects_bridge_20260701_v4` advanced 35 game hours with zero skipped
+hours, emitted 36 `projects_live` compact data records, kept the stream
+ordered/decodable, had no source/partial/bridge/worker failures, captured 864
+facility rows and 324 currently worked project rows, and verified
+`native_session.battleplan`. The manifest intentionally reports
+`projects_root_source = "control_bridge"` and
+`projects_root_discovery_debt = "temporary bounded preflight/cache input; not
+DLL-complete project root discovery"`.
 
 Compact release country-domain proof example:
 

@@ -506,11 +506,18 @@ Scheduled special projects:
   DLL revalidates vtables/types/identity before every scheduled read;
 - the older DLL project slice can still scan for `CProjectFacility`, `CProject`,
   and scientist-backed `CCharacter` objects once per collector worker when
-  explicitly requested, but that heap sweep remains disabled for normal runs;
+  explicitly requested, but that heap sweep is hard-budgeted, fail-closed, and
+  remains disabled for normal runs;
 - emitted top-level `special_projects` rows have `source = "C"` and include
   facilities, scientists, and currently worked project rows. Facility active
   project handles and project static-def handles are raw engine ids, not
   resolved tokens;
+- compact `projects_live` is domain id 41. It emits packed facility rows,
+  currently worked project rows, and scientist rows when pinned, with source kind
+  `control_bridge` or `dll_startup_heap_scan`, per-frame bridge row counts,
+  scan time, observed/emitted counts, and source/partial failure flags. Idle
+  current-build facility sentinels are normalized to
+  `active = false, active_project_handle = 0`;
 - the slice intentionally omits project progress/completion, owner attribution,
   and resolved project definition names until those roots/joins are separately
   pinned;
@@ -535,6 +542,16 @@ Scheduled special projects:
   `projects_live` frames, folded 288 facility rows, 348 worked-project rows,
   and 0 scientist rows, kept worker-poll frames free of `special_projects`
   payloads, and passed `--require-projects-live-payload`;
+- 2026-07-01 current-build compact proof
+  `replay_native/runs/compact_projects_bridge_20260701_v4` used the
+  `870ebf` RTTI-derived project vtables and a cache-backed
+  `special_projects_bridge` with 21535 rows. The DLL/Rust compact path advanced
+  35 game hours with zero skipped hours, emitted 36 `projects_live` data
+  records alongside `focus_live` and `decisions_live`, produced 864 facility
+  rows and 324 worked-project rows, had no source/partial/bridge/worker
+  failures, kept the stream ordered/decodable, verified the `.battleplan`
+  container, and recorded `projects_root_source = "control_bridge"`. This is
+  an hourly compact read proof, not full DLL-complete root discovery;
 - worker-poll frames stay light and must not carry `special_projects`.
 
 Scheduled country fuel:

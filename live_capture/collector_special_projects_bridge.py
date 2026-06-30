@@ -290,6 +290,9 @@ def _default_reader_factory(pid: int) -> Any:
 
         def verify_build(self) -> tuple[bool, Optional[str]]:
             got = self.fingerprint().get("sha256")
+            apply_profile = getattr(projects_live, "apply_build_profile", None)
+            if callable(apply_profile):
+                apply_profile(got)
             return (got == projects_live.EXPECTED_SHA256, got)
 
         def enumerate_special_project_objs(self) -> Dict[str, Any]:
