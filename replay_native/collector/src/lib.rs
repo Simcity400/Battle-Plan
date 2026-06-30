@@ -151,7 +151,7 @@ mod attach_log {
     const POLITICS_CHARACTER_OFF_TOKEN: usize = 0x48;
     const IDEOLOGY_GROUP_ID: usize = 0x18;
     const IDEA_ID: usize = 0x18;
-    const STATE_VTABLE_RVA: usize = 0x2910920;
+    const STATE_VTABLE_RVA: usize = 0x29206C0;
     const STATE_OFF_SID: usize = 0x58;
     const STATE_OFF_OWNER: usize = 0xC8;
     const STATE_OFF_CTRL: usize = 0xCC;
@@ -164,7 +164,7 @@ mod attach_log {
     const CPROVINCE_OFF_STATE: usize = 0xC0;
     const CPROVINCE_OFF_CONTROLLER: usize = 0x188;
     const CPROVINCE_OFF_BUILDINGS_VEC: usize = 0x1C8;
-    const CBUILDING_VTABLE_RVA: usize = 0x2963AA8;
+    const CBUILDING_VTABLE_RVA: usize = 0x2973B88;
     const CBUILDING_OFF_TYPE: usize = 0x08;
     const CBUILDING_OFF_LEVEL: usize = 0x40;
     const STATE_OFF_BUILDINGS_VEC: usize = 0x158;
@@ -419,10 +419,10 @@ mod attach_log {
     const LAND_COMBAT_MANAGER_DATA: usize = 0x08;
     const LAND_COMBAT_MANAGER_COUNT: usize = 0x14;
     const LAND_COMBAT_MANAGER_BODY_DELTA: usize = 0x10;
-    const LAND_COMBAT_VTABLE_RVA: usize = 0x2980CB8;
-    const LAND_COMBAT_SIDE_VTABLE_RVA: usize = 0x2980AC0;
-    const LAND_COMBAT_REGISTRY_VTABLE_RVA: usize = 0x2980BD8;
-    const LAND_COMBAT_FRONT_VTABLE_RVA: usize = 0x294AE78;
+    const LAND_COMBAT_VTABLE_RVA: usize = 0x29915B8;
+    const LAND_COMBAT_SIDE_VTABLE_RVA: usize = 0x29913C0;
+    const LAND_COMBAT_REGISTRY_VTABLE_RVA: usize = 0x29914D8;
+    const LAND_COMBAT_FRONT_VTABLE_RVA: usize = CPROVINCE_VTABLE_RVA;
     const LAND_COMBAT_TYPE: u32 = 62;
     const LAND_COMBAT_OFF_TYPE: usize = 0x08;
     const LAND_COMBAT_OFF_ID: usize = 0x0C;

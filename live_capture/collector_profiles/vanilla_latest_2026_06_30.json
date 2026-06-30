@@ -1,6 +1,6 @@
 {
   "profile_version": 1,
-  "status": "compact_land_oob_weather_country_state_speed5_verified",
+  "status": "compact_full_current_speed5_verified",
   "label": "vanilla_latest_2026_06_30",
   "game": "the game",
   "game_version": null,
@@ -105,6 +105,64 @@
         "decision_country_rows": 397,
         "timed_decision_rows": 50,
         "diplomacy_country_rows": 355
+      },
+      "pack_verify": "ok"
+    },
+    {
+      "kind": "compact_dll_rust_full_current_gate",
+      "date": "2026-07-01",
+      "game_id": "compact_full_current_870ebf_speed5_20260701_v2",
+      "scheduled_domains": [
+        "fuel_live",
+        "production_live",
+        "focus_live",
+        "tech_live",
+        "politics_live",
+        "politics_residuals",
+        "decisions_live",
+        "diplomacy_live",
+        "divisions",
+        "division_equipment",
+        "army_orders",
+        "oob_command",
+        "land_combats",
+        "map_control",
+        "map_detail",
+        "weather_live"
+      ],
+      "first_game_hour_raw": 60779768,
+      "last_game_hour_raw": 60779876,
+      "frame_end_records": 109,
+      "game_hours_advanced": 108,
+      "skipped_game_hours": 0,
+      "compact_stream": {
+        "ordered": true,
+        "decodable": true,
+        "domain_coverage": "full",
+        "source_unavailable_seen": false,
+        "partial_data_seen": false,
+        "bridge_unavailable_seen": false,
+        "worker_panic_seen": false,
+        "frame_time_p95_us": 38570,
+        "total_bytes": 6985286
+      },
+      "typed_units": {
+        "fuel_country_rows": 3092,
+        "stockpile_rows": 8439,
+        "active_research_slot_rows": 1259,
+        "timed_decision_rows": 51,
+        "division_rows": 52781,
+        "division_equipment_entry_rows": 10040,
+        "army_order_rows": 410,
+        "oob_command_rows": 594,
+        "land_combat_rows": 1818,
+        "land_combat_participant_rows": 14765,
+        "map_control_state_rows": 1081,
+        "map_control_province_rows": 13414,
+        "map_detail_resource_rows": 718,
+        "map_detail_state_building_rows": 2417,
+        "map_detail_province_building_rows": 4721,
+        "weather_region_rows": 480
       },
       "pack_verify": "ok"
     }

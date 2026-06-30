@@ -156,6 +156,20 @@ for inspection, with no ability to mutate the game.
   fuel rows, stockpiles, production lines, construction rows, focus rows,
   active research slots, popularity rows, politics residuals, decision rows,
   timed decisions, and diplomacy rows.
+- Compact DLL/Rust replay capture now has a current-build full implemented
+  domain proof for the same executable profile after refreshing the map and
+  land-combat validators as well. The proof
+  `compact_full_current_870ebf_speed5_20260701_v2` scheduled the eight country
+  domains plus `divisions`, `division_equipment`, `army_orders`, `oob_command`,
+  `land_combats`, `map_control`, `map_detail`, and `weather_live` together for
+  60 seconds at speed five/current equivalent. It advanced 108 game hours with
+  0 skipped, verified ordered/decodable compact records, full per-hour domain
+  data coverage, `.battleplan` packing, and no source-unavailable/partial/
+  bridge/worker failures. This is the current strongest proof that the
+  production-shaped compact path can keep up for all implemented typed domains
+  on the active vanilla build. It does not close unimplemented replay domains
+  such as full naval/air native compact telemetry, full OOB roots, theatres,
+  empty armies, task forces, and deeper order/combat semantics.
 - DLL-native scheduled `diplomacy_live` is proven for faction membership and
   war/casualty rows: the collector reads `CCountry+0x598` faction groups on
   hourly frames, folds into `countries.*.diplomacy.faction_group` and
@@ -477,6 +491,13 @@ The app is product-complete only when all applicable gates pass:
   for the eight compact country domains, no source-unavailable/partial/bridge/
   worker failures, semantic counters for all scheduled domains, and a verified
   `.battleplan` container.
+- Compact current-build full implemented-domain proof passed on 2026-07-01:
+  `replay_native/runs/compact_full_current_870ebf_speed5_20260701_v2` advanced
+  108 game hours in 60 seconds at speed five/current equivalent with 0 skipped,
+  verified ordered/decodable records, full per-hour domain/data-record coverage
+  for all 16 implemented compact domains, zero parse/order errors, no
+  source-unavailable/partial/bridge/worker failures, semantic counters across
+  every scheduled domain, and a verified `.battleplan` container.
 - Scheduled `diplomacy_live` faction proof passed on 2026-06-29:
   `replay/snapshots/_collector_session_diplomacy_gate/20260629T152734Z_pid43412`
   advanced 12 game hours in 48.328 wall seconds, stored 13 verified snapshots,

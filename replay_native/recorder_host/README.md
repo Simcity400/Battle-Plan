@@ -511,6 +511,21 @@ rows, 1,005 active research slots, 1,832 popularity rows, 356 politics-residual
 country rows, 397 decision-country rows, 50 timed decisions, and 355 diplomacy
 country rows.
 
+`compact_full_current_870ebf_speed5_20260701_v2` is the current wide proof for
+all implemented compact domains on the 2026-06-30 vanilla executable profile.
+After refreshing current-build map and land-combat validators, the 60-second
+speed-five gate scheduled the eight country domains plus `divisions`,
+`division_equipment`, `army_orders`, `oob_command`, `land_combats`,
+`map_control`, `map_detail`, and `weather_live`. It advanced 108 game hours
+with 109 frame-end records, skipped 0, had full per-domain data coverage,
+ordered/decodable records, zero parse/order errors, no source-unavailable/
+partial/bridge/worker flags, avg frame 35.455 ms, p95 38.570 ms, max 87.869
+ms, 6,985,286 compact bytes, and an independent `pack_replay verify` pass.
+Recorder semantic counters covered real payloads for every scheduled domain,
+including country economy/politics/research/decisions, divisions,
+division-equipment entries, active army orders, active land OOB, land-combat
+participants, map control, map resources/buildings, and weather regions.
+
 Implementation note: see `COMPACT_HOI4REPLAY_NEXT_STEP.md` for the bounded
 Rust-native packaging path and the test contract for putting `collector_stream.bin`
 inside a manifest-covered `.battleplan` without using Python or full JSON root

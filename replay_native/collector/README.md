@@ -191,6 +191,21 @@ country-state domains. Current compact binary proofs:
   current-build domains: 1,005 active research-slot rows, 1,832 popularity rows,
   356 politics-residual country rows, 397 decision-country rows, 50 timed
   decision rows, and 5,727 stockpile rows.
+- `compact_full_current_870ebf_speed5_20260701_v2`: refreshes the current-build
+  map and land-combat validators, then proves all 16 implemented compact domains
+  together on the same executable hash. It scheduled the eight country domains,
+  `divisions`, `division_equipment`, `army_orders`, `oob_command`,
+  `land_combats`, `map_control`, `map_detail`, and `weather_live` for 60
+  seconds, advanced 108 game hours with 109 unique frame hours and 0 skipped,
+  had full domain/data-record coverage, ordered and decodable records, no
+  worker-panic/source-unavailable/partial or bridge flags, avg frame 35.455 ms,
+  p95 38.570 ms, max 87.869 ms, 6,985,286 compact bytes, and a verified
+  `.battleplan`. The run emitted real typed units across the full bundle,
+  including 52,781 division rows, 10,040 division-equipment entry rows, 410
+  army-order rows, 594 active land-OOB rows, 1,818 land-combat rows, 14,765
+  land-combat participant rows, 1,081 map-control state rows, 13,414
+  map-control province rows, 718 state-resource rows, 2,417 state-building
+  rows, 4,721 province-building rows, and 480 weather-region rows.
 
 This completes the extraction-only compact performance gate for the current
 implemented compact domains and starts replay payload capture with typed
