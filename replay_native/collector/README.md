@@ -226,6 +226,26 @@ country-state domains. Current compact binary proofs:
   47.441 ms, p95 57.250 ms, max 73.141 ms, 5,237,329 compact bytes, and a
   verified `.battleplan`. `ships` emitted 3,133 changed rows while observing
   74,160 ship rows and 8,473 task-force rows; ship read p95 was 43.519 ms.
+- `compact_oob_ships_native_870ebf_20260701_nav_oob_v2`: widens compact
+  `oob_command` with DLL-native naval hierarchy rows from the same anchored
+  country/fleet/task-force/ship path. The 20-second focused gate scheduled
+  `oob_command` plus `ships`, advanced 38 game hours with 39 frame-end records
+  and 0 skipped, had ordered/decodable compact records, no worker-panic/
+  source-unavailable/partial or bridge flags, avg frame 50.756 ms, p95
+  52.189 ms, max 52.223 ms, 216,303 compact bytes, and a verified
+  `.battleplan`. `oob_command` emitted 914 changed rows and captured real naval
+  hierarchy counters: 122 fleet rows, 202 task-force rows, 414 task-force member
+  ids, 1,615 ship member ids, 3,939 observed fleet rows, and 6,268 observed
+  task-force rows.
+- `compact_full_plus_naval_oob_870ebf_20260701_v1`: reruns the full 17-domain
+  compact bundle with the widened naval OOB schema. It advanced 53 game hours
+  with 54 frame-end records and 0 skipped, had full domain/data-record coverage,
+  ordered and decodable records, no worker-panic/source-unavailable/partial or
+  bridge flags, avg frame 59.167 ms, p95 70.233 ms, max 80.460 ms, 4,655,364
+  compact bytes, and a verified `.battleplan`. `oob_command` emitted 950 changed
+  rows, including 124 fleet rows, 195 task-force rows, 404 task-force member ids,
+  1,625 ship member ids, 5,441 observed fleet rows, and 8,638 observed
+  task-force rows; OOB read p95 was 55.044 ms.
 
 This completes the extraction-only compact performance gate for the current
 implemented compact domains and starts replay payload capture with typed
@@ -234,12 +254,12 @@ records plus Rust-native `.battleplan` packing. `fuel_live`, `production_live`,
 `decisions_live`, `diplomacy_live`, `divisions`, `division_equipment`,
 `army_orders`, active land `oob_command`, `land_combats`, `map_control`,
 `map_detail`, `weather_live`, and compact `ships` are live-proven through the
-DLL/Rust compact
-path at speed five with zero skipped game hours for the applicable verified
-build profile. The next step is not more JSON widening; it is native compact
-coverage for full naval OOB/task-force/fleet rows, naval/air combat telemetry,
-and richer combat/order details that are still raw-only, bridge-backed, or
-unimplemented.
+DLL/Rust compact path at speed five with zero skipped game hours for the
+applicable verified build profile. Compact `oob_command` now includes DLL-native
+fleet and task-force hierarchy rows for the verified `870ebf` build. The next
+step is not more JSON widening; it is native compact coverage for naval leaders,
+missions, theatre/region state, naval/air combat telemetry, and richer
+combat/order details that are still raw-only, bridge-backed, or unimplemented.
 
 `ships` now has a reserved compact domain (`domain_id=29`) and Rust recorder
 decoder/schema coverage for per-ship hull telemetry, including CShip instance
@@ -705,8 +725,8 @@ Naval-combat raw stream status:
 
 OOB command raw stream status:
 
-- Land and naval command membership now have a bridge-gated raw `oob_command`
-  stream. The Rust DLL accepts `oob_command_bridge` rows in
+- Land command membership and historical naval command membership have a
+  bridge-gated raw `oob_command` stream. The Rust DLL accepts `oob_command_bridge` rows in
   `collector_control.json` as `kind:id:body_ptr` entries. The parser rejects
   malformed, duplicate, unaligned, out-of-range, or oversized payloads and
   reports row count/validity in control metadata.
@@ -714,8 +734,9 @@ OOB command raw stream status:
   `live_capture.collector_session --preflight-oob-command`; by default it is
   cache-first and fails closed unless `--allow-oob-command-cold-scan`
   explicitly allows the slower `oob_command_live.enumerate_command_objs()`
-  vtable sweep. This is production debt until native discovery replaces the
-  Python preflight.
+  vtable sweep. This raw/oracle path remains development debt; the production
+  compact path no longer depends on it for active land OOB or verified
+  fleet/task-force membership on the `870ebf` build.
 - Current emitted rows are `oob_command:army_group:<army_group_id>`,
   `oob_command:army:<army_id>`, `oob_command:fleet:<fleet_id>`, and
   `oob_command:task_force:<task_force_id>`. Rows expose army-group member
@@ -727,6 +748,13 @@ OOB command raw stream status:
   membership, leader portraits, temporary/captured trait state, naval leaders,
   global commander rosters, and save-shaped nested OOB records are not yet
   claimed.
+- Compact `oob_command` no longer depends on the raw naval bridge for fleet and
+  task-force hierarchy in the verified `870ebf` build. The production compact
+  path reuses the DLL-native `CGameState+0x310 -> CCountry+0x278 -> CFleet* ->
+  CTaskForce/CShip` walk, emits kind `fleet` rows with task-force members and
+  kind `task_force` rows with parent fleet plus ship members, and passed the
+  focused plus full speed-five/current-equivalent gates listed above with zero
+  skipped hours and no source/partial/bridge failures.
 - Remaining promotion work is a live active-naval-combat fixture, a
   root/hook-derived discoverer for combats born after preflight, speed-five
   soak, exact damage/sinking semantics, and timeline ingestion.

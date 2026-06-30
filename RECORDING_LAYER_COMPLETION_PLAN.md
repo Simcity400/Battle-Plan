@@ -347,10 +347,11 @@ Current recorder-facing bridge status:
   raw fixed-point values plus decoded floats, and sunk-convoy counts. The Python
   proof harness can populate the bridge with `--preflight-ships`; cache hits
   validate cached bodies and the expensive global CShip vtable scan is gated by
-  `--allow-ship-cold-scan`. This remains production debt until native discovery
-  replaces the Python preflight. It captures current CShip hull HP/org/XP, not
-  owner, fleet/task-force membership, ship name, target, or exact sinking/damage
-  events.
+  `--allow-ship-cold-scan`. This raw/oracle path has been superseded for
+  production compact ship hull telemetry by the DLL-native anchored
+  country/fleet/task-force/ship path; it remains historical validation evidence,
+  not the hot capture loop. It captures current CShip hull HP/org/XP, not ship
+  name, target, or exact sinking/damage events.
 - Land and naval command membership now share the same bridge-gated raw-stream
   shape. The DLL accepts `oob_command_bridge` rows (`kind:id:body_ptr`),
   revalidates bridged army/army-group/division/fleet/task-force object identity
@@ -362,12 +363,13 @@ Current recorder-facing bridge status:
   `oob_command:fleet:<id>`, and `oob_command:task_force:<id>`. The Python proof
   harness can populate the bridge with `--preflight-oob-command`; cache hits
   validate cached roots and the expensive command-object vtable scan is gated by
-  `--allow-oob-command-cold-scan`. This remains production debt until native
-  discovery replaces the Python preflight. It captures live membership joins,
-  army leader ids, bounded army leader skill, and assigned army leader trait tokens;
-  it does not yet claim owner, names, missions, locations, theatre rows, leader
-  portraits, temporary/captured trait state, naval leaders, global commander
-  rosters, or save-shaped OOB nesting.
+  `--allow-oob-command-cold-scan`. This raw/oracle path has been superseded for
+  active land OOB and verified compact fleet/task-force membership on the
+  `870ebf` build. It still captures historical raw membership joins, army leader
+  ids, bounded army leader skill, and assigned army leader trait tokens; it does
+  not yet claim names, missions, locations, theatre rows, leader portraits,
+  temporary/captured trait state, naval leaders, global commander rosters, or
+  save-shaped OOB nesting.
 
 ## Definition Of Done
 
@@ -696,9 +698,21 @@ Tasks:
   `compact_full_plus_ships_870ebf_20260701_010320` covered 17 compact domains,
   advanced 53 game hours with 0 skipped, verified ordered/decodable records and
   `.battleplan` packing, and kept `ship_root_source = "dll_native"` with no
-  compact discovery debt. Fleet/task-force hierarchy records, naval leaders,
-  missions, active naval combat damage/sinking semantics, and exact naval OOB
-  presentation remain follow-up segments.
+  compact discovery debt.
+- Current compact DLL checkpoint: `oob_command` now emits native fleet and
+  task-force hierarchy rows on the same verified build. The collector reuses the
+  DLL-native `CGameState+0x310 -> CCountry+0x278 -> CFleet* -> CTaskForce/CShip`
+  walk, then emits kind `fleet` rows with task-force members and kind
+  `task_force` rows with parent fleet plus ship members. Focused proof
+  `compact_oob_ships_native_870ebf_20260701_nav_oob_v2` advanced 38 game hours
+  with 0 skipped and no source/partial/bridge/worker failures; the full
+  `compact_full_plus_naval_oob_870ebf_20260701_v1` covered 17 compact domains,
+  advanced 53 game hours with 0 skipped, verified ordered/decodable records and
+  `.battleplan` packing, and captured real naval counters: 124 fleet rows, 195
+  task-force rows, 404 task-force member ids, 1,625 ship member ids, 5,441
+  observed fleet rows, and 8,638 observed task-force rows. Naval leaders,
+  missions, theatre/region state, active naval combat damage/sinking semantics,
+  and exact naval OOB presentation remain follow-up segments.
 - Current DLL checkpoint: `naval_air_combats` now has a bridge-gated raw stream
   from supplied `CNavalCombat` body pins. The collector revalidates bridged
   bodies every sample and emits side-level active-combat summaries plus
@@ -1699,22 +1713,23 @@ raw gap frames. `naval_combat_ended` still needs a fixture where a bridged
 naval battle ends during capture. The next naval unlocks are a root/hook-derived
 discoverer for newly born combats, CShip enrichment into active combat members,
 exact end/delete fixture proof, damage/sinking deltas, and longer soaks. Compact
-ship hull telemetry is no longer bridge-gated for the verified `870ebf` build:
-`compact_ships_native_870ebf_20260701_010232` and
-`compact_full_plus_ships_870ebf_20260701_010320` prove the DLL-native
+ship hull telemetry and basic fleet/task-force hierarchy are no longer
+bridge-gated for the verified `870ebf` build: `compact_ships_native_870ebf_20260701_010232`,
+`compact_full_plus_ships_870ebf_20260701_010320`,
+`compact_oob_ships_native_870ebf_20260701_nav_oob_v2`, and
+`compact_full_plus_naval_oob_870ebf_20260701_v1` prove the DLL-native
 country/fleet/task-force/ship path at speed five/current equivalent with zero
 skipped game hours and no source/partial/bridge/worker failures. The older raw
-ship proof
+OOB/ship proof
 `replay/snapshots/_collector_session_air_ship_oob_gate/20260629T210118Z_pid43412`
 remains useful historical/oracle evidence only; it hit `ship_body_cache` in
 0.125s, supplied 1309 bridge rows, emitted 22249 raw `ships` deltas / 22248
 object rows, advanced 12 game hours in 57.297 wall seconds, stored verified
-hourly snapshots, and reported zero raw gap domains. OOB command hierarchy
-retains its own strict proof from the same pid family: 4704 OOB command roots, 17705
-`oob_command` deltas over 12 game hours, and zero raw gap domains after an
-intentionally cold 135.703s discovery. The generated raw sidecars can be large,
-so this slice is verified for extraction but still needs coalescing/backpressure
-policy before full-length recording. Army leader detail now has a stricter
+hourly snapshots, and reported zero raw gap domains. The same historical proof
+also captured 4704 OOB command roots and 17705 `oob_command` deltas over 12 game
+hours after an intentionally cold 135.703s discovery; that bridge evidence is
+now an oracle, not the compact production path for fleet/task-force membership.
+Army leader detail now has a stricter
 same-row proof: `--require-oob-command-leader-detail` passed on the no-cold run
 `replay/snapshots/_collector_session_oob_leader_gate/20260629T215306Z_pid43412`,
 which advanced 12 game hours in 54.110 wall seconds, verified replay output,

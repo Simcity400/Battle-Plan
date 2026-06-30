@@ -547,6 +547,28 @@ p95 57.250 ms, max 73.141 ms, 5,237,329 compact bytes, and an independent
 `pack_replay verify` pass. `ships` emitted 3,133 changed rows while observing
 74,160 ship rows and 8,473 task-force rows; ship read p95 was 43.519 ms.
 
+`compact_oob_ships_native_870ebf_20260701_nav_oob_v2` widens compact
+`oob_command` with DLL-native naval hierarchy rows while keeping `ships`
+scheduled. The 20-second focused gate advanced 38 game hours with 39 frame-end
+records, skipped 0, had full per-domain data coverage, ordered/decodable
+records, zero parse/order errors, no source-unavailable/partial/bridge/worker
+flags, avg frame 50.756 ms, p95 52.189 ms, max 52.223 ms, 216,303 compact
+bytes, and an independent `pack_replay verify` pass. Recorder counters showed
+real naval hierarchy payloads: 122 fleet rows, 202 task-force rows, 414
+task-force member ids, 1,615 ship member ids, 3,939 observed fleet rows, and
+6,268 observed task-force rows.
+
+`compact_full_plus_naval_oob_870ebf_20260701_v1` is the current widest
+production-shaped gate after the OOB schema widening. It scheduled all 17
+compact domains for 30 seconds, advanced 53 game hours with 54 frame-end
+records, skipped 0, had full per-domain data coverage, ordered/decodable
+records, zero parse/order errors, no source-unavailable/partial/bridge/worker
+flags, avg frame 59.167 ms, p95 70.233 ms, max 80.460 ms, 4,655,364 compact
+bytes, and an independent `pack_replay verify` pass. `oob_command` emitted 950
+changed rows, including 124 fleet rows, 195 task-force rows, 404 task-force
+member ids, 1,625 ship member ids, 5,441 observed fleet rows, and 8,638
+observed task-force rows; OOB read p95 was 55.044 ms.
+
 Implementation note: see `COMPACT_HOI4REPLAY_NEXT_STEP.md` for the bounded
 Rust-native packaging path and the test contract for putting `collector_stream.bin`
 inside a manifest-covered `.battleplan` without using Python or full JSON root

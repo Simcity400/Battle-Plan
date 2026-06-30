@@ -97,6 +97,8 @@ const COMPACT_OOB_ROW_LEN: usize = 80;
 const COMPACT_OOB_MEMBER_ROW_LEN: usize = 8;
 const COMPACT_OOB_KIND_ARMY: u32 = 1;
 const COMPACT_OOB_KIND_ARMY_GROUP: u32 = 2;
+const COMPACT_OOB_KIND_FLEET: u32 = 3;
+const COMPACT_OOB_KIND_TASK_FORCE: u32 = 4;
 const COMPACT_OOB_ROW_FLAG_DELETED: u32 = 1;
 const COMPACT_OOB_ROW_FLAG_PARENT: u32 = 1 << 1;
 const COMPACT_OOB_ROW_FLAG_OWNER: u32 = 1 << 2;
@@ -3087,8 +3089,8 @@ fn decode_compact_oob_command_data_payload(
     let observed_army_group_rows = read_u32_le(payload, 28) as usize;
     let member_count = read_u32_le(payload, 32) as usize;
     let deleted_rows = read_u32_le(payload, 36) as usize;
-    let reserved0 = read_u32_le(payload, 40);
-    let reserved1 = read_u32_le(payload, 44);
+    let observed_fleet_rows = read_u32_le(payload, 40) as usize;
+    let observed_task_force_rows = read_u32_le(payload, 44) as usize;
     summary.status_flags_or |= status_flags;
     if member_count > COMPACT_OOB_MAX_MEMBER_ROWS {
         summary.parse_errors.push(format!(
@@ -3120,11 +3122,6 @@ fn decode_compact_oob_command_data_payload(
             "offset {offset}: oob command deleted_rows {deleted_rows} > row_count {row_count}"
         ));
     }
-    if reserved0 != 0 || reserved1 != 0 {
-        summary.parse_errors.push(format!(
-            "offset {offset}: oob command header reserved field is nonzero"
-        ));
-    }
     if let Some(domain) = summary.per_domain.get_mut(&28) {
         domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
         domain.data_changed_rows_total = domain
@@ -3143,14 +3140,25 @@ fn decode_compact_oob_command_data_payload(
     );
     add_compact_domain_data_unit(summary, 28, "oob_member_rows", member_count);
     add_compact_domain_data_unit(summary, 28, "oob_deleted_rows", deleted_rows);
+    add_compact_domain_data_unit(summary, 28, "oob_observed_fleet_rows", observed_fleet_rows);
+    add_compact_domain_data_unit(
+        summary,
+        28,
+        "oob_observed_task_force_rows",
+        observed_task_force_rows,
+    );
 
     let mut cursor = 48usize;
     let mut seen_rows = BTreeSet::new();
     let mut declared_members = 0usize;
     let mut emitted_army_rows = 0usize;
     let mut emitted_army_group_rows = 0usize;
+    let mut emitted_fleet_rows = 0usize;
+    let mut emitted_task_force_rows = 0usize;
     let mut member_division_rows = 0usize;
     let mut member_army_rows = 0usize;
+    let mut member_task_force_rows = 0usize;
+    let mut member_ship_rows = 0usize;
     let mut leader_rows = 0usize;
     let mut leader_skill_rows = 0usize;
     let mut owner_rows = 0usize;
@@ -3180,14 +3188,24 @@ fn decode_compact_oob_command_data_payload(
         cursor += COMPACT_OOB_ROW_LEN;
 
         let deleted = (flags & COMPACT_OOB_ROW_FLAG_DELETED) != 0;
-        if kind != COMPACT_OOB_KIND_ARMY && kind != COMPACT_OOB_KIND_ARMY_GROUP {
+        if !matches!(
+            kind,
+            COMPACT_OOB_KIND_ARMY
+                | COMPACT_OOB_KIND_ARMY_GROUP
+                | COMPACT_OOB_KIND_FLEET
+                | COMPACT_OOB_KIND_TASK_FORCE
+        ) {
             summary.parse_errors.push(format!(
                 "offset {offset}: oob command row {row_index} has invalid kind {kind}"
             ));
         } else if kind == COMPACT_OOB_KIND_ARMY {
             emitted_army_rows = emitted_army_rows.saturating_add(1);
-        } else {
+        } else if kind == COMPACT_OOB_KIND_ARMY_GROUP {
             emitted_army_group_rows = emitted_army_group_rows.saturating_add(1);
+        } else if kind == COMPACT_OOB_KIND_FLEET {
+            emitted_fleet_rows = emitted_fleet_rows.saturating_add(1);
+        } else {
+            emitted_task_force_rows = emitted_task_force_rows.saturating_add(1);
         }
         if !valid_compact_oob_id(object_id) {
             summary.parse_errors.push(format!(
@@ -3320,6 +3338,10 @@ fn decode_compact_oob_command_data_payload(
                 member_division_rows = member_division_rows.saturating_add(row_member_count);
             } else if kind == COMPACT_OOB_KIND_ARMY_GROUP {
                 member_army_rows = member_army_rows.saturating_add(row_member_count);
+            } else if kind == COMPACT_OOB_KIND_FLEET {
+                member_task_force_rows = member_task_force_rows.saturating_add(row_member_count);
+            } else if kind == COMPACT_OOB_KIND_TASK_FORCE {
+                member_ship_rows = member_ship_rows.saturating_add(row_member_count);
             }
         }
         if member_status != 3 && row_member_count != logical_member_count {
@@ -3340,6 +3362,8 @@ fn decode_compact_oob_command_data_payload(
     }
     add_compact_domain_data_unit(summary, 28, "oob_army_rows", emitted_army_rows);
     add_compact_domain_data_unit(summary, 28, "oob_army_group_rows", emitted_army_group_rows);
+    add_compact_domain_data_unit(summary, 28, "oob_fleet_rows", emitted_fleet_rows);
+    add_compact_domain_data_unit(summary, 28, "oob_task_force_rows", emitted_task_force_rows);
     add_compact_domain_data_unit(
         summary,
         28,
@@ -3347,6 +3371,13 @@ fn decode_compact_oob_command_data_payload(
         member_division_rows,
     );
     add_compact_domain_data_unit(summary, 28, "oob_member_army_rows", member_army_rows);
+    add_compact_domain_data_unit(
+        summary,
+        28,
+        "oob_member_task_force_rows",
+        member_task_force_rows,
+    );
+    add_compact_domain_data_unit(summary, 28, "oob_member_ship_rows", member_ship_rows);
     add_compact_domain_data_unit(summary, 28, "oob_leader_rows", leader_rows);
     add_compact_domain_data_unit(summary, 28, "oob_leader_skill_rows", leader_skill_rows);
     add_compact_domain_data_unit(summary, 28, "oob_owner_rows", owner_rows);
@@ -5581,7 +5612,7 @@ mod tests {
             100,
             28,
             COMPACT_RECORD_TYPE_DOMAIN_PERF,
-            &test_domain_payload(650, 2, 2, 3, 2),
+            &test_domain_payload(650, 4, 4, 6, 4),
         );
         append_test_compact_record(
             &mut raw,
@@ -5610,9 +5641,9 @@ mod tests {
         assert!(compact_domain_coverage_errors(&summary, &[28]).is_empty());
         let oob = summary.per_domain.get(&28).unwrap();
         assert_eq!(oob.data_record_count, 1);
-        assert_eq!(oob.data_rows_total, 2);
-        assert_eq!(oob.data_changed_rows_total, 2);
-        assert_eq!(oob.unit_count_total, 3);
+        assert_eq!(oob.data_rows_total, 4);
+        assert_eq!(oob.data_changed_rows_total, 4);
+        assert_eq!(oob.unit_count_total, 6);
         assert_eq!(
             oob.data_units_total.get("oob_observed_army_rows").copied(),
             Some(1)
@@ -5624,8 +5655,18 @@ mod tests {
             Some(1)
         );
         assert_eq!(
+            oob.data_units_total.get("oob_observed_fleet_rows").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            oob.data_units_total
+                .get("oob_observed_task_force_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
             oob.data_units_total.get("oob_member_rows").copied(),
-            Some(3)
+            Some(6)
         );
         assert_eq!(
             oob.data_units_total
@@ -5635,6 +5676,21 @@ mod tests {
         );
         assert_eq!(
             oob.data_units_total.get("oob_member_army_rows").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            oob.data_units_total
+                .get("oob_member_task_force_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            oob.data_units_total.get("oob_member_ship_rows").copied(),
+            Some(2)
+        );
+        assert_eq!(oob.data_units_total.get("oob_fleet_rows").copied(), Some(1));
+        assert_eq!(
+            oob.data_units_total.get("oob_task_force_rows").copied(),
             Some(1)
         );
         assert_eq!(compact_domain_id("oob_command"), Some(28));
@@ -7010,16 +7066,16 @@ mod tests {
     fn test_oob_command_data_payload(status_flags: u32) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(&0u64.to_le_bytes());
-        payload.extend_from_slice(&2u32.to_le_bytes());
-        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&4u32.to_le_bytes());
+        payload.extend_from_slice(&4u32.to_le_bytes());
         payload.extend_from_slice(&status_flags.to_le_bytes());
-        payload.extend_from_slice(&20u32.to_le_bytes());
+        payload.extend_from_slice(&22u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
-        payload.extend_from_slice(&3u32.to_le_bytes());
+        payload.extend_from_slice(&6u32.to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
-        payload.extend_from_slice(&0u32.to_le_bytes());
-        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
 
         for (
             kind,
@@ -7086,6 +7142,46 @@ mod tests {
                 0u32,
                 0u32,
             ),
+            (
+                COMPACT_OOB_KIND_FLEET,
+                615u32,
+                COMPACT_OOB_ROW_FLAG_MEMBER_COUNT_ENGINE,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                3u32,
+                1u32,
+                1u32,
+                1u32,
+                0u32,
+                0u32,
+                0u32,
+                1u32,
+                2u32,
+                0u32,
+                0u32,
+            ),
+            (
+                COMPACT_OOB_KIND_TASK_FORCE,
+                617u32,
+                COMPACT_OOB_ROW_FLAG_PARENT | COMPACT_OOB_ROW_FLAG_MEMBER_COUNT_ENGINE,
+                615u32,
+                0u32,
+                0u32,
+                0u32,
+                4u32,
+                2u32,
+                2u32,
+                2u32,
+                0u32,
+                0u32,
+                1u32,
+                1u32,
+                2u32,
+                0u32,
+                0u32,
+            ),
         ] {
             payload.extend_from_slice(&kind.to_le_bytes());
             payload.extend_from_slice(&object_id.to_le_bytes());
@@ -7108,7 +7204,7 @@ mod tests {
             payload.extend_from_slice(&0u32.to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
         }
-        for member_id in [101u32, 102u32, 17u32] {
+        for member_id in [101u32, 102u32, 17u32, 617u32, 1001u32, 1002u32] {
             payload.extend_from_slice(&member_id.to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
         }
