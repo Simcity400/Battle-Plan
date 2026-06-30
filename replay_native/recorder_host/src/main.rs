@@ -148,6 +148,9 @@ const COMPACT_AIR_VARIANT_DEF_ROW_FLAG_MODULES: u32 = 1 << 2;
 const COMPACT_AIR_VARIANT_DEF_MAX_VARIANT_ID: u32 = i32::MAX as u32;
 const COMPACT_AIR_VARIANT_DEF_MAX_SLOT_HANDLE: u32 = 1_000_000;
 const COMPACT_AIR_VARIANT_DEF_MAX_STRING_LEN: usize = 160;
+const COMPACT_AIR_VARIANT_STATS_ROW_LEN: usize = 64;
+const COMPACT_AIR_VARIANT_STATS_MAX_VARIANT_ID: u32 = i32::MAX as u32;
+const COMPACT_AIR_VARIANT_STATS_MAX_RAW: i32 = 1_000_000_000;
 const COMPACT_AIR_BASE_STATUS_ROW_LEN: usize = 32;
 const COMPACT_AIR_BASE_STATUS_ROW_FLAG_DELETED: u32 = 1;
 const COMPACT_AIR_BASE_STATUS_MAX_AIR_BASE_ID: u32 = i32::MAX as u32;
@@ -1284,6 +1287,9 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     }
                     34 => {
                         decode_compact_air_base_status_data_payload(offset, payload, &mut summary)
+                    }
+                    35 => {
+                        decode_compact_air_variant_stats_data_payload(offset, payload, &mut summary)
                     }
                     other => summary.parse_errors.push(format!(
                         "offset {offset}: unsupported domain data payload for {}",
@@ -4565,6 +4571,232 @@ fn decode_compact_air_variant_defs_data_payload(
     );
 }
 
+fn decode_compact_air_variant_stats_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < 36 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air variant stats data payload is {} byte(s), expected at least 36",
+            payload.len()
+        ));
+        return;
+    }
+    let row_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let observed_variant_rows = read_u32_le(payload, 20) as usize;
+    let invalid_variant_rows = read_u32_le(payload, 24) as usize;
+    let fixed_scale_raw = read_u32_le(payload, 28);
+    let range_scale_raw = read_u32_le(payload, 32);
+    summary.status_flags_or |= status_flags;
+    if changed_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air variant stats changed_rows {changed_rows} > row_count {row_count}"
+        ));
+    }
+    if row_count > observed_variant_rows && (status_flags & COMPACT_STATUS_DELTA_DATA) == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air variant stats row_count {row_count} > observed_variant_rows {observed_variant_rows}"
+        ));
+    }
+    if invalid_variant_rows > observed_variant_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air variant stats invalid_variant_rows {invalid_variant_rows} > observed_variant_rows {observed_variant_rows}"
+        ));
+    }
+    if fixed_scale_raw == 0 || range_scale_raw == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air variant stats scale fields must be nonzero"
+        ));
+    }
+    let expected_len =
+        36usize.saturating_add(row_count.saturating_mul(COMPACT_AIR_VARIANT_STATS_ROW_LEN));
+    if payload.len() != expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air variant stats data payload is {} byte(s), expected {expected_len}",
+            payload.len()
+        ));
+        return;
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&35) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    add_compact_domain_data_unit(summary, 35, "air_variant_stats_rows", row_count);
+    add_compact_domain_data_unit(
+        summary,
+        35,
+        "air_variant_stats_observed_variant_rows",
+        observed_variant_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        35,
+        "air_variant_stats_invalid_variant_rows",
+        invalid_variant_rows,
+    );
+
+    let mut seen_variants = BTreeSet::new();
+    let mut speed_cache_raw_sum = 0u128;
+    let mut range_raw_sum = 0u128;
+    let mut air_attack_raw_sum = 0u128;
+    let mut agility_raw_sum = 0u128;
+    let mut max_speed_raw_sum = 0u128;
+    let mut reliability_raw_sum = 0u128;
+    let mut air_defence_raw_sum = 0u128;
+    let mut thrust_raw_sum = 0u128;
+    let mut fuel_consumption_raw_sum = 0u128;
+    let mut build_cost_ic_raw_sum = 0u128;
+    let mut cursor = 36usize;
+    for row_index in 0..row_count {
+        if let Err(err) = require_compact_remaining(
+            payload,
+            cursor,
+            COMPACT_AIR_VARIANT_STATS_ROW_LEN,
+            "air variant stats row",
+        ) {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let variant_id = read_u32_le(payload, cursor);
+        let flags = read_u32_le(payload, cursor + 4);
+        let equipment_token_raw = read_u32_le(payload, cursor + 8);
+        let equipment_type_token_raw = read_u32_le(payload, cursor + 12);
+        let _interface_type_raw = read_u32_le(payload, cursor + 16);
+        let speed_cache_raw = read_i32_le(payload, cursor + 20);
+        let range_raw = read_i32_le(payload, cursor + 24);
+        let air_attack_raw = read_i32_le(payload, cursor + 28);
+        let agility_raw = read_i32_le(payload, cursor + 32);
+        let max_speed_raw = read_i32_le(payload, cursor + 36);
+        let reliability_raw = read_i32_le(payload, cursor + 40);
+        let air_defence_raw = read_i32_le(payload, cursor + 44);
+        let thrust_raw = read_i32_le(payload, cursor + 48);
+        let fuel_consumption_raw = read_i32_le(payload, cursor + 52);
+        let build_cost_ic_raw = read_i32_le(payload, cursor + 56);
+        let row_reserved = read_u32_le(payload, cursor + 60);
+        cursor += COMPACT_AIR_VARIANT_STATS_ROW_LEN;
+        if variant_id == 0 || variant_id > COMPACT_AIR_VARIANT_STATS_MAX_VARIANT_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air variant stats row {row_index} has invalid variant_id {variant_id}"
+            ));
+        } else if !seen_variants.insert(variant_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air variant stats row {row_index} duplicates variant_id {variant_id}"
+            ));
+        }
+        if flags != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air variant stats row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if row_reserved != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air variant stats row {row_index} reserved field is nonzero"
+            ));
+        }
+        if equipment_token_raw == 0 || equipment_type_token_raw == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air variant stats row {row_index} has zero equipment token/type fields"
+            ));
+        }
+        for (label, value) in [
+            ("speed_cache_raw", speed_cache_raw),
+            ("range_raw", range_raw),
+            ("air_attack_raw", air_attack_raw),
+            ("agility_raw", agility_raw),
+            ("max_speed_raw", max_speed_raw),
+            ("reliability_raw", reliability_raw),
+            ("air_defence_raw", air_defence_raw),
+            ("thrust_raw", thrust_raw),
+            ("fuel_consumption_raw", fuel_consumption_raw),
+            ("build_cost_ic_raw", build_cost_ic_raw),
+        ] {
+            if !(0..=COMPACT_AIR_VARIANT_STATS_MAX_RAW).contains(&value) {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: air variant stats row {row_index} has invalid {label} {value}"
+                ));
+            }
+        }
+        speed_cache_raw_sum = speed_cache_raw_sum.saturating_add(speed_cache_raw.max(0) as u128);
+        range_raw_sum = range_raw_sum.saturating_add(range_raw.max(0) as u128);
+        air_attack_raw_sum = air_attack_raw_sum.saturating_add(air_attack_raw.max(0) as u128);
+        agility_raw_sum = agility_raw_sum.saturating_add(agility_raw.max(0) as u128);
+        max_speed_raw_sum = max_speed_raw_sum.saturating_add(max_speed_raw.max(0) as u128);
+        reliability_raw_sum = reliability_raw_sum.saturating_add(reliability_raw.max(0) as u128);
+        air_defence_raw_sum = air_defence_raw_sum.saturating_add(air_defence_raw.max(0) as u128);
+        thrust_raw_sum = thrust_raw_sum.saturating_add(thrust_raw.max(0) as u128);
+        fuel_consumption_raw_sum =
+            fuel_consumption_raw_sum.saturating_add(fuel_consumption_raw.max(0) as u128);
+        build_cost_ic_raw_sum =
+            build_cost_ic_raw_sum.saturating_add(build_cost_ic_raw.max(0) as u128);
+    }
+    add_compact_domain_data_unit(
+        summary,
+        35,
+        "air_variant_stats_speed_cache_raw_sum",
+        compact_sum_to_usize(speed_cache_raw_sum),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        35,
+        "air_variant_stats_range_raw_sum",
+        compact_sum_to_usize(range_raw_sum),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        35,
+        "air_variant_stats_air_attack_raw_sum",
+        compact_sum_to_usize(air_attack_raw_sum),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        35,
+        "air_variant_stats_agility_raw_sum",
+        compact_sum_to_usize(agility_raw_sum),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        35,
+        "air_variant_stats_max_speed_raw_sum",
+        compact_sum_to_usize(max_speed_raw_sum),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        35,
+        "air_variant_stats_reliability_raw_sum",
+        compact_sum_to_usize(reliability_raw_sum),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        35,
+        "air_variant_stats_air_defence_raw_sum",
+        compact_sum_to_usize(air_defence_raw_sum),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        35,
+        "air_variant_stats_thrust_raw_sum",
+        compact_sum_to_usize(thrust_raw_sum),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        35,
+        "air_variant_stats_fuel_consumption_raw_sum",
+        compact_sum_to_usize(fuel_consumption_raw_sum),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        35,
+        "air_variant_stats_build_cost_ic_raw_sum",
+        compact_sum_to_usize(build_cost_ic_raw_sum),
+    );
+}
+
 fn decode_compact_air_base_status_data_payload(
     offset: usize,
     payload: &[u8],
@@ -5751,6 +5983,7 @@ fn compact_domain_id(domain: &str) -> Option<u16> {
         "air_wing_loadouts" => Some(32),
         "air_variant_defs" => Some(33),
         "air_base_status" => Some(34),
+        "air_variant_stats" => Some(35),
         _ => None,
     }
 }
@@ -5780,6 +6013,7 @@ fn compact_domain_name(domain_id: u16) -> &'static str {
         32 => "air_wing_loadouts",
         33 => "air_variant_defs",
         34 => "air_base_status",
+        35 => "air_variant_stats",
         1000 => "frame",
         _ => "unknown",
     }
@@ -5863,6 +6097,8 @@ fn compact_domain_requires_data_record(domain_id: u16) -> bool {
             | 31
             | 32
             | 33
+            | 34
+            | 35
     )
 }
 
@@ -5987,6 +6223,10 @@ fn add_compact_domain_data_unit(
         let entry = domain.data_units_total.entry(name.to_string()).or_default();
         *entry = entry.saturating_add(count as u64);
     }
+}
+
+fn compact_sum_to_usize(value: u128) -> usize {
+    value.min(usize::MAX as u128) as usize
 }
 
 fn timing_summary_json(values: &[u64]) -> Value {
@@ -7298,6 +7538,94 @@ mod tests {
         );
         assert_eq!(compact_domain_id("air_variant_defs"), Some(33));
         assert_eq!(compact_domain_name(33), "air_variant_defs");
+    }
+
+    #[test]
+    fn compact_summary_decodes_air_variant_stats_data_record() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            35,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(550, 2, 2, 140, 2, COMPACT_STATUS_DELTA_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            35,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_air_variant_stats_data_payload(COMPACT_STATUS_DELTA_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(&summary, &[35]).is_empty());
+        let stats = summary.per_domain.get(&35).unwrap();
+        assert_eq!(stats.row_count_total, 2);
+        assert_eq!(stats.unit_count_total, 140);
+        assert_eq!(stats.data_record_count, 1);
+        assert_eq!(stats.data_rows_total, 2);
+        assert_eq!(stats.data_changed_rows_total, 2);
+        assert_eq!(
+            stats
+                .data_units_total
+                .get("air_variant_stats_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            stats
+                .data_units_total
+                .get("air_variant_stats_observed_variant_rows")
+                .copied(),
+            Some(140)
+        );
+        assert_eq!(
+            stats
+                .data_units_total
+                .get("air_variant_stats_range_raw_sum")
+                .copied(),
+            Some(2_200_000)
+        );
+        assert_eq!(
+            stats
+                .data_units_total
+                .get("air_variant_stats_air_attack_raw_sum")
+                .copied(),
+            Some(600_000)
+        );
+        assert_eq!(
+            stats
+                .data_units_total
+                .get("air_variant_stats_max_speed_raw_sum")
+                .copied(),
+            Some(60_000_000)
+        );
+        assert_eq!(
+            stats
+                .data_units_total
+                .get("air_variant_stats_build_cost_ic_raw_sum")
+                .copied(),
+            Some(5_082_500)
+        );
+        assert_eq!(compact_domain_id("air_variant_stats"), Some(35));
+        assert_eq!(compact_domain_name(35), "air_variant_stats");
     }
 
     #[test]
@@ -9061,6 +9389,86 @@ mod tests {
             payload.extend_from_slice(&slot_handle.to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
             append_test_compact_string(&mut payload, token);
+        }
+        payload
+    }
+
+    fn test_air_variant_stats_data_payload(status_flags: u32) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&140u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&100_000u32.to_le_bytes());
+        payload.extend_from_slice(&1_000u32.to_le_bytes());
+
+        for (
+            variant_id,
+            equipment_token_raw,
+            equipment_type_token_raw,
+            interface_type_raw,
+            speed_cache_raw,
+            range_raw,
+            air_attack_raw,
+            agility_raw,
+            max_speed_raw,
+            reliability_raw,
+            air_defence_raw,
+            thrust_raw,
+            fuel_consumption_raw,
+            build_cost_ic_raw,
+        ) in [
+            (
+                1371u32,
+                18_204u32,
+                70u32,
+                7u32,
+                11_000i32,
+                700_000i32,
+                500_000i32,
+                3_850_000i32,
+                40_000_000i32,
+                80_000i32,
+                400_000i32,
+                1_100_000i32,
+                21_000i32,
+                1_572_500i32,
+            ),
+            (
+                1375u32,
+                18_208u32,
+                70u32,
+                7u32,
+                16_000i32,
+                1_500_000i32,
+                100_000i32,
+                3_000_000i32,
+                20_000_000i32,
+                80_000i32,
+                900_000i32,
+                2_500_000i32,
+                32_000i32,
+                3_510_000i32,
+            ),
+        ] {
+            payload.extend_from_slice(&variant_id.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&equipment_token_raw.to_le_bytes());
+            payload.extend_from_slice(&equipment_type_token_raw.to_le_bytes());
+            payload.extend_from_slice(&interface_type_raw.to_le_bytes());
+            payload.extend_from_slice(&speed_cache_raw.to_le_bytes());
+            payload.extend_from_slice(&range_raw.to_le_bytes());
+            payload.extend_from_slice(&air_attack_raw.to_le_bytes());
+            payload.extend_from_slice(&agility_raw.to_le_bytes());
+            payload.extend_from_slice(&max_speed_raw.to_le_bytes());
+            payload.extend_from_slice(&reliability_raw.to_le_bytes());
+            payload.extend_from_slice(&air_defence_raw.to_le_bytes());
+            payload.extend_from_slice(&thrust_raw.to_le_bytes());
+            payload.extend_from_slice(&fuel_consumption_raw.to_le_bytes());
+            payload.extend_from_slice(&build_cost_ic_raw.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
         }
         payload
     }

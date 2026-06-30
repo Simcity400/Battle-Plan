@@ -612,12 +612,29 @@ mod attach_log {
     const AIR_VARIANT_MODULE_ENTRY_SLOT_OFF: usize = 0x00;
     const AIR_VARIANT_MODULE_ENTRY_DEF_OFF: usize = 0x08;
     const AIR_VARIANT_MODULE_DEF_NAME_OFF: usize = 0x18;
+    const AIR_VARIANT_EQUIPMENT_TOKEN_OFF: usize = 0x18;
+    const AIR_VARIANT_EQUIPMENT_TYPE_TOKEN_OFF: usize = 0x1C;
+    const AIR_VARIANT_INTERFACE_TYPE_OFF: usize = 0x38;
+    const AIR_VARIANT_CACHE_SPEED_RAW_OFF: usize = 0x270;
+    const AIR_VARIANT_CACHE_RANGE_RAW_OFF: usize = 0x278;
+    const AIR_VARIANT_CACHE_AIR_ATTACK_RAW_OFF: usize = 0x280;
+    const AIR_VARIANT_CACHE_AGILITY_RAW_OFF: usize = 0x288;
+    const AIR_VARIANT_CACHE_MAX_SPEED_RAW_OFF: usize = 0x2F0;
+    const AIR_VARIANT_CACHE_RELIABILITY_RAW_OFF: usize = 0x308;
+    const AIR_VARIANT_CACHE_AIR_DEFENCE_RAW_OFF: usize = 0x318;
+    const AIR_VARIANT_CACHE_THRUST_RAW_OFF: usize = 0x320;
+    const AIR_VARIANT_CACHE_FUEL_CONSUMPTION_RAW_OFF: usize = 0x328;
+    const AIR_VARIANT_CACHE_BUILD_COST_RAW_OFF: usize = 0x368;
     const MAX_AIR_VARIANT_DEF_ROWS: usize = 20_000;
+    const MAX_AIR_VARIANT_STAT_ROWS: usize = MAX_AIR_VARIANT_DEF_ROWS;
     const MAX_AIR_VARIANT_MODULE_ROWS: u32 = 256;
     const MAX_AIR_VARIANT_MODULE_TOTAL_ROWS: usize = 250_000;
     const MAX_AIR_VARIANT_NAME_LEN: usize = 160;
     const MAX_AIR_VARIANT_MODULE_TOKEN_LEN: usize = 160;
     const MAX_AIR_VARIANT_MODULE_SLOT_HANDLE: u32 = 1_000_000;
+    const MAX_AIR_VARIANT_CACHE_RAW: i32 = 1_000_000_000;
+    const AIR_VARIANT_STAT_FIXED_SCALE_RAW: u32 = 100_000;
+    const AIR_VARIANT_STAT_RANGE_SCALE_RAW: u32 = 1_000;
     const PROJECT_FACILITY_VTABLE_RVA: usize = 0x294AB40;
     const PROJECT_CPROJECT_VTABLE_RVA: usize = 0x295C190;
     const PROJECT_CHARACTER_VTABLE_RVA: usize = 0x2957D40;
@@ -2787,6 +2804,7 @@ mod attach_log {
     const RAW_AIR_REGION_ACTIVITY_DOMAIN: &str = "air_region_activity";
     const RAW_AIR_WING_LOADOUTS_DOMAIN: &str = "air_wing_loadouts";
     const RAW_AIR_VARIANT_DEFS_DOMAIN: &str = "air_variant_defs";
+    const RAW_AIR_VARIANT_STATS_DOMAIN: &str = "air_variant_stats";
     const RAW_AIR_BASE_STATUS_DOMAIN: &str = "air_base_status";
     const RAW_SHIPS_DOMAIN: &str = "ships";
     const RAW_OOB_COMMAND_DOMAIN: &str = "oob_command";
@@ -2839,6 +2857,7 @@ mod attach_log {
     const COMPACT_DOMAIN_AIR_WING_LOADOUTS: u16 = 32;
     const COMPACT_DOMAIN_AIR_VARIANT_DEFS: u16 = 33;
     const COMPACT_DOMAIN_AIR_BASE_STATUS: u16 = 34;
+    const COMPACT_DOMAIN_AIR_VARIANT_STATS: u16 = 35;
     const COMPACT_STATUS_STATE_UNAVAILABLE: u32 = 1 << 0;
     const COMPACT_STATUS_PROFILE_MISMATCH: u32 = 1 << 1;
     const COMPACT_STATUS_NO_CLOCK: u32 = 1 << 2;
@@ -2986,6 +3005,7 @@ mod attach_log {
         air_region_activity: CompactAirRegionActivityTracker,
         air_wing_loadouts: CompactAirWingLoadoutTracker,
         air_variant_defs: CompactAirVariantDefTracker,
+        air_variant_stats: CompactAirVariantStatsTracker,
         air_base_status: CompactAirBaseStatusTracker,
         land_combat: LandCombatTracker,
         map_control: CompactMapControlTracker,
@@ -3106,6 +3126,15 @@ mod attach_log {
         observed_variant_rows: u32,
         observed_module_rows: u32,
         emitted_module_rows: u32,
+        invalid_variant_rows: u32,
+    }
+
+    struct CompactAirVariantStatsRead {
+        rows: Vec<CompactAirVariantStatsRow>,
+        read_time_us: u64,
+        changed_rows: u32,
+        status_flags: u32,
+        observed_variant_rows: u32,
         invalid_variant_rows: u32,
     }
 
@@ -3391,6 +3420,11 @@ mod attach_log {
     }
 
     #[derive(Default)]
+    struct CompactAirVariantStatsTracker {
+        known: BTreeMap<u32, CompactAirVariantStatsRow>,
+    }
+
+    #[derive(Default)]
     struct CompactAirBaseStatusTracker {
         previous: BTreeMap<u32, CompactAirBaseStatusRow>,
     }
@@ -3491,6 +3525,24 @@ mod attach_log {
         display_name: Option<String>,
         variant_name: Option<String>,
         modules: Vec<CompactAirVariantDefModuleRow>,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct CompactAirVariantStatsRow {
+        variant_id: u32,
+        equipment_token_raw: u32,
+        equipment_type_token_raw: u32,
+        interface_type_raw: u32,
+        speed_cache_raw: i32,
+        range_raw: i32,
+        air_attack_raw: i32,
+        agility_raw: i32,
+        max_speed_raw: i32,
+        reliability_raw: i32,
+        air_defence_raw: i32,
+        thrust_raw: i32,
+        fuel_consumption_raw: i32,
+        build_cost_ic_raw: i32,
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -9728,6 +9780,8 @@ mod attach_log {
             compact_explicit_domain_enabled(control, RAW_AIR_WING_LOADOUTS_DOMAIN);
         let air_variant_defs_enabled =
             compact_explicit_domain_enabled(control, RAW_AIR_VARIANT_DEFS_DOMAIN);
+        let air_variant_stats_enabled =
+            compact_explicit_domain_enabled(control, RAW_AIR_VARIANT_STATS_DOMAIN);
         let air_base_status_enabled =
             compact_explicit_domain_enabled(control, RAW_AIR_BASE_STATUS_DOMAIN);
         let land_combats_enabled =
@@ -9747,6 +9801,7 @@ mod attach_log {
         let mut air_region_activity_read = None;
         let mut air_wing_loadout_read = None;
         let mut air_variant_def_read = None;
+        let mut air_variant_stats_read = None;
         let mut air_base_status_read = None;
         let mut land_combat_read = None;
         let mut map_control_read = None;
@@ -9775,6 +9830,7 @@ mod attach_log {
         let air_region_activity_tracker = &mut trackers.air_region_activity;
         let air_wing_loadout_tracker = &mut trackers.air_wing_loadouts;
         let air_variant_def_tracker = &mut trackers.air_variant_defs;
+        let air_variant_stats_tracker = &mut trackers.air_variant_stats;
         let air_base_status_tracker = &mut trackers.air_base_status;
         let division_roots = &trackers.division_roots;
         let land_combat_tracker = &mut trackers.land_combat;
@@ -9883,6 +9939,13 @@ mod attach_log {
             } else {
                 None
             };
+            let air_variant_stats_handle = if air_variant_stats_enabled {
+                Some(scope.spawn(move || {
+                    read_compact_air_variant_stats(state, status_flags, air_variant_stats_tracker)
+                }))
+            } else {
+                None
+            };
             let air_base_status_handle = if air_base_status_enabled {
                 Some(scope.spawn(move || {
                     read_compact_air_base_status(state, status_flags, air_base_status_tracker)
@@ -9986,6 +10049,12 @@ mod attach_log {
                 air_variant_def_read = Some(match handle.join() {
                     Ok(read) => read,
                     Err(_) => compact_air_variant_def_worker_panic_read(status_flags),
+                });
+            }
+            if let Some(handle) = air_variant_stats_handle {
+                air_variant_stats_read = Some(match handle.join() {
+                    Ok(read) => read,
+                    Err(_) => compact_air_variant_stats_worker_panic_read(status_flags),
                 });
             }
             if let Some(handle) = air_base_status_handle {
@@ -10408,6 +10477,37 @@ mod attach_log {
                 read.observed_variant_rows,
                 read.observed_module_rows,
                 read.emitted_module_rows,
+                read.invalid_variant_rows,
+            );
+            sequence = sequence.saturating_add(1);
+            emitted_domains = emitted_domains.saturating_add(1);
+        }
+        if let Some(read) = air_variant_stats_read {
+            append_compact_domain_perf_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                CompactDomainPerfRecord {
+                    domain_id: COMPACT_DOMAIN_AIR_VARIANT_STATS,
+                    read_time_us: read.read_time_us,
+                    row_count: read.observed_variant_rows,
+                    changed_rows: read.changed_rows,
+                    unit_count: read.observed_variant_rows,
+                    changed_unit_count: read.changed_rows,
+                    status_flags: read.status_flags,
+                },
+                elapsed_wall_ms,
+            );
+            sequence = sequence.saturating_add(1);
+            append_compact_air_variant_stats_data_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                &read.rows,
+                elapsed_wall_ms,
+                read.status_flags,
+                read.changed_rows,
+                read.observed_variant_rows,
                 read.invalid_variant_rows,
             );
             sequence = sequence.saturating_add(1);
@@ -11170,6 +11270,19 @@ mod attach_log {
             observed_variant_rows: 0,
             observed_module_rows: 0,
             emitted_module_rows: 0,
+            invalid_variant_rows: 0,
+        }
+    }
+
+    fn compact_air_variant_stats_worker_panic_read(
+        status_flags: u32,
+    ) -> CompactAirVariantStatsRead {
+        CompactAirVariantStatsRead {
+            rows: Vec::new(),
+            read_time_us: 0,
+            changed_rows: 0,
+            status_flags: status_flags | COMPACT_STATUS_WORKER_PANIC,
+            observed_variant_rows: 0,
             invalid_variant_rows: 0,
         }
     }
@@ -13020,6 +13133,63 @@ mod attach_log {
         }
     }
 
+    fn read_compact_air_variant_stats(
+        state: &CollectorState,
+        status_flags: u32,
+        tracker: &mut CompactAirVariantStatsTracker,
+    ) -> CompactAirVariantStatsRead {
+        let read_started = Instant::now();
+        let mut status_flags = status_flags;
+        let Some(native) = sample_compact_air_variant_defs_native(state) else {
+            return CompactAirVariantStatsRead {
+                rows: Vec::new(),
+                read_time_us: duration_micros_u64(read_started.elapsed()),
+                changed_rows: 0,
+                status_flags: status_flags | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                observed_variant_rows: 0,
+                invalid_variant_rows: 0,
+            };
+        };
+        if native.variant_ptrs.is_empty() {
+            status_flags |= COMPACT_STATUS_SOURCE_UNAVAILABLE;
+        }
+        if native.invalid_air_wing_rows > 0 {
+            status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+        }
+
+        let observed_variant_rows = native.variant_ptrs.len().min(u32::MAX as usize) as u32;
+        let mut rows = Vec::new();
+        let mut invalid_variant_rows = 0u32;
+        for (variant_id, variant_ptr) in native.variant_ptrs {
+            let Some(row) = read_compact_air_variant_stats_row(state.base, variant_id, variant_ptr)
+            else {
+                invalid_variant_rows = invalid_variant_rows.saturating_add(1);
+                continue;
+            };
+            if tracker.known.get(&variant_id) != Some(&row) {
+                tracker.known.insert(variant_id, row);
+                rows.push(row);
+            }
+            if tracker.known.len() > MAX_AIR_VARIANT_STAT_ROWS {
+                status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+                break;
+            }
+        }
+        if invalid_variant_rows > 0 {
+            status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+        }
+        rows.sort_by_key(|row| row.variant_id);
+        let changed_rows = rows.len().min(u32::MAX as usize) as u32;
+        CompactAirVariantStatsRead {
+            rows,
+            read_time_us: duration_micros_u64(read_started.elapsed()),
+            changed_rows,
+            status_flags,
+            observed_variant_rows,
+            invalid_variant_rows,
+        }
+    }
+
     fn read_compact_air_base_status(
         state: &CollectorState,
         status_flags: u32,
@@ -14161,6 +14331,79 @@ mod attach_log {
             variant_name,
             modules,
         })
+    }
+
+    fn read_compact_air_variant_stats_row(
+        module_base: usize,
+        variant_id: u32,
+        variant_ptr: usize,
+    ) -> Option<CompactAirVariantStatsRow> {
+        if !is_map_control_heap_pointer(variant_ptr)
+            || read_u64(variant_ptr)? as usize
+                != module_base.checked_add(DIVISION_EQUIPMENT_VARIANT_VTABLE_RVA)?
+            || read_u32(variant_ptr.checked_add(DIVISION_EQUIPMENT_VARIANT_OFF_TYPE)?)?
+                != DIVISION_EQUIPMENT_VARIANT_TYPE
+            || read_u32(variant_ptr.checked_add(DIVISION_EQUIPMENT_VARIANT_OFF_ID)?)? != variant_id
+        {
+            return None;
+        }
+        let equipment_token_raw =
+            read_u32(variant_ptr.checked_add(AIR_VARIANT_EQUIPMENT_TOKEN_OFF)?)?;
+        let equipment_type_token_raw =
+            read_u32(variant_ptr.checked_add(AIR_VARIANT_EQUIPMENT_TYPE_TOKEN_OFF)?)?;
+        let interface_type_raw =
+            read_u32(variant_ptr.checked_add(AIR_VARIANT_INTERFACE_TYPE_OFF)?)?;
+        let speed_cache_raw = read_i32(variant_ptr.checked_add(AIR_VARIANT_CACHE_SPEED_RAW_OFF)?)?;
+        let range_raw = read_i32(variant_ptr.checked_add(AIR_VARIANT_CACHE_RANGE_RAW_OFF)?)?;
+        let air_attack_raw =
+            read_i32(variant_ptr.checked_add(AIR_VARIANT_CACHE_AIR_ATTACK_RAW_OFF)?)?;
+        let agility_raw = read_i32(variant_ptr.checked_add(AIR_VARIANT_CACHE_AGILITY_RAW_OFF)?)?;
+        let max_speed_raw =
+            read_i32(variant_ptr.checked_add(AIR_VARIANT_CACHE_MAX_SPEED_RAW_OFF)?)?;
+        let reliability_raw =
+            read_i32(variant_ptr.checked_add(AIR_VARIANT_CACHE_RELIABILITY_RAW_OFF)?)?;
+        let air_defence_raw =
+            read_i32(variant_ptr.checked_add(AIR_VARIANT_CACHE_AIR_DEFENCE_RAW_OFF)?)?;
+        let thrust_raw = read_i32(variant_ptr.checked_add(AIR_VARIANT_CACHE_THRUST_RAW_OFF)?)?;
+        let fuel_consumption_raw =
+            read_i32(variant_ptr.checked_add(AIR_VARIANT_CACHE_FUEL_CONSUMPTION_RAW_OFF)?)?;
+        let build_cost_ic_raw =
+            read_i32(variant_ptr.checked_add(AIR_VARIANT_CACHE_BUILD_COST_RAW_OFF)?)?;
+        if equipment_token_raw == 0
+            || equipment_type_token_raw == 0
+            || !valid_air_variant_cache_raw(speed_cache_raw)
+            || !valid_air_variant_cache_raw(range_raw)
+            || !valid_air_variant_cache_raw(air_attack_raw)
+            || !valid_air_variant_cache_raw(agility_raw)
+            || !valid_air_variant_cache_raw(max_speed_raw)
+            || !valid_air_variant_cache_raw(reliability_raw)
+            || !valid_air_variant_cache_raw(air_defence_raw)
+            || !valid_air_variant_cache_raw(thrust_raw)
+            || !valid_air_variant_cache_raw(fuel_consumption_raw)
+            || !valid_air_variant_cache_raw(build_cost_ic_raw)
+        {
+            return None;
+        }
+        Some(CompactAirVariantStatsRow {
+            variant_id,
+            equipment_token_raw,
+            equipment_type_token_raw,
+            interface_type_raw,
+            speed_cache_raw,
+            range_raw,
+            air_attack_raw,
+            agility_raw,
+            max_speed_raw,
+            reliability_raw,
+            air_defence_raw,
+            thrust_raw,
+            fuel_consumption_raw,
+            build_cost_ic_raw,
+        })
+    }
+
+    fn valid_air_variant_cache_raw(value: i32) -> bool {
+        (0..=MAX_AIR_VARIANT_CACHE_RAW).contains(&value)
     }
 
     fn read_compact_air_variant_modules(
@@ -16326,6 +16569,36 @@ mod attach_log {
         );
     }
 
+    fn append_compact_air_variant_stats_data_record(
+        out: &mut Vec<u8>,
+        sequence: u64,
+        game_hour_raw: i32,
+        rows: &[CompactAirVariantStatsRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        observed_variant_rows: u32,
+        invalid_variant_rows: u32,
+    ) {
+        let payload = compact_air_variant_stats_data_payload(
+            rows,
+            elapsed_wall_ms,
+            status_flags,
+            changed_rows,
+            observed_variant_rows,
+            invalid_variant_rows,
+        );
+        append_compact_record(
+            out,
+            sequence,
+            game_hour_raw,
+            COMPACT_DOMAIN_AIR_VARIANT_STATS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+    }
+
     fn append_compact_air_base_status_data_record(
         out: &mut Vec<u8>,
         sequence: u64,
@@ -17726,6 +17999,44 @@ mod attach_log {
                 payload.extend_from_slice(&0u32.to_le_bytes());
                 append_compact_string(&mut payload, Some(&module.module_token));
             }
+        }
+        payload
+    }
+
+    fn compact_air_variant_stats_data_payload(
+        rows: &[CompactAirVariantStatsRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        observed_variant_rows: u32,
+        invalid_variant_rows: u32,
+    ) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(36usize.saturating_add(rows.len().saturating_mul(64)));
+        payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
+        payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+        payload.extend_from_slice(&changed_rows.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&observed_variant_rows.to_le_bytes());
+        payload.extend_from_slice(&invalid_variant_rows.to_le_bytes());
+        payload.extend_from_slice(&AIR_VARIANT_STAT_FIXED_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&AIR_VARIANT_STAT_RANGE_SCALE_RAW.to_le_bytes());
+        for row in rows {
+            payload.extend_from_slice(&row.variant_id.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&row.equipment_token_raw.to_le_bytes());
+            payload.extend_from_slice(&row.equipment_type_token_raw.to_le_bytes());
+            payload.extend_from_slice(&row.interface_type_raw.to_le_bytes());
+            payload.extend_from_slice(&row.speed_cache_raw.to_le_bytes());
+            payload.extend_from_slice(&row.range_raw.to_le_bytes());
+            payload.extend_from_slice(&row.air_attack_raw.to_le_bytes());
+            payload.extend_from_slice(&row.agility_raw.to_le_bytes());
+            payload.extend_from_slice(&row.max_speed_raw.to_le_bytes());
+            payload.extend_from_slice(&row.reliability_raw.to_le_bytes());
+            payload.extend_from_slice(&row.air_defence_raw.to_le_bytes());
+            payload.extend_from_slice(&row.thrust_raw.to_le_bytes());
+            payload.extend_from_slice(&row.fuel_consumption_raw.to_le_bytes());
+            payload.extend_from_slice(&row.build_cost_ic_raw.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
         }
         payload
     }
@@ -26774,6 +27085,104 @@ mod attach_log {
             assert_eq!(
                 u32::from_le_bytes(payload[cursor..cursor + 4].try_into().unwrap()),
                 28691
+            );
+        }
+
+        #[test]
+        fn compact_air_variant_stats_pack_live_cache_rows() {
+            let rows = vec![
+                CompactAirVariantStatsRow {
+                    variant_id: 1371,
+                    equipment_token_raw: 18_204,
+                    equipment_type_token_raw: 70,
+                    interface_type_raw: 7,
+                    speed_cache_raw: 11_000,
+                    range_raw: 700_000,
+                    air_attack_raw: 500_000,
+                    agility_raw: 3_850_000,
+                    max_speed_raw: 40_000_000,
+                    reliability_raw: 80_000,
+                    air_defence_raw: 400_000,
+                    thrust_raw: 1_100_000,
+                    fuel_consumption_raw: 21_000,
+                    build_cost_ic_raw: 1_572_500,
+                },
+                CompactAirVariantStatsRow {
+                    variant_id: 1375,
+                    equipment_token_raw: 18_208,
+                    equipment_type_token_raw: 70,
+                    interface_type_raw: 7,
+                    speed_cache_raw: 16_000,
+                    range_raw: 1_500_000,
+                    air_attack_raw: 100_000,
+                    agility_raw: 3_000_000,
+                    max_speed_raw: 20_000_000,
+                    reliability_raw: 80_000,
+                    air_defence_raw: 900_000,
+                    thrust_raw: 2_500_000,
+                    fuel_consumption_raw: 32_000,
+                    build_cost_ic_raw: 3_510_000,
+                },
+            ];
+
+            let payload = compact_air_variant_stats_data_payload(
+                &rows,
+                84,
+                COMPACT_STATUS_EXTRACTION_PERF_GATE | COMPACT_STATUS_DELTA_DATA,
+                2,
+                140,
+                0,
+            );
+
+            assert_eq!(payload.len(), 36 + 2 * 64);
+            assert_eq!(u64::from_le_bytes(payload[0..8].try_into().unwrap()), 84);
+            assert_eq!(u32::from_le_bytes(payload[8..12].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[12..16].try_into().unwrap()), 2);
+            assert_eq!(
+                u32::from_le_bytes(payload[16..20].try_into().unwrap()),
+                COMPACT_STATUS_EXTRACTION_PERF_GATE | COMPACT_STATUS_DELTA_DATA
+            );
+            assert_eq!(u32::from_le_bytes(payload[20..24].try_into().unwrap()), 140);
+            assert_eq!(u32::from_le_bytes(payload[24..28].try_into().unwrap()), 0);
+            assert_eq!(
+                u32::from_le_bytes(payload[28..32].try_into().unwrap()),
+                AIR_VARIANT_STAT_FIXED_SCALE_RAW
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[32..36].try_into().unwrap()),
+                AIR_VARIANT_STAT_RANGE_SCALE_RAW
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[36..40].try_into().unwrap()),
+                1371
+            );
+            assert_eq!(u32::from_le_bytes(payload[40..44].try_into().unwrap()), 0);
+            assert_eq!(
+                u32::from_le_bytes(payload[44..48].try_into().unwrap()),
+                18_204
+            );
+            assert_eq!(u32::from_le_bytes(payload[48..52].try_into().unwrap()), 70);
+            assert_eq!(u32::from_le_bytes(payload[52..56].try_into().unwrap()), 7);
+            assert_eq!(
+                i32::from_le_bytes(payload[60..64].try_into().unwrap()),
+                700_000
+            );
+            assert_eq!(
+                i32::from_le_bytes(payload[64..68].try_into().unwrap()),
+                500_000
+            );
+            assert_eq!(
+                i32::from_le_bytes(payload[72..76].try_into().unwrap()),
+                40_000_000
+            );
+            assert_eq!(
+                i32::from_le_bytes(payload[92..96].try_into().unwrap()),
+                1_572_500
+            );
+            assert_eq!(u32::from_le_bytes(payload[96..100].try_into().unwrap()), 0);
+            assert_eq!(
+                u32::from_le_bytes(payload[100..104].try_into().unwrap()),
+                1375
             );
         }
 

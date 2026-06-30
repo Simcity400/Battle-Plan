@@ -900,6 +900,16 @@ Air-wing raw stream status:
   present in active wings because earlier replay frames may still reference the
   variant id. This is DLL-only runtime capture; the Python probe was one-time
   bounded live validation of the current offsets.
+- Compact `air_variant_stats` is domain id 35. It reuses the same anchored
+  live type-70 variant pointers and emits pointer-free numeric cache rows keyed
+  by `variant_id`: raw equipment token handles, raw equipment type/interface
+  classifiers, range, attack, agility, max speed, reliability, air defence,
+  thrust, fuel consumption, build-cost, and the adjacent speed cache field. The
+  payload carries explicit fixed-point scale metadata (`100000` for stat-cache
+  values, `1000` for range). Python/Ghidra were used only for bounded
+  current-build discovery/validation; the runtime reader is DLL-only and fails
+  closed on vtable/type/id or stat-bound mismatches. Archetype/base-airframe
+  naming is still separate follow-up work.
 - Compact `air_base_status` is domain id 34. It walks the live strategic-air
   state-indexed air-base table at `strategic_air+0x90`, validates air-base
   records by vtable `MODULE+0x2941FA0`, `{air_base_id,type=65}` handle at
@@ -960,6 +970,17 @@ Air-wing raw stream status:
   434 emitted module-token rows, and reported no source-unavailable,
   partial-data, bridge-unavailable, or worker-panic flags. Frame p95 was 14546
   us; air-variant-def read p95 was 13768 us.
+- Current air-variant stats compact proof:
+  `replay_native/runs/compact_air_variant_stats_870ebf_20260701_v2/native_session_manifest.json`
+  scheduled `air_wings`, `air_region_activity`, `air_wing_loadouts`,
+  `air_variant_defs`, `air_variant_stats`, and `air_base_status` together for
+  60 seconds at no-sleep compact sampling, advanced 105 game hours with 0
+  skipped, emitted ordered/decodable compact records, wrote 313680 total bytes
+  / 269584 payload bytes, captured 17596 observed variant-stat rows, 166
+  emitted stat rows, and reported no source-unavailable, partial-data,
+  bridge-unavailable, or worker-panic flags. Frame p95 was 19618 us;
+  air-variant-stat read p95 was 18066 us, and an independent `pack_replay
+  verify` pass accepted the generated `.battleplan`.
 - Current air-base status compact proof:
   `replay_native/runs/compact_air_base_status_870ebf_20260701_v1/native_session_manifest.json`
   scheduled `air_wings`, `air_region_activity`, `air_wing_loadouts`,
@@ -972,10 +993,10 @@ Air-wing raw stream status:
   bridge-unavailable, or worker-panic flags. Frame p95 was 17174 us; air-base
   status read p95 was 10588 us.
 - Remaining promotion work is live proof while changing missions/rebasing,
-  airbase capacity modifiers/penalty semantics, aircraft archetype/stat
-  metadata, reserves/aces, air-loss/attrition proof, air-combat resolution,
-  exact displayed air-superiority percent classification, and timeline
-  ingestion.
+  airbase capacity modifiers/penalty semantics, aircraft archetype/base-airframe
+  classification, reserves/aces, air-loss/attrition proof, air-combat
+  resolution, exact displayed air-superiority percent classification, and
+  timeline ingestion.
 
 Runtime rules:
 

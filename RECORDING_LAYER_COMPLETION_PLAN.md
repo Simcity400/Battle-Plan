@@ -804,9 +804,8 @@ Tasks:
   -> pool+0x28/+0x34 -> air_wing_object+0x10`. It emits
   `air_wing_observed`, `air_wing_updated`, and `air_wing_lost` events with
   owner, wing id, generation, count, mission mask, mission region, and effective
-  active planes. It does not yet emit aircraft type/stat metadata, reserves,
-  ace joins, airbase capacity, exact air-superiority percent, air losses, or
-  region combat resolution.
+  active planes. It does not yet emit reserves, ace joins, exact
+  air-superiority percent, air losses, or region combat resolution.
 - Current DLL checkpoint: `air_region_activity` is compact domain id 31,
   derived inside the DLL from the anchored air-wing sample. It buckets non-idle
   wings by `(mission_region, owner_tag_db_id, mission_mask)` and emits wing
@@ -826,8 +825,18 @@ Tasks:
   `variant_id` with optional display/model strings plus module children
   `{slot_handle, module_token}` from `variant+0xB8` / `module_def+0x18`. This
   closes replay-side naming/module metadata for live air-wing equipment IDs in
-  the verified `870ebf` build. It does not yet read exact aircraft stat blocks,
-  archetype categories, or airbase capacity modifier/penalty semantics.
+  the verified `870ebf` build. It does not yet read archetype categories,
+  base-airframe names, or airbase capacity modifier/penalty semantics.
+- Current DLL checkpoint: `air_variant_stats` is compact domain id 35. It
+  reuses the anchored live air-wing equipment-bank variant pointers, validates
+  each by vtable/type/id, and emits rows keyed by `variant_id` with raw
+  equipment token handles, raw equipment type/interface classifiers, and live
+  final stat-cache fields for range, air attack, agility, max speed,
+  reliability, air defence, thrust, fuel consumption, build cost, and the
+  adjacent speed cache field. This closes DLL/Rust compact capture of live
+  aircraft final stat-cache values for variant ids on the verified `870ebf`
+  build. It does not yet classify those variants into archetype/base-airframe
+  names or prove exact displayed air-superiority math.
 - Current DLL checkpoint: `air_base_status` is compact domain id 34. It walks
   the anchored live strategic-air state-indexed air-base table at
   `strategic_air+0x90`, validates air-base records by vtable
@@ -881,6 +890,18 @@ Tasks:
   observed module rows, 148 emitted definition rows, and 434 emitted module-token
   rows, and reported no source-unavailable, partial-data, bridge-unavailable, or
   worker-panic flags. Frame p95 was 14546 us; air-variant read p95 was 13768 us.
+- Current variant-stats compact proof:
+  `replay_native/runs/compact_air_variant_stats_870ebf_20260701_v2/native_session_manifest.json`
+  scheduled `air_wings`, `air_region_activity`, `air_wing_loadouts`,
+  `air_variant_defs`, `air_variant_stats`, and `air_base_status` for 60 seconds
+  at no-sleep compact sampling, advanced 105 game hours with 0 skipped, emitted
+  ordered/decodable compact records, wrote 313680 total bytes / 269584 payload
+  bytes, captured 17596 observed variant-stat rows, 166 emitted stat rows,
+  17596 observed variant-definition rows, 51940 observed module rows, 47968
+  observed air-wing rows, and reported no source-unavailable, partial-data,
+  bridge-unavailable, or worker-panic flags. Frame p95 was 19618 us;
+  air-variant-stat read p95 was 18066 us, and an independent `pack_replay
+  verify` pass accepted the generated `.battleplan`.
 - Current air-base status compact proof:
   `replay_native/runs/compact_air_base_status_870ebf_20260701_v1/native_session_manifest.json`
   scheduled `air_wings`, `air_region_activity`, `air_wing_loadouts`,

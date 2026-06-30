@@ -159,6 +159,21 @@ advanced 109 game hours with 0 skipped and no source/partial/bridge/worker
 failures while scheduling `air_wings`, `air_region_activity`,
 `air_wing_loadouts`, and `air_variant_defs` together.
 
+`air_variant_stats` is compact domain id 35. It decodes DLL-derived type-70
+variant stat-cache rows from the same anchored live air-wing equipment bank
+path. Rows are keyed by `variant_id` and carry raw equipment token/type handles,
+raw interface classifier, speed cache, range, attack, agility, max speed,
+reliability, air defence, thrust, fuel consumption, and build-cost raw values
+with explicit fixed-point scale metadata. The host rejects malformed lengths,
+duplicate variant ids, zero equipment token/type handles, out-of-range raw
+stat fields, unknown flags, non-zero reserved bytes, and trailing bytes. Proof
+`replay_native/runs/compact_air_variant_stats_870ebf_20260701_v2/native_session_manifest.json`
+advanced 105 game hours with 0 skipped and no source/partial/bridge/worker
+failures while scheduling `air_wings`, `air_region_activity`,
+`air_wing_loadouts`, `air_variant_defs`, `air_variant_stats`, and
+`air_base_status` together. The generated `.battleplan` also passed an
+independent `pack_replay verify`.
+
 `air_base_status` is compact domain id 34. It decodes DLL-derived air-base rows
 from the anchored strategic-air state-indexed air-base table. Rows are keyed by
 airbase id and carry state id, materialized capacity, state air-base building
