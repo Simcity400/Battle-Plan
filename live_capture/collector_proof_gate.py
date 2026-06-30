@@ -71,6 +71,7 @@ def collector_session_proof_errors(
     require_politics_idea_classification: bool = False,
     require_politics_advisor_residuals: bool = False,
     require_projects_live_payload: bool = False,
+    require_projects_live_links: bool = False,
     require_production_construction: bool = False,
     require_state_resources: bool = False,
     require_tech_live_names: bool = False,
@@ -349,6 +350,48 @@ def collector_session_proof_errors(
             errors.append("special project rows were empty in every frame")
         if lightweight_projects not in (0, None):
             errors.append("special_projects payloads appeared on lightweight frames")
+    if require_projects_live_links:
+        active_facilities = _as_int(
+            summary.get("special_project_active_facility_rows")
+        )
+        active_project_links = _as_int(
+            summary.get("special_project_facility_active_project_links")
+        )
+        facility_scientist_links = _as_int(
+            summary.get("special_project_facility_scientist_links")
+        )
+        iteration_rows = _as_int(summary.get("special_project_iteration_rows"))
+        worked_facility_links = _as_int(
+            summary.get("special_project_worked_facility_links")
+        )
+        max_active_facilities = _as_int(
+            summary.get("max_special_project_active_facilities_per_frame")
+        )
+        max_active_project_links = _as_int(
+            summary.get("max_special_project_active_project_links_per_frame")
+        )
+        max_facility_scientist_links = _as_int(
+            summary.get("max_special_project_facility_scientist_links_per_frame")
+        )
+        max_worked_facility_links = _as_int(
+            summary.get("max_special_project_worked_facility_links_per_frame")
+        )
+        if active_facilities in (None, 0) or max_active_facilities in (None, 0):
+            errors.append("active special-project facilities were not observed")
+        if active_project_links in (None, 0) or max_active_project_links in (None, 0):
+            errors.append("special-project active facility/project links missing")
+        if facility_scientist_links in (None, 0) or max_facility_scientist_links in (
+            None,
+            0,
+        ):
+            errors.append("special-project facility/scientist links missing")
+        if iteration_rows in (None, 0):
+            errors.append("special-project iteration rows were not observed")
+        if worked_facility_links in (None, 0) or max_worked_facility_links in (
+            None,
+            0,
+        ):
+            errors.append("special-project worked-facility links missing")
     if require_production_construction:
         scheduled = _scheduled_domain_frame_count(summary, "production_live")
         required_frames = int(min_game_hours or 1)
@@ -714,6 +757,7 @@ def collector_session_proof_summary(
     require_politics_idea_classification: bool = False,
     require_politics_advisor_residuals: bool = False,
     require_projects_live_payload: bool = False,
+    require_projects_live_links: bool = False,
     require_production_construction: bool = False,
     require_state_resources: bool = False,
     require_tech_live_names: bool = False,
@@ -747,6 +791,7 @@ def collector_session_proof_summary(
         require_politics_idea_classification=require_politics_idea_classification,
         require_politics_advisor_residuals=require_politics_advisor_residuals,
         require_projects_live_payload=require_projects_live_payload,
+        require_projects_live_links=require_projects_live_links,
         require_production_construction=require_production_construction,
         require_state_resources=require_state_resources,
         require_tech_live_names=require_tech_live_names,
@@ -896,12 +941,30 @@ def collector_session_proof_summary(
         "special_project_rows": summary.get("special_project_rows"),
         "special_project_scientist_rows": summary.get(
             "special_project_scientist_rows"),
+        "special_project_active_facility_rows": summary.get(
+            "special_project_active_facility_rows"),
+        "special_project_facility_active_project_links": summary.get(
+            "special_project_facility_active_project_links"),
+        "special_project_facility_scientist_links": summary.get(
+            "special_project_facility_scientist_links"),
+        "special_project_iteration_rows": summary.get(
+            "special_project_iteration_rows"),
+        "special_project_worked_facility_links": summary.get(
+            "special_project_worked_facility_links"),
         "max_special_project_facilities_per_frame": summary.get(
             "max_special_project_facilities_per_frame"),
         "max_special_project_rows_per_frame": summary.get(
             "max_special_project_rows_per_frame"),
         "max_special_project_scientists_per_frame": summary.get(
             "max_special_project_scientists_per_frame"),
+        "max_special_project_active_facilities_per_frame": summary.get(
+            "max_special_project_active_facilities_per_frame"),
+        "max_special_project_active_project_links_per_frame": summary.get(
+            "max_special_project_active_project_links_per_frame"),
+        "max_special_project_facility_scientist_links_per_frame": summary.get(
+            "max_special_project_facility_scientist_links_per_frame"),
+        "max_special_project_worked_facility_links_per_frame": summary.get(
+            "max_special_project_worked_facility_links_per_frame"),
         "projects_on_lightweight_frames": summary.get(
             "projects_on_lightweight_frames"),
         "construction_queue_frames": summary.get("construction_queue_frames"),
@@ -1075,6 +1138,11 @@ def _main(argv: Optional[List[str]] = None) -> int:
         help="require scheduled projects_live facility/project payload rows",
     )
     parser.add_argument(
+        "--require-projects-live-links",
+        action="store_true",
+        help="require scheduled projects_live facility/project/scientist links",
+    )
+    parser.add_argument(
         "--require-production-construction",
         action="store_true",
         help="require positive scheduled production construction-queue rows",
@@ -1174,6 +1242,7 @@ def _main(argv: Optional[List[str]] = None) -> int:
         ),
         require_politics_advisor_residuals=args.require_politics_advisor_residuals,
         require_projects_live_payload=args.require_projects_live_payload,
+        require_projects_live_links=args.require_projects_live_links,
         require_production_construction=args.require_production_construction,
         require_state_resources=args.require_state_resources,
         require_tech_live_names=args.require_tech_live_names,

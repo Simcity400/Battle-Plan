@@ -7,10 +7,17 @@ surfaces have been removed. The active target is a native Rust/wgpu replay
 application that lets a viewer inspect a recorded HOI4 session like the real game
 UI, without any ability to mutate the game.
 
-Runtime replay capture is moving to a single authoritative live source: an
-in-process collector DLL inside the host's `hoi4.exe`, with an external recorder
-writing `.battleplan` containers. Saves are development fixtures and validation
-artifacts only; they are not required to record or replay a live session.
+Runtime replay capture is moving to a single authoritative live source:
+`hoi4.exe` -> in-process collector DLL -> compact raw/event/snapshot stream ->
+`.battleplan` container. Saves are development fixtures and validation artifacts
+only; they are not required to record or replay a live session.
+
+Python is not a production live-extraction dependency. It may attach the DLL in
+development, run proof gates, validate manifests/replay files, and perform
+bounded one-time discovery, but it must not be part of the hourly/sub-hourly hot
+recording loop. Any segment that still needs Python preflight/root discovery is
+temporary debt until that discovery moves into the DLL/Rust host or is proven to
+be one-time, bounded, cached, and outside recording.
 
 ## Progress
 
@@ -51,7 +58,8 @@ full-project signal.
 | Path | Purpose |
 | --- | --- |
 | `replay_native/` | Native Rust/wgpu replay app and rendering/runtime crates. |
-| `live_capture/` | Existing Python recorder GUI/CLI, schema assembly, and `.battleplan` writer; target consumer for collector frames. |
+| `replay_native/recorder_host/` | Rust native host for DLL pipe capture and cadence manifests; production recorder spine under construction. |
+| `live_capture/` | Python development/proof harness, schema assembly, proof gates, and replay validation. Not production hot-loop extraction. |
 | `memory_reader/` | Read-only process-memory readers and live extraction modules, now primarily research/validation inputs for the collector. |
 | `coverage_audit/` | Completeness manifest, report, and checker. |
 | `game_defs/` | Static HOI4 definition parsers. |
@@ -65,6 +73,9 @@ full-project signal.
   remain observational. Never use `WriteProcessMemory` or mutating game calls.
 - The live game should stay paused during external scanning unless running an
   explicit recorder/collector cadence proof.
+- A recording segment is not complete until the DLL/Rust path captures it at
+  hourly-or-better cadence, with no skipped game hours, at speed five or a
+  measured equivalent.
 - Do not commit personal paths, cloud-sync paths, raw dumps, melted saves, or
   generated game art.
 - Local probe outputs belong in ignored scratch paths, not in tracked source.

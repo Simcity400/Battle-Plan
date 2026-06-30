@@ -1,0 +1,11 @@
+[package]
+name = "recorder_host"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde_json = "1"
+
+[[bin]]
+name = "collector_record"
+path = "src/main.rs"

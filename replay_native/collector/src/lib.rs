@@ -546,6 +546,7 @@ mod attach_log {
     const MAX_COUNTRY_CONVOYS_DESTROYED: u32 = 100_000_000;
     const MAX_COUNTRY_ACCIDENTS_SCORE: f64 = 10.0;
     const MAX_COUNTRY_COSMETIC_TAG_LEN: usize = 96;
+    const MAX_WORKER_DURATION_MS: u32 = 86_400_000;
     const DAILY_UPDATE_SENTINEL: [u8; 16] = [
         0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8D,
         0xAC,
@@ -837,6 +838,7 @@ mod attach_log {
         sample_ms: u32,
         country_object_scan: bool,
         special_projects_scan: bool,
+        lightweight_root_frame: bool,
         country_object_bridge: Vec<CountryObjectBridgeEntry>,
         country_object_bridge_valid: bool,
         country_record_bridge: Vec<CountryObjectBridgeEntry>,
@@ -865,6 +867,8 @@ mod attach_log {
         idea_group_filter: BTreeMap<String, String>,
         idea_group_filter_valid: bool,
         scheduled_snapshot_step_hours: u32,
+        scheduled_domains: Vec<String>,
+        scheduled_domains_valid: bool,
         pipe_token: Option<String>,
         session_id: Option<String>,
         sidecar_log: bool,
@@ -1087,9 +1091,19 @@ mod attach_log {
         let sample_ms = parse_json_u32(&text, "sample_ms").unwrap_or(50);
         let scheduled_snapshot_step_hours =
             parse_json_u32(&text, "scheduled_snapshot_step_hours").unwrap_or(1);
+        let (scheduled_domains, scheduled_domains_valid) =
+            match parse_json_string(&text, "scheduled_domains") {
+                Some(value) => match parse_scheduled_domains(&value) {
+                    Some(rows) => (rows, true),
+                    None => (Vec::new(), false),
+                },
+                None => (Vec::new(), true),
+            };
         let country_object_scan = parse_json_bool(&text, "country_object_scan").unwrap_or(false);
         let special_projects_scan =
             parse_json_bool(&text, "special_projects_scan").unwrap_or(false);
+        let lightweight_root_frame =
+            parse_json_bool(&text, "lightweight_root_frame").unwrap_or(false);
         let (country_object_bridge, country_object_bridge_valid) =
             match parse_json_string(&text, "country_object_bridge") {
                 Some(value) => match parse_country_object_bridge(&value) {
@@ -1199,10 +1213,11 @@ mod attach_log {
         let session_id = parse_json_string(&text, "session_id").and_then(clean_session_id);
         let sidecar_log = parse_json_bool(&text, "sidecar_log").unwrap_or(false);
         Some(CollectorControl {
-            duration_ms: duration_ms.clamp(100, 30_000),
+            duration_ms: duration_ms.clamp(100, MAX_WORKER_DURATION_MS),
             sample_ms: sample_ms.clamp(10, 5_000),
             country_object_scan,
             special_projects_scan,
+            lightweight_root_frame,
             country_object_bridge,
             country_object_bridge_valid,
             country_record_bridge,
@@ -1231,6 +1246,8 @@ mod attach_log {
             idea_group_filter,
             idea_group_filter_valid,
             scheduled_snapshot_step_hours: scheduled_snapshot_step_hours.clamp(1, 24),
+            scheduled_domains,
+            scheduled_domains_valid,
             pipe_token,
             session_id,
             sidecar_log,
@@ -1265,6 +1282,40 @@ mod attach_log {
             "false" => Some(false),
             _ => None,
         }
+    }
+
+    fn parse_scheduled_domains(value: &str) -> Option<Vec<String>> {
+        let mut rows = Vec::new();
+        let mut seen: BTreeMap<String, ()> = BTreeMap::new();
+        for raw in value.split(';') {
+            let domain = raw.trim();
+            if domain.is_empty() {
+                continue;
+            }
+            if !is_scheduled_domain_token(domain) {
+                return None;
+            }
+            if seen.insert(domain.to_string(), ()).is_some() {
+                return None;
+            }
+            rows.push(domain.to_string());
+            if rows.len() > 32 {
+                return None;
+            }
+        }
+        Some(rows)
+    }
+
+    fn is_scheduled_domain_token(value: &str) -> bool {
+        let mut chars = value.chars();
+        let Some(first) = chars.next() else {
+            return false;
+        };
+        if !first.is_ascii_lowercase() {
+            return false;
+        }
+        value.len() <= 64
+            && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
     }
 
     fn parse_json_string(text: &str, key: &str) -> Option<String> {
@@ -2245,6 +2296,37 @@ mod attach_log {
         }
     }
 
+    fn scheduled_domain_enabled(control: Option<&CollectorControl>, domain: &str) -> bool {
+        let Some(control) = control else {
+            return true;
+        };
+        if !control.scheduled_domains_valid {
+            return false;
+        }
+        control.scheduled_domains.is_empty()
+            || control
+                .scheduled_domains
+                .iter()
+                .any(|enabled| enabled == domain)
+    }
+
+    fn lightweight_root_needs_country_identity(control: &CollectorControl) -> bool {
+        if !control.lightweight_root_frame {
+            return true;
+        }
+        control.country_object_scan
+            || !control.country_object_bridge.is_empty()
+            || !control.country_record_bridge.is_empty()
+            || scheduled_domain_enabled(Some(control), "fuel_live")
+            || scheduled_domain_enabled(Some(control), "production_live")
+            || scheduled_domain_enabled(Some(control), "focus_live")
+            || scheduled_domain_enabled(Some(control), "tech_live")
+            || scheduled_domain_enabled(Some(control), "politics_live")
+            || scheduled_domain_enabled(Some(control), "politics_residuals")
+            || scheduled_domain_enabled(Some(control), "decisions_live")
+            || scheduled_domain_enabled(Some(control), "diplomacy_live")
+    }
+
     fn build_frame_line(
         pid: Dword,
         state: Option<&CollectorState>,
@@ -2256,17 +2338,31 @@ mod attach_log {
         let tick = unsafe { GetTickCount64() };
         let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let scheduled_frame = capture_boundary == Some("scheduled_hour_snapshot");
-        let include_scheduled_map = scheduled_frame;
-        let include_scheduled_country_fuel = scheduled_frame;
-        let include_scheduled_country_production = scheduled_frame;
-        let include_scheduled_country_focus = scheduled_frame;
-        let include_scheduled_country_research = scheduled_frame;
-        let include_scheduled_country_politics = scheduled_frame;
-        let include_scheduled_country_politics_residuals = scheduled_frame;
-        let include_scheduled_country_decisions = scheduled_frame;
-        let include_scheduled_country_diplomacy = scheduled_frame;
-        let include_scheduled_projects = scheduled_frame;
-        let include_scheduled_buildings = scheduled_frame;
+        let include_scheduled_map = scheduled_frame
+            && (scheduled_domain_enabled(control, "state_ownership")
+                || scheduled_domain_enabled(control, "state_control")
+                || scheduled_domain_enabled(control, "province_control")
+                || scheduled_domain_enabled(control, "state_detail"));
+        let include_scheduled_country_fuel =
+            scheduled_frame && scheduled_domain_enabled(control, "fuel_live");
+        let include_scheduled_country_production =
+            scheduled_frame && scheduled_domain_enabled(control, "production_live");
+        let include_scheduled_country_focus =
+            scheduled_frame && scheduled_domain_enabled(control, "focus_live");
+        let include_scheduled_country_research =
+            scheduled_frame && scheduled_domain_enabled(control, "tech_live");
+        let include_scheduled_country_politics =
+            scheduled_frame && scheduled_domain_enabled(control, "politics_live");
+        let include_scheduled_country_politics_residuals =
+            scheduled_frame && scheduled_domain_enabled(control, "politics_residuals");
+        let include_scheduled_country_decisions =
+            scheduled_frame && scheduled_domain_enabled(control, "decisions_live");
+        let include_scheduled_country_diplomacy =
+            scheduled_frame && scheduled_domain_enabled(control, "diplomacy_live");
+        let include_scheduled_projects =
+            scheduled_frame && scheduled_domain_enabled(control, "projects_live");
+        let include_scheduled_buildings =
+            scheduled_frame && scheduled_domain_enabled(control, "buildings_live");
         let state_rows = scheduled_state_rows_json(
             state,
             control,
@@ -2280,11 +2376,23 @@ mod attach_log {
             include_scheduled_buildings,
         );
         let special_projects = scheduled_special_projects_json(state, include_scheduled_projects);
+        let include_country_rows = control
+            .map(|control| !control.lightweight_root_frame)
+            .unwrap_or(true)
+            || include_scheduled_country_fuel
+            || include_scheduled_country_production
+            || include_scheduled_country_focus
+            || include_scheduled_country_research
+            || include_scheduled_country_politics
+            || include_scheduled_country_politics_residuals
+            || include_scheduled_country_decisions
+            || include_scheduled_country_diplomacy;
         let (probe, domains) = root_probe_json(
             state,
             state_rows.as_deref(),
             province_rows.as_deref(),
             special_projects.as_deref(),
+            include_country_rows,
             include_scheduled_country_fuel,
             include_scheduled_country_production,
             include_scheduled_country_focus,
@@ -7965,7 +8073,10 @@ mod attach_log {
             "{session}{session_sequence}{elapsed_wall_ms}\"capture_boundary\":\"{capture_boundary}\",\
              \"duration_ms\":{},\"sample_ms\":{},\
              \"special_projects_scan\":{},\
+             \"lightweight_root_frame\":{},\
              \"scheduled_snapshot_step_hours\":{},\
+             \"scheduled_domain_rows\":{},\
+             \"scheduled_domains_valid\":{},\
              \"country_object_bridge_rows\":{},\
              \"country_object_bridge_valid\":{},\
              \"country_record_bridge_rows\":{},\
@@ -8001,7 +8112,10 @@ mod attach_log {
             control.duration_ms,
             control.sample_ms,
             control.special_projects_scan,
+            control.lightweight_root_frame,
             control.scheduled_snapshot_step_hours,
+            control.scheduled_domains.len(),
+            control.scheduled_domains_valid,
             control.country_object_bridge.len(),
             control.country_object_bridge_valid,
             control.country_record_bridge.len(),
@@ -8102,7 +8216,12 @@ mod attach_log {
             } else {
                 0
             };
-            let country_identity = if daily_match
+            let skip_country_identity = control
+                .map(|control| !lightweight_root_needs_country_identity(control))
+                .unwrap_or(false);
+            let country_identity = if daily_match && long_string_match && skip_country_identity {
+                CountryIdentityCache::not_attempted("lightweight_root_frame")
+            } else if daily_match
                 && long_string_match
                 && control
                     .map(|control| {
@@ -10175,6 +10294,7 @@ mod attach_log {
         scheduled_state_rows: Option<&str>,
         scheduled_province_rows: Option<&str>,
         scheduled_special_projects: Option<&str>,
+        include_country_rows: bool,
         include_scheduled_country_fuel: bool,
         include_scheduled_country_production: bool,
         include_scheduled_country_focus: bool,
@@ -10216,20 +10336,24 @@ mod attach_log {
         let date_ptr = state.date_ptr;
         let country_database_ptr = state.country_database_ptr;
         let country_probe = country_database_probe_json(country_database_ptr as usize);
-        let mut current_rows = state.country_identity.current_rows(
-            country_database_ptr as usize,
-            include_scheduled_country_fuel,
-            include_scheduled_country_production,
-            include_scheduled_country_focus,
-            include_scheduled_country_research,
-            include_scheduled_country_politics,
-            include_scheduled_country_politics_residuals,
-            include_scheduled_country_decisions,
-            include_scheduled_country_diplomacy,
-            advisor_token_filter,
-            tech_def_filter,
-            idea_group_filter,
-        );
+        let mut current_rows = if include_country_rows {
+            state.country_identity.current_rows(
+                country_database_ptr as usize,
+                include_scheduled_country_fuel,
+                include_scheduled_country_production,
+                include_scheduled_country_focus,
+                include_scheduled_country_research,
+                include_scheduled_country_politics,
+                include_scheduled_country_politics_residuals,
+                include_scheduled_country_decisions,
+                include_scheduled_country_diplomacy,
+                advisor_token_filter,
+                tech_def_filter,
+                idea_group_filter,
+            )
+        } else {
+            Vec::new()
+        };
         let tag_table = country_tag_table(country_database_ptr as usize);
         let war_relations = if include_scheduled_country_diplomacy {
             match (control, tag_table) {
@@ -10247,19 +10371,31 @@ mod attach_log {
         if let Some(war_relations) = war_relations.as_ref() {
             apply_war_relations_to_country_rows(&mut current_rows, war_relations);
         }
-        let country_rows = state.country_identity.countries_json_from_rows(
-            country_database_ptr as usize,
-            &current_rows,
-            include_scheduled_country_fuel,
-            include_scheduled_country_production,
-            include_scheduled_country_focus,
-            include_scheduled_country_research,
-            include_scheduled_country_politics,
-            include_scheduled_country_politics_residuals,
-            include_scheduled_country_decisions,
-            include_scheduled_country_diplomacy,
-        );
-        let identity_probe = state.country_identity.root_json();
+        let country_rows = if include_country_rows {
+            state.country_identity.countries_json_from_rows(
+                country_database_ptr as usize,
+                &current_rows,
+                include_scheduled_country_fuel,
+                include_scheduled_country_production,
+                include_scheduled_country_focus,
+                include_scheduled_country_research,
+                include_scheduled_country_politics,
+                include_scheduled_country_politics_residuals,
+                include_scheduled_country_decisions,
+                include_scheduled_country_diplomacy,
+            )
+        } else {
+            "{}".to_string()
+        };
+        let identity_probe = if include_country_rows {
+            state.country_identity.root_json()
+        } else {
+            "\"country_object_identity\":{\"status\":\"lightweight_root_frame\",\
+             \"scan_ms\":0,\"bridge_rows_supplied\":0,\
+             \"record_rows_supplied\":0,\"object_count\":0,\
+             \"rejected_objects\":0,\"duplicate_tags\":0}"
+                .to_string()
+        };
         let has_building_rows = scheduled_state_rows
             .map(|rows| rows.contains("\"buildings\":"))
             .unwrap_or(false)
@@ -10269,19 +10405,34 @@ mod attach_log {
         let has_state_resource_rows = scheduled_state_rows
             .map(|rows| rows.contains("\"resources\":"))
             .unwrap_or(false);
-        let domains = state.country_identity.domains_json_from_rows(
-            &current_rows,
-            scheduled_state_rows.is_some(),
-            scheduled_province_rows.is_some(),
-            scheduled_special_projects.is_some(),
-            include_scheduled_country_fuel,
-            include_scheduled_country_production,
-            include_scheduled_country_focus,
-            include_scheduled_country_research,
-            include_scheduled_country_politics,
-            include_scheduled_country_politics_residuals,
-            include_scheduled_country_decisions,
-        );
+        let domains = if include_country_rows {
+            state.country_identity.domains_json_from_rows(
+                &current_rows,
+                scheduled_state_rows.is_some(),
+                scheduled_province_rows.is_some(),
+                scheduled_special_projects.is_some(),
+                include_scheduled_country_fuel,
+                include_scheduled_country_production,
+                include_scheduled_country_focus,
+                include_scheduled_country_research,
+                include_scheduled_country_politics,
+                include_scheduled_country_politics_residuals,
+                include_scheduled_country_decisions,
+            )
+        } else {
+            let mut domains = "[\"clock\"]".to_string();
+            if scheduled_state_rows.is_some() {
+                domains = domains_json_with_extra_domain(domains, "state_ownership");
+                domains = domains_json_with_extra_domain(domains, "state_control");
+            }
+            if scheduled_province_rows.is_some() {
+                domains = domains_json_with_extra_domain(domains, "province_control");
+            }
+            if scheduled_special_projects.is_some() {
+                domains = domains_json_with_extra_domain(domains, "projects_live");
+            }
+            domains
+        };
         let domains = if has_building_rows {
             domains_json_with_extra_domain(domains, "buildings_live")
         } else {
@@ -13082,10 +13233,66 @@ mod attach_log {
                 idea_group_filter: BTreeMap::new(),
                 idea_group_filter_valid: true,
                 scheduled_snapshot_step_hours: 1,
+                scheduled_domains: Vec::new(),
+                scheduled_domains_valid: true,
+                lightweight_root_frame: false,
                 pipe_token: Some("abc".to_string()),
                 session_id: Some("run_1".to_string()),
                 sidecar_log: false,
             }
+        }
+
+        #[test]
+        fn scheduled_domain_parser_accepts_clean_domain_list() {
+            let parsed =
+                parse_scheduled_domains("focus_live;decisions_live;projects_live").unwrap();
+            assert_eq!(
+                parsed,
+                vec![
+                    "focus_live".to_string(),
+                    "decisions_live".to_string(),
+                    "projects_live".to_string()
+                ]
+            );
+        }
+
+        #[test]
+        fn scheduled_domain_parser_rejects_bad_or_duplicate_tokens() {
+            assert!(parse_scheduled_domains("projects_live;projects_live").is_none());
+            assert!(parse_scheduled_domains("ProjectsLive").is_none());
+            assert!(parse_scheduled_domains("projects-live").is_none());
+            assert!(parse_scheduled_domains("1projects_live").is_none());
+        }
+
+        #[test]
+        fn scheduled_domain_enabled_defaults_to_all_when_unset() {
+            let mut control = raw_test_control();
+            assert!(scheduled_domain_enabled(Some(&control), "projects_live"));
+            control.scheduled_domains = vec!["projects_live".to_string()];
+            assert!(scheduled_domain_enabled(Some(&control), "projects_live"));
+            assert!(!scheduled_domain_enabled(Some(&control), "tech_live"));
+            control.scheduled_domains_valid = false;
+            assert!(!scheduled_domain_enabled(Some(&control), "projects_live"));
+            assert!(scheduled_domain_enabled(None, "projects_live"));
+        }
+
+        #[test]
+        fn lightweight_root_skips_country_identity_for_project_only_frames() {
+            let mut control = raw_test_control();
+            control.lightweight_root_frame = true;
+            control.scheduled_domains = vec!["projects_live".to_string()];
+
+            assert!(!lightweight_root_needs_country_identity(&control));
+
+            control.scheduled_domains.push("focus_live".to_string());
+            assert!(lightweight_root_needs_country_identity(&control));
+
+            control.scheduled_domains = Vec::new();
+            assert!(lightweight_root_needs_country_identity(&control));
+
+            control.scheduled_domains = vec!["projects_live".to_string()];
+            control.country_object_scan = true;
+            assert!(lightweight_root_needs_country_identity(&control));
         }
 
         fn stationary_division_sample() -> DivisionMovementSample {
@@ -13210,6 +13417,28 @@ mod attach_log {
             let parsed = collector_control(&dll).unwrap();
 
             assert!(parsed.special_projects_scan);
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn collector_control_accepts_production_length_worker_duration() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_duration_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            fs::write(
+                &control,
+                r#"{"mode":"hourly_poll","duration_ms":300000,"sample_ms":10}"#,
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert_eq!(parsed.duration_ms, 300_000);
             let _ = fs::remove_dir_all(&dir);
         }
 
@@ -15645,6 +15874,9 @@ mod attach_log {
                 idea_group_filter: BTreeMap::new(),
                 idea_group_filter_valid: true,
                 scheduled_snapshot_step_hours: 1,
+                scheduled_domains: Vec::new(),
+                scheduled_domains_valid: true,
+                lightweight_root_frame: false,
                 pipe_token: Some("abc".to_string()),
                 session_id: Some("run_1".to_string()),
                 sidecar_log: false,

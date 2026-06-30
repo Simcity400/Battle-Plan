@@ -805,6 +805,8 @@ def record_collector_session(
     preflight_state_control: bool = False,
     preflight_province_control: bool = False,
     allow_province_cold_scan: bool = False,
+    scheduled_domains: Optional[Iterable[str]] = None,
+    lightweight_root_frame: bool = False,
 ) -> Path:
     """Record one collector-backed session and write session lifecycle metadata.
 
@@ -1099,6 +1101,8 @@ def record_collector_session(
         map_control_province_bridge=map_control_province_bridge,
         map_control_controller_bridge=map_control_controller_bridge,
         scheduled_snapshot_step_hours=1,
+        scheduled_domains=scheduled_domains,
+        lightweight_root_frame=lightweight_root_frame,
         advisor_token_filter=advisor_token_filter,
         tech_def_filter=tech_def_filter,
         idea_group_filter=idea_group_filter,
@@ -1517,9 +1521,18 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
     special_project_facility_rows = 0
     special_project_rows = 0
     special_project_scientist_rows = 0
+    special_project_active_facility_rows = 0
+    special_project_facility_active_project_links = 0
+    special_project_facility_scientist_links = 0
+    special_project_iteration_rows = 0
+    special_project_worked_facility_links = 0
     max_special_project_facilities_per_frame = 0
     max_special_project_rows_per_frame = 0
     max_special_project_scientists_per_frame = 0
+    max_special_project_active_facilities_per_frame = 0
+    max_special_project_active_project_links_per_frame = 0
+    max_special_project_facility_scientist_links_per_frame = 0
+    max_special_project_worked_facility_links_per_frame = 0
     frames_with_decisions_payloads = 0
     country_rows_with_decisions_payloads = 0
     max_decisions_country_rows_per_frame = 0
@@ -1908,16 +1921,81 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
             if isinstance(facilities, list):
                 special_projects_payload_in_frame = True
                 special_project_facility_rows += len(facilities)
+                active_facilities_in_frame = 0
+                active_project_links_in_frame = 0
+                facility_scientist_links_in_frame = 0
+                for facility in facilities:
+                    if not isinstance(facility, dict):
+                        continue
+                    if facility.get("active") is True:
+                        active_facilities_in_frame += 1
+                    active_project_handle = facility.get("active_project_handle")
+                    if (
+                        isinstance(active_project_handle, int)
+                        and not isinstance(active_project_handle, bool)
+                        and active_project_handle > 0
+                    ):
+                        active_project_links_in_frame += 1
+                    scientist_char_id = facility.get("scientist_char_id")
+                    if (
+                        isinstance(scientist_char_id, int)
+                        and not isinstance(scientist_char_id, bool)
+                        and scientist_char_id > 0
+                    ):
+                        facility_scientist_links_in_frame += 1
+                special_project_active_facility_rows += active_facilities_in_frame
+                special_project_facility_active_project_links += (
+                    active_project_links_in_frame)
+                special_project_facility_scientist_links += (
+                    facility_scientist_links_in_frame)
                 max_special_project_facilities_per_frame = max(
                     max_special_project_facilities_per_frame,
                     len(facilities),
                 )
+                max_special_project_active_facilities_per_frame = max(
+                    max_special_project_active_facilities_per_frame,
+                    active_facilities_in_frame,
+                )
+                max_special_project_active_project_links_per_frame = max(
+                    max_special_project_active_project_links_per_frame,
+                    active_project_links_in_frame,
+                )
+                max_special_project_facility_scientist_links_per_frame = max(
+                    max_special_project_facility_scientist_links_per_frame,
+                    facility_scientist_links_in_frame,
+                )
             if isinstance(projects, list):
                 special_projects_payload_in_frame = True
                 special_project_rows += len(projects)
+                iteration_rows_in_frame = 0
+                worked_facility_links_in_frame = 0
+                for project in projects:
+                    if not isinstance(project, dict):
+                        continue
+                    iterations = project.get("iterations")
+                    if (
+                        isinstance(iterations, int)
+                        and not isinstance(iterations, bool)
+                        and iterations >= 0
+                    ):
+                        iteration_rows_in_frame += 1
+                    worked_at_facility = project.get("worked_at_facility")
+                    if (
+                        isinstance(worked_at_facility, int)
+                        and not isinstance(worked_at_facility, bool)
+                        and worked_at_facility > 0
+                    ):
+                        worked_facility_links_in_frame += 1
+                special_project_iteration_rows += iteration_rows_in_frame
+                special_project_worked_facility_links += (
+                    worked_facility_links_in_frame)
                 max_special_project_rows_per_frame = max(
                     max_special_project_rows_per_frame,
                     len(projects),
+                )
+                max_special_project_worked_facility_links_per_frame = max(
+                    max_special_project_worked_facility_links_per_frame,
+                    worked_facility_links_in_frame,
                 )
             if isinstance(scientists, list):
                 special_projects_payload_in_frame = True
@@ -2509,11 +2587,28 @@ def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[s
         "special_project_facility_rows": special_project_facility_rows,
         "special_project_rows": special_project_rows,
         "special_project_scientist_rows": special_project_scientist_rows,
+        "special_project_active_facility_rows": (
+            special_project_active_facility_rows),
+        "special_project_facility_active_project_links": (
+            special_project_facility_active_project_links),
+        "special_project_facility_scientist_links": (
+            special_project_facility_scientist_links),
+        "special_project_iteration_rows": special_project_iteration_rows,
+        "special_project_worked_facility_links": (
+            special_project_worked_facility_links),
         "max_special_project_facilities_per_frame": (
             max_special_project_facilities_per_frame),
         "max_special_project_rows_per_frame": max_special_project_rows_per_frame,
         "max_special_project_scientists_per_frame": (
             max_special_project_scientists_per_frame),
+        "max_special_project_active_facilities_per_frame": (
+            max_special_project_active_facilities_per_frame),
+        "max_special_project_active_project_links_per_frame": (
+            max_special_project_active_project_links_per_frame),
+        "max_special_project_facility_scientist_links_per_frame": (
+            max_special_project_facility_scientist_links_per_frame),
+        "max_special_project_worked_facility_links_per_frame": (
+            max_special_project_worked_facility_links_per_frame),
         "projects_on_lightweight_frames": projects_on_lightweight_frames,
         "frames_with_decisions_payloads": frames_with_decisions_payloads,
         "country_rows_with_decisions_payloads": (
@@ -3107,6 +3202,20 @@ def _main() -> int:
         help="allow the slow province array locator during preflight",
     )
     parser.add_argument(
+        "--scheduled-domain",
+        action="append",
+        default=None,
+        help=(
+            "limit scheduled heavy snapshot payloads to this domain; repeat for "
+            "multiple domains. Omit for the default all-domain schedule."
+        ),
+    )
+    parser.add_argument(
+        "--lightweight-root-frame",
+        action="store_true",
+        help="omit full country rows from root frames unless requested domains need them",
+    )
+    parser.add_argument(
         "--allow-hourly-gaps",
         action="store_true",
         help="write diagnostics but exit 0 even if requested hourly coverage has gaps",
@@ -3150,6 +3259,8 @@ def _main() -> int:
         preflight_state_control=args.preflight_state_control,
         preflight_province_control=args.preflight_province_control,
         allow_province_cold_scan=args.allow_province_cold_scan,
+        scheduled_domains=args.scheduled_domain,
+        lightweight_root_frame=args.lightweight_root_frame,
     )
     print(run_dir)
     manifest = json.loads((run_dir / "session_manifest.json").read_text(

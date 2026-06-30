@@ -53,8 +53,9 @@ from replay.store import SnapshotStore  # noqa: E402
 # --------------------------------------------------------------------------
 def atomic_write_json(path: str, obj: Any, *, compact: bool = True) -> None:
     """Durably write ``obj`` as JSON to ``path`` (atomic replace)."""
-    d = os.path.dirname(os.path.abspath(path))
-    os.makedirs(d, exist_ok=True)
+    target = os.path.abspath(os.fspath(path))
+    d = os.path.dirname(target)
+    os.makedirs(_win_long_path(d), exist_ok=True)
     tmp = os.path.join(
         d,
         ".__tmp_%d_%d_%x.json" % (
@@ -65,18 +66,30 @@ def atomic_write_json(path: str, obj: Any, *, compact: bool = True) -> None:
     )
     sep = (",", ":") if compact else (", ", ": ")
     try:
-        with open(tmp, "w", encoding="utf-8") as fh:
+        with open(_win_long_path(tmp), "w", encoding="utf-8") as fh:
             json.dump(obj, fh, separators=sep)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, path)
+        os.replace(_win_long_path(tmp), _win_long_path(target))
         _fsync_dir(d)   # persist the rename itself (Codex code-review #7)
     finally:
-        if os.path.exists(tmp):
+        tmp_path = _win_long_path(tmp)
+        if os.path.exists(tmp_path):
             try:
-                os.remove(tmp)
+                os.remove(tmp_path)
             except OSError:
                 pass
+
+
+def _win_long_path(path: str) -> str:
+    if os.name != "nt":
+        return path
+    full = os.path.abspath(path)
+    if full.startswith("\\\\?\\"):
+        return full
+    if full.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + full.lstrip("\\")
+    return "\\\\?\\" + full
 
 
 def _fsync_dir(d: str) -> None:
@@ -96,10 +109,11 @@ def _fsync_dir(d: str) -> None:
 
 
 def read_json(path: str) -> Optional[Any]:
-    if not os.path.isfile(path):
+    fs_path = _win_long_path(path)
+    if not os.path.isfile(fs_path):
         return None
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(fs_path, "r", encoding="utf-8") as fh:
             return json.load(fh)
     except (OSError, ValueError):
         return None

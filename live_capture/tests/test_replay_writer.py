@@ -184,6 +184,28 @@ class TestStreamingFinalize(unittest.TestCase):
         # re-verify directly too.
         self.assertTrue(rw._verify_container(self.out))
 
+    def test_finalize_reads_long_snapshot_paths(self):
+        store_root = os.path.join(self.tmp, "long_store")
+        while len(os.path.abspath(os.path.join(
+                store_root, "rec_test", "s0001.000017010645.snapshot.json"))) <= 270:
+            store_root = os.path.join(store_root, "capture_path_segment")
+        store = DurableCaptureStore(store_root)
+        out = os.path.join(self.tmp, "long_out", "rec_test.battleplan")
+        rec = rw.ReplayRecorder(
+            store_root=store_root, game_id="rec_test", out_path=out,
+            modset=None, build_exe_sha256="abc123", build_pinned=True,
+            schema_version=schema.SCHEMA_VERSION)
+
+        snap = _stub_snapshot("1941.11.8.21")
+        snap["_capture"] = {"segment_id": 1, "campaign_id": "c0",
+                            "capture_seq": 1}
+        path = store.write_snapshot(snap, allow_unknown_hour=False)
+        rec.on_snapshot_written(path)
+        rec.finalize()
+
+        self.assertGreater(len(os.path.abspath(path)), 260)
+        self.assertTrue(rw._verify_container(out))
+
     def test_hourly_container_index_and_manifest_entries_are_contiguous(self):
         dates = ["1936.1.1.%d" % h for h in range(24)] + ["1936.1.2.0"]
         expected_hours = [schema.date_to_hour_index(d) for d in dates]

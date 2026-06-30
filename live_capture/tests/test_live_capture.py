@@ -2811,6 +2811,17 @@ class TestDurableStore(unittest.TestCase):
         atomic_write_json(p, {"a": 2})
         self.assertEqual(read_json(p), {"a": 2})
 
+    def test_atomic_write_handles_long_final_path(self):
+        d = self.tmp
+        while len(os.path.abspath(os.path.join(d, "x.snapshot.json"))) <= 270:
+            d = os.path.join(d, "capture_path_segment")
+        p = os.path.join(d, "s0001.000017007770.snapshot.json")
+
+        atomic_write_json(p, {"a": 1})
+
+        self.assertGreater(len(os.path.abspath(p)), 260)
+        self.assertEqual(read_json(p), {"a": 1})
+
     def test_rollback_does_not_overwrite_prior_segment(self):
         # schema review #1: a rollback to an already-captured hour in a NEW
         # segment must produce a DISTINCT file, not overwrite segment 1's snapshot.

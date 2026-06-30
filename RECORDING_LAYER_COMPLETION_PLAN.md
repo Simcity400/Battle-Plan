@@ -18,6 +18,13 @@ was measured versus unavailable.
 
 - Runtime recording has one authoritative source: the live host `hoi4.exe`
   process through the in-process collector.
+- The accepted production path is `hoi4.exe` -> DLL collector -> compact
+  raw/event/snapshot stream -> `.battleplan` file. Python is a development and
+  proof harness only.
+- Python may attach the DLL, run proof gates, validate manifests/replay files,
+  and perform temporary bounded preflight discovery. It must not walk memory
+  hourly/sub-hourly, own the hot extraction loop, or be required to keep up with
+  speed five.
 - Saves are development fixtures only. They can discover layouts, validate
   fields, and build test cases, but they cannot be required to record, replay,
   bridge, or complete a live session.
@@ -33,6 +40,20 @@ was measured versus unavailable.
   failures fail closed.
 - No heap-wide scans in the hot recording loop. Whole-heap discovery is research
   scaffolding only.
+- If a segment still needs Python preflight/root discovery, it is temporary debt
+  and is not fully DLL-complete until that discovery is moved into the DLL/Rust
+  host or proven to be one-time, bounded, cached, and outside recording.
+
+## Production Completion Standard
+
+A segment is complete only when the DLL/Rust recording path captures that segment
+at hourly-or-better live cadence, with no skipped game hours, at speed five or a
+measured equivalent. Save files, old Python memory readers, and Python proof
+harnesses may validate the output, but they cannot be required capture inputs.
+
+Existing Python-backed `.battleplan` packing and session wrappers remain useful
+for development proof gates. They do not by themselves promote a segment to
+production-complete.
 
 ## Current Baseline
 
@@ -49,27 +70,75 @@ The project already has several important pieces.
   and excluded internal state.
 - `coverage_audit/COVERAGE_REPORT.md` explains the same coverage ledger in human
   terms.
-- `live_capture/` has the Python recorder, assembler, durable store,
-  `.battleplan` writer, collector frame validation, cadence diagnostics, and the
-  current external-memory reader registry.
+- `live_capture/` has the Python development/proof harness: assembler, durable
+  store, `.battleplan` validator/writer, collector frame validation, cadence
+  diagnostics, and legacy external-memory readers. These are not the production
+  hot extraction loop.
 - `replay_native/collector/` has the Rust DLL proof: attach, build/profile
   sentinels, clock/date roots, country tag-table rows, named-pipe frames,
   producer sequence ids, bounded worker mode, and speed-five proof behavior.
+- `replay_native/recorder_host/` has the first Rust native host for the
+  production path. It writes the bounded collector control file, loads the DLL
+  through the read-only hook attach route, keeps the hook alive for the worker
+  duration, reads the DLL named-pipe stream, persists `collector_frames.jsonl`,
+  and emits `native_session_manifest.json` cadence diagnostics without Python in
+  the live loop. It does not yet pack `.battleplan`.
 - `memory_reader/` has a large amount of reverse-engineering work that can be
   ported into the collector as root-anchored live readers.
 - `save_oracle/` has broad parsers for development fixtures and validation.
 
-The most important proof so far is the user-confirmed speed-five worker run:
+The most important transport proof so far is the user-confirmed speed-five worker run:
 10 ms collector sampling captured 12 consecutive hourly deltas with zero skipped
 hours, monotonic transport sequence, and byte-verified `.battleplan` packing.
-That proves the clock/identity transport shape can keep up at speed five. It does
-not prove the full data layer yet.
+That proves the clock/identity DLL transport shape can keep up at speed five. It
+does not prove the full data layer yet, and Python-assisted session packing is
+not a production-completion signal.
 
 Current recorder-facing bridge status:
 
-- `live_capture.collector_session` wraps repeated bounded DLL workers as one
-  logical session with `session_start`, `session_stop`, `session_manifest`, a
-  durable store, and a finalized `.battleplan`.
+- `live_capture.collector_session` wraps repeated bounded DLL workers as a
+  development/proof session with `session_start`, `session_stop`,
+  `session_manifest`, a durable store, and a finalized `.battleplan`. It is not
+  the accepted production hot loop.
+- Native-host status: the first `collector_record` live attempt wrote
+  `replay/snapshots/_native_collector_session/clock_lightweight_v1/` without
+  Python in the live loop and captured 912 DLL frames, 14 root frames, 456 raw
+  deltas, and 442 raw events with no parse errors and no skipped observed hours.
+  It did not pass the 12-hour speed-five gate: the target game process exited
+  during the run and only advanced from raw hour 60812157 to 60812158. This is
+  failed proof evidence, not segment completion.
+- 2026-06-30 native speed-five checkpoint, no Python hot loop, no save input:
+  `clock_lightweight_speed5_v3` passed after widening the DLL worker duration
+  cap from 30 seconds to a production-length cap. The rebuilt DLL recorded 740
+  unique game hours in a 45 second native-host run, advanced 739 hours, skipped
+  zero hours, emitted 740 scheduled clock frames, and preserved raw
+  `land_combats` deltas/events. This completes the clock/transport proof for
+  the current build, but `.battleplan` packing still has to move into the native
+  host before the whole recorder is production-complete.
+- The same checkpoint proved several country domains independently through the
+  DLL/Rust path at speed five. `decisions_domain_speed5_v1` advanced 191 hours,
+  emitted 192 scheduled `decisions_live` frames, and skipped zero hours.
+  `diplomacy_domain_speed5_v1` advanced 213 hours, emitted 214 scheduled
+  `diplomacy_live` frames, and skipped zero hours. These count as DLL-complete
+  live capture segments for the current build, subject to replay-container
+  packing moving into the native host.
+- The combined country-domain sweep and several heavy country domains are not
+  complete. `country_domains_speed5_v1` verified that the DLL can read
+  `focus_live`, `tech_live`, `politics_live`, `politics_residuals`,
+  `decisions_live`, and `diplomacy_live` from live all-country rows, but the
+  combined payload advanced 272 hours while skipping 148 hours. Individual
+  `politics_live`/`politics_residuals` advanced 242 hours with 48 skipped,
+  `focus_live` advanced 241 hours with 15 skipped, and `tech_live` advanced 223
+  hours with 7 skipped. These roots are real, but their current snapshot shape is
+  too heavy for hourly speed-five capture and needs compact delta/snapshot
+  emission before completion.
+- `projects_live` is also not complete. A lightweight run without project
+  scanning kept cadence but emitted only clock domains, so it was correctly
+  rejected as false completion. The native host now exposes
+  `--special-projects-scan`; enabling it caused the project scan to exceed a
+  bounded live proof window, and the target process was no longer present before
+  a manifest was written. Project extraction needs bounded root discovery or a
+  cached DLL/Rust project contract before it can be retried as a hot segment.
 - A live vanilla run on 2026-06-28 processed 2 bounded worker bursts: 359 raw
   collector observations became 10 unique hourly replay snapshots, advanced 9
   in-game hours with zero skipped hours, verified the replay container, and left
@@ -216,11 +285,13 @@ Current recorder-facing bridge status:
   revalidates the wing body, pool, owner-chain country object, tag-table decode,
   and optional mission-region object every sample, and emits pointer-free raw
   `air_wings` deltas/events keyed as `air_wing:<TAG>:<wing_id>:<generation>`.
-  The Python recorder can populate the bridge with
+  The Python proof harness can populate the bridge with
   `--preflight-air-wings`; cache hits reread cached bodies and the expensive
   `NavalAirReader.enumerate_air_wings()` scan is gated by
-  `--allow-air-wing-cold-scan`. This captures count, mission mask, mission
-  region, and effective active planes, not the final UI air-superiority percent.
+  `--allow-air-wing-cold-scan`. This remains production debt until native
+  discovery replaces the Python preflight. It captures count, mission mask,
+  mission region, and effective active planes, not the final UI air-superiority
+  percent.
 - Active naval combat now has the first per-member DLL stream. The existing
   `naval_combat_body_bridge` roots `CNavalCombat` bodies; the DLL revalidates
   body, registry, side, group, and `CFEXMember` vtables, then emits bounded
@@ -235,9 +306,10 @@ Current recorder-facing bridge status:
   pointer-free raw `ships` deltas keyed as `ship:<instance_id>`. Rows carry
   definition token when readable, category enum/label, strength/org/experience
   raw fixed-point values plus decoded floats, and sunk-convoy counts. The Python
-  recorder can populate the bridge with `--preflight-ships`; cache hits validate
-  cached bodies and the expensive global CShip vtable scan is gated by
-  `--allow-ship-cold-scan`. This captures current CShip hull HP/org/XP, not
+  proof harness can populate the bridge with `--preflight-ships`; cache hits
+  validate cached bodies and the expensive global CShip vtable scan is gated by
+  `--allow-ship-cold-scan`. This remains production debt until native discovery
+  replaces the Python preflight. It captures current CShip hull HP/org/XP, not
   owner, fleet/task-force membership, ship name, target, or exact sinking/damage
   events.
 - Land and naval command membership now share the same bridge-gated raw-stream
@@ -248,11 +320,12 @@ Current recorder-facing bridge status:
   `CTaskForce+0x330` parent fleets against the bridge, validates CShip pointers
   from `CTaskForce+0x338/+0x344`, and emits pointer-free raw `oob_command`
   deltas keyed as `oob_command:army_group:<id>`, `oob_command:army:<id>`,
-  `oob_command:fleet:<id>`, and `oob_command:task_force:<id>`. The Python
-  recorder can populate the bridge with `--preflight-oob-command`; cache hits
+  `oob_command:fleet:<id>`, and `oob_command:task_force:<id>`. The Python proof
+  harness can populate the bridge with `--preflight-oob-command`; cache hits
   validate cached roots and the expensive command-object vtable scan is gated by
-  `--allow-oob-command-cold-scan`. This captures live membership joins, army
-  leader ids, bounded army leader skill, and assigned army leader trait tokens;
+  `--allow-oob-command-cold-scan`. This remains production debt until native
+  discovery replaces the Python preflight. It captures live membership joins,
+  army leader ids, bounded army leader skill, and assigned army leader trait tokens;
   it does not yet claim owner, names, missions, locations, theatre rows, leader
   portraits, temporary/captured trait state, naval leaders, global commander
   rosters, or save-shaped OOB nesting.

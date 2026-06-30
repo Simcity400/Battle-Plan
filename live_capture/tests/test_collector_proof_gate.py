@@ -1271,9 +1271,18 @@ class TestCollectorProofGate(unittest.TestCase):
                     "special_project_facility_rows": 288,
                     "special_project_rows": 348,
                     "special_project_scientist_rows": 0,
+                    "special_project_active_facility_rows": 288,
+                    "special_project_facility_active_project_links": 288,
+                    "special_project_facility_scientist_links": 288,
+                    "special_project_iteration_rows": 348,
+                    "special_project_worked_facility_links": 348,
                     "max_special_project_facilities_per_frame": 24,
                     "max_special_project_rows_per_frame": 29,
                     "max_special_project_scientists_per_frame": 0,
+                    "max_special_project_active_facilities_per_frame": 24,
+                    "max_special_project_active_project_links_per_frame": 24,
+                    "max_special_project_facility_scientist_links_per_frame": 24,
+                    "max_special_project_worked_facility_links_per_frame": 29,
                     "projects_on_lightweight_frames": 0,
                     "heavy_payload_on_lightweight_frames": 0,
                 },
@@ -1281,11 +1290,14 @@ class TestCollectorProofGate(unittest.TestCase):
             required_scheduled_snapshot_domains=["projects_live"],
             min_game_hours=12,
             require_projects_live_payload=True,
+            require_projects_live_links=True,
         )
 
         self.assertTrue(proof["ok"])
         self.assertEqual(proof["errors"], [])
         self.assertEqual(proof["special_project_rows"], 348)
+        self.assertEqual(
+            proof["special_project_worked_facility_links"], 348)
 
     def test_rejects_projects_live_domain_without_payload_rows(self):
         errors = collector_session_proof_errors(
@@ -1314,6 +1326,58 @@ class TestCollectorProofGate(unittest.TestCase):
         )
         self.assertIn("special project facility rows were not observed", errors)
         self.assertIn("special project rows were not observed", errors)
+
+    def test_rejects_projects_live_payload_without_join_links(self):
+        errors = collector_session_proof_errors(
+            _manifest(
+                special_projects_bridge_supplied=True,
+                special_projects_bridge_rows=21496,
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock", "projects_live"],
+                    "scheduled_projects_domain_frames": 12,
+                    "frames_with_special_projects_payloads": 12,
+                    "special_project_facility_rows": 288,
+                    "special_project_rows": 348,
+                    "special_project_active_facility_rows": 0,
+                    "special_project_facility_active_project_links": 0,
+                    "special_project_facility_scientist_links": 0,
+                    "special_project_iteration_rows": 0,
+                    "special_project_worked_facility_links": 0,
+                    "max_special_project_facilities_per_frame": 24,
+                    "max_special_project_rows_per_frame": 29,
+                    "max_special_project_active_facilities_per_frame": 0,
+                    "max_special_project_active_project_links_per_frame": 0,
+                    "max_special_project_facility_scientist_links_per_frame": 0,
+                    "max_special_project_worked_facility_links_per_frame": 0,
+                    "projects_on_lightweight_frames": 0,
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+            ),
+            min_game_hours=12,
+            require_projects_live_payload=True,
+            require_projects_live_links=True,
+        )
+
+        self.assertIn(
+            "active special-project facilities were not observed",
+            errors,
+        )
+        self.assertIn(
+            "special-project active facility/project links missing",
+            errors,
+        )
+        self.assertIn(
+            "special-project facility/scientist links missing",
+            errors,
+        )
+        self.assertIn(
+            "special-project iteration rows were not observed",
+            errors,
+        )
+        self.assertIn(
+            "special-project worked-facility links missing",
+            errors,
+        )
 
     def test_reports_session_hourly_replay_and_domain_failures(self):
         errors = collector_session_proof_errors(

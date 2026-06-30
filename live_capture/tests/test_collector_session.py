@@ -420,11 +420,25 @@ class TestCollectorSession(unittest.TestCase):
                 "domains": ["clock", "projects_live"],
                 "special_projects": {
                     "facilities": [
-                        {"id": 1},
-                        {"id": 2},
+                        {
+                            "id": 1,
+                            "active": True,
+                            "active_project_handle": 10,
+                            "scientist_char_id": 100,
+                        },
+                        {
+                            "id": 2,
+                            "active": False,
+                            "active_project_handle": 0,
+                            "scientist_char_id": None,
+                        },
                     ],
                     "projects": [
-                        {"id": 10},
+                        {
+                            "id": 10,
+                            "iterations": 2,
+                            "worked_at_facility": 1,
+                        },
                     ],
                     "scientists": [
                         {"char_id": 100},
@@ -463,9 +477,25 @@ class TestCollectorSession(unittest.TestCase):
         self.assertEqual(summary["special_project_facility_rows"], 3)
         self.assertEqual(summary["special_project_rows"], 1)
         self.assertEqual(summary["special_project_scientist_rows"], 3)
+        self.assertEqual(summary["special_project_active_facility_rows"], 1)
+        self.assertEqual(
+            summary["special_project_facility_active_project_links"], 1)
+        self.assertEqual(summary["special_project_facility_scientist_links"], 1)
+        self.assertEqual(summary["special_project_iteration_rows"], 1)
+        self.assertEqual(summary["special_project_worked_facility_links"], 1)
         self.assertEqual(summary["max_special_project_facilities_per_frame"], 2)
         self.assertEqual(summary["max_special_project_rows_per_frame"], 1)
         self.assertEqual(summary["max_special_project_scientists_per_frame"], 3)
+        self.assertEqual(
+            summary["max_special_project_active_facilities_per_frame"], 1)
+        self.assertEqual(
+            summary["max_special_project_active_project_links_per_frame"], 1)
+        self.assertEqual(
+            summary["max_special_project_facility_scientist_links_per_frame"],
+            1,
+        )
+        self.assertEqual(
+            summary["max_special_project_worked_facility_links_per_frame"], 1)
         self.assertEqual(summary["projects_on_lightweight_frames"], 1)
         self.assertEqual(summary["heavy_payload_on_lightweight_frames"], 1)
 

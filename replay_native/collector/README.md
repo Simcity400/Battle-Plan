@@ -7,6 +7,21 @@ inside `hoi4.exe`, while the recorder and replay UI stay external. The current
 ABI exposes version/heartbeat functions plus a Windows message-hook procedure
 used for the no-op attach proof.
 
+Production recording target: `hoi4.exe` -> this DLL collector -> compact
+raw/event/snapshot stream -> `.battleplan` file through a Rust/native recorder.
+Python is allowed as a development harness for attaching, proof gates, manifest
+validation, replay validation, and temporary bounded discovery only. Python must
+not be required to walk memory hourly/sub-hourly or keep up with speed five.
+`replay_native/recorder_host` is the current Rust/native host under construction
+for this path; it captures the DLL pipe stream and cadence manifest but does not
+yet pack `.battleplan`.
+
+A collector segment is complete only after the DLL/Rust path captures it at
+hourly-or-better cadence, with no skipped game hours, at speed five or a measured
+equivalent. If a segment depends on Python preflight/root discovery, that segment
+is temporary debt until the discovery moves into the DLL/Rust host or is proven
+one-time, bounded, cached, and outside recording.
+
 On process attach the DLL starts a short worker that emits a `collector_started`
 JSON frame to the sidecar log and, when a recorder is listening, to the named
 pipe `\\.\pipe\battle-plan_collector_<pid>`. When loaded inside the supported
@@ -17,9 +32,9 @@ pipe `\\.\pipe\battle-plan_collector_<pid>`. When loaded inside the supported
 - the country database root, bounded tag-table sample, and active
   country-present rows.
 
-Frames include a monotonic producer sequence id. The Python recorder annotates
-pipe reads with byte count and CRC32 before folding them into replay provenance
-and manifest diagnostics.
+Frames include a monotonic producer sequence id. The Python proof harness may
+annotate pipe reads with byte count and CRC32 for validation, but production
+recording must not depend on Python in the live capture path.
 
 Current cadence contract: bounded proof workers sample cheaply at 10 ms, the
 recorder keeps one canonical replay snapshot per unique game hour, and the raw
@@ -36,11 +51,12 @@ pipe is the authoritative transport. This does not patch HOI4 code. Worker mode
 is honored only inside `hoi4.exe`; the controller-side DLL load remains a
 one-shot attach heartbeat.
 
-The recorder-side session wrapper reassembles those pipe frames into a validated
-`collector_frames.jsonl` stream inside the run directory. The replay snapshot
-store still writes one canonical snapshot per game hour, but the raw stream
-keeps same-hour samples instead of discarding them. That is the bridge for
-sub-hour combat, movement, and event capture.
+The current Python session wrapper can reassemble pipe frames into a validated
+`collector_frames.jsonl` stream inside a development run directory. The
+production replacement is a Rust/native recorder that consumes the same compact
+stream and writes the `.battleplan` output without Python in the hot loop. The
+raw stream keeps same-hour samples instead of discarding them; that is the bridge
+for sub-hour combat, movement, and event capture.
 
 The root probe is intentionally narrow. It proves attach, transport, build
 sentinels, clock decoding, and country identity row emission before any
@@ -64,10 +80,11 @@ validated country-object path by following `CCountry+0xF90` to
 `CPoliticalStatus+0xC8` country backlink, then decoding fixed-point
 `CPoliticalStatus+0xE0`.
 
-Fallback country-scalar / record bridge:
+Temporary country-scalar / record bridge debt:
 
-- the Python recorder may run `live_capture.collector_country_bridge` as a
-  preflight step before bounded worker recording;
+- the Python proof harness may run `live_capture.collector_country_bridge` as a
+  preflight step before bounded worker recording, but this is not production
+  complete for any segment that depends on it;
 - normal recording first reuses bounded same-process caches; `country_array.json`
   stores the located record-array token, `country_objects.json` is for
   object-backed scalars, and `country_records.json` is fallback evidence for
@@ -231,7 +248,7 @@ Scheduled special projects:
   sentinels match and either `special_projects_bridge` supplies validated roots
   or the explicit fallback `special_projects_scan = true` is supplied in
   `collector_control.json`;
-- the normal recorder path is now bridge-first: Python preflight resolves or
+- the current proof path is bridge-first debt: Python preflight resolves or
   validates cached `facility:<id>:<province>:0xptr`,
   `project:<id>:<static_def_handle>:0xptr`, and `scientist:<char_id>:0xptr`
   rows, the control file passes only that ephemeral bridge to the DLL, and the
@@ -393,10 +410,12 @@ Army-order raw stream status:
   `army_id:body_ptr` entries. The parser rejects malformed, duplicate,
   unaligned, out-of-range, or oversized payloads and reports row count/validity
   in control metadata.
-- The recorder can populate that bridge with
+- The Python proof harness can populate that bridge with
   `live_capture.collector_session --preflight-army-orders`; by default it is
   cache-first and fails closed unless `--allow-army-cold-scan` explicitly allows
-  the slower army vtable sweep. Manifests store sanitized counts/status only.
+  the slower army vtable sweep. This remains production debt until discovery is
+  moved into the DLL/Rust recorder or proven one-time and outside recording.
+  Manifests store sanitized counts/status only.
 - Worker sampling does not sweep the heap. For each supplied army row, the DLL
   revalidates the `CArmy` body by vtable, type, and id, then reads the active
   order vector at `CArmy+0x98` at a 250 ms floor.
@@ -438,11 +457,12 @@ Naval-combat raw stream status:
   `collector_control.json` as `combat_id:body_ptr` entries. The parser rejects
   malformed, duplicate, unaligned, out-of-range, or oversized payloads and
   reports row count/validity in control metadata.
-- The recorder can populate that bridge with
+- The Python proof harness can populate that bridge with
   `live_capture.collector_session --preflight-naval-combat`. This runs the
   existing `CombatReader.enumerate_naval_combats()` path before attach, writes
   only ephemeral bridge rows into the temporary control file, and stores
-  sanitized counts/status in manifests.
+  sanitized counts/status in manifests. This is production debt until native
+  root/hook discovery replaces the Python preflight.
 - Worker sampling does not sweep the heap. For each supplied bridge row, the DLL
   revalidates the naval-combat body, registry, side, member, and leader vtables
   before emitting a row. Invalid bridge/layout reads become bounded
@@ -462,10 +482,11 @@ Naval-combat raw stream status:
   pointer-free `ship:<instance_id>` deltas with definition, category,
   strength/org/experience raw values plus decoded floats, and sunk-convoy
   counts.
-- The recorder can populate that bridge with
+- The Python proof harness can populate that bridge with
   `live_capture.collector_session --preflight-ships`; by default it is
   cache-first and fails closed unless `--allow-ship-cold-scan` explicitly
-  allows the slower global CShip vtable scan. Manifests store sanitized
+  allows the slower global CShip vtable scan. This is production debt until
+  native discovery replaces the Python preflight. Manifests store sanitized
   counts/status only.
 - Targets, aggregate attack rows, damage ticks, hit counters, sinking events,
   ship names, owner attribution, missions, and UI damage totals remain follow-up
@@ -492,11 +513,12 @@ OOB command raw stream status:
   `collector_control.json` as `kind:id:body_ptr` entries. The parser rejects
   malformed, duplicate, unaligned, out-of-range, or oversized payloads and
   reports row count/validity in control metadata.
-- The recorder can populate that bridge with
+- The Python proof harness can populate that bridge with
   `live_capture.collector_session --preflight-oob-command`; by default it is
   cache-first and fails closed unless `--allow-oob-command-cold-scan`
   explicitly allows the slower `oob_command_live.enumerate_command_objs()`
-  vtable sweep.
+  vtable sweep. This is production debt until native discovery replaces the
+  Python preflight.
 - Current emitted rows are `oob_command:army_group:<army_group_id>`,
   `oob_command:army:<army_id>`, `oob_command:fleet:<fleet_id>`, and
   `oob_command:task_force:<task_force_id>`. Rows expose army-group member
@@ -538,10 +560,11 @@ Air-wing raw stream status:
   as `owner_tag_db_id:wing_id:body_ptr` entries. The parser rejects malformed,
   duplicate, unaligned, out-of-range, or oversized payloads and reports row
   count/validity in control metadata.
-- The recorder can populate that bridge with
+- The Python proof harness can populate that bridge with
   `live_capture.collector_session --preflight-air-wings`; by default it is
   cache-first and fails closed unless `--allow-air-wing-cold-scan` explicitly
-  allows the slower `NavalAirReader.enumerate_air_wings()` vtable sweep.
+  allows the slower `NavalAirReader.enumerate_air_wings()` vtable sweep. This is
+  production debt until native discovery replaces the Python preflight.
   Manifests store sanitized counts/status only.
 - Worker sampling does not sweep the heap. For each supplied bridge row, the
   DLL revalidates the air-wing body vtable/type/id, pool vtable, owner-chain

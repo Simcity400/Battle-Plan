@@ -398,7 +398,7 @@ class ReplayRecorder:
             return
         cpath = "payload/%s/%s" % (self._game_id, rel)
         try:
-            with open(written_path, "rb") as fh:
+            with open(_win_long_path(written_path), "rb") as fh:
                 data = fh.read()
         except OSError:
             return
@@ -416,7 +416,7 @@ class ReplayRecorder:
         # writing the missing marker as raw bytes, before appending this record.
         need_heal = False
         try:
-            with open(self._sidecar_path, "rb") as rf:
+            with open(_win_long_path(self._sidecar_path), "rb") as rf:
                 rf.seek(0, os.SEEK_END)
                 if rf.tell() > 0:
                     rf.seek(-1, os.SEEK_END)
@@ -425,13 +425,13 @@ class ReplayRecorder:
             need_heal = False                          # no file yet -> nothing to heal
         if need_heal:
             try:
-                with open(self._sidecar_path, "ab") as hf:
+                with open(_win_long_path(self._sidecar_path), "ab") as hf:
                     hf.write(b"\n")
                     hf.flush()
                     os.fsync(hf.fileno())
             except OSError:
                 pass                                   # best-effort heal; append still runs
-        with open(self._sidecar_path, "a", encoding="utf-8", newline="\n") as fh:
+        with open(_win_long_path(self._sidecar_path), "a", encoding="utf-8", newline="\n") as fh:
             fh.write(line + "\n")
             fh.flush()
             os.fsync(fh.fileno())
@@ -467,12 +467,12 @@ class ReplayRecorder:
         # atomic finalize: write <out>.tmp -> fsync -> os.replace (spec §6).
         tmp = self._out_path + ".tmp"
         d = os.path.dirname(os.path.abspath(self._out_path)) or "."
-        os.makedirs(d, exist_ok=True)
-        with open(tmp, "wb") as fh:
+        os.makedirs(_win_long_path(d), exist_ok=True)
+        with open(_win_long_path(tmp), "wb") as fh:
             fh.write(container)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, self._out_path)
+        os.replace(_win_long_path(tmp), _win_long_path(self._out_path))
         _fsync_dir(d)
         return self._out_path
 
@@ -493,7 +493,7 @@ class ReplayRecorder:
         list. The ``index.snapshots[*].file`` field is the ONLY name authority --
         we never synthesize ``%012d`` (rollback files are ``s%04d.*``)."""
         index_path = os.path.join(self._gdir, "index.json")
-        with open(index_path, "rb") as fh:
+        with open(_win_long_path(index_path), "rb") as fh:
             index_bytes = fh.read()
         index = json.loads(index_bytes.decode("utf-8"))
 
@@ -532,7 +532,7 @@ class ReplayRecorder:
                                  % file)
             spath = os.path.join(self._gdir, file)
             try:
-                with open(spath, "rb") as fh:
+                with open(_win_long_path(spath), "rb") as fh:
                     sbytes = fh.read()
             except OSError as exc:
                 raise ValueError(
@@ -548,8 +548,8 @@ class ReplayRecorder:
 
         # optional timeline.json
         tpath = os.path.join(self._gdir, "timeline.json")
-        if os.path.isfile(tpath):
-            with open(tpath, "rb") as fh:
+        if os.path.isfile(_win_long_path(tpath)):
+            with open(_win_long_path(tpath), "rb") as fh:
                 tbytes = fh.read()
             cpath = "payload/%s/timeline.json" % self._game_id
             self._add_entry(entries_meta, zip_files, cpath, tbytes,
@@ -560,7 +560,7 @@ class ReplayRecorder:
             cpath = self._raw_collector_stream["container_path"]
             source_path = self._raw_collector_stream["source_path"]
             try:
-                with open(source_path, "rb") as fh:
+                with open(_win_long_path(source_path), "rb") as fh:
                     raw_bytes = fh.read()
             except OSError as exc:
                 raise ValueError(
@@ -592,13 +592,13 @@ class ReplayRecorder:
         ``self._last_recovery`` when the sidecar references a canonical path that
         the current index does NOT pack (the lost-index-update signal)."""
         self._last_recovery: List[str] = []
-        if not os.path.isfile(self._sidecar_path):
+        if not os.path.isfile(_win_long_path(self._sidecar_path)):
             return
         packed = {e["path"] for e in entries_meta}
         try:
             # STREAM the sidecar line-by-line (Codex F5): an unbounded session can
             # have a large entries.jsonl; never slurp it whole.
-            with open(self._sidecar_path, "r", encoding="utf-8") as fh:
+            with open(_win_long_path(self._sidecar_path), "r", encoding="utf-8") as fh:
                 for ln in fh:
                     ln = ln.strip()
                     if not ln:
@@ -710,11 +710,22 @@ def _now_utc() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def _win_long_path(path: str) -> str:
+    if os.name != "nt":
+        return path
+    full = os.path.abspath(os.fspath(path))
+    if full.startswith("\\\\?\\"):
+        return full
+    if full.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + full.lstrip("\\")
+    return "\\\\?\\" + full
+
+
 def _fsync_dir(d: str) -> None:
     """fsync a directory so a rename into it survives a crash (best-effort; a
     no-op on filesystems that don't support directory fsync)."""
     try:
-        fd = os.open(d, os.O_RDONLY)
+        fd = os.open(_win_long_path(d), os.O_RDONLY)
     except OSError:
         return
     try:
@@ -736,7 +747,7 @@ def _collector_raw_stream_metadata(path: str) -> Dict[str, Any]:
     gap_domains = set()
 
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(_win_long_path(path), "r", encoding="utf-8") as fh:
             for lineno, line in enumerate(fh, start=1):
                 line = line.strip()
                 if not line:
@@ -804,7 +815,7 @@ def _collector_raw_stream_metadata(path: str) -> Dict[str, Any]:
 # stowaways, format/version, fail-closed required_features.
 # ==========================================================================
 def _verify_container(path: str) -> bool:
-    with open(path, "rb") as fh:
+    with open(_win_long_path(path), "rb") as fh:
         data = fh.read()
     by_name = _zip_read_all(data)
 

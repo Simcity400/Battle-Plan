@@ -1,12 +1,14 @@
 # live_capture
 
-Python recorder layer for the native Battle Plan app.
+Python development/proof harness for the native Battle Plan app.
 
 `live_capture/` currently turns read-only memory-reader results into
 schema-conformant snapshots and portable `.battleplan` recordings. Under the
-in-process collector plan, it also becomes the external recorder/adapter that
-consumes collector frames and writes the same replay format. It must keep
-measured zero, captured null, and absent data distinct.
+in-process collector plan, it is a validation harness and temporary adapter for
+collector frames. Production live extraction must be owned by the DLL/Rust path:
+`hoi4.exe` -> DLL collector -> compact raw/event/snapshot stream ->
+`.battleplan`. Python must keep measured zero, captured null, and absent data
+distinct when validating that output, but it is not the production hot loop.
 
 Runtime capture has one authoritative source: the live host `hoi4.exe` process.
 Saves are optional development fixtures and validation artifacts only; they are
@@ -14,11 +16,14 @@ not required to record or replay a live session.
 
 ## Role
 
-This package owns capture assembly, durable snapshot writes, continuity
-metadata, recorder UI/CLI entrypoints, collector-frame ingestion, and
-`.battleplan` writer integration. See `../replay_ui/MASTER_PROGRESS.md` for
-current product status and acceptance gates, and
-`../IN_PROCESS_COLLECTOR_PLAN.md` for the collector migration plan.
+This package owns development capture assembly, durable snapshot writes,
+continuity metadata, recorder UI/CLI experiments, collector-frame ingestion,
+proof gates, and `.battleplan` validation/writer integration. It may attach the
+DLL, run proof gates, validate manifests/replay files, and perform temporary
+bounded preflight discovery. It must not walk memory hourly/sub-hourly, own the
+production hot extraction loop, or be required to keep up with speed five. See
+`../replay_ui/MASTER_PROGRESS.md` for current product status and acceptance
+gates, and `../IN_PROCESS_COLLECTOR_PLAN.md` for the collector migration plan.
 
 ## Main Pieces
 
@@ -30,25 +35,28 @@ current product status and acceptance gates, and
 | `collector_frames.py` | Synthetic/decoded in-process collector frame validation and snapshot adapter. |
 | `collector_map_bridge.py` | State/province map-control preflight helpers and caches; state roots are fast when cached, province array relocation remains the open blocker. |
 | `collector_profile_check.py` | Profile preflight: running-exe hash match, root-probe sentinel/address/domain validation, and transport diagnostics. |
-| `collector_probe_record.py` | Low-level live collector probe recorder used for bounded cadence proofs and transport debugging. |
-| `collector_session.py` | Recorder-facing collector session wrapper that writes lifecycle frames, durable snapshots, `.battleplan` output, and cadence/transport diagnostics without requiring saves. |
+| `collector_probe_record.py` | Low-level live collector probe harness used for bounded cadence proofs and transport debugging. |
+| `collector_session.py` | Development/proof session wrapper that writes lifecycle frames, durable snapshots, `.battleplan` output, and cadence/transport diagnostics without requiring saves. Not production completion evidence by itself. |
 | `collector_profiles/` | Build-gated collector profiles: executable hash, offsets, sentinels, roots, and enabled domains. |
 | `registry.py` | Import-guarded reader plug registry. Failed/missing plugs omit domains instead of fabricating data. |
 | `assembler.py` | Folds reader results into replay snapshots while preserving no-fabrication semantics. |
 | `continuity.py` | Campaign/segment/capture sequence tagging and rollback/time-jump handling. |
 | `durable_store.py` | Atomic snapshot/index writes and single-writer locking. |
-| `recorder/` | GUI/CLI recorder, cadence scheduling, manifest diagnostics, collector transport adapter, packaging spec. |
+| `recorder/` | GUI/CLI recorder experiments, cadence scheduling, manifest diagnostics, collector transport adapter, packaging spec. |
 
 ## Current Recording Reality
 
 - The live host `hoi4.exe` collector is the only runtime-authoritative source.
   Save oracle output is validation/development data only.
+- Python is not production live extraction. A segment is complete only after the
+  DLL/Rust path captures it hourly-or-better, with no skipped game hours, at
+  speed five or a measured equivalent.
 - Canonical replay snapshots are hourly-or-better. Daily rows can be rollups,
   not replay coverage.
 - `collector_session` currently wraps repeated bounded DLL workers as one
-  logical session. That bridge writes lifecycle frames, durable snapshots,
-  manifests, and `.battleplan` output, but the target remains a true
-  long-running collector session.
+  logical development session. That bridge writes lifecycle frames, durable
+  snapshots, manifests, and `.battleplan` output for proof/validation, but the
+  target remains a Rust/native long-running collector recorder.
 - The session writes a validated `collector_frames.jsonl` sidecar containing
   every accepted DLL frame and embeds the same byte stream into finalized
   `.battleplan` files at `payload/<game>/collector_raw/collector_frames.jsonl`.
@@ -222,7 +230,11 @@ current product status and acceptance gates, and
   `--allow-army-cold-scan` only as an explicit bootstrap step because the army
   vtable sweep is outside the hot-loop budget.
 
-## Recorder Smoke / Tests
+## Proof Harness Smoke / Tests
+
+These commands are development and validation commands. Passing them can prove a
+DLL stream shape or catch regressions, but it does not by itself make a segment
+production-complete. Production completion requires the DLL/Rust recorder path.
 
 ```powershell
 python live_capture/recorder/recorder_main.py --smoke
@@ -270,24 +282,27 @@ python -m unittest live_capture.tests.test_collector_session live_capture.tests.
 python -m pytest live_capture
 ```
 
-Run `collector_profile_check` as a separate preflight immediately before worker
-recording. Do not combine it into the same recorder process; back-to-back hook
-loads are more reliable as separate commands.
+Run `collector_profile_check` as a separate development preflight immediately
+before worker proof runs. Do not combine it into the same proof process;
+back-to-back hook loads are more reliable as separate commands.
 
-Use `collector_session` for recorder-facing capture work. It wraps the bounded
+Use `collector_session` for proof-harness capture work. It wraps the bounded
 collector worker with explicit `session_start`/`session_stop` lifecycle frames,
 feeds decoded collector frames through the durable store, finalizes a
 `.battleplan`, packages the raw collector stream, and records cadence plus
-transport diagnostics in the session manifest. Use `collector_probe_record`
-directly only when proving collector timing, reproducing transport behavior, or
-collecting raw probe fixtures.
+transport diagnostics in the session manifest. This remains a Python proof path,
+not the production hot loop. Use `collector_probe_record` directly only when
+proving collector timing, reproducing transport behavior, or collecting raw probe
+fixtures.
 
 For focus/decision/project root-contract acceptance, the unit tests above are
-only executable scaffolding. The segment is live-verified only after
-`collector_session` runs against the real running HOI4 process with
+only executable scaffolding. The segment has Python-harness live evidence only
+after `collector_session` runs against the real running HOI4 process with
 `hourly_requirement.met = true`, `replay_verified = true`, and
 `collector_proof_gate --require-scheduled-domain focus_live --require-scheduled-domain decisions_live --require-scheduled-domain projects_live --require-projects-live-payload`
-passes on that run's `session_manifest.json`. If the special-project cache is
+passes on that run's `session_manifest.json`. It is not production-complete until
+the same segment is captured by the DLL/Rust recording path. If the
+special-project cache is
 missing, first run a cache-populating diagnostic with
 `--preflight-special-projects --allow-special-projects-cold-scan`, then rerun
 the acceptance proof without the cold-scan flag using the same `out-root` so the

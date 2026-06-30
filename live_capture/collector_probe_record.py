@@ -35,6 +35,7 @@ from .collector_idea_groups import (
 from .durable_store import DurableCaptureStore
 
 
+SCHEDULED_DOMAIN_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 MAX_COUNTRY_OBJECT_BRIDGE_ROWS = 512
 
 
@@ -76,6 +77,8 @@ def record_probes(
     map_control_province_bridge: Optional[str] = None,
     map_control_controller_bridge: Optional[str] = None,
     scheduled_snapshot_step_hours: int = 1,
+    scheduled_domains: Optional[Iterable[str]] = None,
+    lightweight_root_frame: bool = False,
     advisor_token_filter: Any = None,
     tech_def_filter: Any = None,
     idea_group_filter: Any = None,
@@ -95,6 +98,7 @@ def record_probes(
         raise ValueError("worker_sample_ms must be >= 10")
     if scheduled_snapshot_step_hours < 1:
         raise ValueError("scheduled_snapshot_step_hours must be >= 1")
+    encoded_scheduled_domains = encode_scheduled_domains(scheduled_domains)
     encoded_country_object_bridge = (
         encode_country_object_bridge(country_object_bridge)
         if country_object_bridge is not None else None
@@ -257,6 +261,8 @@ def record_probes(
                 map_control_province_bridge=map_control_province_bridge,
                 map_control_controller_bridge=map_control_controller_bridge,
                 scheduled_snapshot_step_hours=scheduled_snapshot_step_hours,
+                scheduled_domains=encoded_scheduled_domains,
+                lightweight_root_frame=lightweight_root_frame,
                 advisor_token_filter=encoded_advisor_token_filter,
                 tech_def_filter=encoded_tech_def_filter,
                 idea_group_filter=encoded_idea_group_filter,
@@ -438,6 +444,14 @@ def record_probes(
             "scheduled_snapshot_step_hours": (
                 scheduled_snapshot_step_hours if worker_duration_s is not None else None
             ),
+            "scheduled_domains": (
+                encoded_scheduled_domains.split(";")
+                if encoded_scheduled_domains
+                else None
+            ),
+            "lightweight_root_frame": (
+                bool(lightweight_root_frame) if worker_duration_s is not None else None
+            ),
             "worker_pipe_tokens": worker_pipe_tokens,
             "attach_errors": attach_errors,
             "partial_session": bool(attach_errors and samples),
@@ -516,6 +530,8 @@ def _write_worker_control(
     map_control_province_bridge: Optional[str] = None,
     map_control_controller_bridge: Optional[str] = None,
     scheduled_snapshot_step_hours: int = 1,
+    scheduled_domains: Optional[str] = None,
+    lightweight_root_frame: bool = False,
     advisor_token_filter: Optional[str] = None,
     tech_def_filter: Optional[str] = None,
     idea_group_filter: Optional[str] = None,
@@ -530,9 +546,12 @@ def _write_worker_control(
         "sample_ms": int(sample_ms),
         "country_object_scan": False,
         "special_projects_scan": bool(special_projects_scan),
+        "lightweight_root_frame": bool(lightweight_root_frame),
         "scheduled_snapshot_step_hours": int(scheduled_snapshot_step_hours),
         "sidecar_log": False,
     }
+    if scheduled_domains:
+        payload["scheduled_domains"] = scheduled_domains
     if session_id:
         payload["session_id"] = session_id
     if country_object_bridge:
@@ -569,6 +588,26 @@ def _write_worker_control(
         payload["idea_group_filter"] = idea_group_filter
     control_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
     return control_path, pipe_token
+
+
+def encode_scheduled_domains(domains: Optional[Iterable[str]]) -> Optional[str]:
+    if domains is None:
+        return None
+    seen: set[str] = set()
+    encoded: List[str] = []
+    for raw in domains:
+        if not isinstance(raw, str):
+            raise ValueError("scheduled domain must be a string")
+        domain = raw.strip()
+        if not domain:
+            continue
+        if not SCHEDULED_DOMAIN_RE.match(domain):
+            raise ValueError(f"invalid scheduled domain {domain!r}")
+        if domain in seen:
+            continue
+        seen.add(domain)
+        encoded.append(domain)
+    return ";".join(encoded) if encoded else None
 
 
 def encode_country_object_bridge(rows: Any) -> str:
@@ -985,6 +1024,20 @@ def _main() -> int:
     parser.add_argument("--worker-duration-s", type=float, default=None)
     parser.add_argument("--worker-sample-ms", type=int, default=10)
     parser.add_argument(
+        "--scheduled-domain",
+        action="append",
+        default=None,
+        help=(
+            "limit scheduled heavy snapshot payloads to this domain; repeat for "
+            "multiple domains. Omit for the default all-domain schedule."
+        ),
+    )
+    parser.add_argument(
+        "--lightweight-root-frame",
+        action="store_true",
+        help="omit full country rows from root frames unless requested domains need them",
+    )
+    parser.add_argument(
         "--allow-hourly-gaps",
         action="store_true",
         help="write diagnostics but exit 0 even if requested hourly proof has gaps",
@@ -1002,6 +1055,8 @@ def _main() -> int:
                             unique_store_hours_only=args.unique_store_hours_only,
                             worker_duration_s=args.worker_duration_s,
                             worker_sample_ms=args.worker_sample_ms,
+                            scheduled_domains=args.scheduled_domain,
+                            lightweight_root_frame=args.lightweight_root_frame,
                             require_hourly_cadence=not args.allow_hourly_gaps
                             if args.until_game_hours is not None else False)
     print(run_dir)

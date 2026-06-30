@@ -11,6 +11,7 @@ members = [
     "combat_panel",
     "widgets",
     "collector",
+    "recorder_host",
     "app",
 ]
 

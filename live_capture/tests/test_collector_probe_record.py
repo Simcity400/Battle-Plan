@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from live_capture.collector_probe_record import (  # noqa: E402
     encode_country_object_bridge,
     encode_country_record_bridge,
+    encode_scheduled_domains,
     hourly_requirement_diagnostics,
     record_probes,
     summarize_probe_samples,
@@ -40,6 +41,20 @@ import live_capture.collector_probe_record as cpr  # noqa: E402
 
 
 class TestCollectorProbeRecord(unittest.TestCase):
+    def test_encode_scheduled_domains_sorts_nothing_and_deduplicates(self):
+        self.assertEqual(
+            encode_scheduled_domains([
+                "focus_live",
+                "projects_live",
+                "focus_live",
+                "decisions_live",
+            ]),
+            "focus_live;projects_live;decisions_live",
+        )
+        self.assertIsNone(encode_scheduled_domains(["", "  "]))
+        with self.assertRaises(ValueError):
+            encode_scheduled_domains(["projects-live"])
+
     def test_hourly_summary_counts_no_skips_for_consecutive_hours(self):
         summary = summarize_probe_samples([
             _sample("1936.1.1.1", 100, sequence=10, stored=True),
