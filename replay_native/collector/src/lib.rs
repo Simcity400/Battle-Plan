@@ -4,7 +4,7 @@ use core::{ptr, slice};
 
 pub const ABI_VERSION: u32 = 1;
 pub const COLLECTOR_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const COLLECTOR_PROFILE_ID: &str = "vanilla_latest_2026_06_28";
+pub const COLLECTOR_PROFILE_ID: &str = "vanilla_latest_2026_06_30";
 
 const HEARTBEAT_JSON: &[u8] = br#"{"type":"heartbeat","backend":"in_process_collector","collector_version":"0.1.0","abi_version":1,"domains":[],"quality_status":"ok"}"#;
 
@@ -88,13 +88,13 @@ mod attach_log {
     const OPEN_EXISTING: Dword = 3;
     const FILE_ATTRIBUTE_NORMAL: Dword = 0x80;
     const GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS: Dword = 0x00000004;
-    const C_GAME_STATE_DAILY_UPDATE_OFFSET: usize = 0x1D4540;
-    const CG_STATE_DATE_OFFSET: usize = 0x33048C0;
-    const COUNTRY_DATABASE_OFFSET: usize = 0x33063F8;
-    const GET_LONG_STRING_OFFSET: usize = 0x5269B0;
+    const C_GAME_STATE_DAILY_UPDATE_OFFSET: usize = 0x1D4390;
+    const CG_STATE_DATE_OFFSET: usize = 0x3316E90;
+    const COUNTRY_DATABASE_OFFSET: usize = 0x33189C8;
+    const GET_LONG_STRING_OFFSET: usize = 0x526A40;
     const CGAMESTATE_WEATHER_MANAGER: usize = 0x688;
-    const WEATHER_MANAGER_VTABLE_RVA: usize = 0x2950AF0;
-    const WEATHER_REGION_VTABLE_RVA: usize = 0x2950AA0;
+    const WEATHER_MANAGER_VTABLE_RVA: usize = 0x2960BE0;
+    const WEATHER_REGION_VTABLE_RVA: usize = 0x2960B90;
     const WEATHER_MANAGER_REGION_ARRAY_OFF: usize = 0x40;
     const WEATHER_REGION_STRIDE: usize = 0x160;
     const WEATHER_REGION_COUNT: u32 = 305;
@@ -109,7 +109,7 @@ mod attach_log {
     const WEATHER_REGION_ARCTIC_WATER_OFF: usize = 0x130;
     const WEATHER_REGION_TEMPERATURE_OFF: usize = 0x138;
     const WEATHER_REGION_NEXT_CHANGE_OFF: usize = 0x150;
-    const COUNTRY_VTABLE_RVA: usize = 0x27C0E80;
+    const COUNTRY_VTABLE_RVA: usize = 0x27D0E90;
     const POLITICAL_STATUS_VTABLE_RVA: usize = 0x29299C8;
     const POLITICAL_PARTY_VTABLE_RVA: usize = 0x2976EE0;
     const IDEA_VTABLE_RVA_PRIMARY: usize = 0x295A8C0;
@@ -159,7 +159,7 @@ mod attach_log {
     const CGAMESTATE_COUNTRY_COUNT: usize = 0x31C;
     const CGAMESTATE_CPROVINCE_ARRAY: usize = 0x2B0;
     const CGAMESTATE_CPROVINCE_COUNT: usize = 0x2BC;
-    const CPROVINCE_VTABLE_RVA: usize = 0x294AE78;
+    const CPROVINCE_VTABLE_RVA: usize = 0x295AF68;
     const CPROVINCE_OFF_ID: usize = 0xA4;
     const CPROVINCE_OFF_STATE: usize = 0xC0;
     const CPROVINCE_OFF_CONTROLLER: usize = 0x188;
@@ -344,10 +344,10 @@ mod attach_log {
     const MIN_USABLE_PROVINCE_ROWS: usize = 10_000;
     const DIVISION_TYPE: u32 = 4713;
     const DIVISION_ALT_UNIT_TYPE: u32 = 51;
-    const DIVISION_VTABLE_RVA: usize = 0x2933F00;
-    const DIVISION_WRAPPER_VTABLE_RVA: usize = 0x2933D20;
+    const DIVISION_VTABLE_RVA: usize = 0x2943CB0;
+    const DIVISION_WRAPPER_VTABLE_RVA: usize = 0x2943AD0;
     const DIVISION_WRAPPER_TO_BODY: usize = 0x10;
-    const DIVISION_MOVE_ORDER_VTABLE_RVA: usize = 0x294AE78;
+    const DIVISION_MOVE_ORDER_VTABLE_RVA: usize = 0x295AF68;
     const DIVISION_OFF_ID_TYPE: usize = 0x08;
     const DIVISION_OFF_ID_ID: usize = 0x0C;
     const DIVISION_OFF_LOCATION: usize = 0x18;
@@ -365,11 +365,11 @@ mod attach_log {
     const DIVISION_OFF_TEMPLATE: usize = 0x3A8;
     const DIVISION_OFF_EQUIPMENT_BANK: usize = 0x358;
     const DIVISION_MOVE_ORDER_OFF_SOURCE: usize = 0xA4;
-    const DIVISION_TEMPLATE_VTABLE_RVA: usize = 0x29291D0;
+    const DIVISION_TEMPLATE_VTABLE_RVA: usize = 0x2938F70;
     const DIVISION_TEMPLATE_TYPE: u32 = 52;
     const DIVISION_TEMPLATE_OFF_TYPE: usize = 0x08;
     const DIVISION_TEMPLATE_OFF_ID: usize = 0x0C;
-    const DIVISION_EQUIPMENT_VARIANT_VTABLE_RVA: usize = 0x292B218;
+    const DIVISION_EQUIPMENT_VARIANT_VTABLE_RVA: usize = 0x293AFB8;
     const DIVISION_EQUIPMENT_VARIANT_TYPE: u32 = 70;
     const DIVISION_EQUIPMENT_VARIANT_OFF_TYPE: usize = 0x08;
     const DIVISION_EQUIPMENT_VARIANT_OFF_ID: usize = 0x0C;
@@ -397,11 +397,11 @@ mod attach_log {
     const MAX_DIVISION_EQUIPMENT_VARIANT_ID: u32 = i32::MAX as u32;
     const MAX_DIVISION_EQUIPMENT_AMOUNT_RAW: i64 = 1_000_000_000_000_000;
     const DIVISION_DELTA_BUCKET_RAW: u32 = 1_000;
-    const ARMY_VTABLE_RVA: usize = 0x292BEC0;
+    const ARMY_VTABLE_RVA: usize = 0x293BC60;
     const ARMY_TYPE: u32 = 53;
     const ARMY_OFF_HANDLE: usize = 0x08;
     const ARMY_OFF_ORDERS_VEC: usize = 0x98;
-    const ORDER_VTABLE_RVA: usize = 0x295FA08;
+    const ORDER_VTABLE_RVA: usize = 0x296FAE8;
     const ORDER_OFF_TYPE: usize = 0x30;
     const ORDER_OFF_ARMY_BACKREF: usize = 0x38;
     const ORDER_OFF_TYPE5_STATES_BEGIN: usize = 0xE0;
@@ -507,8 +507,8 @@ mod attach_log {
     const MAX_SHIP_EXPERIENCE_RAW: u32 = 100_000_000;
     const MAX_SHIP_DEFINITION_LEN: usize = 128;
     const SHIP_STATS_SAMPLE_MIN_MS: u64 = 250;
-    const AG_VTABLE_RVA: usize = 0x292BF58;
-    const ARMY_LEADER_VTABLE_RVA: usize = 0x292F788;
+    const AG_VTABLE_RVA: usize = 0x293BCF8;
+    const ARMY_LEADER_VTABLE_RVA: usize = 0x293F538;
     const NAVY_LEADER_VTABLE_RVA: usize = 0x292F8A0;
     const FLEET_VTABLE_RVA: usize = 0x293C178;
     const TASK_FORCE_VTABLE_RVA: usize = 0x293C8B0;
@@ -2770,6 +2770,7 @@ mod attach_log {
     const COMPACT_DOMAIN_WEATHER: u16 = 24;
     const COMPACT_DOMAIN_DIVISION_EQUIPMENT: u16 = 26;
     const COMPACT_DOMAIN_ARMY_ORDERS: u16 = 27;
+    const COMPACT_DOMAIN_OOB_COMMAND: u16 = 28;
     const COMPACT_STATUS_STATE_UNAVAILABLE: u32 = 1 << 0;
     const COMPACT_STATUS_PROFILE_MISMATCH: u32 = 1 << 1;
     const COMPACT_STATUS_NO_CLOCK: u32 = 1 << 2;
@@ -2792,6 +2793,21 @@ mod attach_log {
     const COMPACT_ARMY_ORDER_TARGET_STATUS_UNSUPPORTED: u32 = 2;
     const COMPACT_ARMY_ORDER_TARGET_STATUS_OVERFLOW: u32 = 3;
     const COMPACT_ARMY_ORDER_TARGET_STATUS_VALIDATION_FAILED: u32 = 4;
+    const COMPACT_OOB_KIND_ARMY: u32 = 1;
+    const COMPACT_OOB_KIND_ARMY_GROUP: u32 = 2;
+    const COMPACT_OOB_ROW_FLAG_DELETED: u32 = 1;
+    const COMPACT_OOB_ROW_FLAG_PARENT: u32 = 1 << 1;
+    const COMPACT_OOB_ROW_FLAG_OWNER: u32 = 1 << 2;
+    const COMPACT_OOB_ROW_FLAG_LEADER: u32 = 1 << 3;
+    const COMPACT_OOB_ROW_FLAG_LEADER_SKILL: u32 = 1 << 4;
+    const COMPACT_OOB_ROW_FLAG_MEMBER_COUNT_ENGINE: u32 = 1 << 5;
+    const COMPACT_OOB_ROW_FLAG_MISSING_MEMBER_COUNT: u32 = 1 << 6;
+    const COMPACT_OOB_STATUS_NONE: u32 = 0;
+    const COMPACT_OOB_STATUS_EXACT: u32 = 1;
+    const COMPACT_OOB_STATUS_UNKNOWN: u32 = 2;
+    const COMPACT_OOB_STATUS_OVERFLOW: u32 = 3;
+    const COMPACT_OOB_STATUS_VALIDATION_FAILED: u32 = 4;
+    const COMPACT_OOB_STATUS_MIXED: u32 = 5;
     const COMPACT_DIVISION_SAMPLE_MIN_ROWS: usize = 512;
     const COMPACT_DIVISION_SAMPLE_MAX_WORKERS: usize = 4;
     const COMPACT_MAP_DETAIL_SAMPLE_MIN_ROWS: usize = 512;
@@ -2881,6 +2897,7 @@ mod attach_log {
         division_equipment: CompactDivisionEquipmentTracker,
         division_roots: CompactDivisionRootCache,
         army_order: ArmyOrderTracker,
+        oob_command: CompactOobCommandTracker,
         land_combat: LandCombatTracker,
         map_control: CompactMapControlTracker,
         map_detail: CompactMapDetailTracker,
@@ -2935,6 +2952,18 @@ mod attach_log {
         observed_army_rows: u32,
         observed_order_rows: u32,
         target_state_rows: u32,
+        deleted_rows: u32,
+    }
+
+    struct CompactOobCommandRead {
+        rows: Vec<CompactOobCommandRow>,
+        read_time_us: u64,
+        changed_rows: u32,
+        status_flags: u32,
+        root_rows: u32,
+        observed_army_rows: u32,
+        observed_army_group_rows: u32,
+        member_rows: u32,
         deleted_rows: u32,
     }
 
@@ -3175,6 +3204,32 @@ mod attach_log {
         target_states: Option<Vec<u32>>,
         target_state_count: Option<u32>,
         target_status: &'static str,
+    }
+
+    #[derive(Default)]
+    struct CompactOobCommandTracker {
+        previous: BTreeMap<(u32, u32), CompactOobCommandRow>,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct CompactOobCommandRow {
+        kind: u32,
+        object_id: u32,
+        deleted: bool,
+        parent_id: Option<u32>,
+        owner_tag_db_id: Option<u32>,
+        member_ids: Option<Vec<u32>>,
+        member_count: u32,
+        member_count_engine: Option<u32>,
+        missing_member_count: Option<u32>,
+        leader_id: Option<u32>,
+        leader_skill: Option<u32>,
+        leader_trait_count: Option<u32>,
+        parent_status: &'static str,
+        member_status: &'static str,
+        owner_status: &'static str,
+        leader_status: &'static str,
+        leader_trait_status: &'static str,
     }
 
     #[derive(Clone, Debug, PartialEq)]
@@ -9123,6 +9178,7 @@ mod attach_log {
         let division_equipment_enabled =
             compact_explicit_domain_enabled(control, RAW_DIVISION_EQUIPMENT_DOMAIN);
         let army_orders_enabled = compact_explicit_domain_enabled(control, RAW_ARMY_ORDERS_DOMAIN);
+        let oob_command_enabled = compact_explicit_domain_enabled(control, RAW_OOB_COMMAND_DOMAIN);
         let land_combats_enabled =
             compact_explicit_domain_enabled(control, RAW_LAND_COMBATS_DOMAIN);
         let map_control_enabled = compact_map_control_enabled(control);
@@ -9134,6 +9190,7 @@ mod attach_log {
         let mut division_read = None;
         let mut division_equipment_read = None;
         let mut army_order_read = None;
+        let mut oob_command_read = None;
         let mut land_combat_read = None;
         let mut map_control_read = None;
         let mut map_detail_read = None;
@@ -9155,6 +9212,7 @@ mod attach_log {
         let division_tracker = &mut trackers.division_movement;
         let division_equipment_tracker = &mut trackers.division_equipment;
         let army_order_tracker = &mut trackers.army_order;
+        let oob_command_tracker = &mut trackers.oob_command;
         let division_roots = &trackers.division_roots;
         let land_combat_tracker = &mut trackers.land_combat;
         let map_control_tracker = &mut trackers.map_control;
@@ -9206,6 +9264,18 @@ mod attach_log {
                         state,
                         status_flags,
                         army_order_tracker,
+                        division_roots,
+                    )
+                }))
+            } else {
+                None
+            };
+            let oob_command_handle = if oob_command_enabled {
+                Some(scope.spawn(move || {
+                    read_compact_oob_command(
+                        state,
+                        status_flags,
+                        oob_command_tracker,
                         division_roots,
                     )
                 }))
@@ -9272,6 +9342,12 @@ mod attach_log {
                 army_order_read = Some(match handle.join() {
                     Ok(read) => read,
                     Err(_) => compact_army_order_worker_panic_read(division_roots, status_flags),
+                });
+            }
+            if let Some(handle) = oob_command_handle {
+                oob_command_read = Some(match handle.join() {
+                    Ok(read) => read,
+                    Err(_) => compact_oob_command_worker_panic_read(division_roots, status_flags),
                 });
             }
             if let Some(handle) = land_combat_handle {
@@ -9488,6 +9564,41 @@ mod attach_log {
                 read.root_rows,
                 read.observed_army_rows,
                 read.observed_order_rows,
+                read.deleted_rows,
+            );
+            sequence = sequence.saturating_add(1);
+            emitted_domains = emitted_domains.saturating_add(1);
+        }
+        if let Some(read) = oob_command_read {
+            append_compact_domain_perf_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                CompactDomainPerfRecord {
+                    domain_id: COMPACT_DOMAIN_OOB_COMMAND,
+                    read_time_us: read.read_time_us,
+                    row_count: read
+                        .observed_army_rows
+                        .saturating_add(read.observed_army_group_rows),
+                    changed_rows: read.changed_rows,
+                    unit_count: read.member_rows,
+                    changed_unit_count: read.changed_rows,
+                    status_flags: read.status_flags,
+                },
+                elapsed_wall_ms,
+            );
+            sequence = sequence.saturating_add(1);
+            append_compact_oob_command_data_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                &read.rows,
+                elapsed_wall_ms,
+                read.status_flags,
+                read.changed_rows,
+                read.root_rows,
+                read.observed_army_rows,
+                read.observed_army_group_rows,
                 read.deleted_rows,
             );
             sequence = sequence.saturating_add(1);
@@ -10140,6 +10251,23 @@ mod attach_log {
         }
     }
 
+    fn compact_oob_command_worker_panic_read(
+        root_cache: &CompactDivisionRootCache,
+        status_flags: u32,
+    ) -> CompactOobCommandRead {
+        CompactOobCommandRead {
+            rows: Vec::new(),
+            read_time_us: 0,
+            changed_rows: 0,
+            status_flags: status_flags | COMPACT_STATUS_WORKER_PANIC,
+            root_rows: root_cache.rows.len().min(u32::MAX as usize) as u32,
+            observed_army_rows: 0,
+            observed_army_group_rows: 0,
+            member_rows: 0,
+            deleted_rows: 0,
+        }
+    }
+
     fn compact_land_combat_worker_panic_read(status_flags: u32) -> CompactLandCombatRead {
         CompactLandCombatRead {
             rows: Vec::new(),
@@ -10207,6 +10335,7 @@ mod attach_log {
         compact_explicit_domain_enabled(control, RAW_DIVISIONS_DOMAIN)
             || compact_explicit_domain_enabled(control, RAW_DIVISION_EQUIPMENT_DOMAIN)
             || compact_explicit_domain_enabled(control, RAW_ARMY_ORDERS_DOMAIN)
+            || compact_explicit_domain_enabled(control, RAW_OOB_COMMAND_DOMAIN)
     }
 
     fn compact_division_bridge_available(control: &CollectorControl) -> bool {
@@ -10810,6 +10939,358 @@ mod attach_log {
             "overflow" => COMPACT_ARMY_ORDER_TARGET_STATUS_OVERFLOW,
             "validation_failed" => COMPACT_ARMY_ORDER_TARGET_STATUS_VALIDATION_FAILED,
             _ => COMPACT_ARMY_ORDER_TARGET_STATUS_NONE,
+        }
+    }
+
+    fn read_compact_oob_command(
+        state: &CollectorState,
+        status_flags: u32,
+        tracker: &mut CompactOobCommandTracker,
+        root_cache: &CompactDivisionRootCache,
+    ) -> CompactOobCommandRead {
+        let read_started = Instant::now();
+        let mut status_flags = status_flags;
+        let root_rows = root_cache.rows.len().min(u32::MAX as usize) as u32;
+        if root_cache.rows.is_empty() {
+            status_flags |= COMPACT_STATUS_SOURCE_UNAVAILABLE;
+            return CompactOobCommandRead {
+                rows: Vec::new(),
+                read_time_us: duration_micros_u64(read_started.elapsed()),
+                changed_rows: 0,
+                status_flags,
+                root_rows,
+                observed_army_rows: 0,
+                observed_army_group_rows: 0,
+                member_rows: 0,
+                deleted_rows: 0,
+            };
+        }
+
+        let (army_roots, invalid_army_roots) =
+            discover_compact_army_order_roots(state.base, &root_cache.rows);
+        if invalid_army_roots > 0 {
+            status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+        }
+        if army_roots.is_empty() {
+            status_flags |= COMPACT_STATUS_SOURCE_UNAVAILABLE;
+            return CompactOobCommandRead {
+                rows: Vec::new(),
+                read_time_us: duration_micros_u64(read_started.elapsed()),
+                changed_rows: 0,
+                status_flags,
+                root_rows,
+                observed_army_rows: 0,
+                observed_army_group_rows: 0,
+                member_rows: 0,
+                deleted_rows: 0,
+            };
+        }
+
+        let current_rows =
+            sample_compact_oob_command_rows(state.base, &root_cache.rows, &army_roots);
+        if current_rows.is_empty() {
+            status_flags |= COMPACT_STATUS_SOURCE_UNAVAILABLE;
+            return CompactOobCommandRead {
+                rows: Vec::new(),
+                read_time_us: duration_micros_u64(read_started.elapsed()),
+                changed_rows: 0,
+                status_flags,
+                root_rows,
+                observed_army_rows: 0,
+                observed_army_group_rows: 0,
+                member_rows: 0,
+                deleted_rows: 0,
+            };
+        }
+        let observed_army_rows = current_rows
+            .iter()
+            .filter(|row| row.kind == COMPACT_OOB_KIND_ARMY)
+            .count()
+            .min(u32::MAX as usize) as u32;
+        let observed_army_group_rows = current_rows
+            .iter()
+            .filter(|row| row.kind == COMPACT_OOB_KIND_ARMY_GROUP)
+            .count()
+            .min(u32::MAX as usize) as u32;
+        let observed_member_rows =
+            compact_oob_member_count(&current_rows).min(u32::MAX as usize) as u32;
+        let had_previous = !tracker.previous.is_empty();
+        let (rows, changed_rows, deleted_rows) =
+            compact_oob_command_delta_rows(tracker, current_rows);
+        if had_previous && !rows.is_empty() {
+            status_flags |= COMPACT_STATUS_DELTA_DATA;
+        }
+
+        CompactOobCommandRead {
+            rows,
+            read_time_us: duration_micros_u64(read_started.elapsed()),
+            changed_rows,
+            status_flags,
+            root_rows,
+            observed_army_rows,
+            observed_army_group_rows,
+            member_rows: observed_member_rows,
+            deleted_rows,
+        }
+    }
+
+    fn sample_compact_oob_command_rows(
+        module_base: usize,
+        division_roots: &[DivisionBodyBridgeEntry],
+        army_roots: &[ArmyBodyBridgeEntry],
+    ) -> Vec<CompactOobCommandRow> {
+        let mut army_body_by_id: BTreeMap<u32, usize> = BTreeMap::new();
+        for army in army_roots {
+            army_body_by_id.insert(army.army_id, army.body_ptr);
+        }
+
+        let mut divisions_by_army: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+        let mut owners_by_army: BTreeMap<u32, BTreeMap<u32, u32>> = BTreeMap::new();
+        for division in division_roots {
+            let Some(army_ptr) =
+                read_u64(division.body_ptr.saturating_add(DIVISION_OFF_ARMY_PARENT))
+                    .map(|value| value as usize)
+            else {
+                continue;
+            };
+            let Some(army_id) = validate_army_body(module_base, army_ptr) else {
+                continue;
+            };
+            if army_body_by_id.get(&army_id).copied() != Some(army_ptr) {
+                continue;
+            }
+            divisions_by_army
+                .entry(army_id)
+                .or_default()
+                .push(division.div_id);
+            let owner_tag_db_id = read_division_owner_tag_db_id(division.body_ptr)
+                .or_else(|| valid_division_owner_tag_db_id(division.owner_tag_db_id));
+            if let Some(owner_tag_db_id) = owner_tag_db_id {
+                let owner_counts = owners_by_army.entry(army_id).or_default();
+                let count = owner_counts.entry(owner_tag_db_id).or_default();
+                *count = count.saturating_add(1);
+            }
+        }
+
+        let mut armies_by_ag: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+        let mut owners_by_ag: BTreeMap<u32, BTreeMap<u32, u32>> = BTreeMap::new();
+        let mut rows = Vec::new();
+        for army in army_roots {
+            let mut member_ids = divisions_by_army.remove(&army.army_id).unwrap_or_default();
+            member_ids.sort_unstable();
+            member_ids.dedup();
+            let live_member_count = member_ids.len().min(u32::MAX as usize) as u32;
+            let member_count_engine = read_u32(army.body_ptr.saturating_add(ARMY_OFF_MEMBER_COUNT));
+            let missing_member_count =
+                member_count_engine.and_then(|engine| engine.checked_sub(live_member_count));
+            let (member_ids, member_status) = compact_oob_member_ids(member_ids);
+            let (owner_tag_db_id, owner_status) =
+                compact_oob_owner_consensus(owners_by_army.remove(&army.army_id));
+            let (parent_id, parent_status) =
+                read_compact_oob_army_group_parent(module_base, army.body_ptr);
+            if let Some(parent_id) = parent_id {
+                armies_by_ag
+                    .entry(parent_id)
+                    .or_default()
+                    .push(army.army_id);
+                if let Some(owner_tag_db_id) = owner_tag_db_id {
+                    let owner_counts = owners_by_ag.entry(parent_id).or_default();
+                    let count = owner_counts.entry(owner_tag_db_id).or_default();
+                    *count = count.saturating_add(1);
+                }
+            }
+            let (leader_id, leader_status, leader_skill, leader_traits, leader_trait_status) =
+                read_army_oob_leader_detail(module_base, army.body_ptr);
+            let leader_trait_count = leader_traits
+                .as_ref()
+                .map(|traits| traits.len().min(u32::MAX as usize) as u32);
+            rows.push(CompactOobCommandRow {
+                kind: COMPACT_OOB_KIND_ARMY,
+                object_id: army.army_id,
+                deleted: false,
+                parent_id,
+                owner_tag_db_id,
+                member_ids,
+                member_count: live_member_count,
+                member_count_engine,
+                missing_member_count,
+                leader_id,
+                leader_skill,
+                leader_trait_count,
+                parent_status,
+                member_status,
+                owner_status,
+                leader_status,
+                leader_trait_status: leader_trait_status.unwrap_or("none"),
+            });
+        }
+
+        for (ag_id, mut member_army_ids) in armies_by_ag {
+            member_army_ids.sort_unstable();
+            member_army_ids.dedup();
+            let member_count = member_army_ids.len().min(u32::MAX as usize) as u32;
+            let (member_ids, member_status) = compact_oob_member_ids(member_army_ids);
+            let (owner_tag_db_id, owner_status) =
+                compact_oob_owner_consensus(owners_by_ag.remove(&ag_id));
+            rows.push(CompactOobCommandRow {
+                kind: COMPACT_OOB_KIND_ARMY_GROUP,
+                object_id: ag_id,
+                deleted: false,
+                parent_id: None,
+                owner_tag_db_id,
+                member_ids,
+                member_count,
+                member_count_engine: None,
+                missing_member_count: None,
+                leader_id: None,
+                leader_skill: None,
+                leader_trait_count: None,
+                parent_status: "none",
+                member_status,
+                owner_status,
+                leader_status: "none",
+                leader_trait_status: "none",
+            });
+        }
+
+        rows.sort_by_key(|row| (row.kind, row.object_id));
+        rows
+    }
+
+    fn compact_oob_member_ids(mut ids: Vec<u32>) -> (Option<Vec<u32>>, &'static str) {
+        if ids.len() > MAX_OOB_INLINE_IDS {
+            ids.truncate(MAX_OOB_INLINE_IDS);
+            (Some(ids), "overflow")
+        } else {
+            (Some(ids), "exact")
+        }
+    }
+
+    fn compact_oob_owner_consensus(
+        counts: Option<BTreeMap<u32, u32>>,
+    ) -> (Option<u32>, &'static str) {
+        let Some(counts) = counts else {
+            return (None, "unknown");
+        };
+        if counts.is_empty() {
+            return (None, "unknown");
+        }
+        if counts.len() == 1 {
+            let owner = counts.keys().next().copied();
+            return (owner, "exact");
+        }
+        (None, "mixed")
+    }
+
+    fn read_compact_oob_army_group_parent(
+        module_base: usize,
+        army_body: usize,
+    ) -> (Option<u32>, &'static str) {
+        let Some(parent_ptr) =
+            read_u64(army_body.saturating_add(ARMY_OFF_AG_PARENT)).map(|value| value as usize)
+        else {
+            return (None, "validation_failed");
+        };
+        if !is_map_control_heap_pointer(parent_ptr) {
+            return (None, "unknown");
+        }
+        match validate_oob_body(module_base, parent_ptr, AG_VTABLE_RVA, ARMY_TYPE) {
+            Some(parent_id) => (Some(parent_id), "exact"),
+            None => (None, "validation_failed"),
+        }
+    }
+
+    fn validate_oob_body(
+        module_base: usize,
+        body: usize,
+        vtable_rva: usize,
+        type_tag: u32,
+    ) -> Option<u32> {
+        if !is_map_control_heap_pointer(body) {
+            return None;
+        }
+        if read_u64(body)? as usize != module_base.checked_add(vtable_rva)? {
+            return None;
+        }
+        let handle = read_u64(body.checked_add(0x08)?)?;
+        if (handle & 0xFFFF_FFFF) as u32 != type_tag {
+            return None;
+        }
+        let object_id = ((handle >> 32) & 0xFFFF_FFFF) as u32;
+        (object_id > 0 && object_id <= MAX_OOB_COMMAND_ID).then_some(object_id)
+    }
+
+    fn compact_oob_command_delta_rows(
+        tracker: &mut CompactOobCommandTracker,
+        current_rows: Vec<CompactOobCommandRow>,
+    ) -> (Vec<CompactOobCommandRow>, u32, u32) {
+        let emit_full_snapshot = tracker.previous.is_empty();
+        let mut current = BTreeMap::new();
+        let mut emitted = Vec::new();
+        let mut deleted_rows = 0u32;
+        for row in current_rows {
+            let key = (row.kind, row.object_id);
+            let changed = tracker
+                .previous
+                .get(&key)
+                .map(|old| old != &row)
+                .unwrap_or(true);
+            if emit_full_snapshot || changed {
+                emitted.push(row.clone());
+            }
+            current.insert(key, row);
+        }
+        if !emit_full_snapshot {
+            for key in tracker.previous.keys().copied().collect::<Vec<_>>() {
+                if current.contains_key(&key) {
+                    continue;
+                }
+                emitted.push(deleted_compact_oob_command_row(key.0, key.1));
+                deleted_rows = deleted_rows.saturating_add(1);
+            }
+        }
+        emitted.sort_by_key(|row| (row.kind, row.object_id, row.deleted));
+        tracker.previous = current;
+        let changed_rows = emitted.len().min(u32::MAX as usize) as u32;
+        (emitted, changed_rows, deleted_rows)
+    }
+
+    fn deleted_compact_oob_command_row(kind: u32, object_id: u32) -> CompactOobCommandRow {
+        CompactOobCommandRow {
+            kind,
+            object_id,
+            deleted: true,
+            parent_id: None,
+            owner_tag_db_id: None,
+            member_ids: None,
+            member_count: 0,
+            member_count_engine: None,
+            missing_member_count: None,
+            leader_id: None,
+            leader_skill: None,
+            leader_trait_count: None,
+            parent_status: "none",
+            member_status: "none",
+            owner_status: "none",
+            leader_status: "none",
+            leader_trait_status: "none",
+        }
+    }
+
+    fn compact_oob_member_count(rows: &[CompactOobCommandRow]) -> usize {
+        rows.iter()
+            .map(|row| row.member_ids.as_ref().map(Vec::len).unwrap_or(0))
+            .sum()
+    }
+
+    fn compact_oob_status_code(status: &str) -> u32 {
+        match status {
+            "exact" => COMPACT_OOB_STATUS_EXACT,
+            "unknown" => COMPACT_OOB_STATUS_UNKNOWN,
+            "overflow" => COMPACT_OOB_STATUS_OVERFLOW,
+            "validation_failed" => COMPACT_OOB_STATUS_VALIDATION_FAILED,
+            "mixed" => COMPACT_OOB_STATUS_MIXED,
+            _ => COMPACT_OOB_STATUS_NONE,
         }
     }
 
@@ -12620,6 +13101,40 @@ mod attach_log {
         );
     }
 
+    fn append_compact_oob_command_data_record(
+        out: &mut Vec<u8>,
+        sequence: u64,
+        game_hour_raw: i32,
+        rows: &[CompactOobCommandRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        root_rows: u32,
+        observed_army_rows: u32,
+        observed_army_group_rows: u32,
+        deleted_rows: u32,
+    ) {
+        let payload = compact_oob_command_data_payload(
+            rows,
+            elapsed_wall_ms,
+            status_flags,
+            changed_rows,
+            root_rows,
+            observed_army_rows,
+            observed_army_group_rows,
+            deleted_rows,
+        );
+        append_compact_record(
+            out,
+            sequence,
+            game_hour_raw,
+            COMPACT_DOMAIN_OOB_COMMAND,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+    }
+
     fn append_compact_land_combats_data_record(
         out: &mut Vec<u8>,
         sequence: u64,
@@ -13638,6 +14153,103 @@ mod attach_log {
             if let Some(states) = row.target_states.as_ref() {
                 for state_id in states {
                     payload.extend_from_slice(&state_id.to_le_bytes());
+                    payload.extend_from_slice(&0u32.to_le_bytes());
+                }
+            }
+        }
+        payload
+    }
+
+    fn compact_oob_command_data_payload(
+        rows: &[CompactOobCommandRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        root_rows: u32,
+        observed_army_rows: u32,
+        observed_army_group_rows: u32,
+        deleted_rows: u32,
+    ) -> Vec<u8> {
+        let member_count = compact_oob_member_count(rows);
+        let mut payload = Vec::with_capacity(
+            48usize
+                .saturating_add(rows.len().saturating_mul(80))
+                .saturating_add(member_count.saturating_mul(8)),
+        );
+        payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
+        payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+        payload.extend_from_slice(&changed_rows.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&root_rows.to_le_bytes());
+        payload.extend_from_slice(&observed_army_rows.to_le_bytes());
+        payload.extend_from_slice(&observed_army_group_rows.to_le_bytes());
+        payload.extend_from_slice(&(member_count.min(u32::MAX as usize) as u32).to_le_bytes());
+        payload.extend_from_slice(&deleted_rows.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+
+        let mut member_cursor = 0u32;
+        for row in rows {
+            let row_member_count = row
+                .member_ids
+                .as_ref()
+                .map(Vec::len)
+                .unwrap_or(0)
+                .min(u32::MAX as usize) as u32;
+            let mut flags = 0u32;
+            if row.deleted {
+                flags |= COMPACT_OOB_ROW_FLAG_DELETED;
+            }
+            if row.parent_id.is_some() {
+                flags |= COMPACT_OOB_ROW_FLAG_PARENT;
+            }
+            if row.owner_tag_db_id.is_some() {
+                flags |= COMPACT_OOB_ROW_FLAG_OWNER;
+            }
+            if row.leader_id.is_some() {
+                flags |= COMPACT_OOB_ROW_FLAG_LEADER;
+            }
+            if row.leader_skill.is_some() {
+                flags |= COMPACT_OOB_ROW_FLAG_LEADER_SKILL;
+            }
+            if row.member_count_engine.is_some() {
+                flags |= COMPACT_OOB_ROW_FLAG_MEMBER_COUNT_ENGINE;
+            }
+            if row.missing_member_count.is_some() {
+                flags |= COMPACT_OOB_ROW_FLAG_MISSING_MEMBER_COUNT;
+            }
+            let member_first = if row_member_count == 0 {
+                0
+            } else {
+                member_cursor
+            };
+            payload.extend_from_slice(&row.kind.to_le_bytes());
+            payload.extend_from_slice(&row.object_id.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&row.parent_id.unwrap_or(0).to_le_bytes());
+            payload.extend_from_slice(&row.owner_tag_db_id.unwrap_or(0).to_le_bytes());
+            payload.extend_from_slice(&row.leader_id.unwrap_or(0).to_le_bytes());
+            payload.extend_from_slice(&row.leader_skill.unwrap_or(0).to_le_bytes());
+            payload.extend_from_slice(&member_first.to_le_bytes());
+            payload.extend_from_slice(&row_member_count.to_le_bytes());
+            payload.extend_from_slice(&row.member_count.to_le_bytes());
+            payload.extend_from_slice(&row.member_count_engine.unwrap_or(0).to_le_bytes());
+            payload.extend_from_slice(&row.missing_member_count.unwrap_or(0).to_le_bytes());
+            payload.extend_from_slice(&row.leader_trait_count.unwrap_or(0).to_le_bytes());
+            payload.extend_from_slice(&compact_oob_status_code(row.parent_status).to_le_bytes());
+            payload.extend_from_slice(&compact_oob_status_code(row.member_status).to_le_bytes());
+            payload.extend_from_slice(&compact_oob_status_code(row.owner_status).to_le_bytes());
+            payload.extend_from_slice(&compact_oob_status_code(row.leader_status).to_le_bytes());
+            payload
+                .extend_from_slice(&compact_oob_status_code(row.leader_trait_status).to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            member_cursor = member_cursor.saturating_add(row_member_count);
+        }
+        for row in rows {
+            if let Some(member_ids) = row.member_ids.as_ref() {
+                for member_id in member_ids {
+                    payload.extend_from_slice(&member_id.to_le_bytes());
                     payload.extend_from_slice(&0u32.to_le_bytes());
                 }
             }
@@ -21951,6 +22563,124 @@ mod attach_log {
         }
 
         #[test]
+        fn compact_oob_command_data_payload_packs_army_and_group_rows() {
+            let rows = vec![
+                CompactOobCommandRow {
+                    kind: COMPACT_OOB_KIND_ARMY,
+                    object_id: 17,
+                    deleted: false,
+                    parent_id: Some(301),
+                    owner_tag_db_id: Some(47),
+                    member_ids: Some(vec![101, 102]),
+                    member_count: 2,
+                    member_count_engine: Some(3),
+                    missing_member_count: Some(1),
+                    leader_id: Some(9001),
+                    leader_skill: Some(4),
+                    leader_trait_count: Some(3),
+                    parent_status: "exact",
+                    member_status: "exact",
+                    owner_status: "exact",
+                    leader_status: "exact",
+                    leader_trait_status: "exact",
+                },
+                CompactOobCommandRow {
+                    kind: COMPACT_OOB_KIND_ARMY_GROUP,
+                    object_id: 301,
+                    deleted: false,
+                    parent_id: None,
+                    owner_tag_db_id: Some(47),
+                    member_ids: Some(vec![17]),
+                    member_count: 1,
+                    member_count_engine: None,
+                    missing_member_count: None,
+                    leader_id: None,
+                    leader_skill: None,
+                    leader_trait_count: None,
+                    parent_status: "none",
+                    member_status: "exact",
+                    owner_status: "exact",
+                    leader_status: "none",
+                    leader_trait_status: "none",
+                },
+            ];
+
+            let payload = compact_oob_command_data_payload(
+                &rows,
+                81,
+                COMPACT_STATUS_EXTRACTION_PERF_GATE,
+                2,
+                20,
+                1,
+                1,
+                0,
+            );
+
+            assert_eq!(payload.len(), 48 + 2 * 80 + 3 * 8);
+            assert_eq!(u64::from_le_bytes(payload[0..8].try_into().unwrap()), 81);
+            assert_eq!(u32::from_le_bytes(payload[8..12].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[20..24].try_into().unwrap()), 20);
+            assert_eq!(u32::from_le_bytes(payload[24..28].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[28..32].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[32..36].try_into().unwrap()), 3);
+
+            assert_eq!(
+                u32::from_le_bytes(payload[48..52].try_into().unwrap()),
+                COMPACT_OOB_KIND_ARMY
+            );
+            assert_eq!(u32::from_le_bytes(payload[52..56].try_into().unwrap()), 17);
+            assert_eq!(
+                u32::from_le_bytes(payload[56..60].try_into().unwrap()),
+                COMPACT_OOB_ROW_FLAG_PARENT
+                    | COMPACT_OOB_ROW_FLAG_OWNER
+                    | COMPACT_OOB_ROW_FLAG_LEADER
+                    | COMPACT_OOB_ROW_FLAG_LEADER_SKILL
+                    | COMPACT_OOB_ROW_FLAG_MEMBER_COUNT_ENGINE
+                    | COMPACT_OOB_ROW_FLAG_MISSING_MEMBER_COUNT
+            );
+            assert_eq!(u32::from_le_bytes(payload[60..64].try_into().unwrap()), 301);
+            assert_eq!(u32::from_le_bytes(payload[64..68].try_into().unwrap()), 47);
+            assert_eq!(
+                u32::from_le_bytes(payload[68..72].try_into().unwrap()),
+                9001
+            );
+            assert_eq!(u32::from_le_bytes(payload[72..76].try_into().unwrap()), 4);
+            assert_eq!(u32::from_le_bytes(payload[76..80].try_into().unwrap()), 0);
+            assert_eq!(u32::from_le_bytes(payload[80..84].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[84..88].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[88..92].try_into().unwrap()), 3);
+            assert_eq!(u32::from_le_bytes(payload[92..96].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[96..100].try_into().unwrap()), 3);
+
+            assert_eq!(
+                u32::from_le_bytes(payload[128..132].try_into().unwrap()),
+                COMPACT_OOB_KIND_ARMY_GROUP
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[132..136].try_into().unwrap()),
+                301
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[136..140].try_into().unwrap()),
+                COMPACT_OOB_ROW_FLAG_OWNER
+            );
+            assert_eq!(u32::from_le_bytes(payload[156..160].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[160..164].try_into().unwrap()), 1);
+            assert_eq!(
+                u32::from_le_bytes(payload[208..212].try_into().unwrap()),
+                101
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[216..220].try_into().unwrap()),
+                102
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[224..228].try_into().unwrap()),
+                17
+            );
+        }
+
+        #[test]
         fn compact_division_root_discovery_does_not_heap_scan() {
             let cache = discover_compact_division_roots(None);
 
@@ -23890,7 +24620,7 @@ mod attach_log {
             assert!(frame.contains("\"process_id\":1234"));
             assert!(frame.contains("\"tick_ms\":123456"));
             assert!(frame.contains("\"sequence\":11"));
-            assert!(frame.contains("\"profile_id\":\"vanilla_latest_2026_06_28\""));
+            assert!(frame.contains("\"profile_id\":\"vanilla_latest_2026_06_30\""));
             assert!(frame.contains("\"session_sequence\":5"));
             assert!(frame.contains("\"duration_ms\":8000"));
             assert!(frame.contains("\"elapsed_wall_ms\":125"));
@@ -25315,7 +26045,7 @@ mod attach_log {
             assert!(frame.contains("\"map_control_controller_bridge_valid\":true"));
             assert!(frame.contains("\"division_body_bridge_rows\":0"));
             assert!(frame.contains("\"division_body_bridge_valid\":true"));
-            assert!(frame.contains("\"profile_id\":\"vanilla_latest_2026_06_28\""));
+            assert!(frame.contains("\"profile_id\":\"vanilla_latest_2026_06_30\""));
             assert!(frame.contains("\"domains\":[]"));
             assert!(frame.contains("\"root_probe\":null"));
         }

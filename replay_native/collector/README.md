@@ -163,18 +163,33 @@ country-state domains. Current compact binary proofs:
   changed order rows, 19 delete rows, and 966 exact target-state rows. This is
   DLL-native for active armies reachable through live divisions; full OOB roots,
   empty armies, and deeper non-type-5 order geometry remain open.
+- `compact_land_oob_weather_870ebf_speed5_20260630_v1`: refreshes the active
+  collector profile for the current 2026-06-30 vanilla executable hash
+  `870EBF1F615262FACCA48A3B947775C41F0A5338F3068C40958209F5C41C65AD` and proves
+  the updated land-command vtables through the compact DLL/Rust path. It
+  scheduled `divisions`, `division_equipment`, `army_orders`, `oob_command`,
+  and `weather_live` together for 30 seconds, advanced 57 game hours with 58
+  unique frame hours and 0 skipped, had full domain/data-record coverage,
+  ordered and decodable records, no worker-panic/source-unavailable/partial or
+  bridge flags, `division_root_source = "dll_native"`, avg frame 19.299 ms, p95
+  22.352 ms, max 23.016 ms, 2,800,072 compact bytes, and a verified
+  `.battleplan`. The new compact `oob_command` domain emitted active army and
+  army-group rows, leader/skill rows, owner rows, member division/army rows,
+  engine member counts, and missing-member-count diagnostics. This is not full
+  OOB completion: empty armies, fleets, task forces, theatres, and roots not
+  reachable through live divisions remain open.
 
 This completes the extraction-only compact performance gate for the current
 implemented compact domains and starts replay payload capture with typed
 records plus Rust-native `.battleplan` packing. `fuel_live`, `production_live`,
 `focus_live`, `tech_live`, `politics_live`, `politics_residuals`,
 `decisions_live`, `diplomacy_live`, `divisions`, `division_equipment`,
-`army_orders`, `land_combats`, `map_control`, `map_detail`, and `weather_live`
-are live-proven through the DLL/Rust compact path at speed five with zero
-skipped game hours for the current vanilla build. The next step is not more JSON
-widening; it is native compact coverage for full OOB, naval/air combat and
-telemetry, and richer combat/order details that are still raw-only,
-bridge-backed, or unimplemented.
+`army_orders`, active land `oob_command`, `land_combats`, `map_control`,
+`map_detail`, and `weather_live` are live-proven through the DLL/Rust compact
+path at speed five with zero skipped game hours for the applicable verified
+build profile. The next step is not more JSON widening; it is native compact
+coverage for full OOB, naval/air combat and telemetry, and richer combat/order
+details that are still raw-only, bridge-backed, or unimplemented.
 
 Country-object heap discovery is not part of normal capture. The experimental
 whole-heap vtable scan is behind the explicit `country_object_scan` control flag,

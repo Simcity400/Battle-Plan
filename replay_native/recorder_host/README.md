@@ -476,6 +476,26 @@ path for active armies reachable through live divisions. Do not mark full OOB
 complete yet: empty armies, army-group/fleet/task-force roots, and deeper
 non-type-5 order geometry still need native compact coverage.
 
+`compact_land_oob_weather_870ebf_speed5_20260630_v1` refreshes the active
+collector profile for the 2026-06-30 vanilla executable
+`870EBF1F615262FACCA48A3B947775C41F0A5338F3068C40958209F5C41C65AD` and proves
+the current land-command bundle on that build. The DLL profile now uses
+`CGameStateDailyUpdate=0x1D4390`, `CGameState=0x3316E90`,
+`CountryDataBase=0x33189C8`, and `GetLongString=0x526A40`, with refreshed
+land/OOB/weather vtables from anchored live objects. The 30-second compact
+speed-five gate scheduled `divisions`, `division_equipment`, `army_orders`,
+`oob_command`, and `weather_live`; it advanced 57 game hours with 58 frame-end
+records, skipped 0, had full per-domain data coverage, ordered/decodable
+records, no source-unavailable/partial/bridge/worker flags,
+`division_root_source = "dll_native"`, avg frame 19.299 ms, p95 22.352 ms, max
+23.016 ms, 2,800,072 compact bytes, and an independent `pack_replay verify`
+pass. The new `oob_command` data records captured 433 active army rows, 110
+army-group rows, 388 leader rows, 1,628 division membership rows, 227 army-group
+membership rows, owner rows, engine member counts, and missing-member-count
+diagnostics through the DLL/Rust compact path. This is active land-command OOB
+coverage only; empty armies, fleets, task forces, theatres, and full command
+roots remain open.
+
 Implementation note: see `COMPACT_HOI4REPLAY_NEXT_STEP.md` for the bounded
 Rust-native packaging path and the test contract for putting `collector_stream.bin`
 inside a manifest-covered `.battleplan` without using Python or full JSON root

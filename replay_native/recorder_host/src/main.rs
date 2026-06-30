@@ -93,6 +93,20 @@ const COMPACT_ARMY_ORDER_ROW_FLAG_TARGET_STATES: u32 = 1 << 1;
 const COMPACT_ARMY_ORDER_ROW_FLAG_TARGET_STATE_COUNT: u32 = 1 << 2;
 const COMPACT_ARMY_ORDER_MAX_SLOT_INDEX: u32 = 64;
 const COMPACT_ARMY_ORDER_MAX_STATE_ID: u32 = 65_535;
+const COMPACT_OOB_ROW_LEN: usize = 80;
+const COMPACT_OOB_MEMBER_ROW_LEN: usize = 8;
+const COMPACT_OOB_KIND_ARMY: u32 = 1;
+const COMPACT_OOB_KIND_ARMY_GROUP: u32 = 2;
+const COMPACT_OOB_ROW_FLAG_DELETED: u32 = 1;
+const COMPACT_OOB_ROW_FLAG_PARENT: u32 = 1 << 1;
+const COMPACT_OOB_ROW_FLAG_OWNER: u32 = 1 << 2;
+const COMPACT_OOB_ROW_FLAG_LEADER: u32 = 1 << 3;
+const COMPACT_OOB_ROW_FLAG_LEADER_SKILL: u32 = 1 << 4;
+const COMPACT_OOB_ROW_FLAG_MEMBER_COUNT_ENGINE: u32 = 1 << 5;
+const COMPACT_OOB_ROW_FLAG_MISSING_MEMBER_COUNT: u32 = 1 << 6;
+const COMPACT_OOB_MAX_ID: u32 = 4_000_000;
+const COMPACT_OOB_MAX_MEMBER_ROWS: usize = 250_000;
+const COMPACT_OOB_MAX_LEADER_SKILL: u32 = 15;
 const COMPACT_MAP_STATE_ROW_LEN: usize = 16;
 const COMPACT_MAP_PROVINCE_ROW_LEN: usize = 16;
 const COMPACT_MAP_DETAIL_STATE_ROW_LEN: usize = 28;
@@ -1199,6 +1213,7 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                         &mut summary,
                     ),
                     27 => decode_compact_army_orders_data_payload(offset, payload, &mut summary),
+                    28 => decode_compact_oob_command_data_payload(offset, payload, &mut summary),
                     other => summary.parse_errors.push(format!(
                         "offset {offset}: unsupported domain data payload for {}",
                         compact_domain_name(other)
@@ -3036,6 +3051,350 @@ fn valid_compact_army_order_state_id(value: u32) -> bool {
     value > 0 && value <= COMPACT_ARMY_ORDER_MAX_STATE_ID
 }
 
+fn decode_compact_oob_command_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < 48 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: oob command data payload is {} byte(s), expected at least 48",
+            payload.len()
+        ));
+        return;
+    }
+    let row_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let root_rows = read_u32_le(payload, 20) as usize;
+    let observed_army_rows = read_u32_le(payload, 24) as usize;
+    let observed_army_group_rows = read_u32_le(payload, 28) as usize;
+    let member_count = read_u32_le(payload, 32) as usize;
+    let deleted_rows = read_u32_le(payload, 36) as usize;
+    let reserved0 = read_u32_le(payload, 40);
+    let reserved1 = read_u32_le(payload, 44);
+    summary.status_flags_or |= status_flags;
+    if member_count > COMPACT_OOB_MAX_MEMBER_ROWS {
+        summary.parse_errors.push(format!(
+            "offset {offset}: oob command member_count {member_count} exceeds limit {COMPACT_OOB_MAX_MEMBER_ROWS}"
+        ));
+    }
+    let expected_len = 48usize
+        .saturating_add(row_count.saturating_mul(COMPACT_OOB_ROW_LEN))
+        .saturating_add(member_count.saturating_mul(COMPACT_OOB_MEMBER_ROW_LEN));
+    if payload.len() != expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: oob command data payload is {} byte(s), expected {expected_len}",
+            payload.len()
+        ));
+        return;
+    }
+    if changed_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: oob command changed_rows {changed_rows} > row_count {row_count}"
+        ));
+    }
+    if observed_army_rows > root_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: oob command observed_army_rows {observed_army_rows} > root_rows {root_rows}"
+        ));
+    }
+    if deleted_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: oob command deleted_rows {deleted_rows} > row_count {row_count}"
+        ));
+    }
+    if reserved0 != 0 || reserved1 != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: oob command header reserved field is nonzero"
+        ));
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&28) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    add_compact_domain_data_unit(summary, 28, "oob_command_rows", row_count);
+    add_compact_domain_data_unit(summary, 28, "oob_command_root_rows", root_rows);
+    add_compact_domain_data_unit(summary, 28, "oob_observed_army_rows", observed_army_rows);
+    add_compact_domain_data_unit(
+        summary,
+        28,
+        "oob_observed_army_group_rows",
+        observed_army_group_rows,
+    );
+    add_compact_domain_data_unit(summary, 28, "oob_member_rows", member_count);
+    add_compact_domain_data_unit(summary, 28, "oob_deleted_rows", deleted_rows);
+
+    let mut cursor = 48usize;
+    let mut seen_rows = BTreeSet::new();
+    let mut declared_members = 0usize;
+    let mut emitted_army_rows = 0usize;
+    let mut emitted_army_group_rows = 0usize;
+    let mut member_division_rows = 0usize;
+    let mut member_army_rows = 0usize;
+    let mut leader_rows = 0usize;
+    let mut leader_skill_rows = 0usize;
+    let mut owner_rows = 0usize;
+    let mut engine_count_rows = 0usize;
+    let mut missing_count_rows = 0usize;
+    for row_index in 0..row_count {
+        let kind = read_u32_le(payload, cursor);
+        let object_id = read_u32_le(payload, cursor + 4);
+        let flags = read_u32_le(payload, cursor + 8);
+        let parent_id = read_u32_le(payload, cursor + 12);
+        let owner_tag_db_id = read_u32_le(payload, cursor + 16);
+        let leader_id = read_u32_le(payload, cursor + 20);
+        let leader_skill = read_u32_le(payload, cursor + 24);
+        let member_first = read_u32_le(payload, cursor + 28) as usize;
+        let row_member_count = read_u32_le(payload, cursor + 32) as usize;
+        let logical_member_count = read_u32_le(payload, cursor + 36) as usize;
+        let member_count_engine = read_u32_le(payload, cursor + 40);
+        let missing_member_count = read_u32_le(payload, cursor + 44);
+        let leader_trait_count = read_u32_le(payload, cursor + 48);
+        let parent_status = read_u32_le(payload, cursor + 52);
+        let member_status = read_u32_le(payload, cursor + 56);
+        let owner_status = read_u32_le(payload, cursor + 60);
+        let leader_status = read_u32_le(payload, cursor + 64);
+        let leader_trait_status = read_u32_le(payload, cursor + 68);
+        let row_reserved0 = read_u32_le(payload, cursor + 72);
+        let row_reserved1 = read_u32_le(payload, cursor + 76);
+        cursor += COMPACT_OOB_ROW_LEN;
+
+        let deleted = (flags & COMPACT_OOB_ROW_FLAG_DELETED) != 0;
+        if kind != COMPACT_OOB_KIND_ARMY && kind != COMPACT_OOB_KIND_ARMY_GROUP {
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob command row {row_index} has invalid kind {kind}"
+            ));
+        } else if kind == COMPACT_OOB_KIND_ARMY {
+            emitted_army_rows = emitted_army_rows.saturating_add(1);
+        } else {
+            emitted_army_group_rows = emitted_army_group_rows.saturating_add(1);
+        }
+        if !valid_compact_oob_id(object_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob command row {row_index} has invalid object_id {object_id}"
+            ));
+        } else if !seen_rows.insert((kind, object_id, deleted)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob command row {row_index} duplicates {kind}:{object_id}"
+            ));
+        }
+        if flags
+            & !(COMPACT_OOB_ROW_FLAG_DELETED
+                | COMPACT_OOB_ROW_FLAG_PARENT
+                | COMPACT_OOB_ROW_FLAG_OWNER
+                | COMPACT_OOB_ROW_FLAG_LEADER
+                | COMPACT_OOB_ROW_FLAG_LEADER_SKILL
+                | COMPACT_OOB_ROW_FLAG_MEMBER_COUNT_ENGINE
+                | COMPACT_OOB_ROW_FLAG_MISSING_MEMBER_COUNT)
+            != 0
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob command row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if deleted {
+            if parent_id != 0
+                || owner_tag_db_id != 0
+                || leader_id != 0
+                || leader_skill != 0
+                || row_member_count != 0
+                || logical_member_count != 0
+                || member_count_engine != 0
+                || missing_member_count != 0
+                || leader_trait_count != 0
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: oob command deleted row {row_index} has live fields"
+                ));
+            }
+        }
+        validate_compact_oob_optional_id(
+            summary,
+            offset,
+            row_index,
+            (flags & COMPACT_OOB_ROW_FLAG_PARENT) != 0,
+            parent_id,
+            "parent_id",
+        );
+        validate_compact_oob_optional_id(
+            summary,
+            offset,
+            row_index,
+            (flags & COMPACT_OOB_ROW_FLAG_OWNER) != 0,
+            owner_tag_db_id,
+            "owner_tag_db_id",
+        );
+        validate_compact_oob_optional_id(
+            summary,
+            offset,
+            row_index,
+            (flags & COMPACT_OOB_ROW_FLAG_LEADER) != 0,
+            leader_id,
+            "leader_id",
+        );
+        if (flags & COMPACT_OOB_ROW_FLAG_OWNER) != 0 {
+            owner_rows = owner_rows.saturating_add(1);
+        }
+        if (flags & COMPACT_OOB_ROW_FLAG_LEADER) != 0 {
+            leader_rows = leader_rows.saturating_add(1);
+        }
+        if (flags & COMPACT_OOB_ROW_FLAG_LEADER_SKILL) != 0 {
+            leader_skill_rows = leader_skill_rows.saturating_add(1);
+            if leader_skill > COMPACT_OOB_MAX_LEADER_SKILL {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: oob command row {row_index} has invalid leader_skill {leader_skill}"
+                ));
+            }
+        } else if leader_skill != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob command row {row_index} has leader_skill without flag"
+            ));
+        }
+        if (flags & COMPACT_OOB_ROW_FLAG_MEMBER_COUNT_ENGINE) != 0 {
+            engine_count_rows = engine_count_rows.saturating_add(1);
+        } else if member_count_engine != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob command row {row_index} has engine member count without flag"
+            ));
+        }
+        if (flags & COMPACT_OOB_ROW_FLAG_MISSING_MEMBER_COUNT) != 0 {
+            missing_count_rows = missing_count_rows.saturating_add(1);
+        } else if missing_member_count != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob command row {row_index} has missing member count without flag"
+            ));
+        }
+        for (status_name, status_value) in [
+            ("parent_status", parent_status),
+            ("member_status", member_status),
+            ("owner_status", owner_status),
+            ("leader_status", leader_status),
+            ("leader_trait_status", leader_trait_status),
+        ] {
+            if status_value > 5 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: oob command row {row_index} has invalid {status_name} {status_value}"
+                ));
+            }
+        }
+        if row_member_count == 0 {
+            if member_first != 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: oob command row {row_index} has member_first without members"
+                ));
+            }
+        } else {
+            let Some(member_end) = member_first.checked_add(row_member_count) else {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: oob command row {row_index} member range overflows"
+                ));
+                continue;
+            };
+            if member_end > member_count {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: oob command row {row_index} member range {member_first}..{member_end} exceeds {member_count}"
+                ));
+            }
+            declared_members = declared_members.saturating_add(row_member_count);
+            if kind == COMPACT_OOB_KIND_ARMY {
+                member_division_rows = member_division_rows.saturating_add(row_member_count);
+            } else if kind == COMPACT_OOB_KIND_ARMY_GROUP {
+                member_army_rows = member_army_rows.saturating_add(row_member_count);
+            }
+        }
+        if member_status != 3 && row_member_count != logical_member_count {
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob command row {row_index} member_count {row_member_count} != logical_member_count {logical_member_count}"
+            ));
+        }
+        if row_reserved0 != 0 || row_reserved1 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob command row {row_index} reserved field is nonzero"
+            ));
+        }
+    }
+    if declared_members != member_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: oob command member_count {member_count} != declared {declared_members}"
+        ));
+    }
+    add_compact_domain_data_unit(summary, 28, "oob_army_rows", emitted_army_rows);
+    add_compact_domain_data_unit(summary, 28, "oob_army_group_rows", emitted_army_group_rows);
+    add_compact_domain_data_unit(
+        summary,
+        28,
+        "oob_member_division_rows",
+        member_division_rows,
+    );
+    add_compact_domain_data_unit(summary, 28, "oob_member_army_rows", member_army_rows);
+    add_compact_domain_data_unit(summary, 28, "oob_leader_rows", leader_rows);
+    add_compact_domain_data_unit(summary, 28, "oob_leader_skill_rows", leader_skill_rows);
+    add_compact_domain_data_unit(summary, 28, "oob_owner_rows", owner_rows);
+    add_compact_domain_data_unit(
+        summary,
+        28,
+        "oob_engine_member_count_rows",
+        engine_count_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        28,
+        "oob_missing_member_count_rows",
+        missing_count_rows,
+    );
+
+    let mut seen_members = BTreeSet::new();
+    for row_index in 0..member_count {
+        let member_id = read_u32_le(payload, cursor);
+        let row_reserved = read_u32_le(payload, cursor + 4);
+        cursor += COMPACT_OOB_MEMBER_ROW_LEN;
+        if !valid_compact_oob_id(member_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob command member row {row_index} has invalid member_id {member_id}"
+            ));
+        }
+        if !seen_members.insert((row_index, member_id)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob command member row {row_index} duplicates member_id {member_id}"
+            ));
+        }
+        if row_reserved != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob command member row {row_index} reserved field is nonzero"
+            ));
+        }
+    }
+}
+
+fn valid_compact_oob_id(value: u32) -> bool {
+    value > 0 && value <= COMPACT_OOB_MAX_ID
+}
+
+fn validate_compact_oob_optional_id(
+    summary: &mut CompactSummary,
+    offset: usize,
+    row_index: usize,
+    present: bool,
+    value: u32,
+    field: &str,
+) {
+    if present {
+        if !valid_compact_oob_id(value) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob command row {row_index} has invalid {field} {value}"
+            ));
+        }
+    } else if value != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: oob command row {row_index} has {field} without flag"
+        ));
+    }
+}
+
 fn decode_compact_land_combats_data_payload(
     offset: usize,
     payload: &[u8],
@@ -4030,6 +4389,7 @@ fn compact_domain_id(domain: &str) -> Option<u16> {
         "weather_live" => Some(24),
         "division_equipment" => Some(26),
         "army_orders" => Some(27),
+        "oob_command" => Some(28),
         _ => None,
     }
 }
@@ -4052,6 +4412,7 @@ fn compact_domain_name(domain_id: u16) -> &'static str {
         24 => "weather_live",
         26 => "division_equipment",
         27 => "army_orders",
+        28 => "oob_command",
         1000 => "frame",
         _ => "unknown",
     }
@@ -4115,7 +4476,7 @@ fn compact_domain_coverage_errors(
 fn compact_domain_requires_data_record(domain_id: u16) -> bool {
     matches!(
         domain_id,
-        10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 20 | 21 | 22 | 23 | 24 | 26 | 27
+        10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 20 | 21 | 22 | 23 | 24 | 26 | 27 | 28
     )
 }
 
@@ -4132,7 +4493,10 @@ fn compact_division_root_source(cfg: &Config, summary: &CompactSummary) -> &'sta
         return "python_bridge";
     }
     if !cfg.scheduled_domains.iter().any(|domain| {
-        domain == "divisions" || domain == "division_equipment" || domain == "army_orders"
+        domain == "divisions"
+            || domain == "division_equipment"
+            || domain == "army_orders"
+            || domain == "oob_command"
     }) {
         return "not_scheduled";
     }
@@ -4141,6 +4505,7 @@ fn compact_division_root_source(cfg: &Config, summary: &CompactSummary) -> &'sta
         .get(&20)
         .or_else(|| summary.per_domain.get(&26))
         .or_else(|| summary.per_domain.get(&27))
+        .or_else(|| summary.per_domain.get(&28))
     else {
         return "unseen";
     };
@@ -4970,6 +5335,75 @@ mod tests {
         );
         assert_eq!(compact_domain_id("army_orders"), Some(27));
         assert_eq!(compact_domain_name(27), "army_orders");
+    }
+
+    #[test]
+    fn compact_summary_decodes_oob_command_data_record() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            28,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(650, 2, 2, 3, 2),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            28,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_oob_command_data_payload(0),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_100, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(&summary, &[28]).is_empty());
+        let oob = summary.per_domain.get(&28).unwrap();
+        assert_eq!(oob.data_record_count, 1);
+        assert_eq!(oob.data_rows_total, 2);
+        assert_eq!(oob.data_changed_rows_total, 2);
+        assert_eq!(oob.unit_count_total, 3);
+        assert_eq!(
+            oob.data_units_total.get("oob_observed_army_rows").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            oob.data_units_total
+                .get("oob_observed_army_group_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            oob.data_units_total.get("oob_member_rows").copied(),
+            Some(3)
+        );
+        assert_eq!(
+            oob.data_units_total
+                .get("oob_member_division_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            oob.data_units_total.get("oob_member_army_rows").copied(),
+            Some(1)
+        );
+        assert_eq!(compact_domain_id("oob_command"), Some(28));
+        assert_eq!(compact_domain_name(28), "oob_command");
     }
 
     #[test]
@@ -6227,6 +6661,114 @@ mod tests {
         }
         for state_id in [118u32, 119u32] {
             payload.extend_from_slice(&state_id.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        payload
+    }
+
+    fn test_oob_command_data_payload(status_flags: u32) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&20u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&3u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+
+        for (
+            kind,
+            object_id,
+            flags,
+            parent_id,
+            owner_tag_db_id,
+            leader_id,
+            leader_skill,
+            member_first,
+            row_member_count,
+            logical_member_count,
+            member_count_engine,
+            missing_member_count,
+            leader_trait_count,
+            parent_status,
+            member_status,
+            owner_status,
+            leader_status,
+            leader_trait_status,
+        ) in [
+            (
+                COMPACT_OOB_KIND_ARMY,
+                17u32,
+                COMPACT_OOB_ROW_FLAG_PARENT
+                    | COMPACT_OOB_ROW_FLAG_OWNER
+                    | COMPACT_OOB_ROW_FLAG_LEADER
+                    | COMPACT_OOB_ROW_FLAG_LEADER_SKILL
+                    | COMPACT_OOB_ROW_FLAG_MEMBER_COUNT_ENGINE
+                    | COMPACT_OOB_ROW_FLAG_MISSING_MEMBER_COUNT,
+                301u32,
+                47u32,
+                9001u32,
+                4u32,
+                0u32,
+                2u32,
+                2u32,
+                3u32,
+                1u32,
+                3u32,
+                1u32,
+                1u32,
+                1u32,
+                1u32,
+                1u32,
+            ),
+            (
+                COMPACT_OOB_KIND_ARMY_GROUP,
+                301u32,
+                COMPACT_OOB_ROW_FLAG_OWNER,
+                0u32,
+                47u32,
+                0u32,
+                0u32,
+                2u32,
+                1u32,
+                1u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                1u32,
+                1u32,
+                0u32,
+                0u32,
+            ),
+        ] {
+            payload.extend_from_slice(&kind.to_le_bytes());
+            payload.extend_from_slice(&object_id.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&parent_id.to_le_bytes());
+            payload.extend_from_slice(&owner_tag_db_id.to_le_bytes());
+            payload.extend_from_slice(&leader_id.to_le_bytes());
+            payload.extend_from_slice(&leader_skill.to_le_bytes());
+            payload.extend_from_slice(&member_first.to_le_bytes());
+            payload.extend_from_slice(&row_member_count.to_le_bytes());
+            payload.extend_from_slice(&logical_member_count.to_le_bytes());
+            payload.extend_from_slice(&member_count_engine.to_le_bytes());
+            payload.extend_from_slice(&missing_member_count.to_le_bytes());
+            payload.extend_from_slice(&leader_trait_count.to_le_bytes());
+            payload.extend_from_slice(&parent_status.to_le_bytes());
+            payload.extend_from_slice(&member_status.to_le_bytes());
+            payload.extend_from_slice(&owner_status.to_le_bytes());
+            payload.extend_from_slice(&leader_status.to_le_bytes());
+            payload.extend_from_slice(&leader_trait_status.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        for member_id in [101u32, 102u32, 17u32] {
+            payload.extend_from_slice(&member_id.to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
         }
         payload

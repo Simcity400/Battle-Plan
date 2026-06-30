@@ -129,6 +129,20 @@ for inspection, with no ability to mutate the game.
   DLL-native path from anchored live division parents to CArmy order vectors.
   Remaining replay capture gaps are full OOB roots, empty armies, and deeper
   non-type-5 order geometry.
+- Compact DLL/Rust replay capture now has an active land `oob_command` domain
+  on the current 2026-06-30 vanilla executable profile
+  `870EBF1F615262FACCA48A3B947775C41F0A5338F3068C40958209F5C41C65AD`. The proof
+  `compact_land_oob_weather_870ebf_speed5_20260630_v1` refreshed the current
+  DLL profile roots and land-command/weather vtables, then scheduled
+  `divisions`, `division_equipment`, `army_orders`, `oob_command`, and
+  `weather_live` together for 30 seconds at speed five. It advanced 57 game
+  hours with 0 skipped, verified ordered/decodable records, full per-domain
+  data coverage, `.battleplan` packing, `division_root_source = "dll_native"`,
+  and no source-unavailable/partial/bridge/worker failures. `oob_command`
+  captured active army rows, army-group rows, leader/skill rows, owner rows,
+  member division/army rows, engine member counts, and missing-member-count
+  diagnostics. Full OOB remains open for empty armies, fleets, task forces,
+  theatres, and command roots not reachable through live divisions.
 - DLL-native scheduled `diplomacy_live` is proven for faction membership and
   war/casualty rows: the collector reads `CCountry+0x598` faction groups on
   hourly frames, folds into `countries.*.diplomacy.faction_group` and

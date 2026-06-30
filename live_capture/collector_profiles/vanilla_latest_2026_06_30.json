@@ -1,0 +1,125 @@
+{
+  "profile_version": 1,
+  "status": "compact_land_oob_weather_speed5_verified",
+  "label": "vanilla_latest_2026_06_30",
+  "game": "the game",
+  "game_version": null,
+  "exe_sha256": "870EBF1F615262FACCA48A3B947775C41F0A5338F3068C40958209F5C41C65AD",
+  "observed": {
+    "date": "2026-06-30",
+    "product_version": "1.0",
+    "file_version": "1.0",
+    "mode": "vanilla",
+    "attach": "SetWindowsHookEx no-op heartbeat"
+  },
+  "mod_profile": {
+    "mode": "vanilla",
+    "mod_checksum": "vanilla",
+    "enabled_mods": []
+  },
+  "transport": {
+    "sidecar_log": "collector_attach.jsonl",
+    "live_frame": "named_pipe",
+    "sequence": "producer monotonic tick_ms",
+    "recorder_diagnostics": [
+      "transport_bytes",
+      "transport_crc32",
+      "monotonic_transport_sequence",
+      "duplicate_transport_sequences"
+    ]
+  },
+  "cadence_proofs": [
+    {
+      "kind": "compact_dll_rust_land_oob_weather_gate",
+      "date": "2026-06-30",
+      "game_id": "compact_land_oob_weather_870ebf_speed5_20260630_v1",
+      "scheduled_domains": [
+        "divisions",
+        "division_equipment",
+        "army_orders",
+        "oob_command",
+        "weather_live"
+      ],
+      "first_game_date": "1938.1.21.22",
+      "last_game_date": "1938.1.24.7",
+      "frame_end_records": 58,
+      "game_hours_advanced": 57,
+      "skipped_game_hours": 0,
+      "division_root_source": "dll_native",
+      "compact_stream": {
+        "ordered": true,
+        "decodable": true,
+        "domain_coverage": "full",
+        "source_unavailable_seen": false,
+        "partial_data_seen": false,
+        "bridge_unavailable_seen": false,
+        "worker_panic_seen": false,
+        "frame_time_p95_us": 22352,
+        "total_bytes": 2800072
+      },
+      "pack_verify": "ok"
+    }
+  ],
+  "hooks": {
+    "message_hook_noop": {
+      "export": "Hoi4ReplayGetMsgProc",
+      "status": "attach_verified"
+    },
+    "daily_update": {
+      "status": "offset_verified_layout_unimplemented",
+      "offset": "0x1D4390",
+      "evidence": "Passive read-only current-build preflight found a daily-update-shaped executable prologue at image_base+0x1D4390; nearby disassembly shows a CGameState receiver and module-global references in the expected update family.",
+      "sentinel_bytes": "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC"
+    }
+  },
+  "roots": {
+    "date": {
+      "status": "root_pointer_verified_clock_decoded",
+      "offset": "0x3316E90",
+      "evidence": "Passive read-only current-build scan found module+0x3316E90 pointing to CCurrentGameState; CGameState+0x468 decoded 1937.11.12.19 and advanced while running, and CGameState+0x4A8 decoded start date 1936.1.1.12.",
+      "clock": {
+        "current_game_date_offset": "0x468",
+        "start_date_offset": "0x4A8",
+        "codec": "i32 Jomini DateHour, stored = Clausewitz absolute hours + 43799999"
+      }
+    },
+    "country_database": {
+      "status": "root_pointer_verified_active_country_rows_decoded",
+      "offset": "0x33189C8",
+      "evidence": "Passive read-only current-build scan found module+0x33189C8 pointing to a CountryDataBase object; its tag table decoded the vanilla prefix and reported 474 tag rows with 440 active rows.",
+      "tag_table": {
+        "entry_stride": 32,
+        "inline_text_offset": 0,
+        "length_offset": 16,
+        "identity_fields": [
+          "tag_db_id"
+        ],
+        "observed_active_rows_written": 440,
+        "sample": [
+          "---",
+          "GER",
+          "ENG",
+          "SOV",
+          "SWE",
+          "FRA",
+          "LUX",
+          "BEL",
+          "HOL",
+          "CZE",
+          "POL",
+          "AUS"
+        ]
+      }
+    },
+    "long_string": {
+      "status": "offset_verified_layout_unimplemented",
+      "offset": "0x526A40",
+      "evidence": "Passive read-only current-build disassembly found a matching executable prologue at image_base+0x526A40; the function reads the date payload and subtracts Jomini epoch 0x029C55C0 before formatting.",
+      "sentinel_bytes": "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57"
+    }
+  },
+  "domains_enabled": [
+    "clock",
+    "country_identity"
+  ]
+}
