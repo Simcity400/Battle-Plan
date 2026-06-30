@@ -55,6 +55,7 @@ const COMPACT_STATUS_WORKER_PANIC: u32 = 1 << 6;
 const COMPACT_STATUS_BRIDGE_UNAVAILABLE: u32 = 1 << 7;
 const COMPACT_STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
 const COMPACT_STATUS_PARTIAL_DATA: u32 = 1 << 9;
+const COMPACT_STATUS_DELTA_DATA: u32 = 1 << 10;
 const COMPACT_FUEL_SCALE_RAW: u32 = 32768;
 const COMPACT_PRODUCTION_SCALE_RAW: u32 = 100000;
 const COMPACT_TECH_PROGRESS_SCALE_RAW: u32 = 1000;
@@ -2608,6 +2609,7 @@ fn decode_compact_map_control_data_payload(
     let changed_state_rows = read_u32_le(payload, 24) as usize;
     let changed_province_rows = read_u32_le(payload, 28) as usize;
     summary.status_flags_or |= status_flags;
+    let delta_data = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
 
     let expected_len = 32usize
         .saturating_add(state_count.saturating_mul(COMPACT_MAP_STATE_ROW_LEN))
@@ -2619,12 +2621,12 @@ fn decode_compact_map_control_data_payload(
         ));
         return;
     }
-    if state_count < COMPACT_MAP_MIN_STATE_ROWS {
+    if !delta_data && state_count < COMPACT_MAP_MIN_STATE_ROWS {
         summary.parse_errors.push(format!(
             "offset {offset}: map control state_count {state_count} < {COMPACT_MAP_MIN_STATE_ROWS}"
         ));
     }
-    if province_count < COMPACT_MAP_MIN_PROVINCE_ROWS {
+    if !delta_data && province_count < COMPACT_MAP_MIN_PROVINCE_ROWS {
         summary.parse_errors.push(format!(
             "offset {offset}: map control province_count {province_count} < {COMPACT_MAP_MIN_PROVINCE_ROWS}"
         ));
@@ -2643,6 +2645,16 @@ fn decode_compact_map_control_data_payload(
         summary.parse_errors.push(format!(
             "offset {offset}: map control changed_rows {changed_rows} != changed state+province rows {}",
             changed_state_rows.saturating_add(changed_province_rows)
+        ));
+    }
+    if delta_data && changed_state_rows != state_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: map control delta changed_state_rows {changed_state_rows} != emitted state_count {state_count}"
+        ));
+    }
+    if delta_data && changed_province_rows != province_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: map control delta changed_province_rows {changed_province_rows} != emitted province_count {province_count}"
         ));
     }
     if let Some(domain) = summary.per_domain.get_mut(&22) {
@@ -2735,7 +2747,7 @@ fn decode_compact_map_control_data_payload(
                 "offset {offset}: map control province row {row_index} has invalid state_id {state_id}"
             ));
         }
-        if state_id != 0 && !seen_states.contains(&state_id) {
+        if !delta_data && state_id != 0 && !seen_states.contains(&state_id) {
             summary.parse_errors.push(format!(
                 "offset {offset}: map control province row {row_index} references unknown state_id {state_id}"
             ));
@@ -3781,6 +3793,58 @@ mod tests {
     }
 
     #[test]
+    fn compact_summary_decodes_empty_map_control_delta_record() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            22,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(
+                1_000,
+                11_200,
+                0,
+                10_100,
+                0,
+                COMPACT_STATUS_DELTA_DATA,
+            ),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            22,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_map_control_delta_data_payload(0, 0),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_100, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(&summary, &[22]).is_empty());
+        let map = summary.per_domain.get(&22).unwrap();
+        assert_eq!(map.data_record_count, 1);
+        assert_eq!(map.row_count_total, 11_200);
+        assert_eq!(map.data_rows_total, 0);
+        assert_eq!(map.data_changed_rows_total, 0);
+        assert_eq!(map.unit_count_total, 10_100);
+        assert_ne!(map.status_flags_or & COMPACT_STATUS_DELTA_DATA, 0);
+    }
+
+    #[test]
     fn compact_land_combat_partial_data_fails_hourly_problem_list() {
         let mut raw = Vec::new();
         append_test_compact_record(
@@ -4447,6 +4511,18 @@ mod tests {
             payload.extend_from_slice(&state_id.to_le_bytes());
             payload.extend_from_slice(&0b11u32.to_le_bytes());
         }
+        payload
+    }
+
+    fn test_map_control_delta_data_payload(state_count: u32, province_count: u32) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&state_count.to_le_bytes());
+        payload.extend_from_slice(&(state_count + province_count).to_le_bytes());
+        payload.extend_from_slice(&COMPACT_STATUS_DELTA_DATA.to_le_bytes());
+        payload.extend_from_slice(&province_count.to_le_bytes());
+        payload.extend_from_slice(&state_count.to_le_bytes());
+        payload.extend_from_slice(&province_count.to_le_bytes());
         payload
     }
 

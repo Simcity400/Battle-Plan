@@ -98,9 +98,8 @@ frames as the production path.
 - Add typed data records for army orders, OOB command, naval/air combat,
   air wings, ships, map buildings/resources, logistics/supply proxies, weather,
   and remaining replay-critical event layers.
-- Retune the combined compact scheduler/domain volume for the widened row set.
-  The current division-only gate is green, but the latest 11-domain widened-row
-  run skipped hours at current live speed.
+- Run longer combined compact soaks now that the widened 11-domain row set is
+  green with cached `map_control` topology and delta data records.
 - Fold typed records into the future hourly snapshot spine once the raw compact
   stream is fully covered.
 
@@ -181,6 +180,20 @@ is the current negative combined-load proof for the widened row set. It decoded,
 ordered, packed, and verified the 11-domain stream with no bridge/source/partial
 failures, but advanced 448 game hours with only 381 frame-end records and
 skipped 68 hours. `map_control` remained the heaviest lane at p95 43.350 ms,
-followed by country-root lanes and widened `divisions` at p95 14.381 ms. Do not
-treat the full 11-domain widened-row bundle as complete until the compact path
-captures the current live speed with zero skipped hours.
+followed by country-root lanes and widened `divisions` at p95 14.381 ms. That
+run remained a negative proof until the map-control delta checkpoint below.
+
+`compact_country_divisions_land_combats_map_mapdelta_speed5_20260630_v1` passed
+that widened 11-domain gate after `map_control` switched to cached immutable
+province/state topology and baseline-plus-delta data records. The compact stream
+covered `fuel_live`, `production_live`, `focus_live`, `tech_live`,
+`politics_live`, `politics_residuals`, `decisions_live`, `diplomacy_live`,
+`divisions`, `land_combats`, and `map_control`; advanced 349 game hours with
+350 frame-end records, 0 skipped, full per-domain coverage, no parse/order
+errors, no worker-panic, bridge-unavailable, source-unavailable, or partial-data
+flags, avg frame 31.373 ms, p95 37.631 ms, max 51.696 ms, 34,334,975 raw stream
+bytes, and an independently verified `native_session.battleplan`.
+`map_control` still reported 5,072,900 full observed rows in perf records but
+emitted only 15,418 changed data rows; its read p95 dropped to 12.583 ms. The
+largest remaining p95 lanes in that run were widened `divisions` at 33.470 ms
+and `fuel_live`/`production_live` at 34.625 ms.

@@ -2741,6 +2741,7 @@ mod attach_log {
     const COMPACT_STATUS_WORKER_PANIC: u32 = 1 << 6;
     const COMPACT_STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
     const COMPACT_STATUS_PARTIAL_DATA: u32 = 1 << 9;
+    const COMPACT_STATUS_DELTA_DATA: u32 = 1 << 10;
     const COMPACT_POLITICS_SHARD_MIN_ROWS: usize = 96;
     const COMPACT_POLITICS_SHARD_MAX_WORKERS: usize = 4;
 
@@ -2864,6 +2865,8 @@ mod attach_log {
     struct CompactMapControlRead {
         state_rows: Vec<CompactMapStateRow>,
         province_rows: Vec<CompactMapProvinceRow>,
+        observed_state_rows: u32,
+        observed_province_rows: u32,
         read_time_us: u64,
         changed_rows: u32,
         changed_state_rows: u32,
@@ -2925,6 +2928,28 @@ mod attach_log {
     struct CompactMapControlTracker {
         previous_states: BTreeMap<u32, CompactMapStateRow>,
         previous_provinces: BTreeMap<u32, CompactMapProvinceRow>,
+        topology: Option<CompactMapControlTopology>,
+    }
+
+    #[derive(Clone)]
+    struct CompactMapControlTopology {
+        province_array: usize,
+        province_count: u32,
+        states: Vec<CompactMapStateRoot>,
+        provinces: Vec<CompactMapProvinceRoot>,
+    }
+
+    #[derive(Clone, Copy)]
+    struct CompactMapStateRoot {
+        state_id: u32,
+        state_ptr: usize,
+    }
+
+    #[derive(Clone, Copy)]
+    struct CompactMapProvinceRoot {
+        province_id: u32,
+        province_ptr: usize,
+        state_id: u32,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -9123,12 +9148,10 @@ mod attach_log {
                     domain_id: COMPACT_DOMAIN_MAP_CONTROL,
                     read_time_us: read.read_time_us,
                     row_count: read
-                        .state_rows
-                        .len()
-                        .saturating_add(read.province_rows.len())
-                        .min(u32::MAX as usize) as u32,
+                        .observed_state_rows
+                        .saturating_add(read.observed_province_rows),
                     changed_rows: read.changed_rows,
-                    unit_count: read.province_rows.len().min(u32::MAX as usize) as u32,
+                    unit_count: read.observed_province_rows,
                     changed_unit_count: read.changed_province_rows,
                     status_flags: read.status_flags,
                 },
@@ -9592,6 +9615,8 @@ mod attach_log {
         CompactMapControlRead {
             state_rows: Vec::new(),
             province_rows: Vec::new(),
+            observed_state_rows: 0,
+            observed_province_rows: 0,
             read_time_us: 0,
             changed_rows: 0,
             changed_state_rows: 0,
@@ -9950,41 +9975,55 @@ mod attach_log {
         tracker: &mut CompactMapControlTracker,
     ) -> CompactMapControlRead {
         let read_started = Instant::now();
-        let (state_rows, province_rows) = match sample_compact_map_control_with_retry(state, 3) {
-            Ok(rows) => rows,
-            Err(_) => {
-                return CompactMapControlRead {
-                    state_rows: Vec::new(),
-                    province_rows: Vec::new(),
-                    read_time_us: duration_micros_u64(read_started.elapsed()),
-                    changed_rows: 0,
-                    changed_state_rows: 0,
-                    changed_province_rows: 0,
-                    status_flags: status_flags | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        let (state_rows, province_rows, full_snapshot) =
+            match sample_compact_map_control_with_retry(state, tracker, 3) {
+                Ok(rows) => rows,
+                Err(_) => {
+                    return CompactMapControlRead {
+                        state_rows: Vec::new(),
+                        province_rows: Vec::new(),
+                        observed_state_rows: 0,
+                        observed_province_rows: 0,
+                        read_time_us: duration_micros_u64(read_started.elapsed()),
+                        changed_rows: 0,
+                        changed_state_rows: 0,
+                        changed_province_rows: 0,
+                        status_flags: status_flags | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                    }
                 }
-            }
-        };
+            };
 
+        let emit_full_snapshot = full_snapshot
+            || tracker.previous_states.is_empty()
+            || tracker.previous_provinces.is_empty();
+        let mut emitted_state_rows = Vec::new();
         let mut changed_state_rows = 0u32;
         for row in &state_rows {
-            if tracker
+            let changed = tracker
                 .previous_states
                 .get(&row.state_id)
                 .map(|old| old != row)
-                .unwrap_or(true)
-            {
+                .unwrap_or(true);
+            if changed {
                 changed_state_rows = changed_state_rows.saturating_add(1);
             }
+            if emit_full_snapshot || changed {
+                emitted_state_rows.push(*row);
+            }
         }
+        let mut emitted_province_rows = Vec::new();
         let mut changed_province_rows = 0u32;
         for row in &province_rows {
-            if tracker
+            let changed = tracker
                 .previous_provinces
                 .get(&row.province_id)
                 .map(|old| old != row)
-                .unwrap_or(true)
-            {
+                .unwrap_or(true);
+            if changed {
                 changed_province_rows = changed_province_rows.saturating_add(1);
+            }
+            if emit_full_snapshot || changed {
+                emitted_province_rows.push(*row);
             }
         }
         tracker.previous_states = state_rows
@@ -9997,23 +10036,30 @@ mod attach_log {
             .collect::<BTreeMap<_, _>>();
 
         CompactMapControlRead {
-            state_rows,
-            province_rows,
+            state_rows: emitted_state_rows,
+            province_rows: emitted_province_rows,
+            observed_state_rows: state_rows.len().min(u32::MAX as usize) as u32,
+            observed_province_rows: province_rows.len().min(u32::MAX as usize) as u32,
             read_time_us: duration_micros_u64(read_started.elapsed()),
             changed_rows: changed_state_rows.saturating_add(changed_province_rows),
             changed_state_rows,
             changed_province_rows,
-            status_flags,
+            status_flags: if emit_full_snapshot {
+                status_flags
+            } else {
+                status_flags | COMPACT_STATUS_DELTA_DATA
+            },
         }
     }
 
     fn sample_compact_map_control_with_retry(
         state: &CollectorState,
+        tracker: &mut CompactMapControlTracker,
         attempts: usize,
-    ) -> Result<(Vec<CompactMapStateRow>, Vec<CompactMapProvinceRow>), &'static str> {
+    ) -> Result<(Vec<CompactMapStateRow>, Vec<CompactMapProvinceRow>, bool), &'static str> {
         let attempt_count = attempts.max(1);
         for attempt in 0..attempt_count {
-            match sample_compact_map_control(state) {
+            match sample_compact_map_control_cached(state, tracker) {
                 Ok(rows) => return Ok(rows),
                 Err(err) if attempt + 1 == attempt_count => return Err(err),
                 Err(_) => thread::yield_now(),
@@ -10022,9 +10068,82 @@ mod attach_log {
         Err("map_control_retry_exhausted")
     }
 
-    fn sample_compact_map_control(
+    fn sample_compact_map_control_cached(
         state: &CollectorState,
+        tracker: &mut CompactMapControlTracker,
+    ) -> Result<(Vec<CompactMapStateRow>, Vec<CompactMapProvinceRow>, bool), &'static str> {
+        let cached_result = tracker.topology.as_ref().and_then(|topology| {
+            cprovince_array_still_current(state, topology.province_array, topology.province_count)
+                .then(|| sample_compact_map_control_from_topology(topology))
+        });
+        if let Some(Ok((state_rows, province_rows))) = cached_result {
+            return Ok((state_rows, province_rows, false));
+        }
+
+        tracker.topology = None;
+        let (topology, state_rows, province_rows) = build_compact_map_control_topology(state)?;
+        tracker.topology = Some(topology);
+        Ok((state_rows, province_rows, true))
+    }
+
+    fn sample_compact_map_control_from_topology(
+        topology: &CompactMapControlTopology,
     ) -> Result<(Vec<CompactMapStateRow>, Vec<CompactMapProvinceRow>), &'static str> {
+        let mut state_rows = Vec::with_capacity(topology.states.len());
+        for root in &topology.states {
+            let owner_tag_db_id = read_u32(
+                root.state_ptr
+                    .checked_add(STATE_OFF_OWNER)
+                    .ok_or("state_owner_overflow")?,
+            )
+            .ok_or("state_owner_unreadable")?;
+            let controller_tag_db_id = read_u32(
+                root.state_ptr
+                    .checked_add(STATE_OFF_CTRL)
+                    .ok_or("state_ctrl_overflow")?,
+            )
+            .ok_or("state_ctrl_unreadable")?;
+            if owner_tag_db_id > 1024 || controller_tag_db_id > 1024 {
+                return Err("state_tag_db_id_invalid");
+            }
+            state_rows.push(CompactMapStateRow {
+                state_id: root.state_id,
+                owner_tag_db_id,
+                controller_tag_db_id,
+            });
+        }
+
+        let mut province_rows = Vec::with_capacity(topology.provinces.len());
+        for root in &topology.provinces {
+            let controller_tag_db_id = read_u32(
+                root.province_ptr
+                    .checked_add(CPROVINCE_OFF_CONTROLLER)
+                    .ok_or("controller_overflow")?,
+            )
+            .ok_or("controller_unreadable")?;
+            if controller_tag_db_id > 1024 {
+                return Err("controller_tag_db_id_invalid");
+            }
+            province_rows.push(CompactMapProvinceRow {
+                province_id: root.province_id,
+                controller_tag_db_id,
+                state_id: root.state_id,
+            });
+        }
+
+        Ok((state_rows, province_rows))
+    }
+
+    fn build_compact_map_control_topology(
+        state: &CollectorState,
+    ) -> Result<
+        (
+            CompactMapControlTopology,
+            Vec<CompactMapStateRow>,
+            Vec<CompactMapProvinceRow>,
+        ),
+        &'static str,
+    > {
         let (province_array, province_count, province_ptrs) =
             cprovince_array_snapshot(state).ok_or("province_array_unavailable")?;
         let cprovince_vtable = state
@@ -10036,6 +10155,7 @@ mod attach_log {
             .checked_add(STATE_VTABLE_RVA)
             .ok_or("profile_mismatch")?;
         let mut state_ptrs: BTreeMap<u32, usize> = BTreeMap::new();
+        let mut province_roots = Vec::with_capacity(province_count.saturating_sub(1) as usize);
         let mut province_rows = Vec::with_capacity(province_count.saturating_sub(1) as usize);
 
         for province_id in 1..province_count {
@@ -10099,6 +10219,11 @@ mod attach_log {
             if controller_tag_db_id > 1024 {
                 return Err("controller_tag_db_id_invalid");
             }
+            province_roots.push(CompactMapProvinceRoot {
+                province_id,
+                province_ptr,
+                state_id,
+            });
             province_rows.push(CompactMapProvinceRow {
                 province_id,
                 controller_tag_db_id,
@@ -10112,6 +10237,7 @@ mod attach_log {
             return Err("insufficient_map_rows");
         }
 
+        let mut state_roots = Vec::with_capacity(state_ptrs.len());
         let mut state_rows = Vec::with_capacity(state_ptrs.len());
         for (state_id, state_ptr) in state_ptrs {
             if read_u64(state_ptr).map(|value| value as usize) != Some(state_vtable) {
@@ -10140,6 +10266,10 @@ mod attach_log {
             if owner_tag_db_id > 1024 || controller_tag_db_id > 1024 {
                 return Err("state_tag_db_id_invalid");
             }
+            state_roots.push(CompactMapStateRoot {
+                state_id,
+                state_ptr,
+            });
             state_rows.push(CompactMapStateRow {
                 state_id,
                 owner_tag_db_id,
@@ -10150,7 +10280,16 @@ mod attach_log {
         if !cprovince_array_still_current(state, province_array, province_count) {
             return Err("province_array_changed");
         }
-        Ok((state_rows, province_rows))
+        Ok((
+            CompactMapControlTopology {
+                province_array,
+                province_count,
+                states: state_roots,
+                provinces: province_roots,
+            },
+            state_rows,
+            province_rows,
+        ))
     }
 
     fn read_compact_country_domain_bundle(

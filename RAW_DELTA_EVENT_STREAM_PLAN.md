@@ -179,11 +179,17 @@ Current measured constraint:
   sidecar remains movement/org/strength/combat-ref focused until these newer
   compact fields are given typed lifecycle events.
 - Current combined-load state:
-  `compact_country_divisions_land_combats_map_telemetry_validroot_speed5_20260630_v1`
+  `compact_country_divisions_land_combats_map_mapdelta_speed5_20260630_v1`
   decoded, ordered, packed, and verified the widened row set inside the
-  11-domain bundle, but it skipped 68 game hours while advancing 448. That is
-  the next scheduler/domain-volume target; it is not a completed all-domain
-  speed-five proof.
+  11-domain bundle after `map_control` moved to cached topology plus
+  baseline/delta data. It advanced 349 game hours with 350 frame-end records, 0
+  skipped, full per-domain coverage, no parse/order errors, no
+  source/partial/bridge failures, avg frame 31.373 ms, p95 37.631 ms, and an
+  independently verified `native_session.battleplan`. `map_control` observed
+  5,072,900 full rows but emitted 15,418 changed data rows; map read p95 was
+  12.583 ms. This is the current completed combined compact speed-five proof for
+  the implemented domains, not for still-missing replay layers such as full
+  order geometry, template/equipment/manpower, weather, and naval/air coverage.
 - Earlier raw-event verification state: live-verified on the restarted vanilla
   process (pid 43412). A cold bootstrap outside the hot loop populated the
   current-process division and army caches, then a no-cold 12-game-hour run used

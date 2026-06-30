@@ -24,6 +24,8 @@ Current scope:
   location/source/target/progress, organisation/strength buckets,
   combat-ref/in-combat state, owner tag-db id, parent army id, experience,
   max/current supply, supply gain, and fuel.
+  `map_control` emits a full baseline and then compact delta records; perf
+  records still report the full observed state/province row counts each frame.
 - Optional DLL-side project scanning through `--special-projects-scan`; current
   live evidence shows this is not yet bounded enough for production capture.
 - Compact country-frame recording through `--compact-country-frame`; filtered
@@ -279,6 +281,20 @@ gate has these live speed-five results:
   14.381 ms for widened `divisions`, 9.224 ms for `decisions_live`, 2.319 ms
   for `land_combats`, and 1.066 ms for `diplomacy_live`. Treat this as the next
   scheduler/domain-volume problem, not as a completed all-domain proof.
+- `compact_country_divisions_land_combats_map_mapdelta_speed5_20260630_v1`:
+  passed the widened 11-domain compact gate after `map_control` moved to cached
+  topology plus baseline/delta data records. It covered `fuel_live`,
+  `production_live`, `focus_live`, `tech_live`, `politics_live`,
+  `politics_residuals`, `decisions_live`, `diplomacy_live`, `divisions`,
+  `land_combats`, and `map_control`; advanced 349 game hours with 350 frame-end
+  records, 0 skipped, full per-domain coverage, no parse/order errors, no
+  worker-panic, bridge-unavailable, source-unavailable, or partial-data flags,
+  avg frame 31.373 ms, p95 37.631 ms, max 51.696 ms, 34,334,975 raw stream
+  bytes, and an independent `pack_replay verify` pass. `map_control` observed
+  5,072,900 full rows but emitted only 15,418 changed data rows; its read p95
+  fell to 12.583 ms. The heaviest remaining lanes in this run were widened
+  `divisions` at p95 33.470 ms and `fuel_live`/`production_live` at p95
+  34.625 ms.
 
 The extraction-only compact performance gate is green for the current
 production-shaped country-state domains and the native-root `divisions`,
@@ -298,9 +314,10 @@ in-combat flag, owner tag-db id, parent army id, experience, supply, and fuel)
 on the current vanilla build. It now uses the anchored country unit-wrapper
 path and no longer needs Python preflight, saves, or heap/vtable scans for
 compact division body discovery. Wider division replay coverage still needs
-typed records for template/equipment/manpower/assignment/order details, and the
-full 11-domain widened-row bundle still needs scheduler/domain-volume work
-before it can be called speed-five complete.
+typed records for template/equipment/manpower/assignment/order details. The
+full 11-domain widened-row bundle is now speed-five complete for the currently
+implemented compact domains on the active vanilla process, with longer soaks
+and the next replay-critical domains still open.
 
 Implementation note: see `COMPACT_HOI4REPLAY_NEXT_STEP.md` for the bounded
 Rust-native packaging path and the test contract for putting `collector_stream.bin`

@@ -1420,6 +1420,24 @@ p95 43.350 ms and several country-root lanes. Template/equipment/manpower/
 assignment/order details still need separate typed records before the division
 replay is complete in the broader gameplay sense.
 
+Current combined status: `compact_country_divisions_land_combats_map_mapdelta_speed5_20260630_v1`
+closed that widened 11-domain bottleneck by caching immutable map topology and
+emitting `map_control` as a full baseline followed by delta data records while
+perf records continue to report full observed row counts. The run covered
+`fuel_live`, `production_live`, `focus_live`, `tech_live`, `politics_live`,
+`politics_residuals`, `decisions_live`, `diplomacy_live`, `divisions`,
+`land_combats`, and `map_control`; advanced 349 game hours with 350 frame-end
+records, 0 skipped, full per-domain coverage, no parse/order errors, no
+worker-panic, bridge-unavailable, source-unavailable, or partial-data flags, avg
+frame 31.373 ms, p95 37.631 ms, max 51.696 ms, 34,334,975 raw stream bytes, and
+an independently verified `.battleplan`. `map_control` observed 5,072,900 full
+rows but emitted only 15,418 changed data rows; map read p95 dropped to 12.583
+ms. The largest remaining p95 lanes in that run were widened `divisions` at
+33.470 ms and `fuel_live`/`production_live` at 34.625 ms. This promotes the
+current implemented 11-domain compact bundle to speed-five complete for the
+active vanilla process, while longer soaks and the missing replay-critical
+domains remain open.
+
 Earlier no-cold proof on the restarted vanilla process resolved 1898 division
 bodies and 417 still-live army bodies from cache, advanced 12 game hours in
 52.266 wall seconds, stored 13 verified hourly snapshots, and emitted raw
