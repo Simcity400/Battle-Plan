@@ -2769,6 +2769,7 @@ mod attach_log {
     const COMPACT_DOMAIN_MAP_DETAIL: u16 = 23;
     const COMPACT_DOMAIN_WEATHER: u16 = 24;
     const COMPACT_DOMAIN_DIVISION_EQUIPMENT: u16 = 26;
+    const COMPACT_DOMAIN_ARMY_ORDERS: u16 = 27;
     const COMPACT_STATUS_STATE_UNAVAILABLE: u32 = 1 << 0;
     const COMPACT_STATUS_PROFILE_MISMATCH: u32 = 1 << 1;
     const COMPACT_STATUS_NO_CLOCK: u32 = 1 << 2;
@@ -2783,6 +2784,14 @@ mod attach_log {
     const COMPACT_DIVISION_ROW_FLAG_TEMPLATE: u32 = 1 << 13;
     const COMPACT_DIVISION_EQUIPMENT_ROW_FLAG_TEMPLATE: u32 = 1;
     const COMPACT_DIVISION_EQUIPMENT_ROW_FLAG_DELETED: u32 = 1 << 1;
+    const COMPACT_ARMY_ORDER_ROW_FLAG_DELETED: u32 = 1;
+    const COMPACT_ARMY_ORDER_ROW_FLAG_TARGET_STATES: u32 = 1 << 1;
+    const COMPACT_ARMY_ORDER_ROW_FLAG_TARGET_STATE_COUNT: u32 = 1 << 2;
+    const COMPACT_ARMY_ORDER_TARGET_STATUS_NONE: u32 = 0;
+    const COMPACT_ARMY_ORDER_TARGET_STATUS_EXACT: u32 = 1;
+    const COMPACT_ARMY_ORDER_TARGET_STATUS_UNSUPPORTED: u32 = 2;
+    const COMPACT_ARMY_ORDER_TARGET_STATUS_OVERFLOW: u32 = 3;
+    const COMPACT_ARMY_ORDER_TARGET_STATUS_VALIDATION_FAILED: u32 = 4;
     const COMPACT_DIVISION_SAMPLE_MIN_ROWS: usize = 512;
     const COMPACT_DIVISION_SAMPLE_MAX_WORKERS: usize = 4;
     const COMPACT_MAP_DETAIL_SAMPLE_MIN_ROWS: usize = 512;
@@ -2871,6 +2880,7 @@ mod attach_log {
         division_movement: BTreeMap<u32, DivisionMovementSample>,
         division_equipment: CompactDivisionEquipmentTracker,
         division_roots: CompactDivisionRootCache,
+        army_order: ArmyOrderTracker,
         land_combat: LandCombatTracker,
         map_control: CompactMapControlTracker,
         map_detail: CompactMapDetailTracker,
@@ -2914,6 +2924,18 @@ mod attach_log {
         observed_division_rows: u32,
         observed_equipment_rows: u32,
         emitted_equipment_rows: u32,
+    }
+
+    struct CompactArmyOrderRead {
+        rows: Vec<CompactArmyOrderRow>,
+        read_time_us: u64,
+        changed_rows: u32,
+        status_flags: u32,
+        root_rows: u32,
+        observed_army_rows: u32,
+        observed_order_rows: u32,
+        target_state_rows: u32,
+        deleted_rows: u32,
     }
 
     struct CompactLandCombatRead {
@@ -3141,6 +3163,18 @@ mod attach_log {
     struct ArmyOrderTracker {
         previous: BTreeMap<usize, ArmyOrderSample>,
         next_generation: u64,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct CompactArmyOrderRow {
+        army_id: u32,
+        generation: u64,
+        deleted: bool,
+        slot_index: u32,
+        order_type: i32,
+        target_states: Option<Vec<u32>>,
+        target_state_count: Option<u32>,
+        target_status: &'static str,
     }
 
     #[derive(Clone, Debug, PartialEq)]
@@ -5158,6 +5192,14 @@ mod attach_log {
         entry: &ArmyBodyBridgeEntry,
     ) -> Option<Vec<ArmyOrderSample>> {
         let body = entry.body_ptr;
+        let army_id = validate_army_body(module_base, body)?;
+        if army_id != entry.army_id {
+            return None;
+        }
+        sample_army_orders_from_army_body(module_base, army_id, body)
+    }
+
+    fn validate_army_body(module_base: usize, body: usize) -> Option<u32> {
         let army_vtable = module_base.checked_add(ARMY_VTABLE_RVA)?;
         if !is_map_control_heap_pointer(body) || read_u64(body)? as usize != army_vtable {
             return None;
@@ -5166,7 +5208,17 @@ mod attach_log {
         if (handle & 0xFFFF_FFFF) as u32 != ARMY_TYPE {
             return None;
         }
-        if ((handle >> 32) & 0xFFFF_FFFF) as u32 != entry.army_id {
+        let army_id = ((handle >> 32) & 0xFFFF_FFFF) as u32;
+        (army_id > 0 && army_id <= MAX_ARMY_ID).then_some(army_id)
+    }
+
+    fn sample_army_orders_from_army_body(
+        module_base: usize,
+        army_id: u32,
+        body: usize,
+    ) -> Option<Vec<ArmyOrderSample>> {
+        let validated_army_id = validate_army_body(module_base, body)?;
+        if validated_army_id != army_id {
             return None;
         }
         let orders_begin = read_u64(body.checked_add(ARMY_OFF_ORDERS_VEC)?)? as usize;
@@ -5182,7 +5234,7 @@ mod attach_log {
                 break;
             }
             let Some(sample) =
-                read_army_order_sample(order_vtable, entry.army_id, body, order_ptr, slot_index)
+                read_army_order_sample(order_vtable, army_id, body, order_ptr, slot_index)
             else {
                 continue;
             };
@@ -9070,6 +9122,7 @@ mod attach_log {
         let divisions_enabled = compact_explicit_domain_enabled(control, RAW_DIVISIONS_DOMAIN);
         let division_equipment_enabled =
             compact_explicit_domain_enabled(control, RAW_DIVISION_EQUIPMENT_DOMAIN);
+        let army_orders_enabled = compact_explicit_domain_enabled(control, RAW_ARMY_ORDERS_DOMAIN);
         let land_combats_enabled =
             compact_explicit_domain_enabled(control, RAW_LAND_COMBATS_DOMAIN);
         let map_control_enabled = compact_map_control_enabled(control);
@@ -9080,6 +9133,7 @@ mod attach_log {
         let mut country_reads = Vec::new();
         let mut division_read = None;
         let mut division_equipment_read = None;
+        let mut army_order_read = None;
         let mut land_combat_read = None;
         let mut map_control_read = None;
         let mut map_detail_read = None;
@@ -9100,6 +9154,7 @@ mod attach_log {
         };
         let division_tracker = &mut trackers.division_movement;
         let division_equipment_tracker = &mut trackers.division_equipment;
+        let army_order_tracker = &mut trackers.army_order;
         let division_roots = &trackers.division_roots;
         let land_combat_tracker = &mut trackers.land_combat;
         let map_control_tracker = &mut trackers.map_control;
@@ -9139,6 +9194,18 @@ mod attach_log {
                         control,
                         status_flags,
                         division_equipment_tracker,
+                        division_roots,
+                    )
+                }))
+            } else {
+                None
+            };
+            let army_order_handle = if army_orders_enabled {
+                Some(scope.spawn(move || {
+                    read_compact_army_orders(
+                        state,
+                        status_flags,
+                        army_order_tracker,
                         division_roots,
                     )
                 }))
@@ -9199,6 +9266,12 @@ mod attach_log {
                 division_equipment_read = Some(match handle.join() {
                     Ok(read) => read,
                     Err(_) => compact_division_equipment_worker_panic_read(control, status_flags),
+                });
+            }
+            if let Some(handle) = army_order_handle {
+                army_order_read = Some(match handle.join() {
+                    Ok(read) => read,
+                    Err(_) => compact_army_order_worker_panic_read(division_roots, status_flags),
                 });
             }
             if let Some(handle) = land_combat_handle {
@@ -9383,6 +9456,39 @@ mod attach_log {
                 read.root_rows,
                 read.observed_division_rows,
                 read.observed_equipment_rows,
+            );
+            sequence = sequence.saturating_add(1);
+            emitted_domains = emitted_domains.saturating_add(1);
+        }
+        if let Some(read) = army_order_read {
+            append_compact_domain_perf_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                CompactDomainPerfRecord {
+                    domain_id: COMPACT_DOMAIN_ARMY_ORDERS,
+                    read_time_us: read.read_time_us,
+                    row_count: read.observed_army_rows,
+                    changed_rows: read.changed_rows,
+                    unit_count: read.observed_order_rows,
+                    changed_unit_count: read.target_state_rows,
+                    status_flags: read.status_flags,
+                },
+                elapsed_wall_ms,
+            );
+            sequence = sequence.saturating_add(1);
+            append_compact_army_orders_data_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                &read.rows,
+                elapsed_wall_ms,
+                read.status_flags,
+                read.changed_rows,
+                read.root_rows,
+                read.observed_army_rows,
+                read.observed_order_rows,
+                read.deleted_rows,
             );
             sequence = sequence.saturating_add(1);
             emitted_domains = emitted_domains.saturating_add(1);
@@ -10017,6 +10123,23 @@ mod attach_log {
         }
     }
 
+    fn compact_army_order_worker_panic_read(
+        root_cache: &CompactDivisionRootCache,
+        status_flags: u32,
+    ) -> CompactArmyOrderRead {
+        CompactArmyOrderRead {
+            rows: Vec::new(),
+            read_time_us: 0,
+            changed_rows: 0,
+            status_flags: status_flags | COMPACT_STATUS_WORKER_PANIC,
+            root_rows: root_cache.rows.len().min(u32::MAX as usize) as u32,
+            observed_army_rows: 0,
+            observed_order_rows: 0,
+            target_state_rows: 0,
+            deleted_rows: 0,
+        }
+    }
+
     fn compact_land_combat_worker_panic_read(status_flags: u32) -> CompactLandCombatRead {
         CompactLandCombatRead {
             rows: Vec::new(),
@@ -10083,6 +10206,7 @@ mod attach_log {
     fn compact_division_roots_enabled(control: &CollectorControl) -> bool {
         compact_explicit_domain_enabled(control, RAW_DIVISIONS_DOMAIN)
             || compact_explicit_domain_enabled(control, RAW_DIVISION_EQUIPMENT_DOMAIN)
+            || compact_explicit_domain_enabled(control, RAW_ARMY_ORDERS_DOMAIN)
     }
 
     fn compact_division_bridge_available(control: &CollectorControl) -> bool {
@@ -10454,6 +10578,239 @@ mod attach_log {
 
     fn compact_division_equipment_entry_count(rows: &[DivisionEquipmentSample]) -> usize {
         rows.iter().map(|row| row.entries.len()).sum()
+    }
+
+    fn read_compact_army_orders(
+        state: &CollectorState,
+        status_flags: u32,
+        tracker: &mut ArmyOrderTracker,
+        root_cache: &CompactDivisionRootCache,
+    ) -> CompactArmyOrderRead {
+        let read_started = Instant::now();
+        let mut status_flags = status_flags;
+        let root_rows = root_cache.rows.len().min(u32::MAX as usize) as u32;
+        if root_cache.rows.is_empty() {
+            status_flags |= COMPACT_STATUS_SOURCE_UNAVAILABLE;
+            return CompactArmyOrderRead {
+                rows: Vec::new(),
+                read_time_us: duration_micros_u64(read_started.elapsed()),
+                changed_rows: 0,
+                status_flags,
+                root_rows,
+                observed_army_rows: 0,
+                observed_order_rows: 0,
+                target_state_rows: 0,
+                deleted_rows: 0,
+            };
+        }
+
+        let (army_roots, invalid_army_roots) =
+            discover_compact_army_order_roots(state.base, &root_cache.rows);
+        if invalid_army_roots > 0 {
+            status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+        }
+        let observed_army_rows = army_roots.len().min(u32::MAX as usize) as u32;
+        if army_roots.is_empty() {
+            status_flags |= COMPACT_STATUS_SOURCE_UNAVAILABLE;
+            return CompactArmyOrderRead {
+                rows: Vec::new(),
+                read_time_us: duration_micros_u64(read_started.elapsed()),
+                changed_rows: 0,
+                status_flags,
+                root_rows,
+                observed_army_rows,
+                observed_order_rows: 0,
+                target_state_rows: 0,
+                deleted_rows: 0,
+            };
+        }
+
+        let mut current_samples = Vec::new();
+        let mut invalid_order_armies = 0u32;
+        let mut seen_orders: BTreeMap<usize, ()> = BTreeMap::new();
+        for entry in &army_roots {
+            match sample_army_orders_from_army_body(state.base, entry.army_id, entry.body_ptr) {
+                Some(samples) => {
+                    for sample in samples {
+                        if seen_orders.insert(sample.order_addr, ()).is_none() {
+                            current_samples.push(sample);
+                        }
+                    }
+                }
+                None => invalid_order_armies = invalid_order_armies.saturating_add(1),
+            }
+        }
+        if invalid_order_armies > 0 {
+            status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+        }
+        if current_samples.is_empty() && invalid_order_armies >= observed_army_rows {
+            status_flags |= COMPACT_STATUS_SOURCE_UNAVAILABLE;
+        }
+        current_samples
+            .sort_by_key(|sample| (sample.army_id, sample.slot_index, sample.order_addr));
+        let observed_order_rows = current_samples.len().min(u32::MAX as usize) as u32;
+        let had_previous = !tracker.previous.is_empty();
+        let (rows, changed_rows, deleted_rows) =
+            compact_army_order_delta_rows(tracker, current_samples);
+        let target_state_rows =
+            compact_army_order_target_state_count(&rows).min(u32::MAX as usize) as u32;
+        if had_previous && !rows.is_empty() {
+            status_flags |= COMPACT_STATUS_DELTA_DATA;
+        }
+
+        CompactArmyOrderRead {
+            rows,
+            read_time_us: duration_micros_u64(read_started.elapsed()),
+            changed_rows,
+            status_flags,
+            root_rows,
+            observed_army_rows,
+            observed_order_rows,
+            target_state_rows,
+            deleted_rows,
+        }
+    }
+
+    fn discover_compact_army_order_roots(
+        module_base: usize,
+        division_roots: &[DivisionBodyBridgeEntry],
+    ) -> (Vec<ArmyBodyBridgeEntry>, u32) {
+        let mut by_army_id: BTreeMap<u32, usize> = BTreeMap::new();
+        let mut invalid_rows = 0u32;
+        for division in division_roots {
+            let Some(army_ptr) =
+                read_u64(division.body_ptr.saturating_add(DIVISION_OFF_ARMY_PARENT))
+                    .map(|value| value as usize)
+            else {
+                continue;
+            };
+            if !is_map_control_heap_pointer(army_ptr) {
+                continue;
+            }
+            let Some(army_id) = validate_army_body(module_base, army_ptr) else {
+                invalid_rows = invalid_rows.saturating_add(1);
+                continue;
+            };
+            if let Some(existing_ptr) = by_army_id.get(&army_id) {
+                if *existing_ptr != army_ptr {
+                    invalid_rows = invalid_rows.saturating_add(1);
+                }
+                continue;
+            }
+            by_army_id.insert(army_id, army_ptr);
+            if by_army_id.len() >= MAX_ARMY_BODY_BRIDGE_ROWS {
+                break;
+            }
+        }
+        (
+            by_army_id
+                .into_iter()
+                .map(|(army_id, body_ptr)| ArmyBodyBridgeEntry { army_id, body_ptr })
+                .collect(),
+            invalid_rows,
+        )
+    }
+
+    fn compact_army_order_delta_rows(
+        tracker: &mut ArmyOrderTracker,
+        current_samples: Vec<ArmyOrderSample>,
+    ) -> (Vec<CompactArmyOrderRow>, u32, u32) {
+        let emit_full_snapshot = tracker.previous.is_empty();
+        let previous = std::mem::take(&mut tracker.previous);
+        let mut current: BTreeMap<usize, ArmyOrderSample> = BTreeMap::new();
+        let mut generation_splits: BTreeMap<usize, ArmyOrderSample> = BTreeMap::new();
+        for mut sample in current_samples {
+            if let Some(old) = previous.get(&sample.order_addr) {
+                if army_order_continues(old, &sample) {
+                    sample.generation = old.generation;
+                } else {
+                    generation_splits.insert(sample.order_addr, old.clone());
+                    sample.generation = tracker.next_generation;
+                    tracker.next_generation = tracker.next_generation.saturating_add(1);
+                }
+            } else {
+                sample.generation = tracker.next_generation;
+                tracker.next_generation = tracker.next_generation.saturating_add(1);
+            }
+            current.insert(sample.order_addr, sample);
+        }
+
+        let mut rows = Vec::new();
+        let mut deleted_rows = 0u32;
+        for (order_addr, sample) in &current {
+            if let Some(old) = generation_splits.get(order_addr) {
+                rows.push(deleted_compact_army_order_row(old));
+                deleted_rows = deleted_rows.saturating_add(1);
+                rows.push(compact_army_order_row(sample));
+                continue;
+            }
+            match previous.get(order_addr) {
+                Some(old) => {
+                    if army_order_changed_fields(old, sample).is_some() {
+                        rows.push(compact_army_order_row(sample));
+                    }
+                }
+                None => rows.push(compact_army_order_row(sample)),
+            }
+            if emit_full_snapshot && previous.contains_key(order_addr) {
+                rows.push(compact_army_order_row(sample));
+            }
+        }
+        if !emit_full_snapshot {
+            for (order_addr, old_sample) in &previous {
+                if current.contains_key(order_addr) {
+                    continue;
+                }
+                rows.push(deleted_compact_army_order_row(old_sample));
+                deleted_rows = deleted_rows.saturating_add(1);
+            }
+        }
+        rows.sort_by_key(|row| (row.army_id, row.generation, row.slot_index, row.deleted));
+        tracker.previous = current;
+        let changed_rows = rows.len().min(u32::MAX as usize) as u32;
+        (rows, changed_rows, deleted_rows)
+    }
+
+    fn compact_army_order_row(sample: &ArmyOrderSample) -> CompactArmyOrderRow {
+        CompactArmyOrderRow {
+            army_id: sample.army_id,
+            generation: sample.generation,
+            deleted: false,
+            slot_index: sample.slot_index,
+            order_type: sample.order_type,
+            target_states: sample.target_states.clone(),
+            target_state_count: sample.target_state_count,
+            target_status: sample.target_status,
+        }
+    }
+
+    fn deleted_compact_army_order_row(sample: &ArmyOrderSample) -> CompactArmyOrderRow {
+        CompactArmyOrderRow {
+            army_id: sample.army_id,
+            generation: sample.generation,
+            deleted: true,
+            slot_index: sample.slot_index,
+            order_type: sample.order_type,
+            target_states: None,
+            target_state_count: None,
+            target_status: "deleted",
+        }
+    }
+
+    fn compact_army_order_target_state_count(rows: &[CompactArmyOrderRow]) -> usize {
+        rows.iter()
+            .map(|row| row.target_states.as_ref().map(Vec::len).unwrap_or(0))
+            .sum()
+    }
+
+    fn compact_army_order_target_status_code(status: &str) -> u32 {
+        match status {
+            "exact" => COMPACT_ARMY_ORDER_TARGET_STATUS_EXACT,
+            "unsupported" => COMPACT_ARMY_ORDER_TARGET_STATUS_UNSUPPORTED,
+            "overflow" => COMPACT_ARMY_ORDER_TARGET_STATUS_OVERFLOW,
+            "validation_failed" => COMPACT_ARMY_ORDER_TARGET_STATUS_VALIDATION_FAILED,
+            _ => COMPACT_ARMY_ORDER_TARGET_STATUS_NONE,
+        }
     }
 
     fn deleted_division_sample(div_id: u32) -> DivisionMovementSample {
@@ -12229,6 +12586,40 @@ mod attach_log {
         );
     }
 
+    fn append_compact_army_orders_data_record(
+        out: &mut Vec<u8>,
+        sequence: u64,
+        game_hour_raw: i32,
+        rows: &[CompactArmyOrderRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        root_rows: u32,
+        observed_army_rows: u32,
+        observed_order_rows: u32,
+        deleted_rows: u32,
+    ) {
+        let payload = compact_army_orders_data_payload(
+            rows,
+            elapsed_wall_ms,
+            status_flags,
+            changed_rows,
+            root_rows,
+            observed_army_rows,
+            observed_order_rows,
+            deleted_rows,
+        );
+        append_compact_record(
+            out,
+            sequence,
+            game_hour_raw,
+            COMPACT_DOMAIN_ARMY_ORDERS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+    }
+
     fn append_compact_land_combats_data_record(
         out: &mut Vec<u8>,
         sequence: u64,
@@ -13177,6 +13568,78 @@ mod attach_log {
                 payload.extend_from_slice(&entry.variant_id.to_le_bytes());
                 payload.extend_from_slice(&0u32.to_le_bytes());
                 payload.extend_from_slice(&entry.amount_raw.to_le_bytes());
+            }
+        }
+        payload
+    }
+
+    fn compact_army_orders_data_payload(
+        rows: &[CompactArmyOrderRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        root_rows: u32,
+        observed_army_rows: u32,
+        observed_order_rows: u32,
+        deleted_rows: u32,
+    ) -> Vec<u8> {
+        let target_state_count = compact_army_order_target_state_count(rows);
+        let mut payload = Vec::with_capacity(
+            40usize
+                .saturating_add(rows.len().saturating_mul(48))
+                .saturating_add(target_state_count.saturating_mul(8)),
+        );
+        payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
+        payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+        payload.extend_from_slice(&changed_rows.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&root_rows.to_le_bytes());
+        payload.extend_from_slice(&observed_army_rows.to_le_bytes());
+        payload.extend_from_slice(&observed_order_rows.to_le_bytes());
+        payload
+            .extend_from_slice(&(target_state_count.min(u32::MAX as usize) as u32).to_le_bytes());
+        payload.extend_from_slice(&deleted_rows.to_le_bytes());
+
+        let mut target_cursor = 0u32;
+        for row in rows {
+            let target_count = row
+                .target_states
+                .as_ref()
+                .map(Vec::len)
+                .unwrap_or(0)
+                .min(u32::MAX as usize) as u32;
+            let mut flags = 0u32;
+            if row.deleted {
+                flags |= COMPACT_ARMY_ORDER_ROW_FLAG_DELETED;
+            }
+            if row.target_states.is_some() {
+                flags |= COMPACT_ARMY_ORDER_ROW_FLAG_TARGET_STATES;
+            }
+            if row.target_state_count.is_some() {
+                flags |= COMPACT_ARMY_ORDER_ROW_FLAG_TARGET_STATE_COUNT;
+            }
+            let target_first = if target_count == 0 { 0 } else { target_cursor };
+            payload.extend_from_slice(&row.army_id.to_le_bytes());
+            payload.extend_from_slice(&row.generation.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&row.slot_index.to_le_bytes());
+            payload.extend_from_slice(&row.order_type.to_le_bytes());
+            payload.extend_from_slice(&target_first.to_le_bytes());
+            payload.extend_from_slice(&target_count.to_le_bytes());
+            payload.extend_from_slice(&row.target_state_count.unwrap_or(0).to_le_bytes());
+            payload.extend_from_slice(
+                &compact_army_order_target_status_code(row.target_status).to_le_bytes(),
+            );
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            target_cursor = target_cursor.saturating_add(target_count);
+        }
+        for row in rows {
+            if let Some(states) = row.target_states.as_ref() {
+                for state_id in states {
+                    payload.extend_from_slice(&state_id.to_le_bytes());
+                    payload.extend_from_slice(&0u32.to_le_bytes());
+                }
             }
         }
         payload
@@ -21402,6 +21865,88 @@ mod attach_log {
             assert_eq!(
                 i64::from_le_bytes(payload[112..120].try_into().unwrap()),
                 500_000
+            );
+        }
+
+        #[test]
+        fn compact_army_orders_data_payload_packs_rows_and_targets() {
+            let rows = vec![
+                CompactArmyOrderRow {
+                    army_id: 17,
+                    generation: 3,
+                    deleted: false,
+                    slot_index: 2,
+                    order_type: ORDER_TYPE5_OFFENSIVE,
+                    target_states: Some(vec![118, 119]),
+                    target_state_count: Some(2),
+                    target_status: "exact",
+                },
+                CompactArmyOrderRow {
+                    army_id: 18,
+                    generation: 4,
+                    deleted: true,
+                    slot_index: 0,
+                    order_type: 2,
+                    target_states: None,
+                    target_state_count: None,
+                    target_status: "deleted",
+                },
+            ];
+
+            let payload = compact_army_orders_data_payload(
+                &rows,
+                80,
+                COMPACT_STATUS_EXTRACTION_PERF_GATE | COMPACT_STATUS_DELTA_DATA,
+                2,
+                20,
+                2,
+                3,
+                1,
+            );
+
+            assert_eq!(payload.len(), 40 + 2 * 48 + 2 * 8);
+            assert_eq!(u64::from_le_bytes(payload[0..8].try_into().unwrap()), 80);
+            assert_eq!(u32::from_le_bytes(payload[8..12].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[12..16].try_into().unwrap()), 2);
+            assert_eq!(
+                u32::from_le_bytes(payload[16..20].try_into().unwrap()),
+                COMPACT_STATUS_EXTRACTION_PERF_GATE | COMPACT_STATUS_DELTA_DATA
+            );
+            assert_eq!(u32::from_le_bytes(payload[20..24].try_into().unwrap()), 20);
+            assert_eq!(u32::from_le_bytes(payload[24..28].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[28..32].try_into().unwrap()), 3);
+            assert_eq!(u32::from_le_bytes(payload[32..36].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[36..40].try_into().unwrap()), 1);
+
+            assert_eq!(u32::from_le_bytes(payload[40..44].try_into().unwrap()), 17);
+            assert_eq!(u64::from_le_bytes(payload[44..52].try_into().unwrap()), 3);
+            assert_eq!(
+                u32::from_le_bytes(payload[52..56].try_into().unwrap()),
+                COMPACT_ARMY_ORDER_ROW_FLAG_TARGET_STATES
+                    | COMPACT_ARMY_ORDER_ROW_FLAG_TARGET_STATE_COUNT
+            );
+            assert_eq!(u32::from_le_bytes(payload[56..60].try_into().unwrap()), 2);
+            assert_eq!(i32::from_le_bytes(payload[60..64].try_into().unwrap()), 5);
+            assert_eq!(u32::from_le_bytes(payload[64..68].try_into().unwrap()), 0);
+            assert_eq!(u32::from_le_bytes(payload[68..72].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[72..76].try_into().unwrap()), 2);
+            assert_eq!(
+                u32::from_le_bytes(payload[76..80].try_into().unwrap()),
+                COMPACT_ARMY_ORDER_TARGET_STATUS_EXACT
+            );
+
+            assert_eq!(u32::from_le_bytes(payload[88..92].try_into().unwrap()), 18);
+            assert_eq!(
+                u32::from_le_bytes(payload[100..104].try_into().unwrap()),
+                COMPACT_ARMY_ORDER_ROW_FLAG_DELETED
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[136..140].try_into().unwrap()),
+                118
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[144..148].try_into().unwrap()),
+                119
             );
         }
 

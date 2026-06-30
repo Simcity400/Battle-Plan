@@ -86,6 +86,13 @@ const COMPACT_LAND_COMBAT_ROW_LEN: usize = 40;
 const COMPACT_LAND_COMBAT_PARTICIPANT_ROW_LEN: usize = 24;
 const COMPACT_LAND_COMBAT_MAX_PROVINCE_ID: u32 = 1_000_000;
 const COMPACT_LAND_COMBAT_MAX_AGE_DAYS: u32 = 100_000;
+const COMPACT_ARMY_ORDER_ROW_LEN: usize = 48;
+const COMPACT_ARMY_ORDER_TARGET_ROW_LEN: usize = 8;
+const COMPACT_ARMY_ORDER_ROW_FLAG_DELETED: u32 = 1;
+const COMPACT_ARMY_ORDER_ROW_FLAG_TARGET_STATES: u32 = 1 << 1;
+const COMPACT_ARMY_ORDER_ROW_FLAG_TARGET_STATE_COUNT: u32 = 1 << 2;
+const COMPACT_ARMY_ORDER_MAX_SLOT_INDEX: u32 = 64;
+const COMPACT_ARMY_ORDER_MAX_STATE_ID: u32 = 65_535;
 const COMPACT_MAP_STATE_ROW_LEN: usize = 16;
 const COMPACT_MAP_PROVINCE_ROW_LEN: usize = 16;
 const COMPACT_MAP_DETAIL_STATE_ROW_LEN: usize = 28;
@@ -1191,6 +1198,7 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                         payload,
                         &mut summary,
                     ),
+                    27 => decode_compact_army_orders_data_payload(offset, payload, &mut summary),
                     other => summary.parse_errors.push(format!(
                         "offset {offset}: unsupported domain data payload for {}",
                         compact_domain_name(other)
@@ -2792,6 +2800,242 @@ fn valid_compact_province_id(value: u32) -> bool {
     value > 0 && value <= COMPACT_MAX_DIVISION_PROVINCE_ID
 }
 
+fn decode_compact_army_orders_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < 40 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: army order data payload is {} byte(s), expected at least 40",
+            payload.len()
+        ));
+        return;
+    }
+    let row_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let root_rows = read_u32_le(payload, 20) as usize;
+    let observed_army_rows = read_u32_le(payload, 24) as usize;
+    let observed_order_rows = read_u32_le(payload, 28) as usize;
+    let target_state_count = read_u32_le(payload, 32) as usize;
+    let deleted_rows = read_u32_le(payload, 36) as usize;
+    summary.status_flags_or |= status_flags;
+    let expected_len = 40usize
+        .saturating_add(row_count.saturating_mul(COMPACT_ARMY_ORDER_ROW_LEN))
+        .saturating_add(target_state_count.saturating_mul(COMPACT_ARMY_ORDER_TARGET_ROW_LEN));
+    if payload.len() != expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: army order data payload is {} byte(s), expected {expected_len}",
+            payload.len()
+        ));
+        return;
+    }
+    if changed_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: army order changed_rows {changed_rows} > row_count {row_count}"
+        ));
+    }
+    if observed_army_rows > root_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: army order observed_army_rows {observed_army_rows} > root_rows {root_rows}"
+        ));
+    }
+    if deleted_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: army order deleted_rows {deleted_rows} > row_count {row_count}"
+        ));
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&27) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    add_compact_domain_data_unit(summary, 27, "army_order_rows", row_count);
+    add_compact_domain_data_unit(summary, 27, "army_order_root_rows", root_rows);
+    add_compact_domain_data_unit(
+        summary,
+        27,
+        "army_order_observed_armies",
+        observed_army_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        27,
+        "army_order_observed_orders",
+        observed_order_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        27,
+        "army_order_target_state_rows",
+        target_state_count,
+    );
+    add_compact_domain_data_unit(summary, 27, "army_order_deleted_rows", deleted_rows);
+
+    let mut cursor = 40usize;
+    let mut seen_orders = BTreeSet::new();
+    let mut declared_targets = 0usize;
+    let mut exact_rows = 0usize;
+    let mut unsupported_rows = 0usize;
+    let mut overflow_rows = 0usize;
+    let mut validation_failed_rows = 0usize;
+    for row_index in 0..row_count {
+        let army_id = read_u32_le(payload, cursor);
+        let generation = read_u64_le(payload, cursor + 4);
+        let flags = read_u32_le(payload, cursor + 12);
+        let slot_index = read_u32_le(payload, cursor + 16);
+        let order_type = read_i32_le(payload, cursor + 20);
+        let target_first = read_u32_le(payload, cursor + 24) as usize;
+        let target_count = read_u32_le(payload, cursor + 28) as usize;
+        let target_state_declared_count = read_u32_le(payload, cursor + 32) as usize;
+        let target_status_code = read_u32_le(payload, cursor + 36);
+        let row_reserved0 = read_u32_le(payload, cursor + 40);
+        let row_reserved1 = read_u32_le(payload, cursor + 44);
+        cursor += COMPACT_ARMY_ORDER_ROW_LEN;
+
+        let deleted = (flags & COMPACT_ARMY_ORDER_ROW_FLAG_DELETED) != 0;
+        let has_target_states = (flags & COMPACT_ARMY_ORDER_ROW_FLAG_TARGET_STATES) != 0;
+        let has_target_state_count = (flags & COMPACT_ARMY_ORDER_ROW_FLAG_TARGET_STATE_COUNT) != 0;
+        if army_id == 0 || army_id > COMPACT_MAX_ARMY_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: army order row {row_index} has invalid army_id {army_id}"
+            ));
+        } else if !seen_orders.insert((army_id, generation, slot_index, deleted)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: army order row {row_index} duplicates army {army_id}:{generation}:{slot_index}"
+            ));
+        }
+        if flags
+            & !(COMPACT_ARMY_ORDER_ROW_FLAG_DELETED
+                | COMPACT_ARMY_ORDER_ROW_FLAG_TARGET_STATES
+                | COMPACT_ARMY_ORDER_ROW_FLAG_TARGET_STATE_COUNT)
+            != 0
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: army order row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if slot_index >= COMPACT_ARMY_ORDER_MAX_SLOT_INDEX {
+            summary.parse_errors.push(format!(
+                "offset {offset}: army order row {row_index} has invalid slot_index {slot_index}"
+            ));
+        }
+        if order_type < -1_000 || order_type > 1_000 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: army order row {row_index} has suspicious order_type {order_type}"
+            ));
+        }
+        if deleted {
+            if target_first != 0
+                || target_count != 0
+                || target_state_declared_count != 0
+                || target_status_code != 0
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: army order deleted row {row_index} has live target fields"
+                ));
+            }
+        } else {
+            match target_status_code {
+                0 => {}
+                1 => exact_rows = exact_rows.saturating_add(1),
+                2 => unsupported_rows = unsupported_rows.saturating_add(1),
+                3 => overflow_rows = overflow_rows.saturating_add(1),
+                4 => validation_failed_rows = validation_failed_rows.saturating_add(1),
+                other => summary.parse_errors.push(format!(
+                    "offset {offset}: army order row {row_index} has unknown target_status_code {other}"
+                )),
+            }
+        }
+        if !has_target_states && target_count != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: army order row {row_index} has target_count without target-states flag"
+            ));
+        }
+        if has_target_states {
+            let Some(target_end) = target_first.checked_add(target_count) else {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: army order row {row_index} target range overflows"
+                ));
+                continue;
+            };
+            if target_end > target_state_count {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: army order row {row_index} target range {target_first}..{target_end} exceeds {target_state_count}"
+                ));
+            }
+            declared_targets = declared_targets.saturating_add(target_count);
+        } else if target_first != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: army order row {row_index} has target_first without target-states flag"
+            ));
+        }
+        if !has_target_state_count && target_state_declared_count != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: army order row {row_index} has target_state_count without flag"
+            ));
+        }
+        if row_reserved0 != 0 || row_reserved1 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: army order row {row_index} reserved field is nonzero"
+            ));
+        }
+    }
+    if declared_targets != target_state_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: army order target_state_count {target_state_count} != declared {declared_targets}"
+        ));
+    }
+    add_compact_domain_data_unit(summary, 27, "army_order_exact_target_rows", exact_rows);
+    add_compact_domain_data_unit(
+        summary,
+        27,
+        "army_order_unsupported_target_rows",
+        unsupported_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        27,
+        "army_order_overflow_target_rows",
+        overflow_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        27,
+        "army_order_validation_failed_target_rows",
+        validation_failed_rows,
+    );
+
+    let mut seen_target_states = BTreeSet::new();
+    for row_index in 0..target_state_count {
+        let state_id = read_u32_le(payload, cursor);
+        let row_reserved = read_u32_le(payload, cursor + 4);
+        cursor += COMPACT_ARMY_ORDER_TARGET_ROW_LEN;
+        if !valid_compact_army_order_state_id(state_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: army order target row {row_index} has invalid state_id {state_id}"
+            ));
+        }
+        if !seen_target_states.insert((row_index, state_id)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: army order target row {row_index} duplicates state_id {state_id}"
+            ));
+        }
+        if row_reserved != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: army order target row {row_index} reserved field is nonzero"
+            ));
+        }
+    }
+}
+
+fn valid_compact_army_order_state_id(value: u32) -> bool {
+    value > 0 && value <= COMPACT_ARMY_ORDER_MAX_STATE_ID
+}
+
 fn decode_compact_land_combats_data_payload(
     offset: usize,
     payload: &[u8],
@@ -3785,6 +4029,7 @@ fn compact_domain_id(domain: &str) -> Option<u16> {
         "map_detail" | "state_detail" | "buildings_live" => Some(23),
         "weather_live" => Some(24),
         "division_equipment" => Some(26),
+        "army_orders" => Some(27),
         _ => None,
     }
 }
@@ -3806,6 +4051,7 @@ fn compact_domain_name(domain_id: u16) -> &'static str {
         23 => "map_detail",
         24 => "weather_live",
         26 => "division_equipment",
+        27 => "army_orders",
         1000 => "frame",
         _ => "unknown",
     }
@@ -3869,7 +4115,7 @@ fn compact_domain_coverage_errors(
 fn compact_domain_requires_data_record(domain_id: u16) -> bool {
     matches!(
         domain_id,
-        10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 20 | 21 | 22 | 23 | 24 | 26
+        10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 20 | 21 | 22 | 23 | 24 | 26 | 27
     )
 }
 
@@ -3885,17 +4131,16 @@ fn compact_division_root_source(cfg: &Config, summary: &CompactSummary) -> &'sta
     if cfg.division_body_bridge.is_some() {
         return "python_bridge";
     }
-    if !cfg
-        .scheduled_domains
-        .iter()
-        .any(|domain| domain == "divisions" || domain == "division_equipment")
-    {
+    if !cfg.scheduled_domains.iter().any(|domain| {
+        domain == "divisions" || domain == "division_equipment" || domain == "army_orders"
+    }) {
         return "not_scheduled";
     }
     let Some(domain) = summary
         .per_domain
         .get(&20)
         .or_else(|| summary.per_domain.get(&26))
+        .or_else(|| summary.per_domain.get(&27))
     else {
         return "unseen";
     };
@@ -4652,6 +4897,79 @@ mod tests {
         );
         assert_eq!(compact_domain_id("division_equipment"), Some(26));
         assert_eq!(compact_domain_name(26), "division_equipment");
+    }
+
+    #[test]
+    fn compact_summary_decodes_army_orders_data_record() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            27,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(700, 2, 2, 3, 2),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            27,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_army_orders_data_payload(0),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_100, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(&summary, &[27]).is_empty());
+        let orders = summary.per_domain.get(&27).unwrap();
+        assert_eq!(orders.data_record_count, 1);
+        assert_eq!(orders.data_rows_total, 2);
+        assert_eq!(orders.data_changed_rows_total, 2);
+        assert_eq!(orders.unit_count_total, 3);
+        assert_eq!(
+            orders
+                .data_units_total
+                .get("army_order_observed_armies")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            orders
+                .data_units_total
+                .get("army_order_observed_orders")
+                .copied(),
+            Some(3)
+        );
+        assert_eq!(
+            orders
+                .data_units_total
+                .get("army_order_target_state_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            orders
+                .data_units_total
+                .get("army_order_deleted_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(compact_domain_id("army_orders"), Some(27));
+        assert_eq!(compact_domain_name(27), "army_orders");
     }
 
     #[test]
@@ -5844,6 +6162,72 @@ mod tests {
             payload.extend_from_slice(&variant_id.to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
             payload.extend_from_slice(&amount_raw.to_le_bytes());
+        }
+        payload
+    }
+
+    fn test_army_orders_data_payload(status_flags: u32) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&20u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&3u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+
+        for (
+            army_id,
+            generation,
+            flags,
+            slot_index,
+            order_type,
+            target_first,
+            target_count,
+            target_state_count,
+            target_status_code,
+        ) in [
+            (
+                17u32,
+                3u64,
+                COMPACT_ARMY_ORDER_ROW_FLAG_TARGET_STATES
+                    | COMPACT_ARMY_ORDER_ROW_FLAG_TARGET_STATE_COUNT,
+                2u32,
+                5i32,
+                0u32,
+                2u32,
+                2u32,
+                1u32,
+            ),
+            (
+                18u32,
+                4u64,
+                COMPACT_ARMY_ORDER_ROW_FLAG_DELETED,
+                0u32,
+                2i32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+            ),
+        ] {
+            payload.extend_from_slice(&army_id.to_le_bytes());
+            payload.extend_from_slice(&generation.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&slot_index.to_le_bytes());
+            payload.extend_from_slice(&order_type.to_le_bytes());
+            payload.extend_from_slice(&target_first.to_le_bytes());
+            payload.extend_from_slice(&target_count.to_le_bytes());
+            payload.extend_from_slice(&target_state_count.to_le_bytes());
+            payload.extend_from_slice(&target_status_code.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        for state_id in [118u32, 119u32] {
+            payload.extend_from_slice(&state_id.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
         }
         payload
     }

@@ -216,6 +216,23 @@ Implemented in the current bridge:
   lines, construction queues, active research slots, timed decisions, moving and
   in-combat divisions, held division equipment, land-combat participants, map
   resources/buildings, and active weather regions;
+- compact `army_orders` proof
+  `compact_army_orders_wide_speed5_20260630_v2` adds the 15th compact domain to
+  the same wide production-shaped gate. The DLL derives CArmy roots from
+  anchored live `CDivision+0xB0` parents, validates the army/order vtables and
+  handles, emits typed order rows with generation, slot, order type, delete
+  rows, and exact type-5 target-state slices when validated, and leaves
+  unsupported or failed target geometry explicitly badged in-row. The 60-second
+  speed-five run advanced 105 game hours with 0 skipped, verified
+  ordered/decodable compact records, full per-hour data-record coverage, and
+  `.battleplan` packing, saw no source-unavailable/partial/bridge/worker
+  failures, measured avg frame 47.094 ms / p95 60.541 ms / max 121.066 ms /
+  6,386,939 compact bytes, and verified a 2,031,491-byte `.battleplan`. The
+  `army_orders` domain emitted 106 data records, observed 43,290 army rows and
+  42,226 live orders across the run, and packed 436 changed order rows plus 966
+  target-state rows. This proves active armies reachable through live divisions;
+  empty armies, full OOB hierarchy, and deeper non-type-5 order geometry remain
+  open;
 - DLL-native scheduled `decisions_live` through
   `CCountry+0xFA0 -> CDecisionStatus`: the collector validates the status
   vtable and owner back-pointer, emits non-empty status-vector counts, and

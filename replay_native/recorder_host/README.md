@@ -459,11 +459,22 @@ decisions, division movement/combat/org-strength rows, held equipment entries,
 land-combat participants, map resource/building rows, and active weather
 regions.
 
-`army_orders` remains raw-only and bridge-backed in this checkpoint. Its sampler
-requires `army_body_bridge`, and compact-stream mode currently skips the raw
-army-order loop entirely. Do not mark orders/OOB complete until the army/OOB
-root is native or the compact segment is explicitly badged as temporary bridge
-debt.
+`compact_army_orders_wide_speed5_20260630_v2` adds compact `army_orders` as the
+15th typed domain. The DLL derives active CArmy roots from anchored live
+`CDivision+0xB0` parents, validates the CArmy and order vtables/handles, and
+emits compact rows for order identity, generation, slot, type, delete rows, and
+validated type-5 target-state slices. The 60-second speed-five proof advanced
+105 game hours with 0 skipped, full per-hour domain/data-record coverage,
+ordered/decodable records, no source-unavailable/partial/bridge/worker flags,
+avg frame 47.094 ms, p95 60.541 ms, max 121.066 ms, 6,386,939 compact bytes,
+and a verified 2,031,491-byte `.battleplan`. Recorder semantic counters report
+106 `army_orders` data records, 43,290 observed army rows, 42,226 observed live
+orders, 436 changed order rows, 19 delete rows, 176 exact-target parent rows,
+233 unsupported-target parent rows, 8 validation-failed target rows, and 966
+target-state entries. This replaces the old raw-only/bridge-backed army-order
+path for active armies reachable through live divisions. Do not mark full OOB
+complete yet: empty armies, army-group/fleet/task-force roots, and deeper
+non-type-5 order geometry still need native compact coverage.
 
 Implementation note: see `COMPACT_HOI4REPLAY_NEXT_STEP.md` for the bounded
 Rust-native packaging path and the test contract for putting `collector_stream.bin`

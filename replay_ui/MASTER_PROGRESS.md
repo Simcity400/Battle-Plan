@@ -118,6 +118,17 @@ for inspection, with no ability to mutate the game.
   timed decisions, moving/in-combat divisions, held division equipment,
   land-combat participants, map resources/buildings, and active weather
   regions.
+- Compact DLL/Rust replay capture now includes active `army_orders` as a typed
+  compact domain. The 2026-06-30 proof
+  `compact_army_orders_wide_speed5_20260630_v2` scheduled 15 domains for 60
+  seconds at speed five, advanced 105 game hours with 0 skipped, verified
+  ordered/decodable records, full per-hour domain/data-record coverage, and
+  `.battleplan` packing, and saw no source-unavailable/partial/bridge/worker
+  failures. It observed 43,290 army rows and 42,226 live orders, emitted 436
+  changed order rows, 19 delete rows, and 966 target-state entries through a
+  DLL-native path from anchored live division parents to CArmy order vectors.
+  Remaining replay capture gaps are full OOB roots, empty armies, and deeper
+  non-type-5 order geometry.
 - DLL-native scheduled `diplomacy_live` is proven for faction membership and
   war/casualty rows: the collector reads `CCountry+0x598` faction groups on
   hourly frames, folds into `countries.*.diplomacy.faction_group` and

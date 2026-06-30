@@ -151,18 +151,30 @@ country-state domains. Current compact binary proofs:
   division rows, 5,948 in-combat division rows, 6,160 division-equipment entry
   rows, 6,533 land-combat participant rows, 718 state-resource rows, 6,968
   building rows, and 451 active weather-region rows.
+- `compact_army_orders_wide_speed5_20260630_v2`: adds compact `army_orders` to
+  the wide bundle for 15 scheduled domains, 60 seconds, 105 game hours
+  advanced, 106 unique frame hours, 0 skipped, full per-hour domain/data-record
+  coverage, ordered and decodable stream, and no worker-panic,
+  source-unavailable, partial-data, or bridge flags. It measured avg frame
+  47.094 ms, p95 60.541 ms, max 121.066 ms, wrote 6,386,939 compact bytes, and
+  verified a 2,031,491-byte `.battleplan`. The DLL derives active CArmy roots
+  from anchored live division parents and emitted 106 typed `army_orders` data
+  records with 43,290 observed army rows, 42,226 observed live orders, 436
+  changed order rows, 19 delete rows, and 966 exact target-state rows. This is
+  DLL-native for active armies reachable through live divisions; full OOB roots,
+  empty armies, and deeper non-type-5 order geometry remain open.
 
 This completes the extraction-only compact performance gate for the current
 implemented compact domains and starts replay payload capture with typed
 records plus Rust-native `.battleplan` packing. `fuel_live`, `production_live`,
 `focus_live`, `tech_live`, `politics_live`, `politics_residuals`,
 `decisions_live`, `diplomacy_live`, `divisions`, `division_equipment`,
-`land_combats`, `map_control`, `map_detail`, and `weather_live` are live-proven
-through the DLL/Rust compact path at speed five with zero skipped game hours
-for the current vanilla build. The next step is not more JSON widening; it is
-native compact coverage for army orders/OOB, naval/air combat and telemetry,
-and richer combat/order details that are still raw-only, bridge-backed, or
-unimplemented.
+`army_orders`, `land_combats`, `map_control`, `map_detail`, and `weather_live`
+are live-proven through the DLL/Rust compact path at speed five with zero
+skipped game hours for the current vanilla build. The next step is not more JSON
+widening; it is native compact coverage for full OOB, naval/air combat and
+telemetry, and richer combat/order details that are still raw-only,
+bridge-backed, or unimplemented.
 
 Country-object heap discovery is not part of normal capture. The experimental
 whole-heap vtable scan is behind the explicit `country_object_scan` control flag,
@@ -502,9 +514,19 @@ Land-combat raw stream status:
 - Remaining promotion work is richer combat-tick/participant canonical events
   and raw `land_combats` ingestion into the replay timeline/app.
 
-Army-order raw stream status:
+Army-order stream status:
 
-- `live_capture.collector_frames` and the Rust collector define and test a
+- The production-shaped compact path now captures active army orders without
+  the Python army bridge. In compact mode, the DLL derives CArmy roots from
+  anchored live division bodies (`CDivision+0xB0`), validates CArmy/order
+  vtables and handles, and emits typed `army_orders` payloads through the
+  Rust recorder. `compact_army_orders_wide_speed5_20260630_v2` live-proved this
+  at speed five with 105 game hours advanced, 0 skipped, 106 data records,
+  43,290 observed army rows, 42,226 observed live orders, 436 changed order
+  rows, 19 delete rows, and 966 target-state entries. This covers active armies
+  reachable through live divisions; empty armies, full OOB roots, and deeper
+  non-type-5 order geometry remain open.
+- `live_capture.collector_frames` and the Rust collector also define and test a
   bounded raw `army_orders` domain-delta/event contract:
   `army_order:<army_id>:<generation>` keys, army id, slot index, order type,
   nullable target state ids, target-state count, target status, and no raw
@@ -516,8 +538,8 @@ Army-order raw stream status:
 - The Python proof harness can populate that bridge with
   `live_capture.collector_session --preflight-army-orders`; by default it is
   cache-first and fails closed unless `--allow-army-cold-scan` explicitly allows
-  the slower army vtable sweep. This remains production debt until discovery is
-  moved into the DLL/Rust recorder or proven one-time and outside recording.
+  the slower army vtable sweep. This bridge is retained for historical/debug raw
+  fixtures only and is not the production compact path for active army orders.
   Manifests store sanitized counts/status only.
 - Worker sampling does not sweep the heap. For each supplied army row, the DLL
   revalidates the `CArmy` body by vtable, type, and id, then reads the active
@@ -546,7 +568,7 @@ Army-order raw stream status:
   390 adds and one removal with zero raw gap domains, and also failed the update
   gate.
 - Remaining promotion work is a live speed-five order-edit fixture, semantic
-  event splits, non-type-5 geometry, periodic bridge refresh for new armies, and
+  event splits, native full OOB/empty-army roots, non-type-5 geometry, and
   timeline ingestion.
 
 Naval-combat raw stream status:
