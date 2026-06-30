@@ -206,9 +206,19 @@ for inspection, with no ability to mutate the game.
   advanced 53 game hours with 0 skipped, verified full per-domain coverage,
   ordered/decodable records, `.battleplan` packing, and no source-unavailable/
   partial/bridge/worker failures while capturing 964 OOB owner rows. Direct
-  per-ship owner/name fields, naval leaders, missions, theatre/region state,
-  active naval combat semantics, and sinking/damage event details remain
-  separate segments.
+  ship names, naval leaders, missions, theatre/region state, active naval combat
+  semantics, and sinking/damage event details remain separate segments.
+- Compact `ships` rows now carry owner attribution for individual ships. The
+  collector inherits owner tag-db ids from the DLL-native task-force/fleet owner
+  path and packs them into the compact `ships` domain. Focused proof
+  `compact_oob_ships_ship_owner_870ebf_20260701_v1` advanced 38 game hours with
+  0 skipped and captured 2,577 owner-attributed ship rows, while
+  `compact_full_plus_ship_owner_870ebf_20260701_v1` ran all 17 compact domains,
+  advanced 53 game hours with 0 skipped, verified full per-domain coverage,
+  ordered/decodable records, `.battleplan` packing, and no source-unavailable/
+  partial/bridge/worker failures while capturing 2,080 owner-attributed ship
+  rows. Ship names remain unresolved in live memory; current research did not
+  pin them on `CShip`.
 - DLL-native scheduled `diplomacy_live` is proven for faction membership and
   war/casualty rows: the collector reads `CCountry+0x598` faction groups on
   hourly frames, folds into `countries.*.diplomacy.faction_group` and

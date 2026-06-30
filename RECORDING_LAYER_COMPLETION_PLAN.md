@@ -725,8 +725,22 @@ Tasks:
   source/partial/bridge/worker failures, and captured 964 OOB owner rows
   including 152 fleet rows, 233 task-force rows, 536 task-force member ids,
   1,661 ship member ids, 474 missing-member-count rows, 5,940 observed fleet
-  rows, and 9,243 observed task-force rows. Direct per-ship owner/name fields
-  remain a separate ship-row widening task.
+  rows, and 9,243 observed task-force rows.
+- Current ship-owner checkpoint: compact `ships` rows now carry the owning
+  country tag-db id inherited from the DLL-native task-force/fleet owner path.
+  Focused proof `compact_oob_ships_ship_owner_870ebf_20260701_v1` advanced 38
+  game hours with 0 skipped, verified ordered/decodable records and
+  `.battleplan` packing, had no source/partial/bridge/worker failures, and
+  captured 2,577 owner-attributed ship rows. The full
+  `compact_full_plus_ship_owner_870ebf_20260701_v1` covered 17 compact domains,
+  advanced 53 game hours with 0 skipped, verified full per-domain coverage,
+  ordered/decodable records and `.battleplan` packing, had no
+  source/partial/bridge/worker failures, and captured 2,080 owner-attributed
+  ship rows, 79,068 observed ship rows, and 9,570 observed task-force rows. Ship
+  names remain a separate unresolved live-memory field: existing research did
+  not find them on `CShip[0x40..0x300]`, so they must be pinned separately or
+  sourced from a validated non-save runtime wrapper before being called
+  DLL-complete.
 - Current DLL checkpoint: `naval_air_combats` now has a bridge-gated raw stream
   from supplied `CNavalCombat` body pins. The collector revalidates bridged
   bodies every sample and emits side-level active-combat summaries plus

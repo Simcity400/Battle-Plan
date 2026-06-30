@@ -569,7 +569,7 @@ changed rows, including 124 fleet rows, 195 task-force rows, 404 task-force
 member ids, 1,625 ship member ids, 5,441 observed fleet rows, and 8,638
 observed task-force rows; OOB read p95 was 55.044 ms.
 
-`compact_full_plus_oob_owner_870ebf_20260701_v2` is the current widest
+`compact_full_plus_oob_owner_870ebf_20260701_v2` was the widest
 production-shaped gate after adding owner attribution to compact fleet and
 task-force rows. It scheduled all 17 compact domains for 30 seconds, advanced
 53 game hours with 54 frame-end records, skipped 0, had full per-domain data
@@ -581,6 +581,18 @@ owner rows, including 152 fleet rows, 233 task-force rows, 536 task-force
 member ids, 1,661 ship member ids, 474 missing-member-count rows, 5,940
 observed fleet rows, and 9,243 observed task-force rows; OOB read p95 was
 59.421 ms.
+
+`compact_full_plus_ship_owner_870ebf_20260701_v1` is the current widest
+production-shaped gate after adding owner attribution to compact `ships` rows.
+It scheduled all 17 compact domains for 30 seconds, advanced 53 game hours with
+54 frame-end records, skipped 0, had full per-domain data coverage,
+ordered/decodable records, zero parse/order errors, no
+source-unavailable/partial/bridge/worker flags, avg frame 58.799 ms, p95
+68.350 ms, max 93.165 ms, 5,004,085 compact bytes, and an independent
+`pack_replay verify` pass. `ships` captured 2,110 changed rows, including 2,080
+owner-attributed ship rows, 2,080 task-force rows, 2,080 definition rows, 79,068
+observed ship rows, and 9,570 observed task-force rows; ship read p95 was
+47.590 ms.
 
 Implementation note: see `COMPACT_HOI4REPLAY_NEXT_STEP.md` for the bounded
 Rust-native packaging path and the test contract for putting `collector_stream.bin`

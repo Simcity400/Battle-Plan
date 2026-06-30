@@ -113,7 +113,9 @@ const COMPACT_SHIP_ROW_BASE_LEN: usize = 40;
 const COMPACT_SHIP_ROW_FLAG_DELETED: u32 = 1;
 const COMPACT_SHIP_ROW_FLAG_TASK_FORCE: u32 = 1 << 1;
 const COMPACT_SHIP_ROW_FLAG_DEFINITION: u32 = 1 << 2;
+const COMPACT_SHIP_ROW_FLAG_OWNER: u32 = 1 << 3;
 const COMPACT_SHIP_MAX_ID: u32 = 4_000_000;
+const COMPACT_SHIP_MAX_OWNER_TAG_DB_ID: u32 = 2_048;
 const COMPACT_SHIP_MAX_CATEGORY: u32 = 128;
 const COMPACT_SHIP_MAX_STRENGTH_RAW: u32 = 1_000_000_000;
 const COMPACT_SHIP_MAX_ORGANISATION_RAW: u32 = 100_000_000;
@@ -3504,6 +3506,7 @@ fn decode_compact_ships_data_payload(offset: usize, payload: &[u8], summary: &mu
     let mut cursor = 40usize;
     let mut seen_rows = BTreeSet::new();
     let mut task_force_rows = 0usize;
+    let mut owner_rows = 0usize;
     let mut definition_rows = 0usize;
     for row_index in 0..row_count {
         if let Err(err) =
@@ -3520,7 +3523,7 @@ fn decode_compact_ships_data_payload(offset: usize, payload: &[u8], summary: &mu
         let organisation_raw = read_u32_le(payload, cursor + 20);
         let experience_raw = read_u32_le(payload, cursor + 24);
         let sunk_convoys = read_u32_le(payload, cursor + 28);
-        let row_reserved0 = read_u32_le(payload, cursor + 32);
+        let owner_tag_db_id = read_u32_le(payload, cursor + 32);
         let row_reserved1 = read_u32_le(payload, cursor + 36);
         cursor += COMPACT_SHIP_ROW_BASE_LEN;
         let definition_len = if cursor.saturating_add(2) <= payload.len() {
@@ -3546,7 +3549,8 @@ fn decode_compact_ships_data_payload(offset: usize, payload: &[u8], summary: &mu
         if flags
             & !(COMPACT_SHIP_ROW_FLAG_DELETED
                 | COMPACT_SHIP_ROW_FLAG_TASK_FORCE
-                | COMPACT_SHIP_ROW_FLAG_DEFINITION)
+                | COMPACT_SHIP_ROW_FLAG_DEFINITION
+                | COMPACT_SHIP_ROW_FLAG_OWNER)
             != 0
         {
             summary.parse_errors.push(format!(
@@ -3577,6 +3581,18 @@ fn decode_compact_ships_data_payload(offset: usize, payload: &[u8], summary: &mu
                 "offset {offset}: ships row {row_index} has definition without flag"
             ));
         }
+        if (flags & COMPACT_SHIP_ROW_FLAG_OWNER) != 0 {
+            owner_rows = owner_rows.saturating_add(1);
+            if owner_tag_db_id == 0 || owner_tag_db_id > COMPACT_SHIP_MAX_OWNER_TAG_DB_ID {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: ships row {row_index} has invalid owner_tag_db_id {owner_tag_db_id}"
+                ));
+            }
+        } else if owner_tag_db_id != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: ships row {row_index} has owner_tag_db_id without flag"
+            ));
+        }
         if category_enum > COMPACT_SHIP_MAX_CATEGORY {
             summary.parse_errors.push(format!(
                 "offset {offset}: ships row {row_index} has invalid category_enum {category_enum}"
@@ -3604,13 +3620,14 @@ fn decode_compact_ships_data_payload(offset: usize, payload: &[u8], summary: &mu
                 || organisation_raw != 0
                 || experience_raw != 0
                 || sunk_convoys != 0
+                || owner_tag_db_id != 0
                 || definition_len != 0)
         {
             summary.parse_errors.push(format!(
                 "offset {offset}: ships deleted row {row_index} has live fields"
             ));
         }
-        if row_reserved0 != 0 || row_reserved1 != 0 {
+        if row_reserved1 != 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: ships row {row_index} reserved field is nonzero"
             ));
@@ -3623,6 +3640,7 @@ fn decode_compact_ships_data_payload(offset: usize, payload: &[u8], summary: &mu
         ));
     }
     add_compact_domain_data_unit(summary, 29, "ship_task_force_rows", task_force_rows);
+    add_compact_domain_data_unit(summary, 29, "ship_owner_rows", owner_rows);
     add_compact_domain_data_unit(summary, 29, "ship_definition_rows", definition_rows);
 }
 
@@ -5757,6 +5775,10 @@ mod tests {
             Some(1)
         );
         assert_eq!(
+            ships.data_units_total.get("ship_owner_rows").copied(),
+            Some(1)
+        );
+        assert_eq!(
             ships.data_units_total.get("ship_definition_rows").copied(),
             Some(1)
         );
@@ -7227,6 +7249,7 @@ mod tests {
             instance_id,
             flags,
             task_force_id,
+            owner_tag_db_id,
             category_enum,
             strength_raw,
             organisation_raw,
@@ -7236,8 +7259,11 @@ mod tests {
         ) in [
             (
                 1001u32,
-                COMPACT_SHIP_ROW_FLAG_TASK_FORCE | COMPACT_SHIP_ROW_FLAG_DEFINITION,
+                COMPACT_SHIP_ROW_FLAG_TASK_FORCE
+                    | COMPACT_SHIP_ROW_FLAG_DEFINITION
+                    | COMPACT_SHIP_ROW_FLAG_OWNER,
                 617u32,
+                47u32,
                 3u32,
                 10_000_000u32,
                 9_000_000u32,
@@ -7248,6 +7274,7 @@ mod tests {
             (
                 1002u32,
                 COMPACT_SHIP_ROW_FLAG_DELETED,
+                0u32,
                 0u32,
                 0u32,
                 0u32,
@@ -7265,7 +7292,7 @@ mod tests {
             payload.extend_from_slice(&organisation_raw.to_le_bytes());
             payload.extend_from_slice(&experience_raw.to_le_bytes());
             payload.extend_from_slice(&sunk_convoys.to_le_bytes());
-            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&owner_tag_db_id.to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
             append_test_compact_string(&mut payload, definition);
         }

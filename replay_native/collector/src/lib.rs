@@ -2817,6 +2817,7 @@ mod attach_log {
     const COMPACT_SHIP_ROW_FLAG_DELETED: u32 = 1;
     const COMPACT_SHIP_ROW_FLAG_TASK_FORCE: u32 = 1 << 1;
     const COMPACT_SHIP_ROW_FLAG_DEFINITION: u32 = 1 << 2;
+    const COMPACT_SHIP_ROW_FLAG_OWNER: u32 = 1 << 3;
     const COMPACT_OOB_STATUS_NONE: u32 = 0;
     const COMPACT_OOB_STATUS_EXACT: u32 = 1;
     const COMPACT_OOB_STATUS_UNKNOWN: u32 = 2;
@@ -3270,6 +3271,7 @@ mod attach_log {
         instance_id: u32,
         deleted: bool,
         task_force_id: Option<u32>,
+        owner_tag_db_id: Option<u32>,
         definition: Option<String>,
         category_enum: u32,
         strength_raw: u32,
@@ -11570,6 +11572,7 @@ mod attach_log {
                 state.base,
                 task_force.body_ptr,
                 task_force.task_force_id,
+                task_force.owner_tag_db_id,
             ) {
                 Some(rows) => {
                     for row in rows {
@@ -11876,6 +11879,7 @@ mod attach_log {
         module_base: usize,
         task_force_ptr: usize,
         task_force_id: u32,
+        owner_tag_db_id: Option<u32>,
     ) -> Option<Vec<CompactShipRow>> {
         let count = read_u32(task_force_ptr.checked_add(TASK_FORCE_OFF_SHIP_COUNT)?)?;
         if count == 0 {
@@ -11897,7 +11901,8 @@ mod attach_log {
         let mut seen = BTreeMap::new();
         for index in 0..count as usize {
             let ship_ptr = read_u64_from_slice(&ship_ptrs, index * 8)? as usize;
-            let row = sample_compact_ship_body(module_base, ship_ptr, task_force_id)?;
+            let row =
+                sample_compact_ship_body(module_base, ship_ptr, task_force_id, owner_tag_db_id)?;
             if seen.insert(row.instance_id, ()).is_some() {
                 return None;
             }
@@ -11910,6 +11915,7 @@ mod attach_log {
         module_base: usize,
         body: usize,
         task_force_id: u32,
+        owner_tag_db_id: Option<u32>,
     ) -> Option<CompactShipRow> {
         if !is_map_control_heap_pointer(body) {
             return None;
@@ -11951,6 +11957,7 @@ mod attach_log {
             instance_id,
             deleted: false,
             task_force_id: Some(task_force_id),
+            owner_tag_db_id,
             definition,
             category_enum,
             strength_raw,
@@ -12000,6 +12007,7 @@ mod attach_log {
             instance_id,
             deleted: true,
             task_force_id: None,
+            owner_tag_db_id: None,
             definition: None,
             category_enum: 0,
             strength_raw: 0,
@@ -15051,6 +15059,9 @@ mod attach_log {
             if row.definition.is_some() {
                 flags |= COMPACT_SHIP_ROW_FLAG_DEFINITION;
             }
+            if row.owner_tag_db_id.is_some() {
+                flags |= COMPACT_SHIP_ROW_FLAG_OWNER;
+            }
             payload.extend_from_slice(&row.instance_id.to_le_bytes());
             payload.extend_from_slice(&flags.to_le_bytes());
             payload.extend_from_slice(&row.task_force_id.unwrap_or(0).to_le_bytes());
@@ -15059,7 +15070,7 @@ mod attach_log {
             payload.extend_from_slice(&row.organisation_raw.to_le_bytes());
             payload.extend_from_slice(&row.experience_raw.to_le_bytes());
             payload.extend_from_slice(&row.sunk_convoys.to_le_bytes());
-            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&row.owner_tag_db_id.unwrap_or(0).to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
             append_compact_string(&mut payload, row.definition.as_deref());
         }
@@ -23605,6 +23616,7 @@ mod attach_log {
                     instance_id: 1001,
                     deleted: false,
                     task_force_id: Some(617),
+                    owner_tag_db_id: Some(47),
                     definition: Some("hull".to_string()),
                     category_enum: 3,
                     strength_raw: 10_000_000,
@@ -23616,6 +23628,7 @@ mod attach_log {
                     instance_id: 1002,
                     deleted: true,
                     task_force_id: None,
+                    owner_tag_db_id: None,
                     definition: None,
                     category_enum: 0,
                     strength_raw: 0,
@@ -23657,7 +23670,9 @@ mod attach_log {
             );
             assert_eq!(
                 u32::from_le_bytes(payload[44..48].try_into().unwrap()),
-                COMPACT_SHIP_ROW_FLAG_TASK_FORCE | COMPACT_SHIP_ROW_FLAG_DEFINITION
+                COMPACT_SHIP_ROW_FLAG_TASK_FORCE
+                    | COMPACT_SHIP_ROW_FLAG_DEFINITION
+                    | COMPACT_SHIP_ROW_FLAG_OWNER
             );
             assert_eq!(u32::from_le_bytes(payload[48..52].try_into().unwrap()), 617);
             assert_eq!(u32::from_le_bytes(payload[52..56].try_into().unwrap()), 3);
@@ -23674,6 +23689,7 @@ mod attach_log {
                 500_000
             );
             assert_eq!(u32::from_le_bytes(payload[68..72].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[72..76].try_into().unwrap()), 47);
             assert_eq!(u16::from_le_bytes(payload[80..82].try_into().unwrap()), 4);
             assert_eq!(&payload[82..86], b"hull");
             assert_eq!(

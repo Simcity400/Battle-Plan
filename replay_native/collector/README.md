@@ -266,6 +266,26 @@ country-state domains. Current compact binary proofs:
   rows, 536 task-force member ids, 1,661 ship member ids, 474
   missing-member-count rows, 5,940 observed fleet rows, and 9,243 observed
   task-force rows; OOB read p95 was 59.421 ms.
+- `compact_oob_ships_ship_owner_870ebf_20260701_v1`: widens compact `ships`
+  rows with per-ship owner tag-db ids inherited from the DLL-native
+  country/fleet/task-force path. The 20-second focused gate scheduled
+  `oob_command` plus `ships`, advanced 38 game hours with 39 frame-end records
+  and 0 skipped, had ordered/decodable compact records, no worker-panic/
+  source-unavailable/partial or bridge flags, avg frame 49.055 ms, p95
+  51.000 ms, max 51.258 ms, 255,452 compact bytes, and a verified
+  `.battleplan`. `ships` captured 2,691 changed rows, including 2,577
+  owner-attributed ship rows, 2,577 task-force rows, 2,577 definition rows,
+  56,948 observed ship rows, and 6,898 observed task-force rows; ship read p95
+  was 36.251 ms.
+- `compact_full_plus_ship_owner_870ebf_20260701_v1`: reruns the full 17-domain
+  compact bundle after adding per-ship owner attribution. It advanced 53 game
+  hours with 54 frame-end records and 0 skipped, had full domain/data-record
+  coverage, ordered and decodable records, no worker-panic/source-unavailable/
+  partial or bridge flags, avg frame 58.799 ms, p95 68.350 ms, max 93.165 ms,
+  5,004,085 compact bytes, and a verified `.battleplan`. `ships` captured 2,110
+  changed rows, including 2,080 owner-attributed ship rows, 2,080 task-force
+  rows, 2,080 definition rows, 79,068 observed ship rows, and 9,570 observed
+  task-force rows; ship read p95 was 47.590 ms.
 
 This completes the extraction-only compact performance gate for the current
 implemented compact domains and starts replay payload capture with typed
@@ -278,14 +298,14 @@ DLL/Rust compact path at speed five with zero skipped game hours for the
 applicable verified build profile. Compact `oob_command` now includes DLL-native
 owner-attributed fleet and task-force hierarchy rows for the verified `870ebf`
 build. The next step is not more JSON widening; it is native compact coverage
-for direct per-ship owner/name fields, naval leaders, missions, theatre/region
-state, naval/air combat telemetry, and richer combat/order details that are
-still raw-only, bridge-backed, or unimplemented.
+for direct ship name fields, naval leaders, missions, theatre/region state,
+naval/air combat telemetry, and richer combat/order details that are still
+raw-only, bridge-backed, or unimplemented.
 
 `ships` now has a reserved compact domain (`domain_id=29`) and Rust recorder
 decoder/schema coverage for per-ship hull telemetry, including CShip instance
-id, optional task-force id, hull definition token, category enum, raw
-strength/org/XP, sunk-convoy count, and deletion rows. For the verified
+id, optional task-force id, optional owner tag-db id, hull definition token,
+category enum, raw strength/org/XP, sunk-convoy count, and deletion rows. For the verified
 `870ebf` vanilla build profile, the collector now emits this domain from the
 DLL-native country-rooted fleet/task-force/ship path with
 `ship_root_source="dll_native"` and no discovery debt. The old bridge-gated raw
@@ -720,15 +740,16 @@ Naval-combat raw stream status:
   the verified `870ebf` build. The collector walks the country fleet vector,
   validates fleet/task-force/ship vtables and handle type/id fields, and emits
   pointer-free compact rows with definition, category, strength/org/experience
-  raw values, sunk-convoy counts, task-force membership, and delete rows.
+  raw values, sunk-convoy counts, task-force membership, owner tag-db ids, and
+  delete rows.
 - The older `ship_body_bridge` raw stream and
   `live_capture.collector_session --preflight-ships` proof harness remain
   development/oracle tooling only. They must not be used as the production
   speed-five recording path now that the compact collector has a native
   anchored source. Manifests store sanitized counts/status only.
 - Targets, aggregate attack rows, damage ticks, hit counters, sinking events,
-  ship names, owner attribution, missions, and UI damage totals remain follow-up
-  streams pending live proof or separate command/OOB sources.
+  ship names, missions, and UI damage totals remain follow-up streams pending
+  live proof or separate command/OOB sources.
 - Live proof on pid 43412: a no-cold 12-game-hour run resolved 3 active naval
   combats during preflight in 26.031s outside the hot loop, emitted raw
   `naval_air_combats` and `naval_combat_members`, verified replay output,

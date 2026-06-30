@@ -55,7 +55,7 @@ note at the end).
 | `order_of_battle.armies[]` (`oob_command` M, save backstop → M/S) | `{id, owner, name, leader(general id), members[](div `id:type`), member_count, members_resolved, orders[](battle-plan `order_instance`), field_marshal_group, cached{…}}` | **M/S** | army rows: name/owner/member-count EXACT; **member ids + leader id are RAW engine ints, not TAGs** (only `owner` is a resolved TAG) → leader NAME/skill needs `commanders` join (derived/unavailable); battle-plan order geometry partial (§G) |
 | `order_of_battle.army_groups[]` | `{id, owner, name, leader(FM `id:type`), army_refs[], army_refs_resolved, cached{plan_value,our_power,enemy_power}(RUNTIME), icon}` | **M/S** | army-group shields: name/owner/member EXACT; `cached.*` plan/power **RUNTIME, non-authoritative** → proxy |
 | `order_of_battle.fleets[]` | `{id, owner, name, leader(admiral id), task_forces[{id,name,location_province,owner,mission,ships[{id,definition,organisation,strength,experience,name,equipment}]}]}` | **M/S** | fleet rows + task-force rows + per-ship rows EXACT identity/org/str/xp; **leader id RAW int** → admiral name/skill needs `commanders` |
-| `order_of_battle.ships[]` (LIVE per-ship, `ships` M) | `{instance_id, definition, category, strength_hp, organisation, experience, sunk_convoys}` — **owner NOT carried live** (save-join only) | **M** | live ship rows: org/str/xp/category EXACT; owner needs the save OOB join |
+| `order_of_battle.ships[]` (LIVE per-ship, `ships` M) | `{instance_id, owner_tag_db_id, definition, category, strength_hp, organisation, experience, sunk_convoys}` | **M** | live ship rows: org/str/xp/category EXACT; owner exact as country tag-db id from the DLL-native task-force/fleet owner path; resolved TAG display needs the country identity map |
 | `order_of_battle.navy_theaters[]` / `air_wings[]` | save-only lists | **S** | theatre selector + air management lean on these for fleet/wing membership |
 | `order_of_battle.air_wings[]` | `{id, owner, name, count(planes), experience, manpower, mission/mission_type(cached), strategic_region, plane_definition, air_base(`id:type`), state_id, equipment[[id,type,amount]], effective_planes(RUNTIME)}` | **S** | air-wing rows: count/xp/manpower/mission/base/equipment EXACT (save); **`effective_planes` RUNTIME → proxy** |
 | `order_of_battle.battle_plan_orders[]` (`construction_orders_live` M) | per-army `{army_id, order_type, target_states}` — **`target_states` EXACT for type-5 (offensive) ONLY; non-type-5 live geometry RESISTED (null)**; `army_id`+`target_states` are RAW engine ints | **M** | battle-plan tools: order TYPE bindable; live ARROW/PATH geometry unavailable except offensive target-state SET; save-backed `armies[].orders[]` measured geometry can render exact paths when folded |
@@ -268,7 +268,7 @@ is the **fleet → task-force → ship roster** (`detailed_fleet_box` → `fleet
 | `ship_level` (iconType, `GFX_unit_level`) | ship XP level | int (frame) | **derived** | From `experience`. |
 | `pride` (iconType, `GFX_NV_icon_pride`) | ship == `extra.pride_of_the_fleet` (`{id,type}`) | visibility | **derived** | Pride flag. |
 | `repair_symbol` / `damaged_part_report` (iconType) | ship is under repair / has critical damage | visibility | **unavailable** | Repair state + critical-damage report are runtime; not stored. |
-| `exile_force_flag_frame` / `foreign_ship_flag` (iconType) | ship owner ≠ `<TAG>` (live ships carry no owner) | flag | **unavailable** (live) / **derived** (save) | Live `ships[]` carry NO owner; owner needs the save OOB join. |
+| `exile_force_flag_frame` / `foreign_ship_flag` (iconType) | live `ships[].owner_tag_db_id` ≠ selected country tag-db id | flag | **exact** | Live compact `ships` rows now carry owner tag-db ids; display still needs tag-db→TAG/flag resolution. |
 
 ### Mission/target action bars (`action_bar_window`, `target_bar_window`)
 
@@ -1157,7 +1157,7 @@ unavailable by nature).
 | army, navies | **colonial / exile / reserve** classification flags | **P** | not stored per army/TF in OOB; the owner-TAG-derived expeditionary flag IS derivable, but colonial/exile/reserve sub-class is not. |
 | navies | per-fleet/TF **home base**, **fuel**, **activity** (`home_base_name`, `fuel_icon`, `activity_description`, `dominance`) | **P/H** | home base not in OOB; per-fleet fuel not split from national `fuel`; TF activity/dominance are runtime. |
 | navies | per-ship **repair / critical-damage** state (`repair_symbol`, `damaged_part_report`) | **H** | runtime repair state; not stored. |
-| navies | live ship **owner** (`foreign_ship_flag` on live `ships[]`) | **P** | live `order_of_battle.ships[]` carry NO owner (save-join only). |
+| navies | live ship **name** (`ship_name` without save/OOB-name join) | **P** | live `order_of_battle.ships[]` now carry owner tag-db ids, but ship names are still not pinned on `CShip`. |
 | air (3/4/5), army | air-wing **operational limit / efficiency / effective_planes** (`limit`, `air_mission_efficiency_strip`, `equipment_ratio`) | **H** | `effective_planes` is RUNTIME (§12 note); the operational LIMIT denominator is not stored (only `count`). |
 | air (3/4/5) | wing **ace** attachment (`ace`, `ace_btn`, `ace_name`) | **P** | `extra.aces[]` exists (S) but no wing→ace join. |
 | air (3/4) | air-GROUP **name**, wing→army **attachment count** (`unit_name` on group, `armies_count_box`) | **P** | air-groups are a derived grouping with no stored group name; wing→army attachment count not in `air_wings[]`. |
@@ -1231,8 +1231,8 @@ equipment_variant_stats}`, `strategic_air.air_bases`, `naval_air.air_superiority
 
 **AGREED / CONFIRMED:** carrier-air-wing composition is **truly absent** from schema (no ship→
 air-complement leaf; the only theoretical path — a reverse join `air_wings[].air_base`→carrier ship id —
-does not point at carrier instances) → the composition grid stays `unavailable`; ship-owner gap on the
-LIVE `ships[]` (owner save-join only) confirmed; ability rows have no snapshot leaf; deploy-location
+does not point at carrier instances) → the composition grid stays `unavailable`; the former
+LIVE `ships[]` owner gap is now closed by compact owner tag-db ids; ability rows have no snapshot leaf; deploy-location
 RESISTED; equipment total-NEED is a computed demand (unavailable); the OOB enumeration is the spine and
 NAMES are exact (save) / leaders need the unfolded `commanders` join.
 
