@@ -22,10 +22,12 @@ equivalent. If a segment depends on Python preflight/root discovery, that segmen
 is temporary debt until the discovery moves into the DLL/Rust host or is proven
 one-time, bounded, cached, and outside recording.
 
-On process attach the DLL starts a short worker that emits a `collector_started`
-JSON frame to the sidecar log and, when a recorder is listening, to the named
-pipe `\\.\pipe\battle-plan_collector_<pid>`. When loaded inside the supported
-`hoi4.exe` build, the frame includes a verified root probe:
+On process attach the DLL starts a short worker. In debug/JSON mode it emits a
+`collector_started` JSON frame to the sidecar log and, when a recorder is
+listening, to the named pipe `\\.\pipe\battle-plan_collector_<pid>`. In compact
+gate mode it bypasses full JSON root frames and writes packed records to the
+pipe. When loaded inside the supported `hoi4.exe` build, the debug root probe
+includes:
 
 - executable code sentinels for the daily-update and long-string offsets;
 - live current/start game dates decoded from the game-state root;
@@ -37,27 +39,29 @@ annotate pipe reads with byte count and CRC32 for validation, but production
 recording must not depend on Python in the live capture path.
 
 Current cadence contract: bounded proof workers default to 10 ms sampling, but
-speed-five country-domain proof runs may request 1 ms sampling through the
-native host. The recorder keeps one canonical scheduled snapshot per unique
-game hour, and the raw `collector_frames.jsonl` stream preserves duplicate
-same-hour frames for later high-frequency domains. Daily update hooks or daily
+speed-five country-domain proof runs may request 1 ms sampling or `sample_ms=0`
+true no-sleep mode through the native host. JSON frames are debug/proof
+visibility only. Production feasibility is measured with the compact DLL/Rust
+stream: typed in-memory domain rows/counters, fixed binary record headers, and
+Rust-side ordering/decode/skipped-hour validation. Daily update hooks or daily
 rows are not replay coverage.
 
 For hourly proof runs, the recorder writes a short-lived
 `collector_control.json` beside the DLL before attach. The DLL treats that as a
 bounded worker request, samples verified roots at the requested interval, emits
-JSONL frames over a per-run tokenized named pipe, and exits before the hook is
-removed. Bounded worker runs disable sidecar JSONL file writes by default; the
-pipe is the authoritative transport. This does not patch HOI4 code. Worker mode
-is honored only inside `hoi4.exe`; the controller-side DLL load remains a
-one-shot attach heartbeat.
+JSONL debug frames or compact binary records over a per-run tokenized named
+pipe, and exits before the hook is removed. Bounded worker runs disable sidecar
+file writes by default; the pipe is the authoritative transport. This does not
+patch HOI4 code. Worker mode is honored only inside `hoi4.exe`; the
+controller-side DLL load remains a one-shot attach heartbeat.
 
 The current Python session wrapper can reassemble pipe frames into a validated
 `collector_frames.jsonl` stream inside a development run directory. The
-production replacement is a Rust/native recorder that consumes the same compact
-stream and writes the `.battleplan` output without Python in the hot loop. The
-raw stream keeps same-hour samples instead of discarding them; that is the bridge
-for sub-hour combat, movement, and event capture.
+production replacement is the Rust/native recorder that consumes compact
+`collector_stream.bin` records and writes the `.battleplan` output without
+Python in the hot loop. The raw stream keeps same-hour samples instead of
+discarding them; that is the bridge for sub-hour combat, movement, and event
+capture.
 
 The root probe is intentionally narrow. It proves attach, transport, build
 sentinels, clock decoding, and country identity row emission before any
@@ -66,9 +70,55 @@ trampoline hook or broad object traversal is added.
 Filtered compact country sessions use `compact_country_frame` to emit a full
 initial keyframe followed by DLL-side sparse per-country updates. When a
 scheduled-domain filter is present, worker polls do not emit full root snapshots;
-they emit raw clock plus explicitly requested heavy raw domains. This is required
-for speed-five proof because unrelated late-game combat streams and repeated
+they emit only explicitly requested raw domains. A filtered country session does
+not emit a separate raw clock delta unless `clock` is requested; scheduled root
+snapshots still carry the canonical clock. This is required for speed-five proof
+because unrelated late-game combat streams, raw-clock pipe writes, and repeated
 all-country unchanged payloads can otherwise consume the hourly budget.
+
+2026-06-30 speed-five country-core status: the collector now merges
+`politics_live` and `politics_residuals` reads when both are requested, caches
+static definition tokens inside the DLL worker, resets those caches at worker
+start, guards cached script-token hits with live string-header checks plus
+vtable/type/identity validation where available, and uses a compact country
+identity fast path that reuses verified tag/name identity while still checking
+the `CCountry` vtable and expected `tag_db_id` every scheduled frame. The
+collector also uses frozen per-loop clock samples so the scheduled root frame is
+stamped with the same game hour that triggered the boundary. Current release
+proof `country_core_no_raw_clock_sample0_speed5_v1` used `sample_ms=0`, advanced
+864 game hours in 45 seconds, emitted 865 scheduled root frames, supplied 6474
+idea-group rows plus 3722 advisor-token rows, captured `focus_live`, `tech_live`,
+`politics_live`, and `politics_residuals`, and skipped 0 game hours. This proves
+the compact raw-stream cadence for that slice through the DLL/Rust path; replay
+file packing remains follow-up.
+
+2026-06-30 compact-stream gate status: the Rust host now supports
+`--stream-format compact --extraction-perf-gate`. Compact records carry
+sequence id, `game_hour_raw`, domain id, record type, payload length, and packed
+metric payloads. The host writes `collector_stream.bin`, verifies decodability,
+monotonic ordering, byte volume, frame timing, and zero skipped game hours. JSON
+is no longer a production throughput target.
+
+The full synchronous country layer is still incomplete. Current compact binary
+proofs on live speed five:
+
+- `compact_fuel_production_speed5_v1`: fuel + production, 20 seconds, 284 game
+  hours advanced, 285 frame-end records, 0 skipped, avg frame 23.973 ms, p95
+  39.567 ms, max 76.525 ms, 59,280 bytes.
+- `compact_country_state_nonprod_speed5_v1`: focus + tech + politics +
+  politics residuals + decisions + diplomacy, 20 seconds, 247 game hours
+  advanced, 248 frame-end records, 0 skipped, avg frame 42.434 ms, p95
+  57.007 ms, max 109.462 ms, 123,008 bytes.
+- `compact_all_country_granular_speed5_v1`: all current compact country domains
+  together, 30 seconds, 268 game hours advanced, 260 frame-end records, 9
+  skipped, avg frame 67.080 ms, p95 101.544 ms, max 124.963 ms.
+
+Do not mark the full country layer DLL-complete until the compact DLL/Rust path
+captures all required country domains together at hourly-or-better cadence with
+zero skipped game hours. The next required optimization is internal parallelism
+or ring-buffered per-domain workers under one DLL coordinator, one clock source,
+and one sequence authority; splitting into multiple DLLs is explicitly out of
+scope.
 
 Country-object heap discovery is not part of normal capture. The experimental
 whole-heap vtable scan is behind the explicit `country_object_scan` control flag,

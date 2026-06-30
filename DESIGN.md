@@ -103,17 +103,20 @@ The product decision to allow injection/hooking is now explicit for this private
 host-side, observational tool. See `RESEARCH_in_process_collector.md` for the
 HOI4-IC-Graphs evidence and `IN_PROCESS_COLLECTOR_PLAN.md` for the attack plan.
 
-### Current recording-layer checkpoint (2026-06-28)
+### Current recording-layer checkpoint (2026-06-30)
 
 The recording layer is now a two-channel model:
 
 - **Canonical channel:** hourly-or-better snapshots from the live collector. This
   is the replay timeline and must survive speed five. Daily rows are auxiliary
   rollups only and never satisfy replay coverage.
-- **Raw sampled channel:** the recorder preserves every accepted DLL frame in a
-  `collector_frames.jsonl` sidecar, including duplicate same-hour samples. The
-  current snapshot store still dedupes to one canonical snapshot per game hour,
-  but the raw sidecar keeps sub-hour evidence for future combat, movement, and
+- **Production compact channel:** the recorder preserves accepted DLL records in
+  a compact binary stream with typed domain records/counters, sequence ids,
+  `game_hour_raw`, domain ids, record types, payload lengths, and Rust-side
+  ordering/decode/skipped-hour validation. JSON root frames are debug/proof
+  visibility only; they are not the production throughput target. The current
+  snapshot store still dedupes to one canonical snapshot per game hour, while
+  the raw compact stream is the bridge for sub-hour combat, movement, and
   event-stream extraction.
 
 Implemented in the current bridge:
@@ -160,6 +163,25 @@ Implemented in the current bridge:
   with up to 315 active rulers per scheduled frame, and kept politics payloads
   off worker-poll frames. Multi-entry ruling-party leader vectors are omitted
   until the active element is proven;
+- DLL/Rust compact country cadence proof for `focus_live`, `tech_live`,
+  `politics_live`, and `politics_residuals`: release run
+  `country_core_no_raw_clock_sample0_speed5_v1` used `sample_ms=0`, advanced
+  864 game hours in 45 seconds, emitted 865 scheduled root frames, supplied
+  6474 idea-group rows and 3722 advisor-token rows, and skipped 0 game hours.
+  This proves the debug compact-country raw-stream cadence for that slice. It
+  does not finish `.battleplan` packing;
+- DLL/Rust compact binary extraction gate: the native host now supports
+  `--stream-format compact --extraction-perf-gate`, writes
+  `collector_stream.bin`, and validates packed record ordering, byte volume,
+  decodability, frame timing, game hours advanced, and skipped game hours
+  without full JSON root frames. Live speed-five proof currently passes
+  `compact_fuel_production_speed5_v1` with 284 game hours advanced, 0 skipped,
+  avg frame 23.973 ms, p95 39.567 ms, and `compact_country_state_nonprod_speed5_v1`
+  with 247 game hours advanced, 0 skipped, avg frame 42.434 ms, p95 57.007 ms.
+  The full synchronous country bundle
+  `compact_all_country_granular_speed5_v1` still fails with 268 game hours
+  advanced, 9 skipped, avg frame 67.080 ms, p95 101.544 ms. This is the current
+  production-shaped gate; JSON results must not be used to decide feasibility;
 - DLL-native scheduled `decisions_live` through
   `CCountry+0xFA0 -> CDecisionStatus`: the collector validates the status
   vtable and owner back-pointer, emits non-empty status-vector counts, and
@@ -267,6 +289,14 @@ Implemented in the current bridge:
 
 Still open:
 
+- finish the full country bundle at zero skipped hours in the compact binary
+  DLL/Rust path. `compact_fuel_production_speed5_v1` and
+  `compact_country_state_nonprod_speed5_v1` each pass speed-five cadence in
+  isolation with 0 skipped hours. The synchronous all-domain compact gate
+  `compact_all_country_granular_speed5_v1` still skipped 9 game hours. The next
+  required architecture step is internal per-domain workers/ring buffers under
+  one DLL coordinator, one clock source, and one sequence authority, not Python,
+  save-file capture, multiple independent DLLs, or JSON optimization;
 - replace repeated bounded-worker attaches with a true long-running collector
   session;
 - classify any remaining country-record-only fields and add a speed-safe
