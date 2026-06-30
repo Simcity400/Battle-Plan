@@ -163,18 +163,27 @@ Current measured constraint:
   `division_movement_started` events, with zero first-observation org/combat
   noise events.
 - Current compact verification state: the no-bridge
-  `compact_divisions_anchored_refresh_speed5_20260630_v1` proof refreshed the
-  anchored division root every compact frame and advanced 35 game hours with 36
-  frame-end records, 0 skipped, 497 typed division rows,
+  `compact_divisions_anchored_telemetry_validroot_speed5_20260630_v1` proof
+  refreshed the anchored division root every compact frame and advanced 665
+  game hours with 666 frame-end records, 0 skipped, 91,642 typed division rows,
   `division_root_source = "dll_native"`, no bridge/source/partial failures,
-  division read p95 8.374 ms, ordered/decodable compact stream, and an
-  independently verified `native_session.battleplan`. The 11-domain stress proof
-  `compact_country_divisions_land_combats_map_anchored_refresh_speed5_20260630_v1`
-  advanced 34 game hours with 0 skipped and division read p95 23.575 ms under
-  combined load. This proves the anchored compact division movement/org/strength/
-  combat-ref row at hourly-or-better cadence for the current vanilla build; it
-  does not yet cover every possible movement mode, template/equipment/manpower,
-  or full order semantics.
+  division read avg 7.505 ms, p95 8.002 ms, max 15.187 ms,
+  ordered/decodable compact stream, and an independently verified
+  `native_session.battleplan`. The compact row now carries division id,
+  location/source/target/progress, organisation/strength buckets,
+  combat-ref/in-combat state, owner tag-db id, parent army id, raw experience,
+  max/current supply, supply gain, and fuel. This proves the widened anchored
+  compact division row at hourly-or-better cadence for the current vanilla
+  build; it does not yet cover every possible movement mode,
+  template/equipment/manpower, or full order semantics. The raw JSON event
+  sidecar remains movement/org/strength/combat-ref focused until these newer
+  compact fields are given typed lifecycle events.
+- Current combined-load state:
+  `compact_country_divisions_land_combats_map_telemetry_validroot_speed5_20260630_v1`
+  decoded, ordered, packed, and verified the widened row set inside the
+  11-domain bundle, but it skipped 68 game hours while advancing 448. That is
+  the next scheduler/domain-volume target; it is not a completed all-domain
+  speed-five proof.
 - Earlier raw-event verification state: live-verified on the restarted vanilla
   process (pid 43412). A cold bootstrap outside the hot loop populated the
   current-process division and army caches, then a no-cold 12-game-hour run used

@@ -61,11 +61,17 @@ const COMPACT_TECH_PROGRESS_SCALE_RAW: u32 = 1000;
 const COMPACT_TECH_LIVE_PROGRESS_SCALE_RAW: u32 = 100000;
 const COMPACT_FIXED_SCALE_RAW: u32 = 100000;
 const COMPACT_DIVISION_TYPE: u32 = 4713;
-const COMPACT_DIVISION_ROW_LEN: usize = 56;
+const COMPACT_DIVISION_ROW_LEN: usize = 88;
 const COMPACT_MAX_DIVISION_PROVINCE_ID: u32 = 1_000_000;
 const COMPACT_MAX_DIVISION_COMBAT_REF_COUNT: u32 = 1_000;
 const COMPACT_MAX_DIVISION_ORGANISATION_RAW: u32 = 100_000_000;
 const COMPACT_MAX_DIVISION_STRENGTH_RAW: u32 = 1_000_000_000;
+const COMPACT_MAX_DIVISION_OWNER_TAG_DB_ID: u32 = 2_048;
+const COMPACT_MAX_ARMY_ID: u32 = i32::MAX as u32;
+const COMPACT_MAX_DIVISION_EXPERIENCE_RAW: u32 = u32::MAX;
+const COMPACT_MAX_DIVISION_SUPPLY_RAW: u32 = 100_000_000;
+const COMPACT_MAX_DIVISION_SUPPLY_GAIN_RAW: u32 = 500_000;
+const COMPACT_MAX_DIVISION_FUEL_RAW: u32 = u32::MAX;
 const COMPACT_LAND_COMBAT_ROW_LEN: usize = 40;
 const COMPACT_LAND_COMBAT_PARTICIPANT_ROW_LEN: usize = 24;
 const COMPACT_LAND_COMBAT_MAX_PROVINCE_ID: u32 = 1_000_000;
@@ -2197,6 +2203,14 @@ fn decode_compact_divisions_data_payload(
         let _strength_bucket = read_u32_le(payload, cursor + 44);
         let combat_ref_count = read_u32_le(payload, cursor + 48);
         let row_reserved = read_u32_le(payload, cursor + 52);
+        let owner_tag_db_id = read_u32_le(payload, cursor + 56);
+        let army_id = read_u32_le(payload, cursor + 60);
+        let experience_raw = read_u32_le(payload, cursor + 64);
+        let max_supply_raw = read_u32_le(payload, cursor + 68);
+        let current_supply_raw = read_u32_le(payload, cursor + 72);
+        let supply_gain_raw = read_u32_le(payload, cursor + 76);
+        let fuel_raw = read_u32_le(payload, cursor + 80);
+        let row_reserved2 = read_u32_le(payload, cursor + 84);
         cursor += COMPACT_DIVISION_ROW_LEN;
 
         if div_id == 0 {
@@ -2213,7 +2227,7 @@ fn decode_compact_divisions_data_payload(
                 "offset {offset}: divisions row {row_index} has div_type {div_type}"
             ));
         }
-        if flags & !0b1_1111 != 0 {
+        if flags & !0b1111_1111_1111 != 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: divisions row {row_index} has unknown flags {flags}"
             ));
@@ -2223,6 +2237,13 @@ fn decode_compact_divisions_data_payload(
         let has_target = (flags & (1 << 2)) != 0;
         let has_source = (flags & (1 << 3)) != 0;
         let in_combat = (flags & (1 << 4)) != 0;
+        let has_owner = (flags & (1 << 5)) != 0;
+        let has_army = (flags & (1 << 6)) != 0;
+        let has_experience = (flags & (1 << 7)) != 0;
+        let has_max_supply = (flags & (1 << 8)) != 0;
+        let has_current_supply = (flags & (1 << 9)) != 0;
+        let has_supply_gain = (flags & (1 << 10)) != 0;
+        let has_fuel = (flags & (1 << 11)) != 0;
         if !valid_compact_province_id(location) {
             summary.parse_errors.push(format!(
                 "offset {offset}: divisions row {row_index} has invalid location {location}"
@@ -2298,6 +2319,104 @@ fn decode_compact_divisions_data_payload(
                 "offset {offset}: divisions row {row_index} reserved field is nonzero"
             ));
         }
+        validate_optional_compact_u32(
+            summary,
+            offset,
+            row_index,
+            has_owner,
+            owner_tag_db_id,
+            1,
+            COMPACT_MAX_DIVISION_OWNER_TAG_DB_ID,
+            "owner_tag_db_id",
+        );
+        validate_optional_compact_u32(
+            summary,
+            offset,
+            row_index,
+            has_army,
+            army_id,
+            1,
+            COMPACT_MAX_ARMY_ID,
+            "army_id",
+        );
+        validate_optional_compact_u32(
+            summary,
+            offset,
+            row_index,
+            has_experience,
+            experience_raw,
+            0,
+            COMPACT_MAX_DIVISION_EXPERIENCE_RAW,
+            "experience_raw",
+        );
+        validate_optional_compact_u32(
+            summary,
+            offset,
+            row_index,
+            has_max_supply,
+            max_supply_raw,
+            0,
+            COMPACT_MAX_DIVISION_SUPPLY_RAW,
+            "max_supply_raw",
+        );
+        validate_optional_compact_u32(
+            summary,
+            offset,
+            row_index,
+            has_current_supply,
+            current_supply_raw,
+            0,
+            COMPACT_MAX_DIVISION_SUPPLY_RAW,
+            "current_supply_raw",
+        );
+        validate_optional_compact_u32(
+            summary,
+            offset,
+            row_index,
+            has_supply_gain,
+            supply_gain_raw,
+            0,
+            COMPACT_MAX_DIVISION_SUPPLY_GAIN_RAW,
+            "supply_gain_raw",
+        );
+        validate_optional_compact_u32(
+            summary,
+            offset,
+            row_index,
+            has_fuel,
+            fuel_raw,
+            0,
+            COMPACT_MAX_DIVISION_FUEL_RAW,
+            "fuel_raw",
+        );
+        if row_reserved2 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} second reserved field is nonzero"
+            ));
+        }
+    }
+}
+
+fn validate_optional_compact_u32(
+    summary: &mut CompactSummary,
+    offset: usize,
+    row_index: usize,
+    present: bool,
+    value: u32,
+    min_value: u32,
+    max_value: u32,
+    field: &str,
+) {
+    if present {
+        if value < min_value || value > max_value {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} {field} value {value} out of range"
+            ));
+        }
+    } else if value != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: divisions row {row_index} has {field} without flag"
+        ));
     }
 }
 
@@ -4178,10 +4297,17 @@ mod tests {
             strength,
             strength_bucket,
             combat_refs,
+            owner,
+            army,
+            experience,
+            max_supply,
+            current_supply,
+            supply_gain,
+            fuel,
         ) in [
             (
                 17u32,
-                0b1_1111u32,
+                0b1111_1111_1111u32,
                 118u32,
                 118u32,
                 117u32,
@@ -4192,10 +4318,17 @@ mod tests {
                 96_250_000u32,
                 96_250u32,
                 1u32,
+                47u32,
+                2001u32,
+                333_000u32,
+                1_600_000u32,
+                1_250_000u32,
+                25_000u32,
+                450_000u32,
             ),
             (
                 18u32,
-                0u32,
+                0b1111_1010_0000u32,
                 119u32,
                 0u32,
                 0u32,
@@ -4205,6 +4338,13 @@ mod tests {
                 10_000u32,
                 100_000_000u32,
                 100_000u32,
+                0u32,
+                48u32,
+                0u32,
+                0u32,
+                1_200_000u32,
+                1_200_000u32,
+                0u32,
                 0u32,
             ),
         ] {
@@ -4221,6 +4361,14 @@ mod tests {
             payload.extend_from_slice(&strength.to_le_bytes());
             payload.extend_from_slice(&strength_bucket.to_le_bytes());
             payload.extend_from_slice(&combat_refs.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&owner.to_le_bytes());
+            payload.extend_from_slice(&army.to_le_bytes());
+            payload.extend_from_slice(&experience.to_le_bytes());
+            payload.extend_from_slice(&max_supply.to_le_bytes());
+            payload.extend_from_slice(&current_supply.to_le_bytes());
+            payload.extend_from_slice(&supply_gain.to_le_bytes());
+            payload.extend_from_slice(&fuel.to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
         }
         payload

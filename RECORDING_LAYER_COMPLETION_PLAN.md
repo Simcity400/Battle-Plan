@@ -1395,21 +1395,30 @@ The current vanilla build path is
 `CGameState+0x310 -> CCountry+0x290 unit wrappers -> wrapper+0x10 CDivision`.
 The collector refreshes that bounded root every compact frame, validates
 country, wrapper, and division vtables plus division type/id bounds, then
-samples the existing compact movement/org/strength/combat-ref row contract from
-the anchored `CDivision` bodies. The no-bridge proof
-`compact_divisions_anchored_refresh_speed5_20260630_v1` advanced 35 game hours
-with 36 frame-end records, 0 skipped, 497 typed division rows, no
-bridge/source/partial failures, `division_root_source = "dll_native"`,
-ordered/decodable compact stream, avg frame 6.286 ms, p95 17.590 ms, division
-read p95 8.374 ms, and an independently verified `native_session.battleplan`.
-The wider `compact_country_divisions_land_combats_map_anchored_refresh_speed5_20260630_v1`
-stress gate covered 11 domains with the same anchored division path, advanced
-34 game hours with 0 skipped, kept full per-hour coverage, and verified the
-replay container; division read p95 was 23.575 ms under that combined load. This
-promotes compact division body discovery and the current movement/org/strength/
-combat-ref compact rows to DLL/Rust-complete for the current vanilla build.
-Template/equipment/manpower/assignment/order details still need separate typed
-records before the division replay is complete in the broader gameplay sense.
+samples the widened compact row contract from the anchored `CDivision` bodies:
+division id, location/source/target/progress, organisation/strength buckets,
+combat-ref/in-combat state, owner tag-db id, parent army id, raw experience,
+max/current supply, supply gain, and fuel. The current no-bridge proof
+`compact_divisions_anchored_telemetry_validroot_speed5_20260630_v1` advanced
+665 game hours with 666 frame-end records, 0 skipped, 91,642 typed division
+rows, no bridge/source/partial failures, `division_root_source = "dll_native"`,
+ordered/decodable compact stream, division read avg 7.505 ms, p95 8.002 ms, max
+15.187 ms, avg frame 8.135 ms, p95 8.768 ms, max 15.776 ms, 8,197,696 raw
+stream bytes, and an independently verified `native_session.battleplan`. This
+promotes compact division body discovery and the widened movement/org/strength/
+combat-ref/owner/army/supply/fuel compact row to DLL/Rust-complete for the
+current vanilla build.
+
+The wider `compact_country_divisions_land_combats_map_telemetry_validroot_speed5_20260630_v1`
+stress gate covered 11 domains with the same anchored division path and proved
+the widened rows decode and pack inside the combined stream, but it is not a
+completed all-domain speed-five proof: it advanced 448 game hours with 381
+frame-end records and skipped 68 hours. The stream had no parse/order errors,
+no bridge/source/partial failures, and verified as a `.battleplan`; the blocker
+is extraction volume and scheduling under combined load, led by `map_control`
+p95 43.350 ms and several country-root lanes. Template/equipment/manpower/
+assignment/order details still need separate typed records before the division
+replay is complete in the broader gameplay sense.
 
 Earlier no-cold proof on the restarted vanilla process resolved 1898 division
 bodies and 417 still-live army bodies from cache, advanced 12 game hours in

@@ -20,6 +20,10 @@ Current scope:
   scan-backed in the compact production path; it uses the anchored
   `CGameState+0x310 -> CCountry+0x290 -> wrapper+0x10 CDivision` path and fails
   closed with `SOURCE_UNAVAILABLE` if that root does not validate for a build.
+  The current compact division row is 88 bytes and carries division id,
+  location/source/target/progress, organisation/strength buckets,
+  combat-ref/in-combat state, owner tag-db id, parent army id, experience,
+  max/current supply, supply gain, and fuel.
 - Optional DLL-side project scanning through `--special-projects-scan`; current
   live evidence shows this is not yet bounded enough for production capture.
 - Compact country-frame recording through `--compact-country-frame`; filtered
@@ -254,6 +258,27 @@ gate has these live speed-five results:
   avg frame 57.143 ms, p95 69.584 ms, max 81.650 ms, division read avg 7.889
   ms, p95 23.575 ms, 8,578,373 raw stream bytes, and an independent
   `pack_replay verify` pass.
+- `compact_divisions_anchored_telemetry_validroot_speed5_20260630_v1`: passed
+  the widened no-bridge compact division row contract through the same DLL
+  native anchor. It advanced 665 game hours with 666 frame-end records, 0
+  skipped hours, 91,642 typed division rows, no bridge/source/partial failures,
+  `division_root_source = "dll_native"`, ordered/decodable compact stream,
+  division read avg 7.505 ms, p95 8.002 ms, max 15.187 ms, avg frame 8.135 ms,
+  p95 8.768 ms, max 15.776 ms, 8,197,696 raw stream bytes, and an independent
+  `pack_replay verify` pass. This is the current acceptance proof for the
+  division row fields listed in the scope section above.
+- `compact_country_divisions_land_combats_map_telemetry_validroot_speed5_20260630_v1`:
+  verified that the widened division rows decode and pack inside the 11-domain
+  compact bundle, but it did not meet the hourly gate at the current live speed.
+  It advanced 448 game hours with 381 frame-end records and skipped 68 hours.
+  The stream was ordered/decodable, had no bridge/source/partial failures, and
+  `pack_replay verify` passed; the bottleneck is extraction volume under the
+  combined load. Per-domain p95 read times were 43.350 ms for `map_control`,
+  20.128 ms for `focus_live`/`tech_live`, 18.002 ms for `politics_residuals`,
+  17.680 ms for `fuel_live`/`production_live`, 17.281 ms for `politics_live`,
+  14.381 ms for widened `divisions`, 9.224 ms for `decisions_live`, 2.319 ms
+  for `land_combats`, and 1.066 ms for `diplomacy_live`. Treat this as the next
+  scheduler/domain-volume problem, not as a completed all-domain proof.
 
 The extraction-only compact performance gate is green for the current
 production-shaped country-state domains and the native-root `divisions`,
@@ -267,12 +292,15 @@ active combat lifecycle snapshots and participant vectors at hourly cadence on
 the current vanilla build. `map_control` is DLL/Rust compact-path complete for
 state ownership/control and province controller/state rows at hourly cadence on
 the current vanilla build. `divisions` is DLL/Rust compact-path complete for the
-current compact division row contract (division id, location, movement progress,
-movement source, org, strength, combat reference count, and in-combat flag) on
-the current vanilla build. It now uses the anchored country unit-wrapper path
-and no longer needs Python preflight, saves, or heap/vtable scans for compact
-division body discovery. Wider division replay coverage still needs typed
-records for template/equipment/manpower/assignment/order details.
+current widened compact division row contract (division id, location, movement
+progress, movement source/target, org, strength, combat reference count,
+in-combat flag, owner tag-db id, parent army id, experience, supply, and fuel)
+on the current vanilla build. It now uses the anchored country unit-wrapper
+path and no longer needs Python preflight, saves, or heap/vtable scans for
+compact division body discovery. Wider division replay coverage still needs
+typed records for template/equipment/manpower/assignment/order details, and the
+full 11-domain widened-row bundle still needs scheduler/domain-volume work
+before it can be called speed-five complete.
 
 Implementation note: see `COMPACT_HOI4REPLAY_NEXT_STEP.md` for the bounded
 Rust-native packaging path and the test contract for putting `collector_stream.bin`

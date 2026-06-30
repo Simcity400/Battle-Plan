@@ -87,14 +87,20 @@ frames as the production path.
 
 ## Still Open
 
-- Widen `divisions` beyond the current compact movement/org/strength/combat-ref
-  row contract. Division body discovery itself is now DLL-native through the
-  anchored `CGameState+0x310 -> CCountry+0x290 -> wrapper+0x10 CDivision` path
-  and no longer needs Python preflight, saves, or heap/vtable scans for the
-  current vanilla build.
+- Add typed `divisions` records beyond the widened compact movement/org/
+  strength/combat-ref/owner/army/supply/fuel row contract. Division body
+  discovery itself is now DLL-native through the anchored
+  `CGameState+0x310 -> CCountry+0x290 -> wrapper+0x10 CDivision` path and no
+  longer needs Python preflight, saves, or heap/vtable scans for the current
+  vanilla build. Remaining division details include template, equipment,
+  manpower, exact order geometry/assignment, training/veterancy interpretation,
+  and lifecycle identity for splits, merges, deployment, and destruction.
 - Add typed data records for army orders, OOB command, naval/air combat,
   air wings, ships, map buildings/resources, logistics/supply proxies, weather,
   and remaining replay-critical event layers.
+- Retune the combined compact scheduler/domain volume for the widened row set.
+  The current division-only gate is green, but the latest 11-domain widened-row
+  run skipped hours at current live speed.
 - Fold typed records into the future hourly snapshot spine once the raw compact
   stream is fully covered.
 
@@ -157,3 +163,24 @@ worker-panic, bridge-unavailable, source-unavailable, or partial-data flags, avg
 frame 57.143 ms, p95 69.584 ms, max 81.650 ms, division read avg 7.889 ms, p95
 23.575 ms, 8,578,373 raw stream bytes, and an independently verified
 `native_session.battleplan`.
+
+`compact_divisions_anchored_telemetry_validroot_speed5_20260630_v1` passed the
+widened no-bridge compact division telemetry gate. The DLL still uses the same
+anchored path, but the compact row is now 88 bytes and carries division id,
+location/source/target/progress, organisation/strength buckets,
+combat-ref/in-combat state, owner tag-db id, parent army id, raw experience,
+max/current supply, supply gain, and fuel. The gate advanced 665 game hours
+with 666 frame-end records, 0 skipped, 91,642 typed rows, no
+bridge/source/partial failures, `division_root_source = "dll_native"`,
+ordered/decodable stream, division read avg 7.505 ms, p95 8.002 ms, max
+15.187 ms, avg frame 8.135 ms, p95 8.768 ms, max 15.776 ms, 8,197,696 raw
+stream bytes, and an independently verified `native_session.battleplan`.
+
+`compact_country_divisions_land_combats_map_telemetry_validroot_speed5_20260630_v1`
+is the current negative combined-load proof for the widened row set. It decoded,
+ordered, packed, and verified the 11-domain stream with no bridge/source/partial
+failures, but advanced 448 game hours with only 381 frame-end records and
+skipped 68 hours. `map_control` remained the heaviest lane at p95 43.350 ms,
+followed by country-root lanes and widened `divisions` at p95 14.381 ms. Do not
+treat the full 11-domain widened-row bundle as complete until the compact path
+captures the current live speed with zero skipped hours.
