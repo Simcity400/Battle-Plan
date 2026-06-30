@@ -13,8 +13,8 @@ Python is allowed as a development harness for attaching, proof gates, manifest
 validation, replay validation, and temporary bounded discovery only. Python must
 not be required to walk memory hourly/sub-hourly or keep up with speed five.
 `replay_native/recorder_host` is the current Rust/native host under construction
-for this path; it captures the DLL pipe stream and cadence manifest but does not
-yet pack `.battleplan`.
+for this path; it captures the DLL pipe stream, writes the cadence manifest, and
+packs a manifest-covered `.battleplan` container for the raw stream.
 
 A collector segment is complete only after the DLL/Rust path captures it at
 hourly-or-better cadence, with no skipped game hours, at speed five or a measured
@@ -55,12 +55,12 @@ file writes by default; the pipe is the authoritative transport. This does not
 patch HOI4 code. Worker mode is honored only inside `hoi4.exe`; the
 controller-side DLL load remains a one-shot attach heartbeat.
 
-The current Python session wrapper can reassemble pipe frames into a validated
+The legacy Python session wrapper can reassemble pipe frames into a validated
 `collector_frames.jsonl` stream inside a development run directory. The
 production replacement is the Rust/native recorder that consumes compact
-`collector_stream.bin` records and writes the `.battleplan` output without
-Python in the hot loop. The raw stream keeps same-hour samples instead of
-discarding them; that is the bridge for sub-hour combat, movement, and event
+`collector_stream.bin` records, verifies them, and writes `.battleplan` output
+without Python in the hot loop. The raw stream keeps same-hour samples instead
+of discarding them; that is the bridge for sub-hour combat, movement, and event
 capture.
 
 The root probe is intentionally narrow. It proves attach, transport, build
@@ -89,16 +89,20 @@ proof `country_core_no_raw_clock_sample0_speed5_v1` used `sample_ms=0`, advanced
 864 game hours in 45 seconds, emitted 865 scheduled root frames, supplied 6474
 idea-group rows plus 3722 advisor-token rows, captured `focus_live`, `tech_live`,
 `politics_live`, and `politics_residuals`, and skipped 0 game hours. This proves
-the compact raw-stream cadence for that slice through the DLL/Rust path; replay
-file packing remains follow-up.
+the compact raw-stream cadence for that slice through the DLL/Rust path; it
+predates the later Rust-native `.battleplan` packing checkpoint.
 
 2026-06-30 compact-stream gate status: the Rust host now supports
 `--stream-format compact --extraction-perf-gate`. Compact records carry
-sequence id, `game_hour_raw`, domain id, record type, payload length, and packed
-metric payloads. The host writes `collector_stream.bin`, verifies decodability,
+sequence id, `game_hour_raw`, domain id, record type, payload length, packed
+metric payloads, and the first typed replay payload: `fuel_live` country fuel
+rows as tag-db-id keyed raw fixed-point `i64` values with explicit `32768`
+scale metadata. The host writes `collector_stream.bin`, packs it into
+`native_session.battleplan` under role `collector_compact_stream`, verifies the
+container, verifies the stored stream byte-for-byte, verifies decodability,
 monotonic ordering, byte volume, frame timing, every scheduled domain on every
-frame hour, worker-panic status, and zero skipped game hours. JSON is no longer
-a production throughput target.
+frame hour, one fuel data record per fuel frame, worker-panic status, and zero
+skipped game hours. JSON is no longer a production throughput target.
 
 The full compact country extraction gate now passes live speed five through one
 DLL collector/coordinator. The DLL keeps one clock source and one sequence/order
@@ -119,9 +123,12 @@ country-state domains. Current compact binary proofs:
   38.151 ms, p95 48.743 ms, max 156.203 ms, 213,120 bytes.
 
 This completes the extraction-only compact performance gate for the current
-country domains. It does not yet complete replay payload capture: the next step
-is to replace metric payloads with per-domain packed replay records, then have
-the Rust recorder write those records into `.battleplan`.
+country domains and starts replay payload capture with typed fuel records plus
+Rust-native `.battleplan` packing. Unit/build proof is green for this checkpoint;
+the new fuel-data/container path still needs a fresh live speed-five run before
+the `fuel_live` replay-payload segment can be called production-complete. The
+next step is to widen typed data records to production, focus, tech, politics,
+decisions, diplomacy, combat, movement, and orders.
 
 Country-object heap discovery is not part of normal capture. The experimental
 whole-heap vtable scan is behind the explicit `country_object_scan` control flag,

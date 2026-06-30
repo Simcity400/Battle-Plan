@@ -183,7 +183,13 @@ Implemented in the current bridge:
   hours, verified all 8 scheduled country domains on every frame hour, saw no
   worker panic, and measured avg frame 38.151 ms / p95 48.743 ms / max
   156.203 ms / 213,120 bytes. This is the current production-shaped extraction
-  gate; JSON results must not be used to decide feasibility;
+  gate; JSON results must not be used to decide feasibility. The first
+  replay-payload step now adds typed `fuel_live` data records with raw
+  fixed-point `i64` fuel values and explicit `32768` scale metadata, and the
+  Rust host packs the raw compact stream plus recorder manifest into
+  `native_session.battleplan` under manifest-covered roles
+  `collector_compact_stream` and `recorder_manifest`. Unit/build proof is
+  green; this new data/container path still needs a fresh live speed-five proof;
 - DLL-native scheduled `decisions_live` through
   `CCountry+0xFA0 -> CDecisionStatus`: the collector validates the status
   vtable and owner back-pointer, emits non-empty status-vector counts, and
@@ -291,10 +297,10 @@ Implemented in the current bridge:
 
 Still open:
 
-- replace compact performance-gate metric payloads with packed per-domain
-  replay records and have the Rust recorder write them into `.battleplan`; the
-  current compact all-country gate proves extraction/transport cadence, not the
-  final replay payload schema;
+- widen typed compact data records beyond `fuel_live` to production, focus,
+  tech, politics, decisions, diplomacy, combat, movement, and orders, then
+  re-run live speed-five proof for each segment through the DLL/Rust
+  `.battleplan` packing path;
 - replace repeated bounded-worker attaches with a true long-running collector
   session;
 - classify any remaining country-record-only fields and add a speed-safe

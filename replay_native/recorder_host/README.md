@@ -29,14 +29,20 @@ Current scope:
   root frames. Record headers include sequence id, `game_hour_raw`, domain id,
   record type, and payload length. The Rust host verifies decodability,
   monotonic ordering, byte volume, frame timings, every scheduled domain on
-  every frame hour, worker-panic status, and skipped game hours.
+  every frame hour, one typed `fuel_live` data record per fuel frame,
+  worker-panic status, and skipped game hours.
 - For speed-five proof runs, use the release DLL/host. `--sample-ms 1` is the
   normal high-cadence gate; `--sample-ms 0` enables DLL worker true no-sleep
   mode for stress gates where the game advances faster than a 1 ms sleep loop
   can prove. The default remains 10 ms.
-- No `.battleplan` packing yet. Python may validate the raw output, but a
-  segment is not production-complete until this native path writes the replay
-  file and passes hourly-or-better speed-five proof.
+- Rust-native `.battleplan` packing for the raw stream: the host writes
+  `native_session.battleplan`, includes a minimal index/timeline, stores
+  `collector_raw/collector_stream.bin` with role `collector_compact_stream` and
+  `recorder/native_session_manifest.json` with role `recorder_manifest`, opens
+  the container, verifies every entry, and byte-compares the stored stream
+  against the DLL pipe bytes. Python may validate the raw output, but a segment
+  is not production-complete until this native path passes hourly-or-better
+  speed-five proof.
 
 Example:
 
@@ -129,6 +135,14 @@ gate has these live speed-five results:
   worker panic, avg frame 38.151 ms, p95 48.743 ms, 213,120 bytes.
 
 The extraction-only compact performance gate is now green for the current
-country domains. The next production step is not another JSON optimization; it
-is replacing metric payloads with packed per-domain replay records and writing
-them into `.battleplan`.
+country domains. The first replay-payload step is implemented: `fuel_live` now
+emits a typed binary data record with raw fixed-point `i64` fuel values and
+explicit `32768` scale metadata, and the recorder packs/verifies
+`native_session.battleplan`. Unit tests and release build pass for this path.
+It still needs a fresh live speed-five proof because the current HOI4 process
+was not running during this checkpoint.
+
+Implementation note: see `COMPACT_HOI4REPLAY_NEXT_STEP.md` for the bounded
+Rust-native packaging path and the test contract for putting `collector_stream.bin`
+inside a manifest-covered `.battleplan` without using Python or full JSON root
+frames as the production path.

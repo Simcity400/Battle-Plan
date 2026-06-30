@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+use snapshot::{pack, Container, ExpectedIdentity, PackEntry, PackIdentity};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::{c_char, c_void, OsStr};
@@ -32,7 +33,9 @@ const COMPACT_RECORD_HEADER_LEN: usize = 32;
 const COMPACT_RECORD_VERSION: u16 = 1;
 const COMPACT_RECORD_TYPE_DOMAIN_PERF: u16 = 1;
 const COMPACT_RECORD_TYPE_FRAME_END: u16 = 2;
+const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = 3;
 const COMPACT_STATUS_WORKER_PANIC: u32 = 1 << 6;
+const COMPACT_FUEL_SCALE_RAW: u32 = 32768;
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -138,6 +141,7 @@ struct Summary {
 struct CompactSummary {
     record_count: usize,
     domain_perf_record_count: usize,
+    domain_data_record_count: usize,
     frame_end_record_count: usize,
     total_bytes: usize,
     total_payload_bytes: usize,
@@ -159,8 +163,11 @@ struct CompactSummary {
 #[derive(Debug, Default)]
 struct CompactDomainSummary {
     record_count: usize,
+    data_record_count: usize,
     row_count_total: u64,
     changed_rows_total: u64,
+    data_rows_total: u64,
+    data_changed_rows_total: u64,
     unit_count_total: u64,
     changed_unit_count_total: u64,
     read_times_us: Vec<u64>,
@@ -180,6 +187,8 @@ fn run() -> Result<(), String> {
     fs::create_dir_all(&cfg.out_dir).map_err(|e| format!("create out dir failed: {e}"))?;
     let raw_path = cfg.out_dir.join(cfg.stream_format.stream_file_name());
     let manifest_path = cfg.out_dir.join("native_session_manifest.json");
+    let replay_path = cfg.out_dir.join("native_session.battleplan");
+    let replay_game_id = replay_game_id(&cfg.session_id);
     let pipe_token = pipe_token();
     write_control_file(&cfg, &pipe_token)?;
 
@@ -195,7 +204,7 @@ fn run() -> Result<(), String> {
         .map_err(|_| "pipe thread panicked".to_string())??;
 
     fs::write(&raw_path, &pipe_bytes).map_err(|e| format!("write raw stream failed: {e}"))?;
-    let (manifest, hourly_met) = match cfg.stream_format {
+    let (mut manifest, hourly_met) = match cfg.stream_format {
         StreamFormat::Json => {
             let summary = summarize_frames(&pipe_bytes);
             let hourly_met = summary.skipped_hours == 0
@@ -287,6 +296,7 @@ fn run() -> Result<(), String> {
                         "record_version": COMPACT_RECORD_VERSION,
                         "record_count": summary.record_count,
                         "domain_perf_record_count": summary.domain_perf_record_count,
+                        "domain_data_record_count": summary.domain_data_record_count,
                         "frame_end_record_count": summary.frame_end_record_count,
                         "total_bytes": summary.total_bytes,
                         "total_payload_bytes": summary.total_payload_bytes,
@@ -319,15 +329,37 @@ fn run() -> Result<(), String> {
                     },
                     "parse_errors": summary.parse_errors,
                     "ordering_errors": summary.ordering_errors,
-                    "production_path_note": "compact DLL stream gate: no full JSON root frames in the live extraction path; replay container packing is still follow-up",
+                    "production_path_note": "compact DLL stream gate: no full JSON root frames in the live extraction path; the Rust recorder packs the raw compact stream into .battleplan for durability",
                 }),
                 hourly_met,
             )
         }
     };
+    if let Some(obj) = manifest.as_object_mut() {
+        obj.insert(
+            "replay_file".to_string(),
+            json!(replay_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("native_session.battleplan")),
+        );
+        obj.insert("replay_game_id".to_string(), json!(replay_game_id));
+        obj.insert(
+            "replay_entries".to_string(),
+            json!({
+                "index": "index.json",
+                "timeline": "timeline.json",
+                "stream": format!("collector_raw/{}", cfg.stream_format.stream_file_name()),
+                "stream_role": "collector_compact_stream",
+                "session_manifest": "recorder/native_session_manifest.json",
+                "session_manifest_role": "recorder_manifest",
+            }),
+        );
+    }
     let pretty = serde_json::to_vec_pretty(&manifest)
         .map_err(|e| format!("serialize manifest failed: {e}"))?;
     fs::write(&manifest_path, pretty).map_err(|e| format!("write manifest failed: {e}"))?;
+    write_native_replay_container(&cfg, &pipe_bytes, &manifest, &manifest_path, &replay_path)?;
     if !hourly_met {
         return Err(format!(
             "hourly requirement not met; manifest written to {}",
@@ -520,6 +552,121 @@ fn encoded_row_count(value: Option<&str>) -> usize {
     value
         .map(|text| text.split(';').filter(|row| !row.is_empty()).count())
         .unwrap_or(0)
+}
+
+fn replay_game_id(session_id: &str) -> String {
+    let mut out = String::with_capacity(session_id.len().max(1));
+    for ch in session_id.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        "native_session".to_string()
+    } else {
+        out
+    }
+}
+
+fn created_utc_label() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::from_secs(0))
+        .as_secs();
+    format!("unix_seconds:{secs}")
+}
+
+fn write_native_replay_container(
+    cfg: &Config,
+    stream_bytes: &[u8],
+    manifest: &Value,
+    manifest_path: &Path,
+    replay_path: &Path,
+) -> Result<(), String> {
+    let game_id = manifest
+        .get("replay_game_id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| replay_game_id(&cfg.session_id));
+    let stream_name = cfg.stream_format.stream_file_name();
+    let manifest_name = manifest_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("native_session_manifest.json");
+    let stream_payload_path = format!("collector_raw/{stream_name}");
+    let manifest_payload_path = format!("recorder/{manifest_name}");
+    let index_bytes = serde_json::to_vec_pretty(&json!({
+        "game_id": game_id.clone(),
+        "schema_version": "native_collector_session_v1",
+        "snapshots": [],
+    }))
+    .map_err(|e| format!("serialize replay index failed: {e}"))?;
+    let timeline_bytes = serde_json::to_vec_pretty(&json!({
+        "format": "hoi4_compact_stream_timeline_v1",
+        "stream_format": cfg.stream_format.as_str(),
+        "stream": stream_payload_path.clone(),
+        "session_manifest": manifest_payload_path.clone(),
+        "raw_stream_role": "collector_compact_stream",
+        "session_manifest_role": "recorder_manifest",
+    }))
+    .map_err(|e| format!("serialize replay timeline failed: {e}"))?;
+    let manifest_bytes =
+        fs::read(manifest_path).map_err(|e| format!("read session manifest failed: {e}"))?;
+    let entries = vec![
+        PackEntry {
+            path: format!("payload/{game_id}/index.json"),
+            bytes: index_bytes,
+            role: "index",
+            hour_index: None,
+        },
+        PackEntry {
+            path: format!("payload/{game_id}/timeline.json"),
+            bytes: timeline_bytes,
+            role: "timeline",
+            hour_index: None,
+        },
+        PackEntry {
+            path: format!("payload/{game_id}/{stream_payload_path}"),
+            bytes: stream_bytes.to_vec(),
+            role: "collector_compact_stream",
+            hour_index: None,
+        },
+        PackEntry {
+            path: format!("payload/{game_id}/{manifest_payload_path}"),
+            bytes: manifest_bytes,
+            role: "recorder_manifest",
+            hour_index: None,
+        },
+    ];
+    let identity = PackIdentity {
+        schema_version: Some("native_collector_session_v1".to_string()),
+        created_utc: Some(created_utc_label()),
+        ..Default::default()
+    };
+    let packed = pack(&game_id, &entries, &identity, true)
+        .map_err(|e| format!("pack replay container failed: {e}"))?;
+    let tmp = replay_path.with_extension("hoi4replay.tmp");
+    fs::write(&tmp, packed).map_err(|e| format!("write replay temp failed: {e}"))?;
+    if replay_path.exists() {
+        fs::remove_file(replay_path).map_err(|e| format!("replace existing replay failed: {e}"))?;
+    }
+    fs::rename(&tmp, replay_path).map_err(|e| format!("finalize replay failed: {e}"))?;
+
+    let container = Container::open(replay_path, &ExpectedIdentity::default())
+        .map_err(|e| format!("verify replay open failed: {e}"))?;
+    container
+        .verify_all()
+        .map_err(|e| format!("verify replay entries failed: {e}"))?;
+    let stream_entry = format!("payload/{game_id}/{stream_payload_path}");
+    let verified_stream = container
+        .read_entry_bytes(&stream_entry)
+        .map_err(|e| format!("verify replay stream entry failed: {e}"))?;
+    if verified_stream != stream_bytes {
+        return Err("verify replay stream entry failed: compact bytes changed".to_string());
+    }
+    Ok(())
 }
 
 fn pipe_token() -> String {
@@ -815,6 +962,18 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     domain.status_flags_or |= status_flags;
                 }
             }
+            COMPACT_RECORD_TYPE_DOMAIN_DATA => {
+                summary.domain_data_record_count += 1;
+                let domain = summary.per_domain.entry(domain_id).or_default();
+                domain.data_record_count += 1;
+                match domain_id {
+                    10 => decode_compact_fuel_data_payload(offset, payload, &mut summary),
+                    other => summary.parse_errors.push(format!(
+                        "offset {offset}: unsupported domain data payload for {}",
+                        compact_domain_name(other)
+                    )),
+                }
+            }
             COMPACT_RECORD_TYPE_FRAME_END => {
                 summary.frame_end_record_count += 1;
                 hour_set.insert(game_hour_raw);
@@ -843,6 +1002,82 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
     summary
 }
 
+fn decode_compact_fuel_data_payload(offset: usize, payload: &[u8], summary: &mut CompactSummary) {
+    if payload.len() < 24 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: fuel data payload is {} byte(s), expected at least 24",
+            payload.len()
+        ));
+        return;
+    }
+    let row_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let scale_raw = read_u32_le(payload, 20);
+    summary.status_flags_or |= status_flags;
+    if scale_raw != COMPACT_FUEL_SCALE_RAW {
+        summary.parse_errors.push(format!(
+            "offset {offset}: fuel data scale {scale_raw} != expected {COMPACT_FUEL_SCALE_RAW}"
+        ));
+    }
+    let expected_len = 24usize.saturating_add(row_count.saturating_mul(40));
+    if payload.len() != expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: fuel data payload is {} byte(s), expected {expected_len} for {row_count} row(s)",
+            payload.len()
+        ));
+        return;
+    }
+    if changed_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: fuel data changed_rows {changed_rows} > row_count {row_count}"
+        ));
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&10) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    let mut seen_tag_ids = BTreeSet::new();
+    for row_index in 0..row_count {
+        let row_offset = 24 + row_index * 40;
+        let tag_db_id = read_u32_le(payload, row_offset);
+        let row_flags = read_u32_le(payload, row_offset + 4);
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: fuel data row {row_index} has zero tag_db_id"
+            ));
+        } else if !seen_tag_ids.insert(tag_db_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: fuel data row {row_index} duplicates tag_db_id {tag_db_id}"
+            ));
+        }
+        if row_flags & !1 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: fuel data row {row_index} has unknown flags {row_flags}"
+            ));
+        }
+        let current_raw = read_i64_le(payload, row_offset + 8);
+        let max_raw = read_i64_le(payload, row_offset + 16);
+        let gain_raw = read_i64_le(payload, row_offset + 24);
+        let cost_raw = read_i64_le(payload, row_offset + 32);
+        if current_raw < 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: fuel data row {row_index} current_raw is negative"
+            ));
+        }
+        if max_raw < 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: fuel data row {row_index} max_raw is negative"
+            ));
+        }
+        let _ = gain_raw;
+        let _ = cost_raw;
+    }
+}
+
 fn read_u16_le(bytes: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
 }
@@ -867,6 +1102,19 @@ fn read_i32_le(bytes: &[u8], offset: usize) -> i32 {
 
 fn read_u64_le(bytes: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes([
+        bytes[offset],
+        bytes[offset + 1],
+        bytes[offset + 2],
+        bytes[offset + 3],
+        bytes[offset + 4],
+        bytes[offset + 5],
+        bytes[offset + 6],
+        bytes[offset + 7],
+    ])
+}
+
+fn read_i64_le(bytes: &[u8], offset: usize) -> i64 {
+    i64::from_le_bytes([
         bytes[offset],
         bytes[offset + 1],
         bytes[offset + 2],
@@ -972,6 +1220,19 @@ fn compact_domain_coverage_errors(
                 summary.frame_end_record_count
             ));
         }
+        if *expected == 10 {
+            let data_record_count = summary
+                .per_domain
+                .get(expected)
+                .map(|domain| domain.data_record_count)
+                .unwrap_or(0);
+            if data_record_count != summary.frame_end_record_count {
+                errors.push(format!(
+                    "domain fuel_live data_record_count {} != frame_end_record_count {}",
+                    data_record_count, summary.frame_end_record_count
+                ));
+            }
+        }
     }
     errors
 }
@@ -984,8 +1245,11 @@ fn compact_domain_summaries_json(summary: &CompactSummary) -> Value {
             json!({
                 "domain_id": domain_id,
                 "record_count": domain.record_count,
+                "data_record_count": domain.data_record_count,
                 "row_count_total": domain.row_count_total,
                 "changed_rows_total": domain.changed_rows_total,
+                "data_rows_total": domain.data_rows_total,
+                "data_changed_rows_total": domain.data_changed_rows_total,
                 "unit_count_total": domain.unit_count_total,
                 "changed_unit_count_total": domain.changed_unit_count_total,
                 "status_flags_or": domain.status_flags_or,
@@ -1186,13 +1450,21 @@ mod tests {
             &mut raw,
             2,
             100,
+            10,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_fuel_data_payload(&[(47, 4_046_848, 14_950_400, 245_760, -73_728)]),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
             1000,
             COMPACT_RECORD_TYPE_FRAME_END,
             &test_frame_payload(2_000, 1),
         );
         append_test_compact_record(
             &mut raw,
-            3,
+            4,
             101,
             10,
             COMPACT_RECORD_TYPE_DOMAIN_PERF,
@@ -1200,7 +1472,15 @@ mod tests {
         );
         append_test_compact_record(
             &mut raw,
-            4,
+            5,
+            101,
+            10,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_fuel_data_payload(&[(47, 3_932_160, 14_950_400, 65_536, -32_768)]),
+        );
+        append_test_compact_record(
+            &mut raw,
+            6,
             101,
             1000,
             COMPACT_RECORD_TYPE_FRAME_END,
@@ -1211,8 +1491,9 @@ mod tests {
 
         assert!(summary.parse_errors.is_empty());
         assert!(summary.ordering_errors.is_empty());
-        assert_eq!(summary.record_count, 4);
+        assert_eq!(summary.record_count, 6);
         assert_eq!(summary.domain_perf_record_count, 2);
+        assert_eq!(summary.domain_data_record_count, 2);
         assert_eq!(summary.frame_end_record_count, 2);
         assert_eq!(summary.unique_hours, vec![100, 101]);
         assert_eq!(summary.skipped_hours, 0);
@@ -1222,6 +1503,9 @@ mod tests {
         assert_eq!(fuel.record_count, 2);
         assert_eq!(fuel.row_count_total, 710);
         assert_eq!(fuel.changed_rows_total, 22);
+        assert_eq!(fuel.data_record_count, 2);
+        assert_eq!(fuel.data_rows_total, 2);
+        assert_eq!(fuel.data_changed_rows_total, 2);
         assert_eq!(fuel.unit_count_total, 84);
         assert_eq!(fuel.max_read_time_us, 1_500);
     }
@@ -1301,6 +1585,134 @@ mod tests {
             summary.per_domain.get(&10).unwrap().status_flags_or & COMPACT_STATUS_WORKER_PANIC,
             0
         );
+    }
+
+    #[test]
+    fn compact_coverage_requires_fuel_data_record_per_frame() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            10,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(1_250, 355, 12, 44, 44),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(2_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        let errors = compact_domain_coverage_errors(&summary, &[10]);
+
+        assert!(errors
+            .iter()
+            .any(|err| err.contains("fuel_live data_record_count")));
+    }
+
+    #[test]
+    fn compact_fuel_data_rejects_duplicate_tag_ids() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            10,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_fuel_data_payload(&[
+                (47, 4_046_848, 14_950_400, 245_760, -73_728),
+                (47, 3_932_160, 14_950_400, 65_536, -32_768),
+            ]),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("duplicates tag_db_id 47")));
+    }
+
+    #[test]
+    fn replay_container_preserves_compact_stream_bytes() {
+        let dir =
+            std::env::temp_dir().join(format!("battle-plan_pack_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let manifest_path = dir.join("native_session_manifest.json");
+        let replay_path = dir.join("native_session.battleplan");
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            10,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(1_250, 355, 12, 44, 44),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            10,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_fuel_data_payload(&[(47, 4_046_848, 14_950_400, 245_760, -73_728)]),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(2_000, 1),
+        );
+        let manifest = json!({
+            "schema": "native_collector_session_v1",
+            "session_id": "pack test/session",
+            "replay_game_id": replay_game_id("pack test/session"),
+            "stream_format": "compact",
+        });
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let cfg = Config {
+            pid: 1,
+            dll: dir.join("collector.dll"),
+            out_dir: dir.clone(),
+            duration_ms: 1000,
+            sample_ms: 0,
+            dwell_ms: 0,
+            min_game_hours: 0,
+            scheduled_domains: vec!["fuel_live".to_string()],
+            lightweight_root_frame: true,
+            special_projects_scan: false,
+            compact_country_frame: true,
+            idea_group_filter: None,
+            advisor_token_filter: None,
+            session_id: "pack test/session".to_string(),
+            stream_format: StreamFormat::Compact,
+            extraction_perf_gate: true,
+        };
+
+        write_native_replay_container(&cfg, &raw, &manifest, &manifest_path, &replay_path).unwrap();
+
+        let container = Container::open(&replay_path, &ExpectedIdentity::default()).unwrap();
+        container.verify_all().unwrap();
+        let game_id = replay_game_id("pack test/session");
+        let stored = container
+            .read_entry_bytes(&format!(
+                "payload/{game_id}/collector_raw/collector_stream.bin"
+            ))
+            .unwrap();
+        assert_eq!(stored, raw);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1404,6 +1816,24 @@ mod tests {
         payload.extend_from_slice(&emitted_domains.to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
+        payload
+    }
+
+    fn test_fuel_data_payload(rows: &[(u32, i64, i64, i64, i64)]) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FUEL_SCALE_RAW.to_le_bytes());
+        for (tag_db_id, current, max, gain, cost) in rows {
+            payload.extend_from_slice(&tag_db_id.to_le_bytes());
+            payload.extend_from_slice(&1u32.to_le_bytes());
+            payload.extend_from_slice(&current.to_le_bytes());
+            payload.extend_from_slice(&max.to_le_bytes());
+            payload.extend_from_slice(&gain.to_le_bytes());
+            payload.extend_from_slice(&cost.to_le_bytes());
+        }
         payload
     }
 

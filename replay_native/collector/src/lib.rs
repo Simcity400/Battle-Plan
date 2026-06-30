@@ -252,6 +252,7 @@ mod attach_log {
     const FUEL_STATUS_MAX: usize = 0x10;
     const FUEL_STATUS_GAIN: usize = 0x18;
     const FUEL_STATUS_COST: usize = 0x38;
+    const FUEL_SCALE_RAW: u32 = 32768;
     const FUEL_SCALE: f64 = 32768.0;
     const MAX_FUEL_MEASURE: f64 = 1_000_000_000.0;
     const VARIANT_VTABLE_RVA: usize = 0x292B218;
@@ -2635,6 +2636,7 @@ mod attach_log {
     const COMPACT_RECORD_HEADER_LEN: u16 = 32;
     const COMPACT_RECORD_TYPE_DOMAIN_PERF: u16 = 1;
     const COMPACT_RECORD_TYPE_FRAME_END: u16 = 2;
+    const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = 3;
     const COMPACT_DOMAIN_FRAME: u16 = 1000;
     const COMPACT_DOMAIN_FUEL: u16 = 10;
     const COMPACT_DOMAIN_PRODUCTION: u16 = 11;
@@ -8659,6 +8661,17 @@ mod attach_log {
                     elapsed_wall_ms,
                 );
                 sequence = sequence.saturating_add(1);
+                if matches!(spec.kind, CompactCountryDomainKind::Fuel) {
+                    append_compact_fuel_data_record(
+                        &mut out,
+                        sequence,
+                        game_hour_raw,
+                        &read.rows,
+                        elapsed_wall_ms,
+                        read.status_flags,
+                    );
+                    sequence = sequence.saturating_add(1);
+                }
                 emitted_domains = emitted_domains.saturating_add(1);
             }
         }
@@ -9034,6 +9047,51 @@ mod attach_log {
         );
     }
 
+    fn append_compact_fuel_data_record(
+        out: &mut Vec<u8>,
+        sequence: u64,
+        game_hour_raw: i32,
+        rows: &[CountryObjectRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+    ) {
+        let payload = compact_fuel_data_payload(rows, elapsed_wall_ms, status_flags);
+        append_compact_record(
+            out,
+            sequence,
+            game_hour_raw,
+            COMPACT_DOMAIN_FUEL,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+    }
+
+    fn compact_fuel_data_payload(
+        rows: &[CountryObjectRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+    ) -> Vec<u8> {
+        let fuel_row_count = rows.iter().filter(|row| row.fuel.is_some()).count();
+        let mut payload = Vec::with_capacity(24usize.saturating_add(fuel_row_count * 40));
+        let packed_row_count = fuel_row_count.min(u32::MAX as usize) as u32;
+        payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
+        payload.extend_from_slice(&packed_row_count.to_le_bytes());
+        payload.extend_from_slice(&packed_row_count.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&FUEL_SCALE_RAW.to_le_bytes());
+        for row in rows.iter().filter(|row| row.fuel.is_some()) {
+            let fuel = row.fuel.expect("filtered fuel row");
+            payload.extend_from_slice(&row.tag_db_id.to_le_bytes());
+            payload.extend_from_slice(&1u32.to_le_bytes());
+            payload.extend_from_slice(&fuel.current_raw.to_le_bytes());
+            payload.extend_from_slice(&fuel.max_raw.to_le_bytes());
+            payload.extend_from_slice(&fuel.gain_raw.to_le_bytes());
+            payload.extend_from_slice(&fuel.cost_raw.to_le_bytes());
+        }
+        payload
+    }
+
     fn append_compact_frame_end_record(
         out: &mut Vec<u8>,
         sequence: u64,
@@ -9338,6 +9396,10 @@ mod attach_log {
 
     #[derive(Clone, Copy)]
     struct CountryFuelRow {
+        current_raw: i64,
+        max_raw: i64,
+        gain_raw: i64,
+        cost_raw: i64,
         current: f64,
         max: f64,
         gain: f64,
@@ -14197,16 +14259,24 @@ mod attach_log {
         if !is_map_control_heap_pointer(fuel_status) {
             return None;
         }
-        let current = read_i64(fuel_status + FUEL_STATUS_CURRENT)? as f64 / FUEL_SCALE;
-        let max = read_i64(fuel_status + FUEL_STATUS_MAX)? as f64 / FUEL_SCALE;
-        let gain = read_i64(fuel_status + FUEL_STATUS_GAIN)? as f64 / FUEL_SCALE;
-        let cost = read_i64(fuel_status + FUEL_STATUS_COST)? as f64 / FUEL_SCALE;
+        let current_raw = read_i64(fuel_status + FUEL_STATUS_CURRENT)?;
+        let max_raw = read_i64(fuel_status + FUEL_STATUS_MAX)?;
+        let gain_raw = read_i64(fuel_status + FUEL_STATUS_GAIN)?;
+        let cost_raw = read_i64(fuel_status + FUEL_STATUS_COST)?;
+        let current = current_raw as f64 / FUEL_SCALE;
+        let max = max_raw as f64 / FUEL_SCALE;
+        let gain = gain_raw as f64 / FUEL_SCALE;
+        let cost = cost_raw as f64 / FUEL_SCALE;
         if valid_nonnegative_fuel_measure(current)
             && valid_nonnegative_fuel_measure(max)
             && valid_signed_fuel_measure(gain)
             && valid_signed_fuel_measure(cost)
         {
             Some(CountryFuelRow {
+                current_raw,
+                max_raw,
+                gain_raw,
+                cost_raw,
                 current,
                 max,
                 gain,
@@ -15823,6 +15893,62 @@ mod attach_log {
                 .iter()
                 .any(|spec| spec.name == "politics_residuals"));
             assert_eq!(economy.len() + country_state.len(), specs.len());
+        }
+
+        #[test]
+        fn compact_fuel_data_payload_packs_numeric_rows() {
+            let mut por = test_country_row("POR", 47, 0x1234);
+            por.fuel = Some(CountryFuelRow {
+                current_raw: 4_046_848,
+                max_raw: 14_950_400,
+                gain_raw: 245_760,
+                cost_raw: -73_728,
+                current: 123.5,
+                max: 456.25,
+                gain: 7.5,
+                cost: -2.25,
+            });
+            let mut ger = test_country_row("GER", 1, 0x2234);
+            ger.fuel = Some(CountryFuelRow {
+                current_raw: 327_680,
+                max_raw: 655_360,
+                gain_raw: 32_768,
+                cost_raw: 16_384,
+                current: 10.0,
+                max: 20.0,
+                gain: 1.0,
+                cost: 0.5,
+            });
+            let row_without_fuel = test_country_row("ENG", 2, 0x3234);
+
+            let payload = compact_fuel_data_payload(
+                &[por, row_without_fuel, ger],
+                99,
+                COMPACT_STATUS_EXTRACTION_PERF_GATE,
+            );
+
+            assert_eq!(payload.len(), 24 + 2 * 40);
+            assert_eq!(u64::from_le_bytes(payload[0..8].try_into().unwrap()), 99);
+            assert_eq!(u32::from_le_bytes(payload[8..12].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[12..16].try_into().unwrap()), 2);
+            assert_eq!(
+                u32::from_le_bytes(payload[16..20].try_into().unwrap()),
+                COMPACT_STATUS_EXTRACTION_PERF_GATE
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[20..24].try_into().unwrap()),
+                FUEL_SCALE_RAW
+            );
+            assert_eq!(u32::from_le_bytes(payload[24..28].try_into().unwrap()), 47);
+            assert_eq!(u32::from_le_bytes(payload[64..68].try_into().unwrap()), 1);
+            assert_eq!(
+                i64::from_le_bytes(payload[32..40].try_into().unwrap()),
+                4_046_848
+            );
+            assert_eq!(
+                i64::from_le_bytes(payload[56..64].try_into().unwrap()),
+                -73_728
+            );
         }
 
         #[test]
@@ -19045,6 +19171,10 @@ mod attach_log {
                 convoys: None,
                 misc: None,
                 fuel: Some(CountryFuelRow {
+                    current_raw: 4_046_848,
+                    max_raw: 14_950_400,
+                    gain_raw: 245_760,
+                    cost_raw: -73_728,
                     current: 123.5,
                     max: 456.25,
                     gain: 7.5,
