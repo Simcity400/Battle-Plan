@@ -819,9 +819,15 @@ Tasks:
   `{air_base_id,type=65}` handle, reads `wing_body+0x1E8` as the type-70
   equipment bank, and emits owner/wing/generation rows with home airbase id plus
   equipment child rows `{variant_id, amount_raw}`. This closes home-airbase id
-  and live wing equipment variant amounts for the verified `870ebf` build. It
-  does not yet classify variant ids into aircraft type/stat metadata or read
-  airbase capacity/usage penalties.
+  and live wing equipment variant amounts for the verified `870ebf` build.
+- Current DLL checkpoint: `air_variant_defs` is compact domain id 33. It reuses
+  the anchored live air-wing equipment banks to gather type-70 variant pointers,
+  validates each definition by vtable/type/id, and emits rows keyed by
+  `variant_id` with optional display/model strings plus module children
+  `{slot_handle, module_token}` from `variant+0xB8` / `module_def+0x18`. This
+  closes replay-side naming/module metadata for live air-wing equipment IDs in
+  the verified `870ebf` build. It does not yet read exact aircraft stat blocks,
+  archetype categories, or airbase capacity/usage penalties.
 - Current no-bridge proof:
   `replay/snapshots/_collector_session_air_wing_native_gate/20260630T172419Z_pid45880`
   advanced 12 game hours in 83.860 wall seconds with speed-five/current game
@@ -856,6 +862,16 @@ Tasks:
   rows, 787 changed loadout rows, 2613 emitted equipment rows, and reported no
   source-unavailable, partial-data, bridge-unavailable, or worker-panic flags.
   Frame p95 was 13179 us; air-loadout read p95 was 11592 us.
+- Current variant-definition compact proof:
+  `replay_native/runs/compact_air_variant_defs_870ebf_20260701_v1/native_session_manifest.json`
+  scheduled `air_wings`, `air_region_activity`, `air_wing_loadouts`, and
+  `air_variant_defs` for 60 seconds at 10 ms sampling, advanced 109 game hours
+  with 0 skipped, emitted ordered/decodable compact records, wrote 233782 total
+  bytes / 202102 payload bytes, captured 47350 observed air-wing rows, 130982
+  observed wing-equipment rows, 16280 observed variant-definition rows, 47740
+  observed module rows, 148 emitted definition rows, and 434 emitted module-token
+  rows, and reported no source-unavailable, partial-data, bridge-unavailable, or
+  worker-panic flags. Frame p95 was 14546 us; air-variant read p95 was 13768 us.
 - Build an active air-combat fixture for validation.
 - Resolve `airwing_effective_planes_denom` or badge it.
 - Decide which air-superiority values are exact live state and which are

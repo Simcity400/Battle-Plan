@@ -147,6 +147,18 @@ advanced 113 game hours with 0 skipped and no source/partial/bridge/worker
 failures while scheduling `air_wings`, `air_region_activity`, and
 `air_wing_loadouts` together.
 
+`air_variant_defs` is compact domain id 33. It decodes DLL-derived equipment
+variant definition rows collected from the same anchored air-wing equipment
+banks. Rows are keyed by `variant_id`, carry optional display/model strings, and
+own child module rows `{slot_handle, module_token}`. The host rejects malformed
+lengths, duplicate variant ids, unknown flags, impossible slot handles,
+overlong/empty required strings, non-zero reserved bytes, overlapping/missing
+module ranges, and trailing bytes. Proof
+`replay_native/runs/compact_air_variant_defs_870ebf_20260701_v1/native_session_manifest.json`
+advanced 109 game hours with 0 skipped and no source/partial/bridge/worker
+failures while scheduling `air_wings`, `air_region_activity`,
+`air_wing_loadouts`, and `air_variant_defs` together.
+
 Compact extraction gate example:
 
 ```powershell

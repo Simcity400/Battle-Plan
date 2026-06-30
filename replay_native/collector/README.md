@@ -889,6 +889,17 @@ Air-wing raw stream status:
   rows. Child rows carry equipment variant id plus raw fixed-point amount. The
   DLL retries bounded transient bank reads before failing closed; Python/save
   probes are discovery evidence only and are not in the recording loop.
+- Compact `air_variant_defs` is domain id 33. It reuses the anchored air-wing
+  equipment-bank path to collect live type-70 variant pointers, validates each
+  by vtable/type/id, and emits pointer-free definition rows keyed by
+  `variant_id`. Rows include optional display/model strings from
+  `variant+0x28`/`variant+0x48` plus child module rows `{slot_handle,
+  module_token}` from the current-build module graph at `variant+0xB8`
+  (`module_def+0x18` token, vtable `MODULE+0x2921850`). Definitions are cached
+  and emitted when first seen or changed; they are not deleted when no longer
+  present in active wings because earlier replay frames may still reference the
+  variant id. This is DLL-only runtime capture; the Python probe was one-time
+  bounded live validation of the current offsets.
 - Previous bridge fixture status: live-proven by no-cold cache-backed run
   `replay/snapshots/_collector_session_air_wing_gate/20260629T205254Z_pid43412`.
   The run advanced 12 game hours in 55.875 wall seconds, verified replay output,
@@ -930,10 +941,21 @@ Air-wing raw stream status:
   rows, 787 changed loadout rows, 2613 emitted equipment rows, and reported no
   source-unavailable, partial-data, bridge-unavailable, or worker-panic flags.
   Frame p95 was 13179 us; loadout read p95 was 11592 us.
+- Current air-variant definition compact proof:
+  `replay_native/runs/compact_air_variant_defs_870ebf_20260701_v1/native_session_manifest.json`
+  scheduled `air_wings`, `air_region_activity`, `air_wing_loadouts`, and
+  `air_variant_defs` together for 60 seconds at 10 ms sampling, advanced 109
+  game hours, skipped 0, emitted ordered/decodable compact records, wrote
+  233782 total bytes / 202102 payload bytes, captured 47350 observed air-wing
+  rows, 130982 observed wing-equipment rows, 16280 observed variant-definition
+  rows, 47740 observed variant-module rows, 148 emitted definition rows, and
+  434 emitted module-token rows, and reported no source-unavailable,
+  partial-data, bridge-unavailable, or worker-panic flags. Frame p95 was 14546
+  us; air-variant-def read p95 was 13768 us.
 - Remaining promotion work is live proof while changing missions/rebasing,
-  exact airbase capacity joins, aircraft type definition/stat metadata,
-  reserves/aces, air-loss/attrition proof, air-combat resolution, exact
-  displayed air-superiority percent classification, and timeline ingestion.
+  exact airbase capacity joins, aircraft archetype/stat metadata, reserves/aces,
+  air-loss/attrition proof, air-combat resolution, exact displayed
+  air-superiority percent classification, and timeline ingestion.
 
 Runtime rules:
 

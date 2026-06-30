@@ -650,6 +650,20 @@ The app is product-complete only when all applicable gates pass:
   gaps are airbase capacity/penalties, aircraft type/stat metadata for variant
   ids, reserves, aces, losses, exact displayed superiority percent, and active
   air-combat resolution.
+- Compact `air_variant_defs` proof passed on 2026-07-01:
+  `replay_native/runs/compact_air_variant_defs_870ebf_20260701_v1/native_session_manifest.json`
+  scheduled `air_wings`, `air_region_activity`, `air_wing_loadouts`, and
+  `air_variant_defs` for 60 seconds at 10 ms sampling, advanced 109 game hours,
+  skipped 0 game hours, emitted ordered/decodable compact records, captured
+  47350 observed air-wing rows, 130982 observed wing-equipment rows, 16280
+  observed variant-definition rows, 47740 observed variant-module rows, 148
+  emitted definition rows, and 434 emitted module-token rows, and reported no
+  source-unavailable, partial-data, bridge-unavailable, or worker panic flags.
+  This closes DLL/Rust compact capture of display/model names and module-token
+  metadata for live air-wing equipment variant ids on the verified `870ebf`
+  build. Remaining air gaps are airbase capacity/penalties, exact aircraft
+  archetype/stat blocks, reserves, aces, losses, exact displayed superiority
+  percent, and active air-combat resolution.
 - Every registered view opens from the in-app menu.
 - Every registered view has an interaction contract.
 - Every read-only interaction in each contract is implemented and tested.
