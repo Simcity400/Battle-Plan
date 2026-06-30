@@ -241,6 +241,7 @@ struct CompactDomainSummary {
     changed_rows_total: u64,
     data_rows_total: u64,
     data_changed_rows_total: u64,
+    data_units_total: BTreeMap<String, u64>,
     unit_count_total: u64,
     changed_unit_count_total: u64,
     read_times_us: Vec<u64>,
@@ -1262,6 +1263,7 @@ fn decode_compact_fuel_data_payload(offset: usize, payload: &[u8], summary: &mut
             .saturating_add(changed_rows as u64);
         domain.status_flags_or |= status_flags;
     }
+    add_compact_domain_data_unit(summary, 10, "fuel_country_rows", row_count);
     let mut seen_tag_ids = BTreeSet::new();
     for row_index in 0..row_count {
         let row_offset = 24 + row_index * 40;
@@ -1350,6 +1352,11 @@ fn decode_compact_production_data_payload(
             .saturating_add(changed_rows as u64);
         domain.status_flags_or |= status_flags;
     }
+    add_compact_domain_data_unit(summary, 11, "production_country_rows", country_count);
+    add_compact_domain_data_unit(summary, 11, "stockpile_rows", stockpile_count);
+    add_compact_domain_data_unit(summary, 11, "military_line_rows", military_count);
+    add_compact_domain_data_unit(summary, 11, "naval_line_rows", naval_count);
+    add_compact_domain_data_unit(summary, 11, "construction_queue_rows", construction_count);
     let mut cursor = 40usize;
     let mut seen_stockpile = BTreeSet::new();
     for row_index in 0..stockpile_count {
@@ -1470,6 +1477,8 @@ fn decode_compact_focus_data_payload(offset: usize, payload: &[u8], summary: &mu
             .saturating_add(changed_rows as u64);
         domain.status_flags_or |= status_flags;
     }
+    add_compact_domain_data_unit(summary, 12, "focus_country_rows", country_count);
+    add_compact_domain_data_unit(summary, 12, "completed_focus_tokens", completed_token_count);
     let mut cursor = 28usize;
     let mut seen_countries = BTreeSet::new();
     for row_index in 0..country_count {
@@ -1585,6 +1594,8 @@ fn decode_compact_tech_data_payload(offset: usize, payload: &[u8], summary: &mut
             .saturating_add(changed_rows as u64);
         domain.status_flags_or |= status_flags;
     }
+    add_compact_domain_data_unit(summary, 13, "tech_country_rows", country_count);
+    add_compact_domain_data_unit(summary, 13, "active_research_slot_rows", active_count);
     let mut cursor = 32usize;
     let mut seen_countries = BTreeSet::new();
     for row_index in 0..country_count {
@@ -1685,6 +1696,11 @@ fn decode_compact_politics_data_payload(
             .saturating_add(changed_rows as u64);
         domain.status_flags_or |= status_flags;
     }
+    add_compact_domain_data_unit(summary, 14, "politics_country_rows", country_count);
+    add_compact_domain_data_unit(summary, 14, "popularity_rows", popularity_count);
+    add_compact_domain_data_unit(summary, 14, "law_rows", law_count);
+    add_compact_domain_data_unit(summary, 14, "advisor_rows", advisor_count);
+    add_compact_domain_data_unit(summary, 14, "national_spirit_rows", national_spirit_count);
     let mut cursor = 40usize;
     let mut seen_countries = BTreeSet::new();
     for row_index in 0..country_count {
@@ -1869,6 +1885,8 @@ fn decode_compact_politics_residuals_data_payload(
             .saturating_add(changed_rows as u64);
         domain.status_flags_or |= status_flags;
     }
+    add_compact_domain_data_unit(summary, 15, "politics_residual_country_rows", country_count);
+    add_compact_domain_data_unit(summary, 15, "advisor_detail_rows", advisor_detail_count);
     let mut cursor = 24usize;
     let mut seen_countries = BTreeSet::new();
     let mut declared_advisors = 0usize;
@@ -1977,6 +1995,8 @@ fn decode_compact_decisions_data_payload(
             .saturating_add(changed_rows as u64);
         domain.status_flags_or |= status_flags;
     }
+    add_compact_domain_data_unit(summary, 16, "decision_country_rows", country_count);
+    add_compact_domain_data_unit(summary, 16, "timed_decision_rows", timed_count);
     let mut cursor = 24usize;
     let mut seen_countries = BTreeSet::new();
     let mut declared_timed = 0usize;
@@ -2086,6 +2106,8 @@ fn decode_compact_diplomacy_data_payload(
             .saturating_add(changed_rows as u64);
         domain.status_flags_or |= status_flags;
     }
+    add_compact_domain_data_unit(summary, 17, "diplomacy_country_rows", country_count);
+    add_compact_domain_data_unit(summary, 17, "at_war_relation_rows", relation_count);
     let mut cursor = 24usize;
     let mut seen_countries = BTreeSet::new();
     let mut declared_relations = 0usize;
@@ -2220,8 +2242,17 @@ fn decode_compact_divisions_data_payload(
             .saturating_add(changed_rows as u64);
         domain.status_flags_or |= status_flags;
     }
+    add_compact_domain_data_unit(summary, 20, "division_rows", row_count);
+    add_compact_domain_data_unit(summary, 20, "division_root_rows", root_rows);
     let mut cursor = 32usize;
     let mut seen_divisions = BTreeSet::new();
+    let mut deleted_rows = 0usize;
+    let mut moving_rows = 0usize;
+    let mut combat_rows = 0usize;
+    let mut template_rows = 0usize;
+    let mut owner_rows = 0usize;
+    let mut army_rows = 0usize;
+    let mut org_strength_rows = 0usize;
     for row_index in 0..row_count {
         let div_id = read_u32_le(payload, cursor);
         let div_type = read_u32_le(payload, cursor + 4);
@@ -2286,6 +2317,7 @@ fn decode_compact_divisions_data_payload(
         let has_fuel = (flags & (1 << 11)) != 0;
         let has_template = (flags & COMPACT_DIVISION_ROW_FLAG_TEMPLATE) != 0;
         if deleted {
+            deleted_rows = deleted_rows.saturating_add(1);
             if flags != COMPACT_DIVISION_ROW_FLAG_DELETED {
                 summary.parse_errors.push(format!(
                     "offset {offset}: divisions delete row {row_index} has non-delete flags"
@@ -2316,6 +2348,22 @@ fn decode_compact_divisions_data_payload(
                 ));
             }
             continue;
+        }
+        org_strength_rows = org_strength_rows.saturating_add(1);
+        if moving {
+            moving_rows = moving_rows.saturating_add(1);
+        }
+        if in_combat {
+            combat_rows = combat_rows.saturating_add(1);
+        }
+        if has_template {
+            template_rows = template_rows.saturating_add(1);
+        }
+        if has_owner {
+            owner_rows = owner_rows.saturating_add(1);
+        }
+        if has_army {
+            army_rows = army_rows.saturating_add(1);
         }
         if !valid_compact_province_id(location) {
             summary.parse_errors.push(format!(
@@ -2473,6 +2521,13 @@ fn decode_compact_divisions_data_payload(
             ));
         }
     }
+    add_compact_domain_data_unit(summary, 20, "division_deleted_rows", deleted_rows);
+    add_compact_domain_data_unit(summary, 20, "division_moving_rows", moving_rows);
+    add_compact_domain_data_unit(summary, 20, "division_in_combat_rows", combat_rows);
+    add_compact_domain_data_unit(summary, 20, "division_template_rows", template_rows);
+    add_compact_domain_data_unit(summary, 20, "division_owner_rows", owner_rows);
+    add_compact_domain_data_unit(summary, 20, "division_army_rows", army_rows);
+    add_compact_domain_data_unit(summary, 20, "division_org_strength_rows", org_strength_rows);
 }
 
 fn decode_compact_division_equipment_data_payload(
@@ -2552,10 +2607,31 @@ fn decode_compact_division_equipment_data_payload(
             .saturating_add(changed_rows as u64);
         domain.status_flags_or |= status_flags;
     }
+    add_compact_domain_data_unit(summary, 26, "division_equipment_rows", row_count);
+    add_compact_domain_data_unit(summary, 26, "division_equipment_root_rows", root_rows);
+    add_compact_domain_data_unit(
+        summary,
+        26,
+        "division_equipment_observed_division_rows",
+        observed_division_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        26,
+        "division_equipment_entry_rows",
+        equipment_entry_count,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        26,
+        "division_equipment_observed_entry_rows",
+        observed_equipment_rows,
+    );
 
     let mut cursor = 40usize;
     let mut seen_divisions = BTreeSet::new();
     let mut declared_entries = 0usize;
+    let mut deleted_rows = 0usize;
     let mut parent_ranges = Vec::with_capacity(row_count);
     for row_index in 0..row_count {
         let owner_tag_db_id = read_u32_le(payload, cursor);
@@ -2592,6 +2668,7 @@ fn decode_compact_division_equipment_data_payload(
         let deleted = (flags & COMPACT_DIVISION_EQUIPMENT_ROW_FLAG_DELETED) != 0;
         let has_template = (flags & COMPACT_DIVISION_EQUIPMENT_ROW_FLAG_TEMPLATE) != 0;
         if deleted {
+            deleted_rows = deleted_rows.saturating_add(1);
             if flags != COMPACT_DIVISION_EQUIPMENT_ROW_FLAG_DELETED {
                 summary.parse_errors.push(format!(
                     "offset {offset}: division equipment delete row {row_index} has non-delete flags"
@@ -2644,6 +2721,7 @@ fn decode_compact_division_equipment_data_payload(
             "offset {offset}: division equipment entry_count {equipment_entry_count} != declared {declared_entries}"
         ));
     }
+    add_compact_domain_data_unit(summary, 26, "division_equipment_deleted_rows", deleted_rows);
 
     let mut seen_entries = BTreeSet::new();
     for (row_index, owner_tag_db_id, div_id, entry_first, entry_count, deleted) in parent_ranges {
@@ -2761,9 +2839,19 @@ fn decode_compact_land_combats_data_payload(
             .saturating_add(changed_rows as u64);
         domain.status_flags_or |= status_flags;
     }
+    add_compact_domain_data_unit(summary, 21, "land_combat_rows", combat_count);
+    add_compact_domain_data_unit(
+        summary,
+        21,
+        "land_combat_participant_rows",
+        participant_count,
+    );
+    add_compact_domain_data_unit(summary, 21, "land_combat_ended_rows", ended_count);
     let mut cursor = 32usize;
     let mut seen_combats = BTreeSet::new();
     let mut declared_participants = 0usize;
+    let mut attacker_rows = 0usize;
+    let mut defender_rows = 0usize;
     for row_index in 0..combat_count {
         let combat_id = read_u32_le(payload, cursor);
         let generation = read_u64_le(payload, cursor + 4);
@@ -2832,12 +2920,16 @@ fn decode_compact_land_combats_data_payload(
         }
         declared_participants =
             declared_participants.saturating_add(attacker_count.saturating_add(defender_count));
+        attacker_rows = attacker_rows.saturating_add(attacker_count);
+        defender_rows = defender_rows.saturating_add(defender_count);
         if row_reserved != 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: land combat row {row_index} reserved field is nonzero"
             ));
         }
     }
+    add_compact_domain_data_unit(summary, 21, "land_combat_attacker_rows", attacker_rows);
+    add_compact_domain_data_unit(summary, 21, "land_combat_defender_rows", defender_rows);
     if declared_participants != participant_count {
         summary.parse_errors.push(format!(
             "offset {offset}: land combat participant_count {participant_count} != declared {declared_participants}"
@@ -2955,6 +3047,20 @@ fn decode_compact_map_control_data_payload(
             .saturating_add(changed_rows as u64);
         domain.status_flags_or |= status_flags;
     }
+    add_compact_domain_data_unit(summary, 22, "map_control_state_rows", state_count);
+    add_compact_domain_data_unit(summary, 22, "map_control_province_rows", province_count);
+    add_compact_domain_data_unit(
+        summary,
+        22,
+        "map_control_changed_state_rows",
+        changed_state_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        22,
+        "map_control_changed_province_rows",
+        changed_province_rows,
+    );
 
     let mut cursor = 32usize;
     let mut seen_states = BTreeSet::new();
@@ -3150,6 +3256,33 @@ fn decode_compact_map_detail_data_payload(
             .saturating_add(changed_rows as u64);
         domain.status_flags_or |= status_flags;
     }
+    add_compact_domain_data_unit(summary, 23, "map_detail_state_rows", state_count);
+    add_compact_domain_data_unit(summary, 23, "map_detail_province_rows", province_count);
+    add_compact_domain_data_unit(
+        summary,
+        23,
+        "map_detail_observed_state_rows",
+        observed_state_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        23,
+        "map_detail_observed_province_rows",
+        observed_province_rows,
+    );
+    add_compact_domain_data_unit(summary, 23, "map_detail_resource_rows", resource_count);
+    add_compact_domain_data_unit(
+        summary,
+        23,
+        "map_detail_state_building_rows",
+        state_building_count,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        23,
+        "map_detail_province_building_rows",
+        province_building_count,
+    );
 
     let mut cursor = 48usize;
     let mut seen_states = BTreeSet::new();
@@ -3381,6 +3514,19 @@ fn decode_compact_weather_data_payload(
             .saturating_add(changed_rows as u64);
         domain.status_flags_or |= status_flags;
     }
+    add_compact_domain_data_unit(summary, 24, "weather_region_rows", region_count);
+    add_compact_domain_data_unit(
+        summary,
+        24,
+        "weather_observed_region_rows",
+        observed_region_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        24,
+        "weather_active_region_rows",
+        active_region_count,
+    );
 
     let mut cursor = 48usize;
     let mut seen_regions = BTreeSet::new();
@@ -3792,6 +3938,7 @@ fn compact_domain_summaries_json(summary: &CompactSummary) -> Value {
                 "changed_rows_total": domain.changed_rows_total,
                 "data_rows_total": domain.data_rows_total,
                 "data_changed_rows_total": domain.data_changed_rows_total,
+                "data_units_total": domain.data_units_total,
                 "unit_count_total": domain.unit_count_total,
                 "changed_unit_count_total": domain.changed_unit_count_total,
                 "status_flags_or": domain.status_flags_or,
@@ -3800,6 +3947,21 @@ fn compact_domain_summaries_json(summary: &CompactSummary) -> Value {
         );
     }
     Value::Object(out)
+}
+
+fn add_compact_domain_data_unit(
+    summary: &mut CompactSummary,
+    domain_id: u16,
+    name: &str,
+    count: usize,
+) {
+    if count == 0 {
+        return;
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&domain_id) {
+        let entry = domain.data_units_total.entry(name.to_string()).or_default();
+        *entry = entry.saturating_add(count as u64);
+    }
 }
 
 fn timing_summary_json(values: &[u64]) -> Value {
@@ -4312,6 +4474,69 @@ mod tests {
                 1
             );
         }
+        let production_units = &summary.per_domain.get(&11).unwrap().data_units_total;
+        assert_eq!(production_units.get("stockpile_rows").copied(), Some(1));
+        assert_eq!(production_units.get("military_line_rows").copied(), Some(1));
+        assert_eq!(production_units.get("naval_line_rows").copied(), Some(1));
+        assert_eq!(
+            production_units.get("construction_queue_rows").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .per_domain
+                .get(&12)
+                .unwrap()
+                .data_units_total
+                .get("completed_focus_tokens")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .per_domain
+                .get(&13)
+                .unwrap()
+                .data_units_total
+                .get("active_research_slot_rows")
+                .copied(),
+            Some(1)
+        );
+        let politics_units = &summary.per_domain.get(&14).unwrap().data_units_total;
+        assert_eq!(politics_units.get("popularity_rows").copied(), Some(2));
+        assert_eq!(politics_units.get("law_rows").copied(), Some(1));
+        assert_eq!(politics_units.get("advisor_rows").copied(), Some(1));
+        assert_eq!(politics_units.get("national_spirit_rows").copied(), Some(1));
+        assert_eq!(
+            summary
+                .per_domain
+                .get(&15)
+                .unwrap()
+                .data_units_total
+                .get("advisor_detail_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .per_domain
+                .get(&16)
+                .unwrap()
+                .data_units_total
+                .get("timed_decision_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .per_domain
+                .get(&17)
+                .unwrap()
+                .data_units_total
+                .get("at_war_relation_rows")
+                .copied(),
+            Some(2)
+        );
     }
 
     #[test]
@@ -4354,6 +4579,27 @@ mod tests {
         assert_eq!(divisions.data_record_count, 1);
         assert_eq!(divisions.data_rows_total, 2);
         assert_eq!(divisions.data_changed_rows_total, 2);
+        assert_eq!(
+            divisions
+                .data_units_total
+                .get("division_org_strength_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            divisions
+                .data_units_total
+                .get("division_moving_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            divisions
+                .data_units_total
+                .get("division_in_combat_rows")
+                .copied(),
+            Some(1)
+        );
     }
 
     #[test]
@@ -4397,6 +4643,13 @@ mod tests {
         assert_eq!(equipment.data_rows_total, 2);
         assert_eq!(equipment.data_changed_rows_total, 2);
         assert_eq!(equipment.unit_count_total, 3);
+        assert_eq!(
+            equipment
+                .data_units_total
+                .get("division_equipment_entry_rows")
+                .copied(),
+            Some(3)
+        );
         assert_eq!(compact_domain_id("division_equipment"), Some(26));
         assert_eq!(compact_domain_name(26), "division_equipment");
     }
@@ -4611,6 +4864,24 @@ mod tests {
         assert_eq!(land.data_record_count, 1);
         assert_eq!(land.data_rows_total, 2);
         assert_eq!(land.unit_count_total, 3);
+        assert_eq!(
+            land.data_units_total
+                .get("land_combat_participant_rows")
+                .copied(),
+            Some(3)
+        );
+        assert_eq!(
+            land.data_units_total
+                .get("land_combat_attacker_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            land.data_units_total
+                .get("land_combat_defender_rows")
+                .copied(),
+            Some(1)
+        );
     }
 
     #[test]
@@ -4654,6 +4925,16 @@ mod tests {
         assert_eq!(map.data_rows_total, 11_200);
         assert_eq!(map.data_changed_rows_total, 11_200);
         assert_eq!(map.unit_count_total, 10_100);
+        assert_eq!(
+            map.data_units_total.get("map_control_state_rows").copied(),
+            Some(1_100)
+        );
+        assert_eq!(
+            map.data_units_total
+                .get("map_control_province_rows")
+                .copied(),
+            Some(10_100)
+        );
     }
 
     #[test]
@@ -4749,6 +5030,24 @@ mod tests {
         assert_eq!(map.data_rows_total, 11_200);
         assert_eq!(map.data_changed_rows_total, 11_200);
         assert_eq!(map.unit_count_total, 11_200);
+        assert_eq!(
+            map.data_units_total
+                .get("map_detail_resource_rows")
+                .copied(),
+            Some(1_100)
+        );
+        assert_eq!(
+            map.data_units_total
+                .get("map_detail_state_building_rows")
+                .copied(),
+            Some(1_100)
+        );
+        assert_eq!(
+            map.data_units_total
+                .get("map_detail_province_building_rows")
+                .copied(),
+            Some(10_100)
+        );
         assert_eq!(compact_domain_id("state_detail"), Some(23));
         assert_eq!(compact_domain_id("buildings_live"), Some(23));
         assert_eq!(compact_domain_name(23), "map_detail");
@@ -4795,6 +5094,13 @@ mod tests {
         assert_eq!(weather.data_rows_total, 305);
         assert_eq!(weather.data_changed_rows_total, 305);
         assert_eq!(weather.unit_count_total, 305);
+        assert_eq!(
+            weather
+                .data_units_total
+                .get("weather_active_region_rows")
+                .copied(),
+            Some(1)
+        );
         assert_eq!(compact_domain_id("weather_live"), Some(24));
         assert_eq!(compact_domain_name(24), "weather_live");
     }

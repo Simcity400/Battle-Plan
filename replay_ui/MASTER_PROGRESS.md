@@ -109,6 +109,15 @@ for inspection, with no ability to mutate the game.
   division root, captured 155,040 division rows and 348,368 equipment-entry
   units, verified ordering/decodability/domain coverage/replay packing, and
   produced a verified 1,694,343-byte `.battleplan`.
+- Compact DLL/Rust replay capture now reports semantic proof counters for the
+  current 14 typed domains. The 2026-06-30 proof
+  `compact_wide_semantic_counters_speed5_20260630_v1` advanced 105 game hours
+  at speed five with 0 skipped, verified ordered/decodable records, full
+  domain/data-record coverage, and `.battleplan` packing, and exposed decoded
+  counters for production stockpiles/lines/construction, active research slots,
+  timed decisions, moving/in-combat divisions, held division equipment,
+  land-combat participants, map resources/buildings, and active weather
+  regions.
 - DLL-native scheduled `diplomacy_live` is proven for faction membership and
   war/casualty rows: the collector reads `CCountry+0x598` faction groups on
   hourly frames, folds into `countries.*.diplomacy.faction_group` and
@@ -418,6 +427,11 @@ The app is product-complete only when all applicable gates pass:
   ordered/decodable compact records, full per-hour scheduled-domain coverage,
   typed `division_equipment` data records, no source-unavailable/partial/bridge/
   worker failures, and a verified `.battleplan` container.
+- Compact semantic-counter proof passed on 2026-06-30:
+  `replay_native/runs/compact_wide_semantic_counters_speed5_20260630_v1`
+  advanced 105 game hours in 60 seconds at speed five with 0 skipped, verified
+  the same 14-domain compact bundle, and wrote per-domain `data_units_total`
+  counters for the decoded replay-critical units.
 - Scheduled `diplomacy_live` faction proof passed on 2026-06-29:
   `replay/snapshots/_collector_session_diplomacy_gate/20260629T152734Z_pid43412`
   advanced 12 game hours in 48.328 wall seconds, stored 13 verified snapshots,

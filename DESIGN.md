@@ -204,6 +204,18 @@ Implemented in the current bridge:
   equipment-entry units, saw no source-unavailable/partial/bridge/worker
   failures, measured avg frame 26.648 ms / p95 28.680 ms / max 74.934 ms /
   5,777,247 raw stream bytes, and verified a 1,694,343-byte `.battleplan`;
+- current recorder semantic-counter proof
+  `compact_wide_semantic_counters_speed5_20260630_v1` reran the same 14-domain
+  compact bundle against the live speed-five game for 60 seconds, advanced 105
+  game hours with 0 skipped, verified ordered/decodable compact records,
+  per-hour domain/data-record coverage, and replay packing, saw no
+  source-unavailable/partial/bridge/worker failures, measured avg frame
+  44.608 ms / p95 64.820 ms / max 103.623 ms / 4,695,510 raw stream bytes, and
+  verified a 1,315,765-byte `.battleplan`. Its manifest now exposes decoded
+  proof counters for the actual typed replay units: stockpiles, military/naval
+  lines, construction queues, active research slots, timed decisions, moving and
+  in-combat divisions, held division equipment, land-combat participants, map
+  resources/buildings, and active weather regions;
 - DLL-native scheduled `decisions_live` through
   `CCountry+0xFA0 -> CDecisionStatus`: the collector validates the status
   vtable and owner back-pointer, emits non-empty status-vector counts, and

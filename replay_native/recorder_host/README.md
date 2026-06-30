@@ -444,6 +444,27 @@ speed-five complete for the currently implemented compact domains on the active
 vanilla process, with longer soaks and the next replay-critical domains still
 open.
 
+`compact_wide_semantic_counters_speed5_20260630_v1` reran the widened compact
+path with recorder-side semantic counters for all 14 currently implemented
+typed domains: the 8 country-state domains, `divisions`, `division_equipment`,
+`land_combats`, `map_control`, `map_detail`, and `weather_live`. It advanced
+105 game hours in 60 seconds at speed five with 0 skipped, full per-hour domain
+and data-record coverage, ordered/decodable records, no
+source-unavailable/partial/bridge/worker failures, avg frame 44.608 ms, p95
+64.820 ms, max 103.623 ms, 4,695,510 compact bytes, and a verified
+1,315,765-byte `.battleplan`. The manifest now emits `data_units_total` per
+domain so proof runs can report real decoded unit counts, not just frame bytes:
+production stockpiles/lines/construction, active research slots, timed
+decisions, division movement/combat/org-strength rows, held equipment entries,
+land-combat participants, map resource/building rows, and active weather
+regions.
+
+`army_orders` remains raw-only and bridge-backed in this checkpoint. Its sampler
+requires `army_body_bridge`, and compact-stream mode currently skips the raw
+army-order loop entirely. Do not mark orders/OOB complete until the army/OOB
+root is native or the compact segment is explicitly badged as temporary bridge
+debt.
+
 Implementation note: see `COMPACT_HOI4REPLAY_NEXT_STEP.md` for the bounded
 Rust-native packaging path and the test contract for putting `collector_stream.bin`
 inside a manifest-covered `.battleplan` without using Python or full JSON root

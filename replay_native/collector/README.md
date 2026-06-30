@@ -138,14 +138,31 @@ country-state domains. Current compact binary proofs:
   1,694,343-byte `native_session.battleplan`. The new `division_equipment`
   domain emitted 114 typed data records with 155,040 division rows and 348,368
   equipment-entry units through the DLL-native anchored division root.
+- `compact_wide_semantic_counters_speed5_20260630_v1`: the same 14-domain
+  production-shaped compact bundle, rebuilt with recorder semantic counters,
+  advanced 105 game hours in 60 seconds with 106 unique frame hours, 0 skipped,
+  full per-hour domain/data-record coverage, ordered and decodable stream, and
+  no worker-panic/source-unavailable/partial/bridge flags. It measured avg frame
+  44.608 ms, p95 64.820 ms, max 103.623 ms, wrote 4,695,510 compact bytes, and
+  verified a 1,315,765-byte `.battleplan`. The manifest now reports decoded
+  proof counters for replay-critical units including 5,194 stockpile rows,
+  2,578 military-line rows, 1,856 naval-line rows, 1,474 construction rows,
+  1,206 active research-slot rows, 91 timed-decision rows, 16,588 moving
+  division rows, 5,948 in-combat division rows, 6,160 division-equipment entry
+  rows, 6,533 land-combat participant rows, 718 state-resource rows, 6,968
+  building rows, and 451 active weather-region rows.
 
 This completes the extraction-only compact performance gate for the current
-country domains and starts replay payload capture with typed fuel records plus
-Rust-native `.battleplan` packing. The `fuel_live` and `division_equipment`
-replay-payload segments are live-proven through the DLL/Rust compact path at
-speed five with zero skipped game hours. The next step is to widen typed data
-records to production, focus, tech, politics, decisions, diplomacy, combat,
-movement, and orders.
+implemented compact domains and starts replay payload capture with typed
+records plus Rust-native `.battleplan` packing. `fuel_live`, `production_live`,
+`focus_live`, `tech_live`, `politics_live`, `politics_residuals`,
+`decisions_live`, `diplomacy_live`, `divisions`, `division_equipment`,
+`land_combats`, `map_control`, `map_detail`, and `weather_live` are live-proven
+through the DLL/Rust compact path at speed five with zero skipped game hours
+for the current vanilla build. The next step is not more JSON widening; it is
+native compact coverage for army orders/OOB, naval/air combat and telemetry,
+and richer combat/order details that are still raw-only, bridge-backed, or
+unimplemented.
 
 Country-object heap discovery is not part of normal capture. The experimental
 whole-heap vtable scan is behind the explicit `country_object_scan` control flag,
