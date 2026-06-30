@@ -10,7 +10,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 type Bool = i32;
 type Dword = u32;
@@ -21,15 +21,30 @@ type Handle = *mut c_void;
 type Lparam = isize;
 type Wparam = usize;
 
+#[repr(C)]
+struct ThreadEntry32 {
+    dw_size: Dword,
+    cnt_usage: Dword,
+    th32_thread_id: Dword,
+    th32_owner_process_id: Dword,
+    tp_base_pri: i32,
+    tp_delta_pri: i32,
+    dw_flags: Dword,
+}
+
 const WH_GETMESSAGE: i32 = 3;
 const WM_NULL: u32 = 0x0000;
 const PIPE_ACCESS_INBOUND: Dword = 0x00000001;
 const PIPE_TYPE_BYTE: Dword = 0x00000000;
 const PIPE_READMODE_BYTE: Dword = 0x00000000;
-const PIPE_WAIT: Dword = 0x00000000;
+const PIPE_NOWAIT: Dword = 0x00000001;
 const ERROR_PIPE_CONNECTED: Dword = 535;
+const ERROR_BROKEN_PIPE: Dword = 109;
+const ERROR_NO_DATA: Dword = 232;
+const ERROR_PIPE_LISTENING: Dword = 536;
 const GENERIC_READ_BUFFER: usize = 65_536;
 const INVALID_HANDLE_VALUE: isize = -1;
+const TH32CS_SNAPTHREAD: Dword = 0x00000004;
 const COMPACT_RECORD_MAGIC: &[u8; 4] = b"H4CR";
 const COMPACT_RECORD_HEADER_LEN: usize = 32;
 const COMPACT_RECORD_VERSION: u16 = 1;
@@ -69,6 +84,7 @@ extern "system" {
     fn GetProcAddress(module: Hmodule, name: *const c_char) -> *const c_void;
     fn FreeLibrary(module: Hmodule) -> Bool;
     fn CloseHandle(handle: Handle) -> Bool;
+    fn CreateToolhelp32Snapshot(flags: Dword, process_id: Dword) -> Handle;
     fn GetLastError() -> Dword;
     fn CreateNamedPipeW(
         name: *const u16,
@@ -88,6 +104,8 @@ extern "system" {
         bytes_read: *mut Dword,
         overlapped: *mut c_void,
     ) -> Bool;
+    fn Thread32First(snapshot: Handle, entry: *mut ThreadEntry32) -> Bool;
+    fn Thread32Next(snapshot: Handle, entry: *mut ThreadEntry32) -> Bool;
 }
 
 #[link(name = "user32")]
@@ -95,6 +113,7 @@ extern "system" {
     fn EnumWindows(callback: extern "system" fn(Hwnd, Lparam) -> Bool, lparam: Lparam) -> Bool;
     fn GetWindowThreadProcessId(hwnd: Hwnd, pid: *mut Dword) -> Dword;
     fn IsWindowVisible(hwnd: Hwnd) -> Bool;
+    fn PostMessageW(hwnd: Hwnd, msg: Dword, wparam: Wparam, lparam: Lparam) -> Bool;
     fn SetWindowsHookExW(
         id_hook: i32,
         proc: *const c_void,
@@ -221,6 +240,7 @@ fn run() -> Result<(), String> {
 
     let hook_hold_ms = u64::from(cfg.duration_ms)
         .saturating_add(cfg.dwell_ms)
+        .saturating_add(native_division_root_prewarm_budget_ms(&cfg))
         .saturating_add(1_000);
     let pipe_timeout_ms = hook_hold_ms.saturating_add(3_000);
     let pipe_name = format!(r"\\.\pipe\battle-plan_collector_{}_{}", cfg.pid, pipe_token);
@@ -255,7 +275,9 @@ fn run() -> Result<(), String> {
                     "special_projects_scan": cfg.special_projects_scan,
                     "compact_country_frame": cfg.compact_country_frame,
                     "division_body_bridge_rows": encoded_row_count(cfg.division_body_bridge.as_deref()),
-                    "division_body_bridge_preflight_debt": cfg.division_body_bridge.as_ref().map(|_| "temporary bounded preflight/cache input; not DLL-complete root discovery").unwrap_or("missing"),
+                    "division_root_source": "not_applicable_json_debug_stream",
+                    "division_root_discovery_debt": cfg.division_body_bridge.as_ref().map(|_| "temporary bounded preflight/cache input; JSON is not the production compact proof path").unwrap_or("not_applicable_json_debug_stream"),
+                    "division_body_bridge_preflight_debt": cfg.division_body_bridge.as_ref().map(|_| "temporary bounded preflight/cache input; JSON is not the production compact proof path").unwrap_or("not_applicable_json_debug_stream"),
                     "stream_format": cfg.stream_format.as_str(),
                     "extraction_perf_gate": cfg.extraction_perf_gate,
                     "idea_group_filter_rows": encoded_row_count(cfg.idea_group_filter.as_deref()),
@@ -296,6 +318,9 @@ fn run() -> Result<(), String> {
             let source_unavailable_seen =
                 (summary.status_flags_or & COMPACT_STATUS_SOURCE_UNAVAILABLE) != 0;
             let partial_data_seen = (summary.status_flags_or & COMPACT_STATUS_PARTIAL_DATA) != 0;
+            let division_root_source = compact_division_root_source(&cfg, &summary);
+            let division_root_discovery_debt =
+                compact_division_root_discovery_debt(division_root_source);
             let hourly_met = decodable
                 && ordered
                 && !worker_panic_seen
@@ -324,7 +349,9 @@ fn run() -> Result<(), String> {
                     "special_projects_scan": cfg.special_projects_scan,
                     "compact_country_frame": cfg.compact_country_frame,
                     "division_body_bridge_rows": encoded_row_count(cfg.division_body_bridge.as_deref()),
-                    "division_body_bridge_preflight_debt": cfg.division_body_bridge.as_ref().map(|_| "temporary bounded preflight/cache input; not DLL-complete root discovery").unwrap_or("missing"),
+                    "division_root_source": division_root_source,
+                    "division_root_discovery_debt": division_root_discovery_debt,
+                    "division_body_bridge_preflight_debt": division_root_discovery_debt,
                     "stream_format": cfg.stream_format.as_str(),
                     "extraction_perf_gate": cfg.extraction_perf_gate,
                     "idea_group_filter_rows": encoded_row_count(cfg.idea_group_filter.as_deref()),
@@ -778,7 +805,13 @@ fn attach_hook(pid: Dword, dll: &Path, hold_ms: u64) -> Result<(), String> {
             last_error()
         ));
     }
-    let dll_wide = wide(dll.as_os_str());
+    let dll_path = fs::canonicalize(dll).map_err(|e| {
+        format!(
+            "canonicalize collector dll path {} failed: {e}",
+            dll.display()
+        )
+    })?;
+    let dll_wide = wide(dll_path.as_os_str());
     let module = unsafe { LoadLibraryW(dll_wide.as_ptr()) };
     if module.is_null() {
         return Err(format!("LoadLibraryW failed: {}", last_error()));
@@ -791,22 +824,77 @@ fn attach_hook(pid: Dword, dll: &Path, hold_ms: u64) -> Result<(), String> {
         }
         return Err(format!("GetProcAddress failed: {}", last_error()));
     }
-    let hook = unsafe { SetWindowsHookExW(WH_GETMESSAGE, proc, module, thread_id) };
-    if hook.is_null() {
+    let thread_ids = target_thread_ids(pid, thread_id);
+    let mut hooks = Vec::new();
+    for target_thread_id in thread_ids {
+        let hook = unsafe { SetWindowsHookExW(WH_GETMESSAGE, proc, module, target_thread_id) };
+        if !hook.is_null() {
+            hooks.push((hook, target_thread_id));
+        }
+    }
+    if hooks.is_empty() {
         unsafe {
             FreeLibrary(module);
         }
-        return Err(format!("SetWindowsHookExW failed: {}", last_error()));
+        return Err(format!(
+            "SetWindowsHookExW failed for all target threads: {}",
+            last_error()
+        ));
     }
-    unsafe {
-        PostThreadMessageW(thread_id, WM_NULL, 0, 0);
+    let poke_ms = hold_ms.min(500);
+    let poke_started = Instant::now();
+    while duration_millis_u64(poke_started.elapsed()) <= poke_ms {
+        for (_, target_thread_id) in &hooks {
+            unsafe {
+                PostThreadMessageW(*target_thread_id, WM_NULL, 0, 0);
+            }
+        }
+        unsafe {
+            PostMessageW(hwnd, WM_NULL, 0, 0);
+        }
+        thread::sleep(Duration::from_millis(50));
     }
-    thread::sleep(Duration::from_millis(hold_ms));
+    thread::sleep(Duration::from_millis(
+        hold_ms.saturating_sub(duration_millis_u64(poke_started.elapsed())),
+    ));
     unsafe {
-        UnhookWindowsHookEx(hook);
+        for (hook, _) in hooks {
+            UnhookWindowsHookEx(hook);
+        }
         FreeLibrary(module);
     }
     Ok(())
+}
+
+fn target_thread_ids(pid: Dword, primary_thread_id: Dword) -> Vec<Dword> {
+    let mut out = vec![primary_thread_id];
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot as isize == INVALID_HANDLE_VALUE {
+        return out;
+    }
+    let mut entry = ThreadEntry32 {
+        dw_size: core::mem::size_of::<ThreadEntry32>() as Dword,
+        cnt_usage: 0,
+        th32_thread_id: 0,
+        th32_owner_process_id: 0,
+        tp_base_pri: 0,
+        tp_delta_pri: 0,
+        dw_flags: 0,
+    };
+    let mut ok = unsafe { Thread32First(snapshot, &mut entry) };
+    while ok != 0 {
+        if entry.th32_owner_process_id == pid
+            && entry.th32_thread_id != 0
+            && !out.contains(&entry.th32_thread_id)
+        {
+            out.push(entry.th32_thread_id);
+        }
+        ok = unsafe { Thread32Next(snapshot, &mut entry) };
+    }
+    unsafe {
+        CloseHandle(snapshot);
+    }
+    out
 }
 
 fn read_pipe_bytes(pipe_name: &str, timeout_ms: u64) -> Result<Vec<u8>, String> {
@@ -815,7 +903,7 @@ fn read_pipe_bytes(pipe_name: &str, timeout_ms: u64) -> Result<Vec<u8>, String> 
         CreateNamedPipeW(
             pipe_wide.as_ptr(),
             PIPE_ACCESS_INBOUND,
-            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT,
             1,
             65_536,
             65_536,
@@ -826,14 +914,29 @@ fn read_pipe_bytes(pipe_name: &str, timeout_ms: u64) -> Result<Vec<u8>, String> 
     if handle as isize == INVALID_HANDLE_VALUE {
         return Err(format!("CreateNamedPipeW failed: {}", last_error()));
     }
-    let connected = unsafe { ConnectNamedPipe(handle, ptr::null_mut()) };
-    if connected == 0 && last_error() != ERROR_PIPE_CONNECTED {
-        unsafe {
-            CloseHandle(handle);
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        let connected = unsafe { ConnectNamedPipe(handle, ptr::null_mut()) };
+        if connected != 0 || last_error() == ERROR_PIPE_CONNECTED {
+            break;
         }
-        return Err(format!("ConnectNamedPipe failed: {}", last_error()));
+        let err = last_error();
+        if err != ERROR_PIPE_LISTENING {
+            unsafe {
+                CloseHandle(handle);
+            }
+            return Err(format!("ConnectNamedPipe failed: {err}"));
+        }
+        if Instant::now() >= deadline {
+            unsafe {
+                CloseHandle(handle);
+            }
+            return Err(format!("ConnectNamedPipe timed out after {timeout_ms} ms"));
+        }
+        thread::sleep(Duration::from_millis(25));
     }
     let mut out = Vec::new();
+    let read_deadline = Instant::now() + Duration::from_millis(timeout_ms);
     loop {
         let mut buf = [0u8; GENERIC_READ_BUFFER];
         let mut got = 0u32;
@@ -846,10 +949,25 @@ fn read_pipe_bytes(pipe_name: &str, timeout_ms: u64) -> Result<Vec<u8>, String> 
                 ptr::null_mut(),
             )
         };
-        if ok == 0 || got == 0 {
+        if ok != 0 {
+            if got == 0 {
+                break;
+            }
+            out.extend_from_slice(&buf[..got as usize]);
+            continue;
+        }
+        let err = last_error();
+        if err == ERROR_BROKEN_PIPE {
             break;
         }
-        out.extend_from_slice(&buf[..got as usize]);
+        if err == ERROR_NO_DATA {
+            if Instant::now() >= read_deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+            continue;
+        }
+        break;
     }
     unsafe {
         CloseHandle(handle);
@@ -2019,7 +2137,7 @@ fn decode_compact_divisions_data_payload(
     let changed_rows = read_u32_le(payload, 12) as usize;
     let status_flags = read_u32_le(payload, 16);
     let scale_raw = read_u32_le(payload, 20);
-    let bridge_rows = read_u32_le(payload, 24) as usize;
+    let root_rows = read_u32_le(payload, 24) as usize;
     let reserved = read_u32_le(payload, 28);
     summary.status_flags_or |= status_flags;
     if scale_raw != COMPACT_FIXED_SCALE_RAW {
@@ -2045,14 +2163,14 @@ fn decode_compact_divisions_data_payload(
             "offset {offset}: divisions data changed_rows {changed_rows} > row_count {row_count}"
         ));
     }
-    if row_count > bridge_rows {
+    if row_count > root_rows {
         summary.parse_errors.push(format!(
-            "offset {offset}: divisions data row_count {row_count} > bridge_rows {bridge_rows}"
+            "offset {offset}: divisions data row_count {row_count} > root_rows {root_rows}"
         ));
     }
-    if (status_flags & COMPACT_STATUS_BRIDGE_UNAVAILABLE) != 0 && bridge_rows == 0 {
+    if (status_flags & COMPACT_STATUS_BRIDGE_UNAVAILABLE) != 0 && root_rows == 0 {
         summary.parse_errors.push(format!(
-            "offset {offset}: divisions data bridge unavailable"
+            "offset {offset}: divisions data root source unavailable"
         ));
     }
     if let Some(domain) = summary.per_domain.get_mut(&20) {
@@ -2735,6 +2853,54 @@ fn compact_domain_requires_data_record(domain_id: u16) -> bool {
     )
 }
 
+fn native_division_root_prewarm_budget_ms(_cfg: &Config) -> u64 {
+    0
+}
+
+fn duration_millis_u64(duration: Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn compact_division_root_source(cfg: &Config, summary: &CompactSummary) -> &'static str {
+    if cfg.division_body_bridge.is_some() {
+        return "python_bridge";
+    }
+    if !cfg
+        .scheduled_domains
+        .iter()
+        .any(|domain| domain == "divisions")
+    {
+        return "not_scheduled";
+    }
+    let Some(domain) = summary.per_domain.get(&20) else {
+        return "unseen";
+    };
+    let blocked = (domain.status_flags_or
+        & (COMPACT_STATUS_BRIDGE_UNAVAILABLE
+            | COMPACT_STATUS_SOURCE_UNAVAILABLE
+            | COMPACT_STATUS_WORKER_PANIC))
+        != 0;
+    if !blocked && domain.data_rows_total > 0 {
+        "dll_native"
+    } else {
+        "unresolved"
+    }
+}
+
+fn compact_division_root_discovery_debt(source: &str) -> &'static str {
+    match source {
+        "dll_native" => {
+            "none; compact stream used a DLL-native anchored division root"
+        }
+        "python_bridge" => {
+            "temporary bounded preflight/cache input; not DLL-complete root discovery"
+        }
+        "not_scheduled" => "not_scheduled",
+        "unseen" => "divisions domain was scheduled but no compact division records were seen",
+        _ => "anchored division root/container did not resolve; heap scans are excluded from production capture",
+    }
+}
+
 fn compact_domain_summaries_json(summary: &CompactSummary) -> Value {
     let mut out = serde_json::Map::new();
     for (domain_id, domain) in &summary.per_domain {
@@ -3285,6 +3451,97 @@ mod tests {
     }
 
     #[test]
+    fn compact_division_root_source_marks_dll_native_success() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            20,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(1_500, 2, 2, 2, 2),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            20,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_divisions_data_payload(0),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(2_000, 1),
+        );
+
+        let cfg = test_config(vec!["divisions"], None);
+        let summary = summarize_compact_stream(&raw);
+
+        let source = compact_division_root_source(&cfg, &summary);
+        assert_eq!(source, "dll_native");
+        assert_eq!(
+            compact_division_root_discovery_debt(source),
+            "none; compact stream used a DLL-native anchored division root"
+        );
+        assert_eq!(native_division_root_prewarm_budget_ms(&cfg), 0);
+    }
+
+    #[test]
+    fn compact_division_root_source_marks_python_bridge_without_prewarm() {
+        let cfg = test_config(vec!["divisions"], Some("1:0x10000000000"));
+        let summary = CompactSummary::default();
+
+        assert_eq!(
+            compact_division_root_source(&cfg, &summary),
+            "python_bridge"
+        );
+        assert_eq!(native_division_root_prewarm_budget_ms(&cfg), 0);
+    }
+
+    #[test]
+    fn compact_division_root_source_marks_unresolved_blocked_native_rows() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            20,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(500, 2, 2, 2, 2, COMPACT_STATUS_SOURCE_UNAVAILABLE),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            20,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_divisions_data_payload(COMPACT_STATUS_SOURCE_UNAVAILABLE),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(2_000, 1),
+        );
+
+        let cfg = test_config(vec!["divisions"], None);
+        let summary = summarize_compact_stream(&raw);
+
+        let source = compact_division_root_source(&cfg, &summary);
+        assert_eq!(source, "unresolved");
+        assert_eq!(
+            compact_division_root_discovery_debt(source),
+            "anchored division root/container did not resolve; heap scans are excluded from production capture"
+        );
+    }
+
+    #[test]
     fn compact_divisions_bridge_unavailable_fails_hourly_problem_list() {
         let mut raw = Vec::new();
         append_test_compact_record(
@@ -3596,6 +3853,31 @@ mod tests {
             changed_unit_count,
             0,
         )
+    }
+
+    fn test_config(scheduled_domains: Vec<&str>, division_body_bridge: Option<&str>) -> Config {
+        Config {
+            pid: 1,
+            dll: PathBuf::from("collector.dll"),
+            out_dir: PathBuf::from("."),
+            duration_ms: 1_000,
+            sample_ms: 0,
+            dwell_ms: 0,
+            min_game_hours: 0,
+            scheduled_domains: scheduled_domains
+                .into_iter()
+                .map(|domain| domain.to_string())
+                .collect(),
+            lightweight_root_frame: true,
+            special_projects_scan: false,
+            compact_country_frame: true,
+            division_body_bridge: division_body_bridge.map(str::to_string),
+            idea_group_filter: None,
+            advisor_token_filter: None,
+            session_id: "test-session".to_string(),
+            stream_format: StreamFormat::Compact,
+            extraction_perf_gate: true,
+        }
     }
 
     fn test_domain_payload_with_status(

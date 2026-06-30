@@ -87,8 +87,11 @@ frames as the production path.
 
 ## Still Open
 
-- Move `divisions` root discovery out of temporary Python preflight into the
-  DLL/Rust host before marking that segment DLL-complete.
+- Widen `divisions` beyond the current compact movement/org/strength/combat-ref
+  row contract. Division body discovery itself is now DLL-native through the
+  anchored `CGameState+0x310 -> CCountry+0x290 -> wrapper+0x10 CDivision` path
+  and no longer needs Python preflight, saves, or heap/vtable scans for the
+  current vanilla build.
 - Add typed data records for army orders, OOB command, naval/air combat,
   air wings, ships, map buildings/resources, logistics/supply proxies, weather,
   and remaining replay-critical event layers.
@@ -123,3 +126,34 @@ frame 63.127 ms, p95 101.411 ms, max 145.158 ms, 55,244,380 raw stream bytes,
 and an independently verified `native_session.battleplan`. The `divisions` lane
 in that mixed proof still depends on a bounded one-time bridge preflight and
 remains temporary debt.
+
+`compact_divisions_dll_native_speed5_20260630` documents the negative scan
+evidence: the first no-bridge attempt exposed a DLL lifetime issue because
+scan-based discovery could outlive the host hook hold and allow `collector.dll`
+to unload while the worker thread was still executing. The collector now pins
+its own module for the worker lifetime. After restart, a no-bridge scan proof
+advanced 101 game hours with 0 skipped but emitted 0 division rows and reported
+`division_root_source = "unresolved"` / `SOURCE_UNAVAILABLE`; even a narrowed
+oracle-seeded scan window was too slow. The scan code has been removed from the
+compact division path.
+
+`compact_divisions_anchored_refresh_speed5_20260630_v1` passed the replacement
+native anchored path with root discovery refreshed every compact frame. The DLL
+resolves
+`CGameState+0x310 -> CCountry+0x290 unit wrappers -> wrapper+0x10 CDivision`,
+validates country, wrapper, and division vtables plus division type/id bounds,
+then emits compact division records without Python, saves, or a body bridge.
+The no-bridge compact gate advanced 35 game hours with 36 frame-end records, 0
+skipped, 497 typed division rows, no bridge/source/partial failures,
+`division_root_source = "dll_native"`, ordered/decodable compact stream, avg
+frame 6.286 ms, p95 17.590 ms, max 18.589 ms, division read avg 4.115 ms, p95
+8.374 ms, and an independently verified `native_session.battleplan`.
+
+`compact_country_divisions_land_combats_map_anchored_refresh_speed5_20260630_v1`
+passed the 11-domain stress gate with the same per-frame native anchored
+division root and no division bridge. It advanced 34 game hours with 35
+frame-end records, 0 skipped, full per-hour coverage, no parse/order errors, no
+worker-panic, bridge-unavailable, source-unavailable, or partial-data flags, avg
+frame 57.143 ms, p95 69.584 ms, max 81.650 ms, division read avg 7.889 ms, p95
+23.575 ms, 8,578,373 raw stream bytes, and an independently verified
+`native_session.battleplan`.

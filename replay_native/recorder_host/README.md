@@ -15,10 +15,11 @@ Current scope:
   stream -> native host manifest/recorder.
 - No Python in the live capture loop.
 - No save input.
-- Country-state, `land_combats`, and `map_control` compact gates require no
-  Python preflight bridge. `divisions` currently accepts an explicit bounded
-  bridge input for proof runs; that is temporary root-discovery debt and is not
-  considered DLL-complete until native/Rust discovery replaces it.
+- Country-state, `divisions`, `land_combats`, and `map_control` compact gates
+  require no Python preflight bridge. `divisions` is intentionally not
+  scan-backed in the compact production path; it uses the anchored
+  `CGameState+0x310 -> CCountry+0x290 -> wrapper+0x10 CDivision` path and fails
+  closed with `SOURCE_UNAVAILABLE` if that root does not validate for a build.
 - Optional DLL-side project scanning through `--special-projects-scan`; current
   live evidence shows this is not yet bounded enough for production capture.
 - Compact country-frame recording through `--compact-country-frame`; filtered
@@ -217,10 +218,46 @@ gate has these live speed-five results:
   avg frame 63.127 ms, p95 101.411 ms, max 145.158 ms, 55,244,380 raw stream
   bytes, and an independent `pack_replay verify` pass. The `divisions` lane
   still carries bridge preflight debt.
+- `compact_divisions_dll_native_speed5_20260630`: first no-bridge DLL-native
+  division-root attempt exposed a collector lifetime bug: scan-based discovery
+  could outlive the host hook hold, unload `collector.dll`, and crash HOI4 in
+  `collector.dll_unloaded`. The collector worker now pins its module for the
+  worker lifetime. Unit tests pass, but this did not solve division discovery.
+- `compact_divisions_dll_native_speed5_20260630_followup`: after restarting,
+  the cheap compact attach sanity gate passed with 14 game hours advanced in 2
+  seconds, 0 skipped, ordered/decodable stream, and no source/worker failures.
+  The no-bridge `divisions` gate still failed before emitting records: even with
+  reusable hook-triggered worker startup, bounded pipe-connect/read timeouts,
+  aligned qword scanning, private-memory filtering, and a narrowed oracle-seeded
+  division arena, scan-based native discovery did not emit within a 180 second
+  prewarm budget. The later 20 second compact no-bridge run advanced 101 game
+  hours with 0 skipped, but emitted 0 division rows and set
+  `division_root_source = "unresolved"` / `SOURCE_UNAVAILABLE`. Treat these
+  as negative evidence: division completion needs a native anchored
+  root/container, not a blind vtable heap scan.
+- `compact_divisions_anchored_refresh_speed5_20260630_v1`: passed with the
+  native anchored division path refreshed every compact frame:
+  `CGameState+0x310 -> CCountry+0x290 unit wrappers -> wrapper+0x10 CDivision`.
+  The no-bridge compact DLL/Rust gate advanced 35 game hours with 36 frame-end
+  records, 0 skipped, 497 typed division rows, no bridge/source/partial
+  failures, `division_root_source = "dll_native"`, avg frame 6.286 ms, p95
+  17.590 ms, max 18.589 ms, division read avg 4.115 ms, p95 8.374 ms, 35,032
+  raw stream bytes, and an independent `pack_replay verify` pass.
+- `compact_country_divisions_land_combats_map_anchored_refresh_speed5_20260630_v1`:
+  passed the 11-domain compact stress gate with the same per-frame native
+  anchored division root and no division bridge. It covered `fuel_live`,
+  `production_live`, `focus_live`, `tech_live`, `politics_live`,
+  `politics_residuals`, `decisions_live`, `diplomacy_live`, `divisions`,
+  `land_combats`, and `map_control`; advanced 34 game hours with 35 frame-end
+  records, 0 skipped, full per-hour coverage, 0 parse/order errors, no
+  worker-panic, bridge-unavailable, source-unavailable, or partial-data flags,
+  avg frame 57.143 ms, p95 69.584 ms, max 81.650 ms, division read avg 7.889
+  ms, p95 23.575 ms, 8,578,373 raw stream bytes, and an independent
+  `pack_replay verify` pass.
 
 The extraction-only compact performance gate is green for the current
-production-shaped country-state domains and the native-root `land_combats` and
-`map_control` lanes above. The recorder packs/verifies
+production-shaped country-state domains and the native-root `divisions`,
+`land_combats`, and `map_control` lanes above. The recorder packs/verifies
 `native_session.battleplan`, and the combined country/division/land-combat/map
 stress replay passed independent `pack_replay verify`. `production_live` is now
 DLL/Rust compact-path complete at hourly cadence for the current vanilla build,
@@ -229,8 +266,13 @@ construction queue rows. `land_combats` is DLL/Rust compact-path complete for
 active combat lifecycle snapshots and participant vectors at hourly cadence on
 the current vanilla build. `map_control` is DLL/Rust compact-path complete for
 state ownership/control and province controller/state rows at hourly cadence on
-the current vanilla build. `divisions` is not DLL-complete until its root
-discovery is moved out of Python preflight.
+the current vanilla build. `divisions` is DLL/Rust compact-path complete for the
+current compact division row contract (division id, location, movement progress,
+movement source, org, strength, combat reference count, and in-combat flag) on
+the current vanilla build. It now uses the anchored country unit-wrapper path
+and no longer needs Python preflight, saves, or heap/vtable scans for compact
+division body discovery. Wider division replay coverage still needs typed
+records for template/equipment/manpower/assignment/order details.
 
 Implementation note: see `COMPACT_HOI4REPLAY_NEXT_STEP.md` for the bounded
 Rust-native packaging path and the test contract for putting `collector_stream.bin`

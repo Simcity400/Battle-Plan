@@ -134,10 +134,14 @@ Current measured constraint:
 - Warmed re-reads from the pinned body map took about 22ms median across 20
   samples. At the observed speed-five rate, that is sub-hour and sub-minute
   granularity, but not a reason to put heap discovery in the hot path.
-- The runtime target is a `division_body_bridge` supplied before recording:
-  Python preflight does the expensive locate, the DLL revalidates each bridged
-  body in-process every sample, and raw movement deltas are emitted on the same
-  pipe stream as clock deltas.
+- The old raw/JSON runtime target used a `division_body_bridge` supplied before
+  recording: Python preflight did the expensive locate, the DLL revalidated each
+  bridged body in-process every sample, and raw movement deltas were emitted on
+  the same pipe stream as clock deltas. The production compact path must not use
+  that Python preflight or a DLL heap/vtable scan. The compact path now uses the
+  anchored native root
+  `CGameState+0x310 -> CCountry+0x290 unit wrappers -> wrapper+0x10 CDivision`
+  for the current vanilla build.
 - First live proof: on 2026-06-28, the bridge ran successfully at speed five.
   A 50 ms smoke preserved 2155 raw movement frames; a shorter 10 ms smoke
   preserved 1816 raw movement frames and 39 clock frames, wrote a verified
@@ -158,15 +162,28 @@ Current measured constraint:
   hour in 9.31 wall seconds, preserved 846 division deltas and 842
   `division_movement_started` events, with zero first-observation org/combat
   noise events.
-- Current verification state: live-verified on the restarted vanilla process
-  (pid 43412). A cold bootstrap outside the hot loop populated the
-  current-process division and army caches, then a no-cold 12-game-hour run
-  used cache hits only, advanced 12 game hours in 52.266 wall seconds, stored 13
+- Current compact verification state: the no-bridge
+  `compact_divisions_anchored_refresh_speed5_20260630_v1` proof refreshed the
+  anchored division root every compact frame and advanced 35 game hours with 36
+  frame-end records, 0 skipped, 497 typed division rows,
+  `division_root_source = "dll_native"`, no bridge/source/partial failures,
+  division read p95 8.374 ms, ordered/decodable compact stream, and an
+  independently verified `native_session.battleplan`. The 11-domain stress proof
+  `compact_country_divisions_land_combats_map_anchored_refresh_speed5_20260630_v1`
+  advanced 34 game hours with 0 skipped and division read p95 23.575 ms under
+  combined load. This proves the anchored compact division movement/org/strength/
+  combat-ref row at hourly-or-better cadence for the current vanilla build; it
+  does not yet cover every possible movement mode, template/equipment/manpower,
+  or full order semantics.
+- Earlier raw-event verification state: live-verified on the restarted vanilla
+  process (pid 43412). A cold bootstrap outside the hot loop populated the
+  current-process division and army caches, then a no-cold 12-game-hour run used
+  cache hits only, advanced 12 game hours in 52.266 wall seconds, stored 13
   verified hourly snapshots, preserved the raw stream, and emitted 6903
   `division_org_strength_delta` events plus 85
   `division_combat_ref_changed` events with no raw gap domains. This proves the
-  division org/strength stream at hourly-or-better replay cadence on the current
-  live process; it does not prove every possible movement mode yet. A stricter
+  division org/strength raw stream at hourly-or-better replay cadence on that
+  live process, but it depended on prefilled body caches. A stricter
   2026-06-29 raw military gate
   `replay/snapshots/_collector_session_raw_military_gate/20260629T194359Z_pid43412`
   advanced 12 game hours with `hourly_requirement.met = true` in 62.688 wall

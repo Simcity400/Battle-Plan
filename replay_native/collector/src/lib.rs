@@ -81,11 +81,13 @@ mod attach_log {
     static mut DLL_MODULE: Hmodule = ptr::null_mut();
 
     const MEM_COMMIT: Dword = 0x1000;
+    const MEM_PRIVATE: Dword = 0x20000;
     const PAGE_NOACCESS: Dword = 0x01;
     const PAGE_GUARD: Dword = 0x100;
     const GENERIC_WRITE: Dword = 0x40000000;
     const OPEN_EXISTING: Dword = 3;
     const FILE_ATTRIBUTE_NORMAL: Dword = 0x80;
+    const GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS: Dword = 0x00000004;
     const C_GAME_STATE_DAILY_UPDATE_OFFSET: usize = 0x1D4540;
     const CG_STATE_DATE_OFFSET: usize = 0x33048C0;
     const COUNTRY_DATABASE_OFFSET: usize = 0x33063F8;
@@ -137,6 +139,7 @@ mod attach_log {
     const STATE_OFF_OWNER: usize = 0xC8;
     const STATE_OFF_CTRL: usize = 0xCC;
     const CGAMESTATE_COUNTRY_TABLE: usize = 0x310;
+    const CGAMESTATE_COUNTRY_COUNT: usize = 0x31C;
     const CGAMESTATE_CPROVINCE_ARRAY: usize = 0x2B0;
     const CGAMESTATE_CPROVINCE_COUNT: usize = 0x2BC;
     const CPROVINCE_VTABLE_RVA: usize = 0x294AE78;
@@ -324,6 +327,8 @@ mod attach_log {
     const MIN_USABLE_PROVINCE_ROWS: usize = 10_000;
     const DIVISION_TYPE: u32 = 4713;
     const DIVISION_VTABLE_RVA: usize = 0x2933F00;
+    const DIVISION_WRAPPER_VTABLE_RVA: usize = 0x2933D20;
+    const DIVISION_WRAPPER_TO_BODY: usize = 0x10;
     const DIVISION_MOVE_ORDER_VTABLE_RVA: usize = 0x294AE78;
     const DIVISION_OFF_ID_TYPE: usize = 0x08;
     const DIVISION_OFF_ID_ID: usize = 0x0C;
@@ -337,6 +342,11 @@ mod attach_log {
     const MAX_DIVISION_BODY_BRIDGE_ROWS: usize = 20_000;
     const MAX_DIVISION_BODY_BRIDGE_PAYLOAD_BYTES: usize = 2 * 1024 * 1024;
     const MAX_DIVISION_BODY_BRIDGE_DIV_ID: u32 = i32::MAX as u32;
+    const MAX_CGAMESTATE_COUNTRIES: u32 = 2_048;
+    const COUNTRY_DIVISION_WRAPPER_DATA: usize = 0x290;
+    const COUNTRY_DIVISION_WRAPPER_CAPACITY: usize = 0x298;
+    const COUNTRY_DIVISION_WRAPPER_COUNT: usize = 0x29C;
+    const MAX_COUNTRY_DIVISION_WRAPPER_ROWS: u32 = MAX_DIVISION_BODY_BRIDGE_ROWS as u32;
     const MAX_DIVISION_PROVINCE_ID: u32 = 1_000_000;
     const MAX_DIVISION_COMBAT_REF_COUNT: u32 = 1_000;
     const MAX_DIVISION_ORGANISATION_RAW: u32 = 100_000_000;
@@ -568,6 +578,7 @@ mod attach_log {
         0x57,
     ];
     static FRAME_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+    static ATTACH_WORKER_RUNNING: AtomicU64 = AtomicU64::new(0);
     static IDEA_TOKEN_CACHE: OnceLock<Mutex<BTreeMap<usize, (MsvcStringFingerprint, String)>>> =
         OnceLock::new();
     static TECH_BASE_COST_CACHE: OnceLock<Mutex<BTreeMap<(usize, u32), i64>>> = OnceLock::new();
@@ -602,6 +613,14 @@ mod attach_log {
         type_: Dword,
     }
 
+    struct MemoryRegion {
+        start: usize,
+        size: usize,
+        state: Dword,
+        protect: Dword,
+        type_: Dword,
+    }
+
     #[link(name = "kernel32")]
     extern "system" {
         fn CloseHandle(handle: Handle) -> Bool;
@@ -623,8 +642,10 @@ mod attach_log {
             thread_id: *mut Dword,
         ) -> Handle;
         fn DisableThreadLibraryCalls(module: Hmodule) -> Bool;
+        fn FreeLibraryAndExitThread(module: Hmodule, exit_code: Dword) -> !;
         fn GetCurrentProcessId() -> Dword;
         fn GetModuleFileNameW(module: Hmodule, filename: *mut u16, size: Dword) -> Dword;
+        fn GetModuleHandleExW(flags: Dword, module_name: *const u16, module: *mut Hmodule) -> Bool;
         fn GetModuleHandleW(module_name: *const u16) -> Hmodule;
         fn GetTickCount64() -> u64;
         fn VirtualQuery(
@@ -646,24 +667,60 @@ mod attach_log {
             unsafe {
                 DLL_MODULE = module;
                 DisableThreadLibraryCalls(module);
-                let handle = CreateThread(
-                    ptr::null_mut(),
-                    0,
-                    Some(attach_worker),
-                    ptr::null_mut(),
-                    0,
-                    ptr::null_mut(),
-                );
-                if !handle.is_null() {
-                    CloseHandle(handle);
-                }
+                spawn_attach_worker();
             }
         }
         1
     }
 
+    pub fn trigger_attach_worker_from_hook() {
+        unsafe {
+            spawn_attach_worker();
+        }
+    }
+
+    unsafe fn spawn_attach_worker() {
+        if ATTACH_WORKER_RUNNING
+            .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+        let handle = unsafe {
+            CreateThread(
+                ptr::null_mut(),
+                0,
+                Some(attach_worker),
+                ptr::null_mut(),
+                0,
+                ptr::null_mut(),
+            )
+        };
+        if handle.is_null() {
+            ATTACH_WORKER_RUNNING.store(0, Ordering::SeqCst);
+        } else {
+            unsafe {
+                CloseHandle(handle);
+            }
+        }
+    }
+
     unsafe extern "system" fn attach_worker(_param: Lpvoid) -> Dword {
+        let mut module = ptr::null_mut();
+        let module_pinned = unsafe {
+            GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                attach_worker as *const () as *const u16,
+                &mut module,
+            ) != 0
+        };
         write_attach_heartbeat();
+        ATTACH_WORKER_RUNNING.store(0, Ordering::SeqCst);
+        if module_pinned {
+            unsafe {
+                FreeLibraryAndExitThread(module, 0);
+            }
+        }
         0
     }
 
@@ -700,6 +757,12 @@ mod attach_log {
                 .and_then(|control| control.pipe_token.as_deref()),
         );
         if let Some(control) = control {
+            let mut compact_perf_gate_trackers = CompactPerfGateTrackers::default();
+            prewarm_compact_division_roots(
+                state.as_ref(),
+                &control,
+                &mut compact_perf_gate_trackers.division_roots,
+            );
             let worker_started = Instant::now();
             let deadline = worker_started + Duration::from_millis(control.duration_ms as u64);
             let mut session_sequence = 1u64;
@@ -719,7 +782,6 @@ mod attach_log {
             let mut oob_command_tracker = OobCommandTracker::default();
             let mut last_oob_command_sample_elapsed_ms: Option<u64> = None;
             let mut compact_country_tracker = CompactCountryFrameTracker::default();
-            let mut compact_perf_gate_trackers = CompactPerfGateTrackers::default();
             while Instant::now() <= deadline {
                 let elapsed_wall_ms = duration_millis_u64(worker_started.elapsed());
                 let clock_sample = clock_sample_from_state(state.as_ref());
@@ -2661,7 +2723,6 @@ mod attach_log {
     const COMPACT_STATUS_WAR_BRIDGE_APPLIED: u32 = 1 << 4;
     const COMPACT_STATUS_EXTRACTION_PERF_GATE: u32 = 1 << 5;
     const COMPACT_STATUS_WORKER_PANIC: u32 = 1 << 6;
-    const COMPACT_STATUS_BRIDGE_UNAVAILABLE: u32 = 1 << 7;
     const COMPACT_STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
     const COMPACT_STATUS_PARTIAL_DATA: u32 = 1 << 9;
     const COMPACT_POLITICS_SHARD_MIN_ROWS: usize = 96;
@@ -2742,8 +2803,14 @@ mod attach_log {
         diplomacy: CompactCountryFrameTracker,
         combined: CompactCountryFrameTracker,
         division_movement: BTreeMap<u32, DivisionMovementSample>,
+        division_roots: CompactDivisionRootCache,
         land_combat: LandCombatTracker,
         map_control: CompactMapControlTracker,
+    }
+
+    #[derive(Default)]
+    struct CompactDivisionRootCache {
+        rows: Vec<DivisionBodyBridgeEntry>,
     }
 
     struct CompactBundleRead {
@@ -2766,7 +2833,7 @@ mod attach_log {
         read_time_us: u64,
         changed_rows: u32,
         status_flags: u32,
-        bridge_rows: u32,
+        root_rows: u32,
     }
 
     struct CompactLandCombatRead {
@@ -8742,6 +8809,7 @@ mod attach_log {
             combined: &mut trackers.combined,
         };
         let division_tracker = &mut trackers.division_movement;
+        let division_roots = &mut trackers.division_roots;
         let land_combat_tracker = &mut trackers.land_combat;
         let map_control_tracker = &mut trackers.map_control;
         thread::scope(|scope| {
@@ -8760,7 +8828,13 @@ mod attach_log {
             };
             let division_handle = if divisions_enabled {
                 Some(scope.spawn(move || {
-                    read_compact_divisions(state, control, status_flags, division_tracker)
+                    read_compact_divisions(
+                        state,
+                        control,
+                        status_flags,
+                        division_tracker,
+                        division_roots,
+                    )
                 }))
             } else {
                 None
@@ -8917,7 +8991,7 @@ mod attach_log {
                     read_time_us: read.read_time_us,
                     row_count: read.rows.len().min(u32::MAX as usize) as u32,
                     changed_rows: read.changed_rows,
-                    unit_count: read.bridge_rows,
+                    unit_count: read.root_rows,
                     changed_unit_count: read.changed_rows,
                     status_flags: read.status_flags,
                 },
@@ -8932,7 +9006,7 @@ mod attach_log {
                 elapsed_wall_ms,
                 read.status_flags,
                 read.changed_rows,
-                read.bridge_rows,
+                read.root_rows,
             );
             sequence = sequence.saturating_add(1);
             emitted_domains = emitted_domains.saturating_add(1);
@@ -9427,7 +9501,7 @@ mod attach_log {
             read_time_us: 0,
             changed_rows: 0,
             status_flags: status_flags | COMPACT_STATUS_WORKER_PANIC,
-            bridge_rows: control.division_body_bridge.len().min(u32::MAX as usize) as u32,
+            root_rows: control.division_body_bridge.len().min(u32::MAX as usize) as u32,
         }
     }
 
@@ -9454,30 +9528,203 @@ mod attach_log {
         }
     }
 
+    fn prewarm_compact_division_roots(
+        state: Option<&CollectorState>,
+        control: &CollectorControl,
+        root_cache: &mut CompactDivisionRootCache,
+    ) {
+        if control.stream_format != CollectorStreamFormat::Compact
+            || !compact_explicit_domain_enabled(control, RAW_DIVISIONS_DOMAIN)
+        {
+            return;
+        }
+        let bridge_valid = control.division_body_bridge_valid
+            && division_body_bridge_well_formed(&control.division_body_bridge)
+            && !control.division_body_bridge.is_empty();
+        if bridge_valid {
+            return;
+        }
+        *root_cache = discover_compact_division_roots(state);
+    }
+
+    fn discover_compact_division_roots(state: Option<&CollectorState>) -> CompactDivisionRootCache {
+        let mut cache = CompactDivisionRootCache { rows: Vec::new() };
+        if let Some(rows) = state.and_then(discover_compact_division_roots_from_countries) {
+            cache.rows = rows;
+        }
+        cache
+    }
+
+    fn discover_compact_division_roots_from_countries(
+        state: &CollectorState,
+    ) -> Option<Vec<DivisionBodyBridgeEntry>> {
+        if state.base == 0 || !state.daily_match || !state.long_string_match {
+            return None;
+        }
+        let module_base = state.base;
+        let game_state = state.date_ptr as usize;
+        if !is_heap_pointer_aligned(game_state, 8) {
+            return None;
+        }
+        let country_table = read_u64(game_state.checked_add(CGAMESTATE_COUNTRY_TABLE)?)? as usize;
+        let country_count = read_u32(game_state.checked_add(CGAMESTATE_COUNTRY_COUNT)?)?;
+        if country_count == 0 || country_count > MAX_CGAMESTATE_COUNTRIES {
+            return None;
+        }
+        if !is_heap_pointer_aligned(country_table, 8) {
+            return None;
+        }
+        let table_len = (country_count as usize).checked_mul(8)?;
+        let country_ptrs = read_bytes(country_table, table_len)?;
+        let country_vtable = module_base.checked_add(COUNTRY_VTABLE_RVA)?;
+        let wrapper_vtable = module_base.checked_add(DIVISION_WRAPPER_VTABLE_RVA)?;
+        let division_vtable = module_base.checked_add(DIVISION_VTABLE_RVA)?;
+        let mut rows_by_id: BTreeMap<u32, DivisionBodyBridgeEntry> = BTreeMap::new();
+
+        for index in 0..country_count as usize {
+            if rows_by_id.len() >= MAX_DIVISION_BODY_BRIDGE_ROWS {
+                break;
+            }
+            let Some(country_ptr) = read_u64_from_slice(&country_ptrs, index * 8) else {
+                continue;
+            };
+            let country_ptr = country_ptr as usize;
+            if !is_heap_pointer_aligned(country_ptr, 8) {
+                continue;
+            }
+            if read_u64(country_ptr).map(|value| value as usize) != Some(country_vtable) {
+                continue;
+            }
+            collect_compact_division_country_roots(
+                country_ptr,
+                wrapper_vtable,
+                division_vtable,
+                &mut rows_by_id,
+            );
+        }
+
+        if rows_by_id.is_empty() {
+            None
+        } else {
+            Some(rows_by_id.into_values().collect())
+        }
+    }
+
+    fn collect_compact_division_country_roots(
+        country_ptr: usize,
+        wrapper_vtable: usize,
+        division_vtable: usize,
+        rows_by_id: &mut BTreeMap<u32, DivisionBodyBridgeEntry>,
+    ) {
+        let Some(vector_data) = read_u64(country_ptr.saturating_add(COUNTRY_DIVISION_WRAPPER_DATA))
+        else {
+            return;
+        };
+        let Some(capacity) =
+            read_u32(country_ptr.saturating_add(COUNTRY_DIVISION_WRAPPER_CAPACITY))
+        else {
+            return;
+        };
+        let Some(count) = read_u32(country_ptr.saturating_add(COUNTRY_DIVISION_WRAPPER_COUNT))
+        else {
+            return;
+        };
+        if count == 0 {
+            return;
+        }
+        if count > capacity || count > MAX_COUNTRY_DIVISION_WRAPPER_ROWS {
+            return;
+        }
+        let vector_data = vector_data as usize;
+        if !is_heap_pointer_aligned(vector_data, 8) {
+            return;
+        }
+        let Some(byte_len) = (count as usize).checked_mul(8) else {
+            return;
+        };
+        let Some(wrapper_ptrs) = read_bytes(vector_data, byte_len) else {
+            return;
+        };
+        for index in 0..count as usize {
+            if rows_by_id.len() >= MAX_DIVISION_BODY_BRIDGE_ROWS {
+                break;
+            }
+            let Some(wrapper_ptr) = read_u64_from_slice(&wrapper_ptrs, index * 8) else {
+                continue;
+            };
+            let wrapper_ptr = wrapper_ptr as usize;
+            if !is_heap_pointer_aligned(wrapper_ptr, 8) {
+                continue;
+            }
+            if read_u64(wrapper_ptr).map(|value| value as usize) != Some(wrapper_vtable) {
+                continue;
+            }
+            let Some(body_ptr) = wrapper_ptr.checked_add(DIVISION_WRAPPER_TO_BODY) else {
+                continue;
+            };
+            let Some(div_id) = validate_compact_division_body_root(body_ptr, division_vtable)
+            else {
+                continue;
+            };
+            rows_by_id
+                .entry(div_id)
+                .or_insert(DivisionBodyBridgeEntry { div_id, body_ptr });
+        }
+    }
+
+    fn validate_compact_division_body_root(body_ptr: usize, division_vtable: usize) -> Option<u32> {
+        if !is_heap_pointer_aligned(body_ptr, 8) {
+            return None;
+        }
+        if read_u64(body_ptr)? as usize != division_vtable {
+            return None;
+        }
+        if read_u32(body_ptr.checked_add(DIVISION_OFF_ID_TYPE)?)? != DIVISION_TYPE {
+            return None;
+        }
+        let div_id = read_u32(body_ptr.checked_add(DIVISION_OFF_ID_ID)?)?;
+        if div_id == 0 || div_id > MAX_DIVISION_BODY_BRIDGE_DIV_ID {
+            return None;
+        }
+        Some(div_id)
+    }
+
     fn read_compact_divisions(
         state: &CollectorState,
         control: &CollectorControl,
         status_flags: u32,
         tracker: &mut BTreeMap<u32, DivisionMovementSample>,
+        root_cache: &mut CompactDivisionRootCache,
     ) -> CompactDivisionRead {
         let read_started = Instant::now();
         let mut status_flags = status_flags;
-        let bridge_valid = control.division_body_bridge_valid
-            && division_body_bridge_well_formed(&control.division_body_bridge);
-        if !bridge_valid || control.division_body_bridge.is_empty() {
-            status_flags |= COMPACT_STATUS_BRIDGE_UNAVAILABLE;
+        let bridge_available = control.division_body_bridge_valid
+            && division_body_bridge_well_formed(&control.division_body_bridge)
+            && !control.division_body_bridge.is_empty();
+        let roots = if bridge_available {
+            &control.division_body_bridge
+        } else {
+            // Refresh the anchored country-wrapper walk every compact frame so
+            // newly deployed or removed divisions are reflected without a
+            // Python bridge. The bounded walk is included in the live
+            // speed-five compact proof timings.
+            *root_cache = discover_compact_division_roots(Some(state));
+            &root_cache.rows
+        };
+        if roots.is_empty() {
+            status_flags |= COMPACT_STATUS_SOURCE_UNAVAILABLE;
             return CompactDivisionRead {
                 rows: Vec::new(),
                 read_time_us: duration_micros_u64(read_started.elapsed()),
                 changed_rows: 0,
                 status_flags,
-                bridge_rows: control.division_body_bridge.len().min(u32::MAX as usize) as u32,
+                root_rows: roots.len().min(u32::MAX as usize) as u32,
             };
         }
 
         let mut rows = Vec::new();
         let mut changed_rows = 0u32;
-        for entry in &control.division_body_bridge {
+        for entry in roots {
             let Some(sample) = sample_division_movement(state.base, entry) else {
                 continue;
             };
@@ -9491,13 +9738,18 @@ mod attach_log {
             tracker.insert(sample.div_id, sample.clone());
             rows.push(sample);
         }
+        if rows.is_empty() {
+            status_flags |= COMPACT_STATUS_SOURCE_UNAVAILABLE;
+        } else if rows.len() < roots.len() {
+            status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+        }
 
         CompactDivisionRead {
             rows,
             read_time_us: duration_micros_u64(read_started.elapsed()),
             changed_rows,
             status_flags,
-            bridge_rows: control.division_body_bridge.len().min(u32::MAX as usize) as u32,
+            root_rows: roots.len().min(u32::MAX as usize) as u32,
         }
     }
 
@@ -10319,14 +10571,14 @@ mod attach_log {
         elapsed_wall_ms: u64,
         status_flags: u32,
         changed_rows: u32,
-        bridge_rows: u32,
+        root_rows: u32,
     ) {
         let payload = compact_divisions_data_payload(
             rows,
             elapsed_wall_ms,
             status_flags,
             changed_rows,
-            bridge_rows,
+            root_rows,
         );
         append_compact_record(
             out,
@@ -11096,7 +11348,7 @@ mod attach_log {
         elapsed_wall_ms: u64,
         status_flags: u32,
         changed_rows: u32,
-        bridge_rows: u32,
+        root_rows: u32,
     ) -> Vec<u8> {
         let mut payload = Vec::with_capacity(32usize.saturating_add(rows.len().saturating_mul(56)));
         payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
@@ -11104,7 +11356,7 @@ mod attach_log {
         payload.extend_from_slice(&changed_rows.to_le_bytes());
         payload.extend_from_slice(&status_flags.to_le_bytes());
         payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
-        payload.extend_from_slice(&bridge_rows.to_le_bytes());
+        payload.extend_from_slice(&root_rows.to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
         for sample in rows {
             let mut flags = 0u32;
@@ -18302,24 +18554,32 @@ mod attach_log {
         const CHUNK: usize = 16 << 20;
         const OVERLAP: usize = 16;
         while addr < hi {
-            let Some((region_start, region_size)) = readable_region(addr) else {
+            let Some(region) = query_region(addr) else {
                 addr = addr.saturating_add(0x1000);
                 continue;
             };
-            let region_end = region_start.saturating_add(region_size).min(hi);
-            let mut pos = region_start.max(addr);
+            let region_end_unclamped = region.start.saturating_add(region.size);
+            if region.state != MEM_COMMIT
+                || region.type_ != MEM_PRIVATE
+                || (region.protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0
+            {
+                addr = region_end_unclamped.saturating_add(0x1000);
+                continue;
+            }
+            let region_end = region_end_unclamped.min(hi);
+            let mut pos = region.start.max(addr);
             while pos < region_end {
                 let want = CHUNK.min(region_end - pos);
                 let Some(blob) = read_bytes(pos, want) else {
                     pos = pos.saturating_add(want.max(0x1000));
                     continue;
                 };
-                let mut i = 0usize;
+                let mut i = (8usize.wrapping_sub(pos % 8)) % 8;
                 while i + 8 <= blob.len() {
-                    if blob[i..i + 8] == needle_bytes[..] && (pos + i) % 8 == 0 {
+                    if blob[i..i + 8] == needle_bytes[..] {
                         hits.push(pos + i);
                     }
-                    i += 1;
+                    i += 8;
                 }
                 if pos + blob.len() >= region_end || blob.len() < want {
                     pos = pos.saturating_add(blob.len().max(0x1000));
@@ -18333,6 +18593,17 @@ mod attach_log {
     }
 
     fn readable_region(addr: usize) -> Option<(usize, usize)> {
+        let region = query_region(addr)?;
+        if region.state != MEM_COMMIT {
+            return None;
+        }
+        if (region.protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0 {
+            return None;
+        }
+        Some((region.start, region.size))
+    }
+
+    fn query_region(addr: usize) -> Option<MemoryRegion> {
         let mut mbi = MemoryBasicInformation {
             base_address: ptr::null_mut(),
             allocation_base: ptr::null_mut(),
@@ -18350,13 +18621,16 @@ mod attach_log {
                 core::mem::size_of::<MemoryBasicInformation>(),
             )
         };
-        if ok == 0 || mbi.state != MEM_COMMIT {
+        if ok == 0 {
             return None;
         }
-        if (mbi.protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0 {
-            return None;
-        }
-        Some((mbi.base_address as usize, mbi.region_size))
+        Some(MemoryRegion {
+            start: mbi.base_address as usize,
+            size: mbi.region_size,
+            state: mbi.state,
+            protect: mbi.protect,
+            type_: mbi.type_,
+        })
     }
 
     fn is_readable_range(addr: usize, len: usize) -> bool {
@@ -18785,6 +19059,13 @@ mod attach_log {
                 u32::from_le_bytes(payload[120..124].try_into().unwrap()),
                 10_000_000
             );
+        }
+
+        #[test]
+        fn compact_division_root_discovery_does_not_heap_scan() {
+            let cache = discover_compact_division_roots(None);
+
+            assert!(cache.rows.is_empty());
         }
 
         #[test]
@@ -23201,6 +23482,7 @@ pub unsafe extern "system" fn Hoi4ReplayGetMsgProc(
     wparam: usize,
     lparam: isize,
 ) -> isize {
+    attach_log::trigger_attach_worker_from_hook();
     unsafe { hook_proc::get_msg_proc(code, wparam, lparam) }
 }
 

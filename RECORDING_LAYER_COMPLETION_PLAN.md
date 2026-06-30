@@ -288,10 +288,15 @@ Current recorder-facing bridge status:
   re-reads from the pinned body map took about 22ms median across 20 samples.
   That is viable for sub-hour movement deltas at speed five, but only if the
   cold locate stays out of the hot loop.
-- The next implementation pattern is therefore: Python preflight locates and
-  validates CDivision body roots once, passes a sanitized `division_body_bridge`
-  to the DLL control file, and the DLL performs bounded in-process revalidation
-  plus movement delta emission on the same raw pipe stream as clock frames.
+- The old raw proof pattern was: Python preflight locates and validates
+  CDivision body roots once, passes a sanitized `division_body_bridge` to the
+  DLL control file, and the DLL performs bounded in-process revalidation plus
+  movement delta emission on the same raw pipe stream as clock frames. That
+  proves the field reads and cadence after body addresses are known; it does
+  not satisfy production discovery. The compact DLL path now uses an anchored
+  native country unit-wrapper root for the current vanilla build, and DLL-side
+  heap/vtable scanning is negative evidence only, not a production discovery
+  path.
 - That pattern now has a live speed-five smoke proof. A 50 ms run bridged 1965
   division bodies, preserved 2155 raw division movement frames plus 31 clock
   frames, verified the replay, and leaked no body addresses into manifests. A
@@ -1384,16 +1389,34 @@ Acceptance:
 - Unit counters can scrub positions and strength/org at replay cadence.
 - Movement/order deltas are captured faster than hourly when possible.
 
-Current status: the DLL already consumes a `division_body_bridge` and emits raw
-`divisions` domain deltas from cached body pointers. The Python preflight is now
-cache-first and process-identity-scoped. Normal recording validates cached body
-pins through the warm `read_divisions_from_bodies()` path before emitting a
-bridge; cold body discovery is disabled unless `--allow-division-cold-scan` is
-explicitly set. Earlier no-cold proof on the restarted vanilla process resolved
-1898 division bodies and 417 still-live army bodies from cache, advanced 12 game
-hours in 52.266 wall seconds, stored 13 verified hourly snapshots, and emitted
-raw `clock`, `divisions`, `army_orders`, and `land_combats` streams with no raw
-gaps. A stricter raw military proof
+Current status: the production compact path now resolves division body roots
+inside the DLL without Python, saves, a body bridge, or heap/vtable scanning.
+The current vanilla build path is
+`CGameState+0x310 -> CCountry+0x290 unit wrappers -> wrapper+0x10 CDivision`.
+The collector refreshes that bounded root every compact frame, validates
+country, wrapper, and division vtables plus division type/id bounds, then
+samples the existing compact movement/org/strength/combat-ref row contract from
+the anchored `CDivision` bodies. The no-bridge proof
+`compact_divisions_anchored_refresh_speed5_20260630_v1` advanced 35 game hours
+with 36 frame-end records, 0 skipped, 497 typed division rows, no
+bridge/source/partial failures, `division_root_source = "dll_native"`,
+ordered/decodable compact stream, avg frame 6.286 ms, p95 17.590 ms, division
+read p95 8.374 ms, and an independently verified `native_session.battleplan`.
+The wider `compact_country_divisions_land_combats_map_anchored_refresh_speed5_20260630_v1`
+stress gate covered 11 domains with the same anchored division path, advanced
+34 game hours with 0 skipped, kept full per-hour coverage, and verified the
+replay container; division read p95 was 23.575 ms under that combined load. This
+promotes compact division body discovery and the current movement/org/strength/
+combat-ref compact rows to DLL/Rust-complete for the current vanilla build.
+Template/equipment/manpower/assignment/order details still need separate typed
+records before the division replay is complete in the broader gameplay sense.
+
+Earlier no-cold proof on the restarted vanilla process resolved 1898 division
+bodies and 417 still-live army bodies from cache, advanced 12 game hours in
+52.266 wall seconds, stored 13 verified hourly snapshots, and emitted raw
+`clock`, `divisions`, `army_orders`, and `land_combats` streams with no raw
+gaps. A
+stricter raw military proof
 `replay/snapshots/_collector_session_raw_military_gate/20260629T194359Z_pid43412`
 advanced 12 game hours with `hourly_requirement.met = true` in 62.688 wall
 seconds, verified replay output, and emitted zero raw gap domains while proving
@@ -1404,6 +1427,12 @@ emitted 12002 raw division deltas, 6189 `division_org_strength_delta`, 2109
 allowed only to refresh caches outside the hot loop: division discovery took
 26.531s, army discovery took 27.516s, and OOB command discovery took 135.703s,
 so this is a capture-cadence proof, not an acceptable normal startup path.
+The first no-bridge compact division-root proof attempt on 2026-06-30 exposed a
+collector lifetime bug and then proved blind heap/vtable scanning is the wrong
+production strategy: after restart, the scan-backed run advanced 101 game hours
+with 0 skipped but emitted 0 division rows and reported source unavailable.
+That scan code has been removed from the compact path; it remains negative
+evidence only.
 The DLL now also accepts an `army_body_bridge` populated by
 `--preflight-army-orders` and emits raw `army_orders` deltas/events from
 revalidated army bodies at a 250 ms sampling floor. The first slice captures
