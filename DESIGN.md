@@ -188,8 +188,13 @@ Implemented in the current bridge:
   fixed-point `i64` fuel values and explicit `32768` scale metadata, and the
   Rust host packs the raw compact stream plus recorder manifest into
   `native_session.battleplan` under manifest-covered roles
-  `collector_compact_stream` and `recorder_manifest`. Unit/build proof is
-  green; this new data/container path still needs a fresh live speed-five proof;
+  `collector_compact_stream` and `recorder_manifest`. Live speed-five proof
+  `compact_fuel_replay_container_speed5_v1` advanced 291 game hours in 30
+  seconds, emitted 292 frame-end records, skipped 0 game hours, verified all 8
+  scheduled country domains on every frame hour, emitted 292 fuel data records
+  for 292 fuel frames with 11,611 typed fuel rows, saw no worker panic, measured
+  avg frame 44.869 ms / p95 57.064 ms / max 116.131 ms / 667,672 raw stream
+  bytes, and independently verified the 86,012-byte `.battleplan` container;
 - DLL-native scheduled `decisions_live` through
   `CCountry+0xFA0 -> CDecisionStatus`: the collector validates the status
   vtable and owner back-pointer, emits non-empty status-vector counts, and

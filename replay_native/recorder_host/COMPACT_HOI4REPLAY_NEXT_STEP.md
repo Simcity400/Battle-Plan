@@ -83,10 +83,16 @@ frames as the production path.
 
 ## Still Open
 
-- Run a fresh live speed-five proof with the current fuel data record and
-  `.battleplan` packing path. Unit tests and release build are green; the live
-  proof is blocked when no the game process is running.
 - Add typed data records for production, focus, tech, politics, decisions,
   diplomacy, combat, movement, and orders.
 - Fold typed records into the future hourly snapshot spine once the raw compact
   stream is fully covered.
+
+## Live Proof
+
+`compact_fuel_replay_container_speed5_v1` passed the DLL/Rust compact path at
+speed five: 291 game hours advanced in 30 seconds, 292 frame-end records, 0
+skipped hours, full per-hour coverage for all 8 scheduled country domains, 292
+fuel data records for 292 fuel frames, 11,611 typed fuel rows, no worker panic,
+avg frame 44.869 ms, p95 57.064 ms, max 116.131 ms, 667,672 raw stream bytes,
+and an independently verified 86,012-byte `native_session.battleplan`.

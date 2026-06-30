@@ -133,14 +133,18 @@ gate has these live speed-five results:
 - `compact_all_country_parallel_coverage_speed5_v2`: passed, 332 game hours
   advanced, 333 frame-end records, 0 skipped, full per-hour domain coverage, no
   worker panic, avg frame 38.151 ms, p95 48.743 ms, 213,120 bytes.
+- `compact_fuel_replay_container_speed5_v1`: passed, 291 game hours advanced
+  in 30 seconds, 292 frame-end records, 0 skipped, full per-hour domain
+  coverage, no worker panic, 292 fuel data records for 292 fuel frames, 11,611
+  typed fuel rows, avg frame 44.869 ms, p95 57.064 ms, max 116.131 ms, 667,672
+  raw stream bytes, and a verified 86,012-byte `native_session.battleplan`.
 
 The extraction-only compact performance gate is now green for the current
 country domains. The first replay-payload step is implemented: `fuel_live` now
 emits a typed binary data record with raw fixed-point `i64` fuel values and
 explicit `32768` scale metadata, and the recorder packs/verifies
-`native_session.battleplan`. Unit tests and release build pass for this path.
-It still needs a fresh live speed-five proof because the current HOI4 process
-was not running during this checkpoint.
+`native_session.battleplan`. Unit tests, release build, live speed-five gate,
+and independent `pack_replay verify` pass for this path.
 
 Implementation note: see `COMPACT_HOI4REPLAY_NEXT_STEP.md` for the bounded
 Rust-native packaging path and the test contract for putting `collector_stream.bin`

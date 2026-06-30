@@ -121,14 +121,20 @@ country-state domains. Current compact binary proofs:
   country domains together, 30 seconds, 332 game hours advanced, 333 frame-end
   records, 0 skipped, full per-hour domain coverage, no worker panic, avg frame
   38.151 ms, p95 48.743 ms, max 156.203 ms, 213,120 bytes.
+- `compact_fuel_replay_container_speed5_v1`: all current compact country
+  domains plus typed `fuel_live` replay data records and Rust-native
+  `.battleplan` packing, 30 seconds, 291 game hours advanced, 292 frame-end
+  records, 0 skipped, full per-hour domain coverage, no worker panic, 292 fuel
+  data records for 292 fuel frames, 11,611 typed fuel rows, avg frame
+  44.869 ms, p95 57.064 ms, max 116.131 ms, 667,672 raw stream bytes, and a
+  verified 86,012-byte `native_session.battleplan`.
 
 This completes the extraction-only compact performance gate for the current
 country domains and starts replay payload capture with typed fuel records plus
-Rust-native `.battleplan` packing. Unit/build proof is green for this checkpoint;
-the new fuel-data/container path still needs a fresh live speed-five run before
-the `fuel_live` replay-payload segment can be called production-complete. The
-next step is to widen typed data records to production, focus, tech, politics,
-decisions, diplomacy, combat, movement, and orders.
+Rust-native `.battleplan` packing. The `fuel_live` replay-payload segment is
+now live-proven through the DLL/Rust compact path at speed five with zero
+skipped game hours. The next step is to widen typed data records to production,
+focus, tech, politics, decisions, diplomacy, combat, movement, and orders.
 
 Country-object heap discovery is not part of normal capture. The experimental
 whole-heap vtable scan is behind the explicit `country_object_scan` control flag,
