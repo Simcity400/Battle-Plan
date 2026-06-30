@@ -1398,7 +1398,9 @@ country, wrapper, and division vtables plus division type/id bounds, then
 samples the widened compact row contract from the anchored `CDivision` bodies:
 division id, location/source/target/progress, organisation/strength buckets,
 combat-ref/in-combat state, owner tag-db id, parent army id, raw experience,
-max/current supply, supply gain, and fuel. The current no-bridge proof
+max/current supply, supply gain, and fuel. Division compact data now uses a full
+baseline followed by delta rows, with explicit zero-filled delete/tombstone rows
+when a previously observed division id disappears. The current no-bridge proof
 `compact_divisions_anchored_telemetry_validroot_speed5_20260630_v1` advanced
 665 game hours with 666 frame-end records, 0 skipped, 91,642 typed division
 rows, no bridge/source/partial failures, `division_root_source = "dll_native"`,
@@ -1437,6 +1439,23 @@ ms. The largest remaining p95 lanes in that run were widened `divisions` at
 current implemented 11-domain compact bundle to speed-five complete for the
 active vanilla process, while longer soaks and the missing replay-critical
 domains remain open.
+
+Follow-up combined status:
+`compact_country_divisions_land_combats_map_divdelta_parallel_speed5_20260630_v1`
+kept the same 11-domain compact set and added division baseline-plus-delta
+records, explicit division delete/tombstone rows, and bounded internal division
+sampling workers. The run advanced 345 game hours with 346 frame-end records, 0
+skipped, full per-domain coverage, no parse/order errors, no worker-panic,
+bridge-unavailable, source-unavailable, or partial-data flags, avg frame 34.743
+ms, p95 52.766 ms, max 66.712 ms, 62,786,985 raw stream bytes, and an
+independently verified `.battleplan`. `divisions` observed 772,920 full rows
+and emitted 585,450 changed/tombstone rows; division read p95 was 37.112 ms.
+This preserves the current speed-five completion status for the implemented
+11-domain compact bundle while reducing division stream volume semantics from
+"repeat full roster" toward replay-friendly deltas. The remaining division
+gaps are still template, equipment, manpower, exact order geometry, assignment,
+split/merge/deploy/destroy identity rules, and higher-frequency semantic event
+records.
 
 Earlier no-cold proof on the restarted vanilla process resolved 1898 division
 bodies and 417 still-live army bodies from cache, advanced 12 game hours in

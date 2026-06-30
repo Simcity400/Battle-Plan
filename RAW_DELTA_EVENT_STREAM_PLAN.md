@@ -190,6 +190,16 @@ Current measured constraint:
   12.583 ms. This is the current completed combined compact speed-five proof for
   the implemented domains, not for still-missing replay layers such as full
   order geometry, template/equipment/manpower, weather, and naval/air coverage.
+- Follow-up compact division delta state:
+  `compact_country_divisions_land_combats_map_divdelta_parallel_speed5_20260630_v1`
+  kept the same 11-domain compact set and moved `divisions` to a full baseline
+  followed by compact delta data records. Disappeared division ids now emit
+  explicit zero-filled delete/tombstone rows, and large root sets are sampled by
+  bounded internal DLL workers before deterministic ordered emission. The proof
+  advanced 345 game hours with 346 frame-end records, 0 skipped, full
+  per-domain coverage, no parse/order/source/partial/bridge failures, avg frame
+  34.743 ms, p95 52.766 ms, division read p95 37.112 ms, 62,786,985 raw stream
+  bytes, and an independently verified `native_session.battleplan`.
 - Earlier raw-event verification state: live-verified on the restarted vanilla
   process (pid 43412). A cold bootstrap outside the hot loop populated the
   current-process division and army caches, then a no-cold 12-game-hour run used

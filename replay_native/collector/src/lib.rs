@@ -2742,6 +2742,9 @@ mod attach_log {
     const COMPACT_STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
     const COMPACT_STATUS_PARTIAL_DATA: u32 = 1 << 9;
     const COMPACT_STATUS_DELTA_DATA: u32 = 1 << 10;
+    const COMPACT_DIVISION_ROW_FLAG_DELETED: u32 = 1 << 12;
+    const COMPACT_DIVISION_SAMPLE_MIN_ROWS: usize = 512;
+    const COMPACT_DIVISION_SAMPLE_MAX_WORKERS: usize = 4;
     const COMPACT_POLITICS_SHARD_MIN_ROWS: usize = 96;
     const COMPACT_POLITICS_SHARD_MAX_WORKERS: usize = 4;
 
@@ -2883,6 +2886,7 @@ mod attach_log {
     #[derive(Clone, Debug, PartialEq, Eq)]
     struct DivisionMovementSample {
         div_id: u32,
+        deleted: bool,
         moving: bool,
         raw_movement_progress: Option<u32>,
         progress_bucket: Option<u32>,
@@ -3449,6 +3453,7 @@ mod attach_log {
         let army_id = read_division_army_id(module_base, body);
         Some(DivisionMovementSample {
             div_id: entry.div_id,
+            deleted: false,
             moving,
             raw_movement_progress: moving.then_some(raw_progress),
             progress_bucket: moving.then_some(division_delta_bucket(raw_progress)),
@@ -9086,7 +9091,7 @@ mod attach_log {
                 CompactDomainPerfRecord {
                     domain_id: COMPACT_DOMAIN_DIVISIONS,
                     read_time_us: read.read_time_us,
-                    row_count: read.rows.len().min(u32::MAX as usize) as u32,
+                    row_count: read.root_rows,
                     changed_rows: read.changed_rows,
                     unit_count: read.root_rows,
                     changed_unit_count: read.changed_rows,
@@ -9802,7 +9807,7 @@ mod attach_log {
         let bridge_available = control.division_body_bridge_valid
             && division_body_bridge_well_formed(&control.division_body_bridge)
             && !control.division_body_bridge.is_empty();
-        let (root_rows, rows) = if bridge_available {
+        let (root_rows, active_rows) = if bridge_available {
             let roots = &control.division_body_bridge;
             (
                 roots.len().min(u32::MAX as usize) as u32,
@@ -9839,25 +9844,60 @@ mod attach_log {
             };
         }
 
+        if active_rows.is_empty() {
+            status_flags |= COMPACT_STATUS_SOURCE_UNAVAILABLE;
+            return CompactDivisionRead {
+                rows: Vec::new(),
+                read_time_us: duration_micros_u64(read_started.elapsed()),
+                changed_rows: 0,
+                status_flags,
+                root_rows,
+            };
+        }
+        if active_rows.len() < root_rows as usize {
+            status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+            return CompactDivisionRead {
+                changed_rows: active_rows.len().min(u32::MAX as usize) as u32,
+                rows: active_rows,
+                read_time_us: duration_micros_u64(read_started.elapsed()),
+                status_flags,
+                root_rows,
+            };
+        }
+
+        let emit_full_snapshot = tracker.is_empty();
+        let mut current = BTreeMap::new();
+        let mut emitted_rows = Vec::new();
         let mut changed_rows = 0u32;
-        for sample in &rows {
+        for sample in active_rows {
             let changed = tracker
                 .get(&sample.div_id)
-                .map(|old| old != sample)
+                .map(|old| old != &sample)
                 .unwrap_or(true);
             if changed {
                 changed_rows = changed_rows.saturating_add(1);
             }
-            tracker.insert(sample.div_id, sample.clone());
+            if emit_full_snapshot || changed {
+                emitted_rows.push(sample.clone());
+            }
+            current.insert(sample.div_id, sample);
         }
-        if rows.is_empty() {
-            status_flags |= COMPACT_STATUS_SOURCE_UNAVAILABLE;
-        } else if rows.len() < root_rows as usize {
-            status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+        if !emit_full_snapshot {
+            let removed_ids = tracker
+                .keys()
+                .filter(|div_id| !current.contains_key(div_id))
+                .copied()
+                .collect::<Vec<_>>();
+            for div_id in removed_ids {
+                changed_rows = changed_rows.saturating_add(1);
+                emitted_rows.push(deleted_division_sample(div_id));
+            }
+            status_flags |= COMPACT_STATUS_DELTA_DATA;
         }
+        *tracker = current;
 
         CompactDivisionRead {
-            rows,
+            rows: emitted_rows,
             read_time_us: duration_micros_u64(read_started.elapsed()),
             changed_rows,
             status_flags,
@@ -9865,7 +9905,74 @@ mod attach_log {
         }
     }
 
+    fn deleted_division_sample(div_id: u32) -> DivisionMovementSample {
+        DivisionMovementSample {
+            div_id,
+            deleted: true,
+            moving: false,
+            raw_movement_progress: None,
+            progress_bucket: None,
+            location: 0,
+            move_target_province: None,
+            movement_source_province: None,
+            raw_organisation: 0,
+            organisation_bucket: 0,
+            raw_strength: 0,
+            strength_bucket: 0,
+            combat_ref_count: 0,
+            in_combat: false,
+            owner_tag_db_id: None,
+            army_id: None,
+            raw_experience: None,
+            raw_max_supply: None,
+            raw_current_supply: None,
+            raw_supply_gain: None,
+            raw_fuel: None,
+        }
+    }
+
     fn sample_compact_division_roots(
+        module_base: usize,
+        roots: &[DivisionBodyBridgeEntry],
+    ) -> Vec<DivisionMovementSample> {
+        let worker_count = compact_division_sample_worker_count(roots.len());
+        if worker_count <= 1 {
+            return sample_compact_division_roots_serial(module_base, roots);
+        }
+        let chunk_len = (roots.len() + worker_count - 1) / worker_count;
+        let mut rows = Vec::with_capacity(roots.len());
+        thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for chunk in roots.chunks(chunk_len) {
+                handles.push(
+                    scope.spawn(move || sample_compact_division_roots_serial(module_base, chunk)),
+                );
+            }
+            for handle in handles {
+                if let Ok(mut chunk_rows) = handle.join() {
+                    rows.append(&mut chunk_rows);
+                }
+            }
+        });
+        rows
+    }
+
+    fn compact_division_sample_worker_count(root_count: usize) -> usize {
+        if root_count < COMPACT_DIVISION_SAMPLE_MIN_ROWS.saturating_mul(2) {
+            return 1;
+        }
+        let target_shards =
+            (root_count + COMPACT_DIVISION_SAMPLE_MIN_ROWS - 1) / COMPACT_DIVISION_SAMPLE_MIN_ROWS;
+        let available = thread::available_parallelism()
+            .map(|parallelism| parallelism.get())
+            .unwrap_or(1);
+        target_shards
+            .min(available)
+            .min(COMPACT_DIVISION_SAMPLE_MAX_WORKERS)
+            .max(1)
+    }
+
+    fn sample_compact_division_roots_serial(
         module_base: usize,
         roots: &[DivisionBodyBridgeEntry],
     ) -> Vec<DivisionMovementSample> {
@@ -11599,41 +11706,45 @@ mod attach_log {
         payload.extend_from_slice(&0u32.to_le_bytes());
         for sample in rows {
             let mut flags = 0u32;
-            if sample.moving {
-                flags |= 1;
-            }
-            if sample.raw_movement_progress.is_some() {
-                flags |= 1 << 1;
-            }
-            if sample.move_target_province.is_some() {
-                flags |= 1 << 2;
-            }
-            if sample.movement_source_province.is_some() {
-                flags |= 1 << 3;
-            }
-            if sample.in_combat {
-                flags |= 1 << 4;
-            }
-            if sample.owner_tag_db_id.is_some() {
-                flags |= 1 << 5;
-            }
-            if sample.army_id.is_some() {
-                flags |= 1 << 6;
-            }
-            if sample.raw_experience.is_some() {
-                flags |= 1 << 7;
-            }
-            if sample.raw_max_supply.is_some() {
-                flags |= 1 << 8;
-            }
-            if sample.raw_current_supply.is_some() {
-                flags |= 1 << 9;
-            }
-            if sample.raw_supply_gain.is_some() {
-                flags |= 1 << 10;
-            }
-            if sample.raw_fuel.is_some() {
-                flags |= 1 << 11;
+            if sample.deleted {
+                flags |= COMPACT_DIVISION_ROW_FLAG_DELETED;
+            } else {
+                if sample.moving {
+                    flags |= 1;
+                }
+                if sample.raw_movement_progress.is_some() {
+                    flags |= 1 << 1;
+                }
+                if sample.move_target_province.is_some() {
+                    flags |= 1 << 2;
+                }
+                if sample.movement_source_province.is_some() {
+                    flags |= 1 << 3;
+                }
+                if sample.in_combat {
+                    flags |= 1 << 4;
+                }
+                if sample.owner_tag_db_id.is_some() {
+                    flags |= 1 << 5;
+                }
+                if sample.army_id.is_some() {
+                    flags |= 1 << 6;
+                }
+                if sample.raw_experience.is_some() {
+                    flags |= 1 << 7;
+                }
+                if sample.raw_max_supply.is_some() {
+                    flags |= 1 << 8;
+                }
+                if sample.raw_current_supply.is_some() {
+                    flags |= 1 << 9;
+                }
+                if sample.raw_supply_gain.is_some() {
+                    flags |= 1 << 10;
+                }
+                if sample.raw_fuel.is_some() {
+                    flags |= 1 << 11;
+                }
             }
             payload.extend_from_slice(&sample.div_id.to_le_bytes());
             payload.extend_from_slice(&DIVISION_TYPE.to_le_bytes());
@@ -19088,6 +19199,18 @@ mod attach_log {
         }
 
         #[test]
+        fn compact_division_sampling_uses_bounded_workers() {
+            assert_eq!(
+                compact_division_sample_worker_count(COMPACT_DIVISION_SAMPLE_MIN_ROWS - 1),
+                1
+            );
+            assert!(
+                compact_division_sample_worker_count(COMPACT_DIVISION_SAMPLE_MIN_ROWS * 8)
+                    <= COMPACT_DIVISION_SAMPLE_MAX_WORKERS
+            );
+        }
+
+        #[test]
         fn compact_fuel_data_payload_packs_numeric_rows() {
             let mut por = test_country_row("POR", 47, 0x1234);
             por.fuel = Some(CountryFuelRow {
@@ -19251,6 +19374,7 @@ mod attach_log {
             let rows = vec![
                 DivisionMovementSample {
                     div_id: 17,
+                    deleted: false,
                     moving: true,
                     raw_movement_progress: Some(42_000),
                     progress_bucket: Some(42),
@@ -19273,6 +19397,7 @@ mod attach_log {
                 },
                 DivisionMovementSample {
                     div_id: 18,
+                    deleted: false,
                     moving: false,
                     raw_movement_progress: None,
                     progress_bucket: None,
@@ -19385,6 +19510,44 @@ mod attach_log {
                 u32::from_le_bytes(payload[188..192].try_into().unwrap()),
                 1_200_000
             );
+        }
+
+        #[test]
+        fn compact_divisions_data_payload_packs_deleted_rows() {
+            let rows = vec![deleted_division_sample(99)];
+
+            let payload = compact_divisions_data_payload(
+                &rows,
+                78,
+                COMPACT_STATUS_EXTRACTION_PERF_GATE | COMPACT_STATUS_DELTA_DATA,
+                1,
+                42,
+            );
+
+            assert_eq!(payload.len(), 32 + 88);
+            assert_eq!(u64::from_le_bytes(payload[0..8].try_into().unwrap()), 78);
+            assert_eq!(u32::from_le_bytes(payload[8..12].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[12..16].try_into().unwrap()), 1);
+            assert_eq!(
+                u32::from_le_bytes(payload[16..20].try_into().unwrap()),
+                COMPACT_STATUS_EXTRACTION_PERF_GATE | COMPACT_STATUS_DELTA_DATA
+            );
+            assert_eq!(u32::from_le_bytes(payload[24..28].try_into().unwrap()), 42);
+            assert_eq!(u32::from_le_bytes(payload[32..36].try_into().unwrap()), 99);
+            assert_eq!(
+                u32::from_le_bytes(payload[36..40].try_into().unwrap()),
+                DIVISION_TYPE
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[40..44].try_into().unwrap()),
+                COMPACT_DIVISION_ROW_FLAG_DELETED
+            );
+            for offset in (44..120).step_by(4) {
+                assert_eq!(
+                    u32::from_le_bytes(payload[offset..offset + 4].try_into().unwrap()),
+                    0
+                );
+            }
         }
 
         #[test]
@@ -19802,6 +19965,7 @@ mod attach_log {
             let raw_strength = 100_000;
             DivisionMovementSample {
                 div_id: 7,
+                deleted: false,
                 moving: false,
                 raw_movement_progress: None,
                 progress_bucket: None,
@@ -21499,6 +21663,7 @@ mod attach_log {
             };
             let sample = DivisionMovementSample {
                 div_id: 7,
+                deleted: false,
                 moving: true,
                 raw_movement_progress: Some(12000),
                 progress_bucket: Some(division_delta_bucket(12000)),
@@ -21570,6 +21735,7 @@ mod attach_log {
             };
             let sample = DivisionMovementSample {
                 div_id: 7,
+                deleted: false,
                 moving: true,
                 raw_movement_progress: Some(12000),
                 progress_bucket: Some(division_delta_bucket(12000)),

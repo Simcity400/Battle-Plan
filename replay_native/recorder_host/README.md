@@ -23,7 +23,10 @@ Current scope:
   The current compact division row is 88 bytes and carries division id,
   location/source/target/progress, organisation/strength buckets,
   combat-ref/in-combat state, owner tag-db id, parent army id, experience,
-  max/current supply, supply gain, and fuel.
+  max/current supply, supply gain, and fuel. `divisions` emits a full baseline
+  and then compact delta/tombstone rows; perf records still report the full
+  observed division root count each frame. Large division root sets are sampled
+  by bounded internal DLL workers before ordered record emission.
   `map_control` emits a full baseline and then compact delta records; perf
   records still report the full observed state/province row counts each frame.
 - Optional DLL-side project scanning through `--special-projects-scan`; current
@@ -295,6 +298,21 @@ gate has these live speed-five results:
   fell to 12.583 ms. The heaviest remaining lanes in this run were widened
   `divisions` at p95 33.470 ms and `fuel_live`/`production_live` at p95
   34.625 ms.
+- `compact_country_divisions_land_combats_map_divdelta_parallel_speed5_20260630_v1`:
+  passed the same widened 11-domain compact gate after `divisions` moved to
+  baseline-plus-delta data records with explicit zero-filled delete/tombstone
+  rows and bounded internal sampling workers. It covered `fuel_live`,
+  `production_live`, `focus_live`, `tech_live`, `politics_live`,
+  `politics_residuals`, `decisions_live`, `diplomacy_live`, `divisions`,
+  `land_combats`, and `map_control`; advanced 345 game hours with 346 frame-end
+  records, 0 skipped, full per-domain coverage, no parse/order errors, no
+  worker-panic, bridge-unavailable, source-unavailable, or partial-data flags,
+  avg frame 34.743 ms, p95 52.766 ms, max 66.712 ms, 62,786,985 raw stream
+  bytes, and an independent `pack_replay verify` pass. `divisions` observed
+  772,920 full rows but emitted 585,450 changed/tombstone rows; division read
+  p95 was 37.112 ms. The remaining heavy lanes in this run were
+  `fuel_live`/`production_live` at p95 51.208 ms and widened `divisions` at p95
+  37.112 ms.
 
 The extraction-only compact performance gate is green for the current
 production-shaped country-state domains and the native-root `divisions`,
@@ -311,11 +329,12 @@ the current vanilla build. `divisions` is DLL/Rust compact-path complete for the
 current widened compact division row contract (division id, location, movement
 progress, movement source/target, org, strength, combat reference count,
 in-combat flag, owner tag-db id, parent army id, experience, supply, and fuel)
-on the current vanilla build. It now uses the anchored country unit-wrapper
-path and no longer needs Python preflight, saves, or heap/vtable scans for
-compact division body discovery. Wider division replay coverage still needs
-typed records for template/equipment/manpower/assignment/order details. The
-full 11-domain widened-row bundle is now speed-five complete for the currently
+on the current vanilla build, including compact baseline/delta rows and explicit
+delete/tombstone records. It now uses the anchored country unit-wrapper path and
+no longer needs Python preflight, saves, or heap/vtable scans for compact
+division body discovery. Wider division replay coverage still needs typed
+records for template/equipment/manpower/assignment/order details. The full
+11-domain widened-row bundle is now speed-five complete for the currently
 implemented compact domains on the active vanilla process, with longer soaks
 and the next replay-critical domains still open.
 

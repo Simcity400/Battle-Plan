@@ -73,6 +73,7 @@ const COMPACT_MAX_DIVISION_EXPERIENCE_RAW: u32 = u32::MAX;
 const COMPACT_MAX_DIVISION_SUPPLY_RAW: u32 = 100_000_000;
 const COMPACT_MAX_DIVISION_SUPPLY_GAIN_RAW: u32 = 500_000;
 const COMPACT_MAX_DIVISION_FUEL_RAW: u32 = u32::MAX;
+const COMPACT_DIVISION_ROW_FLAG_DELETED: u32 = 1 << 12;
 const COMPACT_LAND_COMBAT_ROW_LEN: usize = 40;
 const COMPACT_LAND_COMBAT_PARTICIPANT_ROW_LEN: usize = 24;
 const COMPACT_LAND_COMBAT_MAX_PROVINCE_ID: u32 = 1_000_000;
@@ -2147,6 +2148,7 @@ fn decode_compact_divisions_data_payload(
     let root_rows = read_u32_le(payload, 24) as usize;
     let reserved = read_u32_le(payload, 28);
     summary.status_flags_or |= status_flags;
+    let delta_data = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
     if scale_raw != COMPACT_FIXED_SCALE_RAW {
         summary.parse_errors.push(format!(
             "offset {offset}: divisions data scale {scale_raw} != expected {COMPACT_FIXED_SCALE_RAW}"
@@ -2170,7 +2172,12 @@ fn decode_compact_divisions_data_payload(
             "offset {offset}: divisions data changed_rows {changed_rows} > row_count {row_count}"
         ));
     }
-    if row_count > root_rows {
+    if delta_data && changed_rows != row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: divisions delta changed_rows {changed_rows} != emitted row_count {row_count}"
+        ));
+    }
+    if !delta_data && row_count > root_rows {
         summary.parse_errors.push(format!(
             "offset {offset}: divisions data row_count {row_count} > root_rows {root_rows}"
         ));
@@ -2228,11 +2235,12 @@ fn decode_compact_divisions_data_payload(
                 "offset {offset}: divisions row {row_index} has div_type {div_type}"
             ));
         }
-        if flags & !0b1111_1111_1111 != 0 {
+        if flags & !(0b1111_1111_1111 | COMPACT_DIVISION_ROW_FLAG_DELETED) != 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: divisions row {row_index} has unknown flags {flags}"
             ));
         }
+        let deleted = (flags & COMPACT_DIVISION_ROW_FLAG_DELETED) != 0;
         let moving = (flags & 1) != 0;
         let has_progress = (flags & (1 << 1)) != 0;
         let has_target = (flags & (1 << 2)) != 0;
@@ -2245,6 +2253,38 @@ fn decode_compact_divisions_data_payload(
         let has_current_supply = (flags & (1 << 9)) != 0;
         let has_supply_gain = (flags & (1 << 10)) != 0;
         let has_fuel = (flags & (1 << 11)) != 0;
+        if deleted {
+            if flags != COMPACT_DIVISION_ROW_FLAG_DELETED {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: divisions delete row {row_index} has non-delete flags"
+                ));
+            }
+            let zero_filled = location == 0
+                && move_target == 0
+                && move_source == 0
+                && movement_progress == 0
+                && progress_bucket == 0
+                && organisation_raw == 0
+                && _organisation_bucket == 0
+                && strength_raw == 0
+                && _strength_bucket == 0
+                && combat_ref_count == 0
+                && row_reserved == 0
+                && owner_tag_db_id == 0
+                && army_id == 0
+                && experience_raw == 0
+                && max_supply_raw == 0
+                && current_supply_raw == 0
+                && supply_gain_raw == 0
+                && fuel_raw == 0
+                && row_reserved2 == 0;
+            if !zero_filled {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: divisions delete row {row_index} is not zero-filled"
+                ));
+            }
+            continue;
+        }
         if !valid_compact_province_id(location) {
             summary.parse_errors.push(format!(
                 "offset {offset}: divisions row {row_index} has invalid location {location}"
@@ -3582,6 +3622,50 @@ mod tests {
     }
 
     #[test]
+    fn compact_summary_decodes_division_delta_delete_record() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            20,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(1_500, 4, 2, 4, 2, COMPACT_STATUS_DELTA_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            20,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_divisions_delta_data_payload(),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(2_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(&summary, &[20]).is_empty());
+        let divisions = summary.per_domain.get(&20).unwrap();
+        assert_eq!(divisions.row_count_total, 4);
+        assert_eq!(divisions.data_record_count, 1);
+        assert_eq!(divisions.data_rows_total, 2);
+        assert_eq!(divisions.data_changed_rows_total, 2);
+        assert_ne!(divisions.status_flags_or & COMPACT_STATUS_DELTA_DATA, 0);
+    }
+
+    #[test]
     fn compact_division_root_source_marks_dll_native_success() {
         let mut raw = Vec::new();
         append_test_compact_record(
@@ -4408,6 +4492,106 @@ mod tests {
                 0u32,
                 1_200_000u32,
                 1_200_000u32,
+                0u32,
+                0u32,
+            ),
+        ] {
+            payload.extend_from_slice(&div_id.to_le_bytes());
+            payload.extend_from_slice(&COMPACT_DIVISION_TYPE.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&location.to_le_bytes());
+            payload.extend_from_slice(&target.to_le_bytes());
+            payload.extend_from_slice(&source.to_le_bytes());
+            payload.extend_from_slice(&progress.to_le_bytes());
+            payload.extend_from_slice(&progress_bucket.to_le_bytes());
+            payload.extend_from_slice(&org.to_le_bytes());
+            payload.extend_from_slice(&org_bucket.to_le_bytes());
+            payload.extend_from_slice(&strength.to_le_bytes());
+            payload.extend_from_slice(&strength_bucket.to_le_bytes());
+            payload.extend_from_slice(&combat_refs.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&owner.to_le_bytes());
+            payload.extend_from_slice(&army.to_le_bytes());
+            payload.extend_from_slice(&experience.to_le_bytes());
+            payload.extend_from_slice(&max_supply.to_le_bytes());
+            payload.extend_from_slice(&current_supply.to_le_bytes());
+            payload.extend_from_slice(&supply_gain.to_le_bytes());
+            payload.extend_from_slice(&fuel.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        payload
+    }
+
+    fn test_divisions_delta_data_payload() -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_STATUS_DELTA_DATA.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&4u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+
+        for (
+            div_id,
+            flags,
+            location,
+            target,
+            source,
+            progress,
+            progress_bucket,
+            org,
+            org_bucket,
+            strength,
+            strength_bucket,
+            combat_refs,
+            owner,
+            army,
+            experience,
+            max_supply,
+            current_supply,
+            supply_gain,
+            fuel,
+        ) in [
+            (
+                17u32,
+                0b1111_1111_1111u32,
+                118u32,
+                118u32,
+                117u32,
+                42_000u32,
+                42u32,
+                8_500_000u32,
+                8_500u32,
+                96_250_000u32,
+                96_250u32,
+                1u32,
+                47u32,
+                2001u32,
+                333_000u32,
+                1_600_000u32,
+                1_250_000u32,
+                25_000u32,
+                450_000u32,
+            ),
+            (
+                18u32,
+                COMPACT_DIVISION_ROW_FLAG_DELETED,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
                 0u32,
                 0u32,
             ),

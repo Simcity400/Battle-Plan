@@ -84,12 +84,17 @@ frames as the production path.
   can read concurrently, then the collector emits records in deterministic
   order from the same sequence authority. This is required for the larger
   11-domain speed-five gate; the serial version skipped hours.
+- `divisions` now follows the same production stream shape as `map_control`:
+  the first good frame is a full baseline, later frames are compact deltas, and
+  disappeared division ids are emitted as explicit zero-filled delete/tombstone
+  rows. Perf records keep reporting the full observed root count, so the host
+  can distinguish "only a few rows changed" from "only a few roots were read".
 
 ## Still Open
 
-- Add typed `divisions` records beyond the widened compact movement/org/
-  strength/combat-ref/owner/army/supply/fuel row contract. Division body
-  discovery itself is now DLL-native through the anchored
+- Add typed `divisions` records beyond the widened compact baseline/delta
+  movement/org/strength/combat-ref/owner/army/supply/fuel/delete row contract.
+  Division body discovery itself is now DLL-native through the anchored
   `CGameState+0x310 -> CCountry+0x290 -> wrapper+0x10 CDivision` path and no
   longer needs Python preflight, saves, or heap/vtable scans for the current
   vanilla build. Remaining division details include template, equipment,
@@ -197,3 +202,18 @@ bytes, and an independently verified `native_session.battleplan`.
 emitted only 15,418 changed data rows; its read p95 dropped to 12.583 ms. The
 largest remaining p95 lanes in that run were widened `divisions` at 33.470 ms
 and `fuel_live`/`production_live` at 34.625 ms.
+
+`compact_country_divisions_land_combats_map_divdelta_parallel_speed5_20260630_v1`
+passed the next widened 11-domain gate after `divisions` switched to
+baseline-plus-delta data records with explicit delete/tombstone rows and bounded
+internal division sampling workers. The compact stream covered `fuel_live`,
+`production_live`, `focus_live`, `tech_live`, `politics_live`,
+`politics_residuals`, `decisions_live`, `diplomacy_live`, `divisions`,
+`land_combats`, and `map_control`; advanced 345 game hours with 346 frame-end
+records, 0 skipped, full per-domain coverage, no parse/order errors, no
+worker-panic, bridge-unavailable, source-unavailable, or partial-data flags, avg
+frame 34.743 ms, p95 52.766 ms, max 66.712 ms, 62,786,985 raw stream bytes, and
+an independently verified `native_session.battleplan`. `divisions` observed
+772,920 full rows and emitted 585,450 changed/tombstone rows; division read p95
+was 37.112 ms. The remaining heavy lanes were `fuel_live`/`production_live` at
+p95 51.208 ms and widened `divisions` at p95 37.112 ms.
