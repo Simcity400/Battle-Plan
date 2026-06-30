@@ -874,6 +874,16 @@ Tasks:
   air-power reconstruction/modeling on the verified `870ebf` build. It does not
   claim the exact cached displayed the game air-superiority percent; that remains a
   separate denominator/cache-root reverse-engineering task.
+- Current DLL checkpoint: `air_variant_upgrades` is compact domain id 39 and
+  `stockpile_variant_upgrades` is compact domain id 40. They reuse active
+  air-wing type-70 variant pointers and anchored country stockpile type-70
+  variant pointers respectively, validate each variant by vtable/type/id,
+  validate the current-build upgrade container at `variant+0x68`, and emit rows
+  keyed by `variant_id` with child `{upgrade_index, level}` entries. This closes
+  production-shaped live capture of raw upgrade levels for active-air and
+  stockpile variants on the verified `870ebf` build. It does not resolve upgrade
+  key names; prior Python/Ghidra research still marks those keys as resisted, so
+  the DLL stream records raw index/level truth rather than inferred names.
 - Current no-bridge proof:
   `replay/snapshots/_collector_session_air_wing_native_gate/20260630T172419Z_pid45880`
   advanced 12 game hours in 83.860 wall seconds with speed-five/current game
@@ -979,10 +989,29 @@ Tasks:
   bridge-unavailable, or worker-panic flags. `air_superiority_inputs` read p95
   was 40651 us, frame p95 was 50067 us, and an independent `pack_replay verify`
   pass accepted the generated `.battleplan`.
+- Current variant-upgrade compact proof:
+  `replay_native/runs/compact_air_variant_upgrades_870ebf_20260701_v1/native_session_manifest.json`
+  scheduled `air_wings`, `air_wing_loadouts`, `air_variant_defs`,
+  `air_variant_stats`, `stockpile_variant_defs`, `air_variant_reserves`,
+  `air_base_status`, `air_superiority_inputs`, `air_variant_upgrades`, and
+  `stockpile_variant_upgrades` for 60 seconds at no-sleep compact sampling,
+  advanced 99 game hours with 0 skipped, emitted ordered/decodable compact
+  records with full scheduled-domain coverage, wrote 515177 total bytes /
+  447977 payload bytes, captured 18400 observed active-air variant rows, 140388
+  observed stockpile variant rows, 446 emitted stockpile upgrade entries, and
+  reported no source-unavailable, partial-data, bridge-unavailable, or
+  worker-panic flags. Active-air variants had zero upgrade entries in this
+  vanilla sample, which is valid observed data for the current modular aircraft
+  set. `stockpile_variant_upgrades` read p95 was 23606 us, frame p95 was 55174
+  us, and an independent `pack_replay verify` pass accepted the generated
+  `.battleplan`.
 - Build an active air-combat fixture for validation.
 - Resolve `airwing_effective_planes_denom` or badge it.
 - Decide which air-superiority values are exact live state and which are
   computed/render proxies.
+- Resolve live aircraft archetype/base-airframe names, air-superiority weights,
+  and upgrade-name keys, or keep them explicitly sourced from bounded static
+  game-file/catalog validation outside the hot recording loop.
 
 ### 10. Land, Naval, And Air Combat Event Layer
 

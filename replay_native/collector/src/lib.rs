@@ -615,6 +615,13 @@ mod attach_log {
     const AIR_VARIANT_EQUIPMENT_TOKEN_OFF: usize = 0x18;
     const AIR_VARIANT_EQUIPMENT_TYPE_TOKEN_OFF: usize = 0x1C;
     const AIR_VARIANT_INTERFACE_TYPE_OFF: usize = 0x38;
+    const AIR_VARIANT_UPGRADE_CONTAINER_VTABLE_RVA: usize = 0x27AB628;
+    const AIR_VARIANT_UPGRADE_CONTAINER_VTABLE_OFF: usize = 0x68;
+    const AIR_VARIANT_UPGRADE_DATA_OFF: usize = 0x70;
+    const AIR_VARIANT_UPGRADE_CAP_OFF: usize = 0x78;
+    const AIR_VARIANT_UPGRADE_SIZE_OFF: usize = 0x7C;
+    const AIR_VARIANT_UPGRADE_ENTRY_STRIDE: usize = 0x10;
+    const AIR_VARIANT_UPGRADE_ENTRY_LEVEL_OFF: usize = 0x08;
     const AIR_VARIANT_CACHE_SPEED_RAW_OFF: usize = 0x270;
     const AIR_VARIANT_CACHE_RANGE_RAW_OFF: usize = 0x278;
     const AIR_VARIANT_CACHE_AIR_ATTACK_RAW_OFF: usize = 0x280;
@@ -628,7 +635,9 @@ mod attach_log {
     const MAX_AIR_VARIANT_DEF_ROWS: usize = 20_000;
     const MAX_AIR_VARIANT_STAT_ROWS: usize = MAX_AIR_VARIANT_DEF_ROWS;
     const MAX_AIR_VARIANT_MODULE_ROWS: u32 = 256;
+    const MAX_AIR_VARIANT_UPGRADE_ROWS: u32 = 256;
     const MAX_AIR_VARIANT_MODULE_TOTAL_ROWS: usize = 250_000;
+    const MAX_AIR_VARIANT_UPGRADE_TOTAL_ROWS: usize = 250_000;
     const MAX_AIR_VARIANT_NAME_LEN: usize = 160;
     const MAX_AIR_VARIANT_MODULE_TOKEN_LEN: usize = 160;
     const MAX_AIR_VARIANT_MODULE_SLOT_HANDLE: u32 = 1_000_000;
@@ -2811,6 +2820,8 @@ mod attach_log {
     const RAW_AIR_BASE_STATUS_DOMAIN: &str = "air_base_status";
     const RAW_STOCKPILE_VARIANT_DEFS_DOMAIN: &str = "stockpile_variant_defs";
     const RAW_AIR_SUPERIORITY_INPUTS_DOMAIN: &str = "air_superiority_inputs";
+    const RAW_AIR_VARIANT_UPGRADES_DOMAIN: &str = "air_variant_upgrades";
+    const RAW_STOCKPILE_VARIANT_UPGRADES_DOMAIN: &str = "stockpile_variant_upgrades";
     const RAW_SHIPS_DOMAIN: &str = "ships";
     const RAW_OOB_COMMAND_DOMAIN: &str = "oob_command";
     const RAW_CONFIDENCE_SAMPLED: &str = "sampled";
@@ -2866,6 +2877,8 @@ mod attach_log {
     const COMPACT_DOMAIN_AIR_VARIANT_RESERVES: u16 = 36;
     const COMPACT_DOMAIN_STOCKPILE_VARIANT_DEFS: u16 = 37;
     const COMPACT_DOMAIN_AIR_SUPERIORITY_INPUTS: u16 = 38;
+    const COMPACT_DOMAIN_AIR_VARIANT_UPGRADES: u16 = 39;
+    const COMPACT_DOMAIN_STOCKPILE_VARIANT_UPGRADES: u16 = 40;
     const COMPACT_STATUS_STATE_UNAVAILABLE: u32 = 1 << 0;
     const COMPACT_STATUS_PROFILE_MISMATCH: u32 = 1 << 1;
     const COMPACT_STATUS_NO_CLOCK: u32 = 1 << 2;
@@ -3020,6 +3033,8 @@ mod attach_log {
         air_base_status: CompactAirBaseStatusTracker,
         stockpile_variant_defs: CompactAirVariantDefTracker,
         air_superiority_inputs: CompactAirSuperiorityInputTracker,
+        air_variant_upgrades: CompactAirVariantUpgradeTracker,
+        stockpile_variant_upgrades: CompactAirVariantUpgradeTracker,
         land_combat: LandCombatTracker,
         map_control: CompactMapControlTracker,
         map_detail: CompactMapDetailTracker,
@@ -3148,6 +3163,17 @@ mod attach_log {
         changed_rows: u32,
         status_flags: u32,
         observed_variant_rows: u32,
+        invalid_variant_rows: u32,
+    }
+
+    struct CompactAirVariantUpgradeRead {
+        rows: Vec<CompactAirVariantUpgradeRow>,
+        read_time_us: u64,
+        changed_rows: u32,
+        status_flags: u32,
+        observed_variant_rows: u32,
+        observed_upgrade_rows: u32,
+        emitted_upgrade_rows: u32,
         invalid_variant_rows: u32,
     }
 
@@ -3470,6 +3496,11 @@ mod attach_log {
     }
 
     #[derive(Default)]
+    struct CompactAirVariantUpgradeTracker {
+        known: BTreeMap<u32, CompactAirVariantUpgradeRow>,
+    }
+
+    #[derive(Default)]
     struct CompactAirVariantReserveTracker {
         previous: BTreeMap<(u32, u32), CompactAirVariantReserveRow>,
     }
@@ -3593,6 +3624,18 @@ mod attach_log {
         thrust_raw: i32,
         fuel_consumption_raw: i32,
         build_cost_ic_raw: i32,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct CompactAirVariantUpgradeEntry {
+        upgrade_index: u32,
+        level: u32,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct CompactAirVariantUpgradeRow {
+        variant_id: u32,
+        upgrades: Vec<CompactAirVariantUpgradeEntry>,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -9862,6 +9905,10 @@ mod attach_log {
             compact_explicit_domain_enabled(control, RAW_STOCKPILE_VARIANT_DEFS_DOMAIN);
         let air_superiority_inputs_enabled =
             compact_explicit_domain_enabled(control, RAW_AIR_SUPERIORITY_INPUTS_DOMAIN);
+        let air_variant_upgrades_enabled =
+            compact_explicit_domain_enabled(control, RAW_AIR_VARIANT_UPGRADES_DOMAIN);
+        let stockpile_variant_upgrades_enabled =
+            compact_explicit_domain_enabled(control, RAW_STOCKPILE_VARIANT_UPGRADES_DOMAIN);
         let land_combats_enabled =
             compact_explicit_domain_enabled(control, RAW_LAND_COMBATS_DOMAIN);
         let map_control_enabled = compact_map_control_enabled(control);
@@ -9884,6 +9931,8 @@ mod attach_log {
         let mut air_base_status_read = None;
         let mut stockpile_variant_def_read = None;
         let mut air_superiority_input_read = None;
+        let mut air_variant_upgrade_read = None;
+        let mut stockpile_variant_upgrade_read = None;
         let mut land_combat_read = None;
         let mut map_control_read = None;
         let mut map_detail_read = None;
@@ -9916,6 +9965,8 @@ mod attach_log {
         let air_base_status_tracker = &mut trackers.air_base_status;
         let stockpile_variant_def_tracker = &mut trackers.stockpile_variant_defs;
         let air_superiority_input_tracker = &mut trackers.air_superiority_inputs;
+        let air_variant_upgrade_tracker = &mut trackers.air_variant_upgrades;
+        let stockpile_variant_upgrade_tracker = &mut trackers.stockpile_variant_upgrades;
         let division_roots = &trackers.division_roots;
         let land_combat_tracker = &mut trackers.land_combat;
         let map_control_tracker = &mut trackers.map_control;
@@ -10070,6 +10121,28 @@ mod attach_log {
             } else {
                 None
             };
+            let air_variant_upgrade_handle = if air_variant_upgrades_enabled {
+                Some(scope.spawn(move || {
+                    read_compact_air_variant_upgrades(
+                        state,
+                        status_flags,
+                        air_variant_upgrade_tracker,
+                    )
+                }))
+            } else {
+                None
+            };
+            let stockpile_variant_upgrade_handle = if stockpile_variant_upgrades_enabled {
+                Some(scope.spawn(move || {
+                    read_compact_stockpile_variant_upgrades(
+                        state,
+                        status_flags,
+                        stockpile_variant_upgrade_tracker,
+                    )
+                }))
+            } else {
+                None
+            };
             let land_combat_handle = if land_combats_enabled {
                 Some(scope.spawn(move || {
                     read_compact_land_combats(state, status_flags, land_combat_tracker)
@@ -10196,6 +10269,18 @@ mod attach_log {
                 air_superiority_input_read = Some(match handle.join() {
                     Ok(read) => read,
                     Err(_) => compact_air_superiority_input_worker_panic_read(status_flags),
+                });
+            }
+            if let Some(handle) = air_variant_upgrade_handle {
+                air_variant_upgrade_read = Some(match handle.join() {
+                    Ok(read) => read,
+                    Err(_) => compact_air_variant_upgrade_worker_panic_read(status_flags),
+                });
+            }
+            if let Some(handle) = stockpile_variant_upgrade_handle {
+                stockpile_variant_upgrade_read = Some(match handle.join() {
+                    Ok(read) => read,
+                    Err(_) => compact_air_variant_upgrade_worker_panic_read(status_flags),
                 });
             }
             if let Some(handle) = land_combat_handle {
@@ -10781,6 +10866,74 @@ mod attach_log {
                 read.invalid_air_wing_rows,
                 read.invalid_variant_rows,
                 read.deleted_rows,
+            );
+            sequence = sequence.saturating_add(1);
+            emitted_domains = emitted_domains.saturating_add(1);
+        }
+        if let Some(read) = air_variant_upgrade_read {
+            append_compact_domain_perf_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                CompactDomainPerfRecord {
+                    domain_id: COMPACT_DOMAIN_AIR_VARIANT_UPGRADES,
+                    read_time_us: read.read_time_us,
+                    row_count: read.observed_variant_rows,
+                    changed_rows: read.changed_rows,
+                    unit_count: read.observed_upgrade_rows,
+                    changed_unit_count: read.emitted_upgrade_rows,
+                    status_flags: read.status_flags,
+                },
+                elapsed_wall_ms,
+            );
+            sequence = sequence.saturating_add(1);
+            append_compact_variant_upgrades_data_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                COMPACT_DOMAIN_AIR_VARIANT_UPGRADES,
+                &read.rows,
+                elapsed_wall_ms,
+                read.status_flags,
+                read.changed_rows,
+                read.observed_variant_rows,
+                read.observed_upgrade_rows,
+                read.emitted_upgrade_rows,
+                read.invalid_variant_rows,
+            );
+            sequence = sequence.saturating_add(1);
+            emitted_domains = emitted_domains.saturating_add(1);
+        }
+        if let Some(read) = stockpile_variant_upgrade_read {
+            append_compact_domain_perf_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                CompactDomainPerfRecord {
+                    domain_id: COMPACT_DOMAIN_STOCKPILE_VARIANT_UPGRADES,
+                    read_time_us: read.read_time_us,
+                    row_count: read.observed_variant_rows,
+                    changed_rows: read.changed_rows,
+                    unit_count: read.observed_upgrade_rows,
+                    changed_unit_count: read.emitted_upgrade_rows,
+                    status_flags: read.status_flags,
+                },
+                elapsed_wall_ms,
+            );
+            sequence = sequence.saturating_add(1);
+            append_compact_variant_upgrades_data_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                COMPACT_DOMAIN_STOCKPILE_VARIANT_UPGRADES,
+                &read.rows,
+                elapsed_wall_ms,
+                read.status_flags,
+                read.changed_rows,
+                read.observed_variant_rows,
+                read.observed_upgrade_rows,
+                read.emitted_upgrade_rows,
+                read.invalid_variant_rows,
             );
             sequence = sequence.saturating_add(1);
             emitted_domains = emitted_domains.saturating_add(1);
@@ -11523,6 +11676,21 @@ mod attach_log {
             changed_rows: 0,
             status_flags: status_flags | COMPACT_STATUS_WORKER_PANIC,
             observed_variant_rows: 0,
+            invalid_variant_rows: 0,
+        }
+    }
+
+    fn compact_air_variant_upgrade_worker_panic_read(
+        status_flags: u32,
+    ) -> CompactAirVariantUpgradeRead {
+        CompactAirVariantUpgradeRead {
+            rows: Vec::new(),
+            read_time_us: 0,
+            changed_rows: 0,
+            status_flags: status_flags | COMPACT_STATUS_WORKER_PANIC,
+            observed_variant_rows: 0,
+            observed_upgrade_rows: 0,
+            emitted_upgrade_rows: 0,
             invalid_variant_rows: 0,
         }
     }
@@ -13567,6 +13735,165 @@ mod attach_log {
         }
     }
 
+    fn read_compact_air_variant_upgrades(
+        state: &CollectorState,
+        status_flags: u32,
+        tracker: &mut CompactAirVariantUpgradeTracker,
+    ) -> CompactAirVariantUpgradeRead {
+        let read_started = Instant::now();
+        let mut status_flags = status_flags;
+        let Some(native) = sample_compact_air_variant_defs_native(state) else {
+            return CompactAirVariantUpgradeRead {
+                rows: Vec::new(),
+                read_time_us: duration_micros_u64(read_started.elapsed()),
+                changed_rows: 0,
+                status_flags: status_flags | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                observed_variant_rows: 0,
+                observed_upgrade_rows: 0,
+                emitted_upgrade_rows: 0,
+                invalid_variant_rows: 0,
+            };
+        };
+        if native.variant_ptrs.is_empty() {
+            status_flags |= COMPACT_STATUS_SOURCE_UNAVAILABLE;
+        }
+        if native.invalid_air_wing_rows > 0 {
+            status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+        }
+
+        compact_air_variant_upgrade_read_from_ptrs(
+            state.base,
+            status_flags,
+            tracker,
+            native.variant_ptrs,
+            read_started,
+        )
+    }
+
+    fn read_compact_stockpile_variant_upgrades(
+        state: &CollectorState,
+        status_flags: u32,
+        tracker: &mut CompactAirVariantUpgradeTracker,
+    ) -> CompactAirVariantUpgradeRead {
+        let read_started = Instant::now();
+        let mut status_flags = status_flags;
+        if !state.country_identity.has_scalar_source() {
+            return CompactAirVariantUpgradeRead {
+                rows: Vec::new(),
+                read_time_us: duration_micros_u64(read_started.elapsed()),
+                changed_rows: 0,
+                status_flags: status_flags | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                observed_variant_rows: 0,
+                observed_upgrade_rows: 0,
+                emitted_upgrade_rows: 0,
+                invalid_variant_rows: 0,
+            };
+        }
+
+        let country_vtable = state.country_identity.country_vtable;
+        let mut variant_ptrs = BTreeMap::new();
+        let mut invalid_variant_rows = 0u32;
+        for country in &state.country_identity.rows {
+            let object_ptr = country.object_ptr;
+            let valid_country = is_map_control_heap_pointer(object_ptr)
+                && read_u64(object_ptr).is_some_and(|vtable| vtable as usize == country_vtable)
+                && read_u32(object_ptr + OBJ_TAG_DB_ID) == Some(country.tag_db_id);
+            if !valid_country {
+                invalid_variant_rows = invalid_variant_rows.saturating_add(1);
+                continue;
+            }
+            let Some(stockpile) = read_country_stockpile_raw(object_ptr, country_vtable) else {
+                invalid_variant_rows = invalid_variant_rows.saturating_add(1);
+                continue;
+            };
+            for stock in stockpile {
+                if let Some(previous) = variant_ptrs.insert(stock.variant_id, stock.variant_ptr) {
+                    if previous != stock.variant_ptr {
+                        invalid_variant_rows = invalid_variant_rows.saturating_add(1);
+                        variant_ptrs.insert(stock.variant_id, previous);
+                    }
+                }
+                if variant_ptrs.len() > MAX_AIR_VARIANT_DEF_ROWS {
+                    status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+                    break;
+                }
+            }
+            if variant_ptrs.len() > MAX_AIR_VARIANT_DEF_ROWS {
+                break;
+            }
+        }
+        if variant_ptrs.is_empty() {
+            status_flags |= COMPACT_STATUS_SOURCE_UNAVAILABLE;
+        }
+        if invalid_variant_rows > 0 {
+            status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+        }
+
+        let mut read = compact_air_variant_upgrade_read_from_ptrs(
+            state.base,
+            status_flags,
+            tracker,
+            variant_ptrs,
+            read_started,
+        );
+        read.invalid_variant_rows = read
+            .invalid_variant_rows
+            .saturating_add(invalid_variant_rows);
+        if invalid_variant_rows > 0 {
+            read.status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+        }
+        read
+    }
+
+    fn compact_air_variant_upgrade_read_from_ptrs(
+        module_base: usize,
+        mut status_flags: u32,
+        tracker: &mut CompactAirVariantUpgradeTracker,
+        variant_ptrs: BTreeMap<u32, usize>,
+        read_started: Instant,
+    ) -> CompactAirVariantUpgradeRead {
+        let observed_variant_rows = variant_ptrs.len().min(u32::MAX as usize) as u32;
+        let mut rows = Vec::new();
+        let mut observed_upgrade_rows = 0u32;
+        let mut emitted_upgrade_rows = 0u32;
+        let mut invalid_variant_rows = 0u32;
+        for (variant_id, variant_ptr) in variant_ptrs {
+            let Some(row) =
+                read_compact_air_variant_upgrade_row(module_base, variant_id, variant_ptr)
+            else {
+                invalid_variant_rows = invalid_variant_rows.saturating_add(1);
+                continue;
+            };
+            observed_upgrade_rows = observed_upgrade_rows
+                .saturating_add(row.upgrades.len().min(u32::MAX as usize) as u32);
+            if tracker.known.get(&variant_id) != Some(&row) {
+                emitted_upgrade_rows = emitted_upgrade_rows
+                    .saturating_add(row.upgrades.len().min(u32::MAX as usize) as u32);
+                tracker.known.insert(variant_id, row.clone());
+                rows.push(row);
+            }
+            if tracker.known.len() > MAX_AIR_VARIANT_DEF_ROWS {
+                status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+                break;
+            }
+        }
+        if invalid_variant_rows > 0 {
+            status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+        }
+        rows.sort_by_key(|row| row.variant_id);
+        let changed_rows = rows.len().min(u32::MAX as usize) as u32;
+        CompactAirVariantUpgradeRead {
+            rows,
+            read_time_us: duration_micros_u64(read_started.elapsed()),
+            changed_rows,
+            status_flags,
+            observed_variant_rows,
+            observed_upgrade_rows,
+            emitted_upgrade_rows,
+            invalid_variant_rows,
+        }
+    }
+
     fn read_compact_air_variant_reserves(
         state: &CollectorState,
         status_flags: u32,
@@ -15152,6 +15479,73 @@ mod attach_log {
             fuel_consumption_raw,
             build_cost_ic_raw,
         })
+    }
+
+    fn read_compact_air_variant_upgrade_row(
+        module_base: usize,
+        variant_id: u32,
+        variant_ptr: usize,
+    ) -> Option<CompactAirVariantUpgradeRow> {
+        if !is_map_control_heap_pointer(variant_ptr)
+            || read_u64(variant_ptr)? as usize
+                != module_base.checked_add(DIVISION_EQUIPMENT_VARIANT_VTABLE_RVA)?
+            || read_u32(variant_ptr.checked_add(DIVISION_EQUIPMENT_VARIANT_OFF_TYPE)?)?
+                != DIVISION_EQUIPMENT_VARIANT_TYPE
+            || read_u32(variant_ptr.checked_add(DIVISION_EQUIPMENT_VARIANT_OFF_ID)?)? != variant_id
+        {
+            return None;
+        }
+        let upgrades = read_compact_air_variant_upgrade_entries(module_base, variant_ptr)?;
+        Some(CompactAirVariantUpgradeRow {
+            variant_id,
+            upgrades,
+        })
+    }
+
+    fn read_compact_air_variant_upgrade_entries(
+        module_base: usize,
+        variant_ptr: usize,
+    ) -> Option<Vec<CompactAirVariantUpgradeEntry>> {
+        if read_u64(variant_ptr.checked_add(AIR_VARIANT_UPGRADE_CONTAINER_VTABLE_OFF)?)? as usize
+            != module_base.checked_add(AIR_VARIANT_UPGRADE_CONTAINER_VTABLE_RVA)?
+        {
+            return None;
+        }
+        let size = read_u32(variant_ptr.checked_add(AIR_VARIANT_UPGRADE_SIZE_OFF)?)?;
+        let cap = read_u32(variant_ptr.checked_add(AIR_VARIANT_UPGRADE_CAP_OFF)?)?;
+        if size > cap || size > MAX_AIR_VARIANT_UPGRADE_ROWS {
+            return None;
+        }
+        if size == 0 {
+            return Some(Vec::new());
+        }
+        let data = read_u64(variant_ptr.checked_add(AIR_VARIANT_UPGRADE_DATA_OFF)?)? as usize;
+        if !is_map_control_heap_pointer(data) {
+            return None;
+        }
+        let byte_len = (size as usize).checked_mul(AIR_VARIANT_UPGRADE_ENTRY_STRIDE)?;
+        if byte_len
+            > MAX_AIR_VARIANT_UPGRADE_TOTAL_ROWS.saturating_mul(AIR_VARIANT_UPGRADE_ENTRY_STRIDE)
+        {
+            return None;
+        }
+        let raw = read_bytes(data, byte_len)?;
+        if raw.len() < byte_len {
+            return None;
+        }
+        let mut upgrades = Vec::with_capacity(size as usize);
+        for index in 0..(size as usize) {
+            let offset = index.checked_mul(AIR_VARIANT_UPGRADE_ENTRY_STRIDE)?;
+            let level_raw = read_u64_from_slice(
+                &raw,
+                offset.checked_add(AIR_VARIANT_UPGRADE_ENTRY_LEVEL_OFF)?,
+            )?;
+            upgrades.push(CompactAirVariantUpgradeEntry {
+                upgrade_index: index.min(u32::MAX as usize) as u32,
+                level: (level_raw & 0xFF) as u32,
+            });
+        }
+        Some(upgrades)
     }
 
     fn valid_air_variant_cache_raw(value: i32) -> bool {
@@ -17381,6 +17775,41 @@ mod attach_log {
         );
     }
 
+    fn append_compact_variant_upgrades_data_record(
+        out: &mut Vec<u8>,
+        sequence: u64,
+        game_hour_raw: i32,
+        domain_id: u16,
+        rows: &[CompactAirVariantUpgradeRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        observed_variant_rows: u32,
+        observed_upgrade_rows: u32,
+        emitted_upgrade_rows: u32,
+        invalid_variant_rows: u32,
+    ) {
+        let payload = compact_air_variant_upgrades_data_payload(
+            rows,
+            elapsed_wall_ms,
+            status_flags,
+            changed_rows,
+            observed_variant_rows,
+            observed_upgrade_rows,
+            emitted_upgrade_rows,
+            invalid_variant_rows,
+        );
+        append_compact_record(
+            out,
+            sequence,
+            game_hour_raw,
+            domain_id,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+    }
+
     fn append_compact_air_variant_reserves_data_record(
         out: &mut Vec<u8>,
         sequence: u64,
@@ -18897,6 +19326,54 @@ mod attach_log {
             payload.extend_from_slice(&row.fuel_consumption_raw.to_le_bytes());
             payload.extend_from_slice(&row.build_cost_ic_raw.to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        payload
+    }
+
+    fn compact_air_variant_upgrades_data_payload(
+        rows: &[CompactAirVariantUpgradeRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        observed_variant_rows: u32,
+        observed_upgrade_rows: u32,
+        emitted_upgrade_rows: u32,
+        invalid_variant_rows: u32,
+    ) -> Vec<u8> {
+        let upgrade_count = rows
+            .iter()
+            .map(|row| row.upgrades.len())
+            .sum::<usize>()
+            .min(u32::MAX as usize) as u32;
+        let mut payload = Vec::with_capacity(
+            44usize
+                .saturating_add(rows.len().saturating_mul(16))
+                .saturating_add((upgrade_count as usize).saturating_mul(8)),
+        );
+        payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
+        payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+        payload.extend_from_slice(&changed_rows.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&observed_variant_rows.to_le_bytes());
+        payload.extend_from_slice(&observed_upgrade_rows.to_le_bytes());
+        payload.extend_from_slice(&emitted_upgrade_rows.to_le_bytes());
+        payload.extend_from_slice(&invalid_variant_rows.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        let mut next_upgrade = 0u32;
+        for row in rows {
+            let row_upgrade_count = row.upgrades.len().min(u32::MAX as usize) as u32;
+            payload.extend_from_slice(&row.variant_id.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&next_upgrade.to_le_bytes());
+            payload.extend_from_slice(&row_upgrade_count.to_le_bytes());
+            next_upgrade = next_upgrade.saturating_add(row_upgrade_count);
+        }
+        for row in rows {
+            for upgrade in &row.upgrades {
+                payload.extend_from_slice(&upgrade.upgrade_index.to_le_bytes());
+                payload.extend_from_slice(&upgrade.level.to_le_bytes());
+            }
         }
         payload
     }
@@ -27924,6 +28401,68 @@ mod attach_log {
             assert!(deleted.iter().all(|row| row.deleted));
             assert!(deleted.iter().all(|row| row.amount_raw == 0));
             assert!(deleted.iter().all(|row| row.wing_count == 0));
+        }
+
+        #[test]
+        fn compact_air_variant_upgrades_pack_rows_and_entries() {
+            let rows = vec![
+                CompactAirVariantUpgradeRow {
+                    variant_id: 1375,
+                    upgrades: vec![
+                        CompactAirVariantUpgradeEntry {
+                            upgrade_index: 0,
+                            level: 3,
+                        },
+                        CompactAirVariantUpgradeEntry {
+                            upgrade_index: 1,
+                            level: 2,
+                        },
+                    ],
+                },
+                CompactAirVariantUpgradeRow {
+                    variant_id: 5578,
+                    upgrades: Vec::new(),
+                },
+            ];
+            let payload = compact_air_variant_upgrades_data_payload(
+                &rows,
+                86,
+                COMPACT_STATUS_EXTRACTION_PERF_GATE | COMPACT_STATUS_DELTA_DATA,
+                2,
+                140,
+                5,
+                2,
+                0,
+            );
+
+            assert_eq!(payload.len(), 44 + 2 * 16 + 2 * 8);
+            assert_eq!(u64::from_le_bytes(payload[0..8].try_into().unwrap()), 86);
+            assert_eq!(u32::from_le_bytes(payload[8..12].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[12..16].try_into().unwrap()), 2);
+            assert_eq!(
+                u32::from_le_bytes(payload[16..20].try_into().unwrap()),
+                COMPACT_STATUS_EXTRACTION_PERF_GATE | COMPACT_STATUS_DELTA_DATA
+            );
+            assert_eq!(u32::from_le_bytes(payload[20..24].try_into().unwrap()), 140);
+            assert_eq!(u32::from_le_bytes(payload[24..28].try_into().unwrap()), 5);
+            assert_eq!(u32::from_le_bytes(payload[28..32].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[32..36].try_into().unwrap()), 0);
+            assert_eq!(
+                u32::from_le_bytes(payload[44..48].try_into().unwrap()),
+                1375
+            );
+            assert_eq!(u32::from_le_bytes(payload[52..56].try_into().unwrap()), 0);
+            assert_eq!(u32::from_le_bytes(payload[56..60].try_into().unwrap()), 2);
+            assert_eq!(
+                u32::from_le_bytes(payload[60..64].try_into().unwrap()),
+                5578
+            );
+            assert_eq!(u32::from_le_bytes(payload[68..72].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[72..76].try_into().unwrap()), 0);
+            assert_eq!(u32::from_le_bytes(payload[76..80].try_into().unwrap()), 0);
+            assert_eq!(u32::from_le_bytes(payload[80..84].try_into().unwrap()), 3);
+            assert_eq!(u32::from_le_bytes(payload[84..88].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[88..92].try_into().unwrap()), 2);
         }
 
         #[test]

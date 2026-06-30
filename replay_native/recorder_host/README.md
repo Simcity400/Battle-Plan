@@ -223,6 +223,23 @@ failures while scheduling the full current air bundle plus
 `air_superiority_inputs`; the generated `.battleplan` also passed an
 independent `pack_replay verify`.
 
+`air_variant_upgrades` is compact domain id 39 and
+`stockpile_variant_upgrades` is compact domain id 40. They decode DLL-derived
+type-70 variant upgrade rows from active air-wing variant pointers and country
+stockpile variant pointers respectively. Rows are keyed by `variant_id` and
+own child `{upgrade_index, level}` entries. The host rejects malformed lengths,
+duplicate variant ids, invalid upgrade indexes or levels, duplicate indexes
+inside one variant row, unknown flags, non-zero reserved bytes, bad row/entry
+ranges, and trailing bytes. The stream intentionally carries raw indexes, not
+upgrade names, because live upgrade-name key resolution is still unproven.
+Proof
+`replay_native/runs/compact_air_variant_upgrades_870ebf_20260701_v1/native_session_manifest.json`
+advanced 99 game hours with 0 skipped and no source/partial/bridge/worker
+failures while scheduling the full current air bundle plus both upgrade
+domains. It emitted 446 stockpile upgrade entries; active-air upgrade rows were
+valid but zero-entry in this vanilla sample. The generated `.battleplan` also
+passed an independent `pack_replay verify`.
+
 `air_base_status` is compact domain id 34. It decodes DLL-derived air-base rows
 from the anchored strategic-air state-indexed air-base table. Rows are keyed by
 airbase id and carry state id, materialized capacity, state air-base building

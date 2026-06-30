@@ -151,6 +151,11 @@ const COMPACT_AIR_VARIANT_DEF_MAX_STRING_LEN: usize = 160;
 const COMPACT_AIR_VARIANT_STATS_ROW_LEN: usize = 64;
 const COMPACT_AIR_VARIANT_STATS_MAX_VARIANT_ID: u32 = i32::MAX as u32;
 const COMPACT_AIR_VARIANT_STATS_MAX_RAW: i32 = 1_000_000_000;
+const COMPACT_AIR_VARIANT_UPGRADE_ROW_LEN: usize = 16;
+const COMPACT_AIR_VARIANT_UPGRADE_ENTRY_ROW_LEN: usize = 8;
+const COMPACT_AIR_VARIANT_UPGRADE_MAX_VARIANT_ID: u32 = i32::MAX as u32;
+const COMPACT_AIR_VARIANT_UPGRADE_MAX_INDEX: u32 = 256;
+const COMPACT_AIR_VARIANT_UPGRADE_MAX_LEVEL: u32 = 255;
 const COMPACT_AIR_VARIANT_RESERVE_ROW_LEN: usize = 24;
 const COMPACT_AIR_VARIANT_RESERVE_ROW_FLAG_DELETED: u32 = 1;
 const COMPACT_AIR_VARIANT_RESERVE_MAX_TAG_DB_ID: u32 = 1_024;
@@ -1314,6 +1319,16 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                         &mut summary,
                     ),
                     38 => decode_compact_air_superiority_inputs_data_payload(
+                        offset,
+                        payload,
+                        &mut summary,
+                    ),
+                    39 => decode_compact_air_variant_upgrades_data_payload(
+                        offset,
+                        payload,
+                        &mut summary,
+                    ),
+                    40 => decode_compact_stockpile_variant_upgrades_data_payload(
                         offset,
                         payload,
                         &mut summary,
@@ -4862,6 +4877,233 @@ fn decode_compact_air_variant_stats_data_payload(
     );
 }
 
+fn decode_compact_air_variant_upgrades_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    decode_compact_variant_upgrades_data_payload(
+        offset,
+        payload,
+        summary,
+        39,
+        "air variant upgrades",
+        "air_variant_upgrade",
+    );
+}
+
+fn decode_compact_stockpile_variant_upgrades_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    decode_compact_variant_upgrades_data_payload(
+        offset,
+        payload,
+        summary,
+        40,
+        "stockpile variant upgrades",
+        "stockpile_variant_upgrade",
+    );
+}
+
+fn decode_compact_variant_upgrades_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+    domain_id: u16,
+    label: &str,
+    metric_prefix: &str,
+) {
+    if payload.len() < 44 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: {label} data payload is {} byte(s), expected at least 44",
+            payload.len()
+        ));
+        return;
+    }
+    let row_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let observed_variant_rows = read_u32_le(payload, 20) as usize;
+    let observed_upgrade_rows = read_u32_le(payload, 24) as usize;
+    let emitted_upgrade_rows = read_u32_le(payload, 28) as usize;
+    let invalid_variant_rows = read_u32_le(payload, 32) as usize;
+    let reserved0 = read_u32_le(payload, 36);
+    let reserved1 = read_u32_le(payload, 40);
+    summary.status_flags_or |= status_flags;
+    if changed_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: {label} changed_rows {changed_rows} > row_count {row_count}"
+        ));
+    }
+    if row_count > observed_variant_rows && (status_flags & COMPACT_STATUS_DELTA_DATA) == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: {label} row_count {row_count} > observed_variant_rows {observed_variant_rows}"
+        ));
+    }
+    if emitted_upgrade_rows > observed_upgrade_rows
+        && (status_flags & COMPACT_STATUS_DELTA_DATA) == 0
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: {label} emitted_upgrade_rows {emitted_upgrade_rows} > observed_upgrade_rows {observed_upgrade_rows}"
+        ));
+    }
+    if invalid_variant_rows > observed_variant_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: {label} invalid_variant_rows {invalid_variant_rows} > observed_variant_rows {observed_variant_rows}"
+        ));
+    }
+    if reserved0 != 0 || reserved1 != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: {label} header reserved field is nonzero"
+        ));
+    }
+    let expected_len = 44usize
+        .saturating_add(row_count.saturating_mul(COMPACT_AIR_VARIANT_UPGRADE_ROW_LEN))
+        .saturating_add(
+            emitted_upgrade_rows.saturating_mul(COMPACT_AIR_VARIANT_UPGRADE_ENTRY_ROW_LEN),
+        );
+    if payload.len() != expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: {label} data payload is {} byte(s), expected {expected_len}",
+            payload.len()
+        ));
+        return;
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&domain_id) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    add_compact_domain_data_unit(
+        summary,
+        domain_id,
+        &format!("{metric_prefix}_rows"),
+        row_count,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        domain_id,
+        &format!("{metric_prefix}_observed_variant_rows"),
+        observed_variant_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        domain_id,
+        &format!("{metric_prefix}_observed_upgrade_rows"),
+        observed_upgrade_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        domain_id,
+        &format!("{metric_prefix}_emitted_upgrade_rows"),
+        emitted_upgrade_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        domain_id,
+        &format!("{metric_prefix}_invalid_variant_rows"),
+        invalid_variant_rows,
+    );
+
+    let mut cursor = 44usize;
+    let mut seen_variants = BTreeSet::new();
+    let mut rows = Vec::with_capacity(row_count);
+    let mut declared_upgrades = 0usize;
+    for row_index in 0..row_count {
+        let variant_id = read_u32_le(payload, cursor);
+        let flags = read_u32_le(payload, cursor + 4);
+        let upgrade_first = read_u32_le(payload, cursor + 8) as usize;
+        let upgrade_count = read_u32_le(payload, cursor + 12) as usize;
+        cursor += COMPACT_AIR_VARIANT_UPGRADE_ROW_LEN;
+        if variant_id == 0 || variant_id > COMPACT_AIR_VARIANT_UPGRADE_MAX_VARIANT_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: {label} row {row_index} has invalid variant_id {variant_id}"
+            ));
+        } else if !seen_variants.insert(variant_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: {label} row {row_index} duplicates variant_id {variant_id}"
+            ));
+        }
+        if flags != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: {label} row {row_index} has unknown flags {flags}"
+            ));
+        }
+        let Some(upgrade_end) = upgrade_first.checked_add(upgrade_count) else {
+            summary.parse_errors.push(format!(
+                "offset {offset}: {label} row {row_index} upgrade range overflows"
+            ));
+            continue;
+        };
+        if upgrade_end > emitted_upgrade_rows {
+            summary.parse_errors.push(format!(
+                "offset {offset}: {label} row {row_index} upgrade range {upgrade_first}+{upgrade_count} exceeds {emitted_upgrade_rows}"
+            ));
+        }
+        declared_upgrades = declared_upgrades.saturating_add(upgrade_count);
+        rows.push((upgrade_first, upgrade_count));
+    }
+    if declared_upgrades != emitted_upgrade_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: {label} emitted_upgrade_rows {emitted_upgrade_rows} != declared {declared_upgrades}"
+        ));
+    }
+
+    let mut entries = Vec::with_capacity(emitted_upgrade_rows);
+    let mut level_sum = 0usize;
+    for entry_index in 0..emitted_upgrade_rows {
+        let upgrade_index = read_u32_le(payload, cursor);
+        let level = read_u32_le(payload, cursor + 4);
+        cursor += COMPACT_AIR_VARIANT_UPGRADE_ENTRY_ROW_LEN;
+        if upgrade_index >= COMPACT_AIR_VARIANT_UPGRADE_MAX_INDEX {
+            summary.parse_errors.push(format!(
+                "offset {offset}: {label} upgrade row {entry_index} has invalid upgrade_index {upgrade_index}"
+            ));
+        }
+        if level > COMPACT_AIR_VARIANT_UPGRADE_MAX_LEVEL {
+            summary.parse_errors.push(format!(
+                "offset {offset}: {label} upgrade row {entry_index} has invalid level {level}"
+            ));
+        }
+        level_sum = level_sum.saturating_add(level as usize);
+        entries.push((upgrade_index, level));
+    }
+    for (row_index, (upgrade_first, upgrade_count)) in rows.iter().enumerate() {
+        let mut seen_indexes = BTreeSet::new();
+        for entry_index in *upgrade_first..upgrade_first.saturating_add(*upgrade_count) {
+            if let Some((upgrade_index, _)) = entries.get(entry_index) {
+                if !seen_indexes.insert(*upgrade_index) {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: {label} row {row_index} duplicates upgrade_index {upgrade_index}"
+                    ));
+                }
+            }
+        }
+    }
+    if cursor != payload.len() {
+        summary.parse_errors.push(format!(
+            "offset {offset}: {label} payload has {} trailing byte(s)",
+            payload.len().saturating_sub(cursor)
+        ));
+    }
+    add_compact_domain_data_unit(
+        summary,
+        domain_id,
+        &format!("{metric_prefix}_entry_rows"),
+        emitted_upgrade_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        domain_id,
+        &format!("{metric_prefix}_level_sum"),
+        level_sum,
+    );
+}
+
 fn decode_compact_air_variant_reserves_data_payload(
     offset: usize,
     payload: &[u8],
@@ -6456,6 +6698,8 @@ fn compact_domain_id(domain: &str) -> Option<u16> {
         "air_variant_reserves" => Some(36),
         "stockpile_variant_defs" => Some(37),
         "air_superiority_inputs" => Some(38),
+        "air_variant_upgrades" => Some(39),
+        "stockpile_variant_upgrades" => Some(40),
         _ => None,
     }
 }
@@ -6489,6 +6733,8 @@ fn compact_domain_name(domain_id: u16) -> &'static str {
         36 => "air_variant_reserves",
         37 => "stockpile_variant_defs",
         38 => "air_superiority_inputs",
+        39 => "air_variant_upgrades",
+        40 => "stockpile_variant_upgrades",
         1000 => "frame",
         _ => "unknown",
     }
@@ -8174,6 +8420,181 @@ mod tests {
         );
         assert_eq!(compact_domain_id("air_variant_stats"), Some(35));
         assert_eq!(compact_domain_name(35), "air_variant_stats");
+    }
+
+    #[test]
+    fn compact_summary_decodes_air_variant_upgrades_data_record() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            39,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(350, 140, 2, 5, 2, COMPACT_STATUS_DELTA_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            39,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_air_variant_upgrades_data_payload(COMPACT_STATUS_DELTA_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(&summary, &[39]).is_empty());
+        let upgrades = summary.per_domain.get(&39).unwrap();
+        assert_eq!(upgrades.row_count_total, 140);
+        assert_eq!(upgrades.unit_count_total, 5);
+        assert_eq!(upgrades.data_record_count, 1);
+        assert_eq!(upgrades.data_rows_total, 2);
+        assert_eq!(upgrades.data_changed_rows_total, 2);
+        assert_eq!(
+            upgrades
+                .data_units_total
+                .get("air_variant_upgrade_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            upgrades
+                .data_units_total
+                .get("air_variant_upgrade_observed_variant_rows")
+                .copied(),
+            Some(140)
+        );
+        assert_eq!(
+            upgrades
+                .data_units_total
+                .get("air_variant_upgrade_observed_upgrade_rows")
+                .copied(),
+            Some(5)
+        );
+        assert_eq!(
+            upgrades
+                .data_units_total
+                .get("air_variant_upgrade_entry_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            upgrades
+                .data_units_total
+                .get("air_variant_upgrade_level_sum")
+                .copied(),
+            Some(5)
+        );
+        assert_eq!(compact_domain_id("air_variant_upgrades"), Some(39));
+        assert_eq!(compact_domain_name(39), "air_variant_upgrades");
+    }
+
+    #[test]
+    fn compact_summary_decodes_stockpile_variant_upgrades_data_record() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            40,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(360, 140, 2, 5, 2, COMPACT_STATUS_DELTA_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            40,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_air_variant_upgrades_data_payload(COMPACT_STATUS_DELTA_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(&summary, &[40]).is_empty());
+        let upgrades = summary.per_domain.get(&40).unwrap();
+        assert_eq!(upgrades.data_record_count, 1);
+        assert_eq!(upgrades.data_rows_total, 2);
+        assert_eq!(
+            upgrades
+                .data_units_total
+                .get("stockpile_variant_upgrade_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            upgrades
+                .data_units_total
+                .get("stockpile_variant_upgrade_entry_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            upgrades
+                .data_units_total
+                .get("stockpile_variant_upgrade_level_sum")
+                .copied(),
+            Some(5)
+        );
+        assert_eq!(compact_domain_id("stockpile_variant_upgrades"), Some(40));
+        assert_eq!(compact_domain_name(40), "stockpile_variant_upgrades");
+    }
+
+    #[test]
+    fn compact_summary_rejects_duplicate_air_variant_upgrade_indexes() {
+        let mut payload = test_air_variant_upgrades_data_payload(COMPACT_STATUS_DELTA_DATA);
+        let duplicate_entry = 44
+            + 2 * COMPACT_AIR_VARIANT_UPGRADE_ROW_LEN
+            + COMPACT_AIR_VARIANT_UPGRADE_ENTRY_ROW_LEN;
+        payload[duplicate_entry..duplicate_entry + 4].copy_from_slice(&0u32.to_le_bytes());
+
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            39,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary
+                .parse_errors
+                .iter()
+                .any(|error| error.contains("duplicates upgrade_index")),
+            "{:?}",
+            summary.parse_errors
+        );
     }
 
     #[test]
@@ -10238,6 +10659,35 @@ mod tests {
             payload.extend_from_slice(&fuel_consumption_raw.to_le_bytes());
             payload.extend_from_slice(&build_cost_ic_raw.to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        payload
+    }
+
+    fn test_air_variant_upgrades_data_payload(status_flags: u32) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&140u32.to_le_bytes());
+        payload.extend_from_slice(&5u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+
+        for (variant_id, upgrade_first, upgrade_count) in
+            [(1375u32, 0u32, 2u32), (5578u32, 2u32, 0u32)]
+        {
+            payload.extend_from_slice(&variant_id.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&upgrade_first.to_le_bytes());
+            payload.extend_from_slice(&upgrade_count.to_le_bytes());
+        }
+
+        for (upgrade_index, level) in [(0u32, 3u32), (1u32, 2u32)] {
+            payload.extend_from_slice(&upgrade_index.to_le_bytes());
+            payload.extend_from_slice(&level.to_le_bytes());
         }
         payload
     }

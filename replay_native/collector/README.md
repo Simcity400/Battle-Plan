@@ -937,6 +937,15 @@ Air-wing raw stream status:
   fixed-point equipment amount, and tombstones. This captures the production
   inputs needed to reconstruct/model per-region air power; it intentionally does
   not claim the exact cached displayed HOI4 air-superiority percent.
+- Compact `air_variant_upgrades` is domain id 39 and
+  `stockpile_variant_upgrades` is domain id 40. They reuse the active air-wing
+  type-70 variant pointer set and the anchored country stockpile type-70 variant
+  pointer set respectively, validate each variant by vtable/type/id, validate
+  the current-build upgrade container at `variant+0x68`, and emit pointer-free
+  rows keyed by `variant_id` with child `{upgrade_index, level}` entries. The
+  stream intentionally records raw upgrade indexes and levels only: prior
+  Python/Ghidra research still has not resolved live upgrade-name keys, so the
+  production recorder does not invent names.
 - Compact `air_base_status` is domain id 34. It walks the live strategic-air
   state-indexed air-base table at `strategic_air+0x90`, validates air-base
   records by vtable `MODULE+0x2941FA0`, `{air_base_id,type=65}` handle at
@@ -1057,9 +1066,26 @@ Air-wing raw stream status:
   bridge-unavailable, or worker-panic flags. `air_superiority_inputs` read p95
   was 40651 us, frame p95 was 50067 us, and an independent `pack_replay verify`
   pass accepted the generated `.battleplan`.
+- Current variant-upgrade compact proof:
+  `replay_native/runs/compact_air_variant_upgrades_870ebf_20260701_v1/native_session_manifest.json`
+  scheduled `air_wings`, `air_wing_loadouts`, `air_variant_defs`,
+  `air_variant_stats`, `stockpile_variant_defs`, `air_variant_reserves`,
+  `air_base_status`, `air_superiority_inputs`, `air_variant_upgrades`, and
+  `stockpile_variant_upgrades` for 60 seconds at no-sleep compact sampling,
+  advanced 99 game hours, skipped 0, emitted ordered/decodable compact records
+  with full scheduled-domain coverage, wrote 515177 total bytes / 447977
+  payload bytes, captured 18400 observed active-air variant rows, 140388
+  observed stockpile variant rows, 446 emitted stockpile upgrade entries, and
+  reported no source-unavailable, partial-data, bridge-unavailable, or
+  worker-panic flags. `air_variant_upgrades` had zero upgrade entries in this
+  vanilla active-air sample, which is valid observed data for modular aircraft.
+  `stockpile_variant_upgrades` read p95 was 23606 us, frame p95 was 55174 us,
+  and an independent `pack_replay verify` pass accepted the generated
+  `.battleplan`.
 - Remaining promotion work is live proof while changing missions/rebasing,
   airbase capacity modifiers/penalty semantics, aircraft archetype/base-airframe
-  classification, true global equipment registry roots beyond stockpiles, aces,
+  classification and air-superiority weight resolution, live upgrade-name
+  resolution, true global equipment registry roots beyond stockpiles, aces,
   air-loss/attrition proof, air-combat resolution, exact displayed
   air-superiority percent classification, and timeline ingestion.
 
