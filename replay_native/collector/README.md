@@ -879,8 +879,16 @@ Air-wing raw stream status:
   from the same anchored wing sample, buckets non-idle wings by
   `(mission_region, owner_tag_db_id, mission_mask)`, and emits wing count, raw
   plane count, effective active plane count, and delete rows. It does not claim
-  airbase identity/capacity, aircraft variant/type, reserves, aces, losses, or
-  the final displayed air-superiority percent.
+  airbase capacity, aircraft type definition metadata, reserves, aces, losses,
+  or the final displayed air-superiority percent.
+- Compact `air_wing_loadouts` is domain id 32. It walks the same anchored
+  strategic-air root in the DLL, validates `pool+0x18` as the live
+  `{air_base_id,type=65}` handle, validates `wing_body+0x1E8` as a compact
+  type-70 equipment bank, and emits pointer-free parent rows keyed by owner tag
+  db id, wing id, generation, home airbase id, equipment child range, and delete
+  rows. Child rows carry equipment variant id plus raw fixed-point amount. The
+  DLL retries bounded transient bank reads before failing closed; Python/save
+  probes are discovery evidence only and are not in the recording loop.
 - Previous bridge fixture status: live-proven by no-cold cache-backed run
   `replay/snapshots/_collector_session_air_wing_gate/20260629T205254Z_pid43412`.
   The run advanced 12 game hours in 55.875 wall seconds, verified replay output,
@@ -913,8 +921,17 @@ Air-wing raw stream status:
   emitted 302 changed region rows with 18 deletes, and reported no source-
   unavailable, partial-data, bridge-unavailable, or worker-panic flags. Frame
   time p95 was 10347 us; region-activity read p95 was 9207 us.
-- Remaining promotion work is live proof while changing missions, exact
-  airbase identity/capacity joins, aircraft variant/type and equipment joins,
+- Current air-loadout compact proof:
+  `replay_native/runs/compact_air_loadouts_870ebf_20260701_v2/native_session_manifest.json`
+  scheduled `air_wings`, `air_region_activity`, and `air_wing_loadouts` for 60
+  seconds at 10 ms sampling, advanced 113 game hours, skipped 0, emitted
+  ordered/decodable compact records, wrote 204760 total bytes / 179224 payload
+  bytes, captured 45944 observed air-wing rows, 121261 observed wing-equipment
+  rows, 787 changed loadout rows, 2613 emitted equipment rows, and reported no
+  source-unavailable, partial-data, bridge-unavailable, or worker-panic flags.
+  Frame p95 was 13179 us; loadout read p95 was 11592 us.
+- Remaining promotion work is live proof while changing missions/rebasing,
+  exact airbase capacity joins, aircraft type definition/stat metadata,
   reserves/aces, air-loss/attrition proof, air-combat resolution, exact
   displayed air-superiority percent classification, and timeline ingestion.
 

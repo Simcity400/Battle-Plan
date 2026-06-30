@@ -114,7 +114,8 @@ replay_native\target\release\collector_record.exe `
 
 When `--scheduled-domain` is supplied, heavy raw domains such as `map_control`,
 `land_combats`, `divisions`, `army_orders`, `naval_air_combats`,
-`naval_combat_members`, `air_wings`, `ships`, and `oob_command` are captured
+`naval_combat_members`, `air_wings`, `air_wing_loadouts`, `ships`, and
+`oob_command` are captured
 only if explicitly requested. This keeps independent country-domain proof gates
 from being slowed by unrelated late-game combat traffic. Raw clock deltas follow
 the same rule for filtered sessions: request `--scheduled-domain clock` when a
@@ -133,6 +134,18 @@ owner/mission buckets from the anchored air-wing sample, with wing counts, raw
 plane counts, effective active planes, and delete rows. It rejects malformed
 lengths, duplicate region/owner/mission rows, impossible ids/counts, unknown
 flags, non-zero deleted-row counts, non-zero reserved bytes, and trailing bytes.
+
+`air_wing_loadouts` is compact domain id 32. It decodes DLL-derived home
+airbase ids from `pool+0x18` `{id,type=65}` handles plus type-70 equipment
+child rows from `wing_body+0x1E8`. The host rejects malformed row/child lengths,
+duplicate owner/wing/generation rows, invalid airbase ids, invalid equipment
+variant ids, invalid raw amounts, duplicate variants per wing, non-zero
+deleted-row live fields, non-zero reserved bytes, and child ranges that do not
+match the emitted equipment table. Proof
+`replay_native/runs/compact_air_loadouts_870ebf_20260701_v2/native_session_manifest.json`
+advanced 113 game hours with 0 skipped and no source/partial/bridge/worker
+failures while scheduling `air_wings`, `air_region_activity`, and
+`air_wing_loadouts` together.
 
 Compact extraction gate example:
 

@@ -625,9 +625,9 @@ The app is product-complete only when all applicable gates pass:
   compact records, wrote 47884 total bytes / 37228 payload bytes, captured 41474
   observed air-wing rows, 631 changed rows, and 296 mission-region rows, and
   reported no source-unavailable, partial-data, bridge-unavailable, or worker
-  panic flags. Remaining air-system capture gaps are variants, airbase joins,
-  reserves, aces, capacity, exact region superiority, losses, and air-combat
-  resolution.
+  panic flags. This closed the compact wing roster/mission/effective-plane
+  slice; loadouts, capacity, reserves, aces, losses, and exact region
+  superiority were still separate gaps at that checkpoint.
 - Compact `air_region_activity` proof passed on 2026-07-01:
   `replay_native/runs/compact_air_region_activity_870ebf_20260701_v2/native_session_manifest.json`
   scheduled `air_wings` plus `air_region_activity` for 60 seconds at 10 ms
@@ -635,9 +635,21 @@ The app is product-complete only when all applicable gates pass:
   decodable compact records, captured 44522 observed air-wing rows, 6461
   observed region-activity buckets, 302 changed region rows, and 18 region
   deletes, and reported no source-unavailable, partial-data, bridge-unavailable,
-  or worker panic flags. The remaining air gaps are live airbase identity/
-  capacity, plane variant/type/equipment joins, reserves, aces, losses, and
-  exact displayed superiority percent classification.
+  or worker panic flags. This closed the compact per-region active-wing
+  aggregate, but not home airbase, equipment loadouts, capacity, reserves, aces,
+  losses, or exact displayed superiority percent classification.
+- Compact `air_wing_loadouts` proof passed on 2026-07-01:
+  `replay_native/runs/compact_air_loadouts_870ebf_20260701_v2/native_session_manifest.json`
+  scheduled `air_wings`, `air_region_activity`, and `air_wing_loadouts` for 60
+  seconds at 10 ms sampling, advanced 113 game hours, skipped 0 game hours,
+  emitted ordered/decodable compact records, captured 45944 observed air-wing
+  rows, 121261 observed wing-equipment rows, 787 changed loadout rows, and 2613
+  emitted equipment rows, and reported no source-unavailable, partial-data,
+  bridge-unavailable, or worker panic flags. This closes home airbase id and
+  wing equipment variant amounts for the verified `870ebf` build. Remaining air
+  gaps are airbase capacity/penalties, aircraft type/stat metadata for variant
+  ids, reserves, aces, losses, exact displayed superiority percent, and active
+  air-combat resolution.
 - Every registered view opens from the in-app menu.
 - Every registered view has an interaction contract.
 - Every read-only interaction in each contract is implemented and tested.

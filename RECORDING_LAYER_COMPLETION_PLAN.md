@@ -804,16 +804,24 @@ Tasks:
   -> pool+0x28/+0x34 -> air_wing_object+0x10`. It emits
   `air_wing_observed`, `air_wing_updated`, and `air_wing_lost` events with
   owner, wing id, generation, count, mission mask, mission region, and effective
-  active planes. It does not yet emit plane variant/type, airbase, reserves, ace
-  joins, airbase capacity, exact air-superiority percent, air losses, or region
-  combat resolution.
+  active planes. It does not yet emit aircraft type/stat metadata, reserves,
+  ace joins, airbase capacity, exact air-superiority percent, air losses, or
+  region combat resolution.
 - Current DLL checkpoint: `air_region_activity` is compact domain id 31,
   derived inside the DLL from the anchored air-wing sample. It buckets non-idle
   wings by `(mission_region, owner_tag_db_id, mission_mask)` and emits wing
   count, raw plane count, effective active plane count, and delete rows. This
   closes the replay-facing per-region activity aggregate, but it intentionally
-  does not claim unpinned airbase identity/capacity, plane variant/type,
-  reserves, aces, losses, or exact displayed air-superiority percent.
+  does not claim airbase capacity, aircraft type/stat metadata, reserves, aces,
+  losses, or exact displayed air-superiority percent.
+- Current DLL checkpoint: `air_wing_loadouts` is compact domain id 32. It uses
+  the anchored strategic-air root, reads `pool+0x18` as the live
+  `{air_base_id,type=65}` handle, reads `wing_body+0x1E8` as the type-70
+  equipment bank, and emits owner/wing/generation rows with home airbase id plus
+  equipment child rows `{variant_id, amount_raw}`. This closes home-airbase id
+  and live wing equipment variant amounts for the verified `870ebf` build. It
+  does not yet classify variant ids into aircraft type/stat metadata or read
+  airbase capacity/usage penalties.
 - Current no-bridge proof:
   `replay/snapshots/_collector_session_air_wing_native_gate/20260630T172419Z_pid45880`
   advanced 12 game hours in 83.860 wall seconds with speed-five/current game
@@ -839,6 +847,15 @@ Tasks:
   region rows, and 18 region deletes, and reported no source-unavailable,
   partial-data, bridge-unavailable, or worker-panic flags. Frame p95 was 10347
   us; air-region read p95 was 9207 us.
+- Current loadout compact proof:
+  `replay_native/runs/compact_air_loadouts_870ebf_20260701_v2/native_session_manifest.json`
+  scheduled `air_wings`, `air_region_activity`, and `air_wing_loadouts` for 60
+  seconds at 10 ms sampling, advanced 113 game hours with 0 skipped, emitted
+  ordered/decodable compact records, wrote 204760 total bytes / 179224 payload
+  bytes, captured 45944 observed air-wing rows, 121261 observed wing-equipment
+  rows, 787 changed loadout rows, 2613 emitted equipment rows, and reported no
+  source-unavailable, partial-data, bridge-unavailable, or worker-panic flags.
+  Frame p95 was 13179 us; air-loadout read p95 was 11592 us.
 - Build an active air-combat fixture for validation.
 - Resolve `airwing_effective_planes_denom` or badge it.
 - Decide which air-superiority values are exact live state and which are
