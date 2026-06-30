@@ -11,7 +11,8 @@ the compact extraction gate.
   hours.
 - The compact stream includes `DOMAIN_PERF` plus `FRAME_END` records for
   extraction proof, and now includes typed replay data payloads for the
-  production-shaped country-state lanes plus `divisions` and `land_combats`.
+  production-shaped country-state lanes plus `divisions`, `land_combats`, and
+  `map_control`.
 - The snapshot crate already owns the Rust `.battleplan` container primitives:
   `snapshot::pack` byte-copies payloads into a manifest-covered ZIP, and
   `snapshot::Container` reopens entries through verified hashes.
@@ -78,27 +79,47 @@ frames as the production path.
 - Preserve one sequence authority and make `FRAME_END` the last record for a
   game hour. Parallel read lanes may produce data concurrently, but packaged
   records need deterministic order.
+- The DLL collector now parallelizes high-level compact read lanes internally:
+  country-domain lane groups, `divisions`, `land_combats`, and `map_control`
+  can read concurrently, then the collector emits records in deterministic
+  order from the same sequence authority. This is required for the larger
+  11-domain speed-five gate; the serial version skipped hours.
 
 ## Still Open
 
 - Move `divisions` root discovery out of temporary Python preflight into the
   DLL/Rust host before marking that segment DLL-complete.
 - Add typed data records for army orders, OOB command, naval/air combat,
-  air wings, ships, province/state/building deltas, logistics/supply proxies,
-  weather, and remaining replay-critical event layers.
+  air wings, ships, map buildings/resources, logistics/supply proxies, weather,
+  and remaining replay-critical event layers.
 - Fold typed records into the future hourly snapshot spine once the raw compact
   stream is fully covered.
 
 ## Live Proof
 
-`compact_country_divisions_land_combats_speed5_v2_retry` passed the DLL/Rust
-compact path at speed five/current live speed with 10 scheduled domains:
+`compact_map_control_speed5_v2` passed the DLL/Rust compact path with native
+`CGameState+0x2B0` CProvince/CState roots. It advanced 145 game hours with 146
+frame-end records, 0 skipped hours, full per-hour coverage, 1,081 state
+ownership/control rows plus 13,413 province controller/state rows per frame, no
+source-unavailable or partial-data flags, avg frame 45.687 ms, p95 58.764 ms,
+max 73.840 ms, 33,887,184 raw stream bytes, and an independently verified
+`native_session.battleplan`.
+
+`compact_country_divisions_land_combats_map_speed5_v1` intentionally documents
+the failed serial 11-domain stress gate: the compact stream decoded, had full
+per-domain coverage, and had no source/partial/bridge failures, but skipped 19
+game hours with p95 frame time 154.237 ms. That failure is why the collector now
+uses internal high-level workers while keeping one DLL and one sequence/order
+authority.
+
+`compact_country_divisions_land_combats_map_speed5_v2_workers` passed the
+DLL/Rust compact path at speed five/current live speed with 11 scheduled domains:
 `fuel_live`, `production_live`, `focus_live`, `tech_live`, `politics_live`,
-`politics_residuals`, `decisions_live`, `diplomacy_live`, `divisions`, and
-`land_combats`. It advanced 187 game hours with 188 frame-end records, 0 skipped
-hours, full per-hour coverage, 0 parse/order errors, no worker-panic,
-bridge-unavailable, source-unavailable, or partial-data flags, avg frame
-60.247 ms, p95 90.664 ms, max 117.845 ms, 30,022,402 raw stream bytes, and an
-independently verified 9,456,740-byte `native_session.battleplan`. The
-`divisions` lane in that mixed proof still depends on a bounded one-time bridge
-preflight and remains temporary debt.
+`politics_residuals`, `decisions_live`, `diplomacy_live`, `divisions`,
+`land_combats`, and `map_control`. It advanced 141 game hours with 142 frame-end
+records, 0 skipped hours, full per-hour coverage, 0 parse/order errors, no
+worker-panic, bridge-unavailable, source-unavailable, or partial-data flags, avg
+frame 63.127 ms, p95 101.411 ms, max 145.158 ms, 55,244,380 raw stream bytes,
+and an independently verified `native_session.battleplan`. The `divisions` lane
+in that mixed proof still depends on a bounded one-time bridge preflight and
+remains temporary debt.

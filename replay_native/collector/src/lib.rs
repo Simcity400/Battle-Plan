@@ -2609,6 +2609,7 @@ mod attach_log {
     const RAW_CLOCK_ENTITY_KEY: &str = "clock:game_date";
     const RAW_DIVISIONS_DOMAIN: &str = "divisions";
     const RAW_LAND_COMBATS_DOMAIN: &str = "land_combats";
+    const RAW_MAP_CONTROL_DOMAIN: &str = "map_control";
     const RAW_ARMY_ORDERS_DOMAIN: &str = "army_orders";
     const RAW_NAVAL_COMBATS_DOMAIN: &str = "naval_air_combats";
     const RAW_NAVAL_COMBAT_MEMBERS_DOMAIN: &str = "naval_combat_members";
@@ -2652,6 +2653,7 @@ mod attach_log {
     const COMPACT_DOMAIN_DIPLOMACY: u16 = 17;
     const COMPACT_DOMAIN_DIVISIONS: u16 = 20;
     const COMPACT_DOMAIN_LAND_COMBATS: u16 = 21;
+    const COMPACT_DOMAIN_MAP_CONTROL: u16 = 22;
     const COMPACT_STATUS_STATE_UNAVAILABLE: u32 = 1 << 0;
     const COMPACT_STATUS_PROFILE_MISMATCH: u32 = 1 << 1;
     const COMPACT_STATUS_NO_CLOCK: u32 = 1 << 2;
@@ -2720,6 +2722,16 @@ mod attach_log {
         }
     }
 
+    struct CompactCountryGateTrackers<'a> {
+        economy: &'a mut CompactCountryFrameTracker,
+        focus_tech: &'a mut CompactCountryFrameTracker,
+        politics: &'a mut CompactCountryFrameTracker,
+        politics_residuals: &'a mut CompactCountryFrameTracker,
+        decisions: &'a mut CompactCountryFrameTracker,
+        diplomacy: &'a mut CompactCountryFrameTracker,
+        combined: &'a mut CompactCountryFrameTracker,
+    }
+
     #[derive(Default)]
     struct CompactPerfGateTrackers {
         economy: CompactCountryFrameTracker,
@@ -2731,6 +2743,7 @@ mod attach_log {
         combined: CompactCountryFrameTracker,
         division_movement: BTreeMap<u32, DivisionMovementSample>,
         land_combat: LandCombatTracker,
+        map_control: CompactMapControlTracker,
     }
 
     struct CompactBundleRead {
@@ -2763,6 +2776,16 @@ mod attach_log {
         status_flags: u32,
         participant_count: u32,
         ended_count: u32,
+    }
+
+    struct CompactMapControlRead {
+        state_rows: Vec<CompactMapStateRow>,
+        province_rows: Vec<CompactMapProvinceRow>,
+        read_time_us: u64,
+        changed_rows: u32,
+        changed_state_rows: u32,
+        changed_province_rows: u32,
+        status_flags: u32,
     }
 
     struct ClockSample {
@@ -2806,6 +2829,26 @@ mod attach_log {
     struct LandCombatTracker {
         previous: BTreeMap<u32, LandCombatSample>,
         next_generation: u64,
+    }
+
+    #[derive(Default)]
+    struct CompactMapControlTracker {
+        previous_states: BTreeMap<u32, CompactMapStateRow>,
+        previous_provinces: BTreeMap<u32, CompactMapProvinceRow>,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct CompactMapStateRow {
+        state_id: u32,
+        owner_tag_db_id: u32,
+        controller_tag_db_id: u32,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct CompactMapProvinceRow {
+        province_id: u32,
+        controller_tag_db_id: u32,
+        state_id: u32,
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -8680,24 +8723,93 @@ mod attach_log {
             .into_iter()
             .filter(|spec| scheduled_domain_enabled(Some(control), spec.name))
             .collect::<Vec<_>>();
-        let mut reads = if compact_parallel_gate_eligible(&enabled_specs) {
-            read_compact_country_domain_bundles_parallel(
-                state,
-                control,
-                enabled_specs,
-                status_flags,
-                trackers,
-            )
-        } else {
-            vec![read_compact_country_domain_bundle(
-                state,
-                control,
-                enabled_specs,
-                status_flags,
-                &mut trackers.combined,
-            )]
+        let divisions_enabled = compact_explicit_domain_enabled(control, RAW_DIVISIONS_DOMAIN);
+        let land_combats_enabled =
+            compact_explicit_domain_enabled(control, RAW_LAND_COMBATS_DOMAIN);
+        let map_control_enabled = compact_map_control_enabled(control);
+        let mut country_reads = Vec::new();
+        let mut division_read = None;
+        let mut land_combat_read = None;
+        let mut map_control_read = None;
+        let country_specs_for_panic = enabled_specs.clone();
+        let country_trackers = CompactCountryGateTrackers {
+            economy: &mut trackers.economy,
+            focus_tech: &mut trackers.focus_tech,
+            politics: &mut trackers.politics,
+            politics_residuals: &mut trackers.politics_residuals,
+            decisions: &mut trackers.decisions,
+            diplomacy: &mut trackers.diplomacy,
+            combined: &mut trackers.combined,
         };
-        for read in reads.drain(..) {
+        let division_tracker = &mut trackers.division_movement;
+        let land_combat_tracker = &mut trackers.land_combat;
+        let map_control_tracker = &mut trackers.map_control;
+        thread::scope(|scope| {
+            let country_handle = if enabled_specs.is_empty() {
+                None
+            } else {
+                Some(scope.spawn(move || {
+                    read_compact_country_domain_bundles(
+                        state,
+                        control,
+                        enabled_specs,
+                        status_flags,
+                        country_trackers,
+                    )
+                }))
+            };
+            let division_handle = if divisions_enabled {
+                Some(scope.spawn(move || {
+                    read_compact_divisions(state, control, status_flags, division_tracker)
+                }))
+            } else {
+                None
+            };
+            let land_combat_handle = if land_combats_enabled {
+                Some(scope.spawn(move || {
+                    read_compact_land_combats(state, status_flags, land_combat_tracker)
+                }))
+            } else {
+                None
+            };
+            let map_control_handle = if map_control_enabled {
+                Some(scope.spawn(move || {
+                    read_compact_map_control(state, status_flags, map_control_tracker)
+                }))
+            } else {
+                None
+            };
+
+            if let Some(handle) = country_handle {
+                country_reads = match handle.join() {
+                    Ok(reads) => reads,
+                    Err(_) => vec![compact_worker_panic_read(
+                        country_specs_for_panic,
+                        status_flags,
+                    )],
+                };
+            }
+            if let Some(handle) = division_handle {
+                division_read = Some(match handle.join() {
+                    Ok(read) => read,
+                    Err(_) => compact_division_worker_panic_read(control, status_flags),
+                });
+            }
+            if let Some(handle) = land_combat_handle {
+                land_combat_read = Some(match handle.join() {
+                    Ok(read) => read,
+                    Err(_) => compact_land_combat_worker_panic_read(status_flags),
+                });
+            }
+            if let Some(handle) = map_control_handle {
+                map_control_read = Some(match handle.join() {
+                    Ok(read) => read,
+                    Err(_) => compact_map_control_worker_panic_read(status_flags),
+                });
+            }
+        });
+
+        for read in country_reads.drain(..) {
             for spec in read.specs {
                 let changed_rows = read
                     .rows
@@ -8795,8 +8907,7 @@ mod attach_log {
                 emitted_domains = emitted_domains.saturating_add(1);
             }
         }
-        if compact_explicit_domain_enabled(control, RAW_DIVISIONS_DOMAIN) {
-            let read = read_compact_divisions(state, control, status_flags, trackers);
+        if let Some(read) = division_read {
             append_compact_domain_perf_record(
                 &mut out,
                 sequence,
@@ -8826,8 +8937,7 @@ mod attach_log {
             sequence = sequence.saturating_add(1);
             emitted_domains = emitted_domains.saturating_add(1);
         }
-        if compact_explicit_domain_enabled(control, RAW_LAND_COMBATS_DOMAIN) {
-            let read = read_compact_land_combats(state, status_flags, trackers);
+        if let Some(read) = land_combat_read {
             append_compact_domain_perf_record(
                 &mut out,
                 sequence,
@@ -8858,6 +8968,42 @@ mod attach_log {
             sequence = sequence.saturating_add(1);
             emitted_domains = emitted_domains.saturating_add(1);
         }
+        if let Some(read) = map_control_read {
+            append_compact_domain_perf_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                CompactDomainPerfRecord {
+                    domain_id: COMPACT_DOMAIN_MAP_CONTROL,
+                    read_time_us: read.read_time_us,
+                    row_count: read
+                        .state_rows
+                        .len()
+                        .saturating_add(read.province_rows.len())
+                        .min(u32::MAX as usize) as u32,
+                    changed_rows: read.changed_rows,
+                    unit_count: read.province_rows.len().min(u32::MAX as usize) as u32,
+                    changed_unit_count: read.changed_province_rows,
+                    status_flags: read.status_flags,
+                },
+                elapsed_wall_ms,
+            );
+            sequence = sequence.saturating_add(1);
+            append_compact_map_control_data_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                &read.state_rows,
+                &read.province_rows,
+                elapsed_wall_ms,
+                read.status_flags,
+                read.changed_rows,
+                read.changed_state_rows,
+                read.changed_province_rows,
+            );
+            sequence = sequence.saturating_add(1);
+            emitted_domains = emitted_domains.saturating_add(1);
+        }
         append_compact_frame_end_record(
             &mut out,
             sequence,
@@ -8883,12 +9029,48 @@ mod attach_log {
                 .any(|scheduled| scheduled == domain)
     }
 
+    fn compact_map_control_enabled(control: &CollectorControl) -> bool {
+        control.scheduled_domains_valid
+            && control.scheduled_domains.iter().any(|scheduled| {
+                scheduled == RAW_MAP_CONTROL_DOMAIN
+                    || scheduled == "state_ownership"
+                    || scheduled == "state_control"
+                    || scheduled == "province_control"
+            })
+    }
+
+    fn read_compact_country_domain_bundles(
+        state: &CollectorState,
+        control: &CollectorControl,
+        specs: Vec<CompactCountryDomainSpec>,
+        status_flags: u32,
+        trackers: CompactCountryGateTrackers<'_>,
+    ) -> Vec<CompactBundleRead> {
+        if compact_parallel_gate_eligible(&specs) {
+            read_compact_country_domain_bundles_parallel(
+                state,
+                control,
+                specs,
+                status_flags,
+                trackers,
+            )
+        } else {
+            vec![read_compact_country_domain_bundle(
+                state,
+                control,
+                specs,
+                status_flags,
+                trackers.combined,
+            )]
+        }
+    }
+
     fn read_compact_country_domain_bundles_parallel(
         state: &CollectorState,
         control: &CollectorControl,
         specs: Vec<CompactCountryDomainSpec>,
         status_flags: u32,
-        trackers: &mut CompactPerfGateTrackers,
+        trackers: CompactCountryGateTrackers<'_>,
     ) -> Vec<CompactBundleRead> {
         let CompactParallelSpecs {
             economy,
@@ -8904,12 +9086,15 @@ mod attach_log {
         let politics_residuals_specs_for_panic = politics_residuals.clone();
         let decisions_specs_for_panic = decisions.clone();
         let diplomacy_specs_for_panic = diplomacy.clone();
-        let economy_tracker = &mut trackers.economy;
-        let focus_tech_tracker = &mut trackers.focus_tech;
-        let politics_tracker = &mut trackers.politics;
-        let politics_residuals_tracker = &mut trackers.politics_residuals;
-        let decisions_tracker = &mut trackers.decisions;
-        let diplomacy_tracker = &mut trackers.diplomacy;
+        let CompactCountryGateTrackers {
+            economy: economy_tracker,
+            focus_tech: focus_tech_tracker,
+            politics: politics_tracker,
+            politics_residuals: politics_residuals_tracker,
+            decisions: decisions_tracker,
+            diplomacy: diplomacy_tracker,
+            combined: _,
+        } = trackers;
         let mut economy_read = None;
         let mut focus_tech_read = None;
         let mut politics_read = None;
@@ -9233,11 +9418,47 @@ mod attach_log {
         }
     }
 
+    fn compact_division_worker_panic_read(
+        control: &CollectorControl,
+        status_flags: u32,
+    ) -> CompactDivisionRead {
+        CompactDivisionRead {
+            rows: Vec::new(),
+            read_time_us: 0,
+            changed_rows: 0,
+            status_flags: status_flags | COMPACT_STATUS_WORKER_PANIC,
+            bridge_rows: control.division_body_bridge.len().min(u32::MAX as usize) as u32,
+        }
+    }
+
+    fn compact_land_combat_worker_panic_read(status_flags: u32) -> CompactLandCombatRead {
+        CompactLandCombatRead {
+            rows: Vec::new(),
+            read_time_us: 0,
+            changed_rows: 0,
+            status_flags: status_flags | COMPACT_STATUS_WORKER_PANIC,
+            participant_count: 0,
+            ended_count: 0,
+        }
+    }
+
+    fn compact_map_control_worker_panic_read(status_flags: u32) -> CompactMapControlRead {
+        CompactMapControlRead {
+            state_rows: Vec::new(),
+            province_rows: Vec::new(),
+            read_time_us: 0,
+            changed_rows: 0,
+            changed_state_rows: 0,
+            changed_province_rows: 0,
+            status_flags: status_flags | COMPACT_STATUS_WORKER_PANIC,
+        }
+    }
+
     fn read_compact_divisions(
         state: &CollectorState,
         control: &CollectorControl,
         status_flags: u32,
-        trackers: &mut CompactPerfGateTrackers,
+        tracker: &mut BTreeMap<u32, DivisionMovementSample>,
     ) -> CompactDivisionRead {
         let read_started = Instant::now();
         let mut status_flags = status_flags;
@@ -9260,17 +9481,14 @@ mod attach_log {
             let Some(sample) = sample_division_movement(state.base, entry) else {
                 continue;
             };
-            let changed = trackers
-                .division_movement
+            let changed = tracker
                 .get(&sample.div_id)
                 .map(|old| old != &sample)
                 .unwrap_or(true);
             if changed {
                 changed_rows = changed_rows.saturating_add(1);
             }
-            trackers
-                .division_movement
-                .insert(sample.div_id, sample.clone());
+            tracker.insert(sample.div_id, sample.clone());
             rows.push(sample);
         }
 
@@ -9286,7 +9504,7 @@ mod attach_log {
     fn read_compact_land_combats(
         state: &CollectorState,
         status_flags: u32,
-        trackers: &mut CompactPerfGateTrackers,
+        tracker: &mut LandCombatTracker,
     ) -> CompactLandCombatRead {
         let read_started = Instant::now();
         let mut status_flags = status_flags;
@@ -9299,7 +9517,7 @@ mod attach_log {
                     changed_rows: 0,
                     status_flags: status_flags | COMPACT_STATUS_SOURCE_UNAVAILABLE,
                     participant_count: 0,
-                    ended_count: trackers.land_combat.previous.len().min(u32::MAX as usize) as u32,
+                    ended_count: tracker.previous.len().min(u32::MAX as usize) as u32,
                 }
             }
         };
@@ -9309,23 +9527,17 @@ mod attach_log {
         let mut changed_rows = 0u32;
         let mut participant_count = 0u32;
         for mut sample in current_samples {
-            let old = trackers
-                .land_combat
-                .previous
-                .get(&sample.combat_id)
-                .cloned();
+            let old = tracker.previous.get(&sample.combat_id).cloned();
             let continues = land_combat_continues(old.as_ref(), &sample);
             let generation = if continues {
                 old.as_ref().map(|old| old.generation).unwrap_or_else(|| {
-                    let generation = trackers.land_combat.next_generation;
-                    trackers.land_combat.next_generation =
-                        trackers.land_combat.next_generation.saturating_add(1);
+                    let generation = tracker.next_generation;
+                    tracker.next_generation = tracker.next_generation.saturating_add(1);
                     generation
                 })
             } else {
-                let generation = trackers.land_combat.next_generation;
-                trackers.land_combat.next_generation =
-                    trackers.land_combat.next_generation.saturating_add(1);
+                let generation = tracker.next_generation;
+                tracker.next_generation = tracker.next_generation.saturating_add(1);
                 generation
             };
             sample.generation = generation;
@@ -9362,14 +9574,13 @@ mod attach_log {
             current.insert(sample.combat_id, sample.clone());
             rows.push(sample);
         }
-        let ended_count = trackers
-            .land_combat
+        let ended_count = tracker
             .previous
             .keys()
             .filter(|combat_id| !current.contains_key(combat_id))
             .count()
             .min(u32::MAX as usize) as u32;
-        trackers.land_combat.previous = current;
+        tracker.previous = current;
 
         CompactLandCombatRead {
             rows,
@@ -9379,6 +9590,215 @@ mod attach_log {
             participant_count,
             ended_count,
         }
+    }
+
+    fn read_compact_map_control(
+        state: &CollectorState,
+        status_flags: u32,
+        tracker: &mut CompactMapControlTracker,
+    ) -> CompactMapControlRead {
+        let read_started = Instant::now();
+        let (state_rows, province_rows) = match sample_compact_map_control_with_retry(state, 3) {
+            Ok(rows) => rows,
+            Err(_) => {
+                return CompactMapControlRead {
+                    state_rows: Vec::new(),
+                    province_rows: Vec::new(),
+                    read_time_us: duration_micros_u64(read_started.elapsed()),
+                    changed_rows: 0,
+                    changed_state_rows: 0,
+                    changed_province_rows: 0,
+                    status_flags: status_flags | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                }
+            }
+        };
+
+        let mut changed_state_rows = 0u32;
+        for row in &state_rows {
+            if tracker
+                .previous_states
+                .get(&row.state_id)
+                .map(|old| old != row)
+                .unwrap_or(true)
+            {
+                changed_state_rows = changed_state_rows.saturating_add(1);
+            }
+        }
+        let mut changed_province_rows = 0u32;
+        for row in &province_rows {
+            if tracker
+                .previous_provinces
+                .get(&row.province_id)
+                .map(|old| old != row)
+                .unwrap_or(true)
+            {
+                changed_province_rows = changed_province_rows.saturating_add(1);
+            }
+        }
+        tracker.previous_states = state_rows
+            .iter()
+            .map(|row| (row.state_id, *row))
+            .collect::<BTreeMap<_, _>>();
+        tracker.previous_provinces = province_rows
+            .iter()
+            .map(|row| (row.province_id, *row))
+            .collect::<BTreeMap<_, _>>();
+
+        CompactMapControlRead {
+            state_rows,
+            province_rows,
+            read_time_us: duration_micros_u64(read_started.elapsed()),
+            changed_rows: changed_state_rows.saturating_add(changed_province_rows),
+            changed_state_rows,
+            changed_province_rows,
+            status_flags,
+        }
+    }
+
+    fn sample_compact_map_control_with_retry(
+        state: &CollectorState,
+        attempts: usize,
+    ) -> Result<(Vec<CompactMapStateRow>, Vec<CompactMapProvinceRow>), &'static str> {
+        let attempt_count = attempts.max(1);
+        for attempt in 0..attempt_count {
+            match sample_compact_map_control(state) {
+                Ok(rows) => return Ok(rows),
+                Err(err) if attempt + 1 == attempt_count => return Err(err),
+                Err(_) => thread::yield_now(),
+            }
+        }
+        Err("map_control_retry_exhausted")
+    }
+
+    fn sample_compact_map_control(
+        state: &CollectorState,
+    ) -> Result<(Vec<CompactMapStateRow>, Vec<CompactMapProvinceRow>), &'static str> {
+        let (province_array, province_count, province_ptrs) =
+            cprovince_array_snapshot(state).ok_or("province_array_unavailable")?;
+        let cprovince_vtable = state
+            .base
+            .checked_add(CPROVINCE_VTABLE_RVA)
+            .ok_or("profile_mismatch")?;
+        let state_vtable = state
+            .base
+            .checked_add(STATE_VTABLE_RVA)
+            .ok_or("profile_mismatch")?;
+        let mut state_ptrs: BTreeMap<u32, usize> = BTreeMap::new();
+        let mut province_rows = Vec::with_capacity(province_count.saturating_sub(1) as usize);
+
+        for province_id in 1..province_count {
+            let province_ptr = cprovince_ptr_from_snapshot(&province_ptrs, province_id)
+                .ok_or("province_pointer_unavailable")?;
+            if province_ptr == 0 {
+                continue;
+            }
+            if !is_map_control_heap_pointer(province_ptr) {
+                return Err("province_pointer_invalid");
+            }
+            if read_u64(province_ptr).map(|value| value as usize) != Some(cprovince_vtable) {
+                return Err("province_vtable_mismatch");
+            }
+            if read_u32(
+                province_ptr
+                    .checked_add(CPROVINCE_OFF_ID)
+                    .ok_or("province_id_overflow")?,
+            ) != Some(province_id)
+            {
+                return Err("province_id_mismatch");
+            }
+
+            let state_ptr = read_u64(
+                province_ptr
+                    .checked_add(CPROVINCE_OFF_STATE)
+                    .ok_or("state_overflow")?,
+            )
+            .ok_or("state_pointer_unreadable")? as usize;
+            let state_id = if state_ptr == 0 {
+                0
+            } else {
+                if !is_map_control_heap_pointer(state_ptr) {
+                    return Err("state_pointer_invalid");
+                }
+                if read_u64(state_ptr).map(|value| value as usize) != Some(state_vtable) {
+                    return Err("state_vtable_mismatch");
+                }
+                let state_id = read_u32(
+                    state_ptr
+                        .checked_add(STATE_OFF_SID)
+                        .ok_or("state_id_overflow")?,
+                )
+                .ok_or("state_id_unreadable")?;
+                if state_id == 0 || state_id > MAX_MAP_CONTROL_STATE_ID {
+                    return Err("state_id_invalid");
+                }
+                if let Some(previous) = state_ptrs.insert(state_id, state_ptr) {
+                    if previous != state_ptr {
+                        return Err("state_pointer_conflict");
+                    }
+                }
+                state_id
+            };
+            let controller_tag_db_id = read_u32(
+                province_ptr
+                    .checked_add(CPROVINCE_OFF_CONTROLLER)
+                    .ok_or("controller_overflow")?,
+            )
+            .ok_or("controller_unreadable")?;
+            if controller_tag_db_id > 1024 {
+                return Err("controller_tag_db_id_invalid");
+            }
+            province_rows.push(CompactMapProvinceRow {
+                province_id,
+                controller_tag_db_id,
+                state_id,
+            });
+        }
+
+        if state_ptrs.len() < MIN_USABLE_STATE_ROWS
+            || province_rows.len() < MIN_USABLE_PROVINCE_ROWS
+        {
+            return Err("insufficient_map_rows");
+        }
+
+        let mut state_rows = Vec::with_capacity(state_ptrs.len());
+        for (state_id, state_ptr) in state_ptrs {
+            if read_u64(state_ptr).map(|value| value as usize) != Some(state_vtable) {
+                return Err("state_vtable_changed");
+            }
+            if read_u32(
+                state_ptr
+                    .checked_add(STATE_OFF_SID)
+                    .ok_or("state_sid_overflow")?,
+            ) != Some(state_id)
+            {
+                return Err("state_id_changed");
+            }
+            let owner_tag_db_id = read_u32(
+                state_ptr
+                    .checked_add(STATE_OFF_OWNER)
+                    .ok_or("state_owner_overflow")?,
+            )
+            .ok_or("state_owner_unreadable")?;
+            let controller_tag_db_id = read_u32(
+                state_ptr
+                    .checked_add(STATE_OFF_CTRL)
+                    .ok_or("state_ctrl_overflow")?,
+            )
+            .ok_or("state_ctrl_unreadable")?;
+            if owner_tag_db_id > 1024 || controller_tag_db_id > 1024 {
+                return Err("state_tag_db_id_invalid");
+            }
+            state_rows.push(CompactMapStateRow {
+                state_id,
+                owner_tag_db_id,
+                controller_tag_db_id,
+            });
+        }
+
+        if !cprovince_array_still_current(state, province_array, province_count) {
+            return Err("province_array_changed");
+        }
+        Ok((state_rows, province_rows))
     }
 
     fn read_compact_country_domain_bundle(
@@ -9943,6 +10363,38 @@ mod attach_log {
             sequence,
             game_hour_raw,
             COMPACT_DOMAIN_LAND_COMBATS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+    }
+
+    fn append_compact_map_control_data_record(
+        out: &mut Vec<u8>,
+        sequence: u64,
+        game_hour_raw: i32,
+        state_rows: &[CompactMapStateRow],
+        province_rows: &[CompactMapProvinceRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        changed_state_rows: u32,
+        changed_province_rows: u32,
+    ) {
+        let payload = compact_map_control_data_payload(
+            state_rows,
+            province_rows,
+            elapsed_wall_ms,
+            status_flags,
+            changed_rows,
+            changed_state_rows,
+            changed_province_rows,
+        );
+        append_compact_record(
+            out,
+            sequence,
+            game_hour_raw,
+            COMPACT_DOMAIN_MAP_CONTROL,
             COMPACT_RECORD_TYPE_DOMAIN_DATA,
             0,
             &payload,
@@ -10755,6 +11207,57 @@ mod attach_log {
         for sample in rows {
             append_compact_land_combat_participants(&mut payload, sample, 1);
             append_compact_land_combat_participants(&mut payload, sample, 2);
+        }
+        payload
+    }
+
+    fn compact_map_control_data_payload(
+        state_rows: &[CompactMapStateRow],
+        province_rows: &[CompactMapProvinceRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        changed_state_rows: u32,
+        changed_province_rows: u32,
+    ) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(
+            32usize
+                .saturating_add(state_rows.len().saturating_mul(16))
+                .saturating_add(province_rows.len().saturating_mul(16)),
+        );
+        payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
+        payload.extend_from_slice(&(state_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+        payload.extend_from_slice(&changed_rows.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload
+            .extend_from_slice(&(province_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+        payload.extend_from_slice(&changed_state_rows.to_le_bytes());
+        payload.extend_from_slice(&changed_province_rows.to_le_bytes());
+        for row in state_rows {
+            let mut flags = 0u32;
+            if row.owner_tag_db_id != 0 {
+                flags |= 1;
+            }
+            if row.controller_tag_db_id != 0 {
+                flags |= 1 << 1;
+            }
+            payload.extend_from_slice(&row.state_id.to_le_bytes());
+            payload.extend_from_slice(&row.owner_tag_db_id.to_le_bytes());
+            payload.extend_from_slice(&row.controller_tag_db_id.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+        }
+        for row in province_rows {
+            let mut flags = 0u32;
+            if row.controller_tag_db_id != 0 {
+                flags |= 1;
+            }
+            if row.state_id != 0 {
+                flags |= 1 << 1;
+            }
+            payload.extend_from_slice(&row.province_id.to_le_bytes());
+            payload.extend_from_slice(&row.controller_tag_db_id.to_le_bytes());
+            payload.extend_from_slice(&row.state_id.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
         }
         payload
     }
@@ -18353,6 +18856,72 @@ mod attach_log {
                 u32::from_le_bytes(payload[176..180].try_into().unwrap()),
                 465
             );
+        }
+
+        #[test]
+        fn compact_map_control_data_payload_packs_numeric_rows() {
+            let states = vec![
+                CompactMapStateRow {
+                    state_id: 112,
+                    owner_tag_db_id: 47,
+                    controller_tag_db_id: 47,
+                },
+                CompactMapStateRow {
+                    state_id: 113,
+                    owner_tag_db_id: 0,
+                    controller_tag_db_id: 12,
+                },
+            ];
+            let provinces = vec![
+                CompactMapProvinceRow {
+                    province_id: 118,
+                    controller_tag_db_id: 47,
+                    state_id: 112,
+                },
+                CompactMapProvinceRow {
+                    province_id: 119,
+                    controller_tag_db_id: 0,
+                    state_id: 0,
+                },
+            ];
+
+            let payload = compact_map_control_data_payload(
+                &states,
+                &provinces,
+                99,
+                COMPACT_STATUS_EXTRACTION_PERF_GATE,
+                4,
+                2,
+                2,
+            );
+
+            assert_eq!(payload.len(), 32 + 2 * 16 + 2 * 16);
+            assert_eq!(u64::from_le_bytes(payload[0..8].try_into().unwrap()), 99);
+            assert_eq!(u32::from_le_bytes(payload[8..12].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[12..16].try_into().unwrap()), 4);
+            assert_eq!(
+                u32::from_le_bytes(payload[16..20].try_into().unwrap()),
+                COMPACT_STATUS_EXTRACTION_PERF_GATE
+            );
+            assert_eq!(u32::from_le_bytes(payload[20..24].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[24..28].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[28..32].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[32..36].try_into().unwrap()), 112);
+            assert_eq!(u32::from_le_bytes(payload[36..40].try_into().unwrap()), 47);
+            assert_eq!(u32::from_le_bytes(payload[40..44].try_into().unwrap()), 47);
+            assert_eq!(u32::from_le_bytes(payload[44..48].try_into().unwrap()), 3);
+            assert_eq!(u32::from_le_bytes(payload[48..52].try_into().unwrap()), 113);
+            assert_eq!(u32::from_le_bytes(payload[52..56].try_into().unwrap()), 0);
+            assert_eq!(u32::from_le_bytes(payload[56..60].try_into().unwrap()), 12);
+            assert_eq!(u32::from_le_bytes(payload[60..64].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[64..68].try_into().unwrap()), 118);
+            assert_eq!(u32::from_le_bytes(payload[68..72].try_into().unwrap()), 47);
+            assert_eq!(u32::from_le_bytes(payload[72..76].try_into().unwrap()), 112);
+            assert_eq!(u32::from_le_bytes(payload[76..80].try_into().unwrap()), 3);
+            assert_eq!(u32::from_le_bytes(payload[80..84].try_into().unwrap()), 119);
+            assert_eq!(u32::from_le_bytes(payload[84..88].try_into().unwrap()), 0);
+            assert_eq!(u32::from_le_bytes(payload[88..92].try_into().unwrap()), 0);
+            assert_eq!(u32::from_le_bytes(payload[92..96].try_into().unwrap()), 0);
         }
 
         #[test]

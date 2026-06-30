@@ -15,10 +15,10 @@ Current scope:
   stream -> native host manifest/recorder.
 - No Python in the live capture loop.
 - No save input.
-- Country-state and `land_combats` compact gates require no Python preflight
-  bridge. `divisions` currently accepts an explicit bounded bridge input for
-  proof runs; that is temporary root-discovery debt and is not considered
-  DLL-complete until native/Rust discovery replaces it.
+- Country-state, `land_combats`, and `map_control` compact gates require no
+  Python preflight bridge. `divisions` currently accepts an explicit bounded
+  bridge input for proof runs; that is temporary root-discovery debt and is not
+  considered DLL-complete until native/Rust discovery replaces it.
 - Optional DLL-side project scanning through `--special-projects-scan`; current
   live evidence shows this is not yet bounded enough for production capture.
 - Compact country-frame recording through `--compact-country-frame`; filtered
@@ -97,7 +97,7 @@ replay_native\target\release\collector_record.exe `
   --advisor-token-filter-file replay\snapshots\_native_collector_session\static_contracts\advisor_token_filter.txt
 ```
 
-When `--scheduled-domain` is supplied, heavy raw domains such as
+When `--scheduled-domain` is supplied, heavy raw domains such as `map_control`,
 `land_combats`, `divisions`, `army_orders`, `naval_air_combats`,
 `naval_combat_members`, `air_wings`, `ships`, and `oob_command` are captured
 only if explicitly requested. This keeps independent country-domain proof gates
@@ -184,6 +184,12 @@ gate has these live speed-five results:
   source-unavailable or partial-data flags, avg frame 1.779 ms, p95 2.400 ms,
   max 3.487 ms, 1,901,872 raw stream bytes, an 86,841-byte
   `native_session.battleplan`, and an independent `pack_replay verify` pass.
+- `compact_map_control_speed5_v2`: passed with native `CGameState+0x2B0`
+  CProvince/CState roots, 145 game hours advanced, 146 frame-end records, 0
+  skipped, 1,081 state ownership/control rows and 13,413 province
+  controller/state rows per frame, no source-unavailable or partial-data flags,
+  avg frame 45.687 ms, p95 58.764 ms, max 73.840 ms, 33,887,184 raw stream
+  bytes, and an independent `pack_replay verify` pass.
 - `compact_country_divisions_land_combats_speed5_v2_retry`: passed after a
   short native land-combat manager retry for transient manager churn, with 10
   scheduled domains (`fuel_live`, `production_live`, `focus_live`, `tech_live`,
@@ -195,17 +201,36 @@ gate has these live speed-five results:
   9,456,740-byte `native_session.battleplan`, and an independent
   `pack_replay verify` pass. This is a mixed stress gate; the `divisions` lane
   still carries bridge preflight debt.
+- `compact_country_divisions_land_combats_map_speed5_v1`: failed with the same
+  11-domain set after adding `map_control` because serial high-level reads
+  skipped 19 game hours; the stream itself decoded, had full per-domain
+  coverage, and had no source/partial/bridge failures. This is the regression
+  proof for keeping internal per-domain workers.
+- `compact_country_divisions_land_combats_map_speed5_v2_workers`: passed after
+  parallelizing the high-level DLL read lanes while preserving one ordered
+  sequence authority. It covered 11 scheduled domains (`fuel_live`,
+  `production_live`, `focus_live`, `tech_live`, `politics_live`,
+  `politics_residuals`, `decisions_live`, `diplomacy_live`, `divisions`,
+  `land_combats`, `map_control`), advanced 141 game hours with 142 frame-end
+  records, 0 skipped, full per-hour coverage, 0 parse/order errors, no
+  worker-panic, bridge-unavailable, source-unavailable, or partial-data flags,
+  avg frame 63.127 ms, p95 101.411 ms, max 145.158 ms, 55,244,380 raw stream
+  bytes, and an independent `pack_replay verify` pass. The `divisions` lane
+  still carries bridge preflight debt.
 
 The extraction-only compact performance gate is green for the current
-production-shaped country-state domains and the native-root `land_combats` lane
-above. The recorder packs/verifies `native_session.battleplan`, and the combined
-country/division/land-combat stress replay passed independent `pack_replay
-verify`. `production_live` is now DLL/Rust compact-path complete at hourly
-cadence for the current vanilla build, including stockpile, military production
-lines, naval production lines, and construction queue rows. `land_combats` is
-DLL/Rust compact-path complete for active combat lifecycle snapshots and
-participant vectors at hourly cadence on the current vanilla build. `divisions`
-is not DLL-complete until its root discovery is moved out of Python preflight.
+production-shaped country-state domains and the native-root `land_combats` and
+`map_control` lanes above. The recorder packs/verifies
+`native_session.battleplan`, and the combined country/division/land-combat/map
+stress replay passed independent `pack_replay verify`. `production_live` is now
+DLL/Rust compact-path complete at hourly cadence for the current vanilla build,
+including stockpile, military production lines, naval production lines, and
+construction queue rows. `land_combats` is DLL/Rust compact-path complete for
+active combat lifecycle snapshots and participant vectors at hourly cadence on
+the current vanilla build. `map_control` is DLL/Rust compact-path complete for
+state ownership/control and province controller/state rows at hourly cadence on
+the current vanilla build. `divisions` is not DLL-complete until its root
+discovery is moved out of Python preflight.
 
 Implementation note: see `COMPACT_HOI4REPLAY_NEXT_STEP.md` for the bounded
 Rust-native packaging path and the test contract for putting `collector_stream.bin`

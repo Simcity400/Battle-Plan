@@ -55,6 +55,13 @@ const COMPACT_LAND_COMBAT_ROW_LEN: usize = 40;
 const COMPACT_LAND_COMBAT_PARTICIPANT_ROW_LEN: usize = 24;
 const COMPACT_LAND_COMBAT_MAX_PROVINCE_ID: u32 = 1_000_000;
 const COMPACT_LAND_COMBAT_MAX_AGE_DAYS: u32 = 100_000;
+const COMPACT_MAP_STATE_ROW_LEN: usize = 16;
+const COMPACT_MAP_PROVINCE_ROW_LEN: usize = 16;
+const COMPACT_MAP_MIN_STATE_ROWS: usize = 1_000;
+const COMPACT_MAP_MIN_PROVINCE_ROWS: usize = 10_000;
+const COMPACT_MAP_MAX_STATE_ID: u32 = 65_535;
+const COMPACT_MAP_MAX_PROVINCE_ID: u32 = 65_536;
+const COMPACT_MAP_MAX_TAG_DB_ID: u32 = 1024;
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -1030,6 +1037,7 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     17 => decode_compact_diplomacy_data_payload(offset, payload, &mut summary),
                     20 => decode_compact_divisions_data_payload(offset, payload, &mut summary),
                     21 => decode_compact_land_combats_data_payload(offset, payload, &mut summary),
+                    22 => decode_compact_map_control_data_payload(offset, payload, &mut summary),
                     other => summary.parse_errors.push(format!(
                         "offset {offset}: unsupported domain data payload for {}",
                         compact_domain_name(other)
@@ -2344,6 +2352,185 @@ fn decode_compact_land_combats_data_payload(
     }
 }
 
+fn decode_compact_map_control_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < 32 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: map control data payload is {} byte(s), expected at least 32",
+            payload.len()
+        ));
+        return;
+    }
+    let state_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let province_count = read_u32_le(payload, 20) as usize;
+    let changed_state_rows = read_u32_le(payload, 24) as usize;
+    let changed_province_rows = read_u32_le(payload, 28) as usize;
+    summary.status_flags_or |= status_flags;
+
+    let expected_len = 32usize
+        .saturating_add(state_count.saturating_mul(COMPACT_MAP_STATE_ROW_LEN))
+        .saturating_add(province_count.saturating_mul(COMPACT_MAP_PROVINCE_ROW_LEN));
+    if payload.len() != expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: map control data payload is {} byte(s), expected {expected_len}",
+            payload.len()
+        ));
+        return;
+    }
+    if state_count < COMPACT_MAP_MIN_STATE_ROWS {
+        summary.parse_errors.push(format!(
+            "offset {offset}: map control state_count {state_count} < {COMPACT_MAP_MIN_STATE_ROWS}"
+        ));
+    }
+    if province_count < COMPACT_MAP_MIN_PROVINCE_ROWS {
+        summary.parse_errors.push(format!(
+            "offset {offset}: map control province_count {province_count} < {COMPACT_MAP_MIN_PROVINCE_ROWS}"
+        ));
+    }
+    if changed_state_rows > state_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: map control changed_state_rows {changed_state_rows} > state_count {state_count}"
+        ));
+    }
+    if changed_province_rows > province_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: map control changed_province_rows {changed_province_rows} > province_count {province_count}"
+        ));
+    }
+    if changed_rows != changed_state_rows.saturating_add(changed_province_rows) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: map control changed_rows {changed_rows} != changed state+province rows {}",
+            changed_state_rows.saturating_add(changed_province_rows)
+        ));
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&22) {
+        domain.data_rows_total = domain
+            .data_rows_total
+            .saturating_add(state_count.saturating_add(province_count) as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+
+    let mut cursor = 32usize;
+    let mut seen_states = BTreeSet::new();
+    for row_index in 0..state_count {
+        let state_id = read_u32_le(payload, cursor);
+        let owner_tag_db_id = read_u32_le(payload, cursor + 4);
+        let controller_tag_db_id = read_u32_le(payload, cursor + 8);
+        let flags = read_u32_le(payload, cursor + 12);
+        cursor += COMPACT_MAP_STATE_ROW_LEN;
+        if state_id == 0 || state_id > COMPACT_MAP_MAX_STATE_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map control state row {row_index} has invalid state_id {state_id}"
+            ));
+        } else if !seen_states.insert(state_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map control state row {row_index} duplicates state_id {state_id}"
+            ));
+        }
+        if owner_tag_db_id > COMPACT_MAP_MAX_TAG_DB_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map control state row {row_index} has invalid owner tag {owner_tag_db_id}"
+            ));
+        }
+        if controller_tag_db_id > COMPACT_MAP_MAX_TAG_DB_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map control state row {row_index} has invalid controller tag {controller_tag_db_id}"
+            ));
+        }
+        if flags & !0b11 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map control state row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if (flags & 1) == 0 && owner_tag_db_id != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map control state row {row_index} has owner without flag"
+            ));
+        }
+        if (flags & 1) != 0 && owner_tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map control state row {row_index} has owner flag without owner"
+            ));
+        }
+        if (flags & (1 << 1)) == 0 && controller_tag_db_id != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map control state row {row_index} has controller without flag"
+            ));
+        }
+        if (flags & (1 << 1)) != 0 && controller_tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map control state row {row_index} has controller flag without controller"
+            ));
+        }
+    }
+
+    let mut seen_provinces = BTreeSet::new();
+    for row_index in 0..province_count {
+        let province_id = read_u32_le(payload, cursor);
+        let controller_tag_db_id = read_u32_le(payload, cursor + 4);
+        let state_id = read_u32_le(payload, cursor + 8);
+        let flags = read_u32_le(payload, cursor + 12);
+        cursor += COMPACT_MAP_PROVINCE_ROW_LEN;
+        if province_id == 0 || province_id > COMPACT_MAP_MAX_PROVINCE_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map control province row {row_index} has invalid province_id {province_id}"
+            ));
+        } else if !seen_provinces.insert(province_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map control province row {row_index} duplicates province_id {province_id}"
+            ));
+        }
+        if controller_tag_db_id > COMPACT_MAP_MAX_TAG_DB_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map control province row {row_index} has invalid controller tag {controller_tag_db_id}"
+            ));
+        }
+        if state_id > COMPACT_MAP_MAX_STATE_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map control province row {row_index} has invalid state_id {state_id}"
+            ));
+        }
+        if state_id != 0 && !seen_states.contains(&state_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map control province row {row_index} references unknown state_id {state_id}"
+            ));
+        }
+        if flags & !0b11 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map control province row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if (flags & 1) == 0 && controller_tag_db_id != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map control province row {row_index} has controller without flag"
+            ));
+        }
+        if (flags & 1) != 0 && controller_tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map control province row {row_index} has controller flag without controller"
+            ));
+        }
+        if (flags & (1 << 1)) == 0 && state_id != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map control province row {row_index} has state without flag"
+            ));
+        }
+        if (flags & (1 << 1)) != 0 && state_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map control province row {row_index} has state flag without state"
+            ));
+        }
+    }
+}
+
 fn valid_compact_land_combat_province_id(value: u32) -> bool {
     value > 0 && value <= COMPACT_LAND_COMBAT_MAX_PROVINCE_ID
 }
@@ -2462,6 +2649,7 @@ fn compact_domain_id(domain: &str) -> Option<u16> {
         "diplomacy_live" => Some(17),
         "divisions" => Some(20),
         "land_combats" => Some(21),
+        "map_control" | "state_ownership" | "state_control" | "province_control" => Some(22),
         _ => None,
     }
 }
@@ -2479,6 +2667,7 @@ fn compact_domain_name(domain_id: u16) -> &'static str {
         17 => "diplomacy_live",
         20 => "divisions",
         21 => "land_combats",
+        22 => "map_control",
         1000 => "frame",
         _ => "unknown",
     }
@@ -2540,7 +2729,10 @@ fn compact_domain_coverage_errors(
 }
 
 fn compact_domain_requires_data_record(domain_id: u16) -> bool {
-    matches!(domain_id, 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 20 | 21)
+    matches!(
+        domain_id,
+        10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 20 | 21 | 22
+    )
 }
 
 fn compact_domain_summaries_json(summary: &CompactSummary) -> Value {
@@ -3170,6 +3362,49 @@ mod tests {
     }
 
     #[test]
+    fn compact_summary_decodes_map_control_data_record() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            22,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(7_500, 11_200, 11_200, 10_100, 10_100),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            22,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_map_control_data_payload(0),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(8_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(&summary, &[22]).is_empty());
+        let map = summary.per_domain.get(&22).unwrap();
+        assert_eq!(map.data_record_count, 1);
+        assert_eq!(map.data_rows_total, 11_200);
+        assert_eq!(map.data_changed_rows_total, 11_200);
+        assert_eq!(map.unit_count_total, 10_100);
+    }
+
+    #[test]
     fn compact_land_combat_partial_data_fails_hourly_problem_list() {
         let mut raw = Vec::new();
         append_test_compact_record(
@@ -3751,6 +3986,36 @@ mod tests {
             payload.extend_from_slice(&side.to_le_bytes());
             payload.extend_from_slice(&division_id.to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        payload
+    }
+
+    fn test_map_control_data_payload(status_flags: u32) -> Vec<u8> {
+        let state_count = 1_100u32;
+        let province_count = 10_100u32;
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&state_count.to_le_bytes());
+        payload.extend_from_slice(&(state_count + province_count).to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&province_count.to_le_bytes());
+        payload.extend_from_slice(&state_count.to_le_bytes());
+        payload.extend_from_slice(&province_count.to_le_bytes());
+        for state_id in 1..=state_count {
+            let owner_tag_db_id = (state_id % 100) + 1;
+            let controller_tag_db_id = owner_tag_db_id;
+            payload.extend_from_slice(&state_id.to_le_bytes());
+            payload.extend_from_slice(&owner_tag_db_id.to_le_bytes());
+            payload.extend_from_slice(&controller_tag_db_id.to_le_bytes());
+            payload.extend_from_slice(&0b11u32.to_le_bytes());
+        }
+        for province_id in 1..=province_count {
+            let controller_tag_db_id = (province_id % 100) + 1;
+            let state_id = ((province_id - 1) % state_count) + 1;
+            payload.extend_from_slice(&province_id.to_le_bytes());
+            payload.extend_from_slice(&controller_tag_db_id.to_le_bytes());
+            payload.extend_from_slice(&state_id.to_le_bytes());
+            payload.extend_from_slice(&0b11u32.to_le_bytes());
         }
         payload
     }
