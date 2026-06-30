@@ -2771,6 +2771,7 @@ mod attach_log {
     const COMPACT_DOMAIN_DIVISION_EQUIPMENT: u16 = 26;
     const COMPACT_DOMAIN_ARMY_ORDERS: u16 = 27;
     const COMPACT_DOMAIN_OOB_COMMAND: u16 = 28;
+    const COMPACT_DOMAIN_SHIPS: u16 = 29;
     const COMPACT_STATUS_STATE_UNAVAILABLE: u32 = 1 << 0;
     const COMPACT_STATUS_PROFILE_MISMATCH: u32 = 1 << 1;
     const COMPACT_STATUS_NO_CLOCK: u32 = 1 << 2;
@@ -2802,6 +2803,9 @@ mod attach_log {
     const COMPACT_OOB_ROW_FLAG_LEADER_SKILL: u32 = 1 << 4;
     const COMPACT_OOB_ROW_FLAG_MEMBER_COUNT_ENGINE: u32 = 1 << 5;
     const COMPACT_OOB_ROW_FLAG_MISSING_MEMBER_COUNT: u32 = 1 << 6;
+    const COMPACT_SHIP_ROW_FLAG_DELETED: u32 = 1;
+    const COMPACT_SHIP_ROW_FLAG_TASK_FORCE: u32 = 1 << 1;
+    const COMPACT_SHIP_ROW_FLAG_DEFINITION: u32 = 1 << 2;
     const COMPACT_OOB_STATUS_NONE: u32 = 0;
     const COMPACT_OOB_STATUS_EXACT: u32 = 1;
     const COMPACT_OOB_STATUS_UNKNOWN: u32 = 2;
@@ -2898,6 +2902,7 @@ mod attach_log {
         division_roots: CompactDivisionRootCache,
         army_order: ArmyOrderTracker,
         oob_command: CompactOobCommandTracker,
+        ships: CompactShipTracker,
         land_combat: LandCombatTracker,
         map_control: CompactMapControlTracker,
         map_detail: CompactMapDetailTracker,
@@ -2964,6 +2969,16 @@ mod attach_log {
         observed_army_rows: u32,
         observed_army_group_rows: u32,
         member_rows: u32,
+        deleted_rows: u32,
+    }
+
+    struct CompactShipRead {
+        rows: Vec<CompactShipRow>,
+        read_time_us: u64,
+        changed_rows: u32,
+        status_flags: u32,
+        observed_ship_rows: u32,
+        observed_task_force_rows: u32,
         deleted_rows: u32,
     }
 
@@ -3211,6 +3226,11 @@ mod attach_log {
         previous: BTreeMap<(u32, u32), CompactOobCommandRow>,
     }
 
+    #[derive(Default)]
+    struct CompactShipTracker {
+        previous: BTreeMap<u32, CompactShipRow>,
+    }
+
     #[derive(Clone, Debug, PartialEq, Eq)]
     struct CompactOobCommandRow {
         kind: u32,
@@ -3230,6 +3250,19 @@ mod attach_log {
         owner_status: &'static str,
         leader_status: &'static str,
         leader_trait_status: &'static str,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct CompactShipRow {
+        instance_id: u32,
+        deleted: bool,
+        task_force_id: Option<u32>,
+        definition: Option<String>,
+        category_enum: u32,
+        strength_raw: u32,
+        organisation_raw: u32,
+        experience_raw: u32,
+        sunk_convoys: u32,
     }
 
     #[derive(Clone, Debug, PartialEq)]
@@ -9179,6 +9212,7 @@ mod attach_log {
             compact_explicit_domain_enabled(control, RAW_DIVISION_EQUIPMENT_DOMAIN);
         let army_orders_enabled = compact_explicit_domain_enabled(control, RAW_ARMY_ORDERS_DOMAIN);
         let oob_command_enabled = compact_explicit_domain_enabled(control, RAW_OOB_COMMAND_DOMAIN);
+        let ships_enabled = compact_explicit_domain_enabled(control, RAW_SHIPS_DOMAIN);
         let land_combats_enabled =
             compact_explicit_domain_enabled(control, RAW_LAND_COMBATS_DOMAIN);
         let map_control_enabled = compact_map_control_enabled(control);
@@ -9191,6 +9225,7 @@ mod attach_log {
         let mut division_equipment_read = None;
         let mut army_order_read = None;
         let mut oob_command_read = None;
+        let mut ship_read = None;
         let mut land_combat_read = None;
         let mut map_control_read = None;
         let mut map_detail_read = None;
@@ -9213,6 +9248,7 @@ mod attach_log {
         let division_equipment_tracker = &mut trackers.division_equipment;
         let army_order_tracker = &mut trackers.army_order;
         let oob_command_tracker = &mut trackers.oob_command;
+        let ship_tracker = &mut trackers.ships;
         let division_roots = &trackers.division_roots;
         let land_combat_tracker = &mut trackers.land_combat;
         let map_control_tracker = &mut trackers.map_control;
@@ -9282,6 +9318,11 @@ mod attach_log {
             } else {
                 None
             };
+            let ship_handle = if ships_enabled {
+                Some(scope.spawn(move || read_compact_ships(state, status_flags, ship_tracker)))
+            } else {
+                None
+            };
             let land_combat_handle = if land_combats_enabled {
                 Some(scope.spawn(move || {
                     read_compact_land_combats(state, status_flags, land_combat_tracker)
@@ -9348,6 +9389,12 @@ mod attach_log {
                 oob_command_read = Some(match handle.join() {
                     Ok(read) => read,
                     Err(_) => compact_oob_command_worker_panic_read(division_roots, status_flags),
+                });
+            }
+            if let Some(handle) = ship_handle {
+                ship_read = Some(match handle.join() {
+                    Ok(read) => read,
+                    Err(_) => compact_ship_worker_panic_read(status_flags),
                 });
             }
             if let Some(handle) = land_combat_handle {
@@ -9599,6 +9646,38 @@ mod attach_log {
                 read.root_rows,
                 read.observed_army_rows,
                 read.observed_army_group_rows,
+                read.deleted_rows,
+            );
+            sequence = sequence.saturating_add(1);
+            emitted_domains = emitted_domains.saturating_add(1);
+        }
+        if let Some(read) = ship_read {
+            append_compact_domain_perf_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                CompactDomainPerfRecord {
+                    domain_id: COMPACT_DOMAIN_SHIPS,
+                    read_time_us: read.read_time_us,
+                    row_count: read.observed_ship_rows,
+                    changed_rows: read.changed_rows,
+                    unit_count: read.observed_task_force_rows,
+                    changed_unit_count: read.changed_rows,
+                    status_flags: read.status_flags,
+                },
+                elapsed_wall_ms,
+            );
+            sequence = sequence.saturating_add(1);
+            append_compact_ships_data_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                &read.rows,
+                elapsed_wall_ms,
+                read.status_flags,
+                read.changed_rows,
+                read.observed_ship_rows,
+                read.observed_task_force_rows,
                 read.deleted_rows,
             );
             sequence = sequence.saturating_add(1);
@@ -10264,6 +10343,18 @@ mod attach_log {
             observed_army_rows: 0,
             observed_army_group_rows: 0,
             member_rows: 0,
+            deleted_rows: 0,
+        }
+    }
+
+    fn compact_ship_worker_panic_read(status_flags: u32) -> CompactShipRead {
+        CompactShipRead {
+            rows: Vec::new(),
+            read_time_us: 0,
+            changed_rows: 0,
+            status_flags: status_flags | COMPACT_STATUS_WORKER_PANIC,
+            observed_ship_rows: 0,
+            observed_task_force_rows: 0,
             deleted_rows: 0,
         }
     }
@@ -11281,6 +11372,24 @@ mod attach_log {
         rows.iter()
             .map(|row| row.member_ids.as_ref().map(Vec::len).unwrap_or(0))
             .sum()
+    }
+
+    fn read_compact_ships(
+        _state: &CollectorState,
+        status_flags: u32,
+        tracker: &mut CompactShipTracker,
+    ) -> CompactShipRead {
+        let read_started = Instant::now();
+        let _previous_rows = tracker.previous.len();
+        CompactShipRead {
+            rows: Vec::new(),
+            read_time_us: duration_micros_u64(read_started.elapsed()),
+            changed_rows: 0,
+            status_flags: status_flags | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            observed_ship_rows: 0,
+            observed_task_force_rows: 0,
+            deleted_rows: 0,
+        }
     }
 
     fn compact_oob_status_code(status: &str) -> u32 {
@@ -13135,6 +13244,38 @@ mod attach_log {
         );
     }
 
+    fn append_compact_ships_data_record(
+        out: &mut Vec<u8>,
+        sequence: u64,
+        game_hour_raw: i32,
+        rows: &[CompactShipRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        observed_ship_rows: u32,
+        observed_task_force_rows: u32,
+        deleted_rows: u32,
+    ) {
+        let payload = compact_ships_data_payload(
+            rows,
+            elapsed_wall_ms,
+            status_flags,
+            changed_rows,
+            observed_ship_rows,
+            observed_task_force_rows,
+            deleted_rows,
+        );
+        append_compact_record(
+            out,
+            sequence,
+            game_hour_raw,
+            COMPACT_DOMAIN_SHIPS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+    }
+
     fn append_compact_land_combats_data_record(
         out: &mut Vec<u8>,
         sequence: u64,
@@ -14253,6 +14394,51 @@ mod attach_log {
                     payload.extend_from_slice(&0u32.to_le_bytes());
                 }
             }
+        }
+        payload
+    }
+
+    fn compact_ships_data_payload(
+        rows: &[CompactShipRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        observed_ship_rows: u32,
+        observed_task_force_rows: u32,
+        deleted_rows: u32,
+    ) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
+        payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+        payload.extend_from_slice(&changed_rows.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&observed_ship_rows.to_le_bytes());
+        payload.extend_from_slice(&observed_task_force_rows.to_le_bytes());
+        payload.extend_from_slice(&deleted_rows.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        for row in rows {
+            let mut flags = 0u32;
+            if row.deleted {
+                flags |= COMPACT_SHIP_ROW_FLAG_DELETED;
+            }
+            if row.task_force_id.is_some() {
+                flags |= COMPACT_SHIP_ROW_FLAG_TASK_FORCE;
+            }
+            if row.definition.is_some() {
+                flags |= COMPACT_SHIP_ROW_FLAG_DEFINITION;
+            }
+            payload.extend_from_slice(&row.instance_id.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&row.task_force_id.unwrap_or(0).to_le_bytes());
+            payload.extend_from_slice(&row.category_enum.to_le_bytes());
+            payload.extend_from_slice(&row.strength_raw.to_le_bytes());
+            payload.extend_from_slice(&row.organisation_raw.to_le_bytes());
+            payload.extend_from_slice(&row.experience_raw.to_le_bytes());
+            payload.extend_from_slice(&row.sunk_convoys.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            append_compact_string(&mut payload, row.definition.as_deref());
         }
         payload
     }
@@ -22677,6 +22863,94 @@ mod attach_log {
             assert_eq!(
                 u32::from_le_bytes(payload[224..228].try_into().unwrap()),
                 17
+            );
+        }
+
+        #[test]
+        fn compact_ships_data_payload_packs_hull_rows() {
+            let rows = vec![
+                CompactShipRow {
+                    instance_id: 1001,
+                    deleted: false,
+                    task_force_id: Some(617),
+                    definition: Some("hull".to_string()),
+                    category_enum: 3,
+                    strength_raw: 10_000_000,
+                    organisation_raw: 9_000_000,
+                    experience_raw: 500_000,
+                    sunk_convoys: 2,
+                },
+                CompactShipRow {
+                    instance_id: 1002,
+                    deleted: true,
+                    task_force_id: None,
+                    definition: None,
+                    category_enum: 0,
+                    strength_raw: 0,
+                    organisation_raw: 0,
+                    experience_raw: 0,
+                    sunk_convoys: 0,
+                },
+            ];
+
+            let payload = compact_ships_data_payload(
+                &rows,
+                82,
+                COMPACT_STATUS_EXTRACTION_PERF_GATE | COMPACT_STATUS_DELTA_DATA,
+                2,
+                2,
+                1,
+                1,
+            );
+
+            assert_eq!(payload.len(), 40 + 40 + 2 + 4 + 40 + 2);
+            assert_eq!(u64::from_le_bytes(payload[0..8].try_into().unwrap()), 82);
+            assert_eq!(u32::from_le_bytes(payload[8..12].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[12..16].try_into().unwrap()), 2);
+            assert_eq!(
+                u32::from_le_bytes(payload[16..20].try_into().unwrap()),
+                COMPACT_STATUS_EXTRACTION_PERF_GATE | COMPACT_STATUS_DELTA_DATA
+            );
+            assert_eq!(u32::from_le_bytes(payload[20..24].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[24..28].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[28..32].try_into().unwrap()), 1);
+            assert_eq!(
+                u32::from_le_bytes(payload[32..36].try_into().unwrap()),
+                COMPACT_FIXED_SCALE_RAW
+            );
+
+            assert_eq!(
+                u32::from_le_bytes(payload[40..44].try_into().unwrap()),
+                1001
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[44..48].try_into().unwrap()),
+                COMPACT_SHIP_ROW_FLAG_TASK_FORCE | COMPACT_SHIP_ROW_FLAG_DEFINITION
+            );
+            assert_eq!(u32::from_le_bytes(payload[48..52].try_into().unwrap()), 617);
+            assert_eq!(u32::from_le_bytes(payload[52..56].try_into().unwrap()), 3);
+            assert_eq!(
+                u32::from_le_bytes(payload[56..60].try_into().unwrap()),
+                10_000_000
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[60..64].try_into().unwrap()),
+                9_000_000
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[64..68].try_into().unwrap()),
+                500_000
+            );
+            assert_eq!(u32::from_le_bytes(payload[68..72].try_into().unwrap()), 2);
+            assert_eq!(u16::from_le_bytes(payload[80..82].try_into().unwrap()), 4);
+            assert_eq!(&payload[82..86], b"hull");
+            assert_eq!(
+                u32::from_le_bytes(payload[86..90].try_into().unwrap()),
+                1002
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[90..94].try_into().unwrap()),
+                COMPACT_SHIP_ROW_FLAG_DELETED
             );
         }
 

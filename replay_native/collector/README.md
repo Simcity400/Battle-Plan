@@ -219,6 +219,14 @@ build profile. The next step is not more JSON widening; it is native compact
 coverage for full OOB, naval/air combat and telemetry, and richer combat/order
 details that are still raw-only, bridge-backed, or unimplemented.
 
+`ships` now has a reserved compact domain (`domain_id=29`) and Rust recorder
+decoder/schema coverage for per-ship hull telemetry, including CShip instance
+id, optional task-force id, hull definition token, category enum, raw
+strength/org/XP, sunk-convoy count, and deletion rows. The collector currently
+emits this domain as `SOURCE_UNAVAILABLE` until a native anchored
+`CTaskForce`/`CShip` source is implemented; bridge-gated raw ship proofs remain
+development evidence, not production compact completion.
+
 Country-object heap discovery is not part of normal capture. The experimental
 whole-heap vtable scan is behind the explicit `country_object_scan` control flag,
 defaults off, and is not speed-five safe. Runtime country/economy capture must be

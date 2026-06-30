@@ -107,6 +107,15 @@ const COMPACT_OOB_ROW_FLAG_MISSING_MEMBER_COUNT: u32 = 1 << 6;
 const COMPACT_OOB_MAX_ID: u32 = 4_000_000;
 const COMPACT_OOB_MAX_MEMBER_ROWS: usize = 250_000;
 const COMPACT_OOB_MAX_LEADER_SKILL: u32 = 15;
+const COMPACT_SHIP_ROW_BASE_LEN: usize = 40;
+const COMPACT_SHIP_ROW_FLAG_DELETED: u32 = 1;
+const COMPACT_SHIP_ROW_FLAG_TASK_FORCE: u32 = 1 << 1;
+const COMPACT_SHIP_ROW_FLAG_DEFINITION: u32 = 1 << 2;
+const COMPACT_SHIP_MAX_ID: u32 = 4_000_000;
+const COMPACT_SHIP_MAX_CATEGORY: u32 = 128;
+const COMPACT_SHIP_MAX_STRENGTH_RAW: u32 = 1_000_000_000;
+const COMPACT_SHIP_MAX_ORGANISATION_RAW: u32 = 100_000_000;
+const COMPACT_SHIP_MAX_EXPERIENCE_RAW: u32 = 100_000_000;
 const COMPACT_MAP_STATE_ROW_LEN: usize = 16;
 const COMPACT_MAP_PROVINCE_ROW_LEN: usize = 16;
 const COMPACT_MAP_DETAIL_STATE_ROW_LEN: usize = 28;
@@ -327,6 +336,8 @@ fn run() -> Result<(), String> {
                     "division_root_source": "not_applicable_json_debug_stream",
                     "division_root_discovery_debt": cfg.division_body_bridge.as_ref().map(|_| "temporary bounded preflight/cache input; JSON is not the production compact proof path").unwrap_or("not_applicable_json_debug_stream"),
                     "division_body_bridge_preflight_debt": cfg.division_body_bridge.as_ref().map(|_| "temporary bounded preflight/cache input; JSON is not the production compact proof path").unwrap_or("not_applicable_json_debug_stream"),
+                    "ship_root_source": "not_applicable_json_debug_stream",
+                    "ship_root_discovery_debt": "not_applicable_json_debug_stream",
                     "stream_format": cfg.stream_format.as_str(),
                     "extraction_perf_gate": cfg.extraction_perf_gate,
                     "idea_group_filter_rows": encoded_row_count(cfg.idea_group_filter.as_deref()),
@@ -370,6 +381,8 @@ fn run() -> Result<(), String> {
             let division_root_source = compact_division_root_source(&cfg, &summary);
             let division_root_discovery_debt =
                 compact_division_root_discovery_debt(division_root_source);
+            let ship_root_source = compact_ship_root_source(&cfg, &summary);
+            let ship_root_discovery_debt = compact_ship_root_discovery_debt(ship_root_source);
             let hourly_met = decodable
                 && ordered
                 && !worker_panic_seen
@@ -401,6 +414,8 @@ fn run() -> Result<(), String> {
                     "division_root_source": division_root_source,
                     "division_root_discovery_debt": division_root_discovery_debt,
                     "division_body_bridge_preflight_debt": division_root_discovery_debt,
+                    "ship_root_source": ship_root_source,
+                    "ship_root_discovery_debt": ship_root_discovery_debt,
                     "stream_format": cfg.stream_format.as_str(),
                     "extraction_perf_gate": cfg.extraction_perf_gate,
                     "idea_group_filter_rows": encoded_row_count(cfg.idea_group_filter.as_deref()),
@@ -1214,6 +1229,7 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     ),
                     27 => decode_compact_army_orders_data_payload(offset, payload, &mut summary),
                     28 => decode_compact_oob_command_data_payload(offset, payload, &mut summary),
+                    29 => decode_compact_ships_data_payload(offset, payload, &mut summary),
                     other => summary.parse_errors.push(format!(
                         "offset {offset}: unsupported domain data payload for {}",
                         compact_domain_name(other)
@@ -3395,6 +3411,194 @@ fn validate_compact_oob_optional_id(
     }
 }
 
+fn decode_compact_ships_data_payload(offset: usize, payload: &[u8], summary: &mut CompactSummary) {
+    if payload.len() < 40 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: ships data payload is {} byte(s), expected at least 40",
+            payload.len()
+        ));
+        return;
+    }
+    let row_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let observed_ship_rows = read_u32_le(payload, 20) as usize;
+    let observed_task_force_rows = read_u32_le(payload, 24) as usize;
+    let deleted_rows = read_u32_le(payload, 28) as usize;
+    let scale_raw = read_u32_le(payload, 32);
+    let reserved0 = read_u32_le(payload, 36);
+    summary.status_flags_or |= status_flags;
+    if changed_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: ships changed_rows {changed_rows} > row_count {row_count}"
+        ));
+    }
+    if deleted_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: ships deleted_rows {deleted_rows} > row_count {row_count}"
+        ));
+    }
+    if row_count > observed_ship_rows && (status_flags & COMPACT_STATUS_DELTA_DATA) == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: ships row_count {row_count} > observed_ship_rows {observed_ship_rows}"
+        ));
+    }
+    if scale_raw != COMPACT_FIXED_SCALE_RAW {
+        summary.parse_errors.push(format!(
+            "offset {offset}: ships scale_raw {scale_raw} != {COMPACT_FIXED_SCALE_RAW}"
+        ));
+    }
+    if reserved0 != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: ships header reserved field is nonzero"
+        ));
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&29) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    add_compact_domain_data_unit(summary, 29, "ship_rows", row_count);
+    add_compact_domain_data_unit(summary, 29, "ship_observed_ship_rows", observed_ship_rows);
+    add_compact_domain_data_unit(
+        summary,
+        29,
+        "ship_observed_task_force_rows",
+        observed_task_force_rows,
+    );
+    add_compact_domain_data_unit(summary, 29, "ship_deleted_rows", deleted_rows);
+
+    let mut cursor = 40usize;
+    let mut seen_rows = BTreeSet::new();
+    let mut task_force_rows = 0usize;
+    let mut definition_rows = 0usize;
+    for row_index in 0..row_count {
+        if let Err(err) =
+            require_compact_remaining(payload, cursor, COMPACT_SHIP_ROW_BASE_LEN, "ships row")
+        {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let instance_id = read_u32_le(payload, cursor);
+        let flags = read_u32_le(payload, cursor + 4);
+        let task_force_id = read_u32_le(payload, cursor + 8);
+        let category_enum = read_u32_le(payload, cursor + 12);
+        let strength_raw = read_u32_le(payload, cursor + 16);
+        let organisation_raw = read_u32_le(payload, cursor + 20);
+        let experience_raw = read_u32_le(payload, cursor + 24);
+        let sunk_convoys = read_u32_le(payload, cursor + 28);
+        let row_reserved0 = read_u32_le(payload, cursor + 32);
+        let row_reserved1 = read_u32_le(payload, cursor + 36);
+        cursor += COMPACT_SHIP_ROW_BASE_LEN;
+        let definition_len = if cursor.saturating_add(2) <= payload.len() {
+            read_u16_le(payload, cursor) as usize
+        } else {
+            0
+        };
+        if let Err(err) = skip_compact_string(payload, &mut cursor, "ships definition") {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+
+        let deleted = (flags & COMPACT_SHIP_ROW_FLAG_DELETED) != 0;
+        if !valid_compact_ship_id(instance_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: ships row {row_index} has invalid instance_id {instance_id}"
+            ));
+        } else if !seen_rows.insert((instance_id, deleted)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: ships row {row_index} duplicates instance_id {instance_id}"
+            ));
+        }
+        if flags
+            & !(COMPACT_SHIP_ROW_FLAG_DELETED
+                | COMPACT_SHIP_ROW_FLAG_TASK_FORCE
+                | COMPACT_SHIP_ROW_FLAG_DEFINITION)
+            != 0
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: ships row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if (flags & COMPACT_SHIP_ROW_FLAG_TASK_FORCE) != 0 {
+            task_force_rows = task_force_rows.saturating_add(1);
+            if !valid_compact_oob_id(task_force_id) {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: ships row {row_index} has invalid task_force_id {task_force_id}"
+                ));
+            }
+        } else if task_force_id != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: ships row {row_index} has task_force_id without flag"
+            ));
+        }
+        if (flags & COMPACT_SHIP_ROW_FLAG_DEFINITION) != 0 {
+            definition_rows = definition_rows.saturating_add(1);
+            if definition_len == 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: ships row {row_index} has definition flag without definition"
+                ));
+            }
+        } else if definition_len != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: ships row {row_index} has definition without flag"
+            ));
+        }
+        if category_enum > COMPACT_SHIP_MAX_CATEGORY {
+            summary.parse_errors.push(format!(
+                "offset {offset}: ships row {row_index} has invalid category_enum {category_enum}"
+            ));
+        }
+        if strength_raw > COMPACT_SHIP_MAX_STRENGTH_RAW {
+            summary.parse_errors.push(format!(
+                "offset {offset}: ships row {row_index} has invalid strength_raw {strength_raw}"
+            ));
+        }
+        if organisation_raw > COMPACT_SHIP_MAX_ORGANISATION_RAW {
+            summary.parse_errors.push(format!(
+                "offset {offset}: ships row {row_index} has invalid organisation_raw {organisation_raw}"
+            ));
+        }
+        if experience_raw > COMPACT_SHIP_MAX_EXPERIENCE_RAW {
+            summary.parse_errors.push(format!(
+                "offset {offset}: ships row {row_index} has invalid experience_raw {experience_raw}"
+            ));
+        }
+        if deleted
+            && (task_force_id != 0
+                || category_enum != 0
+                || strength_raw != 0
+                || organisation_raw != 0
+                || experience_raw != 0
+                || sunk_convoys != 0
+                || definition_len != 0)
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: ships deleted row {row_index} has live fields"
+            ));
+        }
+        if row_reserved0 != 0 || row_reserved1 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: ships row {row_index} reserved field is nonzero"
+            ));
+        }
+    }
+    if cursor != payload.len() {
+        summary.parse_errors.push(format!(
+            "offset {offset}: ships data payload has {} trailing byte(s)",
+            payload.len().saturating_sub(cursor)
+        ));
+    }
+    add_compact_domain_data_unit(summary, 29, "ship_task_force_rows", task_force_rows);
+    add_compact_domain_data_unit(summary, 29, "ship_definition_rows", definition_rows);
+}
+
+fn valid_compact_ship_id(value: u32) -> bool {
+    value > 0 && value <= COMPACT_SHIP_MAX_ID
+}
+
 fn decode_compact_land_combats_data_payload(
     offset: usize,
     payload: &[u8],
@@ -4390,6 +4594,7 @@ fn compact_domain_id(domain: &str) -> Option<u16> {
         "division_equipment" => Some(26),
         "army_orders" => Some(27),
         "oob_command" => Some(28),
+        "ships" => Some(29),
         _ => None,
     }
 }
@@ -4413,6 +4618,7 @@ fn compact_domain_name(domain_id: u16) -> &'static str {
         26 => "division_equipment",
         27 => "army_orders",
         28 => "oob_command",
+        29 => "ships",
         1000 => "frame",
         _ => "unknown",
     }
@@ -4532,6 +4738,35 @@ fn compact_division_root_discovery_debt(source: &str) -> &'static str {
         "not_scheduled" => "not_scheduled",
         "unseen" => "divisions domain was scheduled but no compact division records were seen",
         _ => "anchored division root/container did not resolve; heap scans are excluded from production capture",
+    }
+}
+
+fn compact_ship_root_source(cfg: &Config, summary: &CompactSummary) -> &'static str {
+    if !cfg.scheduled_domains.iter().any(|domain| domain == "ships") {
+        return "not_scheduled";
+    }
+    let Some(domain) = summary.per_domain.get(&29) else {
+        return "unseen";
+    };
+    let blocked = (domain.status_flags_or
+        & (COMPACT_STATUS_BRIDGE_UNAVAILABLE
+            | COMPACT_STATUS_SOURCE_UNAVAILABLE
+            | COMPACT_STATUS_PARTIAL_DATA
+            | COMPACT_STATUS_WORKER_PANIC))
+        != 0;
+    if !blocked && domain.data_rows_total > 0 {
+        "dll_native"
+    } else {
+        "unresolved"
+    }
+}
+
+fn compact_ship_root_discovery_debt(source: &str) -> &'static str {
+    match source {
+        "dll_native" => "none; compact stream used a DLL-native anchored CTaskForce/CShip root",
+        "not_scheduled" => "not_scheduled",
+        "unseen" => "ships domain was scheduled but no compact ship records were seen",
+        _ => "anchored CTaskForce/CShip root/container did not resolve; ship bridges and heap scans are excluded from production capture",
     }
 }
 
@@ -5404,6 +5639,112 @@ mod tests {
         );
         assert_eq!(compact_domain_id("oob_command"), Some(28));
         assert_eq!(compact_domain_name(28), "oob_command");
+    }
+
+    #[test]
+    fn compact_summary_decodes_ships_data_record() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            29,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(700, 2, 2, 1, 2),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            29,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_ships_data_payload(0),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_100, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(&summary, &[29]).is_empty());
+        let ships = summary.per_domain.get(&29).unwrap();
+        assert_eq!(ships.data_record_count, 1);
+        assert_eq!(ships.data_rows_total, 2);
+        assert_eq!(ships.data_changed_rows_total, 2);
+        assert_eq!(ships.unit_count_total, 1);
+        assert_eq!(
+            ships
+                .data_units_total
+                .get("ship_observed_ship_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            ships
+                .data_units_total
+                .get("ship_observed_task_force_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            ships.data_units_total.get("ship_task_force_rows").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            ships.data_units_total.get("ship_definition_rows").copied(),
+            Some(1)
+        );
+        assert_eq!(compact_domain_id("ships"), Some(29));
+        assert_eq!(compact_domain_name(29), "ships");
+    }
+
+    #[test]
+    fn compact_ship_root_source_marks_unresolved_blocked_native_rows() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            29,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(500, 0, 0, 0, 0, COMPACT_STATUS_SOURCE_UNAVAILABLE),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            29,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_empty_ships_data_payload(COMPACT_STATUS_SOURCE_UNAVAILABLE),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_100, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        let cfg = test_config(vec!["ships"], None);
+        let source = compact_ship_root_source(&cfg, &summary);
+
+        assert_eq!(source, "unresolved");
+        assert_eq!(
+            compact_ship_root_discovery_debt(source),
+            "anchored CTaskForce/CShip root/container did not resolve; ship bridges and heap scans are excluded from production capture"
+        );
     }
 
     #[test]
@@ -6771,6 +7112,81 @@ mod tests {
             payload.extend_from_slice(&member_id.to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
         }
+        payload
+    }
+
+    fn test_ships_data_payload(status_flags: u32) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+
+        for (
+            instance_id,
+            flags,
+            task_force_id,
+            category_enum,
+            strength_raw,
+            organisation_raw,
+            experience_raw,
+            sunk_convoys,
+            definition,
+        ) in [
+            (
+                1001u32,
+                COMPACT_SHIP_ROW_FLAG_TASK_FORCE | COMPACT_SHIP_ROW_FLAG_DEFINITION,
+                617u32,
+                3u32,
+                10_000_000u32,
+                9_000_000u32,
+                500_000u32,
+                2u32,
+                "hull",
+            ),
+            (
+                1002u32,
+                COMPACT_SHIP_ROW_FLAG_DELETED,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                "",
+            ),
+        ] {
+            payload.extend_from_slice(&instance_id.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&task_force_id.to_le_bytes());
+            payload.extend_from_slice(&category_enum.to_le_bytes());
+            payload.extend_from_slice(&strength_raw.to_le_bytes());
+            payload.extend_from_slice(&organisation_raw.to_le_bytes());
+            payload.extend_from_slice(&experience_raw.to_le_bytes());
+            payload.extend_from_slice(&sunk_convoys.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            append_test_compact_string(&mut payload, definition);
+        }
+        payload
+    }
+
+    fn test_empty_ships_data_payload(status_flags: u32) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
         payload
     }
 

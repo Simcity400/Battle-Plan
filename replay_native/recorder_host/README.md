@@ -526,6 +526,16 @@ including country economy/politics/research/decisions, divisions,
 division-equipment entries, active army orders, active land OOB, land-combat
 participants, map control, map resources/buildings, and weather regions.
 
+`ships` is now reserved as compact `domain_id=29` with recorder decoder and
+manifest source/debt reporting. A 15-second live schema gate
+`compact_ships_schema_sourceblocked_870ebf_20260701_004059` advanced 29 game
+hours with 0 skipped, ordered/decodable records, and a verified
+`.battleplan`, but correctly failed acceptance with
+`ship_root_source="unresolved"` / `compact_source_unavailable`. It is not a
+completed recording segment until the DLL walks a native anchored
+`CTaskForce`/`CShip` root and passes the speed-five compact gate with no
+source/partial/bridge flags.
+
 Implementation note: see `COMPACT_HOI4REPLAY_NEXT_STEP.md` for the bounded
 Rust-native packaging path and the test contract for putting `collector_stream.bin`
 inside a manifest-covered `.battleplan` without using Python or full JSON root
