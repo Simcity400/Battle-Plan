@@ -2650,6 +2650,8 @@ mod attach_log {
     const COMPACT_DOMAIN_POLITICS_RESIDUALS: u16 = 15;
     const COMPACT_DOMAIN_DECISIONS: u16 = 16;
     const COMPACT_DOMAIN_DIPLOMACY: u16 = 17;
+    const COMPACT_DOMAIN_DIVISIONS: u16 = 20;
+    const COMPACT_DOMAIN_LAND_COMBATS: u16 = 21;
     const COMPACT_STATUS_STATE_UNAVAILABLE: u32 = 1 << 0;
     const COMPACT_STATUS_PROFILE_MISMATCH: u32 = 1 << 1;
     const COMPACT_STATUS_NO_CLOCK: u32 = 1 << 2;
@@ -2657,6 +2659,9 @@ mod attach_log {
     const COMPACT_STATUS_WAR_BRIDGE_APPLIED: u32 = 1 << 4;
     const COMPACT_STATUS_EXTRACTION_PERF_GATE: u32 = 1 << 5;
     const COMPACT_STATUS_WORKER_PANIC: u32 = 1 << 6;
+    const COMPACT_STATUS_BRIDGE_UNAVAILABLE: u32 = 1 << 7;
+    const COMPACT_STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
+    const COMPACT_STATUS_PARTIAL_DATA: u32 = 1 << 9;
     const COMPACT_POLITICS_SHARD_MIN_ROWS: usize = 96;
     const COMPACT_POLITICS_SHARD_MAX_WORKERS: usize = 4;
 
@@ -2724,6 +2729,8 @@ mod attach_log {
         decisions: CompactCountryFrameTracker,
         diplomacy: CompactCountryFrameTracker,
         combined: CompactCountryFrameTracker,
+        division_movement: BTreeMap<u32, DivisionMovementSample>,
+        land_combat: LandCombatTracker,
     }
 
     struct CompactBundleRead {
@@ -2739,6 +2746,23 @@ mod attach_log {
         rows: Vec<CountryObjectRow>,
         politics_updates: Vec<(u32, CountryPoliticsFingerprint, Option<CountryPoliticsRow>)>,
         popularity_updates: Vec<(u32, u64)>,
+    }
+
+    struct CompactDivisionRead {
+        rows: Vec<DivisionMovementSample>,
+        read_time_us: u64,
+        changed_rows: u32,
+        status_flags: u32,
+        bridge_rows: u32,
+    }
+
+    struct CompactLandCombatRead {
+        rows: Vec<LandCombatSample>,
+        read_time_us: u64,
+        changed_rows: u32,
+        status_flags: u32,
+        participant_count: u32,
+        ended_count: u32,
     }
 
     struct ClockSample {
@@ -3616,7 +3640,7 @@ mod attach_log {
         let Some(clock) = clock_sample_from_state(Some(state)) else {
             return Vec::new();
         };
-        let current_samples = match sample_land_combats(state) {
+        let current_samples = match sample_land_combats_with_retry(state, 3) {
             Ok(samples) => samples,
             Err(gap_kind) => {
                 let tick_ms = unsafe { GetTickCount64() };
@@ -3900,6 +3924,23 @@ mod attach_log {
             return Err("manager_changed_during_read");
         }
         land_combat_manager_samples_result(by_id, invalid_entries)
+    }
+
+    fn sample_land_combats_with_retry(
+        state: &CollectorState,
+        attempts: usize,
+    ) -> Result<Vec<LandCombatSample>, &'static str> {
+        let mut last_err = "not_attempted";
+        for _ in 0..attempts.max(1) {
+            match sample_land_combats(state) {
+                Ok(samples) => return Ok(samples),
+                Err(err) => {
+                    last_err = err;
+                    thread::yield_now();
+                }
+            }
+        }
+        Err(last_err)
     }
 
     fn land_combat_manager_samples_result(
@@ -8754,6 +8795,69 @@ mod attach_log {
                 emitted_domains = emitted_domains.saturating_add(1);
             }
         }
+        if compact_explicit_domain_enabled(control, RAW_DIVISIONS_DOMAIN) {
+            let read = read_compact_divisions(state, control, status_flags, trackers);
+            append_compact_domain_perf_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                CompactDomainPerfRecord {
+                    domain_id: COMPACT_DOMAIN_DIVISIONS,
+                    read_time_us: read.read_time_us,
+                    row_count: read.rows.len().min(u32::MAX as usize) as u32,
+                    changed_rows: read.changed_rows,
+                    unit_count: read.bridge_rows,
+                    changed_unit_count: read.changed_rows,
+                    status_flags: read.status_flags,
+                },
+                elapsed_wall_ms,
+            );
+            sequence = sequence.saturating_add(1);
+            append_compact_divisions_data_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                &read.rows,
+                elapsed_wall_ms,
+                read.status_flags,
+                read.changed_rows,
+                read.bridge_rows,
+            );
+            sequence = sequence.saturating_add(1);
+            emitted_domains = emitted_domains.saturating_add(1);
+        }
+        if compact_explicit_domain_enabled(control, RAW_LAND_COMBATS_DOMAIN) {
+            let read = read_compact_land_combats(state, status_flags, trackers);
+            append_compact_domain_perf_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                CompactDomainPerfRecord {
+                    domain_id: COMPACT_DOMAIN_LAND_COMBATS,
+                    read_time_us: read.read_time_us,
+                    row_count: read.rows.len().min(u32::MAX as usize) as u32,
+                    changed_rows: read.changed_rows,
+                    unit_count: read.participant_count,
+                    changed_unit_count: read.changed_rows,
+                    status_flags: read.status_flags,
+                },
+                elapsed_wall_ms,
+            );
+            sequence = sequence.saturating_add(1);
+            append_compact_land_combats_data_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                &read.rows,
+                elapsed_wall_ms,
+                read.status_flags,
+                read.changed_rows,
+                read.participant_count,
+                read.ended_count,
+            );
+            sequence = sequence.saturating_add(1);
+            emitted_domains = emitted_domains.saturating_add(1);
+        }
         append_compact_frame_end_record(
             &mut out,
             sequence,
@@ -8769,6 +8873,14 @@ mod attach_log {
 
     fn compact_parallel_gate_eligible(specs: &[CompactCountryDomainSpec]) -> bool {
         compact_parallel_gate_lanes(specs.iter().copied()).lane_count() > 1
+    }
+
+    fn compact_explicit_domain_enabled(control: &CollectorControl, domain: &str) -> bool {
+        control.scheduled_domains_valid
+            && control
+                .scheduled_domains
+                .iter()
+                .any(|scheduled| scheduled == domain)
     }
 
     fn read_compact_country_domain_bundles_parallel(
@@ -9118,6 +9230,154 @@ mod attach_log {
             read_time_us: 0,
             row_count: 0,
             status_flags: status_flags | COMPACT_STATUS_WORKER_PANIC,
+        }
+    }
+
+    fn read_compact_divisions(
+        state: &CollectorState,
+        control: &CollectorControl,
+        status_flags: u32,
+        trackers: &mut CompactPerfGateTrackers,
+    ) -> CompactDivisionRead {
+        let read_started = Instant::now();
+        let mut status_flags = status_flags;
+        let bridge_valid = control.division_body_bridge_valid
+            && division_body_bridge_well_formed(&control.division_body_bridge);
+        if !bridge_valid || control.division_body_bridge.is_empty() {
+            status_flags |= COMPACT_STATUS_BRIDGE_UNAVAILABLE;
+            return CompactDivisionRead {
+                rows: Vec::new(),
+                read_time_us: duration_micros_u64(read_started.elapsed()),
+                changed_rows: 0,
+                status_flags,
+                bridge_rows: control.division_body_bridge.len().min(u32::MAX as usize) as u32,
+            };
+        }
+
+        let mut rows = Vec::new();
+        let mut changed_rows = 0u32;
+        for entry in &control.division_body_bridge {
+            let Some(sample) = sample_division_movement(state.base, entry) else {
+                continue;
+            };
+            let changed = trackers
+                .division_movement
+                .get(&sample.div_id)
+                .map(|old| old != &sample)
+                .unwrap_or(true);
+            if changed {
+                changed_rows = changed_rows.saturating_add(1);
+            }
+            trackers
+                .division_movement
+                .insert(sample.div_id, sample.clone());
+            rows.push(sample);
+        }
+
+        CompactDivisionRead {
+            rows,
+            read_time_us: duration_micros_u64(read_started.elapsed()),
+            changed_rows,
+            status_flags,
+            bridge_rows: control.division_body_bridge.len().min(u32::MAX as usize) as u32,
+        }
+    }
+
+    fn read_compact_land_combats(
+        state: &CollectorState,
+        status_flags: u32,
+        trackers: &mut CompactPerfGateTrackers,
+    ) -> CompactLandCombatRead {
+        let read_started = Instant::now();
+        let mut status_flags = status_flags;
+        let current_samples = match sample_land_combats_with_retry(state, 3) {
+            Ok(samples) => samples,
+            Err(_) => {
+                return CompactLandCombatRead {
+                    rows: Vec::new(),
+                    read_time_us: duration_micros_u64(read_started.elapsed()),
+                    changed_rows: 0,
+                    status_flags: status_flags | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                    participant_count: 0,
+                    ended_count: trackers.land_combat.previous.len().min(u32::MAX as usize) as u32,
+                }
+            }
+        };
+
+        let mut current = BTreeMap::new();
+        let mut rows = Vec::with_capacity(current_samples.len());
+        let mut changed_rows = 0u32;
+        let mut participant_count = 0u32;
+        for mut sample in current_samples {
+            let old = trackers
+                .land_combat
+                .previous
+                .get(&sample.combat_id)
+                .cloned();
+            let continues = land_combat_continues(old.as_ref(), &sample);
+            let generation = if continues {
+                old.as_ref().map(|old| old.generation).unwrap_or_else(|| {
+                    let generation = trackers.land_combat.next_generation;
+                    trackers.land_combat.next_generation =
+                        trackers.land_combat.next_generation.saturating_add(1);
+                    generation
+                })
+            } else {
+                let generation = trackers.land_combat.next_generation;
+                trackers.land_combat.next_generation =
+                    trackers.land_combat.next_generation.saturating_add(1);
+                generation
+            };
+            sample.generation = generation;
+            let changed = old
+                .as_ref()
+                .filter(|old| old.generation == generation && continues)
+                .and_then(|old| land_combat_changed_fields(old, &sample))
+                .is_some()
+                || old
+                    .as_ref()
+                    .map(|old| old.generation != generation || !continues)
+                    .unwrap_or(true);
+            if changed {
+                changed_rows = changed_rows.saturating_add(1);
+            }
+            if sample.attacker_divisions.is_none() || sample.defender_divisions.is_none() {
+                status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+            }
+            participant_count = participant_count
+                .saturating_add(
+                    sample
+                        .attacker_divisions
+                        .as_ref()
+                        .map(Vec::len)
+                        .unwrap_or(0) as u32,
+                )
+                .saturating_add(
+                    sample
+                        .defender_divisions
+                        .as_ref()
+                        .map(Vec::len)
+                        .unwrap_or(0) as u32,
+                );
+            current.insert(sample.combat_id, sample.clone());
+            rows.push(sample);
+        }
+        let ended_count = trackers
+            .land_combat
+            .previous
+            .keys()
+            .filter(|combat_id| !current.contains_key(combat_id))
+            .count()
+            .min(u32::MAX as usize) as u32;
+        trackers.land_combat.previous = current;
+
+        CompactLandCombatRead {
+            rows,
+            read_time_us: duration_micros_u64(read_started.elapsed()),
+            changed_rows: changed_rows.saturating_add(ended_count),
+            status_flags,
+            participant_count,
+            ended_count,
         }
     }
 
@@ -9629,6 +9889,64 @@ mod attach_log {
             &payload,
         );
         true
+    }
+
+    fn append_compact_divisions_data_record(
+        out: &mut Vec<u8>,
+        sequence: u64,
+        game_hour_raw: i32,
+        rows: &[DivisionMovementSample],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        bridge_rows: u32,
+    ) {
+        let payload = compact_divisions_data_payload(
+            rows,
+            elapsed_wall_ms,
+            status_flags,
+            changed_rows,
+            bridge_rows,
+        );
+        append_compact_record(
+            out,
+            sequence,
+            game_hour_raw,
+            COMPACT_DOMAIN_DIVISIONS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+    }
+
+    fn append_compact_land_combats_data_record(
+        out: &mut Vec<u8>,
+        sequence: u64,
+        game_hour_raw: i32,
+        rows: &[LandCombatSample],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        participant_count: u32,
+        ended_count: u32,
+    ) {
+        let payload = compact_land_combats_data_payload(
+            rows,
+            elapsed_wall_ms,
+            status_flags,
+            changed_rows,
+            participant_count,
+            ended_count,
+        );
+        append_compact_record(
+            out,
+            sequence,
+            game_hour_raw,
+            COMPACT_DOMAIN_LAND_COMBATS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
     }
 
     fn compact_fuel_data_payload(
@@ -10319,6 +10637,147 @@ mod attach_log {
             }
         }
         payload
+    }
+
+    fn compact_divisions_data_payload(
+        rows: &[DivisionMovementSample],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        bridge_rows: u32,
+    ) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(32usize.saturating_add(rows.len().saturating_mul(56)));
+        payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
+        payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+        payload.extend_from_slice(&changed_rows.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&bridge_rows.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        for sample in rows {
+            let mut flags = 0u32;
+            if sample.moving {
+                flags |= 1;
+            }
+            if sample.raw_movement_progress.is_some() {
+                flags |= 1 << 1;
+            }
+            if sample.move_target_province.is_some() {
+                flags |= 1 << 2;
+            }
+            if sample.movement_source_province.is_some() {
+                flags |= 1 << 3;
+            }
+            if sample.in_combat {
+                flags |= 1 << 4;
+            }
+            payload.extend_from_slice(&sample.div_id.to_le_bytes());
+            payload.extend_from_slice(&DIVISION_TYPE.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&sample.location.to_le_bytes());
+            payload.extend_from_slice(&sample.move_target_province.unwrap_or(0).to_le_bytes());
+            payload.extend_from_slice(&sample.movement_source_province.unwrap_or(0).to_le_bytes());
+            payload.extend_from_slice(&sample.raw_movement_progress.unwrap_or(0).to_le_bytes());
+            payload.extend_from_slice(&sample.progress_bucket.unwrap_or(0).to_le_bytes());
+            payload.extend_from_slice(&sample.raw_organisation.to_le_bytes());
+            payload.extend_from_slice(&sample.organisation_bucket.to_le_bytes());
+            payload.extend_from_slice(&sample.raw_strength.to_le_bytes());
+            payload.extend_from_slice(&sample.strength_bucket.to_le_bytes());
+            payload.extend_from_slice(&sample.combat_ref_count.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        payload
+    }
+
+    fn compact_land_combats_data_payload(
+        rows: &[LandCombatSample],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        participant_count: u32,
+        ended_count: u32,
+    ) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(
+            32usize
+                .saturating_add(rows.len().saturating_mul(40))
+                .saturating_add((participant_count as usize).saturating_mul(24)),
+        );
+        payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
+        payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+        payload.extend_from_slice(&changed_rows.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&participant_count.to_le_bytes());
+        payload.extend_from_slice(&ended_count.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        for sample in rows {
+            let mut flags = 0u32;
+            if sample.location.is_some() {
+                flags |= 1;
+            }
+            if sample.day.is_some() {
+                flags |= 1 << 1;
+            }
+            if sample.duration.is_some() {
+                flags |= 1 << 2;
+            }
+            if sample.attacker_divisions.is_some() {
+                flags |= 1 << 3;
+            }
+            if sample.defender_divisions.is_some() {
+                flags |= 1 << 4;
+            }
+            payload.extend_from_slice(&sample.combat_id.to_le_bytes());
+            payload.extend_from_slice(&sample.generation.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&sample.location.unwrap_or(0).to_le_bytes());
+            payload.extend_from_slice(&sample.day.unwrap_or(0).to_le_bytes());
+            payload.extend_from_slice(&sample.duration.unwrap_or(0).to_le_bytes());
+            payload.extend_from_slice(
+                &(sample
+                    .attacker_divisions
+                    .as_ref()
+                    .map(Vec::len)
+                    .unwrap_or(0)
+                    .min(u32::MAX as usize) as u32)
+                    .to_le_bytes(),
+            );
+            payload.extend_from_slice(
+                &(sample
+                    .defender_divisions
+                    .as_ref()
+                    .map(Vec::len)
+                    .unwrap_or(0)
+                    .min(u32::MAX as usize) as u32)
+                    .to_le_bytes(),
+            );
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        for sample in rows {
+            append_compact_land_combat_participants(&mut payload, sample, 1);
+            append_compact_land_combat_participants(&mut payload, sample, 2);
+        }
+        payload
+    }
+
+    fn append_compact_land_combat_participants(
+        payload: &mut Vec<u8>,
+        sample: &LandCombatSample,
+        side: u32,
+    ) {
+        let divisions = if side == 1 {
+            sample.attacker_divisions.as_ref()
+        } else {
+            sample.defender_divisions.as_ref()
+        };
+        if let Some(divisions) = divisions {
+            for division_id in divisions {
+                payload.extend_from_slice(&sample.combat_id.to_le_bytes());
+                payload.extend_from_slice(&sample.generation.to_le_bytes());
+                payload.extend_from_slice(&side.to_le_bytes());
+                payload.extend_from_slice(&division_id.to_le_bytes());
+                payload.extend_from_slice(&0u32.to_le_bytes());
+            }
+        }
     }
 
     fn append_fixed_ascii_token8(out: &mut Vec<u8>, token: &str) {
@@ -17740,6 +18199,160 @@ mod attach_log {
                 1_080_000_000
             );
             assert_eq!(u32::from_le_bytes(payload[164..168].try_into().unwrap()), 0);
+        }
+
+        #[test]
+        fn compact_divisions_data_payload_packs_numeric_rows() {
+            let rows = vec![
+                DivisionMovementSample {
+                    div_id: 17,
+                    moving: true,
+                    raw_movement_progress: Some(42_000),
+                    progress_bucket: Some(42),
+                    location: 118,
+                    move_target_province: Some(118),
+                    movement_source_province: Some(117),
+                    raw_organisation: 8_500_000,
+                    organisation_bucket: 8_500,
+                    raw_strength: 96_250_000,
+                    strength_bucket: 96_250,
+                    combat_ref_count: 1,
+                    in_combat: true,
+                },
+                DivisionMovementSample {
+                    div_id: 18,
+                    moving: false,
+                    raw_movement_progress: None,
+                    progress_bucket: None,
+                    location: 119,
+                    move_target_province: None,
+                    movement_source_province: None,
+                    raw_organisation: 10_000_000,
+                    organisation_bucket: 10_000,
+                    raw_strength: 100_000_000,
+                    strength_bucket: 100_000,
+                    combat_ref_count: 0,
+                    in_combat: false,
+                },
+            ];
+
+            let payload = compact_divisions_data_payload(
+                &rows,
+                77,
+                COMPACT_STATUS_EXTRACTION_PERF_GATE,
+                2,
+                3,
+            );
+
+            assert_eq!(payload.len(), 32 + 2 * 56);
+            assert_eq!(u64::from_le_bytes(payload[0..8].try_into().unwrap()), 77);
+            assert_eq!(u32::from_le_bytes(payload[8..12].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[12..16].try_into().unwrap()), 2);
+            assert_eq!(
+                u32::from_le_bytes(payload[16..20].try_into().unwrap()),
+                COMPACT_STATUS_EXTRACTION_PERF_GATE
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[20..24].try_into().unwrap()),
+                COMPACT_FIXED_SCALE_RAW
+            );
+            assert_eq!(u32::from_le_bytes(payload[24..28].try_into().unwrap()), 3);
+            assert_eq!(u32::from_le_bytes(payload[32..36].try_into().unwrap()), 17);
+            assert_eq!(
+                u32::from_le_bytes(payload[36..40].try_into().unwrap()),
+                DIVISION_TYPE
+            );
+            assert_eq!(u32::from_le_bytes(payload[40..44].try_into().unwrap()), 31);
+            assert_eq!(u32::from_le_bytes(payload[44..48].try_into().unwrap()), 118);
+            assert_eq!(u32::from_le_bytes(payload[48..52].try_into().unwrap()), 118);
+            assert_eq!(u32::from_le_bytes(payload[52..56].try_into().unwrap()), 117);
+            assert_eq!(
+                u32::from_le_bytes(payload[56..60].try_into().unwrap()),
+                42_000
+            );
+            assert_eq!(u32::from_le_bytes(payload[60..64].try_into().unwrap()), 42);
+            assert_eq!(
+                u32::from_le_bytes(payload[64..68].try_into().unwrap()),
+                8_500_000
+            );
+            assert_eq!(u32::from_le_bytes(payload[80..84].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[88..92].try_into().unwrap()), 18);
+            assert_eq!(u32::from_le_bytes(payload[96..100].try_into().unwrap()), 0);
+            assert_eq!(
+                u32::from_le_bytes(payload[120..124].try_into().unwrap()),
+                10_000_000
+            );
+        }
+
+        #[test]
+        fn compact_land_combats_data_payload_packs_numeric_rows() {
+            let rows = vec![
+                LandCombatSample {
+                    combat_id: 271,
+                    generation: 3,
+                    body_addr: HEAP_LO + 0x11000,
+                    location: Some(118),
+                    day: Some(12),
+                    duration: Some(34),
+                    attacker_divisions: Some(vec![1053, 2837]),
+                    defender_divisions: Some(vec![465]),
+                    attacker_status: "exact",
+                    defender_status: "exact",
+                },
+                LandCombatSample {
+                    combat_id: 272,
+                    generation: 4,
+                    body_addr: HEAP_LO + 0x12000,
+                    location: Some(119),
+                    day: Some(2),
+                    duration: Some(3),
+                    attacker_divisions: Some(Vec::new()),
+                    defender_divisions: Some(Vec::new()),
+                    attacker_status: "exact",
+                    defender_status: "exact",
+                },
+            ];
+
+            let payload = compact_land_combats_data_payload(
+                &rows,
+                88,
+                COMPACT_STATUS_EXTRACTION_PERF_GATE,
+                2,
+                3,
+                1,
+            );
+
+            assert_eq!(payload.len(), 32 + 2 * 40 + 3 * 24);
+            assert_eq!(u64::from_le_bytes(payload[0..8].try_into().unwrap()), 88);
+            assert_eq!(u32::from_le_bytes(payload[8..12].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[12..16].try_into().unwrap()), 2);
+            assert_eq!(
+                u32::from_le_bytes(payload[16..20].try_into().unwrap()),
+                COMPACT_STATUS_EXTRACTION_PERF_GATE
+            );
+            assert_eq!(u32::from_le_bytes(payload[20..24].try_into().unwrap()), 3);
+            assert_eq!(u32::from_le_bytes(payload[24..28].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[32..36].try_into().unwrap()), 271);
+            assert_eq!(u64::from_le_bytes(payload[36..44].try_into().unwrap()), 3);
+            assert_eq!(u32::from_le_bytes(payload[44..48].try_into().unwrap()), 31);
+            assert_eq!(u32::from_le_bytes(payload[48..52].try_into().unwrap()), 118);
+            assert_eq!(u32::from_le_bytes(payload[60..64].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[64..68].try_into().unwrap()), 1);
+            assert_eq!(
+                u32::from_le_bytes(payload[112..116].try_into().unwrap()),
+                271
+            );
+            assert_eq!(u64::from_le_bytes(payload[116..124].try_into().unwrap()), 3);
+            assert_eq!(u32::from_le_bytes(payload[124..128].try_into().unwrap()), 1);
+            assert_eq!(
+                u32::from_le_bytes(payload[128..132].try_into().unwrap()),
+                1053
+            );
+            assert_eq!(u32::from_le_bytes(payload[172..176].try_into().unwrap()), 2);
+            assert_eq!(
+                u32::from_le_bytes(payload[176..180].try_into().unwrap()),
+                465
+            );
         }
 
         #[test]

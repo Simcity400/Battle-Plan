@@ -9,9 +9,9 @@ the compact extraction gate.
   DLL byte stream to `collector_stream.bin` and validates H4CR headers, sequence
   ordering, per-hour domain coverage, frame timing, status flags, and skipped
   hours.
-- The compact stream still includes `DOMAIN_PERF` plus `FRAME_END` records for
-  extraction proof, and now also includes the first typed replay data payload:
-  `fuel_live` rows keyed by `tag_db_id`.
+- The compact stream includes `DOMAIN_PERF` plus `FRAME_END` records for
+  extraction proof, and now includes typed replay data payloads for the
+  production-shaped country-state lanes plus `divisions` and `land_combats`.
 - The snapshot crate already owns the Rust `.battleplan` container primitives:
   `snapshot::pack` byte-copies payloads into a manifest-covered ZIP, and
   `snapshot::Container` reopens entries through verified hashes.
@@ -50,49 +50,55 @@ but app ingestion may still want explicit format metadata later.
 
 `recorder_host` now has tests around synthetic H4CR bytes:
 
-- Build a small compact stream with `fuel_live` perf/data and `frame` records.
+- Build small compact streams with typed domain perf/data and `frame` records.
 - Pack it with a minimal `index.json` into `.battleplan` using the snapshot
   packer.
 - Reopen through `snapshot::Container`, `verify_all`, read the compact entry,
   and assert byte identity.
 - Run `summarize_compact_stream` over compact bytes and assert decodable,
-  ordered, zero skipped hours, no worker panic, expected domain coverage, and
-  one fuel data record per fuel frame.
+  ordered, zero skipped hours, no worker panic, no bridge/source/partial-data
+  proof-failure status, expected domain coverage, and one typed data record per
+  required domain per frame.
 
 These tests should not use Python, `collector_frames.jsonl`, or full JSON root
 frames as the production path.
 
-## First Typed Fuel Record Contract
+## Typed Record Contract
 
-- Fuel rows use `COMPACT_RECORD_TYPE_DOMAIN_DATA`; `DOMAIN_PERF` remains for
-  extraction metrics and per-frame coverage.
+- Domain payloads use `COMPACT_RECORD_TYPE_DOMAIN_DATA`; `DOMAIN_PERF` remains
+  for extraction metrics and per-frame coverage.
 - The host treats unknown record types as parse errors.
-- The payload has a fixed 24-byte header and fixed 40-byte row stride:
-  elapsed wall ms, row count, changed-row count, status flags, fuel scale
-  (`32768`), then rows.
-- Fuel fields are raw signed fixed-point integers with explicit scale metadata,
-  not f64 payloads. Measured zero remains distinct from an omitted row.
-- Include stable country identity in every row, at minimum `tag_db_id`; validate
-  duplicate rows and invalid lengths fail closed.
-- Treat `gain` and `cost` as signed. Do not assert `current <= max`; current fuel
-  can drift at tick boundaries and the collector-side validation already avoids
-  that assumption.
+- Payloads use fixed numeric headers and row strides where possible. Variable
+  token sections are length-prefixed and decoded fail-closed by the host.
+- Fixed-point values carry explicit scale metadata where scale is not implied by
+  the source field. Measured zero remains distinct from an omitted row.
+- Include stable identity in every row, such as `tag_db_id`, `division_id`, or
+  `combat_id:generation`; validate duplicate rows and invalid lengths fail
+  closed.
 - Preserve one sequence authority and make `FRAME_END` the last record for a
   game hour. Parallel read lanes may produce data concurrently, but packaged
   records need deterministic order.
 
 ## Still Open
 
-- Add typed data records for production, focus, tech, politics, decisions,
-  diplomacy, combat, movement, and orders.
+- Move `divisions` root discovery out of temporary Python preflight into the
+  DLL/Rust host before marking that segment DLL-complete.
+- Add typed data records for army orders, OOB command, naval/air combat,
+  air wings, ships, province/state/building deltas, logistics/supply proxies,
+  weather, and remaining replay-critical event layers.
 - Fold typed records into the future hourly snapshot spine once the raw compact
   stream is fully covered.
 
 ## Live Proof
 
-`compact_fuel_replay_container_speed5_v1` passed the DLL/Rust compact path at
-speed five: 291 game hours advanced in 30 seconds, 292 frame-end records, 0
-skipped hours, full per-hour coverage for all 8 scheduled country domains, 292
-fuel data records for 292 fuel frames, 11,611 typed fuel rows, no worker panic,
-avg frame 44.869 ms, p95 57.064 ms, max 116.131 ms, 667,672 raw stream bytes,
-and an independently verified 86,012-byte `native_session.battleplan`.
+`compact_country_divisions_land_combats_speed5_v2_retry` passed the DLL/Rust
+compact path at speed five/current live speed with 10 scheduled domains:
+`fuel_live`, `production_live`, `focus_live`, `tech_live`, `politics_live`,
+`politics_residuals`, `decisions_live`, `diplomacy_live`, `divisions`, and
+`land_combats`. It advanced 187 game hours with 188 frame-end records, 0 skipped
+hours, full per-hour coverage, 0 parse/order errors, no worker-panic,
+bridge-unavailable, source-unavailable, or partial-data flags, avg frame
+60.247 ms, p95 90.664 ms, max 117.845 ms, 30,022,402 raw stream bytes, and an
+independently verified 9,456,740-byte `native_session.battleplan`. The
+`divisions` lane in that mixed proof still depends on a bounded one-time bridge
+preflight and remains temporary debt.

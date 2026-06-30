@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use serde_json::{json, Value};
 use snapshot::{pack, Container, ExpectedIdentity, PackEntry, PackIdentity};
 use std::collections::{BTreeMap, BTreeSet};
@@ -35,11 +37,24 @@ const COMPACT_RECORD_TYPE_DOMAIN_PERF: u16 = 1;
 const COMPACT_RECORD_TYPE_FRAME_END: u16 = 2;
 const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = 3;
 const COMPACT_STATUS_WORKER_PANIC: u32 = 1 << 6;
+const COMPACT_STATUS_BRIDGE_UNAVAILABLE: u32 = 1 << 7;
+const COMPACT_STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
+const COMPACT_STATUS_PARTIAL_DATA: u32 = 1 << 9;
 const COMPACT_FUEL_SCALE_RAW: u32 = 32768;
 const COMPACT_PRODUCTION_SCALE_RAW: u32 = 100000;
 const COMPACT_TECH_PROGRESS_SCALE_RAW: u32 = 1000;
 const COMPACT_TECH_LIVE_PROGRESS_SCALE_RAW: u32 = 100000;
 const COMPACT_FIXED_SCALE_RAW: u32 = 100000;
+const COMPACT_DIVISION_TYPE: u32 = 4713;
+const COMPACT_DIVISION_ROW_LEN: usize = 56;
+const COMPACT_MAX_DIVISION_PROVINCE_ID: u32 = 1_000_000;
+const COMPACT_MAX_DIVISION_COMBAT_REF_COUNT: u32 = 1_000;
+const COMPACT_MAX_DIVISION_ORGANISATION_RAW: u32 = 100_000_000;
+const COMPACT_MAX_DIVISION_STRENGTH_RAW: u32 = 1_000_000_000;
+const COMPACT_LAND_COMBAT_ROW_LEN: usize = 40;
+const COMPACT_LAND_COMBAT_PARTICIPANT_ROW_LEN: usize = 24;
+const COMPACT_LAND_COMBAT_MAX_PROVINCE_ID: u32 = 1_000_000;
+const COMPACT_LAND_COMBAT_MAX_AGE_DAYS: u32 = 100_000;
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -96,6 +111,7 @@ struct Config {
     lightweight_root_frame: bool,
     special_projects_scan: bool,
     compact_country_frame: bool,
+    division_body_bridge: Option<String>,
     idea_group_filter: Option<String>,
     advisor_token_filter: Option<String>,
     session_id: String,
@@ -231,6 +247,8 @@ fn run() -> Result<(), String> {
                     "lightweight_root_frame": cfg.lightweight_root_frame,
                     "special_projects_scan": cfg.special_projects_scan,
                     "compact_country_frame": cfg.compact_country_frame,
+                    "division_body_bridge_rows": encoded_row_count(cfg.division_body_bridge.as_deref()),
+                    "division_body_bridge_preflight_debt": cfg.division_body_bridge.as_ref().map(|_| "temporary bounded preflight/cache input; not DLL-complete root discovery").unwrap_or("missing"),
                     "stream_format": cfg.stream_format.as_str(),
                     "extraction_perf_gate": cfg.extraction_perf_gate,
                     "idea_group_filter_rows": encoded_row_count(cfg.idea_group_filter.as_deref()),
@@ -266,9 +284,17 @@ fn run() -> Result<(), String> {
             let decodable = summary.parse_errors.is_empty();
             let ordered = summary.ordering_errors.is_empty();
             let worker_panic_seen = (summary.status_flags_or & COMPACT_STATUS_WORKER_PANIC) != 0;
+            let bridge_unavailable_seen =
+                (summary.status_flags_or & COMPACT_STATUS_BRIDGE_UNAVAILABLE) != 0;
+            let source_unavailable_seen =
+                (summary.status_flags_or & COMPACT_STATUS_SOURCE_UNAVAILABLE) != 0;
+            let partial_data_seen = (summary.status_flags_or & COMPACT_STATUS_PARTIAL_DATA) != 0;
             let hourly_met = decodable
                 && ordered
                 && !worker_panic_seen
+                && !bridge_unavailable_seen
+                && !source_unavailable_seen
+                && !partial_data_seen
                 && coverage_errors.is_empty()
                 && summary.skipped_hours == 0
                 && summary
@@ -290,6 +316,8 @@ fn run() -> Result<(), String> {
                     "lightweight_root_frame": cfg.lightweight_root_frame,
                     "special_projects_scan": cfg.special_projects_scan,
                     "compact_country_frame": cfg.compact_country_frame,
+                    "division_body_bridge_rows": encoded_row_count(cfg.division_body_bridge.as_deref()),
+                    "division_body_bridge_preflight_debt": cfg.division_body_bridge.as_ref().map(|_| "temporary bounded preflight/cache input; not DLL-complete root discovery").unwrap_or("missing"),
                     "stream_format": cfg.stream_format.as_str(),
                     "extraction_perf_gate": cfg.extraction_perf_gate,
                     "idea_group_filter_rows": encoded_row_count(cfg.idea_group_filter.as_deref()),
@@ -310,6 +338,9 @@ fn run() -> Result<(), String> {
                         "ordered": ordered,
                         "status_flags_or": summary.status_flags_or,
                         "worker_panic_seen": worker_panic_seen,
+                        "bridge_unavailable_seen": bridge_unavailable_seen,
+                        "source_unavailable_seen": source_unavailable_seen,
+                        "partial_data_seen": partial_data_seen,
                         "domains_seen": compact_domain_names(&summary.domains_seen),
                         "expected_domains": compact_domain_names_from_ids(&expected_domain_ids),
                         "domain_coverage": {
@@ -386,6 +417,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut lightweight_root_frame = false;
     let mut special_projects_scan = false;
     let mut compact_country_frame = false;
+    let mut division_body_bridge = None;
     let mut idea_group_filter = None;
     let mut advisor_token_filter = None;
     let mut session_id = None;
@@ -433,6 +465,17 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             "--lightweight-root-frame" => lightweight_root_frame = true,
             "--special-projects-scan" => special_projects_scan = true,
             "--compact-country-frame" => compact_country_frame = true,
+            "--division-body-bridge" => {
+                i += 1;
+                division_body_bridge = Some(required(args.get(i), "--division-body-bridge")?);
+            }
+            "--division-body-bridge-file" => {
+                i += 1;
+                division_body_bridge = Some(read_filter_file(
+                    args.get(i),
+                    "--division-body-bridge-file",
+                )?);
+            }
             "--idea-group-filter-file" => {
                 i += 1;
                 idea_group_filter =
@@ -473,6 +516,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         lightweight_root_frame,
         special_projects_scan,
         compact_country_frame,
+        division_body_bridge,
         idea_group_filter,
         advisor_token_filter,
         session_id: session_id.unwrap_or_else(|| format!("native_{}", pipe_token())),
@@ -482,7 +526,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
 }
 
 fn usage() -> String {
-    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--stream-format json|compact] [--extraction-perf-gate] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--idea-group-filter-file path] [--advisor-token-filter-file path]".to_string()
+    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--stream-format json|compact] [--extraction-perf-gate] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--division-body-bridge value|--division-body-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path]".to_string()
 }
 
 fn required(value: Option<&String>, flag: &str) -> Result<String, String> {
@@ -707,6 +751,7 @@ fn write_control_file(cfg: &Config, pipe_token: &str) -> Result<(), String> {
         "sidecar_log": false,
         "session_id": cfg.session_id,
         "scheduled_domains": scheduled_domains,
+        "division_body_bridge": cfg.division_body_bridge.as_deref(),
         "idea_group_filter": cfg.idea_group_filter.as_deref(),
         "advisor_token_filter": cfg.advisor_token_filter.as_deref(),
     });
@@ -983,6 +1028,8 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     ),
                     16 => decode_compact_decisions_data_payload(offset, payload, &mut summary),
                     17 => decode_compact_diplomacy_data_payload(offset, payload, &mut summary),
+                    20 => decode_compact_divisions_data_payload(offset, payload, &mut summary),
+                    21 => decode_compact_land_combats_data_payload(offset, payload, &mut summary),
                     other => summary.parse_errors.push(format!(
                         "offset {offset}: unsupported domain data payload for {}",
                         compact_domain_name(other)
@@ -1948,6 +1995,359 @@ fn decode_compact_diplomacy_data_payload(
     }
 }
 
+fn decode_compact_divisions_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < 32 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: divisions data payload is {} byte(s), expected at least 32",
+            payload.len()
+        ));
+        return;
+    }
+    let row_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let scale_raw = read_u32_le(payload, 20);
+    let bridge_rows = read_u32_le(payload, 24) as usize;
+    let reserved = read_u32_le(payload, 28);
+    summary.status_flags_or |= status_flags;
+    if scale_raw != COMPACT_FIXED_SCALE_RAW {
+        summary.parse_errors.push(format!(
+            "offset {offset}: divisions data scale {scale_raw} != expected {COMPACT_FIXED_SCALE_RAW}"
+        ));
+    }
+    if reserved != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: divisions data reserved field is nonzero"
+        ));
+    }
+    let expected_len = 32usize.saturating_add(row_count.saturating_mul(COMPACT_DIVISION_ROW_LEN));
+    if payload.len() != expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: divisions data payload is {} byte(s), expected {expected_len}",
+            payload.len()
+        ));
+        return;
+    }
+    if changed_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: divisions data changed_rows {changed_rows} > row_count {row_count}"
+        ));
+    }
+    if row_count > bridge_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: divisions data row_count {row_count} > bridge_rows {bridge_rows}"
+        ));
+    }
+    if (status_flags & COMPACT_STATUS_BRIDGE_UNAVAILABLE) != 0 && bridge_rows == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: divisions data bridge unavailable"
+        ));
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&20) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    let mut cursor = 32usize;
+    let mut seen_divisions = BTreeSet::new();
+    for row_index in 0..row_count {
+        let div_id = read_u32_le(payload, cursor);
+        let div_type = read_u32_le(payload, cursor + 4);
+        let flags = read_u32_le(payload, cursor + 8);
+        let location = read_u32_le(payload, cursor + 12);
+        let move_target = read_u32_le(payload, cursor + 16);
+        let move_source = read_u32_le(payload, cursor + 20);
+        let movement_progress = read_u32_le(payload, cursor + 24);
+        let progress_bucket = read_u32_le(payload, cursor + 28);
+        let organisation_raw = read_u32_le(payload, cursor + 32);
+        let _organisation_bucket = read_u32_le(payload, cursor + 36);
+        let strength_raw = read_u32_le(payload, cursor + 40);
+        let _strength_bucket = read_u32_le(payload, cursor + 44);
+        let combat_ref_count = read_u32_le(payload, cursor + 48);
+        let row_reserved = read_u32_le(payload, cursor + 52);
+        cursor += COMPACT_DIVISION_ROW_LEN;
+
+        if div_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} has zero div_id"
+            ));
+        } else if !seen_divisions.insert(div_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} duplicates div_id {div_id}"
+            ));
+        }
+        if div_type != COMPACT_DIVISION_TYPE {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} has div_type {div_type}"
+            ));
+        }
+        if flags & !0b1_1111 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} has unknown flags {flags}"
+            ));
+        }
+        let moving = (flags & 1) != 0;
+        let has_progress = (flags & (1 << 1)) != 0;
+        let has_target = (flags & (1 << 2)) != 0;
+        let has_source = (flags & (1 << 3)) != 0;
+        let in_combat = (flags & (1 << 4)) != 0;
+        if !valid_compact_province_id(location) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} has invalid location {location}"
+            ));
+        }
+        if has_target && !valid_compact_province_id(move_target) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} has invalid move_target {move_target}"
+            ));
+        }
+        if has_source && !valid_compact_province_id(move_source) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} has invalid move_source {move_source}"
+            ));
+        }
+        if !moving && (has_progress || has_target || has_source) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} has movement fields while not moving"
+            ));
+        }
+        if has_progress && movement_progress == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} has zero movement progress"
+            ));
+        }
+        if !has_progress && movement_progress != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} has progress without flag"
+            ));
+        }
+        if !has_target && move_target != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} has target without flag"
+            ));
+        }
+        if !has_source && move_source != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} has source without flag"
+            ));
+        }
+        if !has_progress && progress_bucket != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} has progress bucket without flag"
+            ));
+        }
+        if organisation_raw > COMPACT_MAX_DIVISION_ORGANISATION_RAW {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} organisation_raw exceeds max"
+            ));
+        }
+        if strength_raw > COMPACT_MAX_DIVISION_STRENGTH_RAW {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} strength_raw exceeds max"
+            ));
+        }
+        if combat_ref_count > COMPACT_MAX_DIVISION_COMBAT_REF_COUNT {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} combat_ref_count exceeds max"
+            ));
+        }
+        if !in_combat && combat_ref_count != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} has combat refs while not in combat"
+            ));
+        }
+        if in_combat && combat_ref_count == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} is in combat without refs"
+            ));
+        }
+        if row_reserved != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: divisions row {row_index} reserved field is nonzero"
+            ));
+        }
+    }
+}
+
+fn valid_compact_province_id(value: u32) -> bool {
+    value > 0 && value <= COMPACT_MAX_DIVISION_PROVINCE_ID
+}
+
+fn decode_compact_land_combats_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < 32 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: land combat data payload is {} byte(s), expected at least 32",
+            payload.len()
+        ));
+        return;
+    }
+    let combat_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let participant_count = read_u32_le(payload, 20) as usize;
+    let ended_count = read_u32_le(payload, 24) as usize;
+    let reserved = read_u32_le(payload, 28);
+    summary.status_flags_or |= status_flags;
+    if reserved != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: land combat data reserved field is nonzero"
+        ));
+    }
+    let expected_len = 32usize
+        .saturating_add(combat_count.saturating_mul(COMPACT_LAND_COMBAT_ROW_LEN))
+        .saturating_add(participant_count.saturating_mul(COMPACT_LAND_COMBAT_PARTICIPANT_ROW_LEN));
+    if payload.len() != expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: land combat data payload is {} byte(s), expected {expected_len}",
+            payload.len()
+        ));
+        return;
+    }
+    if changed_rows > combat_count.saturating_add(ended_count) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: land combat changed_rows {changed_rows} > active+ended rows {}",
+            combat_count.saturating_add(ended_count)
+        ));
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&21) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(combat_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    let mut cursor = 32usize;
+    let mut seen_combats = BTreeSet::new();
+    let mut declared_participants = 0usize;
+    for row_index in 0..combat_count {
+        let combat_id = read_u32_le(payload, cursor);
+        let generation = read_u64_le(payload, cursor + 4);
+        let flags = read_u32_le(payload, cursor + 12);
+        let location = read_u32_le(payload, cursor + 16);
+        let day = read_u32_le(payload, cursor + 20);
+        let duration = read_u32_le(payload, cursor + 24);
+        let attacker_count = read_u32_le(payload, cursor + 28) as usize;
+        let defender_count = read_u32_le(payload, cursor + 32) as usize;
+        let row_reserved = read_u32_le(payload, cursor + 36);
+        cursor += COMPACT_LAND_COMBAT_ROW_LEN;
+
+        if combat_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: land combat row {row_index} has zero combat_id"
+            ));
+        } else if !seen_combats.insert((combat_id, generation)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: land combat row {row_index} duplicates combat {combat_id}:{generation}"
+            ));
+        }
+        if flags & !0b1_1111 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: land combat row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if (flags & 1) != 0 && !valid_compact_land_combat_province_id(location) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: land combat row {row_index} has invalid location {location}"
+            ));
+        }
+        if (flags & 1) == 0 && location != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: land combat row {row_index} has location without flag"
+            ));
+        }
+        if (flags & (1 << 1)) != 0 && day > COMPACT_LAND_COMBAT_MAX_AGE_DAYS {
+            summary.parse_errors.push(format!(
+                "offset {offset}: land combat row {row_index} has invalid day {day}"
+            ));
+        }
+        if (flags & (1 << 1)) == 0 && day != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: land combat row {row_index} has day without flag"
+            ));
+        }
+        if (flags & (1 << 2)) != 0 && duration > COMPACT_LAND_COMBAT_MAX_AGE_DAYS {
+            summary.parse_errors.push(format!(
+                "offset {offset}: land combat row {row_index} has invalid duration {duration}"
+            ));
+        }
+        if (flags & (1 << 2)) == 0 && duration != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: land combat row {row_index} has duration without flag"
+            ));
+        }
+        if (flags & (1 << 3)) == 0 && attacker_count != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: land combat row {row_index} has attackers without exact flag"
+            ));
+        }
+        if (flags & (1 << 4)) == 0 && defender_count != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: land combat row {row_index} has defenders without exact flag"
+            ));
+        }
+        declared_participants =
+            declared_participants.saturating_add(attacker_count.saturating_add(defender_count));
+        if row_reserved != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: land combat row {row_index} reserved field is nonzero"
+            ));
+        }
+    }
+    if declared_participants != participant_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: land combat participant_count {participant_count} != declared {declared_participants}"
+        ));
+    }
+    let mut seen_participants = BTreeSet::new();
+    for row_index in 0..participant_count {
+        let combat_id = read_u32_le(payload, cursor);
+        let generation = read_u64_le(payload, cursor + 4);
+        let side = read_u32_le(payload, cursor + 12);
+        let division_id = read_u32_le(payload, cursor + 16);
+        let row_reserved = read_u32_le(payload, cursor + 20);
+        cursor += COMPACT_LAND_COMBAT_PARTICIPANT_ROW_LEN;
+        if !seen_combats.contains(&(combat_id, generation)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: land combat participant row {row_index} references unknown combat {combat_id}:{generation}"
+            ));
+        }
+        if side != 1 && side != 2 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: land combat participant row {row_index} has invalid side {side}"
+            ));
+        }
+        if division_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: land combat participant row {row_index} has zero division_id"
+            ));
+        }
+        if !seen_participants.insert((combat_id, generation, side, division_id)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: land combat participant row {row_index} duplicates participant"
+            ));
+        }
+        if row_reserved != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: land combat participant row {row_index} reserved field is nonzero"
+            ));
+        }
+    }
+}
+
+fn valid_compact_land_combat_province_id(value: u32) -> bool {
+    value > 0 && value <= COMPACT_LAND_COMBAT_MAX_PROVINCE_ID
+}
+
 fn read_u16_le(bytes: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
 }
@@ -2060,6 +2460,8 @@ fn compact_domain_id(domain: &str) -> Option<u16> {
         "politics_residuals" => Some(15),
         "decisions_live" => Some(16),
         "diplomacy_live" => Some(17),
+        "divisions" => Some(20),
+        "land_combats" => Some(21),
         _ => None,
     }
 }
@@ -2075,6 +2477,8 @@ fn compact_domain_name(domain_id: u16) -> &'static str {
         15 => "politics_residuals",
         16 => "decisions_live",
         17 => "diplomacy_live",
+        20 => "divisions",
+        21 => "land_combats",
         1000 => "frame",
         _ => "unknown",
     }
@@ -2136,7 +2540,7 @@ fn compact_domain_coverage_errors(
 }
 
 fn compact_domain_requires_data_record(domain_id: u16) -> bool {
-    matches!(domain_id, 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17)
+    matches!(domain_id, 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 20 | 21)
 }
 
 fn compact_domain_summaries_json(summary: &CompactSummary) -> Value {
@@ -2202,6 +2606,15 @@ fn compact_hourly_problems(
     }
     if (summary.status_flags_or & COMPACT_STATUS_WORKER_PANIC) != 0 {
         problems.push("compact_worker_panic_seen".to_string());
+    }
+    if (summary.status_flags_or & COMPACT_STATUS_BRIDGE_UNAVAILABLE) != 0 {
+        problems.push("compact_bridge_unavailable".to_string());
+    }
+    if (summary.status_flags_or & COMPACT_STATUS_SOURCE_UNAVAILABLE) != 0 {
+        problems.push("compact_source_unavailable".to_string());
+    }
+    if (summary.status_flags_or & COMPACT_STATUS_PARTIAL_DATA) != 0 {
+        problems.push("compact_partial_data".to_string());
     }
     if !coverage_errors.is_empty() {
         problems.push("scheduled_domain_coverage_failed".to_string());
@@ -2638,6 +3051,160 @@ mod tests {
     }
 
     #[test]
+    fn compact_summary_decodes_divisions_data_record() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            20,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(1_500, 2, 2, 2, 2),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            20,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_divisions_data_payload(0),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(2_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(&summary, &[20]).is_empty());
+        let divisions = summary.per_domain.get(&20).unwrap();
+        assert_eq!(divisions.data_record_count, 1);
+        assert_eq!(divisions.data_rows_total, 2);
+        assert_eq!(divisions.data_changed_rows_total, 2);
+    }
+
+    #[test]
+    fn compact_divisions_bridge_unavailable_fails_hourly_problem_list() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            20,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(500, 0, 0, 0, 0, COMPACT_STATUS_BRIDGE_UNAVAILABLE),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            20,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_divisions_data_payload(COMPACT_STATUS_BRIDGE_UNAVAILABLE),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(2_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        let coverage_errors = compact_domain_coverage_errors(&summary, &[20]);
+        let problems = compact_hourly_problems(&summary, 0, &coverage_errors);
+
+        assert!(problems.contains(&"compact_bridge_unavailable".to_string()));
+    }
+
+    #[test]
+    fn compact_summary_decodes_land_combat_data_record() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            21,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(800, 2, 2, 3, 2),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            21,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_land_combats_data_payload(0),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_200, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(&summary, &[21]).is_empty());
+        let land = summary.per_domain.get(&21).unwrap();
+        assert_eq!(land.data_record_count, 1);
+        assert_eq!(land.data_rows_total, 2);
+        assert_eq!(land.unit_count_total, 3);
+    }
+
+    #[test]
+    fn compact_land_combat_partial_data_fails_hourly_problem_list() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            21,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(500, 0, 0, 0, 0, COMPACT_STATUS_PARTIAL_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            21,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_land_combats_data_payload(COMPACT_STATUS_PARTIAL_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_200, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        let coverage_errors = compact_domain_coverage_errors(&summary, &[21]);
+        let problems = compact_hourly_problems(&summary, 0, &coverage_errors);
+
+        assert!(problems.contains(&"compact_partial_data".to_string()));
+    }
+
+    #[test]
     fn replay_container_preserves_compact_stream_bytes() {
         let dir =
             std::env::temp_dir().join(format!("battle-plan_pack_test_{}", std::process::id()));
@@ -2693,6 +3260,7 @@ mod tests {
             lightweight_root_frame: true,
             special_projects_scan: false,
             compact_country_frame: true,
+            division_body_bridge: None,
             idea_group_filter: None,
             advisor_token_filter: None,
             session_id: "pack test/session".to_string(),
@@ -2724,12 +3292,14 @@ mod tests {
         fs::write(&dll, b"").unwrap();
         let idea_groups = dir.join("idea_groups.txt");
         let advisor_tokens = dir.join("advisor_tokens.txt");
+        let division_bridge = dir.join("division_bridge.txt");
         fs::write(&idea_groups, b"war_economy=economy\n").unwrap();
         fs::write(
             &advisor_tokens,
             b"POR_salazar=political_advisor|political|POR_salazar\n",
         )
         .unwrap();
+        fs::write(&division_bridge, b"17:0x10000000000\n").unwrap();
 
         let cfg = parse_args(vec![
             "--pid".to_string(),
@@ -2743,6 +3313,8 @@ mod tests {
             "--lightweight-root-frame".to_string(),
             "--special-projects-scan".to_string(),
             "--compact-country-frame".to_string(),
+            "--division-body-bridge-file".to_string(),
+            division_bridge.display().to_string(),
             "--idea-group-filter-file".to_string(),
             idea_groups.display().to_string(),
             "--advisor-token-filter-file".to_string(),
@@ -2756,6 +3328,10 @@ mod tests {
         assert!(cfg.lightweight_root_frame);
         assert!(cfg.special_projects_scan);
         assert!(cfg.compact_country_frame);
+        assert_eq!(
+            cfg.division_body_bridge.as_deref(),
+            Some("17:0x10000000000")
+        );
         assert_eq!(cfg.stream_format, StreamFormat::Compact);
         assert!(cfg.extraction_perf_gate);
         assert_eq!(cfg.scheduled_domains, vec!["projects_live".to_string()]);
@@ -3059,6 +3635,122 @@ mod tests {
             let mut fixed = [0u8; 8];
             fixed[..3].copy_from_slice(tag);
             payload.extend_from_slice(&fixed);
+        }
+        payload
+    }
+
+    fn test_divisions_data_payload(status_flags: u32) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        for (
+            div_id,
+            flags,
+            location,
+            target,
+            source,
+            progress,
+            progress_bucket,
+            org,
+            org_bucket,
+            strength,
+            strength_bucket,
+            combat_refs,
+        ) in [
+            (
+                17u32,
+                0b1_1111u32,
+                118u32,
+                118u32,
+                117u32,
+                42_000u32,
+                42u32,
+                8_500_000u32,
+                8_500u32,
+                96_250_000u32,
+                96_250u32,
+                1u32,
+            ),
+            (
+                18u32,
+                0u32,
+                119u32,
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+                10_000_000u32,
+                10_000u32,
+                100_000_000u32,
+                100_000u32,
+                0u32,
+            ),
+        ] {
+            payload.extend_from_slice(&div_id.to_le_bytes());
+            payload.extend_from_slice(&COMPACT_DIVISION_TYPE.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&location.to_le_bytes());
+            payload.extend_from_slice(&target.to_le_bytes());
+            payload.extend_from_slice(&source.to_le_bytes());
+            payload.extend_from_slice(&progress.to_le_bytes());
+            payload.extend_from_slice(&progress_bucket.to_le_bytes());
+            payload.extend_from_slice(&org.to_le_bytes());
+            payload.extend_from_slice(&org_bucket.to_le_bytes());
+            payload.extend_from_slice(&strength.to_le_bytes());
+            payload.extend_from_slice(&strength_bucket.to_le_bytes());
+            payload.extend_from_slice(&combat_refs.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        payload
+    }
+
+    fn test_land_combats_data_payload(status_flags: u32) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&3u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        for (
+            combat_id,
+            generation,
+            flags,
+            location,
+            day,
+            duration,
+            attacker_count,
+            defender_count,
+        ) in [
+            (271u32, 3u64, 0b1_1111u32, 118u32, 12u32, 34u32, 2u32, 1u32),
+            (272u32, 4u64, 0b1_1111u32, 119u32, 2u32, 3u32, 0u32, 0u32),
+        ] {
+            payload.extend_from_slice(&combat_id.to_le_bytes());
+            payload.extend_from_slice(&generation.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&location.to_le_bytes());
+            payload.extend_from_slice(&day.to_le_bytes());
+            payload.extend_from_slice(&duration.to_le_bytes());
+            payload.extend_from_slice(&attacker_count.to_le_bytes());
+            payload.extend_from_slice(&defender_count.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        for (combat_id, generation, side, division_id) in [
+            (271u32, 3u64, 1u32, 1053u32),
+            (271u32, 3u64, 1u32, 2837u32),
+            (271u32, 3u64, 2u32, 465u32),
+        ] {
+            payload.extend_from_slice(&combat_id.to_le_bytes());
+            payload.extend_from_slice(&generation.to_le_bytes());
+            payload.extend_from_slice(&side.to_le_bytes());
+            payload.extend_from_slice(&division_id.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
         }
         payload
     }
