@@ -83,13 +83,19 @@ const COMPACT_MAP_PROVINCE_ROW_LEN: usize = 16;
 const COMPACT_MAP_DETAIL_STATE_ROW_LEN: usize = 28;
 const COMPACT_MAP_DETAIL_PROVINCE_ROW_LEN: usize = 20;
 const COMPACT_MAP_DETAIL_ENTRY_ROW_LEN: usize = 12;
+const COMPACT_WEATHER_REGION_ROW_LEN: usize = 32;
 const COMPACT_MAP_MIN_STATE_ROWS: usize = 1_000;
 const COMPACT_MAP_MIN_PROVINCE_ROWS: usize = 10_000;
+const COMPACT_WEATHER_REGION_ROWS: usize = 305;
 const COMPACT_MAP_MAX_STATE_ID: u32 = 65_535;
 const COMPACT_MAP_MAX_PROVINCE_ID: u32 = 65_536;
 const COMPACT_MAP_MAX_TAG_DB_ID: u32 = 1024;
 const COMPACT_MAP_MAX_RESOURCE_AMOUNT_RAW: i32 = 100_000_000;
 const COMPACT_MAP_MAX_BUILDING_LEVEL: u32 = 1_000;
+const COMPACT_WEATHER_MAX_REGION_ID: u32 = 304;
+const COMPACT_WEATHER_MAX_PHENOMENON: u32 = 16;
+const COMPACT_WEATHER_MAX_TEMPERATURE_RAW: i32 = 10_000_000;
+const COMPACT_WEATHER_MAX_ACTIVE_MODIFIERS: u32 = 4_096;
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -1170,6 +1176,7 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     21 => decode_compact_land_combats_data_payload(offset, payload, &mut summary),
                     22 => decode_compact_map_control_data_payload(offset, payload, &mut summary),
                     23 => decode_compact_map_detail_data_payload(offset, payload, &mut summary),
+                    24 => decode_compact_weather_data_payload(offset, payload, &mut summary),
                     other => summary.parse_errors.push(format!(
                         "offset {offset}: unsupported domain data payload for {}",
                         compact_domain_name(other)
@@ -3052,6 +3059,174 @@ fn decode_compact_map_detail_data_payload(
     }
 }
 
+fn decode_compact_weather_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < 48 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: weather data payload is {} byte(s), expected at least 48",
+            payload.len()
+        ));
+        return;
+    }
+    let region_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let province_count = read_u32_le(payload, 20) as usize;
+    let observed_region_rows = read_u32_le(payload, 24) as usize;
+    let observed_province_rows = read_u32_le(payload, 28) as usize;
+    let scale_raw = read_u32_le(payload, 32);
+    let active_region_count = read_u32_le(payload, 36) as usize;
+    let reserved0 = read_u32_le(payload, 40);
+    let reserved1 = read_u32_le(payload, 44);
+    summary.status_flags_or |= status_flags;
+    let delta_data = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
+
+    let expected_len =
+        48usize.saturating_add(region_count.saturating_mul(COMPACT_WEATHER_REGION_ROW_LEN));
+    if payload.len() != expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: weather data payload is {} byte(s), expected {expected_len}",
+            payload.len()
+        ));
+        return;
+    }
+    if province_count != 0 || observed_province_rows != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: weather province rows are not supported in this schema ({province_count}/{observed_province_rows})"
+        ));
+    }
+    if observed_region_rows != COMPACT_WEATHER_REGION_ROWS {
+        summary.parse_errors.push(format!(
+            "offset {offset}: weather observed_region_rows {observed_region_rows} != {COMPACT_WEATHER_REGION_ROWS}"
+        ));
+    }
+    if !delta_data && region_count != COMPACT_WEATHER_REGION_ROWS {
+        summary.parse_errors.push(format!(
+            "offset {offset}: weather full snapshot region_count {region_count} != {COMPACT_WEATHER_REGION_ROWS}"
+        ));
+    }
+    if region_count > observed_region_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: weather region_count {region_count} > observed_region_rows {observed_region_rows}"
+        ));
+    }
+    if changed_rows > region_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: weather changed_rows {changed_rows} > region_count {region_count}"
+        ));
+    }
+    if delta_data && changed_rows != region_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: weather delta changed_rows {changed_rows} != emitted region_count {region_count}"
+        ));
+    }
+    if scale_raw != COMPACT_FIXED_SCALE_RAW {
+        summary.parse_errors.push(format!(
+            "offset {offset}: weather scale_raw {scale_raw} != {COMPACT_FIXED_SCALE_RAW}"
+        ));
+    }
+    if active_region_count > region_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: weather active_region_count {active_region_count} > region_count {region_count}"
+        ));
+    }
+    if reserved0 != 0 || reserved1 != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: weather reserved fields are nonzero ({reserved0}, {reserved1})"
+        ));
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&24) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(region_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+
+    let mut cursor = 48usize;
+    let mut seen_regions = BTreeSet::new();
+    let mut computed_active_regions = 0usize;
+    for row_index in 0..region_count {
+        let region_id = read_u32_le(payload, cursor);
+        let flags = read_u32_le(payload, cursor + 4);
+        let temperature_raw = read_i32_le(payload, cursor + 8);
+        let phenomenon = read_u32_le(payload, cursor + 12);
+        let _next_weather_change_raw = read_u32_le(payload, cursor + 16);
+        let active_modifier_count = read_u32_le(payload, cursor + 20);
+        let intensity = read_u32_le(payload, cursor + 24);
+        let row_reserved = read_u32_le(payload, cursor + 28);
+        cursor += COMPACT_WEATHER_REGION_ROW_LEN;
+        if region_id > COMPACT_WEATHER_MAX_REGION_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: weather row {row_index} has invalid region_id {region_id}"
+            ));
+        } else if !seen_regions.insert(region_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: weather row {row_index} duplicates region_id {region_id}"
+            ));
+        }
+        if flags & !0x7f != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: weather row {row_index} has unknown flags {flags}"
+            ));
+        }
+        let active_flag = (flags & (1 << 5)) != 0;
+        let phenomenon_flag = (flags & (1 << 6)) != 0;
+        if active_flag != phenomenon_flag {
+            summary.parse_errors.push(format!(
+                "offset {offset}: weather row {row_index} has mismatched active flags"
+            ));
+        }
+        if phenomenon >= 1 {
+            computed_active_regions = computed_active_regions.saturating_add(1);
+            if !active_flag {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: weather row {row_index} has active phenomenon without active flag"
+                ));
+            }
+        } else if active_flag {
+            summary.parse_errors.push(format!(
+                "offset {offset}: weather row {row_index} has active flag without phenomenon"
+            ));
+        }
+        if phenomenon > COMPACT_WEATHER_MAX_PHENOMENON {
+            summary.parse_errors.push(format!(
+                "offset {offset}: weather row {row_index} has invalid phenomenon {phenomenon}"
+            ));
+        }
+        if !(-COMPACT_WEATHER_MAX_TEMPERATURE_RAW..=COMPACT_WEATHER_MAX_TEMPERATURE_RAW)
+            .contains(&temperature_raw)
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: weather row {row_index} has invalid temperature_raw {temperature_raw}"
+            ));
+        }
+        if active_modifier_count > COMPACT_WEATHER_MAX_ACTIVE_MODIFIERS {
+            summary.parse_errors.push(format!(
+                "offset {offset}: weather row {row_index} has invalid active_modifier_count {active_modifier_count}"
+            ));
+        }
+        if intensity > u8::MAX as u32 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: weather row {row_index} has invalid intensity {intensity}"
+            ));
+        }
+        if row_reserved != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: weather row {row_index} reserved field is {row_reserved}"
+            ));
+        }
+    }
+    if computed_active_regions != active_region_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: weather active_region_count {active_region_count} != computed {computed_active_regions}"
+        ));
+    }
+}
+
 fn validate_compact_index_range(
     offset: usize,
     summary: &mut CompactSummary,
@@ -3226,6 +3401,7 @@ fn compact_domain_id(domain: &str) -> Option<u16> {
         "land_combats" => Some(21),
         "map_control" | "state_ownership" | "state_control" | "province_control" => Some(22),
         "map_detail" | "state_detail" | "buildings_live" => Some(23),
+        "weather_live" => Some(24),
         _ => None,
     }
 }
@@ -3245,6 +3421,7 @@ fn compact_domain_name(domain_id: u16) -> &'static str {
         21 => "land_combats",
         22 => "map_control",
         23 => "map_detail",
+        24 => "weather_live",
         1000 => "frame",
         _ => "unknown",
     }
@@ -4263,6 +4440,51 @@ mod tests {
     }
 
     #[test]
+    fn compact_summary_decodes_weather_data_record() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            24,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(1_500, 305, 305, 305, 305),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            24,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_weather_data_payload(0),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_800, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(&summary, &[24]).is_empty());
+        let weather = summary.per_domain.get(&24).unwrap();
+        assert_eq!(weather.data_record_count, 1);
+        assert_eq!(weather.data_rows_total, 305);
+        assert_eq!(weather.data_changed_rows_total, 305);
+        assert_eq!(weather.unit_count_total, 305);
+        assert_eq!(compact_domain_id("weather_live"), Some(24));
+        assert_eq!(compact_domain_name(24), "weather_live");
+    }
+
+    #[test]
     fn compact_land_combat_partial_data_fails_hourly_problem_list() {
         let mut raw = Vec::new();
         append_test_compact_record(
@@ -5089,6 +5311,41 @@ mod tests {
         for _ in 0..province_count {
             payload.extend_from_slice(&0x31F6u32.to_le_bytes());
             payload.extend_from_slice(&10u32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        payload
+    }
+
+    fn test_weather_data_payload(status_flags: u32) -> Vec<u8> {
+        let region_count = COMPACT_WEATHER_REGION_ROWS as u32;
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&region_count.to_le_bytes());
+        payload.extend_from_slice(&region_count.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&region_count.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        for region_id in 0..region_count {
+            let active = region_id == 31;
+            let flags = if active {
+                1u32 | (1u32 << 5) | (1u32 << 6)
+            } else {
+                0
+            };
+            let phenomenon = if active { 1u32 } else { 0u32 };
+            let intensity = if active { 2u32 } else { 0u32 };
+            payload.extend_from_slice(&region_id.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&1_000_000i32.to_le_bytes());
+            payload.extend_from_slice(&phenomenon.to_le_bytes());
+            payload.extend_from_slice(&43_817_520u32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&intensity.to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
         }
         payload

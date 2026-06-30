@@ -347,6 +347,14 @@ gate has these live speed-five results:
   an independent `pack_replay verify` pass. The split showed `fuel_live` read
   p95 at 3.218 ms while `production_live` remained the main country-domain
   limiter at p95 86.877 ms.
+- `compact_weather_region_decode_smoke_20260630_v1`: passed a weather-only
+  compact decode/replay smoke gate for the new `weather_live` region stream.
+  It emitted 305 region rows, decoded without parse/order/source/partial/worker
+  failures, read weather in 54 us, wrote 9,976 compact bytes, and passed
+  independent `pack_replay verify`. This is not a speed-five completion proof:
+  the live game clock did not advance during the smoke window
+  (`game_hours_advanced = 0`). A full weather completion gate still needs an
+  advancing speed-five run with zero skipped game hours.
 
 The extraction-only compact performance gate is green for the current
 production-shaped country-state domains and the native-root `divisions`,
@@ -370,6 +378,13 @@ explicit delete/tombstone records. It now uses the anchored country
 unit-wrapper path and no longer needs Python preflight, saves, or heap/vtable
 scans for compact division body discovery. Wider division replay coverage still
 needs typed records for template/equipment/manpower/assignment/order details.
+`weather_live` now has a DLL/Rust compact region stream for raw phenomenon,
+boolean weather flags, intensity, active-modifier counts, next-change raw value,
+and region temperature inputs. It remains temporary discovery debt until the
+one-time cached `CWeatherManager` singleton locate is either replaced by an
+anchored global/root path or measured/accepted as bounded per-build startup
+discovery, and it is not marked speed-five complete until the full hourly gate
+passes on an advancing clock.
 The full 12-domain widened-row bundle is now speed-five complete for the
 currently implemented compact domains on the active vanilla process, with
 longer soaks and the next replay-critical domains still open.

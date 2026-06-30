@@ -250,3 +250,14 @@ avg frame 61.468 ms, p95 90.135 ms, max 117.487 ms, 62,020,850 raw stream
 bytes, and an independently verified `native_session.battleplan`. The split
 keeps the compact file contract stable while making the real bottleneck clear:
 `fuel_live` read p95 was 3.218 ms, but `production_live` read p95 was 86.877 ms.
+
+`compact_weather_region_decode_smoke_20260630_v1` passed the first compact
+`weather_live` region-stream decode and replay smoke gate. The DLL resolves a
+cached `CWeatherManager` singleton, validates its 305 inline
+`SWeatherPerRegion` rows, and emits raw region phenomenon/flag/intensity/
+temperature-input rows as compact domain 24. The smoke emitted 305 rows,
+decoded without source/partial/worker failures, read weather in 54 us, wrote
+9,976 compact bytes, and independently verified `native_session.battleplan`.
+This is deliberately not recorded as speed-five complete: the live game clock
+did not advance during that smoke window, so the required hourly/no-skipped-hour
+weather gate still needs to be rerun on an advancing speed-five game.

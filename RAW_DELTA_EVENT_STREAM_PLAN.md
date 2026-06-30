@@ -226,6 +226,17 @@ Current measured constraint:
   `native_session.battleplan`. This keeps the compact stream contract stable
   while identifying `production_live` as the current heavy country lane
   (`fuel_live` p95 3.218 ms; `production_live` p95 86.877 ms).
+- Weather-region smoke state:
+  `compact_weather_region_decode_smoke_20260630_v1` introduced compact domain
+  24, `weather_live`, for 305 `SWeatherPerRegion` rows from the cached
+  `CWeatherManager` root. It emitted raw phenomenon, low-byte weather flags,
+  active-vector signal, intensity, active-modifier count, next-change raw value,
+  and scaled region temperature inputs; decoded with no parse/source/partial
+  failures; read weather in 54 us; wrote 9,976 compact bytes; and independently
+  verified `native_session.battleplan`. This is a decode/root smoke only, not
+  completion: the live game clock did not advance in that run, and the root is
+  still a one-time cached singleton/vtable locate until replaced by an anchored
+  global/root path or explicitly accepted as bounded startup discovery.
 - Earlier raw-event verification state: live-verified on the restarted vanilla
   process (pid 43412). A cold bootstrap outside the hot loop populated the
   current-process division and army caches, then a no-cold 12-game-hour run used

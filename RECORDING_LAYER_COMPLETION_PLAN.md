@@ -1496,6 +1496,21 @@ The split did not change the compact file contract; it proved `fuel_live` is
 cheap at p95 3.218 ms and that `production_live` is the current country-domain
 headroom limiter at p95 86.877 ms.
 
+Weather-region implementation status:
+The collector now has a compact `weather_live` region stream (domain 24) that
+resolves a cached `CWeatherManager`, validates `CWeatherManager+0x40` as 305
+inline `SWeatherPerRegion` rows, and emits raw phenomenon, low-byte weather
+flags, active-vector signal, intensity, active-modifier count,
+`next_weather_change_raw`, and scaled region temperature inputs. Smoke proof
+`compact_weather_region_decode_smoke_20260630_v1` emitted 305 rows, decoded with
+no parse/order/source/partial/worker failures, read weather in 54 us, wrote
+9,976 compact bytes, and verified the `.battleplan`. This is not yet
+DLL-complete under the project gate: the smoke run used `min_game_hours = 0`
+because the live game clock did not advance, and the root is still a one-time
+cached singleton/vtable locate rather than a proven anchored global/root path.
+Completion requires rerunning `weather_live` in an advancing speed-five compact
+gate with zero skipped hours and no source/partial flags.
+
 Earlier no-cold proof on the restarted vanilla process resolved 1898 division
 bodies and 417 still-live army bodies from cache, advanced 12 game hours in
 52.266 wall seconds, stored 13 verified hourly snapshots, and emitted raw

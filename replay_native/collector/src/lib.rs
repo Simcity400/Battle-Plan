@@ -92,6 +92,22 @@ mod attach_log {
     const CG_STATE_DATE_OFFSET: usize = 0x33048C0;
     const COUNTRY_DATABASE_OFFSET: usize = 0x33063F8;
     const GET_LONG_STRING_OFFSET: usize = 0x5269B0;
+    const WEATHER_MANAGER_VTABLE_RVA: usize = 0x2950AF0;
+    const WEATHER_REGION_VTABLE_RVA: usize = 0x2950AA0;
+    const WEATHER_MANAGER_REGION_ARRAY_OFF: usize = 0x40;
+    const WEATHER_REGION_STRIDE: usize = 0x160;
+    const WEATHER_REGION_COUNT: u32 = 305;
+    const WEATHER_REGION_ID_OFF: usize = 0x08;
+    const WEATHER_REGION_ACTIVE_MODS_OFF: usize = 0x30;
+    const WEATHER_REGION_INTENSITY_OFF: usize = 0x5D;
+    const WEATHER_REGION_PHENOM_ENUM_OFF: usize = 0x78;
+    const WEATHER_REGION_RAIN_LIGHT_OFF: usize = 0x108;
+    const WEATHER_REGION_RAIN_HEAVY_OFF: usize = 0x110;
+    const WEATHER_REGION_SNOW_OFF: usize = 0x118;
+    const WEATHER_REGION_BLIZZARD_OFF: usize = 0x120;
+    const WEATHER_REGION_ARCTIC_WATER_OFF: usize = 0x130;
+    const WEATHER_REGION_TEMPERATURE_OFF: usize = 0x138;
+    const WEATHER_REGION_NEXT_CHANGE_OFF: usize = 0x150;
     const COUNTRY_VTABLE_RVA: usize = 0x27C0E80;
     const POLITICAL_STATUS_VTABLE_RVA: usize = 0x29299C8;
     const POLITICAL_PARTY_VTABLE_RVA: usize = 0x2976EE0;
@@ -2733,6 +2749,7 @@ mod attach_log {
     const COMPACT_DOMAIN_LAND_COMBATS: u16 = 21;
     const COMPACT_DOMAIN_MAP_CONTROL: u16 = 22;
     const COMPACT_DOMAIN_MAP_DETAIL: u16 = 23;
+    const COMPACT_DOMAIN_WEATHER: u16 = 24;
     const COMPACT_STATUS_STATE_UNAVAILABLE: u32 = 1 << 0;
     const COMPACT_STATUS_PROFILE_MISMATCH: u32 = 1 << 1;
     const COMPACT_STATUS_NO_CLOCK: u32 = 1 << 2;
@@ -2834,6 +2851,7 @@ mod attach_log {
         land_combat: LandCombatTracker,
         map_control: CompactMapControlTracker,
         map_detail: CompactMapDetailTracker,
+        weather: CompactWeatherTracker,
     }
 
     #[derive(Default)]
@@ -2890,6 +2908,14 @@ mod attach_log {
         province_rows: Vec<CompactMapDetailProvinceRow>,
         observed_state_rows: u32,
         observed_province_rows: u32,
+        read_time_us: u64,
+        changed_rows: u32,
+        status_flags: u32,
+    }
+
+    struct CompactWeatherRead {
+        rows: Vec<CompactWeatherRegionRow>,
+        observed_rows: u32,
         read_time_us: u64,
         changed_rows: u32,
         status_flags: u32,
@@ -2960,6 +2986,18 @@ mod attach_log {
         topology: Option<CompactMapControlTopology>,
     }
 
+    #[derive(Default)]
+    struct CompactWeatherTracker {
+        previous_regions: BTreeMap<u32, CompactWeatherRegionRow>,
+    }
+
+    #[derive(Default, Clone, Copy)]
+    struct CompactWeatherRoot {
+        manager: usize,
+        region_array: usize,
+        region_count: u32,
+    }
+
     #[derive(Clone)]
     struct CompactMapControlTopology {
         province_array: usize,
@@ -3019,6 +3057,17 @@ mod attach_log {
         province_id: u32,
         state_id: u32,
         buildings: Option<Vec<CompactBuildingLevelEntry>>,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct CompactWeatherRegionRow {
+        region_id: u32,
+        flags: u32,
+        temperature_raw: i32,
+        phenomenon: u32,
+        next_weather_change_raw: u32,
+        active_modifier_count: u32,
+        intensity: u32,
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -8948,6 +8997,7 @@ mod attach_log {
             compact_explicit_domain_enabled(control, RAW_LAND_COMBATS_DOMAIN);
         let map_control_enabled = compact_map_control_enabled(control);
         let map_detail_enabled = compact_map_detail_enabled(control);
+        let weather_enabled = compact_weather_enabled(control);
         let map_detail_include_resources = compact_map_detail_include_resources(control);
         let map_detail_include_buildings = compact_map_detail_include_buildings(control);
         let mut country_reads = Vec::new();
@@ -8955,6 +9005,7 @@ mod attach_log {
         let mut land_combat_read = None;
         let mut map_control_read = None;
         let mut map_detail_read = None;
+        let mut weather_read = None;
         let country_specs_for_panic = enabled_specs.clone();
         let country_trackers = CompactCountryGateTrackers {
             fuel: &mut trackers.fuel,
@@ -8971,6 +9022,7 @@ mod attach_log {
         let land_combat_tracker = &mut trackers.land_combat;
         let map_control_tracker = &mut trackers.map_control;
         let map_detail_tracker = &mut trackers.map_detail;
+        let weather_tracker = &mut trackers.weather;
         thread::scope(|scope| {
             let country_handle = if enabled_specs.is_empty() {
                 None
@@ -9025,6 +9077,13 @@ mod attach_log {
             } else {
                 None
             };
+            let weather_handle = if weather_enabled {
+                Some(
+                    scope.spawn(move || read_compact_weather(state, status_flags, weather_tracker)),
+                )
+            } else {
+                None
+            };
 
             if let Some(handle) = country_handle {
                 country_reads = match handle.join() {
@@ -9057,6 +9116,12 @@ mod attach_log {
                 map_detail_read = Some(match handle.join() {
                     Ok(read) => read,
                     Err(_) => compact_map_detail_worker_panic_read(status_flags),
+                });
+            }
+            if let Some(handle) = weather_handle {
+                weather_read = Some(match handle.join() {
+                    Ok(read) => read,
+                    Err(_) => compact_weather_worker_panic_read(status_flags),
                 });
             }
         });
@@ -9225,6 +9290,36 @@ mod attach_log {
             sequence = sequence.saturating_add(1);
             emitted_domains = emitted_domains.saturating_add(1);
         }
+        if let Some(read) = weather_read {
+            append_compact_domain_perf_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                CompactDomainPerfRecord {
+                    domain_id: COMPACT_DOMAIN_WEATHER,
+                    read_time_us: read.read_time_us,
+                    row_count: read.observed_rows,
+                    changed_rows: read.changed_rows,
+                    unit_count: read.observed_rows,
+                    changed_unit_count: read.changed_rows,
+                    status_flags: read.status_flags,
+                },
+                elapsed_wall_ms,
+            );
+            sequence = sequence.saturating_add(1);
+            append_compact_weather_data_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                &read.rows,
+                elapsed_wall_ms,
+                read.status_flags,
+                read.changed_rows,
+                read.observed_rows,
+            );
+            sequence = sequence.saturating_add(1);
+            emitted_domains = emitted_domains.saturating_add(1);
+        }
         if let Some(read) = land_combat_read {
             append_compact_domain_perf_record(
                 &mut out,
@@ -9331,6 +9426,14 @@ mod attach_log {
                 .scheduled_domains
                 .iter()
                 .any(|scheduled| scheduled == "state_detail" || scheduled == "buildings_live")
+    }
+
+    fn compact_weather_enabled(control: &CollectorControl) -> bool {
+        control.scheduled_domains_valid
+            && control
+                .scheduled_domains
+                .iter()
+                .any(|scheduled| scheduled == "weather_live")
     }
 
     fn compact_map_detail_include_buildings(control: &CollectorControl) -> bool {
@@ -9795,6 +9898,16 @@ mod attach_log {
             province_rows: Vec::new(),
             observed_state_rows: 0,
             observed_province_rows: 0,
+            read_time_us: 0,
+            changed_rows: 0,
+            status_flags: status_flags | COMPACT_STATUS_WORKER_PANIC,
+        }
+    }
+
+    fn compact_weather_worker_panic_read(status_flags: u32) -> CompactWeatherRead {
+        CompactWeatherRead {
+            rows: Vec::new(),
+            observed_rows: 0,
             read_time_us: 0,
             changed_rows: 0,
             status_flags: status_flags | COMPACT_STATUS_WORKER_PANIC,
@@ -10415,6 +10528,308 @@ mod attach_log {
             } else {
                 status_flags | COMPACT_STATUS_DELTA_DATA
             },
+        }
+    }
+
+    fn read_compact_weather(
+        state: &CollectorState,
+        status_flags: u32,
+        tracker: &mut CompactWeatherTracker,
+    ) -> CompactWeatherRead {
+        let read_started = Instant::now();
+        let rows = match sample_compact_weather_with_retry(state, 3) {
+            Ok(rows) => rows,
+            Err(_) => {
+                return CompactWeatherRead {
+                    rows: Vec::new(),
+                    observed_rows: 0,
+                    read_time_us: duration_micros_u64(read_started.elapsed()),
+                    changed_rows: 0,
+                    status_flags: status_flags | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                }
+            }
+        };
+
+        let emit_full_snapshot = tracker.previous_regions.is_empty();
+        let mut emitted_rows = Vec::new();
+        let mut changed_rows = 0u32;
+        for row in &rows {
+            let changed = tracker
+                .previous_regions
+                .get(&row.region_id)
+                .map(|old| old != row)
+                .unwrap_or(true);
+            if changed {
+                changed_rows = changed_rows.saturating_add(1);
+            }
+            if emit_full_snapshot || changed {
+                emitted_rows.push(*row);
+            }
+        }
+        tracker.previous_regions = rows
+            .iter()
+            .map(|row| (row.region_id, *row))
+            .collect::<BTreeMap<_, _>>();
+
+        CompactWeatherRead {
+            rows: emitted_rows,
+            observed_rows: rows.len().min(u32::MAX as usize) as u32,
+            read_time_us: duration_micros_u64(read_started.elapsed()),
+            changed_rows,
+            status_flags: if emit_full_snapshot {
+                status_flags
+            } else {
+                status_flags | COMPACT_STATUS_DELTA_DATA
+            },
+        }
+    }
+
+    fn sample_compact_weather_with_retry(
+        state: &CollectorState,
+        attempts: usize,
+    ) -> Result<Vec<CompactWeatherRegionRow>, &'static str> {
+        let attempt_count = attempts.max(1);
+        for attempt in 0..attempt_count {
+            match sample_compact_weather_regions(state) {
+                Ok(rows) => return Ok(rows),
+                Err(err) if attempt + 1 == attempt_count => return Err(err),
+                Err(_) => thread::yield_now(),
+            }
+        }
+        Err("weather_retry_exhausted")
+    }
+
+    fn sample_compact_weather_regions(
+        state: &CollectorState,
+    ) -> Result<Vec<CompactWeatherRegionRow>, &'static str> {
+        let root = state.weather;
+        if root.manager == 0 || root.region_array == 0 || root.region_count != WEATHER_REGION_COUNT
+        {
+            return Err("weather_root_unavailable");
+        }
+        validate_compact_weather_root_header(state.base, root)?;
+        let byte_len = WEATHER_REGION_STRIDE
+            .checked_mul(root.region_count as usize)
+            .ok_or("weather_region_array_overflow")?;
+        let bytes = read_bytes(root.region_array, byte_len).ok_or("weather_region_array_read")?;
+        let mut rows = Vec::with_capacity(root.region_count as usize);
+        for index in 0..root.region_count as usize {
+            let start = index
+                .checked_mul(WEATHER_REGION_STRIDE)
+                .ok_or("weather_region_offset_overflow")?;
+            let end = start
+                .checked_add(WEATHER_REGION_STRIDE)
+                .ok_or("weather_region_slice_overflow")?;
+            let body = bytes.get(start..end).ok_or("weather_region_slice")?;
+            rows.push(read_compact_weather_region_row(
+                state.base,
+                body,
+                index as u32,
+            )?);
+        }
+        Ok(rows)
+    }
+
+    fn resolve_compact_weather_root(module_base: usize) -> Option<CompactWeatherRoot> {
+        let manager_vtable = module_base.checked_add(WEATHER_MANAGER_VTABLE_RVA)?;
+        let mut roots = Vec::new();
+        for hit in scan_qword_hits(manager_vtable, HEAP_LO, HEAP_HI) {
+            if let Some(root) = read_compact_weather_root_at(module_base, hit) {
+                roots.push(root);
+                if roots.len() > 1 {
+                    return None;
+                }
+            }
+        }
+        roots.into_iter().next()
+    }
+
+    fn read_compact_weather_root_at(
+        module_base: usize,
+        manager: usize,
+    ) -> Option<CompactWeatherRoot> {
+        if !is_map_control_heap_pointer(manager) {
+            return None;
+        }
+        if read_u64(manager)? as usize != module_base.checked_add(WEATHER_MANAGER_VTABLE_RVA)? {
+            return None;
+        }
+        let root = compact_weather_root_from_header(manager)?;
+        validate_compact_weather_root_rows(module_base, root).then_some(root)
+    }
+
+    fn validate_compact_weather_root_header(
+        module_base: usize,
+        root: CompactWeatherRoot,
+    ) -> Result<(), &'static str> {
+        if !is_map_control_heap_pointer(root.manager)
+            || !is_map_control_heap_pointer(root.region_array)
+            || root.region_count != WEATHER_REGION_COUNT
+        {
+            return Err("weather_root_invalid");
+        }
+        if read_u64(root.manager).map(|value| value as usize)
+            != module_base.checked_add(WEATHER_MANAGER_VTABLE_RVA)
+        {
+            return Err("weather_manager_vtable");
+        }
+        let current = compact_weather_root_from_header(root.manager)
+            .ok_or("weather_region_header_unavailable")?;
+        if current.region_array != root.region_array || current.region_count != root.region_count {
+            return Err("weather_region_header_changed");
+        }
+        Ok(())
+    }
+
+    fn compact_weather_root_from_header(manager: usize) -> Option<CompactWeatherRoot> {
+        let header = read_bytes(manager.checked_add(WEATHER_MANAGER_REGION_ARRAY_OFF)?, 16)?;
+        let begin = read_u64_from_slice(&header, 0)? as usize;
+        let size = read_u32_from_slice(&header, 8)?;
+        let cap = read_u32_from_slice(&header, 12)?;
+        if size != WEATHER_REGION_COUNT || cap != WEATHER_REGION_COUNT {
+            return None;
+        }
+        if !is_map_control_heap_pointer(begin) || begin % 8 != 0 {
+            return None;
+        }
+        Some(CompactWeatherRoot {
+            manager,
+            region_array: begin,
+            region_count: size,
+        })
+    }
+
+    fn validate_compact_weather_root_rows(module_base: usize, root: CompactWeatherRoot) -> bool {
+        let Some(byte_len) = WEATHER_REGION_STRIDE.checked_mul(root.region_count as usize) else {
+            return false;
+        };
+        let Some(bytes) = read_bytes(root.region_array, byte_len) else {
+            return false;
+        };
+        let Some(region_vtable) = module_base.checked_add(WEATHER_REGION_VTABLE_RVA) else {
+            return false;
+        };
+        for index in 0..root.region_count as usize {
+            let Some(start) = index.checked_mul(WEATHER_REGION_STRIDE) else {
+                return false;
+            };
+            let Some(end) = start.checked_add(WEATHER_REGION_STRIDE) else {
+                return false;
+            };
+            let Some(body) = bytes.get(start..end) else {
+                return false;
+            };
+            if read_u64_from_slice(body, 0).map(|value| value as usize) != Some(region_vtable) {
+                return false;
+            }
+            if read_u32_from_slice(body, WEATHER_REGION_ID_OFF) != Some(index as u32) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn read_compact_weather_region_row(
+        module_base: usize,
+        body: &[u8],
+        expected_region_id: u32,
+    ) -> Result<CompactWeatherRegionRow, &'static str> {
+        let region_vtable = module_base
+            .checked_add(WEATHER_REGION_VTABLE_RVA)
+            .ok_or("weather_region_vtable_overflow")?;
+        if read_u64_from_slice(body, 0).map(|value| value as usize) != Some(region_vtable) {
+            return Err("weather_region_vtable");
+        }
+        let region_id =
+            read_u32_from_slice(body, WEATHER_REGION_ID_OFF).ok_or("weather_region_id")?;
+        if region_id != expected_region_id {
+            return Err("weather_region_id_mismatch");
+        }
+        let phenomenon = read_u32_from_slice(body, WEATHER_REGION_PHENOM_ENUM_OFF)
+            .ok_or("weather_phenomenon")?;
+        if phenomenon > 16 {
+            return Err("weather_phenomenon_bounds");
+        }
+        let active_signal = compact_weather_region_active_signal(body)?;
+        if (phenomenon >= 1) != active_signal {
+            return Err("weather_active_signal_mismatch");
+        }
+        let rain_light = weather_bool_byte(body, WEATHER_REGION_RAIN_LIGHT_OFF)?;
+        let rain_heavy = weather_bool_byte(body, WEATHER_REGION_RAIN_HEAVY_OFF)?;
+        let snow = weather_bool_byte(body, WEATHER_REGION_SNOW_OFF)?;
+        let blizzard = weather_bool_byte(body, WEATHER_REGION_BLIZZARD_OFF)?;
+        let arctic_water = weather_bool_byte(body, WEATHER_REGION_ARCTIC_WATER_OFF)?;
+        let active_modifier_count =
+            compact_weather_vec_count(body, WEATHER_REGION_ACTIVE_MODS_OFF)?;
+        let temperature_raw = read_i32_from_slice(body, WEATHER_REGION_TEMPERATURE_OFF)
+            .ok_or("weather_temperature")?;
+        if !(-10_000_000..=10_000_000).contains(&temperature_raw) {
+            return Err("weather_temperature_bounds");
+        }
+        let next_weather_change_raw = read_u32_from_slice(body, WEATHER_REGION_NEXT_CHANGE_OFF)
+            .ok_or("weather_next_change")?;
+        let intensity = body
+            .get(WEATHER_REGION_INTENSITY_OFF)
+            .copied()
+            .ok_or("weather_intensity")? as u32;
+        let mut flags = 0u32;
+        if rain_light {
+            flags |= 1;
+        }
+        if rain_heavy {
+            flags |= 1 << 1;
+        }
+        if snow {
+            flags |= 1 << 2;
+        }
+        if blizzard {
+            flags |= 1 << 3;
+        }
+        if arctic_water {
+            flags |= 1 << 4;
+        }
+        if active_signal {
+            flags |= 1 << 5;
+        }
+        if phenomenon >= 1 {
+            flags |= 1 << 6;
+        }
+        Ok(CompactWeatherRegionRow {
+            region_id,
+            flags,
+            temperature_raw,
+            phenomenon,
+            next_weather_change_raw,
+            active_modifier_count,
+            intensity,
+        })
+    }
+
+    fn compact_weather_region_active_signal(body: &[u8]) -> Result<bool, &'static str> {
+        let begin58 = read_u64_from_slice(body, 0x58).ok_or("weather_active_vec58")? as usize;
+        let begin70 = read_u64_from_slice(body, 0x70).ok_or("weather_active_vec70")? as usize;
+        Ok(is_map_control_heap_pointer(begin58) || is_map_control_heap_pointer(begin70))
+    }
+
+    fn compact_weather_vec_count(body: &[u8], off: usize) -> Result<u32, &'static str> {
+        let begin = read_u64_from_slice(body, off).ok_or("weather_vec_begin")? as usize;
+        let size = read_u32_from_slice(body, off + 8).ok_or("weather_vec_size")?;
+        let cap = read_u32_from_slice(body, off + 12).ok_or("weather_vec_cap")?;
+        if size == 0 {
+            return Ok(0);
+        }
+        if !is_map_control_heap_pointer(begin) || cap < size || cap > 4096 {
+            return Err("weather_vec_invalid");
+        }
+        Ok(size)
+    }
+
+    fn weather_bool_byte(body: &[u8], off: usize) -> Result<bool, &'static str> {
+        match body.get(off).copied() {
+            Some(0) => Ok(false),
+            Some(1) => Ok(true),
+            Some(_) => Err("weather_bool_byte_bounds"),
+            None => Err("weather_bool_byte_missing"),
         }
     }
 
@@ -11481,6 +11896,34 @@ mod attach_log {
         );
     }
 
+    fn append_compact_weather_data_record(
+        out: &mut Vec<u8>,
+        sequence: u64,
+        game_hour_raw: i32,
+        rows: &[CompactWeatherRegionRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        observed_rows: u32,
+    ) {
+        let payload = compact_weather_data_payload(
+            rows,
+            elapsed_wall_ms,
+            status_flags,
+            changed_rows,
+            observed_rows,
+        );
+        append_compact_record(
+            out,
+            sequence,
+            game_hour_raw,
+            COMPACT_DOMAIN_WEATHER,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+    }
+
     fn compact_fuel_data_payload(
         rows: &[CountryObjectRow],
         elapsed_wall_ms: u64,
@@ -12498,6 +12941,40 @@ mod attach_log {
         payload
     }
 
+    fn compact_weather_data_payload(
+        rows: &[CompactWeatherRegionRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        observed_rows: u32,
+    ) -> Vec<u8> {
+        let active_region_count = rows.iter().filter(|row| row.phenomenon >= 1).count();
+        let mut payload = Vec::with_capacity(48usize.saturating_add(rows.len().saturating_mul(32)));
+        payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
+        payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+        payload.extend_from_slice(&changed_rows.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&observed_rows.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
+        payload
+            .extend_from_slice(&(active_region_count.min(u32::MAX as usize) as u32).to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        for row in rows {
+            payload.extend_from_slice(&row.region_id.to_le_bytes());
+            payload.extend_from_slice(&row.flags.to_le_bytes());
+            payload.extend_from_slice(&row.temperature_raw.to_le_bytes());
+            payload.extend_from_slice(&row.phenomenon.to_le_bytes());
+            payload.extend_from_slice(&row.next_weather_change_raw.to_le_bytes());
+            payload.extend_from_slice(&row.active_modifier_count.to_le_bytes());
+            payload.extend_from_slice(&row.intensity.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        payload
+    }
+
     fn append_compact_building_level_entries(
         payload: &mut Vec<u8>,
         buildings: &[CompactBuildingLevelEntry],
@@ -12629,6 +13106,7 @@ mod attach_log {
         country_database_ptr: u64,
         country_identity: CountryIdentityCache,
         special_projects: SpecialProjectsCache,
+        weather: CompactWeatherRoot,
     }
 
     impl CollectorState {
@@ -12648,6 +13126,16 @@ mod attach_log {
                 read_u64(base + COUNTRY_DATABASE_OFFSET).unwrap_or(0)
             } else {
                 0
+            };
+            let weather = if daily_match
+                && long_string_match
+                && control
+                    .map(|control| compact_weather_enabled(control))
+                    .unwrap_or(false)
+            {
+                resolve_compact_weather_root(base).unwrap_or_default()
+            } else {
+                CompactWeatherRoot::default()
             };
             let skip_country_identity = control
                 .map(|control| !lightweight_root_needs_country_identity(control))
@@ -12746,6 +13234,7 @@ mod attach_log {
                 } else {
                     SpecialProjectsCache::not_attempted("disabled")
                 },
+                weather,
             }
         }
     }
@@ -20553,6 +21042,65 @@ mod attach_log {
                 u32::from_le_bytes(payload[152..156].try_into().unwrap()),
                 10
             );
+        }
+
+        #[test]
+        fn compact_weather_data_payload_packs_region_rows() {
+            let rows = vec![
+                CompactWeatherRegionRow {
+                    region_id: 0,
+                    flags: 0,
+                    temperature_raw: 1_250_000,
+                    phenomenon: 0,
+                    next_weather_change_raw: 43_817_520,
+                    active_modifier_count: 0,
+                    intensity: 0,
+                },
+                CompactWeatherRegionRow {
+                    region_id: 31,
+                    flags: (1 << 5) | (1 << 6) | 1,
+                    temperature_raw: 875_000,
+                    phenomenon: 1,
+                    next_weather_change_raw: 43_810_120,
+                    active_modifier_count: 2,
+                    intensity: 2,
+                },
+            ];
+
+            let payload = compact_weather_data_payload(
+                &rows,
+                103,
+                COMPACT_STATUS_EXTRACTION_PERF_GATE,
+                2,
+                WEATHER_REGION_COUNT,
+            );
+
+            assert_eq!(payload.len(), 48 + 2 * 32);
+            assert_eq!(u64::from_le_bytes(payload[0..8].try_into().unwrap()), 103);
+            assert_eq!(u32::from_le_bytes(payload[8..12].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[12..16].try_into().unwrap()), 2);
+            assert_eq!(
+                u32::from_le_bytes(payload[16..20].try_into().unwrap()),
+                COMPACT_STATUS_EXTRACTION_PERF_GATE
+            );
+            assert_eq!(u32::from_le_bytes(payload[20..24].try_into().unwrap()), 0);
+            assert_eq!(
+                u32::from_le_bytes(payload[24..28].try_into().unwrap()),
+                WEATHER_REGION_COUNT
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[32..36].try_into().unwrap()),
+                COMPACT_FIXED_SCALE_RAW
+            );
+            assert_eq!(u32::from_le_bytes(payload[36..40].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[48..52].try_into().unwrap()), 0);
+            assert_eq!(u32::from_le_bytes(payload[80..84].try_into().unwrap()), 31);
+            assert_eq!(
+                i32::from_le_bytes(payload[88..92].try_into().unwrap()),
+                875_000
+            );
+            assert_eq!(u32::from_le_bytes(payload[92..96].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[100..104].try_into().unwrap()), 2);
         }
 
         #[test]
