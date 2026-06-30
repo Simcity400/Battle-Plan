@@ -196,8 +196,19 @@ for inspection, with no ability to mutate the game.
   verified full per-domain coverage, ordered/decodable records, `.battleplan`
   packing, and no source-unavailable/partial/bridge/worker failures. This makes
   basic fleet/task-force membership DLL-complete for the verified `870ebf` build
-  profile; naval leaders, missions, theatre/region state, active naval combat
-  semantics, and sinking/damage event details remain separate segments.
+  profile.
+- Compact `oob_command` also now carries owner attribution for fleet and
+  task-force rows on the same DLL-native path. Fleet rows use the owning country
+  object tag-db id from the country-rooted fleet walk; task-force rows inherit
+  that owner from the parent fleet. `compact_oob_ships_owner_870ebf_20260701_v4`
+  advanced 39 game hours with 0 skipped and captured 924 OOB owner rows, while
+  `compact_full_plus_oob_owner_870ebf_20260701_v2` ran all 17 compact domains,
+  advanced 53 game hours with 0 skipped, verified full per-domain coverage,
+  ordered/decodable records, `.battleplan` packing, and no source-unavailable/
+  partial/bridge/worker failures while capturing 964 OOB owner rows. Direct
+  per-ship owner/name fields, naval leaders, missions, theatre/region state,
+  active naval combat semantics, and sinking/damage event details remain
+  separate segments.
 - DLL-native scheduled `diplomacy_live` is proven for faction membership and
   war/casualty rows: the collector reads `CCountry+0x598` faction groups on
   hourly frames, folds into `countries.*.diplomacy.faction_group` and

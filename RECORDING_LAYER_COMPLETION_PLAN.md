@@ -713,6 +713,20 @@ Tasks:
   observed fleet rows, and 8,638 observed task-force rows. Naval leaders,
   missions, theatre/region state, active naval combat damage/sinking semantics,
   and exact naval OOB presentation remain follow-up segments.
+- Current owner-attribution checkpoint: compact fleet rows now carry the owning
+  explicit country object tag-db id from the country-rooted fleet walk, and
+  compact task-force rows inherit that owner from their parent fleet. Focused
+  proof `compact_oob_ships_owner_870ebf_20260701_v4` advanced 39 game hours with
+  0 skipped, verified ordered/decodable records and `.battleplan` packing, had
+  no source/partial/bridge/worker failures, and captured 924 OOB owner rows. The
+  full `compact_full_plus_oob_owner_870ebf_20260701_v2` covered 17 compact
+  domains, advanced 53 game hours with 0 skipped, verified full per-domain
+  coverage, ordered/decodable records and `.battleplan` packing, had no
+  source/partial/bridge/worker failures, and captured 964 OOB owner rows
+  including 152 fleet rows, 233 task-force rows, 536 task-force member ids,
+  1,661 ship member ids, 474 missing-member-count rows, 5,940 observed fleet
+  rows, and 9,243 observed task-force rows. Direct per-ship owner/name fields
+  remain a separate ship-row widening task.
 - Current DLL checkpoint: `naval_air_combats` now has a bridge-gated raw stream
   from supplied `CNavalCombat` body pins. The collector revalidates bridged
   bodies every sample and emits side-level active-combat summaries plus

@@ -246,6 +246,26 @@ country-state domains. Current compact binary proofs:
   rows, including 124 fleet rows, 195 task-force rows, 404 task-force member ids,
   1,625 ship member ids, 5,441 observed fleet rows, and 8,638 observed
   task-force rows; OOB read p95 was 55.044 ms.
+- `compact_oob_ships_owner_870ebf_20260701_v4`: proves owner-attributed compact
+  fleet/task-force OOB rows without returning to bridge or JSON-root throughput.
+  The 20-second focused gate scheduled `oob_command` plus `ships`, advanced 39
+  game hours with 40 frame-end records and 0 skipped, had ordered/decodable
+  compact records, no worker-panic/source-unavailable/partial or bridge flags,
+  avg frame 49.321 ms, p95 50.727 ms, max 50.949 ms, 415,231 compact bytes, and
+  a verified `.battleplan`. `oob_command` captured 945 changed rows, 924 owner
+  rows, 135 fleet rows, 210 task-force rows, 419 task-force member ids, 1,604
+  ship member ids, 463 missing-member-count rows, 4,400 observed fleet rows, and
+  6,886 observed task-force rows; OOB read p95 was 44.204 ms.
+- `compact_full_plus_oob_owner_870ebf_20260701_v2`: reruns the full 17-domain
+  compact bundle after adding fleet/task-force owner attribution. It advanced 53
+  game hours with 54 frame-end records and 0 skipped, had full domain/data-record
+  coverage, ordered and decodable records, no worker-panic/source-unavailable/
+  partial or bridge flags, avg frame 58.891 ms, p95 72.759 ms, max 87.120 ms,
+  4,651,183 compact bytes, and a verified `.battleplan`. `oob_command` captured
+  997 changed rows and 964 owner rows, including 152 fleet rows, 233 task-force
+  rows, 536 task-force member ids, 1,661 ship member ids, 474
+  missing-member-count rows, 5,940 observed fleet rows, and 9,243 observed
+  task-force rows; OOB read p95 was 59.421 ms.
 
 This completes the extraction-only compact performance gate for the current
 implemented compact domains and starts replay payload capture with typed
@@ -256,10 +276,11 @@ records plus Rust-native `.battleplan` packing. `fuel_live`, `production_live`,
 `map_detail`, `weather_live`, and compact `ships` are live-proven through the
 DLL/Rust compact path at speed five with zero skipped game hours for the
 applicable verified build profile. Compact `oob_command` now includes DLL-native
-fleet and task-force hierarchy rows for the verified `870ebf` build. The next
-step is not more JSON widening; it is native compact coverage for naval leaders,
-missions, theatre/region state, naval/air combat telemetry, and richer
-combat/order details that are still raw-only, bridge-backed, or unimplemented.
+owner-attributed fleet and task-force hierarchy rows for the verified `870ebf`
+build. The next step is not more JSON widening; it is native compact coverage
+for direct per-ship owner/name fields, naval leaders, missions, theatre/region
+state, naval/air combat telemetry, and richer combat/order details that are
+still raw-only, bridge-backed, or unimplemented.
 
 `ships` now has a reserved compact domain (`domain_id=29`) and Rust recorder
 decoder/schema coverage for per-ship hull telemetry, including CShip instance
@@ -754,7 +775,13 @@ OOB command raw stream status:
   CTaskForce/CShip` walk, emits kind `fleet` rows with task-force members and
   kind `task_force` rows with parent fleet plus ship members, and passed the
   focused plus full speed-five/current-equivalent gates listed above with zero
-  skipped hours and no source/partial/bridge failures.
+  skipped hours and no source/partial/bridge failures. Fleet rows now carry the
+  explicit owning country object tag-db id from the country-rooted walk, and
+  task-force rows inherit that owner from the parent fleet; the focused owner
+  gate captured 924 owner rows and the full 17-domain owner gate captured 964
+  owner rows with zero skipped hours. Validation-failed task-force member reads
+  preserve the engine count as `missing_member_count` instead of packing an
+  undecodable logical member-count mismatch.
 - Remaining promotion work is a live active-naval-combat fixture, a
   root/hook-derived discoverer for combats born after preflight, speed-five
   soak, exact damage/sinking semantics, and timeline ingestion.
