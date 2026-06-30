@@ -7408,7 +7408,9 @@ fn compact_projects_root_source(cfg: &Config, summary: &CompactSummary) -> &'sta
 
 fn compact_projects_root_discovery_debt(source: &str) -> &'static str {
     match source {
-        "dll_project_cache" => "none; compact stream used a DLL-owned project cache",
+        "dll_project_cache" => {
+            "partial DLL-native path: CProject rows came from the anchored country project pool; facility/scientist roots still need anchored DLL coverage before projects_live is fully DLL-complete"
+        }
         "dll_startup_heap_scan" => {
             "temporary debt: one-time DLL startup heap scan is outside the hot loop, but projects still need an anchored root/container or cached Rust-host discovery before full DLL-complete status"
         }

@@ -166,15 +166,22 @@ Current recorder-facing bridge status:
   preflight; moving that static game-definition cache generation into Rust host
   startup remains temporary debt before politics can be called fully
   production-self-contained.
-- `projects_live` now has a production-shaped compact read proof, but still not
-  DLL-complete root discovery. On 2026-07-01
+- `projects_live` now has production-shaped compact read proofs and a partial
+  DLL-native root, but still not full DLL-complete special-project coverage. On
+  2026-07-01
   `compact_projects_bridge_20260701_v4` advanced 35 game hours with zero
   skipped hours, covered `projects_live`, `focus_live`, and `decisions_live`,
   emitted 36 project data records, verified `.battleplan`, and showed no
   source/partial/bridge/worker failures. The manifest correctly reports
-  `projects_root_source = control_bridge`, so the remaining work is to replace
-  the bounded preflight/cache bridge with an anchored project root/container in
-  the DLL/Rust production path.
+  `projects_root_source = control_bridge`. The follow-up no-bridge proof
+  `compact_projects_native_pool_20260701_v2` followed the anchored
+  `CCountry+0xFA8 -> CProgramStatus+0x18 -> CProjectPool+0x10 -> CProject`
+  path entirely inside the DLL/Rust compact stream, advanced 35 game hours with
+  zero skipped hours, emitted 36 project data records and 540 worked-project
+  rows, verified `.battleplan`, and recorded
+  `projects_root_source = dll_project_cache`. The remaining work is to anchor
+  facilities/scientists and project progress/completion before the whole
+  `projects_live` segment is complete.
 - A live vanilla run on 2026-06-28 processed 2 bounded worker bursts: 359 raw
   collector observations became 10 unique hourly replay snapshots, advanced 9
   in-game hours with zero skipped hours, verified the replay container, and left
@@ -604,11 +611,13 @@ Tasks:
 
 - Port active research slot detail/progress, project progress/completion and
   definition joins, `decisions_market`, `mio`, `designs`, `designs_variants`,
-  and save-proven project parsers into collector domain plans. The first
-  gated DLL `projects_live` catalog slice now covers facilities, scientists,
-  and currently worked project rows only; normal runs should use the
-  cache-first `special_projects_bridge` path, with the cold heap sweep reserved
-  for explicit preflight refreshes.
+  and save-proven project parsers into collector domain plans. The bridge-backed
+  `projects_live` catalog slice covers facilities, scientists, and currently
+  worked project rows for validation, while the no-bridge DLL path currently
+  covers worked `CProject` rows through the anchored country project pool only.
+  Normal production-shaped runs should prefer the DLL project-pool path; the
+  cache-first `special_projects_bridge` and cold heap sweep remain development
+  validation/discovery tools until facility/scientist roots are anchored.
 - Keep scheduled DLL `focus_live` on the validated `CCountry` path and add only
   the missing pause/event-marker proof rather than reopening the old Python
   scan model.
@@ -1568,15 +1577,19 @@ The DLL/adapter contract for `projects_live` now supports the first top-level
 `special_projects` catalog slice: facilities, scientists, and currently worked
 project rows, all source-badged `C`. The adapter folds only scheduled frames
 that explicitly claim `projects_live`, rejects pointer/tag-db diagnostics, and
-summarizes project row counts in manifests. The normal producer path now has a
-cache-first `special_projects_bridge`: Python preflight validates cached
-facility, project, and scientist roots or performs a cold discovery only when
-`--allow-special-projects-cold-scan` is explicitly paired with
+summarizes project row counts in manifests. The production-shaped no-bridge path
+now resolves worked `CProject` rows from validated country objects via
+`CCountry+0xFA8 -> CProgramStatus+0x18 -> CProjectPool+0x10 -> CProject`
+inside the DLL. The cache-first `special_projects_bridge` remains a
+development/validation path for the wider catalog: Python preflight validates
+cached facility, project, and scientist roots or performs a cold discovery only
+when `--allow-special-projects-cold-scan` is explicitly paired with
 `--preflight-special-projects`; the DLL then revalidates those roots in-process
 and emits `special_projects_identity.status = bridge_verified` when usable.
 The older `special_projects_scan = true` heap sweep remains available but is
-not the normal/speed-five path. Project progress/completion, owner attribution,
-and resolved project definition tokens remain open.
+not the normal/speed-five path. Facility/scientist roots, project
+progress/completion, owner attribution, and resolved project definition tokens
+remain open.
 
 2026-07-01 compact update for the current `870ebf` vanilla build: the
 `projects_live` compact stream is now domain id 41 and the Rust host accepts
@@ -1595,6 +1608,20 @@ verified `native_session.battleplan`. The proof is hourly compact read proof
 only: `projects_root_source = control_bridge`, so this segment remains
 temporary discovery debt until the project root/container is anchored inside
 the DLL/Rust production path.
+
+2026-07-01 no-bridge follow-up on the same build anchored worked project rows
+through live country objects instead of the bridge. The DLL resolves
+`CCountry+0xFA8 -> CProgramStatus`, validates the paired status vtables,
+follows `CProgramStatus+0x18 -> CProjectPool`, validates the pool vtable, and
+walks contiguous `CProject` rows from `CProjectPool+0x10` at stride `0x1C0`.
+The compact proof `replay_native/runs/compact_projects_native_pool_20260701_v2`
+used no `special_projects_bridge` rows and no `special_projects_scan`, advanced
+35 game hours with zero skipped hours, emitted 36 typed `projects_live` data
+records with 540 currently worked project rows, had no source/partial/worker
+failures, kept the compact stream ordered and decodable, and passed
+`.battleplan` verification. The manifest records
+`projects_root_source = dll_project_cache` plus partial DLL-native debt because
+facility/scientist roots and project progress/completion are not yet anchored.
 
 Remaining Phase 2 gaps:
 
@@ -2172,6 +2199,17 @@ verification. This supersedes the older JSON proof for compact-stream
 feasibility, but does not close project root discovery: the manifest correctly
 records `projects_root_source = "control_bridge"` and temporary bounded
 preflight/cache debt.
+
+2026-07-01 no-bridge follow-up
+`replay_native/runs/compact_projects_native_pool_20260701_v2` replaced the
+bridge for worked project rows with the anchored DLL path
+`CCountry+0xFA8 -> CProgramStatus+0x18 -> CProjectPool+0x10 -> CProject`.
+The run used no bridge rows and no heap-scan flag, advanced 35 game hours with
+zero skipped hours, emitted 36 typed `projects_live` records and 540
+worked-project rows, had no source/partial/worker failures, and verified the
+replay container. This closes the worked-`CProject` hot-loop root debt, but not
+the whole special-project segment: facilities, scientists, progress/completion,
+and resolved definition joins still need anchored DLL coverage.
 
 ### Phase 8: Diplomacy, Intel, Market, Logistics, Weather
 

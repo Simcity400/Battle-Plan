@@ -648,6 +648,9 @@ mod attach_log {
     const PROJECT_CPROJECT_VTABLE_RVA: usize = 0x296C270;
     const PROJECT_CHARACTER_VTABLE_RVA: usize = 0x272B088;
     const PROJECT_SCIENTIST_VTABLE_RVA: usize = 0x2967E88;
+    const PROJECT_PROGRAM_STATUS_A_VTABLE_RVA: usize = 0x295AC88;
+    const PROJECT_PROGRAM_STATUS_B_VTABLE_RVA: usize = 0x295ACA8;
+    const PROJECT_POOL_VTABLE_RVA: usize = 0x29B0238;
     const PROJECT_FACILITY_TYPE: u32 = 83;
     const PROJECT_PROJECT_TYPE: u32 = 86;
     const PROJECT_CHARACTER_TYPE: u32 = 73;
@@ -666,6 +669,12 @@ mod attach_log {
     const PROJECT_PROJECT_OFF_OWNER_TAG: usize = 0x60;
     const PROJECT_PROJECT_OFF_OWNER_FACILITY: usize = 0x64;
     const PROJECT_PROJECT_OFF_ITERATIONS: usize = 0x74;
+    const COUNTRY_OFF_PROGRAM_STATUS: usize = 0xFA8;
+    const PROJECT_PROGRAM_STATUS_OFF_POOL: usize = 0x18;
+    const PROJECT_POOL_OFF_FIRST_PROJECT: usize = 0x10;
+    const PROJECT_COUNTRY_STRIDE: usize = 0x1C0;
+    const MIN_PROJECTS_PER_COUNTRY: usize = 16;
+    const MAX_PROJECTS_PER_COUNTRY: usize = 64;
     const PROJECT_CHARACTER_OFF_TYPE: usize = 0x08;
     const PROJECT_CHARACTER_OFF_ID: usize = 0x0C;
     const PROJECT_CHARACTER_OFF_DISPLAY: usize = 0x28;
@@ -678,7 +687,7 @@ mod attach_log {
     const PROJECT_SKILL_HEADER_BASE: u16 = 0x56F7;
     const MAX_PROJECT_FACILITIES: usize = 4_096;
     const MAX_PROJECT_ACTIVE_PROJECTS: usize = 4_096;
-    const MAX_PROJECT_PROJECT_PINS: usize = 20_000;
+    const MAX_PROJECT_PROJECT_PINS: usize = 30_000;
     const MAX_PROJECT_SCIENTISTS: usize = 4_096;
     const MAX_SPECIAL_PROJECT_BRIDGE_ROWS: usize = 30_000;
     const MAX_SPECIAL_PROJECT_BRIDGE_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
@@ -14063,7 +14072,7 @@ mod attach_log {
 
     fn compact_projects_source_kind(cache: &SpecialProjectsCache) -> u32 {
         match cache.status {
-            "verified" => COMPACT_PROJECT_SOURCE_SCAN,
+            "verified" | "country_project_pool_verified" => COMPACT_PROJECT_SOURCE_SCAN,
             "bridge_verified" => COMPACT_PROJECT_SOURCE_BRIDGE,
             _ => 0,
         }
@@ -20288,6 +20297,35 @@ mod attach_log {
             } else {
                 CountryIdentityCache::not_attempted("profile_mismatch")
             };
+            let special_projects = if daily_match
+                && long_string_match
+                && control
+                    .map(|control| !control.special_projects_bridge_valid)
+                    .unwrap_or(false)
+            {
+                SpecialProjectsCache::not_attempted("invalid_control_bridge")
+            } else if daily_match
+                && long_string_match
+                && control
+                    .map(|control| !control.special_projects_bridge.is_empty())
+                    .unwrap_or(false)
+            {
+                let bridge = control
+                    .map(|control| control.special_projects_bridge.as_slice())
+                    .unwrap_or(&[]);
+                SpecialProjectsCache::from_control_bridge(base, bridge)
+            } else if daily_match
+                && long_string_match
+                && control
+                    .map(|control| control.special_projects_scan)
+                    .unwrap_or(false)
+            {
+                SpecialProjectsCache::resolve(base)
+            } else if daily_match && long_string_match {
+                SpecialProjectsCache::from_country_project_pools(base, &country_identity)
+            } else {
+                SpecialProjectsCache::not_attempted("disabled")
+            };
             CollectorState {
                 base,
                 daily_addr,
@@ -20297,33 +20335,7 @@ mod attach_log {
                 date_ptr,
                 country_database_ptr,
                 country_identity,
-                special_projects: if daily_match
-                    && long_string_match
-                    && control
-                        .map(|control| !control.special_projects_bridge_valid)
-                        .unwrap_or(false)
-                {
-                    SpecialProjectsCache::not_attempted("invalid_control_bridge")
-                } else if daily_match
-                    && long_string_match
-                    && control
-                        .map(|control| !control.special_projects_bridge.is_empty())
-                        .unwrap_or(false)
-                {
-                    let bridge = control
-                        .map(|control| control.special_projects_bridge.as_slice())
-                        .unwrap_or(&[]);
-                    SpecialProjectsCache::from_control_bridge(base, bridge)
-                } else if daily_match
-                    && long_string_match
-                    && control
-                        .map(|control| control.special_projects_scan)
-                        .unwrap_or(false)
-                {
-                    SpecialProjectsCache::resolve(base)
-                } else {
-                    SpecialProjectsCache::not_attempted("disabled")
-                },
+                special_projects,
                 weather,
             }
         }
@@ -21259,6 +21271,74 @@ mod attach_log {
             }
         }
 
+        fn from_country_project_pools(
+            base: usize,
+            country_identity: &CountryIdentityCache,
+        ) -> Self {
+            if base == 0 {
+                return Self::not_attempted("profile_mismatch");
+            }
+            if !country_identity.has_scalar_source() {
+                return Self::not_attempted("country_identity_unavailable");
+            }
+            let Some(status_a_vtable) = base.checked_add(PROJECT_PROGRAM_STATUS_A_VTABLE_RVA)
+            else {
+                return Self::not_attempted("profile_mismatch");
+            };
+            let Some(status_b_vtable) = base.checked_add(PROJECT_PROGRAM_STATUS_B_VTABLE_RVA)
+            else {
+                return Self::not_attempted("profile_mismatch");
+            };
+            let Some(pool_vtable) = base.checked_add(PROJECT_POOL_VTABLE_RVA) else {
+                return Self::not_attempted("profile_mismatch");
+            };
+            let Some(project_vtable) = base.checked_add(PROJECT_CPROJECT_VTABLE_RVA) else {
+                return Self::not_attempted("profile_mismatch");
+            };
+
+            let mut projects_by_addr: BTreeMap<usize, ProjectPin> = BTreeMap::new();
+            for country in &country_identity.rows {
+                let Some(pins) = project_pins_from_country_object(
+                    country.object_ptr,
+                    status_a_vtable,
+                    status_b_vtable,
+                    pool_vtable,
+                    project_vtable,
+                ) else {
+                    continue;
+                };
+                for pin in pins {
+                    projects_by_addr.insert(pin.addr, pin);
+                    if projects_by_addr.len() > MAX_PROJECT_PROJECT_PINS {
+                        return Self {
+                            status: "too_many",
+                            scan_ms: 0,
+                            bridge_rows_supplied: 0,
+                            facilities: Vec::new(),
+                            projects: Vec::new(),
+                            scientists: Vec::new(),
+                            too_many: true,
+                        };
+                    }
+                }
+            }
+            let projects: Vec<ProjectPin> = projects_by_addr.into_values().collect();
+            let status = if projects.is_empty() {
+                "country_project_pool_empty"
+            } else {
+                "country_project_pool_verified"
+            };
+            Self {
+                status,
+                scan_ms: 0,
+                bridge_rows_supplied: 0,
+                facilities: Vec::new(),
+                projects,
+                scientists: Vec::new(),
+                too_many: false,
+            }
+        }
+
         fn resolve(base: usize) -> Self {
             if base == 0 {
                 return Self::not_attempted("profile_mismatch");
@@ -21396,7 +21476,11 @@ mod attach_log {
             Vec<ProjectRow>,
             Vec<ProjectScientistRow>,
         ) {
-            if !matches!(self.status, "verified" | "bridge_verified") || self.too_many {
+            if !matches!(
+                self.status,
+                "verified" | "bridge_verified" | "country_project_pool_verified"
+            ) || self.too_many
+            {
                 return (Vec::new(), Vec::new(), Vec::new());
             }
             let facility_vtable = base.saturating_add(PROJECT_FACILITY_VTABLE_RVA);
@@ -21601,6 +21685,49 @@ mod attach_log {
             return None;
         }
         Some(ProjectScientistPin { addr, char_id })
+    }
+
+    fn project_pins_from_country_object(
+        country_ptr: usize,
+        status_a_vtable: usize,
+        status_b_vtable: usize,
+        pool_vtable: usize,
+        project_vtable: usize,
+    ) -> Option<Vec<ProjectPin>> {
+        if !is_map_control_heap_pointer(country_ptr) {
+            return None;
+        }
+        let status_ptr = read_u64(country_ptr.checked_add(COUNTRY_OFF_PROGRAM_STATUS)?)? as usize;
+        if !is_map_control_heap_pointer(status_ptr)
+            || read_u64(status_ptr)? as usize != status_a_vtable
+            || read_u64(status_ptr.checked_add(8)?)? as usize != status_b_vtable
+        {
+            return None;
+        }
+        let pool_ptr = read_u64(status_ptr.checked_add(PROJECT_PROGRAM_STATUS_OFF_POOL)?)? as usize;
+        if !is_map_control_heap_pointer(pool_ptr) || read_u64(pool_ptr)? as usize != pool_vtable {
+            return None;
+        }
+        let first_project =
+            read_u64(pool_ptr.checked_add(PROJECT_POOL_OFF_FIRST_PROJECT)?)? as usize;
+        if !is_map_control_heap_pointer(first_project) {
+            return None;
+        }
+        let mut pins = Vec::new();
+        for index in 0..MAX_PROJECTS_PER_COUNTRY {
+            let Some(addr) = first_project.checked_add(index.checked_mul(PROJECT_COUNTRY_STRIDE)?)
+            else {
+                break;
+            };
+            let Some(pin) = project_pin(addr, project_vtable) else {
+                break;
+            };
+            pins.push(pin);
+        }
+        if pins.len() < MIN_PROJECTS_PER_COUNTRY {
+            return None;
+        }
+        Some(pins)
     }
 
     fn write_sinks(file: Option<&mut std::fs::File>, pipe: Option<Handle>, bytes: &[u8]) {
@@ -32856,6 +32983,28 @@ mod attach_log {
             assert!(json.contains("\"display_name\":\"Ada \\\"Ace\\\"\""));
             assert!(json.contains("\"count\":{\"facilities\":1,\"projects\":1,\"scientists\":1}"));
             assert!(json.contains("\"source\":\"C\""));
+        }
+
+        #[test]
+        fn compact_projects_source_accepts_country_project_pool_cache() {
+            let cache = SpecialProjectsCache {
+                status: "country_project_pool_verified",
+                scan_ms: 0,
+                bridge_rows_supplied: 0,
+                facilities: Vec::new(),
+                projects: vec![ProjectPin {
+                    addr: HEAP_LO + 0x1000,
+                    project_id: 77,
+                    static_def_handle: 9001,
+                }],
+                scientists: Vec::new(),
+                too_many: false,
+            };
+
+            assert_eq!(
+                compact_projects_source_kind(&cache),
+                COMPACT_PROJECT_SOURCE_SCAN
+            );
         }
 
         #[test]

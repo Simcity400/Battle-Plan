@@ -496,14 +496,22 @@ Scheduled country research:
 Scheduled special projects:
 
 - scheduled snapshot frames may claim `projects_live` when the profile
-  sentinels match and either `special_projects_bridge` supplies validated roots
-  or the explicit fallback `special_projects_scan = true` is supplied in
+  sentinels match and the DLL resolves the anchored country project-pool path,
+  or when `special_projects_bridge` supplies validated development roots, or
+  when the explicit fallback `special_projects_scan = true` is supplied in
   `collector_control.json`;
-- the current proof path is bridge-first debt: Python preflight resolves or
-  validates cached `facility:<id>:<province>:0xptr`,
-  `project:<id>:<static_def_handle>:0xptr`, and `scientist:<char_id>:0xptr`
-  rows, the control file passes only that ephemeral bridge to the DLL, and the
-  DLL revalidates vtables/types/identity before every scheduled read;
+- the default no-bridge current-build path follows validated `CCountry` rows to
+  `CCountry+0xFA8 -> CProgramStatus`, validates the paired status vtables,
+  follows `CProgramStatus+0x18 -> CProjectPool`, validates the pool vtable, then
+  walks contiguous `CProject` rows from `CProjectPool+0x10` at stride `0x1C0`.
+  This path emits currently worked project rows only; facility and scientist
+  roots are still separate unresolved work;
+- the full-catalog development/validation path remains bridge-first debt:
+  Python preflight resolves or validates cached
+  `facility:<id>:<province>:0xptr`, `project:<id>:<static_def_handle>:0xptr`,
+  and `scientist:<char_id>:0xptr` rows, the control file passes only that
+  ephemeral bridge to the DLL, and the DLL revalidates vtables/types/identity
+  before every scheduled read;
 - the older DLL project slice can still scan for `CProjectFacility`, `CProject`,
   and scientist-backed `CCharacter` objects once per collector worker when
   explicitly requested, but that heap sweep is hard-budgeted, fail-closed, and
@@ -514,9 +522,10 @@ Scheduled special projects:
   resolved tokens;
 - compact `projects_live` is domain id 41. It emits packed facility rows,
   currently worked project rows, and scientist rows when pinned, with source kind
-  `control_bridge` or `dll_startup_heap_scan`, per-frame bridge row counts,
-  scan time, observed/emitted counts, and source/partial failure flags. Idle
-  current-build facility sentinels are normalized to
+  `control_bridge`, `dll_startup_heap_scan`, or the host-reported
+  `dll_project_cache`, per-frame bridge row counts, scan time,
+  observed/emitted counts, and source/partial failure flags. Idle current-build
+  facility sentinels are normalized to
   `active = false, active_project_handle = 0`;
 - the slice intentionally omits project progress/completion, owner attribution,
   and resolved project definition names until those roots/joins are separately
@@ -552,6 +561,16 @@ Scheduled special projects:
   failures, kept the stream ordered/decodable, verified the `.battleplan`
   container, and recorded `projects_root_source = "control_bridge"`. This is
   an hourly compact read proof, not full DLL-complete root discovery;
+- 2026-07-01 no-bridge anchored project-pool proof
+  `replay_native/runs/compact_projects_native_pool_20260701_v2` used the DLL
+  country project-pool path with no `special_projects_bridge` rows and no
+  `special_projects_scan`. The compact stream advanced 35 game hours with zero
+  skipped hours, emitted 36 `projects_live` data records, produced 540
+  currently worked project rows, had no source/partial/worker failures, kept the
+  stream ordered/decodable, verified `native_session.battleplan`, and recorded
+  `projects_root_source = "dll_project_cache"`. The manifest intentionally
+  keeps this as partial DLL-native coverage until facility/scientist roots are
+  anchored;
 - worker-poll frames stay light and must not carry `special_projects`.
 
 Scheduled country fuel:
