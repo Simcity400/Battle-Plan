@@ -29,6 +29,10 @@ Current scope:
   by bounded internal DLL workers before ordered record emission.
   `map_control` emits a full baseline and then compact delta records; perf
   records still report the full observed state/province row counts each frame.
+  `map_detail` covers `state_detail`/`buildings_live` as compact state-resource
+  rows plus state/province building-level rows from the same native CProvince /
+  CState topology; it emits a full baseline followed by deltas and uses bounded
+  province workers with batched building-vector metadata reads.
 - Optional DLL-side project scanning through `--special-projects-scan`; current
   live evidence shows this is not yet bounded enough for production capture.
 - Compact country-frame recording through `--compact-country-frame`; filtered
@@ -313,6 +317,26 @@ gate has these live speed-five results:
   p95 was 37.112 ms. The remaining heavy lanes in this run were
   `fuel_live`/`production_live` at p95 51.208 ms and widened `divisions` at p95
   37.112 ms.
+- `compact_map_detail_buildings_cached_speed5_20260630_v1`: passed the
+  isolated compact `map_detail` gate for `state_detail` plus `buildings_live`
+  after province building reads moved to bounded workers and batched vector
+  metadata reads. It advanced 259 game hours with 260 frame-end records, 0
+  skipped, full per-domain coverage, no parse/order errors, no worker-panic,
+  source-unavailable, or partial-data flags, avg frame 20.292 ms, p95 24.443
+  ms, max 59.611 ms, 473,672 raw stream bytes, and an independent
+  `pack_replay verify` pass.
+- `compact_country_divisions_land_combats_map_detail_speed5_20260630_v1`:
+  passed the 12-domain compact bundle with `state_detail` and `buildings_live`
+  added to the previous country/division/land-combat/map set. It covered
+  `fuel_live`, `production_live`, `focus_live`, `tech_live`, `politics_live`,
+  `politics_residuals`, `decisions_live`, `diplomacy_live`, `divisions`,
+  `land_combats`, `map_control`, and `map_detail`; advanced 289 game hours with
+  290 frame-end records, 0 skipped, full per-domain coverage, no parse/order
+  errors, no worker-panic, bridge-unavailable, source-unavailable, or
+  partial-data flags, avg frame 54.922 ms, p95 89.906 ms, max 99.708 ms,
+  56,044,696 raw stream bytes, and an independent `pack_replay verify` pass.
+  `map_detail` observed 4,203,260 full rows and emitted 14,528 changed rows;
+  its read p95 was 36.421 ms.
 
 The extraction-only compact performance gate is green for the current
 production-shaped country-state domains and the native-root `divisions`,
@@ -325,18 +349,20 @@ construction queue rows. `land_combats` is DLL/Rust compact-path complete for
 active combat lifecycle snapshots and participant vectors at hourly cadence on
 the current vanilla build. `map_control` is DLL/Rust compact-path complete for
 state ownership/control and province controller/state rows at hourly cadence on
-the current vanilla build. `divisions` is DLL/Rust compact-path complete for the
-current widened compact division row contract (division id, location, movement
-progress, movement source/target, org, strength, combat reference count,
-in-combat flag, owner tag-db id, parent army id, experience, supply, and fuel)
-on the current vanilla build, including compact baseline/delta rows and explicit
-delete/tombstone records. It now uses the anchored country unit-wrapper path and
-no longer needs Python preflight, saves, or heap/vtable scans for compact
-division body discovery. Wider division replay coverage still needs typed
-records for template/equipment/manpower/assignment/order details. The full
-11-domain widened-row bundle is now speed-five complete for the currently
-implemented compact domains on the active vanilla process, with longer soaks
-and the next replay-critical domains still open.
+the current vanilla build. `map_detail` is DLL/Rust compact-path complete for
+state resource deposits and state/province building levels at hourly cadence on
+the current vanilla build. `divisions` is DLL/Rust compact-path complete for
+the current widened compact division row contract (division id, location,
+movement progress, movement source/target, org, strength, combat reference
+count, in-combat flag, owner tag-db id, parent army id, experience, supply, and
+fuel) on the current vanilla build, including compact baseline/delta rows and
+explicit delete/tombstone records. It now uses the anchored country
+unit-wrapper path and no longer needs Python preflight, saves, or heap/vtable
+scans for compact division body discovery. Wider division replay coverage still
+needs typed records for template/equipment/manpower/assignment/order details.
+The full 12-domain widened-row bundle is now speed-five complete for the
+currently implemented compact domains on the active vanilla process, with
+longer soaks and the next replay-critical domains still open.
 
 Implementation note: see `COMPACT_HOI4REPLAY_NEXT_STEP.md` for the bounded
 Rust-native packaging path and the test contract for putting `collector_stream.bin`

@@ -200,6 +200,22 @@ Current measured constraint:
   per-domain coverage, no parse/order/source/partial/bridge failures, avg frame
   34.743 ms, p95 52.766 ms, division read p95 37.112 ms, 62,786,985 raw stream
   bytes, and an independently verified `native_session.battleplan`.
+- Compact map-detail state:
+  `compact_map_detail_buildings_cached_speed5_20260630_v1` moved
+  `state_detail` and `buildings_live` into the compact DLL/Rust path as
+  `map_detail`: state resource deposits plus state/province building levels,
+  baseline-plus-delta records, bounded province workers, and batched
+  building-vector metadata reads. The isolated proof advanced 259 game hours
+  with 260 frame-end records, 0 skipped, full coverage, no parse/source/partial
+  failures, map-detail read p95 23.933 ms, 473,672 raw stream bytes, and an
+  independently verified `native_session.battleplan`.
+- Combined map-detail state:
+  `compact_country_divisions_land_combats_map_detail_speed5_20260630_v1` added
+  `map_detail` to the previous compact bundle and passed with 12 expected
+  domains, 289 game hours advanced, 290 frame-end records, 0 skipped, full
+  coverage, no parse/source/partial/bridge failures, avg frame 54.922 ms, p95
+  89.906 ms, 56,044,696 raw stream bytes, and an independently verified
+  `native_session.battleplan`.
 - Earlier raw-event verification state: live-verified on the restarted vanilla
   process (pid 43412). A cold bootstrap outside the hot loop populated the
   current-process division and army caches, then a no-cold 12-game-hour run used

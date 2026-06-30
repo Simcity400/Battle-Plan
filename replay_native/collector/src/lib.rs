@@ -2732,6 +2732,7 @@ mod attach_log {
     const COMPACT_DOMAIN_DIVISIONS: u16 = 20;
     const COMPACT_DOMAIN_LAND_COMBATS: u16 = 21;
     const COMPACT_DOMAIN_MAP_CONTROL: u16 = 22;
+    const COMPACT_DOMAIN_MAP_DETAIL: u16 = 23;
     const COMPACT_STATUS_STATE_UNAVAILABLE: u32 = 1 << 0;
     const COMPACT_STATUS_PROFILE_MISMATCH: u32 = 1 << 1;
     const COMPACT_STATUS_NO_CLOCK: u32 = 1 << 2;
@@ -2745,6 +2746,8 @@ mod attach_log {
     const COMPACT_DIVISION_ROW_FLAG_DELETED: u32 = 1 << 12;
     const COMPACT_DIVISION_SAMPLE_MIN_ROWS: usize = 512;
     const COMPACT_DIVISION_SAMPLE_MAX_WORKERS: usize = 4;
+    const COMPACT_MAP_DETAIL_SAMPLE_MIN_ROWS: usize = 512;
+    const COMPACT_MAP_DETAIL_SAMPLE_MAX_WORKERS: usize = 8;
     const COMPACT_POLITICS_SHARD_MIN_ROWS: usize = 96;
     const COMPACT_POLITICS_SHARD_MAX_WORKERS: usize = 4;
 
@@ -2826,6 +2829,7 @@ mod attach_log {
         division_roots: CompactDivisionRootCache,
         land_combat: LandCombatTracker,
         map_control: CompactMapControlTracker,
+        map_detail: CompactMapDetailTracker,
     }
 
     #[derive(Default)]
@@ -2874,6 +2878,16 @@ mod attach_log {
         changed_rows: u32,
         changed_state_rows: u32,
         changed_province_rows: u32,
+        status_flags: u32,
+    }
+
+    struct CompactMapDetailRead {
+        state_rows: Vec<CompactMapDetailStateRow>,
+        province_rows: Vec<CompactMapDetailProvinceRow>,
+        observed_state_rows: u32,
+        observed_province_rows: u32,
+        read_time_us: u64,
+        changed_rows: u32,
         status_flags: u32,
     }
 
@@ -2935,6 +2949,13 @@ mod attach_log {
         topology: Option<CompactMapControlTopology>,
     }
 
+    #[derive(Default)]
+    struct CompactMapDetailTracker {
+        previous_states: BTreeMap<u32, CompactMapDetailStateRow>,
+        previous_provinces: BTreeMap<u32, CompactMapDetailProvinceRow>,
+        topology: Option<CompactMapControlTopology>,
+    }
+
     #[derive(Clone)]
     struct CompactMapControlTopology {
         province_array: usize,
@@ -2968,6 +2989,32 @@ mod attach_log {
         province_id: u32,
         controller_tag_db_id: u32,
         state_id: u32,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct CompactStateResourceEntry {
+        resource_id: u32,
+        amount_raw: i32,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct CompactBuildingLevelEntry {
+        type_id: u32,
+        level: u32,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct CompactMapDetailStateRow {
+        state_id: u32,
+        resources: Option<Vec<CompactStateResourceEntry>>,
+        buildings: Option<Vec<CompactBuildingLevelEntry>>,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct CompactMapDetailProvinceRow {
+        province_id: u32,
+        state_id: u32,
+        buildings: Option<Vec<CompactBuildingLevelEntry>>,
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -8896,10 +8943,14 @@ mod attach_log {
         let land_combats_enabled =
             compact_explicit_domain_enabled(control, RAW_LAND_COMBATS_DOMAIN);
         let map_control_enabled = compact_map_control_enabled(control);
+        let map_detail_enabled = compact_map_detail_enabled(control);
+        let map_detail_include_resources = compact_map_detail_include_resources(control);
+        let map_detail_include_buildings = compact_map_detail_include_buildings(control);
         let mut country_reads = Vec::new();
         let mut division_read = None;
         let mut land_combat_read = None;
         let mut map_control_read = None;
+        let mut map_detail_read = None;
         let country_specs_for_panic = enabled_specs.clone();
         let country_trackers = CompactCountryGateTrackers {
             economy: &mut trackers.economy,
@@ -8914,6 +8965,7 @@ mod attach_log {
         let division_roots = &mut trackers.division_roots;
         let land_combat_tracker = &mut trackers.land_combat;
         let map_control_tracker = &mut trackers.map_control;
+        let map_detail_tracker = &mut trackers.map_detail;
         thread::scope(|scope| {
             let country_handle = if enabled_specs.is_empty() {
                 None
@@ -8955,6 +9007,19 @@ mod attach_log {
             } else {
                 None
             };
+            let map_detail_handle = if map_detail_enabled {
+                Some(scope.spawn(move || {
+                    read_compact_map_detail(
+                        state,
+                        status_flags,
+                        map_detail_include_resources,
+                        map_detail_include_buildings,
+                        map_detail_tracker,
+                    )
+                }))
+            } else {
+                None
+            };
 
             if let Some(handle) = country_handle {
                 country_reads = match handle.join() {
@@ -8981,6 +9046,12 @@ mod attach_log {
                 map_control_read = Some(match handle.join() {
                     Ok(read) => read,
                     Err(_) => compact_map_control_worker_panic_read(status_flags),
+                });
+            }
+            if let Some(handle) = map_detail_handle {
+                map_detail_read = Some(match handle.join() {
+                    Ok(read) => read,
+                    Err(_) => compact_map_detail_worker_panic_read(status_flags),
                 });
             }
         });
@@ -9113,6 +9184,42 @@ mod attach_log {
             sequence = sequence.saturating_add(1);
             emitted_domains = emitted_domains.saturating_add(1);
         }
+        if let Some(read) = map_detail_read {
+            append_compact_domain_perf_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                CompactDomainPerfRecord {
+                    domain_id: COMPACT_DOMAIN_MAP_DETAIL,
+                    read_time_us: read.read_time_us,
+                    row_count: read
+                        .observed_state_rows
+                        .saturating_add(read.observed_province_rows),
+                    changed_rows: read.changed_rows,
+                    unit_count: read
+                        .observed_state_rows
+                        .saturating_add(read.observed_province_rows),
+                    changed_unit_count: read.changed_rows,
+                    status_flags: read.status_flags,
+                },
+                elapsed_wall_ms,
+            );
+            sequence = sequence.saturating_add(1);
+            append_compact_map_detail_data_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                &read.state_rows,
+                &read.province_rows,
+                elapsed_wall_ms,
+                read.status_flags,
+                read.changed_rows,
+                read.observed_state_rows,
+                read.observed_province_rows,
+            );
+            sequence = sequence.saturating_add(1);
+            emitted_domains = emitted_domains.saturating_add(1);
+        }
         if let Some(read) = land_combat_read {
             append_compact_domain_perf_record(
                 &mut out,
@@ -9211,6 +9318,30 @@ mod attach_log {
                     || scheduled == "state_control"
                     || scheduled == "province_control"
             })
+    }
+
+    fn compact_map_detail_enabled(control: &CollectorControl) -> bool {
+        control.scheduled_domains_valid
+            && control
+                .scheduled_domains
+                .iter()
+                .any(|scheduled| scheduled == "state_detail" || scheduled == "buildings_live")
+    }
+
+    fn compact_map_detail_include_buildings(control: &CollectorControl) -> bool {
+        control.scheduled_domains_valid
+            && control
+                .scheduled_domains
+                .iter()
+                .any(|scheduled| scheduled == "buildings_live")
+    }
+
+    fn compact_map_detail_include_resources(control: &CollectorControl) -> bool {
+        control.scheduled_domains_valid
+            && control
+                .scheduled_domains
+                .iter()
+                .any(|scheduled| scheduled == "state_detail")
     }
 
     fn read_compact_country_domain_bundles(
@@ -9626,6 +9757,18 @@ mod attach_log {
             changed_rows: 0,
             changed_state_rows: 0,
             changed_province_rows: 0,
+            status_flags: status_flags | COMPACT_STATUS_WORKER_PANIC,
+        }
+    }
+
+    fn compact_map_detail_worker_panic_read(status_flags: u32) -> CompactMapDetailRead {
+        CompactMapDetailRead {
+            state_rows: Vec::new(),
+            province_rows: Vec::new(),
+            observed_state_rows: 0,
+            observed_province_rows: 0,
+            read_time_us: 0,
+            changed_rows: 0,
             status_flags: status_flags | COMPACT_STATUS_WORKER_PANIC,
         }
     }
@@ -10157,6 +10300,285 @@ mod attach_log {
                 status_flags | COMPACT_STATUS_DELTA_DATA
             },
         }
+    }
+
+    fn read_compact_map_detail(
+        state: &CollectorState,
+        status_flags: u32,
+        include_resources: bool,
+        include_buildings: bool,
+        tracker: &mut CompactMapDetailTracker,
+    ) -> CompactMapDetailRead {
+        let read_started = Instant::now();
+        let (state_rows, province_rows, full_snapshot) = match sample_compact_map_detail_with_retry(
+            state,
+            include_resources,
+            include_buildings,
+            tracker,
+            3,
+        ) {
+            Ok(rows) => rows,
+            Err(_) => {
+                return CompactMapDetailRead {
+                    state_rows: Vec::new(),
+                    province_rows: Vec::new(),
+                    observed_state_rows: 0,
+                    observed_province_rows: 0,
+                    read_time_us: duration_micros_u64(read_started.elapsed()),
+                    changed_rows: 0,
+                    status_flags: status_flags | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                }
+            }
+        };
+
+        let emit_full_snapshot = full_snapshot || tracker.previous_states.is_empty();
+        let mut emitted_state_rows = Vec::new();
+        let mut changed_rows = 0u32;
+        for row in &state_rows {
+            let changed = tracker
+                .previous_states
+                .get(&row.state_id)
+                .map(|old| old != row)
+                .unwrap_or(true);
+            if changed {
+                changed_rows = changed_rows.saturating_add(1);
+            }
+            if emit_full_snapshot || changed {
+                emitted_state_rows.push(row.clone());
+            }
+        }
+
+        let emit_full_provinces = include_buildings
+            && (full_snapshot
+                || (!province_rows.is_empty() && tracker.previous_provinces.is_empty()));
+        let mut emitted_province_rows = Vec::new();
+        for row in &province_rows {
+            let changed = tracker
+                .previous_provinces
+                .get(&row.province_id)
+                .map(|old| old != row)
+                .unwrap_or(true);
+            if changed {
+                changed_rows = changed_rows.saturating_add(1);
+            }
+            if emit_full_provinces || changed {
+                emitted_province_rows.push(row.clone());
+            }
+        }
+
+        tracker.previous_states = state_rows
+            .iter()
+            .map(|row| (row.state_id, row.clone()))
+            .collect::<BTreeMap<_, _>>();
+        tracker.previous_provinces = province_rows
+            .iter()
+            .map(|row| (row.province_id, row.clone()))
+            .collect::<BTreeMap<_, _>>();
+
+        CompactMapDetailRead {
+            state_rows: emitted_state_rows,
+            province_rows: emitted_province_rows,
+            observed_state_rows: state_rows.len().min(u32::MAX as usize) as u32,
+            observed_province_rows: province_rows.len().min(u32::MAX as usize) as u32,
+            read_time_us: duration_micros_u64(read_started.elapsed()),
+            changed_rows,
+            status_flags: if emit_full_snapshot {
+                status_flags
+            } else {
+                status_flags | COMPACT_STATUS_DELTA_DATA
+            },
+        }
+    }
+
+    fn sample_compact_map_detail_with_retry(
+        state: &CollectorState,
+        include_resources: bool,
+        include_buildings: bool,
+        tracker: &mut CompactMapDetailTracker,
+        attempts: usize,
+    ) -> Result<
+        (
+            Vec<CompactMapDetailStateRow>,
+            Vec<CompactMapDetailProvinceRow>,
+            bool,
+        ),
+        &'static str,
+    > {
+        let attempt_count = attempts.max(1);
+        for attempt in 0..attempt_count {
+            match sample_compact_map_detail_cached(
+                state,
+                include_resources,
+                include_buildings,
+                tracker,
+            ) {
+                Ok(rows) => return Ok(rows),
+                Err(err) if attempt + 1 == attempt_count => return Err(err),
+                Err(_) => thread::yield_now(),
+            }
+        }
+        Err("map_detail_retry_exhausted")
+    }
+
+    fn sample_compact_map_detail_cached(
+        state: &CollectorState,
+        include_resources: bool,
+        include_buildings: bool,
+        tracker: &mut CompactMapDetailTracker,
+    ) -> Result<
+        (
+            Vec<CompactMapDetailStateRow>,
+            Vec<CompactMapDetailProvinceRow>,
+            bool,
+        ),
+        &'static str,
+    > {
+        if !include_resources && !include_buildings {
+            return Err("map_detail_empty_selection");
+        }
+        let cached_result = tracker.topology.as_ref().and_then(|topology| {
+            cprovince_array_still_current(state, topology.province_array, topology.province_count)
+                .then(|| {
+                    sample_compact_map_detail_from_topology(
+                        state,
+                        topology,
+                        include_resources,
+                        include_buildings,
+                    )
+                })
+        });
+        if let Some(Ok((state_rows, province_rows))) = cached_result {
+            return Ok((state_rows, province_rows, false));
+        }
+
+        tracker.topology = None;
+        let (topology, _, _) = build_compact_map_control_topology(state)?;
+        let (state_rows, province_rows) = sample_compact_map_detail_from_topology(
+            state,
+            &topology,
+            include_resources,
+            include_buildings,
+        )?;
+        tracker.topology = Some(topology);
+        Ok((state_rows, province_rows, true))
+    }
+
+    fn sample_compact_map_detail_from_topology(
+        state: &CollectorState,
+        topology: &CompactMapControlTopology,
+        include_resources: bool,
+        include_buildings: bool,
+    ) -> Result<
+        (
+            Vec<CompactMapDetailStateRow>,
+            Vec<CompactMapDetailProvinceRow>,
+        ),
+        &'static str,
+    > {
+        let mut state_rows = Vec::with_capacity(topology.states.len());
+        for root in &topology.states {
+            let resources = if include_resources {
+                Some(
+                    state_resource_entries(root.state_ptr)
+                        .ok_or("map_detail_state_resources_unavailable")?,
+                )
+            } else {
+                None
+            };
+            let buildings = if include_buildings {
+                Some(
+                    building_level_entries(state.base, root.state_ptr, STATE_OFF_BUILDINGS_VEC)
+                        .ok_or("map_detail_state_buildings_unavailable")?,
+                )
+            } else {
+                None
+            };
+            state_rows.push(CompactMapDetailStateRow {
+                state_id: root.state_id,
+                resources,
+                buildings,
+            });
+        }
+
+        let mut province_rows = Vec::new();
+        if include_buildings {
+            province_rows =
+                sample_compact_map_detail_province_rows(state.base, &topology.provinces)?;
+            if province_rows.len() < MIN_USABLE_PROVINCE_ROWS {
+                return Err("map_detail_insufficient_provinces");
+            }
+        }
+
+        if state_rows.len() < MIN_USABLE_STATE_ROWS {
+            return Err("map_detail_insufficient_states");
+        }
+        Ok((state_rows, province_rows))
+    }
+
+    fn sample_compact_map_detail_province_rows(
+        module_base: usize,
+        roots: &[CompactMapProvinceRoot],
+    ) -> Result<Vec<CompactMapDetailProvinceRow>, &'static str> {
+        let worker_count = compact_map_detail_sample_worker_count(roots.len());
+        if worker_count <= 1 {
+            return sample_compact_map_detail_province_rows_serial(module_base, roots);
+        }
+        let chunk_len = (roots.len() + worker_count - 1) / worker_count;
+        let mut rows = Vec::with_capacity(roots.len());
+        let mut failed = false;
+        thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for chunk in roots.chunks(chunk_len) {
+                handles.push(scope.spawn(move || {
+                    sample_compact_map_detail_province_rows_serial(module_base, chunk)
+                }));
+            }
+            for handle in handles {
+                match handle.join() {
+                    Ok(Ok(mut chunk_rows)) => rows.append(&mut chunk_rows),
+                    _ => failed = true,
+                }
+            }
+        });
+        if failed {
+            Err("map_detail_province_worker_failed")
+        } else {
+            Ok(rows)
+        }
+    }
+
+    fn compact_map_detail_sample_worker_count(root_count: usize) -> usize {
+        if root_count < COMPACT_MAP_DETAIL_SAMPLE_MIN_ROWS.saturating_mul(2) {
+            return 1;
+        }
+        let target_shards = (root_count + COMPACT_MAP_DETAIL_SAMPLE_MIN_ROWS - 1)
+            / COMPACT_MAP_DETAIL_SAMPLE_MIN_ROWS;
+        let available = thread::available_parallelism()
+            .map(|parallelism| parallelism.get())
+            .unwrap_or(1);
+        target_shards
+            .min(available)
+            .min(COMPACT_MAP_DETAIL_SAMPLE_MAX_WORKERS)
+            .max(1)
+    }
+
+    fn sample_compact_map_detail_province_rows_serial(
+        module_base: usize,
+        roots: &[CompactMapProvinceRoot],
+    ) -> Result<Vec<CompactMapDetailProvinceRow>, &'static str> {
+        let mut rows = Vec::with_capacity(roots.len());
+        for root in roots {
+            let buildings = Some(
+                building_level_entries(module_base, root.province_ptr, CPROVINCE_OFF_BUILDINGS_VEC)
+                    .ok_or("map_detail_province_buildings_unavailable")?,
+            );
+            rows.push(CompactMapDetailProvinceRow {
+                province_id: root.province_id,
+                state_id: root.state_id,
+                buildings,
+            });
+        }
+        Ok(rows)
     }
 
     fn sample_compact_map_control_with_retry(
@@ -10993,6 +11415,38 @@ mod attach_log {
             sequence,
             game_hour_raw,
             COMPACT_DOMAIN_MAP_CONTROL,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+    }
+
+    fn append_compact_map_detail_data_record(
+        out: &mut Vec<u8>,
+        sequence: u64,
+        game_hour_raw: i32,
+        state_rows: &[CompactMapDetailStateRow],
+        province_rows: &[CompactMapDetailProvinceRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        observed_state_rows: u32,
+        observed_province_rows: u32,
+    ) {
+        let payload = compact_map_detail_data_payload(
+            state_rows,
+            province_rows,
+            elapsed_wall_ms,
+            status_flags,
+            changed_rows,
+            observed_state_rows,
+            observed_province_rows,
+        );
+        append_compact_record(
+            out,
+            sequence,
+            game_hour_raw,
+            COMPACT_DOMAIN_MAP_DETAIL,
             COMPACT_RECORD_TYPE_DOMAIN_DATA,
             0,
             &payload,
@@ -11891,6 +12345,140 @@ mod attach_log {
             payload.extend_from_slice(&flags.to_le_bytes());
         }
         payload
+    }
+
+    fn compact_map_detail_data_payload(
+        state_rows: &[CompactMapDetailStateRow],
+        province_rows: &[CompactMapDetailProvinceRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        observed_state_rows: u32,
+        observed_province_rows: u32,
+    ) -> Vec<u8> {
+        let resource_count = state_rows
+            .iter()
+            .map(|row| row.resources.as_ref().map(Vec::len).unwrap_or(0))
+            .sum::<usize>();
+        let state_building_count = state_rows
+            .iter()
+            .map(|row| row.buildings.as_ref().map(Vec::len).unwrap_or(0))
+            .sum::<usize>();
+        let province_building_count = province_rows
+            .iter()
+            .map(|row| row.buildings.as_ref().map(Vec::len).unwrap_or(0))
+            .sum::<usize>();
+        let mut payload = Vec::with_capacity(
+            48usize
+                .saturating_add(state_rows.len().saturating_mul(28))
+                .saturating_add(province_rows.len().saturating_mul(20))
+                .saturating_add(resource_count.saturating_mul(12))
+                .saturating_add(state_building_count.saturating_mul(12))
+                .saturating_add(province_building_count.saturating_mul(12)),
+        );
+        payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
+        payload.extend_from_slice(&(state_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+        payload.extend_from_slice(&changed_rows.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload
+            .extend_from_slice(&(province_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+        payload.extend_from_slice(&observed_state_rows.to_le_bytes());
+        payload.extend_from_slice(&observed_province_rows.to_le_bytes());
+        payload.extend_from_slice(&(resource_count.min(u32::MAX as usize) as u32).to_le_bytes());
+        payload
+            .extend_from_slice(&(state_building_count.min(u32::MAX as usize) as u32).to_le_bytes());
+        payload.extend_from_slice(
+            &(province_building_count.min(u32::MAX as usize) as u32).to_le_bytes(),
+        );
+        payload.extend_from_slice(&0u32.to_le_bytes());
+
+        let mut resource_cursor = 0u32;
+        let mut state_building_cursor = 0u32;
+        for row in state_rows {
+            let resource_len = row
+                .resources
+                .as_ref()
+                .map(Vec::len)
+                .unwrap_or(0)
+                .min(u32::MAX as usize) as u32;
+            let building_len = row
+                .buildings
+                .as_ref()
+                .map(Vec::len)
+                .unwrap_or(0)
+                .min(u32::MAX as usize) as u32;
+            let mut flags = 0u32;
+            if row.resources.is_some() {
+                flags |= 1;
+            }
+            if row.buildings.is_some() {
+                flags |= 1 << 1;
+            }
+            payload.extend_from_slice(&row.state_id.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&resource_cursor.to_le_bytes());
+            payload.extend_from_slice(&resource_len.to_le_bytes());
+            payload.extend_from_slice(&state_building_cursor.to_le_bytes());
+            payload.extend_from_slice(&building_len.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            resource_cursor = resource_cursor.saturating_add(resource_len);
+            state_building_cursor = state_building_cursor.saturating_add(building_len);
+        }
+
+        let mut province_building_cursor = 0u32;
+        for row in province_rows {
+            let building_len = row
+                .buildings
+                .as_ref()
+                .map(Vec::len)
+                .unwrap_or(0)
+                .min(u32::MAX as usize) as u32;
+            let mut flags = 0u32;
+            if row.state_id != 0 {
+                flags |= 1;
+            }
+            if row.buildings.is_some() {
+                flags |= 1 << 1;
+            }
+            payload.extend_from_slice(&row.province_id.to_le_bytes());
+            payload.extend_from_slice(&row.state_id.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&province_building_cursor.to_le_bytes());
+            payload.extend_from_slice(&building_len.to_le_bytes());
+            province_building_cursor = province_building_cursor.saturating_add(building_len);
+        }
+
+        for row in state_rows {
+            if let Some(resources) = &row.resources {
+                for resource in resources {
+                    payload.extend_from_slice(&resource.resource_id.to_le_bytes());
+                    payload.extend_from_slice(&resource.amount_raw.to_le_bytes());
+                    payload.extend_from_slice(&0u32.to_le_bytes());
+                }
+            }
+        }
+        for row in state_rows {
+            if let Some(buildings) = &row.buildings {
+                append_compact_building_level_entries(&mut payload, buildings);
+            }
+        }
+        for row in province_rows {
+            if let Some(buildings) = &row.buildings {
+                append_compact_building_level_entries(&mut payload, buildings);
+            }
+        }
+        payload
+    }
+
+    fn append_compact_building_level_entries(
+        payload: &mut Vec<u8>,
+        buildings: &[CompactBuildingLevelEntry],
+    ) {
+        for building in buildings {
+            payload.extend_from_slice(&building.type_id.to_le_bytes());
+            payload.extend_from_slice(&building.level.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
     }
 
     fn append_compact_land_combat_participants(
@@ -14025,6 +14613,135 @@ mod attach_log {
              \"controller_decode_status\":\"{}\",\"controller_source\":\"cprovince_static_root\"{}{}}}",
             province_id, controller, controller_tag_db_id, decode_status, state_field,
             building_field
+        )
+    }
+
+    fn state_resource_entries(state_ptr: usize) -> Option<Vec<CompactStateResourceEntry>> {
+        if !is_map_control_heap_pointer(state_ptr) {
+            return None;
+        }
+        let state_def = read_u64(state_ptr.checked_add(STATE_OFF_DEF)?)? as usize;
+        if !is_map_control_heap_pointer(state_def) {
+            return None;
+        }
+        let header = read_bytes(state_def.checked_add(STATE_DEF_OFF_RESOURCES_PTR)?, 16)?;
+        let data = read_u64_from_slice(&header, 0)? as usize;
+        let size = read_u32_from_slice(
+            &header,
+            STATE_DEF_OFF_RESOURCES_SIZE - STATE_DEF_OFF_RESOURCES_PTR,
+        )?;
+        let cap = read_u32_from_slice(
+            &header,
+            STATE_DEF_OFF_RESOURCES_CAP - STATE_DEF_OFF_RESOURCES_PTR,
+        )?;
+        if size == 0 {
+            return Some(Vec::new());
+        }
+        let logical_rows = if cap != 0 && cap < size { cap } else { size };
+        if logical_rows > STATE_RESOURCE_MAX_ROWS
+            || size > STATE_RESOURCE_MAX_ROWS + 1
+            || size.saturating_sub(logical_rows) > 1
+            || !is_map_control_heap_pointer(data)
+        {
+            return None;
+        }
+        let byte_len = (size as usize).checked_mul(STATE_RESOURCE_STRIDE)?;
+        let rows = read_bytes(data, byte_len)?;
+        if rows.len() != byte_len {
+            return None;
+        }
+        state_resource_entries_from_rows(size, logical_rows, &rows)
+    }
+
+    fn state_resource_entries_from_rows(
+        size: u32,
+        logical_rows: u32,
+        rows: &[u8],
+    ) -> Option<Vec<CompactStateResourceEntry>> {
+        if logical_rows > STATE_RESOURCE_MAX_ROWS
+            || size > STATE_RESOURCE_MAX_ROWS + 1
+            || size.saturating_sub(logical_rows) > 1
+            || rows.len() != (size as usize).checked_mul(STATE_RESOURCE_STRIDE)?
+        {
+            return None;
+        }
+        let mut resources: BTreeMap<u32, i32> = BTreeMap::new();
+        for idx in 0..size {
+            let offset = (idx as usize).checked_mul(STATE_RESOURCE_STRIDE)?;
+            let resource_id = read_u32_from_slice(rows, offset.checked_add(8)?)?;
+            if resource_id == STATE_RESOURCE_NO_ID {
+                continue;
+            }
+            if idx >= logical_rows {
+                return None;
+            }
+            let amount_raw = read_i32_from_slice(rows, offset)?;
+            if !(0..=STATE_RESOURCE_MAX_ABS_RAW).contains(&amount_raw) {
+                return None;
+            }
+            resources.insert(resource_id, amount_raw);
+        }
+        Some(
+            resources
+                .into_iter()
+                .map(|(resource_id, amount_raw)| CompactStateResourceEntry {
+                    resource_id,
+                    amount_raw,
+                })
+                .collect(),
+        )
+    }
+
+    fn building_level_entries(
+        module_base: usize,
+        obj_base: usize,
+        vec_off: usize,
+    ) -> Option<Vec<CompactBuildingLevelEntry>> {
+        if !is_map_control_heap_pointer(obj_base) {
+            return None;
+        }
+        let header = read_bytes(obj_base.checked_add(vec_off)?, 16)?;
+        let begin = read_u64_from_slice(&header, 0)? as usize;
+        let packed = read_u64_from_slice(&header, 8)?;
+        let logical = (packed >> 32) as u32;
+        if logical > BUILDING_VECTOR_MAX {
+            return None;
+        }
+        if logical == 0 {
+            return Some(Vec::new());
+        }
+        if !is_map_control_heap_pointer(begin) {
+            return None;
+        }
+        let byte_len = (logical as usize).checked_mul(8)?;
+        let ptrs = read_bytes(begin, byte_len)?;
+        if ptrs.len() != byte_len {
+            return None;
+        }
+        let cbuilding_vtable = module_base.checked_add(CBUILDING_VTABLE_RVA)?;
+        let mut levels: BTreeMap<u32, u32> = BTreeMap::new();
+        for idx in 0..logical {
+            let offset = (idx as usize).checked_mul(8)?;
+            let building_ptr = read_u64_from_slice(&ptrs, offset)? as usize;
+            if !is_map_control_heap_pointer(building_ptr) {
+                continue;
+            }
+            if read_u64(building_ptr)? as usize != cbuilding_vtable {
+                continue;
+            }
+            let type_id = read_u32(building_ptr.checked_add(CBUILDING_OFF_TYPE)?)?;
+            let level = read_u16(building_ptr.checked_add(CBUILDING_OFF_LEVEL)?)?;
+            if level > BUILDING_LEVEL_SANE_MAX {
+                continue;
+            }
+            let entry = levels.entry(type_id).or_insert(0);
+            *entry = entry.saturating_add(level as u32);
+        }
+        Some(
+            levels
+                .into_iter()
+                .map(|(type_id, level)| CompactBuildingLevelEntry { type_id, level })
+                .collect(),
         )
     }
 
@@ -19211,6 +19928,18 @@ mod attach_log {
         }
 
         #[test]
+        fn compact_map_detail_sampling_uses_bounded_workers() {
+            assert_eq!(
+                compact_map_detail_sample_worker_count(COMPACT_MAP_DETAIL_SAMPLE_MIN_ROWS - 1),
+                1
+            );
+            assert!(
+                compact_map_detail_sample_worker_count(COMPACT_MAP_DETAIL_SAMPLE_MIN_ROWS * 16)
+                    <= COMPACT_MAP_DETAIL_SAMPLE_MAX_WORKERS
+            );
+        }
+
+        #[test]
         fn compact_fuel_data_payload_packs_numeric_rows() {
             let mut por = test_country_row("POR", 47, 0x1234);
             por.fuel = Some(CountryFuelRow {
@@ -19692,6 +20421,105 @@ mod attach_log {
             assert_eq!(u32::from_le_bytes(payload[84..88].try_into().unwrap()), 0);
             assert_eq!(u32::from_le_bytes(payload[88..92].try_into().unwrap()), 0);
             assert_eq!(u32::from_le_bytes(payload[92..96].try_into().unwrap()), 0);
+        }
+
+        #[test]
+        fn compact_map_detail_data_payload_packs_resources_and_buildings() {
+            let states = vec![
+                CompactMapDetailStateRow {
+                    state_id: 112,
+                    resources: Some(vec![CompactStateResourceEntry {
+                        resource_id: 0x3E03,
+                        amount_raw: 700_000,
+                    }]),
+                    buildings: Some(vec![CompactBuildingLevelEntry {
+                        type_id: 0x2FAB,
+                        level: 5,
+                    }]),
+                },
+                CompactMapDetailStateRow {
+                    state_id: 113,
+                    resources: Some(Vec::new()),
+                    buildings: Some(Vec::new()),
+                },
+            ];
+            let provinces = vec![CompactMapDetailProvinceRow {
+                province_id: 118,
+                state_id: 112,
+                buildings: Some(vec![CompactBuildingLevelEntry {
+                    type_id: 0x31F6,
+                    level: 10,
+                }]),
+            }];
+
+            let payload = compact_map_detail_data_payload(
+                &states,
+                &provinces,
+                101,
+                COMPACT_STATUS_EXTRACTION_PERF_GATE,
+                3,
+                1081,
+                13413,
+            );
+
+            assert_eq!(payload.len(), 48 + 2 * 28 + 20 + 12 + 12 + 12);
+            assert_eq!(u64::from_le_bytes(payload[0..8].try_into().unwrap()), 101);
+            assert_eq!(u32::from_le_bytes(payload[8..12].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[12..16].try_into().unwrap()), 3);
+            assert_eq!(
+                u32::from_le_bytes(payload[16..20].try_into().unwrap()),
+                COMPACT_STATUS_EXTRACTION_PERF_GATE
+            );
+            assert_eq!(u32::from_le_bytes(payload[20..24].try_into().unwrap()), 1);
+            assert_eq!(
+                u32::from_le_bytes(payload[24..28].try_into().unwrap()),
+                1081
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[28..32].try_into().unwrap()),
+                13413
+            );
+            assert_eq!(u32::from_le_bytes(payload[32..36].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[36..40].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[40..44].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[48..52].try_into().unwrap()), 112);
+            assert_eq!(u32::from_le_bytes(payload[52..56].try_into().unwrap()), 3);
+            assert_eq!(u32::from_le_bytes(payload[56..60].try_into().unwrap()), 0);
+            assert_eq!(u32::from_le_bytes(payload[60..64].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[64..68].try_into().unwrap()), 0);
+            assert_eq!(u32::from_le_bytes(payload[68..72].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[76..80].try_into().unwrap()), 113);
+            assert_eq!(u32::from_le_bytes(payload[80..84].try_into().unwrap()), 3);
+            assert_eq!(
+                u32::from_le_bytes(payload[104..108].try_into().unwrap()),
+                118
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[108..112].try_into().unwrap()),
+                112
+            );
+            assert_eq!(u32::from_le_bytes(payload[112..116].try_into().unwrap()), 3);
+            assert_eq!(
+                u32::from_le_bytes(payload[124..128].try_into().unwrap()),
+                0x3E03
+            );
+            assert_eq!(
+                i32::from_le_bytes(payload[128..132].try_into().unwrap()),
+                700_000
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[136..140].try_into().unwrap()),
+                0x2FAB
+            );
+            assert_eq!(u32::from_le_bytes(payload[140..144].try_into().unwrap()), 5);
+            assert_eq!(
+                u32::from_le_bytes(payload[148..152].try_into().unwrap()),
+                0x31F6
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[152..156].try_into().unwrap()),
+                10
+            );
         }
 
         #[test]

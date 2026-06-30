@@ -1457,6 +1457,33 @@ gaps are still template, equipment, manpower, exact order geometry, assignment,
 split/merge/deploy/destroy identity rules, and higher-frequency semantic event
 records.
 
+Map-detail compact status:
+`compact_map_detail_buildings_cached_speed5_20260630_v1` promoted live state
+resource deposits and state/province building levels into the DLL/Rust compact
+path as `map_detail`, mapped from scheduled `state_detail` and
+`buildings_live`. The collector uses the native CProvince/CState topology,
+baseline-plus-delta records, bounded province workers, and batched
+building-vector metadata reads. The isolated proof advanced 259 game hours with
+260 frame-end records, 0 skipped, full per-domain coverage, no parse/order
+errors, no worker-panic, source-unavailable, or partial-data flags, avg frame
+20.292 ms, p95 24.443 ms, max 59.611 ms, 473,672 raw stream bytes, and an
+independently verified `.battleplan`.
+
+Current 12-domain combined status:
+`compact_country_divisions_land_combats_map_detail_speed5_20260630_v1` added
+`state_detail` and `buildings_live`/`map_detail` to the previous compact
+country/division/land-combat/map bundle. The run advanced 289 game hours with
+290 frame-end records, 0 skipped, full per-domain coverage, no parse/order
+errors, no worker-panic, bridge-unavailable, source-unavailable, or partial-data
+flags, avg frame 54.922 ms, p95 89.906 ms, max 99.708 ms, 56,044,696 raw stream
+bytes, and an independently verified `.battleplan`. `map_detail` observed
+4,203,260 full rows and emitted 14,528 changed rows; its read p95 was 36.421
+ms. This promotes the currently implemented 12-domain compact bundle to
+speed-five complete for the active vanilla process. The remaining map/economy
+gaps are still weather, logistics/supply proxies, market/trade extras,
+occupation/resistance/compliance depth, and visual/computed overlays that have
+not yet been promoted to compact DLL records.
+
 Earlier no-cold proof on the restarted vanilla process resolved 1898 division
 bodies and 417 still-live army bodies from cache, advanced 12 game hours in
 52.266 wall seconds, stored 13 verified hourly snapshots, and emitted raw

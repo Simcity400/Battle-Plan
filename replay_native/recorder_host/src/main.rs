@@ -80,11 +80,16 @@ const COMPACT_LAND_COMBAT_MAX_PROVINCE_ID: u32 = 1_000_000;
 const COMPACT_LAND_COMBAT_MAX_AGE_DAYS: u32 = 100_000;
 const COMPACT_MAP_STATE_ROW_LEN: usize = 16;
 const COMPACT_MAP_PROVINCE_ROW_LEN: usize = 16;
+const COMPACT_MAP_DETAIL_STATE_ROW_LEN: usize = 28;
+const COMPACT_MAP_DETAIL_PROVINCE_ROW_LEN: usize = 20;
+const COMPACT_MAP_DETAIL_ENTRY_ROW_LEN: usize = 12;
 const COMPACT_MAP_MIN_STATE_ROWS: usize = 1_000;
 const COMPACT_MAP_MIN_PROVINCE_ROWS: usize = 10_000;
 const COMPACT_MAP_MAX_STATE_ID: u32 = 65_535;
 const COMPACT_MAP_MAX_PROVINCE_ID: u32 = 65_536;
 const COMPACT_MAP_MAX_TAG_DB_ID: u32 = 1024;
+const COMPACT_MAP_MAX_RESOURCE_AMOUNT_RAW: i32 = 100_000_000;
+const COMPACT_MAP_MAX_BUILDING_LEVEL: u32 = 1_000;
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -1164,6 +1169,7 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     20 => decode_compact_divisions_data_payload(offset, payload, &mut summary),
                     21 => decode_compact_land_combats_data_payload(offset, payload, &mut summary),
                     22 => decode_compact_map_control_data_payload(offset, payload, &mut summary),
+                    23 => decode_compact_map_detail_data_payload(offset, payload, &mut summary),
                     other => summary.parse_errors.push(format!(
                         "offset {offset}: unsupported domain data payload for {}",
                         compact_domain_name(other)
@@ -2820,6 +2826,286 @@ fn decode_compact_map_control_data_payload(
     }
 }
 
+fn decode_compact_map_detail_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < 48 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: map detail data payload is {} byte(s), expected at least 48",
+            payload.len()
+        ));
+        return;
+    }
+    let state_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let province_count = read_u32_le(payload, 20) as usize;
+    let observed_state_rows = read_u32_le(payload, 24) as usize;
+    let observed_province_rows = read_u32_le(payload, 28) as usize;
+    let resource_count = read_u32_le(payload, 32) as usize;
+    let state_building_count = read_u32_le(payload, 36) as usize;
+    let province_building_count = read_u32_le(payload, 40) as usize;
+    let reserved = read_u32_le(payload, 44);
+    summary.status_flags_or |= status_flags;
+    let delta_data = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
+
+    let expected_len = 48usize
+        .saturating_add(state_count.saturating_mul(COMPACT_MAP_DETAIL_STATE_ROW_LEN))
+        .saturating_add(province_count.saturating_mul(COMPACT_MAP_DETAIL_PROVINCE_ROW_LEN))
+        .saturating_add(resource_count.saturating_mul(COMPACT_MAP_DETAIL_ENTRY_ROW_LEN))
+        .saturating_add(state_building_count.saturating_mul(COMPACT_MAP_DETAIL_ENTRY_ROW_LEN))
+        .saturating_add(province_building_count.saturating_mul(COMPACT_MAP_DETAIL_ENTRY_ROW_LEN));
+    if payload.len() != expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: map detail data payload is {} byte(s), expected {expected_len}",
+            payload.len()
+        ));
+        return;
+    }
+    if reserved != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: map detail reserved field is {reserved}"
+        ));
+    }
+    if !delta_data && state_count < COMPACT_MAP_MIN_STATE_ROWS {
+        summary.parse_errors.push(format!(
+            "offset {offset}: map detail state_count {state_count} < {COMPACT_MAP_MIN_STATE_ROWS}"
+        ));
+    }
+    if province_count > 0 && !delta_data && province_count < COMPACT_MAP_MIN_PROVINCE_ROWS {
+        summary.parse_errors.push(format!(
+            "offset {offset}: map detail province_count {province_count} < {COMPACT_MAP_MIN_PROVINCE_ROWS}"
+        ));
+    }
+    if state_count > observed_state_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: map detail state_count {state_count} > observed_state_rows {observed_state_rows}"
+        ));
+    }
+    if province_count > observed_province_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: map detail province_count {province_count} > observed_province_rows {observed_province_rows}"
+        ));
+    }
+    let emitted_rows = state_count.saturating_add(province_count);
+    if changed_rows > emitted_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: map detail changed_rows {changed_rows} > emitted rows {emitted_rows}"
+        ));
+    }
+    if delta_data && changed_rows != emitted_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: map detail delta changed_rows {changed_rows} != emitted rows {emitted_rows}"
+        ));
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&23) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(emitted_rows as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+
+    let mut cursor = 48usize;
+    let mut seen_states = BTreeSet::new();
+    for row_index in 0..state_count {
+        let state_id = read_u32_le(payload, cursor);
+        let flags = read_u32_le(payload, cursor + 4);
+        let resource_first = read_u32_le(payload, cursor + 8) as usize;
+        let resource_len = read_u32_le(payload, cursor + 12) as usize;
+        let building_first = read_u32_le(payload, cursor + 16) as usize;
+        let building_len = read_u32_le(payload, cursor + 20) as usize;
+        let row_reserved = read_u32_le(payload, cursor + 24);
+        cursor += COMPACT_MAP_DETAIL_STATE_ROW_LEN;
+        if state_id == 0 || state_id > COMPACT_MAP_MAX_STATE_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map detail state row {row_index} has invalid state_id {state_id}"
+            ));
+        } else if !seen_states.insert(state_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map detail state row {row_index} duplicates state_id {state_id}"
+            ));
+        }
+        if flags & !0b11 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map detail state row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if row_reserved != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map detail state row {row_index} reserved field is {row_reserved}"
+            ));
+        }
+        validate_compact_index_range(
+            offset,
+            summary,
+            "map detail state resource",
+            row_index,
+            flags & 1 != 0,
+            resource_first,
+            resource_len,
+            resource_count,
+        );
+        validate_compact_index_range(
+            offset,
+            summary,
+            "map detail state building",
+            row_index,
+            flags & (1 << 1) != 0,
+            building_first,
+            building_len,
+            state_building_count,
+        );
+    }
+
+    let mut seen_provinces = BTreeSet::new();
+    for row_index in 0..province_count {
+        let province_id = read_u32_le(payload, cursor);
+        let state_id = read_u32_le(payload, cursor + 4);
+        let flags = read_u32_le(payload, cursor + 8);
+        let building_first = read_u32_le(payload, cursor + 12) as usize;
+        let building_len = read_u32_le(payload, cursor + 16) as usize;
+        cursor += COMPACT_MAP_DETAIL_PROVINCE_ROW_LEN;
+        if province_id == 0 || province_id > COMPACT_MAP_MAX_PROVINCE_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map detail province row {row_index} has invalid province_id {province_id}"
+            ));
+        } else if !seen_provinces.insert(province_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map detail province row {row_index} duplicates province_id {province_id}"
+            ));
+        }
+        if state_id > COMPACT_MAP_MAX_STATE_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map detail province row {row_index} has invalid state_id {state_id}"
+            ));
+        }
+        if flags & !0b11 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map detail province row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if (flags & 1) == 0 && state_id != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map detail province row {row_index} has state without flag"
+            ));
+        }
+        if (flags & 1) != 0 && state_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map detail province row {row_index} has state flag without state"
+            ));
+        }
+        validate_compact_index_range(
+            offset,
+            summary,
+            "map detail province building",
+            row_index,
+            flags & (1 << 1) != 0,
+            building_first,
+            building_len,
+            province_building_count,
+        );
+    }
+
+    for row_index in 0..resource_count {
+        let resource_id = read_u32_le(payload, cursor);
+        let amount_raw = read_i32_le(payload, cursor + 4);
+        let entry_reserved = read_u32_le(payload, cursor + 8);
+        cursor += COMPACT_MAP_DETAIL_ENTRY_ROW_LEN;
+        if resource_id == 0 || resource_id == u32::MAX {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map detail resource row {row_index} has invalid resource_id {resource_id}"
+            ));
+        }
+        if !(0..=COMPACT_MAP_MAX_RESOURCE_AMOUNT_RAW).contains(&amount_raw) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map detail resource row {row_index} has invalid amount_raw {amount_raw}"
+            ));
+        }
+        if entry_reserved != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map detail resource row {row_index} reserved field is {entry_reserved}"
+            ));
+        }
+    }
+    for row_index in 0..state_building_count {
+        decode_compact_map_detail_building_entry(
+            offset,
+            payload,
+            &mut cursor,
+            summary,
+            "state",
+            row_index,
+        );
+    }
+    for row_index in 0..province_building_count {
+        decode_compact_map_detail_building_entry(
+            offset,
+            payload,
+            &mut cursor,
+            summary,
+            "province",
+            row_index,
+        );
+    }
+}
+
+fn validate_compact_index_range(
+    offset: usize,
+    summary: &mut CompactSummary,
+    label: &str,
+    row_index: usize,
+    present: bool,
+    first: usize,
+    len: usize,
+    total: usize,
+) {
+    if !present {
+        if first != 0 || len != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: {label} row {row_index} has range without presence flag"
+            ));
+        }
+        return;
+    }
+    if first.saturating_add(len) > total {
+        summary.parse_errors.push(format!(
+            "offset {offset}: {label} row {row_index} range {first}+{len} exceeds {total}"
+        ));
+    }
+}
+
+fn decode_compact_map_detail_building_entry(
+    offset: usize,
+    payload: &[u8],
+    cursor: &mut usize,
+    summary: &mut CompactSummary,
+    scope: &str,
+    row_index: usize,
+) {
+    let type_id = read_u32_le(payload, *cursor);
+    let level = read_u32_le(payload, *cursor + 4);
+    let entry_reserved = read_u32_le(payload, *cursor + 8);
+    *cursor += COMPACT_MAP_DETAIL_ENTRY_ROW_LEN;
+    if type_id == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: map detail {scope} building row {row_index} has zero type_id"
+        ));
+    }
+    if level > COMPACT_MAP_MAX_BUILDING_LEVEL {
+        summary.parse_errors.push(format!(
+            "offset {offset}: map detail {scope} building row {row_index} has invalid level {level}"
+        ));
+    }
+    if entry_reserved != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: map detail {scope} building row {row_index} reserved field is {entry_reserved}"
+        ));
+    }
+}
+
 fn valid_compact_land_combat_province_id(value: u32) -> bool {
     value > 0 && value <= COMPACT_LAND_COMBAT_MAX_PROVINCE_ID
 }
@@ -2939,6 +3225,7 @@ fn compact_domain_id(domain: &str) -> Option<u16> {
         "divisions" => Some(20),
         "land_combats" => Some(21),
         "map_control" | "state_ownership" | "state_control" | "province_control" => Some(22),
+        "map_detail" | "state_detail" | "buildings_live" => Some(23),
         _ => None,
     }
 }
@@ -2957,6 +3244,7 @@ fn compact_domain_name(domain_id: u16) -> &'static str {
         20 => "divisions",
         21 => "land_combats",
         22 => "map_control",
+        23 => "map_detail",
         1000 => "frame",
         _ => "unknown",
     }
@@ -3929,6 +4217,52 @@ mod tests {
     }
 
     #[test]
+    fn compact_summary_decodes_map_detail_data_record() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            23,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(7_500, 11_200, 11_200, 11_200, 11_200),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            23,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_map_detail_data_payload(0),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(8_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(&summary, &[23]).is_empty());
+        let map = summary.per_domain.get(&23).unwrap();
+        assert_eq!(map.data_record_count, 1);
+        assert_eq!(map.data_rows_total, 11_200);
+        assert_eq!(map.data_changed_rows_total, 11_200);
+        assert_eq!(map.unit_count_total, 11_200);
+        assert_eq!(compact_domain_id("state_detail"), Some(23));
+        assert_eq!(compact_domain_id("buildings_live"), Some(23));
+        assert_eq!(compact_domain_name(23), "map_detail");
+    }
+
+    #[test]
     fn compact_land_combat_partial_data_fails_hourly_problem_list() {
         let mut raw = Vec::new();
         append_test_compact_record(
@@ -4707,6 +5041,56 @@ mod tests {
         payload.extend_from_slice(&province_count.to_le_bytes());
         payload.extend_from_slice(&state_count.to_le_bytes());
         payload.extend_from_slice(&province_count.to_le_bytes());
+        payload
+    }
+
+    fn test_map_detail_data_payload(status_flags: u32) -> Vec<u8> {
+        let state_count = 1_100u32;
+        let province_count = 10_100u32;
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&state_count.to_le_bytes());
+        payload.extend_from_slice(&(state_count + province_count).to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&province_count.to_le_bytes());
+        payload.extend_from_slice(&state_count.to_le_bytes());
+        payload.extend_from_slice(&province_count.to_le_bytes());
+        payload.extend_from_slice(&state_count.to_le_bytes());
+        payload.extend_from_slice(&state_count.to_le_bytes());
+        payload.extend_from_slice(&province_count.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        for state_id in 1..=state_count {
+            payload.extend_from_slice(&state_id.to_le_bytes());
+            payload.extend_from_slice(&0b11u32.to_le_bytes());
+            payload.extend_from_slice(&(state_id - 1).to_le_bytes());
+            payload.extend_from_slice(&1u32.to_le_bytes());
+            payload.extend_from_slice(&(state_id - 1).to_le_bytes());
+            payload.extend_from_slice(&1u32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        for province_id in 1..=province_count {
+            let state_id = ((province_id - 1) % state_count) + 1;
+            payload.extend_from_slice(&province_id.to_le_bytes());
+            payload.extend_from_slice(&state_id.to_le_bytes());
+            payload.extend_from_slice(&0b11u32.to_le_bytes());
+            payload.extend_from_slice(&(province_id - 1).to_le_bytes());
+            payload.extend_from_slice(&1u32.to_le_bytes());
+        }
+        for _ in 0..state_count {
+            payload.extend_from_slice(&0x3E03u32.to_le_bytes());
+            payload.extend_from_slice(&700_000i32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        for _ in 0..state_count {
+            payload.extend_from_slice(&0x2FABu32.to_le_bytes());
+            payload.extend_from_slice(&5u32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        for _ in 0..province_count {
+            payload.extend_from_slice(&0x31F6u32.to_le_bytes());
+            payload.extend_from_slice(&10u32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
         payload
     }
 

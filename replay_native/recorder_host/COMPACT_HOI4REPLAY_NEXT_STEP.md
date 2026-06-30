@@ -11,8 +11,8 @@ the compact extraction gate.
   hours.
 - The compact stream includes `DOMAIN_PERF` plus `FRAME_END` records for
   extraction proof, and now includes typed replay data payloads for the
-  production-shaped country-state lanes plus `divisions`, `land_combats`, and
-  `map_control`.
+  production-shaped country-state lanes plus `divisions`, `land_combats`,
+  `map_control`, and `map_detail`.
 - The snapshot crate already owns the Rust `.battleplan` container primitives:
   `snapshot::pack` byte-copies payloads into a manifest-covered ZIP, and
   `snapshot::Container` reopens entries through verified hashes.
@@ -89,6 +89,11 @@ frames as the production path.
   disappeared division ids are emitted as explicit zero-filled delete/tombstone
   rows. Perf records keep reporting the full observed root count, so the host
   can distinguish "only a few rows changed" from "only a few roots were read".
+- `map_detail` maps `state_detail` and `buildings_live` into compact state
+  resource rows plus state/province building rows. It uses the native
+  CProvince/CState topology, emits a full baseline followed by deltas, reports
+  full observed row counts in perf records, and samples province building
+  vectors with bounded internal workers.
 
 ## Still Open
 
@@ -101,10 +106,10 @@ frames as the production path.
   manpower, exact order geometry/assignment, training/veterancy interpretation,
   and lifecycle identity for splits, merges, deployment, and destruction.
 - Add typed data records for army orders, OOB command, naval/air combat,
-  air wings, ships, map buildings/resources, logistics/supply proxies, weather,
-  and remaining replay-critical event layers.
-- Run longer combined compact soaks now that the widened 11-domain row set is
-  green with cached `map_control` topology and delta data records.
+  air wings, ships, logistics/supply proxies, weather, and remaining
+  replay-critical event layers.
+- Run longer combined compact soaks now that the widened 12-domain row set is
+  green with cached/delta map, division, and map-detail data records.
 - Fold typed records into the future hourly snapshot spine once the raw compact
   stream is fully covered.
 
@@ -217,3 +222,21 @@ an independently verified `native_session.battleplan`. `divisions` observed
 772,920 full rows and emitted 585,450 changed/tombstone rows; division read p95
 was 37.112 ms. The remaining heavy lanes were `fuel_live`/`production_live` at
 p95 51.208 ms and widened `divisions` at p95 37.112 ms.
+
+`compact_map_detail_buildings_cached_speed5_20260630_v1` passed the isolated
+compact `map_detail` gate for `state_detail` plus `buildings_live` after
+province building reads moved to bounded workers and batched vector metadata
+reads. It advanced 259 game hours with 260 frame-end records, 0 skipped, full
+per-domain coverage, no parse/order errors, no worker-panic, source-unavailable,
+or partial-data flags, avg frame 20.292 ms, p95 24.443 ms, max 59.611 ms,
+473,672 raw stream bytes, and an independently verified `native_session.battleplan`.
+
+`compact_country_divisions_land_combats_map_detail_speed5_20260630_v1` passed
+the widened 12-domain bundle with `state_detail` and `buildings_live` added to
+the previous country/division/land-combat/map set. It advanced 289 game hours
+with 290 frame-end records, 0 skipped, full per-domain coverage, no parse/order
+errors, no worker-panic, bridge-unavailable, source-unavailable, or partial-data
+flags, avg frame 54.922 ms, p95 89.906 ms, max 99.708 ms, 56,044,696 raw stream
+bytes, and an independently verified `native_session.battleplan`. `map_detail`
+observed 4,203,260 full rows and emitted 14,528 changed rows; its read p95 was
+36.421 ms.
