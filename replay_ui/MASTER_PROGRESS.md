@@ -664,6 +664,20 @@ The app is product-complete only when all applicable gates pass:
   build. Remaining air gaps are airbase capacity/penalties, exact aircraft
   archetype/stat blocks, reserves, aces, losses, exact displayed superiority
   percent, and active air-combat resolution.
+- Compact `air_base_status` proof passed on 2026-07-01:
+  `replay_native/runs/compact_air_base_status_870ebf_20260701_v1/native_session_manifest.json`
+  scheduled `air_wings`, `air_region_activity`, `air_wing_loadouts`,
+  `air_variant_defs`, and `air_base_status` for 60 seconds at 10 ms sampling,
+  advanced 106 game hours, skipped 0 game hours, emitted ordered/decodable
+  compact records, captured 39376 observed air-base rows, 24163 observed pool
+  rows, 579 changed air-base rows, 473400 total emitted capacity, 1628
+  based-wing count sum, and 114387 based-plane count sum, and reported no
+  source-unavailable, partial-data, bridge-unavailable, or worker panic flags.
+  This closes DLL/Rust compact capture of the live airbase-id -> state/capacity
+  join and based wing/plane usage for the verified `870ebf` build. Remaining
+  air gaps are capacity modifier/penalty semantics, exact aircraft archetype/stat
+  blocks, reserves, aces, losses, exact displayed superiority percent, and
+  active air-combat resolution.
 - Every registered view opens from the in-app menu.
 - Every registered view has an interaction contract.
 - Every read-only interaction in each contract is implemented and tested.

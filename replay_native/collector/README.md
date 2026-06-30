@@ -900,6 +900,14 @@ Air-wing raw stream status:
   present in active wings because earlier replay frames may still reference the
   variant id. This is DLL-only runtime capture; the Python probe was one-time
   bounded live validation of the current offsets.
+- Compact `air_base_status` is domain id 34. It walks the live strategic-air
+  state-indexed air-base table at `strategic_air+0x90`, validates air-base
+  records by vtable `MODULE+0x2941FA0`, `{air_base_id,type=65}` handle at
+  `+0x08`, and state pointer at `+0x68`, then emits pointer-free rows keyed by
+  airbase id with state id, materialized capacity from `+0x78`, state air-base
+  building level, based wing count, and based plane count. Usage is read from
+  the same anchored airbase-owner/pool/wing path; no save file or Python bridge
+  is used in recording.
 - Previous bridge fixture status: live-proven by no-cold cache-backed run
   `replay/snapshots/_collector_session_air_wing_gate/20260629T205254Z_pid43412`.
   The run advanced 12 game hours in 55.875 wall seconds, verified replay output,
@@ -952,10 +960,22 @@ Air-wing raw stream status:
   434 emitted module-token rows, and reported no source-unavailable,
   partial-data, bridge-unavailable, or worker-panic flags. Frame p95 was 14546
   us; air-variant-def read p95 was 13768 us.
+- Current air-base status compact proof:
+  `replay_native/runs/compact_air_base_status_870ebf_20260701_v1/native_session_manifest.json`
+  scheduled `air_wings`, `air_region_activity`, `air_wing_loadouts`,
+  `air_variant_defs`, and `air_base_status` together for 60 seconds at 10 ms
+  sampling, advanced 106 game hours, skipped 0, emitted ordered/decodable
+  compact records, wrote 266867 total bytes / 229203 payload bytes, captured
+  39376 observed air-base rows, 24163 observed pool rows, 579 changed air-base
+  rows, 473400 total emitted capacity, 1628 based-wing count sum, and 114387
+  based-plane count sum, and reported no source-unavailable, partial-data,
+  bridge-unavailable, or worker-panic flags. Frame p95 was 17174 us; air-base
+  status read p95 was 10588 us.
 - Remaining promotion work is live proof while changing missions/rebasing,
-  exact airbase capacity joins, aircraft archetype/stat metadata, reserves/aces,
-  air-loss/attrition proof, air-combat resolution, exact displayed
-  air-superiority percent classification, and timeline ingestion.
+  airbase capacity modifiers/penalty semantics, aircraft archetype/stat
+  metadata, reserves/aces, air-loss/attrition proof, air-combat resolution,
+  exact displayed air-superiority percent classification, and timeline
+  ingestion.
 
 Runtime rules:
 

@@ -827,7 +827,16 @@ Tasks:
   `{slot_handle, module_token}` from `variant+0xB8` / `module_def+0x18`. This
   closes replay-side naming/module metadata for live air-wing equipment IDs in
   the verified `870ebf` build. It does not yet read exact aircraft stat blocks,
-  archetype categories, or airbase capacity/usage penalties.
+  archetype categories, or airbase capacity modifier/penalty semantics.
+- Current DLL checkpoint: `air_base_status` is compact domain id 34. It walks
+  the anchored live strategic-air state-indexed air-base table at
+  `strategic_air+0x90`, validates air-base records by vtable
+  `MODULE+0x2941FA0`, `{air_base_id,type=65}` handle at `+0x08`, and state
+  pointer at `+0x68`, and emits rows keyed by airbase id with state id,
+  materialized capacity from `+0x78`, live state air-base building level, based
+  wing count, and based plane count. This closes the no-save airbase-id ->
+  state/capacity/usage join for the verified `870ebf` build. It does not yet
+  explain all capacity modifier/penalty semantics.
 - Current no-bridge proof:
   `replay/snapshots/_collector_session_air_wing_native_gate/20260630T172419Z_pid45880`
   advanced 12 game hours in 83.860 wall seconds with speed-five/current game
@@ -872,6 +881,17 @@ Tasks:
   observed module rows, 148 emitted definition rows, and 434 emitted module-token
   rows, and reported no source-unavailable, partial-data, bridge-unavailable, or
   worker-panic flags. Frame p95 was 14546 us; air-variant read p95 was 13768 us.
+- Current air-base status compact proof:
+  `replay_native/runs/compact_air_base_status_870ebf_20260701_v1/native_session_manifest.json`
+  scheduled `air_wings`, `air_region_activity`, `air_wing_loadouts`,
+  `air_variant_defs`, and `air_base_status` for 60 seconds at 10 ms sampling,
+  advanced 106 game hours with 0 skipped, emitted ordered/decodable compact
+  records, wrote 266867 total bytes / 229203 payload bytes, captured 39376
+  observed air-base rows, 24163 observed pool rows, 579 changed air-base rows,
+  473400 total emitted capacity, 1628 based-wing count sum, and 114387
+  based-plane count sum, and reported no source-unavailable, partial-data,
+  bridge-unavailable, or worker-panic flags. Frame p95 was 17174 us; air-base
+  status read p95 was 10588 us.
 - Build an active air-combat fixture for validation.
 - Resolve `airwing_effective_planes_denom` or badge it.
 - Decide which air-superiority values are exact live state and which are

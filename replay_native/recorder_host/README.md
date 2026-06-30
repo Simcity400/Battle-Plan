@@ -159,6 +159,18 @@ advanced 109 game hours with 0 skipped and no source/partial/bridge/worker
 failures while scheduling `air_wings`, `air_region_activity`,
 `air_wing_loadouts`, and `air_variant_defs` together.
 
+`air_base_status` is compact domain id 34. It decodes DLL-derived air-base rows
+from the anchored strategic-air state-indexed air-base table. Rows are keyed by
+airbase id and carry state id, materialized capacity, state air-base building
+level, based wing count, and based plane count. The host rejects malformed
+lengths, duplicate airbase ids, invalid state/capacity/level/usage bounds,
+unknown flags, non-zero deleted-row live fields, non-zero reserved bytes, and
+trailing bytes. Proof
+`replay_native/runs/compact_air_base_status_870ebf_20260701_v1/native_session_manifest.json`
+advanced 106 game hours with 0 skipped and no source/partial/bridge/worker
+failures while scheduling `air_wings`, `air_region_activity`,
+`air_wing_loadouts`, `air_variant_defs`, and `air_base_status` together.
+
 Compact extraction gate example:
 
 ```powershell

@@ -148,6 +148,14 @@ const COMPACT_AIR_VARIANT_DEF_ROW_FLAG_MODULES: u32 = 1 << 2;
 const COMPACT_AIR_VARIANT_DEF_MAX_VARIANT_ID: u32 = i32::MAX as u32;
 const COMPACT_AIR_VARIANT_DEF_MAX_SLOT_HANDLE: u32 = 1_000_000;
 const COMPACT_AIR_VARIANT_DEF_MAX_STRING_LEN: usize = 160;
+const COMPACT_AIR_BASE_STATUS_ROW_LEN: usize = 32;
+const COMPACT_AIR_BASE_STATUS_ROW_FLAG_DELETED: u32 = 1;
+const COMPACT_AIR_BASE_STATUS_MAX_AIR_BASE_ID: u32 = i32::MAX as u32;
+const COMPACT_AIR_BASE_STATUS_MAX_STATE_ID: u32 = 65_535;
+const COMPACT_AIR_BASE_STATUS_MAX_CAPACITY: u32 = 1_000_000;
+const COMPACT_AIR_BASE_STATUS_MAX_BUILDING_LEVEL: u32 = 1_000;
+const COMPACT_AIR_BASE_STATUS_MAX_WING_COUNT: u32 = 20_000;
+const COMPACT_AIR_BASE_STATUS_MAX_PLANES: u32 = 10_000_000;
 const COMPACT_MAP_STATE_ROW_LEN: usize = 16;
 const COMPACT_MAP_PROVINCE_ROW_LEN: usize = 16;
 const COMPACT_MAP_DETAIL_STATE_ROW_LEN: usize = 28;
@@ -1273,6 +1281,9 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     }
                     33 => {
                         decode_compact_air_variant_defs_data_payload(offset, payload, &mut summary)
+                    }
+                    34 => {
+                        decode_compact_air_base_status_data_payload(offset, payload, &mut summary)
                     }
                     other => summary.parse_errors.push(format!(
                         "offset {offset}: unsupported domain data payload for {}",
@@ -4554,6 +4565,182 @@ fn decode_compact_air_variant_defs_data_payload(
     );
 }
 
+fn decode_compact_air_base_status_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < 36 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air base status data payload is {} byte(s), expected at least 36",
+            payload.len()
+        ));
+        return;
+    }
+    let row_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let observed_air_base_rows = read_u32_le(payload, 20) as usize;
+    let observed_pool_rows = read_u32_le(payload, 24) as usize;
+    let deleted_rows = read_u32_le(payload, 28) as usize;
+    let reserved = read_u32_le(payload, 32);
+    summary.status_flags_or |= status_flags;
+    if changed_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air base status changed_rows {changed_rows} > row_count {row_count}"
+        ));
+    }
+    if row_count > observed_air_base_rows && (status_flags & COMPACT_STATUS_DELTA_DATA) == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air base status row_count {row_count} > observed_air_base_rows {observed_air_base_rows}"
+        ));
+    }
+    if deleted_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air base status deleted_rows {deleted_rows} > row_count {row_count}"
+        ));
+    }
+    if reserved != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air base status header reserved field is nonzero"
+        ));
+    }
+    let expected_len =
+        36usize.saturating_add(row_count.saturating_mul(COMPACT_AIR_BASE_STATUS_ROW_LEN));
+    if payload.len() != expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air base status data payload is {} byte(s), expected {expected_len}",
+            payload.len()
+        ));
+        return;
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&34) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    add_compact_domain_data_unit(summary, 34, "air_base_status_rows", row_count);
+    add_compact_domain_data_unit(
+        summary,
+        34,
+        "air_base_status_observed_air_base_rows",
+        observed_air_base_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        34,
+        "air_base_status_observed_pool_rows",
+        observed_pool_rows,
+    );
+    add_compact_domain_data_unit(summary, 34, "air_base_status_deleted_rows", deleted_rows);
+
+    let mut seen_air_bases = BTreeSet::new();
+    let mut capacity_sum = 0usize;
+    let mut based_wing_sum = 0usize;
+    let mut based_plane_sum = 0usize;
+    let mut cursor = 36usize;
+    for row_index in 0..row_count {
+        if let Err(err) = require_compact_remaining(
+            payload,
+            cursor,
+            COMPACT_AIR_BASE_STATUS_ROW_LEN,
+            "air base status row",
+        ) {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let air_base_id = read_u32_le(payload, cursor);
+        let state_id = read_u32_le(payload, cursor + 4);
+        let flags = read_u32_le(payload, cursor + 8);
+        let capacity = read_u32_le(payload, cursor + 12);
+        let building_level = read_u32_le(payload, cursor + 16);
+        let based_wing_count = read_u32_le(payload, cursor + 20);
+        let based_plane_count = read_u32_le(payload, cursor + 24);
+        let row_reserved = read_u32_le(payload, cursor + 28);
+        cursor += COMPACT_AIR_BASE_STATUS_ROW_LEN;
+        let deleted = (flags & COMPACT_AIR_BASE_STATUS_ROW_FLAG_DELETED) != 0;
+        if air_base_id == 0 || air_base_id > COMPACT_AIR_BASE_STATUS_MAX_AIR_BASE_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air base status row {row_index} has invalid air_base_id {air_base_id}"
+            ));
+        } else if !seen_air_bases.insert(air_base_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air base status row {row_index} duplicates air_base_id {air_base_id}"
+            ));
+        }
+        if state_id == 0 || state_id > COMPACT_AIR_BASE_STATUS_MAX_STATE_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air base status row {row_index} has invalid state_id {state_id}"
+            ));
+        }
+        if flags & !COMPACT_AIR_BASE_STATUS_ROW_FLAG_DELETED != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air base status row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if row_reserved != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air base status row {row_index} reserved field is nonzero"
+            ));
+        }
+        if deleted {
+            if capacity != 0
+                || building_level != 0
+                || based_wing_count != 0
+                || based_plane_count != 0
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: air base status deleted row {row_index} carries nonzero live fields"
+                ));
+            }
+            continue;
+        }
+        if capacity > COMPACT_AIR_BASE_STATUS_MAX_CAPACITY {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air base status row {row_index} has invalid capacity {capacity}"
+            ));
+        }
+        if building_level > COMPACT_AIR_BASE_STATUS_MAX_BUILDING_LEVEL {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air base status row {row_index} has invalid building_level {building_level}"
+            ));
+        }
+        if based_wing_count > COMPACT_AIR_BASE_STATUS_MAX_WING_COUNT {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air base status row {row_index} has invalid based_wing_count {based_wing_count}"
+            ));
+        }
+        if based_plane_count > COMPACT_AIR_BASE_STATUS_MAX_PLANES {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air base status row {row_index} has invalid based_plane_count {based_plane_count}"
+            ));
+        }
+        if building_level == 0 && capacity != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air base status row {row_index} has capacity {capacity} with building_level 0"
+            ));
+        }
+        capacity_sum = capacity_sum.saturating_add(capacity as usize);
+        based_wing_sum = based_wing_sum.saturating_add(based_wing_count as usize);
+        based_plane_sum = based_plane_sum.saturating_add(based_plane_count as usize);
+    }
+    add_compact_domain_data_unit(summary, 34, "air_base_status_capacity_sum", capacity_sum);
+    add_compact_domain_data_unit(
+        summary,
+        34,
+        "air_base_status_based_wing_count_sum",
+        based_wing_sum,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        34,
+        "air_base_status_based_plane_count_sum",
+        based_plane_sum,
+    );
+}
+
 fn decode_compact_land_combats_data_payload(
     offset: usize,
     payload: &[u8],
@@ -5563,6 +5750,7 @@ fn compact_domain_id(domain: &str) -> Option<u16> {
         "air_region_activity" => Some(31),
         "air_wing_loadouts" => Some(32),
         "air_variant_defs" => Some(33),
+        "air_base_status" => Some(34),
         _ => None,
     }
 }
@@ -5591,6 +5779,7 @@ fn compact_domain_name(domain_id: u16) -> &'static str {
         31 => "air_region_activity",
         32 => "air_wing_loadouts",
         33 => "air_variant_defs",
+        34 => "air_base_status",
         1000 => "frame",
         _ => "unknown",
     }
@@ -7109,6 +7298,91 @@ mod tests {
         );
         assert_eq!(compact_domain_id("air_variant_defs"), Some(33));
         assert_eq!(compact_domain_name(33), "air_variant_defs");
+    }
+
+    #[test]
+    fn compact_summary_decodes_air_base_status_data_record() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            34,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(650, 2, 2, 5, 2, COMPACT_STATUS_DELTA_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            34,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_air_base_status_data_payload(COMPACT_STATUS_DELTA_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(&summary, &[34]).is_empty());
+        let bases = summary.per_domain.get(&34).unwrap();
+        assert_eq!(bases.row_count_total, 2);
+        assert_eq!(bases.unit_count_total, 5);
+        assert_eq!(bases.data_record_count, 1);
+        assert_eq!(bases.data_rows_total, 2);
+        assert_eq!(bases.data_changed_rows_total, 2);
+        assert_eq!(
+            bases.data_units_total.get("air_base_status_rows").copied(),
+            Some(2)
+        );
+        assert_eq!(
+            bases
+                .data_units_total
+                .get("air_base_status_observed_air_base_rows")
+                .copied(),
+            Some(367)
+        );
+        assert_eq!(
+            bases
+                .data_units_total
+                .get("air_base_status_observed_pool_rows")
+                .copied(),
+            Some(5)
+        );
+        assert_eq!(
+            bases
+                .data_units_total
+                .get("air_base_status_capacity_sum")
+                .copied(),
+            Some(2400)
+        );
+        assert_eq!(
+            bases
+                .data_units_total
+                .get("air_base_status_based_wing_count_sum")
+                .copied(),
+            Some(4)
+        );
+        assert_eq!(
+            bases
+                .data_units_total
+                .get("air_base_status_based_plane_count_sum")
+                .copied(),
+            Some(378)
+        );
+        assert_eq!(compact_domain_id("air_base_status"), Some(34));
+        assert_eq!(compact_domain_name(34), "air_base_status");
     }
 
     #[test]
@@ -8787,6 +9061,41 @@ mod tests {
             payload.extend_from_slice(&slot_handle.to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
             append_test_compact_string(&mut payload, token);
+        }
+        payload
+    }
+
+    fn test_air_base_status_data_payload(status_flags: u32) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&367u32.to_le_bytes());
+        payload.extend_from_slice(&5u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+
+        for (
+            air_base_id,
+            state_id,
+            flags,
+            capacity,
+            building_level,
+            based_wing_count,
+            based_plane_count,
+        ) in [
+            (154u32, 2u32, 0u32, 1600u32, 8u32, 3u32, 278u32),
+            (176u32, 3u32, 0u32, 800u32, 4u32, 1u32, 100u32),
+        ] {
+            payload.extend_from_slice(&air_base_id.to_le_bytes());
+            payload.extend_from_slice(&state_id.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&capacity.to_le_bytes());
+            payload.extend_from_slice(&building_level.to_le_bytes());
+            payload.extend_from_slice(&based_wing_count.to_le_bytes());
+            payload.extend_from_slice(&based_plane_count.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
         }
         payload
     }
