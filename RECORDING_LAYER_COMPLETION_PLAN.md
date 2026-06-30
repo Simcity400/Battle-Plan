@@ -1507,10 +1507,10 @@ headroom limiter at p95 86.877 ms.
 
 Weather-region implementation status:
 The collector now has a compact `weather_live` region stream (domain 24) that
-resolves a cached `CWeatherManager`, validates `CWeatherManager+0x40` as 305
-inline `SWeatherPerRegion` rows, and emits raw phenomenon, low-byte weather
-flags, active-vector signal, intensity, active-modifier count,
-`next_weather_change_raw`, and scaled region temperature inputs. Smoke proof
+resolves `CWeatherManager`, validates `CWeatherManager+0x40` as 305 inline
+`SWeatherPerRegion` rows, and emits raw phenomenon, low-byte weather flags,
+active-vector signal, intensity, active-modifier count, `next_weather_change_raw`,
+and scaled region temperature inputs. Smoke proof
 `compact_weather_region_decode_smoke_20260630_v1` emitted 305 rows, decoded with
 no parse/order/source/partial/worker failures, read weather in 54 us, wrote
 9,976 compact bytes, and verified the `.battleplan`.
@@ -1527,10 +1527,25 @@ worker-panic, bridge-unavailable, source-unavailable, or partial-data flags, avg
 frame 22.567 ms, p95 24.484 ms, max 79.348 ms, 2,983,908 raw stream bytes, and
 an independently verified `.battleplan`. `weather_live` observed 17,690 region
 rows, emitted 394 changed rows, and read at p95 123 us. This promotes the
-current weather compact row contract to DLL/Rust speed-five complete. The root
-is still hardening debt because it is a one-time cached singleton/vtable locate
-rather than a proven static anchored global/root path; it is bounded startup
-discovery, not Python/save/hot-loop discovery.
+current weather compact row contract to DLL/Rust speed-five complete.
+
+Weather root hardening completion:
+`compact_country_divisions_land_combats_map_detail_weather_region_anchor_speed5_20260630_v2`
+replaced the production weather root lookup with the anchored path
+`u64[module+0x33048C0] -> CGameState`, then `u64[CGameState+0x688] ->
+CWeatherManager`. The DLL still validates the manager vtable
+`module+0x2950AF0`, the `+0x40` region vector size/capacity of 305, and
+`SWeatherPerRegion` row vtables/ids before emitting. The run covered the same
+13 compact domains, advanced 56 game hours with 57 frame-end records, skipped 0
+game hours, had full per-domain coverage, no parse, order, source, partial,
+bridge, or worker failures, avg frame 22.319 ms, p95 26.714 ms, max 68.701 ms,
+3,084,775 raw stream bytes, and an independently verified `.battleplan`.
+`weather_live` observed 17,385 region rows, emitted 396 changed rows, and read
+at p95 87 us. The old CWeatherManager heap/vtable singleton discovery is now
+retained only as a reverse-engineering fallback, not the production compact
+recorder path. The same checkpoint also fixed and proved the `map_detail`
+schedule alias so it triggers the full `state_detail` plus `buildings_live`
+compact detail stream.
 
 Earlier no-cold proof on the restarted vanilla process resolved 1898 division
 bodies and 417 still-live army bodies from cache, advanced 12 game hours in

@@ -377,6 +377,18 @@ gate has these live speed-five results:
   71,012 roots and emitted 19,243 changed rows with read p95 22.148 ms;
   `weather_live` observed 17,690 region rows, emitted 394 changed rows, and
   read at p95 123 us.
+- `compact_country_divisions_land_combats_map_detail_weather_region_anchor_speed5_20260630_v2`:
+  passed the same 13-domain compact bundle after replacing weather singleton
+  heap discovery with the anchored `CGameState+0x688 -> CWeatherManager` path
+  and aligning the `map_detail` schedule alias with full state/building detail
+  capture. It advanced 56 game hours with 57 frame-end records, skipped 0 game
+  hours, had full per-domain coverage, no parse/order errors, no worker-panic,
+  bridge-unavailable, source-unavailable, or partial-data flags, avg frame
+  22.319 ms, p95 26.714 ms, max 68.701 ms, 3,084,775 raw stream bytes,
+  `division_root_source = "dll_native"`, and an independent `pack_replay
+  verify` pass. `weather_live` observed 17,385 region rows, emitted 396
+  changed rows, and read at p95 87 us; `map_detail` observed 826,158 rows and
+  read at p95 21.948 ms.
 
 The extraction-only compact performance gate is green for the current
 production-shaped country-state domains and the native-root `divisions`,
@@ -402,14 +414,15 @@ scans for compact division body discovery. Wider division replay coverage still
 needs typed records for template/equipment/manpower/assignment/order details.
 `weather_live` now has a DLL/Rust compact region stream for raw phenomenon,
 boolean weather flags, intensity, active-modifier counts, next-change raw value,
-and region temperature inputs, and it passed the advancing speed-five hourly
-gate in the 13-domain bundle above. Root hardening remains open: the DLL still
-uses a one-time cached `CWeatherManager` singleton/vtable locate, with no Python
-or save dependency, until it is replaced by a static anchored global/root path
-or explicitly accepted as bounded per-build startup discovery. The full
-13-domain widened-row bundle is now speed-five complete for the currently
-implemented compact domains on the active vanilla process, with longer soaks and
-the next replay-critical domains still open.
+and region temperature inputs. It resolves `CWeatherManager` through
+`u64[module+0x33048C0]` (`CGameState`) then `u64[CGameState+0x688]`, validates
+the manager vtable and `CWeatherManager+0x40` region vector, and passed the
+advancing speed-five hourly gate in the 13-domain anchored bundle above. The
+old heap/vtable singleton scan is reverse-engineering fallback only, not the
+production compact capture path. The full 13-domain widened-row bundle is now
+speed-five complete for the currently implemented compact domains on the active
+vanilla process, with longer soaks and the next replay-critical domains still
+open.
 
 Implementation note: see `COMPACT_HOI4REPLAY_NEXT_STEP.md` for the bounded
 Rust-native packaging path and the test contract for putting `collector_stream.bin`

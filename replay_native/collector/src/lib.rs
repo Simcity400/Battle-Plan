@@ -92,6 +92,7 @@ mod attach_log {
     const CG_STATE_DATE_OFFSET: usize = 0x33048C0;
     const COUNTRY_DATABASE_OFFSET: usize = 0x33063F8;
     const GET_LONG_STRING_OFFSET: usize = 0x5269B0;
+    const CGAMESTATE_WEATHER_MANAGER: usize = 0x688;
     const WEATHER_MANAGER_VTABLE_RVA: usize = 0x2950AF0;
     const WEATHER_REGION_VTABLE_RVA: usize = 0x2950AA0;
     const WEATHER_MANAGER_REGION_ARRAY_OFF: usize = 0x40;
@@ -9422,10 +9423,11 @@ mod attach_log {
 
     fn compact_map_detail_enabled(control: &CollectorControl) -> bool {
         control.scheduled_domains_valid
-            && control
-                .scheduled_domains
-                .iter()
-                .any(|scheduled| scheduled == "state_detail" || scheduled == "buildings_live")
+            && control.scheduled_domains.iter().any(|scheduled| {
+                scheduled == "map_detail"
+                    || scheduled == "state_detail"
+                    || scheduled == "buildings_live"
+            })
     }
 
     fn compact_weather_enabled(control: &CollectorControl) -> bool {
@@ -9441,7 +9443,7 @@ mod attach_log {
             && control
                 .scheduled_domains
                 .iter()
-                .any(|scheduled| scheduled == "buildings_live")
+                .any(|scheduled| scheduled == "map_detail" || scheduled == "buildings_live")
     }
 
     fn compact_map_detail_include_resources(control: &CollectorControl) -> bool {
@@ -9449,7 +9451,7 @@ mod attach_log {
             && control
                 .scheduled_domains
                 .iter()
-                .any(|scheduled| scheduled == "state_detail")
+                .any(|scheduled| scheduled == "map_detail" || scheduled == "state_detail")
     }
 
     fn read_compact_country_domain_bundles(
@@ -10634,18 +10636,15 @@ mod attach_log {
         Ok(rows)
     }
 
-    fn resolve_compact_weather_root(module_base: usize) -> Option<CompactWeatherRoot> {
-        let manager_vtable = module_base.checked_add(WEATHER_MANAGER_VTABLE_RVA)?;
-        let mut roots = Vec::new();
-        for hit in scan_qword_hits(manager_vtable, HEAP_LO, HEAP_HI) {
-            if let Some(root) = read_compact_weather_root_at(module_base, hit) {
-                roots.push(root);
-                if roots.len() > 1 {
-                    return None;
-                }
-            }
+    fn resolve_compact_weather_root(
+        module_base: usize,
+        gamestate: usize,
+    ) -> Option<CompactWeatherRoot> {
+        if !is_map_control_heap_pointer(gamestate) {
+            return None;
         }
-        roots.into_iter().next()
+        let manager = read_u64(gamestate.checked_add(CGAMESTATE_WEATHER_MANAGER)?)? as usize;
+        read_compact_weather_root_at(module_base, manager)
     }
 
     fn read_compact_weather_root_at(
@@ -13137,7 +13136,7 @@ mod attach_log {
                     .map(|control| compact_weather_enabled(control))
                     .unwrap_or(false)
             {
-                resolve_compact_weather_root(base).unwrap_or_default()
+                resolve_compact_weather_root(base, date_ptr as usize).unwrap_or_default()
             } else {
                 CompactWeatherRoot::default()
             };
@@ -20344,6 +20343,16 @@ mod attach_log {
         }
 
         #[test]
+        fn map_detail_alias_enables_full_compact_detail_capture() {
+            let mut control = raw_test_control();
+            control.scheduled_domains = vec!["map_detail".to_string()];
+
+            assert!(compact_map_detail_enabled(&control));
+            assert!(compact_map_detail_include_resources(&control));
+            assert!(compact_map_detail_include_buildings(&control));
+        }
+
+        #[test]
         fn compact_parallel_gate_partitions_country_domains_without_rotation() {
             let specs = compact_country_domain_specs().to_vec();
             let lanes = compact_parallel_gate_lanes(specs.iter().copied());
@@ -21113,6 +21122,11 @@ mod attach_log {
             );
             assert_eq!(u32::from_le_bytes(payload[92..96].try_into().unwrap()), 1);
             assert_eq!(u32::from_le_bytes(payload[100..104].try_into().unwrap()), 2);
+        }
+
+        #[test]
+        fn compact_weather_root_requires_gamestate_anchor() {
+            assert!(resolve_compact_weather_root(0, 0).is_none());
         }
 
         #[test]

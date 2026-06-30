@@ -262,11 +262,11 @@ keeps the compact file contract stable while making the real bottleneck clear:
 
 `compact_weather_region_decode_smoke_20260630_v1` passed the first compact
 `weather_live` region-stream decode and replay smoke gate. The DLL resolves a
-cached `CWeatherManager` singleton, validates its 305 inline
-`SWeatherPerRegion` rows, and emits raw region phenomenon/flag/intensity/
-temperature-input rows as compact domain 24. The smoke emitted 305 rows,
-decoded without source/partial/worker failures, read weather in 54 us, wrote
-9,976 compact bytes, and independently verified `native_session.battleplan`.
+`CWeatherManager`, validates its 305 inline `SWeatherPerRegion` rows, and emits
+raw region phenomenon/flag/intensity/temperature-input rows as compact domain
+24. The smoke emitted 305 rows, decoded without source/partial/worker failures,
+read weather in 54 us, wrote 9,976 compact bytes, and independently verified
+`native_session.battleplan`.
 At that point this was deliberately not recorded as speed-five complete: the
 live game clock did not advance during that smoke window, so the required
 hourly/no-skipped-hour weather gate still needed to be rerun on an advancing
@@ -284,6 +284,19 @@ ms, p95 24.484 ms, max 79.348 ms, 2,983,908 raw stream bytes,
 `division_root_source = "dll_native"`, and an independently verified
 `native_session.battleplan`. `weather_live` observed 17,690 region rows, emitted
 394 changed rows, and read at p95 123 us. The weather stream is now
-speed-five complete for the current compact record contract; remaining debt is
-root hardening, because `CWeatherManager` is still located by a one-time cached
-singleton/vtable discovery rather than a static anchored global/root path.
+speed-five complete for the current compact record contract.
+
+`compact_country_divisions_land_combats_map_detail_weather_region_anchor_speed5_20260630_v2`
+then removed the remaining weather root hardening debt by resolving
+`CWeatherManager` from the static game-state path:
+`u64[module+0x33048C0] -> CGameState`, then `u64[CGameState+0x688] ->
+CWeatherManager`. The DLL still validates the manager vtable, the
+`CWeatherManager+0x40` region vector, and each `SWeatherPerRegion` row before
+emitting compact records. The same 13-domain bundle advanced 56 game hours with
+57 frame-end records, skipped 0 game hours, had full per-domain coverage, no
+parse/order/source/partial/bridge/worker failures, avg frame 22.319 ms, p95
+26.714 ms, max 68.701 ms, 3,084,775 raw stream bytes, and an independently
+verified `native_session.battleplan`. `weather_live` observed 17,385 region
+rows, emitted 396 changed rows, and read at p95 87 us. This also proved the
+collector-side `map_detail` alias now activates full state-resource and
+state/province building detail capture.

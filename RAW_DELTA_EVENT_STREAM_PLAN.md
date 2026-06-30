@@ -228,15 +228,13 @@ Current measured constraint:
   (`fuel_live` p95 3.218 ms; `production_live` p95 86.877 ms).
 - Weather-region smoke state:
   `compact_weather_region_decode_smoke_20260630_v1` introduced compact domain
-  24, `weather_live`, for 305 `SWeatherPerRegion` rows from the cached
-  `CWeatherManager` root. It emitted raw phenomenon, low-byte weather flags,
+  24, `weather_live`, for 305 `SWeatherPerRegion` rows from
+  `CWeatherManager`. It emitted raw phenomenon, low-byte weather flags,
   active-vector signal, intensity, active-modifier count, next-change raw value,
   and scaled region temperature inputs; decoded with no parse/source/partial
   failures; read weather in 54 us; wrote 9,976 compact bytes; and independently
-  verified `native_session.battleplan`. This is a decode/root smoke only, not
-  completion: the live game clock did not advance in that run, and the root is
-  still a one-time cached singleton/vtable locate until replaced by an anchored
-  global/root path or explicitly accepted as bounded startup discovery.
+  verified `native_session.battleplan`. This was a decode/root smoke only, not
+  completion: the live game clock did not advance in that run.
 - Combined weather state:
   `compact_country_divisions_land_combats_map_detail_weather_region_speed5_20260630_v3`
   passed with compact `weather_live` inside the full 13-domain bundle after the
@@ -250,10 +248,21 @@ Current measured constraint:
   ms, 2,983,908 raw stream bytes, and an independently verified
   `native_session.battleplan`. `weather_live` observed 17,690 region rows,
   emitted 394 changed rows, and read at p95 123 us. Weather is now complete for
-  the current compact row contract; remaining replay-layer gaps are full order
-  geometry, template/equipment/manpower, naval/air depth, logistics/supply
-  exactness, and weather root hardening from cached singleton discovery to a
-  static anchored global/root path.
+  the current compact row contract.
+- Anchored weather root state:
+  `compact_country_divisions_land_combats_map_detail_weather_region_anchor_speed5_20260630_v2`
+  moved production weather root lookup to
+  `u64[module+0x33048C0] -> CGameState`, then `u64[CGameState+0x688] ->
+  CWeatherManager`, with manager/vector/row validation still required before
+  emission. It covered the same 13 compact domains, advanced 56 game hours with
+  57 frame-end records, skipped 0 game hours, had full coverage, no parse/
+  source/partial/bridge/worker failures, avg frame 22.319 ms, p95 26.714 ms,
+  3,084,775 raw stream bytes, and an independently verified
+  `native_session.battleplan`. `weather_live` observed 17,385 region rows,
+  emitted 396 changed rows, and read at p95 87 us. Remaining replay-layer gaps
+  are full order geometry, template/equipment/manpower, naval/air depth,
+  logistics/supply exactness, and exact weather display-temperature RNG/name
+  mapping rather than the production weather root.
 - Earlier raw-event verification state: live-verified on the restarted vanilla
   process (pid 43412). A cold bootstrap outside the hot loop populated the
   current-process division and army caches, then a no-cold 12-game-hour run used
