@@ -2136,7 +2136,7 @@ fn compact_domain_coverage_errors(
 }
 
 fn compact_domain_requires_data_record(domain_id: u16) -> bool {
-    matches!(domain_id, 10 | 12 | 13 | 14 | 15 | 16 | 17)
+    matches!(domain_id, 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17)
 }
 
 fn compact_domain_summaries_json(summary: &CompactSummary) -> Value {

@@ -154,13 +154,26 @@ gate has these live speed-five results:
   worker panic, avg frame 20.576 ms, p95 32.615 ms, max 52.020 ms, 1,122,564
   raw stream bytes, a 220,682-byte `native_session.battleplan`, and an
   independent `pack_replay verify` pass.
+- `compact_production_live_speed5_v1`: passed after typed production data
+  record emission, 318 game hours advanced, 319 frame-end records, 0 skipped,
+  ordered/decodable compact stream, no worker panic, avg frame 16.966 ms, p95
+  27.467 ms, max 36.684 ms, 3,723,392 raw stream bytes, and an 880,339-byte
+  `native_session.battleplan`.
+- `compact_full_country_state_speed5_v2_host_gate`: passed with lane-parallel
+  compact reads for `fuel_live`, `production_live`, `focus_live`, `tech_live`,
+  `politics_live`, `politics_residuals`, `decisions_live`, and
+  `diplomacy_live` under the tightened host rule requiring per-frame production
+  data records; 180 game hours advanced, 181 frame-end records, 0 skipped, full
+  per-hour domain coverage, no worker panic, avg frame 28.809 ms, p95
+  48.311 ms, max 79.622 ms, 3,094,957 raw stream bytes, a 799,688-byte
+  `native_session.battleplan`, and an independent `pack_replay verify` pass.
 
 The extraction-only compact performance gate is green for the current
 production-shaped country-state domains above. The recorder packs/verifies
 `native_session.battleplan`, and the combined country-state replay passed
-independent `pack_replay verify`. `production_live` is still not marked
-DLL-complete; it needs typed production data records and its own zero-skipped
-speed-five proof before it can join the completed segment list.
+independent `pack_replay verify`. `production_live` is now DLL/Rust compact-path
+complete at hourly cadence for the current vanilla build, including stockpile,
+military production lines, naval production lines, and construction queue rows.
 
 Implementation note: see `COMPACT_HOI4REPLAY_NEXT_STEP.md` for the bounded
 Rust-native packaging path and the test contract for putting `collector_stream.bin`

@@ -251,6 +251,7 @@ mod attach_log {
     const TECH_PROGRESS_SCALE_RAW: u32 = 1000;
     const TECH_LIVE_PROGRESS_SCALE_RAW: u32 = 100000;
     const COMPACT_FIXED_SCALE_RAW: u32 = 100000;
+    const COMPACT_PRODUCTION_SCALE_RAW: u32 = 100000;
     const FUEL_STATUS_CURRENT: usize = 0x08;
     const FUEL_STATUS_MAX: usize = 0x10;
     const FUEL_STATUS_GAIN: usize = 0x18;
@@ -8688,7 +8689,14 @@ mod attach_log {
                         elapsed_wall_ms,
                         read.status_flags,
                     ),
-                    CompactCountryDomainKind::Production => false,
+                    CompactCountryDomainKind::Production => append_compact_production_data_record(
+                        &mut out,
+                        sequence,
+                        game_hour_raw,
+                        &read.rows,
+                        elapsed_wall_ms,
+                        read.status_flags,
+                    ),
                     CompactCountryDomainKind::Focus => append_compact_focus_data_record(
                         &mut out,
                         sequence,
@@ -9476,6 +9484,27 @@ mod attach_log {
         true
     }
 
+    fn append_compact_production_data_record(
+        out: &mut Vec<u8>,
+        sequence: u64,
+        game_hour_raw: i32,
+        rows: &[CountryObjectRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+    ) -> bool {
+        let payload = compact_production_data_payload(rows, elapsed_wall_ms, status_flags);
+        append_compact_record(
+            out,
+            sequence,
+            game_hour_raw,
+            COMPACT_DOMAIN_PRODUCTION,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+        true
+    }
+
     fn append_compact_focus_data_record(
         out: &mut Vec<u8>,
         sequence: u64,
@@ -9625,6 +9654,140 @@ mod attach_log {
             payload.extend_from_slice(&fuel.cost_raw.to_le_bytes());
         }
         payload
+    }
+
+    fn compact_production_data_payload(
+        rows: &[CountryObjectRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+    ) -> Vec<u8> {
+        let mut country_count = 0usize;
+        let mut stockpile_count = 0usize;
+        let mut military_count = 0usize;
+        let mut naval_count = 0usize;
+        let mut construction_count = 0usize;
+        for production in rows.iter().filter_map(|row| row.production.as_ref()) {
+            country_count += 1;
+            stockpile_count += production.stockpile.as_ref().map(Vec::len).unwrap_or(0);
+            military_count += production
+                .military_lines
+                .as_ref()
+                .map(Vec::len)
+                .unwrap_or(0);
+            naval_count += production.naval_lines.as_ref().map(Vec::len).unwrap_or(0);
+            construction_count += production
+                .construction_queue
+                .as_ref()
+                .map(Vec::len)
+                .unwrap_or(0);
+        }
+        let mut payload = Vec::with_capacity(
+            40usize
+                .saturating_add(stockpile_count * 16)
+                .saturating_add(military_count.saturating_add(naval_count) * 32)
+                .saturating_add(construction_count * 32),
+        );
+        let packed_country_count = country_count.min(u32::MAX as usize) as u32;
+        payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
+        payload.extend_from_slice(&packed_country_count.to_le_bytes());
+        payload.extend_from_slice(&packed_country_count.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_PRODUCTION_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&(stockpile_count.min(u32::MAX as usize) as u32).to_le_bytes());
+        payload.extend_from_slice(&(military_count.min(u32::MAX as usize) as u32).to_le_bytes());
+        payload.extend_from_slice(&(naval_count.min(u32::MAX as usize) as u32).to_le_bytes());
+        payload
+            .extend_from_slice(&(construction_count.min(u32::MAX as usize) as u32).to_le_bytes());
+
+        for row in rows.iter().filter(|row| row.production.is_some()) {
+            let production = row.production.as_ref().expect("filtered production row");
+            if let Some(stockpile) = production.stockpile.as_ref() {
+                for stock in stockpile {
+                    payload.extend_from_slice(&row.tag_db_id.to_le_bytes());
+                    payload.extend_from_slice(&stock.variant_id.to_le_bytes());
+                    payload.extend_from_slice(
+                        &compact_scaled_i64(stock.amount, COMPACT_PRODUCTION_SCALE_RAW as f64)
+                            .unwrap_or(0)
+                            .to_le_bytes(),
+                    );
+                }
+            }
+        }
+        for (tag_db_id, line_kind, lines) in rows.iter().filter_map(|row| {
+            row.production
+                .as_ref()
+                .and_then(|production| production.military_lines.as_ref())
+                .map(|lines| (row.tag_db_id, 1u32, lines))
+        }) {
+            append_compact_production_lines(&mut payload, tag_db_id, line_kind, lines);
+        }
+        for (tag_db_id, line_kind, lines) in rows.iter().filter_map(|row| {
+            row.production
+                .as_ref()
+                .and_then(|production| production.naval_lines.as_ref())
+                .map(|lines| (row.tag_db_id, 2u32, lines))
+        }) {
+            append_compact_production_lines(&mut payload, tag_db_id, line_kind, lines);
+        }
+        for row in rows.iter().filter(|row| row.production.is_some()) {
+            let production = row.production.as_ref().expect("filtered production row");
+            if let Some(construction_queue) = production.construction_queue.as_ref() {
+                for construction in construction_queue {
+                    payload.extend_from_slice(&row.tag_db_id.to_le_bytes());
+                    payload.extend_from_slice(&construction.id.to_le_bytes());
+                    payload.extend_from_slice(
+                        &construction.template_id.unwrap_or(u32::MAX).to_le_bytes(),
+                    );
+                    payload.extend_from_slice(&construction.active_factories.to_le_bytes());
+                    payload.extend_from_slice(
+                        &compact_scaled_i32(construction.cost, COMPACT_PRODUCTION_SCALE_RAW as f64)
+                            .unwrap_or(0)
+                            .to_le_bytes(),
+                    );
+                    payload.extend_from_slice(
+                        &compact_scaled_i32(
+                            construction.produced,
+                            COMPACT_PRODUCTION_SCALE_RAW as f64,
+                        )
+                        .unwrap_or(0)
+                        .to_le_bytes(),
+                    );
+                    payload.extend_from_slice(&construction.priority.to_le_bytes());
+                    payload.extend_from_slice(&0u32.to_le_bytes());
+                }
+            }
+        }
+        payload
+    }
+
+    fn append_compact_production_lines(
+        payload: &mut Vec<u8>,
+        tag_db_id: u32,
+        kind: u32,
+        lines: &[CountryProductionLineRow],
+    ) {
+        for line in lines {
+            payload.extend_from_slice(&tag_db_id.to_le_bytes());
+            payload.extend_from_slice(&kind.to_le_bytes());
+            payload.extend_from_slice(&line.id.to_le_bytes());
+            payload.extend_from_slice(&line.active_factories.to_le_bytes());
+            payload.extend_from_slice(
+                &compact_scaled_i32(line.cost, COMPACT_PRODUCTION_SCALE_RAW as f64)
+                    .unwrap_or(0)
+                    .to_le_bytes(),
+            );
+            payload.extend_from_slice(
+                &compact_scaled_i32(line.speed, COMPACT_PRODUCTION_SCALE_RAW as f64)
+                    .unwrap_or(0)
+                    .to_le_bytes(),
+            );
+            payload.extend_from_slice(
+                &compact_scaled_i32(line.produced, COMPACT_PRODUCTION_SCALE_RAW as f64)
+                    .unwrap_or(0)
+                    .to_le_bytes(),
+            );
+            payload.extend_from_slice(&line.amount.to_le_bytes());
+        }
     }
 
     fn compact_focus_data_payload(
@@ -10183,6 +10346,18 @@ mod attach_log {
             None
         } else {
             Some(scaled as i32)
+        }
+    }
+
+    fn compact_scaled_i64(value: f64, scale: f64) -> Option<i64> {
+        if !value.is_finite() {
+            return None;
+        }
+        let scaled = (value * scale).round();
+        if scaled < i64::MIN as f64 || scaled > i64::MAX as f64 {
+            None
+        } else {
+            Some(scaled as i64)
         }
     }
 
@@ -17462,6 +17637,109 @@ mod attach_log {
                 i64::from_le_bytes(payload[56..64].try_into().unwrap()),
                 -73_728
             );
+        }
+
+        #[test]
+        fn compact_production_data_payload_packs_numeric_rows() {
+            let mut por = test_country_row("POR", 47, 0x1234);
+            por.production = Some(CountryProductionRow {
+                stockpile: Some(vec![
+                    CountryStockpileRow {
+                        variant_id: 70,
+                        amount: 123.5,
+                    },
+                    CountryStockpileRow {
+                        variant_id: 71,
+                        amount: -0.25,
+                    },
+                ]),
+                military_lines: Some(vec![CountryProductionLineRow {
+                    id: 349,
+                    active_factories: 3,
+                    cost: 105.0,
+                    speed: 31.05,
+                    produced: 34.4,
+                    amount: -1,
+                }]),
+                naval_lines: Some(vec![CountryProductionLineRow {
+                    id: 350,
+                    active_factories: 2,
+                    cost: 55.0,
+                    speed: 21.05,
+                    produced: 14.4,
+                    amount: 1,
+                }]),
+                construction_queue: Some(vec![CountryConstructionLineRow {
+                    id: 9001,
+                    template_id: Some(20013),
+                    active_factories: 6,
+                    cost: 10800.0,
+                    produced: 125.5,
+                    priority: 0,
+                }]),
+            });
+            let row_without_production = test_country_row("ENG", 2, 0x3234);
+
+            let payload = compact_production_data_payload(&[por, row_without_production], 10, 32);
+
+            assert_eq!(payload.len(), 40 + 2 * 16 + 2 * 32 + 32);
+            assert_eq!(u32::from_le_bytes(payload[8..12].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[12..16].try_into().unwrap()), 1);
+            assert_eq!(
+                u32::from_le_bytes(payload[20..24].try_into().unwrap()),
+                COMPACT_PRODUCTION_SCALE_RAW
+            );
+            assert_eq!(u32::from_le_bytes(payload[24..28].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[28..32].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[32..36].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[36..40].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[40..44].try_into().unwrap()), 47);
+            assert_eq!(u32::from_le_bytes(payload[44..48].try_into().unwrap()), 70);
+            assert_eq!(
+                i64::from_le_bytes(payload[48..56].try_into().unwrap()),
+                12_350_000
+            );
+            assert_eq!(
+                i64::from_le_bytes(payload[64..72].try_into().unwrap()),
+                -25_000
+            );
+            assert_eq!(u32::from_le_bytes(payload[72..76].try_into().unwrap()), 47);
+            assert_eq!(u32::from_le_bytes(payload[76..80].try_into().unwrap()), 1);
+            assert_eq!(i32::from_le_bytes(payload[80..84].try_into().unwrap()), 349);
+            assert_eq!(
+                i32::from_le_bytes(payload[88..92].try_into().unwrap()),
+                10_500_000
+            );
+            assert_eq!(
+                i32::from_le_bytes(payload[92..96].try_into().unwrap()),
+                3_105_000
+            );
+            assert_eq!(
+                i32::from_le_bytes(payload[100..104].try_into().unwrap()),
+                -1
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[104..108].try_into().unwrap()),
+                47
+            );
+            assert_eq!(u32::from_le_bytes(payload[108..112].try_into().unwrap()), 2);
+            assert_eq!(
+                u32::from_le_bytes(payload[136..140].try_into().unwrap()),
+                47
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[140..144].try_into().unwrap()),
+                9001
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[144..148].try_into().unwrap()),
+                20013
+            );
+            assert_eq!(
+                i32::from_le_bytes(payload[152..156].try_into().unwrap()),
+                1_080_000_000
+            );
+            assert_eq!(u32::from_le_bytes(payload[164..168].try_into().unwrap()), 0);
         }
 
         #[test]
