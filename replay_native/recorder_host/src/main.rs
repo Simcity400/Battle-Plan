@@ -82,6 +82,9 @@ struct Config {
     scheduled_domains: Vec<String>,
     lightweight_root_frame: bool,
     special_projects_scan: bool,
+    compact_country_frame: bool,
+    idea_group_filter: Option<String>,
+    advisor_token_filter: Option<String>,
     session_id: String,
 }
 
@@ -147,6 +150,9 @@ fn run() -> Result<(), String> {
         "scheduled_domains": cfg.scheduled_domains,
         "lightweight_root_frame": cfg.lightweight_root_frame,
         "special_projects_scan": cfg.special_projects_scan,
+        "compact_country_frame": cfg.compact_country_frame,
+        "idea_group_filter_rows": encoded_row_count(cfg.idea_group_filter.as_deref()),
+        "advisor_token_filter_rows": encoded_row_count(cfg.advisor_token_filter.as_deref()),
         "frame_count": summary.frame_count,
         "collector_started_count": summary.collector_started_count,
         "raw_event_count": summary.raw_event_count,
@@ -192,6 +198,9 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut scheduled_domains = Vec::new();
     let mut lightweight_root_frame = false;
     let mut special_projects_scan = false;
+    let mut compact_country_frame = false;
+    let mut idea_group_filter = None;
+    let mut advisor_token_filter = None;
     let mut session_id = None;
     let mut i = 0usize;
     while i < args.len() {
@@ -234,6 +243,19 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             }
             "--lightweight-root-frame" => lightweight_root_frame = true,
             "--special-projects-scan" => special_projects_scan = true,
+            "--compact-country-frame" => compact_country_frame = true,
+            "--idea-group-filter-file" => {
+                i += 1;
+                idea_group_filter =
+                    Some(read_filter_file(args.get(i), "--idea-group-filter-file")?);
+            }
+            "--advisor-token-filter-file" => {
+                i += 1;
+                advisor_token_filter = Some(read_filter_file(
+                    args.get(i),
+                    "--advisor-token-filter-file",
+                )?);
+            }
             "--session-id" => {
                 i += 1;
                 session_id = Some(required(args.get(i), "--session-id")?);
@@ -256,12 +278,15 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         scheduled_domains,
         lightweight_root_frame,
         special_projects_scan,
+        compact_country_frame,
+        idea_group_filter,
+        advisor_token_filter,
         session_id: session_id.unwrap_or_else(|| format!("native_{}", pipe_token())),
     })
 }
 
 fn usage() -> String {
-    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--lightweight-root-frame] [--special-projects-scan]".to_string()
+    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--idea-group-filter-file path] [--advisor-token-filter-file path]".to_string()
 }
 
 fn required(value: Option<&String>, flag: &str) -> Result<String, String> {
@@ -310,6 +335,23 @@ fn validate_domain(domain: &str) -> Result<(), String> {
     }
 }
 
+fn read_filter_file(value: Option<&String>, flag: &str) -> Result<String, String> {
+    let path = PathBuf::from(required(value, flag)?);
+    let text = fs::read_to_string(&path).map_err(|e| format!("read {flag} failed: {e}"))?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        Err(format!("{flag} must not be empty"))
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
+fn encoded_row_count(value: Option<&str>) -> usize {
+    value
+        .map(|text| text.split(';').filter(|row| !row.is_empty()).count())
+        .unwrap_or(0)
+}
+
 fn pipe_token() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -337,10 +379,13 @@ fn write_control_file(cfg: &Config, pipe_token: &str) -> Result<(), String> {
         "country_object_scan": false,
         "special_projects_scan": cfg.special_projects_scan,
         "lightweight_root_frame": cfg.lightweight_root_frame,
+        "compact_country_frame": cfg.compact_country_frame,
         "scheduled_snapshot_step_hours": 1,
         "sidecar_log": false,
         "session_id": cfg.session_id,
         "scheduled_domains": scheduled_domains,
+        "idea_group_filter": cfg.idea_group_filter.as_deref(),
+        "advisor_token_filter": cfg.advisor_token_filter.as_deref(),
     });
     let mut bytes = serde_json::to_vec(&payload)
         .map_err(|e| format!("serialize collector control failed: {e}"))?;
@@ -625,6 +670,14 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let dll = dir.join("collector.dll");
         fs::write(&dll, b"").unwrap();
+        let idea_groups = dir.join("idea_groups.txt");
+        let advisor_tokens = dir.join("advisor_tokens.txt");
+        fs::write(&idea_groups, b"war_economy=economy\n").unwrap();
+        fs::write(
+            &advisor_tokens,
+            b"POR_salazar=political_advisor|political|POR_salazar\n",
+        )
+        .unwrap();
 
         let cfg = parse_args(vec![
             "--pid".to_string(),
@@ -637,12 +690,26 @@ mod tests {
             "projects_live".to_string(),
             "--lightweight-root-frame".to_string(),
             "--special-projects-scan".to_string(),
+            "--compact-country-frame".to_string(),
+            "--idea-group-filter-file".to_string(),
+            idea_groups.display().to_string(),
+            "--advisor-token-filter-file".to_string(),
+            advisor_tokens.display().to_string(),
         ])
         .unwrap();
 
         assert!(cfg.lightweight_root_frame);
         assert!(cfg.special_projects_scan);
+        assert!(cfg.compact_country_frame);
         assert_eq!(cfg.scheduled_domains, vec!["projects_live".to_string()]);
+        assert_eq!(
+            cfg.idea_group_filter.as_deref(),
+            Some("war_economy=economy")
+        );
+        assert_eq!(
+            cfg.advisor_token_filter.as_deref(),
+            Some("POR_salazar=political_advisor|political|POR_salazar")
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

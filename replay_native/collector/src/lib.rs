@@ -683,6 +683,7 @@ mod attach_log {
             let mut last_ship_stats_sample_elapsed_ms: Option<u64> = None;
             let mut oob_command_tracker = OobCommandTracker::default();
             let mut last_oob_command_sample_elapsed_ms: Option<u64> = None;
+            let mut compact_country_tracker = CompactCountryFrameTracker::default();
             while Instant::now() <= deadline {
                 let elapsed_wall_ms = duration_millis_u64(worker_started.elapsed());
                 let capture_boundary = capture_boundary_for_frame(
@@ -690,16 +691,6 @@ mod attach_log {
                     &control,
                     &mut last_scheduled_game_hour,
                 );
-                let line = build_frame_line(
-                    pid,
-                    state.as_ref(),
-                    Some(&control),
-                    Some(session_sequence),
-                    Some(elapsed_wall_ms),
-                    Some(capture_boundary),
-                );
-                write_sinks(file.as_mut(), pipe, line.as_bytes());
-                session_sequence = session_sequence.saturating_add(1);
                 if let Some(line) = build_clock_raw_domain_delta_line(
                     pid,
                     state.as_ref(),
@@ -711,33 +702,54 @@ mod attach_log {
                     write_sinks(file.as_mut(), pipe, line.as_bytes());
                     session_sequence = session_sequence.saturating_add(1);
                 }
-                for line in build_division_raw_domain_delta_lines(
-                    pid,
-                    state.as_ref(),
-                    &control,
-                    &mut previous_division_movement,
-                    session_sequence,
-                    Some(elapsed_wall_ms),
-                    capture_boundary,
-                ) {
+                if should_emit_root_frame(&control, capture_boundary) {
+                    let line = build_frame_line(
+                        pid,
+                        state.as_ref(),
+                        Some(&control),
+                        Some(session_sequence),
+                        Some(elapsed_wall_ms),
+                        Some(capture_boundary),
+                        Some(&mut compact_country_tracker),
+                    );
                     write_sinks(file.as_mut(), pipe, line.as_bytes());
                     session_sequence = session_sequence.saturating_add(1);
                 }
-                for line in build_land_combat_raw_domain_delta_lines(
-                    pid,
-                    state.as_ref(),
-                    &control,
-                    &mut land_combat_tracker,
-                    session_sequence,
-                    Some(elapsed_wall_ms),
-                    capture_boundary,
-                ) {
-                    write_sinks(file.as_mut(), pipe, line.as_bytes());
-                    session_sequence = session_sequence.saturating_add(1);
+                if scheduled_domain_enabled(Some(&control), RAW_DIVISIONS_DOMAIN) {
+                    for line in build_division_raw_domain_delta_lines(
+                        pid,
+                        state.as_ref(),
+                        &control,
+                        &mut previous_division_movement,
+                        session_sequence,
+                        Some(elapsed_wall_ms),
+                        capture_boundary,
+                    ) {
+                        write_sinks(file.as_mut(), pipe, line.as_bytes());
+                        session_sequence = session_sequence.saturating_add(1);
+                    }
                 }
-                let sample_army_orders = last_army_order_sample_elapsed_ms
-                    .map(|last| elapsed_wall_ms.saturating_sub(last) >= ARMY_ORDER_SAMPLE_MIN_MS)
-                    .unwrap_or(true);
+                if scheduled_domain_enabled(Some(&control), RAW_LAND_COMBATS_DOMAIN) {
+                    for line in build_land_combat_raw_domain_delta_lines(
+                        pid,
+                        state.as_ref(),
+                        &control,
+                        &mut land_combat_tracker,
+                        session_sequence,
+                        Some(elapsed_wall_ms),
+                        capture_boundary,
+                    ) {
+                        write_sinks(file.as_mut(), pipe, line.as_bytes());
+                        session_sequence = session_sequence.saturating_add(1);
+                    }
+                }
+                let sample_army_orders =
+                    scheduled_domain_enabled(Some(&control), RAW_ARMY_ORDERS_DOMAIN)
+                        && last_army_order_sample_elapsed_ms
+                            .map(|last| {
+                                elapsed_wall_ms.saturating_sub(last) >= ARMY_ORDER_SAMPLE_MIN_MS
+                            })
+                            .unwrap_or(true);
                 if sample_army_orders {
                     for line in build_army_order_raw_domain_delta_lines(
                         pid,
@@ -753,22 +765,30 @@ mod attach_log {
                     }
                     last_army_order_sample_elapsed_ms = Some(elapsed_wall_ms);
                 }
-                for line in build_naval_combat_raw_domain_delta_lines(
-                    pid,
-                    state.as_ref(),
-                    &control,
-                    &mut naval_combat_tracker,
-                    &mut naval_combat_member_tracker,
-                    session_sequence,
-                    Some(elapsed_wall_ms),
-                    capture_boundary,
-                ) {
-                    write_sinks(file.as_mut(), pipe, line.as_bytes());
-                    session_sequence = session_sequence.saturating_add(1);
+                if scheduled_domain_enabled(Some(&control), RAW_NAVAL_COMBATS_DOMAIN)
+                    || scheduled_domain_enabled(Some(&control), RAW_NAVAL_COMBAT_MEMBERS_DOMAIN)
+                {
+                    for line in build_naval_combat_raw_domain_delta_lines(
+                        pid,
+                        state.as_ref(),
+                        &control,
+                        &mut naval_combat_tracker,
+                        &mut naval_combat_member_tracker,
+                        session_sequence,
+                        Some(elapsed_wall_ms),
+                        capture_boundary,
+                    ) {
+                        write_sinks(file.as_mut(), pipe, line.as_bytes());
+                        session_sequence = session_sequence.saturating_add(1);
+                    }
                 }
-                let sample_air_wings = last_air_wing_sample_elapsed_ms
-                    .map(|last| elapsed_wall_ms.saturating_sub(last) >= AIR_WING_SAMPLE_MIN_MS)
-                    .unwrap_or(true);
+                let sample_air_wings =
+                    scheduled_domain_enabled(Some(&control), RAW_AIR_WINGS_DOMAIN)
+                        && last_air_wing_sample_elapsed_ms
+                            .map(|last| {
+                                elapsed_wall_ms.saturating_sub(last) >= AIR_WING_SAMPLE_MIN_MS
+                            })
+                            .unwrap_or(true);
                 if sample_air_wings {
                     for line in build_air_wing_raw_domain_delta_lines(
                         pid,
@@ -784,9 +804,12 @@ mod attach_log {
                     }
                     last_air_wing_sample_elapsed_ms = Some(elapsed_wall_ms);
                 }
-                let sample_ship_stats = last_ship_stats_sample_elapsed_ms
-                    .map(|last| elapsed_wall_ms.saturating_sub(last) >= SHIP_STATS_SAMPLE_MIN_MS)
-                    .unwrap_or(true);
+                let sample_ship_stats = scheduled_domain_enabled(Some(&control), RAW_SHIPS_DOMAIN)
+                    && last_ship_stats_sample_elapsed_ms
+                        .map(|last| {
+                            elapsed_wall_ms.saturating_sub(last) >= SHIP_STATS_SAMPLE_MIN_MS
+                        })
+                        .unwrap_or(true);
                 if sample_ship_stats {
                     for line in build_ship_stats_raw_domain_delta_lines(
                         pid,
@@ -802,9 +825,13 @@ mod attach_log {
                     }
                     last_ship_stats_sample_elapsed_ms = Some(elapsed_wall_ms);
                 }
-                let sample_oob_command = last_oob_command_sample_elapsed_ms
-                    .map(|last| elapsed_wall_ms.saturating_sub(last) >= OOB_COMMAND_SAMPLE_MIN_MS)
-                    .unwrap_or(true);
+                let sample_oob_command =
+                    scheduled_domain_enabled(Some(&control), RAW_OOB_COMMAND_DOMAIN)
+                        && last_oob_command_sample_elapsed_ms
+                            .map(|last| {
+                                elapsed_wall_ms.saturating_sub(last) >= OOB_COMMAND_SAMPLE_MIN_MS
+                            })
+                            .unwrap_or(true);
                 if sample_oob_command {
                     for line in build_oob_command_raw_domain_delta_lines(
                         pid,
@@ -823,7 +850,7 @@ mod attach_log {
                 thread::sleep(Duration::from_millis(control.sample_ms as u64));
             }
         } else {
-            let line = build_frame_line(pid, state.as_ref(), None, None, None, None);
+            let line = build_frame_line(pid, state.as_ref(), None, None, None, None, None);
             write_sinks(file.as_mut(), pipe, line.as_bytes());
         }
         if let Some(handle) = pipe.take() {
@@ -839,6 +866,7 @@ mod attach_log {
         country_object_scan: bool,
         special_projects_scan: bool,
         lightweight_root_frame: bool,
+        compact_country_frame: bool,
         country_object_bridge: Vec<CountryObjectBridgeEntry>,
         country_object_bridge_valid: bool,
         country_record_bridge: Vec<CountryObjectBridgeEntry>,
@@ -1104,6 +1132,8 @@ mod attach_log {
             parse_json_bool(&text, "special_projects_scan").unwrap_or(false);
         let lightweight_root_frame =
             parse_json_bool(&text, "lightweight_root_frame").unwrap_or(false);
+        let compact_country_frame =
+            parse_json_bool(&text, "compact_country_frame").unwrap_or(false);
         let (country_object_bridge, country_object_bridge_valid) =
             match parse_json_string(&text, "country_object_bridge") {
                 Some(value) => match parse_country_object_bridge(&value) {
@@ -1214,10 +1244,11 @@ mod attach_log {
         let sidecar_log = parse_json_bool(&text, "sidecar_log").unwrap_or(false);
         Some(CollectorControl {
             duration_ms: duration_ms.clamp(100, MAX_WORKER_DURATION_MS),
-            sample_ms: sample_ms.clamp(10, 5_000),
+            sample_ms: sample_ms.clamp(1, 5_000),
             country_object_scan,
             special_projects_scan,
             lightweight_root_frame,
+            compact_country_frame,
             country_object_bridge,
             country_object_bridge_valid,
             country_record_bridge,
@@ -2334,6 +2365,7 @@ mod attach_log {
         session_sequence: Option<u64>,
         elapsed_wall_ms: Option<u64>,
         capture_boundary: Option<&str>,
+        mut compact_country_tracker: Option<&mut CompactCountryFrameTracker>,
     ) -> String {
         let tick = unsafe { GetTickCount64() };
         let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -2376,10 +2408,7 @@ mod attach_log {
             include_scheduled_buildings,
         );
         let special_projects = scheduled_special_projects_json(state, include_scheduled_projects);
-        let include_country_rows = control
-            .map(|control| !control.lightweight_root_frame)
-            .unwrap_or(true)
-            || include_scheduled_country_fuel
+        let include_any_scheduled_country_domain = include_scheduled_country_fuel
             || include_scheduled_country_production
             || include_scheduled_country_focus
             || include_scheduled_country_research
@@ -2387,12 +2416,24 @@ mod attach_log {
             || include_scheduled_country_politics_residuals
             || include_scheduled_country_decisions
             || include_scheduled_country_diplomacy;
+        let include_country_rows = control
+            .map(|control| {
+                if control.lightweight_root_frame || control.compact_country_frame {
+                    include_any_scheduled_country_domain
+                } else {
+                    true
+                }
+            })
+            .unwrap_or(true);
         let (probe, domains) = root_probe_json(
             state,
             state_rows.as_deref(),
             province_rows.as_deref(),
             special_projects.as_deref(),
             include_country_rows,
+            control
+                .map(|control| control.compact_country_frame)
+                .unwrap_or(false),
             include_scheduled_country_fuel,
             include_scheduled_country_production,
             include_scheduled_country_focus,
@@ -2405,6 +2446,7 @@ mod attach_log {
             control.map(|control| &control.advisor_token_filter),
             control.map(|control| &control.tech_def_filter),
             control.map(|control| &control.idea_group_filter),
+            compact_country_tracker.as_deref_mut(),
         );
         let control_meta =
             control_metadata_json(control, session_sequence, elapsed_wall_ms, capture_boundary);
@@ -2653,6 +2695,11 @@ mod attach_log {
     #[derive(Default)]
     struct OobCommandTracker {
         previous: BTreeMap<String, OobCommandSample>,
+    }
+
+    #[derive(Default)]
+    struct CompactCountryFrameTracker {
+        previous_rows: BTreeMap<String, String>,
     }
 
     struct RawDomainDeltaFrame<'a> {
@@ -3315,9 +3362,10 @@ mod attach_log {
             let previous_same_generation = old
                 .as_ref()
                 .filter(|old| old.generation == generation && continues);
-            let changed_fields = previous_same_generation
-                .and_then(|old| land_combat_changed_fields(old, &sample))
-                .unwrap_or_else(land_combat_all_fields);
+            let changed_fields = match previous_same_generation {
+                Some(old) => land_combat_changed_fields(old, &sample).unwrap_or_default(),
+                None => land_combat_all_fields(),
+            };
             if !changed_fields.is_empty() {
                 push_land_combat_delta_frame(
                     &mut lines,
@@ -4805,9 +4853,10 @@ mod attach_log {
             let previous_same_generation = old
                 .as_ref()
                 .filter(|old| old.generation == generation && continues);
-            let changed_fields = previous_same_generation
-                .and_then(|old| naval_combat_changed_fields(old, &sample))
-                .unwrap_or_else(naval_combat_all_fields);
+            let changed_fields = match previous_same_generation {
+                Some(old) => naval_combat_changed_fields(old, &sample).unwrap_or_default(),
+                None => naval_combat_all_fields(),
+            };
             if !changed_fields.is_empty() {
                 push_naval_combat_delta_frame(
                     &mut lines,
@@ -8074,6 +8123,7 @@ mod attach_log {
              \"duration_ms\":{},\"sample_ms\":{},\
              \"special_projects_scan\":{},\
              \"lightweight_root_frame\":{},\
+             \"compact_country_frame\":{},\
              \"scheduled_snapshot_step_hours\":{},\
              \"scheduled_domain_rows\":{},\
              \"scheduled_domains_valid\":{},\
@@ -8113,6 +8163,7 @@ mod attach_log {
             control.sample_ms,
             control.special_projects_scan,
             control.lightweight_root_frame,
+            control.compact_country_frame,
             control.scheduled_snapshot_step_hours,
             control.scheduled_domains.len(),
             control.scheduled_domains_valid,
@@ -8172,6 +8223,10 @@ mod attach_log {
         } else {
             "worker_poll"
         }
+    }
+
+    fn should_emit_root_frame(control: &CollectorControl, capture_boundary: &str) -> bool {
+        capture_boundary == "scheduled_hour_snapshot" || control.scheduled_domains.is_empty()
     }
 
     fn current_game_date_raw(state: Option<&CollectorState>) -> Option<i32> {
@@ -8678,6 +8733,7 @@ mod attach_log {
                     false,
                     false,
                     false,
+                    false,
                     None,
                     None,
                     None,
@@ -8732,6 +8788,7 @@ mod attach_log {
                     tag_table,
                     entry.tag_db_id,
                     records_by_tag_id.get(&entry.tag_db_id).copied(),
+                    false,
                     false,
                     false,
                     false,
@@ -8913,6 +8970,7 @@ mod attach_log {
                     false,
                     false,
                     false,
+                    false,
                     None,
                     None,
                     None,
@@ -8957,6 +9015,7 @@ mod attach_log {
         fn current_rows(
             &self,
             country_database_ptr: usize,
+            compact_country_frame: bool,
             include_scheduled_country_fuel: bool,
             include_scheduled_country_production: bool,
             include_scheduled_country_focus: bool,
@@ -8981,6 +9040,7 @@ mod attach_log {
                     row,
                     self.country_vtable,
                     tag_table,
+                    compact_country_frame,
                     include_scheduled_country_fuel,
                     include_scheduled_country_production,
                     include_scheduled_country_focus,
@@ -9005,6 +9065,7 @@ mod attach_log {
             has_state_rows: bool,
             has_province_rows: bool,
             has_special_projects: bool,
+            compact_country_frame: bool,
             include_scheduled_country_fuel: bool,
             include_scheduled_country_production: bool,
             include_scheduled_country_focus: bool,
@@ -9014,10 +9075,10 @@ mod attach_log {
             include_scheduled_country_decisions: bool,
         ) -> String {
             let mut domains = vec!["\"clock\"", "\"country_identity\""];
-            if !current_rows.is_empty() {
+            if !compact_country_frame && !current_rows.is_empty() {
                 domains.push("\"country_scalars\"");
             }
-            if current_rows.iter().any(|row| row.misc.is_some()) {
+            if !compact_country_frame && current_rows.iter().any(|row| row.misc.is_some()) {
                 domains.push("\"country_misc\"");
             }
             if include_scheduled_country_fuel && current_rows.iter().any(|row| row.fuel.is_some()) {
@@ -9088,6 +9149,7 @@ mod attach_log {
             &self,
             country_database_ptr: usize,
             current_rows: &[CountryObjectRow],
+            compact_country_frame: bool,
             include_scheduled_country_fuel: bool,
             include_scheduled_country_production: bool,
             include_scheduled_country_focus: bool,
@@ -9096,23 +9158,34 @@ mod attach_log {
             include_scheduled_country_politics_residuals: bool,
             include_scheduled_country_decisions: bool,
             _include_scheduled_country_diplomacy: bool,
+            mut compact_country_tracker: Option<&mut CompactCountryFrameTracker>,
         ) -> String {
             if !current_rows.is_empty() {
-                let rows: Vec<String> = current_rows
-                    .iter()
-                    .map(|row| {
-                        row_json(
-                            row,
-                            include_scheduled_country_fuel,
-                            include_scheduled_country_production,
-                            include_scheduled_country_focus,
-                            include_scheduled_country_research,
-                            include_scheduled_country_politics,
-                            include_scheduled_country_politics_residuals,
-                            include_scheduled_country_decisions,
-                        )
-                    })
-                    .collect();
+                let mut rows = Vec::new();
+                for row in current_rows {
+                    let row_json = row_json(
+                        row,
+                        compact_country_frame,
+                        include_scheduled_country_fuel,
+                        include_scheduled_country_production,
+                        include_scheduled_country_focus,
+                        include_scheduled_country_research,
+                        include_scheduled_country_politics,
+                        include_scheduled_country_politics_residuals,
+                        include_scheduled_country_decisions,
+                    );
+                    if compact_country_frame {
+                        if let Some(tracker) = compact_country_tracker.as_deref_mut() {
+                            if tracker.previous_rows.get(&row.tag) == Some(&row_json) {
+                                continue;
+                            }
+                            tracker
+                                .previous_rows
+                                .insert(row.tag.clone(), row_json.clone());
+                        }
+                    }
+                    rows.push(row_json);
+                }
                 return format!("{{{}}}", rows.join(","));
             }
             country_rows_from_tag_table_json(country_database_ptr)
@@ -10295,6 +10368,7 @@ mod attach_log {
         scheduled_province_rows: Option<&str>,
         scheduled_special_projects: Option<&str>,
         include_country_rows: bool,
+        compact_country_frame: bool,
         include_scheduled_country_fuel: bool,
         include_scheduled_country_production: bool,
         include_scheduled_country_focus: bool,
@@ -10307,6 +10381,7 @@ mod attach_log {
         advisor_token_filter: Option<&BTreeMap<String, AdvisorTokenInfo>>,
         tech_def_filter: Option<&BTreeMap<u32, String>>,
         idea_group_filter: Option<&BTreeMap<String, String>>,
+        mut compact_country_tracker: Option<&mut CompactCountryFrameTracker>,
     ) -> (String, String) {
         let Some(state) = state else {
             return ("\"root_probe\":null".to_string(), "[]".to_string());
@@ -10339,6 +10414,7 @@ mod attach_log {
         let mut current_rows = if include_country_rows {
             state.country_identity.current_rows(
                 country_database_ptr as usize,
+                compact_country_frame,
                 include_scheduled_country_fuel,
                 include_scheduled_country_production,
                 include_scheduled_country_focus,
@@ -10375,6 +10451,7 @@ mod attach_log {
             state.country_identity.countries_json_from_rows(
                 country_database_ptr as usize,
                 &current_rows,
+                compact_country_frame,
                 include_scheduled_country_fuel,
                 include_scheduled_country_production,
                 include_scheduled_country_focus,
@@ -10383,6 +10460,7 @@ mod attach_log {
                 include_scheduled_country_politics_residuals,
                 include_scheduled_country_decisions,
                 include_scheduled_country_diplomacy,
+                compact_country_tracker.as_deref_mut(),
             )
         } else {
             "{}".to_string()
@@ -10411,6 +10489,7 @@ mod attach_log {
                 scheduled_state_rows.is_some(),
                 scheduled_province_rows.is_some(),
                 scheduled_special_projects.is_some(),
+                compact_country_frame,
                 include_scheduled_country_fuel,
                 include_scheduled_country_production,
                 include_scheduled_country_focus,
@@ -10661,6 +10740,7 @@ mod attach_log {
                 false,
                 false,
                 false,
+                false,
                 None,
                 None,
                 None,
@@ -10710,6 +10790,7 @@ mod attach_log {
         country_vtable: usize,
         tag_table: usize,
         record_ptr: Option<usize>,
+        compact_country_frame: bool,
         include_scheduled_country_fuel: bool,
         include_scheduled_country_production: bool,
         include_scheduled_country_focus: bool,
@@ -10745,37 +10826,84 @@ mod attach_log {
             name,
             object_ptr,
             record_ptr,
-            original_capital: read_i32(object_ptr + OBJ_ORIGINAL_CAPITAL).and_then(|v| {
-                if v > 0 {
-                    Some(v)
-                } else {
-                    None
-                }
-            }),
-            original_tag,
-            templates_locked: read_u8(object_ptr + OBJ_TEMPLATES_LOCKED).map(|v| v == 1),
-            reserved_dynamic_country: read_u8(object_ptr + OBJ_RESERVED_DYNAMIC_COUNTRY)
-                .map(|v| v == 1),
-            stability: read_fixed_0_1(object_ptr + OBJ_STABILITY),
-            war_support: read_fixed_0_1(object_ptr + OBJ_WAR_SUPPORT),
-            political_power: country_object_political_power(object_ptr, country_vtable, record_ptr),
-            command_power: read_fixed_nonnegative(object_ptr + OBJ_COMMAND_POWER, 1000.0),
-            num_ships: read_i32(object_ptr + OBJ_NUM_SHIPS).and_then(|v| {
-                if (0..=100_000).contains(&v) {
-                    Some(v)
-                } else {
-                    None
-                }
-            }),
-            manpower_pool: read_u32(object_ptr + OBJ_MANPOWER_POOL).and_then(|v| {
-                if v <= 2_000_000_000 {
-                    Some(v)
-                } else {
-                    None
-                }
-            }),
-            convoys: read_fixed_nonnegative(object_ptr + OBJ_CONVOYS, 1_000_000.0),
-            misc: read_country_misc(object_ptr),
+            original_capital: if compact_country_frame {
+                None
+            } else {
+                read_i32(object_ptr + OBJ_ORIGINAL_CAPITAL).and_then(|v| {
+                    if v > 0 {
+                        Some(v)
+                    } else {
+                        None
+                    }
+                })
+            },
+            original_tag: if compact_country_frame {
+                None
+            } else {
+                original_tag
+            },
+            templates_locked: if compact_country_frame {
+                None
+            } else {
+                read_u8(object_ptr + OBJ_TEMPLATES_LOCKED).map(|v| v == 1)
+            },
+            reserved_dynamic_country: if compact_country_frame {
+                None
+            } else {
+                read_u8(object_ptr + OBJ_RESERVED_DYNAMIC_COUNTRY).map(|v| v == 1)
+            },
+            stability: if compact_country_frame {
+                None
+            } else {
+                read_fixed_0_1(object_ptr + OBJ_STABILITY)
+            },
+            war_support: if compact_country_frame {
+                None
+            } else {
+                read_fixed_0_1(object_ptr + OBJ_WAR_SUPPORT)
+            },
+            political_power: if compact_country_frame {
+                None
+            } else {
+                country_object_political_power(object_ptr, country_vtable, record_ptr)
+            },
+            command_power: if compact_country_frame {
+                None
+            } else {
+                read_fixed_nonnegative(object_ptr + OBJ_COMMAND_POWER, 1000.0)
+            },
+            num_ships: if compact_country_frame {
+                None
+            } else {
+                read_i32(object_ptr + OBJ_NUM_SHIPS).and_then(|v| {
+                    if (0..=100_000).contains(&v) {
+                        Some(v)
+                    } else {
+                        None
+                    }
+                })
+            },
+            manpower_pool: if compact_country_frame {
+                None
+            } else {
+                read_u32(object_ptr + OBJ_MANPOWER_POOL).and_then(|v| {
+                    if v <= 2_000_000_000 {
+                        Some(v)
+                    } else {
+                        None
+                    }
+                })
+            },
+            convoys: if compact_country_frame {
+                None
+            } else {
+                read_fixed_nonnegative(object_ptr + OBJ_CONVOYS, 1_000_000.0)
+            },
+            misc: if compact_country_frame {
+                None
+            } else {
+                read_country_misc(object_ptr)
+            },
             fuel: if include_scheduled_country_fuel {
                 read_country_fuel(object_ptr)
             } else {
@@ -10787,22 +10915,37 @@ mod attach_log {
                 None
             },
             focus: if include_scheduled_country_focus {
-                read_country_focus(object_ptr)
+                read_country_focus(object_ptr, compact_country_frame)
             } else {
                 None
             },
             research: if include_scheduled_country_research {
-                read_country_research(object_ptr, country_vtable, tech_def_filter)
+                read_country_research(
+                    object_ptr,
+                    country_vtable,
+                    tech_def_filter,
+                    compact_country_frame,
+                )
             } else {
                 None
             },
             politics: if include_scheduled_country_politics {
-                read_country_politics(object_ptr, country_vtable, idea_group_filter)
+                read_country_politics(
+                    object_ptr,
+                    country_vtable,
+                    idea_group_filter,
+                    compact_country_frame,
+                )
             } else {
                 None
             },
             politics_residuals: if include_scheduled_country_politics_residuals {
-                read_country_politics_residuals(object_ptr, country_vtable, advisor_token_filter)
+                read_country_politics_residuals(
+                    object_ptr,
+                    country_vtable,
+                    advisor_token_filter,
+                    compact_country_frame,
+                )
             } else {
                 None
             },
@@ -10825,6 +10968,7 @@ mod attach_log {
         tag_table: usize,
         expected_tag_db_id: u32,
         record_ptr: Option<usize>,
+        compact_country_frame: bool,
         include_scheduled_country_fuel: bool,
         include_scheduled_country_production: bool,
         include_scheduled_country_focus: bool,
@@ -10842,6 +10986,7 @@ mod attach_log {
             country_vtable,
             tag_table,
             record_ptr,
+            compact_country_frame,
             include_scheduled_country_fuel,
             include_scheduled_country_production,
             include_scheduled_country_focus,
@@ -10865,6 +11010,7 @@ mod attach_log {
         expected: &CountryObjectRow,
         country_vtable: usize,
         tag_table: usize,
+        compact_country_frame: bool,
         include_scheduled_country_fuel: bool,
         include_scheduled_country_production: bool,
         include_scheduled_country_focus: bool,
@@ -10883,6 +11029,7 @@ mod attach_log {
             tag_table,
             expected.tag_db_id,
             expected.record_ptr,
+            compact_country_frame,
             include_scheduled_country_fuel,
             include_scheduled_country_production,
             include_scheduled_country_focus,
@@ -11032,7 +11179,7 @@ mod attach_log {
         }
     }
 
-    fn read_country_focus(object_ptr: usize) -> Option<CountryFocusRow> {
+    fn read_country_focus(object_ptr: usize, compact: bool) -> Option<CountryFocusRow> {
         let tree_def = read_u64(object_ptr + OBJ_FOCUS_TREE).unwrap_or(0) as usize;
         let focus_tree = read_focus_id(tree_def, FOCUS_TREE_ID);
         let submgr = read_u64(object_ptr + OBJ_FOCUS_STATUS)? as usize;
@@ -11042,7 +11189,11 @@ mod attach_log {
 
         let completed_count = read_u32_stable(submgr + FOCUS_STATUS_COMPLETED_SIZE)
             .filter(|value| *value <= MAX_FOCUS_COUNT);
-        let completed = completed_count.and_then(|size| read_focus_completed_vector(submgr, size));
+        let completed = if compact {
+            None
+        } else {
+            completed_count.and_then(|size| read_focus_completed_vector(submgr, size))
+        };
         let current_ptr = read_u64(submgr + FOCUS_STATUS_CURRENT).unwrap_or(0) as usize;
         let continuous_ptr = read_u64(submgr + FOCUS_STATUS_CONTINUOUS).unwrap_or(0) as usize;
         let current = read_focus_id(current_ptr, FOCUS_OBJECT_ID);
@@ -11108,6 +11259,7 @@ mod attach_log {
         object_ptr: usize,
         country_vtable: usize,
         tech_def_filter: Option<&BTreeMap<u32, String>>,
+        compact: bool,
     ) -> Option<CountryResearchRow> {
         let module_base = country_vtable.checked_sub(COUNTRY_VTABLE_RVA)?;
         let status_vtable = module_base.checked_add(TECH_STATUS_VTABLE_RVA)?;
@@ -11154,7 +11306,7 @@ mod attach_log {
                 tech_vtables,
                 module_base,
                 count,
-                tech_def_filter,
+                if compact { None } else { tech_def_filter },
             )
         });
 
@@ -11343,6 +11495,7 @@ mod attach_log {
         object_ptr: usize,
         country_vtable: usize,
         idea_group_filter: Option<&BTreeMap<String, String>>,
+        compact: bool,
     ) -> Option<CountryPoliticsRow> {
         let module_base = country_vtable.checked_sub(COUNTRY_VTABLE_RVA)?;
         let status_vtable = module_base.checked_add(POLITICAL_STATUS_VTABLE_RVA)?;
@@ -11378,15 +11531,23 @@ mod attach_log {
         let laws = ideas
             .as_ref()
             .and_then(|values| classify_idea_laws(values, idea_group_filter));
-        let idea_groups = ideas
-            .as_ref()
-            .and_then(|values| classify_idea_groups(values, idea_group_filter));
+        let idea_groups = if compact {
+            None
+        } else {
+            ideas
+                .as_ref()
+                .and_then(|values| classify_idea_groups(values, idea_group_filter))
+        };
         let advisor_ideas = ideas
             .as_ref()
             .and_then(|values| classify_advisor_ideas(values, idea_group_filter));
-        let ideas_other = ideas
-            .as_ref()
-            .and_then(|values| classify_ideas_other(values, idea_group_filter));
+        let ideas_other = if compact {
+            None
+        } else {
+            ideas
+                .as_ref()
+                .and_then(|values| classify_ideas_other(values, idea_group_filter))
+        };
         let national_spirits = ideas
             .as_ref()
             .and_then(|values| classify_national_spirits(values, idea_group_filter));
@@ -11395,7 +11556,7 @@ mod attach_log {
             popularities,
             ruling_party,
             leader,
-            ideas,
+            ideas: if compact { None } else { ideas },
             laws,
             idea_groups,
             advisor_ideas,
@@ -11609,6 +11770,7 @@ mod attach_log {
         object_ptr: usize,
         country_vtable: usize,
         advisor_token_filter: Option<&BTreeMap<String, AdvisorTokenInfo>>,
+        compact: bool,
     ) -> Option<CountryPoliticsResidualsRow> {
         let module_base = country_vtable.checked_sub(COUNTRY_VTABLE_RVA)?;
         let status_vtable = module_base.checked_add(POLITICAL_STATUS_VTABLE_RVA)?;
@@ -11638,13 +11800,19 @@ mod attach_log {
                 match read_active_ideas(status_ptr, idea_vtable_primary, idea_vtable_secondary) {
                     Some(ideas) => {
                         let details = appointed_advisor_rows(&ideas, tokens);
-                        let advisors = details
-                            .iter()
-                            .map(|row| row.idea_token.clone())
-                            .collect::<Vec<String>>();
+                        let advisors = if compact {
+                            None
+                        } else {
+                            Some(
+                                details
+                                    .iter()
+                                    .map(|row| row.idea_token.clone())
+                                    .collect::<Vec<String>>(),
+                            )
+                        };
                         let slots = appointed_advisor_slots_from_rows(&details);
                         let ledgers = appointed_advisor_ledgers_from_rows(&details);
-                        (Some(advisors), Some(details), Some(slots), Some(ledgers))
+                        (advisors, Some(details), Some(slots), Some(ledgers))
                     }
                     None => (None, None, None, None),
                 }
@@ -12239,6 +12407,7 @@ mod attach_log {
 
     fn row_json(
         row: &CountryObjectRow,
+        compact_country_frame: bool,
         include_scheduled_country_fuel: bool,
         include_scheduled_country_production: bool,
         include_scheduled_country_focus: bool,
@@ -12247,6 +12416,54 @@ mod attach_log {
         include_scheduled_country_politics_residuals: bool,
         include_scheduled_country_decisions: bool,
     ) -> String {
+        if compact_country_frame {
+            let focus = if include_scheduled_country_focus {
+                row.focus
+                    .as_ref()
+                    .map(|focus| country_focus_json(focus, false))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let research = if include_scheduled_country_research {
+                row.research
+                    .as_ref()
+                    .map(|research| country_research_json(research, true))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let politics = country_politics_json(
+                if include_scheduled_country_politics {
+                    row.politics.as_ref()
+                } else {
+                    None
+                },
+                if include_scheduled_country_politics_residuals {
+                    row.politics_residuals.as_ref()
+                } else {
+                    None
+                },
+                true,
+            );
+            let decisions = if include_scheduled_country_decisions {
+                row.decisions
+                    .as_ref()
+                    .map(country_decisions_json)
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let diplomacy = row
+                .diplomacy
+                .as_ref()
+                .map(country_diplomacy_json)
+                .unwrap_or_default();
+            return format!(
+                "\"{}\":{{\"present\":true,\"identity\":{{\"tag_db_id\":{}}}{focus}{research}{politics}{decisions}{diplomacy}}}",
+                row.tag, row.tag_db_id
+            );
+        }
         let original_capital = json_opt_i32(row.original_capital);
         let original_tag = json_opt_str(row.original_tag.as_deref());
         let templates_locked = json_opt_bool(row.templates_locked);
@@ -12285,7 +12502,7 @@ mod attach_log {
         let focus = if include_scheduled_country_focus {
             row.focus
                 .as_ref()
-                .map(country_focus_json)
+                .map(|focus| country_focus_json(focus, true))
                 .unwrap_or_default()
         } else {
             String::new()
@@ -12293,7 +12510,7 @@ mod attach_log {
         let research = if include_scheduled_country_research {
             row.research
                 .as_ref()
-                .map(country_research_json)
+                .map(|research| country_research_json(research, false))
                 .unwrap_or_default()
         } else {
             String::new()
@@ -12309,6 +12526,7 @@ mod attach_log {
             } else {
                 None
             },
+            false,
         );
         let decisions = if include_scheduled_country_decisions {
             row.decisions
@@ -12413,7 +12631,7 @@ mod attach_log {
         ))
     }
 
-    fn country_research_json(research: &CountryResearchRow) -> String {
+    fn country_research_json(research: &CountryResearchRow, compact: bool) -> String {
         let mut fields = Vec::new();
         if let Some(completed_tech_count) = research.completed_tech_count {
             fields.push(format!("\"completed_tech_count\":{completed_tech_count}"));
@@ -12425,6 +12643,18 @@ mod attach_log {
             let rows = active_research
                 .iter()
                 .map(|slot| {
+                    if compact {
+                        return format!(
+                            "{{\"slot_index\":{},\"tech_def_index_raw\":{},\
+                             \"progress_raw\":{},\"live_progress_raw\":{},\
+                             \"base_required_points_raw\":{}}}",
+                            slot.slot_index,
+                            slot.tech_def_index_raw,
+                            slot.progress_raw,
+                            json_opt_i64(slot.live_progress_raw),
+                            json_opt_i64(slot.base_required_points_raw)
+                        );
+                    }
                     let tech_name = slot
                         .tech_name
                         .as_ref()
@@ -12459,14 +12689,16 @@ mod attach_log {
         }
     }
 
-    fn country_focus_json(focus: &CountryFocusRow) -> String {
+    fn country_focus_json(focus: &CountryFocusRow, include_completed_list: bool) -> String {
         let mut fields = Vec::new();
         if let Some(focus_tree) = focus.focus_tree.as_ref() {
             fields.push(format!("\"focus_tree\":{}", json_str(focus_tree)));
         }
-        if let Some(completed) = focus.completed.as_ref() {
-            let parts: Vec<String> = completed.iter().map(|token| json_str(token)).collect();
-            fields.push(format!("\"completed\":[{}]", parts.join(",")));
+        if include_completed_list {
+            if let Some(completed) = focus.completed.as_ref() {
+                let parts: Vec<String> = completed.iter().map(|token| json_str(token)).collect();
+                fields.push(format!("\"completed\":[{}]", parts.join(",")));
+            }
         }
         if let Some(completed_count) = focus.completed_count {
             fields.push(format!("\"completed_count\":{completed_count}"));
@@ -12604,6 +12836,7 @@ mod attach_log {
     fn country_politics_json(
         politics: Option<&CountryPoliticsRow>,
         residuals: Option<&CountryPoliticsResidualsRow>,
+        compact: bool,
     ) -> String {
         let mut fields = Vec::new();
         if let Some(politics) = politics {
@@ -12622,9 +12855,11 @@ mod attach_log {
             if let Some(leader) = politics.leader.as_ref() {
                 fields.push(format!("\"leader\":{}", country_leader_json(leader)));
             }
-            if let Some(ideas) = politics.ideas.as_ref() {
-                let parts: Vec<String> = ideas.iter().map(|idea| json_str(idea)).collect();
-                fields.push(format!("\"ideas\":[{}]", parts.join(",")));
+            if !compact {
+                if let Some(ideas) = politics.ideas.as_ref() {
+                    let parts: Vec<String> = ideas.iter().map(|idea| json_str(idea)).collect();
+                    fields.push(format!("\"ideas\":[{}]", parts.join(",")));
+                }
             }
             if let Some(laws) = politics.laws.as_ref() {
                 let parts: Vec<String> = laws
@@ -12633,11 +12868,13 @@ mod attach_log {
                     .collect();
                 fields.push(format!("\"laws\":{{{}}}", parts.join(",")));
             }
-            if let Some(idea_groups) = politics.idea_groups.as_ref() {
-                fields.push(format!(
-                    "\"idea_groups\":{}",
-                    string_vec_map_json(idea_groups)
-                ));
+            if !compact {
+                if let Some(idea_groups) = politics.idea_groups.as_ref() {
+                    fields.push(format!(
+                        "\"idea_groups\":{}",
+                        string_vec_map_json(idea_groups)
+                    ));
+                }
             }
             if let Some(advisor_ideas) = politics.advisor_ideas.as_ref() {
                 fields.push(format!(
@@ -12645,9 +12882,12 @@ mod attach_log {
                     string_vec_map_json(advisor_ideas)
                 ));
             }
-            if let Some(ideas_other) = politics.ideas_other.as_ref() {
-                let parts: Vec<String> = ideas_other.iter().map(|idea| json_str(idea)).collect();
-                fields.push(format!("\"ideas_other\":[{}]", parts.join(",")));
+            if !compact {
+                if let Some(ideas_other) = politics.ideas_other.as_ref() {
+                    let parts: Vec<String> =
+                        ideas_other.iter().map(|idea| json_str(idea)).collect();
+                    fields.push(format!("\"ideas_other\":[{}]", parts.join(",")));
+                }
             }
             if let Some(national_spirits) = politics.national_spirits.as_ref() {
                 let parts: Vec<String> =
@@ -12674,12 +12914,14 @@ mod attach_log {
             if let Some(elections_allowed) = residuals.elections_allowed {
                 fields.push(format!("\"elections_allowed\":{elections_allowed}"));
             }
-            if let Some(appointed_advisors) = residuals.appointed_advisors.as_ref() {
-                let parts: Vec<String> = appointed_advisors
-                    .iter()
-                    .map(|token| json_str(token))
-                    .collect();
-                fields.push(format!("\"appointed_advisors\":[{}]", parts.join(",")));
+            if !compact {
+                if let Some(appointed_advisors) = residuals.appointed_advisors.as_ref() {
+                    let parts: Vec<String> = appointed_advisors
+                        .iter()
+                        .map(|token| json_str(token))
+                        .collect();
+                    fields.push(format!("\"appointed_advisors\":[{}]", parts.join(",")));
+                }
             }
             if let Some(details) = residuals.appointed_advisor_details.as_ref() {
                 let parts: Vec<String> = details
@@ -13205,6 +13447,7 @@ mod attach_log {
                 sample_ms: 10,
                 country_object_scan: false,
                 special_projects_scan: false,
+                compact_country_frame: false,
                 country_object_bridge: Vec::new(),
                 country_object_bridge_valid: true,
                 country_record_bridge: Vec::new(),
@@ -13274,6 +13517,17 @@ mod attach_log {
             control.scheduled_domains_valid = false;
             assert!(!scheduled_domain_enabled(Some(&control), "projects_live"));
             assert!(scheduled_domain_enabled(None, "projects_live"));
+        }
+
+        #[test]
+        fn filtered_sessions_emit_root_frames_only_on_scheduled_boundaries() {
+            let mut control = raw_test_control();
+            assert!(should_emit_root_frame(&control, "worker_poll"));
+            assert!(should_emit_root_frame(&control, "scheduled_hour_snapshot"));
+
+            control.scheduled_domains = vec!["politics_live".to_string()];
+            assert!(!should_emit_root_frame(&control, "worker_poll"));
+            assert!(should_emit_root_frame(&control, "scheduled_hour_snapshot"));
         }
 
         #[test]
@@ -13394,7 +13648,30 @@ mod attach_log {
             assert!(parsed.idea_group_filter.is_empty());
             assert!(parsed.idea_group_filter_valid);
             assert!(!parsed.special_projects_scan);
+            assert!(!parsed.compact_country_frame);
             assert!(!parsed.sidecar_log);
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn collector_control_accepts_compact_country_frame_flag() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_compact_country_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            fs::write(
+                &control,
+                r#"{"mode":"hourly_poll","duration_ms":8000,"sample_ms":10,"compact_country_frame":true}"#,
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert!(parsed.compact_country_frame);
             let _ = fs::remove_dir_all(&dir);
         }
 
@@ -13439,6 +13716,28 @@ mod attach_log {
             let parsed = collector_control(&dll).unwrap();
 
             assert_eq!(parsed.duration_ms, 300_000);
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn collector_control_accepts_one_ms_poll_interval() {
+            let dir = std::env::temp_dir().join(format!(
+                "hoi4_collector_sample_ms_test_{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let dll = dir.join("collector.dll");
+            let control = dir.join("collector_control.json");
+            fs::write(
+                &control,
+                r#"{"mode":"hourly_poll","duration_ms":8000,"sample_ms":1}"#,
+            )
+            .unwrap();
+
+            let parsed = collector_control(&dll).unwrap();
+
+            assert_eq!(parsed.sample_ms, 1);
             let _ = fs::remove_dir_all(&dir);
         }
 
@@ -13564,6 +13863,7 @@ mod attach_log {
                 Some(7),
                 Some(125),
                 Some("worker_poll"),
+                None,
             );
             assert!(frame.contains("\"tech_def_filter_rows\":0"));
             assert!(frame.contains("\"tech_def_filter_valid\":false"));
@@ -14004,6 +14304,7 @@ mod attach_log {
                 Some(7),
                 Some(125),
                 Some("worker_poll"),
+                None,
             );
             assert!(frame.contains("\"division_body_bridge_rows\":0"));
             assert!(frame.contains("\"division_body_bridge_valid\":false"));
@@ -14038,6 +14339,7 @@ mod attach_log {
                 Some(7),
                 Some(125),
                 Some("worker_poll"),
+                None,
             );
             assert!(frame.contains("\"army_body_bridge_rows\":0"));
             assert!(frame.contains("\"army_body_bridge_valid\":false"));
@@ -14072,6 +14374,7 @@ mod attach_log {
                 Some(7),
                 Some(125),
                 Some("worker_poll"),
+                None,
             );
             assert!(frame.contains("\"naval_combat_body_bridge_rows\":0"));
             assert!(frame.contains("\"naval_combat_body_bridge_valid\":false"));
@@ -14106,6 +14409,7 @@ mod attach_log {
                 Some(7),
                 Some(125),
                 Some("worker_poll"),
+                None,
             );
             assert!(frame.contains("\"air_wing_body_bridge_rows\":0"));
             assert!(frame.contains("\"air_wing_body_bridge_valid\":false"));
@@ -14140,6 +14444,7 @@ mod attach_log {
                 Some(7),
                 Some(125),
                 Some("worker_poll"),
+                None,
             );
             assert!(frame.contains("\"ship_body_bridge_rows\":0"));
             assert!(frame.contains("\"ship_body_bridge_valid\":false"));
@@ -15646,6 +15951,18 @@ mod attach_log {
             assert!(started[1].contains("\"event_type\":\"land_combat_started\""));
             assert!(started[1].contains("\"entity_key\":\"land_combat:271:0\""));
 
+            let unchanged = build_land_combat_raw_lines_from_samples(
+                1234,
+                &control,
+                &mut tracker,
+                15,
+                Some(175),
+                "worker_poll",
+                &clock,
+                vec![sample.clone()],
+            );
+            assert!(unchanged.is_empty());
+
             let mut updated_sample = sample.clone();
             updated_sample.duration = Some(18);
             updated_sample.attacker_divisions = Some(vec![1053, 2837]);
@@ -15734,6 +16051,58 @@ mod attach_log {
             assert!(split[2].contains("\"entity_key\":\"land_combat:271:1\""));
             assert!(split[3].contains("\"event_type\":\"land_combat_started\""));
             assert!(split[3].contains("\"entity_key\":\"land_combat:271:1\""));
+        }
+
+        #[test]
+        fn naval_combat_tracker_does_not_emit_unchanged_samples() {
+            let control = raw_test_control();
+            let clock = ClockSample {
+                date: "1936.1.1.12".to_string(),
+                hour_index: ((1936 * 365) * 24 + 12) as u64,
+                raw_date: DATE_EPOCH_CONST + ((1936 * 365) * 24 + 12),
+            };
+            let mut tracker = NavalCombatTracker::default();
+            let sample = NavalCombatSample {
+                combat_id: 17,
+                generation: 0,
+                body_addr: HEAP_LO + 0x22000,
+                location: Some(9123),
+                attacker_tags: Some(vec!["ENG".to_string()]),
+                defender_tags: Some(vec!["GER".to_string()]),
+                attacker_ship_count: Some(3),
+                defender_ship_count: Some(2),
+                attacker_commander: None,
+                defender_commander: None,
+                attacker_positioning: None,
+                defender_positioning: None,
+                attacker_status: "exact",
+                defender_status: "exact",
+            };
+
+            let started = build_naval_combat_raw_lines_from_samples(
+                1234,
+                &control,
+                &mut tracker,
+                10,
+                Some(125),
+                "worker_poll",
+                &clock,
+                vec![sample.clone()],
+            );
+            let unchanged = build_naval_combat_raw_lines_from_samples(
+                1234,
+                &control,
+                &mut tracker,
+                20,
+                Some(225),
+                "worker_poll",
+                &clock,
+                vec![sample],
+            );
+
+            assert_eq!(started.len(), 2);
+            assert!(started[1].contains("\"event_type\":\"naval_combat_started\""));
+            assert!(unchanged.is_empty());
         }
 
         #[test]
@@ -15831,6 +16200,7 @@ mod attach_log {
                 Some(7),
                 Some(125),
                 Some("scheduled_hour_snapshot"),
+                None,
             );
 
             assert!(snapshot.contains("\"type\":\"collector_started\""));
@@ -15846,6 +16216,7 @@ mod attach_log {
                 sample_ms: 10,
                 country_object_scan: false,
                 special_projects_scan: false,
+                compact_country_frame: false,
                 country_object_bridge: Vec::new(),
                 country_object_bridge_valid: true,
                 country_record_bridge: Vec::new(),
@@ -15889,6 +16260,7 @@ mod attach_log {
                 Some(7),
                 Some(125),
                 Some("worker_poll"),
+                None,
             );
 
             assert!(frame.contains("\"type\":\"collector_started\""));
@@ -15931,6 +16303,7 @@ mod attach_log {
                 false,
                 false,
                 false,
+                false,
             );
             assert!(without_provinces.contains("\"state_ownership\""));
             assert!(without_provinces.contains("\"state_control\""));
@@ -15940,6 +16313,7 @@ mod attach_log {
                 &[],
                 false,
                 true,
+                false,
                 false,
                 false,
                 false,
@@ -15969,6 +16343,7 @@ mod attach_log {
                 false,
                 false,
                 false,
+                false,
             );
             assert!(!without_projects.contains("\"projects_live\""));
 
@@ -15977,6 +16352,7 @@ mod attach_log {
                 false,
                 false,
                 true,
+                false,
                 false,
                 false,
                 false,
@@ -16055,6 +16431,7 @@ mod attach_log {
                     false,
                     false,
                     false,
+                    false,
                     false
                 )
                 .contains("\"country_scalars\""));
@@ -16076,6 +16453,7 @@ mod attach_log {
             assert!(gamestate_cache
                 .domains_json_from_rows(
                     &gamestate_cache.rows,
+                    false,
                     false,
                     false,
                     false,
@@ -16238,7 +16616,7 @@ mod attach_log {
                 diplomacy: None,
             };
 
-            let json = row_json(&row, false, false, false, false, false, false, false);
+            let json = row_json(&row, false, false, false, false, false, false, false, false);
 
             assert!(json.contains("\"POR\""));
             assert!(json.contains("\"tag_db_id\":47"));
@@ -16283,7 +16661,7 @@ mod attach_log {
                 diplomacy: None,
             };
 
-            let json = row_json(&row, false, false, false, false, false, false, false);
+            let json = row_json(&row, false, false, false, false, false, false, false, false);
 
             assert!(json.contains("\"misc\""));
             assert!(json.contains("\"convoys_destroyed\":12"));
@@ -16292,10 +16670,11 @@ mod attach_log {
             assert!(json.contains("\"cosmetic_tag\":null"));
             let cache = CountryIdentityCache::not_attempted("test");
             let domains = cache.domains_json_from_rows(
-                &[row],
+                std::slice::from_ref(&row),
                 false, // state rows
                 false, // province rows
                 false, // special-project rows
+                false, // compact country frame
                 false, // fuel
                 false, // production
                 false, // focus
@@ -16342,8 +16721,8 @@ mod attach_log {
                 diplomacy: None,
             };
 
-            let scheduled = row_json(&row, true, false, false, false, false, false, false);
-            let worker = row_json(&row, false, false, false, false, false, false, false);
+            let scheduled = row_json(&row, false, true, false, false, false, false, false, false);
+            let worker = row_json(&row, false, false, false, false, false, false, false, false);
 
             assert!(scheduled.contains(
                 "\"fuel\":{\"current\":123.5,\"max\":456.25,\"gain\":7.5,\"cost\":-2.25}"
@@ -16391,8 +16770,8 @@ mod attach_log {
                 diplomacy: None,
             };
 
-            let scheduled = row_json(&row, false, false, true, false, false, false, false);
-            let worker = row_json(&row, false, false, false, false, false, false, false);
+            let scheduled = row_json(&row, false, false, false, true, false, false, false, false);
+            let worker = row_json(&row, false, false, false, false, false, false, false, false);
 
             assert!(scheduled.contains("\"focus\""));
             assert!(scheduled.contains("\"focus_tree\":\"portugal_focus\""));
@@ -16403,12 +16782,20 @@ mod attach_log {
             assert!(scheduled.contains("\"current_continuous\":\"continuous_naval_production\""));
             assert!(scheduled.contains("\"progress\":12.5"));
             assert!(!worker.contains("\"focus\""));
+            let compact = row_json(&row, true, false, false, true, false, false, false, false);
+            assert!(compact.contains("\"focus\""));
+            assert!(compact.contains("\"completed_count\":2"));
+            assert!(compact.contains("\"current\":\"POR_industrial_focus\""));
+            assert!(!compact.contains("\"completed\":["));
+            assert!(!compact.contains("\"collector_object\""));
+            assert!(!compact.contains("\"scalars\""));
             let cache = CountryIdentityCache::not_attempted("test");
             let domains = cache.domains_json_from_rows(
-                &[row],
+                std::slice::from_ref(&row),
                 false, // state rows
                 false, // province rows
                 false, // special-project rows
+                false, // compact country frame
                 false, // fuel
                 false, // production
                 true,  // focus
@@ -16418,6 +16805,87 @@ mod attach_log {
                 false, // decisions
             );
             assert!(domains.contains("\"focus_live\""));
+            let compact_domains = cache.domains_json_from_rows(
+                &[row],
+                false, // state rows
+                false, // province rows
+                false, // special-project rows
+                true,  // compact country frame
+                false, // fuel
+                false, // production
+                true,  // focus
+                false, // research
+                false, // politics
+                false, // politics residuals
+                false, // decisions
+            );
+            assert!(compact_domains.contains("\"focus_live\""));
+            assert!(!compact_domains.contains("\"country_scalars\""));
+        }
+
+        #[test]
+        fn compact_country_frame_tracker_emits_only_changed_rows() {
+            let cache = CountryIdentityCache::not_attempted("test");
+            let mut tracker = CompactCountryFrameTracker::default();
+            let mut row = test_country_row("POR", 47, 0x1234);
+            row.focus = Some(CountryFocusRow {
+                focus_tree: Some("portugal_focus".to_string()),
+                completed: Some(vec!["POR_estado_novo".to_string()]),
+                completed_count: Some(1),
+                current: Some("POR_industrial_focus".to_string()),
+                current_continuous: None,
+                progress: Some(12.5),
+            });
+
+            let first = cache.countries_json_from_rows(
+                0,
+                std::slice::from_ref(&row),
+                true,
+                false,
+                false,
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                Some(&mut tracker),
+            );
+            let second = cache.countries_json_from_rows(
+                0,
+                std::slice::from_ref(&row),
+                true,
+                false,
+                false,
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                Some(&mut tracker),
+            );
+            row.focus.as_mut().unwrap().progress = Some(13.5);
+            let changed = cache.countries_json_from_rows(
+                0,
+                std::slice::from_ref(&row),
+                true,
+                false,
+                false,
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                Some(&mut tracker),
+            );
+
+            assert!(first.contains("\"POR\""));
+            assert!(first.contains("\"progress\":12.5"));
+            assert_eq!(second, "{}");
+            assert!(changed.contains("\"POR\""));
+            assert!(changed.contains("\"progress\":13.5"));
         }
 
         #[test]
@@ -16440,8 +16908,8 @@ mod attach_log {
                 }]),
             });
 
-            let scheduled = row_json(&row, false, false, false, true, false, false, false);
-            let worker = row_json(&row, false, false, false, false, false, false, false);
+            let scheduled = row_json(&row, false, false, false, false, true, false, false, false);
+            let worker = row_json(&row, false, false, false, false, false, false, false, false);
 
             assert!(scheduled.contains("\"research\""));
             assert!(scheduled.contains("\"completed_tech_count\":123"));
@@ -16456,10 +16924,20 @@ mod attach_log {
             assert!(scheduled.contains("\"base_required_points_units\":220"));
             assert!(scheduled.contains("\"tech_name\":\"basic_machine_tools\""));
             assert!(!worker.contains("\"research\""));
+            let compact = row_json(&row, true, false, false, false, true, false, false, false);
+            assert!(compact.contains("\"research\""));
+            assert!(compact.contains("\"tech_def_index_raw\":36896"));
+            assert!(compact.contains("\"progress_raw\":117000"));
+            assert!(compact.contains("\"live_progress_raw\":11700000"));
+            assert!(compact.contains("\"base_required_points_raw\":22000000"));
+            assert!(!compact.contains("\"tech_handle_raw\""));
+            assert!(!compact.contains("\"progress_units\""));
+            assert!(!compact.contains("\"tech_name\""));
 
             let cache = CountryIdentityCache::not_attempted("test");
             let domains = cache.domains_json_from_rows(
                 &[row],
+                false,
                 false,
                 false,
                 false,
@@ -16550,8 +17028,8 @@ mod attach_log {
                 diplomacy: None,
             };
 
-            let scheduled = row_json(&row, false, false, false, false, true, false, false);
-            let worker = row_json(&row, false, false, false, false, false, false, false);
+            let scheduled = row_json(&row, false, false, false, false, false, true, false, false);
+            let worker = row_json(&row, false, false, false, false, false, false, false, false);
 
             assert!(scheduled.contains("\"politics\""));
             assert!(scheduled.contains("\"ruling_party\":\"neutrality\""));
@@ -16569,9 +17047,20 @@ mod attach_log {
             assert!(scheduled.contains("\"national_spirits\":[\"sour_loser\"]"));
             assert!(scheduled.contains("\"party_count\":4"));
             assert!(!worker.contains("\"politics\""));
+            let compact = row_json(&row, true, false, false, false, false, true, false, false);
+            assert!(compact.contains("\"politics\""));
+            assert!(compact.contains("\"laws\":{\"economy\":\"war_economy\""));
+            assert!(compact.contains("\"advisor_ideas\""));
+            assert!(compact.contains("\"national_spirits\":[\"sour_loser\"]"));
+            assert!(compact.contains("\"idea_count\":4"));
+            assert!(!compact.contains("\"ideas\":["));
+            assert!(!compact.contains("\"idea_groups\""));
+            assert!(!compact.contains("\"ideas_other\""));
+            assert!(!compact.contains("\"scalars\""));
             let cache = CountryIdentityCache::not_attempted("test");
             let domains = cache.domains_json_from_rows(
                 &[row],
+                false,
                 false,
                 false,
                 false,
@@ -16709,8 +17198,8 @@ mod attach_log {
                 diplomacy: None,
             };
 
-            let scheduled = row_json(&row, false, false, false, false, false, true, false);
-            let worker = row_json(&row, false, false, false, false, false, false, false);
+            let scheduled = row_json(&row, false, false, false, false, false, false, true, false);
+            let worker = row_json(&row, false, false, false, false, false, false, false, false);
 
             assert!(scheduled.contains("\"politics\""));
             assert!(scheduled.contains("\"last_election\":\"1933.7.1.1\""));
@@ -16733,6 +17222,7 @@ mod attach_log {
                 false, // state rows
                 false, // province rows
                 false, // special-project rows
+                false, // compact country frame
                 false, // fuel
                 false, // production
                 false, // focus
@@ -16782,7 +17272,7 @@ mod attach_log {
                 diplomacy: None,
             };
 
-            let scheduled = row_json(&row, false, false, false, false, false, true, false);
+            let scheduled = row_json(&row, false, false, false, false, false, false, true, false);
 
             assert!(scheduled.contains("\"appointed_advisors\":[]"));
             assert!(scheduled.contains("\"appointed_advisor_details\":[]"));
@@ -16831,8 +17321,8 @@ mod attach_log {
                 diplomacy: None,
             };
 
-            let scheduled = row_json(&row, false, false, false, false, false, false, true);
-            let worker = row_json(&row, false, false, false, false, false, false, false);
+            let scheduled = row_json(&row, false, false, false, false, false, false, false, true);
+            let worker = row_json(&row, false, false, false, false, false, false, false, false);
 
             assert!(scheduled.contains("\"decisions\""));
             assert!(scheduled.contains("\"status_present\""));
@@ -16847,6 +17337,7 @@ mod attach_log {
                 false, // state rows
                 false, // province rows
                 false, // special-project rows
+                false, // compact country frame
                 false, // fuel
                 false, // production
                 false, // focus
@@ -16867,7 +17358,7 @@ mod attach_log {
                 casualties: None,
             });
 
-            let json = row_json(&row, false, false, false, false, false, false, false);
+            let json = row_json(&row, false, false, false, false, false, false, false, false);
 
             assert!(json.contains("\"diplomacy\":{\"faction_group\":42}"));
         }
@@ -16930,8 +17421,8 @@ mod attach_log {
                 diplomacy: None,
             };
 
-            let scheduled = row_json(&row, false, true, false, false, false, false, false);
-            let worker = row_json(&row, false, false, false, false, false, false, false);
+            let scheduled = row_json(&row, false, false, true, false, false, false, false, false);
+            let worker = row_json(&row, false, false, false, false, false, false, false, false);
 
             assert!(scheduled.contains("\"production\""));
             assert!(scheduled.contains("\"stockpile\":{\"70\":123.5,\"71\":-0.25}"));
@@ -16987,7 +17478,7 @@ mod attach_log {
                 diplomacy: None,
             };
 
-            let scheduled = row_json(&row, false, true, false, false, false, false, false);
+            let scheduled = row_json(&row, false, false, true, false, false, false, false, false);
 
             assert!(scheduled.contains("\"production\""));
             assert!(!scheduled.contains("\"stockpile\""));

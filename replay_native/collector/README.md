@@ -36,11 +36,12 @@ Frames include a monotonic producer sequence id. The Python proof harness may
 annotate pipe reads with byte count and CRC32 for validation, but production
 recording must not depend on Python in the live capture path.
 
-Current cadence contract: bounded proof workers sample cheaply at 10 ms, the
-recorder keeps one canonical replay snapshot per unique game hour, and the raw
-`collector_frames.jsonl` stream preserves duplicate same-hour frames for later
-high-frequency domains. Daily update hooks or daily rows are not replay
-coverage.
+Current cadence contract: bounded proof workers default to 10 ms sampling, but
+speed-five country-domain proof runs may request 1 ms sampling through the
+native host. The recorder keeps one canonical scheduled snapshot per unique
+game hour, and the raw `collector_frames.jsonl` stream preserves duplicate
+same-hour frames for later high-frequency domains. Daily update hooks or daily
+rows are not replay coverage.
 
 For hourly proof runs, the recorder writes a short-lived
 `collector_control.json` beside the DLL before attach. The DLL treats that as a
@@ -61,6 +62,13 @@ for sub-hour combat, movement, and event capture.
 The root probe is intentionally narrow. It proves attach, transport, build
 sentinels, clock decoding, and country identity row emission before any
 trampoline hook or broad object traversal is added.
+
+Filtered compact country sessions use `compact_country_frame` to emit a full
+initial keyframe followed by DLL-side sparse per-country updates. When a
+scheduled-domain filter is present, worker polls do not emit full root snapshots;
+they emit raw clock plus explicitly requested heavy raw domains. This is required
+for speed-five proof because unrelated late-game combat streams and repeated
+all-country unchanged payloads can otherwise consume the hourly budget.
 
 Country-object heap discovery is not part of normal capture. The experimental
 whole-heap vtable scan is behind the explicit `country_object_scan` control flag,
