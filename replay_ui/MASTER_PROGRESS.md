@@ -170,6 +170,20 @@ for inspection, with no ability to mutate the game.
   on the active vanilla build. It does not close unimplemented replay domains
   such as full naval/air native compact telemetry, full OOB roots, theatres,
   empty armies, task forces, and deeper order/combat semantics.
+- Compact `ships` now has a DLL-native production-shaped proof for the same
+  executable profile. The collector walks the anchored
+  `CGameState+0x310 -> CCountry+0x278 -> CFleet* -> CTaskForce/CShip` path
+  without a Python bridge or heap scan. `compact_ships_native_870ebf_20260701_010232`
+  advanced 39 game hours with 0 skipped, verified ordered/decodable compact
+  records, `.battleplan` packing, and no source-unavailable/partial/bridge/
+  worker failures. `compact_full_plus_ships_870ebf_20260701_010320` then
+  scheduled the prior 16 compact domains plus `ships` together for 30 seconds,
+  advanced 53 game hours with 0 skipped, verified full per-domain coverage,
+  ordered/decodable records, `.battleplan` packing, and no source-unavailable/
+  partial/bridge/worker failures. This makes compact ship hull telemetry a
+  DLL-complete segment for the verified `870ebf` build profile; fleet/task-force
+  hierarchy rows, naval leaders, missions, active naval combat semantics, and
+  sinking/damage event details remain separate segments.
 - DLL-native scheduled `diplomacy_live` is proven for faction membership and
   war/casualty rows: the collector reads `CCountry+0x598` faction groups on
   hourly frames, folds into `countries.*.diplomacy.faction_group` and
@@ -498,6 +512,16 @@ The app is product-complete only when all applicable gates pass:
   for all 16 implemented compact domains, zero parse/order errors, no
   source-unavailable/partial/bridge/worker failures, semantic counters across
   every scheduled domain, and a verified `.battleplan` container.
+- Compact current-build full-plus-ships proof passed on 2026-07-01:
+  `replay_native/runs/compact_full_plus_ships_870ebf_20260701_010320` advanced
+  53 game hours in 30 seconds at speed five/current equivalent with 0 skipped,
+  verified ordered/decodable records, full per-hour domain/data-record coverage
+  for all 17 scheduled compact domains, zero parse/order errors, no
+  source-unavailable/partial/bridge/worker failures, semantic counters across
+  every scheduled domain, and a verified `.battleplan` container. The
+  ships-only gate
+  `replay_native/runs/compact_ships_native_870ebf_20260701_010232` separately
+  proved `ship_root_source = "dll_native"` with no compact discovery debt.
 - Scheduled `diplomacy_live` faction proof passed on 2026-06-29:
   `replay/snapshots/_collector_session_diplomacy_gate/20260629T152734Z_pid43412`
   advanced 12 game hours in 48.328 wall seconds, stored 13 verified snapshots,

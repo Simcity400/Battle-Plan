@@ -512,7 +512,8 @@ country rows, 397 decision-country rows, 50 timed decisions, and 355 diplomacy
 country rows.
 
 `compact_full_current_870ebf_speed5_20260701_v2` is the current wide proof for
-all implemented compact domains on the 2026-06-30 vanilla executable profile.
+the first 16 implemented compact domains on the 2026-06-30 vanilla executable
+profile.
 After refreshing current-build map and land-combat validators, the 60-second
 speed-five gate scheduled the eight country domains plus `divisions`,
 `division_equipment`, `army_orders`, `oob_command`, `land_combats`,
@@ -526,15 +527,25 @@ including country economy/politics/research/decisions, divisions,
 division-equipment entries, active army orders, active land OOB, land-combat
 participants, map control, map resources/buildings, and weather regions.
 
-`ships` is now reserved as compact `domain_id=29` with recorder decoder and
-manifest source/debt reporting. A 15-second live schema gate
-`compact_ships_schema_sourceblocked_870ebf_20260701_004059` advanced 29 game
-hours with 0 skipped, ordered/decodable records, and a verified
-`.battleplan`, but correctly failed acceptance with
-`ship_root_source="unresolved"` / `compact_source_unavailable`. It is not a
-completed recording segment until the DLL walks a native anchored
-`CTaskForce`/`CShip` root and passes the speed-five compact gate with no
-source/partial/bridge flags.
+`compact_ships_native_870ebf_20260701_010232` completes compact `ships`
+recording for the same verified executable profile. The DLL collector walks the
+anchored country/fleet/task-force/ship path without a Python bridge, while the
+Rust host verifies ordering, decodability, cadence, byte volume, and replay
+packing. The 20-second ships-only speed-five gate advanced 39 game hours with
+40 frame-end records, skipped 0, had no source-unavailable/partial/bridge/
+worker flags, avg frame 33.733 ms, p95 35.008 ms, max 35.618 ms, 147,677
+compact bytes, `ship_root_source="dll_native"`, and an independent
+`pack_replay verify` pass. Recorder counters observed 55,195 ship rows and
+6,318 task-force rows, emitting 2,692 changed ship rows including 65 deletes.
+
+`compact_full_plus_ships_870ebf_20260701_010320` is the current widest
+production-shaped gate. It scheduled the prior 16 compact domains plus `ships`
+for 30 seconds, advanced 53 game hours with 54 frame-end records, skipped 0,
+had full per-domain data coverage, ordered/decodable records, zero parse/order
+errors, no source-unavailable/partial/bridge/worker flags, avg frame 47.441 ms,
+p95 57.250 ms, max 73.141 ms, 5,237,329 compact bytes, and an independent
+`pack_replay verify` pass. `ships` emitted 3,133 changed rows while observing
+74,160 ship rows and 8,473 task-force rows; ship read p95 was 43.519 ms.
 
 Implementation note: see `COMPACT_HOI4REPLAY_NEXT_STEP.md` for the bounded
 Rust-native packaging path and the test contract for putting `collector_stream.bin`

@@ -488,7 +488,7 @@ mod attach_log {
     const MAX_NAVAL_COMBAT_MEMBER_STRING_LEN: usize = 128;
     const MAX_NAVAL_COMBAT_MEMBER_MAX_STRENGTH_RAW: u32 = 1_000_000_000;
     const MAX_NAVAL_COMBAT_MEMBER_ENGAGEMENT_WEIGHT_RAW: u32 = 10_000_000;
-    const CSHIP_VTABLE_RVA: usize = 0x2931998;
+    const CSHIP_VTABLE_RVA: usize = 0x2941748;
     const CSHIP_TYPE: u32 = 51;
     const CSHIP_OFF_HANDLE: usize = 0x08;
     const CSHIP_OFF_SUNK_CONVOYS: usize = 0x3C;
@@ -509,10 +509,11 @@ mod attach_log {
     const SHIP_STATS_SAMPLE_MIN_MS: u64 = 250;
     const AG_VTABLE_RVA: usize = 0x293BCF8;
     const ARMY_LEADER_VTABLE_RVA: usize = 0x293F538;
-    const NAVY_LEADER_VTABLE_RVA: usize = 0x292F8A0;
-    const FLEET_VTABLE_RVA: usize = 0x293C178;
-    const TASK_FORCE_VTABLE_RVA: usize = 0x293C8B0;
-    const THEATRE_VTABLE_RVA: usize = 0x294ED28;
+    const NAVY_LEADER_VTABLE_RVA: usize = 0x293F650;
+    const FLEET_VTABLE_RVA: usize = 0x294BF28;
+    const TASK_FORCE_SUBOBJECT_VTABLE_RVA: usize = 0x294C480;
+    const TASK_FORCE_VTABLE_RVA: usize = 0x294C660;
+    const THEATRE_VTABLE_RVA: usize = 0x295EE18;
     const OOB_TYPE_FLEET: u32 = 61;
     const OOB_TYPE_THEATRE: u32 = 67;
     const ARMY_OFF_MEMBER_COUNT: usize = 0x5C;
@@ -532,6 +533,14 @@ mod attach_log {
     const TASK_FORCE_OFF_FLEET_PARENT: usize = 0x330;
     const TASK_FORCE_OFF_SHIP_BEGIN: usize = 0x338;
     const TASK_FORCE_OFF_SHIP_COUNT: usize = 0x344;
+    const COUNTRY_FLEET_VECTOR_DATA: usize = 0x278;
+    const COUNTRY_FLEET_VECTOR_CAPACITY: usize = 0x280;
+    const COUNTRY_FLEET_VECTOR_COUNT: usize = 0x284;
+    const MAX_COUNTRY_FLEET_ROWS: u32 = 10_000;
+    const COMPACT_FLEET_SCAN_SPAN: usize = 0x1800;
+    const COMPACT_FLEET_POINTER_VECTOR_MAX_ROWS: u32 = 512;
+    const COMPACT_FLEET_POINTER_VECTOR_MAX_CAPACITY: u32 = 2_000;
+    const TASK_FORCE_SUBOBJECT_TO_BODY_DELTAS: [isize; 4] = [-0x780, 0x10, 0x7A0, 0xF30];
     const MAX_OOB_COMMAND_ID: u32 = 4_000_000;
     const MAX_OOB_COMMAND_BRIDGE_ROWS: usize = 50_000;
     const MAX_OOB_COMMAND_BRIDGE_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
@@ -3263,6 +3272,18 @@ mod attach_log {
         organisation_raw: u32,
         experience_raw: u32,
         sunk_convoys: u32,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct CompactFleetRoot {
+        fleet_id: u32,
+        body_ptr: usize,
+    }
+
+    struct CompactShipNativeRead {
+        rows: Vec<CompactShipRow>,
+        observed_task_force_rows: u32,
+        invalid_task_force_rows: u32,
     }
 
     #[derive(Clone, Debug, PartialEq)]
@@ -11375,20 +11396,442 @@ mod attach_log {
     }
 
     fn read_compact_ships(
-        _state: &CollectorState,
+        state: &CollectorState,
         status_flags: u32,
         tracker: &mut CompactShipTracker,
     ) -> CompactShipRead {
         let read_started = Instant::now();
-        let _previous_rows = tracker.previous.len();
+        let mut status_flags = status_flags;
+        let Some(native) = sample_compact_ships_native(state) else {
+            return CompactShipRead {
+                rows: Vec::new(),
+                read_time_us: duration_micros_u64(read_started.elapsed()),
+                changed_rows: 0,
+                status_flags: status_flags | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                observed_ship_rows: 0,
+                observed_task_force_rows: 0,
+                deleted_rows: 0,
+            };
+        };
+        if native.observed_task_force_rows == 0 {
+            status_flags |= COMPACT_STATUS_SOURCE_UNAVAILABLE;
+        }
+        if native.invalid_task_force_rows > 0 {
+            status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+        }
+        let observed_ship_rows = native.rows.len().min(u32::MAX as usize) as u32;
+        let observed_task_force_rows = native.observed_task_force_rows;
+        let (rows, changed_rows, deleted_rows) = compact_ship_delta_rows(tracker, native.rows);
         CompactShipRead {
-            rows: Vec::new(),
+            rows,
             read_time_us: duration_micros_u64(read_started.elapsed()),
-            changed_rows: 0,
-            status_flags: status_flags | COMPACT_STATUS_SOURCE_UNAVAILABLE,
-            observed_ship_rows: 0,
-            observed_task_force_rows: 0,
-            deleted_rows: 0,
+            changed_rows,
+            status_flags,
+            observed_ship_rows,
+            observed_task_force_rows,
+            deleted_rows,
+        }
+    }
+
+    fn sample_compact_ships_native(state: &CollectorState) -> Option<CompactShipNativeRead> {
+        if state.base == 0 || !state.daily_match || !state.long_string_match {
+            return None;
+        }
+        let fleets = discover_compact_fleet_roots_from_countries(state)?;
+        if fleets.is_empty() {
+            return None;
+        }
+        let mut fleet_ptrs = BTreeMap::new();
+        for fleet in &fleets {
+            fleet_ptrs.insert(fleet.body_ptr, fleet.fleet_id);
+        }
+        let mut task_forces: BTreeMap<usize, u32> = BTreeMap::new();
+        for fleet in &fleets {
+            collect_compact_task_force_roots_from_fleet(
+                state.base,
+                fleet.body_ptr,
+                &fleet_ptrs,
+                &mut task_forces,
+            );
+        }
+
+        let mut rows_by_id: BTreeMap<u32, CompactShipRow> = BTreeMap::new();
+        let mut invalid_task_forces = 0u32;
+        for (task_force_ptr, task_force_id) in &task_forces {
+            match sample_compact_task_force_ships(state.base, *task_force_ptr, *task_force_id) {
+                Some(rows) => {
+                    for row in rows {
+                        rows_by_id.entry(row.instance_id).or_insert(row);
+                    }
+                }
+                None => invalid_task_forces = invalid_task_forces.saturating_add(1),
+            }
+        }
+
+        Some(CompactShipNativeRead {
+            rows: rows_by_id.into_values().collect(),
+            observed_task_force_rows: task_forces.len().min(u32::MAX as usize) as u32,
+            invalid_task_force_rows: invalid_task_forces,
+        })
+    }
+
+    fn discover_compact_fleet_roots_from_countries(
+        state: &CollectorState,
+    ) -> Option<Vec<CompactFleetRoot>> {
+        let module_base = state.base;
+        let game_state = state.date_ptr as usize;
+        if !is_heap_pointer_aligned(game_state, 8) {
+            return None;
+        }
+        let country_table = read_u64(game_state.checked_add(CGAMESTATE_COUNTRY_TABLE)?)? as usize;
+        let country_count = read_u32(game_state.checked_add(CGAMESTATE_COUNTRY_COUNT)?)?;
+        if country_count == 0 || country_count > MAX_CGAMESTATE_COUNTRIES {
+            return None;
+        }
+        if !is_heap_pointer_aligned(country_table, 8) {
+            return None;
+        }
+        let table_len = (country_count as usize).checked_mul(8)?;
+        let country_ptrs = read_bytes(country_table, table_len)?;
+        let country_vtable = module_base.checked_add(COUNTRY_VTABLE_RVA)?;
+        let mut rows_by_id: BTreeMap<u32, CompactFleetRoot> = BTreeMap::new();
+
+        for index in 0..country_count as usize {
+            let Some(country_ptr) = read_u64_from_slice(&country_ptrs, index * 8) else {
+                continue;
+            };
+            let country_ptr = country_ptr as usize;
+            if !is_heap_pointer_aligned(country_ptr, 8) {
+                continue;
+            }
+            if read_u64(country_ptr).map(|value| value as usize) != Some(country_vtable) {
+                continue;
+            }
+            collect_compact_country_fleet_roots(module_base, country_ptr, &mut rows_by_id);
+        }
+
+        if rows_by_id.is_empty() {
+            None
+        } else {
+            Some(rows_by_id.into_values().collect())
+        }
+    }
+
+    fn collect_compact_country_fleet_roots(
+        module_base: usize,
+        country_ptr: usize,
+        rows_by_id: &mut BTreeMap<u32, CompactFleetRoot>,
+    ) {
+        let Some(vector_data) = read_u64(country_ptr.saturating_add(COUNTRY_FLEET_VECTOR_DATA))
+        else {
+            return;
+        };
+        let Some(capacity) = read_u32(country_ptr.saturating_add(COUNTRY_FLEET_VECTOR_CAPACITY))
+        else {
+            return;
+        };
+        let Some(count) = read_u32(country_ptr.saturating_add(COUNTRY_FLEET_VECTOR_COUNT)) else {
+            return;
+        };
+        if count == 0 || count > capacity || count > MAX_COUNTRY_FLEET_ROWS {
+            return;
+        }
+        let vector_data = vector_data as usize;
+        if !is_heap_pointer_aligned(vector_data, 8) {
+            return;
+        }
+        let Some(byte_len) = (count as usize).checked_mul(8) else {
+            return;
+        };
+        let Some(fleet_ptrs) = read_bytes(vector_data, byte_len) else {
+            return;
+        };
+        for index in 0..count as usize {
+            let Some(fleet_ptr) = read_u64_from_slice(&fleet_ptrs, index * 8) else {
+                continue;
+            };
+            let fleet_ptr = fleet_ptr as usize;
+            let Some(fleet_id) = validate_oob_body(
+                module_base,
+                fleet_ptr,
+                FLEET_VTABLE_RVA,
+                OOB_TYPE_FLEET,
+            ) else {
+                continue;
+            };
+            rows_by_id.entry(fleet_id).or_insert(CompactFleetRoot {
+                fleet_id,
+                body_ptr: fleet_ptr,
+            });
+        }
+    }
+
+    fn collect_compact_task_force_roots_from_fleet(
+        module_base: usize,
+        fleet_ptr: usize,
+        fleet_ptrs: &BTreeMap<usize, u32>,
+        task_forces: &mut BTreeMap<usize, u32>,
+    ) {
+        let Some(blob) = read_bytes(fleet_ptr, COMPACT_FLEET_SCAN_SPAN) else {
+            return;
+        };
+        for offset in (0..blob.len().saturating_sub(8)).step_by(8) {
+            let Some(candidate) = read_u64_from_slice(&blob, offset) else {
+                continue;
+            };
+            maybe_insert_compact_task_force_body(
+                module_base,
+                candidate as usize,
+                fleet_ptrs,
+                task_forces,
+            );
+        }
+        for offset in (0..blob.len().saturating_sub(16)).step_by(8) {
+            let Some(vector_data) = read_u64_from_slice(&blob, offset) else {
+                continue;
+            };
+            let Some(capacity) = read_u32_from_slice(&blob, offset + 8) else {
+                continue;
+            };
+            let Some(count) = read_u32_from_slice(&blob, offset + 12) else {
+                continue;
+            };
+            if count == 0
+                || count > capacity
+                || count > COMPACT_FLEET_POINTER_VECTOR_MAX_ROWS
+                || capacity > COMPACT_FLEET_POINTER_VECTOR_MAX_CAPACITY
+            {
+                continue;
+            }
+            let vector_data = vector_data as usize;
+            if !is_heap_pointer_aligned(vector_data, 8) {
+                continue;
+            }
+            let Some(byte_len) = (count as usize).checked_mul(8) else {
+                continue;
+            };
+            let Some(vector_ptrs) = read_bytes(vector_data, byte_len) else {
+                continue;
+            };
+            for index in 0..count as usize {
+                let Some(candidate) = read_u64_from_slice(&vector_ptrs, index * 8) else {
+                    continue;
+                };
+                let candidate = candidate as usize;
+                if maybe_insert_compact_task_force_body(
+                    module_base,
+                    candidate,
+                    fleet_ptrs,
+                    task_forces,
+                ) {
+                    continue;
+                }
+                if !is_heap_pointer_aligned(candidate, 8) {
+                    continue;
+                }
+                if read_u64(candidate).map(|value| value as usize)
+                    != module_base.checked_add(TASK_FORCE_SUBOBJECT_VTABLE_RVA)
+                {
+                    continue;
+                }
+                for delta in TASK_FORCE_SUBOBJECT_TO_BODY_DELTAS {
+                    let Some(body_ptr) = checked_add_isize(candidate, delta) else {
+                        continue;
+                    };
+                    if maybe_insert_compact_task_force_body(
+                        module_base,
+                        body_ptr,
+                        fleet_ptrs,
+                        task_forces,
+                    ) {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    fn checked_add_isize(value: usize, delta: isize) -> Option<usize> {
+        if delta >= 0 {
+            value.checked_add(delta as usize)
+        } else {
+            value.checked_sub(delta.unsigned_abs())
+        }
+    }
+
+    fn maybe_insert_compact_task_force_body(
+        module_base: usize,
+        body_ptr: usize,
+        fleet_ptrs: &BTreeMap<usize, u32>,
+        task_forces: &mut BTreeMap<usize, u32>,
+    ) -> bool {
+        let Some(task_force_id) = validate_compact_task_force_body(module_base, body_ptr, fleet_ptrs)
+        else {
+            return false;
+        };
+        task_forces.entry(body_ptr).or_insert(task_force_id);
+        true
+    }
+
+    fn validate_compact_task_force_body(
+        module_base: usize,
+        body_ptr: usize,
+        fleet_ptrs: &BTreeMap<usize, u32>,
+    ) -> Option<u32> {
+        let task_force_id =
+            validate_oob_body(module_base, body_ptr, TASK_FORCE_VTABLE_RVA, OOB_TYPE_FLEET)?;
+        let parent_ptr =
+            read_u64(body_ptr.checked_add(TASK_FORCE_OFF_FLEET_PARENT)?)? as usize;
+        if !fleet_ptrs.contains_key(&parent_ptr) {
+            return None;
+        }
+        let count = read_u32(body_ptr.checked_add(TASK_FORCE_OFF_SHIP_COUNT)?)?;
+        if count > MAX_OOB_TASK_FORCE_SHIPS {
+            return None;
+        }
+        if count > 0 {
+            let begin = read_u64(body_ptr.checked_add(TASK_FORCE_OFF_SHIP_BEGIN)?)? as usize;
+            if !is_heap_pointer_aligned(begin, 8) {
+                return None;
+            }
+        }
+        Some(task_force_id)
+    }
+
+    fn sample_compact_task_force_ships(
+        module_base: usize,
+        task_force_ptr: usize,
+        task_force_id: u32,
+    ) -> Option<Vec<CompactShipRow>> {
+        let count = read_u32(task_force_ptr.checked_add(TASK_FORCE_OFF_SHIP_COUNT)?)?;
+        if count == 0 {
+            return Some(Vec::new());
+        }
+        if count > MAX_OOB_TASK_FORCE_SHIPS {
+            return None;
+        }
+        let begin = read_u64(task_force_ptr.checked_add(TASK_FORCE_OFF_SHIP_BEGIN)?)? as usize;
+        if !is_heap_pointer_aligned(begin, 8) {
+            return None;
+        }
+        let byte_len = (count as usize).checked_mul(8)?;
+        let ship_ptrs = read_bytes(begin, byte_len)?;
+        if ship_ptrs.len() < byte_len {
+            return None;
+        }
+        let mut rows = Vec::new();
+        let mut seen = BTreeMap::new();
+        for index in 0..count as usize {
+            let ship_ptr = read_u64_from_slice(&ship_ptrs, index * 8)? as usize;
+            let row = sample_compact_ship_body(module_base, ship_ptr, task_force_id)?;
+            if seen.insert(row.instance_id, ()).is_some() {
+                return None;
+            }
+            rows.push(row);
+        }
+        Some(rows)
+    }
+
+    fn sample_compact_ship_body(
+        module_base: usize,
+        body: usize,
+        task_force_id: u32,
+    ) -> Option<CompactShipRow> {
+        if !is_map_control_heap_pointer(body) {
+            return None;
+        }
+        if read_u64(body)? as usize != module_base.checked_add(CSHIP_VTABLE_RVA)? {
+            return None;
+        }
+        let handle = read_u64(body.checked_add(CSHIP_OFF_HANDLE)?)?;
+        if (handle & 0xFFFF_FFFF) as u32 != CSHIP_TYPE {
+            return None;
+        }
+        let instance_id = ((handle >> 32) & 0xFFFF_FFFF) as u32;
+        if instance_id == 0 || instance_id > MAX_SHIP_INSTANCE_ID {
+            return None;
+        }
+        if read_u32(body.checked_add(CSHIP_OFF_REF100)?)? != CSHIP_REF100_RAW {
+            return None;
+        }
+        let category_enum = read_u32(body.checked_add(CSHIP_OFF_CATEGORY)?)?;
+        ship_category_label(category_enum)?;
+        let strength_raw = read_u32(body.checked_add(CSHIP_OFF_STRENGTH)?)?;
+        if strength_raw > MAX_SHIP_STRENGTH_RAW {
+            return None;
+        }
+        let organisation_raw = read_u32(body.checked_add(CSHIP_OFF_ORGANISATION)?)?;
+        if organisation_raw > MAX_SHIP_ORGANISATION_RAW {
+            return None;
+        }
+        let experience_raw = read_u32(body.checked_add(CSHIP_OFF_EXPERIENCE)?)?;
+        if experience_raw > MAX_SHIP_EXPERIENCE_RAW {
+            return None;
+        }
+        let definition = read_msvc_string(
+            body.checked_add(CSHIP_OFF_DEFINITION)?,
+            MAX_SHIP_DEFINITION_LEN,
+        )
+        .filter(|value| !looks_like_hex_pointer(value));
+        Some(CompactShipRow {
+            instance_id,
+            deleted: false,
+            task_force_id: Some(task_force_id),
+            definition,
+            category_enum,
+            strength_raw,
+            organisation_raw,
+            experience_raw,
+            sunk_convoys: read_u32(body.checked_add(CSHIP_OFF_SUNK_CONVOYS)?)?,
+        })
+    }
+
+    fn compact_ship_delta_rows(
+        tracker: &mut CompactShipTracker,
+        current_rows: Vec<CompactShipRow>,
+    ) -> (Vec<CompactShipRow>, u32, u32) {
+        let emit_full_snapshot = tracker.previous.is_empty();
+        let mut current = BTreeMap::new();
+        let mut emitted = Vec::new();
+        let mut deleted_rows = 0u32;
+        for row in current_rows {
+            let key = row.instance_id;
+            let changed = tracker
+                .previous
+                .get(&key)
+                .map(|old| old != &row)
+                .unwrap_or(true);
+            if emit_full_snapshot || changed {
+                emitted.push(row.clone());
+            }
+            current.insert(key, row);
+        }
+        if !emit_full_snapshot {
+            for instance_id in tracker.previous.keys().copied().collect::<Vec<_>>() {
+                if current.contains_key(&instance_id) {
+                    continue;
+                }
+                emitted.push(deleted_compact_ship_row(instance_id));
+                deleted_rows = deleted_rows.saturating_add(1);
+            }
+        }
+        emitted.sort_by_key(|row| (row.instance_id, row.deleted));
+        tracker.previous = current;
+        let changed_rows = emitted.len().min(u32::MAX as usize) as u32;
+        (emitted, changed_rows, deleted_rows)
+    }
+
+    fn deleted_compact_ship_row(instance_id: u32) -> CompactShipRow {
+        CompactShipRow {
+            instance_id,
+            deleted: true,
+            task_force_id: None,
+            definition: None,
+            category_enum: 0,
+            strength_raw: 0,
+            organisation_raw: 0,
+            experience_raw: 0,
+            sunk_convoys: 0,
         }
     }
 

@@ -686,6 +686,19 @@ Tasks:
 
 - Port `ships`, `oob_command`, `naval_air`, `naval_air_combats`, and
   `naval_air_combat_stats` into collector frames.
+- Current compact DLL checkpoint: `ships` now has a DLL-native, no-bridge
+  compact stream for the verified `870ebf` vanilla executable profile. The
+  collector walks `CGameState+0x310 -> CCountry+0x278 -> CFleet*`, normalizes
+  bounded task-force subobject references to validated `CTaskForce` bodies, and
+  validates `CShip` vtables/type/id/ref sentinels before emitting compact ship
+  rows. `compact_ships_native_870ebf_20260701_010232` advanced 39 game hours
+  with 0 skipped and no source/partial/bridge/worker failures; the wider
+  `compact_full_plus_ships_870ebf_20260701_010320` covered 17 compact domains,
+  advanced 53 game hours with 0 skipped, verified ordered/decodable records and
+  `.battleplan` packing, and kept `ship_root_source = "dll_native"` with no
+  compact discovery debt. Fleet/task-force hierarchy records, naval leaders,
+  missions, active naval combat damage/sinking semantics, and exact naval OOB
+  presentation remain follow-up segments.
 - Current DLL checkpoint: `naval_air_combats` now has a bridge-gated raw stream
   from supplied `CNavalCombat` body pins. The collector revalidates bridged
   bodies every sample and emits side-level active-combat summaries plus
@@ -1684,16 +1697,20 @@ output, emitted raw `naval_air_combats` and `naval_combat_members`, observed 3
 `naval_combat_started` and 360 `naval_combat_updated` events, and reported zero
 raw gap frames. `naval_combat_ended` still needs a fixture where a bridged
 naval battle ends during capture. The next naval unlocks are a root/hook-derived
-discoverer for newly born combats, optional CShip enrichment, exact end/delete
-fixture proof, damage/sinking deltas, and longer soaks. Ship telemetry and
-command hierarchy are gated as separate live segments. Ship telemetry now has a
-strict 12-game-hour no-cold proof on the restarted vanilla process:
+discoverer for newly born combats, CShip enrichment into active combat members,
+exact end/delete fixture proof, damage/sinking deltas, and longer soaks. Compact
+ship hull telemetry is no longer bridge-gated for the verified `870ebf` build:
+`compact_ships_native_870ebf_20260701_010232` and
+`compact_full_plus_ships_870ebf_20260701_010320` prove the DLL-native
+country/fleet/task-force/ship path at speed five/current equivalent with zero
+skipped game hours and no source/partial/bridge/worker failures. The older raw
+ship proof
 `replay/snapshots/_collector_session_air_ship_oob_gate/20260629T210118Z_pid43412`
-passed `--require-ship-raw-telemetry`, hit `ship_body_cache` in 0.125s,
-supplied 1309 bridge rows, emitted 22249 raw `ships` deltas / 22248 object
-rows, advanced 12 game hours in 57.297 wall seconds, stored verified hourly
-snapshots, and reported zero raw gap domains. OOB command hierarchy retains its
-own strict proof from the same pid family: 4704 OOB command roots, 17705
+remains useful historical/oracle evidence only; it hit `ship_body_cache` in
+0.125s, supplied 1309 bridge rows, emitted 22249 raw `ships` deltas / 22248
+object rows, advanced 12 game hours in 57.297 wall seconds, stored verified
+hourly snapshots, and reported zero raw gap domains. OOB command hierarchy
+retains its own strict proof from the same pid family: 4704 OOB command roots, 17705
 `oob_command` deltas over 12 game hours, and zero raw gap domains after an
 intentionally cold 135.703s discovery. The generated raw sidecars can be large,
 so this slice is verified for extraction but still needs coalescing/backpressure

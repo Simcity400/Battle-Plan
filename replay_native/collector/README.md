@@ -206,6 +206,26 @@ country-state domains. Current compact binary proofs:
   land-combat participant rows, 1,081 map-control state rows, 13,414
   map-control province rows, 718 state-resource rows, 2,417 state-building
   rows, 4,721 province-building rows, and 480 weather-region rows.
+- `compact_ships_native_870ebf_20260701_010232`: proves compact `ships`
+  through a DLL-native anchored naval path on the same executable hash. The
+  collector walks `CGameState+0x310 -> CCountry+0x278 -> CFleet*`, then bounded
+  `CFleet` task-force references, validated `CTaskForce` bodies, and validated
+  `CShip` rows. The 20-second ships-only speed-five gate advanced 39 game hours
+  with 40 unique frame hours and 0 skipped, had ordered/decodable compact
+  records, no worker-panic/source-unavailable/partial or bridge flags, avg
+  frame 33.733 ms, p95 35.008 ms, max 35.618 ms, 147,677 compact bytes, and a
+  verified `.battleplan`. The stream emitted 2,692 changed ship rows, including
+  65 delete rows, while observing 55,195 ship rows and 6,318 task-force rows.
+- `compact_full_plus_ships_870ebf_20260701_010320`: reruns the current-build
+  compact bundle with `ships` included as the 17th domain. It scheduled the
+  eight country domains, `divisions`, `division_equipment`, `army_orders`,
+  `oob_command`, `land_combats`, `map_control`, `map_detail`, `weather_live`,
+  and `ships` for 30 seconds, advanced 53 game hours with 54 unique frame hours
+  and 0 skipped, had full domain/data-record coverage, ordered and decodable
+  records, no worker-panic/source-unavailable/partial or bridge flags, avg frame
+  47.441 ms, p95 57.250 ms, max 73.141 ms, 5,237,329 compact bytes, and a
+  verified `.battleplan`. `ships` emitted 3,133 changed rows while observing
+  74,160 ship rows and 8,473 task-force rows; ship read p95 was 43.519 ms.
 
 This completes the extraction-only compact performance gate for the current
 implemented compact domains and starts replay payload capture with typed
@@ -213,19 +233,23 @@ records plus Rust-native `.battleplan` packing. `fuel_live`, `production_live`,
 `focus_live`, `tech_live`, `politics_live`, `politics_residuals`,
 `decisions_live`, `diplomacy_live`, `divisions`, `division_equipment`,
 `army_orders`, active land `oob_command`, `land_combats`, `map_control`,
-`map_detail`, and `weather_live` are live-proven through the DLL/Rust compact
+`map_detail`, `weather_live`, and compact `ships` are live-proven through the
+DLL/Rust compact
 path at speed five with zero skipped game hours for the applicable verified
 build profile. The next step is not more JSON widening; it is native compact
-coverage for full OOB, naval/air combat and telemetry, and richer combat/order
-details that are still raw-only, bridge-backed, or unimplemented.
+coverage for full naval OOB/task-force/fleet rows, naval/air combat telemetry,
+and richer combat/order details that are still raw-only, bridge-backed, or
+unimplemented.
 
 `ships` now has a reserved compact domain (`domain_id=29`) and Rust recorder
 decoder/schema coverage for per-ship hull telemetry, including CShip instance
 id, optional task-force id, hull definition token, category enum, raw
-strength/org/XP, sunk-convoy count, and deletion rows. The collector currently
-emits this domain as `SOURCE_UNAVAILABLE` until a native anchored
-`CTaskForce`/`CShip` source is implemented; bridge-gated raw ship proofs remain
-development evidence, not production compact completion.
+strength/org/XP, sunk-convoy count, and deletion rows. For the verified
+`870ebf` vanilla build profile, the collector now emits this domain from the
+DLL-native country-rooted fleet/task-force/ship path with
+`ship_root_source="dll_native"` and no discovery debt. The old bridge-gated raw
+ship proofs remain development evidence only; they are no longer the current
+compact production path for ship telemetry.
 
 Country-object heap discovery is not part of normal capture. The experimental
 whole-heap vtable scan is behind the explicit `country_object_scan` control flag,
@@ -651,19 +675,16 @@ Naval-combat raw stream status:
   identity, owner TAG, designed max-strength raw value, battle-slot index,
   state bitmask, and engagement-weight raw value, with no body/member address
   leakage.
-- Current CShip hull HP/org/XP now have their own bridge-gated raw `ships`
-  stream. The Rust DLL accepts `ship_body_bridge` rows in
-  `collector_control.json` as `instance_id:body_ptr` entries, revalidates the
-  CShip vtable, handle type/id, and `ref100` sentinel every sample, and emits
-  pointer-free `ship:<instance_id>` deltas with definition, category,
-  strength/org/experience raw values plus decoded floats, and sunk-convoy
-  counts.
-- The Python proof harness can populate that bridge with
-  `live_capture.collector_session --preflight-ships`; by default it is
-  cache-first and fails closed unless `--allow-ship-cold-scan` explicitly
-  allows the slower global CShip vtable scan. This is production debt until
-  native discovery replaces the Python preflight. Manifests store sanitized
-  counts/status only.
+- Current CShip hull HP/org/XP now have a DLL-native compact `ships` stream for
+  the verified `870ebf` build. The collector walks the country fleet vector,
+  validates fleet/task-force/ship vtables and handle type/id fields, and emits
+  pointer-free compact rows with definition, category, strength/org/experience
+  raw values, sunk-convoy counts, task-force membership, and delete rows.
+- The older `ship_body_bridge` raw stream and
+  `live_capture.collector_session --preflight-ships` proof harness remain
+  development/oracle tooling only. They must not be used as the production
+  speed-five recording path now that the compact collector has a native
+  anchored source. Manifests store sanitized counts/status only.
 - Targets, aggregate attack rows, damage ticks, hit counters, sinking events,
   ship names, owner attribution, missions, and UI damage totals remain follow-up
   streams pending live proof or separate command/OOB sources.
