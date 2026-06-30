@@ -36,6 +36,10 @@ const COMPACT_RECORD_TYPE_FRAME_END: u16 = 2;
 const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = 3;
 const COMPACT_STATUS_WORKER_PANIC: u32 = 1 << 6;
 const COMPACT_FUEL_SCALE_RAW: u32 = 32768;
+const COMPACT_PRODUCTION_SCALE_RAW: u32 = 100000;
+const COMPACT_TECH_PROGRESS_SCALE_RAW: u32 = 1000;
+const COMPACT_TECH_LIVE_PROGRESS_SCALE_RAW: u32 = 100000;
+const COMPACT_FIXED_SCALE_RAW: u32 = 100000;
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -968,6 +972,17 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                 domain.data_record_count += 1;
                 match domain_id {
                     10 => decode_compact_fuel_data_payload(offset, payload, &mut summary),
+                    11 => decode_compact_production_data_payload(offset, payload, &mut summary),
+                    12 => decode_compact_focus_data_payload(offset, payload, &mut summary),
+                    13 => decode_compact_tech_data_payload(offset, payload, &mut summary),
+                    14 => decode_compact_politics_data_payload(offset, payload, &mut summary),
+                    15 => decode_compact_politics_residuals_data_payload(
+                        offset,
+                        payload,
+                        &mut summary,
+                    ),
+                    16 => decode_compact_decisions_data_payload(offset, payload, &mut summary),
+                    17 => decode_compact_diplomacy_data_payload(offset, payload, &mut summary),
                     other => summary.parse_errors.push(format!(
                         "offset {offset}: unsupported domain data payload for {}",
                         compact_domain_name(other)
@@ -1078,8 +1093,889 @@ fn decode_compact_fuel_data_payload(offset: usize, payload: &[u8], summary: &mut
     }
 }
 
+fn decode_compact_production_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < 40 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: production data payload is {} byte(s), expected at least 40",
+            payload.len()
+        ));
+        return;
+    }
+    let country_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let scale_raw = read_u32_le(payload, 20);
+    let stockpile_count = read_u32_le(payload, 24) as usize;
+    let military_count = read_u32_le(payload, 28) as usize;
+    let naval_count = read_u32_le(payload, 32) as usize;
+    let construction_count = read_u32_le(payload, 36) as usize;
+    summary.status_flags_or |= status_flags;
+    if scale_raw != COMPACT_PRODUCTION_SCALE_RAW {
+        summary.parse_errors.push(format!(
+            "offset {offset}: production data scale {scale_raw} != expected {COMPACT_PRODUCTION_SCALE_RAW}"
+        ));
+    }
+    let line_count = military_count.saturating_add(naval_count);
+    let expected_len = 40usize
+        .saturating_add(stockpile_count.saturating_mul(16))
+        .saturating_add(line_count.saturating_mul(32))
+        .saturating_add(construction_count.saturating_mul(32));
+    if payload.len() != expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: production data payload is {} byte(s), expected {expected_len}",
+            payload.len()
+        ));
+        return;
+    }
+    if changed_rows > country_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: production data changed_rows {changed_rows} > country_count {country_count}"
+        ));
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&11) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(country_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    let mut cursor = 40usize;
+    let mut seen_stockpile = BTreeSet::new();
+    for row_index in 0..stockpile_count {
+        let tag_db_id = read_u32_le(payload, cursor);
+        let variant_id = read_u32_le(payload, cursor + 4);
+        let _amount_raw = read_i64_le(payload, cursor + 8);
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: production stockpile row {row_index} has zero tag_db_id"
+            ));
+        }
+        if !seen_stockpile.insert((tag_db_id, variant_id)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: production stockpile row {row_index} duplicates tag_db_id {tag_db_id} variant_id {variant_id}"
+            ));
+        }
+        cursor += 16;
+    }
+    let mut seen_lines = BTreeSet::new();
+    for row_index in 0..line_count {
+        let tag_db_id = read_u32_le(payload, cursor);
+        let kind = read_u32_le(payload, cursor + 4);
+        let line_id = read_i32_le(payload, cursor + 8);
+        let active_factories = read_i32_le(payload, cursor + 12);
+        let _cost_raw = read_i32_le(payload, cursor + 16);
+        let _speed_raw = read_i32_le(payload, cursor + 20);
+        let _produced_raw = read_i32_le(payload, cursor + 24);
+        let _amount = read_i32_le(payload, cursor + 28);
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: production line row {row_index} has zero tag_db_id"
+            ));
+        }
+        if kind != 1 && kind != 2 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: production line row {row_index} has invalid kind {kind}"
+            ));
+        }
+        if !(0..=100_000).contains(&active_factories) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: production line row {row_index} has invalid active_factories {active_factories}"
+            ));
+        }
+        if !seen_lines.insert((tag_db_id, kind, line_id)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: production line row {row_index} duplicates tag_db_id {tag_db_id} kind {kind} line_id {line_id}"
+            ));
+        }
+        cursor += 32;
+    }
+    let mut seen_construction = BTreeSet::new();
+    for row_index in 0..construction_count {
+        let tag_db_id = read_u32_le(payload, cursor);
+        let line_id = read_u32_le(payload, cursor + 4);
+        let _template_id = read_u32_le(payload, cursor + 8);
+        let active_factories = read_i32_le(payload, cursor + 12);
+        let cost_raw = read_i32_le(payload, cursor + 16);
+        let produced_raw = read_i32_le(payload, cursor + 20);
+        let priority = read_u32_le(payload, cursor + 24);
+        let reserved = read_u32_le(payload, cursor + 28);
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: construction row {row_index} has zero tag_db_id"
+            ));
+        }
+        if !(0..=100_000).contains(&active_factories) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: construction row {row_index} has invalid active_factories {active_factories}"
+            ));
+        }
+        if cost_raw < 0 || produced_raw < 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: construction row {row_index} has negative progress fields"
+            ));
+        }
+        if reserved != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: construction row {row_index} reserved field is {reserved}"
+            ));
+        }
+        if !seen_construction.insert((tag_db_id, line_id, priority)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: construction row {row_index} duplicates tag_db_id {tag_db_id} line_id {line_id} priority {priority}"
+            ));
+        }
+        cursor += 32;
+    }
+}
+
+fn decode_compact_focus_data_payload(offset: usize, payload: &[u8], summary: &mut CompactSummary) {
+    if payload.len() < 28 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: focus data payload is {} byte(s), expected at least 28",
+            payload.len()
+        ));
+        return;
+    }
+    let country_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let scale_raw = read_u32_le(payload, 20);
+    let completed_token_count = read_u32_le(payload, 24) as usize;
+    summary.status_flags_or |= status_flags;
+    if scale_raw != COMPACT_FIXED_SCALE_RAW {
+        summary.parse_errors.push(format!(
+            "offset {offset}: focus data scale {scale_raw} != expected {COMPACT_FIXED_SCALE_RAW}"
+        ));
+    }
+    if changed_rows > country_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: focus data changed_rows {changed_rows} > country_count {country_count}"
+        ));
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&12) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(country_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    let mut cursor = 28usize;
+    let mut seen_countries = BTreeSet::new();
+    for row_index in 0..country_count {
+        if let Err(err) = require_compact_remaining(payload, cursor, 16, "focus country row") {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let tag_db_id = read_u32_le(payload, cursor);
+        let flags = read_u32_le(payload, cursor + 4);
+        let completed_count = read_u32_le(payload, cursor + 8);
+        let progress_raw = read_i32_le(payload, cursor + 12);
+        cursor += 16;
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus country row {row_index} has zero tag_db_id"
+            ));
+        } else if !seen_countries.insert(tag_db_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus country row {row_index} duplicates tag_db_id {tag_db_id}"
+            ));
+        }
+        if flags & !0b11_1111 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus country row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if completed_count != u32::MAX && completed_count > 4096 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus country row {row_index} has invalid completed_count {completed_count}"
+            ));
+        }
+        if flags & (1 << 4) == 0 && progress_raw != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus country row {row_index} has progress without flag"
+            ));
+        }
+        for field in ["focus tree", "focus current", "focus current continuous"] {
+            if let Err(err) = skip_compact_string(payload, &mut cursor, field) {
+                summary.parse_errors.push(format!("offset {offset}: {err}"));
+                return;
+            }
+        }
+    }
+    for row_index in 0..completed_token_count {
+        if let Err(err) = require_compact_remaining(payload, cursor, 4, "focus completed row") {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let tag_db_id = read_u32_le(payload, cursor);
+        cursor += 4;
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus completed row {row_index} has zero tag_db_id"
+            ));
+        }
+        if let Err(err) = skip_compact_string(payload, &mut cursor, "focus completed token") {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+    }
+    if cursor != payload.len() {
+        summary.parse_errors.push(format!(
+            "offset {offset}: focus data payload has {} trailing byte(s)",
+            payload.len().saturating_sub(cursor)
+        ));
+    }
+}
+
+fn decode_compact_tech_data_payload(offset: usize, payload: &[u8], summary: &mut CompactSummary) {
+    if payload.len() < 32 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: tech data payload is {} byte(s), expected at least 32",
+            payload.len()
+        ));
+        return;
+    }
+    let country_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let progress_scale = read_u32_le(payload, 20);
+    let live_scale = read_u32_le(payload, 24);
+    let active_count = read_u32_le(payload, 28) as usize;
+    summary.status_flags_or |= status_flags;
+    if progress_scale != COMPACT_TECH_PROGRESS_SCALE_RAW {
+        summary.parse_errors.push(format!(
+            "offset {offset}: tech progress scale {progress_scale} != expected {COMPACT_TECH_PROGRESS_SCALE_RAW}"
+        ));
+    }
+    if live_scale != COMPACT_TECH_LIVE_PROGRESS_SCALE_RAW {
+        summary.parse_errors.push(format!(
+            "offset {offset}: tech live scale {live_scale} != expected {COMPACT_TECH_LIVE_PROGRESS_SCALE_RAW}"
+        ));
+    }
+    let expected_len = 32usize
+        .saturating_add(country_count.saturating_mul(16))
+        .saturating_add(active_count.saturating_mul(40));
+    if payload.len() != expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: tech data payload is {} byte(s), expected {expected_len}",
+            payload.len()
+        ));
+        return;
+    }
+    if changed_rows > country_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: tech data changed_rows {changed_rows} > country_count {country_count}"
+        ));
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&13) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(country_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    let mut cursor = 32usize;
+    let mut seen_countries = BTreeSet::new();
+    for row_index in 0..country_count {
+        let tag_db_id = read_u32_le(payload, cursor);
+        let flags = read_u32_le(payload, cursor + 4);
+        let _completed_count = read_u32_le(payload, cursor + 8);
+        let slot_count = read_u32_le(payload, cursor + 12);
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: tech country row {row_index} has zero tag_db_id"
+            ));
+        } else if !seen_countries.insert(tag_db_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: tech country row {row_index} duplicates tag_db_id {tag_db_id}"
+            ));
+        }
+        if flags & !0b111 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: tech country row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if slot_count != u32::MAX && slot_count > 32 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: tech country row {row_index} has invalid slot_count {slot_count}"
+            ));
+        }
+        cursor += 16;
+    }
+    let mut seen_slots = BTreeSet::new();
+    for row_index in 0..active_count {
+        let tag_db_id = read_u32_le(payload, cursor);
+        let slot_index = read_u32_le(payload, cursor + 4);
+        let _tech_handle_raw = read_u32_le(payload, cursor + 8);
+        let _tech_def_index_raw = read_u32_le(payload, cursor + 12);
+        let _progress_raw = read_u32_le(payload, cursor + 16);
+        let flags = read_u32_le(payload, cursor + 20);
+        let _live_progress_raw = read_i64_le(payload, cursor + 24);
+        let _base_required_points_raw = read_i64_le(payload, cursor + 32);
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: tech active row {row_index} has zero tag_db_id"
+            ));
+        }
+        if slot_index > 32 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: tech active row {row_index} has invalid slot_index {slot_index}"
+            ));
+        }
+        if flags & !0b11 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: tech active row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if !seen_slots.insert((tag_db_id, slot_index)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: tech active row {row_index} duplicates tag_db_id {tag_db_id} slot_index {slot_index}"
+            ));
+        }
+        cursor += 40;
+    }
+}
+
+fn decode_compact_politics_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < 40 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: politics data payload is {} byte(s), expected at least 40",
+            payload.len()
+        ));
+        return;
+    }
+    let country_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let scale_raw = read_u32_le(payload, 20);
+    let popularity_count = read_u32_le(payload, 24) as usize;
+    let law_count = read_u32_le(payload, 28) as usize;
+    let advisor_count = read_u32_le(payload, 32) as usize;
+    let national_spirit_count = read_u32_le(payload, 36) as usize;
+    summary.status_flags_or |= status_flags;
+    if scale_raw != COMPACT_FIXED_SCALE_RAW {
+        summary.parse_errors.push(format!(
+            "offset {offset}: politics data scale {scale_raw} != expected {COMPACT_FIXED_SCALE_RAW}"
+        ));
+    }
+    if changed_rows > country_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: politics data changed_rows {changed_rows} > country_count {country_count}"
+        ));
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&14) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(country_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    let mut cursor = 40usize;
+    let mut seen_countries = BTreeSet::new();
+    for row_index in 0..country_count {
+        if let Err(err) = require_compact_remaining(payload, cursor, 28, "politics country row") {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let tag_db_id = read_u32_le(payload, cursor);
+        let flags = read_u32_le(payload, cursor + 4);
+        let idea_count = read_u32_le(payload, cursor + 8);
+        let election_frequency = read_u32_le(payload, cursor + 12);
+        let party_count = read_u32_le(payload, cursor + 16);
+        let low_confidence = read_u32_le(payload, cursor + 20);
+        let _leader_char_id = read_u32_le(payload, cursor + 24);
+        cursor += 28;
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: politics country row {row_index} has zero tag_db_id"
+            ));
+        } else if !seen_countries.insert(tag_db_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: politics country row {row_index} duplicates tag_db_id {tag_db_id}"
+            ));
+        }
+        if flags & !0b11_1111_1111 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: politics country row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if idea_count != u32::MAX && idea_count > 4096 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: politics country row {row_index} has invalid idea_count {idea_count}"
+            ));
+        }
+        if election_frequency != u32::MAX && !(1..=600).contains(&election_frequency) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: politics country row {row_index} has invalid election_frequency {election_frequency}"
+            ));
+        }
+        if party_count != u32::MAX && party_count > 128 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: politics country row {row_index} has invalid party_count {party_count}"
+            ));
+        }
+        if low_confidence != u32::MAX && low_confidence > 1 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: politics country row {row_index} has invalid low_confidence {low_confidence}"
+            ));
+        }
+        for field in [
+            "politics ruling party",
+            "politics leader name",
+            "politics leader token",
+            "politics leader ideology",
+        ] {
+            if let Err(err) = skip_compact_string(payload, &mut cursor, field) {
+                summary.parse_errors.push(format!("offset {offset}: {err}"));
+                return;
+            }
+        }
+    }
+    for row_index in 0..popularity_count {
+        if let Err(err) = require_compact_remaining(payload, cursor, 4, "politics popularity row") {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let tag_db_id = read_u32_le(payload, cursor);
+        cursor += 4;
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: politics popularity row {row_index} has zero tag_db_id"
+            ));
+        }
+        if let Err(err) = skip_compact_string(payload, &mut cursor, "politics popularity ideology")
+        {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        if let Err(err) = require_compact_remaining(payload, cursor, 4, "politics popularity row") {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let raw = read_i32_le(payload, cursor);
+        if !(0..=(COMPACT_FIXED_SCALE_RAW as i32 * 100)).contains(&raw) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: politics popularity row {row_index} has invalid raw value {raw}"
+            ));
+        }
+        cursor += 4;
+    }
+    for row_index in 0..law_count {
+        if let Err(err) = require_compact_remaining(payload, cursor, 4, "politics law row") {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let tag_db_id = read_u32_le(payload, cursor);
+        cursor += 4;
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: politics law row {row_index} has zero tag_db_id"
+            ));
+        }
+        for field in ["politics law group", "politics law token"] {
+            if let Err(err) = skip_compact_string(payload, &mut cursor, field) {
+                summary.parse_errors.push(format!("offset {offset}: {err}"));
+                return;
+            }
+        }
+    }
+    for row_index in 0..advisor_count {
+        if let Err(err) = require_compact_remaining(payload, cursor, 4, "politics advisor row") {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let tag_db_id = read_u32_le(payload, cursor);
+        cursor += 4;
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: politics advisor row {row_index} has zero tag_db_id"
+            ));
+        }
+        for field in ["politics advisor group", "politics advisor token"] {
+            if let Err(err) = skip_compact_string(payload, &mut cursor, field) {
+                summary.parse_errors.push(format!("offset {offset}: {err}"));
+                return;
+            }
+        }
+    }
+    for row_index in 0..national_spirit_count {
+        if let Err(err) =
+            require_compact_remaining(payload, cursor, 4, "politics national spirit row")
+        {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let tag_db_id = read_u32_le(payload, cursor);
+        cursor += 4;
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: politics national spirit row {row_index} has zero tag_db_id"
+            ));
+        }
+        if let Err(err) = skip_compact_string(payload, &mut cursor, "politics national spirit") {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+    }
+    if cursor != payload.len() {
+        summary.parse_errors.push(format!(
+            "offset {offset}: politics data payload has {} trailing byte(s)",
+            payload.len().saturating_sub(cursor)
+        ));
+    }
+}
+
+fn decode_compact_politics_residuals_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < 24 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: politics residuals data payload is {} byte(s), expected at least 24",
+            payload.len()
+        ));
+        return;
+    }
+    let country_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let advisor_detail_count = read_u32_le(payload, 20) as usize;
+    summary.status_flags_or |= status_flags;
+    if changed_rows > country_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: politics residuals data changed_rows {changed_rows} > country_count {country_count}"
+        ));
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&15) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(country_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    let mut cursor = 24usize;
+    let mut seen_countries = BTreeSet::new();
+    let mut declared_advisors = 0usize;
+    for row_index in 0..country_count {
+        if let Err(err) =
+            require_compact_remaining(payload, cursor, 16, "politics residuals country row")
+        {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let tag_db_id = read_u32_le(payload, cursor);
+        let flags = read_u32_le(payload, cursor + 4);
+        let elections_allowed = read_u32_le(payload, cursor + 8);
+        let advisor_count = read_u32_le(payload, cursor + 12) as usize;
+        cursor += 16;
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: politics residuals country row {row_index} has zero tag_db_id"
+            ));
+        } else if !seen_countries.insert(tag_db_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: politics residuals country row {row_index} duplicates tag_db_id {tag_db_id}"
+            ));
+        }
+        if flags & !0b111 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: politics residuals country row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if elections_allowed != u32::MAX && elections_allowed > 1 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: politics residuals country row {row_index} has invalid elections_allowed {elections_allowed}"
+            ));
+        }
+        declared_advisors = declared_advisors.saturating_add(advisor_count);
+        if let Err(err) = skip_compact_string(payload, &mut cursor, "politics last election") {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+    }
+    if declared_advisors != advisor_detail_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: politics residuals advisor_detail_count {advisor_detail_count} != declared country advisors {declared_advisors}"
+        ));
+    }
+    for row_index in 0..advisor_detail_count {
+        if let Err(err) =
+            require_compact_remaining(payload, cursor, 4, "politics residuals advisor row")
+        {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let tag_db_id = read_u32_le(payload, cursor);
+        cursor += 4;
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: politics residuals advisor row {row_index} has zero tag_db_id"
+            ));
+        }
+        for field in [
+            "politics advisor idea token",
+            "politics advisor slot",
+            "politics advisor ledger",
+            "politics advisor character",
+        ] {
+            if let Err(err) = skip_compact_string(payload, &mut cursor, field) {
+                summary.parse_errors.push(format!("offset {offset}: {err}"));
+                return;
+            }
+        }
+    }
+    if cursor != payload.len() {
+        summary.parse_errors.push(format!(
+            "offset {offset}: politics residuals data payload has {} trailing byte(s)",
+            payload.len().saturating_sub(cursor)
+        ));
+    }
+}
+
+fn decode_compact_decisions_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < 24 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: decisions data payload is {} byte(s), expected at least 24",
+            payload.len()
+        ));
+        return;
+    }
+    let country_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let timed_count = read_u32_le(payload, 20) as usize;
+    summary.status_flags_or |= status_flags;
+    if changed_rows > country_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: decisions data changed_rows {changed_rows} > country_count {country_count}"
+        ));
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&16) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(country_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    let mut cursor = 24usize;
+    let mut seen_countries = BTreeSet::new();
+    let mut declared_timed = 0usize;
+    for row_index in 0..country_count {
+        if let Err(err) = require_compact_remaining(payload, cursor, 32, "decisions country row") {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let tag_db_id = read_u32_le(payload, cursor);
+        let flags = read_u32_le(payload, cursor + 4);
+        let timed_for_country = read_u32_le(payload, cursor + 28) as usize;
+        cursor += 32;
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decisions country row {row_index} has zero tag_db_id"
+            ));
+        } else if !seen_countries.insert(tag_db_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decisions country row {row_index} duplicates tag_db_id {tag_db_id}"
+            ));
+        }
+        if flags & !0b11 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decisions country row {row_index} has unknown flags {flags}"
+            ));
+        }
+        declared_timed = declared_timed.saturating_add(timed_for_country);
+    }
+    if declared_timed != timed_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: decisions timed_count {timed_count} != declared country timed decisions {declared_timed}"
+        ));
+    }
+    for row_index in 0..timed_count {
+        if let Err(err) = require_compact_remaining(payload, cursor, 12, "decisions timed row") {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let tag_db_id = read_u32_le(payload, cursor);
+        let days = read_i32_le(payload, cursor + 4);
+        let state = read_i32_le(payload, cursor + 8);
+        cursor += 12;
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decisions timed row {row_index} has zero tag_db_id"
+            ));
+        }
+        if !(0..=10_000).contains(&days) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decisions timed row {row_index} has invalid days {days}"
+            ));
+        }
+        if !(0..=16).contains(&state) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decisions timed row {row_index} has invalid state {state}"
+            ));
+        }
+        if let Err(err) = skip_compact_string(payload, &mut cursor, "decisions timed token") {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+    }
+    if cursor != payload.len() {
+        summary.parse_errors.push(format!(
+            "offset {offset}: decisions data payload has {} trailing byte(s)",
+            payload.len().saturating_sub(cursor)
+        ));
+    }
+}
+
+fn decode_compact_diplomacy_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < 24 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: diplomacy data payload is {} byte(s), expected at least 24",
+            payload.len()
+        ));
+        return;
+    }
+    let country_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let relation_count = read_u32_le(payload, 20) as usize;
+    summary.status_flags_or |= status_flags;
+    let expected_len = 24usize
+        .saturating_add(country_count.saturating_mul(24))
+        .saturating_add(relation_count.saturating_mul(16));
+    if payload.len() != expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: diplomacy data payload is {} byte(s), expected {expected_len}",
+            payload.len()
+        ));
+        return;
+    }
+    if changed_rows > country_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: diplomacy data changed_rows {changed_rows} > country_count {country_count}"
+        ));
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&17) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(country_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    let mut cursor = 24usize;
+    let mut seen_countries = BTreeSet::new();
+    let mut declared_relations = 0usize;
+    for row_index in 0..country_count {
+        let tag_db_id = read_u32_le(payload, cursor);
+        let flags = read_u32_le(payload, cursor + 4);
+        let _faction_group = read_i32_le(payload, cursor + 8);
+        let at_war_count = read_u32_le(payload, cursor + 12) as usize;
+        let _casualties = read_i64_le(payload, cursor + 16);
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: diplomacy country row {row_index} has zero tag_db_id"
+            ));
+        } else if !seen_countries.insert(tag_db_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: diplomacy country row {row_index} duplicates tag_db_id {tag_db_id}"
+            ));
+        }
+        if flags & !0b11 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: diplomacy country row {row_index} has unknown flags {flags}"
+            ));
+        }
+        declared_relations = declared_relations.saturating_add(at_war_count);
+        cursor += 24;
+    }
+    if declared_relations != relation_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: diplomacy relation_count {relation_count} != declared country relations {declared_relations}"
+        ));
+    }
+    let mut seen_relations = BTreeSet::new();
+    for row_index in 0..relation_count {
+        let tag_db_id = read_u32_le(payload, cursor);
+        let token_len = read_u32_le(payload, cursor + 4) as usize;
+        let token = &payload[cursor + 8..cursor + 16];
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: diplomacy relation row {row_index} has zero tag_db_id"
+            ));
+        }
+        if token_len == 0 || token_len > 8 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: diplomacy relation row {row_index} has invalid token_len {token_len}"
+            ));
+        }
+        if token_len <= 8
+            && token[..token_len]
+                .iter()
+                .any(|byte| !(byte.is_ascii_alphanumeric() || *byte == b'_' || *byte == b'-'))
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: diplomacy relation row {row_index} has non-token bytes"
+            ));
+        }
+        if token_len < 8 && token[token_len..].iter().any(|byte| *byte != 0) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: diplomacy relation row {row_index} has nonzero padding"
+            ));
+        }
+        if !seen_relations.insert((tag_db_id, token.to_vec())) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: diplomacy relation row {row_index} duplicates tag_db_id {tag_db_id}"
+            ));
+        }
+        cursor += 16;
+    }
+}
+
 fn read_u16_le(bytes: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
+}
+
+fn require_compact_remaining(
+    bytes: &[u8],
+    cursor: usize,
+    needed: usize,
+    label: &str,
+) -> Result<(), String> {
+    if cursor.saturating_add(needed) > bytes.len() {
+        Err(format!(
+            "{label} overruns payload at cursor {cursor}: need {needed}, remaining {}",
+            bytes.len().saturating_sub(cursor)
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn skip_compact_string(bytes: &[u8], cursor: &mut usize, label: &str) -> Result<usize, String> {
+    require_compact_remaining(bytes, *cursor, 2, label)?;
+    let len = read_u16_le(bytes, *cursor) as usize;
+    *cursor += 2;
+    require_compact_remaining(bytes, *cursor, len, label)?;
+    let start = *cursor;
+    *cursor += len;
+    Ok(start)
 }
 
 fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
@@ -1220,7 +2116,7 @@ fn compact_domain_coverage_errors(
                 summary.frame_end_record_count
             ));
         }
-        if *expected == 10 {
+        if compact_domain_requires_data_record(*expected) {
             let data_record_count = summary
                 .per_domain
                 .get(expected)
@@ -1228,13 +2124,19 @@ fn compact_domain_coverage_errors(
                 .unwrap_or(0);
             if data_record_count != summary.frame_end_record_count {
                 errors.push(format!(
-                    "domain fuel_live data_record_count {} != frame_end_record_count {}",
-                    data_record_count, summary.frame_end_record_count
+                    "domain {} data_record_count {} != frame_end_record_count {}",
+                    compact_domain_name(*expected),
+                    data_record_count,
+                    summary.frame_end_record_count
                 ));
             }
         }
     }
     errors
+}
+
+fn compact_domain_requires_data_record(domain_id: u16) -> bool {
+    matches!(domain_id, 10 | 12 | 13 | 14 | 15 | 16 | 17)
 }
 
 fn compact_domain_summaries_json(summary: &CompactSummary) -> Value {
@@ -1639,6 +2541,103 @@ mod tests {
     }
 
     #[test]
+    fn compact_politics_data_accepts_popularity_only_rows() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            14,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_politics_popularity_delta_payload(),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let politics = summary.per_domain.get(&14).unwrap();
+        assert_eq!(politics.data_record_count, 1);
+        assert_eq!(politics.data_rows_total, 1);
+        assert_eq!(politics.data_changed_rows_total, 1);
+    }
+
+    #[test]
+    fn compact_summary_decodes_widened_country_data_records() {
+        let mut raw = Vec::new();
+        let mut sequence = 1u64;
+        for (domain_id, payload) in [
+            (
+                10u16,
+                test_fuel_data_payload(&[(47, 4_046_848, 14_950_400, 245_760, -73_728)]),
+            ),
+            (11u16, test_production_data_payload()),
+            (12u16, test_focus_data_payload()),
+            (13u16, test_tech_data_payload()),
+            (14u16, test_politics_data_payload()),
+            (15u16, test_politics_residuals_data_payload()),
+            (16u16, test_decisions_data_payload()),
+            (17u16, test_diplomacy_data_payload()),
+        ] {
+            append_test_compact_record(
+                &mut raw,
+                sequence,
+                100,
+                domain_id,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                &test_domain_payload(1_250, 355, 1, 1, 1),
+            );
+            sequence += 1;
+            append_test_compact_record(
+                &mut raw,
+                sequence,
+                100,
+                domain_id,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &payload,
+            );
+            sequence += 1;
+        }
+        append_test_compact_record(
+            &mut raw,
+            sequence,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(2_000, 8),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(
+            compact_domain_coverage_errors(&summary, &[10, 11, 12, 13, 14, 15, 16, 17]).is_empty()
+        );
+        assert_eq!(summary.domain_data_record_count, 8);
+        for domain_id in [10u16, 11, 12, 13, 14, 15, 16, 17] {
+            assert_eq!(
+                summary
+                    .per_domain
+                    .get(&domain_id)
+                    .unwrap()
+                    .data_record_count,
+                1
+            );
+            assert_eq!(
+                summary.per_domain.get(&domain_id).unwrap().data_rows_total,
+                1
+            );
+        }
+    }
+
+    #[test]
     fn replay_container_preserves_compact_stream_bytes() {
         let dir =
             std::env::temp_dir().join(format!("battle-plan_pack_test_{}", std::process::id()));
@@ -1835,6 +2834,239 @@ mod tests {
             payload.extend_from_slice(&cost.to_le_bytes());
         }
         payload
+    }
+
+    fn test_production_data_payload() -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_PRODUCTION_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes()); // stockpile
+        payload.extend_from_slice(&1u32.to_le_bytes()); // military
+        payload.extend_from_slice(&1u32.to_le_bytes()); // naval
+        payload.extend_from_slice(&1u32.to_le_bytes()); // construction
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        payload.extend_from_slice(&70u32.to_le_bytes());
+        payload.extend_from_slice(&12_350_000i64.to_le_bytes());
+        for (kind, id, factories, cost, speed, produced, amount) in [
+            (
+                1u32,
+                349i32,
+                3i32,
+                10_500_000i32,
+                3_105_000i32,
+                3_440_000i32,
+                -1i32,
+            ),
+            (
+                2u32,
+                350i32,
+                2i32,
+                5_500_000i32,
+                2_105_000i32,
+                1_440_000i32,
+                1i32,
+            ),
+        ] {
+            payload.extend_from_slice(&47u32.to_le_bytes());
+            payload.extend_from_slice(&kind.to_le_bytes());
+            payload.extend_from_slice(&id.to_le_bytes());
+            payload.extend_from_slice(&factories.to_le_bytes());
+            payload.extend_from_slice(&cost.to_le_bytes());
+            payload.extend_from_slice(&speed.to_le_bytes());
+            payload.extend_from_slice(&produced.to_le_bytes());
+            payload.extend_from_slice(&amount.to_le_bytes());
+        }
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        payload.extend_from_slice(&9001u32.to_le_bytes());
+        payload.extend_from_slice(&20013u32.to_le_bytes());
+        payload.extend_from_slice(&6i32.to_le_bytes());
+        payload.extend_from_slice(&1_080_000_000i32.to_le_bytes());
+        payload.extend_from_slice(&12_550_000i32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload
+    }
+
+    fn test_focus_data_payload() -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        payload.extend_from_slice(&0b11_1111u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&1_350_000i32.to_le_bytes());
+        append_test_compact_string(&mut payload, "portugal_focus");
+        append_test_compact_string(&mut payload, "POR_industrial_focus");
+        append_test_compact_string(&mut payload, "POR_continuous_focus");
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        append_test_compact_string(&mut payload, "POR_completed_focus");
+        payload
+    }
+
+    fn test_tech_data_payload() -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_TECH_PROGRESS_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_TECH_LIVE_PROGRESS_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        payload.extend_from_slice(&0b111u32.to_le_bytes());
+        payload.extend_from_slice(&17u32.to_le_bytes());
+        payload.extend_from_slice(&3u32.to_le_bytes());
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0x2A4Eu32.to_le_bytes());
+        payload.extend_from_slice(&717u32.to_le_bytes());
+        payload.extend_from_slice(&250u32.to_le_bytes());
+        payload.extend_from_slice(&0b11u32.to_le_bytes());
+        payload.extend_from_slice(&125_000i64.to_le_bytes());
+        payload.extend_from_slice(&300_000i64.to_le_bytes());
+        payload
+    }
+
+    fn test_politics_data_payload() -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        payload.extend_from_slice(&0b11_1111_1111u32.to_le_bytes());
+        payload.extend_from_slice(&9u32.to_le_bytes());
+        payload.extend_from_slice(&48u32.to_le_bytes());
+        payload.extend_from_slice(&4u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&123u32.to_le_bytes());
+        append_test_compact_string(&mut payload, "neutrality");
+        append_test_compact_string(&mut payload, "Antonio");
+        append_test_compact_string(&mut payload, "POR_antonio");
+        append_test_compact_string(&mut payload, "neutrality");
+        for (ideology, raw) in [("democratic", 3_500_000i32), ("neutrality", 6_500_000i32)] {
+            payload.extend_from_slice(&47u32.to_le_bytes());
+            append_test_compact_string(&mut payload, ideology);
+            payload.extend_from_slice(&raw.to_le_bytes());
+        }
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        append_test_compact_string(&mut payload, "economy");
+        append_test_compact_string(&mut payload, "partial_economic_mobilisation");
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        append_test_compact_string(&mut payload, "political_advisor");
+        append_test_compact_string(&mut payload, "POR_salazar");
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        append_test_compact_string(&mut payload, "estado_novo");
+        payload
+    }
+
+    fn test_politics_popularity_delta_payload() -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        payload.extend_from_slice(&(1u32 | (1 << 8) | (1 << 9)).to_le_bytes());
+        payload.extend_from_slice(&u32::MAX.to_le_bytes());
+        payload.extend_from_slice(&u32::MAX.to_le_bytes());
+        payload.extend_from_slice(&4u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        for _ in 0..4 {
+            append_test_compact_string(&mut payload, "");
+        }
+        for (ideology, raw) in [("democratic", 3_600_000i32), ("neutrality", 6_400_000i32)] {
+            payload.extend_from_slice(&47u32.to_le_bytes());
+            append_test_compact_string(&mut payload, ideology);
+            payload.extend_from_slice(&raw.to_le_bytes());
+        }
+        payload
+    }
+
+    fn test_politics_residuals_data_payload() -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        payload.extend_from_slice(&0b111u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        append_test_compact_string(&mut payload, "1936.1.1.1");
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        append_test_compact_string(&mut payload, "POR_salazar");
+        append_test_compact_string(&mut payload, "political_advisor");
+        append_test_compact_string(&mut payload, "political");
+        append_test_compact_string(&mut payload, "POR_antonio");
+        payload
+    }
+
+    fn test_decisions_data_payload() -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        payload.extend_from_slice(&0b11u32.to_le_bytes());
+        for count in [1u32, 0, 0, 2, 0] {
+            payload.extend_from_slice(&count.to_le_bytes());
+        }
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        payload.extend_from_slice(&35i32.to_le_bytes());
+        payload.extend_from_slice(&0i32.to_le_bytes());
+        append_test_compact_string(&mut payload, "POR_countdown_mission");
+        payload
+    }
+
+    fn test_diplomacy_data_payload() -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        payload.extend_from_slice(&0b11u32.to_le_bytes());
+        payload.extend_from_slice(&42i32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&1234i64.to_le_bytes());
+        for tag in [b"GER", b"ITA"] {
+            payload.extend_from_slice(&47u32.to_le_bytes());
+            payload.extend_from_slice(&3u32.to_le_bytes());
+            let mut fixed = [0u8; 8];
+            fixed[..3].copy_from_slice(tag);
+            payload.extend_from_slice(&fixed);
+        }
+        payload
+    }
+
+    fn append_test_compact_string(payload: &mut Vec<u8>, value: &str) {
+        let bytes = value.as_bytes();
+        payload.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+        payload.extend_from_slice(bytes);
     }
 
     fn append_test_compact_record(

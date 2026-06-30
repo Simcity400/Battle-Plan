@@ -138,13 +138,29 @@ gate has these live speed-five results:
   coverage, no worker panic, 292 fuel data records for 292 fuel frames, 11,611
   typed fuel rows, avg frame 44.869 ms, p95 57.064 ms, max 116.131 ms, 667,672
   raw stream bytes, and a verified 86,012-byte `native_session.battleplan`.
+- `compact_politics_only_speed5_v5_sharded`: passed after politics popularity
+  deltas and row-sharded politics reads, 386 game hours advanced, 387
+  frame-end records, 0 skipped, ordered/decodable compact stream, no worker
+  panic, avg frame 6.969 ms, p95 11.313 ms, max 32.044 ms, 247,675 raw stream
+  bytes.
+- `compact_politics_residuals_speed5_v3`: passed after residual-only cached
+  reads, 448 game hours advanced, 449 frame-end records, 0 skipped,
+  ordered/decodable compact stream, no worker panic, avg frame 14.894 ms, p95
+  17.472 ms, max 33.503 ms, 96,567 raw stream bytes.
+- `compact_verified_country_state_speed5_v2_lanes`: passed with lane-parallel
+  compact reads for `fuel_live`, `focus_live`, `tech_live`, `politics_live`,
+  `politics_residuals`, `decisions_live`, and `diplomacy_live`; 287 game hours
+  advanced, 288 frame-end records, 0 skipped, full per-hour domain coverage, no
+  worker panic, avg frame 20.576 ms, p95 32.615 ms, max 52.020 ms, 1,122,564
+  raw stream bytes, a 220,682-byte `native_session.battleplan`, and an
+  independent `pack_replay verify` pass.
 
-The extraction-only compact performance gate is now green for the current
-country domains. The first replay-payload step is implemented: `fuel_live` now
-emits a typed binary data record with raw fixed-point `i64` fuel values and
-explicit `32768` scale metadata, and the recorder packs/verifies
-`native_session.battleplan`. Unit tests, release build, live speed-five gate,
-and independent `pack_replay verify` pass for this path.
+The extraction-only compact performance gate is green for the current
+production-shaped country-state domains above. The recorder packs/verifies
+`native_session.battleplan`, and the combined country-state replay passed
+independent `pack_replay verify`. `production_live` is still not marked
+DLL-complete; it needs typed production data records and its own zero-skipped
+speed-five proof before it can join the completed segment list.
 
 Implementation note: see `COMPACT_HOI4REPLAY_NEXT_STEP.md` for the bounded
 Rust-native packaging path and the test contract for putting `collector_stream.bin`
