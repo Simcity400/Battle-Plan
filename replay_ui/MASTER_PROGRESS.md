@@ -300,15 +300,18 @@ for inspection, with no ability to mutate the game.
   combat-updated, and 11 combat-ended events without heavyweight payloads on
   lightweight frames. UI ingestion and richer battle-detail enrichment remain
   open.
-- DLL-native raw `air_wings` telemetry capture is proven at speed five for the
-  raw replay stream: cold preflight now live-discovers the heap arena before
+- Bridge-backed raw `air_wings` telemetry capture is proven at speed five for
+  the raw replay stream: cold preflight now live-discovers the heap arena before
   air-wing body enumeration, stored 653 rows in the cache, and the no-cold proof
   `replay/snapshots/_collector_session_air_wing_gate/20260629T164933Z_pid43412`
   advanced 12 game hours in 52.891 wall seconds, verified the replay container,
   supplied 652 cached bridge rows, passed the raw `air_wings` proof gate,
   observed 652 `air_wing_observed` and 9128 `air_wing_updated` events, and
-  reported zero raw gaps or heavyweight payloads on lightweight frames. Exact
-  displayed air-superiority percentage remains an open computed layer.
+  reported zero raw gaps or heavyweight payloads on lightweight frames. This is
+  not production DLL completion because the wing bodies were bridge supplied.
+  Current 870ebf work pins the strategic-air manager, airbase/owner vector, and
+  air-wing pool vectors, but the anchored full wing-roster table remains open.
+  Exact displayed air-superiority percentage remains an open computed layer.
 - Anchored land-counter stacks now compose portrait and formation-insignia
   sprites into the native fixed-footprint `UnitCounter` render plan, preserving
   four stable asset slots, sprite frame identities, and explicit missing-asset
@@ -606,7 +609,8 @@ The app is product-complete only when all applicable gates pass:
   advanced 12 game hours in 52.891 wall seconds, verified the replay container,
   supplied 652 cached bridge rows, saw raw `air_wings`, observed 652
   `air_wing_observed` and 9128 `air_wing_updated` events, and reported zero raw
-  gap frames.
+  gap frames. This is bridge-backed proof evidence, not no-bridge production
+  completion.
 - Every registered view opens from the in-app menu.
 - Every registered view has an interaction contract.
 - Every read-only interaction in each contract is implemented and tested.

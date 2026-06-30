@@ -321,8 +321,8 @@ Current recorder-facing bridge status:
   events in one game hour, and met the wall cap in 9.31 seconds.
 - Air-wing telemetry now has the same bridge-gated raw-stream shape. The DLL
   accepts `air_wing_body_bridge` rows (`owner_tag_db_id:wing_id:body_ptr`),
-  revalidates the wing body, pool, owner-chain country object, tag-table decode,
-  and optional mission-region object every sample, and emits pointer-free raw
+  revalidates the wing body, pool, airbase-owner object, tag-table decode, and
+  optional mission-region object every sample, and emits pointer-free raw
   `air_wings` deltas/events keyed as `air_wing:<TAG>:<wing_id>:<generation>`.
   The Python proof harness can populate the bridge with
   `--preflight-air-wings`; cache hits reread cached bodies and the expensive
@@ -331,6 +331,15 @@ Current recorder-facing bridge status:
   discovery replaces the Python preflight. It captures count, mission mask,
   mission region, and effective active planes, not the final UI air-superiority
   percent.
+- Current 870ebf air-wing discovery refreshed the body guards and pinned part
+  of the native root chain: `CAirWing` vtable `module+0x29641B0`,
+  `CAirWingPool` vtable `module+0x2964208`, airbase/owner vtable
+  `module+0x2941FF8`, strategic-region vtables `module+0x29569A8` and
+  `module+0x29569F8`, `CGameState+0x690` to strategic-air manager,
+  `strategic_air+0x30` to the airbase/owner vector, and `airbase+0x58` to
+  owned air-wing pool vectors. Live wing records appear as value-array rows with
+  observed stride `0xA90`; the anchored roster/table parent is still open, so
+  this segment is not DLL-complete.
 - Active naval combat now has the first per-member DLL stream. The existing
   `naval_combat_body_bridge` roots `CNavalCombat` bodies; the DLL revalidates
   body, registry, side, group, and `CFEXMember` vtables, then emits bounded
@@ -793,13 +802,18 @@ Tasks:
 
 - Promote `strategic_air`, `naval_air`, `abilities`, `country_extra`, and OOB
   air-wing rows into collector-sourced domains or exact derived rows.
-- Current DLL checkpoint: `air_wings` now has a bridge-gated raw stream from
+- Current DLL checkpoint: `air_wings` has a bridge-gated raw stream from
   supplied air-wing body pins. It emits `air_wing_observed`,
   `air_wing_updated`, and `air_wing_lost` events with owner, wing id,
   generation, count, mission mask, mission region, and effective active planes.
   It does not yet emit plane variant/type, airbase, reserves, ace joins,
   airbase capacity, exact air-superiority percent, air losses, or region combat
   resolution.
+- Current 870ebf root work has native strategic-air, airbase/owner, and pool
+  roots, but no native anchored walk from those roots to the full wing roster.
+  Do not mark `air_wings` DLL-complete until the DLL/Rust compact path captures
+  the roster without Python bridge rows, heap scans, or save inputs and passes
+  the speed-five zero-skipped-hours gate.
 - Build an active air-combat fixture for validation.
 - Resolve `airwing_effective_planes_denom` or badge it.
 - Decide which air-superiority values are exact live state and which are
@@ -1802,10 +1816,13 @@ passed the strict `--require-air-wing-raw-telemetry` gate: it advanced 12 game
 hours in 55.875 wall seconds, verified replay output, hit `air_wing_body_cache`
 in 0.094s, supplied 585 bridge rows, emitted 11115 raw `air_wings` deltas,
 observed 585 `air_wing_observed` and 10530 `air_wing_updated` events, and
-reported zero raw gaps. The next air unlocks are
-exact airbase/variant joins, region aggregate rows, air-loss/attrition proof,
-and a decision on which air-superiority values are exact state versus computed
-UI proxies.
+reported zero raw gaps. This proof remains bridge-backed debug/proof evidence,
+not production completion. Current 870ebf work pins the native strategic-air
+manager, airbase/owner vector, and pool vectors, while the wing roster/table
+parent remains the blocker. The next air unlocks are anchored wing-roster
+discovery, exact airbase/variant joins, region aggregate rows,
+air-loss/attrition proof, and a decision on which air-superiority values are
+exact state versus computed UI proxies.
 
 ### Phase 7: Focus, Tech, Decisions, Projects, Politics
 

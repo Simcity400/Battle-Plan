@@ -121,6 +121,12 @@ the same rule for filtered sessions: request `--scheduled-domain clock` when a
 raw clock sidecar is the thing under test. With no domain filter, the DLL keeps
 the legacy default of enabling all domains.
 
+`air_wings` is still a bridge-backed debug/proof stream, not a production
+no-bridge compact source. Current 870ebf collector guards validate the wing
+body, pool, airbase/owner, and mission-region layout, and the native
+strategic-air manager/airbase/pool roots are pinned, but the full anchored wing
+roster walk is still open.
+
 Compact extraction gate example:
 
 ```powershell

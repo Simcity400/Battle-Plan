@@ -548,11 +548,11 @@ mod attach_log {
     const MAX_OOB_INLINE_IDS: usize = 256;
     const MAX_OOB_TASK_FORCE_SHIPS: u32 = 20_000;
     const OOB_COMMAND_SAMPLE_MIN_MS: u64 = 250;
-    const AIR_WING_VTABLE_RVA: usize = 0x29540C0;
-    const AIR_WING_POOL_VTABLE_RVA: usize = 0x2954118;
-    const AIR_WING_OWNER_COUNTRY_VTABLE_RVA: usize = 0x2932248;
-    const AIR_WING_REGION_VTABLE_RVA: usize = 0x29468B8;
-    const AIR_WING_REGION_ALT_VTABLE_RVA: usize = 0x2946908;
+    const AIR_WING_VTABLE_RVA: usize = 0x29641B0;
+    const AIR_WING_POOL_VTABLE_RVA: usize = 0x2964208;
+    const AIR_WING_AIRBASE_OWNER_VTABLE_RVA: usize = 0x2941FF8;
+    const AIR_WING_REGION_VTABLE_RVA: usize = 0x29569A8;
+    const AIR_WING_REGION_ALT_VTABLE_RVA: usize = 0x29569F8;
     const AIR_WING_TYPE: u32 = 69;
     const AIR_WING_OFF_TYPE: usize = 0x08;
     const AIR_WING_OFF_ID: usize = 0x0C;
@@ -561,8 +561,8 @@ mod attach_log {
     const AIR_WING_OFF_MISSION_MASK: usize = 0x90;
     const AIR_WING_OFF_MISSION_REGION: usize = 0xB0;
     const AIR_WING_OFF_EFFECTIVE_PLANES: usize = 0x160;
-    const AIR_WING_POOL_OFF_COUNTRY: usize = 0x40;
-    const AIR_WING_COUNTRY_OFF_TAG: usize = 0x90;
+    const AIR_WING_POOL_OFF_AIRBASE_OWNER: usize = 0x40;
+    const AIR_WING_AIRBASE_OWNER_OFF_TAG: usize = 0x90;
     const AIR_WING_REGION_OFF_ID: usize = 0x58;
     const MAX_AIR_WING_ID: u32 = i32::MAX as u32;
     const MAX_AIR_WING_BODY_BRIDGE_ROWS: usize = 20_000;
@@ -7329,14 +7329,14 @@ mod attach_log {
         {
             return None;
         }
-        let country = read_u64(pool.checked_add(AIR_WING_POOL_OFF_COUNTRY)?)? as usize;
-        if !is_map_control_heap_pointer(country)
-            || read_u64(country)? as usize
-                != module_base.checked_add(AIR_WING_OWNER_COUNTRY_VTABLE_RVA)?
+        let airbase_owner = read_u64(pool.checked_add(AIR_WING_POOL_OFF_AIRBASE_OWNER)?)? as usize;
+        if !is_map_control_heap_pointer(airbase_owner)
+            || read_u64(airbase_owner)? as usize
+                != module_base.checked_add(AIR_WING_AIRBASE_OWNER_VTABLE_RVA)?
         {
             return None;
         }
-        let tag_db_id = read_u32(country.checked_add(AIR_WING_COUNTRY_OFF_TAG)?)?;
+        let tag_db_id = read_u32(airbase_owner.checked_add(AIR_WING_AIRBASE_OWNER_OFF_TAG)?)?;
         (tag_db_id > 0 && tag_db_id <= 1024).then_some(tag_db_id)
     }
 

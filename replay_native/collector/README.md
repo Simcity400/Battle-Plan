@@ -849,23 +849,37 @@ Air-wing raw stream status:
   allows the slower `NavalAirReader.enumerate_air_wings()` vtable sweep. This is
   production debt until native discovery replaces the Python preflight.
   Manifests store sanitized counts/status only.
+- Current 870ebf build discovery refreshed the DLL body guards: `CAirWing`
+  vtable `module+0x29641B0`, `CAirWingPool` vtable `module+0x2964208`,
+  airbase/owner vtable `module+0x2941FF8`, strategic-region vtables
+  `module+0x29569A8` and `module+0x29569F8`, wing id at `+0x0C`, pool at
+  `+0x28`, count at `+0x6C`, mission mask at `+0x90`, mission region at
+  `+0xB0`, and effective planes at `+0x160`.
+- Current 870ebf root progress: `CGameState+0x690` resolves the strategic-air
+  manager, `strategic_air+0x30` is a 440-entry airbase/owner pointer vector,
+  and `airbase+0x58` resolves owned air-wing pool vectors. The remaining
+  blocker is the anchored wing roster/table parent; live wings are value-array
+  records with observed stride `0xA90`, but no production DLL walk owns that
+  table yet.
 - Worker sampling does not sweep the heap. For each supplied bridge row, the
-  DLL revalidates the air-wing body vtable/type/id, pool vtable, owner-chain
-  country vtable, owner tag id, live tag-table decode, optional mission-region
-  vtables, and sane count/effective-plane bounds at a 250 ms floor.
+  DLL revalidates the air-wing body vtable/type/id, pool vtable, airbase-owner
+  vtable, owner tag id, live tag-table decode, optional mission-region vtables,
+  and sane count/effective-plane bounds at a 250 ms floor.
 - The current stream emits `air_wing_observed`, `air_wing_updated`, and
   `air_wing_lost`. `effective_planes` is the live active/effective plane count
   used for later aggregation; it is not the final displayed air-superiority
   percent.
-- Current pid 43412 fixture status: live-proven by no-cold cache-backed run
+- Previous bridge fixture status: live-proven by no-cold cache-backed run
   `replay/snapshots/_collector_session_air_wing_gate/20260629T205254Z_pid43412`.
   The run advanced 12 game hours in 55.875 wall seconds, verified replay output,
   hit `air_wing_body_cache` in 0.094s, supplied 585 bridge rows, emitted 11115
   raw `air_wings` deltas, observed 585 `air_wing_observed` and 10530
-  `air_wing_updated` events, and reported zero raw gaps.
+  `air_wing_updated` events, and reported zero raw gaps. This is useful
+  telemetry proof, not production completion, because the wing body roots were
+  bridge supplied.
 - Remaining promotion work is live proof while changing missions, exact
-  airbase/variant joins, derived region aggregate rows, air-loss/attrition
-  proof, and timeline ingestion.
+  anchored wing-roster discovery, exact airbase/variant joins, derived region
+  aggregate rows, air-loss/attrition proof, and timeline ingestion.
 
 Runtime rules:
 
