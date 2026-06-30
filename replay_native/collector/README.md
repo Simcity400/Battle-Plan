@@ -875,6 +875,12 @@ Air-wing raw stream status:
   validates ordering, payload length, row bounds, mission-region flag
   consistency, deleted-row zeroing, and reserved bytes before accepting the
   stream.
+- Compact `air_region_activity` is domain id 31. It is derived inside the DLL
+  from the same anchored wing sample, buckets non-idle wings by
+  `(mission_region, owner_tag_db_id, mission_mask)`, and emits wing count, raw
+  plane count, effective active plane count, and delete rows. It does not claim
+  airbase identity/capacity, aircraft variant/type, reserves, aces, losses, or
+  the final displayed air-superiority percent.
 - Previous bridge fixture status: live-proven by no-cold cache-backed run
   `replay/snapshots/_collector_session_air_wing_gate/20260629T205254Z_pid43412`.
   The run advanced 12 game hours in 55.875 wall seconds, verified replay output,
@@ -898,10 +904,19 @@ Air-wing raw stream status:
   41474 air-wing rows, emitted 631 changed rows and 296 mission-region rows, and
   reported no source-unavailable, partial-data, bridge-unavailable, or worker
   panic flags. Frame time p95 was 8205 us; air-wing read p95 was 7014 us.
+- Current region-activity compact proof:
+  `replay_native/runs/compact_air_region_activity_870ebf_20260701_v2/native_session_manifest.json`
+  scheduled `air_wings` plus `air_region_activity` for 60 seconds at 10 ms
+  sampling, advanced 113 game hours, skipped 0 game hours, emitted ordered/
+  decodable compact records, wrote 78560 total bytes / 60320 payload bytes,
+  observed 44522 air-wing rows, captured 6461 observed region-activity buckets,
+  emitted 302 changed region rows with 18 deletes, and reported no source-
+  unavailable, partial-data, bridge-unavailable, or worker-panic flags. Frame
+  time p95 was 10347 us; region-activity read p95 was 9207 us.
 - Remaining promotion work is live proof while changing missions, exact
-  airbase/variant joins, derived region aggregate rows, air-loss/attrition
-  proof, air-combat resolution, aces/reserves/capacity joins, and timeline
-  ingestion.
+  airbase identity/capacity joins, aircraft variant/type and equipment joins,
+  reserves/aces, air-loss/attrition proof, air-combat resolution, exact
+  displayed air-superiority percent classification, and timeline ingestion.
 
 Runtime rules:
 

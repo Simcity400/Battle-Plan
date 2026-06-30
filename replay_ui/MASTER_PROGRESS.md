@@ -628,6 +628,16 @@ The app is product-complete only when all applicable gates pass:
   panic flags. Remaining air-system capture gaps are variants, airbase joins,
   reserves, aces, capacity, exact region superiority, losses, and air-combat
   resolution.
+- Compact `air_region_activity` proof passed on 2026-07-01:
+  `replay_native/runs/compact_air_region_activity_870ebf_20260701_v2/native_session_manifest.json`
+  scheduled `air_wings` plus `air_region_activity` for 60 seconds at 10 ms
+  sampling, advanced 113 game hours, skipped 0 game hours, emitted ordered/
+  decodable compact records, captured 44522 observed air-wing rows, 6461
+  observed region-activity buckets, 302 changed region rows, and 18 region
+  deletes, and reported no source-unavailable, partial-data, bridge-unavailable,
+  or worker panic flags. The remaining air gaps are live airbase identity/
+  capacity, plane variant/type/equipment joins, reserves, aces, losses, and
+  exact displayed superiority percent classification.
 - Every registered view opens from the in-app menu.
 - Every registered view has an interaction contract.
 - Every read-only interaction in each contract is implemented and tested.

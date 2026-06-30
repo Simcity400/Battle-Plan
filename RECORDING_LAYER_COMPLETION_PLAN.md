@@ -807,6 +807,13 @@ Tasks:
   active planes. It does not yet emit plane variant/type, airbase, reserves, ace
   joins, airbase capacity, exact air-superiority percent, air losses, or region
   combat resolution.
+- Current DLL checkpoint: `air_region_activity` is compact domain id 31,
+  derived inside the DLL from the anchored air-wing sample. It buckets non-idle
+  wings by `(mission_region, owner_tag_db_id, mission_mask)` and emits wing
+  count, raw plane count, effective active plane count, and delete rows. This
+  closes the replay-facing per-region activity aggregate, but it intentionally
+  does not claim unpinned airbase identity/capacity, plane variant/type,
+  reserves, aces, losses, or exact displayed air-superiority percent.
 - Current no-bridge proof:
   `replay/snapshots/_collector_session_air_wing_native_gate/20260630T172419Z_pid45880`
   advanced 12 game hours in 83.860 wall seconds with speed-five/current game
@@ -823,6 +830,15 @@ Tasks:
   bridge-unavailable, or worker-panic flags. Frame p95 was 8205 us; air-wing
   read p95 was 7014 us. This completes the first production-shaped compact
   roster slice, but not the wider air system.
+- Current region-activity compact proof:
+  `replay_native/runs/compact_air_region_activity_870ebf_20260701_v2/native_session_manifest.json`
+  scheduled `air_wings` plus `air_region_activity` for 60 seconds at 10 ms
+  sampling, advanced 113 game hours with 0 skipped, emitted ordered/decodable
+  compact records, wrote 78560 total bytes / 60320 payload bytes, captured 44522
+  observed air-wing rows, 6461 observed region-activity buckets, 302 changed
+  region rows, and 18 region deletes, and reported no source-unavailable,
+  partial-data, bridge-unavailable, or worker-panic flags. Frame p95 was 10347
+  us; air-region read p95 was 9207 us.
 - Build an active air-combat fixture for validation.
 - Resolve `airwing_effective_planes_denom` or badge it.
 - Decide which air-superiority values are exact live state and which are
@@ -1826,12 +1842,12 @@ hours in 55.875 wall seconds, verified replay output, hit `air_wing_body_cache`
 in 0.094s, supplied 585 bridge rows, emitted 11115 raw `air_wings` deltas,
 observed 585 `air_wing_observed` and 10530 `air_wing_updated` events, and
 reported zero raw gaps. This proof remains bridge-backed debug/proof evidence,
-not production completion. Current 870ebf work pins the native strategic-air
-manager, airbase/owner vector, and pool vectors, while the wing roster/table
-parent remains the blocker. The next air unlocks are anchored wing-roster
-discovery, exact airbase/variant joins, region aggregate rows,
-air-loss/attrition proof, and a decision on which air-superiority values are
-exact state versus computed UI proxies.
+not production completion. Current 870ebf work now has no-bridge compact wing
+roster rows and derived region-activity buckets live-proven above. The next air
+unlocks are exact airbase identity/capacity joins, aircraft variant/type and
+equipment joins, reserves/aces, air-loss/attrition proof, air-combat resolution,
+and a decision on which air-superiority values are exact state versus computed
+UI proxies.
 
 ### Phase 7: Focus, Tech, Decisions, Projects, Politics
 

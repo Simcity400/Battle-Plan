@@ -128,6 +128,12 @@ mission-region flag mismatches, non-zero deleted-row live fields, and non-zero
 reserved bytes. The legacy `air_wing_body_bridge` remains debug/proof fallback
 only; it is not part of the production recording path.
 
+`air_region_activity` is compact domain id 31. It decodes DLL-derived region/
+owner/mission buckets from the anchored air-wing sample, with wing counts, raw
+plane counts, effective active planes, and delete rows. It rejects malformed
+lengths, duplicate region/owner/mission rows, impossible ids/counts, unknown
+flags, non-zero deleted-row counts, non-zero reserved bytes, and trailing bytes.
+
 Compact extraction gate example:
 
 ```powershell

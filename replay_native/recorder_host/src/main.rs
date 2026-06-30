@@ -129,6 +129,12 @@ const COMPACT_AIR_WING_MAX_OWNER_TAG_DB_ID: u32 = 1_024;
 const COMPACT_AIR_WING_MAX_ID: u32 = i32::MAX as u32;
 const COMPACT_AIR_WING_MAX_PLANES: u32 = 10_000_000;
 const COMPACT_AIR_WING_MAX_MISSION_REGION_ID: u32 = 65_535;
+const COMPACT_AIR_REGION_ACTIVITY_ROW_LEN: usize = 32;
+const COMPACT_AIR_REGION_ACTIVITY_ROW_FLAG_DELETED: u32 = 1;
+const COMPACT_AIR_REGION_ACTIVITY_MAX_REGION_ID: u32 = 65_535;
+const COMPACT_AIR_REGION_ACTIVITY_MAX_OWNER_TAG_DB_ID: u32 = 1_024;
+const COMPACT_AIR_REGION_ACTIVITY_MAX_WING_COUNT: u32 = 20_000;
+const COMPACT_AIR_REGION_ACTIVITY_MAX_PLANES: u32 = 10_000_000;
 const COMPACT_MAP_STATE_ROW_LEN: usize = 16;
 const COMPACT_MAP_PROVINCE_ROW_LEN: usize = 16;
 const COMPACT_MAP_DETAIL_STATE_ROW_LEN: usize = 28;
@@ -1244,6 +1250,11 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     28 => decode_compact_oob_command_data_payload(offset, payload, &mut summary),
                     29 => decode_compact_ships_data_payload(offset, payload, &mut summary),
                     30 => decode_compact_air_wings_data_payload(offset, payload, &mut summary),
+                    31 => decode_compact_air_region_activity_data_payload(
+                        offset,
+                        payload,
+                        &mut summary,
+                    ),
                     other => summary.parse_errors.push(format!(
                         "offset {offset}: unsupported domain data payload for {}",
                         compact_domain_name(other)
@@ -3829,6 +3840,175 @@ fn decode_compact_air_wings_data_payload(
     );
 }
 
+fn decode_compact_air_region_activity_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < 36 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air region activity data payload is {} byte(s), expected at least 36",
+            payload.len()
+        ));
+        return;
+    }
+    let row_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let observed_air_wing_rows = read_u32_le(payload, 20) as usize;
+    let observed_bucket_rows = read_u32_le(payload, 24) as usize;
+    let deleted_rows = read_u32_le(payload, 28) as usize;
+    let reserved0 = read_u32_le(payload, 32);
+    summary.status_flags_or |= status_flags;
+    if changed_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air region activity changed_rows {changed_rows} > row_count {row_count}"
+        ));
+    }
+    if deleted_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air region activity deleted_rows {deleted_rows} > row_count {row_count}"
+        ));
+    }
+    if row_count > observed_bucket_rows && (status_flags & COMPACT_STATUS_DELTA_DATA) == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air region activity row_count {row_count} > observed_bucket_rows {observed_bucket_rows}"
+        ));
+    }
+    if reserved0 != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air region activity header reserved field is nonzero"
+        ));
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&31) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    add_compact_domain_data_unit(summary, 31, "air_region_activity_rows", row_count);
+    add_compact_domain_data_unit(
+        summary,
+        31,
+        "air_region_activity_observed_wing_rows",
+        observed_air_wing_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        31,
+        "air_region_activity_observed_bucket_rows",
+        observed_bucket_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        31,
+        "air_region_activity_deleted_rows",
+        deleted_rows,
+    );
+
+    let mut cursor = 36usize;
+    let mut seen_rows = BTreeSet::new();
+    let mut wing_count_sum = 0usize;
+    let mut plane_count_sum = 0usize;
+    let mut effective_planes_sum = 0usize;
+    for row_index in 0..row_count {
+        if let Err(err) = require_compact_remaining(
+            payload,
+            cursor,
+            COMPACT_AIR_REGION_ACTIVITY_ROW_LEN,
+            "air region activity row",
+        ) {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let region_id = read_u32_le(payload, cursor);
+        let owner_tag_db_id = read_u32_le(payload, cursor + 4);
+        let mission_mask = read_u32_le(payload, cursor + 8);
+        let flags = read_u32_le(payload, cursor + 12);
+        let wing_count = read_u32_le(payload, cursor + 16);
+        let plane_count = read_u32_le(payload, cursor + 20);
+        let effective_planes = read_u32_le(payload, cursor + 24);
+        let reserved1 = read_u32_le(payload, cursor + 28);
+        cursor += COMPACT_AIR_REGION_ACTIVITY_ROW_LEN;
+
+        let deleted = (flags & COMPACT_AIR_REGION_ACTIVITY_ROW_FLAG_DELETED) != 0;
+        if region_id == 0 || region_id > COMPACT_AIR_REGION_ACTIVITY_MAX_REGION_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air region activity row {row_index} has invalid region_id {region_id}"
+            ));
+        }
+        if owner_tag_db_id == 0 || owner_tag_db_id > COMPACT_AIR_REGION_ACTIVITY_MAX_OWNER_TAG_DB_ID
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air region activity row {row_index} has invalid owner_tag_db_id {owner_tag_db_id}"
+            ));
+        }
+        if !seen_rows.insert((region_id, owner_tag_db_id, mission_mask)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air region activity row {row_index} duplicates region/owner/mission"
+            ));
+        }
+        if flags & !COMPACT_AIR_REGION_ACTIVITY_ROW_FLAG_DELETED != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air region activity row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if wing_count > COMPACT_AIR_REGION_ACTIVITY_MAX_WING_COUNT {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air region activity row {row_index} has invalid wing_count {wing_count}"
+            ));
+        }
+        if plane_count > COMPACT_AIR_REGION_ACTIVITY_MAX_PLANES {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air region activity row {row_index} has invalid plane_count {plane_count}"
+            ));
+        }
+        if effective_planes > COMPACT_AIR_REGION_ACTIVITY_MAX_PLANES {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air region activity row {row_index} has invalid effective_planes {effective_planes}"
+            ));
+        }
+        if deleted && (wing_count != 0 || plane_count != 0 || effective_planes != 0) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air region activity deleted row {row_index} has live counts"
+            ));
+        }
+        if reserved1 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air region activity row {row_index} reserved field is nonzero"
+            ));
+        }
+        wing_count_sum = wing_count_sum.saturating_add(wing_count as usize);
+        plane_count_sum = plane_count_sum.saturating_add(plane_count as usize);
+        effective_planes_sum = effective_planes_sum.saturating_add(effective_planes as usize);
+    }
+    if cursor != payload.len() {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air region activity data payload has {} trailing byte(s)",
+            payload.len().saturating_sub(cursor)
+        ));
+    }
+    add_compact_domain_data_unit(
+        summary,
+        31,
+        "air_region_activity_wing_count_sum",
+        wing_count_sum,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        31,
+        "air_region_activity_plane_count_sum",
+        plane_count_sum,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        31,
+        "air_region_activity_effective_planes_sum",
+        effective_planes_sum,
+    );
+}
+
 fn decode_compact_land_combats_data_payload(
     offset: usize,
     payload: &[u8],
@@ -4826,6 +5006,7 @@ fn compact_domain_id(domain: &str) -> Option<u16> {
         "oob_command" => Some(28),
         "ships" => Some(29),
         "air_wings" => Some(30),
+        "air_region_activity" => Some(31),
         _ => None,
     }
 }
@@ -4851,6 +5032,7 @@ fn compact_domain_name(domain_id: u16) -> &'static str {
         28 => "oob_command",
         29 => "ships",
         30 => "air_wings",
+        31 => "air_region_activity",
         1000 => "frame",
         _ => "unknown",
     }
@@ -4914,7 +5096,24 @@ fn compact_domain_coverage_errors(
 fn compact_domain_requires_data_record(domain_id: u16) -> bool {
     matches!(
         domain_id,
-        10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 20 | 21 | 22 | 23 | 24 | 26 | 27 | 28 | 29 | 30
+        10 | 11
+            | 12
+            | 13
+            | 14
+            | 15
+            | 16
+            | 17
+            | 20
+            | 21
+            | 22
+            | 23
+            | 24
+            | 26
+            | 27
+            | 28
+            | 29
+            | 30
+            | 31
     )
 }
 
@@ -6080,6 +6279,101 @@ mod tests {
         );
         assert_eq!(compact_domain_id("air_wings"), Some(30));
         assert_eq!(compact_domain_name(30), "air_wings");
+    }
+
+    #[test]
+    fn compact_summary_decodes_air_region_activity_data_record() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            31,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(800, 2, 2, 3, 2, COMPACT_STATUS_DELTA_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            31,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_air_region_activity_data_payload(COMPACT_STATUS_DELTA_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(&summary, &[31]).is_empty());
+        let activity = summary.per_domain.get(&31).unwrap();
+        assert_eq!(activity.row_count_total, 2);
+        assert_eq!(activity.unit_count_total, 3);
+        assert_eq!(activity.data_record_count, 1);
+        assert_eq!(activity.data_rows_total, 2);
+        assert_eq!(activity.data_changed_rows_total, 2);
+        assert_eq!(
+            activity
+                .data_units_total
+                .get("air_region_activity_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            activity
+                .data_units_total
+                .get("air_region_activity_observed_wing_rows")
+                .copied(),
+            Some(3)
+        );
+        assert_eq!(
+            activity
+                .data_units_total
+                .get("air_region_activity_observed_bucket_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            activity
+                .data_units_total
+                .get("air_region_activity_deleted_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            activity
+                .data_units_total
+                .get("air_region_activity_wing_count_sum")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            activity
+                .data_units_total
+                .get("air_region_activity_plane_count_sum")
+                .copied(),
+            Some(200)
+        );
+        assert_eq!(
+            activity
+                .data_units_total
+                .get("air_region_activity_effective_planes_sum")
+                .copied(),
+            Some(180)
+        );
+        assert_eq!(compact_domain_id("air_region_activity"), Some(31));
+        assert_eq!(compact_domain_name(31), "air_region_activity");
     }
 
     #[test]
@@ -7626,6 +7920,49 @@ mod tests {
             payload.extend_from_slice(&count.to_le_bytes());
             payload.extend_from_slice(&mission_mask.to_le_bytes());
             payload.extend_from_slice(&mission_region.to_le_bytes());
+            payload.extend_from_slice(&effective_planes.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        payload
+    }
+
+    fn test_air_region_activity_data_payload(status_flags: u32) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&3u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+
+        for (
+            region_id,
+            owner_tag_db_id,
+            mission_mask,
+            flags,
+            wing_count,
+            plane_count,
+            effective_planes,
+        ) in [
+            (154u32, 1u32, 1u32, 0u32, 2u32, 200u32, 180u32),
+            (
+                164u32,
+                2u32,
+                4u32,
+                COMPACT_AIR_REGION_ACTIVITY_ROW_FLAG_DELETED,
+                0u32,
+                0u32,
+                0u32,
+            ),
+        ] {
+            payload.extend_from_slice(&region_id.to_le_bytes());
+            payload.extend_from_slice(&owner_tag_db_id.to_le_bytes());
+            payload.extend_from_slice(&mission_mask.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&wing_count.to_le_bytes());
+            payload.extend_from_slice(&plane_count.to_le_bytes());
             payload.extend_from_slice(&effective_planes.to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
         }

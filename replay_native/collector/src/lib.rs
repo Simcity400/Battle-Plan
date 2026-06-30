@@ -2750,6 +2750,7 @@ mod attach_log {
     const RAW_NAVAL_COMBATS_DOMAIN: &str = "naval_air_combats";
     const RAW_NAVAL_COMBAT_MEMBERS_DOMAIN: &str = "naval_combat_members";
     const RAW_AIR_WINGS_DOMAIN: &str = "air_wings";
+    const RAW_AIR_REGION_ACTIVITY_DOMAIN: &str = "air_region_activity";
     const RAW_SHIPS_DOMAIN: &str = "ships";
     const RAW_OOB_COMMAND_DOMAIN: &str = "oob_command";
     const RAW_CONFIDENCE_SAMPLED: &str = "sampled";
@@ -2797,6 +2798,7 @@ mod attach_log {
     const COMPACT_DOMAIN_OOB_COMMAND: u16 = 28;
     const COMPACT_DOMAIN_SHIPS: u16 = 29;
     const COMPACT_DOMAIN_AIR_WINGS: u16 = 30;
+    const COMPACT_DOMAIN_AIR_REGION_ACTIVITY: u16 = 31;
     const COMPACT_STATUS_STATE_UNAVAILABLE: u32 = 1 << 0;
     const COMPACT_STATUS_PROFILE_MISMATCH: u32 = 1 << 1;
     const COMPACT_STATUS_NO_CLOCK: u32 = 1 << 2;
@@ -2837,6 +2839,7 @@ mod attach_log {
     const COMPACT_SHIP_ROW_FLAG_OWNER: u32 = 1 << 3;
     const COMPACT_AIR_WING_ROW_FLAG_DELETED: u32 = 1;
     const COMPACT_AIR_WING_ROW_FLAG_MISSION_REGION: u32 = 1 << 1;
+    const COMPACT_AIR_REGION_ACTIVITY_ROW_FLAG_DELETED: u32 = 1;
     const COMPACT_OOB_STATUS_NONE: u32 = 0;
     const COMPACT_OOB_STATUS_EXACT: u32 = 1;
     const COMPACT_OOB_STATUS_UNKNOWN: u32 = 2;
@@ -2935,6 +2938,7 @@ mod attach_log {
         oob_command: CompactOobCommandTracker,
         ships: CompactShipTracker,
         air_wings: CompactAirWingTracker,
+        air_region_activity: CompactAirRegionActivityTracker,
         land_combat: LandCombatTracker,
         map_control: CompactMapControlTracker,
         map_detail: CompactMapDetailTracker,
@@ -3022,6 +3026,16 @@ mod attach_log {
         changed_rows: u32,
         status_flags: u32,
         observed_air_wing_rows: u32,
+        deleted_rows: u32,
+    }
+
+    struct CompactAirRegionActivityRead {
+        rows: Vec<CompactAirRegionActivityRow>,
+        read_time_us: u64,
+        changed_rows: u32,
+        status_flags: u32,
+        observed_air_wing_rows: u32,
+        observed_bucket_rows: u32,
         deleted_rows: u32,
     }
 
@@ -3280,6 +3294,11 @@ mod attach_log {
         next_generation: u64,
     }
 
+    #[derive(Default)]
+    struct CompactAirRegionActivityTracker {
+        previous: BTreeMap<(u32, u32, u32), CompactAirRegionActivityRow>,
+    }
+
     #[derive(Clone, Debug, PartialEq, Eq)]
     struct CompactOobCommandRow {
         kind: u32,
@@ -3326,6 +3345,17 @@ mod attach_log {
         count: u32,
         mission_mask: u32,
         mission_region: Option<u32>,
+        effective_planes: u32,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct CompactAirRegionActivityRow {
+        region_id: u32,
+        owner_tag_db_id: u32,
+        mission_mask: u32,
+        deleted: bool,
+        wing_count: u32,
+        plane_count: u32,
         effective_planes: u32,
     }
 
@@ -9529,6 +9559,8 @@ mod attach_log {
         let oob_command_enabled = compact_explicit_domain_enabled(control, RAW_OOB_COMMAND_DOMAIN);
         let ships_enabled = compact_explicit_domain_enabled(control, RAW_SHIPS_DOMAIN);
         let air_wings_enabled = compact_explicit_domain_enabled(control, RAW_AIR_WINGS_DOMAIN);
+        let air_region_activity_enabled =
+            compact_explicit_domain_enabled(control, RAW_AIR_REGION_ACTIVITY_DOMAIN);
         let land_combats_enabled =
             compact_explicit_domain_enabled(control, RAW_LAND_COMBATS_DOMAIN);
         let map_control_enabled = compact_map_control_enabled(control);
@@ -9543,6 +9575,7 @@ mod attach_log {
         let mut oob_command_read = None;
         let mut ship_read = None;
         let mut air_wing_read = None;
+        let mut air_region_activity_read = None;
         let mut land_combat_read = None;
         let mut map_control_read = None;
         let mut map_detail_read = None;
@@ -9567,6 +9600,7 @@ mod attach_log {
         let oob_command_tracker = &mut trackers.oob_command;
         let ship_tracker = &mut trackers.ships;
         let air_wing_tracker = &mut trackers.air_wings;
+        let air_region_activity_tracker = &mut trackers.air_region_activity;
         let division_roots = &trackers.division_roots;
         let land_combat_tracker = &mut trackers.land_combat;
         let map_control_tracker = &mut trackers.map_control;
@@ -9649,6 +9683,17 @@ mod attach_log {
                 } else {
                     None
                 };
+            let air_region_activity_handle = if air_region_activity_enabled {
+                Some(scope.spawn(move || {
+                    read_compact_air_region_activity(
+                        state,
+                        status_flags,
+                        air_region_activity_tracker,
+                    )
+                }))
+            } else {
+                None
+            };
             let land_combat_handle = if land_combats_enabled {
                 Some(scope.spawn(move || {
                     read_compact_land_combats(state, status_flags, land_combat_tracker)
@@ -9727,6 +9772,12 @@ mod attach_log {
                 air_wing_read = Some(match handle.join() {
                     Ok(read) => read,
                     Err(_) => compact_air_wing_worker_panic_read(status_flags),
+                });
+            }
+            if let Some(handle) = air_region_activity_handle {
+                air_region_activity_read = Some(match handle.join() {
+                    Ok(read) => read,
+                    Err(_) => compact_air_region_activity_worker_panic_read(status_flags),
                 });
             }
             if let Some(handle) = land_combat_handle {
@@ -10045,6 +10096,38 @@ mod attach_log {
                 read.status_flags,
                 read.changed_rows,
                 read.observed_air_wing_rows,
+                read.deleted_rows,
+            );
+            sequence = sequence.saturating_add(1);
+            emitted_domains = emitted_domains.saturating_add(1);
+        }
+        if let Some(read) = air_region_activity_read {
+            append_compact_domain_perf_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                CompactDomainPerfRecord {
+                    domain_id: COMPACT_DOMAIN_AIR_REGION_ACTIVITY,
+                    read_time_us: read.read_time_us,
+                    row_count: read.observed_bucket_rows,
+                    changed_rows: read.changed_rows,
+                    unit_count: read.observed_air_wing_rows,
+                    changed_unit_count: read.changed_rows,
+                    status_flags: read.status_flags,
+                },
+                elapsed_wall_ms,
+            );
+            sequence = sequence.saturating_add(1);
+            append_compact_air_region_activity_data_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                &read.rows,
+                elapsed_wall_ms,
+                read.status_flags,
+                read.changed_rows,
+                read.observed_air_wing_rows,
+                read.observed_bucket_rows,
                 read.deleted_rows,
             );
             sequence = sequence.saturating_add(1);
@@ -10735,6 +10818,20 @@ mod attach_log {
             changed_rows: 0,
             status_flags: status_flags | COMPACT_STATUS_WORKER_PANIC,
             observed_air_wing_rows: 0,
+            deleted_rows: 0,
+        }
+    }
+
+    fn compact_air_region_activity_worker_panic_read(
+        status_flags: u32,
+    ) -> CompactAirRegionActivityRead {
+        CompactAirRegionActivityRead {
+            rows: Vec::new(),
+            read_time_us: 0,
+            changed_rows: 0,
+            status_flags: status_flags | COMPACT_STATUS_WORKER_PANIC,
+            observed_air_wing_rows: 0,
+            observed_bucket_rows: 0,
             deleted_rows: 0,
         }
     }
@@ -12416,6 +12513,134 @@ mod attach_log {
             status_flags,
             observed_air_wing_rows,
             deleted_rows,
+        }
+    }
+
+    fn read_compact_air_region_activity(
+        state: &CollectorState,
+        status_flags: u32,
+        tracker: &mut CompactAirRegionActivityTracker,
+    ) -> CompactAirRegionActivityRead {
+        let read_started = Instant::now();
+        let mut status_flags = status_flags;
+        let Some(native) = sample_compact_air_wings_native(state) else {
+            return CompactAirRegionActivityRead {
+                rows: Vec::new(),
+                read_time_us: duration_micros_u64(read_started.elapsed()),
+                changed_rows: 0,
+                status_flags: status_flags | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                observed_air_wing_rows: 0,
+                observed_bucket_rows: 0,
+                deleted_rows: 0,
+            };
+        };
+        if native.rows.is_empty() {
+            status_flags |= COMPACT_STATUS_SOURCE_UNAVAILABLE;
+        }
+        if native.invalid_air_wing_rows > 0 {
+            status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+        }
+        let observed_air_wing_rows = native.rows.len().min(u32::MAX as usize) as u32;
+        let bucket_rows = compact_air_region_activity_rows(&native.rows);
+        let observed_bucket_rows = bucket_rows.len().min(u32::MAX as usize) as u32;
+        let (rows, changed_rows, deleted_rows) =
+            compact_air_region_activity_delta_rows(tracker, bucket_rows);
+        CompactAirRegionActivityRead {
+            rows,
+            read_time_us: duration_micros_u64(read_started.elapsed()),
+            changed_rows,
+            status_flags,
+            observed_air_wing_rows,
+            observed_bucket_rows,
+            deleted_rows,
+        }
+    }
+
+    fn compact_air_region_activity_rows(
+        wing_rows: &[CompactAirWingRow],
+    ) -> Vec<CompactAirRegionActivityRow> {
+        let mut buckets = BTreeMap::new();
+        for wing in wing_rows {
+            if wing.deleted {
+                continue;
+            }
+            let Some(region_id) = wing.mission_region else {
+                continue;
+            };
+            if region_id == 0 || region_id > MAX_AIR_WING_MISSION_REGION_ID {
+                continue;
+            }
+            let key = (region_id, wing.owner_tag_db_id, wing.mission_mask);
+            let entry = buckets.entry(key).or_insert(CompactAirRegionActivityRow {
+                region_id,
+                owner_tag_db_id: wing.owner_tag_db_id,
+                mission_mask: wing.mission_mask,
+                deleted: false,
+                wing_count: 0,
+                plane_count: 0,
+                effective_planes: 0,
+            });
+            entry.wing_count = entry.wing_count.saturating_add(1);
+            entry.plane_count = entry.plane_count.saturating_add(wing.count);
+            entry.effective_planes = entry.effective_planes.saturating_add(wing.effective_planes);
+        }
+        buckets.into_values().collect()
+    }
+
+    fn compact_air_region_activity_delta_rows(
+        tracker: &mut CompactAirRegionActivityTracker,
+        current_rows: Vec<CompactAirRegionActivityRow>,
+    ) -> (Vec<CompactAirRegionActivityRow>, u32, u32) {
+        let emit_full_snapshot = tracker.previous.is_empty();
+        let mut current = BTreeMap::new();
+        let mut emitted = Vec::new();
+        let mut deleted_rows = 0u32;
+        for row in current_rows {
+            let key = (row.region_id, row.owner_tag_db_id, row.mission_mask);
+            if emit_full_snapshot || tracker.previous.get(&key) != Some(&row) {
+                emitted.push(row.clone());
+            }
+            current.insert(key, row);
+        }
+        if !emit_full_snapshot {
+            for key in tracker.previous.keys().copied().collect::<Vec<_>>() {
+                if current.contains_key(&key) {
+                    continue;
+                }
+                if let Some(old) = tracker.previous.get(&key) {
+                    emitted.push(deleted_compact_air_region_activity_row(old));
+                    deleted_rows = deleted_rows.saturating_add(1);
+                }
+            }
+        }
+        emitted.sort_by_key(|row| {
+            (
+                row.region_id,
+                row.owner_tag_db_id,
+                row.mission_mask,
+                row.deleted,
+            )
+        });
+        tracker.previous = current;
+        let changed_rows = emitted.len().min(u32::MAX as usize) as u32;
+        if changed_rows > 0 {
+            (emitted, changed_rows, deleted_rows)
+        } else {
+            (Vec::new(), 0, deleted_rows)
+        }
+    }
+
+    fn deleted_compact_air_region_activity_row(
+        old: &CompactAirRegionActivityRow,
+    ) -> CompactAirRegionActivityRow {
+        CompactAirRegionActivityRow {
+            region_id: old.region_id,
+            owner_tag_db_id: old.owner_tag_db_id,
+            mission_mask: old.mission_mask,
+            deleted: true,
+            wing_count: 0,
+            plane_count: 0,
+            effective_planes: 0,
         }
     }
 
@@ -14572,6 +14797,38 @@ mod attach_log {
         );
     }
 
+    fn append_compact_air_region_activity_data_record(
+        out: &mut Vec<u8>,
+        sequence: u64,
+        game_hour_raw: i32,
+        rows: &[CompactAirRegionActivityRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        observed_air_wing_rows: u32,
+        observed_bucket_rows: u32,
+        deleted_rows: u32,
+    ) {
+        let payload = compact_air_region_activity_data_payload(
+            rows,
+            elapsed_wall_ms,
+            status_flags,
+            changed_rows,
+            observed_air_wing_rows,
+            observed_bucket_rows,
+            deleted_rows,
+        );
+        append_compact_record(
+            out,
+            sequence,
+            game_hour_raw,
+            COMPACT_DOMAIN_AIR_REGION_ACTIVITY,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+    }
+
     fn append_compact_land_combats_data_record(
         out: &mut Vec<u8>,
         sequence: u64,
@@ -15779,6 +16036,41 @@ mod attach_log {
             payload.extend_from_slice(&row.count.to_le_bytes());
             payload.extend_from_slice(&row.mission_mask.to_le_bytes());
             payload.extend_from_slice(&row.mission_region.unwrap_or(0).to_le_bytes());
+            payload.extend_from_slice(&row.effective_planes.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        payload
+    }
+
+    fn compact_air_region_activity_data_payload(
+        rows: &[CompactAirRegionActivityRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        observed_air_wing_rows: u32,
+        observed_bucket_rows: u32,
+        deleted_rows: u32,
+    ) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(36usize.saturating_add(rows.len().saturating_mul(32)));
+        payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
+        payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+        payload.extend_from_slice(&changed_rows.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&observed_air_wing_rows.to_le_bytes());
+        payload.extend_from_slice(&observed_bucket_rows.to_le_bytes());
+        payload.extend_from_slice(&deleted_rows.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        for row in rows {
+            let mut flags = 0u32;
+            if row.deleted {
+                flags |= COMPACT_AIR_REGION_ACTIVITY_ROW_FLAG_DELETED;
+            }
+            payload.extend_from_slice(&row.region_id.to_le_bytes());
+            payload.extend_from_slice(&row.owner_tag_db_id.to_le_bytes());
+            payload.extend_from_slice(&row.mission_mask.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&row.wing_count.to_le_bytes());
+            payload.extend_from_slice(&row.plane_count.to_le_bytes());
             payload.extend_from_slice(&row.effective_planes.to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
         }
@@ -24428,6 +24720,102 @@ mod attach_log {
                 u32::from_le_bytes(payload[90..94].try_into().unwrap()),
                 COMPACT_SHIP_ROW_FLAG_DELETED
             );
+        }
+
+        #[test]
+        fn compact_air_region_activity_aggregates_and_deletes_buckets() {
+            let wings = vec![
+                CompactAirWingRow {
+                    owner_tag_db_id: 1,
+                    wing_id: 4,
+                    generation: 0,
+                    body_addr: HEAP_LO + 0x100,
+                    deleted: false,
+                    count: 100,
+                    mission_mask: 1,
+                    mission_region: Some(154),
+                    effective_planes: 90,
+                },
+                CompactAirWingRow {
+                    owner_tag_db_id: 1,
+                    wing_id: 5,
+                    generation: 0,
+                    body_addr: HEAP_LO + 0x200,
+                    deleted: false,
+                    count: 100,
+                    mission_mask: 1,
+                    mission_region: Some(154),
+                    effective_planes: 80,
+                },
+                CompactAirWingRow {
+                    owner_tag_db_id: 1,
+                    wing_id: 6,
+                    generation: 0,
+                    body_addr: HEAP_LO + 0x300,
+                    deleted: false,
+                    count: 12,
+                    mission_mask: 0,
+                    mission_region: None,
+                    effective_planes: 0,
+                },
+            ];
+
+            let bucket_rows = compact_air_region_activity_rows(&wings);
+
+            assert_eq!(bucket_rows.len(), 1);
+            assert_eq!(bucket_rows[0].region_id, 154);
+            assert_eq!(bucket_rows[0].owner_tag_db_id, 1);
+            assert_eq!(bucket_rows[0].mission_mask, 1);
+            assert_eq!(bucket_rows[0].wing_count, 2);
+            assert_eq!(bucket_rows[0].plane_count, 200);
+            assert_eq!(bucket_rows[0].effective_planes, 170);
+
+            let mut tracker = CompactAirRegionActivityTracker::default();
+            let (emitted, changed_rows, deleted_rows) =
+                compact_air_region_activity_delta_rows(&mut tracker, bucket_rows);
+            assert_eq!(changed_rows, 1);
+            assert_eq!(deleted_rows, 0);
+            assert_eq!(emitted.len(), 1);
+
+            let payload = compact_air_region_activity_data_payload(
+                &emitted,
+                82,
+                COMPACT_STATUS_EXTRACTION_PERF_GATE | COMPACT_STATUS_DELTA_DATA,
+                changed_rows,
+                3,
+                1,
+                deleted_rows,
+            );
+
+            assert_eq!(payload.len(), 36 + 32);
+            assert_eq!(u64::from_le_bytes(payload[0..8].try_into().unwrap()), 82);
+            assert_eq!(u32::from_le_bytes(payload[8..12].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[12..16].try_into().unwrap()), 1);
+            assert_eq!(
+                u32::from_le_bytes(payload[16..20].try_into().unwrap()),
+                COMPACT_STATUS_EXTRACTION_PERF_GATE | COMPACT_STATUS_DELTA_DATA
+            );
+            assert_eq!(u32::from_le_bytes(payload[20..24].try_into().unwrap()), 3);
+            assert_eq!(u32::from_le_bytes(payload[24..28].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[28..32].try_into().unwrap()), 0);
+            assert_eq!(u32::from_le_bytes(payload[36..40].try_into().unwrap()), 154);
+            assert_eq!(u32::from_le_bytes(payload[40..44].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[44..48].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[48..52].try_into().unwrap()), 0);
+            assert_eq!(u32::from_le_bytes(payload[52..56].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[56..60].try_into().unwrap()), 200);
+            assert_eq!(u32::from_le_bytes(payload[60..64].try_into().unwrap()), 170);
+            assert_eq!(u32::from_le_bytes(payload[64..68].try_into().unwrap()), 0);
+
+            let (deleted, changed_rows, deleted_rows) =
+                compact_air_region_activity_delta_rows(&mut tracker, Vec::new());
+            assert_eq!(changed_rows, 1);
+            assert_eq!(deleted_rows, 1);
+            assert_eq!(deleted.len(), 1);
+            assert!(deleted[0].deleted);
+            assert_eq!(deleted[0].wing_count, 0);
+            assert_eq!(deleted[0].plane_count, 0);
+            assert_eq!(deleted[0].effective_planes, 0);
         }
 
         #[test]
