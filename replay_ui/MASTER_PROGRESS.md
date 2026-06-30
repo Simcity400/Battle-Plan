@@ -694,6 +694,23 @@ The app is product-complete only when all applicable gates pass:
   catalog roots, airbase capacity/penalty semantics, aircraft
   archetype/base-airframe classification, aces, losses, exact displayed
   superiority percent, and active air-combat resolution.
+- Compact `stockpile_variant_defs` proof passed on 2026-07-01:
+  `replay_native/runs/compact_stockpile_variant_defs_870ebf_20260701_v1/native_session_manifest.json`
+  scheduled `air_wings`, `air_region_activity`, `air_wing_loadouts`,
+  `air_variant_defs`, `air_variant_stats`, `air_variant_reserves`,
+  `air_base_status`, and `stockpile_variant_defs` for 60 seconds at no-sleep
+  compact sampling, advanced 103 game hours, skipped 0 game hours, emitted
+  ordered/decodable compact records, captured 134812 observed stockpile variant
+  rows, 138008 observed module rows, 1298 emitted stockpile variant definition
+  rows, and 1327 emitted module-token rows, and reported no source-unavailable,
+  partial-data, bridge-unavailable, or worker panic flags. This closes DLL/Rust
+  compact capture of a stockpile-rooted live type-70 variant catalog, including
+  variants present in country stockpiles but not currently assigned to active
+  air wings; the generated `.battleplan` also passed independent `pack_replay
+  verify`. Remaining air gaps are airbase capacity/penalty semantics, aircraft
+  archetype/base-airframe classification, aces, losses, exact displayed
+  superiority percent, active air-combat resolution, and any true global
+  equipment registry beyond stockpiled variants.
 - Compact `air_base_status` proof passed on 2026-07-01:
   `replay_native/runs/compact_air_base_status_870ebf_20260701_v1/native_session_manifest.json`
   scheduled `air_wings`, `air_region_activity`, `air_wing_loadouts`,

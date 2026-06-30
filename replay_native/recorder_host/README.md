@@ -193,6 +193,19 @@ air wings; reserve-only aircraft variants still need a broader equipment
 catalog root before the reserve slice can claim complete aircraft inventory
 coverage.
 
+`stockpile_variant_defs` is compact domain id 37. It decodes DLL-derived
+type-70 variant definitions rooted in the country production-manager stockpile,
+using the same row/module/string payload layout and validation rules as
+`air_variant_defs`. The stream is pointer-free and keyed by `variant_id`; it is
+intended to cover stockpiled variants, including aircraft variants not currently
+assigned to live air wings, without a heap-wide type-70 scan in the production
+recording loop. Proof
+`replay_native/runs/compact_stockpile_variant_defs_870ebf_20260701_v1/native_session_manifest.json`
+advanced 103 game hours with 0 skipped and no source/partial/bridge/worker
+failures while scheduling the full current air bundle plus
+`stockpile_variant_defs`; the generated `.battleplan` also passed an independent
+`pack_replay verify`.
+
 `air_base_status` is compact domain id 34. It decodes DLL-derived air-base rows
 from the anchored strategic-air state-indexed air-base table. Rows are keyed by
 airbase id and carry state id, materialized capacity, state air-base building

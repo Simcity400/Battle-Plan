@@ -2665,6 +2665,7 @@ mod attach_log {
             || scheduled_domain_enabled(Some(control), "politics_residuals")
             || scheduled_domain_enabled(Some(control), "decisions_live")
             || scheduled_domain_enabled(Some(control), "diplomacy_live")
+            || scheduled_domain_enabled(Some(control), RAW_STOCKPILE_VARIANT_DEFS_DOMAIN)
             || scheduled_domain_enabled(Some(control), RAW_AIR_VARIANT_RESERVES_DOMAIN)
     }
 
@@ -2808,6 +2809,7 @@ mod attach_log {
     const RAW_AIR_VARIANT_STATS_DOMAIN: &str = "air_variant_stats";
     const RAW_AIR_VARIANT_RESERVES_DOMAIN: &str = "air_variant_reserves";
     const RAW_AIR_BASE_STATUS_DOMAIN: &str = "air_base_status";
+    const RAW_STOCKPILE_VARIANT_DEFS_DOMAIN: &str = "stockpile_variant_defs";
     const RAW_SHIPS_DOMAIN: &str = "ships";
     const RAW_OOB_COMMAND_DOMAIN: &str = "oob_command";
     const RAW_CONFIDENCE_SAMPLED: &str = "sampled";
@@ -2861,6 +2863,7 @@ mod attach_log {
     const COMPACT_DOMAIN_AIR_BASE_STATUS: u16 = 34;
     const COMPACT_DOMAIN_AIR_VARIANT_STATS: u16 = 35;
     const COMPACT_DOMAIN_AIR_VARIANT_RESERVES: u16 = 36;
+    const COMPACT_DOMAIN_STOCKPILE_VARIANT_DEFS: u16 = 37;
     const COMPACT_STATUS_STATE_UNAVAILABLE: u32 = 1 << 0;
     const COMPACT_STATUS_PROFILE_MISMATCH: u32 = 1 << 1;
     const COMPACT_STATUS_NO_CLOCK: u32 = 1 << 2;
@@ -3012,6 +3015,7 @@ mod attach_log {
         air_variant_stats: CompactAirVariantStatsTracker,
         air_variant_reserves: CompactAirVariantReserveTracker,
         air_base_status: CompactAirBaseStatusTracker,
+        stockpile_variant_defs: CompactAirVariantDefTracker,
         land_combat: LandCombatTracker,
         map_control: CompactMapControlTracker,
         map_detail: CompactMapDetailTracker,
@@ -9817,6 +9821,8 @@ mod attach_log {
             compact_explicit_domain_enabled(control, RAW_AIR_VARIANT_RESERVES_DOMAIN);
         let air_base_status_enabled =
             compact_explicit_domain_enabled(control, RAW_AIR_BASE_STATUS_DOMAIN);
+        let stockpile_variant_defs_enabled =
+            compact_explicit_domain_enabled(control, RAW_STOCKPILE_VARIANT_DEFS_DOMAIN);
         let land_combats_enabled =
             compact_explicit_domain_enabled(control, RAW_LAND_COMBATS_DOMAIN);
         let map_control_enabled = compact_map_control_enabled(control);
@@ -9837,6 +9843,7 @@ mod attach_log {
         let mut air_variant_stats_read = None;
         let mut air_variant_reserve_read = None;
         let mut air_base_status_read = None;
+        let mut stockpile_variant_def_read = None;
         let mut land_combat_read = None;
         let mut map_control_read = None;
         let mut map_detail_read = None;
@@ -9867,6 +9874,7 @@ mod attach_log {
         let air_variant_stats_tracker = &mut trackers.air_variant_stats;
         let air_variant_reserve_tracker = &mut trackers.air_variant_reserves;
         let air_base_status_tracker = &mut trackers.air_base_status;
+        let stockpile_variant_def_tracker = &mut trackers.stockpile_variant_defs;
         let division_roots = &trackers.division_roots;
         let land_combat_tracker = &mut trackers.land_combat;
         let map_control_tracker = &mut trackers.map_control;
@@ -9999,6 +10007,17 @@ mod attach_log {
             } else {
                 None
             };
+            let stockpile_variant_def_handle = if stockpile_variant_defs_enabled {
+                Some(scope.spawn(move || {
+                    read_compact_stockpile_variant_defs(
+                        state,
+                        status_flags,
+                        stockpile_variant_def_tracker,
+                    )
+                }))
+            } else {
+                None
+            };
             let land_combat_handle = if land_combats_enabled {
                 Some(scope.spawn(move || {
                     read_compact_land_combats(state, status_flags, land_combat_tracker)
@@ -10113,6 +10132,12 @@ mod attach_log {
                 air_base_status_read = Some(match handle.join() {
                     Ok(read) => read,
                     Err(_) => compact_air_base_status_worker_panic_read(status_flags),
+                });
+            }
+            if let Some(handle) = stockpile_variant_def_handle {
+                stockpile_variant_def_read = Some(match handle.join() {
+                    Ok(read) => read,
+                    Err(_) => compact_air_variant_def_worker_panic_read(status_flags),
                 });
             }
             if let Some(handle) = land_combat_handle {
@@ -10628,6 +10653,40 @@ mod attach_log {
                 read.observed_air_base_rows,
                 read.observed_pool_rows,
                 read.deleted_rows,
+            );
+            sequence = sequence.saturating_add(1);
+            emitted_domains = emitted_domains.saturating_add(1);
+        }
+        if let Some(read) = stockpile_variant_def_read {
+            append_compact_domain_perf_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                CompactDomainPerfRecord {
+                    domain_id: COMPACT_DOMAIN_STOCKPILE_VARIANT_DEFS,
+                    read_time_us: read.read_time_us,
+                    row_count: read.observed_variant_rows,
+                    changed_rows: read.changed_rows,
+                    unit_count: read.observed_module_rows,
+                    changed_unit_count: read.emitted_module_rows,
+                    status_flags: read.status_flags,
+                },
+                elapsed_wall_ms,
+            );
+            sequence = sequence.saturating_add(1);
+            append_compact_variant_defs_data_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                COMPACT_DOMAIN_STOCKPILE_VARIANT_DEFS,
+                &read.rows,
+                elapsed_wall_ms,
+                read.status_flags,
+                read.changed_rows,
+                read.observed_variant_rows,
+                read.observed_module_rows,
+                read.emitted_module_rows,
+                read.invalid_variant_rows,
             );
             sequence = sequence.saturating_add(1);
             emitted_domains = emitted_domains.saturating_add(1);
@@ -13196,6 +13255,108 @@ mod attach_log {
         let mut emitted_module_rows = 0u32;
         let mut invalid_variant_rows = 0u32;
         for (variant_id, variant_ptr) in native.variant_ptrs {
+            let row = if let Some(cached) = tracker.known.get(&variant_id).cloned() {
+                cached
+            } else {
+                let Some(row) =
+                    read_compact_air_variant_def_row(state.base, variant_id, variant_ptr)
+                else {
+                    invalid_variant_rows = invalid_variant_rows.saturating_add(1);
+                    continue;
+                };
+                row
+            };
+            observed_module_rows = observed_module_rows
+                .saturating_add(row.modules.len().min(u32::MAX as usize) as u32);
+            if tracker.known.get(&variant_id) != Some(&row) {
+                emitted_module_rows = emitted_module_rows
+                    .saturating_add(row.modules.len().min(u32::MAX as usize) as u32);
+                tracker.known.insert(variant_id, row.clone());
+                rows.push(row);
+            }
+            if tracker.known.len() > MAX_AIR_VARIANT_DEF_ROWS {
+                status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+                break;
+            }
+        }
+        if invalid_variant_rows > 0 {
+            status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+        }
+        rows.sort_by_key(|row| row.variant_id);
+        let changed_rows = rows.len().min(u32::MAX as usize) as u32;
+        CompactAirVariantDefRead {
+            rows,
+            read_time_us: duration_micros_u64(read_started.elapsed()),
+            changed_rows,
+            status_flags,
+            observed_variant_rows,
+            observed_module_rows,
+            emitted_module_rows,
+            invalid_variant_rows,
+        }
+    }
+
+    fn read_compact_stockpile_variant_defs(
+        state: &CollectorState,
+        status_flags: u32,
+        tracker: &mut CompactAirVariantDefTracker,
+    ) -> CompactAirVariantDefRead {
+        let read_started = Instant::now();
+        let mut status_flags = status_flags;
+        if !state.country_identity.has_scalar_source() {
+            return CompactAirVariantDefRead {
+                rows: Vec::new(),
+                read_time_us: duration_micros_u64(read_started.elapsed()),
+                changed_rows: 0,
+                status_flags: status_flags | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                observed_variant_rows: 0,
+                observed_module_rows: 0,
+                emitted_module_rows: 0,
+                invalid_variant_rows: 0,
+            };
+        }
+
+        let country_vtable = state.country_identity.country_vtable;
+        let mut variant_ptrs = BTreeMap::new();
+        let mut invalid_variant_rows = 0u32;
+        for country in &state.country_identity.rows {
+            let object_ptr = country.object_ptr;
+            let valid_country = is_map_control_heap_pointer(object_ptr)
+                && read_u64(object_ptr).is_some_and(|vtable| vtable as usize == country_vtable)
+                && read_u32(object_ptr + OBJ_TAG_DB_ID) == Some(country.tag_db_id);
+            if !valid_country {
+                invalid_variant_rows = invalid_variant_rows.saturating_add(1);
+                continue;
+            }
+            let Some(stockpile) = read_country_stockpile_raw(object_ptr, country_vtable) else {
+                invalid_variant_rows = invalid_variant_rows.saturating_add(1);
+                continue;
+            };
+            for stock in stockpile {
+                if let Some(previous) = variant_ptrs.insert(stock.variant_id, stock.variant_ptr) {
+                    if previous != stock.variant_ptr {
+                        invalid_variant_rows = invalid_variant_rows.saturating_add(1);
+                        variant_ptrs.insert(stock.variant_id, previous);
+                    }
+                }
+                if variant_ptrs.len() > MAX_AIR_VARIANT_DEF_ROWS {
+                    status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+                    break;
+                }
+            }
+            if variant_ptrs.len() > MAX_AIR_VARIANT_DEF_ROWS {
+                break;
+            }
+        }
+        if variant_ptrs.is_empty() {
+            status_flags |= COMPACT_STATUS_SOURCE_UNAVAILABLE;
+        }
+
+        let observed_variant_rows = variant_ptrs.len().min(u32::MAX as usize) as u32;
+        let mut rows = Vec::new();
+        let mut observed_module_rows = 0u32;
+        let mut emitted_module_rows = 0u32;
+        for (variant_id, variant_ptr) in variant_ptrs {
             let row = if let Some(cached) = tracker.known.get(&variant_id).cloned() {
                 cached
             } else {
@@ -16793,6 +16954,36 @@ mod attach_log {
         emitted_module_rows: u32,
         invalid_variant_rows: u32,
     ) {
+        append_compact_variant_defs_data_record(
+            out,
+            sequence,
+            game_hour_raw,
+            COMPACT_DOMAIN_AIR_VARIANT_DEFS,
+            rows,
+            elapsed_wall_ms,
+            status_flags,
+            changed_rows,
+            observed_variant_rows,
+            observed_module_rows,
+            emitted_module_rows,
+            invalid_variant_rows,
+        );
+    }
+
+    fn append_compact_variant_defs_data_record(
+        out: &mut Vec<u8>,
+        sequence: u64,
+        game_hour_raw: i32,
+        domain_id: u16,
+        rows: &[CompactAirVariantDefRow],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        observed_variant_rows: u32,
+        observed_module_rows: u32,
+        emitted_module_rows: u32,
+        invalid_variant_rows: u32,
+    ) {
         let payload = compact_air_variant_defs_data_payload(
             rows,
             elapsed_wall_ms,
@@ -16807,7 +16998,7 @@ mod attach_log {
             out,
             sequence,
             game_hour_raw,
-            COMPACT_DOMAIN_AIR_VARIANT_DEFS,
+            domain_id,
             COMPACT_RECORD_TYPE_DOMAIN_DATA,
             0,
             &payload,
@@ -19091,6 +19282,7 @@ mod attach_log {
     #[derive(Clone, Copy)]
     struct CountryStockpileRawRow {
         variant_id: u32,
+        variant_ptr: usize,
         amount_raw: i64,
     }
 
@@ -24735,7 +24927,7 @@ mod attach_log {
         }
         let byte_len = (size as usize).checked_mul(STOCK_STRIDE)?;
         let raw = read_bytes(begin, byte_len)?;
-        let mut rows_by_variant: BTreeMap<u32, i64> = BTreeMap::new();
+        let mut rows_by_variant: BTreeMap<u32, CountryStockpileRawRow> = BTreeMap::new();
         for k in (0..byte_len).step_by(STOCK_STRIDE) {
             let def_ptr = read_u64_from_slice(&raw, k + STOCK_ENTRY_DEF)? as usize;
             let amount_raw = read_i64_from_slice(&raw, k + STOCK_ENTRY_AMOUNT)?;
@@ -24752,19 +24944,16 @@ mod attach_log {
             if !amount.is_finite() || amount.abs() > MAX_PRODUCTION_STOCKPILE_AMOUNT {
                 return None;
             }
-            if rows_by_variant.insert(variant_id, amount_raw).is_some() {
+            let row = CountryStockpileRawRow {
+                variant_id,
+                variant_ptr: def_ptr,
+                amount_raw,
+            };
+            if rows_by_variant.insert(variant_id, row).is_some() {
                 return None;
             }
         }
-        Some(
-            rows_by_variant
-                .into_iter()
-                .map(|(variant_id, amount_raw)| CountryStockpileRawRow {
-                    variant_id,
-                    amount_raw,
-                })
-                .collect(),
-        )
+        Some(rows_by_variant.into_values().collect())
     }
 
     fn read_production_stockpile(
@@ -28276,6 +28465,9 @@ mod attach_log {
             assert!(lightweight_root_needs_country_identity(&control));
 
             control.scheduled_domains = vec![RAW_AIR_VARIANT_RESERVES_DOMAIN.to_string()];
+            assert!(lightweight_root_needs_country_identity(&control));
+
+            control.scheduled_domains = vec![RAW_STOCKPILE_VARIANT_DEFS_DOMAIN.to_string()];
             assert!(lightweight_root_needs_country_identity(&control));
 
             control.scheduled_domains = Vec::new();

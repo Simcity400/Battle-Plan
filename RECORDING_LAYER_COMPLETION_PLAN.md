@@ -847,6 +847,14 @@ Tasks:
   build. It does not yet discover reserve-only aircraft variants that are not
   currently present in any live air wing; that still needs a broader equipment
   catalog/root.
+- Current DLL checkpoint: `stockpile_variant_defs` is compact domain id 37. It
+  reads each resolved country object's anchored production-manager stockpile,
+  preserves the type-70 equipment definition pointer from every stockpile entry,
+  validates vtable/type/id, and emits the same pointer-free variant definition
+  rows/module children as `air_variant_defs`. This closes a production-shaped,
+  no-heap-scan live catalog for variants present in country stockpiles, including
+  aircraft variants not currently assigned to active air wings. It does not claim
+  a true global equipment registry for variants that exist in no live stockpile.
 - Current DLL checkpoint: `air_base_status` is compact domain id 34. It walks
   the anchored live strategic-air state-indexed air-base table at
   `strategic_air+0x90`, validates air-base records by vtable
@@ -935,6 +943,18 @@ Tasks:
   bridge-unavailable, or worker-panic flags. Air-variant-reserve read p95 was
   26106 us, and an independent `pack_replay verify` pass accepted the generated
   `.battleplan`.
+- Current stockpile variant-definition compact proof:
+  `replay_native/runs/compact_stockpile_variant_defs_870ebf_20260701_v1/native_session_manifest.json`
+  scheduled `air_wings`, `air_region_activity`, `air_wing_loadouts`,
+  `air_variant_defs`, `air_variant_stats`, `air_variant_reserves`,
+  `air_base_status`, and `stockpile_variant_defs` for 60 seconds at no-sleep
+  compact sampling, advanced 103 game hours with 0 skipped, emitted ordered/
+  decodable compact records, wrote 419593 total bytes, captured 134812 observed
+  stockpile variant rows, 138008 observed module rows, 1298 emitted stockpile
+  variant definition rows, and 1327 emitted module-token rows, and reported no
+  source-unavailable, partial-data, bridge-unavailable, or worker-panic flags.
+  `stockpile_variant_defs` read p95 was 11695 us, and an independent
+  `pack_replay verify` pass accepted the generated `.battleplan`.
 - Build an active air-combat fixture for validation.
 - Resolve `airwing_effective_planes_denom` or badge it.
 - Decide which air-superiority values are exact live state and which are

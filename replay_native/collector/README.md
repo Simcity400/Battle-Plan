@@ -920,6 +920,15 @@ Air-wing raw stream status:
   country identity, invalid stockpile vectors, invalid variant definitions, or
   impossible amounts. Reserve-only aircraft variants that are not currently
   present in any live air wing still need a broader equipment catalog root.
+- Compact `stockpile_variant_defs` is domain id 37. It reuses the anchored
+  country production-manager stockpile root, preserves each stockpile entry's
+  type-70 equipment definition pointer, validates vtable/type/id, and emits the
+  same pointer-free variant definition payload as `air_variant_defs`. This
+  avoids a heap-wide type-70 catalog scan in the production hot loop and gives
+  the replay a live catalog for variants that exist in country stockpiles,
+  including variants not currently assigned to an active air wing. It is still a
+  stockpile-derived catalog, not a proven global equipment registry for variants
+  that exist only in designer/history/catalog data and in no country stockpile.
 - Compact `air_base_status` is domain id 34. It walks the live strategic-air
   state-indexed air-base table at `strategic_air+0x90`, validates air-base
   records by vtable `MODULE+0x2941FA0`, `{air_base_id,type=65}` handle at
@@ -1014,11 +1023,23 @@ Air-wing raw stream status:
   bridge-unavailable, or worker-panic flags. Frame cadence stayed hourly clean;
   air-variant-reserve read p95 was 26106 us, and an independent `pack_replay
   verify` pass accepted the generated `.battleplan`.
+- Current stockpile variant-definition compact proof:
+  `replay_native/runs/compact_stockpile_variant_defs_870ebf_20260701_v1/native_session_manifest.json`
+  scheduled `air_wings`, `air_region_activity`, `air_wing_loadouts`,
+  `air_variant_defs`, `air_variant_stats`, `air_variant_reserves`,
+  `air_base_status`, and `stockpile_variant_defs` together for 60 seconds at
+  no-sleep compact sampling, advanced 103 game hours, skipped 0, emitted
+  ordered/decodable compact records, wrote 419593 total bytes, captured 134812
+  observed stockpile variant rows, 138008 observed module rows, 1298 emitted
+  stockpile variant definition rows, and 1327 emitted module-token rows, and
+  reported no source-unavailable, partial-data, bridge-unavailable, or
+  worker-panic flags. `stockpile_variant_defs` read p95 was 11695 us, and an
+  independent `pack_replay verify` pass accepted the generated `.battleplan`.
 - Remaining promotion work is live proof while changing missions/rebasing,
   airbase capacity modifiers/penalty semantics, aircraft archetype/base-airframe
-  classification, reserve-only aircraft catalog roots, aces, air-loss/attrition
-  proof, air-combat resolution, exact displayed air-superiority percent
-  classification, and timeline ingestion.
+  classification, true global equipment registry roots beyond stockpiles, aces,
+  air-loss/attrition proof, air-combat resolution, exact displayed
+  air-superiority percent classification, and timeline ingestion.
 
 Runtime rules:
 
