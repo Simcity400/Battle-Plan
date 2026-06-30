@@ -1102,8 +1102,8 @@ class TestCollectorProofGate(unittest.TestCase):
     def test_accepts_air_wing_raw_telemetry_proof(self):
         proof = collector_session_proof_summary(
             _manifest(
-                air_wing_body_bridge_supplied=True,
-                air_wing_body_bridge_rows=587,
+                air_wing_body_bridge_supplied=False,
+                air_wing_body_bridge_rows=0,
                 collector_frame_payload_summary={
                     "domains_seen": ["clock"],
                     "raw_delta_domains_seen": ["air_wings"],
@@ -1121,11 +1121,39 @@ class TestCollectorProofGate(unittest.TestCase):
         self.assertTrue(proof["ok"])
         self.assertEqual(proof["errors"], [])
 
-    def test_rejects_air_wing_rows_without_observed_event(self):
+    def test_rejects_air_wing_raw_telemetry_proof_with_bridge(self):
         errors = collector_session_proof_errors(
             _manifest(
                 air_wing_body_bridge_supplied=True,
                 air_wing_body_bridge_rows=587,
+                collector_frame_payload_summary={
+                    "domains_seen": ["clock"],
+                    "raw_delta_domains_seen": ["air_wings"],
+                    "raw_event_types_seen": ["air_wing_observed"],
+                    "raw_event_type_counts": {"air_wing_observed": 587},
+                    "raw_delta_domain_counts": {"air_wings": 587},
+                    "raw_delta_domain_object_counts": {"air_wings": 587},
+                    "raw_gap_domain_counts": {},
+                    "heavy_payload_on_lightweight_frames": 0,
+                },
+            ),
+            require_air_wing_raw_telemetry=True,
+        )
+
+        self.assertIn(
+            "air wing body bridge was supplied; expected DLL-native root",
+            errors,
+        )
+        self.assertIn(
+            "air wing body bridge rows present; expected DLL-native root",
+            errors,
+        )
+
+    def test_rejects_air_wing_rows_without_observed_event(self):
+        errors = collector_session_proof_errors(
+            _manifest(
+                air_wing_body_bridge_supplied=False,
+                air_wing_body_bridge_rows=0,
                 collector_frame_payload_summary={
                     "domains_seen": ["clock"],
                     "raw_delta_domains_seen": ["air_wings"],
@@ -1145,8 +1173,8 @@ class TestCollectorProofGate(unittest.TestCase):
     def test_rejects_air_wing_raw_gaps(self):
         errors = collector_session_proof_errors(
             _manifest(
-                air_wing_body_bridge_supplied=True,
-                air_wing_body_bridge_rows=587,
+                air_wing_body_bridge_supplied=False,
+                air_wing_body_bridge_rows=0,
                 collector_frame_payload_summary={
                     "domains_seen": ["clock"],
                     "raw_delta_domains_seen": ["air_wings"],

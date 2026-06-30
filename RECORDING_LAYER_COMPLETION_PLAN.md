@@ -802,18 +802,23 @@ Tasks:
 
 - Promote `strategic_air`, `naval_air`, `abilities`, `country_extra`, and OOB
   air-wing rows into collector-sourced domains or exact derived rows.
-- Current DLL checkpoint: `air_wings` has a bridge-gated raw stream from
-  supplied air-wing body pins. It emits `air_wing_observed`,
-  `air_wing_updated`, and `air_wing_lost` events with owner, wing id,
-  generation, count, mission mask, mission region, and effective active planes.
-  It does not yet emit plane variant/type, airbase, reserves, ace joins,
-  airbase capacity, exact air-superiority percent, air losses, or region combat
-  resolution.
-- Current 870ebf root work has native strategic-air, airbase/owner, and pool
-  roots, but no native anchored walk from those roots to the full wing roster.
-  Do not mark `air_wings` DLL-complete until the DLL/Rust compact path captures
-  the roster without Python bridge rows, heap scans, or save inputs and passes
-  the speed-five zero-skipped-hours gate.
+- Current DLL checkpoint: `air_wings` has a no-bridge, DLL-native raw stream
+  from anchored strategic-air roots:
+  `CGameState+0x690 -> strategic_air+0x30/+0x3C -> airbase_owner+0x58/+0x64
+  -> pool+0x28/+0x34 -> air_wing_object+0x10`. It emits
+  `air_wing_observed`, `air_wing_updated`, and `air_wing_lost` events with
+  owner, wing id, generation, count, mission mask, mission region, and effective
+  active planes. It does not yet emit plane variant/type, airbase, reserves, ace
+  joins, airbase capacity, exact air-superiority percent, air losses, or region
+  combat resolution.
+- Current no-bridge proof:
+  `replay/snapshots/_collector_session_air_wing_native_gate/20260630T172419Z_pid45880`
+  advanced 12 game hours in 83.860 wall seconds with speed-five/current game
+  conditions, supplied 0 air-wing bridge rows, verified the replay output,
+  emitted 8640 raw `air_wings` deltas, observed 360 `air_wing_observed` and
+  8280 `air_wing_updated` events, and reported zero skipped game hours and zero
+  raw air-wing gaps. Do not mark the segment fully production-complete until the
+  same roster is emitted through compact binary air-wing records.
 - Build an active air-combat fixture for validation.
 - Resolve `airwing_effective_planes_denom` or badge it.
 - Decide which air-superiority values are exact live state and which are

@@ -688,10 +688,11 @@ def collector_session_proof_errors(
         if _map_int(summary, "raw_gap_domain_counts", "army_orders") > 0:
             errors.append("army order raw telemetry gap frames observed")
     if require_air_wing_raw_telemetry:
-        if manifest.get("air_wing_body_bridge_supplied") is not True:
-            errors.append("air wing body bridge was not supplied")
-        if _as_int(manifest.get("air_wing_body_bridge_rows")) in (None, 0):
-            errors.append("air wing body bridge rows not positive")
+        if manifest.get("air_wing_body_bridge_supplied") is True:
+            errors.append("air wing body bridge was supplied; expected DLL-native root")
+        bridge_rows = _as_int(manifest.get("air_wing_body_bridge_rows"))
+        if bridge_rows not in (None, 0):
+            errors.append("air wing body bridge rows present; expected DLL-native root")
         if _map_int(summary, "raw_delta_domain_counts", "air_wings") == 0:
             errors.append("air wing raw telemetry frames were not observed")
         if _map_int(summary, "raw_delta_domain_object_counts", "air_wings") == 0:

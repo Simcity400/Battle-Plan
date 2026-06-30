@@ -611,6 +611,14 @@ The app is product-complete only when all applicable gates pass:
   `air_wing_observed` and 9128 `air_wing_updated` events, and reported zero raw
   gap frames. This is bridge-backed proof evidence, not no-bridge production
   completion.
+- Raw `air_wings` no-bridge DLL proof passed on 2026-06-30:
+  `replay/snapshots/_collector_session_air_wing_native_gate/20260630T172419Z_pid45880`
+  advanced 12 game hours in 83.860 wall seconds with speed-five/current game
+  conditions, supplied 0 air-wing bridge rows, verified the replay container,
+  emitted 8640 raw `air_wings` deltas, observed 360 `air_wing_observed` and
+  8280 `air_wing_updated` events, and reported zero skipped game hours and zero
+  raw gap frames. Compact binary air-wing emission remains the production
+  promotion step.
 - Every registered view opens from the in-app menu.
 - Every registered view has an interaction contract.
 - Every read-only interaction in each contract is implemented and tested.

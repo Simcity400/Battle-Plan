@@ -548,6 +548,13 @@ mod attach_log {
     const MAX_OOB_INLINE_IDS: usize = 256;
     const MAX_OOB_TASK_FORCE_SHIPS: u32 = 20_000;
     const OOB_COMMAND_SAMPLE_MIN_MS: u64 = 250;
+    const CGAMESTATE_OFF_STRATEGIC_AIR_MANAGER: usize = 0x690;
+    const STRATEGIC_AIR_MANAGER_VTABLE_RVA: usize = 0x2942118;
+    const STRATEGIC_AIR_MANAGER_OFF_COUNTRY_CONTAINERS: usize = 0x30;
+    const STRATEGIC_AIR_MANAGER_OFF_COUNTRY_CONTAINER_COUNT: usize = 0x3C;
+    const MAX_STRATEGIC_AIR_CONTAINERS: u32 = 4_096;
+    const AIR_WING_OBJECT_VTABLE_RVA: usize = 0x2964178;
+    const AIR_WING_OBJECT_OFF_BODY: usize = 0x10;
     const AIR_WING_VTABLE_RVA: usize = 0x29641B0;
     const AIR_WING_POOL_VTABLE_RVA: usize = 0x2964208;
     const AIR_WING_AIRBASE_OWNER_VTABLE_RVA: usize = 0x2941FF8;
@@ -561,9 +568,16 @@ mod attach_log {
     const AIR_WING_OFF_MISSION_MASK: usize = 0x90;
     const AIR_WING_OFF_MISSION_REGION: usize = 0xB0;
     const AIR_WING_OFF_EFFECTIVE_PLANES: usize = 0x160;
+    const AIR_WING_AIRBASE_OWNER_OFF_POOL_BEGIN: usize = 0x58;
+    const AIR_WING_AIRBASE_OWNER_OFF_POOL_COUNT: usize = 0x64;
     const AIR_WING_POOL_OFF_AIRBASE_OWNER: usize = 0x40;
+    const AIR_WING_POOL_OFF_WING_OBJECT_BEGIN: usize = 0x28;
+    const AIR_WING_POOL_OFF_WING_OBJECT_COUNT: usize = 0x34;
     const AIR_WING_AIRBASE_OWNER_OFF_TAG: usize = 0x90;
     const AIR_WING_REGION_OFF_ID: usize = 0x58;
+    const MAX_AIR_WING_POOLS_PER_OWNER: u32 = 2_048;
+    const MAX_AIR_WING_OBJECTS_PER_POOL: u32 = 4_096;
+    const MAX_NATIVE_AIR_WING_ROWS: usize = 20_000;
     const MAX_AIR_WING_ID: u32 = i32::MAX as u32;
     const MAX_AIR_WING_BODY_BRIDGE_ROWS: usize = 20_000;
     const MAX_AIR_WING_BODY_BRIDGE_PAYLOAD_BYTES: usize = 2 * 1024 * 1024;
@@ -7254,6 +7268,212 @@ mod attach_log {
         if !(state.daily_match && state.long_string_match) {
             return Err("state_validation_failed");
         }
+        let tag_table = country_tag_table(state.country_database_ptr as usize)
+            .ok_or("tag_table_unavailable")?;
+        match sample_air_wings_from_native_root(state, tag_table) {
+            Ok(samples) => return Ok(samples),
+            Err(native_gap) if control.air_wing_body_bridge.is_empty() => return Err(native_gap),
+            Err(_) => {}
+        }
+        sample_air_wings_from_bridge(state, control, tag_table)
+    }
+
+    fn sample_air_wings_from_native_root(
+        state: &CollectorState,
+        tag_table: usize,
+    ) -> Result<Vec<AirWingSample>, &'static str> {
+        let module_base = state.base;
+        let game_state = state.date_ptr as usize;
+        if !is_map_control_heap_pointer(game_state) {
+            return Err("native_root_game_state_invalid");
+        }
+        let strategic_air = read_u64(
+            game_state
+                .checked_add(CGAMESTATE_OFF_STRATEGIC_AIR_MANAGER)
+                .ok_or("native_root_overflow")?,
+        )
+        .ok_or("native_root_strategic_air_read_failed")? as usize;
+        if !is_map_control_heap_pointer(strategic_air)
+            || read_u64(strategic_air).ok_or("native_root_strategic_air_vtable_read_failed")?
+                as usize
+                != module_base
+                    .checked_add(STRATEGIC_AIR_MANAGER_VTABLE_RVA)
+                    .ok_or("native_root_overflow")?
+        {
+            return Err("native_root_strategic_air_invalid");
+        }
+        let container_begin = read_u64(
+            strategic_air
+                .checked_add(STRATEGIC_AIR_MANAGER_OFF_COUNTRY_CONTAINERS)
+                .ok_or("native_root_overflow")?,
+        )
+        .ok_or("native_root_container_begin_read_failed")? as usize;
+        let container_count = read_u32(
+            strategic_air
+                .checked_add(STRATEGIC_AIR_MANAGER_OFF_COUNTRY_CONTAINER_COUNT)
+                .ok_or("native_root_overflow")?,
+        )
+        .ok_or("native_root_container_count_read_failed")?;
+        if container_count > MAX_STRATEGIC_AIR_CONTAINERS {
+            return Err("native_root_container_count_invalid");
+        }
+        if container_count == 0 {
+            return Ok(Vec::new());
+        }
+        if !is_map_control_heap_pointer(container_begin) {
+            return Err("native_root_container_begin_invalid");
+        }
+
+        let mut by_key = BTreeMap::new();
+        for container_index in 0..(container_count as usize) {
+            let container = read_u64(
+                container_begin
+                    .checked_add(
+                        container_index
+                            .checked_mul(std::mem::size_of::<u64>())
+                            .ok_or("native_root_overflow")?,
+                    )
+                    .ok_or("native_root_overflow")?,
+            )
+            .ok_or("native_root_container_read_failed")? as usize;
+            if container == 0 {
+                continue;
+            }
+            if !is_map_control_heap_pointer(container)
+                || read_u64(container).ok_or("native_root_container_vtable_read_failed")? as usize
+                    != module_base
+                        .checked_add(AIR_WING_AIRBASE_OWNER_VTABLE_RVA)
+                        .ok_or("native_root_overflow")?
+            {
+                return Err("native_root_container_invalid");
+            }
+            let pool_begin = read_u64(
+                container
+                    .checked_add(AIR_WING_AIRBASE_OWNER_OFF_POOL_BEGIN)
+                    .ok_or("native_root_overflow")?,
+            )
+            .ok_or("native_root_pool_begin_read_failed")? as usize;
+            let pool_count = read_u32(
+                container
+                    .checked_add(AIR_WING_AIRBASE_OWNER_OFF_POOL_COUNT)
+                    .ok_or("native_root_overflow")?,
+            )
+            .ok_or("native_root_pool_count_read_failed")?;
+            if pool_count > MAX_AIR_WING_POOLS_PER_OWNER {
+                return Err("native_root_pool_count_invalid");
+            }
+            if pool_count == 0 {
+                continue;
+            }
+            if !is_map_control_heap_pointer(pool_begin) {
+                return Err("native_root_pool_begin_invalid");
+            }
+            for pool_index in 0..(pool_count as usize) {
+                let pool = read_u64(
+                    pool_begin
+                        .checked_add(
+                            pool_index
+                                .checked_mul(std::mem::size_of::<u64>())
+                                .ok_or("native_root_overflow")?,
+                        )
+                        .ok_or("native_root_overflow")?,
+                )
+                .ok_or("native_root_pool_read_failed")? as usize;
+                if !is_map_control_heap_pointer(pool)
+                    || read_u64(pool).ok_or("native_root_pool_vtable_read_failed")? as usize
+                        != module_base
+                            .checked_add(AIR_WING_POOL_VTABLE_RVA)
+                            .ok_or("native_root_overflow")?
+                {
+                    return Err("native_root_pool_invalid");
+                }
+                if read_u64(
+                    pool.checked_add(AIR_WING_POOL_OFF_AIRBASE_OWNER)
+                        .ok_or("native_root_overflow")?,
+                )
+                .ok_or("native_root_pool_owner_read_failed")? as usize
+                    != container
+                {
+                    return Err("native_root_pool_owner_mismatch");
+                }
+                let object_begin = read_u64(
+                    pool.checked_add(AIR_WING_POOL_OFF_WING_OBJECT_BEGIN)
+                        .ok_or("native_root_overflow")?,
+                )
+                .ok_or("native_root_wing_object_begin_read_failed")?
+                    as usize;
+                let object_count = read_u32(
+                    pool.checked_add(AIR_WING_POOL_OFF_WING_OBJECT_COUNT)
+                        .ok_or("native_root_overflow")?,
+                )
+                .ok_or("native_root_wing_object_count_read_failed")?;
+                if object_count > MAX_AIR_WING_OBJECTS_PER_POOL {
+                    return Err("native_root_wing_object_count_invalid");
+                }
+                if object_count == 0 {
+                    continue;
+                }
+                if !is_map_control_heap_pointer(object_begin) {
+                    return Err("native_root_wing_object_begin_invalid");
+                }
+                for object_index in 0..(object_count as usize) {
+                    let object = read_u64(
+                        object_begin
+                            .checked_add(
+                                object_index
+                                    .checked_mul(std::mem::size_of::<u64>())
+                                    .ok_or("native_root_overflow")?,
+                            )
+                            .ok_or("native_root_overflow")?,
+                    )
+                    .ok_or("native_root_wing_object_read_failed")?
+                        as usize;
+                    if !is_map_control_heap_pointer(object)
+                        || read_u64(object).ok_or("native_root_wing_object_vtable_read_failed")?
+                            as usize
+                            != module_base
+                                .checked_add(AIR_WING_OBJECT_VTABLE_RVA)
+                                .ok_or("native_root_overflow")?
+                    {
+                        return Err("native_root_wing_object_invalid");
+                    }
+                    let body = object
+                        .checked_add(AIR_WING_OBJECT_OFF_BODY)
+                        .ok_or("native_root_overflow")?;
+                    if read_u64(
+                        body.checked_add(AIR_WING_OFF_POOL)
+                            .ok_or("native_root_overflow")?,
+                    )
+                    .ok_or("native_root_wing_pool_read_failed")? as usize
+                        != pool
+                    {
+                        return Err("native_root_wing_pool_mismatch");
+                    }
+                    let Some(sample) =
+                        sample_air_wing_from_body(module_base, tag_table, body, None, None)
+                    else {
+                        return Err("native_root_wing_body_invalid");
+                    };
+                    if by_key
+                        .insert((sample.owner.clone(), sample.wing_id), sample)
+                        .is_some()
+                    {
+                        return Err("native_root_duplicate_air_wing");
+                    }
+                    if by_key.len() > MAX_NATIVE_AIR_WING_ROWS {
+                        return Err("native_root_air_wing_count_invalid");
+                    }
+                }
+            }
+        }
+        Ok(by_key.into_values().collect())
+    }
+
+    fn sample_air_wings_from_bridge(
+        state: &CollectorState,
+        control: &CollectorControl,
+        tag_table: usize,
+    ) -> Result<Vec<AirWingSample>, &'static str> {
         if !(control.air_wing_body_bridge_valid
             && air_wing_body_bridge_well_formed(&control.air_wing_body_bridge))
         {
@@ -7262,12 +7482,16 @@ mod attach_log {
         if control.air_wing_body_bridge.is_empty() {
             return Ok(Vec::new());
         }
-        let tag_table = country_tag_table(state.country_database_ptr as usize)
-            .ok_or("tag_table_unavailable")?;
         let mut by_key = BTreeMap::new();
         let mut invalid_entries = 0_u32;
         for entry in &control.air_wing_body_bridge {
-            if let Some(sample) = sample_air_wing_from_bridge_entry(state.base, tag_table, entry) {
+            if let Some(sample) = sample_air_wing_from_body(
+                state.base,
+                tag_table,
+                entry.body_ptr,
+                Some(entry.owner_tag_db_id),
+                Some(entry.wing_id),
+            ) {
                 by_key
                     .entry((sample.owner.clone(), sample.wing_id))
                     .or_insert(sample);
@@ -7281,12 +7505,13 @@ mod attach_log {
         Ok(by_key.into_values().collect())
     }
 
-    fn sample_air_wing_from_bridge_entry(
+    fn sample_air_wing_from_body(
         module_base: usize,
         tag_table: usize,
-        entry: &AirWingBodyBridgeEntry,
+        body: usize,
+        expected_owner_tag_db_id: Option<u32>,
+        expected_wing_id: Option<u32>,
     ) -> Option<AirWingSample> {
-        let body = entry.body_ptr;
         if !is_map_control_heap_pointer(body) {
             return None;
         }
@@ -7297,11 +7522,14 @@ mod attach_log {
             return None;
         }
         let wing_id = read_u32(body.checked_add(AIR_WING_OFF_ID)?)?;
-        if wing_id == 0 || wing_id != entry.wing_id || wing_id > MAX_AIR_WING_ID {
+        if wing_id == 0 || wing_id > MAX_AIR_WING_ID {
+            return None;
+        }
+        if expected_wing_id.is_some_and(|expected| expected != wing_id) {
             return None;
         }
         let owner_tag_db_id = read_air_wing_owner_tag_db_id(module_base, body)?;
-        if owner_tag_db_id != entry.owner_tag_db_id {
+        if expected_owner_tag_db_id.is_some_and(|expected| expected != owner_tag_db_id) {
             return None;
         }
         let owner = tag_from_table(tag_table, owner_tag_db_id)?;
