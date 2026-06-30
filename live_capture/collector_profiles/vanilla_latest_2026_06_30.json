@@ -1,6 +1,6 @@
 {
   "profile_version": 1,
-  "status": "compact_land_oob_weather_speed5_verified",
+  "status": "compact_land_oob_weather_country_state_speed5_verified",
   "label": "vanilla_latest_2026_06_30",
   "game": "the game",
   "game_version": null,
@@ -56,6 +56,55 @@
         "worker_panic_seen": false,
         "frame_time_p95_us": 22352,
         "total_bytes": 2800072
+      },
+      "pack_verify": "ok"
+    },
+    {
+      "kind": "compact_dll_rust_country_state_gate",
+      "date": "2026-07-01",
+      "game_id": "compact_country_870ebf_speed5_20260701_v2",
+      "scheduled_domains": [
+        "fuel_live",
+        "production_live",
+        "focus_live",
+        "tech_live",
+        "politics_live",
+        "politics_residuals",
+        "decisions_live",
+        "diplomacy_live"
+      ],
+      "first_game_hour_raw": 60778730,
+      "last_game_hour_raw": 60778816,
+      "frame_end_records": 87,
+      "game_hours_advanced": 86,
+      "skipped_game_hours": 0,
+      "compact_stream": {
+        "ordered": true,
+        "decodable": true,
+        "domain_coverage": "full",
+        "source_unavailable_seen": false,
+        "partial_data_seen": false,
+        "bridge_unavailable_seen": false,
+        "worker_panic_seen": false,
+        "frame_time_p95_us": 17691,
+        "total_bytes": 640154
+      },
+      "typed_units": {
+        "fuel_country_rows": 2480,
+        "production_country_rows": 1058,
+        "stockpile_rows": 5727,
+        "military_line_rows": 2434,
+        "naval_line_rows": 1465,
+        "construction_queue_rows": 1462,
+        "focus_country_rows": 631,
+        "tech_country_rows": 635,
+        "active_research_slot_rows": 1005,
+        "politics_country_rows": 458,
+        "popularity_rows": 1832,
+        "politics_residual_country_rows": 356,
+        "decision_country_rows": 397,
+        "timed_decision_rows": 50,
+        "diplomacy_country_rows": 355
       },
       "pack_verify": "ok"
     }
@@ -120,6 +169,19 @@
   },
   "domains_enabled": [
     "clock",
-    "country_identity"
+    "country_identity",
+    "fuel_live",
+    "production_live",
+    "focus_live",
+    "tech_live",
+    "politics_live",
+    "politics_residuals",
+    "decisions_live",
+    "diplomacy_live",
+    "divisions",
+    "division_equipment",
+    "army_orders",
+    "oob_command",
+    "weather_live"
   ]
 }

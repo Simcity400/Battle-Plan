@@ -178,6 +178,19 @@ country-state domains. Current compact binary proofs:
   engine member counts, and missing-member-count diagnostics. This is not full
   OOB completion: empty armies, fleets, task forces, theatres, and roots not
   reachable through live divisions remain open.
+- `compact_country_870ebf_speed5_20260701_v2`: refreshes the current-build
+  country-state vtable validators for the same executable hash and proves the
+  eight compact country domains together without JSON root frames. It scheduled
+  `fuel_live`, `production_live`, `focus_live`, `tech_live`, `politics_live`,
+  `politics_residuals`, `decisions_live`, and `diplomacy_live` for 45 seconds,
+  advanced 86 game hours with 87 unique frame hours and 0 skipped, had full
+  domain/data-record coverage, ordered and decodable records, no worker-panic,
+  source-unavailable, partial-data, or bridge flags, avg frame 14.702 ms, p95
+  17.691 ms, max 23.922 ms, 640,154 compact bytes, and a verified
+  `.battleplan`. The run emitted real typed rows for the previously empty
+  current-build domains: 1,005 active research-slot rows, 1,832 popularity rows,
+  356 politics-residual country rows, 397 decision-country rows, 50 timed
+  decision rows, and 5,727 stockpile rows.
 
 This completes the extraction-only compact performance gate for the current
 implemented compact domains and starts replay payload capture with typed
@@ -434,7 +447,7 @@ Scheduled country production:
   `CCountry+0xF68` to the production manager;
 - stockpile reads use the compact vector at manager `+0x220/+0x228/+0x22C`
   and gate every non-null entry through the equipment-variant vtable
-  `module+0x292B218` plus type `70`;
+  `module+0x293AFB8` plus type `70` on the current 2026-06-30 vanilla build;
 - military/naval production lines use the compact pointer vector at
   manager `+0x58/+0x60/+0x64` and accept line type `56` or `57`;
 - unavailable stockpile or line vectors are omitted, while measured-empty `{}`,

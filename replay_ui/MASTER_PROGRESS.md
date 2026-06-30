@@ -143,6 +143,19 @@ for inspection, with no ability to mutate the game.
   member division/army rows, engine member counts, and missing-member-count
   diagnostics. Full OOB remains open for empty armies, fleets, task forces,
   theatres, and command roots not reachable through live divisions.
+- Compact DLL/Rust replay capture now has current-build country-state coverage
+  for the same 2026-06-30 vanilla executable profile after refreshing the
+  politics, idea, leader, decision, research, and equipment-variant validators.
+  The proof `compact_country_870ebf_speed5_20260701_v2` scheduled
+  `fuel_live`, `production_live`, `focus_live`, `tech_live`, `politics_live`,
+  `politics_residuals`, `decisions_live`, and `diplomacy_live` together for 45
+  seconds at speed five/current equivalent. It advanced 86 game hours with 0
+  skipped, verified ordered/decodable compact records, full per-hour domain
+  data coverage, `.battleplan` packing, and no source-unavailable/partial/
+  bridge/worker failures. The semantic counters showed real typed payloads:
+  fuel rows, stockpiles, production lines, construction rows, focus rows,
+  active research slots, popularity rows, politics residuals, decision rows,
+  timed decisions, and diplomacy rows.
 - DLL-native scheduled `diplomacy_live` is proven for faction membership and
   war/casualty rows: the collector reads `CCountry+0x598` faction groups on
   hourly frames, folds into `countries.*.diplomacy.faction_group` and
@@ -457,6 +470,13 @@ The app is product-complete only when all applicable gates pass:
   advanced 105 game hours in 60 seconds at speed five with 0 skipped, verified
   the same 14-domain compact bundle, and wrote per-domain `data_units_total`
   counters for the decoded replay-critical units.
+- Compact current-build country-state proof passed on 2026-07-01:
+  `replay_native/runs/compact_country_870ebf_speed5_20260701_v2` advanced 86
+  game hours in 45 seconds at speed five/current equivalent with 0 skipped,
+  verified ordered/decodable records, full per-hour domain/data-record coverage
+  for the eight compact country domains, no source-unavailable/partial/bridge/
+  worker failures, semantic counters for all scheduled domains, and a verified
+  `.battleplan` container.
 - Scheduled `diplomacy_live` faction proof passed on 2026-06-29:
   `replay/snapshots/_collector_session_diplomacy_gate/20260629T152734Z_pid43412`
   advanced 12 game hours in 48.328 wall seconds, stored 13 verified snapshots,

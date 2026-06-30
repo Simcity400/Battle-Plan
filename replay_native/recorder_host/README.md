@@ -496,6 +496,21 @@ diagnostics through the DLL/Rust compact path. This is active land-command OOB
 coverage only; empty armies, fleets, task forces, theatres, and full command
 roots remain open.
 
+`compact_country_870ebf_speed5_20260701_v2` refreshes the same active profile's
+country-state validators for politics, ideas, leaders, decisions, research, and
+equipment variants. The 45-second compact speed-five gate scheduled
+`fuel_live`, `production_live`, `focus_live`, `tech_live`, `politics_live`,
+`politics_residuals`, `decisions_live`, and `diplomacy_live`; it advanced 86
+game hours with 87 frame-end records, skipped 0, had full per-domain data
+coverage, ordered/decodable records, no source-unavailable/partial/bridge/
+worker flags, avg frame 14.702 ms, p95 17.691 ms, max 23.922 ms, 640,154
+compact bytes, and an independent `pack_replay verify` pass. Recorder semantic
+counters show real typed payloads for all eight domains: 2,480 fuel rows, 5,727
+stockpile rows, 2,434 military lines, 1,465 naval lines, 1,462 construction
+rows, 1,005 active research slots, 1,832 popularity rows, 356 politics-residual
+country rows, 397 decision-country rows, 50 timed decisions, and 355 diplomacy
+country rows.
+
 Implementation note: see `COMPACT_HOI4REPLAY_NEXT_STEP.md` for the bounded
 Rust-native packaging path and the test contract for putting `collector_stream.bin`
 inside a manifest-covered `.battleplan` without using Python or full JSON root
