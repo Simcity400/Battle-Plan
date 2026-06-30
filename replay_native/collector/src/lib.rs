@@ -342,6 +342,7 @@ mod attach_log {
     const MIN_USABLE_STATE_ROWS: usize = 1_000;
     const MIN_USABLE_PROVINCE_ROWS: usize = 10_000;
     const DIVISION_TYPE: u32 = 4713;
+    const DIVISION_ALT_UNIT_TYPE: u32 = 51;
     const DIVISION_VTABLE_RVA: usize = 0x2933F00;
     const DIVISION_WRAPPER_VTABLE_RVA: usize = 0x2933D20;
     const DIVISION_WRAPPER_TO_BODY: usize = 0x10;
@@ -421,7 +422,6 @@ mod attach_log {
     const LAND_COMBAT_REGISTRY_OFF_ATTACKER_SIDE: usize = 0x28;
     const LAND_COMBAT_REGISTRY_OFF_DEFENDER_SIDE: usize = 0x30;
     const LAND_COMBAT_REGISTRY_OFF_FRONT: usize = 0x38;
-    const LAND_COMBAT_SIDE_UNIT_ALT_TYPE: u32 = 51;
     const MAX_LAND_COMBATS: u32 = 4_000;
     const MAX_LAND_COMBAT_SIDE_UNITS: u32 = 128;
     const MAX_LAND_COMBAT_AGE_DAYS: u32 = 100_000;
@@ -3519,7 +3519,7 @@ mod attach_log {
         if read_u64(body)? as usize != module_base.checked_add(DIVISION_VTABLE_RVA)? {
             return None;
         }
-        if read_u32(body.checked_add(DIVISION_OFF_ID_TYPE)?)? != DIVISION_TYPE {
+        if !is_compact_division_body_type(read_u32(body.checked_add(DIVISION_OFF_ID_TYPE)?)?) {
             return None;
         }
         if read_u32(body.checked_add(DIVISION_OFF_ID_ID)?)? != entry.div_id {
@@ -4440,7 +4440,7 @@ mod attach_log {
             return None;
         }
         let unit_type = read_u32(body.checked_add(DIVISION_OFF_ID_TYPE)?)?;
-        if unit_type != DIVISION_TYPE && unit_type != LAND_COMBAT_SIDE_UNIT_ALT_TYPE {
+        if !is_compact_division_body_type(unit_type) {
             return None;
         }
         let id = read_u32(body.checked_add(DIVISION_OFF_ID_ID)?)?;
@@ -10069,7 +10069,7 @@ mod attach_log {
         if read_u64(body_ptr)? as usize != division_vtable {
             return None;
         }
-        if read_u32(body_ptr.checked_add(DIVISION_OFF_ID_TYPE)?)? != DIVISION_TYPE {
+        if !is_compact_division_body_type(read_u32(body_ptr.checked_add(DIVISION_OFF_ID_TYPE)?)?) {
             return None;
         }
         let div_id = read_u32(body_ptr.checked_add(DIVISION_OFF_ID_ID)?)?;
@@ -10077,6 +10077,10 @@ mod attach_log {
             return None;
         }
         Some(div_id)
+    }
+
+    fn is_compact_division_body_type(unit_type: u32) -> bool {
+        unit_type == DIVISION_TYPE || unit_type == DIVISION_ALT_UNIT_TYPE
     }
 
     fn read_compact_divisions(
@@ -20447,6 +20451,14 @@ mod attach_log {
                 compact_division_sample_worker_count(COMPACT_DIVISION_SAMPLE_MIN_ROWS * 8)
                     <= COMPACT_DIVISION_SAMPLE_MAX_WORKERS
             );
+        }
+
+        #[test]
+        fn compact_division_body_type_accepts_wrapper_observed_alt_type() {
+            assert!(is_compact_division_body_type(DIVISION_TYPE));
+            assert!(is_compact_division_body_type(DIVISION_ALT_UNIT_TYPE));
+            assert!(!is_compact_division_body_type(0));
+            assert!(!is_compact_division_body_type(LAND_COMBAT_TYPE));
         }
 
         #[test]

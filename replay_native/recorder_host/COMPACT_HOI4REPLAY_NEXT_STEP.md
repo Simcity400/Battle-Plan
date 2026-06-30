@@ -164,6 +164,15 @@ skipped, 497 typed division rows, no bridge/source/partial failures,
 frame 6.286 ms, p95 17.590 ms, max 18.589 ms, division read avg 4.115 ms, p95
 8.374 ms, and an independently verified `native_session.battleplan`.
 
+Follow-up live probing on the active vanilla Portugal session showed that the
+same country-wrapper path can expose `CDivision` bodies with handle type `51`
+instead of `4713`. The compact root/sampler now accepts `{4713, 51}` only after
+the `CDivision` vtable matches `module+0x2933F00`, and still serializes the
+canonical replay division type `4713`. This is why
+`compact_country_divisions_land_combats_map_detail_weather_region_speed5_20260630_v2`
+failed with `SOURCE_UNAVAILABLE` even though `CCountry+0x290` contained valid
+wrapper rows.
+
 `compact_country_divisions_land_combats_map_anchored_refresh_speed5_20260630_v1`
 passed the 11-domain stress gate with the same per-frame native anchored
 division root and no division bridge. It advanced 34 game hours with 35
@@ -258,6 +267,23 @@ cached `CWeatherManager` singleton, validates its 305 inline
 temperature-input rows as compact domain 24. The smoke emitted 305 rows,
 decoded without source/partial/worker failures, read weather in 54 us, wrote
 9,976 compact bytes, and independently verified `native_session.battleplan`.
-This is deliberately not recorded as speed-five complete: the live game clock
-did not advance during that smoke window, so the required hourly/no-skipped-hour
-weather gate still needs to be rerun on an advancing speed-five game.
+At that point this was deliberately not recorded as speed-five complete: the
+live game clock did not advance during that smoke window, so the required
+hourly/no-skipped-hour weather gate still needed to be rerun on an advancing
+speed-five game.
+
+`compact_country_divisions_land_combats_map_detail_weather_region_speed5_20260630_v3`
+passed that advancing speed-five gate with `weather_live` inside the full
+compact bundle. It covered `fuel_live`, `production_live`, `focus_live`,
+`tech_live`, `politics_live`, `politics_residuals`, `decisions_live`,
+`diplomacy_live`, `divisions`, `land_combats`, `map_control`, `map_detail`, and
+`weather_live`; advanced 57 game hours with 58 frame-end records, 0 skipped,
+full per-domain coverage, no parse/order errors, no worker-panic,
+bridge-unavailable, source-unavailable, or partial-data flags, avg frame 22.567
+ms, p95 24.484 ms, max 79.348 ms, 2,983,908 raw stream bytes,
+`division_root_source = "dll_native"`, and an independently verified
+`native_session.battleplan`. `weather_live` observed 17,690 region rows, emitted
+394 changed rows, and read at p95 123 us. The weather stream is now
+speed-five complete for the current compact record contract; remaining debt is
+root hardening, because `CWeatherManager` is still located by a one-time cached
+singleton/vtable discovery rather than a static anchored global/root path.

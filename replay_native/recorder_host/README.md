@@ -256,6 +256,14 @@ gate has these live speed-five results:
   failures, `division_root_source = "dll_native"`, avg frame 6.286 ms, p95
   17.590 ms, max 18.589 ms, division read avg 4.115 ms, p95 8.374 ms, 35,032
   raw stream bytes, and an independent `pack_replay verify` pass.
+- Current vanilla sessions can expose country-wrapper `CDivision` bodies whose
+  handle type is `51` rather than the older save-correlated `4713`. The compact
+  division root and sampler now accept `{4713, 51}` only after the body vtable
+  matches `module+0x2933F00`, then still serialize the canonical replay
+  division type `4713`. This fixed the failed
+  `compact_country_divisions_land_combats_map_detail_weather_region_speed5_20260630_v2`
+  run, where the anchored path was present but all division roots were rejected
+  as `SOURCE_UNAVAILABLE`.
 - `compact_country_divisions_land_combats_map_anchored_refresh_speed5_20260630_v1`:
   passed the 11-domain compact stress gate with the same per-frame native
   anchored division root and no division bridge. It covered `fuel_live`,
@@ -355,6 +363,20 @@ gate has these live speed-five results:
   the live game clock did not advance during the smoke window
   (`game_hours_advanced = 0`). A full weather completion gate still needs an
   advancing speed-five run with zero skipped game hours.
+- `compact_country_divisions_land_combats_map_detail_weather_region_speed5_20260630_v3`:
+  passed the full compact bundle with `weather_live` added after widening the
+  native division body-type validator. It covered `fuel_live`,
+  `production_live`, `focus_live`, `tech_live`, `politics_live`,
+  `politics_residuals`, `decisions_live`, `diplomacy_live`, `divisions`,
+  `land_combats`, `map_control`, `map_detail`, and `weather_live`; advanced 57
+  game hours with 58 frame-end records, 0 skipped, full per-domain coverage, no
+  parse/order errors, no worker-panic, bridge-unavailable, source-unavailable,
+  or partial-data flags, avg frame 22.567 ms, p95 24.484 ms, max 79.348 ms,
+  2,983,908 raw stream bytes, `division_root_source = "dll_native"`, and an
+  independent `pack_replay verify` pass. In that run `divisions` observed
+  71,012 roots and emitted 19,243 changed rows with read p95 22.148 ms;
+  `weather_live` observed 17,690 region rows, emitted 394 changed rows, and
+  read at p95 123 us.
 
 The extraction-only compact performance gate is green for the current
 production-shaped country-state domains and the native-root `divisions`,
@@ -380,14 +402,14 @@ scans for compact division body discovery. Wider division replay coverage still
 needs typed records for template/equipment/manpower/assignment/order details.
 `weather_live` now has a DLL/Rust compact region stream for raw phenomenon,
 boolean weather flags, intensity, active-modifier counts, next-change raw value,
-and region temperature inputs. It remains temporary discovery debt until the
-one-time cached `CWeatherManager` singleton locate is either replaced by an
-anchored global/root path or measured/accepted as bounded per-build startup
-discovery, and it is not marked speed-five complete until the full hourly gate
-passes on an advancing clock.
-The full 12-domain widened-row bundle is now speed-five complete for the
-currently implemented compact domains on the active vanilla process, with
-longer soaks and the next replay-critical domains still open.
+and region temperature inputs, and it passed the advancing speed-five hourly
+gate in the 13-domain bundle above. Root hardening remains open: the DLL still
+uses a one-time cached `CWeatherManager` singleton/vtable locate, with no Python
+or save dependency, until it is replaced by a static anchored global/root path
+or explicitly accepted as bounded per-build startup discovery. The full
+13-domain widened-row bundle is now speed-five complete for the currently
+implemented compact domains on the active vanilla process, with longer soaks and
+the next replay-critical domains still open.
 
 Implementation note: see `COMPACT_HOI4REPLAY_NEXT_STEP.md` for the bounded
 Rust-native packaging path and the test contract for putting `collector_stream.bin`

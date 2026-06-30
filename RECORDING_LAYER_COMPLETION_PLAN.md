@@ -1411,6 +1411,15 @@ promotes compact division body discovery and the widened movement/org/strength/
 combat-ref/owner/army/supply/fuel compact row to DLL/Rust-complete for the
 current vanilla build.
 
+Important validator detail from the active vanilla Portugal proof: the
+country-wrapper path can surface `CDivision` bodies whose handle type is `51`
+rather than `4713`. The production collector now treats the `CDivision` vtable
+as the primary identity guard and accepts body types `{4713, 51}` after the
+vtable check. The compact stream still writes canonical replay division type
+`4713`, so the host/replay schema does not branch on this engine-internal
+variant. This fixed the failed weather-bundle rerun where the anchored root was
+present but the DLL rejected every division row as `SOURCE_UNAVAILABLE`.
+
 The wider `compact_country_divisions_land_combats_map_telemetry_validroot_speed5_20260630_v1`
 stress gate covered 11 domains with the same anchored division path and proved
 the widened rows decode and pack inside the combined stream, but it is not a
@@ -1504,12 +1513,24 @@ flags, active-vector signal, intensity, active-modifier count,
 `next_weather_change_raw`, and scaled region temperature inputs. Smoke proof
 `compact_weather_region_decode_smoke_20260630_v1` emitted 305 rows, decoded with
 no parse/order/source/partial/worker failures, read weather in 54 us, wrote
-9,976 compact bytes, and verified the `.battleplan`. This is not yet
-DLL-complete under the project gate: the smoke run used `min_game_hours = 0`
-because the live game clock did not advance, and the root is still a one-time
-cached singleton/vtable locate rather than a proven anchored global/root path.
-Completion requires rerunning `weather_live` in an advancing speed-five compact
-gate with zero skipped hours and no source/partial flags.
+9,976 compact bytes, and verified the `.battleplan`.
+
+Weather-region speed-five completion:
+`compact_country_divisions_land_combats_map_detail_weather_region_speed5_20260630_v3`
+reran `weather_live` in the full compact bundle on the advancing live game. It
+covered 13 expected domains (`fuel_live`, `production_live`, `focus_live`,
+`tech_live`, `politics_live`, `politics_residuals`, `decisions_live`,
+`diplomacy_live`, `divisions`, `land_combats`, `map_control`, `map_detail`, and
+`weather_live`), advanced 57 game hours with 58 frame-end records, skipped 0
+game hours, had full per-domain coverage, no parse/order errors, no
+worker-panic, bridge-unavailable, source-unavailable, or partial-data flags, avg
+frame 22.567 ms, p95 24.484 ms, max 79.348 ms, 2,983,908 raw stream bytes, and
+an independently verified `.battleplan`. `weather_live` observed 17,690 region
+rows, emitted 394 changed rows, and read at p95 123 us. This promotes the
+current weather compact row contract to DLL/Rust speed-five complete. The root
+is still hardening debt because it is a one-time cached singleton/vtable locate
+rather than a proven static anchored global/root path; it is bounded startup
+discovery, not Python/save/hot-loop discovery.
 
 Earlier no-cold proof on the restarted vanilla process resolved 1898 division
 bodies and 417 still-live army bodies from cache, advanced 12 game hours in

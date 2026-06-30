@@ -187,9 +187,9 @@ Current measured constraint:
   source/partial/bridge failures, avg frame 31.373 ms, p95 37.631 ms, and an
   independently verified `native_session.battleplan`. `map_control` observed
   5,072,900 full rows but emitted 15,418 changed data rows; map read p95 was
-  12.583 ms. This is the current completed combined compact speed-five proof for
-  the implemented domains, not for still-missing replay layers such as full
-  order geometry, template/equipment/manpower, weather, and naval/air coverage.
+  12.583 ms. This was the completed combined compact speed-five proof for that
+  11-domain slice; later proofs below add map detail, split economy lanes, and
+  weather.
 - Follow-up compact division delta state:
   `compact_country_divisions_land_combats_map_divdelta_parallel_speed5_20260630_v1`
   kept the same 11-domain compact set and moved `divisions` to a full baseline
@@ -237,6 +237,23 @@ Current measured constraint:
   completion: the live game clock did not advance in that run, and the root is
   still a one-time cached singleton/vtable locate until replaced by an anchored
   global/root path or explicitly accepted as bounded startup discovery.
+- Combined weather state:
+  `compact_country_divisions_land_combats_map_detail_weather_region_speed5_20260630_v3`
+  passed with compact `weather_live` inside the full 13-domain bundle after the
+  division root validator accepted wrapper-observed `CDivision` body types
+  `{4713, 51}` behind the vtable guard. The run covered `fuel_live`,
+  `production_live`, `focus_live`, `tech_live`, `politics_live`,
+  `politics_residuals`, `decisions_live`, `diplomacy_live`, `divisions`,
+  `land_combats`, `map_control`, `map_detail`, and `weather_live`; advanced 57
+  game hours with 58 frame-end records, 0 skipped, full coverage, no
+  parse/source/partial/bridge/worker failures, avg frame 22.567 ms, p95 24.484
+  ms, 2,983,908 raw stream bytes, and an independently verified
+  `native_session.battleplan`. `weather_live` observed 17,690 region rows,
+  emitted 394 changed rows, and read at p95 123 us. Weather is now complete for
+  the current compact row contract; remaining replay-layer gaps are full order
+  geometry, template/equipment/manpower, naval/air depth, logistics/supply
+  exactness, and weather root hardening from cached singleton discovery to a
+  static anchored global/root path.
 - Earlier raw-event verification state: live-verified on the restarted vanilla
   process (pid 43412). A cold bootstrap outside the hot loop populated the
   current-process division and army caches, then a no-cold 12-game-hour run used
