@@ -240,3 +240,13 @@ flags, avg frame 54.922 ms, p95 89.906 ms, max 99.708 ms, 56,044,696 raw stream
 bytes, and an independently verified `native_session.battleplan`. `map_detail`
 observed 4,203,260 full rows and emitted 14,528 changed rows; its read p95 was
 36.421 ms.
+
+`compact_country_divisions_land_combats_map_detail_split_economy_speed5_20260630_v1`
+passed the same 12-domain bundle after `fuel_live` and `production_live` were
+split into separate compact workers. It advanced 262 game hours with 263
+frame-end records, 0 skipped, full per-domain coverage, no parse/order errors,
+no worker-panic, bridge-unavailable, source-unavailable, or partial-data flags,
+avg frame 61.468 ms, p95 90.135 ms, max 117.487 ms, 62,020,850 raw stream
+bytes, and an independently verified `native_session.battleplan`. The split
+keeps the compact file contract stable while making the real bottleneck clear:
+`fuel_live` read p95 was 3.218 ms, but `production_live` read p95 was 86.877 ms.

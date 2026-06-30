@@ -216,6 +216,16 @@ Current measured constraint:
   coverage, no parse/source/partial/bridge failures, avg frame 54.922 ms, p95
   89.906 ms, 56,044,696 raw stream bytes, and an independently verified
   `native_session.battleplan`.
+- Economy-lane split state:
+  `compact_country_divisions_land_combats_map_detail_split_economy_speed5_20260630_v1`
+  kept the same 12 expected domains but split `fuel_live` and
+  `production_live` into separate compact workers. It passed with 262 game
+  hours advanced, 263 frame-end records, 0 skipped, full coverage, no
+  parse/source/partial/bridge failures, avg frame 61.468 ms, p95 90.135 ms,
+  62,020,850 raw stream bytes, and an independently verified
+  `native_session.battleplan`. This keeps the compact stream contract stable
+  while identifying `production_live` as the current heavy country lane
+  (`fuel_live` p95 3.218 ms; `production_live` p95 86.877 ms).
 - Earlier raw-event verification state: live-verified on the restarted vanilla
   process (pid 43412). A cold bootstrap outside the hot loop populated the
   current-process division and army caches, then a no-cold 12-game-hour run used

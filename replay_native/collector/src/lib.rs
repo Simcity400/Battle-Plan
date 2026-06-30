@@ -2782,7 +2782,8 @@ mod attach_log {
 
     #[derive(Default)]
     struct CompactParallelSpecs {
-        economy: Vec<CompactCountryDomainSpec>,
+        fuel: Vec<CompactCountryDomainSpec>,
+        production: Vec<CompactCountryDomainSpec>,
         focus_tech: Vec<CompactCountryDomainSpec>,
         politics: Vec<CompactCountryDomainSpec>,
         politics_residuals: Vec<CompactCountryDomainSpec>,
@@ -2793,7 +2794,8 @@ mod attach_log {
     impl CompactParallelSpecs {
         fn lane_count(&self) -> usize {
             [
-                &self.economy,
+                &self.fuel,
+                &self.production,
                 &self.focus_tech,
                 &self.politics,
                 &self.politics_residuals,
@@ -2807,7 +2809,8 @@ mod attach_log {
     }
 
     struct CompactCountryGateTrackers<'a> {
-        economy: &'a mut CompactCountryFrameTracker,
+        fuel: &'a mut CompactCountryFrameTracker,
+        production: &'a mut CompactCountryFrameTracker,
         focus_tech: &'a mut CompactCountryFrameTracker,
         politics: &'a mut CompactCountryFrameTracker,
         politics_residuals: &'a mut CompactCountryFrameTracker,
@@ -2818,7 +2821,8 @@ mod attach_log {
 
     #[derive(Default)]
     struct CompactPerfGateTrackers {
-        economy: CompactCountryFrameTracker,
+        fuel: CompactCountryFrameTracker,
+        production: CompactCountryFrameTracker,
         focus_tech: CompactCountryFrameTracker,
         politics: CompactCountryFrameTracker,
         politics_residuals: CompactCountryFrameTracker,
@@ -8953,7 +8957,8 @@ mod attach_log {
         let mut map_detail_read = None;
         let country_specs_for_panic = enabled_specs.clone();
         let country_trackers = CompactCountryGateTrackers {
-            economy: &mut trackers.economy,
+            fuel: &mut trackers.fuel,
+            production: &mut trackers.production,
             focus_tech: &mut trackers.focus_tech,
             politics: &mut trackers.politics,
             politics_residuals: &mut trackers.politics_residuals,
@@ -9378,21 +9383,24 @@ mod attach_log {
         trackers: CompactCountryGateTrackers<'_>,
     ) -> Vec<CompactBundleRead> {
         let CompactParallelSpecs {
-            economy,
+            fuel,
+            production,
             focus_tech,
             politics,
             politics_residuals,
             decisions,
             diplomacy,
         } = compact_parallel_gate_lanes(specs);
-        let economy_specs_for_panic = economy.clone();
+        let fuel_specs_for_panic = fuel.clone();
+        let production_specs_for_panic = production.clone();
         let focus_tech_specs_for_panic = focus_tech.clone();
         let politics_specs_for_panic = politics.clone();
         let politics_residuals_specs_for_panic = politics_residuals.clone();
         let decisions_specs_for_panic = decisions.clone();
         let diplomacy_specs_for_panic = diplomacy.clone();
         let CompactCountryGateTrackers {
-            economy: economy_tracker,
+            fuel: fuel_tracker,
+            production: production_tracker,
             focus_tech: focus_tech_tracker,
             politics: politics_tracker,
             politics_residuals: politics_residuals_tracker,
@@ -9400,23 +9408,37 @@ mod attach_log {
             diplomacy: diplomacy_tracker,
             combined: _,
         } = trackers;
-        let mut economy_read = None;
+        let mut fuel_read = None;
+        let mut production_read = None;
         let mut focus_tech_read = None;
         let mut politics_read = None;
         let mut politics_residuals_read = None;
         let mut decisions_read = None;
         let mut diplomacy_read = None;
         thread::scope(|scope| {
-            let economy_handle = if economy.is_empty() {
+            let fuel_handle = if fuel.is_empty() {
                 None
             } else {
                 Some(scope.spawn(|| {
                     read_compact_country_domain_bundle(
                         state,
                         control,
-                        economy,
+                        fuel,
                         status_flags,
-                        economy_tracker,
+                        fuel_tracker,
+                    )
+                }))
+            };
+            let production_handle = if production.is_empty() {
+                None
+            } else {
+                Some(scope.spawn(|| {
+                    read_compact_country_domain_bundle(
+                        state,
+                        control,
+                        production,
+                        status_flags,
+                        production_tracker,
                     )
                 }))
             };
@@ -9485,10 +9507,16 @@ mod attach_log {
                     )
                 }))
             };
-            if let Some(handle) = economy_handle {
-                economy_read = Some(match handle.join() {
+            if let Some(handle) = fuel_handle {
+                fuel_read = Some(match handle.join() {
                     Ok(read) => read,
-                    Err(_) => compact_worker_panic_read(economy_specs_for_panic, status_flags),
+                    Err(_) => compact_worker_panic_read(fuel_specs_for_panic, status_flags),
+                });
+            }
+            if let Some(handle) = production_handle {
+                production_read = Some(match handle.join() {
+                    Ok(read) => read,
+                    Err(_) => compact_worker_panic_read(production_specs_for_panic, status_flags),
                 });
             }
             if let Some(handle) = focus_tech_handle {
@@ -9525,7 +9553,8 @@ mod attach_log {
             }
         });
         [
-            economy_read,
+            fuel_read,
+            production_read,
             focus_tech_read,
             politics_read,
             politics_residuals_read,
@@ -9544,9 +9573,8 @@ mod attach_log {
         let mut lanes = CompactParallelSpecs::default();
         for spec in specs {
             match spec.kind {
-                CompactCountryDomainKind::Fuel | CompactCountryDomainKind::Production => {
-                    lanes.economy.push(spec)
-                }
+                CompactCountryDomainKind::Fuel => lanes.fuel.push(spec),
+                CompactCountryDomainKind::Production => lanes.production.push(spec),
                 CompactCountryDomainKind::Focus | CompactCountryDomainKind::Tech => {
                     lanes.focus_tech.push(spec)
                 }
@@ -19829,12 +19857,16 @@ mod attach_log {
 
             assert!(compact_parallel_gate_eligible(&specs));
             assert_eq!(
+                lanes.fuel.iter().map(|spec| spec.name).collect::<Vec<_>>(),
+                vec!["fuel_live"]
+            );
+            assert_eq!(
                 lanes
-                    .economy
+                    .production
                     .iter()
                     .map(|spec| spec.name)
                     .collect::<Vec<_>>(),
-                vec!["fuel_live", "production_live"]
+                vec!["production_live"]
             );
             assert_eq!(
                 lanes
@@ -19877,7 +19909,8 @@ mod attach_log {
                 vec!["diplomacy_live"]
             );
             assert_eq!(
-                lanes.economy.len()
+                lanes.fuel.len()
+                    + lanes.production.len()
                     + lanes.focus_tech.len()
                     + lanes.politics.len()
                     + lanes.politics_residuals.len()

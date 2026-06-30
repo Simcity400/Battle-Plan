@@ -1484,6 +1484,18 @@ gaps are still weather, logistics/supply proxies, market/trade extras,
 occupation/resistance/compliance depth, and visual/computed overlays that have
 not yet been promoted to compact DLL records.
 
+Economy-lane split follow-up:
+`compact_country_divisions_land_combats_map_detail_split_economy_speed5_20260630_v1`
+kept the same 12-domain bundle but split the former shared economy worker into
+separate `fuel_live` and `production_live` compact workers. The run advanced
+262 game hours with 263 frame-end records, 0 skipped, full per-domain coverage,
+no parse/order errors, no worker-panic, bridge-unavailable, source-unavailable,
+or partial-data flags, avg frame 61.468 ms, p95 90.135 ms, max 117.487 ms,
+62,020,850 raw stream bytes, and an independently verified `.battleplan`.
+The split did not change the compact file contract; it proved `fuel_live` is
+cheap at p95 3.218 ms and that `production_live` is the current country-domain
+headroom limiter at p95 86.877 ms.
+
 Earlier no-cold proof on the restarted vanilla process resolved 1898 division
 bodies and 417 still-live army bodies from cache, advanced 12 game hours in
 52.266 wall seconds, stored 13 verified hourly snapshots, and emitted raw
