@@ -76,6 +76,12 @@ const COMPACT_MAX_DIVISION_FUEL_RAW: u32 = u32::MAX;
 const COMPACT_DIVISION_ROW_FLAG_DELETED: u32 = 1 << 12;
 const COMPACT_DIVISION_ROW_FLAG_TEMPLATE: u32 = 1 << 13;
 const COMPACT_MAX_DIVISION_TEMPLATE_ID: u32 = i32::MAX as u32;
+const COMPACT_DIVISION_EQUIPMENT_ROW_LEN: usize = 24;
+const COMPACT_DIVISION_EQUIPMENT_ENTRY_ROW_LEN: usize = 16;
+const COMPACT_DIVISION_EQUIPMENT_ROW_FLAG_TEMPLATE: u32 = 1;
+const COMPACT_DIVISION_EQUIPMENT_ROW_FLAG_DELETED: u32 = 1 << 1;
+const COMPACT_MAX_DIVISION_EQUIPMENT_VARIANT_ID: u32 = i32::MAX as u32;
+const COMPACT_MAX_DIVISION_EQUIPMENT_AMOUNT_RAW: i64 = 1_000_000_000_000_000;
 const COMPACT_LAND_COMBAT_ROW_LEN: usize = 40;
 const COMPACT_LAND_COMBAT_PARTICIPANT_ROW_LEN: usize = 24;
 const COMPACT_LAND_COMBAT_MAX_PROVINCE_ID: u32 = 1_000_000;
@@ -1179,6 +1185,11 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     22 => decode_compact_map_control_data_payload(offset, payload, &mut summary),
                     23 => decode_compact_map_detail_data_payload(offset, payload, &mut summary),
                     24 => decode_compact_weather_data_payload(offset, payload, &mut summary),
+                    26 => decode_compact_division_equipment_data_payload(
+                        offset,
+                        payload,
+                        &mut summary,
+                    ),
                     other => summary.parse_errors.push(format!(
                         "offset {offset}: unsupported domain data payload for {}",
                         compact_domain_name(other)
@@ -2464,6 +2475,218 @@ fn decode_compact_divisions_data_payload(
     }
 }
 
+fn decode_compact_division_equipment_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < 40 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: division equipment data payload is {} byte(s), expected at least 40",
+            payload.len()
+        ));
+        return;
+    }
+    let row_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let scale_raw = read_u32_le(payload, 20);
+    let root_rows = read_u32_le(payload, 24) as usize;
+    let observed_division_rows = read_u32_le(payload, 28) as usize;
+    let equipment_entry_count = read_u32_le(payload, 32) as usize;
+    let observed_equipment_rows = read_u32_le(payload, 36) as usize;
+    summary.status_flags_or |= status_flags;
+    let delta_data = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
+
+    if scale_raw != COMPACT_FIXED_SCALE_RAW {
+        summary.parse_errors.push(format!(
+            "offset {offset}: division equipment scale {scale_raw} != expected {COMPACT_FIXED_SCALE_RAW}"
+        ));
+    }
+    let expected_len = 40usize
+        .saturating_add(row_count.saturating_mul(COMPACT_DIVISION_EQUIPMENT_ROW_LEN))
+        .saturating_add(
+            equipment_entry_count.saturating_mul(COMPACT_DIVISION_EQUIPMENT_ENTRY_ROW_LEN),
+        );
+    if payload.len() != expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: division equipment data payload is {} byte(s), expected {expected_len}",
+            payload.len()
+        ));
+        return;
+    }
+    if changed_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: division equipment changed_rows {changed_rows} > row_count {row_count}"
+        ));
+    }
+    if delta_data && changed_rows != row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: division equipment delta changed_rows {changed_rows} != emitted row_count {row_count}"
+        ));
+    }
+    if !delta_data && row_count != observed_division_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: division equipment full row_count {row_count} != observed_division_rows {observed_division_rows}"
+        ));
+    }
+    if observed_division_rows > root_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: division equipment observed_division_rows {observed_division_rows} > root_rows {root_rows}"
+        ));
+    }
+    if !delta_data && equipment_entry_count != observed_equipment_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: division equipment full equipment_entry_count {equipment_entry_count} != observed_equipment_rows {observed_equipment_rows}"
+        ));
+    }
+    if equipment_entry_count > observed_equipment_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: division equipment emitted entries {equipment_entry_count} > observed_equipment_rows {observed_equipment_rows}"
+        ));
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&26) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+
+    let mut cursor = 40usize;
+    let mut seen_divisions = BTreeSet::new();
+    let mut declared_entries = 0usize;
+    let mut parent_ranges = Vec::with_capacity(row_count);
+    for row_index in 0..row_count {
+        let owner_tag_db_id = read_u32_le(payload, cursor);
+        let div_id = read_u32_le(payload, cursor + 4);
+        let flags = read_u32_le(payload, cursor + 8);
+        let template_id = read_u32_le(payload, cursor + 12);
+        let entry_first = read_u32_le(payload, cursor + 16) as usize;
+        let entry_count = read_u32_le(payload, cursor + 20) as usize;
+        cursor += COMPACT_DIVISION_EQUIPMENT_ROW_LEN;
+
+        if owner_tag_db_id == 0 || owner_tag_db_id > COMPACT_MAX_DIVISION_OWNER_TAG_DB_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: division equipment row {row_index} has invalid owner_tag_db_id {owner_tag_db_id}"
+            ));
+        }
+        if div_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: division equipment row {row_index} has zero div_id"
+            ));
+        } else if !seen_divisions.insert((owner_tag_db_id, div_id)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: division equipment row {row_index} duplicates owner/division {owner_tag_db_id}:{div_id}"
+            ));
+        }
+        if flags
+            & !(COMPACT_DIVISION_EQUIPMENT_ROW_FLAG_TEMPLATE
+                | COMPACT_DIVISION_EQUIPMENT_ROW_FLAG_DELETED)
+            != 0
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: division equipment row {row_index} has unknown flags {flags}"
+            ));
+        }
+        let deleted = (flags & COMPACT_DIVISION_EQUIPMENT_ROW_FLAG_DELETED) != 0;
+        let has_template = (flags & COMPACT_DIVISION_EQUIPMENT_ROW_FLAG_TEMPLATE) != 0;
+        if deleted {
+            if flags != COMPACT_DIVISION_EQUIPMENT_ROW_FLAG_DELETED {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: division equipment delete row {row_index} has non-delete flags"
+                ));
+            }
+            if template_id != 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: division equipment delete row {row_index} has template_id"
+                ));
+            }
+            if entry_count != 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: division equipment delete row {row_index} has entries"
+                ));
+            }
+            if entry_first > equipment_entry_count {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: division equipment delete row {row_index} entry_first {entry_first} exceeds {equipment_entry_count}"
+                ));
+            }
+        } else {
+            validate_optional_compact_u32(
+                summary,
+                offset,
+                row_index,
+                has_template,
+                template_id,
+                1,
+                COMPACT_MAX_DIVISION_TEMPLATE_ID,
+                "template_id",
+            );
+            if entry_first.saturating_add(entry_count) > equipment_entry_count {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: division equipment row {row_index} entry range {entry_first}+{entry_count} exceeds {equipment_entry_count}"
+                ));
+            }
+        }
+        declared_entries = declared_entries.saturating_add(entry_count);
+        parent_ranges.push((
+            row_index,
+            owner_tag_db_id,
+            div_id,
+            entry_first,
+            entry_count,
+            deleted,
+        ));
+    }
+    if declared_entries != equipment_entry_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: division equipment entry_count {equipment_entry_count} != declared {declared_entries}"
+        ));
+    }
+
+    let mut seen_entries = BTreeSet::new();
+    for (row_index, owner_tag_db_id, div_id, entry_first, entry_count, deleted) in parent_ranges {
+        if deleted {
+            continue;
+        }
+        for child_index in entry_first..entry_first.saturating_add(entry_count) {
+            let child_offset = 40usize
+                .saturating_add(row_count.saturating_mul(COMPACT_DIVISION_EQUIPMENT_ROW_LEN))
+                .saturating_add(
+                    child_index.saturating_mul(COMPACT_DIVISION_EQUIPMENT_ENTRY_ROW_LEN),
+                );
+            if child_offset.saturating_add(COMPACT_DIVISION_EQUIPMENT_ENTRY_ROW_LEN) > payload.len()
+            {
+                continue;
+            }
+            let variant_id = read_u32_le(payload, child_offset);
+            let reserved = read_u32_le(payload, child_offset + 4);
+            let amount_raw = read_i64_le(payload, child_offset + 8);
+            if variant_id == 0 || variant_id > COMPACT_MAX_DIVISION_EQUIPMENT_VARIANT_ID {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: division equipment entry row {child_index} has invalid variant_id {variant_id}"
+                ));
+            }
+            if amount_raw <= 0 || amount_raw > COMPACT_MAX_DIVISION_EQUIPMENT_AMOUNT_RAW {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: division equipment entry row {child_index} has invalid amount_raw {amount_raw}"
+                ));
+            }
+            if reserved != 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: division equipment entry row {child_index} reserved field is nonzero"
+                ));
+            }
+            if !seen_entries.insert((owner_tag_db_id, div_id, variant_id)) {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: division equipment row {row_index} duplicates variant {variant_id}"
+                ));
+            }
+        }
+    }
+}
+
 fn validate_optional_compact_u32(
     summary: &mut CompactSummary,
     offset: usize,
@@ -3415,6 +3638,7 @@ fn compact_domain_id(domain: &str) -> Option<u16> {
         "map_control" | "state_ownership" | "state_control" | "province_control" => Some(22),
         "map_detail" | "state_detail" | "buildings_live" => Some(23),
         "weather_live" => Some(24),
+        "division_equipment" => Some(26),
         _ => None,
     }
 }
@@ -3435,6 +3659,7 @@ fn compact_domain_name(domain_id: u16) -> &'static str {
         22 => "map_control",
         23 => "map_detail",
         24 => "weather_live",
+        26 => "division_equipment",
         1000 => "frame",
         _ => "unknown",
     }
@@ -3498,7 +3723,7 @@ fn compact_domain_coverage_errors(
 fn compact_domain_requires_data_record(domain_id: u16) -> bool {
     matches!(
         domain_id,
-        10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 20 | 21 | 22
+        10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 20 | 21 | 22 | 23 | 24 | 26
     )
 }
 
@@ -3517,11 +3742,15 @@ fn compact_division_root_source(cfg: &Config, summary: &CompactSummary) -> &'sta
     if !cfg
         .scheduled_domains
         .iter()
-        .any(|domain| domain == "divisions")
+        .any(|domain| domain == "divisions" || domain == "division_equipment")
     {
         return "not_scheduled";
     }
-    let Some(domain) = summary.per_domain.get(&20) else {
+    let Some(domain) = summary
+        .per_domain
+        .get(&20)
+        .or_else(|| summary.per_domain.get(&26))
+    else {
         return "unseen";
     };
     let blocked = (domain.status_flags_or
@@ -3938,6 +4167,34 @@ mod tests {
     }
 
     #[test]
+    fn compact_coverage_requires_division_equipment_data_record_per_frame() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            26,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(900, 2, 2, 3, 3),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        let errors = compact_domain_coverage_errors(&summary, &[26]);
+
+        assert!(errors
+            .iter()
+            .any(|err| err.contains("division_equipment data_record_count")));
+    }
+
+    #[test]
     fn compact_fuel_data_rejects_duplicate_tag_ids() {
         let mut raw = Vec::new();
         append_test_compact_record(
@@ -4097,6 +4354,51 @@ mod tests {
         assert_eq!(divisions.data_record_count, 1);
         assert_eq!(divisions.data_rows_total, 2);
         assert_eq!(divisions.data_changed_rows_total, 2);
+    }
+
+    #[test]
+    fn compact_summary_decodes_division_equipment_data_record() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            26,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(900, 2, 2, 3, 3),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            26,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_division_equipment_data_payload(0),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_100, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(&summary, &[26]).is_empty());
+        let equipment = summary.per_domain.get(&26).unwrap();
+        assert_eq!(equipment.data_record_count, 1);
+        assert_eq!(equipment.data_rows_total, 2);
+        assert_eq!(equipment.data_changed_rows_total, 2);
+        assert_eq!(equipment.unit_count_total, 3);
+        assert_eq!(compact_domain_id("division_equipment"), Some(26));
+        assert_eq!(compact_domain_name(26), "division_equipment");
     }
 
     #[test]
@@ -5193,6 +5495,49 @@ mod tests {
             payload.extend_from_slice(&supply_gain.to_le_bytes());
             payload.extend_from_slice(&fuel.to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        payload
+    }
+
+    fn test_division_equipment_data_payload(status_flags: u32) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&3u32.to_le_bytes());
+        payload.extend_from_slice(&3u32.to_le_bytes());
+
+        for (owner, div_id, flags, template_id, entry_first, entry_count) in [
+            (
+                47u32,
+                17u32,
+                COMPACT_DIVISION_EQUIPMENT_ROW_FLAG_TEMPLATE,
+                3101u32,
+                0u32,
+                2u32,
+            ),
+            (48u32, 18u32, 0u32, 0u32, 2u32, 1u32),
+        ] {
+            payload.extend_from_slice(&owner.to_le_bytes());
+            payload.extend_from_slice(&div_id.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&template_id.to_le_bytes());
+            payload.extend_from_slice(&entry_first.to_le_bytes());
+            payload.extend_from_slice(&entry_count.to_le_bytes());
+        }
+
+        for (variant_id, amount_raw) in [
+            (101u32, 11_300_000i64),
+            (202u32, 500_000i64),
+            (303u32, 7_500_000i64),
+        ] {
+            payload.extend_from_slice(&variant_id.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&amount_raw.to_le_bytes());
         }
         payload
     }

@@ -363,11 +363,17 @@ mod attach_log {
     const DIVISION_OFF_CURRENT_SUPPLY: usize = 0x600;
     const DIVISION_OFF_FUEL: usize = 0x610;
     const DIVISION_OFF_TEMPLATE: usize = 0x3A8;
+    const DIVISION_OFF_EQUIPMENT_BANK: usize = 0x358;
     const DIVISION_MOVE_ORDER_OFF_SOURCE: usize = 0xA4;
     const DIVISION_TEMPLATE_VTABLE_RVA: usize = 0x29291D0;
     const DIVISION_TEMPLATE_TYPE: u32 = 52;
     const DIVISION_TEMPLATE_OFF_TYPE: usize = 0x08;
     const DIVISION_TEMPLATE_OFF_ID: usize = 0x0C;
+    const DIVISION_EQUIPMENT_VARIANT_VTABLE_RVA: usize = 0x292B218;
+    const DIVISION_EQUIPMENT_VARIANT_TYPE: u32 = 70;
+    const DIVISION_EQUIPMENT_VARIANT_OFF_TYPE: usize = 0x08;
+    const DIVISION_EQUIPMENT_VARIANT_OFF_ID: usize = 0x0C;
+    const DIVISION_EQUIPMENT_ENTRY_STRIDE: usize = 0x10;
     const MAX_DIVISION_BODY_BRIDGE_ROWS: usize = 20_000;
     const MAX_DIVISION_BODY_BRIDGE_PAYLOAD_BYTES: usize = 2 * 1024 * 1024;
     const MAX_DIVISION_BODY_BRIDGE_DIV_ID: u32 = i32::MAX as u32;
@@ -386,6 +392,10 @@ mod attach_log {
     const MAX_DIVISION_SUPPLY_GAIN_RAW: u32 = 500_000;
     const MAX_DIVISION_FUEL_RAW: u32 = u32::MAX;
     const MAX_DIVISION_TEMPLATE_ID: u32 = i32::MAX as u32;
+    const MAX_DIVISION_EQUIPMENT_BANK_ROWS: u32 = 4_096;
+    const MAX_DIVISION_EQUIPMENT_TOTAL_ROWS: usize = 250_000;
+    const MAX_DIVISION_EQUIPMENT_VARIANT_ID: u32 = i32::MAX as u32;
+    const MAX_DIVISION_EQUIPMENT_AMOUNT_RAW: i64 = 1_000_000_000_000_000;
     const DIVISION_DELTA_BUCKET_RAW: u32 = 1_000;
     const ARMY_VTABLE_RVA: usize = 0x292BEC0;
     const ARMY_TYPE: u32 = 53;
@@ -2709,6 +2719,7 @@ mod attach_log {
     const RAW_CLOCK_DOMAIN: &str = "clock";
     const RAW_CLOCK_ENTITY_KEY: &str = "clock:game_date";
     const RAW_DIVISIONS_DOMAIN: &str = "divisions";
+    const RAW_DIVISION_EQUIPMENT_DOMAIN: &str = "division_equipment";
     const RAW_LAND_COMBATS_DOMAIN: &str = "land_combats";
     const RAW_MAP_CONTROL_DOMAIN: &str = "map_control";
     const RAW_ARMY_ORDERS_DOMAIN: &str = "army_orders";
@@ -2757,6 +2768,7 @@ mod attach_log {
     const COMPACT_DOMAIN_MAP_CONTROL: u16 = 22;
     const COMPACT_DOMAIN_MAP_DETAIL: u16 = 23;
     const COMPACT_DOMAIN_WEATHER: u16 = 24;
+    const COMPACT_DOMAIN_DIVISION_EQUIPMENT: u16 = 26;
     const COMPACT_STATUS_STATE_UNAVAILABLE: u32 = 1 << 0;
     const COMPACT_STATUS_PROFILE_MISMATCH: u32 = 1 << 1;
     const COMPACT_STATUS_NO_CLOCK: u32 = 1 << 2;
@@ -2769,6 +2781,8 @@ mod attach_log {
     const COMPACT_STATUS_DELTA_DATA: u32 = 1 << 10;
     const COMPACT_DIVISION_ROW_FLAG_DELETED: u32 = 1 << 12;
     const COMPACT_DIVISION_ROW_FLAG_TEMPLATE: u32 = 1 << 13;
+    const COMPACT_DIVISION_EQUIPMENT_ROW_FLAG_TEMPLATE: u32 = 1;
+    const COMPACT_DIVISION_EQUIPMENT_ROW_FLAG_DELETED: u32 = 1 << 1;
     const COMPACT_DIVISION_SAMPLE_MIN_ROWS: usize = 512;
     const COMPACT_DIVISION_SAMPLE_MAX_WORKERS: usize = 4;
     const COMPACT_MAP_DETAIL_SAMPLE_MIN_ROWS: usize = 512;
@@ -2855,6 +2869,7 @@ mod attach_log {
         diplomacy: CompactCountryFrameTracker,
         combined: CompactCountryFrameTracker,
         division_movement: BTreeMap<u32, DivisionMovementSample>,
+        division_equipment: CompactDivisionEquipmentTracker,
         division_roots: CompactDivisionRootCache,
         land_combat: LandCombatTracker,
         map_control: CompactMapControlTracker,
@@ -2888,6 +2903,17 @@ mod attach_log {
         changed_rows: u32,
         status_flags: u32,
         root_rows: u32,
+    }
+
+    struct CompactDivisionEquipmentRead {
+        rows: Vec<DivisionEquipmentSample>,
+        read_time_us: u64,
+        changed_rows: u32,
+        status_flags: u32,
+        root_rows: u32,
+        observed_division_rows: u32,
+        observed_equipment_rows: u32,
+        emitted_equipment_rows: u32,
     }
 
     struct CompactLandCombatRead {
@@ -2959,6 +2985,26 @@ mod attach_log {
         raw_current_supply: Option<u32>,
         raw_supply_gain: Option<u32>,
         raw_fuel: Option<u32>,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct DivisionEquipmentSample {
+        owner_tag_db_id: u32,
+        div_id: u32,
+        deleted: bool,
+        template_id: Option<u32>,
+        entries: Vec<DivisionEquipmentEntry>,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct DivisionEquipmentEntry {
+        variant_id: u32,
+        amount_raw: i64,
+    }
+
+    #[derive(Default)]
+    struct CompactDivisionEquipmentTracker {
+        previous: BTreeMap<(u32, u32), DivisionEquipmentSample>,
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -9022,6 +9068,8 @@ mod attach_log {
             .filter(|spec| scheduled_domain_enabled(Some(control), spec.name))
             .collect::<Vec<_>>();
         let divisions_enabled = compact_explicit_domain_enabled(control, RAW_DIVISIONS_DOMAIN);
+        let division_equipment_enabled =
+            compact_explicit_domain_enabled(control, RAW_DIVISION_EQUIPMENT_DOMAIN);
         let land_combats_enabled =
             compact_explicit_domain_enabled(control, RAW_LAND_COMBATS_DOMAIN);
         let map_control_enabled = compact_map_control_enabled(control);
@@ -9031,11 +9079,15 @@ mod attach_log {
         let map_detail_include_buildings = compact_map_detail_include_buildings(control);
         let mut country_reads = Vec::new();
         let mut division_read = None;
+        let mut division_equipment_read = None;
         let mut land_combat_read = None;
         let mut map_control_read = None;
         let mut map_detail_read = None;
         let mut weather_read = None;
         let country_specs_for_panic = enabled_specs.clone();
+        if compact_division_roots_enabled(control) && !compact_division_bridge_available(control) {
+            trackers.division_roots = discover_compact_division_roots(Some(state));
+        }
         let country_trackers = CompactCountryGateTrackers {
             fuel: &mut trackers.fuel,
             production: &mut trackers.production,
@@ -9047,7 +9099,8 @@ mod attach_log {
             combined: &mut trackers.combined,
         };
         let division_tracker = &mut trackers.division_movement;
-        let division_roots = &mut trackers.division_roots;
+        let division_equipment_tracker = &mut trackers.division_equipment;
+        let division_roots = &trackers.division_roots;
         let land_combat_tracker = &mut trackers.land_combat;
         let map_control_tracker = &mut trackers.map_control;
         let map_detail_tracker = &mut trackers.map_detail;
@@ -9073,6 +9126,19 @@ mod attach_log {
                         control,
                         status_flags,
                         division_tracker,
+                        division_roots,
+                    )
+                }))
+            } else {
+                None
+            };
+            let division_equipment_handle = if division_equipment_enabled {
+                Some(scope.spawn(move || {
+                    read_compact_division_equipment(
+                        state,
+                        control,
+                        status_flags,
+                        division_equipment_tracker,
                         division_roots,
                     )
                 }))
@@ -9127,6 +9193,12 @@ mod attach_log {
                 division_read = Some(match handle.join() {
                     Ok(read) => read,
                     Err(_) => compact_division_worker_panic_read(control, status_flags),
+                });
+            }
+            if let Some(handle) = division_equipment_handle {
+                division_equipment_read = Some(match handle.join() {
+                    Ok(read) => read,
+                    Err(_) => compact_division_equipment_worker_panic_read(control, status_flags),
                 });
             }
             if let Some(handle) = land_combat_handle {
@@ -9279,6 +9351,38 @@ mod attach_log {
                 read.status_flags,
                 read.changed_rows,
                 read.root_rows,
+            );
+            sequence = sequence.saturating_add(1);
+            emitted_domains = emitted_domains.saturating_add(1);
+        }
+        if let Some(read) = division_equipment_read {
+            append_compact_domain_perf_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                CompactDomainPerfRecord {
+                    domain_id: COMPACT_DOMAIN_DIVISION_EQUIPMENT,
+                    read_time_us: read.read_time_us,
+                    row_count: read.observed_division_rows,
+                    changed_rows: read.changed_rows,
+                    unit_count: read.observed_equipment_rows,
+                    changed_unit_count: read.emitted_equipment_rows,
+                    status_flags: read.status_flags,
+                },
+                elapsed_wall_ms,
+            );
+            sequence = sequence.saturating_add(1);
+            append_compact_division_equipment_data_record(
+                &mut out,
+                sequence,
+                game_hour_raw,
+                &read.rows,
+                elapsed_wall_ms,
+                read.status_flags,
+                read.changed_rows,
+                read.root_rows,
+                read.observed_division_rows,
+                read.observed_equipment_rows,
             );
             sequence = sequence.saturating_add(1);
             emitted_domains = emitted_domains.saturating_add(1);
@@ -9897,6 +10001,22 @@ mod attach_log {
         }
     }
 
+    fn compact_division_equipment_worker_panic_read(
+        control: &CollectorControl,
+        status_flags: u32,
+    ) -> CompactDivisionEquipmentRead {
+        CompactDivisionEquipmentRead {
+            rows: Vec::new(),
+            read_time_us: 0,
+            changed_rows: 0,
+            status_flags: status_flags | COMPACT_STATUS_WORKER_PANIC,
+            root_rows: control.division_body_bridge.len().min(u32::MAX as usize) as u32,
+            observed_division_rows: 0,
+            observed_equipment_rows: 0,
+            emitted_equipment_rows: 0,
+        }
+    }
+
     fn compact_land_combat_worker_panic_read(status_flags: u32) -> CompactLandCombatRead {
         CompactLandCombatRead {
             rows: Vec::new(),
@@ -9950,17 +10070,25 @@ mod attach_log {
         root_cache: &mut CompactDivisionRootCache,
     ) {
         if control.stream_format != CollectorStreamFormat::Compact
-            || !compact_explicit_domain_enabled(control, RAW_DIVISIONS_DOMAIN)
+            || !compact_division_roots_enabled(control)
         {
             return;
         }
-        let bridge_valid = control.division_body_bridge_valid
-            && division_body_bridge_well_formed(&control.division_body_bridge)
-            && !control.division_body_bridge.is_empty();
-        if bridge_valid {
+        if compact_division_bridge_available(control) {
             return;
         }
         *root_cache = discover_compact_division_roots(state);
+    }
+
+    fn compact_division_roots_enabled(control: &CollectorControl) -> bool {
+        compact_explicit_domain_enabled(control, RAW_DIVISIONS_DOMAIN)
+            || compact_explicit_domain_enabled(control, RAW_DIVISION_EQUIPMENT_DOMAIN)
+    }
+
+    fn compact_division_bridge_available(control: &CollectorControl) -> bool {
+        control.division_body_bridge_valid
+            && division_body_bridge_well_formed(&control.division_body_bridge)
+            && !control.division_body_bridge.is_empty()
     }
 
     fn discover_compact_division_roots(state: Option<&CollectorState>) -> CompactDivisionRootCache {
@@ -10118,13 +10246,11 @@ mod attach_log {
         control: &CollectorControl,
         status_flags: u32,
         tracker: &mut BTreeMap<u32, DivisionMovementSample>,
-        root_cache: &mut CompactDivisionRootCache,
+        root_cache: &CompactDivisionRootCache,
     ) -> CompactDivisionRead {
         let read_started = Instant::now();
         let mut status_flags = status_flags;
-        let bridge_available = control.division_body_bridge_valid
-            && division_body_bridge_well_formed(&control.division_body_bridge)
-            && !control.division_body_bridge.is_empty();
+        let bridge_available = compact_division_bridge_available(control);
         let (root_rows, active_rows) = if bridge_available {
             let roots = &control.division_body_bridge;
             (
@@ -10132,18 +10258,8 @@ mod attach_log {
                 sample_compact_division_roots(state.base, roots),
             )
         } else {
-            // Refresh the anchored country-wrapper walk every compact frame so
-            // newly deployed or removed divisions are reflected without a
-            // Python bridge. The bounded walk is included in the live
-            // speed-five compact proof timings.
-            *root_cache = discover_compact_division_roots(Some(state));
-            let mut root_count = root_cache.rows.len();
-            let mut rows = sample_compact_division_roots(state.base, &root_cache.rows);
-            if rows.len() < root_count {
-                *root_cache = discover_compact_division_roots(Some(state));
-                root_count = root_cache.rows.len();
-                rows = sample_compact_division_roots(state.base, &root_cache.rows);
-            }
+            let root_count = root_cache.rows.len();
+            let rows = sample_compact_division_roots(state.base, &root_cache.rows);
             let _candidate_root_count = root_count;
             // For native anchored discovery, root_rows is the count of fully
             // sampled and validated typed roots. Candidate wrapper pointers can
@@ -10221,6 +10337,123 @@ mod attach_log {
             status_flags,
             root_rows,
         }
+    }
+
+    fn read_compact_division_equipment(
+        state: &CollectorState,
+        control: &CollectorControl,
+        status_flags: u32,
+        tracker: &mut CompactDivisionEquipmentTracker,
+        root_cache: &CompactDivisionRootCache,
+    ) -> CompactDivisionEquipmentRead {
+        let read_started = Instant::now();
+        let mut status_flags = status_flags;
+        let bridge_available = compact_division_bridge_available(control);
+        let roots = if bridge_available {
+            &control.division_body_bridge
+        } else {
+            &root_cache.rows
+        };
+        let root_rows = roots.len().min(u32::MAX as usize) as u32;
+        if roots.is_empty() {
+            status_flags |= COMPACT_STATUS_SOURCE_UNAVAILABLE;
+            return CompactDivisionEquipmentRead {
+                rows: Vec::new(),
+                read_time_us: duration_micros_u64(read_started.elapsed()),
+                changed_rows: 0,
+                status_flags,
+                root_rows,
+                observed_division_rows: 0,
+                observed_equipment_rows: 0,
+                emitted_equipment_rows: 0,
+            };
+        }
+
+        let active_rows = sample_compact_division_equipment_roots(state.base, roots);
+        let observed_division_rows = active_rows.len().min(u32::MAX as usize) as u32;
+        let observed_equipment_rows =
+            compact_division_equipment_entry_count(&active_rows).min(u32::MAX as usize) as u32;
+        if active_rows.is_empty() {
+            status_flags |= COMPACT_STATUS_SOURCE_UNAVAILABLE;
+            return CompactDivisionEquipmentRead {
+                rows: Vec::new(),
+                read_time_us: duration_micros_u64(read_started.elapsed()),
+                changed_rows: 0,
+                status_flags,
+                root_rows,
+                observed_division_rows,
+                observed_equipment_rows,
+                emitted_equipment_rows: 0,
+            };
+        }
+        if active_rows.len() < roots.len() {
+            status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+        }
+
+        let emit_full_snapshot = tracker.previous.is_empty();
+        let mut current = BTreeMap::new();
+        let mut emitted_rows = Vec::new();
+        let mut changed_rows = 0u32;
+        for sample in active_rows {
+            let key = (sample.owner_tag_db_id, sample.div_id);
+            let changed = tracker
+                .previous
+                .get(&key)
+                .map(|old| old != &sample)
+                .unwrap_or(true);
+            if changed {
+                changed_rows = changed_rows.saturating_add(1);
+            }
+            if emit_full_snapshot || changed {
+                emitted_rows.push(sample.clone());
+            }
+            current.insert(key, sample);
+        }
+        if !emit_full_snapshot {
+            let removed_keys = tracker
+                .previous
+                .keys()
+                .filter(|key| !current.contains_key(key))
+                .copied()
+                .collect::<Vec<_>>();
+            for (owner_tag_db_id, div_id) in removed_keys {
+                changed_rows = changed_rows.saturating_add(1);
+                emitted_rows.push(deleted_division_equipment_sample(owner_tag_db_id, div_id));
+            }
+            status_flags |= COMPACT_STATUS_DELTA_DATA;
+        }
+        emitted_rows.sort_by_key(|sample| (sample.owner_tag_db_id, sample.div_id));
+        tracker.previous = current;
+        let emitted_equipment_rows =
+            compact_division_equipment_entry_count(&emitted_rows).min(u32::MAX as usize) as u32;
+
+        CompactDivisionEquipmentRead {
+            rows: emitted_rows,
+            read_time_us: duration_micros_u64(read_started.elapsed()),
+            changed_rows,
+            status_flags,
+            root_rows,
+            observed_division_rows,
+            observed_equipment_rows,
+            emitted_equipment_rows,
+        }
+    }
+
+    fn deleted_division_equipment_sample(
+        owner_tag_db_id: u32,
+        div_id: u32,
+    ) -> DivisionEquipmentSample {
+        DivisionEquipmentSample {
+            owner_tag_db_id,
+            div_id,
+            deleted: true,
+            template_id: None,
+            entries: Vec::new(),
+        }
+    }
+
+    fn compact_division_equipment_entry_count(rows: &[DivisionEquipmentSample]) -> usize {
+        rows.iter().map(|row| row.entries.len()).sum()
     }
 
     fn deleted_division_sample(div_id: u32) -> DivisionMovementSample {
@@ -10302,6 +10535,136 @@ mod attach_log {
             }
         }
         rows
+    }
+
+    fn sample_compact_division_equipment_roots(
+        module_base: usize,
+        roots: &[DivisionBodyBridgeEntry],
+    ) -> Vec<DivisionEquipmentSample> {
+        let worker_count = compact_division_sample_worker_count(roots.len());
+        if worker_count <= 1 {
+            let mut rows = sample_compact_division_equipment_roots_serial(module_base, roots);
+            rows.sort_by_key(|row| (row.owner_tag_db_id, row.div_id));
+            return rows;
+        }
+        let chunk_len = (roots.len() + worker_count - 1) / worker_count;
+        let mut rows = Vec::with_capacity(roots.len());
+        thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for chunk in roots.chunks(chunk_len) {
+                handles.push(scope.spawn(move || {
+                    sample_compact_division_equipment_roots_serial(module_base, chunk)
+                }));
+            }
+            for handle in handles {
+                if let Ok(mut chunk_rows) = handle.join() {
+                    rows.append(&mut chunk_rows);
+                }
+            }
+        });
+        rows.sort_by_key(|row| (row.owner_tag_db_id, row.div_id));
+        rows
+    }
+
+    fn sample_compact_division_equipment_roots_serial(
+        module_base: usize,
+        roots: &[DivisionBodyBridgeEntry],
+    ) -> Vec<DivisionEquipmentSample> {
+        let mut rows = Vec::with_capacity(roots.len());
+        for entry in roots {
+            if let Some(sample) = sample_division_equipment(module_base, entry) {
+                rows.push(sample);
+            }
+        }
+        rows
+    }
+
+    fn sample_division_equipment(
+        module_base: usize,
+        entry: &DivisionBodyBridgeEntry,
+    ) -> Option<DivisionEquipmentSample> {
+        let body = entry.body_ptr;
+        let division_vtable = module_base.checked_add(DIVISION_VTABLE_RVA)?;
+        let div_id = validate_compact_division_body_root(body, division_vtable)?;
+        if div_id != entry.div_id {
+            return None;
+        }
+        let owner_tag_db_id = read_division_owner_tag_db_id(body)
+            .or_else(|| valid_division_owner_tag_db_id(entry.owner_tag_db_id))?;
+        let entries = read_division_equipment_entries(module_base, body)?;
+        Some(DivisionEquipmentSample {
+            owner_tag_db_id,
+            div_id,
+            deleted: false,
+            template_id: read_division_template_id(module_base, body),
+            entries,
+        })
+    }
+
+    fn read_division_equipment_entries(
+        module_base: usize,
+        body: usize,
+    ) -> Option<Vec<DivisionEquipmentEntry>> {
+        let bank = body.checked_add(DIVISION_OFF_EQUIPMENT_BANK)?;
+        let begin = read_u64(bank)? as usize;
+        let capacity = read_u32(bank.checked_add(8)?)?;
+        let size = read_u32(bank.checked_add(12)?)?;
+        if size > capacity || size > MAX_DIVISION_EQUIPMENT_BANK_ROWS {
+            return None;
+        }
+        if size == 0 {
+            if begin != 0 && !is_heap_pointer_aligned(begin, 8) {
+                return None;
+            }
+            return Some(Vec::new());
+        }
+        if !is_heap_pointer_aligned(begin, 8) {
+            return None;
+        }
+        let byte_len = (size as usize).checked_mul(DIVISION_EQUIPMENT_ENTRY_STRIDE)?;
+        if byte_len
+            > MAX_DIVISION_EQUIPMENT_TOTAL_ROWS.saturating_mul(DIVISION_EQUIPMENT_ENTRY_STRIDE)
+        {
+            return None;
+        }
+        let raw = read_bytes(begin, byte_len)?;
+        let variant_vtable = module_base.checked_add(DIVISION_EQUIPMENT_VARIANT_VTABLE_RVA)?;
+        let mut rows = Vec::with_capacity(size as usize);
+        let mut seen_variants = BTreeMap::new();
+        for index in 0..size as usize {
+            let offset = index.checked_mul(DIVISION_EQUIPMENT_ENTRY_STRIDE)?;
+            let variant_ptr = read_u64_from_slice(&raw, offset)? as usize;
+            let amount_raw = read_i64_from_slice(&raw, offset.checked_add(8)?)?;
+            if !(0..=MAX_DIVISION_EQUIPMENT_AMOUNT_RAW).contains(&amount_raw) {
+                return None;
+            }
+            if !is_map_control_heap_pointer(variant_ptr) {
+                return None;
+            }
+            if read_u64(variant_ptr)? as usize != variant_vtable {
+                return None;
+            }
+            if read_u32(variant_ptr.checked_add(DIVISION_EQUIPMENT_VARIANT_OFF_TYPE)?)?
+                != DIVISION_EQUIPMENT_VARIANT_TYPE
+            {
+                return None;
+            }
+            let variant_id = read_u32(variant_ptr.checked_add(DIVISION_EQUIPMENT_VARIANT_OFF_ID)?)?;
+            if variant_id == 0 || variant_id > MAX_DIVISION_EQUIPMENT_VARIANT_ID {
+                return None;
+            }
+            if seen_variants.insert(variant_id, ()).is_some() {
+                return None;
+            }
+            if amount_raw != 0 {
+                rows.push(DivisionEquipmentEntry {
+                    variant_id,
+                    amount_raw,
+                });
+            }
+        }
+        rows.sort_by_key(|row| row.variant_id);
+        Some(rows)
     }
 
     fn read_compact_land_combats(
@@ -11834,6 +12197,38 @@ mod attach_log {
         );
     }
 
+    fn append_compact_division_equipment_data_record(
+        out: &mut Vec<u8>,
+        sequence: u64,
+        game_hour_raw: i32,
+        rows: &[DivisionEquipmentSample],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        root_rows: u32,
+        observed_division_rows: u32,
+        observed_equipment_rows: u32,
+    ) {
+        let payload = compact_division_equipment_data_payload(
+            rows,
+            elapsed_wall_ms,
+            status_flags,
+            changed_rows,
+            root_rows,
+            observed_division_rows,
+            observed_equipment_rows,
+        );
+        append_compact_record(
+            out,
+            sequence,
+            game_hour_raw,
+            COMPACT_DOMAIN_DIVISION_EQUIPMENT,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+    }
+
     fn append_compact_land_combats_data_record(
         out: &mut Vec<u8>,
         sequence: u64,
@@ -12728,6 +13123,61 @@ mod attach_log {
             payload.extend_from_slice(&sample.raw_supply_gain.unwrap_or(0).to_le_bytes());
             payload.extend_from_slice(&sample.raw_fuel.unwrap_or(0).to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        payload
+    }
+
+    fn compact_division_equipment_data_payload(
+        rows: &[DivisionEquipmentSample],
+        elapsed_wall_ms: u64,
+        status_flags: u32,
+        changed_rows: u32,
+        root_rows: u32,
+        observed_division_rows: u32,
+        observed_equipment_rows: u32,
+    ) -> Vec<u8> {
+        let equipment_entry_count = compact_division_equipment_entry_count(rows);
+        let mut payload = Vec::with_capacity(
+            40usize
+                .saturating_add(rows.len().saturating_mul(24))
+                .saturating_add(equipment_entry_count.saturating_mul(16)),
+        );
+        payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
+        payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+        payload.extend_from_slice(&changed_rows.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&root_rows.to_le_bytes());
+        payload.extend_from_slice(&observed_division_rows.to_le_bytes());
+        payload.extend_from_slice(
+            &(equipment_entry_count.min(u32::MAX as usize) as u32).to_le_bytes(),
+        );
+        payload.extend_from_slice(&observed_equipment_rows.to_le_bytes());
+
+        let mut entry_cursor = 0u32;
+        for sample in rows {
+            let entry_count = sample.entries.len().min(u32::MAX as usize) as u32;
+            let mut flags = 0u32;
+            if sample.template_id.is_some() {
+                flags |= COMPACT_DIVISION_EQUIPMENT_ROW_FLAG_TEMPLATE;
+            }
+            if sample.deleted {
+                flags |= COMPACT_DIVISION_EQUIPMENT_ROW_FLAG_DELETED;
+            }
+            payload.extend_from_slice(&sample.owner_tag_db_id.to_le_bytes());
+            payload.extend_from_slice(&sample.div_id.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&sample.template_id.unwrap_or(0).to_le_bytes());
+            payload.extend_from_slice(&entry_cursor.to_le_bytes());
+            payload.extend_from_slice(&entry_count.to_le_bytes());
+            entry_cursor = entry_cursor.saturating_add(entry_count);
+        }
+        for sample in rows {
+            for entry in &sample.entries {
+                payload.extend_from_slice(&entry.variant_id.to_le_bytes());
+                payload.extend_from_slice(&0u32.to_le_bytes());
+                payload.extend_from_slice(&entry.amount_raw.to_le_bytes());
+            }
         }
         payload
     }
@@ -15189,20 +15639,30 @@ mod attach_log {
         if size == 0 {
             return Some(Vec::new());
         }
-        let logical_rows = if cap != 0 && cap < size { cap } else { size };
-        if logical_rows > STATE_RESOURCE_MAX_ROWS
-            || size > STATE_RESOURCE_MAX_ROWS + 1
-            || size.saturating_sub(logical_rows) > 1
-            || !is_map_control_heap_pointer(data)
-        {
+        let logical_rows = state_resource_logical_rows(size, cap)?;
+        if logical_rows == 0 {
+            return Some(Vec::new());
+        }
+        if !is_map_control_heap_pointer(data) {
             return None;
         }
-        let byte_len = (size as usize).checked_mul(STATE_RESOURCE_STRIDE)?;
+        let byte_len = (logical_rows as usize).checked_mul(STATE_RESOURCE_STRIDE)?;
         let rows = read_bytes(data, byte_len)?;
         if rows.len() != byte_len {
             return None;
         }
-        state_resource_entries_from_rows(size, logical_rows, &rows)
+        state_resource_entries_from_rows(logical_rows, logical_rows, &rows)
+    }
+
+    fn state_resource_logical_rows(size: u32, cap: u32) -> Option<u32> {
+        if size == 0 {
+            return Some(0);
+        }
+        if size > STATE_RESOURCE_MAX_ROWS {
+            return None;
+        }
+        let logical_rows = if cap != 0 && cap < size { cap } else { size };
+        (logical_rows <= STATE_RESOURCE_MAX_ROWS).then_some(logical_rows)
     }
 
     fn state_resource_entries_from_rows(
@@ -15311,20 +15771,19 @@ mod attach_log {
         if size == 0 {
             return Some("{}".to_string());
         }
-        let logical_rows = if cap != 0 && cap < size { cap } else { size };
-        if logical_rows > STATE_RESOURCE_MAX_ROWS
-            || size > STATE_RESOURCE_MAX_ROWS + 1
-            || size.saturating_sub(logical_rows) > 1
-            || !is_map_control_heap_pointer(data)
-        {
+        let logical_rows = state_resource_logical_rows(size, cap)?;
+        if logical_rows == 0 {
+            return Some("{}".to_string());
+        }
+        if !is_map_control_heap_pointer(data) {
             return None;
         }
-        let byte_len = (size as usize).checked_mul(STATE_RESOURCE_STRIDE)?;
+        let byte_len = (logical_rows as usize).checked_mul(STATE_RESOURCE_STRIDE)?;
         let rows = read_bytes(data, byte_len)?;
         if rows.len() != byte_len {
             return None;
         }
-        state_resource_rows_json(size, logical_rows, &rows)
+        state_resource_rows_json(logical_rows, logical_rows, &rows)
     }
 
     fn state_resource_rows_json(size: u32, logical_rows: u32, rows: &[u8]) -> Option<String> {
@@ -20862,6 +21321,91 @@ mod attach_log {
         }
 
         #[test]
+        fn compact_division_equipment_data_payload_packs_parent_and_entries() {
+            let rows = vec![
+                DivisionEquipmentSample {
+                    owner_tag_db_id: 47,
+                    div_id: 17,
+                    deleted: false,
+                    template_id: Some(3101),
+                    entries: vec![
+                        DivisionEquipmentEntry {
+                            variant_id: 101,
+                            amount_raw: 11_300_000,
+                        },
+                        DivisionEquipmentEntry {
+                            variant_id: 202,
+                            amount_raw: 500_000,
+                        },
+                    ],
+                },
+                deleted_division_equipment_sample(48, 18),
+            ];
+
+            let payload = compact_division_equipment_data_payload(
+                &rows,
+                79,
+                COMPACT_STATUS_EXTRACTION_PERF_GATE | COMPACT_STATUS_DELTA_DATA,
+                2,
+                3,
+                2,
+                2,
+            );
+
+            assert_eq!(payload.len(), 40 + 2 * 24 + 2 * 16);
+            assert_eq!(u64::from_le_bytes(payload[0..8].try_into().unwrap()), 79);
+            assert_eq!(u32::from_le_bytes(payload[8..12].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[12..16].try_into().unwrap()), 2);
+            assert_eq!(
+                u32::from_le_bytes(payload[16..20].try_into().unwrap()),
+                COMPACT_STATUS_EXTRACTION_PERF_GATE | COMPACT_STATUS_DELTA_DATA
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[20..24].try_into().unwrap()),
+                COMPACT_FIXED_SCALE_RAW
+            );
+            assert_eq!(u32::from_le_bytes(payload[24..28].try_into().unwrap()), 3);
+            assert_eq!(u32::from_le_bytes(payload[28..32].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[32..36].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[36..40].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[40..44].try_into().unwrap()), 47);
+            assert_eq!(u32::from_le_bytes(payload[44..48].try_into().unwrap()), 17);
+            assert_eq!(
+                u32::from_le_bytes(payload[48..52].try_into().unwrap()),
+                COMPACT_DIVISION_EQUIPMENT_ROW_FLAG_TEMPLATE
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[52..56].try_into().unwrap()),
+                3101
+            );
+            assert_eq!(u32::from_le_bytes(payload[56..60].try_into().unwrap()), 0);
+            assert_eq!(u32::from_le_bytes(payload[60..64].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[64..68].try_into().unwrap()), 48);
+            assert_eq!(u32::from_le_bytes(payload[68..72].try_into().unwrap()), 18);
+            assert_eq!(
+                u32::from_le_bytes(payload[72..76].try_into().unwrap()),
+                COMPACT_DIVISION_EQUIPMENT_ROW_FLAG_DELETED
+            );
+            assert_eq!(u32::from_le_bytes(payload[76..80].try_into().unwrap()), 0);
+            assert_eq!(u32::from_le_bytes(payload[80..84].try_into().unwrap()), 2);
+            assert_eq!(u32::from_le_bytes(payload[84..88].try_into().unwrap()), 0);
+            assert_eq!(u32::from_le_bytes(payload[88..92].try_into().unwrap()), 101);
+            assert_eq!(u32::from_le_bytes(payload[92..96].try_into().unwrap()), 0);
+            assert_eq!(
+                i64::from_le_bytes(payload[96..104].try_into().unwrap()),
+                11_300_000
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[104..108].try_into().unwrap()),
+                202
+            );
+            assert_eq!(
+                i64::from_le_bytes(payload[112..120].try_into().unwrap()),
+                500_000
+            );
+        }
+
+        #[test]
         fn compact_division_root_discovery_does_not_heap_scan() {
             let cache = discover_compact_division_roots(None);
 
@@ -25088,6 +25632,17 @@ mod attach_log {
             ]);
 
             assert!(state_resource_rows_json(6, 5, &rows).is_none());
+        }
+
+        #[test]
+        fn state_resource_logical_rows_uses_cap_when_lower_than_size() {
+            assert_eq!(state_resource_logical_rows(6, 5), Some(5));
+            assert_eq!(state_resource_logical_rows(6, 0), Some(6));
+            assert_eq!(state_resource_logical_rows(0, 0), Some(0));
+            assert_eq!(
+                state_resource_logical_rows(STATE_RESOURCE_MAX_ROWS + 1, STATE_RESOURCE_MAX_ROWS),
+                None
+            );
         }
 
         #[test]

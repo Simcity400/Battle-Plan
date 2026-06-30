@@ -195,6 +195,15 @@ Implemented in the current bridge:
   for 292 fuel frames with 11,611 typed fuel rows, saw no worker panic, measured
   avg frame 44.869 ms / p95 57.064 ms / max 116.131 ms / 667,672 raw stream
   bytes, and independently verified the 86,012-byte `.battleplan` container;
+- follow-up live speed-five proof
+  `compact_division_equipment_wide_speed5_20260630_v2` scheduled 14 compact
+  domains together for 60 seconds, advanced 113 game hours with 0 skipped,
+  verified ordering, decodability, replay packing, and per-hour domain coverage,
+  emitted 114 typed `division_equipment` data records through the DLL-native
+  anchored division root, captured 155,040 division rows and 348,368
+  equipment-entry units, saw no source-unavailable/partial/bridge/worker
+  failures, measured avg frame 26.648 ms / p95 28.680 ms / max 74.934 ms /
+  5,777,247 raw stream bytes, and verified a 1,694,343-byte `.battleplan`;
 - DLL-native scheduled `decisions_live` through
   `CCountry+0xFA0 -> CDecisionStatus`: the collector validates the status
   vtable and owner back-pointer, emits non-empty status-vector counts, and
@@ -278,6 +287,13 @@ Implemented in the current bridge:
   state owner/controller rows are derived through `CProvince+0xC0`, and province
   controller rows through `CProvince+0x188`, gated to canonical hourly frames
   rather than 10 ms worker polls;
+- DLL-native scheduled `state_detail` resource deposits on the same state root:
+  the compact proof `compact_state_detail_probe_speed5_20260630_v2` advanced 38
+  game hours with 0 skipped, emitted 39 ordered/decodable `map_detail` data
+  records, captured 42,159 state-detail rows, saw no
+  source-unavailable/partial/parse failures, and kept p95 extraction at 2.363 ms.
+  The DLL resource reader now follows the verified state resource vector shape
+  where a non-zero capacity lower than size is the logical row count;
 - DLL-native scheduled `buildings_live` on the same static map spine: state
   building vectors at `STATE+0x158` and province building vectors at
   `CProvince+0x1C8` are emitted only on scheduled hourly frames and folded into
@@ -302,10 +318,10 @@ Implemented in the current bridge:
 
 Still open:
 
-- widen typed compact data records beyond `fuel_live` to production, focus,
-  tech, politics, decisions, diplomacy, combat, movement, and orders, then
-  re-run live speed-five proof for each segment through the DLL/Rust
-  `.battleplan` packing path;
+- widen typed compact data records beyond `fuel_live` and `division_equipment`
+  to production, focus, tech, politics, decisions, diplomacy, combat, movement,
+  and orders, then re-run live speed-five proof for each segment through the
+  DLL/Rust `.battleplan` packing path;
 - replace repeated bounded-worker attaches with a true long-running collector
   session;
 - classify any remaining country-record-only fields and add a speed-safe

@@ -128,13 +128,24 @@ country-state domains. Current compact binary proofs:
   data records for 292 fuel frames, 11,611 typed fuel rows, avg frame
   44.869 ms, p95 57.064 ms, max 116.131 ms, 667,672 raw stream bytes, and a
   verified 86,012-byte `native_session.battleplan`.
+- `compact_division_equipment_wide_speed5_20260630_v2`: fuel, production,
+  focus, tech, politics, politics residuals, decisions, diplomacy, divisions,
+  division equipment, land combats, map control, map detail, and weather
+  together, 60 seconds, 113 game hours advanced, 114 unique frame hours, 0
+  skipped, full per-hour domain coverage, ordered and decodable stream, no
+  worker panic/source-unavailable/partial/bridge flags, avg frame 26.648 ms,
+  p95 28.680 ms, max 74.934 ms, 5,777,247 raw stream bytes, and a verified
+  1,694,343-byte `native_session.battleplan`. The new `division_equipment`
+  domain emitted 114 typed data records with 155,040 division rows and 348,368
+  equipment-entry units through the DLL-native anchored division root.
 
 This completes the extraction-only compact performance gate for the current
 country domains and starts replay payload capture with typed fuel records plus
-Rust-native `.battleplan` packing. The `fuel_live` replay-payload segment is
-now live-proven through the DLL/Rust compact path at speed five with zero
-skipped game hours. The next step is to widen typed data records to production,
-focus, tech, politics, decisions, diplomacy, combat, movement, and orders.
+Rust-native `.battleplan` packing. The `fuel_live` and `division_equipment`
+replay-payload segments are live-proven through the DLL/Rust compact path at
+speed five with zero skipped game hours. The next step is to widen typed data
+records to production, focus, tech, politics, decisions, diplomacy, combat,
+movement, and orders.
 
 Country-object heap discovery is not part of normal capture. The experimental
 whole-heap vtable scan is behind the explicit `country_object_scan` control flag,
@@ -416,13 +427,14 @@ Recorder-side map-control contract:
 - current no-cold proof on pid 43412 emitted 12 scheduled frames each for
   `state_ownership`, `state_control`, and `province_control` across 12 game
   hours, with 1081 state rows and 10272 province rows per frame;
-- current state-resource proof on pid 43412 emitted 13 scheduled `state_detail`
-  frames across 12 game hours in 44.579 wall seconds, verified replay output,
-  folded 14053 state resource rows with 9334 resource entries, reached full
-  1081/1081 resource-bearing state rows in one frame, preserved unknown
-  resource db ids as `tid_0x...`, handled the verified `size=6/cap=5`
-  trailing `NO_ID` sentinel shape for Piedmont/Liaotung, and kept worker-poll
-  frames free of heavy scheduled payloads;
+- current state-resource compact proof
+  `compact_state_detail_probe_speed5_20260630_v2` advanced 38 game hours with 0
+  skipped, emitted 39 ordered/decodable `map_detail` data records, captured
+  42,159 state-detail rows, saw no source-unavailable/partial/parse failures,
+  and kept p95 extraction at 2.363 ms. The DLL resource reader now treats a
+  non-zero resource-vector capacity lower than size as the logical row count,
+  matching the already-proven Python/Ghidra research for the verified
+  `size=6/cap=5` trailing `NO_ID` sentinel shape;
 - the older `map_control_state_roots`, dense province array, and controller
   bridges remain fallbacks if the static root is unavailable; worker-poll
   frames stay light.

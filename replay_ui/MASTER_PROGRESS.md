@@ -101,6 +101,14 @@ for inspection, with no ability to mutate the game.
   no-cold 12-game-hour proof on pid 43412 with 13 verified scheduled building
   frames, 1081 state rows and 10272 province rows per scheduled frame, non-empty
   state/province building maps, and zero worker-poll building payloads.
+- Compact DLL/Rust replay capture now has typed `division_equipment` payloads:
+  the 2026-06-30 live speed-five proof
+  `compact_division_equipment_wide_speed5_20260630_v2` scheduled 14 compact
+  domains together for 60 seconds, advanced 113 game hours with 0 skipped,
+  emitted 114 division-equipment data records through the DLL-native anchored
+  division root, captured 155,040 division rows and 348,368 equipment-entry
+  units, verified ordering/decodability/domain coverage/replay packing, and
+  produced a verified 1,694,343-byte `.battleplan`.
 - DLL-native scheduled `diplomacy_live` is proven for faction membership and
   war/casualty rows: the collector reads `CCountry+0x598` faction groups on
   hourly frames, folds into `countries.*.diplomacy.faction_group` and
@@ -404,6 +412,12 @@ The app is product-complete only when all applicable gates pass:
   observed `buildings_live` on all 13 scheduled frames, captured non-empty state
   and province building maps, and reported zero heavy payloads on lightweight
   frames.
+- Compact 14-domain DLL/Rust replay proof passed on 2026-06-30:
+  `replay_native/runs/compact_division_equipment_wide_speed5_20260630_v2`
+  advanced 113 game hours in 60 seconds at speed five with 0 skipped, verified
+  ordered/decodable compact records, full per-hour scheduled-domain coverage,
+  typed `division_equipment` data records, no source-unavailable/partial/bridge/
+  worker failures, and a verified `.battleplan` container.
 - Scheduled `diplomacy_live` faction proof passed on 2026-06-29:
   `replay/snapshots/_collector_session_diplomacy_gate/20260629T152734Z_pid43412`
   advanced 12 game hours in 48.328 wall seconds, stored 13 verified snapshots,
