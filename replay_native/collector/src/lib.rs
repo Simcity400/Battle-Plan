@@ -531,6 +531,7 @@ mod attach_log {
     const MAX_UNIT_LEADER_SKILL: u32 = 15;
     const MAX_UNIT_LEADER_TRAITS: u32 = 64;
     const TASK_FORCE_OFF_FLEET_PARENT: usize = 0x330;
+    const TASK_FORCE_OFF_LOCATION_PROVINCE: usize = 0x18;
     const TASK_FORCE_OFF_SHIP_BEGIN: usize = 0x338;
     const TASK_FORCE_OFF_SHIP_COUNT: usize = 0x344;
     const COUNTRY_FLEET_VECTOR_DATA: usize = 0x278;
@@ -2814,6 +2815,7 @@ mod attach_log {
     const COMPACT_OOB_ROW_FLAG_LEADER_SKILL: u32 = 1 << 4;
     const COMPACT_OOB_ROW_FLAG_MEMBER_COUNT_ENGINE: u32 = 1 << 5;
     const COMPACT_OOB_ROW_FLAG_MISSING_MEMBER_COUNT: u32 = 1 << 6;
+    const COMPACT_OOB_ROW_FLAG_LOCATION: u32 = 1 << 7;
     const COMPACT_SHIP_ROW_FLAG_DELETED: u32 = 1;
     const COMPACT_SHIP_ROW_FLAG_TASK_FORCE: u32 = 1 << 1;
     const COMPACT_SHIP_ROW_FLAG_DEFINITION: u32 = 1 << 2;
@@ -3256,6 +3258,7 @@ mod attach_log {
         member_count: u32,
         member_count_engine: Option<u32>,
         missing_member_count: Option<u32>,
+        location_province_id: Option<u32>,
         leader_id: Option<u32>,
         leader_skill: Option<u32>,
         leader_trait_count: Option<u32>,
@@ -8603,6 +8606,11 @@ mod attach_log {
         (Some(ship_ids), Some(count), "exact")
     }
 
+    fn read_task_force_location_province(task_force_body: usize) -> Option<u32> {
+        let province_id = read_u32(task_force_body.checked_add(TASK_FORCE_OFF_LOCATION_PROVINCE)?)?;
+        (province_id > 0 && province_id <= MAX_DIVISION_PROVINCE_ID).then_some(province_id)
+    }
+
     fn read_cship_instance_id(module_base: usize, ship_ptr: usize) -> Option<u32> {
         if !is_map_control_heap_pointer(ship_ptr)
             || read_u64(ship_ptr)? as usize != module_base.checked_add(CSHIP_VTABLE_RVA)?
@@ -11261,6 +11269,7 @@ mod attach_log {
                 member_count: live_member_count,
                 member_count_engine,
                 missing_member_count,
+                location_province_id: None,
                 leader_id,
                 leader_skill,
                 leader_trait_count,
@@ -11289,6 +11298,7 @@ mod attach_log {
                 member_count,
                 member_count_engine: None,
                 missing_member_count: None,
+                location_province_id: None,
                 leader_id: None,
                 leader_skill: None,
                 leader_trait_count: None,
@@ -11317,6 +11327,7 @@ mod attach_log {
                 .push(task_force.task_force_id);
             let (ship_ids, ship_count, ship_status) =
                 read_task_force_ship_ids(module_base, task_force.body_ptr);
+            let location_province_id = read_task_force_location_province(task_force.body_ptr);
             let emitted_ship_count = ship_ids
                 .as_ref()
                 .map(|ids| ids.len().min(u32::MAX as usize) as u32)
@@ -11343,6 +11354,7 @@ mod attach_log {
                 member_count,
                 member_count_engine: ship_count,
                 missing_member_count,
+                location_province_id,
                 leader_id: None,
                 leader_skill: None,
                 leader_trait_count: None,
@@ -11376,6 +11388,7 @@ mod attach_log {
                 member_count,
                 member_count_engine: Some(member_count),
                 missing_member_count: None,
+                location_province_id: None,
                 leader_id: None,
                 leader_skill: None,
                 leader_trait_count: None,
@@ -11504,6 +11517,7 @@ mod attach_log {
             member_count: 0,
             member_count_engine: None,
             missing_member_count: None,
+            location_province_id: None,
             leader_id: None,
             leader_skill: None,
             leader_trait_count: None,
@@ -11598,50 +11612,26 @@ mod attach_log {
         if fleets.is_empty() {
             return None;
         }
-        let mut fleet_ptrs = BTreeMap::new();
+        let mut fleet_roots_by_ptr = BTreeMap::new();
         for fleet in &fleets {
-            fleet_ptrs.insert(fleet.body_ptr, fleet.fleet_id);
+            fleet_roots_by_ptr.insert(fleet.body_ptr, *fleet);
         }
-        let mut task_force_ptrs: BTreeMap<usize, u32> = BTreeMap::new();
+        let mut task_force_roots: BTreeMap<usize, CompactTaskForceRoot> = BTreeMap::new();
         for fleet in &fleets {
             collect_compact_task_force_roots_from_fleet(
                 state.base,
                 fleet.body_ptr,
-                &fleet_ptrs,
-                &mut task_force_ptrs,
+                &fleet_roots_by_ptr,
+                &mut task_force_roots,
             );
         }
 
-        let mut task_forces = Vec::new();
-        let mut invalid_task_force_rows = 0u32;
-        for (body_ptr, task_force_id) in task_force_ptrs {
-            let Some(parent_addr) = body_ptr.checked_add(TASK_FORCE_OFF_FLEET_PARENT) else {
-                invalid_task_force_rows = invalid_task_force_rows.saturating_add(1);
-                continue;
-            };
-            let Some(parent_ptr) = read_u64(parent_addr).map(|value| value as usize) else {
-                invalid_task_force_rows = invalid_task_force_rows.saturating_add(1);
-                continue;
-            };
-            let Some(fleet_id) = fleet_ptrs.get(&parent_ptr).copied() else {
-                invalid_task_force_rows = invalid_task_force_rows.saturating_add(1);
-                continue;
-            };
-            task_forces.push(CompactTaskForceRoot {
-                task_force_id,
-                body_ptr,
-                fleet_id,
-                owner_tag_db_id: fleets
-                    .iter()
-                    .find(|fleet| fleet.fleet_id == fleet_id)
-                    .and_then(|fleet| fleet.owner_tag_db_id),
-            });
-        }
+        let mut task_forces = task_force_roots.into_values().collect::<Vec<_>>();
         task_forces.sort_by_key(|root| (root.fleet_id, root.task_force_id));
         Some(CompactNavalOobRoots {
             fleets,
             task_forces,
-            invalid_task_force_rows,
+            invalid_task_force_rows: 0,
         })
     }
 
@@ -11746,8 +11736,8 @@ mod attach_log {
     fn collect_compact_task_force_roots_from_fleet(
         module_base: usize,
         fleet_ptr: usize,
-        fleet_ptrs: &BTreeMap<usize, u32>,
-        task_forces: &mut BTreeMap<usize, u32>,
+        fleet_roots_by_ptr: &BTreeMap<usize, CompactFleetRoot>,
+        task_forces: &mut BTreeMap<usize, CompactTaskForceRoot>,
     ) {
         let Some(blob) = read_bytes(fleet_ptr, COMPACT_FLEET_SCAN_SPAN) else {
             return;
@@ -11759,7 +11749,7 @@ mod attach_log {
             maybe_insert_compact_task_force_body(
                 module_base,
                 candidate as usize,
-                fleet_ptrs,
+                fleet_roots_by_ptr,
                 task_forces,
             );
         }
@@ -11798,7 +11788,7 @@ mod attach_log {
                 if maybe_insert_compact_task_force_body(
                     module_base,
                     candidate,
-                    fleet_ptrs,
+                    fleet_roots_by_ptr,
                     task_forces,
                 ) {
                     continue;
@@ -11818,7 +11808,7 @@ mod attach_log {
                     if maybe_insert_compact_task_force_body(
                         module_base,
                         body_ptr,
-                        fleet_ptrs,
+                        fleet_roots_by_ptr,
                         task_forces,
                     ) {
                         break;
@@ -11839,29 +11829,32 @@ mod attach_log {
     fn maybe_insert_compact_task_force_body(
         module_base: usize,
         body_ptr: usize,
-        fleet_ptrs: &BTreeMap<usize, u32>,
-        task_forces: &mut BTreeMap<usize, u32>,
+        fleet_roots_by_ptr: &BTreeMap<usize, CompactFleetRoot>,
+        task_forces: &mut BTreeMap<usize, CompactTaskForceRoot>,
     ) -> bool {
-        let Some(task_force_id) =
-            validate_compact_task_force_body(module_base, body_ptr, fleet_ptrs)
+        let Some((task_force_id, fleet_root)) =
+            validate_compact_task_force_body(module_base, body_ptr, fleet_roots_by_ptr)
         else {
             return false;
         };
-        task_forces.entry(body_ptr).or_insert(task_force_id);
+        task_forces.entry(body_ptr).or_insert(CompactTaskForceRoot {
+            task_force_id,
+            body_ptr,
+            fleet_id: fleet_root.fleet_id,
+            owner_tag_db_id: fleet_root.owner_tag_db_id,
+        });
         true
     }
 
     fn validate_compact_task_force_body(
         module_base: usize,
         body_ptr: usize,
-        fleet_ptrs: &BTreeMap<usize, u32>,
-    ) -> Option<u32> {
+        fleet_roots_by_ptr: &BTreeMap<usize, CompactFleetRoot>,
+    ) -> Option<(u32, CompactFleetRoot)> {
         let task_force_id =
             validate_oob_body(module_base, body_ptr, TASK_FORCE_VTABLE_RVA, OOB_TYPE_FLEET)?;
         let parent_ptr = read_u64(body_ptr.checked_add(TASK_FORCE_OFF_FLEET_PARENT)?)? as usize;
-        if !fleet_ptrs.contains_key(&parent_ptr) {
-            return None;
-        }
+        let fleet_root = *fleet_roots_by_ptr.get(&parent_ptr)?;
         let count = read_u32(body_ptr.checked_add(TASK_FORCE_OFF_SHIP_COUNT)?)?;
         if count > MAX_OOB_TASK_FORCE_SHIPS {
             return None;
@@ -11872,7 +11865,57 @@ mod attach_log {
                 return None;
             }
         }
-        Some(task_force_id)
+        if !validate_task_force_ship_vector(module_base, body_ptr) {
+            return None;
+        }
+        Some((task_force_id, fleet_root))
+    }
+
+    fn validate_task_force_ship_vector(module_base: usize, task_force_body: usize) -> bool {
+        let Some(count_addr) = task_force_body.checked_add(TASK_FORCE_OFF_SHIP_COUNT) else {
+            return false;
+        };
+        let Some(count) = read_u32(count_addr) else {
+            return false;
+        };
+        if count == 0 {
+            return true;
+        }
+        if count > MAX_OOB_TASK_FORCE_SHIPS {
+            return false;
+        }
+        let Some(begin_addr) = task_force_body.checked_add(TASK_FORCE_OFF_SHIP_BEGIN) else {
+            return false;
+        };
+        let Some(begin) = read_u64(begin_addr).map(|value| value as usize) else {
+            return false;
+        };
+        if !is_heap_pointer_aligned(begin, 8) {
+            return false;
+        }
+        let Some(byte_len) = (count as usize).checked_mul(8) else {
+            return false;
+        };
+        let Some(raw) = read_bytes(begin, byte_len) else {
+            return false;
+        };
+        if raw.len() < byte_len {
+            return false;
+        }
+        let mut seen = BTreeMap::new();
+        for index in 0..count as usize {
+            let Some(ship_ptr) = read_u64_from_slice(&raw, index * 8).map(|value| value as usize)
+            else {
+                return false;
+            };
+            let Some(instance_id) = read_cship_instance_id(module_base, ship_ptr) else {
+                return false;
+            };
+            if seen.insert(instance_id, ()).is_some() {
+                return false;
+            }
+        }
+        true
     }
 
     fn sample_compact_task_force_ships(
@@ -14990,6 +15033,9 @@ mod attach_log {
             if row.missing_member_count.is_some() {
                 flags |= COMPACT_OOB_ROW_FLAG_MISSING_MEMBER_COUNT;
             }
+            if row.location_province_id.is_some() {
+                flags |= COMPACT_OOB_ROW_FLAG_LOCATION;
+            }
             let member_first = if row_member_count == 0 {
                 0
             } else {
@@ -15014,7 +15060,7 @@ mod attach_log {
             payload.extend_from_slice(&compact_oob_status_code(row.leader_status).to_le_bytes());
             payload
                 .extend_from_slice(&compact_oob_status_code(row.leader_trait_status).to_le_bytes());
-            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&row.location_province_id.unwrap_or(0).to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
             member_cursor = member_cursor.saturating_add(row_member_count);
         }
@@ -23395,6 +23441,7 @@ mod attach_log {
                     member_count: 2,
                     member_count_engine: Some(3),
                     missing_member_count: Some(1),
+                    location_province_id: None,
                     leader_id: Some(9001),
                     leader_skill: Some(4),
                     leader_trait_count: Some(3),
@@ -23414,6 +23461,7 @@ mod attach_log {
                     member_count: 1,
                     member_count_engine: None,
                     missing_member_count: None,
+                    location_province_id: None,
                     leader_id: None,
                     leader_skill: None,
                     leader_trait_count: None,
@@ -23433,6 +23481,7 @@ mod attach_log {
                     member_count: 1,
                     member_count_engine: Some(1),
                     missing_member_count: None,
+                    location_province_id: None,
                     leader_id: None,
                     leader_skill: None,
                     leader_trait_count: None,
@@ -23452,6 +23501,7 @@ mod attach_log {
                     member_count: 2,
                     member_count_engine: Some(2),
                     missing_member_count: None,
+                    location_province_id: Some(12389),
                     leader_id: None,
                     leader_skill: None,
                     leader_trait_count: None,
@@ -23552,6 +23602,16 @@ mod attach_log {
                 u32::from_le_bytes(payload[408..412].try_into().unwrap()),
                 1002
             );
+            assert_eq!(
+                u32::from_le_bytes(payload[296..300].try_into().unwrap()),
+                COMPACT_OOB_ROW_FLAG_PARENT
+                    | COMPACT_OOB_ROW_FLAG_MEMBER_COUNT_ENGINE
+                    | COMPACT_OOB_ROW_FLAG_LOCATION
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[360..364].try_into().unwrap()),
+                12389
+            );
         }
 
         #[test]
@@ -23566,6 +23626,7 @@ mod attach_log {
                 member_count: 0,
                 member_count_engine: Some(11),
                 missing_member_count: Some(11),
+                location_province_id: Some(12389),
                 leader_id: None,
                 leader_skill: None,
                 leader_trait_count: None,
@@ -23597,12 +23658,17 @@ mod attach_log {
                     | COMPACT_OOB_ROW_FLAG_OWNER
                     | COMPACT_OOB_ROW_FLAG_MEMBER_COUNT_ENGINE
                     | COMPACT_OOB_ROW_FLAG_MISSING_MEMBER_COUNT
+                    | COMPACT_OOB_ROW_FLAG_LOCATION
             );
             assert_eq!(u32::from_le_bytes(payload[76..80].try_into().unwrap()), 0);
             assert_eq!(u32::from_le_bytes(payload[80..84].try_into().unwrap()), 0);
             assert_eq!(u32::from_le_bytes(payload[84..88].try_into().unwrap()), 0);
             assert_eq!(u32::from_le_bytes(payload[88..92].try_into().unwrap()), 11);
             assert_eq!(u32::from_le_bytes(payload[92..96].try_into().unwrap()), 11);
+            assert_eq!(
+                u32::from_le_bytes(payload[120..124].try_into().unwrap()),
+                12389
+            );
             assert_eq!(
                 u32::from_le_bytes(payload[104..108].try_into().unwrap()),
                 COMPACT_OOB_STATUS_VALIDATION_FAILED

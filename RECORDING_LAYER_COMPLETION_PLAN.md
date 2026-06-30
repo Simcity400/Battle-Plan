@@ -367,7 +367,7 @@ Current recorder-facing bridge status:
   active land OOB and verified compact fleet/task-force membership on the
   `870ebf` build. It still captures historical raw membership joins, army leader
   ids, bounded army leader skill, and assigned army leader trait tokens; it does
-  not yet claim names, missions, locations, theatre rows, leader portraits,
+  not yet claim names, missions, home base, theatre rows, leader portraits,
   temporary/captured trait state, naval leaders, global commander rosters, or
   save-shaped OOB nesting.
 
@@ -711,8 +711,9 @@ Tasks:
   `.battleplan` packing, and captured real naval counters: 124 fleet rows, 195
   task-force rows, 404 task-force member ids, 1,625 ship member ids, 5,441
   observed fleet rows, and 8,638 observed task-force rows. Naval leaders,
-  missions, theatre/region state, active naval combat damage/sinking semantics,
-  and exact naval OOB presentation remain follow-up segments.
+  missions, home base, broader theatre/region rollups, active naval combat
+  damage/sinking semantics, and exact naval OOB presentation remain follow-up
+  segments.
 - Current owner-attribution checkpoint: compact fleet rows now carry the owning
   explicit country object tag-db id from the country-rooted fleet walk, and
   compact task-force rows inherit that owner from their parent fleet. Focused
@@ -741,6 +742,25 @@ Tasks:
   not find them on `CShip[0x40..0x300]`, so they must be pinned separately or
   sourced from a validated non-save runtime wrapper before being called
   DLL-complete.
+- Current task-force-location checkpoint: compact `oob_command` task-force rows
+  now carry the current province id from the prior Python/Ghidra-pinned
+  `CTaskForce+0x18` field. The collector validates task-force roots through the
+  DLL-native country/fleet path, validates the live CShip member vector before
+  accepting a task-force root, and carries the validated parent fleet root
+  forward so speed-five root discovery does not reclassify already-validated
+  task forces as partial data after the game advances. Focused proof
+  `compact_oob_ships_tf_location_870ebf_20260701_v4` advanced 39 game hours
+  with 0 skipped, verified ordered/decodable records and `.battleplan` packing,
+  had no source/partial/bridge/worker failures, and captured 187 OOB location
+  rows. The full `compact_full_plus_tf_location_870ebf_20260701_v1` covered all
+  17 compact domains, advanced 52 game hours with 0 skipped, verified full
+  per-domain coverage, ordered/decodable records and `.battleplan` packing, had
+  no source/partial/bridge/worker failures, and captured 203 OOB location rows,
+  230 task-force rows, 960 OOB owner rows, 2,615 ship rows, and 2,462
+  owner-attributed ship rows. This closes current task-force location/province
+  for the verified `870ebf` build; missions, home base, naval leaders,
+  theatre/region rollups, ship names, and naval combat damage/sinking semantics
+  remain separate segments.
 - Current DLL checkpoint: `naval_air_combats` now has a bridge-gated raw stream
   from supplied `CNavalCombat` body pins. The collector revalidates bridged
   bodies every sample and emits side-level active-combat summaries plus

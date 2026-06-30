@@ -296,11 +296,12 @@ records plus Rust-native `.battleplan` packing. `fuel_live`, `production_live`,
 `map_detail`, `weather_live`, and compact `ships` are live-proven through the
 DLL/Rust compact path at speed five with zero skipped game hours for the
 applicable verified build profile. Compact `oob_command` now includes DLL-native
-owner-attributed fleet and task-force hierarchy rows for the verified `870ebf`
-build. The next step is not more JSON widening; it is native compact coverage
-for direct ship name fields, naval leaders, missions, theatre/region state,
-naval/air combat telemetry, and richer combat/order details that are still
-raw-only, bridge-backed, or unimplemented.
+  owner-attributed fleet and task-force hierarchy rows plus current task-force
+  province ids for the verified `870ebf` build. The next step is not more JSON
+  widening; it is native compact coverage for direct ship name fields, naval
+  leaders, missions, home base, theatre/region rollups, naval/air combat
+  telemetry, and richer combat/order details that are still raw-only,
+  bridge-backed, or unimplemented.
 
 `ships` now has a reserved compact domain (`domain_id=29`) and Rust recorder
 decoder/schema coverage for per-ship hull telemetry, including CShip instance
@@ -786,10 +787,10 @@ OOB command raw stream status:
   army leader skill values, assigned army leader trait tokens, engine
   member-count diagnostics, fleet task-force membership, task-force parent
   fleet, and bounded CShip instance-id membership from the live
-  `CTaskForce+0x338/+0x344` vector. Owner, names, missions, locations, theatre
-  membership, leader portraits, temporary/captured trait state, naval leaders,
-  global commander rosters, and save-shaped nested OOB records are not yet
-  claimed.
+  `CTaskForce+0x338/+0x344` vector and current task-force province from
+  `CTaskForce+0x18`. Names, missions, home base, theatre membership, leader
+  portraits, temporary/captured trait state, naval leaders, global commander
+  rosters, and save-shaped nested OOB records are not yet claimed.
 - Compact `oob_command` no longer depends on the raw naval bridge for fleet and
   task-force hierarchy in the verified `870ebf` build. The production compact
   path reuses the DLL-native `CGameState+0x310 -> CCountry+0x278 -> CFleet* ->
@@ -803,6 +804,15 @@ OOB command raw stream status:
   owner rows with zero skipped hours. Validation-failed task-force member reads
   preserve the engine count as `missing_member_count` instead of packing an
   undecodable logical member-count mismatch.
+  Task-force rows also carry the current province id from the prior
+  Python/Ghidra-pinned `CTaskForce+0x18` field. Focused gate
+  `compact_oob_ships_tf_location_870ebf_20260701_v4` advanced 39 game hours
+  with 0 skipped, ordered/decodable records, zero parse errors, no source/
+  partial/bridge/worker flags, a verified `.battleplan`, and 187 OOB location
+  rows. Full gate `compact_full_plus_tf_location_870ebf_20260701_v1` scheduled
+  all 17 compact domains for 30 seconds, advanced 52 game hours with 0 skipped,
+  ordered/decodable records, zero parse errors, no source/partial/bridge/worker
+  flags, a verified `.battleplan`, and 203 OOB location rows.
 - Remaining promotion work is a live active-naval-combat fixture, a
   root/hook-derived discoverer for combats born after preflight, speed-five
   soak, exact damage/sinking semantics, and timeline ingestion.

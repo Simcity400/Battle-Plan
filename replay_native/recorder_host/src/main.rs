@@ -106,7 +106,9 @@ const COMPACT_OOB_ROW_FLAG_LEADER: u32 = 1 << 3;
 const COMPACT_OOB_ROW_FLAG_LEADER_SKILL: u32 = 1 << 4;
 const COMPACT_OOB_ROW_FLAG_MEMBER_COUNT_ENGINE: u32 = 1 << 5;
 const COMPACT_OOB_ROW_FLAG_MISSING_MEMBER_COUNT: u32 = 1 << 6;
+const COMPACT_OOB_ROW_FLAG_LOCATION: u32 = 1 << 7;
 const COMPACT_OOB_MAX_ID: u32 = 4_000_000;
+const COMPACT_OOB_MAX_LOCATION_PROVINCE_ID: u32 = 1_000_000;
 const COMPACT_OOB_MAX_MEMBER_ROWS: usize = 250_000;
 const COMPACT_OOB_MAX_LEADER_SKILL: u32 = 15;
 const COMPACT_SHIP_ROW_BASE_LEN: usize = 40;
@@ -3164,6 +3166,7 @@ fn decode_compact_oob_command_data_payload(
     let mut leader_rows = 0usize;
     let mut leader_skill_rows = 0usize;
     let mut owner_rows = 0usize;
+    let mut location_rows = 0usize;
     let mut engine_count_rows = 0usize;
     let mut missing_count_rows = 0usize;
     for row_index in 0..row_count {
@@ -3185,7 +3188,7 @@ fn decode_compact_oob_command_data_payload(
         let owner_status = read_u32_le(payload, cursor + 60);
         let leader_status = read_u32_le(payload, cursor + 64);
         let leader_trait_status = read_u32_le(payload, cursor + 68);
-        let row_reserved0 = read_u32_le(payload, cursor + 72);
+        let location_province_id = read_u32_le(payload, cursor + 72);
         let row_reserved1 = read_u32_le(payload, cursor + 76);
         cursor += COMPACT_OOB_ROW_LEN;
 
@@ -3225,7 +3228,8 @@ fn decode_compact_oob_command_data_payload(
                 | COMPACT_OOB_ROW_FLAG_LEADER
                 | COMPACT_OOB_ROW_FLAG_LEADER_SKILL
                 | COMPACT_OOB_ROW_FLAG_MEMBER_COUNT_ENGINE
-                | COMPACT_OOB_ROW_FLAG_MISSING_MEMBER_COUNT)
+                | COMPACT_OOB_ROW_FLAG_MISSING_MEMBER_COUNT
+                | COMPACT_OOB_ROW_FLAG_LOCATION)
             != 0
         {
             summary.parse_errors.push(format!(
@@ -3242,6 +3246,7 @@ fn decode_compact_oob_command_data_payload(
                 || member_count_engine != 0
                 || missing_member_count != 0
                 || leader_trait_count != 0
+                || location_province_id != 0
             {
                 summary.parse_errors.push(format!(
                     "offset {offset}: oob command deleted row {row_index} has live fields"
@@ -3277,6 +3282,20 @@ fn decode_compact_oob_command_data_payload(
         }
         if (flags & COMPACT_OOB_ROW_FLAG_LEADER) != 0 {
             leader_rows = leader_rows.saturating_add(1);
+        }
+        if (flags & COMPACT_OOB_ROW_FLAG_LOCATION) != 0 {
+            location_rows = location_rows.saturating_add(1);
+            if location_province_id == 0
+                || location_province_id > COMPACT_OOB_MAX_LOCATION_PROVINCE_ID
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: oob command row {row_index} has invalid location_province_id {location_province_id}"
+                ));
+            }
+        } else if location_province_id != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob command row {row_index} has location_province_id without flag"
+            ));
         }
         if (flags & COMPACT_OOB_ROW_FLAG_LEADER_SKILL) != 0 {
             leader_skill_rows = leader_skill_rows.saturating_add(1);
@@ -3351,7 +3370,7 @@ fn decode_compact_oob_command_data_payload(
                 "offset {offset}: oob command row {row_index} member_count {row_member_count} != logical_member_count {logical_member_count}"
             ));
         }
-        if row_reserved0 != 0 || row_reserved1 != 0 {
+        if row_reserved1 != 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: oob command row {row_index} reserved field is nonzero"
             ));
@@ -3383,6 +3402,7 @@ fn decode_compact_oob_command_data_payload(
     add_compact_domain_data_unit(summary, 28, "oob_leader_rows", leader_rows);
     add_compact_domain_data_unit(summary, 28, "oob_leader_skill_rows", leader_skill_rows);
     add_compact_domain_data_unit(summary, 28, "oob_owner_rows", owner_rows);
+    add_compact_domain_data_unit(summary, 28, "oob_location_rows", location_rows);
     add_compact_domain_data_unit(
         summary,
         28,
@@ -5711,6 +5731,10 @@ mod tests {
             oob.data_units_total.get("oob_task_force_rows").copied(),
             Some(1)
         );
+        assert_eq!(
+            oob.data_units_total.get("oob_location_rows").copied(),
+            Some(1)
+        );
         assert_eq!(compact_domain_id("oob_command"), Some(28));
         assert_eq!(compact_domain_name(28), "oob_command");
     }
@@ -7113,6 +7137,7 @@ mod tests {
             member_count_engine,
             missing_member_count,
             leader_trait_count,
+            location_province_id,
             parent_status,
             member_status,
             owner_status,
@@ -7138,6 +7163,7 @@ mod tests {
                 3u32,
                 1u32,
                 3u32,
+                0u32,
                 1u32,
                 1u32,
                 1u32,
@@ -7155,6 +7181,7 @@ mod tests {
                 2u32,
                 1u32,
                 1u32,
+                0u32,
                 0u32,
                 0u32,
                 0u32,
@@ -7179,6 +7206,7 @@ mod tests {
                 0u32,
                 0u32,
                 0u32,
+                0u32,
                 1u32,
                 2u32,
                 0u32,
@@ -7187,7 +7215,9 @@ mod tests {
             (
                 COMPACT_OOB_KIND_TASK_FORCE,
                 617u32,
-                COMPACT_OOB_ROW_FLAG_PARENT | COMPACT_OOB_ROW_FLAG_MEMBER_COUNT_ENGINE,
+                COMPACT_OOB_ROW_FLAG_PARENT
+                    | COMPACT_OOB_ROW_FLAG_MEMBER_COUNT_ENGINE
+                    | COMPACT_OOB_ROW_FLAG_LOCATION,
                 615u32,
                 0u32,
                 0u32,
@@ -7198,6 +7228,7 @@ mod tests {
                 2u32,
                 0u32,
                 0u32,
+                12389u32,
                 1u32,
                 1u32,
                 2u32,
@@ -7223,7 +7254,7 @@ mod tests {
             payload.extend_from_slice(&owner_status.to_le_bytes());
             payload.extend_from_slice(&leader_status.to_le_bytes());
             payload.extend_from_slice(&leader_trait_status.to_le_bytes());
-            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&location_province_id.to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
         }
         for member_id in [101u32, 102u32, 17u32, 617u32, 1001u32, 1002u32] {
