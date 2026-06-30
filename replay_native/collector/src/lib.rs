@@ -714,6 +714,7 @@ mod attach_log {
             let mut oob_command_tracker = OobCommandTracker::default();
             let mut last_oob_command_sample_elapsed_ms: Option<u64> = None;
             let mut compact_country_tracker = CompactCountryFrameTracker::default();
+            let mut compact_perf_gate_trackers = CompactPerfGateTrackers::default();
             while Instant::now() <= deadline {
                 let elapsed_wall_ms = duration_millis_u64(worker_started.elapsed());
                 let clock_sample = clock_sample_from_state(state.as_ref());
@@ -730,7 +731,7 @@ mod attach_log {
                             session_sequence,
                             elapsed_wall_ms,
                             clock_sample.as_ref(),
-                            &mut compact_country_tracker,
+                            &mut compact_perf_gate_trackers,
                         );
                         if !records.is_empty() {
                             write_sinks(file.as_mut(), pipe, &records);
@@ -2649,6 +2650,7 @@ mod attach_log {
     const COMPACT_STATUS_NO_SCALAR_SOURCE: u32 = 1 << 3;
     const COMPACT_STATUS_WAR_BRIDGE_APPLIED: u32 = 1 << 4;
     const COMPACT_STATUS_EXTRACTION_PERF_GATE: u32 = 1 << 5;
+    const COMPACT_STATUS_WORKER_PANIC: u32 = 1 << 6;
 
     #[derive(Clone, Copy)]
     struct CompactCountryDomainSpec {
@@ -2676,6 +2678,21 @@ mod attach_log {
         changed_rows: u32,
         unit_count: u32,
         changed_unit_count: u32,
+        status_flags: u32,
+    }
+
+    #[derive(Default)]
+    struct CompactPerfGateTrackers {
+        economy: CompactCountryFrameTracker,
+        country_state: CompactCountryFrameTracker,
+        combined: CompactCountryFrameTracker,
+    }
+
+    struct CompactBundleRead {
+        specs: Vec<CompactCountryDomainSpec>,
+        rows: Vec<CountryObjectRow>,
+        read_time_us: u64,
+        row_count: u32,
         status_flags: u32,
     }
 
@@ -8531,7 +8548,7 @@ mod attach_log {
         sequence_start: u64,
         elapsed_wall_ms: u64,
         clock: Option<&ClockSample>,
-        tracker: &mut CompactCountryFrameTracker,
+        trackers: &mut CompactPerfGateTrackers,
     ) -> (Vec<u8>, u64) {
         let frame_started = Instant::now();
         let mut out = Vec::new();
@@ -8570,34 +8587,159 @@ mod attach_log {
             .into_iter()
             .filter(|spec| scheduled_domain_enabled(Some(control), spec.name))
             .collect::<Vec<_>>();
-        let include_fuel = enabled_specs
+        let mut reads = if compact_parallel_gate_eligible(&enabled_specs) {
+            let (economy_specs, country_state_specs): (Vec<_>, Vec<_>) = enabled_specs
+                .into_iter()
+                .partition(|spec| compact_domain_is_economy(spec.kind));
+            let economy_specs_for_panic = economy_specs.clone();
+            let economy_tracker = &mut trackers.economy;
+            let country_state_tracker = &mut trackers.country_state;
+            let mut economy_read = None;
+            let mut country_state_read = None;
+            thread::scope(|scope| {
+                let economy_handle = scope.spawn(|| {
+                    read_compact_country_domain_bundle(
+                        state,
+                        control,
+                        economy_specs,
+                        status_flags,
+                        economy_tracker,
+                    )
+                });
+                country_state_read = Some(read_compact_country_domain_bundle(
+                    state,
+                    control,
+                    country_state_specs,
+                    status_flags,
+                    country_state_tracker,
+                ));
+                economy_read = Some(match economy_handle.join() {
+                    Ok(read) => read,
+                    Err(_) => compact_worker_panic_read(economy_specs_for_panic, status_flags),
+                });
+            });
+            let mut reads = Vec::new();
+            if let Some(read) = economy_read {
+                reads.push(read);
+            }
+            if let Some(read) = country_state_read {
+                reads.push(read);
+            }
+            reads
+        } else {
+            vec![read_compact_country_domain_bundle(
+                state,
+                control,
+                enabled_specs,
+                status_flags,
+                &mut trackers.combined,
+            )]
+        };
+        for read in reads.drain(..) {
+            for spec in read.specs {
+                let changed_rows = read
+                    .rows
+                    .iter()
+                    .filter(|row| row_has_compact_domain(row, spec.kind))
+                    .count();
+                let unit_count = compact_domain_unit_count(&read.rows, spec.kind);
+                append_compact_domain_perf_record(
+                    &mut out,
+                    sequence,
+                    game_hour_raw,
+                    CompactDomainPerfRecord {
+                        domain_id: spec.id,
+                        read_time_us: read.read_time_us,
+                        row_count: read.row_count,
+                        changed_rows: changed_rows.min(u32::MAX as usize) as u32,
+                        unit_count,
+                        changed_unit_count: unit_count,
+                        status_flags: read.status_flags,
+                    },
+                    elapsed_wall_ms,
+                );
+                sequence = sequence.saturating_add(1);
+                emitted_domains = emitted_domains.saturating_add(1);
+            }
+        }
+        append_compact_frame_end_record(
+            &mut out,
+            sequence,
+            game_hour_raw,
+            elapsed_wall_ms,
+            duration_micros_u64(frame_started.elapsed()),
+            emitted_domains,
+            emitted_domains,
+            status_flags,
+        );
+        (out, sequence.saturating_add(1))
+    }
+
+    fn compact_parallel_gate_eligible(specs: &[CompactCountryDomainSpec]) -> bool {
+        specs
+            .iter()
+            .any(|spec| compact_domain_is_economy(spec.kind))
+            && specs
+                .iter()
+                .any(|spec| !compact_domain_is_economy(spec.kind))
+    }
+
+    fn compact_domain_is_economy(kind: CompactCountryDomainKind) -> bool {
+        matches!(
+            kind,
+            CompactCountryDomainKind::Fuel | CompactCountryDomainKind::Production
+        )
+    }
+
+    fn compact_worker_panic_read(
+        specs: Vec<CompactCountryDomainSpec>,
+        status_flags: u32,
+    ) -> CompactBundleRead {
+        CompactBundleRead {
+            specs,
+            rows: Vec::new(),
+            read_time_us: 0,
+            row_count: 0,
+            status_flags: status_flags | COMPACT_STATUS_WORKER_PANIC,
+        }
+    }
+
+    fn read_compact_country_domain_bundle(
+        state: &CollectorState,
+        control: &CollectorControl,
+        specs: Vec<CompactCountryDomainSpec>,
+        status_flags: u32,
+        tracker: &mut CompactCountryFrameTracker,
+    ) -> CompactBundleRead {
+        let read_started = Instant::now();
+        let include_fuel = specs
             .iter()
             .any(|spec| matches!(spec.kind, CompactCountryDomainKind::Fuel));
-        let include_production = enabled_specs
+        let include_production = specs
             .iter()
             .any(|spec| matches!(spec.kind, CompactCountryDomainKind::Production));
-        let include_focus = enabled_specs
+        let include_focus = specs
             .iter()
             .any(|spec| matches!(spec.kind, CompactCountryDomainKind::Focus));
-        let include_tech = enabled_specs
+        let include_tech = specs
             .iter()
             .any(|spec| matches!(spec.kind, CompactCountryDomainKind::Tech));
-        let include_politics = enabled_specs
+        let include_politics = specs
             .iter()
             .any(|spec| matches!(spec.kind, CompactCountryDomainKind::Politics));
-        let include_politics_residuals = enabled_specs
+        let include_politics_residuals = specs
             .iter()
             .any(|spec| matches!(spec.kind, CompactCountryDomainKind::PoliticsResiduals));
-        let include_decisions = enabled_specs
+        let include_decisions = specs
             .iter()
             .any(|spec| matches!(spec.kind, CompactCountryDomainKind::Decisions));
-        let include_diplomacy = enabled_specs
+        let include_diplomacy = specs
             .iter()
             .any(|spec| matches!(spec.kind, CompactCountryDomainKind::Diplomacy));
-        let read_started = Instant::now();
         let mut rows = if state.daily_match
             && state.long_string_match
             && state.country_identity.has_scalar_source()
+            && !specs.is_empty()
         {
             state.country_identity.current_rows(
                 state.country_database_ptr as usize,
@@ -8633,42 +8775,13 @@ mod attach_log {
             }
         }
         mark_compact_rows_seen(tracker, &rows);
-        let coextract_read_time_us = duration_micros_u64(read_started.elapsed());
-        for spec in enabled_specs {
-            let changed_rows = rows
-                .iter()
-                .filter(|row| row_has_compact_domain(row, spec.kind))
-                .count();
-            let unit_count = compact_domain_unit_count(&rows, spec.kind);
-            append_compact_domain_perf_record(
-                &mut out,
-                sequence,
-                game_hour_raw,
-                CompactDomainPerfRecord {
-                    domain_id: spec.id,
-                    read_time_us: coextract_read_time_us,
-                    row_count: state.country_identity.rows.len().min(u32::MAX as usize) as u32,
-                    changed_rows: changed_rows.min(u32::MAX as usize) as u32,
-                    unit_count,
-                    changed_unit_count: unit_count,
-                    status_flags: read_status_flags,
-                },
-                elapsed_wall_ms,
-            );
-            sequence = sequence.saturating_add(1);
-            emitted_domains = emitted_domains.saturating_add(1);
+        CompactBundleRead {
+            specs,
+            rows,
+            read_time_us: duration_micros_u64(read_started.elapsed()),
+            row_count: state.country_identity.rows.len().min(u32::MAX as usize) as u32,
+            status_flags: read_status_flags,
         }
-        append_compact_frame_end_record(
-            &mut out,
-            sequence,
-            game_hour_raw,
-            elapsed_wall_ms,
-            duration_micros_u64(frame_started.elapsed()),
-            emitted_domains,
-            emitted_domains,
-            status_flags,
-        );
-        (out, sequence.saturating_add(1))
     }
 
     fn compact_country_domain_specs() -> [CompactCountryDomainSpec; 8] {
@@ -15688,6 +15801,28 @@ mod attach_log {
             control.scheduled_domains_valid = false;
             assert!(!scheduled_domain_enabled(Some(&control), "projects_live"));
             assert!(scheduled_domain_enabled(None, "projects_live"));
+        }
+
+        #[test]
+        fn compact_parallel_gate_partitions_country_domains_without_rotation() {
+            let specs = compact_country_domain_specs().to_vec();
+            let (economy, country_state): (Vec<_>, Vec<_>) = specs
+                .iter()
+                .copied()
+                .partition(|spec| compact_domain_is_economy(spec.kind));
+
+            assert!(compact_parallel_gate_eligible(&specs));
+            assert_eq!(
+                economy.iter().map(|spec| spec.name).collect::<Vec<_>>(),
+                vec!["fuel_live", "production_live"]
+            );
+            assert!(country_state
+                .iter()
+                .any(|spec| spec.name == "politics_live"));
+            assert!(country_state
+                .iter()
+                .any(|spec| spec.name == "politics_residuals"));
+            assert_eq!(economy.len() + country_state.len(), specs.len());
         }
 
         #[test]

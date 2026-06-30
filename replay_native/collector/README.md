@@ -96,11 +96,15 @@ file packing remains follow-up.
 `--stream-format compact --extraction-perf-gate`. Compact records carry
 sequence id, `game_hour_raw`, domain id, record type, payload length, and packed
 metric payloads. The host writes `collector_stream.bin`, verifies decodability,
-monotonic ordering, byte volume, frame timing, and zero skipped game hours. JSON
-is no longer a production throughput target.
+monotonic ordering, byte volume, frame timing, every scheduled domain on every
+frame hour, worker-panic status, and zero skipped game hours. JSON is no longer
+a production throughput target.
 
-The full synchronous country layer is still incomplete. Current compact binary
-proofs on live speed five:
+The full compact country extraction gate now passes live speed five through one
+DLL collector/coordinator. The DLL keeps one clock source and one sequence/order
+authority, while the compact gate internally splits country extraction into two
+read-only lanes with separate dirty caches: fuel/production and the remaining
+country-state domains. Current compact binary proofs:
 
 - `compact_fuel_production_speed5_v1`: fuel + production, 20 seconds, 284 game
   hours advanced, 285 frame-end records, 0 skipped, avg frame 23.973 ms, p95
@@ -109,16 +113,15 @@ proofs on live speed five:
   politics residuals + decisions + diplomacy, 20 seconds, 247 game hours
   advanced, 248 frame-end records, 0 skipped, avg frame 42.434 ms, p95
   57.007 ms, max 109.462 ms, 123,008 bytes.
-- `compact_all_country_granular_speed5_v1`: all current compact country domains
-  together, 30 seconds, 268 game hours advanced, 260 frame-end records, 9
-  skipped, avg frame 67.080 ms, p95 101.544 ms, max 124.963 ms.
+- `compact_all_country_parallel_coverage_speed5_v2`: all current compact
+  country domains together, 30 seconds, 332 game hours advanced, 333 frame-end
+  records, 0 skipped, full per-hour domain coverage, no worker panic, avg frame
+  38.151 ms, p95 48.743 ms, max 156.203 ms, 213,120 bytes.
 
-Do not mark the full country layer DLL-complete until the compact DLL/Rust path
-captures all required country domains together at hourly-or-better cadence with
-zero skipped game hours. The next required optimization is internal parallelism
-or ring-buffered per-domain workers under one DLL coordinator, one clock source,
-and one sequence authority; splitting into multiple DLLs is explicitly out of
-scope.
+This completes the extraction-only compact performance gate for the current
+country domains. It does not yet complete replay payload capture: the next step
+is to replace metric payloads with per-domain packed replay records, then have
+the Rust recorder write those records into `.battleplan`.
 
 Country-object heap discovery is not part of normal capture. The experimental
 whole-heap vtable scan is behind the explicit `country_object_scan` control flag,

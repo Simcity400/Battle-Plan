@@ -32,6 +32,7 @@ const COMPACT_RECORD_HEADER_LEN: usize = 32;
 const COMPACT_RECORD_VERSION: u16 = 1;
 const COMPACT_RECORD_TYPE_DOMAIN_PERF: u16 = 1;
 const COMPACT_RECORD_TYPE_FRAME_END: u16 = 2;
+const COMPACT_STATUS_WORKER_PANIC: u32 = 1 << 6;
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -144,7 +145,9 @@ struct CompactSummary {
     max_record_len: usize,
     domains_seen: BTreeSet<u16>,
     per_domain: BTreeMap<u16, CompactDomainSummary>,
+    per_hour_domains: BTreeMap<i32, BTreeSet<u16>>,
     frame_times_us: Vec<u64>,
+    status_flags_or: u32,
     unique_hours: Vec<i32>,
     first_hour: Option<i32>,
     last_hour: Option<i32>,
@@ -162,6 +165,7 @@ struct CompactDomainSummary {
     changed_unit_count_total: u64,
     read_times_us: Vec<u64>,
     max_read_time_us: u64,
+    status_flags_or: u32,
 }
 
 fn main() {
@@ -244,10 +248,15 @@ fn run() -> Result<(), String> {
         }
         StreamFormat::Compact => {
             let summary = summarize_compact_stream(&pipe_bytes);
+            let expected_domain_ids = compact_expected_domain_ids(&cfg.scheduled_domains);
+            let coverage_errors = compact_domain_coverage_errors(&summary, &expected_domain_ids);
             let decodable = summary.parse_errors.is_empty();
             let ordered = summary.ordering_errors.is_empty();
+            let worker_panic_seen = (summary.status_flags_or & COMPACT_STATUS_WORKER_PANIC) != 0;
             let hourly_met = decodable
                 && ordered
+                && !worker_panic_seen
+                && coverage_errors.is_empty()
                 && summary.skipped_hours == 0
                 && summary
                     .first_hour
@@ -285,7 +294,15 @@ fn run() -> Result<(), String> {
                         "max_record_len": summary.max_record_len,
                         "decodable": decodable,
                         "ordered": ordered,
+                        "status_flags_or": summary.status_flags_or,
+                        "worker_panic_seen": worker_panic_seen,
                         "domains_seen": compact_domain_names(&summary.domains_seen),
+                        "expected_domains": compact_domain_names_from_ids(&expected_domain_ids),
+                        "domain_coverage": {
+                            "ok": coverage_errors.is_empty(),
+                            "expected_domain_count": expected_domain_ids.len(),
+                            "errors": coverage_errors.clone(),
+                        },
                         "per_domain": compact_domain_summaries_json(&summary),
                         "frame_time_us": timing_summary_json(&summary.frame_times_us),
                     },
@@ -298,7 +315,7 @@ fn run() -> Result<(), String> {
                         "required": true,
                         "requested_game_hours": cfg.min_game_hours,
                         "met": hourly_met,
-                        "problems": compact_hourly_problems(&summary, cfg.min_game_hours),
+                        "problems": compact_hourly_problems(&summary, cfg.min_game_hours, &coverage_errors),
                     },
                     "parse_errors": summary.parse_errors,
                     "ordering_errors": summary.ordering_errors,
@@ -777,6 +794,13 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     let changed_rows = read_u32_le(payload, 20) as u64;
                     let unit_count = read_u32_le(payload, 24) as u64;
                     let changed_unit_count = read_u32_le(payload, 28) as u64;
+                    let status_flags = read_u32_le(payload, 32);
+                    summary.status_flags_or |= status_flags;
+                    summary
+                        .per_hour_domains
+                        .entry(game_hour_raw)
+                        .or_default()
+                        .insert(domain_id);
                     let domain = summary.per_domain.entry(domain_id).or_default();
                     domain.record_count += 1;
                     domain.row_count_total = domain.row_count_total.saturating_add(row_count);
@@ -788,6 +812,7 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                         .saturating_add(changed_unit_count);
                     domain.max_read_time_us = domain.max_read_time_us.max(read_time_us);
                     domain.read_times_us.push(read_time_us);
+                    domain.status_flags_or |= status_flags;
                 }
             }
             COMPACT_RECORD_TYPE_FRAME_END => {
@@ -799,6 +824,7 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                         payload.len()
                     ));
                 } else {
+                    summary.status_flags_or |= read_u32_le(payload, 24);
                     summary.frame_times_us.push(read_u64_le(payload, 8));
                 }
             }
@@ -859,6 +885,41 @@ fn compact_domain_names(domains: &BTreeSet<u16>) -> Vec<String> {
         .collect()
 }
 
+fn compact_domain_names_from_ids(domains: &[u16]) -> Vec<String> {
+    domains
+        .iter()
+        .map(|domain| compact_domain_name(*domain).to_string())
+        .collect()
+}
+
+fn compact_expected_domain_ids(scheduled_domains: &[String]) -> Vec<u16> {
+    let mut ids = if scheduled_domains.is_empty() {
+        vec![10, 11, 12, 13, 14, 15, 16, 17]
+    } else {
+        scheduled_domains
+            .iter()
+            .filter_map(|domain| compact_domain_id(domain))
+            .collect::<Vec<_>>()
+    };
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+fn compact_domain_id(domain: &str) -> Option<u16> {
+    match domain {
+        "fuel_live" => Some(10),
+        "production_live" => Some(11),
+        "focus_live" => Some(12),
+        "tech_live" => Some(13),
+        "politics_live" => Some(14),
+        "politics_residuals" => Some(15),
+        "decisions_live" => Some(16),
+        "diplomacy_live" => Some(17),
+        _ => None,
+    }
+}
+
 fn compact_domain_name(domain_id: u16) -> &'static str {
     match domain_id {
         1 => "clock",
@@ -875,6 +936,46 @@ fn compact_domain_name(domain_id: u16) -> &'static str {
     }
 }
 
+fn compact_domain_coverage_errors(
+    summary: &CompactSummary,
+    expected_domains: &[u16],
+) -> Vec<String> {
+    if expected_domains.is_empty() {
+        return Vec::new();
+    }
+    let mut errors = Vec::new();
+    for hour in &summary.unique_hours {
+        let present = summary.per_hour_domains.get(hour);
+        for expected in expected_domains {
+            if !present
+                .map(|domains| domains.contains(expected))
+                .unwrap_or(false)
+            {
+                errors.push(format!(
+                    "game_hour_raw {hour}: missing compact domain {}",
+                    compact_domain_name(*expected)
+                ));
+            }
+        }
+    }
+    for expected in expected_domains {
+        let record_count = summary
+            .per_domain
+            .get(expected)
+            .map(|domain| domain.record_count)
+            .unwrap_or(0);
+        if record_count != summary.frame_end_record_count {
+            errors.push(format!(
+                "domain {} record_count {} != frame_end_record_count {}",
+                compact_domain_name(*expected),
+                record_count,
+                summary.frame_end_record_count
+            ));
+        }
+    }
+    errors
+}
+
 fn compact_domain_summaries_json(summary: &CompactSummary) -> Value {
     let mut out = serde_json::Map::new();
     for (domain_id, domain) in &summary.per_domain {
@@ -887,6 +988,7 @@ fn compact_domain_summaries_json(summary: &CompactSummary) -> Value {
                 "changed_rows_total": domain.changed_rows_total,
                 "unit_count_total": domain.unit_count_total,
                 "changed_unit_count_total": domain.changed_unit_count_total,
+                "status_flags_or": domain.status_flags_or,
                 "read_time_us": timing_summary_json(&domain.read_times_us),
             }),
         );
@@ -917,7 +1019,11 @@ fn timing_summary_json(values: &[u64]) -> Value {
     })
 }
 
-fn compact_hourly_problems(summary: &CompactSummary, min_game_hours: i32) -> Vec<String> {
+fn compact_hourly_problems(
+    summary: &CompactSummary,
+    min_game_hours: i32,
+    coverage_errors: &[String],
+) -> Vec<String> {
     let mut problems = Vec::new();
     if !summary.parse_errors.is_empty() {
         problems.push("compact_stream_not_decodable".to_string());
@@ -927,6 +1033,12 @@ fn compact_hourly_problems(summary: &CompactSummary, min_game_hours: i32) -> Vec
     }
     if summary.skipped_hours != 0 {
         problems.push("skipped_game_hours_detected".to_string());
+    }
+    if (summary.status_flags_or & COMPACT_STATUS_WORKER_PANIC) != 0 {
+        problems.push("compact_worker_panic_seen".to_string());
+    }
+    if !coverage_errors.is_empty() {
+        problems.push("scheduled_domain_coverage_failed".to_string());
     }
     let advanced = summary
         .first_hour
@@ -1105,12 +1217,90 @@ mod tests {
         assert_eq!(summary.unique_hours, vec![100, 101]);
         assert_eq!(summary.skipped_hours, 0);
         assert_eq!(summary.total_bytes, raw.len());
+        assert!(compact_domain_coverage_errors(&summary, &[10]).is_empty());
         let fuel = summary.per_domain.get(&10).unwrap();
         assert_eq!(fuel.record_count, 2);
         assert_eq!(fuel.row_count_total, 710);
         assert_eq!(fuel.changed_rows_total, 22);
         assert_eq!(fuel.unit_count_total, 84);
         assert_eq!(fuel.max_read_time_us, 1_500);
+    }
+
+    #[test]
+    fn compact_coverage_rejects_alternating_domain_hours() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            10,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(1_250, 355, 12, 44, 44),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(2_000, 1),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            101,
+            11,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(1_500, 355, 10, 40, 40),
+        );
+        append_test_compact_record(
+            &mut raw,
+            4,
+            101,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(2_250, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        let errors = compact_domain_coverage_errors(&summary, &[10, 11]);
+
+        assert_eq!(summary.skipped_hours, 0);
+        assert!(errors
+            .iter()
+            .any(|err| err.contains("missing compact domain production_live")));
+        assert!(errors
+            .iter()
+            .any(|err| err.contains("missing compact domain fuel_live")));
+    }
+
+    #[test]
+    fn compact_summary_surfaces_worker_panic_status() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            10,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(0, 0, 0, 0, 0, COMPACT_STATUS_WORKER_PANIC),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert_ne!(summary.status_flags_or & COMPACT_STATUS_WORKER_PANIC, 0);
+        assert_ne!(
+            summary.per_domain.get(&10).unwrap().status_flags_or & COMPACT_STATUS_WORKER_PANIC,
+            0
+        );
     }
 
     #[test]
@@ -1176,6 +1366,24 @@ mod tests {
         unit_count: u32,
         changed_unit_count: u32,
     ) -> Vec<u8> {
+        test_domain_payload_with_status(
+            read_time_us,
+            row_count,
+            changed_rows,
+            unit_count,
+            changed_unit_count,
+            0,
+        )
+    }
+
+    fn test_domain_payload_with_status(
+        read_time_us: u64,
+        row_count: u32,
+        changed_rows: u32,
+        unit_count: u32,
+        changed_unit_count: u32,
+        status_flags: u32,
+    ) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(&0u64.to_le_bytes());
         payload.extend_from_slice(&read_time_us.to_le_bytes());
@@ -1183,7 +1391,7 @@ mod tests {
         payload.extend_from_slice(&changed_rows.to_le_bytes());
         payload.extend_from_slice(&unit_count.to_le_bytes());
         payload.extend_from_slice(&changed_unit_count.to_le_bytes());
-        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
         payload
     }

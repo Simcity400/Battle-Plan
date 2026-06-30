@@ -28,7 +28,8 @@ Current scope:
   typed in-memory domain rows/counters and emits packed records, not full JSON
   root frames. Record headers include sequence id, `game_hour_raw`, domain id,
   record type, and payload length. The Rust host verifies decodability,
-  monotonic ordering, byte volume, frame timings, and skipped game hours.
+  monotonic ordering, byte volume, frame timings, every scheduled domain on
+  every frame hour, worker-panic status, and skipped game hours.
 - For speed-five proof runs, use the release DLL/host. `--sample-ms 1` is the
   normal high-cadence gate; `--sample-ms 0` enables DLL worker true no-sleep
   mode for stress gates where the game advances faster than a 1 ms sleep loop
@@ -123,10 +124,11 @@ gate has these live speed-five results:
   skipped, avg frame 23.973 ms, p95 39.567 ms, 59,280 bytes.
 - `compact_country_state_nonprod_speed5_v1`: passed, 247 game hours advanced,
   0 skipped, avg frame 42.434 ms, p95 57.007 ms, 123,008 bytes.
-- `compact_all_country_granular_speed5_v1`: failed the full synchronous bundle,
-  268 game hours advanced, 9 skipped, avg frame 67.080 ms, p95 101.544 ms.
+- `compact_all_country_parallel_coverage_speed5_v2`: passed, 332 game hours
+  advanced, 333 frame-end records, 0 skipped, full per-hour domain coverage, no
+  worker panic, avg frame 38.151 ms, p95 48.743 ms, 213,120 bytes.
 
-The next production step is not another JSON optimization. Keep one injected DLL
-collector/coordinator, but add internal per-domain workers or ring buffers under
-one clock source and one sequence/order authority so the two passing bundles can
-be captured together without skipped hours.
+The extraction-only compact performance gate is now green for the current
+country domains. The next production step is not another JSON optimization; it
+is replacing metric payloads with packed per-domain replay records and writing
+them into `.battleplan`.

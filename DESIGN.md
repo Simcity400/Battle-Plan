@@ -173,15 +173,17 @@ Implemented in the current bridge:
 - DLL/Rust compact binary extraction gate: the native host now supports
   `--stream-format compact --extraction-perf-gate`, writes
   `collector_stream.bin`, and validates packed record ordering, byte volume,
-  decodability, frame timing, game hours advanced, and skipped game hours
-  without full JSON root frames. Live speed-five proof currently passes
-  `compact_fuel_production_speed5_v1` with 284 game hours advanced, 0 skipped,
-  avg frame 23.973 ms, p95 39.567 ms, and `compact_country_state_nonprod_speed5_v1`
-  with 247 game hours advanced, 0 skipped, avg frame 42.434 ms, p95 57.007 ms.
-  The full synchronous country bundle
-  `compact_all_country_granular_speed5_v1` still fails with 268 game hours
-  advanced, 9 skipped, avg frame 67.080 ms, p95 101.544 ms. This is the current
-  production-shaped gate; JSON results must not be used to decide feasibility;
+  decodability, frame timing, game hours advanced, every scheduled domain on
+  every frame hour, worker-panic status, and skipped game hours without full
+  JSON root frames. The DLL keeps one collector/coordinator, one clock source,
+  and one sequence/order authority, while the compact gate internally splits
+  country extraction into two read-only lanes with separate dirty caches. Live
+  speed-five proof `compact_all_country_parallel_coverage_speed5_v2` advanced
+  332 game hours in 30 seconds, emitted 333 frame-end records, skipped 0 game
+  hours, verified all 8 scheduled country domains on every frame hour, saw no
+  worker panic, and measured avg frame 38.151 ms / p95 48.743 ms / max
+  156.203 ms / 213,120 bytes. This is the current production-shaped extraction
+  gate; JSON results must not be used to decide feasibility;
 - DLL-native scheduled `decisions_live` through
   `CCountry+0xFA0 -> CDecisionStatus`: the collector validates the status
   vtable and owner back-pointer, emits non-empty status-vector counts, and
@@ -289,14 +291,10 @@ Implemented in the current bridge:
 
 Still open:
 
-- finish the full country bundle at zero skipped hours in the compact binary
-  DLL/Rust path. `compact_fuel_production_speed5_v1` and
-  `compact_country_state_nonprod_speed5_v1` each pass speed-five cadence in
-  isolation with 0 skipped hours. The synchronous all-domain compact gate
-  `compact_all_country_granular_speed5_v1` still skipped 9 game hours. The next
-  required architecture step is internal per-domain workers/ring buffers under
-  one DLL coordinator, one clock source, and one sequence authority, not Python,
-  save-file capture, multiple independent DLLs, or JSON optimization;
+- replace compact performance-gate metric payloads with packed per-domain
+  replay records and have the Rust recorder write them into `.battleplan`; the
+  current compact all-country gate proves extraction/transport cadence, not the
+  final replay payload schema;
 - replace repeated bounded-worker attaches with a true long-running collector
   session;
 - classify any remaining country-record-only fields and add a speed-safe
