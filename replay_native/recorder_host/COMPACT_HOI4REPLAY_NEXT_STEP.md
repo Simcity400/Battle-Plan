@@ -89,6 +89,9 @@ frames as the production path.
   disappeared division ids are emitted as explicit zero-filled delete/tombstone
   rows. Perf records keep reporting the full observed root count, so the host
   can distinguish "only a few rows changed" from "only a few roots were read".
+  The row now includes `template_id` from the validated
+  `CDivision+0x3A8 -> CDivisionTemplate` pointer without changing the 88-byte
+  payload size.
 - `map_detail` maps `state_detail` and `buildings_live` into compact state
   resource rows plus state/province building rows. It uses the native
   CProvince/CState topology, emits a full baseline followed by deltas, reports
@@ -102,9 +105,11 @@ frames as the production path.
   Division body discovery itself is now DLL-native through the anchored
   `CGameState+0x310 -> CCountry+0x290 -> wrapper+0x10 CDivision` path and no
   longer needs Python preflight, saves, or heap/vtable scans for the current
-  vanilla build. Remaining division details include template, equipment,
-  manpower, exact order geometry/assignment, training/veterancy interpretation,
-  and lifecycle identity for splits, merges, deployment, and destruction.
+  vanilla build. The scalar `template_id` is now live-proven inside compact
+  `divisions`; remaining division details include template catalog rows, held
+  equipment inventory, exact manpower once pinned, exact order geometry/
+  assignment, training/veterancy interpretation, and lifecycle identity for
+  splits, merges, deployment, and destruction.
 - Add typed data records for army orders, OOB command, naval/air combat,
   air wings, ships, logistics/supply proxies, weather, and remaining
   replay-critical event layers.
@@ -300,3 +305,21 @@ verified `native_session.battleplan`. `weather_live` observed 17,385 region
 rows, emitted 396 changed rows, and read at p95 87 us. This also proved the
 collector-side `map_detail` alias now activates full state-resource and
 state/province building detail capture.
+
+`compact_country_divisions_land_combats_map_detail_weather_region_anchor_soak_speed5_20260630_v1`
+passed a longer 120-second anchored 13-domain soak: 222 game hours advanced,
+223 frame-end records, 0 skipped, full coverage, no parse/order/source/partial/
+bridge/worker failures, avg frame 22.113 ms, p95 24.463 ms, max 69.586 ms,
+9,180,014 raw stream bytes, and an independently verified
+`native_session.battleplan`.
+
+`compact_country_divisions_template_id_speed5_20260630_v1` widened the compact
+`divisions` row with a validated scalar `template_id` from
+`CDivision+0x3A8 -> CDivisionTemplate+0x0C`, guarded by template vtable
+`module+0x29291D0` and type tag `52`. The 13-domain gate advanced 56 game hours
+with 57 frame-end records, 0 skipped, full coverage, no parse/order/source/
+partial/bridge/worker failures, avg frame 22.930 ms, p95 25.829 ms, max
+72.687 ms, 3,025,600 raw stream bytes, and an independently verified
+`native_session.battleplan`. A byte-level compact-stream audit found 19,222
+division rows with the template flag and nonzero template ids, with 0
+flag/value mismatches.

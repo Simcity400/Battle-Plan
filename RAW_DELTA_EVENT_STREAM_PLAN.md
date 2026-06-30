@@ -263,6 +263,19 @@ Current measured constraint:
   are full order geometry, template/equipment/manpower, naval/air depth,
   logistics/supply exactness, and exact weather display-temperature RNG/name
   mapping rather than the production weather root.
+- Anchored soak and division template scalar:
+  `compact_country_divisions_land_combats_map_detail_weather_region_anchor_soak_speed5_20260630_v1`
+  passed a 120-second anchored 13-domain soak with 222 game hours advanced, 0
+  skipped, full coverage, no parse/source/partial/bridge/worker failures, and
+  verified `native_session.battleplan`. `compact_country_divisions_template_id_speed5_20260630_v1`
+  then widened compact `divisions` with validated scalar `template_id` from
+  `CDivision+0x3A8 -> CDivisionTemplate+0x0C`; it advanced 56 game hours, 0
+  skipped, full coverage, no parse/source/partial/bridge/worker failures, and
+  verified `.battleplan`. Byte-level stream audit found 19,222 template-flagged
+  division rows with nonzero template ids and 0 flag/value mismatches. This is
+  not the full template/equipment/manpower segment: template catalog rows and
+  per-division held equipment need separate compact domains, and exact
+  division manpower remains unpinned.
 - Earlier raw-event verification state: live-verified on the restarted vanilla
   process (pid 43412). A cold bootstrap outside the hot loop populated the
   current-process division and army caches, then a no-cold 12-game-hour run used

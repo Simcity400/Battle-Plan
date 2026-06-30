@@ -1547,6 +1547,34 @@ recorder path. The same checkpoint also fixed and proved the `map_detail`
 schedule alias so it triggers the full `state_detail` plus `buildings_live`
 compact detail stream.
 
+Long anchored compact soak:
+`compact_country_divisions_land_combats_map_detail_weather_region_anchor_soak_speed5_20260630_v1`
+ran the same anchored 13-domain production-shaped bundle for 120 seconds. It
+advanced 222 game hours with 223 frame-end records, skipped 0 game hours, had
+full per-domain coverage, no parse/order/source/partial/bridge/worker failures,
+avg frame 22.113 ms, p95 24.463 ms, max 69.586 ms, 9,180,014 raw stream bytes,
+and an independently verified `.battleplan`. `divisions` observed 298,132 roots
+and emitted 69,187 changed rows with read p95 22.296 ms; `map_detail` observed
+3,232,162 rows with read p95 22.394 ms; `weather_live` observed 68,015 region
+rows with read p95 102 us.
+
+Division template-id scalar completion:
+`compact_country_divisions_template_id_speed5_20260630_v1` widened the compact
+`divisions` row with `template_id` from the validated
+`CDivision+0x3A8 -> CDivisionTemplate+0x0C` path, guarded by template vtable
+`module+0x29291D0`, type tag `52`, and a bounded nonzero id before emission.
+It covered the full 13-domain compact bundle, advanced 56 game hours with 57
+frame-end records, skipped 0 game hours, had full coverage, no parse/order/
+source/partial/bridge/worker failures, avg frame 22.930 ms, p95 25.829 ms, max
+72.687 ms, 3,025,600 raw stream bytes, and an independently verified
+`.battleplan`. A byte-level compact-stream audit found 19,222 division rows with
+the template flag and nonzero template ids, with 0 flag/value mismatches. This
+completes the scalar `template_id` part of division replay state on the current
+build; template catalog rows, per-division held-equipment inventory, exact
+manpower, assignment, and order geometry remain separate segments. Exact
+division manpower is not yet pinned and must not be called DLL-complete until a
+live CDivision manpower offset or a clearly labeled derived contract is proven.
+
 Earlier no-cold proof on the restarted vanilla process resolved 1898 division
 bodies and 417 still-live army bodies from cache, advanced 12 game hours in
 52.266 wall seconds, stored 13 verified hourly snapshots, and emitted raw

@@ -362,7 +362,12 @@ mod attach_log {
     const DIVISION_OFF_SUPPLY_GAIN: usize = 0x5F8;
     const DIVISION_OFF_CURRENT_SUPPLY: usize = 0x600;
     const DIVISION_OFF_FUEL: usize = 0x610;
+    const DIVISION_OFF_TEMPLATE: usize = 0x3A8;
     const DIVISION_MOVE_ORDER_OFF_SOURCE: usize = 0xA4;
+    const DIVISION_TEMPLATE_VTABLE_RVA: usize = 0x29291D0;
+    const DIVISION_TEMPLATE_TYPE: u32 = 52;
+    const DIVISION_TEMPLATE_OFF_TYPE: usize = 0x08;
+    const DIVISION_TEMPLATE_OFF_ID: usize = 0x0C;
     const MAX_DIVISION_BODY_BRIDGE_ROWS: usize = 20_000;
     const MAX_DIVISION_BODY_BRIDGE_PAYLOAD_BYTES: usize = 2 * 1024 * 1024;
     const MAX_DIVISION_BODY_BRIDGE_DIV_ID: u32 = i32::MAX as u32;
@@ -380,6 +385,7 @@ mod attach_log {
     const MAX_DIVISION_SUPPLY_RAW: u32 = 100_000_000;
     const MAX_DIVISION_SUPPLY_GAIN_RAW: u32 = 500_000;
     const MAX_DIVISION_FUEL_RAW: u32 = u32::MAX;
+    const MAX_DIVISION_TEMPLATE_ID: u32 = i32::MAX as u32;
     const DIVISION_DELTA_BUCKET_RAW: u32 = 1_000;
     const ARMY_VTABLE_RVA: usize = 0x292BEC0;
     const ARMY_TYPE: u32 = 53;
@@ -2762,6 +2768,7 @@ mod attach_log {
     const COMPACT_STATUS_PARTIAL_DATA: u32 = 1 << 9;
     const COMPACT_STATUS_DELTA_DATA: u32 = 1 << 10;
     const COMPACT_DIVISION_ROW_FLAG_DELETED: u32 = 1 << 12;
+    const COMPACT_DIVISION_ROW_FLAG_TEMPLATE: u32 = 1 << 13;
     const COMPACT_DIVISION_SAMPLE_MIN_ROWS: usize = 512;
     const COMPACT_DIVISION_SAMPLE_MAX_WORKERS: usize = 4;
     const COMPACT_MAP_DETAIL_SAMPLE_MIN_ROWS: usize = 512;
@@ -2946,6 +2953,7 @@ mod attach_log {
         in_combat: bool,
         owner_tag_db_id: Option<u32>,
         army_id: Option<u32>,
+        template_id: Option<u32>,
         raw_experience: Option<u32>,
         raw_max_supply: Option<u32>,
         raw_current_supply: Option<u32>,
@@ -3569,6 +3577,7 @@ mod attach_log {
             in_combat: combat_ref_count > 0,
             owner_tag_db_id,
             army_id,
+            template_id: read_division_template_id(module_base, body),
             raw_experience: read_division_fixed_raw(
                 body.checked_add(DIVISION_OFF_EXPERIENCE)?,
                 MAX_DIVISION_EXPERIENCE_RAW,
@@ -3598,6 +3607,25 @@ mod attach_log {
 
     fn valid_division_owner_tag_db_id(value: u32) -> Option<u32> {
         (value > 0 && value <= MAX_DIVISION_OWNER_TAG_DB_ID).then_some(value)
+    }
+
+    fn read_division_template_id(module_base: usize, body: usize) -> Option<u32> {
+        let template_ptr = read_u64(body.checked_add(DIVISION_OFF_TEMPLATE)?)? as usize;
+        if !is_map_control_heap_pointer(template_ptr) {
+            return None;
+        }
+        if read_u64(template_ptr)? as usize
+            != module_base.checked_add(DIVISION_TEMPLATE_VTABLE_RVA)?
+        {
+            return None;
+        }
+        if read_u32(template_ptr.checked_add(DIVISION_TEMPLATE_OFF_TYPE)?)?
+            != DIVISION_TEMPLATE_TYPE
+        {
+            return None;
+        }
+        let template_id = read_u32(template_ptr.checked_add(DIVISION_TEMPLATE_OFF_ID)?)?;
+        (template_id > 0 && template_id <= MAX_DIVISION_TEMPLATE_ID).then_some(template_id)
     }
 
     fn read_division_army_id(module_base: usize, body: usize) -> Option<u32> {
@@ -10213,6 +10241,7 @@ mod attach_log {
             in_combat: false,
             owner_tag_db_id: None,
             army_id: None,
+            template_id: None,
             raw_experience: None,
             raw_max_supply: None,
             raw_current_supply: None,
@@ -12673,6 +12702,9 @@ mod attach_log {
                 if sample.raw_fuel.is_some() {
                     flags |= 1 << 11;
                 }
+                if sample.template_id.is_some() {
+                    flags |= COMPACT_DIVISION_ROW_FLAG_TEMPLATE;
+                }
             }
             payload.extend_from_slice(&sample.div_id.to_le_bytes());
             payload.extend_from_slice(&DIVISION_TYPE.to_le_bytes());
@@ -12687,7 +12719,7 @@ mod attach_log {
             payload.extend_from_slice(&sample.raw_strength.to_le_bytes());
             payload.extend_from_slice(&sample.strength_bucket.to_le_bytes());
             payload.extend_from_slice(&sample.combat_ref_count.to_le_bytes());
-            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&sample.template_id.unwrap_or(0).to_le_bytes());
             payload.extend_from_slice(&sample.owner_tag_db_id.unwrap_or(0).to_le_bytes());
             payload.extend_from_slice(&sample.army_id.unwrap_or(0).to_le_bytes());
             payload.extend_from_slice(&sample.raw_experience.unwrap_or(0).to_le_bytes());
@@ -20661,6 +20693,7 @@ mod attach_log {
                     in_combat: true,
                     owner_tag_db_id: Some(47),
                     army_id: Some(2001),
+                    template_id: Some(3101),
                     raw_experience: Some(333_000),
                     raw_max_supply: Some(1_600_000),
                     raw_current_supply: Some(1_250_000),
@@ -20684,6 +20717,7 @@ mod attach_log {
                     in_combat: false,
                     owner_tag_db_id: Some(48),
                     army_id: None,
+                    template_id: None,
                     raw_experience: Some(0),
                     raw_max_supply: Some(1_200_000),
                     raw_current_supply: Some(1_200_000),
@@ -20720,7 +20754,7 @@ mod attach_log {
             );
             assert_eq!(
                 u32::from_le_bytes(payload[40..44].try_into().unwrap()),
-                0b1111_1111_1111
+                0b10_1111_1111_1111
             );
             assert_eq!(u32::from_le_bytes(payload[44..48].try_into().unwrap()), 118);
             assert_eq!(u32::from_le_bytes(payload[48..52].try_into().unwrap()), 118);
@@ -20735,6 +20769,10 @@ mod attach_log {
                 8_500_000
             );
             assert_eq!(u32::from_le_bytes(payload[80..84].try_into().unwrap()), 1);
+            assert_eq!(
+                u32::from_le_bytes(payload[84..88].try_into().unwrap()),
+                3101
+            );
             assert_eq!(u32::from_le_bytes(payload[88..92].try_into().unwrap()), 47);
             assert_eq!(
                 u32::from_le_bytes(payload[92..96].try_into().unwrap()),
@@ -20772,6 +20810,7 @@ mod attach_log {
                 u32::from_le_bytes(payload[152..156].try_into().unwrap()),
                 10_000_000
             );
+            assert_eq!(u32::from_le_bytes(payload[172..176].try_into().unwrap()), 0);
             assert_eq!(
                 u32::from_le_bytes(payload[176..180].try_into().unwrap()),
                 48
@@ -21415,6 +21454,7 @@ mod attach_log {
                 in_combat: false,
                 owner_tag_db_id: None,
                 army_id: None,
+                template_id: None,
                 raw_experience: None,
                 raw_max_supply: None,
                 raw_current_supply: None,
@@ -23113,6 +23153,7 @@ mod attach_log {
                 in_combat: true,
                 owner_tag_db_id: None,
                 army_id: None,
+                template_id: None,
                 raw_experience: None,
                 raw_max_supply: None,
                 raw_current_supply: None,
@@ -23185,6 +23226,7 @@ mod attach_log {
                 in_combat: true,
                 owner_tag_db_id: None,
                 army_id: None,
+                template_id: None,
                 raw_experience: None,
                 raw_max_supply: None,
                 raw_current_supply: None,

@@ -74,6 +74,8 @@ const COMPACT_MAX_DIVISION_SUPPLY_RAW: u32 = 100_000_000;
 const COMPACT_MAX_DIVISION_SUPPLY_GAIN_RAW: u32 = 500_000;
 const COMPACT_MAX_DIVISION_FUEL_RAW: u32 = u32::MAX;
 const COMPACT_DIVISION_ROW_FLAG_DELETED: u32 = 1 << 12;
+const COMPACT_DIVISION_ROW_FLAG_TEMPLATE: u32 = 1 << 13;
+const COMPACT_MAX_DIVISION_TEMPLATE_ID: u32 = i32::MAX as u32;
 const COMPACT_LAND_COMBAT_ROW_LEN: usize = 40;
 const COMPACT_LAND_COMBAT_PARTICIPANT_ROW_LEN: usize = 24;
 const COMPACT_LAND_COMBAT_MAX_PROVINCE_ID: u32 = 1_000_000;
@@ -2223,7 +2225,7 @@ fn decode_compact_divisions_data_payload(
         let strength_raw = read_u32_le(payload, cursor + 40);
         let _strength_bucket = read_u32_le(payload, cursor + 44);
         let combat_ref_count = read_u32_le(payload, cursor + 48);
-        let row_reserved = read_u32_le(payload, cursor + 52);
+        let template_id = read_u32_le(payload, cursor + 52);
         let owner_tag_db_id = read_u32_le(payload, cursor + 56);
         let army_id = read_u32_le(payload, cursor + 60);
         let experience_raw = read_u32_le(payload, cursor + 64);
@@ -2248,7 +2250,12 @@ fn decode_compact_divisions_data_payload(
                 "offset {offset}: divisions row {row_index} has div_type {div_type}"
             ));
         }
-        if flags & !(0b1111_1111_1111 | COMPACT_DIVISION_ROW_FLAG_DELETED) != 0 {
+        if flags
+            & !(0b1111_1111_1111
+                | COMPACT_DIVISION_ROW_FLAG_DELETED
+                | COMPACT_DIVISION_ROW_FLAG_TEMPLATE)
+            != 0
+        {
             summary.parse_errors.push(format!(
                 "offset {offset}: divisions row {row_index} has unknown flags {flags}"
             ));
@@ -2266,6 +2273,7 @@ fn decode_compact_divisions_data_payload(
         let has_current_supply = (flags & (1 << 9)) != 0;
         let has_supply_gain = (flags & (1 << 10)) != 0;
         let has_fuel = (flags & (1 << 11)) != 0;
+        let has_template = (flags & COMPACT_DIVISION_ROW_FLAG_TEMPLATE) != 0;
         if deleted {
             if flags != COMPACT_DIVISION_ROW_FLAG_DELETED {
                 summary.parse_errors.push(format!(
@@ -2282,7 +2290,7 @@ fn decode_compact_divisions_data_payload(
                 && strength_raw == 0
                 && _strength_bucket == 0
                 && combat_ref_count == 0
-                && row_reserved == 0
+                && template_id == 0
                 && owner_tag_db_id == 0
                 && army_id == 0
                 && experience_raw == 0
@@ -2368,11 +2376,16 @@ fn decode_compact_divisions_data_payload(
                 "offset {offset}: divisions row {row_index} is in combat without refs"
             ));
         }
-        if row_reserved != 0 {
-            summary.parse_errors.push(format!(
-                "offset {offset}: divisions row {row_index} reserved field is nonzero"
-            ));
-        }
+        validate_optional_compact_u32(
+            summary,
+            offset,
+            row_index,
+            has_template,
+            template_id,
+            1,
+            COMPACT_MAX_DIVISION_TEMPLATE_ID,
+            "template_id",
+        );
         validate_optional_compact_u32(
             summary,
             offset,
@@ -5001,6 +5014,7 @@ mod tests {
             strength,
             strength_bucket,
             combat_refs,
+            template_id,
             owner,
             army,
             experience,
@@ -5011,7 +5025,7 @@ mod tests {
         ) in [
             (
                 17u32,
-                0b1111_1111_1111u32,
+                0b10_1111_1111_1111u32,
                 118u32,
                 118u32,
                 117u32,
@@ -5022,6 +5036,7 @@ mod tests {
                 96_250_000u32,
                 96_250u32,
                 1u32,
+                3101u32,
                 47u32,
                 2001u32,
                 333_000u32,
@@ -5042,6 +5057,7 @@ mod tests {
                 10_000u32,
                 100_000_000u32,
                 100_000u32,
+                0u32,
                 0u32,
                 48u32,
                 0u32,
@@ -5065,7 +5081,7 @@ mod tests {
             payload.extend_from_slice(&strength.to_le_bytes());
             payload.extend_from_slice(&strength_bucket.to_le_bytes());
             payload.extend_from_slice(&combat_refs.to_le_bytes());
-            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&template_id.to_le_bytes());
             payload.extend_from_slice(&owner.to_le_bytes());
             payload.extend_from_slice(&army.to_le_bytes());
             payload.extend_from_slice(&experience.to_le_bytes());
@@ -5101,6 +5117,7 @@ mod tests {
             strength,
             strength_bucket,
             combat_refs,
+            template_id,
             owner,
             army,
             experience,
@@ -5111,7 +5128,7 @@ mod tests {
         ) in [
             (
                 17u32,
-                0b1111_1111_1111u32,
+                0b10_1111_1111_1111u32,
                 118u32,
                 118u32,
                 117u32,
@@ -5122,6 +5139,7 @@ mod tests {
                 96_250_000u32,
                 96_250u32,
                 1u32,
+                3101u32,
                 47u32,
                 2001u32,
                 333_000u32,
@@ -5133,6 +5151,7 @@ mod tests {
             (
                 18u32,
                 COMPACT_DIVISION_ROW_FLAG_DELETED,
+                0u32,
                 0u32,
                 0u32,
                 0u32,
@@ -5165,7 +5184,7 @@ mod tests {
             payload.extend_from_slice(&strength.to_le_bytes());
             payload.extend_from_slice(&strength_bucket.to_le_bytes());
             payload.extend_from_slice(&combat_refs.to_le_bytes());
-            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&template_id.to_le_bytes());
             payload.extend_from_slice(&owner.to_le_bytes());
             payload.extend_from_slice(&army.to_le_bytes());
             payload.extend_from_slice(&experience.to_le_bytes());

@@ -22,11 +22,12 @@ Current scope:
   closed with `SOURCE_UNAVAILABLE` if that root does not validate for a build.
   The current compact division row is 88 bytes and carries division id,
   location/source/target/progress, organisation/strength buckets,
-  combat-ref/in-combat state, owner tag-db id, parent army id, experience,
-  max/current supply, supply gain, and fuel. `divisions` emits a full baseline
-  and then compact delta/tombstone rows; perf records still report the full
-  observed division root count each frame. Large division root sets are sampled
-  by bounded internal DLL workers before ordered record emission.
+  combat-ref/in-combat state, owner tag-db id, parent army id, template id,
+  experience, max/current supply, supply gain, and fuel. `divisions` emits a
+  full baseline and then compact delta/tombstone rows; perf records still
+  report the full observed division root count each frame. Large division root
+  sets are sampled by bounded internal DLL workers before ordered record
+  emission.
   `map_control` emits a full baseline and then compact delta records; perf
   records still report the full observed state/province row counts each frame.
   `map_detail` covers `state_detail`/`buildings_live` as compact state-resource
@@ -389,6 +390,24 @@ gate has these live speed-five results:
   verify` pass. `weather_live` observed 17,385 region rows, emitted 396
   changed rows, and read at p95 87 us; `map_detail` observed 826,158 rows and
   read at p95 21.948 ms.
+- `compact_country_divisions_land_combats_map_detail_weather_region_anchor_soak_speed5_20260630_v1`:
+  passed a longer 120-second anchored 13-domain soak. It advanced 222 game
+  hours with 223 frame-end records, skipped 0 game hours, had full domain
+  coverage, no parse/order errors, no worker-panic, bridge-unavailable,
+  source-unavailable, or partial-data flags, avg frame 22.113 ms, p95 24.463
+  ms, max 69.586 ms, 9,180,014 raw stream bytes, and an independent
+  `pack_replay verify` pass. `divisions` observed 298,132 roots and emitted
+  69,187 changed rows with read p95 22.296 ms.
+- `compact_country_divisions_template_id_speed5_20260630_v1`: passed the full
+  13-domain compact bundle after widening `divisions` to read
+  `CDivision+0x3A8 -> CDivisionTemplate+0x0C` as `template_id`, guarded by the
+  template vtable `module+0x29291D0` and type tag `52`. It advanced 56 game
+  hours with 57 frame-end records, skipped 0 game hours, had full coverage, no
+  parse/order errors, no worker-panic, bridge-unavailable, source-unavailable,
+  or partial-data flags, avg frame 22.930 ms, p95 25.829 ms, max 72.687 ms,
+  3,025,600 raw stream bytes, and an independent `pack_replay verify` pass.
+  A byte-level stream audit confirmed 19,222 compact division rows carried the
+  template flag with nonzero template ids, with 0 flag/value mismatches.
 
 The extraction-only compact performance gate is green for the current
 production-shaped country-state domains and the native-root `divisions`,
@@ -406,12 +425,13 @@ state resource deposits and state/province building levels at hourly cadence on
 the current vanilla build. `divisions` is DLL/Rust compact-path complete for
 the current widened compact division row contract (division id, location,
 movement progress, movement source/target, org, strength, combat reference
-count, in-combat flag, owner tag-db id, parent army id, experience, supply, and
-fuel) on the current vanilla build, including compact baseline/delta rows and
-explicit delete/tombstone records. It now uses the anchored country
+count, in-combat flag, owner tag-db id, parent army id, template id, experience,
+supply, and fuel) on the current vanilla build, including compact baseline/delta
+rows and explicit delete/tombstone records. It now uses the anchored country
 unit-wrapper path and no longer needs Python preflight, saves, or heap/vtable
 scans for compact division body discovery. Wider division replay coverage still
-needs typed records for template/equipment/manpower/assignment/order details.
+needs typed records for the template catalog, per-division held equipment,
+exact manpower once pinned, assignment, and order geometry/details.
 `weather_live` now has a DLL/Rust compact region stream for raw phenomenon,
 boolean weather flags, intensity, active-modifier counts, next-change raw value,
 and region temperature inputs. It resolves `CWeatherManager` through
