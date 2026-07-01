@@ -16,16 +16,19 @@
 ## Current status note
 
 This is the product vision and architecture document, not the current completion
-ledger. Current status lives in:
+ledger. Current collector/data status lives in:
 
+- `replay_native/MASTER_EXTRACTION_CONTRACT.md`
 - `RECORDING_LAYER_COMPLETION_PLAN.md`
 - `IN_PROCESS_COLLECTOR_PLAN.md`
-- `replay_ui/MASTER_PROGRESS.md`
+- `replay/HOI4REPLAY_CONTAINER_SPEC.md`
 - `coverage_audit/memory_manifest.json`
 - `coverage_audit/COVERAGE_REPORT.md`
 
 Do not treat older build-status tables below as a remaining-work list unless
-they agree with the current master progress document and manifest.
+they agree with the current collector plan and manifest. The replay UI/map
+surface has been intentionally reset and is not represented by the historical
+progress documents.
 
 ---
 
@@ -66,7 +69,7 @@ Host running hoi4.exe (deterministic lockstep ⇒ the host holds the WHOLE world
                        |
        External recorder / .battleplan writer → Snapshot store → Diff engine
                        |
-          Native replay app — scrub state + browse events
+          Replacement replay surface — scrub state + browse events
 
 Optional development inputs, never required at runtime:
   - external read-only memory probes for research and comparison
@@ -83,15 +86,15 @@ pipe/shared-memory/file queue to an external recorder. It must not mutate game
 state, call unsafe game logic, or run heavy work inside hook callbacks.
 
 **External recorder** — owns durability, segment metadata, `.battleplan` writing,
-schema validation, skipped-hour diagnostics, and native-app compatibility. The
+schema validation, skipped-hour diagnostics, and replay-surface compatibility. The
 recorder is outside the game process so storage, compression, UI, and replay
 inspection cannot crash or stall HOI4.
 
 **Language split** — Rust owns the runtime path that must keep up with the game:
-the injected collector, bounded object reads, transport, backpressure, replay
-packing/reading, and the native UI. Python remains the research, oracle, profile,
-audit, and harness layer while the Rust runtime matures. Runtime speed-five
-capture must not depend on Python doing per-frame heap traversal.
+the injected collector, bounded object reads, transport, backpressure, and replay
+packing/reading. Python remains the research, oracle, profile, audit, and harness
+layer while the Rust runtime matures. Runtime speed-five capture must not depend
+on Python doing per-frame heap traversal.
 
 **Optional validators** — the existing external `ReadProcessMemory` readers and
 `save_oracle` parsers remain valuable for research, fixtures, and field validation.
@@ -368,7 +371,7 @@ Still open:
 
 All memory offsets in this snapshot were validated 1:1 against a time-aligned
 melt. Keep the evidence, but treat current progress and remaining work as living
-in `replay_ui/MASTER_PROGRESS.md` and the coverage manifest. Save-backed rows
+in `IN_PROCESS_COLLECTOR_PLAN.md` and the coverage manifest. Save-backed rows
 below are evidence that the field exists and has a known schema; they are not a
 runtime-source commitment. Every replay-critical row must either move to the
 live collector, be derived from live collector inputs, or remain explicitly
@@ -406,9 +409,9 @@ preflight bridges required.
 
 ### Historical build status (2026-06-24; superseded)
 
-The following snapshot is retained only as historical context. Current status is
-the native replay app state in the master progress document and coverage
-manifest named above.
+The following snapshot is retained only as historical context. Current
+collector/data status is tracked in the collector plan and coverage manifest
+named above. The replay UI/map surface has been reset since these notes.
 
 The old offline prototype stack once composed end-to-end (validate →
 ingest → snapshot store → diff/events → browser map preview), but that browser
@@ -423,9 +426,9 @@ runtime has been removed. The retained/current pieces are:
   validated and save-free. ✓
 - **`replay/`** — schema + store + diff engine (29 event types,
   no-fabrication gating), 77 tests. ✓
-- **Then in flight, now historical:** the old `replay_ui/` web front-end,
-  economy-to-TAG bridge work, and review fixes. Current native-app status is
-  tracked in the master progress document and coverage manifest named above.
+- **Then in flight, now historical:** the old deleted web front-end,
+  economy-to-TAG bridge work, and review fixes. The later native replay surface
+  has also been reset; new UI/map work should start from the real installed content.
 
 > **MP continuity / resilience** — how the replay stays continuous (and honest) across
 > disconnects, hotjoins, rehosts, crashes, desyncs, and rollbacks: see §11.

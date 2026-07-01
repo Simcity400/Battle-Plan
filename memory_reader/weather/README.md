@@ -11,8 +11,8 @@ weather. The melted save does persist realized weather:
 - region weather values such as temperature, next weather change, phenomenon
   flags, and `arctic_water`
 
-Current product status is in `../../replay_ui/MASTER_PROGRESS.md`; data evidence
-is in `../../coverage_audit/COVERAGE_REPORT.md`.
+Current collector/data status is in `../../IN_PROCESS_COLLECTOR_PLAN.md`; data
+evidence is in `../../coverage_audit/COVERAGE_REPORT.md`.
 
 ## Evidence
 

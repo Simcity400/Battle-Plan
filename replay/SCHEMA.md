@@ -1,6 +1,6 @@
 # Replay snapshot schema (canonical) — v1
 
-> **This is the contract.** The native app, recorder/container path, diff/event
+> **This is the contract.** The replay surface, recorder/container path, diff/event
 > engine, and validation tools all build against the shapes defined here. Field
 > names and nesting are stable; new fields are added optional/null, never renamed in place. The Python
 > mirror of this document is `replay/schema.py` (dataclasses + validators).

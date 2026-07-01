@@ -1,60 +1,45 @@
 # replay_native
 
-Native Rust/wgpu replay application for inspecting HOI4 recordings.
+Native support crates for the Battle Plan recorder foundation.
 
-The app is read-only: it opens snapshot stores or portable `.battleplan`
-recordings and presents captured game state through game-faithful UI surfaces. It
-does not write to HOI4, saves, or process memory.
-
-## Role
-
-This workspace owns the native app, rendering/runtime crates, view registry,
-host/input plumbing, and replay playback. See
-`../replay_ui/MASTER_PROGRESS.md` for current product status and acceptance
-gates.
-
-## Run
-
-From the repository root:
-
-```powershell
-cargo run --manifest-path replay_native/Cargo.toml --release -p app --bin replay_app
-```
-
-Useful targeted checks:
-
-```powershell
-cargo check --manifest-path replay_native/Cargo.toml -p app --bin replay_app
-cargo test --manifest-path replay_native/Cargo.toml -p app --no-fail-fast
-cargo test --manifest-path replay_native/Cargo.toml -p render overlay --lib --no-fail-fast
-cargo test --manifest-path replay_native/Cargo.toml -p assets --no-fail-fast
-cargo fmt --manifest-path replay_native/Cargo.toml --all --check
-```
+The previous Rust replay app, map renderer, GUI runtime, widgets, and binding
+crates were intentionally removed during the replay-surface reset. The remaining
+workspace keeps only the pieces needed by the DLL connector and portable replay
+container path.
 
 ## Crates
 
 | Crate | Role |
 | --- | --- |
-| `snapshot` | Snapshot-store and `.battleplan` reader/writer primitives. |
-| `assets` | Game asset, sprite, font, and DDS resolution. |
-| `render` | wgpu map, terrain, weather, overlay, and mode rendering. |
-| `gui_runtime` | Parsed `.gui` layout/runtime primitives. |
-| `bind` | Data binding and no-fabrication display atoms. |
-| `scrub` | Replay timeline/scrub support. |
-| `focus_tree` | Focus tree parsing/layout/render support. |
-| `combat_panel` | Combat model and panel rendering helpers. |
-| `widgets` | Reusable UI widgets and interaction primitives. |
 | `collector` | In-process collector DLL, no-op attach ABI, pipe heartbeat, and verified root probe. |
-| `app` | Window host, view registry, native app binary, screenshot harness. |
+| `map_viewer` | Rust-native HOI4 map bundle tooling and production D3D11 terrain replay backend. |
+| `snapshot` | Snapshot-store and `.battleplan` reader/writer primitives. |
+| `terrain_capture` | Rust-native D3D11 map-frame extraction contract for the production map renderer. |
 
-## Portable Recordings
+## Checks
 
-`.battleplan` files are ZIP containers with snapshots, identity metadata,
-integrity manifests, and optional signature slots. The app-side reader shares the
-same `Store` interface as directory snapshots, so portable recordings and local
-stores open through the same path.
+```powershell
+cargo test --manifest-path replay_native/Cargo.toml --workspace --no-fail-fast
+cargo fmt --manifest-path replay_native/Cargo.toml --all --check
+```
 
-Spec: `../replay_ui/HOI4REPLAY_CONTAINER_SPEC.md`.
+Map checkpoint commands:
+
+```powershell
+cargo run --manifest-path replay_native/Cargo.toml -p map_viewer -- bundle --game "<path-to-Hearts of Iron IV>" --force
+cargo run --manifest-path replay_native/Cargo.toml -p map_viewer -- render-terrain-d3d11 --map-frame-bundle "<capture-dir-or-map_frame_bundle.json>" --out terrain_native.r16g16b16a16_float
+cargo run --manifest-path replay_native/Cargo.toml -p map_viewer -- validate-water-map-frame --map-frame-bundle "<capture-dir-or-map_frame_water_pass_bundle.json>"
+cargo run --manifest-path replay_native/Cargo.toml -p map_viewer -- render-production-map-d3d11 --terrain-map-frame-bundle "<capture-dir-or-map_frame_bundle.json>" --water-map-frame-bundle "<capture-dir-or-map_frame_water_pass_bundle.json>" --rivers-map-frame-bundle "<capture-dir-or-map_frame_rivers_pass_bundle.json>" --borders-map-frame-bundle "<capture-dir-or-map_frame_borders_pass_bundle.json>" --trees-map-frame-bundle "<capture-dir-or-map_frame_trees_pass_bundle.json>" --camera-json production_camera.json --out map_native.raw
+```
+
+Production app code should load captured terrain with
+`map_viewer::NativeD3d11TerrainBundle::load(...)`, optional captured water with
+`map_viewer::NativeD3d11TerrainBundle::load_water(...)`, and optional captured
+map-layer bundles with `load_rivers(...)`, `load_borders(...)`, and
+`load_trees(...)`. `NativeD3d11TerrainRenderer::prepare_production_map_with_layers(...)`
+prepares the app-owned terrain-first pass graph and replays ready dependent
+passes into the same app-owned color/depth target with an app-owned camera. The
+CLI is a verification wrapper over that backend, not the app integration point.
 
 Reference pack/verify command:
 
@@ -62,10 +47,12 @@ Reference pack/verify command:
 cargo run --manifest-path replay_native/Cargo.toml -p snapshot --bin pack_replay -- verify out.battleplan replay/snapshots campaign
 ```
 
+Container spec: `../replay/HOI4REPLAY_CONTAINER_SPEC.md`.
+
 ## Guardrails
 
-- Missing captured data must render unavailable/badged, never fabricated.
-- Mutating HOI4 actions must be inert or disabled in the replay UI.
+- The collector remains observational: no game-state writes or mutating game
+  calls.
 - Generated screenshots, output captures, game art, and local recordings stay
   ignored.
 - Do not add personal paths or machine-specific install paths to tracked files.

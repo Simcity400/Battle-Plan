@@ -2,9 +2,9 @@
 
 Reads the game LAUNCHER config at capture time -- the `dlc_load.json` in the game
 user-data directory plus the `.mod` descriptors it enables -- and builds the
-`provenance.mod` ModSet that the native UI auto-matches against
-(GAME_UI_REPLICA_PLAN §K). This is read from the launcher config ON DISK, NOT from
-game memory and NOT from the melted save.
+`provenance.mod` ModSet that the replacement replay surface auto-matches against.
+This is read from the launcher config ON DISK, NOT from game memory and NOT from
+the melted save.
 
 Hard rules honoured here:
   * READ-ONLY. Opens files for reading only; never writes the game/mod/launcher.

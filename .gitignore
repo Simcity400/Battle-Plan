@@ -9,6 +9,9 @@ desktop.ini
 .DS_Store
 *.swp
 
+# Rust/Codex scratch output from repo-root commands
+/target/
+
 # backup assets (L7)
 *.old
 

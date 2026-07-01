@@ -4,10 +4,9 @@ Turns captured world-state records into a queryable **replay**: an ordered serie
 of canonical **snapshots** plus a derived **event timeline**. Pure offline
 Python, **stdlib only** — no game, no network, import-clean.
 
-This package is the backbone every capture and replay layer writes into. The
-native app reads the snapshot store and timeline produced here. Runtime capture
-is moving to in-process collector frames; save-oracle output remains a fixture
-and offline import path, not a live replay requirement.
+This package is the backbone every capture and replay layer writes into. Runtime
+capture is moving to in-process collector frames; save-oracle output remains a
+fixture and offline import path, not a live replay requirement.
 
 ## Files
 
@@ -50,7 +49,7 @@ replay/snapshots/<game_id>/
 ```
 
 Filenames are the zero-padded `hour_index`, so a lexical directory sort is
-chronological. `index.json` is the manifest the native scrubber iterates; each
+chronological. `index.json` is the manifest replay readers iterate; each
 snapshot file is self-contained and schema-valid (`store` refuses to write an
 invalid one). `unknown` is used for a snapshot whose date couldn't be parsed.
 

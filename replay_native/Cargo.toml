@@ -2,22 +2,17 @@
 resolver = "2"
 members = [
     "snapshot",
-    "assets",
-    "render",
-    "gui_runtime",
-    "bind",
-    "scrub",
-    "focus_tree",
-    "combat_panel",
-    "widgets",
     "collector",
     "recorder_host",
     "lanes/air_wings_variants_lifecycle_live",
     "lanes/scripted_state_flags_variables_live",
     "lanes/occupation_resistance_compliance_live",
-    "app",
+    "map_viewer",
+    "terrain_capture",
 ]
 
-# Native replay UI workspace. The original milestone labels are historical; the
-# current app has all engineering-DoD crates wired and product-parity work is
-# tracked in ../replay_ui/MASTER_PROGRESS.md.
+# Native replay support workspace.
+#
+# The previous replay app/map/UI crates were intentionally removed in the
+# replay-surface reset. New UI/map crates should be added explicitly when the
+# replacement surface is designed against the real installed content.

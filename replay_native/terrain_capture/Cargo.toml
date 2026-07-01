@@ -1,0 +1,37 @@
+[package]
+name = "terrain_capture"
+version = "0.1.0"
+edition = "2021"
+description = "Rust-native D3D11 TerrainIDMap extraction contract for the Battle Plan map renderer"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "terrain_capture_attach"
+path = "src/bin/terrain_capture_attach.rs"
+
+[dependencies]
+minhook = "0.9.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+winapi = { version = "0.3.9", features = [
+    "d3d11",
+    "d3d11shader",
+    "d3dcommon",
+    "dxgi",
+    "dxgiformat",
+    "guiddef",
+    "minwindef",
+    "unknwnbase",
+    "winerror",
+] }

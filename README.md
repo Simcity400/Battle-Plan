@@ -1,11 +1,11 @@
-# Battle Plan / Native Replay App
+# Battle Plan / Replay Recorder Foundation
 
 Private, read-only tooling for the owner's Hearts of Iron IV multiplayer group.
 
 The project started as an in-game stats mod plus browser dashboards. Those legacy
-surfaces have been removed. The active target is a native Rust/wgpu replay
-application that lets a viewer inspect a recorded HOI4 session like the real game
-UI, without any ability to mutate the game.
+surfaces have been removed. The previous native replay app, map renderer, and UI
+scaffolding have also been reset so the replay surface can be rebuilt from the
+real installed content instead of inherited mockups.
 
 Runtime replay capture is moving to a single authoritative live source:
 `hoi4.exe` -> in-process collector DLL -> compact raw/event/snapshot stream ->
@@ -19,17 +19,8 @@ recording loop. Any segment that still needs Python preflight/root discovery is
 temporary debt until that discovery moves into the DLL/Rust host or is proven to
 be one-time, bounded, cached, and outside recording.
 
-## Progress
-
-Current progress and remaining work are tracked only in
-[replay_ui/MASTER_PROGRESS.md](replay_ui/MASTER_PROGRESS.md). Keep status updates
-there, not in this README.
-
-## Run The Native Replay App
-
-```powershell
-cargo run --manifest-path replay_native/Cargo.toml --release -p app --bin replay_app
-```
+There is currently no replay UI/map app in-tree. The kept code is the
+collector/recorder/data foundation the replacement surface will consume.
 
 ## Useful Verification Commands
 
@@ -45,26 +36,25 @@ full-project signal.
 
 ## Source Of Truth
 
-- `replay_ui/MASTER_PROGRESS.md` - product parity status and remaining work
 - `IN_PROCESS_COLLECTOR_PLAN.md` - live collector implementation plan
+- `replay_native/MASTER_EXTRACTION_CONTRACT.md` - final recording-layer completion contract
 - `RECORDING_LAYER_COMPLETION_PLAN.md` - working plan for completing runtime recording coverage
+- `replay/HOI4REPLAY_CONTAINER_SPEC.md` - portable recording container format
 - `coverage_audit/memory_manifest.json` - data completeness row status
 - `coverage_audit/COVERAGE_REPORT.md` - readable data coverage report
-- `replay_ui/BINDING_MAP_COVERAGE.md` - UI binding inventory
 - `AGENTS.md` - current agent workflow rules
 
 ## Repo Map
 
 | Path | Purpose |
 | --- | --- |
-| `replay_native/` | Native Rust/wgpu replay app and rendering/runtime crates. |
-| `replay_native/recorder_host/` | Rust native host for DLL pipe capture and cadence manifests; production recorder spine under construction. |
-| `live_capture/` | Python development/proof harness, schema assembly, proof gates, and replay validation. Not production hot-loop extraction. |
+| `replay_native/` | Native collector DLL, Rust recorder host, extraction lanes, map viewer, terrain capture, and Rust snapshot/container support crates. |
+| `live_capture/` | Python development/proof harness, schema assembly, proof gates, recorder UI/CLI experiments, and replay validation. Not production hot-loop extraction. |
 | `memory_reader/` | Read-only process-memory readers and live extraction modules, now primarily research/validation inputs for the collector. |
 | `coverage_audit/` | Completeness manifest, report, and checker. |
 | `game_defs/` | Static HOI4 definition parsers. |
-| `replay/` | Snapshot schema, store, diff engine, and tests. |
-| `replay_ui/` | Master progress doc, binding maps, interaction inventory, and replay specs; no browser replay runtime remains here. |
+| `map_pipeline/` | Legacy static map JSON assets kept for existing recorder/research callers; new map generation lives in Rust. |
+| `replay/` | Snapshot schema, store, diff engine, container spec, and tests. |
 | `save_oracle/` | Development-only save parsing/oracle tooling used for fixtures, validation, and discovery. |
 
 ## Safety Rules

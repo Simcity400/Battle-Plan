@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""SCRIPTED-GUI element->variable map  (bucket-(c): the structural closure for
-the 38 scripted_gui / mod overlays — ``BINDING_MAP_scripted_gui_overlays.md``).
+"""SCRIPTED-GUI element->variable map for scripted GUI and mod overlays.
 
 For each ``scripted_gui = { <gui_name> = {...} }`` definition in the effective
 mod-over-vanilla ``common/scripted_guis/*.txt`` set, we extract the binding key

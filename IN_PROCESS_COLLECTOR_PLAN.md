@@ -16,8 +16,8 @@ recorder:
 - `collector.dll` lives inside `hoi4.exe`, hooks known safe update boundaries,
   reads live objects directly, and emits structured records.
 - The external recorder owns durability, schema validation, `.battleplan`
-  writing, compression, UI, diagnostics, and native-app compatibility.
-- The native replay app remains external and schema-driven.
+  writing, compression, UI, diagnostics, and replay-surface compatibility.
+- The replacement replay surface remains external and schema-driven.
 
 ## Non-Negotiables
 
@@ -231,7 +231,8 @@ Acceptance:
 - At intended multiplayer speed, hourly capture misses no scheduled hours, or
   every miss is represented in the `.battleplan` manifest.
 - Warm steady-state capture time is inside the selected budget.
-- The recorder can replay the result in the native app without save input.
+- The recorder can pack and verify the result without save input; the replacement
+  replay surface must consume the same container contract.
 
 ## Phase 5 - Domain Promotion
 
@@ -284,7 +285,7 @@ Tasks:
 - Add smoke tests for profile mismatch, hook failure, malformed transport, and
   torn snapshots.
 - Add a release checklist: build hash, mod checksum, domain sentinels, live
-  unpaused proof, native-app replay open.
+  unpaused proof, and replay-container verification.
 
 Acceptance:
 

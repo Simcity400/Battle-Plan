@@ -3,7 +3,7 @@
 Wires the live capture loop's durable directory store into a single, portable
 ``.battleplan`` container that a player can stop anytime and send to someone else.
 
-Design rule (replay_ui/HOI4REPLAY_CONTAINER_SPEC.md §6): the hot capture loop
+Design rule (replay/HOI4REPLAY_CONTAINER_SPEC.md §6): the hot capture loop
 keeps writing each hour into the **existing durable directory store** (atomic per
 file) -- we never turn it into a fragile ZIP-append loop. This module adds two
 things on top:

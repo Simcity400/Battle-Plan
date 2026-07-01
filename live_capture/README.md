@@ -22,8 +22,8 @@ proof gates, and `.battleplan` validation/writer integration. It may attach the
 DLL, run proof gates, validate manifests/replay files, and perform temporary
 bounded preflight discovery. It must not walk memory hourly/sub-hourly, own the
 production hot extraction loop, or be required to keep up with speed five. See
-`../replay_ui/MASTER_PROGRESS.md` for current product status and acceptance
-gates, and `../IN_PROCESS_COLLECTOR_PLAN.md` for the collector migration plan.
+`../IN_PROCESS_COLLECTOR_PLAN.md` for the collector migration plan and
+`../replay/HOI4REPLAY_CONTAINER_SPEC.md` for the portable recording format.
 
 ## Main Pieces
 
@@ -552,8 +552,9 @@ so stale workers and local file I/O cannot contaminate the timing signal.
 <root>/_continuity/<game_id>.lock
 ```
 
-Portable recordings are finalized as `.battleplan` containers and can be opened
-by the native app through the same snapshot-store interface.
+Portable recordings are finalized as `.battleplan` containers and are consumed
+through the same snapshot-store interface by whatever replay surface replaces
+the reset app.
 
 ## Safety
 

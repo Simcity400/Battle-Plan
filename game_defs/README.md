@@ -1,9 +1,9 @@
 # game_defs — mod-aware STATIC GAME-DATA parsers (binding-sweep bucket-(c))
 
 Parses the **effective mod-over-vanilla** installed content (`common/` + `events/` +
-`localisation/`) into structured JSON the native replay UI binds. This closes
-**bucket (c)** of `replay_ui/BINDING_MAP_COVERAGE.md` §4c — the *static
-definition / world data* the views need that isn't game state (memory) at all.
+`localisation/`) into structured JSON for the replacement replay surface. This
+provides the *static definition / world data* the views need that is not game
+state from memory at all.
 
 It works exactly like the existing focus-tree / GUI extraction: it **reuses**
 `game_assets/extract.py` (the audited Clausewitz mod-over-vanilla resolver:

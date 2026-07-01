@@ -1030,8 +1030,8 @@ class Provenance:
     # The ACTIVE MOD-SET this snapshot was captured under, read at CAPTURE time from
     # the host's the game launcher config (`dlc_load.json` + the `.mod` descriptors it
     # names) — NOT from game memory and NOT from the melted save. This is the
-    # per-replay MOD IDENTITY the native UI auto-matches against, so vanilla chrome
-    # is never rendered over a mod's replay (GAME_UI_REPLICA_PLAN §K).
+    # per-replay MOD IDENTITY the replacement replay surface auto-matches against,
+    # so vanilla chrome is never rendered over a mod's replay.
     #
     # NO FABRICATION (the cardinal rule): `mod` is `None` whenever no launcher
     # config was found (a SP/vanilla run, or capture without launcher-dir access) —
