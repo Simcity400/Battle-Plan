@@ -40,7 +40,7 @@ Status vocabulary:
 | 21 | `land_combats_live` | existing compact domain | land combat |
 | 22 | `map_control_live` | existing compact domain | map control |
 | 23 | `map_detail_live` | existing compact domain | map detail |
-| 24 | `weather_live` | validated slice: weather visual drivers; internals are computed/visual-parity open | weather visual drivers |
+| 24 | `weather_live` | validated slice: weather visual drivers plus sandstorm flag; enum/particle parity and internals open | weather visual drivers |
 | 26 | `division_equipment_live` | existing compact domain | divisions |
 | 27 | `army_orders_live` | existing compact domain | army orders |
 | 28 | `oob_command_live` | existing compact domain | army OOB |

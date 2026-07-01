@@ -375,6 +375,22 @@ const COMPACT_WEATHER_MAX_TEMPERATURE_RAW: i32 = 10_000_000;
 const COMPACT_WEATHER_MAX_TEMP_CHANGE_RAW: i32 = 10_000_000;
 const COMPACT_WEATHER_MAX_PRECIP_RAW: i32 = 100_000_000;
 const COMPACT_WEATHER_MAX_ACTIVE_MODIFIERS: u32 = 4_096;
+const COMPACT_WEATHER_REGION_FLAG_RAIN_LIGHT: u32 = 1;
+const COMPACT_WEATHER_REGION_FLAG_RAIN_HEAVY: u32 = 1 << 1;
+const COMPACT_WEATHER_REGION_FLAG_SNOW: u32 = 1 << 2;
+const COMPACT_WEATHER_REGION_FLAG_BLIZZARD: u32 = 1 << 3;
+const COMPACT_WEATHER_REGION_FLAG_ARCTIC_WATER: u32 = 1 << 4;
+const COMPACT_WEATHER_REGION_FLAG_ACTIVE_SIGNAL: u32 = 1 << 5;
+const COMPACT_WEATHER_REGION_FLAG_PHENOMENON_ACTIVE: u32 = 1 << 6;
+const COMPACT_WEATHER_REGION_FLAG_SANDSTORM: u32 = 1 << 7;
+const COMPACT_WEATHER_REGION_KNOWN_FLAGS: u32 = COMPACT_WEATHER_REGION_FLAG_RAIN_LIGHT
+    | COMPACT_WEATHER_REGION_FLAG_RAIN_HEAVY
+    | COMPACT_WEATHER_REGION_FLAG_SNOW
+    | COMPACT_WEATHER_REGION_FLAG_BLIZZARD
+    | COMPACT_WEATHER_REGION_FLAG_ARCTIC_WATER
+    | COMPACT_WEATHER_REGION_FLAG_ACTIVE_SIGNAL
+    | COMPACT_WEATHER_REGION_FLAG_PHENOMENON_ACTIVE
+    | COMPACT_WEATHER_REGION_FLAG_SANDSTORM;
 const COMPACT_WEATHER_PROVINCE_FLAG_TEMP_PRESENT: u32 = 1;
 const COMPACT_WEATHER_PROVINCE_FLAG_TEMP_CHANGE_PRESENT: u32 = 1 << 1;
 const COMPACT_WEATHER_PROVINCE_FLAG_WATER_PRESENT: u32 = 1 << 2;
@@ -9178,7 +9194,7 @@ fn decode_compact_weather_data_payload(
                 "offset {offset}: weather row {row_index} duplicates region_id {region_id}"
             ));
         }
-        if flags & !0x7f != 0 {
+        if flags & !COMPACT_WEATHER_REGION_KNOWN_FLAGS != 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: weather row {row_index} has unknown flags {flags}"
             ));
@@ -9218,6 +9234,9 @@ fn decode_compact_weather_data_payload(
             summary.parse_errors.push(format!(
                 "offset {offset}: weather row {row_index} has invalid active_modifier_count {active_modifier_count}"
             ));
+        }
+        if flags & COMPACT_WEATHER_REGION_FLAG_SANDSTORM != 0 {
+            add_compact_domain_data_unit(summary, 24, "weather_region_sandstorm_rows", 1);
         }
         if intensity > u8::MAX as u32 {
             summary.parse_errors.push(format!(
@@ -13299,6 +13318,38 @@ mod tests {
                 .copied(),
             Some(2)
         );
+        assert_eq!(
+            weather
+                .data_units_total
+                .get("weather_region_sandstorm_rows")
+                .copied(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn compact_summary_rejects_weather_region_unknown_flags() {
+        let mut payload = test_weather_visual_data_payload(COMPACT_STATUS_DELTA_DATA);
+        let first_region_flags = 48 + 4;
+        let bad_flags = COMPACT_WEATHER_REGION_KNOWN_FLAGS | (1 << 8);
+        payload[first_region_flags..first_region_flags + 4]
+            .copy_from_slice(&bad_flags.to_le_bytes());
+
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            24,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("unknown flags")));
     }
 
     #[test]
@@ -15311,7 +15362,10 @@ mod tests {
         payload.extend_from_slice(&0u32.to_le_bytes());
 
         payload.extend_from_slice(&31u32.to_le_bytes());
-        payload.extend_from_slice(&(1u32 | (1u32 << 5) | (1u32 << 6)).to_le_bytes());
+        payload.extend_from_slice(
+            &(1u32 | (1u32 << 5) | (1u32 << 6) | COMPACT_WEATHER_REGION_FLAG_SANDSTORM)
+                .to_le_bytes(),
+        );
         payload.extend_from_slice(&1_000_000i32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&43_817_520u32.to_le_bytes());
