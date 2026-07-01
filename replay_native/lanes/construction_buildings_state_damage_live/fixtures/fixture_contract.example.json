@@ -1,0 +1,60 @@
+{
+  "schema": "construction_buildings_state_damage_live_fixture_contract_v1",
+  "build_profile": "870ebf",
+  "game_hour_raw": 123,
+  "observed_country_roots": 87,
+  "observed_state_roots": 1081,
+  "observed_province_roots": 13275,
+  "requires": {
+    "construction_target_state": true,
+    "damaged_building": true
+  },
+  "construction_target_state_observations": [
+    {
+      "tag_db_id": 369,
+      "line_id": 114,
+      "priority": 0,
+      "template_id": 20013,
+      "active_factories": 15,
+      "cost_raw": 10000000,
+      "produced_raw": 5500000,
+      "expected_target_state_id": 42,
+      "candidate": {
+        "base": "sub",
+        "offset": "0x20",
+        "kind": "raw_province_id",
+        "raw_value": 2068,
+        "mapped_state_id": 42
+      }
+    }
+  ],
+  "damaged_building_observations": [
+    {
+      "scope": "state",
+      "location_id": 42,
+      "state_id": 42,
+      "type_id": 12123,
+      "level_at_0x40": 5,
+      "healthy_level_at_0x42": 4,
+      "expected_damaged": true,
+      "source": "fixture contract example; replace with live+save damaged-frame evidence before promotion"
+    },
+    {
+      "scope": "province",
+      "location_id": 2068,
+      "state_id": 42,
+      "type_id": 19649,
+      "level_at_0x40": 2,
+      "healthy_level_at_0x42": 2,
+      "expected_damaged": false,
+      "source": "fixture contract example undamaged control"
+    }
+  ],
+  "resource_observations": [
+    {
+      "state_id": 42,
+      "resource_id": 15875,
+      "amount_raw": 2500000
+    }
+  ]
+}

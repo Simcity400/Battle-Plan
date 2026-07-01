@@ -1,0 +1,32 @@
+{
+  "operation_detail": {
+    "build_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+    "same_tick_utc": "",
+    "owner_tag": "",
+    "target_tag_or_state": "",
+    "operation_token": "",
+    "operation_name": "",
+    "phase_or_progress": "",
+    "assigned_operative_ids": [],
+    "ui_or_save_operation_evidence": ""
+  },
+  "intel_map_percentages": {
+    "build_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+    "same_tick_utc": "",
+    "viewer_tag": "",
+    "target_tag": "",
+    "civilian_percent": null,
+    "army_percent": null,
+    "navy_percent": null,
+    "air_percent": null,
+    "ui_or_save_intel_evidence": ""
+  },
+  "incoming_action_queue": {
+    "build_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+    "same_tick_utc": "",
+    "actor_tag": "",
+    "target_tag": "",
+    "action_kind": "",
+    "visible_queue_evidence": ""
+  }
+}

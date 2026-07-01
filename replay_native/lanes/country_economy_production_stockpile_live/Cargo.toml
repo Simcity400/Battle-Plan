@@ -1,0 +1,18 @@
+[package]
+name = "country_economy_production_stockpile_live_lane"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[lib]
+name = "country_economy_production_stockpile_live_lane"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lane_proof"
+path = "src/bin/lane_proof.rs"
+
+[[bin]]
+name = "gap_report"
+path = "src/bin/gap_report.rs"

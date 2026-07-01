@@ -1,0 +1,24 @@
+[package]
+name = "characters_leaders_cabinet_live_lane"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+replay-verify = ["dep:snapshot"]
+
+[dependencies]
+snapshot = { path = "../../snapshot", optional = true }
+
+[[bin]]
+name = "appointed_fixture_gate"
+path = "src/bin/appointed_fixture_gate.rs"
+
+[[bin]]
+name = "replay_fixture_verify"
+path = "src/bin/replay_fixture_verify.rs"
+required-features = ["replay-verify"]
+
+[workspace]

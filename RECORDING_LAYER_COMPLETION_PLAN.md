@@ -55,6 +55,106 @@ Existing Python-backed `.battleplan` packing and session wrappers remain useful
 for development proof gates. They do not by themselves promote a segment to
 production-complete.
 
+## Subagent Lane Acceptance Rule
+
+Recording-layer subagents are production owners, not broad research scouts. A
+lane may be marked `COMPLETE` only when it measurably reduces the remaining
+production extraction backlog:
+
+- Production extraction shipped through the accepted path: DLL-only capture,
+  compact binary records, Rust recorder decode, `.battleplan` verification,
+  hourly-or-better at speed five/current equivalent, zero skipped game hours,
+  and no partial/source/worker/bridge failures.
+- A blocker was removed: an unknown root/path/offset became a validated
+  production path with exact offsets/functions/structures documented, so
+  implementation can proceed without more discovery.
+- A candidate was conclusively rejected with exact probe evidence that reduces
+  the search space and prevents repeat work.
+
+Do not accept broad read-only summaries, promising-but-unproven roots, "more
+research needed", "no compact records implemented yet", "could not verify due
+to time", or file-reading reports as complete. If an agent returns without
+reducing the backlog, send that same agent back to the same lane.
+
+Every report must state completion status, backlog reduction, exact backlog item
+removed or narrowed, files changed, roots/offsets/functions validated or
+rejected, compact schema changes, Rust decoder/gate changes, proof
+commands/results, DLL-only status, compact-stream status, Rust decode status,
+`.battleplan` verification, speed-five/hourly status, skipped-hour count, and
+any partial/source/worker/bridge failures.
+
+Lane implementation workflow:
+
+1. The orchestrator assigns final compact domain IDs up front in
+   `replay_native/DOMAIN_REGISTRY.md`.
+2. Build a lane-local mini production stack first: lane-owned DLL
+   collector/extractor module, compact record structs and encoder, lane-owned
+   Rust decoder/gate module, tests, live proof output, `.battleplan`
+   verification where possible, and a final registration patch plan.
+3. Keep lane code isolated from shared collector/recorder entrypoints. Shared
+   entrypoint edits are limited to explicit registration hooks into the one DLL
+   coordinator and Rust recorder.
+4. Return merge-ready production work. Research-only notes, file inventories,
+   broad "slot-ready" summaries, and packets that leave major
+   collector/recorder implementation to the orchestrator do not satisfy the
+   lane-owner contract.
+5. Merge-ready means the lane-owned path has already proven hourly-or-better
+   live capture at speed five/current equivalent, zero skipped game hours, no
+   partial/source/worker/bridge failures, and `.battleplan` verification where
+   possible.
+6. The orchestrator serializes registration hooks, reviews lane output, resolves
+   conflicts, runs combined proofs, and decides whether a lane can advance to
+   the next layer.
+7. If an agent performs large shared collector/recorder implementation instead
+   of lane-local module work, that is a workflow failure. The same agent must
+   move its lane implementation behind a lane-owned module/interface or return
+   an exact blocker before the lane can be accepted.
+
+Keep one injected DLL collector/coordinator. The modularization target is
+per-domain modules registered into that one DLL and recorder, not multiple DLLs
+or independent collectors.
+
+Retroactive current-lane status under this rule:
+
+| Lane | Status | Backlog impact required next |
+| --- | --- | --- |
+| `projects_live_hardening` | `COMPLETE` as production extraction shipped for anchored facilities/projects | Keep as regression gate while downstream scientist/progress lanes expand `projects_live`. |
+| `scientists_live` | `COMPLETE` as production extraction shipped | Keep the country-owned roster route as a regression gate; `CGameState+0x520/+0x524` is rejected for the current build. |
+| `project_progress_live` | `PARTIAL PRODUCTION SHIPPED / NOT COMPLETE` | State/progress/completed-bit rows are now production-proven inside `projects_live`; start/reward history remains fixture-blocked and must not be fabricated. |
+| `market_trade_live` | `ACTIVE / NOT COMPLETE` | Promote validated market/trade/licensing roots to compact records, or reject exact candidates with bounded proof evidence. |
+| `naval_combat_live` | `ACTIVE / NOT COMPLETE` | Promote naval combat lifecycle/member roots to compact records, or return an exact fixture/root blocker that narrows the search space. |
+| `air_combat_losses_live` | `ACTIVE / NOT COMPLETE` | Promote sortie/combat/loss/reinforcement capture to compact records, or conclusively reject exact candidate roots and document the remaining production path. |
+
+2026-07-01 production checkpoint:
+
+- Domain `41` `projects_live` now emits the validated project-state completed
+  bit through the DLL/Rust compact path. The collector writes payload extension
+  `4`; the final u32 in each 48-byte project-state row is `state_flags`, with
+  bit `0x1` meaning completed. The Rust decoder accepts old extension `3` as
+  reserved-zero and extension `4` as completed-bit aware, rejecting unknown
+  `state_flags` bits fail-closed.
+- Live proof:
+  `replay_native/runs/projects_live_completed_bit_integrated_20260701_v3`.
+  Command shape: `collector_record --pid 45880 --dll
+  replay_native\target\release\collector.dll --scheduled-domain projects_live
+  --stream-format compact --extraction-perf-gate --duration-s 45
+  --sample-ms 0 --min-game-hours 12`. Do not add
+  `--special-projects-scan` or `--lightweight-root-frame` for this proof: the
+  production route is the anchored country project-pool route, and lightweight
+  root frames hide the country identity it depends on.
+- Result: 82 compact project frames, 81 game hours advanced, 0 skipped hours,
+  compact stream decodable, domain coverage OK, no parse errors, no source,
+  partial, bridge, or worker failures, `.battleplan` verified. Domain-41 totals:
+  `project_facility_rows=1394`, `project_rows=902`,
+  `project_scientist_rows=10414`, `project_state_rows=1426390`,
+  `project_completed_state_rows=2542`, and
+  `project_breakthrough_rows=58220`.
+- Performance for that run: average frame time `263833 us`, p95 `287827 us`,
+  max `303777 us`; stream size `70168548` bytes and replay container
+  `5304315` bytes. This is production-feasible for the current speed-five
+  equivalent proof, but the large per-hour project-state payload should still be
+  delta-compressed before broad combined-domain soaks.
+
 ## Current Baseline
 
 The project already has several important pieces.

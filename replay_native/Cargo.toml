@@ -12,6 +12,7 @@ members = [
     "widgets",
     "collector",
     "recorder_host",
+    "lanes/air_wings_variants_lifecycle_live",
     "app",
 ]
 

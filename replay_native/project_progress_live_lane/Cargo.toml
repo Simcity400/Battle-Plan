@@ -1,0 +1,20 @@
+[package]
+name = "project_progress_live_lane"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "project_progress_lane_proof"
+path = "src/bin/proof_from_probe.rs"
+
+[[bin]]
+name = "project_progress_residual_proof"
+path = "src/bin/residual_proof.rs"
+
+[dependencies]
+serde_json = "1"

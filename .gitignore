@@ -28,6 +28,13 @@ replay/snapshots/
 #     via the demo/app binaries) — never commit ---
 replay_native/*/out/
 
+# Native collector/recorder proof outputs and ad hoc cargo target dirs.
+replay_native/runs/
+replay_native/target*/
+replay_native/**/target/
+replay_native/**/proof_out/
+*.pdb
+
 # --- Scratch / RE scan working dir (incl. crack_archive/: archived one-shot RE
 #     scratch scripts; may contain local machine/Ghidra paths -> never commit) ---
 re_scratch/

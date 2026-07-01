@@ -1,0 +1,18 @@
+[package]
+name = "diplomacy_intel_operatives_live"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[lib]
+name = "diplomacy_intel_operatives_live"
+path = "src/lib.rs"
+
+[dependencies]
+serde_json = "1"
+snapshot = { path = "../../snapshot" }
+
+[[bin]]
+name = "domain53_proof"
+path = "src/bin/domain53_proof.rs"

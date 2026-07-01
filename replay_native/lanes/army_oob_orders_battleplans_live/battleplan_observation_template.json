@@ -1,0 +1,60 @@
+{
+  "capture": {
+    "bridge_unavailable": false,
+    "compact_stream": true,
+    "dll_only": true,
+    "game_hours_advanced": 1,
+    "hoi4replay_verified": true,
+    "max_frame_hour_gap": 1,
+    "no_failures": true,
+    "partial_data": false,
+    "rust_decoded": true,
+    "source_unavailable": false,
+    "worker_panic": false,
+    "zero_skipped_hours": true
+  },
+  "exe_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+  "observations": [
+    {
+      "after": {
+        "value": []
+      },
+      "army_id": 0,
+      "before": {
+        "value": []
+      },
+      "candidate": "+0x70",
+      "field_name": "province_path",
+      "field_type": "vec<u32>",
+      "kind": "geometry",
+      "operator_action": "redraw_non_type5_order",
+      "order_generation": 1,
+      "order_type": 2,
+      "slot_index": 0,
+      "source_kind": "live_fixture"
+    },
+    {
+      "after": {
+        "value": 1
+      },
+      "army_id": 0,
+      "before": {
+        "value": 0
+      },
+      "candidate": "+0x150",
+      "field_name": "is_executing",
+      "field_type": "u8",
+      "kind": "execution",
+      "operator_action": "toggle_battleplan_execution",
+      "order_generation": 1,
+      "order_type": 2,
+      "slot_index": 0,
+      "source_kind": "live_fixture"
+    }
+  ],
+  "operator_actions": [
+    "redraw_non_type5_order",
+    "toggle_battleplan_execution"
+  ],
+  "schema": "army_oob_orders_battleplans_observation_v1"
+}

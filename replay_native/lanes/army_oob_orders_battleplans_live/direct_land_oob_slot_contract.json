@@ -1,0 +1,69 @@
+{
+  "schema": "direct_land_oob_integration_slot_v1",
+  "direct_root_proof_json": "../../runs/army_oob_orders_battleplans_live_direct_oob_870ebf_20260701_v1/direct_oob_probe.json",
+  "proof_minimums": {
+    "direct_armies": 660,
+    "empty_or_inactive_direct_armies": 8,
+    "theatres": 97
+  },
+  "compact_schema_source": "direct_oob_compact.rs",
+  "compact_schema": {
+    "domain_id": 44,
+    "header_len": 32,
+    "row_len": 64,
+    "member_row_len": 8,
+    "kinds": {
+      "army": 1,
+      "army_group": 2,
+      "theatre": 5
+    },
+    "status_codes": {
+      "none": 0,
+      "exact": 1,
+      "unknown": 2,
+      "overflow": 3,
+      "validation_failed": 4,
+      "cold_preflight_only": 5
+    }
+  },
+  "collector_slot": {
+    "shared_entrypoint_slot_required": true,
+    "root_refresh_mode": "bounded_preflight_cache_refresh",
+    "bounded_root_refresh": true,
+    "hot_loop_heap_sweep": false,
+    "fail_closed_on_layout_mismatch": true,
+    "future_isolated_module": "replay_native/collector/src/lanes/army_oob_orders_battleplans_live/direct_land_oob.rs",
+    "future_schedule_domain": "direct_land_oob",
+    "reuse_validated_roots": [
+      "CArmy vtable MODULE+0x293BC60, handle type 53",
+      "army-group vtable MODULE+0x293BCF8, handle type 53",
+      "theatre vtable MODULE+0x295EE18, handle type 67",
+      "CDivision vtable MODULE+0x2943CB0, parent CArmy at +0xB0"
+    ],
+    "owner_boundary": "consume division ids, owner tag-db ids, and CArmy parent joins only; do not emit division scalar or movement state"
+  },
+  "recorder_slot": {
+    "additive_domain_only": true,
+    "do_not_change_domains": [
+      27,
+      28
+    ],
+    "future_decoder": "decode direct_land_oob domain 44 with direct_oob_compact.rs row contract",
+    "future_manifest_counters": [
+      "direct_land_oob_rows",
+      "direct_land_oob_armies",
+      "direct_land_oob_army_groups",
+      "direct_land_oob_theatres",
+      "direct_land_oob_member_rows"
+    ]
+  },
+  "required_post_slot_gates": [
+    "direct_land_oob_compact_decode",
+    "compact_stream_ordered",
+    "hourly_or_lower_frame_coverage",
+    "one_data_record_per_scheduled_domain_per_frame",
+    "hoi4replay_verify",
+    "zero_skipped_hours",
+    "no_source_partial_bridge_worker_failures"
+  ]
+}

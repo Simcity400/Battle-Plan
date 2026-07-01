@@ -1,0 +1,2354 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+pub const DOMAIN_ID: u16 = 45;
+pub const DOMAIN_NAME: &str = "focus_research_decisions_depth_live";
+
+const H4CR_MAGIC: &[u8; 4] = b"H4CR";
+const H4CR_VERSION: u16 = 1;
+const H4CR_HEADER_LEN: usize = 32;
+const RECORD_TYPE_DOMAIN_DATA: u16 = 3;
+const RECORD_TYPE_FRAME_END: u16 = 2;
+const DOMAIN_FOCUS: u16 = 12;
+const DOMAIN_TECH: u16 = 13;
+const DOMAIN_DECISIONS: u16 = 16;
+const DOMAIN_FRAME: u16 = 1000;
+
+const DEPTH_HEADER_LEN: usize = 48;
+const RESEARCH_ETA_ROW_LEN: usize = 80;
+const DECISION_STATUS_ROW_LEN: usize = 28;
+const BADGE_ROW_FIXED_LEN: usize = 20;
+
+const DEPTH_STATUS_FOCUS_PAUSE_BADGED: u32 = 1;
+const DEPTH_STATUS_DECISION_TARGETS_BADGED: u32 = 1 << 1;
+const DEPTH_STATUS_DIRECT_EVENTS_DERIVED: u32 = 1 << 2;
+const DEPTH_STATUS_KNOWN_MASK: u32 = DEPTH_STATUS_FOCUS_PAUSE_BADGED
+    | DEPTH_STATUS_DECISION_TARGETS_BADGED
+    | DEPTH_STATUS_DIRECT_EVENTS_DERIVED;
+
+const BADGE_KIND_FOCUS_PAUSE_FAIL_CLOSED: u32 = 1;
+const BADGE_KIND_DECISION_TARGET_FIELDS_FAIL_CLOSED: u32 = 2;
+const BADGE_KIND_DIRECT_EVENT_HOOKS_UNAVAILABLE: u32 = 3;
+const BADGE_KIND_MAX: u32 = BADGE_KIND_DIRECT_EVENT_HOOKS_UNAVAILABLE;
+
+const BADGE_FLAG_FAIL_CLOSED: u32 = 1;
+const BADGE_FLAG_DERIVED_DETERMINISTIC: u32 = 1 << 1;
+const BADGE_FLAG_CURRENT_BUILD_PROBED: u32 = 1 << 2;
+const BADGE_FLAG_KNOWN_MASK: u32 =
+    BADGE_FLAG_FAIL_CLOSED | BADGE_FLAG_DERIVED_DETERMINISTIC | BADGE_FLAG_CURRENT_BUILD_PROBED;
+
+const BADGE_EVIDENCE_NO_PAUSED_TRUE_GROUND_TRUTH: u32 = 1;
+const BADGE_EVIDENCE_TIMED_DEFINITION_LAYOUT_REJECTED: u32 = 2;
+const BADGE_EVIDENCE_COMPACT_FRAME_DELTA_DERIVED: u32 = 3;
+
+const BADGE_DETAIL_FOCUS_PAUSE_FAIL_CLOSED: &str =
+    "focus_pause_flag_fail_closed_no_paused_true_ground_truth";
+const BADGE_DETAIL_DECISION_TARGET_FIELDS_FAIL_CLOSED: &str =
+    "decision_target_fields_fail_closed_body_layout_unvalidated";
+const BADGE_DETAIL_DIRECT_EVENT_HOOKS_UNAVAILABLE: &str =
+    "direct_event_hooks_unavailable_transitions_derived_from_compact_frames";
+
+const FOCUS_EVENT_COMPLETED_COUNT_INCREASED: u32 = 1;
+const FOCUS_EVENT_CURRENT_STARTED: u32 = 2;
+const FOCUS_EVENT_CURRENT_STOPPED: u32 = 3;
+const FOCUS_EVENT_CURRENT_CHANGED: u32 = 4;
+const FOCUS_EVENT_PROGRESS_REGRESSED: u32 = 5;
+const FOCUS_EVENT_INVALID_BOTH_CURRENT_TYPES: u32 = 6;
+
+const FOCUS_KIND_NATIONAL: u32 = 1;
+const FOCUS_KIND_CONTINUOUS: u32 = 2;
+
+const FOCUS_FLAG_COMPLETED_TOKEN_INFERRED: u32 = 1;
+const FOCUS_FLAG_COMPLETED_TOKEN_EXACT: u32 = 1 << 1;
+
+const RESEARCH_FLAG_SAME_TECH: u32 = 1;
+const RESEARCH_FLAG_POSITIVE_SPEED: u32 = 1 << 1;
+const RESEARCH_FLAG_ETA_AVAILABLE: u32 = 1 << 2;
+const RESEARCH_FLAG_TECH_ROLLOVER: u32 = 1 << 3;
+const RESEARCH_FLAG_NEGATIVE_DELTA: u32 = 1 << 4;
+const RESEARCH_FLAG_BASE_PRESENT: u32 = 1 << 5;
+
+const DECISION_EVENT_STARTED: u32 = 1;
+const DECISION_EVENT_STOPPED: u32 = 2;
+const DECISION_EVENT_DAY_DELTA: u32 = 3;
+const DECISION_EVENT_STATE_CHANGED: u32 = 4;
+const DECISION_EVENT_STATUS_COUNTS_CHANGED: u32 = 5;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DepthGateSummary {
+    pub data_records: u64,
+    pub focus_event_rows: u64,
+    pub research_eta_rows: u64,
+    pub decision_status_rows: u64,
+    pub decision_event_rows: u64,
+    pub badge_rows: u64,
+    pub focus_pause_badge_rows: u64,
+    pub decision_target_badge_rows: u64,
+    pub direct_event_badge_rows: u64,
+    pub parse_errors: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct DepthProof {
+    pub depth_stream: Vec<u8>,
+    pub source_bytes: usize,
+    pub source_records: u64,
+    pub source_frames: u64,
+    pub first_game_hour_raw: Option<i32>,
+    pub last_game_hour_raw: Option<i32>,
+    pub game_hours_advanced: i32,
+    pub skipped_game_hours: u32,
+    pub focus_data_records: u64,
+    pub tech_data_records: u64,
+    pub decisions_data_records: u64,
+    pub source_focus_rows: u64,
+    pub source_research_slot_rows: u64,
+    pub source_decision_country_rows: u64,
+    pub source_timed_decision_rows: u64,
+    pub depth_data_records: u64,
+    pub focus_event_rows: u64,
+    pub research_eta_rows: u64,
+    pub decision_status_rows: u64,
+    pub decision_event_rows: u64,
+    pub badge_rows: u64,
+    pub focus_pause_badge_rows: u64,
+    pub decision_target_badge_rows: u64,
+    pub direct_event_badge_rows: u64,
+    pub parse_errors: Vec<String>,
+    pub depth_parse_errors: Vec<String>,
+    sample_events: Vec<String>,
+}
+
+impl DepthProof {
+    pub fn manifest_json(&self, source_stream: &str) -> String {
+        let parse_errors = json_string_array(&self.parse_errors);
+        let depth_parse_errors = json_string_array(&self.depth_parse_errors);
+        format!(
+            concat!(
+                "{{\n",
+                "  \"lane\": \"{lane}\",\n",
+                "  \"provisional_domain_id\": {domain_id},\n",
+                "  \"source_stream\": {source_stream},\n",
+                "  \"source_bytes\": {source_bytes},\n",
+                "  \"source_records\": {source_records},\n",
+                "  \"source_frames\": {source_frames},\n",
+                "  \"first_game_hour_raw\": {first_hour},\n",
+                "  \"last_game_hour_raw\": {last_hour},\n",
+                "  \"game_hours_advanced\": {advanced},\n",
+                "  \"skipped_game_hours\": {skipped},\n",
+                "  \"base_domain_data_records\": {{\n",
+                "    \"focus_live\": {focus_records},\n",
+                "    \"tech_live\": {tech_records},\n",
+                "    \"decisions_live\": {decision_records}\n",
+                "  }},\n",
+                "  \"base_payload_rows\": {{\n",
+                "    \"focus_country_rows\": {source_focus_rows},\n",
+                "    \"active_research_slot_rows\": {source_research_slot_rows},\n",
+                "    \"decision_country_rows\": {source_decision_country_rows},\n",
+                "    \"timed_decision_rows\": {source_timed_decision_rows}\n",
+                "  }},\n",
+                "  \"depth_output\": {{\n",
+                "    \"bytes\": {depth_bytes},\n",
+                "    \"data_records\": {depth_records},\n",
+                "    \"focus_event_rows\": {focus_event_rows},\n",
+                "    \"research_eta_rows\": {research_eta_rows},\n",
+                "    \"decision_status_rows\": {decision_status_rows},\n",
+                "    \"decision_event_rows\": {decision_event_rows},\n",
+                "    \"badge_rows\": {badge_rows},\n",
+                "    \"badge_rows_by_kind\": {{\n",
+                "      \"focus_pause_fail_closed\": {focus_pause_badge_rows},\n",
+                "      \"decision_target_fields_fail_closed\": {decision_target_badge_rows},\n",
+                "      \"direct_event_hooks_unavailable\": {direct_event_badge_rows}\n",
+                "    }}\n",
+                "  }},\n",
+                "  \"gate\": {{\n",
+                "    \"source_parse_errors\": {parse_errors},\n",
+                "    \"depth_parse_errors\": {depth_parse_errors},\n",
+                "    \"ok\": {ok}\n",
+                "  }}\n",
+                "}}\n"
+            ),
+            lane = DOMAIN_NAME,
+            domain_id = DOMAIN_ID,
+            source_stream = json_str(source_stream),
+            source_bytes = self.source_bytes,
+            source_records = self.source_records,
+            source_frames = self.source_frames,
+            first_hour = json_i32(self.first_game_hour_raw),
+            last_hour = json_i32(self.last_game_hour_raw),
+            advanced = self.game_hours_advanced,
+            skipped = self.skipped_game_hours,
+            focus_records = self.focus_data_records,
+            tech_records = self.tech_data_records,
+            decision_records = self.decisions_data_records,
+            source_focus_rows = self.source_focus_rows,
+            source_research_slot_rows = self.source_research_slot_rows,
+            source_decision_country_rows = self.source_decision_country_rows,
+            source_timed_decision_rows = self.source_timed_decision_rows,
+            depth_bytes = self.depth_stream.len(),
+            depth_records = self.depth_data_records,
+            focus_event_rows = self.focus_event_rows,
+            research_eta_rows = self.research_eta_rows,
+            decision_status_rows = self.decision_status_rows,
+            decision_event_rows = self.decision_event_rows,
+            badge_rows = self.badge_rows,
+            focus_pause_badge_rows = self.focus_pause_badge_rows,
+            decision_target_badge_rows = self.decision_target_badge_rows,
+            direct_event_badge_rows = self.direct_event_badge_rows,
+            parse_errors = parse_errors,
+            depth_parse_errors = depth_parse_errors,
+            ok = self.parse_errors.is_empty() && self.depth_parse_errors.is_empty(),
+        )
+    }
+
+    pub fn sample_events_jsonl(&self) -> String {
+        let mut out = String::new();
+        for line in &self.sample_events {
+            out.push_str(line);
+            out.push('\n');
+        }
+        out
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FocusState {
+    pub tag_db_id: u32,
+    pub completed_count: Option<u32>,
+    pub progress_raw: Option<i32>,
+    pub current: Option<String>,
+    pub current_continuous: Option<String>,
+    pub completed_tokens: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResearchSlotState {
+    pub tag_db_id: u32,
+    pub slot_index: u32,
+    pub tech_handle_raw: u32,
+    pub tech_def_index_raw: u32,
+    pub progress_raw: u32,
+    pub live_progress_raw: Option<i64>,
+    pub base_required_points_raw: Option<i64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DecisionCountryState {
+    pub tag_db_id: u32,
+    pub active_timed_count: u32,
+    pub targeted_count: u32,
+    pub targeted_timed_count: u32,
+    pub decisions_taken_bucket_count: u32,
+    pub re_enable_count: u32,
+    pub timed_live: Vec<TimedDecisionState>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimedDecisionState {
+    pub tag_db_id: u32,
+    pub decision: String,
+    pub days: i32,
+    pub state: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FocusEventRow {
+    pub tag_db_id: u32,
+    pub kind: u32,
+    pub focus_kind: u32,
+    pub flags: u32,
+    pub previous_completed_count: u32,
+    pub current_completed_count: u32,
+    pub previous_progress_raw: i32,
+    pub current_progress_raw: i32,
+    pub completed_delta: u32,
+    pub from_token: Option<String>,
+    pub to_token: Option<String>,
+    pub completed_token: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResearchEtaRow {
+    pub tag_db_id: u32,
+    pub slot_index: u32,
+    pub flags: u32,
+    pub hour_delta: u32,
+    pub previous_tech_handle: u32,
+    pub current_tech_handle: u32,
+    pub previous_tech_def_index: u32,
+    pub current_tech_def_index: u32,
+    pub previous_live_progress_raw: i64,
+    pub current_live_progress_raw: i64,
+    pub delta_live_progress_raw: i64,
+    pub speed_raw_per_hour: i64,
+    pub base_required_points_raw: i64,
+    pub eta_hours: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DecisionStatusRow {
+    pub tag_db_id: u32,
+    pub active_timed_count: u32,
+    pub targeted_count: u32,
+    pub targeted_timed_count: u32,
+    pub decisions_taken_bucket_count: u32,
+    pub re_enable_count: u32,
+    pub timed_live_count: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DecisionEventRow {
+    pub tag_db_id: u32,
+    pub kind: u32,
+    pub flags: u32,
+    pub previous_days: i32,
+    pub current_days: i32,
+    pub previous_state: i32,
+    pub current_state: i32,
+    pub decision: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BadgeRow {
+    pub kind: u32,
+    pub flags: u32,
+    pub source_domain_id: u32,
+    pub affected_count: u32,
+    pub evidence_code: u32,
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DepthFrameRows {
+    pub status_flags: u32,
+    pub focus_events: Vec<FocusEventRow>,
+    pub research_eta: Vec<ResearchEtaRow>,
+    pub decision_status: Vec<DecisionStatusRow>,
+    pub decision_events: Vec<DecisionEventRow>,
+    pub badges: Vec<BadgeRow>,
+    pub observed_focus_rows: u32,
+    pub observed_research_slot_rows: u32,
+    pub observed_decision_rows: u32,
+    pub observed_timed_decision_rows: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FocusTrackerState {
+    game_hour_raw: i32,
+    state: FocusState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ResearchTrackerState {
+    game_hour_raw: i32,
+    state: ResearchSlotState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DecisionTrackerState {
+    state: DecisionCountryState,
+}
+
+#[derive(Default)]
+struct Deriver {
+    focus_by_tag: BTreeMap<u32, FocusTrackerState>,
+    research_by_slot: BTreeMap<(u32, u32), ResearchTrackerState>,
+    decision_by_tag: BTreeMap<u32, DecisionTrackerState>,
+    pending: DepthFrameRows,
+    samples: Vec<String>,
+    sample_limit: usize,
+}
+
+impl Deriver {
+    fn new() -> Self {
+        Self {
+            sample_limit: 80,
+            ..Self::default()
+        }
+    }
+
+    fn apply_focus_rows(&mut self, game_hour_raw: i32, rows: Vec<FocusState>) {
+        self.pending.observed_focus_rows = self
+            .pending
+            .observed_focus_rows
+            .saturating_add(rows.len().min(u32::MAX as usize) as u32);
+        for state in rows {
+            let tag_db_id = state.tag_db_id;
+            if state.current.is_some() && state.current_continuous.is_some() {
+                self.push_focus_event(
+                    game_hour_raw,
+                    FocusEventRow {
+                        tag_db_id,
+                        kind: FOCUS_EVENT_INVALID_BOTH_CURRENT_TYPES,
+                        focus_kind: 0,
+                        flags: 0,
+                        previous_completed_count: u32::MAX,
+                        current_completed_count: state.completed_count.unwrap_or(u32::MAX),
+                        previous_progress_raw: 0,
+                        current_progress_raw: state.progress_raw.unwrap_or(0),
+                        completed_delta: 0,
+                        from_token: state.current.clone(),
+                        to_token: state.current_continuous.clone(),
+                        completed_token: None,
+                    },
+                );
+            }
+            if let Some(previous) = self.focus_by_tag.get(&tag_db_id).cloned() {
+                self.derive_focus_events(game_hour_raw, &previous.state, &state);
+            }
+            self.focus_by_tag.insert(
+                tag_db_id,
+                FocusTrackerState {
+                    game_hour_raw,
+                    state,
+                },
+            );
+        }
+    }
+
+    fn derive_focus_events(
+        &mut self,
+        game_hour_raw: i32,
+        previous: &FocusState,
+        current: &FocusState,
+    ) {
+        let prev_active = active_focus(previous);
+        let curr_active = active_focus(current);
+        let prev_completed = previous.completed_count.unwrap_or(u32::MAX);
+        let curr_completed = current.completed_count.unwrap_or(u32::MAX);
+        if prev_completed != u32::MAX
+            && curr_completed != u32::MAX
+            && curr_completed > prev_completed
+        {
+            let completed_delta = curr_completed.saturating_sub(prev_completed);
+            let exact_completed = current
+                .completed_tokens
+                .iter()
+                .find(|token| !previous.completed_tokens.contains(*token))
+                .cloned();
+            let inferred_completed = exact_completed
+                .clone()
+                .or_else(|| prev_active.as_ref().map(|(_, token)| token.clone()));
+            let mut flags = 0;
+            if exact_completed.is_some() {
+                flags |= FOCUS_FLAG_COMPLETED_TOKEN_EXACT;
+            } else if inferred_completed.is_some() {
+                flags |= FOCUS_FLAG_COMPLETED_TOKEN_INFERRED;
+            }
+            self.push_focus_event(
+                game_hour_raw,
+                FocusEventRow {
+                    tag_db_id: current.tag_db_id,
+                    kind: FOCUS_EVENT_COMPLETED_COUNT_INCREASED,
+                    focus_kind: prev_active
+                        .as_ref()
+                        .map(|(kind, _)| *kind)
+                        .or_else(|| curr_active.as_ref().map(|(kind, _)| *kind))
+                        .unwrap_or(0),
+                    flags,
+                    previous_completed_count: prev_completed,
+                    current_completed_count: curr_completed,
+                    previous_progress_raw: previous.progress_raw.unwrap_or(0),
+                    current_progress_raw: current.progress_raw.unwrap_or(0),
+                    completed_delta,
+                    from_token: prev_active.as_ref().map(|(_, token)| token.clone()),
+                    to_token: curr_active.as_ref().map(|(_, token)| token.clone()),
+                    completed_token: inferred_completed,
+                },
+            );
+        }
+
+        if prev_active != curr_active {
+            let kind = match (&prev_active, &curr_active) {
+                (None, Some(_)) => FOCUS_EVENT_CURRENT_STARTED,
+                (Some(_), None) => FOCUS_EVENT_CURRENT_STOPPED,
+                (Some(_), Some(_)) => FOCUS_EVENT_CURRENT_CHANGED,
+                (None, None) => 0,
+            };
+            if kind != 0 {
+                self.push_focus_event(
+                    game_hour_raw,
+                    FocusEventRow {
+                        tag_db_id: current.tag_db_id,
+                        kind,
+                        focus_kind: curr_active
+                            .as_ref()
+                            .map(|(kind, _)| *kind)
+                            .or_else(|| prev_active.as_ref().map(|(kind, _)| *kind))
+                            .unwrap_or(0),
+                        flags: 0,
+                        previous_completed_count: prev_completed,
+                        current_completed_count: curr_completed,
+                        previous_progress_raw: previous.progress_raw.unwrap_or(0),
+                        current_progress_raw: current.progress_raw.unwrap_or(0),
+                        completed_delta: curr_completed.saturating_sub(prev_completed),
+                        from_token: prev_active.as_ref().map(|(_, token)| token.clone()),
+                        to_token: curr_active.as_ref().map(|(_, token)| token.clone()),
+                        completed_token: None,
+                    },
+                );
+            }
+        }
+
+        if prev_active.is_some()
+            && prev_active == curr_active
+            && current.progress_raw.unwrap_or(0) < previous.progress_raw.unwrap_or(0)
+        {
+            self.push_focus_event(
+                game_hour_raw,
+                FocusEventRow {
+                    tag_db_id: current.tag_db_id,
+                    kind: FOCUS_EVENT_PROGRESS_REGRESSED,
+                    focus_kind: curr_active.as_ref().map(|(kind, _)| *kind).unwrap_or(0),
+                    flags: 0,
+                    previous_completed_count: prev_completed,
+                    current_completed_count: curr_completed,
+                    previous_progress_raw: previous.progress_raw.unwrap_or(0),
+                    current_progress_raw: current.progress_raw.unwrap_or(0),
+                    completed_delta: 0,
+                    from_token: prev_active.as_ref().map(|(_, token)| token.clone()),
+                    to_token: curr_active.as_ref().map(|(_, token)| token.clone()),
+                    completed_token: None,
+                },
+            );
+        }
+    }
+
+    fn push_focus_event(&mut self, game_hour_raw: i32, row: FocusEventRow) {
+        self.sample(
+            game_hour_raw,
+            "focus",
+            row.kind,
+            row.tag_db_id,
+            row.completed_token
+                .as_deref()
+                .or(row.to_token.as_deref())
+                .or(row.from_token.as_deref()),
+        );
+        self.pending.focus_events.push(row);
+    }
+
+    fn apply_research_rows(&mut self, game_hour_raw: i32, rows: Vec<ResearchSlotState>) {
+        self.pending.observed_research_slot_rows = self
+            .pending
+            .observed_research_slot_rows
+            .saturating_add(rows.len().min(u32::MAX as usize) as u32);
+        for state in rows {
+            let key = (state.tag_db_id, state.slot_index);
+            if let Some(previous) = self.research_by_slot.get(&key).cloned() {
+                if let Some(row) = derive_research_eta_row(
+                    previous.game_hour_raw,
+                    &previous.state,
+                    game_hour_raw,
+                    &state,
+                ) {
+                    self.sample(game_hour_raw, "research", row.flags, row.tag_db_id, None);
+                    self.pending.research_eta.push(row);
+                }
+            }
+            self.research_by_slot.insert(
+                key,
+                ResearchTrackerState {
+                    game_hour_raw,
+                    state,
+                },
+            );
+        }
+    }
+
+    fn apply_decision_rows(&mut self, game_hour_raw: i32, rows: Vec<DecisionCountryState>) {
+        self.pending.observed_decision_rows = self
+            .pending
+            .observed_decision_rows
+            .saturating_add(rows.len().min(u32::MAX as usize) as u32);
+        self.pending.observed_timed_decision_rows =
+            self.pending.observed_timed_decision_rows.saturating_add(
+                rows.iter()
+                    .map(|row| row.timed_live.len())
+                    .sum::<usize>()
+                    .min(u32::MAX as usize) as u32,
+            );
+        for state in rows {
+            let status = DecisionStatusRow {
+                tag_db_id: state.tag_db_id,
+                active_timed_count: state.active_timed_count,
+                targeted_count: state.targeted_count,
+                targeted_timed_count: state.targeted_timed_count,
+                decisions_taken_bucket_count: state.decisions_taken_bucket_count,
+                re_enable_count: state.re_enable_count,
+                timed_live_count: state.timed_live.len().min(u32::MAX as usize) as u32,
+            };
+            self.pending.decision_status.push(status);
+            if let Some(previous) = self.decision_by_tag.get(&state.tag_db_id).cloned() {
+                self.derive_decision_events(game_hour_raw, &previous.state, &state);
+            }
+            self.decision_by_tag
+                .insert(state.tag_db_id, DecisionTrackerState { state });
+        }
+    }
+
+    fn derive_decision_events(
+        &mut self,
+        game_hour_raw: i32,
+        previous: &DecisionCountryState,
+        current: &DecisionCountryState,
+    ) {
+        if decision_counts(previous) != decision_counts(current) {
+            self.push_decision_event(
+                game_hour_raw,
+                DecisionEventRow {
+                    tag_db_id: current.tag_db_id,
+                    kind: DECISION_EVENT_STATUS_COUNTS_CHANGED,
+                    flags: 0,
+                    previous_days: 0,
+                    current_days: 0,
+                    previous_state: 0,
+                    current_state: 0,
+                    decision: None,
+                },
+            );
+        }
+
+        let previous_timed = timed_decision_map(previous);
+        let current_timed = timed_decision_map(current);
+        for (decision, curr) in &current_timed {
+            match previous_timed.get(decision) {
+                None => self.push_decision_event(
+                    game_hour_raw,
+                    DecisionEventRow {
+                        tag_db_id: current.tag_db_id,
+                        kind: DECISION_EVENT_STARTED,
+                        flags: 0,
+                        previous_days: -1,
+                        current_days: curr.days,
+                        previous_state: -1,
+                        current_state: curr.state,
+                        decision: Some(decision.clone()),
+                    },
+                ),
+                Some(prev) => {
+                    if prev.days != curr.days {
+                        self.push_decision_event(
+                            game_hour_raw,
+                            DecisionEventRow {
+                                tag_db_id: current.tag_db_id,
+                                kind: DECISION_EVENT_DAY_DELTA,
+                                flags: 0,
+                                previous_days: prev.days,
+                                current_days: curr.days,
+                                previous_state: prev.state,
+                                current_state: curr.state,
+                                decision: Some(decision.clone()),
+                            },
+                        );
+                    }
+                    if prev.state != curr.state {
+                        self.push_decision_event(
+                            game_hour_raw,
+                            DecisionEventRow {
+                                tag_db_id: current.tag_db_id,
+                                kind: DECISION_EVENT_STATE_CHANGED,
+                                flags: 0,
+                                previous_days: prev.days,
+                                current_days: curr.days,
+                                previous_state: prev.state,
+                                current_state: curr.state,
+                                decision: Some(decision.clone()),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        for (decision, prev) in &previous_timed {
+            if !current_timed.contains_key(decision) {
+                self.push_decision_event(
+                    game_hour_raw,
+                    DecisionEventRow {
+                        tag_db_id: current.tag_db_id,
+                        kind: DECISION_EVENT_STOPPED,
+                        flags: 0,
+                        previous_days: prev.days,
+                        current_days: -1,
+                        previous_state: prev.state,
+                        current_state: -1,
+                        decision: Some(decision.clone()),
+                    },
+                );
+            }
+        }
+    }
+
+    fn push_decision_event(&mut self, game_hour_raw: i32, row: DecisionEventRow) {
+        self.sample(
+            game_hour_raw,
+            "decision",
+            row.kind,
+            row.tag_db_id,
+            row.decision.as_deref(),
+        );
+        self.pending.decision_events.push(row);
+    }
+
+    fn take_pending(&mut self) -> DepthFrameRows {
+        let mut rows = std::mem::take(&mut self.pending);
+        apply_required_badges(&mut rows);
+        rows
+    }
+
+    fn sample(
+        &mut self,
+        game_hour_raw: i32,
+        family: &str,
+        kind: u32,
+        tag_db_id: u32,
+        token: Option<&str>,
+    ) {
+        if self.samples.len() >= self.sample_limit {
+            return;
+        }
+        self.samples.push(format!(
+            "{{\"game_hour_raw\":{game_hour_raw},\"family\":{},\"kind\":{kind},\"tag_db_id\":{tag_db_id},\"token\":{}}}",
+            json_str(family),
+            token.map(json_str).unwrap_or_else(|| "null".to_string())
+        ));
+    }
+}
+
+fn apply_required_badges(rows: &mut DepthFrameRows) {
+    rows.status_flags |= DEPTH_STATUS_KNOWN_MASK;
+    push_badge_if_missing(
+        rows,
+        BadgeRow {
+            kind: BADGE_KIND_FOCUS_PAUSE_FAIL_CLOSED,
+            flags: BADGE_FLAG_FAIL_CLOSED | BADGE_FLAG_CURRENT_BUILD_PROBED,
+            source_domain_id: DOMAIN_FOCUS as u32,
+            affected_count: rows.observed_focus_rows,
+            evidence_code: BADGE_EVIDENCE_NO_PAUSED_TRUE_GROUND_TRUTH,
+            detail: Some(BADGE_DETAIL_FOCUS_PAUSE_FAIL_CLOSED.to_string()),
+        },
+    );
+    push_badge_if_missing(
+        rows,
+        BadgeRow {
+            kind: BADGE_KIND_DECISION_TARGET_FIELDS_FAIL_CLOSED,
+            flags: BADGE_FLAG_FAIL_CLOSED | BADGE_FLAG_CURRENT_BUILD_PROBED,
+            source_domain_id: DOMAIN_DECISIONS as u32,
+            affected_count: decision_target_body_count(rows),
+            evidence_code: BADGE_EVIDENCE_TIMED_DEFINITION_LAYOUT_REJECTED,
+            detail: Some(BADGE_DETAIL_DECISION_TARGET_FIELDS_FAIL_CLOSED.to_string()),
+        },
+    );
+    push_badge_if_missing(
+        rows,
+        BadgeRow {
+            kind: BADGE_KIND_DIRECT_EVENT_HOOKS_UNAVAILABLE,
+            flags: BADGE_FLAG_FAIL_CLOSED | BADGE_FLAG_DERIVED_DETERMINISTIC,
+            source_domain_id: DOMAIN_FRAME as u32,
+            affected_count: rows
+                .focus_events
+                .len()
+                .saturating_add(rows.decision_events.len())
+                .min(u32::MAX as usize) as u32,
+            evidence_code: BADGE_EVIDENCE_COMPACT_FRAME_DELTA_DERIVED,
+            detail: Some(BADGE_DETAIL_DIRECT_EVENT_HOOKS_UNAVAILABLE.to_string()),
+        },
+    );
+}
+
+fn push_badge_if_missing(rows: &mut DepthFrameRows, badge: BadgeRow) {
+    if !rows.badges.iter().any(|row| row.kind == badge.kind) {
+        rows.badges.push(badge);
+    }
+}
+
+fn decision_target_body_count(rows: &DepthFrameRows) -> u32 {
+    rows.decision_status.iter().fold(0u32, |total, row| {
+        total
+            .saturating_add(row.targeted_count)
+            .saturating_add(row.targeted_timed_count)
+            .saturating_add(row.decisions_taken_bucket_count)
+            .saturating_add(row.re_enable_count)
+    })
+}
+
+pub fn derive_depth_stream(raw: &[u8]) -> Result<DepthProof, String> {
+    let mut proof = DepthProof {
+        source_bytes: raw.len(),
+        ..DepthProof::default()
+    };
+    let mut deriver = Deriver::new();
+    let mut offset = 0usize;
+    let mut previous_sequence: Option<u64> = None;
+    let mut depth_sequence = 1u64;
+    let mut frame_hours = Vec::new();
+    let mut depth_gate = DepthGateSummary::default();
+
+    while offset < raw.len() {
+        let record = match parse_h4cr_record(raw, offset) {
+            Ok(record) => record,
+            Err(err) => {
+                proof.parse_errors.push(err);
+                break;
+            }
+        };
+        proof.source_records = proof.source_records.saturating_add(1);
+        if let Some(previous) = previous_sequence {
+            if record.sequence <= previous {
+                proof.parse_errors.push(format!(
+                    "offset {offset}: sequence {} did not advance past {previous}",
+                    record.sequence
+                ));
+            }
+        }
+        previous_sequence = Some(record.sequence);
+
+        match (record.domain_id, record.record_type) {
+            (DOMAIN_FOCUS, RECORD_TYPE_DOMAIN_DATA) => match decode_focus_payload(record.payload) {
+                Ok(rows) => {
+                    proof.focus_data_records = proof.focus_data_records.saturating_add(1);
+                    proof.source_focus_rows =
+                        proof.source_focus_rows.saturating_add(rows.len() as u64);
+                    deriver.apply_focus_rows(record.game_hour_raw, rows);
+                }
+                Err(err) => proof
+                    .parse_errors
+                    .push(format!("offset {offset}: focus_live decode: {err}")),
+            },
+            (DOMAIN_TECH, RECORD_TYPE_DOMAIN_DATA) => match decode_tech_payload(record.payload) {
+                Ok(rows) => {
+                    proof.tech_data_records = proof.tech_data_records.saturating_add(1);
+                    proof.source_research_slot_rows = proof
+                        .source_research_slot_rows
+                        .saturating_add(rows.len() as u64);
+                    deriver.apply_research_rows(record.game_hour_raw, rows);
+                }
+                Err(err) => proof
+                    .parse_errors
+                    .push(format!("offset {offset}: tech_live decode: {err}")),
+            },
+            (DOMAIN_DECISIONS, RECORD_TYPE_DOMAIN_DATA) => {
+                match decode_decisions_payload(record.payload) {
+                    Ok(rows) => {
+                        proof.decisions_data_records =
+                            proof.decisions_data_records.saturating_add(1);
+                        proof.source_decision_country_rows = proof
+                            .source_decision_country_rows
+                            .saturating_add(rows.len() as u64);
+                        proof.source_timed_decision_rows =
+                            proof.source_timed_decision_rows.saturating_add(
+                                rows.iter()
+                                    .map(|row| row.timed_live.len() as u64)
+                                    .sum::<u64>(),
+                            );
+                        deriver.apply_decision_rows(record.game_hour_raw, rows);
+                    }
+                    Err(err) => proof
+                        .parse_errors
+                        .push(format!("offset {offset}: decisions_live decode: {err}")),
+                }
+            }
+            (DOMAIN_FRAME, RECORD_TYPE_FRAME_END) => {
+                proof.source_frames = proof.source_frames.saturating_add(1);
+                frame_hours.push(record.game_hour_raw);
+                let rows = deriver.take_pending();
+                proof.focus_event_rows = proof
+                    .focus_event_rows
+                    .saturating_add(rows.focus_events.len() as u64);
+                proof.research_eta_rows = proof
+                    .research_eta_rows
+                    .saturating_add(rows.research_eta.len() as u64);
+                proof.decision_status_rows = proof
+                    .decision_status_rows
+                    .saturating_add(rows.decision_status.len() as u64);
+                proof.decision_event_rows = proof
+                    .decision_event_rows
+                    .saturating_add(rows.decision_events.len() as u64);
+                proof.badge_rows = proof.badge_rows.saturating_add(rows.badges.len() as u64);
+                let payload = encode_depth_payload(&rows);
+                let summary = decode_depth_payload(offset, &payload);
+                merge_depth_gate(&mut depth_gate, summary);
+                append_h4cr_record(
+                    &mut proof.depth_stream,
+                    depth_sequence,
+                    record.game_hour_raw,
+                    DOMAIN_ID,
+                    RECORD_TYPE_DOMAIN_DATA,
+                    0,
+                    &payload,
+                );
+                depth_sequence = depth_sequence.saturating_add(1);
+                proof.depth_data_records = proof.depth_data_records.saturating_add(1);
+            }
+            _ => {}
+        }
+        offset = record.next_offset;
+    }
+
+    frame_hours.sort_unstable();
+    frame_hours.dedup();
+    proof.first_game_hour_raw = frame_hours.first().copied();
+    proof.last_game_hour_raw = frame_hours.last().copied();
+    proof.game_hours_advanced = match (proof.first_game_hour_raw, proof.last_game_hour_raw) {
+        (Some(first), Some(last)) => last.saturating_sub(first),
+        _ => 0,
+    };
+    proof.skipped_game_hours = skipped_hours(&frame_hours);
+    proof.focus_pause_badge_rows = depth_gate.focus_pause_badge_rows;
+    proof.decision_target_badge_rows = depth_gate.decision_target_badge_rows;
+    proof.direct_event_badge_rows = depth_gate.direct_event_badge_rows;
+    proof.depth_parse_errors = depth_gate.parse_errors;
+    proof.sample_events = deriver.samples;
+    Ok(proof)
+}
+
+pub fn encode_depth_payload(rows: &DepthFrameRows) -> Vec<u8> {
+    let mut normalized = rows.clone();
+    apply_required_badges(&mut normalized);
+    let rows = &normalized;
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0u64.to_le_bytes());
+    payload.extend_from_slice(&rows.status_flags.to_le_bytes());
+    payload
+        .extend_from_slice(&(rows.focus_events.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    payload
+        .extend_from_slice(&(rows.research_eta.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    payload.extend_from_slice(
+        &(rows.decision_status.len().min(u32::MAX as usize) as u32).to_le_bytes(),
+    );
+    payload.extend_from_slice(
+        &(rows.decision_events.len().min(u32::MAX as usize) as u32).to_le_bytes(),
+    );
+    payload.extend_from_slice(&rows.observed_focus_rows.to_le_bytes());
+    payload.extend_from_slice(&rows.observed_research_slot_rows.to_le_bytes());
+    payload.extend_from_slice(&rows.observed_decision_rows.to_le_bytes());
+    payload.extend_from_slice(&rows.observed_timed_decision_rows.to_le_bytes());
+    payload.extend_from_slice(&(rows.badges.len().min(u32::MAX as usize) as u32).to_le_bytes());
+
+    for row in &rows.focus_events {
+        payload.extend_from_slice(&row.tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&row.kind.to_le_bytes());
+        payload.extend_from_slice(&row.focus_kind.to_le_bytes());
+        payload.extend_from_slice(&row.flags.to_le_bytes());
+        payload.extend_from_slice(&row.previous_completed_count.to_le_bytes());
+        payload.extend_from_slice(&row.current_completed_count.to_le_bytes());
+        payload.extend_from_slice(&row.previous_progress_raw.to_le_bytes());
+        payload.extend_from_slice(&row.current_progress_raw.to_le_bytes());
+        payload.extend_from_slice(&row.completed_delta.to_le_bytes());
+        append_compact_string(&mut payload, row.from_token.as_deref());
+        append_compact_string(&mut payload, row.to_token.as_deref());
+        append_compact_string(&mut payload, row.completed_token.as_deref());
+    }
+
+    for row in &rows.research_eta {
+        payload.extend_from_slice(&row.tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&row.slot_index.to_le_bytes());
+        payload.extend_from_slice(&row.flags.to_le_bytes());
+        payload.extend_from_slice(&row.hour_delta.to_le_bytes());
+        payload.extend_from_slice(&row.previous_tech_handle.to_le_bytes());
+        payload.extend_from_slice(&row.current_tech_handle.to_le_bytes());
+        payload.extend_from_slice(&row.previous_tech_def_index.to_le_bytes());
+        payload.extend_from_slice(&row.current_tech_def_index.to_le_bytes());
+        payload.extend_from_slice(&row.previous_live_progress_raw.to_le_bytes());
+        payload.extend_from_slice(&row.current_live_progress_raw.to_le_bytes());
+        payload.extend_from_slice(&row.delta_live_progress_raw.to_le_bytes());
+        payload.extend_from_slice(&row.speed_raw_per_hour.to_le_bytes());
+        payload.extend_from_slice(&row.base_required_points_raw.to_le_bytes());
+        payload.extend_from_slice(&row.eta_hours.to_le_bytes());
+    }
+
+    for row in &rows.decision_status {
+        payload.extend_from_slice(&row.tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&row.active_timed_count.to_le_bytes());
+        payload.extend_from_slice(&row.targeted_count.to_le_bytes());
+        payload.extend_from_slice(&row.targeted_timed_count.to_le_bytes());
+        payload.extend_from_slice(&row.decisions_taken_bucket_count.to_le_bytes());
+        payload.extend_from_slice(&row.re_enable_count.to_le_bytes());
+        payload.extend_from_slice(&row.timed_live_count.to_le_bytes());
+    }
+
+    for row in &rows.decision_events {
+        payload.extend_from_slice(&row.tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&row.kind.to_le_bytes());
+        payload.extend_from_slice(&row.flags.to_le_bytes());
+        payload.extend_from_slice(&row.previous_days.to_le_bytes());
+        payload.extend_from_slice(&row.current_days.to_le_bytes());
+        payload.extend_from_slice(&row.previous_state.to_le_bytes());
+        payload.extend_from_slice(&row.current_state.to_le_bytes());
+        append_compact_string(&mut payload, row.decision.as_deref());
+    }
+    for row in &rows.badges {
+        payload.extend_from_slice(&row.kind.to_le_bytes());
+        payload.extend_from_slice(&row.flags.to_le_bytes());
+        payload.extend_from_slice(&row.source_domain_id.to_le_bytes());
+        payload.extend_from_slice(&row.affected_count.to_le_bytes());
+        payload.extend_from_slice(&row.evidence_code.to_le_bytes());
+        append_compact_string(&mut payload, row.detail.as_deref());
+    }
+    payload
+}
+
+pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
+    let mut summary = DepthGateSummary::default();
+    summary.data_records = 1;
+    if payload.len() < DEPTH_HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: {DOMAIN_NAME} payload is {} byte(s), expected at least {DEPTH_HEADER_LEN}",
+            payload.len()
+        ));
+        return summary;
+    }
+    let status_flags = read_u32_le(payload, 8);
+    let focus_count = read_u32_le(payload, 12) as usize;
+    let research_count = read_u32_le(payload, 16) as usize;
+    let decision_status_count = read_u32_le(payload, 20) as usize;
+    let decision_event_count = read_u32_le(payload, 24) as usize;
+    let observed_focus_rows = read_u32_le(payload, 28);
+    let observed_decision_rows = read_u32_le(payload, 36);
+    let badge_count = read_u32_le(payload, 44) as usize;
+    if status_flags & !DEPTH_STATUS_KNOWN_MASK != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: {DOMAIN_NAME} status_flags has unknown bits: {status_flags}"
+        ));
+    }
+    if status_flags & DEPTH_STATUS_KNOWN_MASK != DEPTH_STATUS_KNOWN_MASK {
+        let missing = DEPTH_STATUS_KNOWN_MASK & !status_flags;
+        summary.parse_errors.push(format!(
+            "offset {offset}: {DOMAIN_NAME} status_flags missing required fail-closed bits: {missing}"
+        ));
+    }
+
+    summary.focus_event_rows = focus_count as u64;
+    summary.research_eta_rows = research_count as u64;
+    summary.decision_status_rows = decision_status_count as u64;
+    summary.decision_event_rows = decision_event_count as u64;
+    summary.badge_rows = badge_count as u64;
+
+    let mut cursor = DEPTH_HEADER_LEN;
+    let mut seen_focus = BTreeSet::new();
+    for row_index in 0..focus_count {
+        if let Err(err) = require_remaining(payload, cursor, 36, "focus depth row") {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return summary;
+        }
+        let tag_db_id = read_u32_le(payload, cursor);
+        let kind = read_u32_le(payload, cursor + 4);
+        let focus_kind = read_u32_le(payload, cursor + 8);
+        let flags = read_u32_le(payload, cursor + 12);
+        let previous_completed = read_u32_le(payload, cursor + 16);
+        let current_completed = read_u32_le(payload, cursor + 20);
+        let previous_progress = read_i32_le(payload, cursor + 24);
+        let current_progress = read_i32_le(payload, cursor + 28);
+        let completed_delta = read_u32_le(payload, cursor + 32);
+        cursor += 36;
+        let from_len = read_compact_string_len(payload, &mut cursor, "focus depth from token")
+            .unwrap_or_else(|err| {
+                summary.parse_errors.push(format!("offset {offset}: {err}"));
+                0
+            });
+        let to_len = read_compact_string_len(payload, &mut cursor, "focus depth to token")
+            .unwrap_or_else(|err| {
+                summary.parse_errors.push(format!("offset {offset}: {err}"));
+                0
+            });
+        let completed_len =
+            read_compact_string_len(payload, &mut cursor, "focus depth completed token")
+                .unwrap_or_else(|err| {
+                    summary.parse_errors.push(format!("offset {offset}: {err}"));
+                    0
+                });
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus depth row {row_index} has zero tag_db_id"
+            ));
+        }
+        if kind == 0 || kind > FOCUS_EVENT_INVALID_BOTH_CURRENT_TYPES {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus depth row {row_index} has invalid kind {kind}"
+            ));
+        }
+        if focus_kind > FOCUS_KIND_CONTINUOUS {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus depth row {row_index} has invalid focus_kind {focus_kind}"
+            ));
+        }
+        if flags & !(FOCUS_FLAG_COMPLETED_TOKEN_INFERRED | FOCUS_FLAG_COMPLETED_TOKEN_EXACT) != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus depth row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if kind == FOCUS_EVENT_COMPLETED_COUNT_INCREASED {
+            if current_completed != u32::MAX
+                && previous_completed != u32::MAX
+                && current_completed <= previous_completed
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: focus completed row {row_index} did not increase completed_count"
+                ));
+            }
+            if completed_delta == 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: focus completed row {row_index} has zero completed_delta"
+                ));
+            }
+        }
+        if kind == FOCUS_EVENT_PROGRESS_REGRESSED && current_progress >= previous_progress {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus progress-regression row {row_index} did not regress"
+            ));
+        }
+        if flags & FOCUS_FLAG_COMPLETED_TOKEN_EXACT != 0 && completed_len == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus row {row_index} has exact completed-token flag without token"
+            ));
+        }
+        if from_len == 0
+            && to_len == 0
+            && completed_len == 0
+            && kind != FOCUS_EVENT_INVALID_BOTH_CURRENT_TYPES
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus depth row {row_index} has no token context"
+            ));
+        }
+        if !seen_focus.insert((
+            tag_db_id,
+            kind,
+            previous_completed,
+            current_completed,
+            completed_delta,
+        )) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus depth row {row_index} duplicates focus transition key"
+            ));
+        }
+    }
+
+    let mut seen_research = BTreeSet::new();
+    for row_index in 0..research_count {
+        if let Err(err) =
+            require_remaining(payload, cursor, RESEARCH_ETA_ROW_LEN, "research ETA row")
+        {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return summary;
+        }
+        let tag_db_id = read_u32_le(payload, cursor);
+        let slot_index = read_u32_le(payload, cursor + 4);
+        let flags = read_u32_le(payload, cursor + 8);
+        let hour_delta = read_u32_le(payload, cursor + 12);
+        let previous_handle = read_u32_le(payload, cursor + 16);
+        let current_handle = read_u32_le(payload, cursor + 20);
+        let previous_def = read_u32_le(payload, cursor + 24);
+        let current_def = read_u32_le(payload, cursor + 28);
+        let previous_progress = read_i64_le(payload, cursor + 32);
+        let current_progress = read_i64_le(payload, cursor + 40);
+        let delta = read_i64_le(payload, cursor + 48);
+        let speed = read_i64_le(payload, cursor + 56);
+        let base = read_i64_le(payload, cursor + 64);
+        let eta = read_i64_le(payload, cursor + 72);
+        cursor += RESEARCH_ETA_ROW_LEN;
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: research ETA row {row_index} has zero tag_db_id"
+            ));
+        }
+        if slot_index > 32 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: research ETA row {row_index} has invalid slot_index {slot_index}"
+            ));
+        }
+        if flags
+            & !(RESEARCH_FLAG_SAME_TECH
+                | RESEARCH_FLAG_POSITIVE_SPEED
+                | RESEARCH_FLAG_ETA_AVAILABLE
+                | RESEARCH_FLAG_TECH_ROLLOVER
+                | RESEARCH_FLAG_NEGATIVE_DELTA
+                | RESEARCH_FLAG_BASE_PRESENT)
+            != 0
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: research ETA row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if hour_delta == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: research ETA row {row_index} has zero hour_delta"
+            ));
+        }
+        let same_tech = flags & RESEARCH_FLAG_SAME_TECH != 0;
+        if same_tech && (previous_handle != current_handle || previous_def != current_def) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: research ETA row {row_index} has same-tech flag but different tech ids"
+            ));
+        }
+        if !same_tech && flags & RESEARCH_FLAG_TECH_ROLLOVER == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: research ETA row {row_index} changed tech without rollover flag"
+            ));
+        }
+        if delta != current_progress.saturating_sub(previous_progress) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: research ETA row {row_index} delta does not match progress"
+            ));
+        }
+        if flags & RESEARCH_FLAG_POSITIVE_SPEED != 0 && speed <= 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: research ETA row {row_index} has positive-speed flag without positive speed"
+            ));
+        }
+        if flags & RESEARCH_FLAG_NEGATIVE_DELTA != 0 && delta >= 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: research ETA row {row_index} has negative-delta flag without negative delta"
+            ));
+        }
+        if flags & RESEARCH_FLAG_BASE_PRESENT != 0 && base <= 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: research ETA row {row_index} has base-present flag without positive base"
+            ));
+        }
+        if flags & RESEARCH_FLAG_ETA_AVAILABLE != 0 && eta < 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: research ETA row {row_index} has negative eta"
+            ));
+        }
+        if !seen_research.insert((
+            tag_db_id,
+            slot_index,
+            current_handle,
+            current_def,
+            current_progress,
+        )) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: research ETA row {row_index} duplicates slot/progress key"
+            ));
+        }
+    }
+
+    let mut seen_decision_status = BTreeSet::new();
+    for row_index in 0..decision_status_count {
+        if let Err(err) = require_remaining(
+            payload,
+            cursor,
+            DECISION_STATUS_ROW_LEN,
+            "decision status row",
+        ) {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return summary;
+        }
+        let tag_db_id = read_u32_le(payload, cursor);
+        let counts = [
+            read_u32_le(payload, cursor + 4),
+            read_u32_le(payload, cursor + 8),
+            read_u32_le(payload, cursor + 12),
+            read_u32_le(payload, cursor + 16),
+            read_u32_le(payload, cursor + 20),
+            read_u32_le(payload, cursor + 24),
+        ];
+        cursor += DECISION_STATUS_ROW_LEN;
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision status row {row_index} has zero tag_db_id"
+            ));
+        }
+        if counts.iter().any(|count| *count > 4096) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision status row {row_index} has impossible count"
+            ));
+        }
+        if !seen_decision_status.insert(tag_db_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision status row {row_index} duplicates tag_db_id {tag_db_id}"
+            ));
+        }
+    }
+
+    for row_index in 0..decision_event_count {
+        if let Err(err) = require_remaining(payload, cursor, 28, "decision event row") {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return summary;
+        }
+        let tag_db_id = read_u32_le(payload, cursor);
+        let kind = read_u32_le(payload, cursor + 4);
+        let flags = read_u32_le(payload, cursor + 8);
+        let previous_days = read_i32_le(payload, cursor + 12);
+        let current_days = read_i32_le(payload, cursor + 16);
+        let previous_state = read_i32_le(payload, cursor + 20);
+        let current_state = read_i32_le(payload, cursor + 24);
+        cursor += 28;
+        let decision_len = read_compact_string_len(payload, &mut cursor, "decision event token")
+            .unwrap_or_else(|err| {
+                summary.parse_errors.push(format!("offset {offset}: {err}"));
+                0
+            });
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision event row {row_index} has zero tag_db_id"
+            ));
+        }
+        if !(DECISION_EVENT_STARTED..=DECISION_EVENT_STATUS_COUNTS_CHANGED).contains(&kind) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision event row {row_index} has invalid kind {kind}"
+            ));
+        }
+        if flags != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision event row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if kind != DECISION_EVENT_STATUS_COUNTS_CHANGED && decision_len == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision event row {row_index} has no decision token"
+            ));
+        }
+        if kind == DECISION_EVENT_DAY_DELTA && previous_days == current_days {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision day-delta row {row_index} did not change days"
+            ));
+        }
+        if kind == DECISION_EVENT_STATE_CHANGED && previous_state == current_state {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision state-change row {row_index} did not change state"
+            ));
+        }
+    }
+
+    let mut badge_kinds = BTreeSet::new();
+    for row_index in 0..badge_count {
+        if let Err(err) = require_remaining(payload, cursor, BADGE_ROW_FIXED_LEN, "badge row") {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return summary;
+        }
+        let kind = read_u32_le(payload, cursor);
+        let flags = read_u32_le(payload, cursor + 4);
+        let source_domain_id = read_u32_le(payload, cursor + 8);
+        let affected_count = read_u32_le(payload, cursor + 12);
+        let evidence_code = read_u32_le(payload, cursor + 16);
+        cursor += BADGE_ROW_FIXED_LEN;
+        let detail =
+            read_compact_string(payload, &mut cursor, "badge detail").unwrap_or_else(|err| {
+                summary.parse_errors.push(format!("offset {offset}: {err}"));
+                String::new()
+            });
+        if kind == 0 || kind > BADGE_KIND_MAX {
+            summary.parse_errors.push(format!(
+                "offset {offset}: badge row {row_index} has invalid kind {kind}"
+            ));
+        }
+        if flags == 0 || flags & !BADGE_FLAG_KNOWN_MASK != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: badge row {row_index} has invalid flags {flags}"
+            ));
+        }
+        if detail.is_empty() {
+            summary.parse_errors.push(format!(
+                "offset {offset}: badge row {row_index} has no detail token"
+            ));
+        }
+        if !badge_kinds.insert(kind) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: badge row {row_index} duplicates kind {kind}"
+            ));
+        }
+        match kind {
+            BADGE_KIND_FOCUS_PAUSE_FAIL_CLOSED => {
+                if source_domain_id != DOMAIN_FOCUS as u32
+                    || evidence_code != BADGE_EVIDENCE_NO_PAUSED_TRUE_GROUND_TRUTH
+                    || flags & BADGE_FLAG_FAIL_CLOSED == 0
+                    || flags & BADGE_FLAG_CURRENT_BUILD_PROBED == 0
+                    || detail != BADGE_DETAIL_FOCUS_PAUSE_FAIL_CLOSED
+                {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: focus pause badge row {row_index} has inconsistent provenance"
+                    ));
+                }
+                summary.focus_pause_badge_rows = summary.focus_pause_badge_rows.saturating_add(1);
+                if affected_count > observed_focus_rows {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: focus pause badge row {row_index} affected_count exceeds observed focus rows"
+                    ));
+                }
+            }
+            BADGE_KIND_DECISION_TARGET_FIELDS_FAIL_CLOSED => {
+                if source_domain_id != DOMAIN_DECISIONS as u32
+                    || evidence_code != BADGE_EVIDENCE_TIMED_DEFINITION_LAYOUT_REJECTED
+                    || flags & BADGE_FLAG_FAIL_CLOSED == 0
+                    || flags & BADGE_FLAG_CURRENT_BUILD_PROBED == 0
+                    || detail != BADGE_DETAIL_DECISION_TARGET_FIELDS_FAIL_CLOSED
+                {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: decision target badge row {row_index} has inconsistent provenance"
+                    ));
+                }
+                summary.decision_target_badge_rows =
+                    summary.decision_target_badge_rows.saturating_add(1);
+                if observed_decision_rows == 0 && affected_count != 0 {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: decision target badge row {row_index} has affected decisions without observed decision rows"
+                    ));
+                }
+            }
+            BADGE_KIND_DIRECT_EVENT_HOOKS_UNAVAILABLE => {
+                if source_domain_id != DOMAIN_FRAME as u32
+                    || evidence_code != BADGE_EVIDENCE_COMPACT_FRAME_DELTA_DERIVED
+                    || flags & BADGE_FLAG_FAIL_CLOSED == 0
+                    || flags & BADGE_FLAG_DERIVED_DETERMINISTIC == 0
+                    || detail != BADGE_DETAIL_DIRECT_EVENT_HOOKS_UNAVAILABLE
+                {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: direct event badge row {row_index} has inconsistent provenance"
+                    ));
+                }
+                summary.direct_event_badge_rows = summary.direct_event_badge_rows.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+    for (flag, kind, name) in [
+        (
+            DEPTH_STATUS_FOCUS_PAUSE_BADGED,
+            BADGE_KIND_FOCUS_PAUSE_FAIL_CLOSED,
+            "focus pause",
+        ),
+        (
+            DEPTH_STATUS_DECISION_TARGETS_BADGED,
+            BADGE_KIND_DECISION_TARGET_FIELDS_FAIL_CLOSED,
+            "decision target fields",
+        ),
+        (
+            DEPTH_STATUS_DIRECT_EVENTS_DERIVED,
+            BADGE_KIND_DIRECT_EVENT_HOOKS_UNAVAILABLE,
+            "direct event hooks",
+        ),
+    ] {
+        if status_flags & flag != 0 && !badge_kinds.contains(&kind) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: {DOMAIN_NAME} status flag for {name} lacks badge row"
+            ));
+        }
+        if !badge_kinds.contains(&kind) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: {DOMAIN_NAME} missing required {name} badge row"
+            ));
+        }
+    }
+
+    if cursor != payload.len() {
+        summary.parse_errors.push(format!(
+            "offset {offset}: {DOMAIN_NAME} payload has {} trailing byte(s)",
+            payload.len().saturating_sub(cursor)
+        ));
+    }
+    summary
+}
+
+fn derive_research_eta_row(
+    previous_hour: i32,
+    previous: &ResearchSlotState,
+    current_hour: i32,
+    current: &ResearchSlotState,
+) -> Option<ResearchEtaRow> {
+    let hour_delta_i32 = current_hour.saturating_sub(previous_hour);
+    if hour_delta_i32 <= 0 {
+        return None;
+    }
+    let hour_delta = hour_delta_i32 as u32;
+    let same_tech = previous.tech_handle_raw == current.tech_handle_raw
+        && previous.tech_def_index_raw == current.tech_def_index_raw;
+    let prev_progress = previous.live_progress_raw.unwrap_or(0);
+    let curr_progress = current.live_progress_raw.unwrap_or(0);
+    let delta = curr_progress.saturating_sub(prev_progress);
+    let mut flags = 0u32;
+    if same_tech {
+        flags |= RESEARCH_FLAG_SAME_TECH;
+    } else {
+        flags |= RESEARCH_FLAG_TECH_ROLLOVER;
+    }
+    if delta > 0 {
+        flags |= RESEARCH_FLAG_POSITIVE_SPEED;
+    }
+    if delta < 0 {
+        flags |= RESEARCH_FLAG_NEGATIVE_DELTA;
+    }
+    let base = current.base_required_points_raw.unwrap_or(0);
+    if base > 0 {
+        flags |= RESEARCH_FLAG_BASE_PRESENT;
+    }
+    let speed = if hour_delta > 0 {
+        delta.checked_div(hour_delta as i64).unwrap_or(0)
+    } else {
+        0
+    };
+    let eta = if same_tech && speed > 0 && base > curr_progress {
+        flags |= RESEARCH_FLAG_ETA_AVAILABLE;
+        ceil_div_i64(base.saturating_sub(curr_progress), speed)
+    } else if same_tech && base > 0 && curr_progress >= base {
+        flags |= RESEARCH_FLAG_ETA_AVAILABLE;
+        0
+    } else {
+        -1
+    };
+    if same_tech && previous.live_progress_raw.is_none() && current.live_progress_raw.is_none() {
+        return None;
+    }
+    Some(ResearchEtaRow {
+        tag_db_id: current.tag_db_id,
+        slot_index: current.slot_index,
+        flags,
+        hour_delta,
+        previous_tech_handle: previous.tech_handle_raw,
+        current_tech_handle: current.tech_handle_raw,
+        previous_tech_def_index: previous.tech_def_index_raw,
+        current_tech_def_index: current.tech_def_index_raw,
+        previous_live_progress_raw: prev_progress,
+        current_live_progress_raw: curr_progress,
+        delta_live_progress_raw: delta,
+        speed_raw_per_hour: speed,
+        base_required_points_raw: base,
+        eta_hours: eta,
+    })
+}
+
+fn decode_focus_payload(payload: &[u8]) -> Result<Vec<FocusState>, String> {
+    if payload.len() < 28 {
+        return Err(format!(
+            "payload is {} byte(s), expected at least 28",
+            payload.len()
+        ));
+    }
+    let country_count = read_u32_le(payload, 8) as usize;
+    let completed_token_count = read_u32_le(payload, 24) as usize;
+    let mut cursor = 28usize;
+    let mut rows = Vec::with_capacity(country_count);
+    for _ in 0..country_count {
+        require_remaining(payload, cursor, 16, "focus country row")?;
+        let tag_db_id = read_u32_le(payload, cursor);
+        let flags = read_u32_le(payload, cursor + 4);
+        let completed_count_raw = read_u32_le(payload, cursor + 8);
+        let progress_raw = read_i32_le(payload, cursor + 12);
+        cursor += 16;
+        let _focus_tree = read_compact_string(payload, &mut cursor, "focus tree")?;
+        let current = read_compact_string(payload, &mut cursor, "focus current")?;
+        let current_continuous =
+            read_compact_string(payload, &mut cursor, "focus current continuous")?;
+        rows.push(FocusState {
+            tag_db_id,
+            completed_count: if flags & (1 << 1) != 0 {
+                Some(completed_count_raw)
+            } else {
+                None
+            },
+            progress_raw: if flags & (1 << 4) != 0 {
+                Some(progress_raw)
+            } else {
+                None
+            },
+            current: if flags & (1 << 2) != 0 && !current.is_empty() {
+                Some(current)
+            } else {
+                None
+            },
+            current_continuous: if flags & (1 << 3) != 0 && !current_continuous.is_empty() {
+                Some(current_continuous)
+            } else {
+                None
+            },
+            completed_tokens: Vec::new(),
+        });
+    }
+    let mut completed_by_tag: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+    for _ in 0..completed_token_count {
+        require_remaining(payload, cursor, 4, "focus completed row")?;
+        let tag_db_id = read_u32_le(payload, cursor);
+        cursor += 4;
+        let token = read_compact_string(payload, &mut cursor, "focus completed token")?;
+        completed_by_tag.entry(tag_db_id).or_default().push(token);
+    }
+    if cursor != payload.len() {
+        return Err(format!(
+            "focus payload has {} trailing byte(s)",
+            payload.len().saturating_sub(cursor)
+        ));
+    }
+    for row in &mut rows {
+        if let Some(tokens) = completed_by_tag.remove(&row.tag_db_id) {
+            row.completed_tokens = tokens;
+        }
+    }
+    Ok(rows)
+}
+
+fn decode_tech_payload(payload: &[u8]) -> Result<Vec<ResearchSlotState>, String> {
+    if payload.len() < 32 {
+        return Err(format!(
+            "payload is {} byte(s), expected at least 32",
+            payload.len()
+        ));
+    }
+    let country_count = read_u32_le(payload, 8) as usize;
+    let active_count = read_u32_le(payload, 28) as usize;
+    let mut cursor = 32usize.saturating_add(country_count.saturating_mul(16));
+    require_remaining(
+        payload,
+        cursor,
+        active_count.saturating_mul(40),
+        "tech active rows",
+    )?;
+    let mut rows = Vec::with_capacity(active_count);
+    for _ in 0..active_count {
+        let tag_db_id = read_u32_le(payload, cursor);
+        let slot_index = read_u32_le(payload, cursor + 4);
+        let tech_handle_raw = read_u32_le(payload, cursor + 8);
+        let tech_def_index_raw = read_u32_le(payload, cursor + 12);
+        let progress_raw = read_u32_le(payload, cursor + 16);
+        let flags = read_u32_le(payload, cursor + 20);
+        let live_progress_raw = read_i64_le(payload, cursor + 24);
+        let base_required_points_raw = read_i64_le(payload, cursor + 32);
+        cursor += 40;
+        rows.push(ResearchSlotState {
+            tag_db_id,
+            slot_index,
+            tech_handle_raw,
+            tech_def_index_raw,
+            progress_raw,
+            live_progress_raw: if flags & 1 != 0 {
+                Some(live_progress_raw)
+            } else {
+                None
+            },
+            base_required_points_raw: if flags & (1 << 1) != 0 {
+                Some(base_required_points_raw)
+            } else {
+                None
+            },
+        });
+    }
+    if cursor != payload.len() {
+        return Err(format!(
+            "tech payload has {} trailing byte(s)",
+            payload.len().saturating_sub(cursor)
+        ));
+    }
+    Ok(rows)
+}
+
+fn decode_decisions_payload(payload: &[u8]) -> Result<Vec<DecisionCountryState>, String> {
+    if payload.len() < 24 {
+        return Err(format!(
+            "payload is {} byte(s), expected at least 24",
+            payload.len()
+        ));
+    }
+    let country_count = read_u32_le(payload, 8) as usize;
+    let timed_count = read_u32_le(payload, 20) as usize;
+    let mut cursor = 24usize;
+    let mut rows = Vec::with_capacity(country_count);
+    for _ in 0..country_count {
+        require_remaining(payload, cursor, 32, "decision country row")?;
+        rows.push(DecisionCountryState {
+            tag_db_id: read_u32_le(payload, cursor),
+            active_timed_count: read_u32_le(payload, cursor + 8),
+            targeted_count: read_u32_le(payload, cursor + 12),
+            targeted_timed_count: read_u32_le(payload, cursor + 16),
+            decisions_taken_bucket_count: read_u32_le(payload, cursor + 20),
+            re_enable_count: read_u32_le(payload, cursor + 24),
+            timed_live: Vec::new(),
+        });
+        cursor += 32;
+    }
+    let mut timed_by_tag: BTreeMap<u32, Vec<TimedDecisionState>> = BTreeMap::new();
+    for _ in 0..timed_count {
+        require_remaining(payload, cursor, 12, "decision timed row")?;
+        let tag_db_id = read_u32_le(payload, cursor);
+        let days = read_i32_le(payload, cursor + 4);
+        let state = read_i32_le(payload, cursor + 8);
+        cursor += 12;
+        let decision = read_compact_string(payload, &mut cursor, "decision timed token")?;
+        timed_by_tag
+            .entry(tag_db_id)
+            .or_default()
+            .push(TimedDecisionState {
+                tag_db_id,
+                decision,
+                days,
+                state,
+            });
+    }
+    if cursor != payload.len() {
+        return Err(format!(
+            "decisions payload has {} trailing byte(s)",
+            payload.len().saturating_sub(cursor)
+        ));
+    }
+    for row in &mut rows {
+        if let Some(timed) = timed_by_tag.remove(&row.tag_db_id) {
+            row.timed_live = timed;
+        }
+    }
+    Ok(rows)
+}
+
+struct H4crRecord<'a> {
+    sequence: u64,
+    game_hour_raw: i32,
+    domain_id: u16,
+    record_type: u16,
+    payload: &'a [u8],
+    next_offset: usize,
+}
+
+fn parse_h4cr_record(raw: &[u8], offset: usize) -> Result<H4crRecord<'_>, String> {
+    let remaining = raw.len().saturating_sub(offset);
+    if remaining < H4CR_HEADER_LEN {
+        return Err(format!(
+            "offset {offset}: truncated H4CR header with {remaining} byte(s)"
+        ));
+    }
+    let header = &raw[offset..offset + H4CR_HEADER_LEN];
+    if &header[0..4] != H4CR_MAGIC {
+        return Err(format!("offset {offset}: invalid H4CR magic"));
+    }
+    let version = read_u16_le(header, 4);
+    if version != H4CR_VERSION {
+        return Err(format!(
+            "offset {offset}: unsupported H4CR version {version}"
+        ));
+    }
+    let header_len = read_u16_le(header, 6) as usize;
+    if header_len != H4CR_HEADER_LEN {
+        return Err(format!(
+            "offset {offset}: unsupported H4CR header length {header_len}"
+        ));
+    }
+    let payload_len = read_u32_le(header, 24) as usize;
+    let record_len = H4CR_HEADER_LEN.saturating_add(payload_len);
+    if record_len > remaining {
+        return Err(format!(
+            "offset {offset}: payload length {payload_len} exceeds remaining stream bytes"
+        ));
+    }
+    let payload_start = offset + H4CR_HEADER_LEN;
+    let payload_end = payload_start + payload_len;
+    Ok(H4crRecord {
+        sequence: read_u64_le(header, 8),
+        game_hour_raw: read_i32_le(header, 16),
+        domain_id: read_u16_le(header, 20),
+        record_type: read_u16_le(header, 22),
+        payload: &raw[payload_start..payload_end],
+        next_offset: payload_end,
+    })
+}
+
+fn append_h4cr_record(
+    out: &mut Vec<u8>,
+    sequence: u64,
+    game_hour_raw: i32,
+    domain_id: u16,
+    record_type: u16,
+    flags: u32,
+    payload: &[u8],
+) {
+    out.extend_from_slice(H4CR_MAGIC);
+    out.extend_from_slice(&H4CR_VERSION.to_le_bytes());
+    out.extend_from_slice(&(H4CR_HEADER_LEN as u16).to_le_bytes());
+    out.extend_from_slice(&sequence.to_le_bytes());
+    out.extend_from_slice(&game_hour_raw.to_le_bytes());
+    out.extend_from_slice(&domain_id.to_le_bytes());
+    out.extend_from_slice(&record_type.to_le_bytes());
+    out.extend_from_slice(&(payload.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    out.extend_from_slice(&flags.to_le_bytes());
+    out.extend_from_slice(payload);
+}
+
+fn merge_depth_gate(out: &mut DepthGateSummary, next: DepthGateSummary) {
+    out.data_records = out.data_records.saturating_add(next.data_records);
+    out.focus_event_rows = out.focus_event_rows.saturating_add(next.focus_event_rows);
+    out.research_eta_rows = out.research_eta_rows.saturating_add(next.research_eta_rows);
+    out.decision_status_rows = out
+        .decision_status_rows
+        .saturating_add(next.decision_status_rows);
+    out.decision_event_rows = out
+        .decision_event_rows
+        .saturating_add(next.decision_event_rows);
+    out.badge_rows = out.badge_rows.saturating_add(next.badge_rows);
+    out.focus_pause_badge_rows = out
+        .focus_pause_badge_rows
+        .saturating_add(next.focus_pause_badge_rows);
+    out.decision_target_badge_rows = out
+        .decision_target_badge_rows
+        .saturating_add(next.decision_target_badge_rows);
+    out.direct_event_badge_rows = out
+        .direct_event_badge_rows
+        .saturating_add(next.direct_event_badge_rows);
+    out.parse_errors.extend(next.parse_errors);
+}
+
+fn active_focus(row: &FocusState) -> Option<(u32, String)> {
+    row.current
+        .as_ref()
+        .map(|token| (FOCUS_KIND_NATIONAL, token.clone()))
+        .or_else(|| {
+            row.current_continuous
+                .as_ref()
+                .map(|token| (FOCUS_KIND_CONTINUOUS, token.clone()))
+        })
+}
+
+fn decision_counts(row: &DecisionCountryState) -> [u32; 6] {
+    [
+        row.active_timed_count,
+        row.targeted_count,
+        row.targeted_timed_count,
+        row.decisions_taken_bucket_count,
+        row.re_enable_count,
+        row.timed_live.len().min(u32::MAX as usize) as u32,
+    ]
+}
+
+fn timed_decision_map(row: &DecisionCountryState) -> BTreeMap<String, TimedDecisionState> {
+    row.timed_live
+        .iter()
+        .map(|timed| (timed.decision.clone(), timed.clone()))
+        .collect()
+}
+
+fn skipped_hours(hours: &[i32]) -> u32 {
+    if hours.len() < 2 {
+        return 0;
+    }
+    let mut skipped = 0u32;
+    for pair in hours.windows(2) {
+        let delta = pair[1].saturating_sub(pair[0]);
+        if delta > 1 {
+            skipped = skipped.saturating_add((delta - 1) as u32);
+        }
+    }
+    skipped
+}
+
+fn ceil_div_i64(numerator: i64, denominator: i64) -> i64 {
+    if denominator <= 0 {
+        return -1;
+    }
+    numerator
+        .saturating_add(denominator.saturating_sub(1))
+        .saturating_div(denominator)
+}
+
+fn append_compact_string(out: &mut Vec<u8>, value: Option<&str>) {
+    let bytes = value.unwrap_or("").as_bytes();
+    let len = bytes.len().min(u16::MAX as usize);
+    out.extend_from_slice(&(len as u16).to_le_bytes());
+    out.extend_from_slice(&bytes[..len]);
+}
+
+fn read_compact_string(bytes: &[u8], cursor: &mut usize, label: &str) -> Result<String, String> {
+    require_remaining(bytes, *cursor, 2, label)?;
+    let len = read_u16_le(bytes, *cursor) as usize;
+    *cursor += 2;
+    require_remaining(bytes, *cursor, len, label)?;
+    let start = *cursor;
+    let end = start + len;
+    *cursor = end;
+    std::str::from_utf8(&bytes[start..end])
+        .map(|value| value.to_string())
+        .map_err(|err| format!("{label}: invalid utf-8: {err}"))
+}
+
+fn read_compact_string_len(bytes: &[u8], cursor: &mut usize, label: &str) -> Result<usize, String> {
+    require_remaining(bytes, *cursor, 2, label)?;
+    let len = read_u16_le(bytes, *cursor) as usize;
+    *cursor += 2;
+    require_remaining(bytes, *cursor, len, label)?;
+    *cursor += len;
+    Ok(len)
+}
+
+fn require_remaining(
+    bytes: &[u8],
+    cursor: usize,
+    needed: usize,
+    label: &str,
+) -> Result<(), String> {
+    if bytes.len().saturating_sub(cursor) < needed {
+        Err(format!(
+            "{label}: need {needed} byte(s), have {}",
+            bytes.len().saturating_sub(cursor)
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn read_u16_le(bytes: &[u8], offset: usize) -> u16 {
+    u16::from_le_bytes(bytes[offset..offset + 2].try_into().expect("u16 range"))
+}
+
+fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("u32 range"))
+}
+
+fn read_i32_le(bytes: &[u8], offset: usize) -> i32 {
+    i32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("i32 range"))
+}
+
+fn read_u64_le(bytes: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("u64 range"))
+}
+
+fn read_i64_le(bytes: &[u8], offset: usize) -> i64 {
+    i64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("i64 range"))
+}
+
+fn json_i32(value: Option<i32>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn json_string_array(values: &[String]) -> String {
+    let items = values
+        .iter()
+        .map(|value| json_str(value))
+        .collect::<Vec<_>>();
+    format!("[{}]", items.join(", "))
+}
+
+fn json_str(value: &str) -> String {
+    let mut out = String::from("\"");
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            ch if ch.is_control() => out.push_str(&format!("\\u{:04x}", ch as u32)),
+            ch => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn depth_payload_round_trip_gates_transition_rows() {
+        let rows = DepthFrameRows {
+            focus_events: vec![FocusEventRow {
+                tag_db_id: 47,
+                kind: FOCUS_EVENT_COMPLETED_COUNT_INCREASED,
+                focus_kind: FOCUS_KIND_NATIONAL,
+                flags: FOCUS_FLAG_COMPLETED_TOKEN_INFERRED,
+                previous_completed_count: 2,
+                current_completed_count: 3,
+                previous_progress_raw: 6_900_000,
+                current_progress_raw: 0,
+                completed_delta: 1,
+                from_token: Some("POR_old_focus".to_string()),
+                to_token: None,
+                completed_token: Some("POR_old_focus".to_string()),
+            }],
+            research_eta: vec![ResearchEtaRow {
+                tag_db_id: 47,
+                slot_index: 1,
+                flags: RESEARCH_FLAG_SAME_TECH
+                    | RESEARCH_FLAG_POSITIVE_SPEED
+                    | RESEARCH_FLAG_ETA_AVAILABLE
+                    | RESEARCH_FLAG_BASE_PRESENT,
+                hour_delta: 24,
+                previous_tech_handle: 700,
+                current_tech_handle: 700,
+                previous_tech_def_index: 700,
+                current_tech_def_index: 700,
+                previous_live_progress_raw: 100_000,
+                current_live_progress_raw: 220_000,
+                delta_live_progress_raw: 120_000,
+                speed_raw_per_hour: 5_000,
+                base_required_points_raw: 1_000_000,
+                eta_hours: 156,
+            }],
+            decision_status: vec![DecisionStatusRow {
+                tag_db_id: 47,
+                active_timed_count: 1,
+                targeted_count: 2,
+                targeted_timed_count: 0,
+                decisions_taken_bucket_count: 0,
+                re_enable_count: 1,
+                timed_live_count: 1,
+            }],
+            decision_events: vec![DecisionEventRow {
+                tag_db_id: 47,
+                kind: DECISION_EVENT_DAY_DELTA,
+                flags: 0,
+                previous_days: 44,
+                current_days: 43,
+                previous_state: 0,
+                current_state: 0,
+                decision: Some("POR_countdown".to_string()),
+            }],
+            observed_focus_rows: 1,
+            observed_research_slot_rows: 1,
+            observed_decision_rows: 1,
+            observed_timed_decision_rows: 1,
+            ..DepthFrameRows::default()
+        };
+        let payload = encode_depth_payload(&rows);
+        let summary = decode_depth_payload(0, &payload);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(summary.focus_event_rows, 1);
+        assert_eq!(summary.research_eta_rows, 1);
+        assert_eq!(summary.decision_status_rows, 1);
+        assert_eq!(summary.decision_event_rows, 1);
+        assert_eq!(summary.badge_rows, 3);
+        assert_eq!(summary.focus_pause_badge_rows, 1);
+        assert_eq!(summary.decision_target_badge_rows, 1);
+        assert_eq!(summary.direct_event_badge_rows, 1);
+    }
+
+    #[test]
+    fn derives_depth_rows_from_base_compact_stream() {
+        let mut stream = Vec::new();
+        let mut seq = 1u64;
+
+        let focus_1 = focus_payload(FocusState {
+            tag_db_id: 47,
+            completed_count: Some(2),
+            progress_raw: Some(6_800_000),
+            current: Some("POR_old_focus".to_string()),
+            current_continuous: None,
+            completed_tokens: Vec::new(),
+        });
+        append_h4cr_record(
+            &mut stream,
+            seq,
+            100,
+            DOMAIN_FOCUS,
+            RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &focus_1,
+        );
+        seq += 1;
+        let tech_1 = tech_payload(ResearchSlotState {
+            tag_db_id: 47,
+            slot_index: 0,
+            tech_handle_raw: 700,
+            tech_def_index_raw: 700,
+            progress_raw: 100,
+            live_progress_raw: Some(100_000),
+            base_required_points_raw: Some(1_000_000),
+        });
+        append_h4cr_record(
+            &mut stream,
+            seq,
+            100,
+            DOMAIN_TECH,
+            RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &tech_1,
+        );
+        seq += 1;
+        let decisions_1 = decisions_payload(DecisionCountryState {
+            tag_db_id: 47,
+            active_timed_count: 1,
+            targeted_count: 0,
+            targeted_timed_count: 0,
+            decisions_taken_bucket_count: 0,
+            re_enable_count: 0,
+            timed_live: vec![TimedDecisionState {
+                tag_db_id: 47,
+                decision: "POR_countdown".to_string(),
+                days: 44,
+                state: 0,
+            }],
+        });
+        append_h4cr_record(
+            &mut stream,
+            seq,
+            100,
+            DOMAIN_DECISIONS,
+            RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &decisions_1,
+        );
+        seq += 1;
+        append_h4cr_record(
+            &mut stream,
+            seq,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            0,
+            &[],
+        );
+        seq += 1;
+
+        let focus_2 = focus_payload(FocusState {
+            tag_db_id: 47,
+            completed_count: Some(3),
+            progress_raw: None,
+            current: None,
+            current_continuous: None,
+            completed_tokens: Vec::new(),
+        });
+        append_h4cr_record(
+            &mut stream,
+            seq,
+            124,
+            DOMAIN_FOCUS,
+            RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &focus_2,
+        );
+        seq += 1;
+        let tech_2 = tech_payload(ResearchSlotState {
+            tag_db_id: 47,
+            slot_index: 0,
+            tech_handle_raw: 700,
+            tech_def_index_raw: 700,
+            progress_raw: 200,
+            live_progress_raw: Some(220_000),
+            base_required_points_raw: Some(1_000_000),
+        });
+        append_h4cr_record(
+            &mut stream,
+            seq,
+            124,
+            DOMAIN_TECH,
+            RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &tech_2,
+        );
+        seq += 1;
+        let decisions_2 = decisions_payload(DecisionCountryState {
+            tag_db_id: 47,
+            active_timed_count: 1,
+            targeted_count: 1,
+            targeted_timed_count: 0,
+            decisions_taken_bucket_count: 0,
+            re_enable_count: 0,
+            timed_live: vec![TimedDecisionState {
+                tag_db_id: 47,
+                decision: "POR_countdown".to_string(),
+                days: 43,
+                state: 0,
+            }],
+        });
+        append_h4cr_record(
+            &mut stream,
+            seq,
+            124,
+            DOMAIN_DECISIONS,
+            RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &decisions_2,
+        );
+        seq += 1;
+        append_h4cr_record(
+            &mut stream,
+            seq,
+            124,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            0,
+            &[],
+        );
+
+        let proof = derive_depth_stream(&stream).expect("derive proof");
+        assert!(proof.parse_errors.is_empty(), "{:?}", proof.parse_errors);
+        assert!(
+            proof.depth_parse_errors.is_empty(),
+            "{:?}",
+            proof.depth_parse_errors
+        );
+        assert_eq!(proof.source_frames, 2);
+        assert_eq!(proof.skipped_game_hours, 23);
+        assert_eq!(proof.focus_event_rows, 2);
+        assert_eq!(proof.research_eta_rows, 1);
+        assert_eq!(proof.decision_event_rows, 2);
+        assert_eq!(proof.decision_status_rows, 2);
+        assert_eq!(proof.badge_rows, 6);
+        assert_eq!(proof.focus_pause_badge_rows, 2);
+        assert_eq!(proof.decision_target_badge_rows, 2);
+        assert_eq!(proof.direct_event_badge_rows, 2);
+    }
+
+    #[test]
+    fn depth_gate_rejects_bad_research_delta() {
+        let rows = DepthFrameRows {
+            research_eta: vec![ResearchEtaRow {
+                tag_db_id: 47,
+                slot_index: 0,
+                flags: RESEARCH_FLAG_SAME_TECH,
+                hour_delta: 1,
+                previous_tech_handle: 700,
+                current_tech_handle: 700,
+                previous_tech_def_index: 700,
+                current_tech_def_index: 700,
+                previous_live_progress_raw: 100,
+                current_live_progress_raw: 90,
+                delta_live_progress_raw: 1,
+                speed_raw_per_hour: 1,
+                base_required_points_raw: 0,
+                eta_hours: -1,
+            }],
+            ..DepthFrameRows::default()
+        };
+        let payload = encode_depth_payload(&rows);
+        let summary = decode_depth_payload(7, &payload);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("delta does not match progress")));
+    }
+
+    #[test]
+    fn depth_gate_requires_badges_for_fail_closed_status_flags() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&DEPTH_STATUS_FOCUS_PAUSE_BADGED.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        let summary = decode_depth_payload(11, &payload);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("focus pause") && err.contains("lacks badge")));
+    }
+
+    #[test]
+    fn depth_gate_rejects_omitted_required_status_flags() {
+        let mut payload = encode_depth_payload(&DepthFrameRows::default());
+        payload[8..12].copy_from_slice(&0u32.to_le_bytes());
+        let summary = decode_depth_payload(17, &payload);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("status_flags missing required fail-closed bits")));
+    }
+
+    #[test]
+    fn depth_gate_validates_badge_detail_tokens() {
+        let rows = DepthFrameRows {
+            badges: vec![BadgeRow {
+                kind: BADGE_KIND_FOCUS_PAUSE_FAIL_CLOSED,
+                flags: BADGE_FLAG_FAIL_CLOSED | BADGE_FLAG_CURRENT_BUILD_PROBED,
+                source_domain_id: DOMAIN_FOCUS as u32,
+                affected_count: 0,
+                evidence_code: BADGE_EVIDENCE_NO_PAUSED_TRUE_GROUND_TRUTH,
+                detail: Some("wrong_focus_pause_badge_detail".to_string()),
+            }],
+            ..DepthFrameRows::default()
+        };
+        let payload = encode_depth_payload(&rows);
+        let summary = decode_depth_payload(19, &payload);
+        assert!(summary.parse_errors.iter().any(
+            |err| err.contains("focus pause badge") && err.contains("inconsistent provenance")
+        ));
+    }
+
+    fn focus_payload(row: FocusState) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&100_000u32.to_le_bytes());
+        payload.extend_from_slice(&(row.completed_tokens.len() as u32).to_le_bytes());
+        let mut flags = 1u32;
+        if row.completed_count.is_some() {
+            flags |= 1 << 1;
+        }
+        if row.current.is_some() {
+            flags |= 1 << 2;
+        }
+        if row.current_continuous.is_some() {
+            flags |= 1 << 3;
+        }
+        if row.progress_raw.is_some() {
+            flags |= 1 << 4;
+        }
+        if !row.completed_tokens.is_empty() {
+            flags |= 1 << 5;
+        }
+        payload.extend_from_slice(&row.tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&flags.to_le_bytes());
+        payload.extend_from_slice(&row.completed_count.unwrap_or(u32::MAX).to_le_bytes());
+        payload.extend_from_slice(&row.progress_raw.unwrap_or(0).to_le_bytes());
+        append_compact_string(&mut payload, Some("portugal_focus"));
+        append_compact_string(&mut payload, row.current.as_deref());
+        append_compact_string(&mut payload, row.current_continuous.as_deref());
+        for token in row.completed_tokens {
+            payload.extend_from_slice(&row.tag_db_id.to_le_bytes());
+            append_compact_string(&mut payload, Some(&token));
+        }
+        payload
+    }
+
+    fn tech_payload(row: ResearchSlotState) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&1_000u32.to_le_bytes());
+        payload.extend_from_slice(&100_000u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&row.tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&0b111u32.to_le_bytes());
+        payload.extend_from_slice(&10u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&row.tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&row.slot_index.to_le_bytes());
+        payload.extend_from_slice(&row.tech_handle_raw.to_le_bytes());
+        payload.extend_from_slice(&row.tech_def_index_raw.to_le_bytes());
+        payload.extend_from_slice(&row.progress_raw.to_le_bytes());
+        let mut flags = 0u32;
+        if row.live_progress_raw.is_some() {
+            flags |= 1;
+        }
+        if row.base_required_points_raw.is_some() {
+            flags |= 1 << 1;
+        }
+        payload.extend_from_slice(&flags.to_le_bytes());
+        payload.extend_from_slice(&row.live_progress_raw.unwrap_or(0).to_le_bytes());
+        payload.extend_from_slice(&row.base_required_points_raw.unwrap_or(0).to_le_bytes());
+        payload
+    }
+
+    fn decisions_payload(row: DecisionCountryState) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&(row.timed_live.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&row.tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&0b11u32.to_le_bytes());
+        payload.extend_from_slice(&row.active_timed_count.to_le_bytes());
+        payload.extend_from_slice(&row.targeted_count.to_le_bytes());
+        payload.extend_from_slice(&row.targeted_timed_count.to_le_bytes());
+        payload.extend_from_slice(&row.decisions_taken_bucket_count.to_le_bytes());
+        payload.extend_from_slice(&row.re_enable_count.to_le_bytes());
+        payload.extend_from_slice(&(row.timed_live.len() as u32).to_le_bytes());
+        for timed in row.timed_live {
+            payload.extend_from_slice(&timed.tag_db_id.to_le_bytes());
+            payload.extend_from_slice(&timed.days.to_le_bytes());
+            payload.extend_from_slice(&timed.state.to_le_bytes());
+            append_compact_string(&mut payload, Some(&timed.decision));
+        }
+        payload
+    }
+}

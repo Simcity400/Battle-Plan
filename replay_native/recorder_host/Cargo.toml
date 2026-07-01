@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+air_wings_variants_lifecycle_live_lane = { path = "../lanes/air_wings_variants_lifecycle_live" }
 serde_json = "1"
 snapshot = { path = "../snapshot" }
 

@@ -1,0 +1,63 @@
+{
+  "schema": "characters_leaders_cabinet_live.registration_blocker.v1",
+  "lane": "characters_leaders_cabinet_live",
+  "domain_id": 47,
+  "result": "blocked",
+  "backlog_reduced": true,
+  "patch_artifact": "replay_native/lanes/characters_leaders_cabinet_live/DOMAIN47_REGISTRATION_ONLY.patch",
+  "patch_check": {
+    "command": "git apply --check --verbose replay_native\\lanes\\characters_leaders_cabinet_live\\DOMAIN47_REGISTRATION_ONLY.patch",
+    "result": "passed",
+    "applied": false
+  },
+  "registry_state": {
+    "domain_46": {
+      "name": "air_variant_archetypes_live",
+      "status_in_domain_registry_json": "production_complete",
+      "status_in_domain_registry_md": "production-complete"
+    },
+    "domain_47": {
+      "name": "characters_leaders_cabinet_live",
+      "status_in_domain_registry_json": "reserved",
+      "status_in_domain_registry_md": "reserved"
+    }
+  },
+  "shared_registration_state": {
+    "collector_registry_domain47": "Reserved, schedulable=false",
+    "recorder_registry_domain47": "Reserved, schedulable=false",
+    "collector_append_hook": "absent",
+    "recorder_decoder_hook": "absent"
+  },
+  "active_shared_worktree_conflict": {
+    "reason_not_applied": "shared collector/recorder integration files are already actively modified by other lanes; applying the collector hot-loop hook now would overlap scheduling/read/append blocks",
+    "dirty_shared_files_observed": [
+      "replay_native/Cargo.toml",
+      "replay_native/collector/Cargo.toml",
+      "replay_native/collector/src/lib.rs",
+      "replay_native/recorder_host/Cargo.toml",
+      "replay_native/recorder_host/src/main.rs",
+      "replay_native/DOMAIN_REGISTRY.md",
+      "replay_native/domain_registry.json",
+      "replay_native/collector/src/domain_registry.rs",
+      "replay_native/recorder_host/src/compact_domain_registry.rs"
+    ],
+    "collector_hook_conflict_points": [
+      "replay_native/collector/src/lib.rs scheduled domain enabled flags around air_variant_archetypes/market/supply/focus depth",
+      "replay_native/collector/src/lib.rs read-handle block around air_variant_archetype_read",
+      "replay_native/collector/src/lib.rs append sequencing around append_compact_air_variant_archetypes_data_record"
+    ]
+  },
+  "lane_proof": {
+    "rust_tests": "14 passed with replay-verify feature",
+    "appointed_transition_fixture": "before=0, after_add=3, after_remove=1",
+    "domain47_replay_fixture": {
+      "result": "verified",
+      "hoi4replay": "replay_native/runs/characters_leaders_cabinet_live_20260701_replay_fixture_v1/native_session.battleplan",
+      "collector_stream_bytes": 321,
+      "verified_stream_bytes": 321,
+      "appointed_advisor_rows": 3,
+      "parse_errors": []
+    }
+  },
+  "unbreakable_until": "shared integration owner applies DOMAIN47_REGISTRATION_ONLY.patch and the collector hot-loop hook from REGISTRATION_HOOK_PLAN.md, then runs live speed-five/current-equivalent DLL-only proof"
+}

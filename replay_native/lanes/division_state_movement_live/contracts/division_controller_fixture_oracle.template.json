@@ -1,0 +1,16 @@
+{
+  "schema": "division_controller_fixture_oracle_v1",
+  "fixture_id": "replace_with_save_or_scenario_name",
+  "exe_sha256": "optional_same_as_controller_candidate_probe",
+  "source": "time_aligned_save_or_in_game_fixture_note",
+  "divisions": [
+    {
+      "div_id": 0,
+      "owner_tag_db_id": 0,
+      "controller_tag_db_id": 0,
+      "owner_tag": "OWN",
+      "controller_tag": "CTL",
+      "fixture_note": "must be an expeditionary/borrowed/current-host divergent division"
+    }
+  ]
+}

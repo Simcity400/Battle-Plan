@@ -1,5 +1,6 @@
 #![recursion_limit = "256"]
 
+use recorder_host::compact_domain_registry;
 use serde_json::{json, Value};
 use snapshot::{pack, Container, ExpectedIdentity, PackEntry, PackIdentity};
 use std::collections::{BTreeMap, BTreeSet};
@@ -61,6 +62,133 @@ const COMPACT_PRODUCTION_SCALE_RAW: u32 = 100000;
 const COMPACT_TECH_PROGRESS_SCALE_RAW: u32 = 1000;
 const COMPACT_TECH_LIVE_PROGRESS_SCALE_RAW: u32 = 100000;
 const COMPACT_FIXED_SCALE_RAW: u32 = 100000;
+const COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE: u16 = 45;
+const COMPACT_DOMAIN_AIR_VARIANT_ARCHETYPES: u16 = 46;
+#[cfg(test)]
+const COMPACT_AIR_VARIANT_ARCHETYPE_ROW_FLAG_ARCHETYPE: u32 = 1 << 1;
+#[cfg(test)]
+const COMPACT_AIR_VARIANT_ARCHETYPE_ROW_FLAG_BASE_AIRFRAME: u32 = 1 << 2;
+#[cfg(test)]
+const COMPACT_AIR_VARIANT_ARCHETYPE_ROW_FLAG_ROLE: u32 = 1 << 3;
+#[cfg(test)]
+const COMPACT_AIR_VARIANT_ARCHETYPE_SOURCE_LIVE_STATS: u32 = 1;
+#[cfg(test)]
+const COMPACT_AIR_VARIANT_ARCHETYPE_SOURCE_LIVE_TOKEN_DICTIONARY: u32 = 1 << 5;
+#[cfg(test)]
+const COMPACT_AIR_VARIANT_ARCHETYPE_SOURCE_STATIC_SOURCE_ENUM: u32 = 1 << 6;
+const COMPACT_FRD_DEPTH_HEADER_LEN: usize = 48;
+const COMPACT_FRD_RESEARCH_ETA_ROW_LEN: usize = 80;
+const COMPACT_FRD_DECISION_STATUS_ROW_LEN: usize = 28;
+const COMPACT_FRD_BADGE_ROW_FIXED_LEN: usize = 20;
+const COMPACT_FRD_STATUS_FOCUS_PAUSE_BADGED: u32 = 1;
+const COMPACT_FRD_STATUS_DECISION_TARGETS_BADGED: u32 = 1 << 1;
+const COMPACT_FRD_STATUS_DIRECT_EVENTS_DERIVED: u32 = 1 << 2;
+const COMPACT_FRD_STATUS_KNOWN_MASK: u32 = COMPACT_FRD_STATUS_FOCUS_PAUSE_BADGED
+    | COMPACT_FRD_STATUS_DECISION_TARGETS_BADGED
+    | COMPACT_FRD_STATUS_DIRECT_EVENTS_DERIVED;
+const COMPACT_FRD_BADGE_KIND_FOCUS_PAUSE_FAIL_CLOSED: u32 = 1;
+const COMPACT_FRD_BADGE_KIND_DECISION_TARGET_FIELDS_FAIL_CLOSED: u32 = 2;
+const COMPACT_FRD_BADGE_KIND_DIRECT_EVENT_HOOKS_UNAVAILABLE: u32 = 3;
+const COMPACT_FRD_BADGE_KIND_MAX: u32 = COMPACT_FRD_BADGE_KIND_DIRECT_EVENT_HOOKS_UNAVAILABLE;
+const COMPACT_FRD_BADGE_FLAG_FAIL_CLOSED: u32 = 1;
+const COMPACT_FRD_BADGE_FLAG_DERIVED_DETERMINISTIC: u32 = 1 << 1;
+const COMPACT_FRD_BADGE_FLAG_CURRENT_BUILD_PROBED: u32 = 1 << 2;
+const COMPACT_FRD_BADGE_FLAG_KNOWN_MASK: u32 = COMPACT_FRD_BADGE_FLAG_FAIL_CLOSED
+    | COMPACT_FRD_BADGE_FLAG_DERIVED_DETERMINISTIC
+    | COMPACT_FRD_BADGE_FLAG_CURRENT_BUILD_PROBED;
+const COMPACT_FRD_BADGE_EVIDENCE_NO_PAUSED_TRUE_GROUND_TRUTH: u32 = 1;
+const COMPACT_FRD_BADGE_EVIDENCE_TIMED_DEFINITION_LAYOUT_REJECTED: u32 = 2;
+const COMPACT_FRD_BADGE_EVIDENCE_COMPACT_FRAME_DELTA_DERIVED: u32 = 3;
+const COMPACT_FRD_BADGE_DETAIL_FOCUS_PAUSE_FAIL_CLOSED: &str =
+    "focus_pause_flag_fail_closed_no_paused_true_ground_truth";
+const COMPACT_FRD_BADGE_DETAIL_DECISION_TARGET_FIELDS_FAIL_CLOSED: &str =
+    "decision_target_fields_fail_closed_body_layout_unvalidated";
+const COMPACT_FRD_BADGE_DETAIL_DIRECT_EVENT_HOOKS_UNAVAILABLE: &str =
+    "direct_event_hooks_unavailable_transitions_derived_from_compact_frames";
+const COMPACT_FRD_FOCUS_EVENT_COMPLETED_COUNT_INCREASED: u32 = 1;
+const COMPACT_FRD_FOCUS_EVENT_CURRENT_STARTED: u32 = 2;
+const COMPACT_FRD_FOCUS_EVENT_STOPPED: u32 = 3;
+const COMPACT_FRD_FOCUS_EVENT_CHANGED: u32 = 4;
+const COMPACT_FRD_FOCUS_EVENT_PROGRESS_REGRESSED: u32 = 5;
+const COMPACT_FRD_FOCUS_EVENT_INVALID_BOTH_CURRENT_TYPES: u32 = 6;
+const COMPACT_FRD_FOCUS_KIND_CONTINUOUS: u32 = 2;
+const COMPACT_FRD_FOCUS_FLAG_COMPLETED_TOKEN_INFERRED: u32 = 1;
+const COMPACT_FRD_FOCUS_FLAG_COMPLETED_TOKEN_EXACT: u32 = 1 << 1;
+const COMPACT_FRD_RESEARCH_FLAG_SAME_TECH: u32 = 1;
+const COMPACT_FRD_RESEARCH_FLAG_POSITIVE_SPEED: u32 = 1 << 1;
+const COMPACT_FRD_RESEARCH_FLAG_ETA_AVAILABLE: u32 = 1 << 2;
+const COMPACT_FRD_RESEARCH_FLAG_TECH_ROLLOVER: u32 = 1 << 3;
+const COMPACT_FRD_RESEARCH_FLAG_NEGATIVE_DELTA: u32 = 1 << 4;
+const COMPACT_FRD_RESEARCH_FLAG_BASE_PRESENT: u32 = 1 << 5;
+const COMPACT_FRD_DECISION_EVENT_STARTED: u32 = 1;
+const COMPACT_FRD_DECISION_EVENT_STOPPED: u32 = 2;
+const COMPACT_FRD_DECISION_EVENT_DAY_DELTA: u32 = 3;
+const COMPACT_FRD_DECISION_EVENT_STATE_CHANGED: u32 = 4;
+const COMPACT_FRD_DECISION_EVENT_STATUS_COUNTS_CHANGED: u32 = 5;
+const COMPACT_MARKET_TRADE_HEADER_LEN: usize = 48;
+const COMPACT_MARKET_TRADE_ROW_LEN: usize = 48;
+const COMPACT_MARKET_TRADE_CONTRACT_TYPE: u32 = 81;
+const COMPACT_MARKET_TRADE_MAX_TAG_DB_ID: u32 = 2_048;
+const COMPACT_MARKET_TRADE_MAX_CONTRACT_ID: u32 = i32::MAX as u32;
+const COMPACT_MARKET_TRADE_MAX_VARIANT_ID: u32 = i32::MAX as u32;
+const COMPACT_MARKET_TRADE_MAX_AMOUNT_RAW: i64 = 1_000_000_000_000_000;
+const COMPACT_MARKET_TRADE_ROW_FLAG_BUYER_PTR_VALID: u32 = 1;
+const COMPACT_MARKET_TRADE_ROW_FLAG_EQUIPMENT_SUBBUF_VALID: u32 = 1 << 1;
+const COMPACT_MARKET_TRADE_ROW_FLAG_DELIVERY_SUBBUF_VALID: u32 = 1 << 2;
+const COMPACT_MARKET_TRADE_ROW_FLAG_VARIANT_VALID: u32 = 1 << 3;
+const COMPACT_MARKET_TRADE_ROW_FLAG_AMOUNT_VALID: u32 = 1 << 4;
+const COMPACT_SUPPLY_LOGISTICS_HEADER_LEN: usize = 48;
+const COMPACT_SUPPLY_LOGISTICS_ROW_LEN: usize = 40;
+const COMPACT_SUPPLY_ROW_KIND_PROVINCE_LOGISTICS: u32 = 1;
+const COMPACT_SUPPLY_ROW_KIND_DIVISION_SUPPLY: u32 = 2;
+const COMPACT_SUPPLY_ROW_KIND_COMPUTED_BADGE: u32 = 3;
+const COMPACT_SUPPLY_ROW_FLAG_RAIL: u32 = 1;
+const COMPACT_SUPPLY_ROW_FLAG_SUPPLY_NODE: u32 = 1 << 1;
+const COMPACT_SUPPLY_ROW_FLAG_NAVAL_SUPPLY_HUB: u32 = 1 << 2;
+const COMPACT_SUPPLY_ROW_FLAG_INFRASTRUCTURE: u32 = 1 << 3;
+const COMPACT_SUPPLY_ROW_FLAG_LIVE_BUILDING_VECTOR: u32 = 1 << 4;
+const COMPACT_SUPPLY_ROW_FLAG_DIVISION_CURRENT_SUPPLY: u32 = 1 << 5;
+const COMPACT_SUPPLY_ROW_FLAG_DIVISION_MAX_SUPPLY: u32 = 1 << 6;
+const COMPACT_SUPPLY_ROW_FLAG_DIVISION_SUPPLY_GAIN: u32 = 1 << 7;
+const COMPACT_SUPPLY_ROW_FLAG_DIVISION_OWNER: u32 = 1 << 8;
+const COMPACT_SUPPLY_ROW_FLAG_EXACT_SUPPLY_WALL: u32 = 1 << 9;
+const COMPACT_SUPPLY_ROW_FLAG_ATTRITION_WALL: u32 = 1 << 10;
+const COMPACT_SUPPLY_ROW_FLAG_PROXY_VALUE: u32 = 1 << 11;
+const COMPACT_SUPPLY_ROW_FLAG_DIVISION_SUPPLY_DEFICIT: u32 = 1 << 12;
+const COMPACT_SUPPLY_ROW_FLAG_DIVISION_FUEL: u32 = 1 << 13;
+const COMPACT_SUPPLY_ROW_FLAG_MOTORIZATION_WALL: u32 = 1 << 14;
+const COMPACT_SUPPLY_ROW_FLAG_CONVOY_PRESSURE_WALL: u32 = 1 << 15;
+const COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED: u32 = 1 << 16;
+const COMPACT_SUPPLY_ROW_VALID_FLAGS: u32 = COMPACT_SUPPLY_ROW_FLAG_RAIL
+    | COMPACT_SUPPLY_ROW_FLAG_SUPPLY_NODE
+    | COMPACT_SUPPLY_ROW_FLAG_NAVAL_SUPPLY_HUB
+    | COMPACT_SUPPLY_ROW_FLAG_INFRASTRUCTURE
+    | COMPACT_SUPPLY_ROW_FLAG_LIVE_BUILDING_VECTOR
+    | COMPACT_SUPPLY_ROW_FLAG_DIVISION_CURRENT_SUPPLY
+    | COMPACT_SUPPLY_ROW_FLAG_DIVISION_MAX_SUPPLY
+    | COMPACT_SUPPLY_ROW_FLAG_DIVISION_SUPPLY_GAIN
+    | COMPACT_SUPPLY_ROW_FLAG_DIVISION_OWNER
+    | COMPACT_SUPPLY_ROW_FLAG_EXACT_SUPPLY_WALL
+    | COMPACT_SUPPLY_ROW_FLAG_ATTRITION_WALL
+    | COMPACT_SUPPLY_ROW_FLAG_PROXY_VALUE
+    | COMPACT_SUPPLY_ROW_FLAG_DIVISION_SUPPLY_DEFICIT
+    | COMPACT_SUPPLY_ROW_FLAG_DIVISION_FUEL
+    | COMPACT_SUPPLY_ROW_FLAG_MOTORIZATION_WALL
+    | COMPACT_SUPPLY_ROW_FLAG_CONVOY_PRESSURE_WALL
+    | COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED;
+const COMPACT_SUPPLY_BADGE_EXACT_PROVINCE_SUPPLY_TRANSIENT: i32 = 1;
+const COMPACT_SUPPLY_BADGE_ATTRITION_RUNTIME_COMPUTED: i32 = 2;
+const COMPACT_SUPPLY_BADGE_MOTORIZATION_SETTINGS_UNPINNED: i32 = 3;
+const COMPACT_SUPPLY_BADGE_CONVOY_LOGISTICS_PRESSURE_UNPINNED: i32 = 4;
+const COMPACT_SUPPLY_BADGE_CSUPPLY_INPUT_ARRAYS_UNSAFE: i32 = 5;
+const COMPACT_SUPPLY_MAX_PROVINCE_ID: u32 = 13_413;
+const COMPACT_SUPPLY_MAX_STATE_ID: u32 = 1_081;
+const COMPACT_SUPPLY_MAX_TAG_DB_ID: u32 = 2_048;
+const COMPACT_SUPPLY_MAX_DIVISION_ID: u32 = i32::MAX as u32;
+const COMPACT_SUPPLY_MAX_SUPPLY_RAW: i32 = 100_000_000;
+const COMPACT_SUPPLY_MAX_SUPPLY_GAIN_RAW: i32 = 500_000;
+const COMPACT_SUPPLY_MAX_DIVISION_FUEL_RAW: i32 = i32::MAX;
+const COMPACT_SUPPLY_MAX_BUILDING_LEVEL: i32 = 1_000;
 const COMPACT_DIVISION_TYPE: u32 = 4713;
 const COMPACT_DIVISION_ROW_LEN: usize = 88;
 const COMPACT_MAX_DIVISION_PROVINCE_ID: u32 = 1_000_000;
@@ -141,6 +269,14 @@ const COMPACT_AIR_WING_LOADOUT_ROW_FLAG_DELETED: u32 = 1;
 const COMPACT_AIR_WING_LOADOUT_MAX_AIR_BASE_ID: u32 = i32::MAX as u32;
 const COMPACT_AIR_WING_LOADOUT_MAX_VARIANT_ID: u32 = i32::MAX as u32;
 const COMPACT_AIR_WING_LOADOUT_MAX_AMOUNT_RAW: i64 = 1_000_000_000_000_000;
+const COMPACT_AIR_STRENGTH_DELTA_HEADER_LEN: usize = 48;
+const COMPACT_AIR_STRENGTH_DELTA_ROW_LEN: usize = 68;
+const COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_LOSS: u32 = 1;
+const COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_REINFORCEMENT: u32 = 1 << 1;
+const COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_DELETED: u32 = 1 << 2;
+const COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_MISSION_REGION: u32 = 1 << 3;
+const COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK: u32 = 1 << 4;
+const COMPACT_AIR_STRENGTH_EQUIPMENT_AMOUNT_PER_PLANE: i64 = 100_000;
 const COMPACT_AIR_VARIANT_DEF_ROW_LEN: usize = 24;
 const COMPACT_AIR_VARIANT_DEF_ROW_FLAG_DISPLAY_NAME: u32 = 1;
 const COMPACT_AIR_VARIANT_DEF_ROW_FLAG_VARIANT_NAME: u32 = 1 << 1;
@@ -159,11 +295,16 @@ const COMPACT_AIR_VARIANT_UPGRADE_MAX_LEVEL: u32 = 255;
 const COMPACT_PROJECT_HEADER_LEN: usize = 64;
 const COMPACT_PROJECT_HEADER_EXT_ROOT_COUNTERS: u32 = 1;
 const COMPACT_PROJECT_HEADER_EXT_ROOT_REASON_COUNTERS: u32 = 2;
+const COMPACT_PROJECT_HEADER_EXT_PROGRESS_V1: u32 = 3;
+const COMPACT_PROJECT_HEADER_EXT_PROGRESS_V2: u32 = 4;
 const COMPACT_PROJECT_ROOT_COUNTERS_LEN: usize = 24;
 const COMPACT_PROJECT_ROOT_REASON_COUNTERS_LEN: usize = 48;
+const COMPACT_PROJECT_PROGRESS_COUNTERS_LEN: usize = 16;
 const COMPACT_PROJECT_FACILITY_ROW_LEN: usize = 32;
 const COMPACT_PROJECT_ROW_LEN: usize = 24;
 const COMPACT_PROJECT_SCIENTIST_ROW_LEN: usize = 32;
+const COMPACT_PROJECT_STATE_ROW_LEN: usize = 48;
+const COMPACT_PROJECT_BREAKTHROUGH_ROW_LEN: usize = 16;
 const COMPACT_PROJECT_SOURCE_SCAN: u32 = 1;
 const COMPACT_PROJECT_SOURCE_BRIDGE: u32 = 2;
 const COMPACT_PROJECT_FACILITY_ROW_FLAG_ACTIVE: u32 = 1;
@@ -174,10 +315,15 @@ const COMPACT_PROJECT_SCIENTIST_ROW_FLAG_NAME_TOKEN: u32 = 1;
 const COMPACT_PROJECT_SCIENTIST_ROW_FLAG_DISPLAY_NAME: u32 = 1 << 1;
 const COMPACT_PROJECT_SCIENTIST_ROW_FLAG_TRAIT_COUNT: u32 = 1 << 2;
 const COMPACT_PROJECT_SCIENTIST_ROW_FLAG_SKILLS: u32 = 1 << 3;
+const COMPACT_PROJECT_STATE_ROW_FLAG_COMPLETED: u32 = 1;
 const COMPACT_PROJECT_MAX_ID: u32 = 10_000_000;
 const COMPACT_PROJECT_MAX_PROVINCE_ID: u32 = 1_000_000;
 const COMPACT_PROJECT_MAX_HANDLE: u32 = 10_000_000;
 const COMPACT_PROJECT_MAX_ITERATIONS: u32 = 1_000_000;
+const COMPACT_PROJECT_MAX_PROGRESS_RAW: u32 = 1_000_000_000;
+const COMPACT_PROJECT_MAX_PHASE_TARGET_RAW: u32 = 1_000_000;
+const COMPACT_PROJECT_MAX_STATE_ENUM: u32 = 64;
+const COMPACT_PROJECT_MAX_BREAKTHROUGH_POINTS: u32 = 1_000_000_000;
 const COMPACT_PROJECT_MAX_TRAITS: u32 = 256;
 const COMPACT_PROJECT_MAX_SKILL_LEVEL: i32 = 1_000;
 const COMPACT_PROJECT_MAX_BUILDING_LEN: usize = 96;
@@ -209,9 +355,12 @@ const COMPACT_MAP_DETAIL_STATE_ROW_LEN: usize = 28;
 const COMPACT_MAP_DETAIL_PROVINCE_ROW_LEN: usize = 20;
 const COMPACT_MAP_DETAIL_ENTRY_ROW_LEN: usize = 12;
 const COMPACT_WEATHER_REGION_ROW_LEN: usize = 32;
+const COMPACT_WEATHER_PROVINCE_ROW_LEN: usize = 32;
 const COMPACT_MAP_MIN_STATE_ROWS: usize = 1_000;
 const COMPACT_MAP_MIN_PROVINCE_ROWS: usize = 10_000;
 const COMPACT_WEATHER_REGION_ROWS: usize = 305;
+const COMPACT_WEATHER_MIN_PROVINCE_ROWS: usize = 10_000;
+const COMPACT_WEATHER_MAX_PROVINCE_ROWS: usize = 65_536;
 const COMPACT_MAP_MAX_STATE_ID: u32 = 65_535;
 const COMPACT_MAP_MAX_PROVINCE_ID: u32 = 65_536;
 const COMPACT_MAP_MAX_TAG_DB_ID: u32 = 1024;
@@ -220,7 +369,29 @@ const COMPACT_MAP_MAX_BUILDING_LEVEL: u32 = 1_000;
 const COMPACT_WEATHER_MAX_REGION_ID: u32 = 304;
 const COMPACT_WEATHER_MAX_PHENOMENON: u32 = 16;
 const COMPACT_WEATHER_MAX_TEMPERATURE_RAW: i32 = 10_000_000;
+const COMPACT_WEATHER_MAX_TEMP_CHANGE_RAW: i32 = 10_000_000;
+const COMPACT_WEATHER_MAX_PRECIP_RAW: i32 = 100_000_000;
 const COMPACT_WEATHER_MAX_ACTIVE_MODIFIERS: u32 = 4_096;
+const COMPACT_WEATHER_PROVINCE_FLAG_TEMP_PRESENT: u32 = 1;
+const COMPACT_WEATHER_PROVINCE_FLAG_TEMP_CHANGE_PRESENT: u32 = 1 << 1;
+const COMPACT_WEATHER_PROVINCE_FLAG_WATER_PRESENT: u32 = 1 << 2;
+const COMPACT_WEATHER_PROVINCE_FLAG_SNOW_PRESENT: u32 = 1 << 3;
+const COMPACT_WEATHER_PROVINCE_FLAG_MUD_PRESENT: u32 = 1 << 4;
+const COMPACT_WEATHER_PROVINCE_FLAG_MUD_ACTIVE: u32 = 1 << 5;
+const COMPACT_WEATHER_PROVINCE_FLAG_CUSTOM_MODIFIER_COUNT_PRESENT: u32 = 1 << 6;
+const COMPACT_WEATHER_PROVINCE_FLAG_STRUCT_VALIDATED: u32 = 1 << 7;
+const COMPACT_WEATHER_PROVINCE_FLAG_MAP_RECOLOR_DRIVER: u32 = 1 << 8;
+const COMPACT_WEATHER_PROVINCE_FLAG_DYNAMIC_LUT_DRIVER: u32 = 1 << 9;
+const COMPACT_WEATHER_PROVINCE_KNOWN_FLAGS: u32 = COMPACT_WEATHER_PROVINCE_FLAG_TEMP_PRESENT
+    | COMPACT_WEATHER_PROVINCE_FLAG_TEMP_CHANGE_PRESENT
+    | COMPACT_WEATHER_PROVINCE_FLAG_WATER_PRESENT
+    | COMPACT_WEATHER_PROVINCE_FLAG_SNOW_PRESENT
+    | COMPACT_WEATHER_PROVINCE_FLAG_MUD_PRESENT
+    | COMPACT_WEATHER_PROVINCE_FLAG_MUD_ACTIVE
+    | COMPACT_WEATHER_PROVINCE_FLAG_CUSTOM_MODIFIER_COUNT_PRESENT
+    | COMPACT_WEATHER_PROVINCE_FLAG_STRUCT_VALIDATED
+    | COMPACT_WEATHER_PROVINCE_FLAG_MAP_RECOLOR_DRIVER
+    | COMPACT_WEATHER_PROVINCE_FLAG_DYNAMIC_LUT_DRIVER;
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -1394,6 +1565,27 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                         &mut summary,
                     ),
                     41 => decode_compact_projects_data_payload(offset, payload, &mut summary),
+                    42 => decode_compact_air_combat_losses_live_data_payload(
+                        offset,
+                        payload,
+                        &mut summary,
+                    ),
+                    43 => decode_compact_market_trade_data_payload(offset, payload, &mut summary),
+                    44 => decode_compact_supply_logistics_attrition_data_payload(
+                        offset,
+                        payload,
+                        &mut summary,
+                    ),
+                    COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE => {
+                        decode_compact_frd_depth_data_payload(offset, payload, &mut summary)
+                    }
+                    COMPACT_DOMAIN_AIR_VARIANT_ARCHETYPES => {
+                        decode_compact_air_variant_archetypes_data_payload(
+                            offset,
+                            payload,
+                            &mut summary,
+                        )
+                    }
                     other => summary.parse_errors.push(format!(
                         "offset {offset}: unsupported domain data payload for {}",
                         compact_domain_name(other)
@@ -2268,6 +2460,570 @@ fn decode_compact_decisions_data_payload(
     if cursor != payload.len() {
         summary.parse_errors.push(format!(
             "offset {offset}: decisions data payload has {} trailing byte(s)",
+            payload.len().saturating_sub(cursor)
+        ));
+    }
+}
+
+fn decode_compact_frd_depth_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < COMPACT_FRD_DEPTH_HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: focus/research/decisions depth payload is {} byte(s), expected at least {COMPACT_FRD_DEPTH_HEADER_LEN}",
+            payload.len()
+        ));
+        return;
+    }
+    let depth_status_flags = read_u32_le(payload, 8);
+    let focus_count = read_u32_le(payload, 12) as usize;
+    let research_count = read_u32_le(payload, 16) as usize;
+    let decision_status_count = read_u32_le(payload, 20) as usize;
+    let decision_event_count = read_u32_le(payload, 24) as usize;
+    let observed_focus_rows = read_u32_le(payload, 28);
+    let observed_research_slot_rows = read_u32_le(payload, 32) as usize;
+    let observed_decision_rows = read_u32_le(payload, 36);
+    let observed_timed_decision_rows = read_u32_le(payload, 40) as usize;
+    let badge_count = read_u32_le(payload, 44) as usize;
+    let emitted_rows = focus_count
+        .saturating_add(research_count)
+        .saturating_add(decision_status_count)
+        .saturating_add(decision_event_count)
+        .saturating_add(badge_count);
+
+    if depth_status_flags & !COMPACT_FRD_STATUS_KNOWN_MASK != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: focus/research/decisions depth status_flags has unknown bits: {depth_status_flags}"
+        ));
+    }
+    if depth_status_flags & COMPACT_FRD_STATUS_KNOWN_MASK != COMPACT_FRD_STATUS_KNOWN_MASK {
+        let missing = COMPACT_FRD_STATUS_KNOWN_MASK & !depth_status_flags;
+        summary.parse_errors.push(format!(
+            "offset {offset}: focus/research/decisions depth status_flags missing required fail-closed bits: {missing}"
+        ));
+    }
+
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE)
+    {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(emitted_rows as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(emitted_rows as u64);
+    }
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+        "focus_depth_event_rows",
+        focus_count,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+        "research_eta_rows",
+        research_count,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+        "decision_status_rows",
+        decision_status_count,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+        "decision_event_rows",
+        decision_event_count,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+        "depth_badge_rows",
+        badge_count,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+        "depth_observed_research_slot_rows",
+        observed_research_slot_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+        "depth_observed_timed_decision_rows",
+        observed_timed_decision_rows,
+    );
+
+    let mut cursor = COMPACT_FRD_DEPTH_HEADER_LEN;
+    let mut seen_focus = BTreeSet::new();
+    for row_index in 0..focus_count {
+        if let Err(err) = require_compact_remaining(payload, cursor, 36, "focus depth row") {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let tag_db_id = read_u32_le(payload, cursor);
+        let kind = read_u32_le(payload, cursor + 4);
+        let focus_kind = read_u32_le(payload, cursor + 8);
+        let flags = read_u32_le(payload, cursor + 12);
+        let previous_completed = read_u32_le(payload, cursor + 16);
+        let current_completed = read_u32_le(payload, cursor + 20);
+        let previous_progress = read_i32_le(payload, cursor + 24);
+        let current_progress = read_i32_le(payload, cursor + 28);
+        let completed_delta = read_u32_le(payload, cursor + 32);
+        cursor += 36;
+        let from_len = match skip_compact_string_len(payload, &mut cursor, "focus depth from token")
+        {
+            Ok(len) => len,
+            Err(err) => {
+                summary.parse_errors.push(format!("offset {offset}: {err}"));
+                return;
+            }
+        };
+        let to_len = match skip_compact_string_len(payload, &mut cursor, "focus depth to token") {
+            Ok(len) => len,
+            Err(err) => {
+                summary.parse_errors.push(format!("offset {offset}: {err}"));
+                return;
+            }
+        };
+        let completed_len =
+            match skip_compact_string_len(payload, &mut cursor, "focus depth completed token") {
+                Ok(len) => len,
+                Err(err) => {
+                    summary.parse_errors.push(format!("offset {offset}: {err}"));
+                    return;
+                }
+            };
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus depth row {row_index} has zero tag_db_id"
+            ));
+        }
+        if !matches!(
+            kind,
+            COMPACT_FRD_FOCUS_EVENT_COMPLETED_COUNT_INCREASED
+                | COMPACT_FRD_FOCUS_EVENT_CURRENT_STARTED
+                | COMPACT_FRD_FOCUS_EVENT_STOPPED
+                | COMPACT_FRD_FOCUS_EVENT_CHANGED
+                | COMPACT_FRD_FOCUS_EVENT_PROGRESS_REGRESSED
+                | COMPACT_FRD_FOCUS_EVENT_INVALID_BOTH_CURRENT_TYPES
+        ) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus depth row {row_index} has invalid kind {kind}"
+            ));
+        }
+        if focus_kind > COMPACT_FRD_FOCUS_KIND_CONTINUOUS {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus depth row {row_index} has invalid focus_kind {focus_kind}"
+            ));
+        }
+        if flags
+            & !(COMPACT_FRD_FOCUS_FLAG_COMPLETED_TOKEN_INFERRED
+                | COMPACT_FRD_FOCUS_FLAG_COMPLETED_TOKEN_EXACT)
+            != 0
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus depth row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if kind == COMPACT_FRD_FOCUS_EVENT_COMPLETED_COUNT_INCREASED {
+            if current_completed != u32::MAX
+                && previous_completed != u32::MAX
+                && current_completed <= previous_completed
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: focus completed row {row_index} did not increase completed_count"
+                ));
+            }
+            if completed_delta == 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: focus completed row {row_index} has zero completed_delta"
+                ));
+            }
+        }
+        if kind == COMPACT_FRD_FOCUS_EVENT_PROGRESS_REGRESSED
+            && current_progress >= previous_progress
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus progress-regression row {row_index} did not regress"
+            ));
+        }
+        if flags & COMPACT_FRD_FOCUS_FLAG_COMPLETED_TOKEN_EXACT != 0 && completed_len == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus row {row_index} has exact completed-token flag without token"
+            ));
+        }
+        if from_len == 0
+            && to_len == 0
+            && completed_len == 0
+            && kind != COMPACT_FRD_FOCUS_EVENT_INVALID_BOTH_CURRENT_TYPES
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus depth row {row_index} has no token context"
+            ));
+        }
+        if !seen_focus.insert((
+            tag_db_id,
+            kind,
+            previous_completed,
+            current_completed,
+            completed_delta,
+        )) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus depth row {row_index} duplicates focus transition key"
+            ));
+        }
+    }
+
+    let mut seen_research = BTreeSet::new();
+    for row_index in 0..research_count {
+        if let Err(err) = require_compact_remaining(
+            payload,
+            cursor,
+            COMPACT_FRD_RESEARCH_ETA_ROW_LEN,
+            "research ETA row",
+        ) {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let tag_db_id = read_u32_le(payload, cursor);
+        let slot_index = read_u32_le(payload, cursor + 4);
+        let flags = read_u32_le(payload, cursor + 8);
+        let hour_delta = read_u32_le(payload, cursor + 12);
+        let previous_handle = read_u32_le(payload, cursor + 16);
+        let current_handle = read_u32_le(payload, cursor + 20);
+        let previous_def = read_u32_le(payload, cursor + 24);
+        let current_def = read_u32_le(payload, cursor + 28);
+        let previous_progress = read_i64_le(payload, cursor + 32);
+        let current_progress = read_i64_le(payload, cursor + 40);
+        let delta = read_i64_le(payload, cursor + 48);
+        let speed = read_i64_le(payload, cursor + 56);
+        let base = read_i64_le(payload, cursor + 64);
+        let eta = read_i64_le(payload, cursor + 72);
+        cursor += COMPACT_FRD_RESEARCH_ETA_ROW_LEN;
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: research ETA row {row_index} has zero tag_db_id"
+            ));
+        }
+        if slot_index > 32 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: research ETA row {row_index} has invalid slot_index {slot_index}"
+            ));
+        }
+        if flags
+            & !(COMPACT_FRD_RESEARCH_FLAG_SAME_TECH
+                | COMPACT_FRD_RESEARCH_FLAG_POSITIVE_SPEED
+                | COMPACT_FRD_RESEARCH_FLAG_ETA_AVAILABLE
+                | COMPACT_FRD_RESEARCH_FLAG_TECH_ROLLOVER
+                | COMPACT_FRD_RESEARCH_FLAG_NEGATIVE_DELTA
+                | COMPACT_FRD_RESEARCH_FLAG_BASE_PRESENT)
+            != 0
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: research ETA row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if hour_delta == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: research ETA row {row_index} has zero hour_delta"
+            ));
+        }
+        let same_tech = flags & COMPACT_FRD_RESEARCH_FLAG_SAME_TECH != 0;
+        if same_tech && (previous_handle != current_handle || previous_def != current_def) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: research ETA row {row_index} has same-tech flag but different tech ids"
+            ));
+        }
+        if !same_tech && flags & COMPACT_FRD_RESEARCH_FLAG_TECH_ROLLOVER == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: research ETA row {row_index} changed tech without rollover flag"
+            ));
+        }
+        if delta != current_progress.saturating_sub(previous_progress) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: research ETA row {row_index} delta does not match progress"
+            ));
+        }
+        if flags & COMPACT_FRD_RESEARCH_FLAG_POSITIVE_SPEED != 0 && speed <= 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: research ETA row {row_index} has positive-speed flag without positive speed"
+            ));
+        }
+        if flags & COMPACT_FRD_RESEARCH_FLAG_NEGATIVE_DELTA != 0 && delta >= 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: research ETA row {row_index} has negative-delta flag without negative delta"
+            ));
+        }
+        if flags & COMPACT_FRD_RESEARCH_FLAG_BASE_PRESENT != 0 && base <= 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: research ETA row {row_index} has base-present flag without positive base"
+            ));
+        }
+        if flags & COMPACT_FRD_RESEARCH_FLAG_ETA_AVAILABLE != 0 && eta < 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: research ETA row {row_index} has negative eta"
+            ));
+        }
+        if !seen_research.insert((
+            tag_db_id,
+            slot_index,
+            current_handle,
+            current_def,
+            current_progress,
+        )) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: research ETA row {row_index} duplicates slot/progress key"
+            ));
+        }
+    }
+
+    let mut seen_decision_status = BTreeSet::new();
+    for row_index in 0..decision_status_count {
+        if let Err(err) = require_compact_remaining(
+            payload,
+            cursor,
+            COMPACT_FRD_DECISION_STATUS_ROW_LEN,
+            "decision status row",
+        ) {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let tag_db_id = read_u32_le(payload, cursor);
+        let counts = [
+            read_u32_le(payload, cursor + 4),
+            read_u32_le(payload, cursor + 8),
+            read_u32_le(payload, cursor + 12),
+            read_u32_le(payload, cursor + 16),
+            read_u32_le(payload, cursor + 20),
+            read_u32_le(payload, cursor + 24),
+        ];
+        cursor += COMPACT_FRD_DECISION_STATUS_ROW_LEN;
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision status row {row_index} has zero tag_db_id"
+            ));
+        }
+        if counts.iter().any(|count| *count > 4096) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision status row {row_index} has impossible count"
+            ));
+        }
+        if !seen_decision_status.insert(tag_db_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision status row {row_index} duplicates tag_db_id {tag_db_id}"
+            ));
+        }
+    }
+
+    for row_index in 0..decision_event_count {
+        if let Err(err) = require_compact_remaining(payload, cursor, 28, "decision event row") {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let tag_db_id = read_u32_le(payload, cursor);
+        let kind = read_u32_le(payload, cursor + 4);
+        let flags = read_u32_le(payload, cursor + 8);
+        let previous_days = read_i32_le(payload, cursor + 12);
+        let current_days = read_i32_le(payload, cursor + 16);
+        let previous_state = read_i32_le(payload, cursor + 20);
+        let current_state = read_i32_le(payload, cursor + 24);
+        cursor += 28;
+        let decision_len =
+            match skip_compact_string_len(payload, &mut cursor, "decision event token") {
+                Ok(len) => len,
+                Err(err) => {
+                    summary.parse_errors.push(format!("offset {offset}: {err}"));
+                    return;
+                }
+            };
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision event row {row_index} has zero tag_db_id"
+            ));
+        }
+        if !matches!(
+            kind,
+            COMPACT_FRD_DECISION_EVENT_STARTED
+                | COMPACT_FRD_DECISION_EVENT_STOPPED
+                | COMPACT_FRD_DECISION_EVENT_DAY_DELTA
+                | COMPACT_FRD_DECISION_EVENT_STATE_CHANGED
+                | COMPACT_FRD_DECISION_EVENT_STATUS_COUNTS_CHANGED
+        ) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision event row {row_index} has invalid kind {kind}"
+            ));
+        }
+        if flags != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision event row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if kind != COMPACT_FRD_DECISION_EVENT_STATUS_COUNTS_CHANGED && decision_len == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision event row {row_index} has no decision token"
+            ));
+        }
+        if kind == COMPACT_FRD_DECISION_EVENT_DAY_DELTA && previous_days == current_days {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision day-delta row {row_index} did not change days"
+            ));
+        }
+        if kind == COMPACT_FRD_DECISION_EVENT_STATE_CHANGED && previous_state == current_state {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision state-change row {row_index} did not change state"
+            ));
+        }
+    }
+
+    let mut badge_kinds = BTreeSet::new();
+    for row_index in 0..badge_count {
+        if let Err(err) = require_compact_remaining(
+            payload,
+            cursor,
+            COMPACT_FRD_BADGE_ROW_FIXED_LEN,
+            "badge row",
+        ) {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let kind = read_u32_le(payload, cursor);
+        let flags = read_u32_le(payload, cursor + 4);
+        let source_domain_id = read_u32_le(payload, cursor + 8);
+        let affected_count = read_u32_le(payload, cursor + 12);
+        let evidence_code = read_u32_le(payload, cursor + 16);
+        cursor += COMPACT_FRD_BADGE_ROW_FIXED_LEN;
+        let detail = match read_compact_string(payload, &mut cursor, "badge detail") {
+            Ok(value) => value,
+            Err(err) => {
+                summary.parse_errors.push(format!("offset {offset}: {err}"));
+                return;
+            }
+        };
+        if kind == 0 || kind > COMPACT_FRD_BADGE_KIND_MAX {
+            summary.parse_errors.push(format!(
+                "offset {offset}: badge row {row_index} has invalid kind {kind}"
+            ));
+        }
+        if flags == 0 || flags & !COMPACT_FRD_BADGE_FLAG_KNOWN_MASK != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: badge row {row_index} has invalid flags {flags}"
+            ));
+        }
+        if detail.is_empty() {
+            summary.parse_errors.push(format!(
+                "offset {offset}: badge row {row_index} has no detail token"
+            ));
+        }
+        if !badge_kinds.insert(kind) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: badge row {row_index} duplicates kind {kind}"
+            ));
+        }
+        match kind {
+            COMPACT_FRD_BADGE_KIND_FOCUS_PAUSE_FAIL_CLOSED => {
+                if source_domain_id != 12
+                    || evidence_code != COMPACT_FRD_BADGE_EVIDENCE_NO_PAUSED_TRUE_GROUND_TRUTH
+                    || flags & COMPACT_FRD_BADGE_FLAG_FAIL_CLOSED == 0
+                    || flags & COMPACT_FRD_BADGE_FLAG_CURRENT_BUILD_PROBED == 0
+                    || detail != COMPACT_FRD_BADGE_DETAIL_FOCUS_PAUSE_FAIL_CLOSED
+                {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: focus pause badge row {row_index} has inconsistent provenance"
+                    ));
+                }
+                add_compact_domain_data_unit(
+                    summary,
+                    COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+                    "focus_pause_badge_rows",
+                    1,
+                );
+                if affected_count > observed_focus_rows {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: focus pause badge row {row_index} affected_count exceeds observed focus rows"
+                    ));
+                }
+            }
+            COMPACT_FRD_BADGE_KIND_DECISION_TARGET_FIELDS_FAIL_CLOSED => {
+                if source_domain_id != 16
+                    || evidence_code != COMPACT_FRD_BADGE_EVIDENCE_TIMED_DEFINITION_LAYOUT_REJECTED
+                    || flags & COMPACT_FRD_BADGE_FLAG_FAIL_CLOSED == 0
+                    || flags & COMPACT_FRD_BADGE_FLAG_CURRENT_BUILD_PROBED == 0
+                    || detail != COMPACT_FRD_BADGE_DETAIL_DECISION_TARGET_FIELDS_FAIL_CLOSED
+                {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: decision target badge row {row_index} has inconsistent provenance"
+                    ));
+                }
+                add_compact_domain_data_unit(
+                    summary,
+                    COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+                    "decision_target_badge_rows",
+                    1,
+                );
+                if observed_decision_rows == 0 && affected_count != 0 {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: decision target badge row {row_index} has affected decisions without observed decision rows"
+                    ));
+                }
+            }
+            COMPACT_FRD_BADGE_KIND_DIRECT_EVENT_HOOKS_UNAVAILABLE => {
+                if source_domain_id != 1000
+                    || evidence_code != COMPACT_FRD_BADGE_EVIDENCE_COMPACT_FRAME_DELTA_DERIVED
+                    || flags & COMPACT_FRD_BADGE_FLAG_FAIL_CLOSED == 0
+                    || flags & COMPACT_FRD_BADGE_FLAG_DERIVED_DETERMINISTIC == 0
+                    || detail != COMPACT_FRD_BADGE_DETAIL_DIRECT_EVENT_HOOKS_UNAVAILABLE
+                {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: direct event badge row {row_index} has inconsistent provenance"
+                    ));
+                }
+                add_compact_domain_data_unit(
+                    summary,
+                    COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+                    "direct_event_badge_rows",
+                    1,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    for (flag, kind, name) in [
+        (
+            COMPACT_FRD_STATUS_FOCUS_PAUSE_BADGED,
+            COMPACT_FRD_BADGE_KIND_FOCUS_PAUSE_FAIL_CLOSED,
+            "focus pause",
+        ),
+        (
+            COMPACT_FRD_STATUS_DECISION_TARGETS_BADGED,
+            COMPACT_FRD_BADGE_KIND_DECISION_TARGET_FIELDS_FAIL_CLOSED,
+            "decision target fields",
+        ),
+        (
+            COMPACT_FRD_STATUS_DIRECT_EVENTS_DERIVED,
+            COMPACT_FRD_BADGE_KIND_DIRECT_EVENT_HOOKS_UNAVAILABLE,
+            "direct event hooks",
+        ),
+    ] {
+        if depth_status_flags & flag != 0 && !badge_kinds.contains(&kind) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus/research/decisions depth status flag for {name} lacks badge row"
+            ));
+        }
+        if !badge_kinds.contains(&kind) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus/research/decisions depth missing required {name} badge row"
+            ));
+        }
+    }
+
+    if cursor != payload.len() {
+        summary.parse_errors.push(format!(
+            "offset {offset}: focus/research/decisions depth payload has {} trailing byte(s)",
             payload.len().saturating_sub(cursor)
         ));
     }
@@ -4397,6 +5153,264 @@ fn decode_compact_air_wing_loadouts_data_payload(
     );
 }
 
+fn decode_compact_air_combat_losses_live_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < COMPACT_AIR_STRENGTH_DELTA_HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air combat losses live data payload is {} byte(s), expected at least {COMPACT_AIR_STRENGTH_DELTA_HEADER_LEN}",
+            payload.len()
+        ));
+        return;
+    }
+    let row_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let observed_air_wing_rows = read_u32_le(payload, 20) as usize;
+    let observed_equipment_rows = read_u32_le(payload, 24) as usize;
+    let loss_rows = read_u32_le(payload, 28) as usize;
+    let reinforcement_rows = read_u32_le(payload, 32) as usize;
+    let deleted_rows = read_u32_le(payload, 36) as usize;
+    let scale_raw = read_u32_le(payload, 40);
+    let reserved0 = read_u32_le(payload, 44);
+    summary.status_flags_or |= status_flags;
+
+    if changed_rows != row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air combat losses live changed_rows {changed_rows} != row_count {row_count}"
+        ));
+    }
+    if loss_rows > row_count || reinforcement_rows > row_count || deleted_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air combat losses live counters exceed row_count {row_count}"
+        ));
+    }
+    if scale_raw != COMPACT_AIR_STRENGTH_EQUIPMENT_AMOUNT_PER_PLANE as u32 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air combat losses live scale_raw {scale_raw} != {COMPACT_AIR_STRENGTH_EQUIPMENT_AMOUNT_PER_PLANE}"
+        ));
+    }
+    if reserved0 != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air combat losses live header reserved field is nonzero"
+        ));
+    }
+    let expected_len = COMPACT_AIR_STRENGTH_DELTA_HEADER_LEN
+        .saturating_add(row_count.saturating_mul(COMPACT_AIR_STRENGTH_DELTA_ROW_LEN));
+    if payload.len() != expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air combat losses live data payload is {} byte(s), expected {expected_len}",
+            payload.len()
+        ));
+        return;
+    }
+
+    if let Some(domain) = summary.per_domain.get_mut(&42) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    add_compact_domain_data_unit(summary, 42, "air_strength_delta_rows", row_count);
+    add_compact_domain_data_unit(
+        summary,
+        42,
+        "air_strength_observed_wing_rows",
+        observed_air_wing_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        42,
+        "air_strength_observed_equipment_rows",
+        observed_equipment_rows,
+    );
+    add_compact_domain_data_unit(summary, 42, "air_strength_loss_rows", loss_rows);
+    add_compact_domain_data_unit(
+        summary,
+        42,
+        "air_strength_reinforcement_rows",
+        reinforcement_rows,
+    );
+    add_compact_domain_data_unit(summary, 42, "air_strength_deleted_rows", deleted_rows);
+
+    let mut cursor = COMPACT_AIR_STRENGTH_DELTA_HEADER_LEN;
+    let mut seen_rows = BTreeSet::new();
+    let mut decoded_loss_rows = 0usize;
+    let mut decoded_reinforcement_rows = 0usize;
+    let mut decoded_deleted_rows = 0usize;
+    let mut mission_region_rows = 0usize;
+    let max_equipment_amount = (COMPACT_AIR_WING_MAX_PLANES as i64)
+        .saturating_mul(COMPACT_AIR_STRENGTH_EQUIPMENT_AMOUNT_PER_PLANE);
+    for row_index in 0..row_count {
+        if let Err(err) = require_compact_remaining(
+            payload,
+            cursor,
+            COMPACT_AIR_STRENGTH_DELTA_ROW_LEN,
+            "air combat losses live row",
+        ) {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let owner_tag_db_id = read_u32_le(payload, cursor);
+        let wing_id = read_u32_le(payload, cursor + 4);
+        let generation = read_u64_le(payload, cursor + 8);
+        let flags = read_u32_le(payload, cursor + 16);
+        let mission_region = read_u32_le(payload, cursor + 24);
+        let old_count = read_u32_le(payload, cursor + 28);
+        let new_count = read_u32_le(payload, cursor + 32);
+        let count_delta = read_i32_le(payload, cursor + 36);
+        let reserved1 = read_u32_le(payload, cursor + 40);
+        let old_equipment_amount_sum = read_i64_le(payload, cursor + 44);
+        let new_equipment_amount_sum = read_i64_le(payload, cursor + 52);
+        let equipment_amount_delta = read_i64_le(payload, cursor + 60);
+        cursor += COMPACT_AIR_STRENGTH_DELTA_ROW_LEN;
+
+        let deleted = (flags & COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_DELETED) != 0;
+        let loss = (flags & COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_LOSS) != 0;
+        let reinforcement = (flags & COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_REINFORCEMENT) != 0;
+        if owner_tag_db_id == 0 || owner_tag_db_id > COMPACT_AIR_WING_MAX_OWNER_TAG_DB_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat losses live row {row_index} has invalid owner_tag_db_id {owner_tag_db_id}"
+            ));
+        }
+        if wing_id == 0 || wing_id > COMPACT_AIR_WING_MAX_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat losses live row {row_index} has invalid wing_id {wing_id}"
+            ));
+        } else if !seen_rows.insert((
+            owner_tag_db_id,
+            wing_id,
+            generation,
+            deleted,
+            old_count,
+            new_count,
+        )) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat losses live row {row_index} duplicates owner/wing/generation/counts"
+            ));
+        }
+        if flags
+            & !(COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_LOSS
+                | COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_REINFORCEMENT
+                | COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_DELETED
+                | COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_MISSION_REGION
+                | COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK)
+            != 0
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat losses live row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if !loss && !reinforcement && !deleted {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat losses live row {row_index} has no event flag"
+            ));
+        }
+        if (flags & COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_MISSION_REGION) != 0 {
+            mission_region_rows = mission_region_rows.saturating_add(1);
+            if mission_region == 0 || mission_region > COMPACT_AIR_WING_MAX_MISSION_REGION_ID {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: air combat losses live row {row_index} has invalid mission_region {mission_region}"
+                ));
+            }
+        } else if mission_region != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat losses live row {row_index} has mission_region without flag"
+            ));
+        }
+        if old_count > COMPACT_AIR_WING_MAX_PLANES || new_count > COMPACT_AIR_WING_MAX_PLANES {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat losses live row {row_index} has invalid counts {old_count}->{new_count}"
+            ));
+        }
+        if count_delta as i64 != (new_count as i64) - (old_count as i64) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat losses live row {row_index} count_delta {count_delta} does not match counts {old_count}->{new_count}"
+            ));
+        }
+        if !(0..=max_equipment_amount).contains(&old_equipment_amount_sum)
+            || !(0..=max_equipment_amount).contains(&new_equipment_amount_sum)
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat losses live row {row_index} has invalid equipment amount sums"
+            ));
+        }
+        if equipment_amount_delta
+            != new_equipment_amount_sum.saturating_sub(old_equipment_amount_sum)
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat losses live row {row_index} equipment delta does not match equipment sums"
+            ));
+        }
+        let expected_equipment_delta =
+            (count_delta as i64).saturating_mul(COMPACT_AIR_STRENGTH_EQUIPMENT_AMOUNT_PER_PLANE);
+        if equipment_amount_delta == expected_equipment_delta {
+            if (flags & COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK) == 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: air combat losses live row {row_index} missing equipment scale flag"
+                ));
+            }
+        } else if (flags & COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK) != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat losses live row {row_index} has invalid equipment scale flag"
+            ));
+        }
+        if loss != (count_delta < 0 || equipment_amount_delta < 0) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat losses live row {row_index} loss flag does not match deltas"
+            ));
+        }
+        if reinforcement != (count_delta > 0 || equipment_amount_delta > 0) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat losses live row {row_index} reinforcement flag does not match deltas"
+            ));
+        }
+        if deleted && (new_count != 0 || new_equipment_amount_sum != 0) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat losses live deleted row {row_index} has live new fields"
+            ));
+        }
+        if reserved1 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: air combat losses live row {row_index} reserved field is nonzero"
+            ));
+        }
+        if loss {
+            decoded_loss_rows = decoded_loss_rows.saturating_add(1);
+        }
+        if reinforcement {
+            decoded_reinforcement_rows = decoded_reinforcement_rows.saturating_add(1);
+        }
+        if deleted {
+            decoded_deleted_rows = decoded_deleted_rows.saturating_add(1);
+        }
+    }
+    if decoded_loss_rows != loss_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air combat losses live loss_rows {loss_rows} != decoded {decoded_loss_rows}"
+        ));
+    }
+    if decoded_reinforcement_rows != reinforcement_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air combat losses live reinforcement_rows {reinforcement_rows} != decoded {decoded_reinforcement_rows}"
+        ));
+    }
+    if decoded_deleted_rows != deleted_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: air combat losses live deleted_rows {deleted_rows} != decoded {decoded_deleted_rows}"
+        ));
+    }
+    add_compact_domain_data_unit(
+        summary,
+        42,
+        "air_strength_mission_region_rows",
+        mission_region_rows,
+    );
+}
+
 fn decode_compact_air_variant_defs_data_payload(
     offset: usize,
     payload: &[u8],
@@ -4941,6 +5955,31 @@ fn decode_compact_air_variant_stats_data_payload(
     );
 }
 
+fn decode_compact_air_variant_archetypes_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    let lane_summary = air_wings_variants_lifecycle_live_lane::decode_payload(offset, payload);
+    summary.status_flags_or |= lane_summary.status_flags_or;
+    summary.parse_errors.extend(lane_summary.parse_errors);
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_AIR_VARIANT_ARCHETYPES)
+    {
+        domain.status_flags_or |= lane_summary.status_flags_or;
+        domain.data_rows_total = domain
+            .data_rows_total
+            .saturating_add(lane_summary.data_rows_total);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(lane_summary.data_changed_rows_total);
+        for (name, count) in lane_summary.data_units_total {
+            let entry = domain.data_units_total.entry(name.to_string()).or_default();
+            *entry = entry.saturating_add(count);
+        }
+    }
+}
 fn decode_compact_air_variant_upgrades_data_payload(
     offset: usize,
     payload: &[u8],
@@ -5193,6 +6232,10 @@ fn decode_compact_projects_data_payload(
     let source_kind = read_u32_le(payload, 48);
     let header_extension = read_u32_le(payload, 52);
     let scan_ms = read_u64_le(payload, 56);
+    let mut project_state_count = 0usize;
+    let mut breakthrough_count = 0usize;
+    let mut observed_project_state_rows = 0usize;
+    let mut observed_breakthrough_rows = 0usize;
     let mut project_header_len = COMPACT_PROJECT_HEADER_LEN;
     let mut invalid_program_status_countries = 0usize;
     let mut invalid_facility_countries = 0usize;
@@ -5215,7 +6258,9 @@ fn decode_compact_projects_data_payload(
     match header_extension {
         0 => {}
         COMPACT_PROJECT_HEADER_EXT_ROOT_COUNTERS
-        | COMPACT_PROJECT_HEADER_EXT_ROOT_REASON_COUNTERS => {
+        | COMPACT_PROJECT_HEADER_EXT_ROOT_REASON_COUNTERS
+        | COMPACT_PROJECT_HEADER_EXT_PROGRESS_V1
+        | COMPACT_PROJECT_HEADER_EXT_PROGRESS_V2 => {
             project_header_len = COMPACT_PROJECT_HEADER_LEN + COMPACT_PROJECT_ROOT_COUNTERS_LEN;
             if payload.len() < project_header_len {
                 summary.parse_errors.push(format!(
@@ -5230,7 +6275,10 @@ fn decode_compact_projects_data_payload(
             neutral_program_status_countries = read_u32_le(payload, 76) as usize;
             neutral_facility_countries = read_u32_le(payload, 80) as usize;
             neutral_project_pool_countries = read_u32_le(payload, 84) as usize;
-            if header_extension == COMPACT_PROJECT_HEADER_EXT_ROOT_REASON_COUNTERS {
+            if header_extension == COMPACT_PROJECT_HEADER_EXT_ROOT_REASON_COUNTERS
+                || header_extension == COMPACT_PROJECT_HEADER_EXT_PROGRESS_V1
+                || header_extension == COMPACT_PROJECT_HEADER_EXT_PROGRESS_V2
+            {
                 project_header_len += COMPACT_PROJECT_ROOT_REASON_COUNTERS_LEN;
                 if payload.len() < project_header_len {
                     summary.parse_errors.push(format!(
@@ -5252,6 +6300,22 @@ fn decode_compact_projects_data_payload(
                 invalid_project_candidate_fields_invalid = read_u32_le(payload, 128) as usize;
                 invalid_project_short_array = read_u32_le(payload, 132) as usize;
             }
+            if header_extension == COMPACT_PROJECT_HEADER_EXT_PROGRESS_V1
+                || header_extension == COMPACT_PROJECT_HEADER_EXT_PROGRESS_V2
+            {
+                project_header_len += COMPACT_PROJECT_PROGRESS_COUNTERS_LEN;
+                if payload.len() < project_header_len {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: projects data payload is {} byte(s), expected at least {project_header_len} for progress header extension",
+                        payload.len()
+                    ));
+                    return;
+                }
+                project_state_count = read_u32_le(payload, 136) as usize;
+                breakthrough_count = read_u32_le(payload, 140) as usize;
+                observed_project_state_rows = read_u32_le(payload, 144) as usize;
+                observed_breakthrough_rows = read_u32_le(payload, 148) as usize;
+            }
         }
         other => {
             summary.parse_errors.push(format!(
@@ -5265,9 +6329,11 @@ fn decode_compact_projects_data_payload(
         != facility_count
             .saturating_add(project_count)
             .saturating_add(scientist_count)
+            .saturating_add(project_state_count)
+            .saturating_add(breakthrough_count)
     {
         summary.parse_errors.push(format!(
-            "offset {offset}: projects row_count {row_count} does not match facility/project/scientist totals"
+            "offset {offset}: projects row_count {row_count} does not match facility/project/scientist/state/breakthrough totals"
         ));
     }
     if changed_rows > row_count {
@@ -5288,6 +6354,16 @@ fn decode_compact_projects_data_payload(
     if scientist_count > observed_scientist_rows {
         summary.parse_errors.push(format!(
             "offset {offset}: projects scientist_count {scientist_count} > observed_scientist_rows {observed_scientist_rows}"
+        ));
+    }
+    if project_state_count > observed_project_state_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: projects project_state_count {project_state_count} > observed_project_state_rows {observed_project_state_rows}"
+        ));
+    }
+    if breakthrough_count > observed_breakthrough_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: projects breakthrough_count {breakthrough_count} > observed_breakthrough_rows {observed_breakthrough_rows}"
         ));
     }
     if !matches!(
@@ -5322,10 +6398,27 @@ fn decode_compact_projects_data_payload(
         ));
         return;
     };
+    let Some(project_state_bytes) = project_state_count.checked_mul(COMPACT_PROJECT_STATE_ROW_LEN)
+    else {
+        summary.parse_errors.push(format!(
+            "offset {offset}: projects project state byte count overflow"
+        ));
+        return;
+    };
+    let Some(breakthrough_bytes) =
+        breakthrough_count.checked_mul(COMPACT_PROJECT_BREAKTHROUGH_ROW_LEN)
+    else {
+        summary.parse_errors.push(format!(
+            "offset {offset}: projects breakthrough byte count overflow"
+        ));
+        return;
+    };
     let fixed_end = project_header_len
         .saturating_add(facility_bytes)
         .saturating_add(project_bytes)
-        .saturating_add(scientist_bytes);
+        .saturating_add(scientist_bytes)
+        .saturating_add(project_state_bytes)
+        .saturating_add(breakthrough_bytes);
     if payload.len() < fixed_end {
         summary.parse_errors.push(format!(
             "offset {offset}: projects data payload is {} byte(s), expected at least {fixed_end}",
@@ -5343,6 +6436,9 @@ fn decode_compact_projects_data_payload(
     add_compact_domain_data_unit(summary, 41, "project_facility_rows", facility_count);
     add_compact_domain_data_unit(summary, 41, "project_rows", project_count);
     add_compact_domain_data_unit(summary, 41, "project_scientist_rows", scientist_count);
+    add_compact_domain_data_unit(summary, 41, "project_state_rows", project_state_count);
+    add_compact_domain_data_unit(summary, 41, "project_breakthrough_rows", breakthrough_count);
+    let mut project_completed_state_rows = 0usize;
     add_compact_domain_data_unit(
         summary,
         41,
@@ -5360,6 +6456,18 @@ fn decode_compact_projects_data_payload(
         41,
         "project_observed_scientist_rows",
         observed_scientist_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_observed_project_state_rows",
+        observed_project_state_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_observed_breakthrough_rows",
+        observed_breakthrough_rows,
     );
     add_compact_domain_data_unit(
         summary,
@@ -5652,6 +6760,124 @@ fn decode_compact_projects_data_payload(
         scientist_flags.push(flags);
     }
 
+    let mut seen_project_states = BTreeSet::new();
+    for row_index in 0..project_state_count {
+        let id = read_u32_le(payload, cursor);
+        let static_def_handle = read_u32_le(payload, cursor + 4);
+        let current_state_offset = read_u32_le(payload, cursor + 8);
+        let current_state_enum = read_u32_le(payload, cursor + 12);
+        let prototype_state_enum = read_u32_le(payload, cursor + 16);
+        let simple_state_1_enum = read_u32_le(payload, cursor + 20);
+        let simple_state_2_enum = read_u32_le(payload, cursor + 24);
+        let simple_state_3_enum = read_u32_le(payload, cursor + 28);
+        let prototype_iterations = read_u32_le(payload, cursor + 32);
+        let phase_progress_raw = read_u32_le(payload, cursor + 36);
+        let phase_target_raw = read_u32_le(payload, cursor + 40);
+        let state_flags_or_reserved = read_u32_le(payload, cursor + 44);
+        cursor += COMPACT_PROJECT_STATE_ROW_LEN;
+        if id == 0 || id > COMPACT_PROJECT_MAX_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects state row {row_index} has invalid id {id}"
+            ));
+        } else if !seen_project_states.insert((id, static_def_handle)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects state row {row_index} duplicates id/static_def_handle {id}/{static_def_handle}"
+            ));
+        }
+        if static_def_handle == 0 || static_def_handle > COMPACT_PROJECT_MAX_HANDLE {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects state row {row_index} has invalid static_def_handle {static_def_handle}"
+            ));
+        }
+        if !matches!(current_state_offset, 0x18 | 0xE8 | 0x168 | 0x1E8) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects state row {row_index} has invalid current_state_offset {current_state_offset:#x}"
+            ));
+        }
+        for (name, value) in [
+            ("current_state_enum", current_state_enum),
+            ("prototype_state_enum", prototype_state_enum),
+            ("simple_state_1_enum", simple_state_1_enum),
+            ("simple_state_2_enum", simple_state_2_enum),
+            ("simple_state_3_enum", simple_state_3_enum),
+        ] {
+            if value > COMPACT_PROJECT_MAX_STATE_ENUM {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: projects state row {row_index} has invalid {name} {value}"
+                ));
+            }
+        }
+        if prototype_iterations > COMPACT_PROJECT_MAX_ITERATIONS {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects state row {row_index} has invalid prototype_iterations {prototype_iterations}"
+            ));
+        }
+        if phase_progress_raw > COMPACT_PROJECT_MAX_PROGRESS_RAW {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects state row {row_index} has invalid phase_progress_raw {phase_progress_raw}"
+            ));
+        }
+        if phase_target_raw == 0 || phase_target_raw > COMPACT_PROJECT_MAX_PHASE_TARGET_RAW {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects state row {row_index} has invalid phase_target_raw {phase_target_raw}"
+            ));
+        }
+        if header_extension == COMPACT_PROJECT_HEADER_EXT_PROGRESS_V2 {
+            if state_flags_or_reserved & !COMPACT_PROJECT_STATE_ROW_FLAG_COMPLETED != 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: projects state row {row_index} has unknown state_flags {state_flags_or_reserved:#x}"
+                ));
+            }
+            if state_flags_or_reserved & COMPACT_PROJECT_STATE_ROW_FLAG_COMPLETED != 0 {
+                project_completed_state_rows = project_completed_state_rows.saturating_add(1);
+            }
+        } else if state_flags_or_reserved != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects state row {row_index} reserved field is nonzero"
+            ));
+        }
+    }
+
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_completed_state_rows",
+        project_completed_state_rows,
+    );
+
+    let mut seen_breakthrough = BTreeSet::new();
+    for row_index in 0..breakthrough_count {
+        let tag_db_id = read_u32_le(payload, cursor);
+        let specialization_handle = read_u32_le(payload, cursor + 4);
+        let points_raw = read_u32_le(payload, cursor + 8);
+        let reserved0 = read_u32_le(payload, cursor + 12);
+        cursor += COMPACT_PROJECT_BREAKTHROUGH_ROW_LEN;
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects breakthrough row {row_index} has invalid tag_db_id {tag_db_id}"
+            ));
+        }
+        if specialization_handle == 0 || specialization_handle > COMPACT_PROJECT_MAX_HANDLE {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects breakthrough row {row_index} has invalid specialization_handle {specialization_handle}"
+            ));
+        } else if !seen_breakthrough.insert((tag_db_id, specialization_handle)) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects breakthrough row {row_index} duplicates tag/specialization {tag_db_id}/{specialization_handle}"
+            ));
+        }
+        if points_raw > COMPACT_PROJECT_MAX_BREAKTHROUGH_POINTS {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects breakthrough row {row_index} has invalid points_raw {points_raw}"
+            ));
+        }
+        if reserved0 != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects breakthrough row {row_index} reserved field is nonzero"
+            ));
+        }
+    }
+
     for (row_index, flags) in facility_flags.iter().copied().enumerate() {
         let len = match skip_compact_string_len(payload, &mut cursor, "projects facility building")
         {
@@ -5729,6 +6955,791 @@ fn decode_compact_projects_data_payload(
         summary.parse_errors.push(format!(
             "offset {offset}: projects payload has {} trailing byte(s)",
             payload.len().saturating_sub(cursor)
+        ));
+    }
+}
+
+fn decode_compact_market_trade_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < COMPACT_MARKET_TRADE_HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade data payload is {} byte(s), expected at least {}",
+            payload.len(),
+            COMPACT_MARKET_TRADE_HEADER_LEN
+        ));
+        return;
+    }
+    let row_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let observed_contract_rows = read_u32_le(payload, 20) as usize;
+    let emitted_contract_rows = read_u32_le(payload, 24) as usize;
+    let buyer_ptr_valid_rows = read_u32_le(payload, 28) as usize;
+    let variant_valid_rows = read_u32_le(payload, 32) as usize;
+    let amount_valid_rows = read_u32_le(payload, 36) as usize;
+    let partial_field_rows = read_u32_le(payload, 40) as usize;
+    let scale_raw = read_u32_le(payload, 44);
+    summary.status_flags_or |= status_flags;
+
+    if changed_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade changed_rows {changed_rows} > row_count {row_count}"
+        ));
+    }
+    if emitted_contract_rows != row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade emitted_contract_rows {emitted_contract_rows} != row_count {row_count}"
+        ));
+    }
+    if observed_contract_rows < row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade observed_contract_rows {observed_contract_rows} < row_count {row_count}"
+        ));
+    }
+    let omitted_candidate_rows = observed_contract_rows.saturating_sub(emitted_contract_rows);
+    for (name, count) in [
+        ("buyer_ptr_valid_rows", buyer_ptr_valid_rows),
+        ("variant_valid_rows", variant_valid_rows),
+        ("amount_valid_rows", amount_valid_rows),
+        ("partial_field_rows", partial_field_rows),
+    ] {
+        if count > row_count {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade {name} {count} > row_count {row_count}"
+            ));
+        }
+    }
+    if scale_raw != COMPACT_FIXED_SCALE_RAW {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade scale_raw {scale_raw} != {COMPACT_FIXED_SCALE_RAW}"
+        ));
+    }
+    let expected_len = COMPACT_MARKET_TRADE_HEADER_LEN
+        .saturating_add(row_count.saturating_mul(COMPACT_MARKET_TRADE_ROW_LEN));
+    if payload.len() != expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade data payload is {} byte(s), expected {expected_len}",
+            payload.len()
+        ));
+        return;
+    }
+
+    if let Some(domain) = summary.per_domain.get_mut(&43) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    add_compact_domain_data_unit(summary, 43, "market_trade_contract_rows", row_count);
+    add_compact_domain_data_unit(
+        summary,
+        43,
+        "market_trade_observed_contract_rows",
+        observed_contract_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        43,
+        "market_trade_omitted_candidate_rows",
+        omitted_candidate_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        43,
+        "market_trade_buyer_ptr_valid_rows",
+        buyer_ptr_valid_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        43,
+        "market_trade_variant_valid_rows",
+        variant_valid_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        43,
+        "market_trade_amount_valid_rows",
+        amount_valid_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        43,
+        "market_trade_partial_field_rows",
+        partial_field_rows,
+    );
+
+    let mut seen_contracts = BTreeSet::new();
+    let mut computed_buyer_valid = 0usize;
+    let mut computed_variant_valid = 0usize;
+    let mut computed_amount_valid = 0usize;
+    let mut computed_partial_fields = 0usize;
+    let known_flags = COMPACT_MARKET_TRADE_ROW_FLAG_BUYER_PTR_VALID
+        | COMPACT_MARKET_TRADE_ROW_FLAG_EQUIPMENT_SUBBUF_VALID
+        | COMPACT_MARKET_TRADE_ROW_FLAG_DELIVERY_SUBBUF_VALID
+        | COMPACT_MARKET_TRADE_ROW_FLAG_VARIANT_VALID
+        | COMPACT_MARKET_TRADE_ROW_FLAG_AMOUNT_VALID;
+    let mut cursor = COMPACT_MARKET_TRADE_HEADER_LEN;
+    for row_index in 0..row_count {
+        if let Err(err) = require_compact_remaining(
+            payload,
+            cursor,
+            COMPACT_MARKET_TRADE_ROW_LEN,
+            "market trade row",
+        ) {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let contract_id = read_u32_le(payload, cursor);
+        let contract_type = read_u32_le(payload, cursor + 4);
+        let flags = read_u32_le(payload, cursor + 8);
+        let seller_tag_db_id = read_u32_le(payload, cursor + 12);
+        let buyer_tag_db_id = read_u32_le(payload, cursor + 16);
+        let equipment_variant_id = read_u32_le(payload, cursor + 20);
+        let amount_raw = read_i64_le(payload, cursor + 24);
+        let equipment_subbuf_status = read_u32_le(payload, cursor + 32);
+        let delivery_subbuf_status = read_u32_le(payload, cursor + 36);
+        let buyer_ptr_status = read_u32_le(payload, cursor + 40);
+        let reserved = read_u32_le(payload, cursor + 44);
+        cursor += COMPACT_MARKET_TRADE_ROW_LEN;
+
+        let buyer_ptr_valid = flags & COMPACT_MARKET_TRADE_ROW_FLAG_BUYER_PTR_VALID != 0;
+        let equipment_subbuf_valid =
+            flags & COMPACT_MARKET_TRADE_ROW_FLAG_EQUIPMENT_SUBBUF_VALID != 0;
+        let delivery_subbuf_valid =
+            flags & COMPACT_MARKET_TRADE_ROW_FLAG_DELIVERY_SUBBUF_VALID != 0;
+        let variant_valid = flags & COMPACT_MARKET_TRADE_ROW_FLAG_VARIANT_VALID != 0;
+        let amount_valid = flags & COMPACT_MARKET_TRADE_ROW_FLAG_AMOUNT_VALID != 0;
+        if buyer_ptr_valid {
+            computed_buyer_valid = computed_buyer_valid.saturating_add(1);
+        }
+        if variant_valid {
+            computed_variant_valid = computed_variant_valid.saturating_add(1);
+        }
+        if amount_valid {
+            computed_amount_valid = computed_amount_valid.saturating_add(1);
+        }
+        if !buyer_ptr_valid
+            || !equipment_subbuf_valid
+            || !delivery_subbuf_valid
+            || !variant_valid
+            || !amount_valid
+        {
+            computed_partial_fields = computed_partial_fields.saturating_add(1);
+        }
+
+        if contract_id == 0 || contract_id > COMPACT_MARKET_TRADE_MAX_CONTRACT_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade row {row_index} has invalid contract_id {contract_id}"
+            ));
+        } else if !seen_contracts.insert(contract_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade row {row_index} duplicates contract_id {contract_id}"
+            ));
+        }
+        if contract_type != COMPACT_MARKET_TRADE_CONTRACT_TYPE {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade row {row_index} has contract_type {contract_type}, expected {COMPACT_MARKET_TRADE_CONTRACT_TYPE}"
+            ));
+        }
+        for (name, tag_db_id) in [
+            ("seller_tag_db_id", seller_tag_db_id),
+            ("buyer_tag_db_id", buyer_tag_db_id),
+        ] {
+            if tag_db_id == 0 || tag_db_id > COMPACT_MARKET_TRADE_MAX_TAG_DB_ID {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: market trade row {row_index} has invalid {name} {tag_db_id}"
+                ));
+            }
+        }
+        if flags & !known_flags != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if reserved != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade row {row_index} reserved field is nonzero"
+            ));
+        }
+        if buyer_ptr_status > 2 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade row {row_index} has invalid buyer_ptr_status {buyer_ptr_status}"
+            ));
+        }
+        if buyer_ptr_valid != (buyer_ptr_status == 1) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade row {row_index} buyer_ptr_valid flag disagrees with status {buyer_ptr_status}"
+            ));
+        }
+        for (name, status) in [
+            ("equipment_subbuf_status", equipment_subbuf_status),
+            ("delivery_subbuf_status", delivery_subbuf_status),
+        ] {
+            if status > 2 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: market trade row {row_index} has invalid {name} {status}"
+                ));
+            }
+        }
+        if equipment_subbuf_valid != (equipment_subbuf_status == 1) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade row {row_index} equipment valid flag disagrees with status {equipment_subbuf_status}"
+            ));
+        }
+        if delivery_subbuf_valid != (delivery_subbuf_status == 1) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade row {row_index} delivery valid flag disagrees with status {delivery_subbuf_status}"
+            ));
+        }
+        if variant_valid {
+            if equipment_variant_id == 0
+                || equipment_variant_id > COMPACT_MARKET_TRADE_MAX_VARIANT_ID
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: market trade row {row_index} has invalid equipment_variant_id {equipment_variant_id}"
+                ));
+            }
+            if !equipment_subbuf_valid {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: market trade row {row_index} marks variant valid without valid equipment subbuffer"
+                ));
+            }
+        } else if equipment_variant_id != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade row {row_index} has equipment_variant_id {equipment_variant_id} with variant flag unset"
+            ));
+        }
+        if amount_valid {
+            if amount_raw <= 0 || amount_raw > COMPACT_MARKET_TRADE_MAX_AMOUNT_RAW {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: market trade row {row_index} has invalid amount_raw {amount_raw}"
+                ));
+            }
+            if !delivery_subbuf_valid {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: market trade row {row_index} marks amount valid without valid delivery subbuffer"
+                ));
+            }
+        } else if amount_raw != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade row {row_index} has amount_raw {amount_raw} with amount flag unset"
+            ));
+        }
+    }
+
+    for (name, expected, actual) in [
+        (
+            "buyer_ptr_valid_rows",
+            buyer_ptr_valid_rows,
+            computed_buyer_valid,
+        ),
+        (
+            "variant_valid_rows",
+            variant_valid_rows,
+            computed_variant_valid,
+        ),
+        (
+            "amount_valid_rows",
+            amount_valid_rows,
+            computed_amount_valid,
+        ),
+        (
+            "partial_field_rows",
+            partial_field_rows,
+            computed_partial_fields,
+        ),
+    ] {
+        if expected != actual {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade header {name} {expected} != computed {actual}"
+            ));
+        }
+    }
+}
+
+fn decode_compact_supply_logistics_attrition_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < COMPACT_SUPPLY_LOGISTICS_HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: supply logistics data payload is {} byte(s), expected at least {}",
+            payload.len(),
+            COMPACT_SUPPLY_LOGISTICS_HEADER_LEN
+        ));
+        return;
+    }
+
+    let row_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    let scale_raw = read_u32_le(payload, 20);
+    let province_rows = read_u32_le(payload, 24) as usize;
+    let division_rows = read_u32_le(payload, 28) as usize;
+    let badge_rows = read_u32_le(payload, 32) as usize;
+    let observed_province_roots = read_u32_le(payload, 36) as usize;
+    let observed_division_roots = read_u32_le(payload, 40) as usize;
+    let reserved0 = read_u32_le(payload, 44);
+    summary.status_flags_or |= status_flags;
+
+    if scale_raw != COMPACT_FIXED_SCALE_RAW {
+        summary.parse_errors.push(format!(
+            "offset {offset}: supply logistics scale_raw {scale_raw} != {COMPACT_FIXED_SCALE_RAW}"
+        ));
+    }
+    if changed_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: supply logistics changed_rows {changed_rows} > row_count {row_count}"
+        ));
+    }
+    if province_rows
+        .saturating_add(division_rows)
+        .saturating_add(badge_rows)
+        != row_count
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: supply logistics row counters {province_rows}+{division_rows}+{badge_rows} != row_count {row_count}"
+        ));
+    }
+    if observed_province_roots < province_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: supply logistics observed_province_roots {observed_province_roots} < province_rows {province_rows}"
+        ));
+    }
+    if observed_division_roots < division_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: supply logistics observed_division_roots {observed_division_roots} < division_rows {division_rows}"
+        ));
+    }
+    if reserved0 != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: supply logistics header reserved field is nonzero"
+        ));
+    }
+    let expected_len = COMPACT_SUPPLY_LOGISTICS_HEADER_LEN
+        .saturating_add(row_count.saturating_mul(COMPACT_SUPPLY_LOGISTICS_ROW_LEN));
+    if payload.len() != expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: supply logistics data payload is {} byte(s), expected {expected_len}",
+            payload.len()
+        ));
+        return;
+    }
+
+    if let Some(domain) = summary.per_domain.get_mut(&44) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    add_compact_domain_data_unit(summary, 44, "supply_province_logistics_rows", province_rows);
+    add_compact_domain_data_unit(summary, 44, "supply_division_supply_rows", division_rows);
+    add_compact_domain_data_unit(summary, 44, "supply_computed_badge_rows", badge_rows);
+    add_compact_domain_data_unit(
+        summary,
+        44,
+        "supply_observed_province_roots",
+        observed_province_roots,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        44,
+        "supply_observed_division_roots",
+        observed_division_roots,
+    );
+
+    let mut decoded_province_rows = 0usize;
+    let mut decoded_division_rows = 0usize;
+    let mut decoded_badge_rows = 0usize;
+    let mut seen_provinces = BTreeSet::new();
+    let mut seen_divisions = BTreeSet::new();
+    let mut has_exact_supply_wall = false;
+    let mut has_attrition_wall = false;
+    let mut has_motorization_wall = false;
+    let mut has_convoy_pressure_wall = false;
+    let mut has_csupply_candidate_rejected = false;
+    let mut division_fuel_rows = 0usize;
+    let mut division_supply_deficit_rows = 0usize;
+
+    let mut cursor = COMPACT_SUPPLY_LOGISTICS_HEADER_LEN;
+    for row_index in 0..row_count {
+        if let Err(err) = require_compact_remaining(
+            payload,
+            cursor,
+            COMPACT_SUPPLY_LOGISTICS_ROW_LEN,
+            "supply logistics row",
+        ) {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let row_kind = read_u32_le(payload, cursor);
+        let entity_id = read_u32_le(payload, cursor + 4);
+        let join_id = read_u32_le(payload, cursor + 8);
+        let owner_tag_db_id = read_u32_le(payload, cursor + 12);
+        let flags = read_u32_le(payload, cursor + 16);
+        let value_a_raw = read_i32_le(payload, cursor + 20);
+        let value_b_raw = read_i32_le(payload, cursor + 24);
+        let value_c_raw = read_i32_le(payload, cursor + 28);
+        let value_d_raw = read_i32_le(payload, cursor + 32);
+        let aux_raw = read_i32_le(payload, cursor + 36);
+        cursor += COMPACT_SUPPLY_LOGISTICS_ROW_LEN;
+
+        if flags & !COMPACT_SUPPLY_ROW_VALID_FLAGS != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: supply logistics row {row_index} has unknown flags {flags}"
+            ));
+        }
+        match row_kind {
+            COMPACT_SUPPLY_ROW_KIND_PROVINCE_LOGISTICS => {
+                decoded_province_rows = decoded_province_rows.saturating_add(1);
+                if entity_id == 0 || entity_id > COMPACT_SUPPLY_MAX_PROVINCE_ID {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics province row {row_index} has invalid province_id {entity_id}"
+                    ));
+                } else if !seen_provinces.insert(entity_id) {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics province row {row_index} duplicates province_id {entity_id}"
+                    ));
+                }
+                if join_id == 0 || join_id > COMPACT_SUPPLY_MAX_STATE_ID {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics province row {row_index} has invalid state_id {join_id}"
+                    ));
+                }
+                if owner_tag_db_id != 0 {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics province row {row_index} has nonzero owner_tag_db_id"
+                    ));
+                }
+                if flags & COMPACT_SUPPLY_ROW_FLAG_LIVE_BUILDING_VECTOR == 0 {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics province row {row_index} missing live building vector flag"
+                    ));
+                }
+                for (label, value, flag) in [
+                    ("rail", value_a_raw, COMPACT_SUPPLY_ROW_FLAG_RAIL),
+                    (
+                        "supply_node",
+                        value_b_raw,
+                        COMPACT_SUPPLY_ROW_FLAG_SUPPLY_NODE,
+                    ),
+                    (
+                        "naval_supply_hub",
+                        value_c_raw,
+                        COMPACT_SUPPLY_ROW_FLAG_NAVAL_SUPPLY_HUB,
+                    ),
+                    (
+                        "infrastructure",
+                        value_d_raw,
+                        COMPACT_SUPPLY_ROW_FLAG_INFRASTRUCTURE,
+                    ),
+                ] {
+                    validate_supply_logistics_nonnegative_value(
+                        offset,
+                        summary,
+                        row_index,
+                        label,
+                        value,
+                        COMPACT_SUPPLY_MAX_BUILDING_LEVEL,
+                    );
+                    validate_supply_logistics_presence_flag(
+                        offset, summary, row_index, label, value, flags, flag,
+                    );
+                }
+                validate_supply_logistics_nonnegative_value(
+                    offset,
+                    summary,
+                    row_index,
+                    "building_count",
+                    aux_raw,
+                    COMPACT_SUPPLY_MAX_BUILDING_LEVEL,
+                );
+            }
+            COMPACT_SUPPLY_ROW_KIND_DIVISION_SUPPLY => {
+                decoded_division_rows = decoded_division_rows.saturating_add(1);
+                if entity_id == 0 || entity_id > COMPACT_SUPPLY_MAX_DIVISION_ID {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics division row {row_index} has invalid division_id {entity_id}"
+                    ));
+                } else if !seen_divisions.insert(entity_id) {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics division row {row_index} duplicates division_id {entity_id}"
+                    ));
+                }
+                if join_id == 0 || join_id > COMPACT_SUPPLY_MAX_PROVINCE_ID {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics division row {row_index} has invalid province_id {join_id}"
+                    ));
+                }
+                if flags & COMPACT_SUPPLY_ROW_FLAG_PROXY_VALUE == 0 {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics division row {row_index} missing proxy flag"
+                    ));
+                }
+                if flags & COMPACT_SUPPLY_ROW_FLAG_DIVISION_OWNER != 0 {
+                    if owner_tag_db_id == 0 || owner_tag_db_id > COMPACT_SUPPLY_MAX_TAG_DB_ID {
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: supply logistics division row {row_index} has invalid owner_tag_db_id {owner_tag_db_id}"
+                        ));
+                    }
+                } else if owner_tag_db_id != 0 {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics division row {row_index} has owner without owner flag"
+                    ));
+                }
+                for (label, value, max_value, flag) in [
+                    (
+                        "current_supply_raw",
+                        value_a_raw,
+                        COMPACT_SUPPLY_MAX_SUPPLY_RAW,
+                        COMPACT_SUPPLY_ROW_FLAG_DIVISION_CURRENT_SUPPLY,
+                    ),
+                    (
+                        "max_supply_raw",
+                        value_b_raw,
+                        COMPACT_SUPPLY_MAX_SUPPLY_RAW,
+                        COMPACT_SUPPLY_ROW_FLAG_DIVISION_MAX_SUPPLY,
+                    ),
+                    (
+                        "supply_gain_raw",
+                        value_c_raw,
+                        COMPACT_SUPPLY_MAX_SUPPLY_GAIN_RAW,
+                        COMPACT_SUPPLY_ROW_FLAG_DIVISION_SUPPLY_GAIN,
+                    ),
+                ] {
+                    validate_supply_logistics_nonnegative_value(
+                        offset, summary, row_index, label, value, max_value,
+                    );
+                    validate_supply_logistics_presence_flag(
+                        offset, summary, row_index, label, value, flags, flag,
+                    );
+                }
+                validate_supply_logistics_nonnegative_value(
+                    offset,
+                    summary,
+                    row_index,
+                    "supply_deficit_raw",
+                    value_d_raw,
+                    COMPACT_SUPPLY_MAX_SUPPLY_RAW,
+                );
+                let expected_deficit = value_b_raw.saturating_sub(value_a_raw).max(0);
+                if value_d_raw != expected_deficit {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics division row {row_index} has supply_deficit_raw {value_d_raw} but expected {expected_deficit}"
+                    ));
+                }
+                if value_d_raw > 0 {
+                    division_supply_deficit_rows = division_supply_deficit_rows.saturating_add(1);
+                }
+                validate_supply_logistics_presence_flag(
+                    offset,
+                    summary,
+                    row_index,
+                    "supply_deficit_raw",
+                    value_d_raw,
+                    flags,
+                    COMPACT_SUPPLY_ROW_FLAG_DIVISION_SUPPLY_DEFICIT,
+                );
+                validate_supply_logistics_nonnegative_value(
+                    offset,
+                    summary,
+                    row_index,
+                    "fuel_raw",
+                    aux_raw,
+                    COMPACT_SUPPLY_MAX_DIVISION_FUEL_RAW,
+                );
+                if aux_raw > 0 {
+                    division_fuel_rows = division_fuel_rows.saturating_add(1);
+                }
+                validate_supply_logistics_presence_flag(
+                    offset,
+                    summary,
+                    row_index,
+                    "fuel_raw",
+                    aux_raw,
+                    flags,
+                    COMPACT_SUPPLY_ROW_FLAG_DIVISION_FUEL,
+                );
+            }
+            COMPACT_SUPPLY_ROW_KIND_COMPUTED_BADGE => {
+                decoded_badge_rows = decoded_badge_rows.saturating_add(1);
+                if entity_id != 0 || join_id != 0 || owner_tag_db_id != 0 {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics badge row {row_index} has nonzero identity fields"
+                    ));
+                }
+                if value_b_raw != 0 || value_c_raw != 0 || value_d_raw != 0 || aux_raw != 0 {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics badge row {row_index} has nonzero reserved value fields"
+                    ));
+                }
+                let badge_flags = flags
+                    & (COMPACT_SUPPLY_ROW_FLAG_EXACT_SUPPLY_WALL
+                        | COMPACT_SUPPLY_ROW_FLAG_ATTRITION_WALL
+                        | COMPACT_SUPPLY_ROW_FLAG_MOTORIZATION_WALL
+                        | COMPACT_SUPPLY_ROW_FLAG_CONVOY_PRESSURE_WALL
+                        | COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED);
+                if badge_flags.count_ones() != 1 {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics badge row {row_index} must carry exactly one badge flag"
+                    ));
+                }
+                if flags != badge_flags {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics badge row {row_index} has non-badge flags"
+                    ));
+                }
+                if flags & COMPACT_SUPPLY_ROW_FLAG_EXACT_SUPPLY_WALL != 0 {
+                    has_exact_supply_wall = true;
+                    validate_supply_logistics_badge(
+                        offset,
+                        summary,
+                        row_index,
+                        "exact-supply",
+                        value_a_raw,
+                        COMPACT_SUPPLY_BADGE_EXACT_PROVINCE_SUPPLY_TRANSIENT,
+                    );
+                }
+                if flags & COMPACT_SUPPLY_ROW_FLAG_ATTRITION_WALL != 0 {
+                    has_attrition_wall = true;
+                    validate_supply_logistics_badge(
+                        offset,
+                        summary,
+                        row_index,
+                        "attrition",
+                        value_a_raw,
+                        COMPACT_SUPPLY_BADGE_ATTRITION_RUNTIME_COMPUTED,
+                    );
+                }
+                if flags & COMPACT_SUPPLY_ROW_FLAG_MOTORIZATION_WALL != 0 {
+                    has_motorization_wall = true;
+                    validate_supply_logistics_badge(
+                        offset,
+                        summary,
+                        row_index,
+                        "motorization",
+                        value_a_raw,
+                        COMPACT_SUPPLY_BADGE_MOTORIZATION_SETTINGS_UNPINNED,
+                    );
+                }
+                if flags & COMPACT_SUPPLY_ROW_FLAG_CONVOY_PRESSURE_WALL != 0 {
+                    has_convoy_pressure_wall = true;
+                    validate_supply_logistics_badge(
+                        offset,
+                        summary,
+                        row_index,
+                        "convoy-pressure",
+                        value_a_raw,
+                        COMPACT_SUPPLY_BADGE_CONVOY_LOGISTICS_PRESSURE_UNPINNED,
+                    );
+                }
+                if flags & COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED != 0 {
+                    has_csupply_candidate_rejected = true;
+                    validate_supply_logistics_badge(
+                        offset,
+                        summary,
+                        row_index,
+                        "csupply-candidate",
+                        value_a_raw,
+                        COMPACT_SUPPLY_BADGE_CSUPPLY_INPUT_ARRAYS_UNSAFE,
+                    );
+                }
+            }
+            other => summary.parse_errors.push(format!(
+                "offset {offset}: supply logistics row {row_index} has unknown row_kind {other}"
+            )),
+        }
+    }
+
+    if decoded_province_rows != province_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: supply logistics province_rows {province_rows} != decoded {decoded_province_rows}"
+        ));
+    }
+    if decoded_division_rows != division_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: supply logistics division_rows {division_rows} != decoded {decoded_division_rows}"
+        ));
+    }
+    if decoded_badge_rows != badge_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: supply logistics badge_rows {badge_rows} != decoded {decoded_badge_rows}"
+        ));
+    }
+    for (label, present) in [
+        ("exact supply wall", has_exact_supply_wall),
+        ("attrition wall", has_attrition_wall),
+        ("motorization wall", has_motorization_wall),
+        ("convoy pressure wall", has_convoy_pressure_wall),
+        (
+            "csupply candidate rejection",
+            has_csupply_candidate_rejected,
+        ),
+    ] {
+        if !present {
+            summary.parse_errors.push(format!(
+                "offset {offset}: supply logistics missing {label} badge row"
+            ));
+        }
+    }
+    add_compact_domain_data_unit(summary, 44, "supply_division_fuel_rows", division_fuel_rows);
+    add_compact_domain_data_unit(
+        summary,
+        44,
+        "supply_division_deficit_rows",
+        division_supply_deficit_rows,
+    );
+}
+
+fn validate_supply_logistics_nonnegative_value(
+    offset: usize,
+    summary: &mut CompactSummary,
+    row_index: usize,
+    label: &str,
+    value: i32,
+    max_value: i32,
+) {
+    if !(0..=max_value).contains(&value) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: supply logistics row {row_index} has invalid {label} {value}"
+        ));
+    }
+}
+
+fn validate_supply_logistics_presence_flag(
+    offset: usize,
+    summary: &mut CompactSummary,
+    row_index: usize,
+    label: &str,
+    value: i32,
+    flags: u32,
+    flag: u32,
+) {
+    let present = flags & flag != 0;
+    if value != 0 && !present {
+        summary.parse_errors.push(format!(
+            "offset {offset}: supply logistics row {row_index} has nonzero {label} without presence flag"
+        ));
+    }
+}
+
+fn validate_supply_logistics_badge(
+    offset: usize,
+    summary: &mut CompactSummary,
+    row_index: usize,
+    label: &str,
+    actual: i32,
+    expected: i32,
+) {
+    if actual != expected {
+        summary.parse_errors.push(format!(
+            "offset {offset}: supply logistics {label} badge row {row_index} has invalid code {actual}"
         ));
     }
 }
@@ -6973,9 +8984,11 @@ fn decode_compact_weather_data_payload(
     let reserved1 = read_u32_le(payload, 44);
     summary.status_flags_or |= status_flags;
     let delta_data = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
+    let emitted_rows = region_count.saturating_add(province_count);
 
-    let expected_len =
-        48usize.saturating_add(region_count.saturating_mul(COMPACT_WEATHER_REGION_ROW_LEN));
+    let expected_len = 48usize
+        .saturating_add(region_count.saturating_mul(COMPACT_WEATHER_REGION_ROW_LEN))
+        .saturating_add(province_count.saturating_mul(COMPACT_WEATHER_PROVINCE_ROW_LEN));
     if payload.len() != expected_len {
         summary.parse_errors.push(format!(
             "offset {offset}: weather data payload is {} byte(s), expected {expected_len}",
@@ -6983,14 +8996,17 @@ fn decode_compact_weather_data_payload(
         ));
         return;
     }
-    if province_count != 0 || observed_province_rows != 0 {
-        summary.parse_errors.push(format!(
-            "offset {offset}: weather province rows are not supported in this schema ({province_count}/{observed_province_rows})"
-        ));
-    }
     if observed_region_rows != COMPACT_WEATHER_REGION_ROWS {
         summary.parse_errors.push(format!(
             "offset {offset}: weather observed_region_rows {observed_region_rows} != {COMPACT_WEATHER_REGION_ROWS}"
+        ));
+    }
+    if observed_province_rows != 0
+        && !(COMPACT_WEATHER_MIN_PROVINCE_ROWS..=COMPACT_WEATHER_MAX_PROVINCE_ROWS)
+            .contains(&observed_province_rows)
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: weather observed_province_rows {observed_province_rows} outside {COMPACT_WEATHER_MIN_PROVINCE_ROWS}..={COMPACT_WEATHER_MAX_PROVINCE_ROWS}"
         ));
     }
     if !delta_data && region_count != COMPACT_WEATHER_REGION_ROWS {
@@ -6998,19 +9014,33 @@ fn decode_compact_weather_data_payload(
             "offset {offset}: weather full snapshot region_count {region_count} != {COMPACT_WEATHER_REGION_ROWS}"
         ));
     }
+    if !delta_data && observed_province_rows != 0 && province_count != observed_province_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: weather full snapshot province_count {province_count} != observed_province_rows {observed_province_rows}"
+        ));
+    }
     if region_count > observed_region_rows {
         summary.parse_errors.push(format!(
             "offset {offset}: weather region_count {region_count} > observed_region_rows {observed_region_rows}"
         ));
     }
-    if changed_rows > region_count {
+    if observed_province_rows == 0 && province_count != 0 {
         summary.parse_errors.push(format!(
-            "offset {offset}: weather changed_rows {changed_rows} > region_count {region_count}"
+            "offset {offset}: weather province_count {province_count} emitted with zero observed_province_rows"
+        ));
+    } else if province_count > observed_province_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: weather province_count {province_count} > observed_province_rows {observed_province_rows}"
         ));
     }
-    if delta_data && changed_rows != region_count {
+    if changed_rows > emitted_rows {
         summary.parse_errors.push(format!(
-            "offset {offset}: weather delta changed_rows {changed_rows} != emitted region_count {region_count}"
+            "offset {offset}: weather changed_rows {changed_rows} > emitted_rows {emitted_rows}"
+        ));
+    }
+    if delta_data && changed_rows != emitted_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: weather delta changed_rows {changed_rows} != emitted_rows {emitted_rows}"
         ));
     }
     if scale_raw != COMPACT_FIXED_SCALE_RAW {
@@ -7029,7 +9059,7 @@ fn decode_compact_weather_data_payload(
         ));
     }
     if let Some(domain) = summary.per_domain.get_mut(&24) {
-        domain.data_rows_total = domain.data_rows_total.saturating_add(region_count as u64);
+        domain.data_rows_total = domain.data_rows_total.saturating_add(emitted_rows as u64);
         domain.data_changed_rows_total = domain
             .data_changed_rows_total
             .saturating_add(changed_rows as u64);
@@ -7041,6 +9071,13 @@ fn decode_compact_weather_data_payload(
         24,
         "weather_observed_region_rows",
         observed_region_rows,
+    );
+    add_compact_domain_data_unit(summary, 24, "weather_province_visual_rows", province_count);
+    add_compact_domain_data_unit(
+        summary,
+        24,
+        "weather_observed_province_rows",
+        observed_province_rows,
     );
     add_compact_domain_data_unit(
         summary,
@@ -7127,6 +9164,156 @@ fn decode_compact_weather_data_payload(
         summary.parse_errors.push(format!(
             "offset {offset}: weather active_region_count {active_region_count} != computed {computed_active_regions}"
         ));
+    }
+
+    let mut seen_provinces = BTreeSet::new();
+    for row_index in 0..province_count {
+        let province_id = read_u32_le(payload, cursor);
+        let flags = read_u32_le(payload, cursor + 4);
+        let temperature_raw = read_i32_le(payload, cursor + 8);
+        let temperature_change_raw = read_i32_le(payload, cursor + 12);
+        let water_raw = read_i32_le(payload, cursor + 16);
+        let snow_raw = read_i32_le(payload, cursor + 20);
+        let custom_modifier_count = read_u32_le(payload, cursor + 24);
+        let row_reserved = read_u32_le(payload, cursor + 28);
+        cursor += COMPACT_WEATHER_PROVINCE_ROW_LEN;
+
+        if observed_province_rows != 0 && province_id as usize >= observed_province_rows {
+            summary.parse_errors.push(format!(
+                "offset {offset}: weather province row {row_index} has invalid province_id {province_id}"
+            ));
+        } else if !seen_provinces.insert(province_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: weather province row {row_index} duplicates province_id {province_id}"
+            ));
+        }
+        if flags & !COMPACT_WEATHER_PROVINCE_KNOWN_FLAGS != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: weather province row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if flags & COMPACT_WEATHER_PROVINCE_FLAG_STRUCT_VALIDATED == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: weather province row {row_index} missing struct validation flag"
+            ));
+        }
+        let temp_present = flags & COMPACT_WEATHER_PROVINCE_FLAG_TEMP_PRESENT != 0;
+        let temp_change_present = flags & COMPACT_WEATHER_PROVINCE_FLAG_TEMP_CHANGE_PRESENT != 0;
+        let water_present = flags & COMPACT_WEATHER_PROVINCE_FLAG_WATER_PRESENT != 0;
+        let snow_present = flags & COMPACT_WEATHER_PROVINCE_FLAG_SNOW_PRESENT != 0;
+        let mud_present = flags & COMPACT_WEATHER_PROVINCE_FLAG_MUD_PRESENT != 0;
+        let mud_active = flags & COMPACT_WEATHER_PROVINCE_FLAG_MUD_ACTIVE != 0;
+        let custom_present =
+            flags & COMPACT_WEATHER_PROVINCE_FLAG_CUSTOM_MODIFIER_COUNT_PRESENT != 0;
+        let map_recolor_driver = flags & COMPACT_WEATHER_PROVINCE_FLAG_MAP_RECOLOR_DRIVER != 0;
+        let dynamic_lut_driver = flags & COMPACT_WEATHER_PROVINCE_FLAG_DYNAMIC_LUT_DRIVER != 0;
+
+        if mud_active && !mud_present {
+            summary.parse_errors.push(format!(
+                "offset {offset}: weather province row {row_index} has mud_active without mud_present"
+            ));
+        }
+        if map_recolor_driver != (temp_present || water_present || snow_present) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: weather province row {row_index} has inconsistent map recolor flag"
+            ));
+        }
+        if dynamic_lut_driver != (snow_present || mud_present) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: weather province row {row_index} has inconsistent dynamic LUT flag"
+            ));
+        }
+        if temp_present {
+            add_compact_domain_data_unit(summary, 24, "weather_province_temp_rows", 1);
+            if !(-COMPACT_WEATHER_MAX_TEMPERATURE_RAW..=COMPACT_WEATHER_MAX_TEMPERATURE_RAW)
+                .contains(&temperature_raw)
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: weather province row {row_index} has invalid temperature_raw {temperature_raw}"
+                ));
+            }
+        } else if temperature_raw != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: weather province row {row_index} has temperature_raw without presence flag"
+            ));
+        }
+        if temp_change_present {
+            add_compact_domain_data_unit(summary, 24, "weather_province_temp_change_rows", 1);
+            if !(-COMPACT_WEATHER_MAX_TEMP_CHANGE_RAW..=COMPACT_WEATHER_MAX_TEMP_CHANGE_RAW)
+                .contains(&temperature_change_raw)
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: weather province row {row_index} has invalid temperature_change_raw {temperature_change_raw}"
+                ));
+            }
+        } else if temperature_change_raw != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: weather province row {row_index} has temperature_change_raw without presence flag"
+            ));
+        }
+        if water_present {
+            add_compact_domain_data_unit(summary, 24, "weather_province_water_rows", 1);
+            if !(0..=COMPACT_WEATHER_MAX_PRECIP_RAW).contains(&water_raw) {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: weather province row {row_index} has invalid water_raw {water_raw}"
+                ));
+            }
+        } else if water_raw != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: weather province row {row_index} has water_raw without presence flag"
+            ));
+        }
+        if snow_present {
+            add_compact_domain_data_unit(summary, 24, "weather_province_snow_rows", 1);
+            if !(0..=COMPACT_WEATHER_MAX_PRECIP_RAW).contains(&snow_raw) {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: weather province row {row_index} has invalid snow_raw {snow_raw}"
+                ));
+            }
+        } else if snow_raw != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: weather province row {row_index} has snow_raw without presence flag"
+            ));
+        }
+        if mud_present {
+            add_compact_domain_data_unit(summary, 24, "weather_province_mud_measured_rows", 1);
+        }
+        if mud_active {
+            add_compact_domain_data_unit(summary, 24, "weather_province_mud_active_rows", 1);
+        }
+        if custom_present {
+            add_compact_domain_data_unit(summary, 24, "weather_province_custom_modifier_rows", 1);
+            if custom_modifier_count > COMPACT_WEATHER_MAX_ACTIVE_MODIFIERS {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: weather province row {row_index} has invalid custom_modifier_count {custom_modifier_count}"
+                ));
+            }
+        } else if custom_modifier_count != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: weather province row {row_index} has custom_modifier_count without presence flag"
+            ));
+        }
+        if map_recolor_driver {
+            add_compact_domain_data_unit(
+                summary,
+                24,
+                "weather_province_map_recolor_driver_rows",
+                1,
+            );
+        }
+        if dynamic_lut_driver {
+            add_compact_domain_data_unit(
+                summary,
+                24,
+                "weather_province_dynamic_lut_driver_rows",
+                1,
+            );
+        }
+        if row_reserved != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: weather province row {row_index} reserved field is {row_reserved}"
+            ));
+        }
     }
 }
 
@@ -7227,6 +9414,19 @@ fn skip_compact_string_len(bytes: &[u8], cursor: &mut usize, label: &str) -> Res
     Ok(len)
 }
 
+fn read_compact_string(bytes: &[u8], cursor: &mut usize, label: &str) -> Result<String, String> {
+    require_compact_remaining(bytes, *cursor, 2, label)?;
+    let len = read_u16_le(bytes, *cursor) as usize;
+    *cursor += 2;
+    require_compact_remaining(bytes, *cursor, len, label)?;
+    let start = *cursor;
+    let end = start + len;
+    *cursor = end;
+    std::str::from_utf8(&bytes[start..end])
+        .map(|value| value.to_string())
+        .map_err(|err| format!("{label}: invalid utf-8: {err}"))
+}
+
 fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes([
         bytes[offset],
@@ -7300,75 +9500,11 @@ fn compact_expected_domain_ids(scheduled_domains: &[String]) -> Vec<u16> {
 }
 
 fn compact_domain_id(domain: &str) -> Option<u16> {
-    match domain {
-        "fuel_live" => Some(10),
-        "production_live" => Some(11),
-        "focus_live" => Some(12),
-        "tech_live" => Some(13),
-        "politics_live" => Some(14),
-        "politics_residuals" => Some(15),
-        "decisions_live" => Some(16),
-        "diplomacy_live" => Some(17),
-        "divisions" => Some(20),
-        "land_combats" => Some(21),
-        "map_control" | "state_ownership" | "state_control" | "province_control" => Some(22),
-        "map_detail" | "state_detail" | "buildings_live" => Some(23),
-        "weather_live" => Some(24),
-        "division_equipment" => Some(26),
-        "army_orders" => Some(27),
-        "oob_command" => Some(28),
-        "ships" => Some(29),
-        "air_wings" => Some(30),
-        "air_region_activity" => Some(31),
-        "air_wing_loadouts" => Some(32),
-        "air_variant_defs" => Some(33),
-        "air_base_status" => Some(34),
-        "air_variant_stats" => Some(35),
-        "air_variant_reserves" => Some(36),
-        "stockpile_variant_defs" => Some(37),
-        "air_superiority_inputs" => Some(38),
-        "air_variant_upgrades" => Some(39),
-        "stockpile_variant_upgrades" => Some(40),
-        "projects_live" => Some(41),
-        _ => None,
-    }
+    compact_domain_registry::id_for_scheduled_name(domain)
 }
 
 fn compact_domain_name(domain_id: u16) -> &'static str {
-    match domain_id {
-        1 => "clock",
-        10 => "fuel_live",
-        11 => "production_live",
-        12 => "focus_live",
-        13 => "tech_live",
-        14 => "politics_live",
-        15 => "politics_residuals",
-        16 => "decisions_live",
-        17 => "diplomacy_live",
-        20 => "divisions",
-        21 => "land_combats",
-        22 => "map_control",
-        23 => "map_detail",
-        24 => "weather_live",
-        26 => "division_equipment",
-        27 => "army_orders",
-        28 => "oob_command",
-        29 => "ships",
-        30 => "air_wings",
-        31 => "air_region_activity",
-        32 => "air_wing_loadouts",
-        33 => "air_variant_defs",
-        34 => "air_base_status",
-        35 => "air_variant_stats",
-        36 => "air_variant_reserves",
-        37 => "stockpile_variant_defs",
-        38 => "air_superiority_inputs",
-        39 => "air_variant_upgrades",
-        40 => "stockpile_variant_upgrades",
-        41 => "projects_live",
-        1000 => "frame",
-        _ => "unknown",
-    }
+    compact_domain_registry::wire_name_for_id(domain_id).unwrap_or("unknown")
 }
 
 fn compact_domain_coverage_errors(
@@ -7502,37 +9638,7 @@ fn compact_domain_coverage_errors(
 }
 
 fn compact_domain_requires_data_record(domain_id: u16) -> bool {
-    matches!(
-        domain_id,
-        10 | 11
-            | 12
-            | 13
-            | 14
-            | 15
-            | 16
-            | 17
-            | 20
-            | 21
-            | 22
-            | 23
-            | 24
-            | 26
-            | 27
-            | 28
-            | 29
-            | 30
-            | 31
-            | 32
-            | 33
-            | 34
-            | 35
-            | 36
-            | 37
-            | 38
-            | 39
-            | 40
-            | 41
-    )
+    compact_domain_registry::requires_data_record(domain_id)
 }
 
 fn native_division_root_prewarm_budget_ms(_cfg: &Config) -> u64 {
@@ -7651,6 +9757,16 @@ fn compact_projects_root_source(cfg: &Config, summary: &CompactSummary) -> &'sta
     if blocked || domain.data_rows_total == 0 {
         return "unresolved";
     }
+    let state_rows = domain
+        .data_units_total
+        .get("project_state_rows")
+        .copied()
+        .unwrap_or(0);
+    let breakthrough_rows = domain
+        .data_units_total
+        .get("project_breakthrough_rows")
+        .copied()
+        .unwrap_or(0);
     if domain
         .data_units_total
         .get("project_bridge_rows_supplied")
@@ -7659,6 +9775,8 @@ fn compact_projects_root_source(cfg: &Config, summary: &CompactSummary) -> &'sta
         > 0
     {
         "control_bridge"
+    } else if state_rows > 0 && breakthrough_rows > 0 && !cfg.special_projects_scan {
+        "dll_project_cache_progress"
     } else if cfg.special_projects_scan {
         "dll_startup_heap_scan"
     } else {
@@ -7668,8 +9786,11 @@ fn compact_projects_root_source(cfg: &Config, summary: &CompactSummary) -> &'sta
 
 fn compact_projects_root_discovery_debt(source: &str) -> &'static str {
     match source {
+        "dll_project_cache_progress" => {
+            "none; projects_live includes anchored DLL project state/progress raw rows from CProject+0x28 and breakthrough rows from CProgramStatus+0x50"
+        }
         "dll_project_cache" => {
-            "partial DLL-native path: CProject rows and CProgram facility rows came from anchored country program-status roots; full scientist character rows and project progress/completion still need anchored DLL coverage before projects_live is fully DLL-complete"
+            "partial DLL-native path: CProject rows, CProgram facility rows, and CCharacter/CScientist rows came from anchored country roots; project progress/completion still need anchored DLL coverage before projects_live is fully DLL-complete"
         }
         "dll_startup_heap_scan" => {
             "temporary debt: one-time DLL startup heap scan is outside the hot loop, but projects still need an anchored root/container or cached Rust-host discovery before full DLL-complete status"
@@ -9095,6 +11216,197 @@ mod tests {
     }
 
     #[test]
+    fn compact_summary_decodes_air_combat_losses_live_data_record() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            42,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(800, 500, 3, 900, 3, COMPACT_STATUS_DELTA_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            42,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_air_combat_losses_live_data_payload(COMPACT_STATUS_DELTA_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(&summary, &[42]).is_empty());
+        let deltas = summary.per_domain.get(&42).unwrap();
+        assert_eq!(deltas.row_count_total, 500);
+        assert_eq!(deltas.unit_count_total, 900);
+        assert_eq!(deltas.data_record_count, 1);
+        assert_eq!(deltas.data_rows_total, 3);
+        assert_eq!(deltas.data_changed_rows_total, 3);
+        assert_eq!(
+            deltas
+                .data_units_total
+                .get("air_strength_delta_rows")
+                .copied(),
+            Some(3)
+        );
+        assert_eq!(
+            deltas
+                .data_units_total
+                .get("air_strength_loss_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            deltas
+                .data_units_total
+                .get("air_strength_reinforcement_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            deltas
+                .data_units_total
+                .get("air_strength_deleted_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            deltas
+                .data_units_total
+                .get("air_strength_mission_region_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(compact_domain_id("air_combat_losses_live"), Some(42));
+        assert_eq!(compact_domain_name(42), "air_combat_losses_live");
+    }
+
+    #[test]
+    fn compact_summary_decodes_air_combat_losses_live_zero_baseline_record() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            42,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(800, 500, 0, 900, 0, COMPACT_STATUS_DELTA_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            42,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_air_combat_losses_live_empty_data_payload(COMPACT_STATUS_DELTA_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(&summary, &[42]).is_empty());
+        let deltas = summary.per_domain.get(&42).unwrap();
+        assert_eq!(deltas.data_record_count, 1);
+        assert_eq!(deltas.data_rows_total, 0);
+        assert_eq!(
+            deltas
+                .data_units_total
+                .get("air_strength_observed_wing_rows")
+                .copied(),
+            Some(500)
+        );
+    }
+
+    #[test]
+    fn compact_air_combat_losses_live_row_len_is_68_not_64() {
+        let payload = test_air_combat_losses_live_single_loss_payload(COMPACT_STATUS_DELTA_DATA);
+        assert_eq!(
+            payload.len(),
+            COMPACT_AIR_STRENGTH_DELTA_HEADER_LEN + COMPACT_AIR_STRENGTH_DELTA_ROW_LEN
+        );
+        assert_eq!(COMPACT_AIR_STRENGTH_DELTA_ROW_LEN, 68);
+        assert_ne!(COMPACT_AIR_STRENGTH_DELTA_ROW_LEN, 64);
+    }
+
+    #[test]
+    fn compact_summary_rejects_stale_air_combat_losses_live_64_byte_row_shape() {
+        let payload = test_air_combat_losses_live_single_loss_payload(COMPACT_STATUS_DELTA_DATA);
+        let stale_len = COMPACT_AIR_STRENGTH_DELTA_HEADER_LEN + 64;
+        let summary = summarize_compact_stream(&{
+            let mut raw = Vec::new();
+            append_test_compact_record(
+                &mut raw,
+                1,
+                100,
+                42,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &payload[..stale_len],
+            );
+            raw
+        });
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("expected 116") && error.contains("112 byte")));
+    }
+
+    #[test]
+    fn compact_summary_rejects_air_combat_losses_live_bad_scale_and_delta() {
+        let mut payload =
+            test_air_combat_losses_live_single_loss_payload(COMPACT_STATUS_DELTA_DATA);
+        payload[40..44].copy_from_slice(&1u32.to_le_bytes());
+        payload[84..88].copy_from_slice(&(-2i32).to_le_bytes());
+
+        let summary = summarize_compact_stream(&{
+            let mut raw = Vec::new();
+            append_test_compact_record(
+                &mut raw,
+                1,
+                100,
+                42,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &payload,
+            );
+            raw
+        });
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("scale_raw 1")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("count_delta -2")));
+    }
+
+    #[test]
     fn compact_summary_decodes_air_variant_defs_data_record() {
         let mut raw = Vec::new();
         append_test_compact_record(
@@ -9333,6 +11645,92 @@ mod tests {
     }
 
     #[test]
+    fn compact_summary_decodes_air_variant_archetypes_data_record() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            COMPACT_DOMAIN_AIR_VARIANT_ARCHETYPES,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(650, 19, 2, 1, 2, COMPACT_STATUS_DELTA_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            COMPACT_DOMAIN_AIR_VARIANT_ARCHETYPES,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_air_variant_archetypes_data_payload(COMPACT_STATUS_DELTA_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(
+            compact_domain_coverage_errors(&summary, &[COMPACT_DOMAIN_AIR_VARIANT_ARCHETYPES],)
+                .is_empty()
+        );
+        let archetypes = summary
+            .per_domain
+            .get(&COMPACT_DOMAIN_AIR_VARIANT_ARCHETYPES)
+            .unwrap();
+        assert_eq!(archetypes.row_count_total, 19);
+        assert_eq!(archetypes.unit_count_total, 1);
+        assert_eq!(archetypes.data_record_count, 1);
+        assert_eq!(archetypes.data_rows_total, 2);
+        assert_eq!(archetypes.data_changed_rows_total, 2);
+        assert_eq!(
+            archetypes
+                .data_units_total
+                .get("air_variant_archetype_classified_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            archetypes
+                .data_units_total
+                .get("air_variant_archetype_unresolved_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            archetypes
+                .data_units_total
+                .get("air_variant_archetype_live_token_dictionary_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            archetypes
+                .data_units_total
+                .get("air_variant_archetype_static_source_enum_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            compact_domain_id("air_variant_archetypes"),
+            Some(COMPACT_DOMAIN_AIR_VARIANT_ARCHETYPES)
+        );
+        assert_eq!(
+            compact_domain_name(COMPACT_DOMAIN_AIR_VARIANT_ARCHETYPES),
+            "air_variant_archetypes"
+        );
+    }
+
+    #[test]
     fn compact_summary_decodes_air_variant_upgrades_data_record() {
         let mut raw = Vec::new();
         append_test_compact_record(
@@ -9515,8 +11913,8 @@ mod tests {
         assert!(compact_domain_coverage_errors(&summary, &[41]).is_empty());
         let projects = summary.per_domain.get(&41).unwrap();
         assert_eq!(projects.data_record_count, 1);
-        assert_eq!(projects.data_rows_total, 3);
-        assert_eq!(projects.data_changed_rows_total, 3);
+        assert_eq!(projects.data_rows_total, 5);
+        assert_eq!(projects.data_changed_rows_total, 5);
         assert_eq!(
             projects
                 .data_units_total
@@ -9532,6 +11930,38 @@ mod tests {
             projects
                 .data_units_total
                 .get("project_scientist_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            projects.data_units_total.get("project_state_rows").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            projects
+                .data_units_total
+                .get("project_completed_state_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            projects
+                .data_units_total
+                .get("project_breakthrough_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            projects
+                .data_units_total
+                .get("project_observed_project_state_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            projects
+                .data_units_total
+                .get("project_observed_breakthrough_rows")
                 .copied(),
             Some(1)
         );
@@ -9603,12 +12033,43 @@ mod tests {
         }
         assert_eq!(compact_domain_id("projects_live"), Some(41));
         assert_eq!(compact_domain_name(41), "projects_live");
+        let mut dll_cfg = test_config(vec!["projects_live"], None);
+        dll_cfg.special_projects_scan = false;
+        let progress_source = compact_projects_root_source(&dll_cfg, &summary);
+        assert_eq!(progress_source, "dll_project_cache_progress");
+        assert!(compact_projects_root_discovery_debt(progress_source).contains("CProject+0x28"));
         let mut cfg = test_config(vec!["projects_live"], None);
         cfg.special_projects_scan = true;
         let source = compact_projects_root_source(&cfg, &summary);
         assert_eq!(source, "dll_startup_heap_scan");
         assert!(
             compact_projects_root_discovery_debt(source).contains("one-time DLL startup heap scan")
+        );
+    }
+
+    #[test]
+    fn compact_summary_rejects_unknown_project_state_flags() {
+        let mut payload = test_projects_data_payload(0);
+        payload[284..288].copy_from_slice(&0x8000_0000u32.to_le_bytes());
+
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            41,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        assert!(
+            summary
+                .parse_errors
+                .iter()
+                .any(|error| error.contains("unknown state_flags")),
+            "{:?}",
+            summary.parse_errors
         );
     }
 
@@ -9637,6 +12098,286 @@ mod tests {
                 .parse_errors
                 .iter()
                 .any(|error| error.contains("duplicates upgrade_index")),
+            "{:?}",
+            summary.parse_errors
+        );
+    }
+
+    #[test]
+    fn compact_summary_decodes_market_trade_data_record_with_derived_omissions() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            43,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(450, 3, 2, 2, 2),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            43,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_market_trade_data_payload(true),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(&summary, &[43]).is_empty());
+        let market = summary.per_domain.get(&43).unwrap();
+        assert_eq!(market.data_record_count, 1);
+        assert_eq!(market.data_rows_total, 2);
+        assert_eq!(market.data_changed_rows_total, 2);
+        assert_eq!(
+            market
+                .data_units_total
+                .get("market_trade_observed_contract_rows")
+                .copied(),
+            Some(3)
+        );
+        assert_eq!(
+            market
+                .data_units_total
+                .get("market_trade_omitted_candidate_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(compact_domain_id("market_trade_live"), Some(43));
+        assert_eq!(compact_domain_name(43), "market_trade_live");
+    }
+
+    #[test]
+    fn compact_summary_decodes_supply_logistics_attrition_data_record() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            44,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(900, 2, 7, 7, 7),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            44,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_supply_logistics_attrition_data_payload(0),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(&summary, &[44]).is_empty());
+        let supply = summary.per_domain.get(&44).unwrap();
+        assert_eq!(supply.row_count_total, 2);
+        assert_eq!(supply.unit_count_total, 7);
+        assert_eq!(supply.data_record_count, 1);
+        assert_eq!(supply.data_rows_total, 7);
+        assert_eq!(supply.data_changed_rows_total, 7);
+        assert_eq!(
+            supply
+                .data_units_total
+                .get("supply_province_logistics_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            supply
+                .data_units_total
+                .get("supply_division_supply_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            supply
+                .data_units_total
+                .get("supply_computed_badge_rows")
+                .copied(),
+            Some(5)
+        );
+        assert_eq!(
+            supply
+                .data_units_total
+                .get("supply_division_fuel_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            supply
+                .data_units_total
+                .get("supply_division_deficit_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            compact_domain_id("supply_logistics_attrition_live"),
+            Some(44)
+        );
+        assert_eq!(compact_domain_name(44), "supply_logistics_attrition_live");
+    }
+
+    #[test]
+    fn compact_supply_logistics_missing_badge_fails_decode() {
+        let mut payload = test_supply_logistics_attrition_data_payload(0);
+        payload.truncate(payload.len() - COMPACT_SUPPLY_LOGISTICS_ROW_LEN);
+        payload[8..12].copy_from_slice(&6u32.to_le_bytes());
+        payload[12..16].copy_from_slice(&6u32.to_le_bytes());
+        payload[32..36].copy_from_slice(&4u32.to_le_bytes());
+        let mut summary = CompactSummary::default();
+
+        decode_compact_supply_logistics_attrition_data_payload(0, &payload, &mut summary);
+
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("missing csupply candidate rejection badge row")));
+    }
+
+    #[test]
+    fn compact_summary_decodes_focus_research_decisions_depth_data_record() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(300, 3, 7, 7, 7, COMPACT_STATUS_DELTA_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_frd_depth_data_payload(true),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(
+            &summary,
+            &[COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE]
+        )
+        .is_empty());
+        let depth = summary
+            .per_domain
+            .get(&COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE)
+            .unwrap();
+        assert_eq!(depth.data_record_count, 1);
+        assert_eq!(depth.data_rows_total, 7);
+        assert_eq!(depth.data_changed_rows_total, 7);
+        assert_eq!(
+            depth
+                .data_units_total
+                .get("focus_depth_event_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            depth.data_units_total.get("research_eta_rows").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            depth.data_units_total.get("decision_status_rows").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            depth.data_units_total.get("decision_event_rows").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            depth.data_units_total.get("depth_badge_rows").copied(),
+            Some(3)
+        );
+        assert_eq!(
+            compact_domain_id("focus_research_decisions_depth_live"),
+            Some(COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE)
+        );
+        assert_eq!(
+            compact_domain_name(COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE),
+            "focus_research_decisions_depth_live"
+        );
+    }
+
+    #[test]
+    fn compact_frd_depth_missing_required_badge_fails_decode() {
+        let payload = test_frd_depth_data_payload(false);
+        let mut summary = CompactSummary::default();
+
+        decode_compact_frd_depth_data_payload(0, &payload, &mut summary);
+
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("missing required direct event hooks badge row")));
+    }
+
+    #[test]
+    fn compact_summary_rejects_market_trade_fabricated_variant_without_flag() {
+        let mut payload = test_market_trade_data_payload(false);
+        let first_row_variant = COMPACT_MARKET_TRADE_HEADER_LEN + 20;
+        payload[first_row_variant..first_row_variant + 4].copy_from_slice(&99u32.to_le_bytes());
+
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            43,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary
+                .parse_errors
+                .iter()
+                .any(|error| error.contains("equipment_variant_id 99 with variant flag unset")),
             "{:?}",
             summary.parse_errors
         );
@@ -10397,6 +13138,131 @@ mod tests {
         );
         assert_eq!(compact_domain_id("weather_live"), Some(24));
         assert_eq!(compact_domain_name(24), "weather_live");
+    }
+
+    #[test]
+    fn compact_summary_decodes_weather_province_visual_rows() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            24,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload_with_status(
+                1_500,
+                13_719,
+                3,
+                13_719,
+                3,
+                COMPACT_STATUS_DELTA_DATA,
+            ),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            24,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_weather_visual_data_payload(COMPACT_STATUS_DELTA_DATA),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_800, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(&summary, &[24]).is_empty());
+        let weather = summary.per_domain.get(&24).unwrap();
+        assert_eq!(weather.data_record_count, 1);
+        assert_eq!(weather.data_rows_total, 3);
+        assert_eq!(weather.data_changed_rows_total, 3);
+        assert_eq!(
+            weather
+                .data_units_total
+                .get("weather_province_visual_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            weather
+                .data_units_total
+                .get("weather_observed_province_rows")
+                .copied(),
+            Some(13_414)
+        );
+        assert_eq!(
+            weather
+                .data_units_total
+                .get("weather_province_temp_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            weather
+                .data_units_total
+                .get("weather_province_snow_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            weather
+                .data_units_total
+                .get("weather_province_mud_measured_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            weather
+                .data_units_total
+                .get("weather_province_dynamic_lut_driver_rows")
+                .copied(),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn compact_summary_rejects_weather_province_bad_flags() {
+        let mut payload = test_weather_visual_data_payload(COMPACT_STATUS_DELTA_DATA);
+        let first_province_flags = 48 + COMPACT_WEATHER_REGION_ROW_LEN + 4;
+        let bad_flags = COMPACT_WEATHER_PROVINCE_FLAG_MUD_ACTIVE
+            | COMPACT_WEATHER_PROVINCE_FLAG_MAP_RECOLOR_DRIVER;
+        payload[first_province_flags..first_province_flags + 4]
+            .copy_from_slice(&bad_flags.to_le_bytes());
+
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            24,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("missing struct validation flag")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("mud_active without mud_present")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("inconsistent map recolor flag")));
     }
 
     #[test]
@@ -11593,6 +14459,157 @@ mod tests {
         payload
     }
 
+    fn test_air_combat_losses_live_empty_data_payload(status_flags: u32) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&500u32.to_le_bytes());
+        payload.extend_from_slice(&900u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(
+            &(COMPACT_AIR_STRENGTH_EQUIPMENT_AMOUNT_PER_PLANE as u32).to_le_bytes(),
+        );
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload
+    }
+
+    fn test_air_combat_losses_live_single_loss_payload(status_flags: u32) -> Vec<u8> {
+        test_air_combat_losses_live_payload(
+            status_flags,
+            &[(
+                1,
+                10,
+                0,
+                4,
+                Some(42),
+                100,
+                97,
+                -3,
+                10_000_000,
+                9_700_000,
+                false,
+            )],
+            1,
+            0,
+            0,
+        )
+    }
+
+    fn test_air_combat_losses_live_data_payload(status_flags: u32) -> Vec<u8> {
+        test_air_combat_losses_live_payload(
+            status_flags,
+            &[
+                (
+                    1,
+                    10,
+                    0,
+                    4,
+                    Some(42),
+                    100,
+                    97,
+                    -3,
+                    10_000_000,
+                    9_700_000,
+                    false,
+                ),
+                (1, 11, 1, 8, None, 80, 84, 4, 8_000_000, 8_400_000, false),
+                (2, 20, 2, 4, Some(43), 12, 0, -12, 1_200_000, 0, true),
+            ],
+            2,
+            1,
+            1,
+        )
+    }
+
+    fn test_air_combat_losses_live_payload(
+        status_flags: u32,
+        rows: &[(
+            u32,
+            u32,
+            u64,
+            u32,
+            Option<u32>,
+            u32,
+            u32,
+            i32,
+            i64,
+            i64,
+            bool,
+        )],
+        loss_rows: u32,
+        reinforcement_rows: u32,
+        deleted_rows: u32,
+    ) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&500u32.to_le_bytes());
+        payload.extend_from_slice(&900u32.to_le_bytes());
+        payload.extend_from_slice(&loss_rows.to_le_bytes());
+        payload.extend_from_slice(&reinforcement_rows.to_le_bytes());
+        payload.extend_from_slice(&deleted_rows.to_le_bytes());
+        payload.extend_from_slice(
+            &(COMPACT_AIR_STRENGTH_EQUIPMENT_AMOUNT_PER_PLANE as u32).to_le_bytes(),
+        );
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        for (
+            owner_tag_db_id,
+            wing_id,
+            generation,
+            mission_mask,
+            mission_region,
+            old_count,
+            new_count,
+            count_delta,
+            old_equipment_amount_sum,
+            new_equipment_amount_sum,
+            deleted,
+        ) in rows
+        {
+            let equipment_amount_delta =
+                new_equipment_amount_sum.saturating_sub(*old_equipment_amount_sum);
+            let mut flags = 0u32;
+            if *count_delta < 0 || equipment_amount_delta < 0 {
+                flags |= COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_LOSS;
+            }
+            if *count_delta > 0 || equipment_amount_delta > 0 {
+                flags |= COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_REINFORCEMENT;
+            }
+            if *deleted {
+                flags |= COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_DELETED;
+            }
+            if mission_region.is_some() {
+                flags |= COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_MISSION_REGION;
+            }
+            if equipment_amount_delta
+                == (*count_delta as i64)
+                    .saturating_mul(COMPACT_AIR_STRENGTH_EQUIPMENT_AMOUNT_PER_PLANE)
+            {
+                flags |= COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK;
+            }
+            payload.extend_from_slice(&owner_tag_db_id.to_le_bytes());
+            payload.extend_from_slice(&wing_id.to_le_bytes());
+            payload.extend_from_slice(&generation.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&mission_mask.to_le_bytes());
+            payload.extend_from_slice(&mission_region.unwrap_or(0).to_le_bytes());
+            payload.extend_from_slice(&old_count.to_le_bytes());
+            payload.extend_from_slice(&new_count.to_le_bytes());
+            payload.extend_from_slice(&count_delta.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&old_equipment_amount_sum.to_le_bytes());
+            payload.extend_from_slice(&new_equipment_amount_sum.to_le_bytes());
+            payload.extend_from_slice(&equipment_amount_delta.to_le_bytes());
+        }
+        payload
+    }
+
     fn test_air_variant_defs_data_payload(status_flags: u32) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(&0u64.to_le_bytes());
@@ -11718,6 +14735,70 @@ mod tests {
         payload
     }
 
+    fn test_air_variant_archetypes_data_payload(status_flags: u32) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&19u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+
+        let classified_flags = COMPACT_AIR_VARIANT_ARCHETYPE_ROW_FLAG_ARCHETYPE
+            | COMPACT_AIR_VARIANT_ARCHETYPE_ROW_FLAG_BASE_AIRFRAME
+            | COMPACT_AIR_VARIANT_ARCHETYPE_ROW_FLAG_ROLE;
+        let classified_source = COMPACT_AIR_VARIANT_ARCHETYPE_SOURCE_LIVE_STATS
+            | COMPACT_AIR_VARIANT_ARCHETYPE_SOURCE_LIVE_TOKEN_DICTIONARY
+            | COMPACT_AIR_VARIANT_ARCHETYPE_SOURCE_STATIC_SOURCE_ENUM;
+        for (
+            variant_id,
+            flags,
+            equipment_token_raw,
+            equipment_type_token_raw,
+            interface_type_raw,
+            source_mask,
+        ) in [
+            (
+                1371u32,
+                classified_flags,
+                20_335u32,
+                70u32,
+                7u32,
+                classified_source,
+            ),
+            (
+                1375u32,
+                0u32,
+                20_213u32,
+                70u32,
+                7u32,
+                COMPACT_AIR_VARIANT_ARCHETYPE_SOURCE_LIVE_STATS,
+            ),
+        ] {
+            payload.extend_from_slice(&variant_id.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&equipment_token_raw.to_le_bytes());
+            payload.extend_from_slice(&equipment_type_token_raw.to_le_bytes());
+            payload.extend_from_slice(&interface_type_raw.to_le_bytes());
+            payload.extend_from_slice(&0i32.to_le_bytes());
+            payload.extend_from_slice(&source_mask.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+
+        append_test_compact_string(&mut payload, "small_plane_cas_airframe");
+        append_test_compact_string(&mut payload, "small_plane_cas_airframe");
+        append_test_compact_string(&mut payload, "cas");
+        append_test_compact_string(&mut payload, "");
+        append_test_compact_string(&mut payload, "");
+        append_test_compact_string(&mut payload, "");
+        payload
+    }
+
     fn test_air_variant_upgrades_data_payload(status_flags: u32) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(&0u64.to_le_bytes());
@@ -11750,8 +14831,8 @@ mod tests {
     fn test_projects_data_payload(status_flags: u32) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(&0u64.to_le_bytes());
-        payload.extend_from_slice(&3u32.to_le_bytes());
-        payload.extend_from_slice(&3u32.to_le_bytes());
+        payload.extend_from_slice(&5u32.to_le_bytes());
+        payload.extend_from_slice(&5u32.to_le_bytes());
         payload.extend_from_slice(&status_flags.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
@@ -11761,7 +14842,7 @@ mod tests {
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
         payload.extend_from_slice(&COMPACT_PROJECT_SOURCE_SCAN.to_le_bytes());
-        payload.extend_from_slice(&COMPACT_PROJECT_HEADER_EXT_ROOT_REASON_COUNTERS.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_PROJECT_HEADER_EXT_PROGRESS_V2.to_le_bytes());
         payload.extend_from_slice(&77u64.to_le_bytes());
         payload.extend_from_slice(&5u32.to_le_bytes());
         payload.extend_from_slice(&6u32.to_le_bytes());
@@ -11772,6 +14853,10 @@ mod tests {
         for value in 11u32..=22 {
             payload.extend_from_slice(&value.to_le_bytes());
         }
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
 
         payload.extend_from_slice(&118u32.to_le_bytes());
         payload.extend_from_slice(&341u32.to_le_bytes());
@@ -11806,6 +14891,24 @@ mod tests {
         for skill in [4i32, 0, 1, 2] {
             payload.extend_from_slice(&skill.to_le_bytes());
         }
+        payload.extend_from_slice(&0u32.to_le_bytes());
+
+        payload.extend_from_slice(&91234u32.to_le_bytes());
+        payload.extend_from_slice(&6655u32.to_le_bytes());
+        payload.extend_from_slice(&0x18u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&3u32.to_le_bytes());
+        payload.extend_from_slice(&7u32.to_le_bytes());
+        payload.extend_from_slice(&3_000_000u32.to_le_bytes());
+        payload.extend_from_slice(&60u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_PROJECT_STATE_ROW_FLAG_COMPLETED.to_le_bytes());
+
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&22214u32.to_le_bytes());
+        payload.extend_from_slice(&12345u32.to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
 
         append_test_compact_string(&mut payload, "facility_laboratory");
@@ -12118,6 +15221,418 @@ mod tests {
             payload.extend_from_slice(&intensity.to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
         }
+        payload
+    }
+
+    fn test_weather_visual_data_payload(status_flags: u32) -> Vec<u8> {
+        let region_count = 1u32;
+        let province_count = 2u32;
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&region_count.to_le_bytes());
+        payload.extend_from_slice(&(region_count + province_count).to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&province_count.to_le_bytes());
+        payload.extend_from_slice(&(COMPACT_WEATHER_REGION_ROWS as u32).to_le_bytes());
+        payload.extend_from_slice(&13_414u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+
+        payload.extend_from_slice(&31u32.to_le_bytes());
+        payload.extend_from_slice(&(1u32 | (1u32 << 5) | (1u32 << 6)).to_le_bytes());
+        payload.extend_from_slice(&1_000_000i32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&43_817_520u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+
+        let zero_visual_flags = COMPACT_WEATHER_PROVINCE_FLAG_WATER_PRESENT
+            | COMPACT_WEATHER_PROVINCE_FLAG_SNOW_PRESENT
+            | COMPACT_WEATHER_PROVINCE_FLAG_MUD_PRESENT
+            | COMPACT_WEATHER_PROVINCE_FLAG_CUSTOM_MODIFIER_COUNT_PRESENT
+            | COMPACT_WEATHER_PROVINCE_FLAG_STRUCT_VALIDATED
+            | COMPACT_WEATHER_PROVINCE_FLAG_MAP_RECOLOR_DRIVER
+            | COMPACT_WEATHER_PROVINCE_FLAG_DYNAMIC_LUT_DRIVER;
+        append_test_weather_province_row(&mut payload, 11, zero_visual_flags, 0, 0, 0, 0, 0);
+        append_test_weather_province_row(
+            &mut payload,
+            12,
+            COMPACT_WEATHER_PROVINCE_KNOWN_FLAGS,
+            -350_000,
+            -12_072,
+            1_852_000,
+            800_000,
+            2,
+        );
+        payload
+    }
+
+    fn append_test_weather_province_row(
+        payload: &mut Vec<u8>,
+        province_id: u32,
+        flags: u32,
+        temperature_raw: i32,
+        temperature_change_raw: i32,
+        water_raw: i32,
+        snow_raw: i32,
+        custom_modifier_count: u32,
+    ) {
+        payload.extend_from_slice(&province_id.to_le_bytes());
+        payload.extend_from_slice(&flags.to_le_bytes());
+        payload.extend_from_slice(&temperature_raw.to_le_bytes());
+        payload.extend_from_slice(&temperature_change_raw.to_le_bytes());
+        payload.extend_from_slice(&water_raw.to_le_bytes());
+        payload.extend_from_slice(&snow_raw.to_le_bytes());
+        payload.extend_from_slice(&custom_modifier_count.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+    }
+
+    fn test_supply_logistics_attrition_data_payload(status_flags: u32) -> Vec<u8> {
+        let rows = [
+            (
+                COMPACT_SUPPLY_ROW_KIND_PROVINCE_LOGISTICS,
+                2068u32,
+                64u32,
+                0u32,
+                COMPACT_SUPPLY_ROW_FLAG_RAIL
+                    | COMPACT_SUPPLY_ROW_FLAG_SUPPLY_NODE
+                    | COMPACT_SUPPLY_ROW_FLAG_INFRASTRUCTURE
+                    | COMPACT_SUPPLY_ROW_FLAG_LIVE_BUILDING_VECTOR,
+                5i32,
+                2i32,
+                0i32,
+                4i32,
+                3i32,
+            ),
+            (
+                COMPACT_SUPPLY_ROW_KIND_DIVISION_SUPPLY,
+                42u32,
+                2068u32,
+                1u32,
+                COMPACT_SUPPLY_ROW_FLAG_DIVISION_CURRENT_SUPPLY
+                    | COMPACT_SUPPLY_ROW_FLAG_DIVISION_MAX_SUPPLY
+                    | COMPACT_SUPPLY_ROW_FLAG_DIVISION_SUPPLY_GAIN
+                    | COMPACT_SUPPLY_ROW_FLAG_DIVISION_OWNER
+                    | COMPACT_SUPPLY_ROW_FLAG_DIVISION_SUPPLY_DEFICIT
+                    | COMPACT_SUPPLY_ROW_FLAG_DIVISION_FUEL
+                    | COMPACT_SUPPLY_ROW_FLAG_PROXY_VALUE,
+                950_000i32,
+                1_200_000i32,
+                25_000i32,
+                250_000i32,
+                99_000i32,
+            ),
+            (
+                COMPACT_SUPPLY_ROW_KIND_COMPUTED_BADGE,
+                0u32,
+                0u32,
+                0u32,
+                COMPACT_SUPPLY_ROW_FLAG_EXACT_SUPPLY_WALL,
+                COMPACT_SUPPLY_BADGE_EXACT_PROVINCE_SUPPLY_TRANSIENT,
+                0i32,
+                0i32,
+                0i32,
+                0i32,
+            ),
+            (
+                COMPACT_SUPPLY_ROW_KIND_COMPUTED_BADGE,
+                0u32,
+                0u32,
+                0u32,
+                COMPACT_SUPPLY_ROW_FLAG_ATTRITION_WALL,
+                COMPACT_SUPPLY_BADGE_ATTRITION_RUNTIME_COMPUTED,
+                0i32,
+                0i32,
+                0i32,
+                0i32,
+            ),
+            (
+                COMPACT_SUPPLY_ROW_KIND_COMPUTED_BADGE,
+                0u32,
+                0u32,
+                0u32,
+                COMPACT_SUPPLY_ROW_FLAG_MOTORIZATION_WALL,
+                COMPACT_SUPPLY_BADGE_MOTORIZATION_SETTINGS_UNPINNED,
+                0i32,
+                0i32,
+                0i32,
+                0i32,
+            ),
+            (
+                COMPACT_SUPPLY_ROW_KIND_COMPUTED_BADGE,
+                0u32,
+                0u32,
+                0u32,
+                COMPACT_SUPPLY_ROW_FLAG_CONVOY_PRESSURE_WALL,
+                COMPACT_SUPPLY_BADGE_CONVOY_LOGISTICS_PRESSURE_UNPINNED,
+                0i32,
+                0i32,
+                0i32,
+                0i32,
+            ),
+            (
+                COMPACT_SUPPLY_ROW_KIND_COMPUTED_BADGE,
+                0u32,
+                0u32,
+                0u32,
+                COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED,
+                COMPACT_SUPPLY_BADGE_CSUPPLY_INPUT_ARRAYS_UNSAFE,
+                0i32,
+                0i32,
+                0i32,
+                0i32,
+            ),
+        ];
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&5u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        for (
+            row_kind,
+            entity_id,
+            join_id,
+            owner_tag_db_id,
+            flags,
+            value_a_raw,
+            value_b_raw,
+            value_c_raw,
+            value_d_raw,
+            aux_raw,
+        ) in rows
+        {
+            payload.extend_from_slice(&row_kind.to_le_bytes());
+            payload.extend_from_slice(&entity_id.to_le_bytes());
+            payload.extend_from_slice(&join_id.to_le_bytes());
+            payload.extend_from_slice(&owner_tag_db_id.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&value_a_raw.to_le_bytes());
+            payload.extend_from_slice(&value_b_raw.to_le_bytes());
+            payload.extend_from_slice(&value_c_raw.to_le_bytes());
+            payload.extend_from_slice(&value_d_raw.to_le_bytes());
+            payload.extend_from_slice(&aux_raw.to_le_bytes());
+        }
+        payload
+    }
+
+    fn test_market_trade_data_payload(first_row_valid: bool) -> Vec<u8> {
+        let first_flags = if first_row_valid {
+            COMPACT_MARKET_TRADE_ROW_FLAG_BUYER_PTR_VALID
+                | COMPACT_MARKET_TRADE_ROW_FLAG_EQUIPMENT_SUBBUF_VALID
+                | COMPACT_MARKET_TRADE_ROW_FLAG_DELIVERY_SUBBUF_VALID
+                | COMPACT_MARKET_TRADE_ROW_FLAG_VARIANT_VALID
+                | COMPACT_MARKET_TRADE_ROW_FLAG_AMOUNT_VALID
+        } else {
+            COMPACT_MARKET_TRADE_ROW_FLAG_DELIVERY_SUBBUF_VALID
+        };
+        let rows = [
+            (1405u32, first_flags, 34u32, 67u32, 4756u32, 21_700_000i64),
+            (
+                1433u32,
+                COMPACT_MARKET_TRADE_ROW_FLAG_BUYER_PTR_VALID
+                    | COMPACT_MARKET_TRADE_ROW_FLAG_EQUIPMENT_SUBBUF_VALID
+                    | COMPACT_MARKET_TRADE_ROW_FLAG_DELIVERY_SUBBUF_VALID
+                    | COMPACT_MARKET_TRADE_ROW_FLAG_VARIANT_VALID
+                    | COMPACT_MARKET_TRADE_ROW_FLAG_AMOUNT_VALID,
+                41u32,
+                68u32,
+                121u32,
+                2_000_000i64,
+            ),
+        ];
+        let buyer_ptr_valid_rows = rows
+            .iter()
+            .filter(|(_, flags, _, _, _, _)| {
+                flags & COMPACT_MARKET_TRADE_ROW_FLAG_BUYER_PTR_VALID != 0
+            })
+            .count() as u32;
+        let variant_valid_rows = rows
+            .iter()
+            .filter(|(_, flags, _, _, _, _)| {
+                flags & COMPACT_MARKET_TRADE_ROW_FLAG_VARIANT_VALID != 0
+            })
+            .count() as u32;
+        let amount_valid_rows = rows
+            .iter()
+            .filter(|(_, flags, _, _, _, _)| {
+                flags & COMPACT_MARKET_TRADE_ROW_FLAG_AMOUNT_VALID != 0
+            })
+            .count() as u32;
+        let partial_field_rows = rows
+            .iter()
+            .filter(|(_, flags, _, _, _, _)| {
+                flags & COMPACT_MARKET_TRADE_ROW_FLAG_BUYER_PTR_VALID == 0
+                    || flags & COMPACT_MARKET_TRADE_ROW_FLAG_EQUIPMENT_SUBBUF_VALID == 0
+                    || flags & COMPACT_MARKET_TRADE_ROW_FLAG_DELIVERY_SUBBUF_VALID == 0
+                    || flags & COMPACT_MARKET_TRADE_ROW_FLAG_VARIANT_VALID == 0
+                    || flags & COMPACT_MARKET_TRADE_ROW_FLAG_AMOUNT_VALID == 0
+            })
+            .count() as u32;
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1_000u64.to_le_bytes());
+        payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&3u32.to_le_bytes());
+        payload.extend_from_slice(&(rows.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&buyer_ptr_valid_rows.to_le_bytes());
+        payload.extend_from_slice(&variant_valid_rows.to_le_bytes());
+        payload.extend_from_slice(&amount_valid_rows.to_le_bytes());
+        payload.extend_from_slice(&partial_field_rows.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
+        for (contract_id, flags, seller, buyer, variant, amount) in rows {
+            let variant_valid = flags & COMPACT_MARKET_TRADE_ROW_FLAG_VARIANT_VALID != 0;
+            let amount_valid = flags & COMPACT_MARKET_TRADE_ROW_FLAG_AMOUNT_VALID != 0;
+            let equipment_valid = flags & COMPACT_MARKET_TRADE_ROW_FLAG_EQUIPMENT_SUBBUF_VALID != 0;
+            let delivery_valid = flags & COMPACT_MARKET_TRADE_ROW_FLAG_DELIVERY_SUBBUF_VALID != 0;
+            let buyer_valid = flags & COMPACT_MARKET_TRADE_ROW_FLAG_BUYER_PTR_VALID != 0;
+            payload.extend_from_slice(&contract_id.to_le_bytes());
+            payload.extend_from_slice(&COMPACT_MARKET_TRADE_CONTRACT_TYPE.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(&seller.to_le_bytes());
+            payload.extend_from_slice(&buyer.to_le_bytes());
+            payload.extend_from_slice(&(if variant_valid { variant } else { 0 }).to_le_bytes());
+            payload.extend_from_slice(&(if amount_valid { amount } else { 0 }).to_le_bytes());
+            payload.extend_from_slice(&(if equipment_valid { 1u32 } else { 0u32 }).to_le_bytes());
+            payload.extend_from_slice(&(if delivery_valid { 1u32 } else { 0u32 }).to_le_bytes());
+            payload.extend_from_slice(&(if buyer_valid { 1u32 } else { 0u32 }).to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        payload
+    }
+
+    fn test_frd_depth_data_payload(include_direct_event_badge: bool) -> Vec<u8> {
+        let badge_count = if include_direct_event_badge {
+            3u32
+        } else {
+            2u32
+        };
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1_000u64.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FRD_STATUS_KNOWN_MASK.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&badge_count.to_le_bytes());
+
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FRD_FOCUS_EVENT_COMPLETED_COUNT_INCREASED.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FRD_FOCUS_FLAG_COMPLETED_TOKEN_INFERRED.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&3u32.to_le_bytes());
+        payload.extend_from_slice(&6_900_000i32.to_le_bytes());
+        payload.extend_from_slice(&0i32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        append_test_compact_string(&mut payload, "POR_old_focus");
+        append_test_compact_string(&mut payload, "");
+        append_test_compact_string(&mut payload, "POR_old_focus");
+
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(
+            &(COMPACT_FRD_RESEARCH_FLAG_SAME_TECH
+                | COMPACT_FRD_RESEARCH_FLAG_POSITIVE_SPEED
+                | COMPACT_FRD_RESEARCH_FLAG_ETA_AVAILABLE
+                | COMPACT_FRD_RESEARCH_FLAG_BASE_PRESENT)
+                .to_le_bytes(),
+        );
+        payload.extend_from_slice(&24u32.to_le_bytes());
+        payload.extend_from_slice(&700u32.to_le_bytes());
+        payload.extend_from_slice(&700u32.to_le_bytes());
+        payload.extend_from_slice(&700u32.to_le_bytes());
+        payload.extend_from_slice(&700u32.to_le_bytes());
+        payload.extend_from_slice(&100_000i64.to_le_bytes());
+        payload.extend_from_slice(&220_000i64.to_le_bytes());
+        payload.extend_from_slice(&120_000i64.to_le_bytes());
+        payload.extend_from_slice(&5_000i64.to_le_bytes());
+        payload.extend_from_slice(&1_000_000i64.to_le_bytes());
+        payload.extend_from_slice(&156i64.to_le_bytes());
+
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_FRD_DECISION_EVENT_DAY_DELTA.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&44i32.to_le_bytes());
+        payload.extend_from_slice(&43i32.to_le_bytes());
+        payload.extend_from_slice(&0i32.to_le_bytes());
+        payload.extend_from_slice(&0i32.to_le_bytes());
+        append_test_compact_string(&mut payload, "POR_countdown");
+
+        payload.extend_from_slice(&COMPACT_FRD_BADGE_KIND_FOCUS_PAUSE_FAIL_CLOSED.to_le_bytes());
+        payload.extend_from_slice(
+            &(COMPACT_FRD_BADGE_FLAG_FAIL_CLOSED | COMPACT_FRD_BADGE_FLAG_CURRENT_BUILD_PROBED)
+                .to_le_bytes(),
+        );
+        payload.extend_from_slice(&(12u32).to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(
+            &COMPACT_FRD_BADGE_EVIDENCE_NO_PAUSED_TRUE_GROUND_TRUTH.to_le_bytes(),
+        );
+        append_test_compact_string(
+            &mut payload,
+            COMPACT_FRD_BADGE_DETAIL_FOCUS_PAUSE_FAIL_CLOSED,
+        );
+
+        payload.extend_from_slice(
+            &COMPACT_FRD_BADGE_KIND_DECISION_TARGET_FIELDS_FAIL_CLOSED.to_le_bytes(),
+        );
+        payload.extend_from_slice(
+            &(COMPACT_FRD_BADGE_FLAG_FAIL_CLOSED | COMPACT_FRD_BADGE_FLAG_CURRENT_BUILD_PROBED)
+                .to_le_bytes(),
+        );
+        payload.extend_from_slice(&(16u32).to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(
+            &COMPACT_FRD_BADGE_EVIDENCE_TIMED_DEFINITION_LAYOUT_REJECTED.to_le_bytes(),
+        );
+        append_test_compact_string(
+            &mut payload,
+            COMPACT_FRD_BADGE_DETAIL_DECISION_TARGET_FIELDS_FAIL_CLOSED,
+        );
+
+        if include_direct_event_badge {
+            payload.extend_from_slice(
+                &COMPACT_FRD_BADGE_KIND_DIRECT_EVENT_HOOKS_UNAVAILABLE.to_le_bytes(),
+            );
+            payload.extend_from_slice(
+                &(COMPACT_FRD_BADGE_FLAG_FAIL_CLOSED
+                    | COMPACT_FRD_BADGE_FLAG_DERIVED_DETERMINISTIC)
+                    .to_le_bytes(),
+            );
+            payload.extend_from_slice(&(1000u32).to_le_bytes());
+            payload.extend_from_slice(&2u32.to_le_bytes());
+            payload.extend_from_slice(
+                &COMPACT_FRD_BADGE_EVIDENCE_COMPACT_FRAME_DELTA_DERIVED.to_le_bytes(),
+            );
+            append_test_compact_string(
+                &mut payload,
+                COMPACT_FRD_BADGE_DETAIL_DIRECT_EVENT_HOOKS_UNAVAILABLE,
+            );
+        }
+
         payload
     }
 

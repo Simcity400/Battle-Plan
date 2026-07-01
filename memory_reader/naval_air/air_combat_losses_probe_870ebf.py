@@ -103,6 +103,7 @@ KNOWN_WING_U32_OFFSETS = {
     AIR_WING_OFF_MISSION_MASK,
     AIR_WING_OFF_EFFECTIVE_PLANES,
 }
+EQUIPMENT_AMOUNT_PER_PLANE = 100000
 
 
 def is_heap(value: int | None) -> bool:
@@ -410,10 +411,14 @@ class Probe:
         return list(rows_by_body.values()), topo, sources, pools
 
     def direct_ref_probe(self, sources: list[dict], air_wings: list[dict]) -> dict:
-        wing_refs = {row["body"] for row in air_wings}
-        wing_refs.update(row["object"] for row in air_wings)
+        wing_by_ref = {}
+        for row in air_wings:
+            wing_by_ref[row["body"]] = ("body", row)
+            wing_by_ref[row["object"]] = ("object", row)
+        wing_refs = set(wing_by_ref)
         scanned = collections.Counter()
         unknown_ptrs = collections.Counter()
+        unknown_vtables = collections.Counter()
         candidates = []
         for source in sources:
             scanned[source["kind"]] += 1
@@ -427,12 +432,40 @@ class Probe:
                 if vt in self.known_vtables:
                     continue
                 unknown_ptrs[source["kind"]] += 1
+                unknown_vtables[(source["kind"], vt - self.base)] += 1
                 target = self.proc.try_read(ptr, 0x400)
                 refs = []
                 for off, q in qwords(target):
                     if q in wing_refs:
-                        refs.append({"offset": off, "ref": hx(q)})
+                        ref_kind, row = wing_by_ref[q]
+                        refs.append({
+                            "offset": off,
+                            "ref": hx(q),
+                            "ref_kind": ref_kind,
+                            "wing_key": row["key"],
+                            "owner_tag_db_id": row["owner_tag_db_id"],
+                            "wing_id": row["wing_id"],
+                            "pool": hx(row["pool"]),
+                            "mission_region": row["mission_region"],
+                            "mission_mask": row["mission_mask"],
+                            "count": row["count"],
+                            "equipment_amount_sum": row["equipment_amount_sum"],
+                        })
                 if len({r["ref"] for r in refs}) >= 2:
+                    owners = sorted({r["owner_tag_db_id"] for r in refs})
+                    pools = sorted({r["pool"] for r in refs})
+                    regions = sorted(
+                        {r["mission_region"] for r in refs if r["mission_region"] is not None}
+                    )
+                    masks = sorted({r["mission_mask"] for r in refs if r["mission_mask"] is not None})
+                    distinct_wings = sorted({r["wing_key"] for r in refs})
+                    opposition_capable = len(owners) >= 2 and bool(regions)
+                    if opposition_capable:
+                        classification = "possible_opposed_air_event_root_needs_followup"
+                    elif len(owners) == 1 and len(pools) == 1:
+                        classification = "rejected_same_owner_same_pool_local_wing_collection"
+                    else:
+                        classification = "rejected_non_opposed_direct_wing_collection"
                     candidates.append({
                         "source_kind": source["kind"],
                         "source_addr": hx(source["addr"]),
@@ -440,12 +473,29 @@ class Probe:
                         "target_addr": hx(ptr),
                         "target_vtable": hx(vt),
                         "target_vtable_rva": hex(vt - self.base),
+                        "classification": classification,
+                        "opposition_capable": opposition_capable,
+                        "distinct_wing_keys": distinct_wings[:16],
+                        "owner_tag_db_ids": owners,
+                        "pool_addrs": pools[:8],
+                        "mission_regions": regions,
+                        "mission_masks": masks,
                         "wing_refs": refs[:16],
                     })
+        event_candidates = [c for c in candidates if c["opposition_capable"]]
         return {
             "candidate": "direct manager/container/pool object holding air-wing refs",
-            "classification": "ambiguous aggregate/list-like object, not a validated combat/loss/reinforcement event root",
-            "criterion": "unknown-vtable target object in bounded root fields contains >=2 direct air-wing body/object refs in first 0x400 bytes",
+            "classification": (
+                "rejected_direct_opposed_event_root"
+                if not event_candidates
+                else "possible_direct_opposed_event_root"
+            ),
+            "criterion": (
+                "unknown-vtable target object in bounded root fields contains >=2 direct "
+                "air-wing body/object refs in first 0x400 bytes; event-root upgrade requires "
+                "opposition-capable refs (>=2 owner tags with region-bearing wings), not merely "
+                "a same-owner pool-local collection"
+            ),
             "source_spans": {
                 "strategic_air_manager": "0x0..0x200",
                 "airbase_owner_container": "0x0..0x120",
@@ -453,8 +503,21 @@ class Probe:
             },
             "sources_scanned": dict(scanned),
             "unknown_vtable_pointers_seen": dict(unknown_ptrs),
+            "top_unknown_vtable_rvas": [
+                {
+                    "source_kind": source_kind,
+                    "target_vtable_rva": hex(vtable_rva),
+                    "count": count,
+                }
+                for (source_kind, vtable_rva), count in unknown_vtables.most_common(20)
+            ],
             "candidate_count": len(candidates),
-            "status": "ambiguous_direct_aggregate_candidate_not_event_root" if candidates else "rejected_no_direct_aggregate_object",
+            "event_root_candidate_count": len(event_candidates),
+            "status": (
+                "rejected_no_direct_opposed_event_root"
+                if not event_candidates
+                else "possible_direct_opposed_event_root"
+            ),
             "candidates": candidates[:50],
         }
 
@@ -495,10 +558,14 @@ class Probe:
                     eff_delta = row["effective_planes"] - old["effective_planes"]
                     if count_delta < 0 or equip_delta < 0:
                         loss_like.append({
+                            "raw_hour": raw_hour,
                             "sample_utc": wall,
                             "key": key,
                             "count_delta": count_delta,
                             "equipment_amount_delta": equip_delta,
+                            "equipment_delta_scale_ok": (
+                                equip_delta == count_delta * EQUIPMENT_AMOUNT_PER_PLANE
+                            ),
                             "old_count": old["count"],
                             "new_count": row["count"],
                             "old_equipment_amount_sum": old["equipment_amount_sum"],
@@ -508,10 +575,14 @@ class Probe:
                         })
                     elif count_delta > 0 or equip_delta > 0:
                         reinforcement_like.append({
+                            "raw_hour": raw_hour,
                             "sample_utc": wall,
                             "key": key,
                             "count_delta": count_delta,
                             "equipment_amount_delta": equip_delta,
+                            "equipment_delta_scale_ok": (
+                                equip_delta == count_delta * EQUIPMENT_AMOUNT_PER_PLANE
+                            ),
                             "old_count": old["count"],
                             "new_count": row["count"],
                             "old_equipment_amount_sum": old["equipment_amount_sum"],
@@ -577,6 +648,32 @@ class Probe:
                 "change_count": count,
                 "examples": field_change_examples[off],
             })
+        all_delta_events = loss_like + reinforcement_like
+        scale_checked = [event for event in all_delta_events if event["count_delta"] != 0]
+        scale_mismatches = [event for event in scale_checked if not event["equipment_delta_scale_ok"]]
+        loss_reinforcement_delta_path = {
+            "status": (
+                "validated_loss_and_reinforcement_delta_events"
+                if loss_like and reinforcement_like and not scale_mismatches and skipped == 0
+                else "not_validated"
+            ),
+            "source": (
+                "air-wing body count delta at +0x6C plus equipment-bank amount delta at "
+                "+0x1E8 entries; mission context from +0x90 mission mask and +0xB0 region"
+            ),
+            "equipment_amount_per_plane": EQUIPMENT_AMOUNT_PER_PLANE,
+            "loss_events_seen": len(loss_like),
+            "reinforcement_events_seen": len(reinforcement_like),
+            "count_equipment_scale_checked_events": len(scale_checked),
+            "count_equipment_scale_mismatch_count": len(scale_mismatches),
+            "sample_scale_mismatches": scale_mismatches[:10],
+            "hourly_or_lower_sampling_passed": skipped == 0 and len(distinct_hours) > 0,
+            "production_note": (
+                "This validates loss/reinforcement as a derived state-delta event path. "
+                "It does not validate sortie starts, combat pairing, killer/victim cause, "
+                "or a separate air-combat object root."
+            ),
+        }
         return {
             "duration_s": duration_s,
             "interval_s": interval_s,
@@ -593,6 +690,7 @@ class Probe:
             "loss_like_delta_count": len(loss_like),
             "reinforcement_like_known_wing_or_loadout_deltas": reinforcement_like[:50],
             "reinforcement_like_delta_count": len(reinforcement_like),
+            "loss_reinforcement_delta_path": loss_reinforcement_delta_path,
             "other_known_field_change_counts": dict(other_changes),
             "top_unknown_air_wing_body_u32_changes": top_unknown,
             "first_sample": samples[0] if samples else None,
@@ -688,10 +786,17 @@ def main() -> int:
             "vtable_scan": None,
             "verdict": {
                 "compact_record_ready": False,
+                "loss_reinforcement_delta_path_validated": (
+                    temporal["loss_reinforcement_delta_path"]["status"]
+                    == "validated_loss_and_reinforcement_delta_events"
+                ),
+                "direct_opposed_event_root_rejected": (
+                    direct_refs["status"] == "rejected_no_direct_opposed_event_root"
+                ),
                 "reason": (
-                    "no distinct active air combat/loss/reinforcement root was validated; "
-                    "probe only validated the existing strategic-air/air-wing/loadout topology "
-                    "and rejected the bounded direct-aggregate candidate"
+                    "loss/reinforcement can be captured as a wing-count/equipment-bank delta path; "
+                    "no distinct sortie/combat/cause root was validated, and the bounded shallow "
+                    "direct-ref candidate set contains no opposed event root"
                 ),
             },
         }

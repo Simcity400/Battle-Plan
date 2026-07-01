@@ -58,6 +58,13 @@ PROJECT_STATE_MACHINE_VTABLE_RVA = 0x2A19358
 PROJECT_PROTOTYPE_STATE_VTABLE_RVA = 0x2A19300
 PROJECT_SIMPLE_STATE_VTABLE_RVA = 0x2A192A8
 PROJECT_BREAKTHROUGH_PROGRESS_VTABLE_RVA = 0x2A152E0
+PROJECT_STATE_MACHINE_OFF_CURRENT_STATE_PTR = 0x08
+PROJECT_STATE_MACHINE_OFF_PROTOTYPE_STATE = 0x18
+PROJECT_STATE_MACHINE_OFF_SIMPLE_STATES = (0xE8, 0x168, 0x1E8)
+PROJECT_STATE_OFF_CURRENT_STATE_ENUM = 0x78
+PROJECT_PROTOTYPE_STATE_OFF_PHASE_PROGRESS_RAW = 0x48
+PROJECT_PROTOTYPE_STATE_OFF_PHASE_TARGET = 0x50
+PROJECT_PROTOTYPE_STATE_OFF_ITERATIONS = 0x8C
 
 MAX_TAG_ROWS = 1024
 MAX_COUNTRY_PROJECTS = 256
@@ -210,6 +217,60 @@ def read_breakthrough_rows(p, obj_addr, breakthrough_vtable, max_rows=16):
     return rows
 
 
+def classify_current_state(p, state_machine_addr, expected):
+    current_ptr = try_u64(
+        p, state_machine_addr + PROJECT_STATE_MACHINE_OFF_CURRENT_STATE_PTR
+    )
+    if not is_heap_ptr(current_ptr):
+        return {
+            "valid": False,
+            "current_ptr": current_ptr,
+            "offset": None,
+            "vtable": None,
+            "enum": None,
+        }
+    offset = current_ptr - state_machine_addr
+    current_vtable = try_u64(p, current_ptr)
+    name = vtable_name(current_vtable, expected)
+    expected_offsets = {
+        PROJECT_STATE_MACHINE_OFF_PROTOTYPE_STATE: "CPrototypeProjectState",
+        **{
+            off: "CSimpleProjectState"
+            for off in PROJECT_STATE_MACHINE_OFF_SIMPLE_STATES
+        },
+    }
+    expected_name = expected_offsets.get(offset)
+    enum_value = try_u32(p, current_ptr + PROJECT_STATE_OFF_CURRENT_STATE_ENUM)
+    return {
+        "valid": expected_name is not None and name == expected_name,
+        "current_ptr": current_ptr,
+        "offset": offset,
+        "vtable": name,
+        "enum": enum_value,
+    }
+
+
+def read_prototype_progress_snapshot(p, state_machine_addr, expected):
+    prototype_addr = state_machine_addr + PROJECT_STATE_MACHINE_OFF_PROTOTYPE_STATE
+    if try_u64(p, prototype_addr) != expected["CPrototypeProjectState"]:
+        return None
+    raw = try_u32(p, prototype_addr + PROJECT_PROTOTYPE_STATE_OFF_PHASE_PROGRESS_RAW)
+    target = try_u32(p, prototype_addr + PROJECT_PROTOTYPE_STATE_OFF_PHASE_TARGET)
+    iterations = try_u32(p, prototype_addr + PROJECT_PROTOTYPE_STATE_OFF_ITERATIONS)
+    enum_value = try_u32(p, prototype_addr + PROJECT_STATE_OFF_CURRENT_STATE_ENUM)
+    phase_progress_percent_candidate = None
+    if raw is not None and target:
+        phase_progress_percent_candidate = round(raw / target / 1000.0, 6)
+    return {
+        "addr": prototype_addr,
+        "phase_progress_raw": raw,
+        "phase_target": target,
+        "phase_progress_percent_candidate": phase_progress_percent_candidate,
+        "iterations": iterations,
+        "enum": enum_value,
+    }
+
+
 def summarize_counter(counter):
     return [
         {"offset": hx(off), "vtable": name, "count": count}
@@ -297,7 +358,7 @@ def probe(args):
             raise SystemExit("failed to validate country table/tag table")
 
         summary = {
-            "schema": "project_progress_live_probe_v1",
+            "schema": "project_progress_live_probe_v2",
             "pid": args.pid,
             "utc": datetime.now(timezone.utc).isoformat(),
             "module_path": fp.get("path"),
@@ -357,6 +418,16 @@ def probe(args):
         state_machine_pointer_hits = Counter()
         state_machine_ptr_valid = 0
         state_machine_ptr_invalid = 0
+        current_state_selector_hits = Counter()
+        current_state_selector_worked_hits = Counter()
+        current_state_selector_invalid = 0
+        current_state_enum_hits = Counter()
+        simple_state_enum_hits = Counter()
+        prototype_state_enum_hits = Counter()
+        prototype_phase_target_hits = Counter()
+        prototype_phase_nonzero = 0
+        prototype_iterations_match_project = 0
+        prototype_iterations_mismatch_project = 0
         breakthrough_countries = 0
         breakthrough_rows_total = 0
         breakthrough_parse_failures = 0
@@ -365,6 +436,8 @@ def probe(args):
         project_examples = []
         project_0x170_examples = []
         state_machine_examples = []
+        current_state_examples = []
+        progress_examples = []
 
         for tag_db_id in range(1, rows):
             country_ptr = try_u64(p, country_table + tag_db_id * 8)
@@ -454,6 +527,102 @@ def probe(args):
                     == module_base + PROJECT_STATE_MACHINE_VTABLE_RVA
                 ):
                     state_machine_ptr_valid += 1
+                    current_state = classify_current_state(
+                        p, state_machine_ptr, expected
+                    )
+                    if current_state["valid"]:
+                        key = (
+                            current_state["offset"],
+                            current_state["vtable"],
+                            current_state["enum"],
+                        )
+                        current_state_selector_hits[key] += 1
+                        current_state_enum_hits[current_state["enum"]] += 1
+                        if row["worked_at_facility"] is not None:
+                            current_state_selector_worked_hits[key] += 1
+                    else:
+                        current_state_selector_invalid += 1
+
+                    prototype_progress = read_prototype_progress_snapshot(
+                        p, state_machine_ptr, expected
+                    )
+                    if prototype_progress is not None:
+                        prototype_state_enum_hits[prototype_progress["enum"]] += 1
+                        if prototype_progress["phase_target"] is not None:
+                            prototype_phase_target_hits[
+                                prototype_progress["phase_target"]
+                            ] += 1
+                        if prototype_progress["phase_progress_raw"]:
+                            prototype_phase_nonzero += 1
+                        if prototype_progress["iterations"] == row["iterations"]:
+                            prototype_iterations_match_project += 1
+                        else:
+                            prototype_iterations_mismatch_project += 1
+                        if (
+                            row["worked_at_facility"] is not None
+                            and len(progress_examples) < 16
+                        ):
+                            progress_examples.append(
+                                {
+                                    "project_id": row["project_id"],
+                                    "static_def_handle": row["static_def_handle"],
+                                    "worked_at_facility": row["worked_at_facility"],
+                                    "project_iterations": row["iterations"],
+                                    "prototype_state_addr": hx(
+                                        prototype_progress["addr"]
+                                    ),
+                                    "phase_progress_raw": prototype_progress[
+                                        "phase_progress_raw"
+                                    ],
+                                    "phase_target": prototype_progress[
+                                        "phase_target"
+                                    ],
+                                    "phase_progress_percent_candidate": (
+                                        prototype_progress[
+                                            "phase_progress_percent_candidate"
+                                        ]
+                                    ),
+                                    "prototype_iterations": prototype_progress[
+                                        "iterations"
+                                    ],
+                                    "current_state_offset": hx(
+                                        current_state["offset"]
+                                    ),
+                                    "current_state_enum": current_state["enum"],
+                                    "current_state_vtable": current_state["vtable"],
+                                }
+                            )
+                    for simple_off in PROJECT_STATE_MACHINE_OFF_SIMPLE_STATES:
+                        simple_addr = state_machine_ptr + simple_off
+                        if (
+                            try_u64(p, simple_addr)
+                            == expected["CSimpleProjectState"]
+                        ):
+                            simple_state_enum_hits[
+                                (simple_off, try_u32(
+                                    p,
+                                    simple_addr
+                                    + PROJECT_STATE_OFF_CURRENT_STATE_ENUM,
+                                ))
+                            ] += 1
+                    if len(current_state_examples) < 16:
+                        current_state_examples.append(
+                            {
+                                "project_id": row["project_id"],
+                                "static_def_handle": row["static_def_handle"],
+                                "worked_at_facility": row["worked_at_facility"],
+                                "state_machine_ptr": hx(state_machine_ptr),
+                                "current_state_ptr": hx(
+                                    current_state["current_ptr"]
+                                ),
+                                "current_state_offset": hx(
+                                    current_state["offset"]
+                                ),
+                                "current_state_vtable": current_state["vtable"],
+                                "current_state_enum": current_state["enum"],
+                                "valid": current_state["valid"],
+                            }
+                        )
                     direct, pointer, examples = scan_direct_and_pointer_vtables(
                         p, state_machine_ptr, args.state_scan_window, expected
                     )
@@ -484,6 +653,7 @@ def probe(args):
             (0, "CProjectStateMachine"), 0
         )
         project_0x28_pointer_count = project_pointer_hits.get((0x28, "CProjectStateMachine"), 0)
+        current_state_selector_total = sum(current_state_selector_hits.values())
         status_breakthrough_direct = [
             item
             for item in summarize_counter(status_direct_hits)
@@ -510,6 +680,15 @@ def probe(args):
                     "countries_with_worked_projects_in_sample": countries_with_worked_projects,
                     "state_machine_ptr_valid": state_machine_ptr_valid,
                     "state_machine_ptr_invalid": state_machine_ptr_invalid,
+                    "current_state_selector_valid": current_state_selector_total,
+                    "current_state_selector_invalid": current_state_selector_invalid,
+                    "prototype_phase_nonzero": prototype_phase_nonzero,
+                    "prototype_iterations_match_project": (
+                        prototype_iterations_match_project
+                    ),
+                    "prototype_iterations_mismatch_project": (
+                        prototype_iterations_mismatch_project
+                    ),
                     "breakthrough_countries_with_points": breakthrough_countries,
                     "breakthrough_rows_total": breakthrough_rows_total,
                     "breakthrough_parse_failures": breakthrough_parse_failures,
@@ -521,6 +700,27 @@ def probe(args):
                     ),
                     "CProject_state_machine_pointer_at_0x28": (
                         project_0x28_pointer_count == len(projects) and len(projects) > 0
+                    ),
+                    "CProjectStateMachine_current_state_selector_at_0x8": (
+                        current_state_selector_total == len(projects)
+                        and current_state_selector_invalid == 0
+                        and len(projects) > 0
+                    ),
+                    "CProjectStateMachine_embedded_state_enums": (
+                        prototype_state_enum_hits.get(0, 0) == len(projects)
+                        and all(
+                            simple_state_enum_hits.get((off, index), 0)
+                            == len(projects)
+                            for index, off in enumerate(
+                                PROJECT_STATE_MACHINE_OFF_SIMPLE_STATES,
+                                start=1,
+                            )
+                        )
+                        and len(projects) > 0
+                    ),
+                    "CPrototypeProjectState_progress_raw_fields_candidate": (
+                        prototype_phase_nonzero > 0
+                        and bool(prototype_phase_target_hits)
                     ),
                     "CProgramStatus_breakthrough_direct_or_pointer": bool(
                         status_breakthrough_direct or status_breakthrough_pointer
@@ -539,6 +739,84 @@ def probe(args):
                         "expected": "CProjectStateMachine",
                         "hits": project_0x28_pointer_count,
                         "sampled_projects": len(projects),
+                    },
+                    "CProjectStateMachine_plus_0x8_current_state_selector": {
+                        "expected": (
+                            "pointer to embedded CPrototypeProjectState at +0x18 "
+                            "or embedded CSimpleProjectState at +0xE8/+0x168/+0x1E8"
+                        ),
+                        "hits": [
+                            {
+                                "offset": hx(off),
+                                "vtable": name,
+                                "current_state_enum": enum_value,
+                                "count": count,
+                            }
+                            for (off, name, enum_value), count in sorted(
+                                current_state_selector_hits.items()
+                            )
+                        ],
+                        "worked_hits": [
+                            {
+                                "offset": hx(off),
+                                "vtable": name,
+                                "current_state_enum": enum_value,
+                                "count": count,
+                            }
+                            for (off, name, enum_value), count in sorted(
+                                current_state_selector_worked_hits.items()
+                            )
+                        ],
+                        "invalid": current_state_selector_invalid,
+                        "sampled_projects": len(projects),
+                    },
+                    "CProjectStateMachine_embedded_state_enum_offsets": {
+                        "prototype": {
+                            "offset": hx(PROJECT_STATE_MACHINE_OFF_PROTOTYPE_STATE),
+                            "enum_offset": hx(PROJECT_STATE_OFF_CURRENT_STATE_ENUM),
+                            "enum_counts": dict(
+                                sorted(prototype_state_enum_hits.items())
+                            ),
+                        },
+                        "simple": [
+                            {
+                                "offset": hx(off),
+                                "enum_offset": hx(
+                                    PROJECT_STATE_OFF_CURRENT_STATE_ENUM
+                                ),
+                                "enum_value": enum_value,
+                                "count": count,
+                            }
+                            for (off, enum_value), count in sorted(
+                                simple_state_enum_hits.items()
+                            )
+                        ],
+                    },
+                    "CPrototypeProjectState_progress_candidate_fields": {
+                        "path": "CProject+0x28 -> CProjectStateMachine+0x18",
+                        "phase_progress_raw_offset": hx(
+                            PROJECT_PROTOTYPE_STATE_OFF_PHASE_PROGRESS_RAW
+                        ),
+                        "phase_target_offset": hx(
+                            PROJECT_PROTOTYPE_STATE_OFF_PHASE_TARGET
+                        ),
+                        "iterations_offset": hx(
+                            PROJECT_PROTOTYPE_STATE_OFF_ITERATIONS
+                        ),
+                        "phase_target_counts": dict(
+                            sorted(prototype_phase_target_hits.items())
+                        ),
+                        "nonzero_phase_raw_projects": prototype_phase_nonzero,
+                        "iterations_match_CProject_plus_0x74": (
+                            prototype_iterations_match_project
+                        ),
+                        "iterations_mismatch_CProject_plus_0x74": (
+                            prototype_iterations_mismatch_project
+                        ),
+                        "semantic_note": (
+                            "raw accumulator fields, not direct saved "
+                            "project_progress/phase_progress percent scalars"
+                        ),
                     },
                     "CProgramStatus_breakthrough_hits_direct": status_breakthrough_direct,
                     "CProgramStatus_breakthrough_hits_pointer": status_breakthrough_pointer,
@@ -588,6 +866,8 @@ def probe(args):
                     "project_vtable_hits": project_examples,
                     "project_plus_0x170_vtable_hits": project_0x170_examples,
                     "state_machine_vtable_hits": state_machine_examples,
+                    "current_state_selector": current_state_examples,
+                    "prototype_progress_candidates": progress_examples,
                     "breakthrough_rows": breakthrough_examples,
                 },
             }
@@ -604,7 +884,7 @@ def main(argv=None):
     parser.add_argument("--max-projects", type=int, default=2048)
     parser.add_argument("--example-projects", type=int, default=12)
     parser.add_argument("--status-scan-window", type=lambda x: int(x, 0), default=MAX_SCAN_WINDOW)
-    parser.add_argument("--state-scan-window", type=lambda x: int(x, 0), default=0x180)
+    parser.add_argument("--state-scan-window", type=lambda x: int(x, 0), default=0x280)
     parser.add_argument("--out", default=None, help="write JSON proof to this file")
     args = parser.parse_args(argv)
     if args.pid is None:

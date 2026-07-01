@@ -7,3 +7,4 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+air_wings_variants_lifecycle_live_lane = { path = "../lanes/air_wings_variants_lifecycle_live" }

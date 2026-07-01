@@ -1,0 +1,431 @@
+use std::collections::BTreeMap;
+
+pub const EXPECTED_SHA_16022851: &str =
+    "16022851eaa571728aa3a0b5fd5f990a56da57e2249a4c1b9cfb30336f59b120";
+
+pub const OBJ_VARIABLES: u64 = 0x218;
+pub const RTTI_VARIABLES: &str = ".?AVCVariables@@";
+pub const CV_BASE: u64 = 0x18;
+pub const CV_SIZE_MASK: u64 = 0x20;
+pub const NODE_STRIDE: u64 = 0x30;
+pub const NODE_VALUE: u64 = 0x20;
+pub const VALUE_SCALE_RAW: i64 = 100_000;
+
+pub const HEAP_LO: u64 = 0x10000000000;
+pub const HEAP_HI: u64 = 0x7FF000000000;
+pub const MODULE_SPAN_MAX: u64 = 0x10000000;
+pub const MAX_SIZE: u64 = 200_000;
+pub const MAX_BUCKETS: u64 = 1 << 21;
+pub const MAX_KEYLEN: usize = 256;
+
+pub trait MemoryRead {
+    fn read_exact(&self, addr: u64, len: usize) -> Option<Vec<u8>>;
+
+    fn read_u64(&self, addr: u64) -> Option<u64> {
+        let bytes = self.read_exact(addr, 8)?;
+        Some(u64::from_le_bytes(to_arr8(&bytes)))
+    }
+
+    fn read_i64(&self, addr: u64) -> Option<i64> {
+        let bytes = self.read_exact(addr, 8)?;
+        Some(i64::from_le_bytes(to_arr8(&bytes)))
+    }
+
+    fn read_u32(&self, addr: u64) -> Option<u32> {
+        let bytes = self.read_exact(addr, 4)?;
+        Some(u32::from_le_bytes(to_arr4(&bytes)))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VariableReadStatus {
+    Measured,
+    MeasuredEmpty,
+    Unmeasured,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CountryVariableRead {
+    pub status: VariableReadStatus,
+    pub country_obj: u64,
+    pub container_addr: Option<u64>,
+    pub node_base: Option<u64>,
+    pub declared_size: u32,
+    pub bucket_mask: u32,
+    pub entries: BTreeMap<String, i64>,
+    pub failure_reason: Option<&'static str>,
+}
+
+impl CountryVariableRead {
+    pub fn unmeasured(country_obj: u64, reason: &'static str) -> Self {
+        Self {
+            status: VariableReadStatus::Unmeasured,
+            country_obj,
+            container_addr: None,
+            node_base: None,
+            declared_size: 0,
+            bucket_mask: 0,
+            entries: BTreeMap::new(),
+            failure_reason: Some(reason),
+        }
+    }
+}
+
+pub fn read_country_variables<R: MemoryRead>(
+    mem: &R,
+    module_base: u64,
+    country_obj: u64,
+) -> CountryVariableRead {
+    let Some(container) = mem.read_u64(country_obj.saturating_add(OBJ_VARIABLES)) else {
+        return CountryVariableRead::unmeasured(
+            country_obj,
+            "country_variables_pointer_read_failed",
+        );
+    };
+    if !heap_ok(container) {
+        return CountryVariableRead::unmeasured(
+            country_obj,
+            "country_variables_pointer_out_of_heap",
+        );
+    }
+    if rtti_type_name(mem, module_base, container).as_deref() != Some(RTTI_VARIABLES) {
+        return CountryVariableRead::unmeasured(country_obj, "country_variables_rtti_mismatch");
+    }
+    read_variables_container(mem, country_obj, container)
+}
+
+pub fn read_variables_container<R: MemoryRead>(
+    mem: &R,
+    country_obj: u64,
+    container: u64,
+) -> CountryVariableRead {
+    let Some((base, size, mask)) = stable_header(mem, container) else {
+        return unmeasured_with_container(
+            country_obj,
+            container,
+            "country_variables_header_unstable",
+        );
+    };
+    if size == 0 {
+        return CountryVariableRead {
+            status: VariableReadStatus::MeasuredEmpty,
+            country_obj,
+            container_addr: Some(container),
+            node_base: Some(base),
+            declared_size: 0,
+            bucket_mask: mask,
+            entries: BTreeMap::new(),
+            failure_reason: None,
+        };
+    }
+    let nb = (mask as u64).saturating_add(1);
+    if !heap_ok(base) || size as u64 > MAX_SIZE || nb == 0 || nb > MAX_BUCKETS {
+        return unmeasured_with_container(
+            country_obj,
+            container,
+            "country_variables_header_invalid",
+        );
+    }
+    if ((mask as u64) & nb) != 0 || size as u64 > nb {
+        return unmeasured_with_container(
+            country_obj,
+            container,
+            "country_variables_bucket_mask_invalid",
+        );
+    }
+
+    let span = nb.saturating_add(4).saturating_mul(NODE_STRIDE);
+    let end = base.saturating_add(span);
+    let mut exact: Option<BTreeMap<String, i64>> = None;
+    let mut phase = 0u64;
+    while phase < NODE_STRIDE {
+        let mut tmp = BTreeMap::new();
+        let mut dup = false;
+        let mut addr = base.saturating_add(phase);
+        while addr.saturating_add(NODE_STRIDE) <= end {
+            if let Some(key) = read_msvc_string(mem, addr) {
+                if tmp.contains_key(&key) {
+                    dup = true;
+                }
+                if let Some(raw) = mem.read_i64(addr.saturating_add(NODE_VALUE)) {
+                    tmp.insert(key, raw);
+                }
+            }
+            addr = addr.saturating_add(NODE_STRIDE);
+        }
+        if !dup && tmp.len() == size as usize {
+            if let Some(existing) = exact.as_ref() {
+                if existing != &tmp {
+                    return unmeasured_with_container(
+                        country_obj,
+                        container,
+                        "country_variables_phase_ambiguous",
+                    );
+                }
+            }
+            exact = Some(tmp);
+        }
+        phase += 8;
+    }
+
+    let Some(entries) = exact else {
+        return unmeasured_with_container(
+            country_obj,
+            container,
+            "country_variables_size_gate_failed",
+        );
+    };
+    CountryVariableRead {
+        status: VariableReadStatus::Measured,
+        country_obj,
+        container_addr: Some(container),
+        node_base: Some(base),
+        declared_size: size,
+        bucket_mask: mask,
+        entries,
+        failure_reason: None,
+    }
+}
+
+pub fn rtti_type_name<R: MemoryRead>(mem: &R, module_base: u64, obj: u64) -> Option<String> {
+    let vt = mem.read_u64(obj)?;
+    if !in_module(module_base, vt) {
+        return None;
+    }
+    let col = mem.read_u64(vt.saturating_sub(8))?;
+    if !in_module(module_base, col) {
+        return None;
+    }
+    let type_descriptor =
+        module_base.saturating_add(mem.read_u32(col.saturating_add(0x0C))? as u64);
+    read_cstr(mem, type_descriptor.saturating_add(0x10), 200).filter(|name| name.starts_with(".?A"))
+}
+
+pub fn read_msvc_string<R: MemoryRead>(mem: &R, addr: u64) -> Option<String> {
+    let size = mem.read_u64(addr.saturating_add(0x10))? as usize;
+    let cap = mem.read_u64(addr.saturating_add(0x18))? as usize;
+    if size == 0 || size > MAX_KEYLEN || size > cap || cap >= (1 << 20) {
+        return None;
+    }
+    let inline = cap == 15;
+    if !inline && cap < 16 {
+        return None;
+    }
+    let chars = if inline { addr } else { mem.read_u64(addr)? };
+    let data = mem.read_exact(chars, size.saturating_add(1))?;
+    if data.get(size).copied() != Some(0) {
+        return None;
+    }
+    let key = String::from_utf8(data[..size].to_vec()).ok()?;
+    if key.bytes().all(|b| (32..=126).contains(&b)) {
+        Some(key)
+    } else {
+        None
+    }
+}
+
+fn stable_header<R: MemoryRead>(mem: &R, container: u64) -> Option<(u64, u32, u32)> {
+    let b1 = mem.read_u64(container.saturating_add(CV_BASE))?;
+    let w1 = mem.read_u64(container.saturating_add(CV_SIZE_MASK))?;
+    let b2 = mem.read_u64(container.saturating_add(CV_BASE))?;
+    let w2 = mem.read_u64(container.saturating_add(CV_SIZE_MASK))?;
+    if b1 != b2 || w1 != w2 {
+        return None;
+    }
+    Some((b1, (w1 & 0xFFFF_FFFF) as u32, (w1 >> 32) as u32))
+}
+
+fn read_cstr<R: MemoryRead>(mem: &R, addr: u64, max_len: usize) -> Option<String> {
+    let bytes = mem.read_exact(addr, max_len)?;
+    let end = bytes.iter().position(|b| *b == 0)?;
+    String::from_utf8(bytes[..end].to_vec()).ok()
+}
+
+fn unmeasured_with_container(
+    country_obj: u64,
+    container: u64,
+    reason: &'static str,
+) -> CountryVariableRead {
+    let mut read = CountryVariableRead::unmeasured(country_obj, reason);
+    read.container_addr = Some(container);
+    read
+}
+
+fn heap_ok(value: u64) -> bool {
+    (HEAP_LO..HEAP_HI).contains(&value)
+}
+
+fn in_module(module_base: u64, value: u64) -> bool {
+    (module_base..module_base.saturating_add(MODULE_SPAN_MAX)).contains(&value)
+}
+
+fn to_arr8(bytes: &[u8]) -> [u8; 8] {
+    let mut out = [0u8; 8];
+    out.copy_from_slice(&bytes[..8]);
+    out
+}
+
+fn to_arr4(bytes: &[u8]) -> [u8; 4] {
+    let mut out = [0u8; 4];
+    out.copy_from_slice(&bytes[..4]);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct FixtureMemory {
+        segments: Vec<(u64, Vec<u8>)>,
+    }
+
+    impl FixtureMemory {
+        fn add(&mut self, addr: u64, bytes: Vec<u8>) {
+            self.segments.push((addr, bytes));
+        }
+    }
+
+    impl MemoryRead for FixtureMemory {
+        fn read_exact(&self, addr: u64, len: usize) -> Option<Vec<u8>> {
+            for (base, bytes) in &self.segments {
+                let Some(start64) = addr.checked_sub(*base) else {
+                    continue;
+                };
+                let start = start64 as usize;
+                let end = start.checked_add(len)?;
+                if end <= bytes.len() {
+                    return Some(bytes[start..end].to_vec());
+                }
+            }
+            None
+        }
+    }
+
+    #[test]
+    fn extracts_complete_country_variable_table() {
+        let module_base = 0x7FF7_0000_0000;
+        let country = 0x2000_0000_0000;
+        let container = 0x2000_0000_1000;
+        let node_base = 0x2000_0000_3000;
+        let mut mem = FixtureMemory::default();
+
+        let mut country_bytes = vec![0u8; 0x300];
+        put_u64(&mut country_bytes, OBJ_VARIABLES as usize, container);
+        mem.add(country, country_bytes);
+
+        let mut container_bytes = vec![0u8; 0x40];
+        put_u64(&mut container_bytes, 0, module_base + 0x5000);
+        put_u64(&mut container_bytes, CV_BASE as usize, node_base);
+        put_u64(
+            &mut container_bytes,
+            CV_SIZE_MASK as usize,
+            2 | (3u64 << 32),
+        );
+        mem.add(container, container_bytes);
+
+        let mut vtable_prefix = vec![0u8; 16];
+        put_u64(&mut vtable_prefix, 0, module_base + 0x6000);
+        mem.add(module_base + 0x5000 - 8, vtable_prefix);
+
+        let mut col = vec![0u8; 0x20];
+        put_u32(&mut col, 0x0C, 0x7000);
+        mem.add(module_base + 0x6000, col);
+
+        let mut type_descriptor = vec![0u8; 0x100];
+        type_descriptor[0x10..0x10 + RTTI_VARIABLES.len()]
+            .copy_from_slice(RTTI_VARIABLES.as_bytes());
+        mem.add(module_base + 0x7000, type_descriptor);
+
+        let mut nodes = vec![0u8; ((4 + 4) * NODE_STRIDE) as usize];
+        put_inline_string(&mut nodes, 0, "foo");
+        put_i64(&mut nodes, NODE_VALUE as usize, 1_100_000);
+        put_inline_string(&mut nodes, NODE_STRIDE as usize, "bar^0");
+        put_i64(
+            &mut nodes,
+            NODE_STRIDE as usize + NODE_VALUE as usize,
+            -1_073_741_542,
+        );
+        mem.add(node_base, nodes);
+
+        let read = read_country_variables(&mem, module_base, country);
+        assert_eq!(read.status, VariableReadStatus::Measured, "{read:?}");
+        assert_eq!(read.declared_size, 2);
+        assert_eq!(read.entries.get("foo").copied(), Some(1_100_000));
+        assert_eq!(read.entries.get("bar^0").copied(), Some(-1_073_741_542));
+    }
+
+    #[test]
+    fn distinguishes_measured_empty_from_unmeasured() {
+        let country = 0x2000_0001_0000;
+        let container = 0x2000_0001_1000;
+        let mut mem = FixtureMemory::default();
+        let mut container_bytes = vec![0u8; 0x40];
+        put_u64(&mut container_bytes, CV_BASE as usize, 0x2000_0001_3000);
+        put_u64(
+            &mut container_bytes,
+            CV_SIZE_MASK as usize,
+            0 | (0u64 << 32),
+        );
+        mem.add(container, container_bytes);
+
+        let read = read_variables_container(&mem, country, container);
+        assert_eq!(read.status, VariableReadStatus::MeasuredEmpty);
+        assert!(read.entries.is_empty());
+
+        let failed = read_variables_container(&mem, country, 0x2000_0001_2000);
+        assert_eq!(failed.status, VariableReadStatus::Unmeasured);
+        assert_eq!(
+            failed.failure_reason,
+            Some("country_variables_header_unstable")
+        );
+    }
+
+    #[test]
+    fn rejects_non_reconciling_node_phase() {
+        let country = 0x2000_0002_0000;
+        let container = 0x2000_0002_1000;
+        let node_base = 0x2000_0002_3000;
+        let mut mem = FixtureMemory::default();
+        let mut container_bytes = vec![0u8; 0x40];
+        put_u64(&mut container_bytes, CV_BASE as usize, node_base);
+        put_u64(
+            &mut container_bytes,
+            CV_SIZE_MASK as usize,
+            2 | (3u64 << 32),
+        );
+        mem.add(container, container_bytes);
+
+        let mut nodes = vec![0u8; ((4 + 4) * NODE_STRIDE) as usize];
+        put_inline_string(&mut nodes, 0, "only_one");
+        put_i64(&mut nodes, NODE_VALUE as usize, 100_000);
+        mem.add(node_base, nodes);
+
+        let read = read_variables_container(&mem, country, container);
+        assert_eq!(read.status, VariableReadStatus::Unmeasured);
+        assert_eq!(
+            read.failure_reason,
+            Some("country_variables_size_gate_failed")
+        );
+    }
+
+    fn put_u64(buf: &mut [u8], offset: usize, value: u64) {
+        buf[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn put_i64(buf: &mut [u8], offset: usize, value: i64) {
+        buf[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn put_u32(buf: &mut [u8], offset: usize, value: u32) {
+        buf[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn put_inline_string(buf: &mut [u8], offset: usize, value: &str) {
+        let bytes = value.as_bytes();
+        buf[offset..offset + bytes.len()].copy_from_slice(bytes);
+        buf[offset + bytes.len()] = 0;
+        put_u64(buf, offset + 0x10, bytes.len() as u64);
+        put_u64(buf, offset + 0x18, 15);
+    }
+}

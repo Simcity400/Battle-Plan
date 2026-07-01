@@ -1,0 +1,518 @@
+#[path = "scripted_state_compact.rs"]
+pub mod compact;
+
+pub const EXPECTED_SHA_870EBF: &str =
+    "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
+
+pub const CGAMESTATE_RVA: usize = 0x3316E90;
+pub const COUNTRY_TABLE: usize = 0x310;
+pub const COUNTRY_COUNT: usize = 0x31C;
+pub const COUNTRY_VTABLE_RVA: usize = 0x27D0E90;
+pub const COUNTRY_TAG_DB_ID: usize = 0x08;
+pub const COUNTRY_VARIABLES: usize = 0x218;
+pub const COUNTRY_FLAGS: usize = 0x230;
+pub const GLOBAL_FLAGS: usize = 0x258;
+pub const GLOBAL_VARIABLES: usize = 0x980;
+pub const PROVINCE_ARRAY: usize = 0x2B0;
+pub const PROVINCE_COUNT: usize = 0x2BC;
+pub const CPROVINCE_VTABLE_RVA: usize = 0x295AF68;
+pub const CPROVINCE_STATE: usize = 0xC0;
+pub const STATE_VTABLE_RVA: usize = 0x29206C0;
+pub const STATE_ID: usize = 0x58;
+pub const STATE_FLAGS: usize = 0x540;
+pub const STATE_VARIABLES: usize = 0x7F8;
+
+pub const CFLAGMANAGER_ROWS: usize = 0x08;
+pub const CFLAGMANAGER_PACKED_SLOT_ENTRY_COUNT: usize = 0x10;
+pub const CFLAG_ROW_STRIDE: usize = 0x30;
+pub const CFLAG_ROW_TOKEN_ID: usize = 0x08;
+pub const CFLAG_ROW_DATE_HOUR: usize = 0x18;
+pub const CFLAG_ROW_VALUE: usize = 0x28;
+
+pub const DELAYED_EVENTS_BADGE_KEY: &str = "root_unresolved:delayed_events";
+pub const SCRIPTED_GUI_BADGE_KEY: &str = "root_unresolved:scripted_gui_open_state";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScopeReadStatus {
+    Measured,
+    MeasuredEmpty,
+    Unmeasured,
+}
+
+impl ScopeReadStatus {
+    fn is_measured(self) -> bool {
+        matches!(self, Self::Measured | Self::MeasuredEmpty)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VariableEntry {
+    pub key: String,
+    pub value_raw: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VariableScopeRead {
+    pub scope_kind: u32,
+    pub owner_id: u32,
+    pub status: ScopeReadStatus,
+    pub entries: Vec<VariableEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FlagEntry {
+    pub key: Option<String>,
+    pub token_id: Option<u32>,
+    pub date_hour_raw: Option<i32>,
+    pub value: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FlagScopeRead {
+    pub scope_kind: u32,
+    pub owner_id: u32,
+    pub status: ScopeReadStatus,
+    pub entries: Vec<FlagEntry>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpaqueRootState {
+    NotRequested,
+    MeasuredEmpty,
+    UnresolvedFixtureBlocked,
+}
+
+impl OpaqueRootState {
+    fn is_observed(self) -> bool {
+        !matches!(self, Self::NotRequested)
+    }
+
+    fn is_measured(self) -> bool {
+        matches!(self, Self::MeasuredEmpty)
+    }
+
+    fn is_rejected(self) -> bool {
+        matches!(self, Self::UnresolvedFixtureBlocked)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Domain51FrameInput {
+    pub elapsed_wall_ms: u64,
+    pub variable_scopes: Vec<VariableScopeRead>,
+    pub flag_scopes: Vec<FlagScopeRead>,
+    pub delayed_events: OpaqueRootState,
+    pub scripted_gui_open_state: OpaqueRootState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Domain51CollectedFrame {
+    pub domain_id: u16,
+    pub payload: Vec<u8>,
+    pub row_count: u32,
+    pub status_flags: u32,
+    pub observed_scopes: u32,
+    pub measured_scopes: u32,
+    pub rejected_scopes: u32,
+    pub validated_scope_partial_failure: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Domain51RegistrationDescriptor {
+    pub id: u16,
+    pub canonical_name: &'static str,
+    pub wire_name: &'static str,
+    pub status_before_integration: &'static str,
+    pub status_when_registered: &'static str,
+    pub schedulable_when_registered: bool,
+    pub requires_data_record: bool,
+}
+
+pub fn registration_descriptor() -> Domain51RegistrationDescriptor {
+    Domain51RegistrationDescriptor {
+        id: compact::DOMAIN_ID,
+        canonical_name: compact::DOMAIN_NAME,
+        wire_name: compact::DOMAIN_NAME,
+        status_before_integration: "reserved",
+        status_when_registered: "active_integration",
+        schedulable_when_registered: true,
+        requires_data_record: true,
+    }
+}
+
+pub fn collect_domain51_frame(input: Domain51FrameInput) -> Domain51CollectedFrame {
+    let mut rows = Vec::new();
+    let mut status_flags = 0u32;
+    let mut observed_scopes = 0u32;
+    let mut measured_scopes = 0u32;
+    let mut rejected_scopes = 0u32;
+    let mut validated_scope_partial_failure = false;
+
+    for scope in input.variable_scopes {
+        observed_scopes = observed_scopes.saturating_add(1);
+        if scope.status.is_measured() {
+            measured_scopes = measured_scopes.saturating_add(1);
+        } else {
+            rejected_scopes = rejected_scopes.saturating_add(1);
+            validated_scope_partial_failure = true;
+            continue;
+        }
+        if scope.status == ScopeReadStatus::MeasuredEmpty {
+            continue;
+        }
+        for entry in scope.entries {
+            rows.push(compact::ScriptedStateRow {
+                scope_kind: scope.scope_kind,
+                owner_id: scope.owner_id,
+                value_kind: compact::VALUE_VARIABLE_FIXED_I64,
+                key: Some(entry.key),
+                token_id: None,
+                value_raw: Some(entry.value_raw),
+                date_hour_raw: None,
+                deleted: false,
+            });
+        }
+    }
+
+    for scope in input.flag_scopes {
+        observed_scopes = observed_scopes.saturating_add(1);
+        if scope.status.is_measured() {
+            measured_scopes = measured_scopes.saturating_add(1);
+        } else {
+            rejected_scopes = rejected_scopes.saturating_add(1);
+            validated_scope_partial_failure = true;
+            continue;
+        }
+        if scope.status == ScopeReadStatus::MeasuredEmpty {
+            continue;
+        }
+        for entry in scope.entries {
+            let value_kind = if entry.key.is_some() {
+                compact::VALUE_FLAG_NAMED
+            } else {
+                status_flags |= compact::STATUS_FLAG_NAMES_PARTIAL;
+                compact::VALUE_FLAG_TOKEN_ONLY
+            };
+            rows.push(compact::ScriptedStateRow {
+                scope_kind: scope.scope_kind,
+                owner_id: scope.owner_id,
+                value_kind,
+                key: entry.key,
+                token_id: entry.token_id,
+                value_raw: entry.value.map(i64::from),
+                date_hour_raw: entry.date_hour_raw,
+                deleted: false,
+            });
+        }
+    }
+
+    append_opaque_root(
+        input.delayed_events,
+        compact::STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED,
+        compact::VALUE_DELAYED_EVENT_OPAQUE,
+        DELAYED_EVENTS_BADGE_KEY,
+        &mut rows,
+        &mut status_flags,
+        &mut observed_scopes,
+        &mut measured_scopes,
+        &mut rejected_scopes,
+    );
+    append_opaque_root(
+        input.scripted_gui_open_state,
+        compact::STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED,
+        compact::VALUE_SCRIPTED_GUI_OPAQUE,
+        SCRIPTED_GUI_BADGE_KEY,
+        &mut rows,
+        &mut status_flags,
+        &mut observed_scopes,
+        &mut measured_scopes,
+        &mut rejected_scopes,
+    );
+
+    if validated_scope_partial_failure {
+        status_flags |= compact::STATUS_PARTIAL_DATA;
+    }
+
+    let row_count = rows.len().min(u32::MAX as usize) as u32;
+    let header = compact::ScriptedStateHeader {
+        elapsed_wall_ms: input.elapsed_wall_ms,
+        status_flags,
+        changed_rows: row_count,
+        observed_scopes,
+        measured_scopes,
+        rejected_scopes,
+    };
+    let payload = compact::encode_payload(&header, &rows);
+
+    Domain51CollectedFrame {
+        domain_id: compact::DOMAIN_ID,
+        payload,
+        row_count,
+        status_flags,
+        observed_scopes,
+        measured_scopes,
+        rejected_scopes,
+        validated_scope_partial_failure,
+    }
+}
+
+fn append_opaque_root(
+    state: OpaqueRootState,
+    unresolved_status: u32,
+    value_kind: u32,
+    badge_key: &str,
+    rows: &mut Vec<compact::ScriptedStateRow>,
+    status_flags: &mut u32,
+    observed_scopes: &mut u32,
+    measured_scopes: &mut u32,
+    rejected_scopes: &mut u32,
+) {
+    if !state.is_observed() {
+        return;
+    }
+    *observed_scopes = observed_scopes.saturating_add(1);
+    if state.is_measured() {
+        *measured_scopes = measured_scopes.saturating_add(1);
+        return;
+    }
+    if state.is_rejected() {
+        *rejected_scopes = rejected_scopes.saturating_add(1);
+        *status_flags |= unresolved_status;
+        rows.push(compact::ScriptedStateRow {
+            scope_kind: compact::SCOPE_GLOBAL,
+            owner_id: 0,
+            value_kind,
+            key: Some(badge_key.to_string()),
+            token_id: None,
+            value_raw: None,
+            date_hour_raw: None,
+            deleted: false,
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn country_vars(owner_id: u32) -> VariableScopeRead {
+        VariableScopeRead {
+            scope_kind: compact::SCOPE_COUNTRY,
+            owner_id,
+            status: ScopeReadStatus::Measured,
+            entries: vec![VariableEntry {
+                key: "usa_congress_senate_support".to_string(),
+                value_raw: 5_250_000,
+            }],
+        }
+    }
+
+    fn named_flag(owner_id: u32) -> FlagScopeRead {
+        FlagScopeRead {
+            scope_kind: compact::SCOPE_COUNTRY,
+            owner_id,
+            status: ScopeReadStatus::Measured,
+            entries: vec![FlagEntry {
+                key: Some("has_election".to_string()),
+                token_id: Some(0x1111),
+                date_hour_raw: Some(13_440),
+                value: Some(1),
+            }],
+        }
+    }
+
+    #[test]
+    fn encodes_validated_country_global_state_variables_and_flags() {
+        let frame = collect_domain51_frame(Domain51FrameInput {
+            elapsed_wall_ms: 17,
+            variable_scopes: vec![
+                country_vars(1),
+                VariableScopeRead {
+                    scope_kind: compact::SCOPE_GLOBAL,
+                    owner_id: 0,
+                    status: ScopeReadStatus::Measured,
+                    entries: vec![VariableEntry {
+                        key: "global.test".to_string(),
+                        value_raw: -100_000,
+                    }],
+                },
+                VariableScopeRead {
+                    scope_kind: compact::SCOPE_STATE,
+                    owner_id: 123,
+                    status: ScopeReadStatus::MeasuredEmpty,
+                    entries: vec![],
+                },
+            ],
+            flag_scopes: vec![
+                named_flag(1),
+                FlagScopeRead {
+                    scope_kind: compact::SCOPE_GLOBAL,
+                    owner_id: 0,
+                    status: ScopeReadStatus::Measured,
+                    entries: vec![FlagEntry {
+                        key: Some("global_flag".to_string()),
+                        token_id: Some(0x2222),
+                        date_hour_raw: Some(13_441),
+                        value: Some(1),
+                    }],
+                },
+                FlagScopeRead {
+                    scope_kind: compact::SCOPE_STATE,
+                    owner_id: 123,
+                    status: ScopeReadStatus::Measured,
+                    entries: vec![FlagEntry {
+                        key: Some("state_flag".to_string()),
+                        token_id: Some(0x3333),
+                        date_hour_raw: Some(13_442),
+                        value: Some(1),
+                    }],
+                },
+            ],
+            delayed_events: OpaqueRootState::MeasuredEmpty,
+            scripted_gui_open_state: OpaqueRootState::MeasuredEmpty,
+        });
+
+        assert_eq!(frame.domain_id, 51);
+        assert_eq!(frame.row_count, 5);
+        assert_eq!(frame.status_flags & compact::STATUS_PARTIAL_DATA, 0);
+        assert!(!frame.validated_scope_partial_failure);
+        let summary = compact::decode_payload(0, &frame.payload);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("scripted_variable_rows")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            summary.data_units_total.get("scripted_flag_rows").copied(),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn unresolved_delayed_and_scripted_gui_roots_are_badges_not_partial_failure() {
+        let frame = collect_domain51_frame(Domain51FrameInput {
+            elapsed_wall_ms: 3,
+            variable_scopes: vec![country_vars(1)],
+            flag_scopes: vec![named_flag(1)],
+            delayed_events: OpaqueRootState::UnresolvedFixtureBlocked,
+            scripted_gui_open_state: OpaqueRootState::UnresolvedFixtureBlocked,
+        });
+
+        assert_eq!(
+            frame.status_flags & compact::STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED,
+            compact::STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED
+        );
+        assert_eq!(
+            frame.status_flags & compact::STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED,
+            compact::STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED
+        );
+        assert_eq!(frame.status_flags & compact::STATUS_PARTIAL_DATA, 0);
+        assert_eq!(frame.status_flags & compact::STATUS_SOURCE_UNAVAILABLE, 0);
+        assert!(!frame.validated_scope_partial_failure);
+
+        let summary = compact::decode_payload(64, &frame.payload);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("scripted_delayed_event_opaque_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("scripted_gui_opaque_rows")
+                .copied(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn unmeasured_validated_scope_sets_partial_data() {
+        let frame = collect_domain51_frame(Domain51FrameInput {
+            elapsed_wall_ms: 5,
+            variable_scopes: vec![VariableScopeRead {
+                scope_kind: compact::SCOPE_COUNTRY,
+                owner_id: 1,
+                status: ScopeReadStatus::Unmeasured,
+                entries: vec![],
+            }],
+            flag_scopes: vec![named_flag(1)],
+            delayed_events: OpaqueRootState::UnresolvedFixtureBlocked,
+            scripted_gui_open_state: OpaqueRootState::NotRequested,
+        });
+
+        assert_ne!(frame.status_flags & compact::STATUS_PARTIAL_DATA, 0);
+        assert!(frame.validated_scope_partial_failure);
+        assert_eq!(frame.rejected_scopes, 2);
+        let summary = compact::decode_payload(128, &frame.payload);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+    }
+
+    #[test]
+    fn token_only_flags_badge_names_without_source_failure() {
+        let frame = collect_domain51_frame(Domain51FrameInput {
+            elapsed_wall_ms: 5,
+            variable_scopes: vec![],
+            flag_scopes: vec![FlagScopeRead {
+                scope_kind: compact::SCOPE_COUNTRY,
+                owner_id: 1,
+                status: ScopeReadStatus::Measured,
+                entries: vec![FlagEntry {
+                    key: None,
+                    token_id: Some(0xB5E5),
+                    date_hour_raw: Some(13_443),
+                    value: Some(1),
+                }],
+            }],
+            delayed_events: OpaqueRootState::NotRequested,
+            scripted_gui_open_state: OpaqueRootState::NotRequested,
+        });
+
+        assert_ne!(frame.status_flags & compact::STATUS_FLAG_NAMES_PARTIAL, 0);
+        assert_eq!(frame.status_flags & compact::STATUS_PARTIAL_DATA, 0);
+        assert_eq!(frame.status_flags & compact::STATUS_SOURCE_UNAVAILABLE, 0);
+        let summary = compact::decode_payload(256, &frame.payload);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("scripted_token_only_flag_rows")
+                .copied(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn registration_descriptor_targets_domain_51_registry_slot() {
+        let descriptor = registration_descriptor();
+        assert_eq!(descriptor.id, 51);
+        assert_eq!(
+            descriptor.canonical_name,
+            "scripted_state_flags_variables_live"
+        );
+        assert_eq!(descriptor.status_before_integration, "reserved");
+        assert!(descriptor.schedulable_when_registered);
+        assert!(descriptor.requires_data_record);
+    }
+}
