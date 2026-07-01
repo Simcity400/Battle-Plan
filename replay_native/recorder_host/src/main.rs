@@ -1,7 +1,7 @@
 #![recursion_limit = "256"]
 
-use recorder_host::compact_domain_registry;
 use occupation_resistance_compliance_live_lane as occupation52;
+use recorder_host::compact_domain_registry;
 use serde_json::{json, Value};
 use snapshot::{pack, Container, ExpectedIdentity, PackEntry, PackIdentity};
 use std::collections::{BTreeMap, BTreeSet};
@@ -145,6 +145,7 @@ const COMPACT_SUPPLY_LOGISTICS_ROW_LEN: usize = 40;
 const COMPACT_SUPPLY_ROW_KIND_PROVINCE_LOGISTICS: u32 = 1;
 const COMPACT_SUPPLY_ROW_KIND_DIVISION_SUPPLY: u32 = 2;
 const COMPACT_SUPPLY_ROW_KIND_COMPUTED_BADGE: u32 = 3;
+const COMPACT_SUPPLY_ROW_KIND_CSUPPLY_PROVINCE_INPUT: u32 = 4;
 const COMPACT_SUPPLY_ROW_FLAG_RAIL: u32 = 1;
 const COMPACT_SUPPLY_ROW_FLAG_SUPPLY_NODE: u32 = 1 << 1;
 const COMPACT_SUPPLY_ROW_FLAG_NAVAL_SUPPLY_HUB: u32 = 1 << 2;
@@ -162,6 +163,8 @@ const COMPACT_SUPPLY_ROW_FLAG_DIVISION_FUEL: u32 = 1 << 13;
 const COMPACT_SUPPLY_ROW_FLAG_MOTORIZATION_WALL: u32 = 1 << 14;
 const COMPACT_SUPPLY_ROW_FLAG_CONVOY_PRESSURE_WALL: u32 = 1 << 15;
 const COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED: u32 = 1 << 16;
+const COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_EFFICIENCY: u32 = 1 << 17;
+const COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_PROVINCE_ARRAY: u32 = 1 << 18;
 const COMPACT_SUPPLY_ROW_VALID_FLAGS: u32 = COMPACT_SUPPLY_ROW_FLAG_RAIL
     | COMPACT_SUPPLY_ROW_FLAG_SUPPLY_NODE
     | COMPACT_SUPPLY_ROW_FLAG_NAVAL_SUPPLY_HUB
@@ -178,7 +181,9 @@ const COMPACT_SUPPLY_ROW_VALID_FLAGS: u32 = COMPACT_SUPPLY_ROW_FLAG_RAIL
     | COMPACT_SUPPLY_ROW_FLAG_DIVISION_FUEL
     | COMPACT_SUPPLY_ROW_FLAG_MOTORIZATION_WALL
     | COMPACT_SUPPLY_ROW_FLAG_CONVOY_PRESSURE_WALL
-    | COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED;
+    | COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED
+    | COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_EFFICIENCY
+    | COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_PROVINCE_ARRAY;
 const COMPACT_SUPPLY_BADGE_EXACT_PROVINCE_SUPPLY_TRANSIENT: i32 = 1;
 const COMPACT_SUPPLY_BADGE_ATTRITION_RUNTIME_COMPUTED: i32 = 2;
 const COMPACT_SUPPLY_BADGE_MOTORIZATION_SETTINGS_UNPINNED: i32 = 3;
@@ -192,6 +197,7 @@ const COMPACT_SUPPLY_MAX_SUPPLY_RAW: i32 = 100_000_000;
 const COMPACT_SUPPLY_MAX_SUPPLY_GAIN_RAW: i32 = 500_000;
 const COMPACT_SUPPLY_MAX_DIVISION_FUEL_RAW: i32 = i32::MAX;
 const COMPACT_SUPPLY_MAX_BUILDING_LEVEL: i32 = 1_000;
+const COMPACT_SUPPLY_MAX_CSUPPLY_INPUT_RAW: i32 = COMPACT_FIXED_SCALE_RAW as i32;
 const COMPACT_DIVISION_TYPE: u32 = 4713;
 const COMPACT_DIVISION_ROW_LEN: usize = 88;
 const COMPACT_MAX_DIVISION_PROVINCE_ID: u32 = 1_000_000;
@@ -7370,7 +7376,7 @@ fn decode_compact_supply_logistics_attrition_data_payload(
     let badge_rows = read_u32_le(payload, 32) as usize;
     let observed_province_roots = read_u32_le(payload, 36) as usize;
     let observed_division_roots = read_u32_le(payload, 40) as usize;
-    let reserved0 = read_u32_le(payload, 44);
+    let csupply_input_rows = read_u32_le(payload, 44) as usize;
     summary.status_flags_or |= status_flags;
 
     if scale_raw != COMPACT_FIXED_SCALE_RAW {
@@ -7386,10 +7392,11 @@ fn decode_compact_supply_logistics_attrition_data_payload(
     if province_rows
         .saturating_add(division_rows)
         .saturating_add(badge_rows)
+        .saturating_add(csupply_input_rows)
         != row_count
     {
         summary.parse_errors.push(format!(
-            "offset {offset}: supply logistics row counters {province_rows}+{division_rows}+{badge_rows} != row_count {row_count}"
+            "offset {offset}: supply logistics row counters {province_rows}+{division_rows}+{badge_rows}+{csupply_input_rows} != row_count {row_count}"
         ));
     }
     if observed_province_roots < province_rows {
@@ -7400,11 +7407,6 @@ fn decode_compact_supply_logistics_attrition_data_payload(
     if observed_division_roots < division_rows {
         summary.parse_errors.push(format!(
             "offset {offset}: supply logistics observed_division_roots {observed_division_roots} < division_rows {division_rows}"
-        ));
-    }
-    if reserved0 != 0 {
-        summary.parse_errors.push(format!(
-            "offset {offset}: supply logistics header reserved field is nonzero"
         ));
     }
     let expected_len = COMPACT_SUPPLY_LOGISTICS_HEADER_LEN
@@ -7427,6 +7429,7 @@ fn decode_compact_supply_logistics_attrition_data_payload(
     add_compact_domain_data_unit(summary, 44, "supply_province_logistics_rows", province_rows);
     add_compact_domain_data_unit(summary, 44, "supply_division_supply_rows", division_rows);
     add_compact_domain_data_unit(summary, 44, "supply_computed_badge_rows", badge_rows);
+    add_compact_domain_data_unit(summary, 44, "supply_csupply_input_rows", csupply_input_rows);
     add_compact_domain_data_unit(
         summary,
         44,
@@ -7443,8 +7446,10 @@ fn decode_compact_supply_logistics_attrition_data_payload(
     let mut decoded_province_rows = 0usize;
     let mut decoded_division_rows = 0usize;
     let mut decoded_badge_rows = 0usize;
+    let mut decoded_csupply_input_rows = 0usize;
     let mut seen_provinces = BTreeSet::new();
     let mut seen_divisions = BTreeSet::new();
+    let mut seen_csupply_input_provinces = BTreeSet::new();
     let mut has_exact_supply_wall = false;
     let mut has_attrition_wall = false;
     let mut has_motorization_wall = false;
@@ -7653,6 +7658,43 @@ fn decode_compact_supply_logistics_attrition_data_payload(
                     COMPACT_SUPPLY_ROW_FLAG_DIVISION_FUEL,
                 );
             }
+            COMPACT_SUPPLY_ROW_KIND_CSUPPLY_PROVINCE_INPUT => {
+                decoded_csupply_input_rows = decoded_csupply_input_rows.saturating_add(1);
+                if entity_id == 0 || entity_id > COMPACT_SUPPLY_MAX_PROVINCE_ID {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics csupply row {row_index} has invalid province_id {entity_id}"
+                    ));
+                } else if !seen_csupply_input_provinces.insert(entity_id) {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics csupply row {row_index} duplicates province_id {entity_id}"
+                    ));
+                }
+                if join_id != 0 || owner_tag_db_id != 0 {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics csupply row {row_index} has nonzero identity join fields"
+                    ));
+                }
+                let expected_flags = COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_EFFICIENCY
+                    | COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_PROVINCE_ARRAY;
+                if flags != expected_flags {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics csupply row {row_index} has invalid flags {flags}"
+                    ));
+                }
+                validate_supply_logistics_nonnegative_value(
+                    offset,
+                    summary,
+                    row_index,
+                    "csupply_input_raw",
+                    value_a_raw,
+                    COMPACT_SUPPLY_MAX_CSUPPLY_INPUT_RAW,
+                );
+                if value_b_raw != 0 || value_c_raw != 0 || value_d_raw != 0 || aux_raw != 0 {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics csupply row {row_index} has nonzero reserved value fields"
+                    ));
+                }
+            }
             COMPACT_SUPPLY_ROW_KIND_COMPUTED_BADGE => {
                 decoded_badge_rows = decoded_badge_rows.saturating_add(1);
                 if entity_id != 0 || join_id != 0 || owner_tag_db_id != 0 {
@@ -7758,6 +7800,11 @@ fn decode_compact_supply_logistics_attrition_data_payload(
             "offset {offset}: supply logistics badge_rows {badge_rows} != decoded {decoded_badge_rows}"
         ));
     }
+    if decoded_csupply_input_rows != csupply_input_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: supply logistics csupply_input_rows {csupply_input_rows} != decoded {decoded_csupply_input_rows}"
+        ));
+    }
     for (label, present) in [
         ("exact supply wall", has_exact_supply_wall),
         ("attrition wall", has_attrition_wall),
@@ -7780,6 +7827,12 @@ fn decode_compact_supply_logistics_attrition_data_payload(
         44,
         "supply_division_deficit_rows",
         division_supply_deficit_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        44,
+        "supply_csupply_efficiency_rows",
+        decoded_csupply_input_rows,
     );
 }
 
@@ -12290,8 +12343,8 @@ mod tests {
         assert_eq!(supply.row_count_total, 2);
         assert_eq!(supply.unit_count_total, 7);
         assert_eq!(supply.data_record_count, 1);
-        assert_eq!(supply.data_rows_total, 7);
-        assert_eq!(supply.data_changed_rows_total, 7);
+        assert_eq!(supply.data_rows_total, 8);
+        assert_eq!(supply.data_changed_rows_total, 8);
         assert_eq!(
             supply
                 .data_units_total
@@ -12316,6 +12369,13 @@ mod tests {
         assert_eq!(
             supply
                 .data_units_total
+                .get("supply_csupply_input_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            supply
+                .data_units_total
                 .get("supply_division_fuel_rows")
                 .copied(),
             Some(1)
@@ -12324,6 +12384,13 @@ mod tests {
             supply
                 .data_units_total
                 .get("supply_division_deficit_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            supply
+                .data_units_total
+                .get("supply_csupply_efficiency_rows")
                 .copied(),
             Some(1)
         );
@@ -12338,8 +12405,8 @@ mod tests {
     fn compact_supply_logistics_missing_badge_fails_decode() {
         let mut payload = test_supply_logistics_attrition_data_payload(0);
         payload.truncate(payload.len() - COMPACT_SUPPLY_LOGISTICS_ROW_LEN);
-        payload[8..12].copy_from_slice(&6u32.to_le_bytes());
-        payload[12..16].copy_from_slice(&6u32.to_le_bytes());
+        payload[8..12].copy_from_slice(&7u32.to_le_bytes());
+        payload[12..16].copy_from_slice(&7u32.to_le_bytes());
         payload[32..36].copy_from_slice(&4u32.to_le_bytes());
         let mut summary = CompactSummary::default();
 
@@ -12349,6 +12416,23 @@ mod tests {
             .parse_errors
             .iter()
             .any(|err| err.contains("missing csupply candidate rejection badge row")));
+    }
+
+    #[test]
+    fn compact_supply_logistics_bad_csupply_row_fails_decode() {
+        let mut payload = test_supply_logistics_attrition_data_payload(0);
+        let csupply_cursor =
+            COMPACT_SUPPLY_LOGISTICS_HEADER_LEN + 2 * COMPACT_SUPPLY_LOGISTICS_ROW_LEN;
+        payload[csupply_cursor + 16..csupply_cursor + 20]
+            .copy_from_slice(&COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_EFFICIENCY.to_le_bytes());
+        let mut summary = CompactSummary::default();
+
+        decode_compact_supply_logistics_attrition_data_payload(0, &payload, &mut summary);
+
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("csupply row 2 has invalid flags")));
     }
 
     #[test]
@@ -15450,6 +15534,19 @@ mod tests {
                 99_000i32,
             ),
             (
+                COMPACT_SUPPLY_ROW_KIND_CSUPPLY_PROVINCE_INPUT,
+                3544u32,
+                0u32,
+                0u32,
+                COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_EFFICIENCY
+                    | COMPACT_SUPPLY_ROW_FLAG_CSUPPLY_PROVINCE_ARRAY,
+                72_500i32,
+                0i32,
+                0i32,
+                0i32,
+                0i32,
+            ),
+            (
                 COMPACT_SUPPLY_ROW_KIND_COMPUTED_BADGE,
                 0u32,
                 0u32,
@@ -15521,7 +15618,7 @@ mod tests {
         payload.extend_from_slice(&5u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
-        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
         for (
             row_kind,
             entity_id,

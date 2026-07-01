@@ -68,6 +68,7 @@
     {"id": 40, "name": "stockpile_variant_upgrades", "required_units": ["stockpile_variant_upgrade_rows", "stockpile_variant_upgrade_entry_rows"], "shared_recorder_known": true},
     {"id": 41, "name": "projects_live", "required_units": ["project_rows"], "shared_recorder_known": true},
     {"id": 42, "name": "air_combat_losses_live", "required_units": ["air_strength_delta_rows", "air_strength_observed_wing_rows"], "shared_recorder_known": false},
-    {"id": 43, "name": "market_trade_live", "required_units": [], "shared_recorder_known": true}
+    {"id": 43, "name": "market_trade_live", "required_units": [], "shared_recorder_known": true},
+    {"id": 44, "name": "supply_logistics_attrition_live", "required_units": ["supply_province_logistics_rows", "supply_division_supply_rows", "supply_csupply_input_rows", "supply_csupply_efficiency_rows"], "shared_recorder_known": true}
   ]
 }

@@ -331,6 +331,18 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         required_units: &[],
         shared_recorder_known: true,
     },
+    DomainContract {
+        id: 44,
+        name: "supply_logistics_attrition_live",
+        requires_data: true,
+        required_units: &[
+            "supply_province_logistics_rows",
+            "supply_division_supply_rows",
+            "supply_csupply_input_rows",
+            "supply_csupply_efficiency_rows",
+        ],
+        shared_recorder_known: true,
+    },
 ];
 
 pub fn validate_run_dir(options: &GateOptions) -> GateReport {

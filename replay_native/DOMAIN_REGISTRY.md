@@ -59,7 +59,7 @@ Status vocabulary:
 | 41 | `projects_live` | partial validated slice: facilities/scientists/progress/completed bit; start/reward fixture blocked | projects |
 | 42 | `air_combat_losses_live` | validated slice: loss/reinforcement delta; direct event root rejected; not full air combat | air combat losses |
 | 43 | `market_trade_live` | validated slice: purchase contracts; dynamic D-tag buyer resolved; omitted candidates/full trade economy open | market/trade |
-| 44 | `supply_logistics_attrition_live` | validated slice: supply/logistics subset; direct `CSupplySystem` arrays rejected; exact province supply wall open | supply/logistics |
+| 44 | `supply_logistics_attrition_live` | validated slice: supply/logistics subset; `CSupplySystem` rows structurally integrated via anchored root but speed-five proof open; exact province supply wall open | supply/logistics |
 | 45 | `focus_research_decisions_depth_live` | validated slice: transition depth; decision body candidates rejected; unresolved fields open | focus/research/decisions depth |
 | 46 | `air_variant_archetypes_live` | validated slice: variant archetypes; token `20378` resolved; shared token hook/full air lifecycle open | air wings/variants lifecycle |
 | 47 | `characters_leaders_cabinet_live` | lane-ready; shared adapter/registration blocked; remaining matrix written | characters/leaders/cabinet |
