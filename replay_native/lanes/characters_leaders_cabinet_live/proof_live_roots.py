@@ -441,6 +441,8 @@ COMPACT_RECORD_MAGIC = b"H4CR"
 COMPACT_RECORD_HEADER_LEN = 32
 COMPACT_RECORD_VERSION = 1
 COMPACT_RECORD_TYPE_DOMAIN_DATA = 3
+GAMESTATE_RVA_CANDIDATES = (0x3316E90, 0x33048C0)
+GAMESTATE_CURRENT_DATE_OFF = 0x468
 
 HEADER_LEN = 64
 STRING_NONE = 0xFFFFFFFF
@@ -460,6 +462,7 @@ ROW_COUNTRY_LEADER_ROLE = 4
 ROW_ACTIVE_RULER = 5
 ROW_ADVISOR_ROSTER = 6
 ROW_APPOINTED_ADVISOR = 7
+ROW_CHARACTER_PORTRAIT = 8
 
 UNIT_LEADER_ARMY = 1
 UNIT_LEADER_NAVY = 2
@@ -478,6 +481,32 @@ ADVISOR_CABINET_BUCKETS = (
     "unknown",
 )
 ADVISOR_SLOT_TO_BUCKET = {bucket: bucket for bucket in ADVISOR_CABINET_BUCKETS}
+
+
+def read_current_game_hour_sample(cl: CL.CharactersLiveReader) -> dict:
+    for rva in GAMESTATE_RVA_CANDIDATES:
+        gamestate = cl.u64(cl.module_base + rva)
+        if not _heap_ok(gamestate):
+            continue
+        raw = cl.u32(int(gamestate) + GAMESTATE_CURRENT_DATE_OFF)
+        decoded = PRES.decode_datehour(raw)
+        if decoded:
+            return {
+                "ok": True,
+                "game_hour_raw": int(raw),
+                "decoded": decoded,
+                "gamestate": f"0x{int(gamestate):X}",
+                "root_rva": f"0x{rva:X}",
+                "offset": f"+0x{GAMESTATE_CURRENT_DATE_OFF:X}",
+            }
+    return {
+        "ok": False,
+        "game_hour_raw": None,
+        "decoded": None,
+        "gamestate": None,
+        "root_rva": None,
+        "offset": f"+0x{GAMESTATE_CURRENT_DATE_OFF:X}",
+    }
 
 
 def _ascii_optional(value, max_len: int = MAX_STRING_BYTES):
@@ -659,6 +688,23 @@ def _encode_domain47_payload(
                 bucket_sid,
                 idea_sid,
             )
+        elif kind == ROW_CHARACTER_PORTRAIT:
+            role_sid = strings.require(row.get("role"))
+            size_sid = strings.require(row.get("size"))
+            gfx_sid = strings.require(row.get("gfx"))
+            if role_sid is None or size_sid is None or gfx_sid is None:
+                skipped["character_portrait_missing_required_string"] += 1
+                continue
+            counts["character_portraits"] += 1
+            _push_row_header(row_bytes, kind, 24)
+            row_bytes += struct.pack(
+                "<IIIII",
+                int(row["country_tag_db_id"]),
+                int(row["char_id"]),
+                role_sid,
+                size_sid,
+                gfx_sid,
+            )
         else:
             skipped["unknown_kind"] += 1
 
@@ -693,6 +739,7 @@ def _encode_domain47_payload(
         "active_ruler_rows": int(counts["active_rulers"]),
         "advisor_roster_rows": int(counts["advisor_roster"]),
         "appointed_advisor_rows": int(counts["appointed_advisors"]),
+        "character_portrait_rows": int(counts["character_portraits"]),
         "string_count": len(strings.values),
         "string_bytes": len(strings_blob),
         "payload_bytes": len(payload),
@@ -902,14 +949,19 @@ def _compact_rows_from_live(
     }
 
 
-def _write_compact_artifacts(out_dir: Path, elapsed_ms: int, rows: list[dict]) -> dict:
+def _write_compact_artifacts(
+    out_dir: Path,
+    elapsed_ms: int,
+    rows: list[dict],
+    game_hour_raw: int,
+) -> dict:
     payload, summary = _encode_domain47_payload(
         elapsed_ms,
         0,
         SCHEMA_ROOTS_VALIDATED | SCHEMA_STATIC_NAME_CLOSURE | SCHEMA_APPOINTED_FROM_ACTIVE_IDEAS,
         rows,
     )
-    record = _encode_compact_record(1, 0, payload)
+    record = _encode_compact_record(1, game_hour_raw, payload)
     payload_path = out_dir / "domain47_payload.bin"
     record_path = out_dir / "domain47_record.bin"
     payload_path.write_bytes(payload)
@@ -922,6 +974,7 @@ def _write_compact_artifacts(out_dir: Path, elapsed_ms: int, rows: list[dict]) -
             "record_path": str(record_rel),
             "record_bytes": len(record),
             "record_domain_id": DOMAIN_ID,
+            "record_game_hour_raw": int(game_hour_raw),
         }
     )
     return summary
@@ -1016,6 +1069,7 @@ def run(args: argparse.Namespace) -> dict:
                 "active_ruler",
                 "advisor_roster",
                 "appointed_advisor",
+                "character_portrait",
             ],
             "codec": "replay_native/lanes/characters_leaders_cabinet_live/domain47_compact.rs",
             "status_flags": "shared compact health flags only",
@@ -1042,6 +1096,8 @@ def run(args: argparse.Namespace) -> dict:
         }
         if not ok and not args.force:
             raise SystemExit(f"build gate failed: {digest} != {CL.EXPECTED_SHA256}")
+
+        proof["game_hour_start"] = read_current_game_hour_sample(cl)
 
         rtti = cl.rtti_self_check()
         rtti_overrides = {}
@@ -1315,12 +1371,22 @@ def run(args: argparse.Namespace) -> dict:
                 roster,
                 appointed,
             )
+            game_hour_end = read_current_game_hour_sample(cl)
+            proof["game_hour_end"] = game_hour_end
+            record_game_hour_raw = (
+                game_hour_end.get("game_hour_raw")
+                or proof["game_hour_start"].get("game_hour_raw")
+                or 0
+            )
             compact_summary = _write_compact_artifacts(
                 out_dir,
                 int((time.perf_counter() - started) * 1000),
                 compact_rows,
+                int(record_game_hour_raw),
             )
             compact_summary.update(compact_source_summary)
+            compact_summary["game_hour_start"] = proof.get("game_hour_start")
+            compact_summary["game_hour_end"] = game_hour_end
             proof["checks"]["compact_artifacts"] = compact_summary
         proof["result"] = "validated" if not proof["errors"] else "partial"
     except BaseException as exc:
@@ -1368,10 +1434,11 @@ def write_markdown(path: Path, proof: dict) -> None:
         f"- appointed advisor rows: `{appointed.get('appointed_rows')}`; nonempty countries `{appointed.get('nonempty_countries')}`",
         f"- politics countries for appointed intersection: `{appointed.get('politics_countries')}`",
         f"- compact record: `{compact.get('record_path')}` bytes `{compact.get('record_bytes')}` rows `{compact.get('row_count_total')}`",
+        f"- compact record game hour: `{compact.get('record_game_hour_raw')}` start `{proof.get('game_hour_start')}` end `{proof.get('game_hour_end')}`",
         "",
         "## Completion Interpretation",
         "",
-        "This proof validates current-build roots for at least one politics/cabinet sub-slice and the lane-local compact row contract. It does not claim DLL-only extraction, Rust recorder integration, or .battleplan verification for this lane.",
+        "This proof validates current-build roots for at least one politics/cabinet sub-slice and the lane-local compact row contract. It does not claim DLL-only extraction or shared Rust recorder integration for this lane. Replay container verification is performed by the separate replay_record_verify gate when present.",
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 

@@ -2,9 +2,10 @@
 
 This lane-local proof deliberately does not claim a live root. It checks the
 current save-oracle/keytree/parser evidence before any live root can be accepted
-for queued delayed events. Without a positive `countries.*.delayed_event`
-fixture, a live heap candidate cannot be validated against an oracle and must
-stay fail-closed.
+for queued delayed events. The recursive save inventory proves the raw
+`countries.*.delayed_event` shape exists, but without parsed owner/value rows a
+live heap candidate cannot be validated against an oracle and must stay
+fail-closed.
 """
 
 from __future__ import annotations
@@ -124,6 +125,32 @@ def scan_parser_lines(files, target):
     return hits
 
 
+def scan_recursive_path_shape(path: Path, root: str):
+    hits = []
+    for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip() or "\t" not in line:
+            continue
+        row_path = line.split("\t", 1)[0]
+        if row_path == root or row_path.startswith(root + "."):
+            fields = line.split("\t")
+            hits.append(
+                {
+                    "line": line_no,
+                    "path": row_path,
+                    "kind": fields[1] if len(fields) > 1 else "",
+                    "count": fields[2] if len(fields) > 2 else "",
+                }
+            )
+    return {
+        "file": str(path.relative_to(REPO_ROOT)),
+        "root": root,
+        "rows": hits,
+        "row_count": len(hits),
+        "has_root": any(row["path"] == root for row in hits),
+        "descendant_count": sum(1 for row in hits if row["path"].startswith(root + ".")),
+    }
+
+
 def summarize_events_json(path: Path):
     data = read_json(path)
     pending = data.get("pending_events") if isinstance(data, dict) else None
@@ -151,14 +178,19 @@ def build_audit():
     delayed_parser_hits = scan_parser_lines(parser_files, "delayed_event")
     saved_target_parser_hits = scan_parser_lines(parser_files, "saved_event_target")
     events_summary = summarize_events_json(REPO_ROOT / "save_oracle" / "output" / "events.json")
+    recursive_shape = scan_recursive_path_shape(
+        REPO_ROOT / "coverage_audit" / "recursive_paths_country.txt",
+        "countries.<id>.delayed_event",
+    )
 
-    no_positive_fixture = (
+    no_parsed_owner_value_fixture = (
         delayed_output_scan["key_hit_count"] == 0
         and delayed_output_scan["scalar_hit_count"] == 0
         and delayed_keytree_scan["key_hit_count"] == 0
         and delayed_keytree_scan["scalar_hit_count"] == 0
         and bool(delayed_manifest)
         and delayed_manifest[0].get("save_parsed") == "no"
+        and recursive_shape["has_root"]
     )
 
     return {
@@ -175,16 +207,18 @@ def build_audit():
             "recorder_entrypoints_edited": False,
             "integration_slot_required": True,
         },
-        "completion_status": "COMPLETE",
-        "lane_full_production_status": "NOT_COMPLETE",
+        "completion_status": "NOT COMPLETE",
+        "lane_full_production_status": "NOT COMPLETE",
         "backlog_reduced": True,
         "exact_backlog_item_removed_or_narrowed": (
-            "Delayed-event live root validation narrowed to a missing-positive-fixture "
-            "blocker; saved_event_target is rejected as a validation proxy for "
-            "countries.*.delayed_event."
+            "Delayed-event live root validation narrowed to a missing parsed "
+            "owner/value fixture blocker. The raw recursive save inventory proves "
+            "countries.*.delayed_event shape exists, while saved_event_target and "
+            "pending_events are rejected as validation proxies."
         ),
         "delayed_event_manifest_rows": delayed_manifest,
         "saved_event_target_manifest_rows": saved_target_manifest,
+        "recursive_delayed_event_shape": recursive_shape,
         "save_oracle_output_scan": delayed_output_scan,
         "save_keytree_delayed_event_scan": delayed_keytree_scan,
         "save_keytree_saved_event_target_scan": saved_target_keytree_scan,
@@ -209,17 +243,20 @@ def build_audit():
             },
         ],
         "blocker": {
-            "kind": "missing_positive_save_fixture",
-            "is_blocking_current_live_root_acceptance": no_positive_fixture,
+            "kind": "missing_parsed_owner_value_fixture",
+            "is_blocking_current_live_root_acceptance": no_parsed_owner_value_fixture,
             "blocked_work": (
                 "Do not accept a delayed-event heap/root candidate from the current "
-                "870ebf process without a save-derived non-empty countries.*.delayed_event "
-                "fixture or an equivalent engine-side invariant."
+                "870ebf process without parsed owner/value rows for a non-empty "
+                "countries.*.delayed_event fixture or an equivalent engine-side "
+                "invariant."
             ),
             "unblocker": (
-                "Capture or synthesize a development save with at least one non-empty "
-                "countries.*.delayed_event row, parse it into the save oracle, then "
-                "correlate the queued payload against validated CCountry rows."
+                "Use the raw recursive save shape already observed here to extend a "
+                "fixture parser, or capture/synthesize a development save with at "
+                "least one non-empty countries.*.delayed_event row, then correlate "
+                "owner, event, originator, scope, and time fields against validated "
+                "CCountry rows."
             ),
         },
         "compact_packet_effect": {

@@ -32,32 +32,51 @@ sources used by the lane-local proof stack:
 
 - Current 870EBF live root evidence is in `CURRENT_BUILD_ROOTS.md` and proof
   output under
-  `replay_native/runs/focus_research_decisions_depth_live_current_roots_20260701_v3`.
+  `replay_native/lanes/focus_research_decisions_depth_live/proofs/current_roots_20260701_v5`.
 
 ## Remaining Fail-Closed Gaps
 
 - Focus paused state is still unresolved. The current-build probe sampled
   `439` valid focus status rows, including `114` active/progress rows, but no
-  `paused=true` ground truth. This lane does not synthesize a pause boolean and
-  emits badge kind `1` with status flag bit `0`.
-- Completed focus token is exact only when a completed-token list is present in
-  the source payload. In compact delta streams, the lane can infer a completion
-  token from the previous current focus when the completed count increases and
-  the current focus clears or changes; that row is flagged as inferred. The
-  integrated compact domain `45` proof currently has `0` exact completed-token
-  rows and `1` inferred completed-token row because compact focus reads omit the
-  completed vector.
+  `paused=true` ground truth. The v2 focus pause candidate gate rejects the full
+  `CFocusStatus+0x20..+0x37` byte window as the paused-boolean home:
+  `13` direct byte-shape rejections plus `11` structural qword-overlap
+  rejections. The wider v2 focus pause gate scanned
+  `CFocusStatus+0x00..+0x7F`, excluding that prior window, and rejects `100`
+  additional outside-window byte candidates. The static v2 gap gate rejects the
+  final `0x3C..0x3F` bytes by proving `2` CFocusStatus vtable methods use
+  qword-sized access at `+0x38` and `0` scanned methods access the gap directly.
+  The bounded fixture watcher observed `2` unique game hours and records the
+  required paused=true oracle contract for any future root outside
+  `CFocusStatus`. This lane does not synthesize a pause boolean and emits badge
+  kind `1` with status flag bit `0`.
+- Completed focus token closure is a validated slice when compact focus source
+  rows carry the completed-token vector. The exact-completed production proof
+  has `1` exact completed-token row, `0` inferred rows, `0` unresolved rows,
+  zero skipped hours, and verified `.battleplan` output. Without the
+  orchestrator hunk in `SHARED_RESIDUAL_PATCH_PLAN.md`, compact focus rows can
+  still only infer a completion token from previous-current deltas.
 - Decision targeted/cooldown record bodies are narrowed:
   - non-timed targeted/cooldown records at vtable `0x27D4F00` reject the
     timed-definition layout;
   - `decision_to_re_enable` at vtable `0x27D4E60` rejects the timed-definition
     layout;
   - targeted-timed records at vtable `0x27D5038` validate
-    `record+0x10 -> CDecisionDef`, but target fields remain unproven.
+    `record+0x10 -> CDecisionDef`;
+  - targeted-timed `record+0x20` validates as the country target `tag_db_id`
+    for the exact save/live matched country-target subset: `1061` live rows
+    across `180` decision tokens.
+  - targeted-timed `record+0x24` validates as the numeric target id for the
+    exact save/live matched `target=<number>` subset: `2285` rows, with `4`
+    live-only and `3` save-only transition rows.
+  - lane-local domain 45 compact schema/decoder/gate coverage is proved for
+    those rows using `decision_target_count` plus target rows carrying owner tag,
+    target id, source kind, provenance flags, and decision token.
   This lane records count/status transitions and active timed-decision rows, and
-  leaves exact target/cooldown body detail fail-closed with badge kind `2` and
+  leaves unmatched transition rows, numeric target semantic classification, and
+  exact cooldown/day/state body detail fail-closed with badge kind `2` and
   status flag bit `1`.
-- The v4 decision-body candidate gate rejects exact offsets that should not be
+- The v2 decision-body candidate gate rejects exact offsets that should not be
   retried as production target fields on build `870ebf`:
   - timed-body `record+0x10 -> CDecisionDef` for
     `decisions_taken_bucket`, `active_targeted_decision`, and
@@ -69,9 +88,26 @@ sources used by the lane-local proof stack:
     as universal exact country-target tag fields;
   - `active_targeted_timed_decision+0x60/+0x70` as universal exact
     country-target pointer fields.
-  The remaining target-body blocker is a same-frame oracle for records with
-  vtable `0x27D5038` or static decision target-type metadata for a
-  definition-aware variant layout, not another retry of these rejected offsets.
+  The v3 full-decision variant gate also rejects `49` definition-local country-
+  tag slices in the scanned `record+0x20..+0x7C` i32 window. It leaves `50`
+  definition-local candidates as `CANDIDATE_NOT_PRODUCTION` unless covered by
+  the save-oracle target proofs. The save-oracle proofs validate `record+0x20`
+  for exact matched country-target rows and `record+0x24` for exact matched
+  numeric-target rows; the remaining target-body blocker is a same-frame oracle
+  for unmatched transition rows, numeric target semantic classification, and
+  cooldown/day/state encodings, not another retry of the rejected offsets.
+- The event-hook candidate gate rejects the named decision-event string route
+  and the named focus-completion callback string route for build `870ebf`.
+  The static-contract gate rejects all `5` remaining string/xref anchors as
+  registration/catalog arguments rather than runtime callbacks. The rejected
+  anchors are `on_tech_research_completed`, `on_research_complete`,
+  `on_research_complete_limit`, `complete_national_focus`, and
+  `uncomplete_national_focus`. Each xref lives in function
+  `0x82CB0..0x11896F`, which has `10697` string references, loads the string
+  into `r8`, loads a registration key into `edx`, sets a global registry
+  pointer in `rcx`, and calls `0x24AFC10`. Direct event hooks remain
+  fail-closed with badge kind `3` and status flag bit `2` until a non-
+  registration callback root with a live argument contract is validated.
 
 ## Badge Gates
 

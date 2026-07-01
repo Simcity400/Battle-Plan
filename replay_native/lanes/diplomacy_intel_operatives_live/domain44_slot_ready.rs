@@ -2,9 +2,14 @@ mod domain44_compact;
 
 use domain44_compact::{
     decode_payload, domain_id_rejection_reason, encode_payload, DiplomacyIntelSnapshot,
-    Domain53GateSummary, DOMAIN_ID_PROPOSED, STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED,
-    STATUS_INTEL_MAP_RESISTED, STATUS_OPERATIONS_DETAIL_RESISTED,
-    STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED, STATUS_WAR_ROOT_UNVALIDATED,
+    Domain53GateSummary, DOMAIN_ID_PROPOSED, STATE_EVENT_SOURCE_AGENCY_CAPACITY,
+    STATE_EVENT_SOURCE_AGENCY_SCALAR, STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP,
+    STATE_EVENT_SOURCE_CRYPTOLOGY,
+    STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE, STATE_EVENT_SOURCE_RELATION_FLAG,
+    STATE_EVENT_SOURCE_RELATION_OPINION, STATE_EVENT_SOURCE_SUBJECT_AUTONOMY,
+    STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED, STATUS_INTEL_MAP_RESISTED,
+    STATUS_OPERATIONS_DETAIL_RESISTED, STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED,
+    STATUS_WAR_ROOT_UNVALIDATED,
 };
 
 pub const EXPECTED_HOI4_SHA256_870EBF: &str =
@@ -93,11 +98,11 @@ pub fn admit_slot_payload(
             &mut errors,
         );
     }
-    if !snapshot.agencies.is_empty() {
+    if !snapshot.agencies.is_empty() || !snapshot.agency_capacity_clusters.is_empty() {
         require(
             source_proofs,
             SOURCE_PROOF_AGENCY_ROOT_870EBF,
-            "agency rows require SOURCE_PROOF_AGENCY_ROOT_870EBF",
+            "agency rows/capacity clusters require SOURCE_PROOF_AGENCY_ROOT_870EBF",
             &mut errors,
         );
     }
@@ -114,6 +119,70 @@ pub fn admit_slot_payload(
             source_proofs,
             SOURCE_PROOF_OPERATIVE_ROOT_870EBF,
             "operative rows require SOURCE_PROOF_OPERATIVE_ROOT_870EBF",
+            &mut errors,
+        );
+    }
+    if snapshot.state_events.iter().any(|row| {
+        matches!(
+            row.source_kind,
+            STATE_EVENT_SOURCE_RELATION_FLAG
+                | STATE_EVENT_SOURCE_RELATION_OPINION
+                | STATE_EVENT_SOURCE_SUBJECT_AUTONOMY
+        )
+    }) {
+        require(
+            source_proofs,
+            SOURCE_PROOF_RELATION_ROOTS_870EBF,
+            "compact state events sourced from relation/opinion/subject rows require SOURCE_PROOF_RELATION_ROOTS_870EBF",
+            &mut errors,
+        );
+    }
+    if snapshot
+        .state_events
+        .iter()
+        .any(|row| row.source_kind == STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP)
+    {
+        require(
+            source_proofs,
+            SOURCE_PROOF_COUNTRY_ROOTS_870EBF,
+            "compact state events sourced from country faction rows require SOURCE_PROOF_COUNTRY_ROOTS_870EBF",
+            &mut errors,
+        );
+    }
+    if snapshot.state_events.iter().any(|row| {
+        matches!(
+            row.source_kind,
+            STATE_EVENT_SOURCE_AGENCY_SCALAR | STATE_EVENT_SOURCE_AGENCY_CAPACITY
+        )
+    }) {
+        require(
+            source_proofs,
+            SOURCE_PROOF_AGENCY_ROOT_870EBF,
+            "compact state events sourced from agency rows require SOURCE_PROOF_AGENCY_ROOT_870EBF",
+            &mut errors,
+        );
+    }
+    if snapshot
+        .state_events
+        .iter()
+        .any(|row| row.source_kind == STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE)
+    {
+        require(
+            source_proofs,
+            SOURCE_PROOF_OPERATIVE_ROOT_870EBF,
+            "compact state events sourced from operative lifecycle rows require SOURCE_PROOF_OPERATIVE_ROOT_870EBF",
+            &mut errors,
+        );
+    }
+    if snapshot
+        .state_events
+        .iter()
+        .any(|row| row.source_kind == STATE_EVENT_SOURCE_CRYPTOLOGY)
+    {
+        require(
+            source_proofs,
+            SOURCE_PROOF_CRYPTOLOGY_ROOT_870EBF,
+            "compact state events sourced from cryptology rows require SOURCE_PROOF_CRYPTOLOGY_ROOT_870EBF",
             &mut errors,
         );
     }
@@ -216,9 +285,10 @@ fn has(source_proofs: u64, flag: u64) -> bool {
 mod tests {
     use super::*;
     use domain44_compact::{
-        AgencyRow, CountryDiplomacyRow, CryptologyRow, DiplomacyIntelSnapshot, IntelMapRow,
-        OperationAnchorRow, OperativeRow, OpinionRow, RelationFlagRow, SubjectRow, WarRelationRow,
-        REL_KIND_GUARANTEE, RESERVED_OCCUPIED_DOMAIN_IDS,
+        stable_hash32, AgencyCapacityClusterRow, AgencyRow, CountryDiplomacyRow, CryptologyRow,
+        DiplomacyIntelSnapshot, IntelMapRow, OperationAnchorRow, OperativeRow, OpinionRow,
+        RelationFlagRow, StateEventRow, SubjectRow, WarRelationRow, REL_KIND_GUARANTEE,
+        RESERVED_OCCUPIED_DOMAIN_IDS, STATE_EVENT_KIND_OBSERVED,
     };
 
     #[test]
@@ -254,9 +324,41 @@ mod tests {
             report
                 .gate_summary
                 .data_units_total
+                .get("agency_capacity_cluster_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            report
+                .gate_summary
+                .data_units_total
                 .get("war_relation_rows")
                 .copied(),
             Some(0)
+        );
+        assert_eq!(
+            report
+                .gate_summary
+                .data_units_total
+                .get("compact_state_event_rows")
+                .copied(),
+            Some(8)
+        );
+        assert_eq!(
+            report
+                .gate_summary
+                .data_units_total
+                .get("compact_state_event_relation_opinion_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            report
+                .gate_summary
+                .data_units_total
+                .get("compact_state_event_country_faction_group_rows")
+                .copied(),
+            Some(1)
         );
     }
 
@@ -376,6 +478,46 @@ mod tests {
             .any(|error| error.contains("source_proofs has unknown bits")));
     }
 
+    #[test]
+    fn rejects_state_events_without_matching_source_proof() {
+        let mut snapshot = gap_badged_snapshot();
+        snapshot.operatives.clear();
+        snapshot.state_events.retain(|row| {
+            row.source_kind == STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE
+        });
+
+        let report = admit_slot_payload(
+            snapshot,
+            CURRENT_VALIDATED_SOURCE_PROOFS & !SOURCE_PROOF_OPERATIVE_ROOT_870EBF,
+        );
+
+        assert!(!report.ok);
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("compact state events sourced from operative lifecycle")));
+    }
+
+    #[test]
+    fn rejects_faction_group_state_event_without_country_source_proof() {
+        let mut snapshot = gap_badged_snapshot();
+        snapshot.countries.clear();
+        snapshot.state_events.retain(|row| {
+            row.source_kind == STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP
+        });
+
+        let report = admit_slot_payload(
+            snapshot,
+            CURRENT_VALIDATED_SOURCE_PROOFS & !SOURCE_PROOF_COUNTRY_ROOTS_870EBF,
+        );
+
+        assert!(!report.ok);
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("compact state events sourced from country faction")));
+    }
+
     fn gap_badged_snapshot() -> DiplomacyIntelSnapshot {
         DiplomacyIntelSnapshot {
             elapsed_wall_ms: 1_000,
@@ -416,6 +558,13 @@ mod tests {
                 name_hash: 0xAAAA,
                 icon_hash: 0xBBBB,
             }],
+            agency_capacity_clusters: vec![AgencyCapacityClusterRow {
+                owner_tag_db_id: 2,
+                value_0xe4: 9,
+                value_0xf0: 10,
+                value_0xf4: 9,
+                proof_hash: stable_hash32("agency_capacity_offsets_e4_f0_f4"),
+            }],
             operatives: vec![OperativeRow {
                 owner_tag_db_id: 1,
                 op_id: 10,
@@ -425,6 +574,7 @@ mod tests {
                 experience_raw: Some(40_000),
                 name_hash: 0xCCCC,
                 state_hash: 0xDDDD,
+                lifecycle_flag: Some(47),
             }],
             cryptology: vec![CryptologyRow {
                 owner_tag_db_id: 1,
@@ -449,6 +599,80 @@ mod tests {
                 air_raw: 0,
                 resisted: true,
             }],
+            state_events: vec![
+                StateEventRow {
+                    owner_tag_db_id: 1,
+                    target_tag_db_id: Some(2),
+                    event_kind: STATE_EVENT_KIND_OBSERVED,
+                    source_kind: STATE_EVENT_SOURCE_RELATION_FLAG,
+                    object_hash: stable_hash32("relation_flag_guarantee"),
+                    value_hash: stable_hash32("directed_true"),
+                    value_raw: REL_KIND_GUARANTEE as i64,
+                },
+                StateEventRow {
+                    owner_tag_db_id: 1,
+                    target_tag_db_id: Some(3),
+                    event_kind: STATE_EVENT_KIND_OBSERVED,
+                    source_kind: STATE_EVENT_SOURCE_SUBJECT_AUTONOMY,
+                    object_hash: stable_hash32("autonomy_puppet"),
+                    value_hash: stable_hash32("autonomy_ratio_50000"),
+                    value_raw: 50_000,
+                },
+                StateEventRow {
+                    owner_tag_db_id: 1,
+                    target_tag_db_id: Some(2),
+                    event_kind: STATE_EVENT_KIND_OBSERVED,
+                    source_kind: STATE_EVENT_SOURCE_RELATION_OPINION,
+                    object_hash: stable_hash32("relation_opinion"),
+                    value_hash: stable_hash32("opinion_25"),
+                    value_raw: 25,
+                },
+                StateEventRow {
+                    owner_tag_db_id: 1,
+                    target_tag_db_id: None,
+                    event_kind: STATE_EVENT_KIND_OBSERVED,
+                    source_kind: STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP,
+                    object_hash: stable_hash32("country_faction_group"),
+                    value_hash: stable_hash32("faction_group_42"),
+                    value_raw: 42,
+                },
+                StateEventRow {
+                    owner_tag_db_id: 1,
+                    target_tag_db_id: None,
+                    event_kind: STATE_EVENT_KIND_OBSERVED,
+                    source_kind: STATE_EVENT_SOURCE_AGENCY_SCALAR,
+                    object_hash: stable_hash32("agency_upgrade_progress_raw"),
+                    value_hash: stable_hash32("agency_upgrade_progress_75000"),
+                    value_raw: 75_000,
+                },
+                StateEventRow {
+                    owner_tag_db_id: 1,
+                    target_tag_db_id: None,
+                    event_kind: STATE_EVENT_KIND_OBSERVED,
+                    source_kind: STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE,
+                    object_hash: stable_hash32("operative_10_lifecycle"),
+                    value_hash: stable_hash32("lifeflag_47"),
+                    value_raw: 47,
+                },
+                StateEventRow {
+                    owner_tag_db_id: 2,
+                    target_tag_db_id: None,
+                    event_kind: STATE_EVENT_KIND_OBSERVED,
+                    source_kind: STATE_EVENT_SOURCE_AGENCY_CAPACITY,
+                    object_hash: stable_hash32("agency_capacity_offsets_e4_f0_f4"),
+                    value_hash: stable_hash32("agency_capacity_9_10_9"),
+                    value_raw: 10,
+                },
+                StateEventRow {
+                    owner_tag_db_id: 1,
+                    target_tag_db_id: Some(2),
+                    event_kind: STATE_EVENT_KIND_OBSERVED,
+                    source_kind: STATE_EVENT_SOURCE_CRYPTOLOGY,
+                    object_hash: stable_hash32("cryptology_amount_raw"),
+                    value_hash: stable_hash32("cryptology_amount_10000"),
+                    value_raw: 10_000,
+                },
+            ],
         }
     }
 }

@@ -72,13 +72,16 @@ fn run() -> Result<(), String> {
     println!("wrote {}", out_dir.join("proof_manifest.json").display());
     println!("wrote {}", out_dir.join("sample_events.jsonl").display());
     println!(
-        "frames={} skipped_hours={} focus_events={} research_eta_rows={} decision_events={} decision_status_rows={} badge_rows={}",
+        "frames={} skipped_hours={} focus_events={} research_eta_rows={} decision_events={} decision_status_rows={} decision_targets={} country_targets={} numeric_targets={} badge_rows={}",
         proof.source_frames,
         proof.skipped_game_hours,
         proof.focus_event_rows,
         proof.research_eta_rows,
         proof.decision_event_rows,
         proof.decision_status_rows,
+        proof.decision_target_rows,
+        proof.decision_country_target_rows,
+        proof.decision_numeric_target_rows,
         proof.badge_rows
     );
     if !proof.parse_errors.is_empty() || !proof.depth_parse_errors.is_empty() {

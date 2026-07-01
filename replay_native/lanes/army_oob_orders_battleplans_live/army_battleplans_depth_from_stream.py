@@ -22,14 +22,18 @@ VERSION = 1
 RECORD_TYPE_FRAME_END = 2
 RECORD_TYPE_DOMAIN_DATA = 3
 DOMAIN_ARMY_ORDERS = 27
+DOMAIN_OOB_COMMAND = 28
 DOMAIN_ARMY_BATTLEPLANS_DEPTH = 54
 DOMAIN_FRAME = 1000
 
 ARMY_ORDER_ROW_LEN = 48
 ARMY_ORDER_TARGET_ROW_LEN = 8
-DEPTH_HEADER_LEN = 40
+DEPTH_HEADER_LEN = 52
 DEPTH_ROW_LEN = 64
 DEPTH_TARGET_ROW_LEN = 8
+DEPTH_PATH_GEOMETRY_ROW_LEN = 8
+DEPTH_DIRECT_ROOT_ROW_LEN = 64
+DEPTH_DIRECT_ROOT_MEMBER_ROW_LEN = 8
 
 ARMY_ORDER_FLAG_DELETED = 1
 ARMY_ORDER_FLAG_TARGET_STATES = 1 << 1
@@ -40,22 +44,45 @@ DEPTH_FLAG_TARGET_STATES = 1 << 1
 DEPTH_FLAG_TARGET_STATE_COUNT = 1 << 2
 DEPTH_FLAG_NON_TYPE5_GEOMETRY_BLOCKED = 1 << 3
 DEPTH_FLAG_EXECUTION_BLOCKED = 1 << 4
+DEPTH_FLAG_PATH_GEOMETRY = 1 << 5
 
 STATUS_NONE = 0
 STATUS_EXACT = 1
+STATUS_UNKNOWN = 2
 STATUS_UNSUPPORTED = 3
+STATUS_VALIDATION_FAILED = 5
 STATUS_FIXTURE_REQUIRED = 6
+STATUS_COLD_PREFLIGHT_ONLY = 7
+
+OOB_ROW_LEN = 80
+OOB_MEMBER_ROW_LEN = 8
+OOB_KIND_ARMY = 1
+OOB_FLAG_DELETED = 1
+
+DIRECT_KIND_ARMY = 1
+DIRECT_KIND_ARMY_GROUP = 2
+DIRECT_KIND_THEATRE = 5
+
+DIRECT_FLAG_DELETED = 1
+DIRECT_FLAG_PARENT = 1 << 1
+DIRECT_FLAG_OWNER = 1 << 2
+DIRECT_FLAG_ENGINE_MEMBER_COUNT = 1 << 3
+DIRECT_FLAG_MISSING_MEMBER_COUNT = 1 << 4
+DIRECT_FLAG_MEMBER_IDS = 1 << 5
+DIRECT_FLAG_ORDER_COUNTS = 1 << 6
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("input_stream", type=Path)
+    ap.add_argument("--direct-oob-proof", type=Path)
     ap.add_argument("--out-stream", type=Path, required=True)
     ap.add_argument("--summary", type=Path, required=True)
     args = ap.parse_args()
 
     source = args.input_stream.read_bytes()
-    output, summary = convert_stream(source)
+    direct_roots = load_direct_roots(args.direct_oob_proof) if args.direct_oob_proof else []
+    output, summary = convert_stream(source, direct_roots=direct_roots)
     args.out_stream.parent.mkdir(parents=True, exist_ok=True)
     args.out_stream.write_bytes(output)
     args.summary.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -63,8 +90,10 @@ def main() -> int:
     return 0
 
 
-def convert_stream(source: bytes) -> tuple[bytes, dict[str, Any]]:
+def convert_stream(source: bytes, *, direct_roots: list[dict[str, Any]]) -> tuple[bytes, dict[str, Any]]:
     records = list(iter_records(source))
+    assigned_units_by_hour = collect_assigned_unit_statuses(records)
+    direct_member_rows = sum(len(row["member_ids"]) for row in direct_roots)
     out = bytearray()
     seq = 1
     summary: dict[str, Any] = {
@@ -76,16 +105,38 @@ def convert_stream(source: bytes) -> tuple[bytes, dict[str, Any]]:
         "rows": 0,
         "type5_exact_rows": 0,
         "type5_non_exact_omitted_rows": 0,
+        "non_type5_exact_path_rows": 0,
+        "path_geometry_rows": 0,
         "non_type5_fixture_blocked_rows": 0,
         "execution_fixture_blocked_rows": 0,
         "target_state_rows": 0,
+        "assigned_units_exact_rows": 0,
+        "assigned_units_missing_rows": 0,
+        "order_linkage_exact_rows": 0,
+        "stance_unknown_rows": 0,
+        "aggressiveness_unknown_rows": 0,
+        "direct_root_rows": 0,
+        "direct_root_member_rows": 0,
+        "direct_army_rows": 0,
+        "direct_army_group_rows": 0,
+        "direct_theatre_rows": 0,
+        "direct_cold_preflight_rows": 0,
+        "direct_root_unique_rows": len(direct_roots),
+        "direct_root_unique_member_rows": direct_member_rows,
+        "direct_root_unique_armies": sum(1 for row in direct_roots if row["kind"] == DIRECT_KIND_ARMY),
+        "direct_root_unique_army_groups": sum(1 for row in direct_roots if row["kind"] == DIRECT_KIND_ARMY_GROUP),
+        "direct_root_unique_theatres": sum(1 for row in direct_roots if row["kind"] == DIRECT_KIND_THEATRE),
         "status_flags_or": 0,
         "hours": [],
     }
     seen_hours: set[int] = set()
     for record in records:
         if record["record_type"] == RECORD_TYPE_DOMAIN_DATA and record["domain_id"] == DOMAIN_ARMY_ORDERS:
-            payload, stats = convert_army_orders_payload(record["payload"])
+            payload, stats = convert_army_orders_payload(
+                record["payload"],
+                assigned_units_by_hour.get(record["game_hour_raw"], {}),
+                direct_roots,
+            )
             out.extend(write_record(seq, record["game_hour_raw"], DOMAIN_ARMY_BATTLEPLANS_DEPTH, RECORD_TYPE_DOMAIN_DATA, payload))
             seq += 1
             summary["depth_records"] += 1
@@ -96,6 +147,17 @@ def convert_stream(source: bytes) -> tuple[bytes, dict[str, Any]]:
                 "non_type5_fixture_blocked_rows",
                 "execution_fixture_blocked_rows",
                 "target_state_rows",
+                "assigned_units_exact_rows",
+                "assigned_units_missing_rows",
+                "order_linkage_exact_rows",
+                "stance_unknown_rows",
+                "aggressiveness_unknown_rows",
+                "direct_root_rows",
+                "direct_root_member_rows",
+                "direct_army_rows",
+                "direct_army_group_rows",
+                "direct_theatre_rows",
+                "direct_cold_preflight_rows",
             ):
                 summary[key] += stats[key]
             summary["status_flags_or"] |= stats["status_flags"]
@@ -113,7 +175,156 @@ def convert_stream(source: bytes) -> tuple[bytes, dict[str, Any]]:
     return bytes(out), summary
 
 
-def convert_army_orders_payload(payload: bytes) -> tuple[bytes, dict[str, int]]:
+def load_direct_roots(path: Path) -> list[dict[str, Any]]:
+    proof = json.loads(path.read_text(encoding="utf-8"))
+    if proof.get("schema") != "army_oob_orders_battleplans_direct_oob_probe_v1":
+        raise ValueError("direct OOB proof has unexpected schema")
+    summary = proof.get("summary", {})
+    roots = summary.get("roots", {})
+    army_samples = {row["id"]: row for row in summary.get("direct_armies_sample", [])}
+    army_group_samples = {row["id"]: row for row in summary.get("army_groups_sample", [])}
+
+    rows: list[dict[str, Any]] = []
+    for root in roots.get("armies", []):
+        object_id = int(root["id"])
+        sample = army_samples.get(object_id, {})
+        engine_count = optional_count_u32(sample.get("engine_member_count"))
+        live_count = optional_count_u32(sample.get("live_division_member_count"))
+        missing_count = optional_count_u32(sample.get("missing_member_count"))
+        if engine_count is None and live_count is None:
+            member_status = STATUS_UNKNOWN
+        elif missing_count == 0:
+            member_status = STATUS_EXACT
+        elif missing_count is not None and missing_count > 0:
+            member_status = STATUS_VALIDATION_FAILED
+        else:
+            member_status = STATUS_UNKNOWN
+        rows.append(
+            {
+                "kind": DIRECT_KIND_ARMY,
+                "object_id": object_id,
+                "deleted": False,
+                "parent_id": optional_positive_u32(sample.get("parent_army_group_id")),
+                "owner_tag_db_id": optional_positive_u32(sample.get("owner_tag_db_id")),
+                "member_ids": [],
+                "engine_member_count": engine_count,
+                "missing_member_count": missing_count,
+                "order_count": optional_count_u32(sample.get("order_count")),
+                "non_type5_order_count": optional_count_u32(sample.get("non_type5_order_count")),
+                "parent_status": status_from_direct_proof(sample.get("parent_status", "unknown")),
+                "member_status": member_status,
+                "root_status": STATUS_COLD_PREFLIGHT_ONLY,
+            }
+        )
+
+    for root in roots.get("army_groups", []):
+        object_id = int(root["id"])
+        sample = army_group_samples.get(object_id, {})
+        member_ids = [int(member_id) for member_id in sample.get("member_army_ids", [])]
+        member_count = optional_count_u32(sample.get("member_count"))
+        rows.append(
+            {
+                "kind": DIRECT_KIND_ARMY_GROUP,
+                "object_id": object_id,
+                "deleted": False,
+                "parent_id": None,
+                "owner_tag_db_id": None,
+                "member_ids": member_ids,
+                "engine_member_count": member_count,
+                "missing_member_count": None,
+                "order_count": None,
+                "non_type5_order_count": None,
+                "parent_status": STATUS_NONE,
+                "member_status": STATUS_EXACT if member_ids else STATUS_UNKNOWN,
+                "root_status": STATUS_COLD_PREFLIGHT_ONLY,
+            }
+        )
+
+    for root in roots.get("theatres", []):
+        rows.append(
+            {
+                "kind": DIRECT_KIND_THEATRE,
+                "object_id": int(root["id"]),
+                "deleted": False,
+                "parent_id": None,
+                "owner_tag_db_id": None,
+                "member_ids": [],
+                "engine_member_count": None,
+                "missing_member_count": None,
+                "order_count": None,
+                "non_type5_order_count": None,
+                "parent_status": STATUS_NONE,
+                "member_status": STATUS_UNKNOWN,
+                "root_status": STATUS_COLD_PREFLIGHT_ONLY,
+            }
+        )
+    rows.sort(key=lambda row: (row["kind"], row["object_id"]))
+    return rows
+
+
+def status_from_direct_proof(value: Any) -> int:
+    return {
+        "none": STATUS_NONE,
+        "exact": STATUS_EXACT,
+        "unknown": STATUS_UNKNOWN,
+        "validation_failed": STATUS_VALIDATION_FAILED,
+    }.get(str(value), STATUS_UNKNOWN)
+
+
+def optional_positive_u32(value: Any) -> int | None:
+    if value is None:
+        return None
+    out = int(value)
+    if out <= 0:
+        return None
+    return out
+
+
+def optional_count_u32(value: Any) -> int | None:
+    if value is None:
+        return None
+    out = int(value)
+    if out < 0:
+        return None
+    return out
+
+
+def collect_assigned_unit_statuses(records: list[dict[str, Any]]) -> dict[int, dict[int, int]]:
+    by_hour: dict[int, dict[int, int]] = {}
+    for record in records:
+        if record["record_type"] != RECORD_TYPE_DOMAIN_DATA or record["domain_id"] != DOMAIN_OOB_COMMAND:
+            continue
+        by_hour[record["game_hour_raw"]] = parse_oob_assignment_statuses(record["payload"])
+    return by_hour
+
+
+def parse_oob_assignment_statuses(payload: bytes) -> dict[int, int]:
+    if len(payload) < 48:
+        raise ValueError("oob_command payload shorter than 48 bytes")
+    row_count = u32(payload, 8)
+    member_count = u32(payload, 32)
+    expected_len = 48 + row_count * OOB_ROW_LEN + member_count * OOB_MEMBER_ROW_LEN
+    if len(payload) != expected_len:
+        raise ValueError(f"oob_command payload length {len(payload)} != {expected_len}")
+    by_army: dict[int, int] = {}
+    cursor = 48
+    for _ in range(row_count):
+        kind = u32(payload, cursor)
+        object_id = u32(payload, cursor + 4)
+        flags = u32(payload, cursor + 8)
+        member_status = u32(payload, cursor + 56)
+        deleted = (flags & OOB_FLAG_DELETED) != 0
+        if kind == OOB_KIND_ARMY and not deleted:
+            by_army[object_id] = member_status
+        cursor += OOB_ROW_LEN
+    return by_army
+
+
+def convert_army_orders_payload(
+    payload: bytes,
+    assigned_units_by_army: dict[int, int],
+    direct_roots: list[dict[str, Any]],
+) -> tuple[bytes, dict[str, int]]:
     if len(payload) < 40:
         raise ValueError("army_orders payload shorter than 40 bytes")
     elapsed_ms = u64(payload, 0)
@@ -140,6 +351,19 @@ def convert_army_orders_payload(payload: bytes) -> tuple[bytes, dict[str, int]]:
         "non_type5_fixture_blocked_rows": 0,
         "execution_fixture_blocked_rows": 0,
         "target_state_rows": 0,
+        "assigned_units_exact_rows": 0,
+        "assigned_units_missing_rows": 0,
+        "order_linkage_exact_rows": 0,
+        "stance_unknown_rows": 0,
+        "aggressiveness_unknown_rows": 0,
+        "direct_root_rows": len(direct_roots),
+        "direct_root_member_rows": sum(len(row["member_ids"]) for row in direct_roots),
+        "direct_army_rows": sum(1 for row in direct_roots if row["kind"] == DIRECT_KIND_ARMY),
+        "direct_army_group_rows": sum(1 for row in direct_roots if row["kind"] == DIRECT_KIND_ARMY_GROUP),
+        "direct_theatre_rows": sum(1 for row in direct_roots if row["kind"] == DIRECT_KIND_THEATRE),
+        "direct_cold_preflight_rows": sum(
+            1 for row in direct_roots if row["root_status"] == STATUS_COLD_PREFLIGHT_ONLY
+        ),
         "status_flags": status_flags,
     }
     cursor = 40
@@ -170,6 +394,18 @@ def convert_army_orders_payload(payload: bytes) -> tuple[bytes, dict[str, int]]:
             stats["execution_fixture_blocked_rows"] += 1
         if order_type == 5 and target_status == STATUS_EXACT and not deleted:
             stats["type5_exact_rows"] += 1
+        assigned_units_status = STATUS_NONE if deleted else assigned_units_by_army.get(army_id, STATUS_UNKNOWN)
+        order_linkage_status = STATUS_NONE if deleted else STATUS_EXACT
+        stance_status = STATUS_NONE if deleted else STATUS_UNKNOWN
+        aggressiveness_status = STATUS_NONE if deleted else STATUS_UNKNOWN
+        if not deleted:
+            if assigned_units_status == STATUS_EXACT:
+                stats["assigned_units_exact_rows"] += 1
+            else:
+                stats["assigned_units_missing_rows"] += 1
+            stats["order_linkage_exact_rows"] += 1
+            stats["stance_unknown_rows"] += 1
+            stats["aggressiveness_unknown_rows"] += 1
         rows.append(
             {
                 "army_id": army_id,
@@ -178,10 +414,15 @@ def convert_army_orders_payload(payload: bytes) -> tuple[bytes, dict[str, int]]:
                 "slot_index": slot_index,
                 "order_type": order_type,
                 "target_states": target_states,
+                "path_provinces": [],
                 "target_declared": target_declared if flags & ARMY_ORDER_FLAG_TARGET_STATE_COUNT else None,
                 "target_status": target_status if order_type == 5 and not deleted else STATUS_UNSUPPORTED,
                 "geometry_status": geometry_status,
                 "execution_status": execution_status,
+                "assigned_units_status": assigned_units_status,
+                "order_linkage_status": order_linkage_status,
+                "stance_status": stance_status,
+                "aggressiveness_status": aggressiveness_status,
             }
         )
         stats["rows"] += 1
@@ -189,6 +430,7 @@ def convert_army_orders_payload(payload: bytes) -> tuple[bytes, dict[str, int]]:
 
     depth_payload = encode_depth_payload(
         rows,
+        direct_roots,
         elapsed_ms,
         status_flags,
         min(changed_rows, len(rows)),
@@ -200,6 +442,7 @@ def convert_army_orders_payload(payload: bytes) -> tuple[bytes, dict[str, int]]:
 
 def encode_depth_payload(
     rows: list[dict[str, Any]],
+    direct_roots: list[dict[str, Any]],
     elapsed_ms: int,
     status_flags: int,
     changed_rows: int,
@@ -207,6 +450,8 @@ def encode_depth_payload(
     observed_order_rows: int,
 ) -> bytes:
     target_count = sum(len(row["target_states"]) for row in rows)
+    path_geometry_count = sum(len(row.get("path_provinces", [])) for row in rows)
+    direct_member_count = sum(len(row["member_ids"]) for row in direct_roots)
     unsupported_geometry = sum(
         1 for row in rows if not row["deleted"] and row["geometry_status"] == STATUS_FIXTURE_REQUIRED
     )
@@ -215,7 +460,7 @@ def encode_depth_payload(
     )
     out = bytearray()
     out += struct.pack(
-        "<QIIIIIIII",
+        "<QIIIIIIIIIII",
         elapsed_ms,
         len(rows),
         changed_rows,
@@ -225,8 +470,12 @@ def encode_depth_payload(
         target_count,
         unsupported_geometry,
         execution_unknown,
+        len(direct_roots),
+        direct_member_count,
+        path_geometry_count,
     )
     target_cursor = 0
+    path_cursor = 0
     for row in rows:
         flags = 0
         if row["deleted"]:
@@ -239,7 +488,11 @@ def encode_depth_payload(
             flags |= DEPTH_FLAG_NON_TYPE5_GEOMETRY_BLOCKED
         if row["execution_status"] == STATUS_FIXTURE_REQUIRED:
             flags |= DEPTH_FLAG_EXECUTION_BLOCKED
-        target_first = target_cursor if row["target_states"] else 0
+        path_provinces = row.get("path_provinces", [])
+        if path_provinces:
+            flags |= DEPTH_FLAG_PATH_GEOMETRY
+        child_first = target_cursor if row["target_states"] else path_cursor if path_provinces else 0
+        child_count = len(row["target_states"]) if row["target_states"] else len(path_provinces)
         out += struct.pack(
             "<IQIIiIIIIIIIIII",
             row["army_id"],
@@ -247,21 +500,67 @@ def encode_depth_payload(
             flags,
             row["slot_index"],
             row["order_type"],
-            target_first,
-            len(row["target_states"]),
+            child_first,
+            child_count,
             row["target_declared"] or 0,
             row["target_status"],
             row["geometry_status"],
             row["execution_status"],
-            0,
-            0,
-            0,
-            0,
+            row["assigned_units_status"],
+            row["order_linkage_status"],
+            row["stance_status"],
+            row["aggressiveness_status"],
         )
         target_cursor += len(row["target_states"])
+        path_cursor += len(path_provinces)
     for row in rows:
         for state_id in row["target_states"]:
             out += struct.pack("<II", state_id, 0)
+    for row in rows:
+        for province_id in row.get("path_provinces", []):
+            out += struct.pack("<II", province_id, 0)
+    member_cursor = 0
+    for row in direct_roots:
+        flags = 0
+        if row["deleted"]:
+            flags |= DIRECT_FLAG_DELETED
+        if row["parent_id"] is not None:
+            flags |= DIRECT_FLAG_PARENT
+        if row["owner_tag_db_id"] is not None:
+            flags |= DIRECT_FLAG_OWNER
+        if row["engine_member_count"] is not None:
+            flags |= DIRECT_FLAG_ENGINE_MEMBER_COUNT
+        if row["missing_member_count"] is not None:
+            flags |= DIRECT_FLAG_MISSING_MEMBER_COUNT
+        if row["member_ids"]:
+            flags |= DIRECT_FLAG_MEMBER_IDS
+        if row["order_count"] is not None or row["non_type5_order_count"] is not None:
+            flags |= DIRECT_FLAG_ORDER_COUNTS
+        member_count = len(row["member_ids"])
+        member_first = member_cursor if member_count else 0
+        out += struct.pack(
+            "<IIIIIIIIIIIIIIII",
+            row["kind"],
+            row["object_id"],
+            flags,
+            row["parent_id"] or 0,
+            row["owner_tag_db_id"] or 0,
+            member_first,
+            member_count,
+            row["engine_member_count"] or 0,
+            row["missing_member_count"] or 0,
+            row["order_count"] or 0,
+            row["non_type5_order_count"] or 0,
+            row["parent_status"],
+            row["member_status"],
+            row["root_status"],
+            0,
+            0,
+        )
+        member_cursor += member_count
+    for row in direct_roots:
+        for member_id in row["member_ids"]:
+            out += struct.pack("<II", member_id, 0)
     return bytes(out)
 
 

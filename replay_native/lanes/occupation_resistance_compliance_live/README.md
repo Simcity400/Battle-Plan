@@ -62,25 +62,31 @@ Rejected/narrowed current-build candidates:
   The v5 bounded graph proof found `0` controller-country matches and `0`
   occupied-country matches while validating `203` rows by `+0x50` state and
   `+0x58` occupation-data joins.
-- Garrison need/equilibrium/progress scalar offsets inside `CStateGarrisonData`
-  remain unclassified, but the v19 bounded scalar proof conclusively rejects
-  the pinned inline candidates for the current fixture. The proof compared
-  `392` save garrison rows with `225` live rows, `34` key matches, and `18`
-  same-law matches. As `strength_ratio`, `i32/u32 @ 0x10`, `0x78`, and `0x7C`
-  plus `fixed100000_i32/i64 @ 0xF0` all missed every non-default fixture row.
-  As `garrison_required`, `fixed100000_i32/i64 @ 0xF8` matched `0/18`. As
-  `army_manpower_need`, `i32/u32 @ 0x88` matched `0/18`. Keep
-  need/equilibrium/progress row-badged unavailable until a same-hour or
-  one-variable controlled fixture proves a different scalar offset.
-- Collaboration/GIE detail remains fixture-gated, and the current save fixture
-  rejects the only visible GIE assignment keys as occupation-lane data. The v19
-  occupation oracle reports `countries.<TAG>.collaboration` empty for every
-  country. The save melt contains `8` `government_in_exile_tag` assignments,
-  but all `8/8` are in leader/character context (`POL`, `ROM`, `YUG`), not
-  country occupation/collaboration payloads. The bounded live graph still finds
-  one reachable `CCountryCollaborationData` object for `GER` at
-  `root +0x48 +0x90`, but a fixture with non-empty country collaboration or
-  country-scope GIE data is required before wiring detail fields.
+- Garrison scalar/manpower/equipment/detail offsets remain unwired. The v23
+  bounded proof compared `368` save garrison rows, `305` live rows, `296` key
+  matches, and `295` same-law matches. It rejected the inline scalar candidates
+  for `strength_ratio`, `garrison_required`, and `army_manpower_need`; rejected
+  the same fields across `3374` direct/root pointer scans from
+  `CStateGarrisonData+0x0..0x17F`; and rejected detail candidates for
+  `manpower_pool` value, `equipment_need` values (`infantry_equipment`,
+  `support_equipment`, `motorized_equipment`), and reinforcement request count.
+  The current fixture has `340` manpower-pool rows, all single-tag and all
+  matching the already emitted controller tag, so it does not prove an
+  independent manpower vector. Keep garrison scalar/manpower/equipment detail
+  badged unavailable until a same-hour or one-variable controlled fixture
+  proves a different vector/root layout.
+- Collaboration/GIE detail remains unwired, with the current targeted live
+  candidates rejected for this fixture. The v23 occupation oracle reports
+  `countries.<TAG>.collaboration` empty for every country. The save melt has
+  `101` `government_in_exile_tag` rows, but all `101/101` classify as asset
+  scope (`20` leader, `58` ship, `3` deployment, `20` air wing), not country
+  occupation/collaboration payload. The same melt has `8` country-scope
+  GIE rows for `FRA`, `LUX`, `BEL`, `HOL`, `POL`, `YUG`, `NOR`, and `PHI`;
+  the targeted live graph over those countries plus hosts `ENG` and `USA`
+  resolved `10/10` collaboration-status roots, found `1`
+  `CCountryCollaborationData` hit and `16` scalar/tag hits, and rejected all
+  candidate scopes because none contained the expected host plus target country
+  tag or unique legitimacy raw.
 
 ## Compact schema
 
@@ -115,8 +121,10 @@ The decoder gate fails closed if a row marks garrison signals unavailable while
 carrying nonzero garrison scalar values.
 
 Validated but not yet encoded as detailed payload: `CCountry + 0xFD8` gives the
-collaboration-status root. Active collaboration/government-in-exile detail still
-requires a scenario fixture with non-empty per-target data.
+collaboration-status root. Current country-level GIE fixture rows
+(`hosting_our_government_in_exile`, `legitimacy`, `exile_army_leaders`) are
+blocked on a controlled fixture because the targeted v23 live scalar/tag hits
+do not satisfy the host/country/unique-legitimacy contract.
 
 ## Registration-only patch plan
 
@@ -140,6 +148,62 @@ hook, after the orchestrator grants the slot, is:
    skipped hours, and no source/partial/worker failures.
 
 ## Latest proof
+
+`replay_native/runs/occupation_resistance_compliance_live_870ebf_20260701_v23_garrison_child_roots`
+adds the residual-resolution pass against a fresh autosave snapshot:
+
+- `parse_occupation.py`: save date `1943.5.1.1`, `439` countries with data,
+  `31` active occupiers, `163` occupation pairs, and `443` per-state laws.
+- `remaining_fields_probe.py`: resistance speed `0x280` validated `92/92`
+  delta rows and compliance speed `0x2B0` validated `277/277` delta rows.
+  The object graph validated `113` country occupation-data rows and `165`
+  state-garrison rows; `CStateGarrisonData+0x48` again had `0`
+  controller-country and `0` occupied-country matches. Collaboration/GIE
+  verdict is `fixture_has_country_gie_payload_unjoined_to_live_collaboration_status`;
+  targeted GIE live graph verdict is
+  `rejected_targeted_scalar_hits_no_gie_contract_current_fixture` with `10/10`
+  target collaboration-status roots, `1` `CCountryCollaborationData` hit,
+  `16` scalar/tag hits, `0` contract-match scopes, and `6` rejected scopes.
+- `garrison_scalar_probe.py`: verdict
+  `scanned_garrison_candidates_rejected_current_fixture`; `368` save garrison
+  rows, `305` live rows, `296` key matches, and `295` same-law matches. Inline
+  scalar candidates, direct/root scalar candidates, manpower-pool value,
+  equipment-need values, and reinforcement request count all had `0`
+  threshold scopes. No compact schema change was made because no new field
+  validated.
+
+`replay_native/runs/occupation_resistance_compliance_live_870ebf_20260701_v21_stable_autosave_residuals`
+adds the stable autosave residual pass:
+
+- `live_probe.py`: current live `hoi4.exe` build
+  `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`,
+  `1081` state rows, `381` occupied rows, `345` garrison-template rows,
+  `1042` law-token rows, `0` invalid state rows, and a domain-52 compact stream
+  verified by `domain52_gate.rs`.
+- Shared DLL-only stream
+  `replay_native/runs/occupation_resistance_compliance_live_shared_20260701T165935`
+  was replay-packed from an unchanged compact stream under
+  `...v21_stable_autosave_residuals/shared_stream_pack`: `81` domain-data
+  frames, `80` game hours advanced, `81` unique game-hour samples,
+  `0` skipped hours, no source/partial/worker/bridge failure flags, and
+  `.battleplan` verification succeeded.
+- `remaining_fields_probe.py`: resistance speed `0x280` validated `140/140`
+  delta rows and compliance speed `0x2B0` validated `271/271` delta rows.
+  The object graph again validates `CStateGarrisonData+0x50` as state join and
+  `+0x58` as occupation-data join; `+0x48` again had `0` controller-country and
+  `0` occupied-country matches. Collaboration/GIE verdict is
+  `fixture_has_country_gie_payload_unjoined_to_live_collaboration_status`;
+  targeted live graph verdict is
+  `candidate_scalar_hits_require_controlled_fixture` across
+  `BEL/ENG/FRA/HOL/LUX/NOR/PHI/POL/YUG` with `9/9` valid
+  collaboration-status roots, `1` `CCountryCollaborationData` hit, and `13`
+  ambiguous scalar/tag hits. This v21 candidate status is superseded by the
+  v23 rejection proof above.
+- `garrison_scalar_probe.py`: current stable fixture verdict is
+  `fixture_insufficient`; pinned primitive inline scalar candidates in
+  `CStateGarrisonData+0x0..0x17F` remain rejected or below threshold, so
+  garrison need/equilibrium/progress stay badged unavailable. This is
+  superseded by the v23 inline/direct-root/detail rejection proof above.
 
 `replay_native/lanes/occupation_resistance_compliance_live/proof_current_head_20260701_bc0797784`
 refreshes the lane against current HEAD `bc0797784`:

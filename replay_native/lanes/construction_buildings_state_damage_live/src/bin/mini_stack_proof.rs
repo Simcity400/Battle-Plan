@@ -12,12 +12,12 @@ use construction_buildings_state_damage_live::decoder_gate::{
 use construction_buildings_state_damage_live::{
     CountryConstructionRoot, LaneMemory, ProvinceRoot, StateRoot, BUILD_PROFILE,
     CBUILDING_OFF_HEALTHY_LEVEL, CBUILDING_OFF_LEVEL, CBUILDING_OFF_TYPE, CBUILDING_VTABLE_RVA,
-    CONSTRUCTION_BEGIN, CONSTRUCTION_CAP, CONSTRUCTION_SIZE, CONSTRUCTION_TEMPLATE_ID,
-    CPROVINCE_OFF_BUILDINGS_VEC, DOMAIN_ID, DOMAIN_NAME, LINE_ACTIVE_FACTORIES,
-    LINE_CONSTRUCTION_SUB, LINE_COST, LINE_ID, LINE_PRODUCED, LINE_TYPE, LINE_TYPE_CONSTRUCTION,
-    OBJ_PROD_MANAGER, SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE,
-    STATE_DEF_OFF_RESOURCES_CAP, STATE_DEF_OFF_RESOURCES_PTR, STATE_DEF_OFF_RESOURCES_SIZE,
-    STATE_OFF_BUILDINGS_VEC, STATE_OFF_DEF, STATE_RESOURCE_STRIDE,
+    CONSTRUCTION_BEGIN, CONSTRUCTION_CAP, CONSTRUCTION_SIZE, CONSTRUCTION_TARGET_LOCATION_PTR,
+    CONSTRUCTION_TEMPLATE_ID, CPROVINCE_OFF_BUILDINGS_VEC, DOMAIN_ID, DOMAIN_NAME,
+    LINE_ACTIVE_FACTORIES, LINE_CONSTRUCTION_SUB, LINE_COST, LINE_ID, LINE_PRODUCED, LINE_TYPE,
+    LINE_TYPE_CONSTRUCTION, OBJ_PROD_MANAGER, STATE_DEF_OFF_RESOURCES_CAP,
+    STATE_DEF_OFF_RESOURCES_PTR, STATE_DEF_OFF_RESOURCES_SIZE, STATE_OFF_BUILDINGS_VEC,
+    STATE_OFF_DEF, STATE_RESOURCE_STRIDE, TARGET_LOCATION_ID,
 };
 use serde_json::json;
 
@@ -47,8 +47,9 @@ fn main() -> Result<(), String> {
     let worker_panic = compact_output.gate.status_flags
         & construction_buildings_state_damage_live::STATUS_WORKER_PANIC
         != 0;
-    let target_state_absent_and_badged = decoded.summary.construction_rows_with_target_state == 0
-        && decoded.summary.target_state_unavailable_badged;
+    let target_state_emitted = decoded.summary.construction_rows > 0
+        && decoded.summary.construction_rows_with_target_state == decoded.summary.construction_rows
+        && !decoded.summary.target_state_unavailable_badged;
 
     let proof = json!({
         "schema": "construction_buildings_state_damage_live_mini_stack_proof_v1",
@@ -93,12 +94,14 @@ fn main() -> Result<(), String> {
                 "resource_rows": decoded.summary.resource_rows,
             },
         },
-        "target_state_fail_closed": {
-            "ok": target_state_absent_and_badged,
-            "source_flag": "SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE",
-            "source_flag_value": format!("0x{:X}", SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE),
-            "candidate_offsets_not_emitted": ["subobject+0xC0", "subobject+0xC8"],
-            "reason": "target-state semantics remain fixture-blocked; construction rows are still emitted without guessed target states",
+        "target_state_extraction": {
+            "ok": target_state_emitted,
+            "target_state_unavailable_badged": decoded.summary.target_state_unavailable_badged,
+            "construction_rows_with_target_state": decoded.summary.construction_rows_with_target_state,
+            "construction_rows": decoded.summary.construction_rows,
+            "root": "subobject+0x1D8 -> target_location +0x6C",
+            "province_mapping": "province construction rows map exact location through shared/static province_to_state roots before compact emission",
+            "rejected_candidates_not_emitted": ["subobject+0xC0", "subobject+0xC8"],
         },
         "production_health_gate": {
             "source_unavailable": source_unavailable,
@@ -121,6 +124,8 @@ fn main() -> Result<(), String> {
                 "produced_raw_offset": format_hex(LINE_PRODUCED),
                 "building_subobject_offset": format_hex(LINE_CONSTRUCTION_SUB),
                 "template_id_offset": format_hex(CONSTRUCTION_TEMPLATE_ID),
+                "target_location_ptr_offset": format_hex(CONSTRUCTION_TARGET_LOCATION_PTR),
+                "target_location_id_offset": format_hex(TARGET_LOCATION_ID),
             },
             "buildings": {
                 "state_building_vector": format_hex(STATE_OFF_BUILDINGS_VEC),
@@ -155,7 +160,7 @@ fn main() -> Result<(), String> {
                 "hourly_or_lower": true,
                 "zero_skipped_hours": true,
                 "no_partial_source_worker_bridge_failures": true,
-                "target_state": "must remain absent with unavailable badge until oracle fixture validates a root",
+                "target_state": "emit for every construction row or badge unavailable; current fixture proves all-row target-state emission",
             },
         },
     });
@@ -168,7 +173,7 @@ fn main() -> Result<(), String> {
     .map_err(|err| format!("failed to write {}: {err}", proof_path.display()))?;
 
     if !decoded.gate.ok
-        || !target_state_absent_and_badged
+        || !target_state_emitted
         || source_unavailable
         || partial_data
         || worker_panic
@@ -229,6 +234,7 @@ impl FixtureMemory {
         let construction_vector = 0x1000_0000_2000usize;
         let line = 0x1000_0000_3000usize;
         let sub = 0x1000_0000_4000usize;
+        let target_location = 0x1000_0000_5000usize;
 
         let state = 0x1000_0001_0000usize;
         let state_building_vector = 0x1000_0001_1000usize;
@@ -255,6 +261,11 @@ impl FixtureMemory {
         mem.write_i32(line + LINE_PRODUCED, 5_500_000);
         mem.write_u64(line + LINE_CONSTRUCTION_SUB, sub as u64);
         mem.write_u32(sub + CONSTRUCTION_TEMPLATE_ID, 20_013);
+        mem.write_u64(
+            sub + CONSTRUCTION_TARGET_LOCATION_PTR,
+            target_location as u64,
+        );
+        mem.write_u32(target_location + TARGET_LOCATION_ID, 42);
 
         mem.write_u64(
             state + STATE_OFF_BUILDINGS_VEC,

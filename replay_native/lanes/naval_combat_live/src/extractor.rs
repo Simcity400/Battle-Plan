@@ -98,6 +98,7 @@ pub struct NavalCombatBodyBridgeRow {
     pub generation: u64,
     pub body_ptr: u64,
     pub location_id: Option<u32>,
+    pub region_id: Option<u32>,
     pub attacker_member_count: u32,
     pub defender_member_count: u32,
     pub attacker_positioning_milli: Option<i32>,
@@ -153,6 +154,12 @@ pub struct CaptureFrame {
     pub status_flags: u32,
 }
 
+#[derive(Clone, Debug)]
+struct PendingMemberBridgeRow {
+    row: MemberBridgeRow,
+    deleted: bool,
+}
+
 pub fn build_capture_frame(
     snapshots: &[ValidatedCombatSnapshot],
     cships: &[CshipSnapshotRow],
@@ -187,15 +194,21 @@ pub fn build_capture_frame(
             body_ptr: snapshot.lifecycle.body_ptr,
             deleted: false,
             location_id: snapshot.lifecycle.location_id,
+            region_id: snapshot.lifecycle.region_id,
             attacker_member_count: Some(snapshot.lifecycle.attacker_member_count),
             defender_member_count: Some(snapshot.lifecycle.defender_member_count),
             attacker_positioning_milli: snapshot.lifecycle.attacker_positioning_milli,
             defender_positioning_milli: snapshot.lifecycle.defender_positioning_milli,
         });
-        raw_member_rows.extend(snapshot.members.iter().cloned());
+        raw_member_rows.extend(snapshot.members.iter().cloned().map(|row| {
+            PendingMemberBridgeRow {
+                row,
+                deleted: false,
+            }
+        }));
     }
 
-    let member_rows = match validate_member_cship_joins(&raw_member_rows, &cship_index) {
+    let member_rows = match validate_pending_member_cship_joins(&raw_member_rows, &cship_index) {
         Ok(rows) => rows,
         Err(mut join_errors) => {
             errors.append(&mut join_errors);
@@ -271,16 +284,40 @@ pub fn build_transition_capture_frame(
             body_ptr: snapshot.lifecycle.body_ptr,
             deleted: false,
             location_id: snapshot.lifecycle.location_id,
+            region_id: snapshot.lifecycle.region_id,
             attacker_member_count: Some(snapshot.lifecycle.attacker_member_count),
             defender_member_count: Some(snapshot.lifecycle.defender_member_count),
             attacker_positioning_milli: snapshot.lifecycle.attacker_positioning_milli,
             defender_positioning_milli: snapshot.lifecycle.defender_positioning_milli,
         });
-        raw_member_rows.extend(snapshot.members.iter().cloned());
+        raw_member_rows.extend(snapshot.members.iter().cloned().map(|row| {
+            PendingMemberBridgeRow {
+                row,
+                deleted: false,
+            }
+        }));
     }
 
     for (key, snapshot) in previous_by_key.iter() {
         if current_by_key.contains_key(key) {
+            let current_member_keys = current_by_key
+                .get(key)
+                .map(|current| {
+                    current
+                        .members
+                        .iter()
+                        .map(member_key)
+                        .collect::<BTreeSet<_>>()
+                })
+                .unwrap_or_default();
+            raw_member_rows.extend(
+                snapshot
+                    .members
+                    .iter()
+                    .filter(|member| !current_member_keys.contains(&member_key(member)))
+                    .cloned()
+                    .map(|row| PendingMemberBridgeRow { row, deleted: true }),
+            );
             continue;
         }
         lifecycle_rows.push(LifecycleRow {
@@ -289,11 +326,19 @@ pub fn build_transition_capture_frame(
             body_ptr: snapshot.lifecycle.body_ptr,
             deleted: true,
             location_id: snapshot.lifecycle.location_id,
+            region_id: snapshot.lifecycle.region_id,
             attacker_member_count: Some(snapshot.lifecycle.attacker_member_count),
             defender_member_count: Some(snapshot.lifecycle.defender_member_count),
             attacker_positioning_milli: snapshot.lifecycle.attacker_positioning_milli,
             defender_positioning_milli: snapshot.lifecycle.defender_positioning_milli,
         });
+        raw_member_rows.extend(
+            snapshot
+                .members
+                .iter()
+                .cloned()
+                .map(|row| PendingMemberBridgeRow { row, deleted: true }),
+        );
     }
 
     if lifecycle_rows.is_empty() {
@@ -303,7 +348,7 @@ pub fn build_transition_capture_frame(
     let member_rows = if raw_member_rows.is_empty() {
         Vec::new()
     } else {
-        match validate_member_cship_joins(&raw_member_rows, &cship_index) {
+        match validate_pending_member_cship_joins(&raw_member_rows, &cship_index) {
             Ok(rows) => rows,
             Err(mut join_errors) => {
                 errors.append(&mut join_errors);
@@ -346,13 +391,29 @@ pub fn validate_member_cship_joins(
     members: &[MemberBridgeRow],
     cships: &BTreeMap<u32, CshipSnapshotRow>,
 ) -> Result<Vec<MemberRow>, Vec<String>> {
+    let pending = members
+        .iter()
+        .cloned()
+        .map(|row| PendingMemberBridgeRow {
+            row,
+            deleted: false,
+        })
+        .collect::<Vec<_>>();
+    validate_pending_member_cship_joins(&pending, cships)
+}
+
+fn validate_pending_member_cship_joins(
+    members: &[PendingMemberBridgeRow],
+    cships: &BTreeMap<u32, CshipSnapshotRow>,
+) -> Result<Vec<MemberRow>, Vec<String>> {
     let mut errors = Vec::new();
     let mut rows = Vec::with_capacity(members.len());
     let mut non_convoy_count = 0usize;
     let mut cship_join_count = 0usize;
     let mut seen = BTreeSet::new();
 
-    for member in members {
+    for pending in members {
+        let member = &pending.row;
         let key = (
             member.combat_id,
             member.generation,
@@ -429,6 +490,7 @@ pub fn validate_member_cship_joins(
         rows.push(MemberRow {
             combat_id: member.combat_id,
             generation: member.generation,
+            deleted: pending.deleted,
             side: member.side,
             group_index: member.group_index,
             member_index: member.member_index,
@@ -506,6 +568,16 @@ fn index_cships(
     index
 }
 
+fn member_key(member: &MemberBridgeRow) -> (u32, u64, CombatSide, u32, u32) {
+    (
+        member.combat_id,
+        member.generation,
+        member.side,
+        member.group_index,
+        member.member_index,
+    )
+}
+
 fn index_snapshots<'a>(
     snapshots: &'a [ValidatedCombatSnapshot],
     errors: &mut Vec<String>,
@@ -561,6 +633,7 @@ mod tests {
                 generation: 1,
                 body_ptr: 0x22aa_0004_000,
                 location_id: Some(2799),
+                region_id: Some(18),
                 attacker_member_count: 1,
                 defender_member_count: 1,
                 attacker_positioning_milli: Some(812),
@@ -652,6 +725,8 @@ mod tests {
             build_transition_capture_frame(&[active], &[], &[cship(1001)], 12, 513, 8).unwrap();
         assert_eq!(end.lifecycle_rows.len(), 1);
         assert!(end.lifecycle_rows[0].deleted);
+        assert_eq!(end.member_rows.len(), 2);
+        assert!(end.member_rows.iter().all(|row| row.deleted));
 
         let mut stream = start.compact_stream;
         stream.extend_from_slice(&end.compact_stream);
@@ -659,6 +734,7 @@ mod tests {
         assert!(gate.ok, "{:?}", gate.errors);
         assert_eq!(gate.summary.lifecycle_started_row_count, 1);
         assert_eq!(gate.summary.lifecycle_ended_row_count, 1);
+        assert_eq!(gate.summary.member_deleted_row_count, 2);
     }
 
     #[test]

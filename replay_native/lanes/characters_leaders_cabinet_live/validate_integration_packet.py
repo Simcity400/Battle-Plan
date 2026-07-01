@@ -70,33 +70,39 @@ def main() -> None:
         domains.get(47, {}),
         "reserved",
         "lane_ready_shared_registration_blocked_remaining_matrix",
+        "lane_ready_shared_adapter_registration_blocked_remaining_matrix",
     ), "registry id 47 is not lane-ready/reserved for this lane")
     require(domains.get(46, {}).get("name") == "air_variant_archetypes_live",
             "registry id 46 is not air_variant_archetypes_live")
-    require(domains.get(46, {}).get("status") in {"active_integration", "production_complete"},
+    require(domains.get(46, {}).get("status") in {
+        "active_integration",
+        "production_complete",
+        "validated_slice_variant_archetype_token20378_resolved_shared_token_hook_open",
+    },
             "registry id 46 is not occupied by air_variant_archetypes_live")
     require((
         "| 47 | `characters_leaders_cabinet_live` | reserved |" in registry_doc
         or "| 47 | `characters_leaders_cabinet_live` | lane-ready; shared registration blocked; remaining matrix written |" in registry_doc
+        or "| 47 | `characters_leaders_cabinet_live` | lane-ready; shared adapter/registration blocked; remaining matrix written |" in registry_doc
     ),
             "registry markdown id 47 row missing")
     require(descriptor_has(collector_registry, 44, "supply_logistics_attrition_live",
-                           "ProductionComplete", True),
+                           "ValidatedSliceOpenGaps", True),
             "collector registry id 44 supply descriptor missing")
     require(descriptor_has(recorder_registry, 44, "supply_logistics_attrition_live",
-                           "ProductionComplete", True),
+                           "ValidatedSliceOpenGaps", True),
             "recorder registry id 44 supply descriptor missing")
     require(descriptor_has(collector_registry, 45, "focus_research_decisions_depth_live",
-                           "ProductionComplete", True),
+                           "ValidatedSliceOpenGaps", True),
             "collector registry id 45 focus/research/decisions descriptor missing")
     require(descriptor_has(recorder_registry, 45, "focus_research_decisions_depth_live",
-                           "ProductionComplete", True),
+                           "ValidatedSliceOpenGaps", True),
             "recorder registry id 45 focus/research/decisions descriptor missing")
     require(descriptor_has(collector_registry, 46, "air_variant_archetypes_live",
-                           "ActiveIntegration", True),
+                           "ValidatedSliceOpenGaps", True),
             "collector registry id 46 air_variant_archetypes descriptor missing")
     require(descriptor_has(recorder_registry, 46, "air_variant_archetypes_live",
-                           "ActiveIntegration", True),
+                           "ValidatedSliceOpenGaps", True),
             "recorder registry id 46 air_variant_archetypes descriptor missing")
     require(descriptor_has(collector_registry, 47, domain_name, "Reserved", False),
             "collector registry id 47 reserved descriptor missing")

@@ -40,6 +40,8 @@ STATUS_COMPACT_HEALTH_OK = 0
 ROW_KIND_PROVINCE_LOGISTICS = 1
 ROW_KIND_DIVISION_SUPPLY = 2
 ROW_KIND_COMPUTED_BADGE = 3
+ROW_KIND_CSUPPLY_PROVINCE_INPUT = 4
+ROW_KIND_FOREIGN_HOMEBASE_PRESSURE_CANDIDATE = 5
 
 ROW_FLAG_RAIL = 1
 ROW_FLAG_SUPPLY_NODE = 1 << 1
@@ -58,6 +60,10 @@ ROW_FLAG_DIVISION_FUEL = 1 << 13
 ROW_FLAG_MOTORIZATION_WALL = 1 << 14
 ROW_FLAG_CONVOY_PRESSURE_WALL = 1 << 15
 ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED = 1 << 16
+ROW_FLAG_CSUPPLY_EFFICIENCY = 1 << 17
+ROW_FLAG_CSUPPLY_PROVINCE_ARRAY = 1 << 18
+ROW_FLAG_FOREIGN_HOMEBASE_PRESSURE = 1 << 19
+ROW_FLAG_PRESSURE_CANDIDATE_LAYOUT = 1 << 20
 
 BADGE_EXACT_PROVINCE_SUPPLY_TRANSIENT = 1
 BADGE_ATTRITION_RUNTIME_COMPUTED = 2
@@ -65,7 +71,7 @@ BADGE_MOTORIZATION_SETTINGS_UNPINNED = 3
 BADGE_CONVOY_LOGISTICS_PRESSURE_UNPINNED = 4
 BADGE_CSUPPLY_INPUT_ARRAYS_UNSAFE = 5
 
-HEADER_STRUCT = struct.Struct("<Q10I")
+HEADER_STRUCT = struct.Struct("<Q11I")
 ROW_STRUCT = struct.Struct("<5I5i")
 
 HEAP_LO = 0x10000000000
@@ -550,6 +556,8 @@ def _encode_payload(
     province_rows: int,
     division_rows: int,
     badge_rows: int,
+    csupply_input_rows: int,
+    pressure_candidate_rows: int = 0,
 ) -> bytes:
     status = STATUS_COMPACT_HEALTH_OK
     header = HEADER_STRUCT.pack(
@@ -563,7 +571,8 @@ def _encode_payload(
         badge_rows,
         province_rows,
         division_rows,
-        0,
+        csupply_input_rows,
+        pressure_candidate_rows,
     )
     body = b"".join(ROW_STRUCT.pack(*row) for row in rows)
     return header + body
@@ -652,20 +661,20 @@ def _find_csupplysystem_candidate(p: Any, module_base: int) -> Dict[str, Any]:
                 b = fields.get("province_input_b_plus_0x138", {})
                 c = fields.get("province_input_c_plus_0x150", {})
                 return {
-                    "status": "candidate_found_not_emitted",
+                    "status": "candidate_found_plus_0x10_filtered_rows_emitted",
                     "object": f"0x{obj:X}",
                     "vtable0": f"module+0x{CSUPPLYSYSTEM_VTABLE0_RVA:X}",
                     "vtable1": f"module+0x{CSUPPLYSYSTEM_VTABLE1_RVA:X}",
                     "fields": fields,
                     "verdict": (
-                        "Current-build CSupplySystem-shaped object was found, but no "
-                        "province input sibling is emitted: +0x10 has "
-                        f"{a.get('negative', 0) + a.get('gt_100000', 0)} out-of-range "
-                        "or packed entries under i32/1e5 guards, +0x138 has "
+                        "Current-build CSupplySystem-shaped object was found. +0x10 is "
+                        "emitted by the lane as filtered bounded low-i32/1e5 rows, while "
+                        f"{a.get('negative', 0) + a.get('gt_100000', 0)} raw +0x10 "
+                        "entries remain rejected as out-of-range or packed. +0x138 has "
                         f"{b.get('negative', 0)} negative and {b.get('gt_100000', 0)} "
                         "gt_100000 entries, and +0x150 has "
                         f"{c.get('negative', 0)} negative and {c.get('gt_100000', 0)} "
-                        "gt_100000 entries."
+                        "gt_100000 entries, so those siblings are not emitted."
                     ),
                 }
             except OSError:
@@ -675,6 +684,178 @@ def _find_csupplysystem_candidate(p: Any, module_base: int) -> Dict[str, Any]:
         "vtable0": f"module+0x{CSUPPLYSYSTEM_VTABLE0_RVA:X}",
         "vtable1": f"module+0x{CSUPPLYSYSTEM_VTABLE1_RVA:X}",
         "verdict": "No current-build CSupplySystem-shaped object found by the bounded vtable scan.",
+    }
+
+
+def _low_i32_stride8_stats(p: Any, array: int, count: int, max_raw: int) -> Dict[str, Any]:
+    stats: Dict[str, Any] = {
+        "count": count,
+        "valid": 0,
+        "nonzero": 0,
+        "zero": 0,
+        "negative": 0,
+        "gt_max_raw": 0,
+        "bad_reads": 0,
+        "min_raw": None,
+        "max_raw": None,
+        "samples": {},
+    }
+    blob = p.try_read(array, count * 8)
+    if not blob or len(blob) < count * 8:
+        stats["bad_reads"] = count
+        stats["verdict"] = "rejected_short_read"
+        return stats
+    for province_id in range(1, count):
+        raw = struct.unpack_from("<i", blob, province_id * 8)[0]
+        if raw < 0:
+            stats["negative"] += 1
+        elif raw > max_raw:
+            stats["gt_max_raw"] += 1
+        else:
+            stats["valid"] += 1
+            if raw:
+                stats["nonzero"] += 1
+            else:
+                stats["zero"] += 1
+            stats["min_raw"] = raw if stats["min_raw"] is None else min(stats["min_raw"], raw)
+            stats["max_raw"] = raw if stats["max_raw"] is None else max(stats["max_raw"], raw)
+        if province_id in (1, 2, 10, 100, 500, 1000, 2000, 3324, 3544, 6421, 9244, 12000, 13413):
+            stats["samples"][str(province_id)] = raw
+    if stats["bad_reads"]:
+        verdict = "rejected_bad_reads"
+    elif stats["negative"] or stats["gt_max_raw"]:
+        verdict = "partially_valid_with_rejected_values"
+    elif stats["nonzero"] == 0:
+        verdict = "rejected_all_zero"
+    else:
+        verdict = "valid_bounded_low_i32_stride8"
+    stats["verdict"] = verdict
+    return stats
+
+
+def _csupply_input_rows(p: Any, module_base: int) -> Tuple[List[Tuple[int, ...]], Dict[str, Any]]:
+    vtable0 = module_base + CSUPPLYSYSTEM_VTABLE0_RVA
+    vtable1 = module_base + CSUPPLYSYSTEM_VTABLE1_RVA
+    needle = struct.pack("<QQ", vtable0, vtable1)
+    for base, size in p.iter_regions(HEAP_LO, HEAP_HI, want_exec=False):
+        if size > 0x10000000:
+            continue
+        blob = p.try_read(base, size)
+        if not blob:
+            continue
+        search = 0
+        while True:
+            found = blob.find(needle, search)
+            if found < 0:
+                break
+            search = found + 8
+            obj = base + found
+            try:
+                eff_array = p.u64(obj + CSUPPLYSYSTEM_PROVINCE_INPUT_A)
+                eff_count = p.u32(obj + CSUPPLYSYSTEM_PROVINCE_INPUT_A + 8)
+                draw_array = p.u64(obj + CSUPPLYSYSTEM_PROVINCE_INPUT_B)
+                draw_count = p.u32(obj + CSUPPLYSYSTEM_PROVINCE_INPUT_B + 8)
+                x_array = p.u64(obj + CSUPPLYSYSTEM_PROVINCE_INPUT_C)
+                x_count = p.u32(obj + CSUPPLYSYSTEM_PROVINCE_INPUT_C + 8)
+            except OSError:
+                continue
+            if eff_count != MAX_PROVINCE_ID + 1 or not _is_heap(eff_array):
+                continue
+            eff_blob = p.try_read(eff_array, eff_count * 8)
+            if not eff_blob or len(eff_blob) < eff_count * 8:
+                return [], {
+                    "status": "short_read",
+                    "object": f"0x{obj:X}",
+                    "efficiency": {
+                        "array": f"0x{eff_array:X}",
+                        "count": eff_count,
+                        "verdict": "rejected_short_read",
+                    },
+                }
+            rows: List[Tuple[int, ...]] = []
+            rejected_samples: List[Dict[str, Any]] = []
+            nonzero = 0
+            min_raw: Optional[int] = None
+            max_raw: Optional[int] = None
+            negative = 0
+            gt_100000 = 0
+            for province_id in range(1, eff_count):
+                raw = struct.unpack_from("<i", eff_blob, province_id * 8)[0]
+                if raw < 0:
+                    negative += 1
+                    if len(rejected_samples) < 12:
+                        rejected_samples.append({"province_id": province_id, "raw": raw, "reason": "negative"})
+                    continue
+                if raw > FIXED_SCALE_RAW:
+                    gt_100000 += 1
+                    if len(rejected_samples) < 12:
+                        rejected_samples.append({"province_id": province_id, "raw": raw, "reason": "gt_100000"})
+                    continue
+                if raw:
+                    nonzero += 1
+                min_raw = raw if min_raw is None else min(min_raw, raw)
+                max_raw = raw if max_raw is None else max(max_raw, raw)
+                rows.append((
+                    ROW_KIND_CSUPPLY_PROVINCE_INPUT,
+                    province_id,
+                    0,
+                    0,
+                    ROW_FLAG_CSUPPLY_EFFICIENCY | ROW_FLAG_CSUPPLY_PROVINCE_ARRAY,
+                    raw,
+                    0,
+                    0,
+                    0,
+                    0,
+                ))
+            draw_report = {
+                "array": f"0x{draw_array:X}" if draw_array else None,
+                "count": draw_count,
+                **(
+                    _low_i32_stride8_stats(p, draw_array, draw_count, MAX_SUPPLY_RAW)
+                    if draw_count == MAX_PROVINCE_ID + 1 and _is_heap(draw_array)
+                    else {"verdict": "rejected_shape"}
+                ),
+            }
+            x_report = {
+                "array": f"0x{x_array:X}" if x_array else None,
+                "count": x_count,
+                **(
+                    _low_i32_stride8_stats(p, x_array, x_count, MAX_SUPPLY_RAW)
+                    if x_count == MAX_PROVINCE_ID + 1 and _is_heap(x_array)
+                    else {"verdict": "rejected_shape"}
+                ),
+            }
+            return rows, {
+                "status": "efficiency_rows_emitted",
+                "object": f"0x{obj:X}",
+                "vtable0": f"module+0x{CSUPPLYSYSTEM_VTABLE0_RVA:X}",
+                "vtable1": f"module+0x{CSUPPLYSYSTEM_VTABLE1_RVA:X}",
+                "efficiency": {
+                    "array": f"0x{eff_array:X}",
+                    "count": eff_count,
+                    "rows_emitted": len(rows),
+                    "nonzero_rows": nonzero,
+                    "zero_rows": len(rows) - nonzero,
+                    "negative_rejected": negative,
+                    "gt_100000_rejected": gt_100000,
+                    "min_raw": min_raw,
+                    "max_raw": max_raw,
+                    "encoding": "low i32 at array + province_id*8, fixed /100000",
+                    "verdict": "production_candidate_emitted_with_per_value_bounds",
+                    "rejected_samples": rejected_samples,
+                },
+                "draw_plus_0x138": draw_report,
+                "x_plus_0x150": x_report,
+                "verdict": (
+                    "CSupplySystem +0x10 is emitted as bounded per-province efficiency/fulfilment "
+                    "input rows. +0x138 and +0x150 remain un-emitted under current-build guards."
+                ),
+            }
+    return [], {
+        "status": "csupplysystem_not_found",
+        "vtable0": f"module+0x{CSUPPLYSYSTEM_VTABLE0_RVA:X}",
+        "vtable1": f"module+0x{CSUPPLYSYSTEM_VTABLE1_RVA:X}",
+        "verdict": "No CSupplySystem-shaped object found.",
     }
 
 
@@ -695,6 +876,8 @@ def _write_outputs(out_dir: Path, report: Dict[str, Any], payload: Optional[byte
     compact = report.get("compact_payload", {})
     province_summary = report.get("province_logistics", {}).get("summary", {})
     division_summary = report.get("division_supply", {}).get("summary", {})
+    csupply_inputs = report.get("csupply_inputs", {})
+    csupply_efficiency = csupply_inputs.get("efficiency", {}) if isinstance(csupply_inputs, dict) else {}
     schema = report.get("compact_schema", {})
     candidate = report.get("csupplysystem_candidate", {})
     candidate_fields = candidate.get("fields", {}) if isinstance(candidate, dict) else {}
@@ -720,6 +903,7 @@ def _write_outputs(out_dir: Path, report: Dict[str, Any], payload: Optional[byte
         f"- compact_rows: `{schema.get('row_count', 0)}`",
         f"- province_rows: `{province_summary.get('province_rows', 0)}`",
         f"- division_rows: `{division_summary.get('division_rows', 0)}`",
+        f"- csupply_input_rows: `{schema.get('csupply_input_rows', 0)}`",
         f"- badge_rows: `{schema.get('badge_rows', 0)}`",
         f"- nonzero_supply_deficit_divisions: `{division_summary.get('nonzero_supply_deficit_divisions', 0)}`",
         f"- fuel_divisions: `{division_summary.get('fuel_divisions', 0)}`",
@@ -727,7 +911,8 @@ def _write_outputs(out_dir: Path, report: Dict[str, Any], payload: Optional[byte
         "## Validated Slice",
         "",
         "- Validated slice only: province logistics/building-derived rows plus division current/max/gain supply, computed deficit, and fuel proxy.",
-        "- Whole supply/logistics/attrition concept is not complete; exact province supply, attrition reason, hub motorization, convoy/logistics pressure, and CSupplySystem province inputs remain outside the emitted data.",
+        "- Current-build CSupplySystem `+0x10` bounded per-province efficiency/fulfilment inputs are emitted as compact rows.",
+        "- Whole supply/logistics/attrition concept is not complete; exact province supply, attrition reason, hub motorization, convoy/logistics pressure, and CSupplySystem draw/remaining arrays remain outside the emitted data.",
         "",
         "## Roots Validated",
         "",
@@ -737,6 +922,18 @@ def _write_outputs(out_dir: Path, report: Dict[str, Any], payload: Optional[byte
         f"- State rows: `{report.get('roots_validated', {}).get('state', 'not validated')}`",
         f"- Building rows: `{report.get('roots_validated', {}).get('building', 'not validated')}`",
         f"- Division rows: `{report.get('roots_validated', {}).get('division', 'not validated')}`",
+        "",
+        "## CSupply Inputs",
+        "",
+        f"- CSupplySystem status: `{csupply_inputs.get('status', 'not observed')}`",
+        f"- CSupplySystem object: `{csupply_inputs.get('object', 'none')}`",
+        f"- Emitted efficiency rows: `{csupply_efficiency.get('rows_emitted', 0)}`",
+        f"- Nonzero efficiency rows: `{csupply_efficiency.get('nonzero_rows', 0)}`",
+        f"- Rejected efficiency negatives: `{csupply_efficiency.get('negative_rejected', 0)}`",
+        f"- Rejected efficiency `>100000`: `{csupply_efficiency.get('gt_100000_rejected', 0)}`",
+        f"- Draw `+0x138` verdict: `{csupply_inputs.get('draw_plus_0x138', {}).get('verdict', 'not observed')}`",
+        f"- X `+0x150` verdict: `{csupply_inputs.get('x_plus_0x150', {}).get('verdict', 'not observed')}`",
+        f"- Verdict: {csupply_inputs.get('verdict', 'no csupply input verdict')}",
         "",
         "## Candidate Rejections",
         "",
@@ -763,7 +960,7 @@ def _write_outputs(out_dir: Path, report: Dict[str, Any], payload: Optional[byte
         "- Attrition reason/flag remains badged as runtime-computed until a field or function path is pinned.",
         "- Hub motorization settings remain badged until a current-build node-setting root is pinned.",
         "- Convoy/logistics pressure remains badged beyond existing country convoy/fuel domains.",
-        "- CSupplySystem province input candidates were bounded-probed and not emitted under current guards.",
+        "- CSupplySystem `+0x10` efficiency/fulfilment input is emitted with per-value bounds; `+0x138`, `+0x150`, and exact displayed remaining are still not emitted under current guards.",
     ]
     (out_dir / "PROOF.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
 
@@ -801,10 +998,18 @@ def run(pid: Optional[int], out_dir: Path) -> Dict[str, Any]:
             raise RuntimeError(f"invalid CGameState pointer 0x{game_state:X}")
         province_rows, province_report = _province_rows(p, module_base, game_state)
         division_rows, division_report = _division_rows(p, module_base, game_state)
+        csupply_input_rows, csupply_input_report = _csupply_input_rows(p, module_base)
         csupplysystem_report = _find_csupplysystem_candidate(p, module_base)
         badge_rows = _badge_rows()
-        rows = province_rows + division_rows + badge_rows
-        payload = _encode_payload(rows, len(province_rows), len(division_rows), len(badge_rows))
+        rows = province_rows + division_rows + csupply_input_rows + badge_rows
+        payload = _encode_payload(
+            rows,
+            len(province_rows),
+            len(division_rows),
+            len(badge_rows),
+            len(csupply_input_rows),
+            0,
+        )
         report.update({
             "status": "live_roots_validated",
             "roots_validated": {
@@ -817,13 +1022,14 @@ def run(pid: Optional[int], out_dir: Path) -> Dict[str, Any]:
             },
             "province_logistics": province_report,
             "division_supply": division_report,
+            "csupply_inputs": csupply_input_report,
             "csupplysystem_candidate": csupplysystem_report,
             "computed_badges": [
                 "exact_per_province_supply_tooltip_value_transient_not_persisted",
                 "attrition_flag_reason_runtime_computed_unpinned",
                 "hub_motorization_settings_unpinned_current_build",
                 "convoy_logistics_pressure_unpinned_current_build",
-                "csupplysystem_candidate_arrays_rejected_by_bounds",
+                "csupplysystem_draw_x_remaining_arrays_unemitted_by_bounds",
             ],
             "compact_schema": {
                 "domain_id": DOMAIN_ID,
@@ -833,6 +1039,8 @@ def run(pid: Optional[int], out_dir: Path) -> Dict[str, Any]:
                 "row_count": len(rows),
                 "province_rows": len(province_rows),
                 "division_rows": len(division_rows),
+                "csupply_input_rows": len(csupply_input_rows),
+                "pressure_candidate_rows": 0,
                 "badge_rows": len(badge_rows),
             },
         })
@@ -864,6 +1072,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         "out_dir": str(out_dir),
         "province_rows": report.get("compact_schema", {}).get("province_rows", 0),
         "division_rows": report.get("compact_schema", {}).get("division_rows", 0),
+        "csupply_input_rows": report.get("compact_schema", {}).get("csupply_input_rows", 0),
         "payload_bytes": report.get("compact_payload", {}).get("bytes", 0),
         "reason": report.get("reason"),
     }, indent=2))

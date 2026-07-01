@@ -299,15 +299,16 @@ def _matrix(args: argparse.Namespace) -> dict[str, Any]:
         },
         {
             "item": "character portraits",
-            "status": "static_sidecar_validated_schema_gap_blocked",
+            "status": "static_sidecar_validated_shared_feed_pending",
             "evidence": [
                 "portraits are static common/characters metadata, not mutable hourly memory state",
                 f"static characters with portrait blocks: {portrait_static['counts'].get('characters_with_portrait_block', 0)}",
                 f"static portrait entries: {portrait_static['counts'].get('portrait_entries', 0)}",
                 f"portrait entries by role: {portrait_static['by_role']}",
                 f"compact generic character rows with token: {compact_counts.get('character_token_present', 0)}/{header['character_rows']}",
+                f"compact character portrait rows: {header.get('character_portrait_rows', 0)}",
             ],
-            "remaining": "Current domain-47 row schema has no portrait field and generic character rows do not emit character tokens. Portraits can be joined as static sidecar metadata for token-bearing role rows, but full character portrait closure needs either generic character token emission plus a static sidecar or an explicit schema extension.",
+            "remaining": "Domain 47 now has a character_portrait compact row and the adapter fixture validates one portrait row. Live production still needs the shared collector to feed static portrait metadata keyed by validated live character identity; generic character rows still do not emit character tokens.",
         },
         {
             "item": "unit leader XP, skill level, stat bytes, trait membership",
@@ -387,13 +388,13 @@ def _matrix(args: argparse.Namespace) -> dict[str, Any]:
         },
         {
             "item": "CollectorState to LaneFrame shared adapter",
-            "status": "hard_blocked_with_lane_local_adapter_plan",
+            "status": "lane_local_adapter_validated_shared_hook_pending",
             "evidence": [
-                "CollectorState currently exposes base/date/country_database/country_identity/special_projects/weather, but no domain-47 character root cache or LaneFrame adapter.",
-                "lane module exposes LaneCollectorModule::collect_frame(game_hour_raw, &LaneFrame), so the missing work is population, not wrapping/encoding.",
+                "lane-local adapter::build_lane_frame_from_adapter_input is implemented and fixture-proven with one row from every domain-47 row family.",
+                "shared CollectorState currently exposes base/date/country_database/country_identity/special_projects/weather, but no domain-47 character root cache or scheduled adapter invocation.",
                 "domain 47 remains unscheduled in shared collector/recorder entrypoints per validate_merge_ready_blocker.py.",
             ],
-            "remaining": "Shared integration owner must add a character-root cache, resolve current-build RTTI type roots outside hook callbacks, reuse country_identity and politics active ideas, populate LaneFrame, then register domain 47. Exact lane-local plan: replay_native/lanes/characters_leaders_cabinet_live/LANEFRAME_ADAPTER_PLAN.md.",
+            "remaining": "Shared integration must add the domain-47 root cache, resolve current-build RTTI type roots outside hook callbacks, reuse country_identity and politics active ideas, build AdapterInput, call the lane-local adapter, and append the lane-owned payload through the shared sequence-owned compact writer. Exact lane-local hook plan: replay_native/lanes/characters_leaders_cabinet_live/DOMAIN47_SHARED_ADAPTER_HOOK_PLAN.md.",
         },
         {
             "item": "national-spirit/law idea classification",

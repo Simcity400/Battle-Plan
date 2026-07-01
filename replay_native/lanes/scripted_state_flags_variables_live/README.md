@@ -201,6 +201,21 @@ domain-51 compact data records across `162` frame hours, advanced `161` game
 hours with `0` skipped hours, had no partial/source/worker/bridge failures, and
 passed shared `pack_replay verify` for `native_session.battleplan`.
 
+Opaque-roots full closeout artifact:
+`replay_native/runs/scripted_state_flags_variables_live_20260701_opaque_roots_full_final/FINAL_REPORT.md`.
+The refreshed proof revalidated current-build country/global/state variable and
+flag roots, then ran a shared domain-51-only compact capture for `43` frame
+hours. The lane-owned Rust stream gate decoded `43` domain-51 data records with
+`0` skipped hours and no partial/source/worker/bridge failures; `pack_replay
+verify` accepted the resulting `native_session.battleplan`. The companion
+scope-container audit found exactly the manifest's world/country/state
+flag/variable bags plus `countries.*.delayed_event` and
+`countries.*.scripted_gui_random`; there are no additional manifest-listed
+province/unit/character/combat script flag or variable containers for this lane
+to chase. Whole-concept scripted-state completion remains `NOT COMPLETE`:
+delayed-event and scripted-GUI/open-state roots are exact positive-fixture
+blockers and must stay fail-closed opaque badge rows until those fixtures exist.
+
 Delayed-event blocker proof:
 `replay_native/runs/scripted_state_flags_variables_live_870ebf_20260701_delayed_event_blocker_v1/delayed_event_fixture_audit.json`.
 

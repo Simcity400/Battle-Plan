@@ -343,7 +343,7 @@ def build_contracts() -> dict[str, Any]:
         "lane": LANE,
         "domain_id": DOMAIN_ID,
         "target_build_sha256": EXPECTED_SHA_870EBF,
-        "completion_status": "NOT_COMPLETE",
+        "completion_status": "NOT COMPLETE",
         "backlog_reduced": True,
         "exact_backlog_item_removed_or_narrowed": (
             "Delayed-event and scripted-GUI/open-state root work narrowed to exact "

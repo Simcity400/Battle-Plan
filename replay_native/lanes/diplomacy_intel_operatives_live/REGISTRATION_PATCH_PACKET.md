@@ -3,6 +3,28 @@
 This is an exact patch plan, not an applied shared-entrypoint edit. The lane does
 not own the shared integration slot.
 
+For the v20 operative lifecycle row addition, also apply the tighter details in
+`OPERATIVE_LIFECYCLE_REGISTRATION_PATCH.md` and validate them with
+`validate_operative_lifecycle_registration_patch.py`. That gate proves the
+domain-53 registry reservation, collector `identity+0x110` lifecycle source,
+generic Rust decoder counter merge, and `operative_lifecycle_rows` preservation.
+
+For the v22 raw agency capacity row addition, also apply
+`AGENCY_CAPACITY_REGISTRATION_PATCH.md` and validate it with
+`validate_agency_capacity_registration_patch.py`. That gate proves the domain-53
+registry reservation, collector `agency+0xE4/+0xF0/+0xF4` raw source, generic
+Rust decoder counter merge, `agency_capacity_cluster_rows` preservation, and the
+no-semantic-relabeling rule pending UI/save evidence.
+
+For the v24/v26 compact validated-state event rows, preserve the generic
+`lane_summary.data_units_total` merge for `compact_state_event_rows`. Also apply
+the tighter details in `STATE_EVENTS_REGISTRATION_PATCH.md` and validate them
+with `validate_state_events_registration_patch.py`. These rows are sourced only
+from already validated relation flag, relation opinion, subject autonomy,
+country faction-group, agency scalar/capacity, operative lifecycle, and
+cryptology roots; they do not clear unresolved war lifecycle, diplomacy queue,
+running operation, spy-network, or full agency/operative event semantics.
+
 ## Registry State
 
 - `replay_native/DOMAIN_REGISTRY.md`: domain `53` is assigned to
@@ -98,6 +120,8 @@ Required behavior:
   start-date scalar and war grouping/name extraction.
 - It must encode operation detail and intel-map percentage gaps as omitted/badged
   fields, not `SOURCE_UNAVAILABLE` or `PARTIAL_DATA`.
+- It must emit compact state-event rows only for sources whose matching
+  production source proof is present; preserve `compact_state_event_rows`.
 - If `build_domain53_payload(...).ok() == false`, suppress the data record and
   report a source error for this domain.
 
@@ -213,13 +237,26 @@ Expected semantic counters after the lane-local proof:
 - `relation_flag_rows`
 - `subject_rows`
 - `intel_agency_rows`
+- `agency_capacity_cluster_rows`
 - `operative_rows`
+- `operative_lifecycle_rows`
 - `cryptology_rows`
 - `operation_anchor_rows`
 - `intel_map_rows`
+- `compact_state_event_rows`
 - `war_relation_rows` must remain `0` until the war root is accepted.
 - `STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED` must be present whenever schema-v1
   war rows or country war/casualty projections are emitted.
+- A v20/v21 lifecycle-registration proof must preserve
+  `operative_lifecycle_rows` through the generic `lane_summary.data_units_total`
+  merge; do not replace the generic merge with a stale counter whitelist.
+- A v22/v23 agency-capacity registration proof must preserve
+  `agency_capacity_cluster_rows` through the same generic merge and must not
+  rename raw `+0xE4/+0xF0/+0xF4` values into final semantic labels.
+- A v26 state-event proof must preserve `compact_state_event_rows=8`,
+  `compact_state_event_relation_opinion_rows=1`, and
+  `compact_state_event_country_faction_group_rows=1` for the validated-state
+  observation rows without claiming the unresolved event surfaces are complete.
 
 ## Required Shared Proof After Slot Opens
 

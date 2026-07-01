@@ -3,7 +3,8 @@ use std::convert::TryInto;
 
 pub const DOMAIN_ID: u16 = 44;
 pub const DOMAIN_NAME: &str = "supply_logistics_attrition_live";
-pub const HEADER_LEN: usize = 48;
+pub const HEADER_LEN_LEGACY: usize = 48;
+pub const HEADER_LEN: usize = 52;
 pub const ROW_LEN: usize = 40;
 pub const FIXED_SCALE_RAW: u32 = 100_000;
 
@@ -12,6 +13,8 @@ pub const STATUS_COMPACT_HEALTH_OK: u32 = 0;
 pub const ROW_KIND_PROVINCE_LOGISTICS: u32 = 1;
 pub const ROW_KIND_DIVISION_SUPPLY: u32 = 2;
 pub const ROW_KIND_COMPUTED_BADGE: u32 = 3;
+pub const ROW_KIND_CSUPPLY_PROVINCE_INPUT: u32 = 4;
+pub const ROW_KIND_FOREIGN_HOMEBASE_PRESSURE_CANDIDATE: u32 = 5;
 
 pub const ROW_FLAG_RAIL: u32 = 1;
 pub const ROW_FLAG_SUPPLY_NODE: u32 = 1 << 1;
@@ -30,6 +33,10 @@ pub const ROW_FLAG_DIVISION_FUEL: u32 = 1 << 13;
 pub const ROW_FLAG_MOTORIZATION_WALL: u32 = 1 << 14;
 pub const ROW_FLAG_CONVOY_PRESSURE_WALL: u32 = 1 << 15;
 pub const ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED: u32 = 1 << 16;
+pub const ROW_FLAG_CSUPPLY_EFFICIENCY: u32 = 1 << 17;
+pub const ROW_FLAG_CSUPPLY_PROVINCE_ARRAY: u32 = 1 << 18;
+pub const ROW_FLAG_FOREIGN_HOMEBASE_PRESSURE: u32 = 1 << 19;
+pub const ROW_FLAG_PRESSURE_CANDIDATE_LAYOUT: u32 = 1 << 20;
 
 pub const BADGE_EXACT_PROVINCE_SUPPLY_TRANSIENT: i32 = 1;
 pub const BADGE_ATTRITION_RUNTIME_COMPUTED: i32 = 2;
@@ -62,7 +69,11 @@ const VALID_ROW_FLAGS: u32 = ROW_FLAG_RAIL
     | ROW_FLAG_DIVISION_FUEL
     | ROW_FLAG_MOTORIZATION_WALL
     | ROW_FLAG_CONVOY_PRESSURE_WALL
-    | ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED;
+    | ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED
+    | ROW_FLAG_CSUPPLY_EFFICIENCY
+    | ROW_FLAG_CSUPPLY_PROVINCE_ARRAY
+    | ROW_FLAG_FOREIGN_HOMEBASE_PRESSURE
+    | ROW_FLAG_PRESSURE_CANDIDATE_LAYOUT;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SupplyLogisticsHeader {
@@ -74,6 +85,8 @@ pub struct SupplyLogisticsHeader {
     pub badge_rows: u32,
     pub observed_province_roots: u32,
     pub observed_division_roots: u32,
+    pub csupply_input_rows: u32,
+    pub pressure_candidate_rows: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -97,6 +110,8 @@ pub struct Domain44GateSummary {
     pub province_rows_total: u64,
     pub division_rows_total: u64,
     pub badge_rows_total: u64,
+    pub csupply_input_rows_total: u64,
+    pub pressure_candidate_rows_total: u64,
     pub observed_province_roots: u64,
     pub observed_division_roots: u64,
     pub data_units_total: BTreeMap<&'static str, u64>,
@@ -116,7 +131,8 @@ pub fn encode_payload(header: &SupplyLogisticsHeader, rows: &[SupplyLogisticsRow
     payload.extend_from_slice(&header.badge_rows.to_le_bytes());
     payload.extend_from_slice(&header.observed_province_roots.to_le_bytes());
     payload.extend_from_slice(&header.observed_division_roots.to_le_bytes());
-    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&header.csupply_input_rows.to_le_bytes());
+    payload.extend_from_slice(&header.pressure_candidate_rows.to_le_bytes());
     for row in rows {
         payload.extend_from_slice(&row.row_kind.to_le_bytes());
         payload.extend_from_slice(&row.entity_id.to_le_bytes());
@@ -134,13 +150,20 @@ pub fn encode_payload(header: &SupplyLogisticsHeader, rows: &[SupplyLogisticsRow
 
 pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
     let mut summary = Domain44GateSummary::default();
-    if payload.len() < HEADER_LEN {
+    if payload.len() < HEADER_LEN_LEGACY {
         summary.parse_errors.push(format!(
-            "offset {offset}: supply logistics data payload is {} byte(s), expected at least {HEADER_LEN}",
+            "offset {offset}: supply logistics data payload is {} byte(s), expected at least {HEADER_LEN_LEGACY}",
             payload.len()
         ));
         return summary;
     }
+    let header_len = if payload.len() >= HEADER_LEN
+        && payload.len().saturating_sub(HEADER_LEN) % ROW_LEN == 0
+    {
+        HEADER_LEN
+    } else {
+        HEADER_LEN_LEGACY
+    };
 
     let row_count = read_u32_le(payload, 8) as usize;
     let changed_rows = read_u32_le(payload, 12) as usize;
@@ -151,7 +174,12 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
     let badge_rows = read_u32_le(payload, 32) as usize;
     let observed_province_roots = read_u32_le(payload, 36) as usize;
     let observed_division_roots = read_u32_le(payload, 40) as usize;
-    let reserved0 = read_u32_le(payload, 44);
+    let csupply_input_rows = read_u32_le(payload, 44) as usize;
+    let pressure_candidate_rows = if header_len >= HEADER_LEN {
+        read_u32_le(payload, 48) as usize
+    } else {
+        0
+    };
     summary.status_flags_or |= status_flags;
     summary.observed_province_roots = observed_province_roots as u64;
     summary.observed_division_roots = observed_division_roots as u64;
@@ -166,18 +194,19 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
             "offset {offset}: supply logistics changed_rows {changed_rows} > row_count {row_count}"
         ));
     }
-    if province_rows + division_rows + badge_rows != row_count {
+    if province_rows
+        + division_rows
+        + badge_rows
+        + csupply_input_rows
+        + pressure_candidate_rows
+        != row_count
+    {
         summary.parse_errors.push(format!(
-            "offset {offset}: supply logistics row counters {}+{}+{} != row_count {row_count}",
-            province_rows, division_rows, badge_rows
+            "offset {offset}: supply logistics row counters {}+{}+{}+{}+{} != row_count {row_count}",
+            province_rows, division_rows, badge_rows, csupply_input_rows, pressure_candidate_rows
         ));
     }
-    if reserved0 != 0 {
-        summary.parse_errors.push(format!(
-            "offset {offset}: supply logistics header reserved field is nonzero"
-        ));
-    }
-    let expected_len = HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
+    let expected_len = header_len.saturating_add(row_count.saturating_mul(ROW_LEN));
     if payload.len() != expected_len {
         summary.parse_errors.push(format!(
             "offset {offset}: supply logistics data payload is {} byte(s), expected {expected_len}",
@@ -189,14 +218,18 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
     let mut decoded_province_rows = 0usize;
     let mut decoded_division_rows = 0usize;
     let mut decoded_badge_rows = 0usize;
+    let mut decoded_csupply_input_rows = 0usize;
+    let mut decoded_pressure_candidate_rows = 0usize;
     let mut seen_provinces = BTreeSet::new();
     let mut seen_divisions = BTreeSet::new();
+    let mut seen_csupply_input_provinces = BTreeSet::new();
+    let mut seen_pressure_candidates = BTreeSet::new();
     let mut has_exact_supply_wall = false;
     let mut has_attrition_wall = false;
     let mut has_motorization_wall = false;
     let mut has_convoy_pressure_wall = false;
     let mut has_csupply_candidate_rejected = false;
-    let mut cursor = HEADER_LEN;
+    let mut cursor = header_len;
     for row_index in 0..row_count {
         let row_kind = read_u32_le(payload, cursor);
         let entity_id = read_u32_le(payload, cursor + 4);
@@ -394,6 +427,128 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
                 }
                 add_unit(&mut summary, "division_supply_rows", 1);
             }
+            ROW_KIND_CSUPPLY_PROVINCE_INPUT => {
+                decoded_csupply_input_rows = decoded_csupply_input_rows.saturating_add(1);
+                if entity_id == 0 || entity_id > MAX_PROVINCE_ID {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics csupply input row {row_index} has invalid province_id {entity_id}"
+                    ));
+                } else if !seen_csupply_input_provinces.insert(entity_id) {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics csupply input row {row_index} duplicates province_id {entity_id}"
+                    ));
+                }
+                if join_id != 0 || owner_tag_db_id != 0 {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics csupply input row {row_index} has nonzero join/owner fields"
+                    ));
+                }
+                if flags
+                    & (ROW_FLAG_CSUPPLY_EFFICIENCY | ROW_FLAG_CSUPPLY_PROVINCE_ARRAY)
+                    != (ROW_FLAG_CSUPPLY_EFFICIENCY | ROW_FLAG_CSUPPLY_PROVINCE_ARRAY)
+                {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics csupply input row {row_index} missing required csupply flags"
+                    ));
+                }
+                if flags
+                    & !(ROW_FLAG_CSUPPLY_EFFICIENCY | ROW_FLAG_CSUPPLY_PROVINCE_ARRAY)
+                    != 0
+                {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics csupply input row {row_index} has non-csupply flags"
+                    ));
+                }
+                validate_nonnegative_value(
+                    offset,
+                    &mut summary,
+                    row_index,
+                    "csupply_efficiency_raw",
+                    value_a_raw,
+                    FIXED_SCALE_RAW as i32,
+                );
+                if value_b_raw != 0 || value_c_raw != 0 || value_d_raw != 0 || aux_raw != 0 {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics csupply input row {row_index} has nonzero reserved value fields"
+                    ));
+                }
+                add_unit(&mut summary, "csupply_efficiency_rows", 1);
+            }
+            ROW_KIND_FOREIGN_HOMEBASE_PRESSURE_CANDIDATE => {
+                decoded_pressure_candidate_rows =
+                    decoded_pressure_candidate_rows.saturating_add(1);
+                if entity_id == 0 || entity_id > MAX_PROVINCE_ID {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics pressure candidate row {row_index} has invalid province_id {entity_id}"
+                    ));
+                }
+                if owner_tag_db_id == 0 || owner_tag_db_id > MAX_TAG_DB_ID {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics pressure candidate row {row_index} has invalid owner_tag_db_id {owner_tag_db_id}"
+                    ));
+                }
+                if join_id != 0 {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics pressure candidate row {row_index} has nonzero join_id {join_id}"
+                    ));
+                }
+                if flags
+                    & (ROW_FLAG_FOREIGN_HOMEBASE_PRESSURE | ROW_FLAG_PRESSURE_CANDIDATE_LAYOUT)
+                    != (ROW_FLAG_FOREIGN_HOMEBASE_PRESSURE | ROW_FLAG_PRESSURE_CANDIDATE_LAYOUT)
+                {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics pressure candidate row {row_index} missing required pressure flags"
+                    ));
+                }
+                if flags
+                    & !(ROW_FLAG_FOREIGN_HOMEBASE_PRESSURE | ROW_FLAG_PRESSURE_CANDIDATE_LAYOUT)
+                    != 0
+                {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics pressure candidate row {row_index} has non-pressure flags"
+                    ));
+                }
+                validate_nonnegative_value(
+                    offset,
+                    &mut summary,
+                    row_index,
+                    "foreign_homebase_supply_raw",
+                    value_a_raw,
+                    MAX_SUPPLY_RAW,
+                );
+                validate_nonnegative_value(
+                    offset,
+                    &mut summary,
+                    row_index,
+                    "foreign_homebase_penalty_raw",
+                    value_b_raw,
+                    FIXED_SCALE_RAW as i32,
+                );
+                if value_c_raw != entity_id as i32 {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics pressure candidate row {row_index} duplicate province {value_c_raw} != entity_id {entity_id}"
+                    ));
+                }
+                validate_nonnegative_value(
+                    offset,
+                    &mut summary,
+                    row_index,
+                    "pressure_record_offset",
+                    value_d_raw,
+                    1_048_576,
+                );
+                if aux_raw != 0 {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics pressure candidate row {row_index} has nonzero reserved aux_raw"
+                    ));
+                }
+                if !seen_pressure_candidates.insert((owner_tag_db_id, entity_id, value_d_raw)) {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics pressure candidate row {row_index} duplicates owner/province/offset tuple"
+                    ));
+                }
+                add_unit(&mut summary, "foreign_homebase_pressure_candidate_rows", 1);
+            }
             ROW_KIND_COMPUTED_BADGE => {
                 decoded_badge_rows = decoded_badge_rows.saturating_add(1);
                 if entity_id != 0 || join_id != 0 || owner_tag_db_id != 0 {
@@ -485,6 +640,16 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
             "offset {offset}: supply logistics badge_rows {badge_rows} != decoded {decoded_badge_rows}"
         ));
     }
+    if decoded_csupply_input_rows != csupply_input_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: supply logistics csupply_input_rows {csupply_input_rows} != decoded {decoded_csupply_input_rows}"
+        ));
+    }
+    if decoded_pressure_candidate_rows != pressure_candidate_rows {
+        summary.parse_errors.push(format!(
+            "offset {offset}: supply logistics pressure_candidate_rows {pressure_candidate_rows} != decoded {decoded_pressure_candidate_rows}"
+        ));
+    }
     for (label, present) in [
         ("exact supply wall", has_exact_supply_wall),
         ("attrition wall", has_attrition_wall),
@@ -506,6 +671,8 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
     summary.province_rows_total = decoded_province_rows as u64;
     summary.division_rows_total = decoded_division_rows as u64;
     summary.badge_rows_total = decoded_badge_rows as u64;
+    summary.csupply_input_rows_total = decoded_csupply_input_rows as u64;
+    summary.pressure_candidate_rows_total = decoded_pressure_candidate_rows as u64;
     add_unit(
         &mut summary,
         "observed_province_roots",
@@ -583,6 +750,14 @@ fn main() {
     println!("province_rows_total={}", summary.province_rows_total);
     println!("division_rows_total={}", summary.division_rows_total);
     println!("badge_rows_total={}", summary.badge_rows_total);
+    println!(
+        "csupply_input_rows_total={}",
+        summary.csupply_input_rows_total
+    );
+    println!(
+        "pressure_candidate_rows_total={}",
+        summary.pressure_candidate_rows_total
+    );
     println!(
         "observed_province_roots={}",
         summary.observed_province_roots
@@ -717,6 +892,8 @@ mod tests {
             badge_rows: 5,
             observed_province_roots: 13_414,
             observed_division_roots: 1_600,
+            csupply_input_rows: 0,
+            pressure_candidate_rows: 0,
         };
         let payload = encode_payload(&header, &rows);
         let summary = decode_payload(32, &payload);
@@ -762,6 +939,8 @@ mod tests {
             badge_rows: 0,
             observed_province_roots: 1,
             observed_division_roots: 0,
+            csupply_input_rows: 0,
+            pressure_candidate_rows: 0,
         };
         let payload = encode_payload(&header, &rows);
         let summary = decode_payload(0, &payload);
@@ -798,6 +977,8 @@ mod tests {
             badge_rows: 0,
             observed_province_roots: 0,
             observed_division_roots: 1,
+            csupply_input_rows: 0,
+            pressure_candidate_rows: 0,
         };
         let payload = encode_payload(&header, &rows);
         let summary = decode_payload(7, &payload);
@@ -850,6 +1031,8 @@ mod tests {
             badge_rows: 0,
             observed_province_roots: 0,
             observed_division_roots: 1,
+            csupply_input_rows: 0,
+            pressure_candidate_rows: 0,
         };
         let payload = encode_payload(&header, &rows);
         let summary = decode_payload(0, &payload);
@@ -904,6 +1087,8 @@ mod tests {
             badge_rows: 0,
             observed_province_roots: 1,
             observed_division_roots: 1,
+            csupply_input_rows: 0,
+            pressure_candidate_rows: 0,
         };
         let payload = encode_payload(&header, &rows);
         let summary = decode_payload(0, &payload);
@@ -964,6 +1149,8 @@ mod tests {
             badge_rows: 1,
             observed_province_roots: 0,
             observed_division_roots: 0,
+            csupply_input_rows: 0,
+            pressure_candidate_rows: 0,
         };
         let payload = encode_payload(&header, &rows);
         let summary = decode_payload(0, &payload);
@@ -987,5 +1174,192 @@ mod tests {
             .parse_errors
             .iter()
             .any(|err| err.contains("exact-supply badge")));
+    }
+
+    #[test]
+    fn decodes_and_rejects_csupply_input_rows() {
+        let valid = SupplyLogisticsRow {
+            row_kind: ROW_KIND_CSUPPLY_PROVINCE_INPUT,
+            entity_id: 3324,
+            join_id: 0,
+            owner_tag_db_id: 0,
+            flags: ROW_FLAG_CSUPPLY_EFFICIENCY | ROW_FLAG_CSUPPLY_PROVINCE_ARRAY,
+            value_a_raw: 95_000,
+            value_b_raw: 0,
+            value_c_raw: 0,
+            value_d_raw: 0,
+            aux_raw: 0,
+        };
+        let header = SupplyLogisticsHeader {
+            elapsed_wall_ms: 1,
+            status_flags: STATUS_COMPACT_HEALTH_OK,
+            changed_rows: 1,
+            province_rows: 0,
+            division_rows: 0,
+            badge_rows: 0,
+            observed_province_roots: 0,
+            observed_division_roots: 0,
+            csupply_input_rows: 1,
+            pressure_candidate_rows: 0,
+        };
+        let payload = encode_payload(&header, &[valid.clone()]);
+        let summary = decode_payload(0, &payload);
+        assert!(
+            summary
+                .parse_errors
+                .iter()
+                .all(|err| err.contains("missing") && err.contains("badge row")),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(summary.csupply_input_rows_total, 1);
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("csupply_efficiency_rows")
+                .copied(),
+            Some(1)
+        );
+
+        let invalid = SupplyLogisticsRow {
+            join_id: 64,
+            flags: ROW_FLAG_CSUPPLY_EFFICIENCY | ROW_FLAG_PROXY_VALUE,
+            value_a_raw: FIXED_SCALE_RAW as i32 + 1,
+            value_b_raw: 7,
+            ..valid
+        };
+        let payload = encode_payload(&header, &[invalid]);
+        let summary = decode_payload(0, &payload);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("nonzero join/owner")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("missing required csupply flags")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("non-csupply flags")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("csupply_efficiency_raw")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("nonzero reserved value fields")));
+    }
+
+    #[test]
+    fn decodes_and_rejects_pressure_candidate_rows() {
+        let mut rows = fixture_rows();
+        rows.push(SupplyLogisticsRow {
+            row_kind: ROW_KIND_FOREIGN_HOMEBASE_PRESSURE_CANDIDATE,
+            entity_id: 4948,
+            join_id: 0,
+            owner_tag_db_id: 30,
+            flags: ROW_FLAG_FOREIGN_HOMEBASE_PRESSURE | ROW_FLAG_PRESSURE_CANDIDATE_LAYOUT,
+            value_a_raw: 25_000,
+            value_b_raw: 84_000,
+            value_c_raw: 4948,
+            value_d_raw: 0x2A0,
+            aux_raw: 0,
+        });
+        let header = SupplyLogisticsHeader {
+            elapsed_wall_ms: 1,
+            status_flags: STATUS_COMPACT_HEALTH_OK,
+            changed_rows: rows.len() as u32,
+            province_rows: 1,
+            division_rows: 1,
+            badge_rows: 5,
+            observed_province_roots: 1,
+            observed_division_roots: 1,
+            csupply_input_rows: 0,
+            pressure_candidate_rows: 1,
+        };
+        let payload = encode_payload(&header, &rows);
+        let summary = decode_payload(0, &payload);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(summary.pressure_candidate_rows_total, 1);
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("foreign_homebase_pressure_candidate_rows")
+                .copied(),
+            Some(1)
+        );
+
+        let invalid = SupplyLogisticsRow {
+            row_kind: ROW_KIND_FOREIGN_HOMEBASE_PRESSURE_CANDIDATE,
+            entity_id: MAX_PROVINCE_ID + 1,
+            join_id: 7,
+            owner_tag_db_id: 0,
+            flags: ROW_FLAG_FOREIGN_HOMEBASE_PRESSURE | ROW_FLAG_PROXY_VALUE,
+            value_a_raw: -1,
+            value_b_raw: FIXED_SCALE_RAW as i32 + 1,
+            value_c_raw: 123,
+            value_d_raw: -1,
+            aux_raw: 1,
+        };
+        let header = SupplyLogisticsHeader {
+            elapsed_wall_ms: 1,
+            status_flags: STATUS_COMPACT_HEALTH_OK,
+            changed_rows: 1,
+            province_rows: 0,
+            division_rows: 0,
+            badge_rows: 0,
+            observed_province_roots: 0,
+            observed_division_roots: 0,
+            csupply_input_rows: 0,
+            pressure_candidate_rows: 1,
+        };
+        let payload = encode_payload(&header, &[invalid]);
+        let summary = decode_payload(0, &payload);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("invalid province_id")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("invalid owner_tag_db_id")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("nonzero join_id")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("missing required pressure flags")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("non-pressure flags")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("foreign_homebase_supply_raw")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("foreign_homebase_penalty_raw")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("duplicate province")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("pressure_record_offset")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("nonzero reserved aux_raw")));
     }
 }

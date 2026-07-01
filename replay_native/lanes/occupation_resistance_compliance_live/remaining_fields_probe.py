@@ -63,9 +63,75 @@ GIE_SAVE_ASSIGNMENT_KEYS = (
     "host_nation",
 )
 
+GIE_ASSET_CONTEXTS = {"leader", "ship", "deployment", "air_wing"}
+
 
 def hx(value):
     return "0x%X" % value if isinstance(value, int) else None
+
+
+def line_no_at(text, offset):
+    return text.count("\n", 0, offset) + 1
+
+
+def classify_government_in_exile_tag_window(window):
+    contexts = []
+    if all(
+        token in window
+        for token in (
+            "attack_skill=",
+            "defense_skill=",
+            "planning_skill=",
+            "logistics_skill=",
+        )
+    ):
+        contexts.append("leader")
+    if "ship_name=" in window and "max_manpower=" in window and "manpower=" in window:
+        contexts.append("ship")
+    if "military_deployment_line=" in window or re.search(r"(?m)^\s*role\s*=", window):
+        contexts.append("deployment")
+    if (
+        "air_wings=" in window
+        or "allow_mission_type=" in window
+        or "air_untrained_pilots_penalty_factor=" in window
+    ):
+        contexts.append("air_wing")
+    return "+".join(contexts) if contexts else "unknown"
+
+
+def is_asset_gie_tag_context(context):
+    parts = set(context.split("+")) if context else set()
+    return bool(parts) and parts.issubset(GIE_ASSET_CONTEXTS)
+
+
+def parse_country_gie_window(text, match):
+    start = max(0, match.start() - 1600)
+    end = min(len(text), match.end() + 900)
+    window = text[start:end]
+    legitimacy = re.search(r"(?m)^\s*legitimacy\s*=\s*([+-]?[0-9]+(?:\.[0-9]+)?)", window)
+    exile_leaders = re.search(r"(?m)^\s*exile_army_leaders\s*=\s*([0-9]+)", window)
+    return {
+        "host_tag": match.group(1),
+        "line": line_no_at(text, match.start()),
+        "legitimacy": float(legitimacy.group(1)) if legitimacy else None,
+        "exile_army_leaders": int(exile_leaders.group(1)) if exile_leaders else None,
+    }
+
+
+def top_level_country_marks(text):
+    return [
+        (match.start(), match.group(1))
+        for match in re.finditer(r"(?m)^\t([A-Z0-9]{3})=\{$", text)
+    ]
+
+
+def country_tag_for_offset(country_marks, offset):
+    current = None
+    for mark_offset, tag in country_marks:
+        if mark_offset > offset:
+            break
+        current = tag
+    return current
 
 
 def read_u64(p, address):
@@ -375,8 +441,8 @@ def collect_container_ptrs_by_kind(p, ptr, target_vtables):
     return by_kind
 
 
-def probe_occupation_object_graph(p, rows, status_by_tag, tbl, max_countries):
-    target_vtables = {
+def target_vtables_for_graph(p):
+    return {
         p.module_base + COUNTRY_OCCUPATION_DATA_VTABLE_RVA: "country_occupation_data",
         p.module_base + STATE_GARRISON_DATA_VTABLE_RVA: "state_garrison_data",
         p.module_base + GARRISON_STATUS_VTABLE_RVA: "garrison_status",
@@ -387,6 +453,10 @@ def probe_occupation_object_graph(p, rows, status_by_tag, tbl, max_countries):
         p.module_base + live_probe.STATE_VTABLE_RVA: "state",
         p.module_base + live_probe.COUNTRY_VTABLE_RVA: "country",
     }
+
+
+def probe_occupation_object_graph(p, rows, status_by_tag, tbl, max_countries):
+    target_vtables = target_vtables_for_graph(p)
     state_ptr_to_id = {}
     for row in rows:
         ptr = row.get("state_ptr")
@@ -771,6 +841,256 @@ def probe_occupation_object_graph(p, rows, status_by_tag, tbl, max_countries):
     }
 
 
+def expected_legitimacy_raws(country_gie_sample):
+    out = {}
+    for rec in country_gie_sample or []:
+        value = rec.get("legitimacy")
+        country_tag = rec.get("country_tag")
+        if value is None or country_tag is None:
+            continue
+        for scale in (1000, 10000, 100000):
+            raw = int(round(float(value) * scale))
+            out.setdefault(raw, []).append({"country_tag": country_tag, "scale": scale})
+    return out
+
+
+def country_gie_by_country(country_gie_sample):
+    return {
+        rec["country_tag"]: rec
+        for rec in country_gie_sample or []
+        if rec.get("country_tag")
+    }
+
+
+def scan_blob_for_gie_scalars(blob, tag_ids_by_tag, legitimacy_raws):
+    hits = []
+    tag_by_id = {tag_id: tag for tag, tag_id in tag_ids_by_tag.items() if tag_id}
+    for offset in range(0, max(0, len(blob) - 4) + 1, 4):
+        value = struct.unpack_from("<I", blob, offset)[0]
+        tag = tag_by_id.get(value)
+        if tag:
+            hits.append({"offset": hx(offset), "kind": "tag_db_id", "tag": tag, "value": value})
+        legit_matches = legitimacy_raws.get(value)
+        if legit_matches:
+            hits.append(
+                {
+                    "offset": hx(offset),
+                    "kind": "legitimacy_fixed_candidate",
+                    "value": value,
+                    "matches": legit_matches[:4],
+                }
+            )
+        if len(hits) >= 16:
+            break
+    return hits
+
+
+def evaluate_gie_candidate_scope(scope, hits, target_tag, expected, legitimacy_raws):
+    expected_host = expected.get("host_tag") if expected else None
+    annotated = []
+    host_hits = 0
+    country_hits = 0
+    unique_legitimacy_hits = 0
+    for hit in hits:
+        rec = dict(hit)
+        role = None
+        if hit.get("kind") == "tag_db_id":
+            if hit.get("tag") == expected_host:
+                role = "expected_host_tag"
+                host_hits += 1
+            elif hit.get("tag") == target_tag:
+                role = "expected_country_tag"
+                country_hits += 1
+            else:
+                role = "other_target_set_tag"
+        elif hit.get("kind") == "legitimacy_fixed_candidate":
+            matches = legitimacy_raws.get(hit.get("value"), [])
+            target_matches = [m for m in matches if m.get("country_tag") == target_tag]
+            if target_matches and len(matches) == 1:
+                role = "unique_expected_legitimacy"
+                unique_legitimacy_hits += 1
+            elif target_matches:
+                role = "shared_expected_legitimacy"
+            else:
+                role = "other_target_legitimacy"
+        rec["contract_role"] = role
+        annotated.append(rec)
+
+    contract_match = bool(expected_host) and host_hits > 0 and (
+        country_hits > 0 or unique_legitimacy_hits > 0
+    )
+    if not expected:
+        reason = "no_country_gie_expected_row_for_tag"
+    elif contract_match:
+        reason = "candidate_scope_has_expected_host_and_target_or_unique_legitimacy"
+    else:
+        reason = "missing_expected_host_plus_target_or_unique_legitimacy"
+    return {
+        "scope": scope,
+        "hits": annotated,
+        "expected_country_tag": target_tag if expected else None,
+        "expected_host_tag": expected_host,
+        "expected_legitimacy": expected.get("legitimacy") if expected else None,
+        "expected_exile_army_leaders": (
+            expected.get("exile_army_leaders") if expected else None
+        ),
+        "expected_host_hits": host_hits,
+        "expected_country_hits": country_hits,
+        "unique_expected_legitimacy_hits": unique_legitimacy_hits,
+        "contract_match": contract_match,
+        "reason": reason,
+    }
+
+
+def probe_country_gie_live_graph(p, status_by_tag, tbl, collab_fixture):
+    samples = collab_fixture.get("country_gie_sample") or []
+    expected_by_country = country_gie_by_country(samples)
+    country_tags = {
+        rec.get("country_tag")
+        for rec in samples
+        if rec.get("country_tag")
+    }
+    host_tags = set((collab_fixture.get("country_gie_hosts") or {}).keys())
+    target_tags = sorted(country_tags | host_tags)
+    by_tag = {
+        rec["country_tag"]: (tag_id, rec)
+        for tag_id, rec in status_by_tag.items()
+        if rec.get("country_tag")
+    }
+    tag_ids_by_tag = {tag: by_tag[tag][0] for tag in target_tags if tag in by_tag}
+    legitimacy_raws = expected_legitimacy_raws(samples)
+    target_vtables = target_vtables_for_graph(p)
+    rows = []
+    totals = {
+        "target_tags": target_tags,
+        "target_tag_count": len(target_tags),
+        "valid_collaboration_status_roots": 0,
+        "country_collaboration_data_hits": 0,
+        "scalar_candidate_hits": 0,
+        "candidate_contract_match_scopes": 0,
+        "rejected_candidate_scopes": 0,
+        "missing_live_country_rows": 0,
+    }
+
+    for tag in target_tags:
+        item = by_tag.get(tag)
+        if not item:
+            totals["missing_live_country_rows"] += 1
+            rows.append({"tag": tag, "status": "missing_live_country"})
+            continue
+        tag_id, rec = item
+        collab_ptr = rec.get("collaboration_status_ptr")
+        if collab_ptr:
+            totals["valid_collaboration_status_roots"] += 1
+        root_scan = []
+        root_contract = None
+        expected = expected_by_country.get(tag)
+        root_blob = p.try_read(collab_ptr, COUNTRY_COLLABORATION_STATUS_SIZE) if collab_ptr else None
+        if root_blob:
+            root_scan = scan_blob_for_gie_scalars(root_blob, tag_ids_by_tag, legitimacy_raws)
+            totals["scalar_candidate_hits"] += len(root_scan)
+            root_contract = evaluate_gie_candidate_scope(
+                "collaboration_status_root",
+                root_scan,
+                tag,
+                expected,
+                legitimacy_raws,
+            )
+            if root_scan:
+                if root_contract["contract_match"]:
+                    totals["candidate_contract_match_scopes"] += 1
+                else:
+                    totals["rejected_candidate_scopes"] += 1
+        collab_hits = []
+        collab_seen_nodes = 0
+        hit_scans = []
+        if collab_ptr:
+            graph_hits, collab_seen_nodes = collect_reachable_vtable_hits(
+                p,
+                collab_ptr,
+                COUNTRY_COLLABORATION_STATUS_SIZE,
+                target_vtables,
+            )
+            for hit in graph_hits:
+                if hit["kind"] != "country_collaboration_data":
+                    continue
+                collab_hits.append(hit)
+                blob = p.try_read(hit["ptr"], GRAPH_NODE_SIZE)
+                scalar_hits = (
+                    scan_blob_for_gie_scalars(blob, tag_ids_by_tag, legitimacy_raws)
+                    if blob
+                    else []
+                )
+                totals["scalar_candidate_hits"] += len(scalar_hits)
+                if len(hit_scans) < 8:
+                    scalar_contract = evaluate_gie_candidate_scope(
+                        "country_collaboration_data",
+                        scalar_hits,
+                        tag,
+                        expected,
+                        legitimacy_raws,
+                    )
+                    if scalar_hits:
+                        if scalar_contract["contract_match"]:
+                            totals["candidate_contract_match_scopes"] += 1
+                        else:
+                            totals["rejected_candidate_scopes"] += 1
+                    hit_scans.append(
+                        {
+                            "ptr": hx(hit["ptr"]),
+                            "path": hit["path"],
+                            "scalar_hits": scalar_hits,
+                            "scalar_contract": scalar_contract,
+                        }
+                    )
+        totals["country_collaboration_data_hits"] += len(collab_hits)
+        rows.append(
+            {
+                "tag": tag,
+                "tag_db_id": tag_id,
+                "collaboration_status_ptr": hx(collab_ptr),
+                "graph_nodes_seen": collab_seen_nodes,
+                "country_collaboration_data_hits": len(collab_hits),
+                "root_scalar_hits": root_scan,
+                "root_scalar_contract": root_contract,
+                "collaboration_data_scalar_scans": hit_scans,
+            }
+        )
+
+    if not target_tags:
+        verdict = "fixture_has_no_country_gie_targets"
+    elif (
+        totals["valid_collaboration_status_roots"] == len(target_tags)
+        and totals["country_collaboration_data_hits"] == 0
+    ):
+        verdict = "blocked_no_country_collaboration_data_hits_for_gie_country_set"
+    elif totals["candidate_contract_match_scopes"]:
+        verdict = "candidate_contract_hits_require_controlled_fixture"
+    elif totals["scalar_candidate_hits"]:
+        verdict = "rejected_targeted_scalar_hits_no_gie_contract_current_fixture"
+    elif totals["country_collaboration_data_hits"] and not totals["scalar_candidate_hits"]:
+        verdict = "unclassified_collaboration_data_hits_without_gie_join_scalars"
+    else:
+        verdict = "blocked_no_valid_live_gie_join"
+
+    return {
+        "verdict": verdict,
+        "totals": totals,
+        "rows": rows,
+        "contract": (
+            "This bounded scan is scoped to CCountryCollaborationStatus roots for "
+            "country-scope GIE owner tags plus their host tags. It can reject the "
+            "collaboration-status graph as a direct source only when all target "
+            "countries have valid roots and the graph contains no "
+            "CCountryCollaborationData hits. Scalar/tag hits are rejected for the "
+            "current fixture unless a scan scope contains the expected host tag "
+            "and either the expected country tag or a unique legitimacy raw for "
+            "that country. Contract-matching hits are still candidates only and "
+            "need a controlled fixture before being wired."
+        ),
+    }
+
+
 def collaboration_gie_fixture_summary(oracle_occupation, save_melt):
     summary = {
         "oracle_occupation_path": str(oracle_occupation) if oracle_occupation else None,
@@ -781,14 +1101,24 @@ def collaboration_gie_fixture_summary(oracle_occupation, save_melt):
         "gie_assignment_key_counts": {},
         "government_in_exile_tag_rows": 0,
         "government_in_exile_tag_leader_context_rows": 0,
+        "government_in_exile_tag_asset_scope_rows": 0,
+        "government_in_exile_tag_unknown_context_rows": 0,
+        "government_in_exile_tag_context_counts": {},
         "government_in_exile_tags": {},
         "government_in_exile_tag_sample": [],
+        "country_gie_rows": 0,
+        "country_gie_countries": {},
+        "country_gie_hosts": {},
+        "country_gie_sample": [],
         "verdict": "fixture_not_checked",
         "fixture_contract": (
             "Collaboration/GIE detail can be wired only when a save fixture has "
-            "non-empty collaboration or government-in-exile target data that can "
-            "be joined to live CCountryCollaborationStatus/CCountryCollaborationData "
-            "objects by tag."
+            "non-empty collaboration or country-scope government-in-exile target "
+            "data that can be joined to live "
+            "CCountryCollaborationStatus/CCountryCollaborationData objects by tag. "
+            "government_in_exile_tag rows inside leaders, ships, deployments, or "
+            "air wings are asset attribution and are not occupation/collaboration "
+            "country detail."
         ),
     }
     path = Path(oracle_occupation) if oracle_occupation else None
@@ -817,23 +1147,26 @@ def collaboration_gie_fixture_summary(oracle_occupation, save_melt):
                 re.findall(rf"(?m)(?:^|\s){re.escape(key)}\s*=", text)
             )
         summary["gie_assignment_key_counts"] = key_counts
+        country_marks = top_level_country_marks(text)
         for match in re.finditer(r'government_in_exile_tag\s*=\s*"([^"]+)"', text):
             tag = match.group(1)
             start = max(0, match.start() - 1000)
             end = min(len(text), match.end() + 700)
             window = text[start:end]
-            leader_context = all(
-                token in window
-                for token in (
-                    "attack_skill=",
-                    "defense_skill=",
-                    "planning_skill=",
-                    "logistics_skill=",
-                )
-            )
+            context = classify_government_in_exile_tag_window(window)
+            context_parts = set(context.split("+")) if context else set()
+            asset_context = is_asset_gie_tag_context(context)
             summary["government_in_exile_tag_rows"] += 1
-            if leader_context:
+            summary["government_in_exile_tag_context_counts"][context] = (
+                summary["government_in_exile_tag_context_counts"].get(context, 0)
+                + 1
+            )
+            if "leader" in context_parts:
                 summary["government_in_exile_tag_leader_context_rows"] += 1
+            if asset_context:
+                summary["government_in_exile_tag_asset_scope_rows"] += 1
+            if context == "unknown":
+                summary["government_in_exile_tag_unknown_context_rows"] += 1
             summary["government_in_exile_tags"][tag] = (
                 summary["government_in_exile_tags"].get(tag, 0) + 1
             )
@@ -841,23 +1174,52 @@ def collaboration_gie_fixture_summary(oracle_occupation, save_melt):
                 summary["government_in_exile_tag_sample"].append(
                     {
                         "tag": tag,
-                        "leader_context": leader_context,
+                        "line": line_no_at(text, match.start()),
+                        "context": context,
+                        "asset_scope": asset_context,
                         "context_has_attack_skill": "attack_skill=" in window,
                         "context_has_defense_skill": "defense_skill=" in window,
+                        "context_has_ship_name": "ship_name=" in window,
+                        "context_has_military_deployment_line": (
+                            "military_deployment_line=" in window
+                        ),
+                        "context_has_air_wings": "air_wings=" in window,
                     }
                 )
+        for match in re.finditer(
+            r'hosting_our_government_in_exile\s*=\s*"([^"]+)"', text
+        ):
+            rec = parse_country_gie_window(text, match)
+            rec["country_tag"] = country_tag_for_offset(country_marks, match.start())
+            summary["country_gie_rows"] += 1
+            country_tag = rec.get("country_tag")
+            if country_tag:
+                summary["country_gie_countries"][country_tag] = (
+                    summary["country_gie_countries"].get(country_tag, 0) + 1
+                )
+            host = rec["host_tag"]
+            summary["country_gie_hosts"][host] = (
+                summary["country_gie_hosts"].get(host, 0) + 1
+            )
+            if len(summary["country_gie_sample"]) < 8:
+                summary["country_gie_sample"].append(rec)
 
+    only_asset_tags = (
+        summary["government_in_exile_tag_rows"] > 0
+        and summary["government_in_exile_tag_rows"]
+        == summary["government_in_exile_tag_asset_scope_rows"]
+    )
     if (
         summary["countries_with_collaboration_payload"] == 0
         and not summary["government_in_exile_tag_rows"]
+        and not summary["country_gie_rows"]
         and not any(summary["gie_assignment_key_counts"].values())
     ):
         summary["verdict"] = "fixture_blocked_no_collaboration_or_gie_save_payload"
     elif (
         summary["countries_with_collaboration_payload"] == 0
-        and summary["government_in_exile_tag_rows"] > 0
-        and summary["government_in_exile_tag_rows"]
-        == summary["government_in_exile_tag_leader_context_rows"]
+        and only_asset_tags
+        and not summary["country_gie_rows"]
         and not any(
             count
             for key, count in summary["gie_assignment_key_counts"].items()
@@ -865,10 +1227,20 @@ def collaboration_gie_fixture_summary(oracle_occupation, save_melt):
         )
     ):
         summary["verdict"] = (
-            "fixture_blocked_collaboration_empty_gie_rows_are_leader_scope"
+            "fixture_blocked_collaboration_empty_gie_tags_are_asset_scope"
         )
-    elif summary["countries_with_collaboration_payload"] > 0 or any(
-        summary["gie_assignment_key_counts"].values()
+    elif (
+        summary["countries_with_collaboration_payload"] == 0
+        and only_asset_tags
+        and summary["country_gie_rows"] > 0
+    ):
+        summary["verdict"] = (
+            "fixture_has_country_gie_payload_unjoined_to_live_collaboration_status"
+        )
+    elif (
+        summary["countries_with_collaboration_payload"] > 0
+        or summary["country_gie_rows"] > 0
+        or any(summary["gie_assignment_key_counts"].values())
     ):
         summary["verdict"] = "fixture_has_candidate_payload"
     return summary
@@ -880,6 +1252,8 @@ def write_md(out_dir, proof):
     graph = proof.get("occupation_object_graph", {})
     graph_totals = graph.get("totals", {})
     collab_fixture = proof.get("collaboration_gie_fixture", {})
+    gie_live = proof.get("country_gie_live_graph", {})
+    gie_live_totals = gie_live.get("totals", {})
     lines = [
         "# Remaining Occupation Field Probe",
         "",
@@ -972,12 +1346,53 @@ def write_md(out_dir, proof):
                         "government_in_exile_tag_leader_context_rows"
                     ),
                 ),
+                "- `government_in_exile_tag` asset-scope / unknown rows: `%s/%s`"
+                % (
+                    collab_fixture.get("government_in_exile_tag_asset_scope_rows"),
+                    collab_fixture.get("government_in_exile_tag_unknown_context_rows"),
+                ),
+                "- `government_in_exile_tag` context counts: `%s`"
+                % collab_fixture.get("government_in_exile_tag_context_counts"),
                 "- `government_in_exile_tag` tag counts: `%s`"
                 % collab_fixture.get("government_in_exile_tags"),
+                "- Country-scope GIE rows: `%s`"
+                % collab_fixture.get("country_gie_rows"),
+                "- Country-scope GIE country counts: `%s`"
+                % collab_fixture.get("country_gie_countries"),
+                "- Country-scope GIE host counts: `%s`"
+                % collab_fixture.get("country_gie_hosts"),
+                "- Country-scope GIE sample: `%s`"
+                % collab_fixture.get("country_gie_sample"),
                 "- Collaboration note: %s"
                 % collab_fixture.get("collaboration_note"),
                 "- Fixture contract: %s"
                 % collab_fixture.get("fixture_contract"),
+            ]
+        )
+    if gie_live:
+        lines.extend(
+            [
+                "",
+                "## Country GIE Live Graph",
+                "",
+                "- Verdict: `%s`" % gie_live.get("verdict"),
+                "- Target tags: `%s`" % gie_live_totals.get("target_tags"),
+                "- Valid collaboration-status roots: `%s/%s`"
+                % (
+                    gie_live_totals.get("valid_collaboration_status_roots"),
+                    gie_live_totals.get("target_tag_count"),
+                ),
+                "- Country collaboration-data hits: `%s`"
+                % gie_live_totals.get("country_collaboration_data_hits"),
+                "- Scalar candidate hits: `%s`"
+                % gie_live_totals.get("scalar_candidate_hits"),
+                "- Contract-match candidate scopes: `%s`"
+                % gie_live_totals.get("candidate_contract_match_scopes"),
+                "- Rejected candidate scopes: `%s`"
+                % gie_live_totals.get("rejected_candidate_scopes"),
+                "- Missing live country rows: `%s`"
+                % gie_live_totals.get("missing_live_country_rows"),
+                "- Contract: %s" % gie_live.get("contract"),
             ]
         )
     compare = template.get("oracle_compare")
@@ -1009,6 +1424,7 @@ def run(out_dir, seconds, oracle_occupation, graph_countries, save_melt):
         rows, invalid_states = live_probe.read_state_rows(
             p, roots["state_roots"], tbl, status_by_tag
         )
+        collab_fixture = collaboration_gie_fixture_summary(oracle_occupation, save_melt)
         proof = {
             "process": {
                 "pid": fp.get("pid"),
@@ -1025,8 +1441,9 @@ def run(out_dir, seconds, oracle_occupation, graph_countries, save_melt):
             "occupation_object_graph": probe_occupation_object_graph(
                 p, rows, status_by_tag, tbl, graph_countries
             ),
-            "collaboration_gie_fixture": collaboration_gie_fixture_summary(
-                oracle_occupation, save_melt
+            "collaboration_gie_fixture": collab_fixture,
+            "country_gie_live_graph": probe_country_gie_live_graph(
+                p, status_by_tag, tbl, collab_fixture
             ),
         }
 

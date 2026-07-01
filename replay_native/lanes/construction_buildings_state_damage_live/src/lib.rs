@@ -67,9 +67,11 @@ pub const LINE_PRODUCED: usize = 0x38;
 pub const LINE_CONSTRUCTION_SUB: usize = 0x70;
 pub const LINE_TYPE_CONSTRUCTION: u32 = 59;
 pub const CONSTRUCTION_TEMPLATE_ID: usize = 0x08;
+pub const CONSTRUCTION_TARGET_LOCATION_PTR: usize = 0x1D8;
+pub const TARGET_LOCATION_ID: usize = 0x6C;
 pub const MAX_CONSTRUCTION_TEMPLATE_ID: u32 = 10_000_000;
 pub const MAX_PRODUCTION_VECTOR_ENTRIES: u32 = 4096;
-pub const MAX_PRODUCTION_LINE_FIXED_RAW: i32 = 1_000_000_000;
+pub const MAX_PRODUCTION_LINE_FIXED_RAW: i32 = 2_000_000_000;
 pub const MAX_ACTIVE_FACTORIES: i32 = 100_000;
 
 pub const SCOPE_STATE: u32 = 1;
@@ -81,6 +83,8 @@ pub const CONSTRUCTION_FLAG_TEMPLATE_PRESENT: u32 = 1;
 pub const CONSTRUCTION_FLAG_TARGET_STATE_PRESENT: u32 = 1 << 1;
 pub const BUILDING_FLAG_HEALTHY_PRESENT: u32 = 1;
 pub const BUILDING_FLAG_DAMAGED: u32 = 1 << 1;
+
+pub const PROVINCE_CONSTRUCTION_TEMPLATE_IDS: [u32; 4] = [12_790, 19_649, 22_353, 22_354];
 
 pub trait LaneMemory {
     fn read_u8(&self, addr: usize) -> Option<u8>;
@@ -201,13 +205,33 @@ pub fn read_country_construction_queue<M: LaneMemory>(
     root: CountryConstructionRoot,
 ) -> Option<Vec<ConstructionQueueRow>> {
     let manager = production_manager_from_country(mem, root.country_ptr)?;
-    read_construction_queue_from_manager(mem, manager, root.tag_db_id)
+    read_construction_queue_from_manager_with_targets(mem, manager, root.tag_db_id, None)
 }
 
 pub fn read_construction_queue_from_manager<M: LaneMemory>(
     mem: &M,
     manager: usize,
     tag_db_id: u32,
+) -> Option<Vec<ConstructionQueueRow>> {
+    read_construction_queue_from_manager_with_targets(mem, manager, tag_db_id, None)
+}
+
+pub fn read_country_construction_queue_with_target_states<M: LaneMemory>(
+    mem: &M,
+    root: CountryConstructionRoot,
+    state_roots: &[StateRoot],
+    province_roots: &[ProvinceRoot],
+) -> Option<Vec<ConstructionQueueRow>> {
+    let manager = production_manager_from_country(mem, root.country_ptr)?;
+    let lookup = TargetStateLookup::new(state_roots, province_roots);
+    read_construction_queue_from_manager_with_targets(mem, manager, root.tag_db_id, Some(&lookup))
+}
+
+fn read_construction_queue_from_manager_with_targets<M: LaneMemory>(
+    mem: &M,
+    manager: usize,
+    tag_db_id: u32,
+    target_lookup: Option<&TargetStateLookup>,
 ) -> Option<Vec<ConstructionQueueRow>> {
     if tag_db_id == 0 || !is_heap_ptr(manager) {
         return None;
@@ -255,6 +279,10 @@ pub fn read_construction_queue_from_manager<M: LaneMemory>(
         } else {
             None
         };
+        let target_state_id = target_lookup.and_then(|lookup| {
+            read_construction_target_location_id(mem, sub_ptr)
+                .and_then(|location_id| lookup.target_state_id(template_id, location_id))
+        });
         rows.push(ConstructionQueueRow {
             tag_db_id,
             line_id: mem.read_u32(line_ptr.checked_add(LINE_ID)?)?,
@@ -263,10 +291,61 @@ pub fn read_construction_queue_from_manager<M: LaneMemory>(
             cost_raw,
             produced_raw,
             priority: (offset / CONSTRUCTION_STRIDE) as u32,
-            target_state_id: None,
+            target_state_id,
         });
     }
     Some(rows)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TargetStateLookup {
+    state_ids: BTreeSet<u32>,
+    province_to_state: BTreeMap<u32, u32>,
+}
+
+impl TargetStateLookup {
+    pub fn new(state_roots: &[StateRoot], province_roots: &[ProvinceRoot]) -> Self {
+        let state_ids = state_roots.iter().map(|root| root.state_id).collect();
+        let province_to_state = province_roots
+            .iter()
+            .map(|root| (root.province_id, root.state_id))
+            .collect();
+        Self {
+            state_ids,
+            province_to_state,
+        }
+    }
+
+    pub fn target_state_id(&self, template_id: Option<u32>, location_id: u32) -> Option<u32> {
+        if is_province_construction_template(template_id) {
+            return self.province_to_state.get(&location_id).copied();
+        }
+        if self.state_ids.contains(&location_id) {
+            return Some(location_id);
+        }
+        if !self.province_to_state.contains_key(&location_id) {
+            return None;
+        }
+        self.province_to_state.get(&location_id).copied()
+    }
+}
+
+pub fn is_province_construction_template(template_id: Option<u32>) -> bool {
+    template_id
+        .map(|id| PROVINCE_CONSTRUCTION_TEMPLATE_IDS.contains(&id))
+        .unwrap_or(false)
+}
+
+pub fn read_construction_target_location_id<M: LaneMemory>(mem: &M, sub_ptr: usize) -> Option<u32> {
+    if !is_heap_ptr(sub_ptr) {
+        return None;
+    }
+    let target_ptr = mem.read_u64(sub_ptr.checked_add(CONSTRUCTION_TARGET_LOCATION_PTR)?)? as usize;
+    if !is_heap_ptr(target_ptr) {
+        return None;
+    }
+    let location_id = mem.read_u32(target_ptr.checked_add(TARGET_LOCATION_ID)?)?;
+    (location_id > 0 && location_id <= MAX_PROVINCE_ID).then_some(location_id)
 }
 
 pub fn read_state_building_rows<M: LaneMemory>(
@@ -661,8 +740,9 @@ pub fn gate_decoded_frame(frame: &LaneFrame) -> GateReport {
 }
 
 fn read_production_fixed_raw<M: LaneMemory>(mem: &M, addr: usize) -> Option<i32> {
-    mem.read_i32(addr)
-        .filter(|value| value.abs() <= MAX_PRODUCTION_LINE_FIXED_RAW)
+    mem.read_i32(addr).filter(|value| {
+        (-MAX_PRODUCTION_LINE_FIXED_RAW..=MAX_PRODUCTION_LINE_FIXED_RAW).contains(value)
+    })
 }
 
 fn state_resource_logical_rows(size: u32, cap: u32) -> Option<u32> {
@@ -988,7 +1068,7 @@ mod tests {
         mem.write_u32(good_line + LINE_TYPE, LINE_TYPE_CONSTRUCTION);
         mem.write_u32(good_line + LINE_ID, 77);
         mem.write_i32(good_line + LINE_ACTIVE_FACTORIES, 15);
-        mem.write_i32(good_line + LINE_COST, 10_000_000);
+        mem.write_i32(good_line + LINE_COST, 1_450_000_000);
         mem.write_i32(good_line + LINE_PRODUCED, 5_000_000);
         mem.write_u64(good_line + LINE_CONSTRUCTION_SUB, sub as u64);
         mem.write_u32(sub + CONSTRUCTION_TEMPLATE_ID, 20_013);
@@ -1002,7 +1082,71 @@ mod tests {
         assert_eq!(rows[0].line_id, 77);
         assert_eq!(rows[0].template_id, Some(20_013));
         assert_eq!(rows[0].active_factories, 15);
+        assert_eq!(rows[0].cost_raw, 1_450_000_000);
         assert_eq!(rows[0].priority, 0);
+    }
+
+    #[test]
+    fn extractor_reads_construction_target_state_from_location_root() {
+        let manager = 0x1000_0000_0000usize;
+        let vector = 0x1000_0000_1000usize;
+        let state_line = 0x1000_0000_2000usize;
+        let province_line = 0x1000_0000_2100usize;
+        let state_sub = 0x1000_0000_3000usize;
+        let province_sub = 0x1000_0000_3100usize;
+        let state_target = 0x1000_0000_4000usize;
+        let province_target = 0x1000_0000_4100usize;
+        let mut mem = FakeMemory::default();
+        mem.write_u64(manager + CONSTRUCTION_BEGIN, vector as u64);
+        mem.write_u32(manager + CONSTRUCTION_CAP, 2);
+        mem.write_u32(manager + CONSTRUCTION_SIZE, 2);
+        mem.write_u64(vector, state_line as u64);
+        mem.write_u64(vector + 8, province_line as u64);
+
+        mem.write_u32(state_line + LINE_TYPE, LINE_TYPE_CONSTRUCTION);
+        mem.write_u32(state_line + LINE_ID, 77);
+        mem.write_i32(state_line + LINE_ACTIVE_FACTORIES, 15);
+        mem.write_i32(state_line + LINE_COST, 1_080_000_000);
+        mem.write_i32(state_line + LINE_PRODUCED, 5_000_000);
+        mem.write_u64(state_line + LINE_CONSTRUCTION_SUB, state_sub as u64);
+        mem.write_u32(state_sub + CONSTRUCTION_TEMPLATE_ID, 20_013);
+        mem.write_u64(
+            state_sub + CONSTRUCTION_TARGET_LOCATION_PTR,
+            state_target as u64,
+        );
+        mem.write_u32(state_target + TARGET_LOCATION_ID, 42);
+
+        mem.write_u32(province_line + LINE_TYPE, LINE_TYPE_CONSTRUCTION);
+        mem.write_u32(province_line + LINE_ID, 78);
+        mem.write_i32(province_line + LINE_ACTIVE_FACTORIES, 10);
+        mem.write_i32(province_line + LINE_COST, 600_000_000);
+        mem.write_i32(province_line + LINE_PRODUCED, 4_000_000);
+        mem.write_u64(province_line + LINE_CONSTRUCTION_SUB, province_sub as u64);
+        mem.write_u32(province_sub + CONSTRUCTION_TEMPLATE_ID, 12_790);
+        mem.write_u64(
+            province_sub + CONSTRUCTION_TARGET_LOCATION_PTR,
+            province_target as u64,
+        );
+        mem.write_u32(province_target + TARGET_LOCATION_ID, 2_068);
+
+        let lookup = TargetStateLookup::new(
+            &[StateRoot {
+                state_id: 42,
+                state_ptr: 0x1000_0001_0000,
+            }],
+            &[ProvinceRoot {
+                province_id: 2_068,
+                province_ptr: 0x1000_0002_0000,
+                state_id: 42,
+            }],
+        );
+        let rows =
+            read_construction_queue_from_manager_with_targets(&mem, manager, 123, Some(&lookup))
+                .unwrap();
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].target_state_id, Some(42));
+        assert_eq!(rows[1].target_state_id, Some(42));
     }
 
     #[test]

@@ -130,6 +130,32 @@ def scan_json_files(files, targets):
     }
 
 
+def scan_recursive_path_shape(path: Path, root: str):
+    hits = []
+    for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip() or "\t" not in line:
+            continue
+        row_path = line.split("\t", 1)[0]
+        if row_path == root or row_path.startswith(root + "."):
+            fields = line.split("\t")
+            hits.append(
+                {
+                    "line": line_no,
+                    "path": row_path,
+                    "kind": fields[1] if len(fields) > 1 else "",
+                    "count": fields[2] if len(fields) > 2 else "",
+                }
+            )
+    return {
+        "file": str(path.relative_to(REPO_ROOT)),
+        "root": root,
+        "rows": hits,
+        "row_count": len(hits),
+        "has_root": any(row["path"] == root for row in hits),
+        "descendant_count": sum(1 for row in hits if row["path"].startswith(root + ".")),
+    }
+
+
 def summarize_scripted_guis(path: Path):
     data = read_json(path)
     guis = data.get("scripted_guis", {})
@@ -202,6 +228,10 @@ def build_audit():
     scripted_gui_summary = summarize_scripted_guis(
         REPO_ROOT / "game_defs" / "out" / "scripted_guis.json"
     )
+    recursive_scripted_gui_random = scan_recursive_path_shape(
+        REPO_ROOT / "coverage_audit" / "recursive_paths_country.txt",
+        "countries.<id>.scripted_gui_random",
+    )
     scripted_gui_rows = find_manifest_rows(manifest, "scripted_gui")
     variable_rows = [
         row
@@ -236,17 +266,19 @@ def build_audit():
             "recorder_entrypoints_edited": False,
             "integration_slot_required": True,
         },
-        "completion_status": "COMPLETE",
-        "lane_full_production_status": "NOT_COMPLETE",
+        "completion_status": "NOT COMPLETE",
+        "lane_full_production_status": "NOT COMPLETE",
         "backlog_reduced": True,
         "exact_backlog_item_removed_or_narrowed": (
             "Scripted-GUI open/opaque root validation narrowed to a missing "
-            "positive fixture: static scripted_gui definitions and validated "
-            "country variables are not sufficient roots for scripted_gui_random "
-            "or open GUI causal state."
+            "phase-labeled positive fixture: the raw recursive save inventory "
+            "proves countries.*.scripted_gui_random exists, while static "
+            "scripted_gui definitions and validated country variables are not "
+            "sufficient roots for scripted_gui_random or open GUI causal state."
         ),
         "manifest_scripted_gui_rows": scripted_gui_rows,
         "manifest_country_variable_rows": variable_rows,
+        "recursive_scripted_gui_random_shape": recursive_scripted_gui_random,
         "scripted_gui_static_definition_summary": scripted_gui_summary,
         "save_oracle_output_scan": oracle_scan,
         "save_keytree_scan": keytree_scan,
@@ -276,16 +308,19 @@ def build_audit():
                 "evidence": (
                     "save_oracle/output, save_oracle/output_1940, and all "
                     "coverage_audit/save_keytree_*.json files have zero "
-                    "scripted_gui_random hits."
+                    "scripted_gui_random hits. coverage_audit/recursive_paths_country.txt "
+                    "does prove a raw countries.<id>.scripted_gui_random leaf exists, "
+                    "but it does not provide phase-labeled owner/value rows."
                 ),
             },
         ],
         "blocker": {
-            "kind": "missing_positive_scripted_gui_open_fixture",
+            "kind": "missing_phase_labeled_scripted_gui_open_fixture",
             "is_blocking_current_live_root_acceptance": (
                 registry["valid"]
                 and no_scripted_gui_random_fixture
                 and no_live_open_fixture
+                and recursive_scripted_gui_random["has_root"]
             ),
             "blocked_work": (
                 "Do not accept a scripted-GUI/open-state heap/root candidate from "

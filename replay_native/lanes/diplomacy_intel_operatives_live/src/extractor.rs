@@ -1,8 +1,13 @@
 use crate::compact::{
-    decode_payload, encode_payload, AgencyRow, CountryDiplomacyRow, CryptologyRow,
-    DiplomacyIntelSnapshot, Domain53GateSummary, IntelMapRow, OperationAnchorRow, OperativeRow,
-    OpinionRow, RelationFlagRow, SubjectRow, WarRelationRow, DOMAIN_ID_PROPOSED,
-    REL_KIND_GUARANTEE, STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED, STATUS_INTEL_MAP_RESISTED,
+    decode_payload, encode_payload, AgencyCapacityClusterRow, AgencyRow, CountryDiplomacyRow,
+    CryptologyRow, DiplomacyIntelSnapshot, Domain53GateSummary, IntelMapRow, OperationAnchorRow,
+    OperativeRow, OpinionRow, RelationFlagRow, StateEventRow, SubjectRow, WarRelationRow,
+    DOMAIN_ID_PROPOSED, REL_KIND_GUARANTEE, STATE_EVENT_KIND_OBSERVED,
+    STATE_EVENT_SOURCE_AGENCY_CAPACITY, STATE_EVENT_SOURCE_AGENCY_SCALAR,
+    STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP, STATE_EVENT_SOURCE_CRYPTOLOGY,
+    STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE, STATE_EVENT_SOURCE_RELATION_FLAG,
+    STATE_EVENT_SOURCE_RELATION_OPINION, STATE_EVENT_SOURCE_SUBJECT_AUTONOMY,
+    STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED, STATUS_INTEL_MAP_RESISTED,
     STATUS_OPERATIONS_DETAIL_RESISTED, STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED,
     STATUS_WAR_ROOT_UNVALIDATED,
 };
@@ -71,7 +76,7 @@ pub const CURRENT_BUILD_ROOTS_870EBF: &[CurrentBuildRoot] = &[
     },
     CurrentBuildRoot {
         name: "agency",
-        evidence: "country+0xFC0 -> CIntelligenceAgency, vtable module+0x296B338",
+        evidence: "country+0xFC0 -> CIntelligenceAgency, vtable module+0x296B338, capacity raw cluster agency+0xE4/+0xF0/+0xF4 with +0xE4==+0xF4 warm invariant",
     },
     CurrentBuildRoot {
         name: "cryptology",
@@ -79,7 +84,7 @@ pub const CURRENT_BUILD_ROOTS_870EBF: &[CurrentBuildRoot] = &[
     },
     CurrentBuildRoot {
         name: "operative_identity",
-        evidence: "COperativeLeader active vtable module+0x293F790, identity active layout and skill/XP stats path",
+        evidence: "COperativeLeader vtable/classdesc module+0x293F790, identity+0x110 lifecycle flag cohorts {47,31,63}, owner identity+0x118, skill/XP stats path",
     },
     CurrentBuildRoot {
         name: "war_relation_rows",
@@ -97,10 +102,12 @@ pub struct ExtractedDomain53Rows {
     pub relation_flags: Vec<RelationFlagRow>,
     pub subjects: Vec<SubjectRow>,
     pub agencies: Vec<AgencyRow>,
+    pub agency_capacity_clusters: Vec<AgencyCapacityClusterRow>,
     pub operatives: Vec<OperativeRow>,
     pub cryptology: Vec<CryptologyRow>,
     pub operation_anchors: Vec<OperationAnchorRow>,
     pub intel_map: Vec<IntelMapRow>,
+    pub state_events: Vec<StateEventRow>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -133,10 +140,12 @@ pub fn build_domain53_payload(
         relation_flags: rows.relation_flags,
         subjects: rows.subjects,
         agencies: rows.agencies,
+        agency_capacity_clusters: rows.agency_capacity_clusters,
         operatives: rows.operatives,
         cryptology: rows.cryptology,
         operation_anchors: rows.operation_anchors,
         intel_map: rows.intel_map,
+        state_events: rows.state_events,
     };
     let mut errors = Vec::new();
 
@@ -169,10 +178,10 @@ pub fn build_domain53_payload(
         &mut errors,
     );
     require_rows(
-        !snapshot.agencies.is_empty(),
+        !snapshot.agencies.is_empty() || !snapshot.agency_capacity_clusters.is_empty(),
         source_proofs,
         SOURCE_PROOF_AGENCY_ROOT_870EBF,
-        "agency rows require SOURCE_PROOF_AGENCY_ROOT_870EBF",
+        "agency rows/capacity clusters require SOURCE_PROOF_AGENCY_ROOT_870EBF",
         &mut errors,
     );
     require_rows(
@@ -187,6 +196,62 @@ pub fn build_domain53_payload(
         source_proofs,
         SOURCE_PROOF_CRYPTOLOGY_ROOT_870EBF,
         "cryptology rows require SOURCE_PROOF_CRYPTOLOGY_ROOT_870EBF",
+        &mut errors,
+    );
+    require_rows(
+        snapshot.state_events.iter().any(|row| {
+            matches!(
+                row.source_kind,
+                STATE_EVENT_SOURCE_RELATION_FLAG
+                    | STATE_EVENT_SOURCE_RELATION_OPINION
+                    | STATE_EVENT_SOURCE_SUBJECT_AUTONOMY
+            )
+        }),
+        source_proofs,
+        SOURCE_PROOF_RELATION_ROOTS_870EBF,
+        "compact state events sourced from relation/opinion/subject rows require SOURCE_PROOF_RELATION_ROOTS_870EBF",
+        &mut errors,
+    );
+    require_rows(
+        snapshot
+            .state_events
+            .iter()
+            .any(|row| row.source_kind == STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP),
+        source_proofs,
+        SOURCE_PROOF_COUNTRY_ROOTS_870EBF,
+        "compact state events sourced from country faction rows require SOURCE_PROOF_COUNTRY_ROOTS_870EBF",
+        &mut errors,
+    );
+    require_rows(
+        snapshot.state_events.iter().any(|row| {
+            matches!(
+                row.source_kind,
+                STATE_EVENT_SOURCE_AGENCY_SCALAR | STATE_EVENT_SOURCE_AGENCY_CAPACITY
+            )
+        }),
+        source_proofs,
+        SOURCE_PROOF_AGENCY_ROOT_870EBF,
+        "compact state events sourced from agency rows require SOURCE_PROOF_AGENCY_ROOT_870EBF",
+        &mut errors,
+    );
+    require_rows(
+        snapshot
+            .state_events
+            .iter()
+            .any(|row| row.source_kind == STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE),
+        source_proofs,
+        SOURCE_PROOF_OPERATIVE_ROOT_870EBF,
+        "compact state events sourced from operative lifecycle rows require SOURCE_PROOF_OPERATIVE_ROOT_870EBF",
+        &mut errors,
+    );
+    require_rows(
+        snapshot
+            .state_events
+            .iter()
+            .any(|row| row.source_kind == STATE_EVENT_SOURCE_CRYPTOLOGY),
+        source_proofs,
+        SOURCE_PROOF_CRYPTOLOGY_ROOT_870EBF,
+        "compact state events sourced from cryptology rows require SOURCE_PROOF_CRYPTOLOGY_ROOT_870EBF",
         &mut errors,
     );
 
@@ -298,23 +363,55 @@ pub fn proof_fixture_rows() -> ExtractedDomain53Rows {
             owner_tag_db_id: 1,
             max_operatives: 3,
             usable_slots: 3,
-            operative_count: 1,
+            operative_count: 3,
             cryptology_target_count: 1,
             defense_raw: 600_000,
             upgrade_progress_raw: 2_400_000,
             name_hash: crate::compact::stable_hash64("Abwehr"),
             icon_hash: crate::compact::stable_hash64("GFX_intelligence_agency_logo_ger"),
         }],
-        operatives: vec![OperativeRow {
-            owner_tag_db_id: 1,
-            op_id: 11_387,
-            detected: false,
-            captured: false,
-            skill: Some(2),
-            experience_raw: Some(71_372_000),
-            name_hash: crate::compact::stable_hash64("Johann Hein"),
-            state_hash: crate::compact::stable_hash32("on_mission"),
+        agency_capacity_clusters: vec![AgencyCapacityClusterRow {
+            owner_tag_db_id: 2,
+            value_0xe4: 9,
+            value_0xf0: 10,
+            value_0xf4: 9,
+            proof_hash: crate::compact::stable_hash32("agency_capacity_offsets_e4_f0_f4"),
         }],
+        operatives: vec![
+            OperativeRow {
+                owner_tag_db_id: 1,
+                op_id: 11_387,
+                detected: false,
+                captured: false,
+                skill: Some(2),
+                experience_raw: Some(71_372_000),
+                name_hash: crate::compact::stable_hash64("Johann Hein"),
+                state_hash: crate::compact::stable_hash32("lifeflag_47"),
+                lifecycle_flag: Some(47),
+            },
+            OperativeRow {
+                owner_tag_db_id: 1,
+                op_id: 11_388,
+                detected: false,
+                captured: false,
+                skill: Some(1),
+                experience_raw: Some(12_400_000),
+                name_hash: crate::compact::stable_hash64("Pool Cohort"),
+                state_hash: crate::compact::stable_hash32("lifeflag_31"),
+                lifecycle_flag: Some(31),
+            },
+            OperativeRow {
+                owner_tag_db_id: 1,
+                op_id: 11_389,
+                detected: false,
+                captured: false,
+                skill: Some(1),
+                experience_raw: Some(0),
+                name_hash: crate::compact::stable_hash64("Lifecycle Cohort"),
+                state_hash: crate::compact::stable_hash32("lifeflag_63"),
+                lifecycle_flag: Some(63),
+            },
+        ],
         cryptology: vec![CryptologyRow {
             owner_tag_db_id: 1,
             target_tag_db_id: 3,
@@ -338,7 +435,85 @@ pub fn proof_fixture_rows() -> ExtractedDomain53Rows {
             air_raw: 0,
             resisted: true,
         }],
+        state_events: validated_state_event_rows(),
     }
+}
+
+fn validated_state_event_rows() -> Vec<StateEventRow> {
+    vec![
+        StateEventRow {
+            owner_tag_db_id: 1,
+            target_tag_db_id: Some(3),
+            event_kind: STATE_EVENT_KIND_OBSERVED,
+            source_kind: STATE_EVENT_SOURCE_RELATION_FLAG,
+            object_hash: crate::compact::stable_hash32("relation_flag_guarantee"),
+            value_hash: crate::compact::stable_hash32("directed_true"),
+            value_raw: REL_KIND_GUARANTEE as i64,
+        },
+        StateEventRow {
+            owner_tag_db_id: 1,
+            target_tag_db_id: Some(22),
+            event_kind: STATE_EVENT_KIND_OBSERVED,
+            source_kind: STATE_EVENT_SOURCE_SUBJECT_AUTONOMY,
+            object_hash: crate::compact::stable_hash32("autonomy_puppet"),
+            value_hash: crate::compact::stable_hash32("autonomy_ratio_40000"),
+            value_raw: 40_000,
+        },
+        StateEventRow {
+            owner_tag_db_id: 1,
+            target_tag_db_id: Some(3),
+            event_kind: STATE_EVENT_KIND_OBSERVED,
+            source_kind: STATE_EVENT_SOURCE_RELATION_OPINION,
+            object_hash: crate::compact::stable_hash32("relation_opinion"),
+            value_hash: crate::compact::stable_hash32("opinion_neg35"),
+            value_raw: -35,
+        },
+        StateEventRow {
+            owner_tag_db_id: 1,
+            target_tag_db_id: None,
+            event_kind: STATE_EVENT_KIND_OBSERVED,
+            source_kind: STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP,
+            object_hash: crate::compact::stable_hash32("country_faction_group"),
+            value_hash: crate::compact::stable_hash32("faction_group_42"),
+            value_raw: 42,
+        },
+        StateEventRow {
+            owner_tag_db_id: 1,
+            target_tag_db_id: None,
+            event_kind: STATE_EVENT_KIND_OBSERVED,
+            source_kind: STATE_EVENT_SOURCE_AGENCY_SCALAR,
+            object_hash: crate::compact::stable_hash32("agency_upgrade_progress_raw"),
+            value_hash: crate::compact::stable_hash32("agency_upgrade_progress_2400000"),
+            value_raw: 2_400_000,
+        },
+        StateEventRow {
+            owner_tag_db_id: 1,
+            target_tag_db_id: None,
+            event_kind: STATE_EVENT_KIND_OBSERVED,
+            source_kind: STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE,
+            object_hash: crate::compact::stable_hash32("operative_11387_lifecycle"),
+            value_hash: crate::compact::stable_hash32("lifeflag_47"),
+            value_raw: 47,
+        },
+        StateEventRow {
+            owner_tag_db_id: 2,
+            target_tag_db_id: None,
+            event_kind: STATE_EVENT_KIND_OBSERVED,
+            source_kind: STATE_EVENT_SOURCE_AGENCY_CAPACITY,
+            object_hash: crate::compact::stable_hash32("agency_capacity_offsets_e4_f0_f4"),
+            value_hash: crate::compact::stable_hash32("agency_capacity_9_10_9"),
+            value_raw: 10,
+        },
+        StateEventRow {
+            owner_tag_db_id: 1,
+            target_tag_db_id: Some(3),
+            event_kind: STATE_EVENT_KIND_OBSERVED,
+            source_kind: STATE_EVENT_SOURCE_CRYPTOLOGY,
+            object_hash: crate::compact::stable_hash32("cryptology_amount_raw"),
+            value_hash: crate::compact::stable_hash32("cryptology_amount_960000000"),
+            value_raw: 960_000_000,
+        },
+    ]
 }
 
 fn require_rows(
@@ -367,7 +542,47 @@ mod tests {
 
         assert!(report.ok(), "{:?}", report.errors);
         assert_eq!(report.domain_id, 53);
-        assert_eq!(report.gate_summary.data_rows_total, 9);
+        assert_eq!(report.gate_summary.data_rows_total, 20);
+        assert_eq!(
+            report
+                .gate_summary
+                .data_units_total
+                .get("agency_capacity_cluster_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            report
+                .gate_summary
+                .data_units_total
+                .get("operative_lifecycle_rows")
+                .copied(),
+            Some(3)
+        );
+        assert_eq!(
+            report
+                .gate_summary
+                .data_units_total
+                .get("compact_state_event_rows")
+                .copied(),
+            Some(8)
+        );
+        assert_eq!(
+            report
+                .gate_summary
+                .data_units_total
+                .get("compact_state_event_relation_opinion_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            report
+                .gate_summary
+                .data_units_total
+                .get("compact_state_event_country_faction_group_rows")
+                .copied(),
+            Some(1)
+        );
         assert_eq!(
             report.gate_summary.status_flags_or & STATUS_WAR_ROOT_UNVALIDATED,
             0
@@ -487,6 +702,44 @@ mod tests {
             .errors
             .iter()
             .any(|error| error.contains("unresisted intel-map rows require")));
+    }
+
+    #[test]
+    fn rejects_state_events_without_matching_source_proof() {
+        let mut rows = proof_fixture_rows();
+        rows.operatives.clear();
+        rows.state_events
+            .retain(|row| row.source_kind == STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE);
+
+        let report = build_domain53_payload(
+            rows,
+            CURRENT_VALIDATED_SOURCE_PROOFS & !SOURCE_PROOF_OPERATIVE_ROOT_870EBF,
+        );
+
+        assert!(!report.ok());
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("compact state events sourced from operative lifecycle")));
+    }
+
+    #[test]
+    fn rejects_faction_group_state_event_without_country_source_proof() {
+        let mut rows = proof_fixture_rows();
+        rows.countries.clear();
+        rows.state_events
+            .retain(|row| row.source_kind == STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP);
+
+        let report = build_domain53_payload(
+            rows,
+            CURRENT_VALIDATED_SOURCE_PROOFS & !SOURCE_PROOF_COUNTRY_ROOTS_870EBF,
+        );
+
+        assert!(!report.ok());
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("compact state events sourced from country faction")));
     }
 
     #[test]

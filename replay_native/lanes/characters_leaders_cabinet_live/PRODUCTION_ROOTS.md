@@ -219,6 +219,135 @@ This closes the lane-local nonzero appointed-row compact/gate proof. It does not
 replace the still-needed live hourly transition proof after shared DLL/Rust
 integration gets a slot.
 
+Live refresh proof
+`replay_native/runs/characters_leaders_cabinet_live_20260701_live_refresh_v1/`
+revalidated the current running process with RTTI-discovered vtables and packed
+the resulting domain-47 compact record through the lane-local
+`replay_record_verify` gate:
+
+- `proof_live_roots.py --force --use-rtti-vtables` result `validated`,
+  `errors=[]`, elapsed wall seconds `383.455`;
+- build SHA-256
+  `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`,
+  module base `0x7FF6AAFF0000`;
+- located current roots: `1058` army leaders, `231` navy leaders, `13591`
+  characters, and `2049` country-leader roles;
+- address set validation `true`; legacy `characters_live.validate_addrs`
+  remains rejected as lane authority (`false`);
+- live country bridge resolved `55` countries with `revalidate=true`;
+- leader skill/trait proof saw `1289` leaders, `0` missing skill reads, `0`
+  missing trait reads, and `3128` trait tokens;
+- active-ruler path produced `55` rows with `0` ambiguous vectors;
+- advisor roster path produced `9614` source rows across `365` countries;
+- appointed advisor intersection produced `0` rows across `55` politics
+  countries, a measured-empty live frame;
+- compact domain-47 record decoded with `parse_errors=[]`, `status_flags_or=0`,
+  `schema_flags_or=7`, `27803` total rows: `13158` character, `1249`
+  unit-leader, `3024` unit-leader-trait, `1938` country-leader-role, `55`
+  active-ruler, `8379` advisor-roster, and `0` appointed-advisor rows;
+- lane-local `.battleplan` verification succeeded for
+  `native_session.battleplan`; independent `pack_replay verify` returned
+  `verify: OK`.
+
+This refresh proves the current-process roots, compact decoder, and
+`.battleplan` container path for an existing lane-local domain-47 compact
+record. It still does not satisfy production extraction because the record was
+not emitted by the one injected DLL collector through shared scheduled-domain
+registration.
+
+Live refresh proof
+`replay_native/runs/characters_leaders_cabinet_live_20260701_live_refresh_v2/`
+updates that lane-local proof with a real current game-hour record header and
+then repacks the same domain-47 stream through the Rust replay verifier:
+
+- `proof_live_roots.py --force --use-rtti-vtables` result `validated`,
+  `errors=[]`, elapsed wall seconds `507.542`;
+- live clock start `60822599` / `1943.3.22.0`, live clock end and compact
+  record hour `60823344` / `1943.4.22.1`;
+- the running game advanced `745` game hours during the Python root walk, so
+  this proof rejects a Python full-root scan as the production hourly capture
+  path;
+- compact domain-47 record decoded with `parse_errors=[]`, `status_flags_or=0`,
+  `schema_flags_or=7`, `28116` total rows: `13290` character, `1288`
+  unit-leader, `3164` unit-leader-trait, `1941` country-leader-role, `55`
+  active-ruler, `8378` advisor-roster, `0` appointed-advisor, and `0`
+  character-portrait rows;
+- `replay_record_verify` packed `domain47_record.bin` into
+  `native_session.battleplan`, byte-compared `749547` collector stream bytes,
+  and returned `result=verified`;
+- independent `pack_replay verify` returned `verify: OK` for
+  `characters_leaders_cabinet_live_domain47_record`.
+
+Live clock cadence proof
+`replay_native/runs/characters_leaders_cabinet_live_20260701_live_cadence_probe_v2/`
+samples the current process date root `gamestate+0x468` through candidate RVA
+`0x3316E90`. With `--poll-s 0.05`, it observed `10` advanced game hours,
+`0` skipped hours, and `112` valid samples before stopping at the target. This
+proves the live fixture can expose hourly/current-equivalent clock movement
+without skips; it does not prove domain-47 extraction cadence, because the full
+domain-47 root walk above is too slow outside the shared native root cache and
+scheduled adapter.
+
+Native scheduled adapter proof
+`replay_native/runs/characters_leaders_cabinet_live_20260701_scheduled_adapter_benchmark_v1/`
+validates the lane-owned hot-loop strategy without Python or save data in the
+scheduled path:
+
+- release command:
+  `cargo run --release --manifest-path replay_native\lanes\characters_leaders_cabinet_live\Cargo.toml --bin scheduled_adapter_benchmark -- --frames 120 --out-dir replay_native\runs\characters_leaders_cabinet_live_20260701_scheduled_adapter_benchmark_v1`;
+- `scheduled::read_native_scheduled_frame` consumed a `NativeRootCache` plus
+  per-frame `NativeFrameInput`, then ran the adapter, compact encoder, and gate;
+- scale matched the current live row family shape: `13290` character, `1288`
+  unit-leader, `3164` trait, `1941` country-leader-role, `55` active-ruler,
+  `8378` advisor-roster, `3` appointed-advisor, and `128` portrait rows;
+- `120` native frames emitted `28247` rows each, with
+  `avg_read_time_us=49304`, `max_read_time_us=102401`, `status_flags_or=0`,
+  `schema_flags_or=7`, and `parse_errors=[]`;
+- the last wrapped compact record (`787241` bytes) decoded through
+  `replay_record_verify`, packed into `.battleplan`, byte-compared its stream,
+  and passed independent `pack_replay verify`.
+
+Native scheduled cadence budget proof
+`replay_native/runs/characters_leaders_cabinet_live_20260701_scheduled_cadence_budget_v1/`
+validates that the cached-root scheduled read/encode/gate cost fits the current
+observed live-hour budget:
+
+- command:
+  `python replay_native\lanes\characters_leaders_cabinet_live\scheduled_cadence_budget.py --benchmark replay_native\runs\characters_leaders_cabinet_live_20260701_scheduled_adapter_benchmark_v1\scheduled_adapter_benchmark.json --cadence replay_native\runs\characters_leaders_cabinet_live_20260701_live_cadence_probe_v2\live_cadence_probe.json --out-dir replay_native\runs\characters_leaders_cabinet_live_20260701_scheduled_cadence_budget_v1`;
+- result: `validated`, `observed_hour_wall_us=587700`,
+  `avg_fraction_of_observed_hour=0.0839`,
+  `max_fraction_of_observed_hour=0.1742`;
+- budget checks pass: average scheduled cost is below one quarter of the
+  observed live hour and max scheduled cost is below one half of the observed
+  live hour.
+
+This proof does not claim shared DLL production capture. It removes the
+lane-owned native scheduling/encoding/gating implementation as a blocker; the
+remaining shared work is population of `NativeRootCache`, per-frame
+`NativeFrameInput`, and coordinator append wiring.
+
+Adapter fixture proof
+`replay_native/runs/characters_leaders_cabinet_live_20260701_adapter_fixture_v1/`
+validates the lane-local `CollectorState`-shape adapter and compact row closure:
+
+- source is a Rust fake-memory fixture routed through
+  `adapter::build_lane_frame_from_adapter_input`, not shared DLL capture;
+- `adapter_fixture_gate` result `validated`, domain `47`, `status_flags_or=0`,
+  `schema_flags_or=7`, and `parse_errors=[]`;
+- emitted exactly one row from every domain-47 row family: `character`,
+  `unit_leader`, `unit_leader_trait`, `country_leader_role`, `active_ruler`,
+  `advisor_roster`, `appointed_advisor`, and `character_portrait`;
+- adapter stats have `rejected_roots=0`, `missing_trait_tokens=0`, and
+  `portrait_rows=1`;
+- the adapter record was packed through `replay_record_verify` into
+  `native_session.battleplan`, byte-compared against the compact stream, and
+  independently verified with `pack_replay verify`.
+
+This removes the lane-local adapter/schema blocker for portraits and appointed
+advisor state. It still does not satisfy live production extraction because the
+shared collector has not been wired to provide the root cache/static metadata
+and scheduled adapter call.
+
 Static semantic closure proof
 `replay_native/runs/characters_leaders_cabinet_live_20260701_static_semantic_closure_v1/`
 adds lane-local replay semantics from game character definitions without adding
@@ -274,9 +403,10 @@ inventories the remaining deeper field backlog after static semantic closure:
   character-row token/name emission is wired.
 - portraits are static `common/characters` metadata. The v2 matrix validates
   `4941` static characters with portrait blocks and `6289` portrait entries
-  (`army=4737`, `civilian=1492`, `navy=60`) but parks them as a schema/static
-  sidecar gap because current domain-47 rows have no portrait field and generic
-  character rows still emit `0/14071` tokens.
+  (`army=4737`, `civilian=1492`, `navy=60`). Domain 47 now has a compact
+  `character_portrait` row and the adapter fixture emits one validated portrait
+  row. Live refresh still has `0` portrait rows because the shared collector is
+  not yet feeding static portrait metadata into the scheduled domain-47 hook.
 - unit-leader XP/skill/stat/trait compact coverage is complete for emitted
   unit-leader rows (`1533/1533` skill, XP, and stat rows; `3884`
   unit-leader-trait rows). Runtime army/fleet command assignment remains an
@@ -294,11 +424,15 @@ inventories the remaining deeper field backlog after static semantic closure:
   `CCountryLeader+0x08 -> CCharacter`, and the politics-side active-ruler chain.
   Runtime command assignment remains an OOB/navy concern, and scripted/effect
   relationships require a separate decoder.
-- shared adapter closure is hard-blocked until the one injected collector
-  populates the lane-owned `LaneFrame` from `CollectorState`, country identity,
-  politics active ideas, and validated character/advisor/leader roots. The exact
-  lane-local adapter plan is
-  `replay_native/lanes/characters_leaders_cabinet_live/LANEFRAME_ADAPTER_PLAN.md`.
+- shared adapter closure is narrowed to the shared root-cache/scheduler hook.
+  The lane-local adapter now populates `LaneFrame` from typed roots, country
+  identity, politics active ideas, validated character/advisor/leader roots, and
+  static portraits. The remaining shared work is to build those
+  `AdapterInput` values from the one injected collector and append the
+  lane-owned payload through the shared coordinator. Exact plans:
+  `replay_native/lanes/characters_leaders_cabinet_live/LANEFRAME_ADAPTER_PLAN.md`
+  and
+  `replay_native/lanes/characters_leaders_cabinet_live/DOMAIN47_SHARED_ADAPTER_HOOK_PLAN.md`.
 
 ## Compact Payload
 
@@ -315,6 +449,7 @@ The payload is pointer-free and uses a per-record string table. Row kinds:
 - `active_ruler`
 - `advisor_roster`
 - `appointed_advisor`
+- `character_portrait`
 
 The row split is intentional:
 
@@ -327,6 +462,9 @@ The row split is intentional:
   string and a required compact `cabinet_bucket` enum in the existing `ledger`
   string field. The enum is the recorder-facing cabinet grouping; the raw slot is
   retained as source evidence.
+- character portrait rows carry static `common/characters` portrait metadata
+  joined to validated live character identity. They are omitted unless the
+  `(country_tag_db_id, char_id)` identity is known from live rows.
 
 ## Integration Plan
 

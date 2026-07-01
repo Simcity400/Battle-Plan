@@ -30,6 +30,8 @@ import winmem  # noqa: E402
 from deep_common import LBRACE, atom_value, iter_block_entries, to_float, to_int  # noqa: E402
 
 STATE_GARRISON_READ_SIZE = 0x180
+DIRECT_CHILD_READ_SIZE = 0x300
+DIRECT_CHILD_CAP_PER_ROW = 32
 FLOAT_TOLERANCE = 0.0007
 MIN_VALIDATE_ROWS = 20
 MIN_VALIDATE_RATIO = 0.95
@@ -41,6 +43,8 @@ FIELD_DEFAULTS = {
     "strength_ratio": 1.0,
     "garrison_required": 0.0,
     "army_manpower_need": 0.0,
+    "manpower_pool_value": 0.0,
+    "reinforcement_request_count": 0,
 }
 
 PINNED_SCALAR_CANDIDATES = {
@@ -235,6 +239,27 @@ def parse_save_garrison_rows(text):
     return out, meta
 
 
+def direct_child_roots(p, blob, target_vtables):
+    roots = []
+    for offset, child in rem.iter_heap_ptrs(blob):
+        child_blob = p.try_read(child, DIRECT_CHILD_READ_SIZE)
+        if not child_blob or len(child_blob) < 0x20:
+            continue
+        vtable = struct.unpack_from("<Q", child_blob, 0)[0]
+        roots.append(
+            {
+                "parent_offset": offset,
+                "ptr": child,
+                "vtable": vtable,
+                "kind": target_vtables.get(vtable, "unclassified"),
+                "blob": child_blob,
+            }
+        )
+        if len(roots) >= DIRECT_CHILD_CAP_PER_ROW:
+            break
+    return roots
+
+
 def live_garrison_rows(p, rows, status_by_tag, tbl):
     target_vtables = {
         p.module_base + rem.COUNTRY_OCCUPATION_DATA_VTABLE_RVA: "country_occupation_data",
@@ -242,6 +267,7 @@ def live_garrison_rows(p, rows, status_by_tag, tbl):
         p.module_base + live_probe.OCCUPATION_LAW_VTABLE_RVA: "occupation_law",
         p.module_base + live_probe.STATE_VTABLE_RVA: "state",
     }
+    child_target_vtables = rem.target_vtables_for_graph(p)
     state_ptr_to_id = {
         row["state_ptr"]: row["state_id"]
         for row in rows
@@ -313,6 +339,7 @@ def live_garrison_rows(p, rows, status_by_tag, tbl):
                     "entry_offset": entry_offset,
                     "garrison_ptr": garrison_ptr,
                     "blob": blob,
+                    "direct_child_roots": direct_child_roots(p, blob, child_target_vtables),
                 }
     return out
 
@@ -326,6 +353,8 @@ def iter_candidate_values(blob):
         f32 = struct.unpack("<f", chunk4)[0]
         yield "i32", offset, i32
         yield "u32", offset, u32
+        yield "fixed1000_i32", offset, i32 / 1000.0
+        yield "fixed10000_i32", offset, i32 / 10000.0
         yield "fixed100000_i32", offset, i32 / 100000.0
         if math.isfinite(f32) and abs(f32) < 1e9:
             yield "f32", offset, f32
@@ -336,6 +365,8 @@ def iter_candidate_values(blob):
         f64 = struct.unpack("<d", chunk8)[0]
         yield "i64", offset, i64
         yield "u64", offset, u64
+        yield "fixed1000_i64", offset, i64 / 1000.0
+        yield "fixed10000_i64", offset, i64 / 10000.0
         yield "fixed100000_i64", offset, i64 / 100000.0
         if math.isfinite(f64) and abs(f64) < 1e12:
             yield "f64", offset, f64
@@ -347,6 +378,10 @@ def matches_value(field, expected, actual):
     if field in ("strength_ratio", "garrison_required"):
         return isinstance(actual, (int, float)) and abs(float(actual) - float(expected)) <= FLOAT_TOLERANCE
     if field == "army_manpower_need":
+        return isinstance(actual, (int, float)) and abs(float(actual) - float(expected)) <= 0.01
+    if field in ("manpower_pool_value",) or field.startswith("equipment_need:"):
+        return isinstance(actual, (int, float)) and abs(float(actual) - float(expected)) <= 0.05
+    if field == "reinforcement_request_count":
         return isinstance(actual, (int, float)) and abs(float(actual) - float(expected)) <= 0.01
     return False
 
@@ -370,7 +405,7 @@ def add_count_capped(counts, value, cap=VALUE_COUNT_CAP):
 def is_nondefault(field, value):
     if value is None:
         return False
-    default = FIELD_DEFAULTS.get(field)
+    default = 0.0 if field.startswith("equipment_need:") else FIELD_DEFAULTS.get(field)
     if default is None:
         return True
     tolerance = FLOAT_TOLERANCE if isinstance(default, float) else 0.01
@@ -530,6 +565,525 @@ def classify_candidates(matches):
     return out
 
 
+def classify_child_candidates(matches):
+    field_names = ("strength_ratio", "garrison_required", "army_manpower_need")
+    child_offset_rows = {}
+    known_vtable_counts = {}
+    for live, _oracle in matches:
+        seen_offsets = set()
+        for child in live.get("direct_child_roots") or []:
+            parent_offset = child["parent_offset"]
+            if parent_offset not in seen_offsets:
+                rec = child_offset_rows.setdefault(
+                    parent_offset,
+                    {
+                        "parent_offset": hx(parent_offset),
+                        "rows": 0,
+                        "kind_counts": {},
+                        "vtable_counts": {},
+                        "samples": [],
+                    },
+                )
+                rec["rows"] += 1
+                seen_offsets.add(parent_offset)
+            rec = child_offset_rows[parent_offset]
+            kind = child.get("kind") or "unclassified"
+            rec["kind_counts"][kind] = rec["kind_counts"].get(kind, 0) + 1
+            if kind != "unclassified":
+                known_vtable_counts[kind] = known_vtable_counts.get(kind, 0) + 1
+            if len(rec["vtable_counts"]) < VALUE_COUNT_CAP:
+                vtable_key = hx(child.get("vtable"))
+                rec["vtable_counts"][vtable_key] = rec["vtable_counts"].get(vtable_key, 0) + 1
+            else:
+                rec["vtable_counts"]["<more>"] = rec["vtable_counts"].get("<more>", 0) + 1
+            if len(rec["samples"]) < 6:
+                rec["samples"].append(
+                    {
+                        "state_id": live["state_id"],
+                        "controller_tag": live["controller_tag"],
+                        "occupied_tag": live["occupied_tag"],
+                        "ptr": hx(child.get("ptr")),
+                        "kind": kind,
+                        "vtable": hx(child.get("vtable")),
+                    }
+                )
+
+    eligible_parent_offsets = {
+        offset for offset, rec in child_offset_rows.items() if rec["rows"] >= MIN_REJECT_ROWS
+    }
+    stats = {field: {} for field in field_names}
+    for live, oracle in matches:
+        for child in live.get("direct_child_roots") or []:
+            parent_offset = child["parent_offset"]
+            if parent_offset not in eligible_parent_offsets:
+                continue
+            kind = child.get("kind") or "unclassified"
+            for encoding, child_offset, actual in iter_candidate_values(child["blob"]):
+                key = (parent_offset, kind, encoding, child_offset)
+                for field in field_names:
+                    expected = oracle.get(field)
+                    if expected is None:
+                        continue
+                    rec = stats[field].setdefault(
+                        key,
+                        {
+                            "parent_offset": parent_offset,
+                            "kind": kind,
+                            "encoding": encoding,
+                            "child_offset": child_offset,
+                            "compared": 0,
+                            "matches": 0,
+                            "samples": [],
+                            "miss_samples": [],
+                            "actual_value_counts": {},
+                            "expected_value_counts": {},
+                            "nondefault_expected_rows": 0,
+                            "nondefault_expected_misses": 0,
+                        },
+                    )
+                    rec["compared"] += 1
+                    add_count_capped(rec["actual_value_counts"], actual)
+                    add_count_capped(rec["expected_value_counts"], expected)
+                    ok = matches_value(field, expected, actual)
+                    nondefault = is_nondefault(field, expected)
+                    if nondefault:
+                        rec["nondefault_expected_rows"] += 1
+                        if not ok:
+                            rec["nondefault_expected_misses"] += 1
+                            if len(rec["miss_samples"]) < 8:
+                                rec["miss_samples"].append(
+                                    {
+                                        "state_id": live["state_id"],
+                                        "controller_tag": live["controller_tag"],
+                                        "occupied_tag": live["occupied_tag"],
+                                        "law_name": live["law_name"],
+                                        "expected": expected,
+                                        "actual": actual,
+                                        "garrison_ptr": hx(live["garrison_ptr"]),
+                                        "child_ptr": hx(child.get("ptr")),
+                                    }
+                                )
+                    if ok:
+                        rec["matches"] += 1
+                        if len(rec["samples"]) < 8:
+                            rec["samples"].append(
+                                {
+                                    "state_id": live["state_id"],
+                                    "controller_tag": live["controller_tag"],
+                                    "occupied_tag": live["occupied_tag"],
+                                    "law_name": live["law_name"],
+                                    "expected": expected,
+                                    "actual": actual,
+                                    "garrison_ptr": hx(live["garrison_ptr"]),
+                                    "child_ptr": hx(child.get("ptr")),
+                                }
+                            )
+
+    field_results = {}
+    for field, by_key in stats.items():
+        ranked = sorted(
+            by_key.values(),
+            key=lambda rec: (rec["matches"], rec["matches"] / max(1, rec["compared"])),
+            reverse=True,
+        )
+        compact = []
+        for rec in ranked[:12]:
+            ratio = rec["matches"] / max(1, rec["compared"])
+            item = {
+                "parent_offset": hx(rec["parent_offset"]),
+                "kind": rec["kind"],
+                "encoding": rec["encoding"],
+                "child_offset": hx(rec["child_offset"]),
+                "compared": rec["compared"],
+                "matches": rec["matches"],
+                "match_ratio": ratio,
+                "actual_value_counts": rec["actual_value_counts"],
+                "expected_value_counts": rec["expected_value_counts"],
+                "nondefault_expected_rows": rec["nondefault_expected_rows"],
+                "nondefault_expected_misses": rec["nondefault_expected_misses"],
+                "samples": rec["samples"],
+                "miss_samples": rec["miss_samples"],
+            }
+            rejection = candidate_rejection(field, item)
+            if rejection:
+                item["candidate_verdict"] = rejection
+            compact.append(item)
+        threshold_candidates = [
+            item
+            for item in compact
+            if item["compared"] >= MIN_VALIDATE_ROWS
+            and item["match_ratio"] >= MIN_VALIDATE_RATIO
+        ]
+        threshold_scopes = sorted(
+            {
+                "%s/%s/%s@%s"
+                % (
+                    item["parent_offset"],
+                    item["kind"],
+                    item["encoding"],
+                    item["child_offset"],
+                )
+                for item in threshold_candidates
+            }
+        )
+        rejected_top_candidates = [
+            {
+                "parent_offset": item["parent_offset"],
+                "kind": item["kind"],
+                "encoding": item["encoding"],
+                "child_offset": item["child_offset"],
+                "matches": item["matches"],
+                "compared": item["compared"],
+                "match_ratio": item["match_ratio"],
+                "candidate_verdict": item["candidate_verdict"],
+                "nondefault_expected_rows": item["nondefault_expected_rows"],
+                "nondefault_expected_misses": item["nondefault_expected_misses"],
+            }
+            for item in compact
+            if item.get("candidate_verdict")
+        ]
+        verdict = "fixture_insufficient"
+        if len(threshold_scopes) == 1:
+            verdict = "validated_child_candidate"
+        elif len(threshold_scopes) > 1:
+            verdict = "ambiguous_child_candidate_fixture_required"
+        elif compact and rejected_top_candidates and not threshold_scopes:
+            verdict = "child_candidates_rejected_current_fixture"
+        elif not compact:
+            verdict = "no_child_candidate_values"
+        field_results[field] = {
+            "verdict": verdict,
+            "top_candidates": compact,
+            "threshold_scopes": threshold_scopes,
+            "threshold_candidate_count": len(threshold_candidates),
+            "rejected_top_candidates": rejected_top_candidates,
+        }
+
+    if not child_offset_rows:
+        verdict = "no_direct_child_roots"
+    elif any(rec["verdict"] == "validated_child_candidate" for rec in field_results.values()):
+        verdict = "validated_child_candidates"
+    elif any(
+        rec["verdict"] == "ambiguous_child_candidate_fixture_required"
+        for rec in field_results.values()
+    ):
+        verdict = "ambiguous_child_candidates_fixture_required"
+    elif all(
+        rec["verdict"] in ("child_candidates_rejected_current_fixture", "no_child_candidate_values")
+        for rec in field_results.values()
+    ):
+        verdict = "child_candidates_rejected_current_fixture"
+    else:
+        verdict = "fixture_insufficient"
+
+    return {
+        "verdict": verdict,
+        "matched_rows_with_child_roots": sum(
+            1 for live, _oracle in matches if live.get("direct_child_roots")
+        ),
+        "direct_child_root_count": sum(
+            len(live.get("direct_child_roots") or []) for live, _oracle in matches
+        ),
+        "eligible_parent_offsets": [hx(offset) for offset in sorted(eligible_parent_offsets)],
+        "known_vtable_counts": known_vtable_counts,
+        "parent_offsets": [
+            child_offset_rows[offset] for offset in sorted(child_offset_rows)
+        ],
+        "candidate_fields": field_results,
+        "contract": (
+            "Direct-child candidates are scanned only from heap pointers stored "
+            f"inside CStateGarrisonData+0x0..0x{STATE_GARRISON_READ_SIZE - 1:X}. "
+            f"Each readable child root is sampled for 0x{DIRECT_CHILD_READ_SIZE:X} "
+            "bytes and compared against the same same-key/same-law save rows. "
+            "A child candidate is wireable only with one threshold scope for a "
+            "field; rejected scopes are scoped to this direct-child scan and "
+            "primitive encodings."
+        ),
+    }
+
+
+def save_detail_summary(save_rows):
+    equipment_type_counts = {}
+    reinforcement_status_counts = {}
+    rows_with_progress = 0
+    manpower_single_tag_rows = 0
+    manpower_multi_tag_rows = 0
+    manpower_tag_matches_controller_rows = 0
+    for row in save_rows.values():
+        manpower_tags = {
+            item.get("tag")
+            for item in row.get("manpower_pool") or []
+            if item.get("tag")
+        }
+        if len(manpower_tags) == 1:
+            manpower_single_tag_rows += 1
+            if next(iter(manpower_tags)) == row.get("controller_tag"):
+                manpower_tag_matches_controller_rows += 1
+        elif len(manpower_tags) > 1:
+            manpower_multi_tag_rows += 1
+        for equipment_type in (row.get("equipment_need") or {}).keys():
+            equipment_type_counts[equipment_type] = equipment_type_counts.get(equipment_type, 0) + 1
+        for request in row.get("reinforcement_requests") or []:
+            status = request.get("status")
+            key = "none" if status is None else str(status)
+            reinforcement_status_counts[key] = reinforcement_status_counts.get(key, 0) + 1
+            if request.get("progress") is not None:
+                rows_with_progress += 1
+    return {
+        "manpower_pool_rows": sum(1 for row in save_rows.values() if row.get("manpower_pool")),
+        "manpower_single_tag_rows": manpower_single_tag_rows,
+        "manpower_multi_tag_rows": manpower_multi_tag_rows,
+        "manpower_tag_matches_controller_rows": manpower_tag_matches_controller_rows,
+        "equipment_need_rows": sum(1 for row in save_rows.values() if row.get("equipment_need")),
+        "reinforcement_request_rows": sum(
+            1 for row in save_rows.values() if row.get("reinforcement_requests")
+        ),
+        "equipment_type_counts": equipment_type_counts,
+        "reinforcement_status_counts": reinforcement_status_counts,
+        "reinforcement_requests_with_progress": rows_with_progress,
+    }
+
+
+def expected_detail_values(oracle, tag_to_id):
+    expected = {}
+    manpower_pool = oracle.get("manpower_pool") or []
+    manpower_values = [
+        float(item["value"])
+        for item in manpower_pool
+        if isinstance(item.get("value"), (int, float))
+    ]
+    if manpower_values:
+        expected["manpower_pool_value"] = sum(manpower_values)
+    for equipment_type, value in (oracle.get("equipment_need") or {}).items():
+        if isinstance(value, (int, float)):
+            expected[f"equipment_need:{equipment_type}"] = float(value)
+    if isinstance(oracle.get("reinforcement_requests"), list):
+        expected["reinforcement_request_count"] = len(oracle.get("reinforcement_requests") or [])
+    return expected
+
+
+def eligible_direct_child_offsets(matches):
+    counts = {}
+    for live, _oracle in matches:
+        seen = set()
+        for child in live.get("direct_child_roots") or []:
+            offset = child["parent_offset"]
+            if offset in seen:
+                continue
+            counts[offset] = counts.get(offset, 0) + 1
+            seen.add(offset)
+    return {offset for offset, count in counts.items() if count >= MIN_REJECT_ROWS}
+
+
+def iter_detail_scopes(live, eligible_child_offsets):
+    yield "inline", None, "state_garrison_data_inline", live["blob"], live["garrison_ptr"]
+    for child in live.get("direct_child_roots") or []:
+        parent_offset = child["parent_offset"]
+        if parent_offset not in eligible_child_offsets:
+            continue
+        yield "direct_child", parent_offset, child.get("kind") or "unclassified", child["blob"], child.get("ptr")
+
+
+def classify_detail_candidates(matches, save_rows, tag_to_id):
+    eligible_child_offsets = eligible_direct_child_offsets(matches)
+    stats = {}
+    compared_rows_by_field = {}
+    for live, oracle in matches:
+        expected_values = expected_detail_values(oracle, tag_to_id)
+        for field in expected_values:
+            compared_rows_by_field[field] = compared_rows_by_field.get(field, 0) + 1
+        if not expected_values:
+            continue
+        for scope_kind, parent_offset, root_kind, blob, root_ptr in iter_detail_scopes(
+            live, eligible_child_offsets
+        ):
+            for encoding, value_offset, actual in iter_candidate_values(blob):
+                key_scope = (
+                    scope_kind,
+                    parent_offset if parent_offset is not None else -1,
+                    root_kind,
+                    encoding,
+                    value_offset,
+                )
+                for field, expected in expected_values.items():
+                    rec = stats.setdefault(field, {}).setdefault(
+                        key_scope,
+                        {
+                            "scope_kind": scope_kind,
+                            "parent_offset": parent_offset,
+                            "root_kind": root_kind,
+                            "encoding": encoding,
+                            "value_offset": value_offset,
+                            "compared": 0,
+                            "matches": 0,
+                            "samples": [],
+                            "miss_samples": [],
+                            "actual_value_counts": {},
+                            "expected_value_counts": {},
+                            "nondefault_expected_rows": 0,
+                            "nondefault_expected_misses": 0,
+                        },
+                    )
+                    rec["compared"] += 1
+                    add_count_capped(rec["actual_value_counts"], actual)
+                    add_count_capped(rec["expected_value_counts"], expected)
+                    ok = matches_value(field, expected, actual)
+                    nondefault = is_nondefault(field, expected)
+                    if nondefault:
+                        rec["nondefault_expected_rows"] += 1
+                        if not ok:
+                            rec["nondefault_expected_misses"] += 1
+                            if len(rec["miss_samples"]) < 8:
+                                rec["miss_samples"].append(
+                                    {
+                                        "state_id": live["state_id"],
+                                        "controller_tag": live["controller_tag"],
+                                        "occupied_tag": live["occupied_tag"],
+                                        "law_name": live["law_name"],
+                                        "expected": expected,
+                                        "actual": actual,
+                                        "garrison_ptr": hx(live["garrison_ptr"]),
+                                        "root_ptr": hx(root_ptr),
+                                    }
+                                )
+                    if ok:
+                        rec["matches"] += 1
+                        if len(rec["samples"]) < 8:
+                            rec["samples"].append(
+                                {
+                                    "state_id": live["state_id"],
+                                    "controller_tag": live["controller_tag"],
+                                    "occupied_tag": live["occupied_tag"],
+                                    "law_name": live["law_name"],
+                                    "expected": expected,
+                                    "actual": actual,
+                                    "garrison_ptr": hx(live["garrison_ptr"]),
+                                    "root_ptr": hx(root_ptr),
+                                }
+                            )
+
+    field_results = {}
+    for field in sorted(compared_rows_by_field):
+        ranked = sorted(
+            stats.get(field, {}).values(),
+            key=lambda rec: (rec["matches"], rec["matches"] / max(1, rec["compared"])),
+            reverse=True,
+        )
+        compact = []
+        for rec in ranked[:12]:
+            ratio = rec["matches"] / max(1, rec["compared"])
+            item = {
+                "scope_kind": rec["scope_kind"],
+                "parent_offset": hx(rec["parent_offset"]) if rec["parent_offset"] is not None else None,
+                "root_kind": rec["root_kind"],
+                "encoding": rec["encoding"],
+                "value_offset": hx(rec["value_offset"]),
+                "compared": rec["compared"],
+                "matches": rec["matches"],
+                "match_ratio": ratio,
+                "actual_value_counts": rec["actual_value_counts"],
+                "expected_value_counts": rec["expected_value_counts"],
+                "nondefault_expected_rows": rec["nondefault_expected_rows"],
+                "nondefault_expected_misses": rec["nondefault_expected_misses"],
+                "samples": rec["samples"],
+                "miss_samples": rec["miss_samples"],
+            }
+            rejection = candidate_rejection(field, item)
+            if rejection:
+                item["candidate_verdict"] = rejection
+            compact.append(item)
+        threshold_candidates = [
+            item
+            for item in compact
+            if item["compared"] >= MIN_VALIDATE_ROWS
+            and item["match_ratio"] >= MIN_VALIDATE_RATIO
+        ]
+        threshold_scopes = sorted(
+            {
+                "%s/%s/%s/%s@%s"
+                % (
+                    item["scope_kind"],
+                    item["parent_offset"] or "inline",
+                    item["root_kind"],
+                    item["encoding"],
+                    item["value_offset"],
+                )
+                for item in threshold_candidates
+            }
+        )
+        rejected_top_candidates = [
+            {
+                "scope_kind": item["scope_kind"],
+                "parent_offset": item["parent_offset"],
+                "root_kind": item["root_kind"],
+                "encoding": item["encoding"],
+                "value_offset": item["value_offset"],
+                "matches": item["matches"],
+                "compared": item["compared"],
+                "match_ratio": item["match_ratio"],
+                "candidate_verdict": item["candidate_verdict"],
+                "nondefault_expected_rows": item["nondefault_expected_rows"],
+                "nondefault_expected_misses": item["nondefault_expected_misses"],
+            }
+            for item in compact
+            if item.get("candidate_verdict")
+        ]
+        if len(threshold_scopes) == 1:
+            verdict = "validated_detail_candidate"
+        elif len(threshold_scopes) > 1:
+            verdict = "ambiguous_detail_candidate_fixture_required"
+        elif compact and rejected_top_candidates and not threshold_scopes:
+            verdict = "detail_candidates_rejected_current_fixture"
+        elif not compact:
+            verdict = "no_detail_candidate_values"
+        else:
+            verdict = "fixture_insufficient"
+        field_results[field] = {
+            "verdict": verdict,
+            "compared_rows": compared_rows_by_field[field],
+            "top_candidates": compact,
+            "threshold_scopes": threshold_scopes,
+            "threshold_candidate_count": len(threshold_candidates),
+            "rejected_top_candidates": rejected_top_candidates,
+        }
+
+    if any(rec["verdict"] == "validated_detail_candidate" for rec in field_results.values()):
+        verdict = "validated_detail_candidates"
+    elif any(
+        rec["verdict"] == "ambiguous_detail_candidate_fixture_required"
+        for rec in field_results.values()
+    ):
+        verdict = "ambiguous_detail_candidates_fixture_required"
+    elif field_results and all(
+        rec["verdict"] in ("detail_candidates_rejected_current_fixture", "no_detail_candidate_values")
+        for rec in field_results.values()
+    ):
+        verdict = "detail_candidates_rejected_current_fixture"
+    elif not field_results:
+        verdict = "no_detail_fixture_rows"
+    else:
+        verdict = "fixture_insufficient"
+    return {
+        "verdict": verdict,
+        "save_detail_summary": save_detail_summary(save_rows),
+        "eligible_child_offsets": [hx(offset) for offset in sorted(eligible_child_offsets)],
+        "candidate_fields": field_results,
+        "contract": (
+            "Detail candidates cover save garrison manpower_pool values, "
+            "equipment_need values by equipment token, and reinforcement request "
+            "count. Manpower pool tags are summarized separately; in the current "
+            "fixture every manpower pool has one tag and it matches the emitted "
+            "controller tag, so it is not an independent garrison vector proof. "
+            "Candidate values are scanned across the inline CStateGarrisonData "
+            "blob and the same direct/root pointer scopes as scalar candidates. "
+            "A detail field is wireable only with one threshold scope; otherwise "
+            "the lane must keep manpower/equipment detail unavailable until a "
+            "controlled same-hour or one-variable fixture classifies the vector "
+            "layout."
+        ),
+    }
+
+
 def write_md(out_dir, proof):
     lines = [
         "# Garrison Scalar Probe",
@@ -591,6 +1145,94 @@ def write_md(out_dir, proof):
                     )
         else:
             lines.append("- `%s`: `%s`, no candidates" % (field, rec["verdict"]))
+    child_probe = proof.get("child_root_probe") or {}
+    lines.extend(
+        [
+            "",
+            "## Direct Child Roots",
+            "",
+            "- Verdict: `%s`" % child_probe.get("verdict"),
+            "- Matched rows with child roots: `%s`"
+            % child_probe.get("matched_rows_with_child_roots"),
+            "- Direct child root count: `%s`" % child_probe.get("direct_child_root_count"),
+            "- Eligible parent offsets: `%s`"
+            % ", ".join(child_probe.get("eligible_parent_offsets") or []),
+            "- Known child vtables: `%s`" % (child_probe.get("known_vtable_counts") or {}),
+            "",
+        ]
+    )
+    for field, rec in (child_probe.get("candidate_fields") or {}).items():
+        best = rec["top_candidates"][0] if rec["top_candidates"] else None
+        if not best:
+            lines.append("- `%s`: `%s`, no child candidates" % (field, rec["verdict"]))
+            continue
+        lines.append(
+            "- `%s`: `%s`, best parent `%s` `%s` `%s @ %s`, `%d/%d` matches, "
+            "threshold scopes `%s`, rejected top candidates `%d`"
+            % (
+                field,
+                rec["verdict"],
+                best["parent_offset"],
+                best["kind"],
+                best["encoding"],
+                best["child_offset"],
+                best["matches"],
+                best["compared"],
+                ", ".join(rec.get("threshold_scopes") or []),
+                len(rec.get("rejected_top_candidates") or []),
+            )
+        )
+    detail_probe = proof.get("detail_probe") or {}
+    detail_summary = detail_probe.get("save_detail_summary") or {}
+    lines.extend(
+        [
+            "",
+            "## Manpower / Equipment Detail",
+            "",
+            "- Verdict: `%s`" % detail_probe.get("verdict"),
+            "- Save rows with manpower pool: `%s`"
+            % detail_summary.get("manpower_pool_rows"),
+            "- Manpower pool single-tag / multi-tag rows: `%s/%s`"
+            % (
+                detail_summary.get("manpower_single_tag_rows"),
+                detail_summary.get("manpower_multi_tag_rows"),
+            ),
+            "- Manpower pool tag matches controller rows: `%s`"
+            % detail_summary.get("manpower_tag_matches_controller_rows"),
+            "- Save rows with equipment need: `%s`"
+            % detail_summary.get("equipment_need_rows"),
+            "- Save rows with reinforcement requests: `%s`"
+            % detail_summary.get("reinforcement_request_rows"),
+            "- Equipment types: `%s`" % (detail_summary.get("equipment_type_counts") or {}),
+            "- Reinforcement status counts: `%s`"
+            % (detail_summary.get("reinforcement_status_counts") or {}),
+            "",
+        ]
+    )
+    for field, rec in (detail_probe.get("candidate_fields") or {}).items():
+        best = rec["top_candidates"][0] if rec["top_candidates"] else None
+        if not best:
+            lines.append("- `%s`: `%s`, no detail candidates" % (field, rec["verdict"]))
+            continue
+        lines.append(
+            "- `%s`: `%s`, compared rows `%d`, best `%s` parent `%s` `%s` "
+            "`%s @ %s`, `%d/%d` matches, threshold scopes `%s`, rejected top "
+            "candidates `%d`"
+            % (
+                field,
+                rec["verdict"],
+                rec["compared_rows"],
+                best["scope_kind"],
+                best["parent_offset"] or "inline",
+                best["root_kind"],
+                best["encoding"],
+                best["value_offset"],
+                best["matches"],
+                best["compared"],
+                ", ".join(rec.get("threshold_scopes") or []),
+                len(rec.get("rejected_top_candidates") or []),
+            )
+        )
     lines.extend(
         [
             "",
@@ -599,6 +1241,10 @@ def write_md(out_dir, proof):
             proof["field_contract"],
             "",
             proof.get("rejection_contract", ""),
+            "",
+            child_probe.get("contract", ""),
+            "",
+            detail_probe.get("contract", ""),
         ]
     )
     (out_dir / "garrison_scalar_PROOF.md").write_text(
@@ -615,6 +1261,7 @@ def run(out_dir, save_melt):
     with p:
         fp = live_probe.checked_fingerprint(p)
         tbl = tag_table.TagTable.locate(p)
+        tag_to_id = {tag: tag_id for tag_id, tag in tbl.as_map().items()}
         roots = live_probe.resolve_state_roots(p)
         status_by_tag, status_summary = live_probe.read_country_occupation_status(
             p, roots["game_state"], tbl
@@ -647,6 +1294,8 @@ def run(out_dir, save_melt):
         matched.append((live, oracle))
 
     candidate_fields = classify_candidates(matched)
+    child_root_probe = classify_child_candidates(matched)
+    detail_probe = classify_detail_candidates(matched, save_rows, tag_to_id)
     validated = [
         field
         for field, rec in candidate_fields.items()
@@ -661,6 +1310,26 @@ def run(out_dir, save_melt):
         verdict = "validated_scalar_candidates"
     elif ambiguous:
         verdict = "ambiguous_scalar_candidates_fixture_required"
+    elif child_root_probe["verdict"] == "validated_child_candidates":
+        verdict = "validated_child_scalar_candidates"
+    elif child_root_probe["verdict"] == "ambiguous_child_candidates_fixture_required":
+        verdict = "ambiguous_child_scalar_candidates_fixture_required"
+    elif detail_probe["verdict"] == "validated_detail_candidates":
+        verdict = "validated_detail_candidates"
+    elif detail_probe["verdict"] == "ambiguous_detail_candidates_fixture_required":
+        verdict = "ambiguous_detail_candidates_fixture_required"
+    elif (
+        candidate_fields
+        and all(
+            rec["verdict"] == "inline_candidates_rejected_current_fixture"
+            for rec in candidate_fields.values()
+        )
+        and child_root_probe["verdict"]
+        in ("no_direct_child_roots", "child_candidates_rejected_current_fixture")
+        and detail_probe["verdict"]
+        in ("no_detail_fixture_rows", "detail_candidates_rejected_current_fixture")
+    ):
+        verdict = "scanned_garrison_candidates_rejected_current_fixture"
     else:
         verdict = "fixture_insufficient"
     proof = {
@@ -688,6 +1357,8 @@ def run(out_dir, save_melt):
             "law_mismatches_sample": law_mismatches,
         },
         "candidate_fields": candidate_fields,
+        "child_root_probe": child_root_probe,
+        "detail_probe": detail_probe,
         "verdict": verdict,
         "field_contract": (
             "Only fields with verdict validated_candidate are safe to wire. "

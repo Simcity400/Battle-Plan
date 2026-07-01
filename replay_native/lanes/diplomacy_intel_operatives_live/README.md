@@ -42,7 +42,10 @@ Not owned here:
 - `domain44_compact.rs`: reserved production compact domain `53` schema, encoder,
   decoder, and gate tests. The file name is historical from the provisional
   package; the packet constant is `DOMAIN_ID_PROPOSED = 53`, and the
-  integration-facing decoder summary type is `Domain53GateSummary`.
+  integration-facing decoder summary type is `Domain53GateSummary`. v24 adds
+  implicit tail `compact_state_event_rows` for validated state observations;
+  v26 extends those observations with relation-opinion and country faction-group
+  source counters.
 - `domain44_slot_ready.rs`: lane-local integration admission layer. It wraps the
   compact encoder/decoder with source-proof bits so a future shared integration
   slot can emit only domain `53` rows backed by current `870ebf` roots, while
@@ -68,10 +71,32 @@ Not owned here:
   incoming-action roots. It consumes current proof artifacts plus an optional
   same-tick fixture JSON and exits `2` with exact blocker evidence until all
   four surfaces have current-build accepted roots.
+- `full_slice_closure_gate.py`: stricter lane-owner closure gate for the full
+  assigned diplomacy/intel/operatives slice. It consumes the refreshed
+  diplomacy, intel, war, operation, residual, and replay proof artifacts and
+  keeps the lane `NOT COMPLETE` unless war lifecycle detail, diplomacy
+  actions/queues, intel map percentages, operations, operatives, spy networks,
+  agency state, and compact event/state records are all proven through the
+  production-shaped path.
 - `INTEGRATION_PATCH_PLAN.md`: exact registration-only shared patch plan for
   when the orchestrator opens an integration slot.
 - `REGISTRATION_PATCH_PACKET.md`: concrete shared registry, collector
   coordinator, and recorder hook packet for the integration owner.
+- `OPERATIVE_LIFECYCLE_REGISTRATION_PATCH.md`: exact shared collector/recorder
+  patch details for preserving v20 `operative_lifecycle_rows` through domain 53.
+- `validate_operative_lifecycle_registration_patch.py`: lane-local verifier for
+  the lifecycle registration patch details and v20 proof counters.
+- `AGENCY_CAPACITY_REGISTRATION_PATCH.md`: exact shared collector/recorder patch
+  details for preserving v22 raw `agency_capacity_cluster_rows`.
+- `validate_agency_capacity_registration_patch.py`: lane-local verifier for the
+  raw agency-capacity registration details, v16 semantic rejection proof, and
+  v22 proof counters.
+- `STATE_EVENTS_REGISTRATION_PATCH.md`: exact shared collector/recorder patch
+  details for preserving v26 `compact_state_event_rows`.
+- `validate_state_events_registration_patch.py`: lane-local verifier for the
+  state-event registration details, v26 proof counters, and proposed
+  master-contract row wording that keeps the concept rows open without directly
+  editing the orchestrator-owned master file.
 
 The shared collector already has compact domain `17` for country-level diplomacy
 (`faction_group`, at-war tags, and casualties). This lane's schema is wider and
@@ -118,8 +143,15 @@ Current `870ebf` production roots validated by the lane-local probe:
   after 250 ms.
 - Agency: `country_object+0xFC0 -> CIntelligenceAgency`, vtable
   `module+0x296B338`; name `+0x80`, icon `+0xA0`, upgrade progress `+0xC8`,
-  max operatives `+0xE4`, usable slots `+0xF0`, usable mirror `+0xF4`,
-  defense `+0x128`.
+  defense `+0x128`. Capacity cluster `+0xE4/+0xF0/+0xF4` is narrowed but not
+  fully named: current v16 proof warm-validated 102/102 agency rows, found
+  `+0xE4 == +0xF4` for 102/102, and rejected the old
+  `max_operative_count=+0xE4, usable_operative_slots=+0xF0` assignment because
+  three stable rows had `+0xF0 > +0xE4`. The supported candidate is
+  `+0xF0=max` and `+0xE4/+0xF4=usable/current slots`, pending same-tick UI/save
+  semantic confirmation. v22 implements compact raw capacity-cluster rows for
+  these offsets and verifies `agency_capacity_cluster_rows=1` through Rust
+  decode and `.battleplan` packing without assigning final semantic labels.
 - Cryptology: `agency+0x120 -> CCryptology`, vtable `module+0x29A6540`;
   `manager+0x28 -> CCountryDecryptionState` records with stride `0x38`,
   record vtable `module+0x29A64F0`, target `record+0x08`, decryption byte
@@ -127,8 +159,11 @@ Current `870ebf` production roots validated by the lane-local probe:
 - Active operative identities: heap identity object with `(type=4713, op_id)`,
   real leader base `L = identity_addr - 0x8`, vtable
   `COperativeLeader=module+0x293F790`, duplicate UTF-8 names at
-  `identity+0x18/+0x38`, detected state `identity+0x68`, lifecycle
-  `identity+0x110 == 47`, owner `identity+0x118`.
+  `identity+0x18/+0x38`, detected state `identity+0x68`, lifecycle flag
+  `identity+0x110`, owner `identity+0x118`. v19 validates owner-valid lifecycle
+  flag cohorts `47=122`, `31=20`, and `63=10`; v20 carries those rooted flags
+  into compact operative lifecycle rows without assigning semantic names to
+  `31` or `63`.
 - Operative skill/experience: skill `u32[u64[L+0xE60]+0x1B8]`; experience
   `i64[L+0xE68] / 100000`.
 
@@ -188,17 +223,26 @@ Legacy `16022851` roots retained as research input only:
 Still not pinned:
 
 - War start-date/lifecycle detail decode. The current war row root and casualty
-  row shape are validated, but the embedded date object's scalar date fields and
-  higher-level war lifecycle grouping/name are not decoded yet. Relation-entry
-  pointer/range joins were also not observed in v13, so treat the row pool as a
-  validated slice: global tag-pair/casualty rows keyed by tag pair plus warm
-  address validation. Compact frames must carry
+  row shape are validated. v17 narrowed the date-scalar search by live-validating
+  512/512 accepted war rows and rejecting the inline DateHour candidate range
+  `row+0x10..row+0x3C` (`date-object+0x08..+0x34`): `row+0x10` decoded on all
+  rows but 34/512 values were after the current game date (`1943.3.23.4`), while
+  all other tested offsets failed full-row DateHour decode. Higher-level war
+  lifecycle grouping/name are still not decoded. Relation-entry pointer/range
+  joins were also not observed in v13, so treat the row pool as a validated
+  slice: global tag-pair/casualty rows keyed by tag pair plus warm address
+  validation. Compact frames must carry
   `STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED` until
   `SOURCE_PROOF_WAR_LIFECYCLE_DETAIL_870EBF` proves start-date scalar and war
   grouping/name extraction.
 - Running operation full detail. The current `870ebf` operation RTTI definition
   surface is pinned and the stale `16022851` operation-definition RVAs are
-  rejected, but the running `COperation` struct fields are still not decoded.
+  rejected. v18 also rejects the current `COperation` heap-hit set as active
+  running operation state: `COperationsDatabase 0x22BA619C890 +0x60` pointed to
+  a warm-stable table at `0x22BA625C050` with 38 `COperation` definition
+  pointers, matching the prior full-heap `COperation` count, with first null at
+  index 38. A running operation root still needs owner/target/progress/assigned
+  operative fields outside that rejected definition table.
   `final_residuals_live.py` remains old-build research input only.
 - Intel-map percentages. The save oracle parses positional
   `countries.<TAG>.intel.intel` rows, but no live owner/target percentage root is
@@ -207,6 +251,40 @@ Still not pinned:
   state/flags; no pending-action queue root is accepted by this lane.
   Until a root is validated, compact frames must carry
   `STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED`.
+- Spy-network graph. The save oracle treats strategic operative networks as a
+  separate graph surface; no current `870ebf` live owner/target network root is
+  accepted by this lane.
+- Full agency/operative lifecycle. Current roots cover agency scalars,
+  cryptology, active operative identity/detected state/skill/experience, but
+  not upgrade branch levels, current upgrade/building/recruitment pool,
+  agency capacity semantic labels, operative traits/nationalities/mission or
+  operation assignment, positive captured fixtures, or lifecycle event rows.
+  v19 narrows operative lifecycle by validating the broader current
+  `COperativeLeader` identity root and `identity+0x110` lifecycle flag cohorts:
+  classdesc/vtable RVA `0x293F790`, owner at `identity+0x118`, warm-stable
+  owner-valid counts `47=122`, `31=20`, `63=10`. v20 implements lane-local
+  compact operative lifecycle rows for those rooted flag cohorts and verifies
+  `operative_lifecycle_rows=3` through Rust decode and `.battleplan` packing.
+  These remain rooted numeric cohorts only; do not name `31` or `63` as
+  recruitable/captured semantics without same-tick UI/save evidence.
+- Full agency capacity semantics. v22 adds a separate compact raw-capacity row
+  so the replay can preserve `agency+0xE4`, `agency+0xF0`, and `agency+0xF4`
+  values while the final labels remain fixture-gated. Do not rename the existing
+  agency scalar fields or infer max/usable semantics from the raw row until the
+  UI/save fixture confirms them.
+- Full compact event/state stream. The lane-local `H4CR` proof verifies the
+  badged state payload and `.battleplan` packing. v21 validates exact shared
+  registration patch details for preserving compact operative lifecycle rows
+  through the generic Rust decoder counter merge. v23 validates exact shared
+  registration patch details for preserving raw agency capacity rows through the
+  same generic counter merge. v24 implements compact validated-state event rows
+  for relation flag, subject autonomy, agency scalar, agency capacity,
+  operative lifecycle, and cryptology observations. v26 adds relation-opinion
+  and country faction-group observations and verifies
+  `compact_state_event_rows=8` through Rust decode and `.battleplan` packing.
+  Shared DLL/Rust registration is not applied and event rows for the unresolved
+  war lifecycle, diplomacy queue, running operation, spy-network, and full
+  agency/operative semantics are not proven.
 
 The executable fixture contract for the remaining gaps is
 `remaining_root_fixture_gate.py`. Required fixture sections are
@@ -215,6 +293,9 @@ The executable fixture contract for the remaining gaps is
 the gate can clear those gaps. Use `fixture_contract.template.json` for the
 positive fixture shape.
 
+Use `full_slice_closure_gate.py` after the root fixture gate to produce the final
+full-slice `COMPLETE`/`NOT COMPLETE` report for this lane.
+
 ## Compact schema
 
 `domain44_compact.rs` encodes one payload with:
@@ -222,7 +303,23 @@ positive fixture shape.
 - header: elapsed wall time, row totals, status flags, schema version, scale, and
   per-kind counts;
 - row kinds: country diplomacy, war relation, opinion, relation flag, subject,
-  agency, operative, cryptology, operation anchor, and intel-map row;
+  agency, agency capacity cluster, operative, cryptology, operation anchor, and
+  intel-map row; v24/v26 append compact state-event tail rows as an implicit
+  extension count derived from `row_count - sum(header_per_kind_counts)`;
+- operative rows use `OPERATIVE_FLAG_LIFECYCLE_PRESENT` and the final `u32`
+  payload field for the rooted `identity+0x110` lifecycle flag. The decoder
+  reports these as `operative_lifecycle_rows`;
+- agency capacity-cluster rows carry raw `agency+0xE4`, `agency+0xF0`, and
+  `agency+0xF4` values plus a proof hash. The decoder reports these as
+  `agency_capacity_cluster_rows` and rejects rows where `+0xE4 != +0xF4`;
+- compact state-event rows carry observed validated state transitions as
+  `(owner, optional target, event_kind, source_kind, object_hash, value_hash,
+  value_raw)`. Current sources are relation flag, relation opinion, subject
+  autonomy, country faction group, agency scalar, agency capacity, operative
+  lifecycle, and cryptology. They are state observations for already validated
+  roots, not substitutes for unresolved war, diplomacy queue, running operation,
+  spy-network, or full agency/operative event streams. The decoder reports them
+  as `compact_state_event_rows` plus source-specific counters;
 - fail-closed flags for partial/resisted rows, especially operations detail and
   intel-map values.
 
@@ -247,7 +344,13 @@ slot handoff:
   `51=scripted_state_live`, and
   `52=occupation_resistance_compliance_live`;
 - current accepted source proofs are build SHA, country roots, relation roots,
-  agency root, cryptology root, operative root, and war root;
+  agency root, cryptology root, operative root with lifecycle flag cohorts, and
+  war root;
+- compact state-event rows require the source proof for the row source:
+  relation/opinion/subject events require relation roots, country faction-group
+  events require country roots, agency scalar/capacity events require agency
+  root, operative lifecycle events require operative root, and cryptology
+  events require cryptology root;
 - war rows and country war/casualty projections require
   `SOURCE_PROOF_WAR_ROOT_870EBF`;
 - war rows and country war/casualty projections remain lifecycle-incomplete
@@ -274,11 +377,18 @@ slot handoff:
      current `SOURCE_PROOF_WAR_ROOT_870EBF` row pool; suppress them if the
      current-build proof is absent or stale;
    - add relation-entry table walks for opinion, flags, and subjects;
-   - add agency, operative, skill/XP, and cryptology readers.
+   - add agency, operative identity/lifecycle flag, skill/XP, and cryptology
+     readers.
 4. Emit domain `53` `COMPACT_RECORD_TYPE_DOMAIN_DATA` records using the lane row
    layout.
 5. Add recorder-host decoder branch and manifest counters mirroring
    `Domain53GateSummary`.
+   - v21 requires preserving the generic `lane_summary.data_units_total` merge
+     so `operative_lifecycle_rows` is surfaced by the shared recorder.
+   - v26 also requires preserving `compact_state_event_rows` and source-specific
+     state-event counters; these rows carry validated state observations only
+     and do not clear the still-blocked war/queue/operation/spy-network event
+     surfaces.
 6. Run speed-five/current-equivalent proof requiring hourly-or-lower frames, zero
    skipped hours, no source/worker/bridge failures, and `.battleplan`
    verification.

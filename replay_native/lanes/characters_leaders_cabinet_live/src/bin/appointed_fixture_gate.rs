@@ -41,7 +41,7 @@ fn run() -> Result<(), String> {
     }
 
     println!(
-        "{{\"domain\":\"{}\",\"domain_id\":{},\"result\":\"validated\",\"transition_counts\":{{\"before\":{},\"after_add\":{},\"after_remove\":{}}},\"payload_bytes\":{},\"record_bytes\":{},\"advisor_roster_rows\":{},\"appointed_advisor_rows\":{},\"schema_flags_or\":{},\"parse_errors\":[]}}",
+        "{{\"domain\":\"{}\",\"domain_id\":{},\"result\":\"validated\",\"transition_counts\":{{\"before\":{},\"after_add\":{},\"after_remove\":{}}},\"payload_bytes\":{},\"record_bytes\":{},\"advisor_roster_rows\":{},\"appointed_advisor_rows\":{},\"character_portrait_rows\":{},\"schema_flags_or\":{},\"parse_errors\":[]}}",
         compact::DOMAIN_NAME,
         compact::DOMAIN_ID,
         before.len(),
@@ -51,6 +51,7 @@ fn run() -> Result<(), String> {
         record.len(),
         summary.advisor_roster_rows,
         summary.appointed_advisor_rows,
+        summary.character_portrait_rows,
         summary.schema_flags_or,
     );
     Ok(())

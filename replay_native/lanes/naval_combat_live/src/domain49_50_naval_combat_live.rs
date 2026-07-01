@@ -26,6 +26,7 @@ pub const LIFECYCLE_ATTACKER_COUNT_PRESENT: u32 = 1 << 2;
 pub const LIFECYCLE_DEFENDER_COUNT_PRESENT: u32 = 1 << 3;
 pub const LIFECYCLE_ATTACKER_POSITIONING_PRESENT: u32 = 1 << 4;
 pub const LIFECYCLE_DEFENDER_POSITIONING_PRESENT: u32 = 1 << 5;
+pub const LIFECYCLE_REGION_PRESENT: u32 = 1 << 6;
 
 pub const MEMBER_ROW_DELETED: u32 = 1 << 0;
 pub const MEMBER_SHIP_INSTANCE_PRESENT: u32 = 1 << 1;
@@ -49,6 +50,7 @@ pub const MAX_GROUP_INDEX: u32 = 64;
 pub const MAX_MEMBER_INDEX: u32 = 1_000;
 pub const MAX_BATTLE_SLOT_INDEX: u32 = 4_096;
 pub const MAX_LOCATION_ID: u32 = 1_000_000;
+pub const MAX_REGION_ID: u32 = 100_000;
 pub const MAX_DESIGNED_STRENGTH_RAW: u32 = 1_000_000_000;
 pub const MAX_FIXED_POINT_RAW: u32 = 1_000_000_000;
 pub const MAX_SUNK_CONVOYS: u32 = 1_000_000;
@@ -92,6 +94,7 @@ pub struct LifecycleRow {
     pub body_ptr: u64,
     pub deleted: bool,
     pub location_id: Option<u32>,
+    pub region_id: Option<u32>,
     pub attacker_member_count: Option<u32>,
     pub defender_member_count: Option<u32>,
     pub attacker_positioning_milli: Option<i32>,
@@ -102,6 +105,7 @@ pub struct LifecycleRow {
 pub struct MemberRow {
     pub combat_id: u32,
     pub generation: u64,
+    pub deleted: bool,
     pub side: CombatSide,
     pub group_index: u32,
     pub member_index: u32,
@@ -147,9 +151,12 @@ pub struct GateSummary {
     pub member_row_count: u64,
     pub active_combat_count: u64,
     pub two_sided_combat_count: u64,
+    pub lifecycle_location_row_count: u64,
+    pub lifecycle_region_row_count: u64,
     pub lifecycle_started_row_count: u64,
     pub lifecycle_updated_row_count: u64,
     pub lifecycle_ended_row_count: u64,
+    pub member_deleted_row_count: u64,
     pub cship_validated_member_count: u64,
     pub task_force_linked_member_count: u64,
     pub fleet_linked_member_count: u64,
@@ -189,11 +196,11 @@ struct DecodedLifecycleRow {
     generation: u64,
     flags: u32,
     location_id: u32,
+    region_id: u32,
     attacker_member_count: u32,
     defender_member_count: u32,
     attacker_positioning_milli: i32,
     defender_positioning_milli: i32,
-    reserved: u32,
 }
 
 #[derive(Debug)]
@@ -244,6 +251,9 @@ pub fn encode_lifecycle_payload(
         if row.location_id.is_some() {
             flags |= LIFECYCLE_LOCATION_PRESENT;
         }
+        if row.region_id.is_some() {
+            flags |= LIFECYCLE_REGION_PRESENT;
+        }
         if row.attacker_member_count.is_some() {
             flags |= LIFECYCLE_ATTACKER_COUNT_PRESENT;
         }
@@ -261,11 +271,11 @@ pub fn encode_lifecycle_payload(
         push_u64(&mut payload, row.body_ptr);
         push_u32(&mut payload, flags);
         push_u32(&mut payload, row.location_id.unwrap_or(0));
+        push_u32(&mut payload, row.region_id.unwrap_or(0));
         push_u32(&mut payload, row.attacker_member_count.unwrap_or(0));
         push_u32(&mut payload, row.defender_member_count.unwrap_or(0));
         push_i32(&mut payload, row.attacker_positioning_milli.unwrap_or(0));
         push_i32(&mut payload, row.defender_positioning_milli.unwrap_or(0));
-        push_u32(&mut payload, 0);
         push_u64(&mut payload, 0);
         push_u64(&mut payload, 0);
         push_u64(&mut payload, 0);
@@ -291,6 +301,9 @@ pub fn encode_member_payload(
     for row in rows {
         validate_member_row(row).expect("invalid member row");
         let mut flags = 0u32;
+        if row.deleted {
+            flags |= MEMBER_ROW_DELETED;
+        }
         if row.ship_instance_id.is_some() {
             flags |= MEMBER_SHIP_INSTANCE_PRESENT;
         }
@@ -400,9 +413,27 @@ pub fn decode_lifecycle_data_payload(offset: usize, payload: &[u8]) -> PayloadDe
     summary.status_flags_or |= header.status_flags;
     summary.row_count = rows.len() as u64;
     add_payload_unit(&mut summary, "naval_combat_lifecycle_rows", rows.len());
+    let mut location_rows = 0usize;
+    let mut region_rows = 0usize;
     for (row_index, row) in rows.iter().enumerate() {
         validate_decoded_lifecycle_row(offset, row_index, row, &mut errors);
+        if row.flags & LIFECYCLE_LOCATION_PRESENT != 0 {
+            location_rows = location_rows.saturating_add(1);
+        }
+        if row.flags & LIFECYCLE_REGION_PRESENT != 0 {
+            region_rows = region_rows.saturating_add(1);
+        }
     }
+    add_payload_unit(
+        &mut summary,
+        "naval_combat_lifecycle_location_rows",
+        location_rows,
+    );
+    add_payload_unit(
+        &mut summary,
+        "naval_combat_lifecycle_region_rows",
+        region_rows,
+    );
     summary.parse_errors = errors;
     summary
 }
@@ -423,6 +454,7 @@ pub fn decode_members_data_payload(offset: usize, payload: &[u8]) -> PayloadDeco
     add_payload_unit(&mut summary, "naval_combat_member_rows", rows.len());
     let mut cship_validated_rows = 0usize;
     let mut convoy_rows = 0usize;
+    let mut deleted_rows = 0usize;
     let mut task_force_linked_rows = 0usize;
     let mut fleet_linked_rows = 0usize;
     let mut hull_telemetry_rows = 0usize;
@@ -431,6 +463,9 @@ pub fn decode_members_data_payload(offset: usize, payload: &[u8]) -> PayloadDeco
         validate_decoded_member_row(offset, row_index, row, &mut errors);
         if row.flags & MEMBER_CSHIP_JOIN_VALIDATED != 0 {
             cship_validated_rows = cship_validated_rows.saturating_add(1);
+        }
+        if row.flags & MEMBER_ROW_DELETED != 0 {
+            deleted_rows = deleted_rows.saturating_add(1);
         }
         if row.flags & MEMBER_IS_CONVOY != 0 {
             convoy_rows = convoy_rows.saturating_add(1);
@@ -454,6 +489,11 @@ pub fn decode_members_data_payload(offset: usize, payload: &[u8]) -> PayloadDeco
         cship_validated_rows,
     );
     add_payload_unit(&mut summary, "naval_combat_convoy_member_rows", convoy_rows);
+    add_payload_unit(
+        &mut summary,
+        "naval_combat_member_deleted_rows",
+        deleted_rows,
+    );
     add_payload_unit(
         &mut summary,
         "naval_combat_task_force_linked_member_rows",
@@ -531,6 +571,14 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
                     .saturating_add(rows.len() as u64);
                 for (row_index, row) in rows.into_iter().enumerate() {
                     validate_decoded_lifecycle_row(record.offset, row_index, &row, &mut errors);
+                    if row.flags & LIFECYCLE_LOCATION_PRESENT != 0 {
+                        summary.lifecycle_location_row_count =
+                            summary.lifecycle_location_row_count.saturating_add(1);
+                    }
+                    if row.flags & LIFECYCLE_REGION_PRESENT != 0 {
+                        summary.lifecycle_region_row_count =
+                            summary.lifecycle_region_row_count.saturating_add(1);
+                    }
                     if row.flags & LIFECYCLE_ROW_DELETED == 0 {
                         let key = (row.combat_id, row.generation);
                         lifecycle_keys.insert(key);
@@ -567,6 +615,10 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
                     validate_decoded_member_row(record.offset, row_index, &row, &mut errors);
                     if row.flags & MEMBER_IS_CONVOY != 0 {
                         summary.convoy_member_count = summary.convoy_member_count.saturating_add(1);
+                    }
+                    if row.flags & MEMBER_ROW_DELETED != 0 {
+                        summary.member_deleted_row_count =
+                            summary.member_deleted_row_count.saturating_add(1);
                     }
                     if row.flags & MEMBER_CSHIP_JOIN_VALIDATED != 0 {
                         summary.cship_validated_member_count =
@@ -715,6 +767,18 @@ pub fn result_json(result: &GateResult) -> String {
     );
     push_json_u64_field(
         &mut out,
+        "lifecycle_location_row_count",
+        result.summary.lifecycle_location_row_count,
+        true,
+    );
+    push_json_u64_field(
+        &mut out,
+        "lifecycle_region_row_count",
+        result.summary.lifecycle_region_row_count,
+        true,
+    );
+    push_json_u64_field(
+        &mut out,
         "lifecycle_started_row_count",
         result.summary.lifecycle_started_row_count,
         true,
@@ -729,6 +793,12 @@ pub fn result_json(result: &GateResult) -> String {
         &mut out,
         "lifecycle_ended_row_count",
         result.summary.lifecycle_ended_row_count,
+        true,
+    );
+    push_json_u64_field(
+        &mut out,
+        "member_deleted_row_count",
+        result.summary.member_deleted_row_count,
         true,
     );
     push_json_u64_field(
@@ -854,11 +924,11 @@ fn decode_lifecycle_payload(
             generation: read_u64(payload, cursor + 4),
             flags: read_u32(payload, cursor + 20),
             location_id: read_u32(payload, cursor + 24),
-            attacker_member_count: read_u32(payload, cursor + 28),
-            defender_member_count: read_u32(payload, cursor + 32),
-            attacker_positioning_milli: read_i32(payload, cursor + 36),
-            defender_positioning_milli: read_i32(payload, cursor + 40),
-            reserved: read_u32(payload, cursor + 44),
+            region_id: read_u32(payload, cursor + 28),
+            attacker_member_count: read_u32(payload, cursor + 32),
+            defender_member_count: read_u32(payload, cursor + 36),
+            attacker_positioning_milli: read_i32(payload, cursor + 40),
+            defender_positioning_milli: read_i32(payload, cursor + 44),
         });
         cursor += LIFECYCLE_ROW_LEN;
     }
@@ -1003,11 +1073,6 @@ fn validate_decoded_lifecycle_row(
             row.combat_id
         ));
     }
-    if row.reserved != 0 {
-        errors.push(format!(
-            "offset {offset}: lifecycle row {row_index} reserved field is nonzero"
-        ));
-    }
     if row.flags & LIFECYCLE_LOCATION_PRESENT != 0
         && (row.location_id == 0 || row.location_id > MAX_LOCATION_ID)
     {
@@ -1019,6 +1084,29 @@ fn validate_decoded_lifecycle_row(
     if row.flags & LIFECYCLE_LOCATION_PRESENT == 0 && row.location_id != 0 {
         errors.push(format!(
             "offset {offset}: lifecycle row {row_index} has location without flag"
+        ));
+    }
+    if row.flags & LIFECYCLE_LOCATION_PRESENT == 0 {
+        errors.push(format!(
+            "offset {offset}: lifecycle row {row_index} is missing required location"
+        ));
+    }
+    if row.flags & LIFECYCLE_REGION_PRESENT != 0
+        && (row.region_id == 0 || row.region_id > MAX_REGION_ID)
+    {
+        errors.push(format!(
+            "offset {offset}: lifecycle row {row_index} invalid region_id {}",
+            row.region_id
+        ));
+    }
+    if row.flags & LIFECYCLE_REGION_PRESENT == 0 && row.region_id != 0 {
+        errors.push(format!(
+            "offset {offset}: lifecycle row {row_index} has region without flag"
+        ));
+    }
+    if row.flags & LIFECYCLE_REGION_PRESENT == 0 {
+        errors.push(format!(
+            "offset {offset}: lifecycle row {row_index} is missing required region"
         ));
     }
     if row.flags & LIFECYCLE_ATTACKER_COUNT_PRESENT == 0 && row.attacker_member_count != 0 {
@@ -1264,6 +1352,11 @@ fn validate_lifecycle_row(row: &LifecycleRow) -> Result<(), String> {
             return Err("invalid lifecycle location_id".to_string());
         }
     }
+    if let Some(region_id) = row.region_id {
+        if region_id == 0 || region_id > MAX_REGION_ID {
+            return Err("invalid lifecycle region_id".to_string());
+        }
+    }
     Ok(())
 }
 
@@ -1468,6 +1561,7 @@ mod tests {
             body_ptr: 0x22aa_0004_000,
             deleted: false,
             location_id: Some(2799),
+            region_id: Some(18),
             attacker_member_count: Some(1),
             defender_member_count: Some(1),
             attacker_positioning_milli: Some(812),
@@ -1477,6 +1571,7 @@ mod tests {
             MemberRow {
                 combat_id: 240_580,
                 generation: 1,
+                deleted: false,
                 side: CombatSide::Attacker,
                 group_index: 0,
                 member_index: 0,
@@ -1499,6 +1594,7 @@ mod tests {
             MemberRow {
                 combat_id: 240_580,
                 generation: 1,
+                deleted: false,
                 side: CombatSide::Defender,
                 group_index: 0,
                 member_index: 0,
@@ -1546,6 +1642,9 @@ mod tests {
         assert_eq!(result.summary.lifecycle_row_count, 1);
         assert_eq!(result.summary.member_row_count, 2);
         assert_eq!(result.summary.two_sided_combat_count, 1);
+        assert_eq!(result.summary.lifecycle_location_row_count, 1);
+        assert_eq!(result.summary.lifecycle_region_row_count, 1);
+        assert_eq!(result.summary.member_deleted_row_count, 0);
         assert_eq!(result.summary.cship_validated_member_count, 1);
         assert_eq!(result.summary.task_force_linked_member_count, 1);
         assert_eq!(result.summary.fleet_linked_member_count, 1);
@@ -1578,6 +1677,20 @@ mod tests {
                 .copied(),
             Some(1)
         );
+        assert_eq!(
+            lifecycle_summary
+                .data_units_total
+                .get("naval_combat_lifecycle_location_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            lifecycle_summary
+                .data_units_total
+                .get("naval_combat_lifecycle_region_rows")
+                .copied(),
+            Some(1)
+        );
 
         let member_summary = decode_members_data_payload(members.offset, members.payload);
         assert_eq!(member_summary.domain_id, DOMAIN_NAVAL_COMBAT_MEMBERS);
@@ -1603,6 +1716,13 @@ mod tests {
                 .get("naval_combat_convoy_member_rows")
                 .copied(),
             Some(1)
+        );
+        assert_eq!(
+            member_summary
+                .data_units_total
+                .get("naval_combat_member_deleted_rows")
+                .copied(),
+            Some(0)
         );
         assert_eq!(
             member_summary
@@ -1635,6 +1755,7 @@ mod tests {
             body_ptr: 0x22aa_0004_000,
             deleted: false,
             location_id: None,
+            region_id: None,
             attacker_member_count: Some(1),
             defender_member_count: Some(1),
             attacker_positioning_milli: None,
@@ -1661,6 +1782,7 @@ mod tests {
         let row = MemberRow {
             combat_id: 240_580,
             generation: 1,
+            deleted: false,
             side: CombatSide::Attacker,
             group_index: 0,
             member_index: 0,

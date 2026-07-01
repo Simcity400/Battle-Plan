@@ -22,7 +22,8 @@ Use the lane crate schema from
 
 Header, 48 bytes:
 
-- `u64 elapsed_wall_ms`
+- `u32 decision_target_count`
+- `u32 schema_flags_reserved_zero`
 - `u32 status_flags`
 - `u32 focus_event_count`
 - `u32 research_eta_count`
@@ -66,6 +67,13 @@ Rows:
 - Decision event row: fixed numeric prefix
   `tag_db_id, kind, flags, previous_days, current_days, previous_state,
   current_state`, then compact string `decision`.
+- Decision target row: fixed 16-byte prefix
+  `tag_db_id, target_id, flags, source_kind`, then compact string `decision`.
+  Current accepted rows require source kind `1`
+  (`active_targeted_timed_decision`) and either country target plus
+  `record+0x20` provenance flags or numeric target plus `record+0x24`
+  provenance flags. This row is lane-local proved only until the shared
+  collector/recorder patch lands.
 - Badge row: fixed 20-byte prefix
   `kind, flags, source_domain_id, affected_count, evidence_code`, then compact
   string `detail`.
@@ -111,18 +119,45 @@ granted.
    - for direct completed-focus closure, compact focus rows must include a
      bounded completed-token vector, or the depth tracker must receive an exact
      completed-token delta before the compact row discards it; do not rely only
-     on `completed_count` plus previous-current inference;
+     on `completed_count` plus previous-current inference. The exact completed
+     token hunk and proof results are in `SHARED_RESIDUAL_PATCH_PLAN.md`;
    - research rows from `CCountry+0xF60`, research slots, live progress, and
      base required points;
    - decision rows from `CCountry+0xFA0` and active timed decisions.
+   - for targeted-timed country targets, the residual save-oracle proof validates
+     `CDecisionStatus+0xE8` vtable `0x27D5038` `record+0x20` as the country
+     target `tag_db_id` for exact save/live matched country-target rows.
+   - for targeted-timed numeric targets, the residual save-oracle proof validates
+     `record+0x24` as the numeric target id for exact save/live matched
+     `target=<number>` rows. A shared patch may emit that field only with
+     fail-closed handling for rows whose future validation gate fails, whose
+     target semantics are not yet classified, or whose save/live transition row
+     is unmatched.
 5. Emit one depth domain data record per compact frame, before the frame-end
    record, with the same `game_hour_raw` as the frame.
 6. Keep fail-closed behavior:
-   - do not emit a focus pause boolean;
+   - do not emit a focus pause boolean from `CFocusStatus+0x20..+0x37`; that
+     byte window is rejected by the v2 focus pause gate. The bounded wider
+     `CFocusStatus+0x00..+0x7F` v2 gate rejects `100` outside-window offsets,
+     and the static v2 gap gate rejects the final `+0x3C..+0x3F` bytes by
+     CFocusStatus vtable-method qword-access evidence. Pause needs a
+     same-build paused=true watcher oracle or a root outside `CFocusStatus`
+     proven by exact static/dynamic evidence;
    - do not emit non-timed targeted/cooldown decision body token, target, or
      cooldown detail;
-   - do not emit targeted-timed target detail until `record+0x20` or another
-     target field is proven by a stronger invariant than tag-id coincidence;
+   - do not emit targeted-timed target detail except for the validated
+     `record+0x20` country-target `tag_db_id` subset and the validated
+     `record+0x24` numeric target id subset described above; keep unmatched
+     transition rows, numeric target semantic classification, and cooldown/
+     day/state fields fail-closed;
+   - do not add a direct focus/decision event hook from named callback strings;
+     the v1 event-hook candidate gate rejects the named decision-event and
+     focus-completion string routes for this build. Also do not promote the
+     five static text-xref anchors from that gate; the v1 static-contract gate
+     rejects them as registration/catalog arguments because each lives in
+     function `0x82CB0..0x11896F`, loads the string into `r8`, passes an `edx`
+     registration key plus `rcx` global registry pointer, and calls
+     `0x24AFC10`;
    - if the capture is running with `compact_country_frame=true`, verify that
      exact completed-focus tokens are still present in the depth payload before
      claiming direct completed-focus closure.
@@ -150,6 +185,8 @@ slot is granted.
    - `research_eta_rows`;
    - `decision_status_rows`;
    - `decision_event_rows`;
+   - `decision_target_rows`;
+   - `decision_country_target_rows`;
    - depth status flags.
 4. Add `.battleplan` manifest/index fields only after the decoder accepts the
    compact domain without parse errors.
@@ -161,6 +198,12 @@ Keep lane-local tests as fixtures until the integration slot lands:
 ```powershell
 cargo test --manifest-path replay_native\lanes\focus_research_decisions_depth_live\Cargo.toml
 ```
+
+Current lane-local target-row proof in that test suite:
+
+- `derives_targeted_timed_target_rows_from_extended_decisions_payload`;
+- `depth_gate_rejects_bad_decision_country_target_row`;
+- `depth_payload_round_trip_gates_transition_rows`.
 
 Integration tests to add with the shared patch:
 
@@ -191,4 +234,6 @@ After the shared patch is granted and applied:
    - zero skipped hours;
    - no source, partial, worker, or bridge failures.
 
-Until that proof exists, this lane remains `NOT COMPLETE`.
+Until the whole residual proof exists, this lane remains `NOT COMPLETE`.
+Residual-specific shared hunks that are not applied by this lane are tracked in
+`SHARED_RESIDUAL_PATCH_PLAN.md`.

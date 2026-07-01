@@ -1,0 +1,26 @@
+[package]
+name = "country_economy_counters_live_lane"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[lib]
+name = "country_economy_counters_live_lane"
+path = "src/lib.rs"
+
+[dependencies]
+serde_json = "1"
+snapshot = { path = "../../snapshot" }
+
+[[bin]]
+name = "counter_report"
+path = "src/bin/counter_report.rs"
+
+[[bin]]
+name = "counter_gate"
+path = "src/bin/counter_gate.rs"
+
+[[bin]]
+name = "replay_pack_proof"
+path = "src/bin/replay_pack_proof.rs"

@@ -53,6 +53,9 @@ fn run() -> Result<(), String> {
             "  \"research_eta_rows\": {research_eta_rows},\n",
             "  \"decision_status_rows\": {decision_status_rows},\n",
             "  \"decision_event_rows\": {decision_event_rows},\n",
+            "  \"decision_target_rows\": {decision_target_rows},\n",
+            "  \"decision_country_target_rows\": {decision_country_target_rows},\n",
+            "  \"decision_numeric_target_rows\": {decision_numeric_target_rows},\n",
             "  \"badge_rows\": {badge_rows},\n",
             "  \"focus_pause_badge_rows\": {focus_pause_badge_rows},\n",
             "  \"decision_target_badge_rows\": {decision_target_badge_rows},\n",
@@ -71,6 +74,9 @@ fn run() -> Result<(), String> {
         research_eta_rows = summary.research_eta_rows,
         decision_status_rows = summary.decision_status_rows,
         decision_event_rows = summary.decision_event_rows,
+        decision_target_rows = summary.decision_target_rows,
+        decision_country_target_rows = summary.decision_country_target_rows,
+        decision_numeric_target_rows = summary.decision_numeric_target_rows,
         badge_rows = summary.badge_rows,
         focus_pause_badge_rows = summary.focus_pause_badge_rows,
         decision_target_badge_rows = summary.decision_target_badge_rows,
@@ -89,12 +95,15 @@ fn run() -> Result<(), String> {
         out_dir.join("depth_gate_manifest.json").display()
     );
     println!(
-        "records={} focus_events={} exact_completed={} inferred_completed={} unresolved_completed={} badges={} errors={}",
+        "records={} focus_events={} exact_completed={} inferred_completed={} unresolved_completed={} decision_targets={} country_targets={} numeric_targets={} badges={} errors={}",
         summary.data_records,
         summary.focus_event_rows,
         summary.focus_completed_exact_rows,
         summary.focus_completed_inferred_rows,
         summary.focus_completed_unresolved_rows,
+        summary.decision_target_rows,
+        summary.decision_country_target_rows,
+        summary.decision_numeric_target_rows,
         summary.badge_rows,
         summary.parse_errors.len()
     );

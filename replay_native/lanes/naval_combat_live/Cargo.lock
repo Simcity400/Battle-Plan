@@ -59,6 +59,8 @@ dependencies = [
 name = "naval_combat_live_lane"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "snapshot",
 ]
 

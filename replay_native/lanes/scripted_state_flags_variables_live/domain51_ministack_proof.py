@@ -153,8 +153,8 @@ def build_manifest(out_dir: Path):
             "process": "hoi4.exe",
         },
         "domain_registry": registry,
-        "completion_status": "COMPLETE",
-        "lane_full_production_status": "NOT_COMPLETE",
+        "completion_status": "NOT COMPLETE",
+        "lane_full_production_status": "NOT COMPLETE",
         "backlog_reduced": True,
         "exact_backlog_item_removed_or_narrowed": (
             "Built a lane-owned domain-51 mini stack for validated "

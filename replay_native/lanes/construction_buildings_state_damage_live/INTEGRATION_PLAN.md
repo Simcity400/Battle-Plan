@@ -1,16 +1,19 @@
 # construction_buildings_state_damage_live lane-local integration plan
 
 Status: lane-local extraction helpers, compact encoding, decoder/gate code, live probe, fixture
-contract gate, production-shaped compact stream proof, and lane-local `.battleplan` pack/verify
-proof are ready. Do not merge into shared collector or recorder entrypoints until the orchestrator
-grants an integration slot and the active shared collector/recorder edits are settled.
+contract gate, production-shaped compact stream proof, lane-local `.battleplan` pack/verify
+proof, exact shared registration patch plan, and host-shaped hourly schedule proof are ready. Do not
+merge into shared collector or recorder entrypoints until the orchestrator grants an integration
+slot and the active shared collector/recorder edits are settled.
 
-Domain-48 mini-stack status: construction queue rows, state/province building rows,
-damaged-building health rows, and state resource rows can be emitted now with construction target
-state explicitly badged unavailable. The compact source flag for that badge is
-`SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE = 0x10`. The gate rejects any production packet
-that silently omits `target_state_id` from non-empty construction rows without this flag, and also
-rejects packets that set the unavailable flag while emitting target states.
+Domain-48 mini-stack status: construction queue rows, target state, state/province building rows,
+damaged-building health rows, and state resource rows can be emitted by the lane-local collector.
+Construction target location is validated at `subobject+0x1D8 -> target_location +0x6C`; state
+locations map directly, and province construction rows map exact province location through the
+province-to-state topology. The compact source flag
+`SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE = 0x10` remains the fail-closed fallback if any
+construction row cannot resolve. The gate rejects silent target-state omission, target-state
+emission while unavailable-badged, and partial target-state emission.
 
 Registry alignment: `replay_native/domain_registry.json` assigns final domain id
 `48 = construction_buildings_state_damage_live`. Current shared registry helper files expose the
@@ -67,7 +70,29 @@ replay_native/runs/construction_buildings_state_damage_live_20260701_v12_registr
 replay_native/runs/construction_buildings_state_damage_live_20260701_v13_target_focus_refresh/target_candidate_focus_probe.json
 replay_native/runs/construction_buildings_state_damage_live_20260701_v14_target_state_oracle_contract/target_state_oracle_contract.json
 replay_native/runs/construction_buildings_state_damage_live_20260701_v14_target_state_oracle_contract/target_state_oracle_contract_gate.json
+replay_native/runs/construction_buildings_state_damage_live_20260701_v29_bounded_root_search_static_topology/target_state_bounded_root_search.json
+replay_native/runs/construction_buildings_state_damage_live_20260701_v31_target_location_root_inspect_secondhop/target_location_root_inspect.json
+replay_native/runs/construction_buildings_state_damage_live_20260701_v33_mini_stack_target_location_root/mini_stack_proof.json
+replay_native/runs/construction_buildings_state_damage_live_20260701_v33_replay_pack_target_location_root/replay_pack_proof.json
+replay_native/runs/construction_buildings_state_damage_live_20260701_v33_replay_pack_target_location_root/construction_buildings_state_damage_live.domain48.battleplan
+replay_native/runs/construction_buildings_state_damage_live_20260701_v34_replay_pack_hourly_schedule_target_location_root/replay_pack_proof.json
+replay_native/runs/construction_buildings_state_damage_live_20260701_v34_replay_pack_hourly_schedule_target_location_root/construction_buildings_state_damage_live.domain48.collector_stream.bin
+replay_native/runs/construction_buildings_state_damage_live_20260701_v34_replay_pack_hourly_schedule_target_location_root/construction_buildings_state_damage_live.domain48.battleplan
 ```
+
+Latest host-shaped schedule proof:
+
+```powershell
+cargo run --manifest-path replay_native\lanes\construction_buildings_state_damage_live\Cargo.toml --bin construction_buildings_state_damage_replay_pack_proof -- replay_native\runs\construction_buildings_state_damage_live_20260701_v34_replay_pack_hourly_schedule_target_location_root 12
+```
+
+Result: passed 12 consecutive scheduled game hours with one domain-48 perf record, one domain-48
+data record, and one frame-end record per hour. The decoder saw 24 construction rows, 24 target
+states, 36 building rows, 12 damaged-building rows, and 12 resource rows. The compact stream had
+zero skipped hours, `.battleplan` verification had byte-identical stream bytes, and the lane-owned
+collector path recorded no source-unavailable, partial-data, worker-panic, or bridge-failure
+condition. This is not a DLL-only production proof because shared collector/recorder registration
+is still intentionally unedited.
 
 ## Lane-owned module shape
 
@@ -76,7 +101,9 @@ replay_native/runs/construction_buildings_state_damage_live_20260701_v14_target_
   - inputs: `module_base`, `game_hour_raw`, shared country construction roots, shared state roots,
     and shared province roots;
   - output: domain-48 compact bytes plus gate/stats;
-  - target-state behavior: every construction row has `target_state_id = None` and the frame sets
+  - target-state behavior: reads exact construction location from
+    `subobject+0x1D8 -> target_location +0x6C`; emits `target_state_id` on every construction row
+    when state/province topology resolves all locations, otherwise clears all target states and sets
     `SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE = 0x10`.
 - Recorder decoder/gate module: `src/decoder_gate.rs`
   - entrypoint `decode_domain48_compact(bytes)`;
@@ -86,8 +113,8 @@ replay_native/runs/construction_buildings_state_damage_live_20260701_v14_target_
   - builds production-shaped memory for one country construction queue, one state building/resource
     root, and one province building root;
   - runs collector module -> compact encoder -> decoder/gate module;
-  - proves construction/building/resource rows can pass without target-state semantics as long as
-    the unavailable badge is present.
+  - proves construction/building/resource rows can pass with all-row target-state emission from the
+    validated target-location root.
 
 ## Roots and offsets
 
@@ -96,6 +123,15 @@ replay_native/runs/construction_buildings_state_damage_live_20260701_v14_target_
 - Construction line fields: type `+0x08`, line id `+0x0C`, active factories `+0x18`,
   cost raw `+0x28`, produced raw `+0x38`, building subobject `+0x70`, template id
   `subobject+0x08`.
+- Construction target location root: `subobject+0x1D8 -> target_location +0x6C`.
+  Bounded live/save proof v29 accepted 273 construction rows and matched exact save
+  `building.location` on all rows. State-location rows use the location id as target state;
+  province-location rows derive target state by joining the exact province id through
+  province-to-state topology.
+- Construction target-state pointer detail: `target_location+0x150` is a matching `CState` for
+  state-location rows. For province-location rows, v31 scanned 0x300 bytes from `target_location`
+  and `target_location+0x150` and rejected a direct target-state second-hop candidate set with 30
+  province rows, 0 all-row candidates, 0 partial candidates, and 0 failures.
 - State building root: state object `+0x158` vector of `CBuilding*`.
 - Province building root: `CProvince+0x1C8` vector of `CBuilding*`.
 - Current `870ebf` building identity: `CBuilding` vtable RVA `0x2973B88`, type id
@@ -112,32 +148,33 @@ replay_native/runs/construction_buildings_state_damage_live_20260701_v14_target_
   `subobject+0x60` as a per-line target-state root under `raw_state_id`, `raw_province_id`,
   `u64_low_state_id`, and `u64_low_province_id` interpretations. In the live proof it was
   invariant (`raw=357`, mapping to state `357` or province `357 -> state 253`) across 398
-  construction lines spanning 84 owner tag ids and 18 template ids. Remaining candidate offsets
-  are `subobject+0xC0` and `subobject+0xC8` (raw/u64-low state interpretations only); these need
-  a live/save-aligned fixture with expected target states before they can be promoted or rejected.
-- Remaining target-state fixture blocker, tightened by `target_candidate_focus_probe.py`: on
+  construction lines spanning 84 owner tag ids and 18 template ids. Later v20/v23 proofs reject
+  the surviving `subobject+0xC0` and `subobject+0xC8` candidates for state-building target rows;
+  do not retry those offsets as the target-state or exact-location root.
+- Historical target-state fixture blocker, tightened by `target_candidate_focus_probe.py`: on
   current `870ebf`, `subobject+0xC0` existed as a state id on 391/391 live construction lines
   but had only 11 unique state values and only 5 owner/controller matches to the line owner.
   `subobject+0xC8` existed as a state id on 391/391 lines but had only 3 unique state values and
   only 1 owner/controller match. This is strong suspicious evidence but not a conclusive rejection
-  because foreign/subject/occupied construction cannot be ruled out from this lane alone. The
-  v4 focus proof emits concrete rows that must be filled from a time-aligned save/UI oracle:
+  because foreign/subject/occupied construction cannot be ruled out from this lane alone. This
+  blocker is superseded by the v23 stable-line rejection. The v4 focus proof emitted concrete rows:
   `replay_native/runs/construction_buildings_state_damage_live_20260701_v4/target_candidate_focus_probe.json`.
-- Target-state unavailable badge: until the v4 fixture request is settled, integrated packets must
-  leave construction `target_state_id` absent and set
-  `SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE = 0x10`. This keeps the field fail-closed and
-  prevents replay consumers from interpreting a missing target as a decoder bug or a valid null.
-- Exact target-state fixture blocker: the executable blocker proof
+- Target-state unavailable badge: this is now a fail-closed fallback, not the expected accepted
+  production state. Integrated packets should emit target state for every construction row from the
+  validated target-location root. If shared state/province roots are incomplete and any row cannot
+  resolve, the lane module clears all target states and sets
+  `SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE = 0x10`.
+- Historical exact target-state fixture blocker: the executable blocker proof
   `construction_buildings_state_damage_target_state_fixture_blocker` consumes the v4 focus proof,
   verifies domain id `48` from `replay_native/domain_registry.json`, inventories lane fixtures, and
-  emits `target_state_fixture_gate.ok=false` until a time-aligned save/UI oracle fills numeric
-  `expected_target_state_id` rows for `subobject+0xC0` or `subobject+0xC8`.
-- Refreshed target-state fixture blocker: the v13 focus proof on the still-running current-build
+  emits `target_state_fixture_gate.ok=false`. This remains useful as a fixture-shape contract, but
+  the `+0xC0` / `+0xC8` root candidates themselves are now rejected by v23.
+- Historical refreshed target-state fixture blocker: the v13 focus proof on the still-running current-build
   `870ebf` process observed 229 construction lines across 94 tag ids. `subobject+0xC0` was a valid
   state id for 229/229 rows but had only 9 unique states and 22 owner/controller matches.
   `subobject+0xC8` was a valid state id for 229/229 rows but had only 3 unique states and 16
-  owner/controller matches. Both remain suspicious but not conclusively rejected because
-  owner/controller mismatch is not an oracle for foreign/subject/occupied construction targets.
+  owner/controller matches. The later v23 stable-line proof supplies the oracle rejection that
+  this owner/controller heuristic could not.
 - Executable target-state oracle contract:
   `construction_buildings_state_damage_target_state_oracle_contract` consumes a focused live proof
   and writes `target_state_oracle_contract.json` plus
@@ -153,10 +190,17 @@ replay_native/runs/construction_buildings_state_damage_live_20260701_v14_target_
   `subobject+0xC8`. In the current 250-line proof, `+0xC0` was a direct state id on 250/250 rows
   with 6 unique direct states, and a valid province id on 76/250 rows mapping to 4 unique states.
   `+0xC8` was a direct state id on 250/250 rows with 2 unique direct states, and a valid province
-  id on 250/250 rows mapping to states `213` or `400`. This does not validate or reject the
-  target-state root without a same-frame save/UI oracle, but it removes the direct-state-only
-  oracle blind spot; future filled oracle rows must be checked against every emitted
-  `candidate_interpretations` entry before rejecting the path.
+  id on 250/250 rows mapping to states `213` or `400`. The later v23 proof checked both direct
+  raw-state and raw-province-mapped-state interpretations for stable state-building rows and
+  rejected them as target-state candidates.
+- Target-state candidate rejection on 2026-07-01: stable-line proof
+  `replay_native/runs/construction_buildings_state_damage_live_20260701_v23_stable_line_state_rejection/stable_line_rejection.json`
+  accepted 8 type-59 construction rows from the v20 focused live proof and v21 autosave row oracle.
+  It accepted only rows with matching `line_id`, `line_type = 59`, equal `cost_raw`, and numeric
+  save `building.location`. It rejected `subobject+0xC0` and `subobject+0xC8` as target-state
+  roots on 5 state-building rows with save state targets `{131, 558, 776, 886, 1014}` and rejected
+  them as exact `building.location` roots on all 8 stable rows. Province-building rows remain
+  separated as province-location evidence; they are not counted as mapped target-state proof.
 - Runnable same-frame target-state observer: lane-local
   `probes/target_state_same_frame_observer.py` now captures the focused live proof from an explicit
   `hoi4.exe` PID, waits for a save whose mtime is after the live proof, parses
@@ -172,10 +216,8 @@ replay_native/runs/construction_buildings_state_damage_live_20260701_v14_target_
   `cargo run --manifest-path replay_native\lanes\construction_buildings_state_damage_live\Cargo.toml --bin construction_buildings_state_damage_target_state_oracle_contract -- replay_native\lanes\construction_buildings_state_damage_live\target\codex_domain48_same_frame_observer\pid45880_wait_short_v2\target_candidate_focus_probe.json replay_native\lanes\construction_buildings_state_damage_live\target\codex_domain48_same_frame_observer\pid45880_wait_short_v2\target_state_oracle_contract replay_native\lanes\construction_buildings_state_damage_live\target\codex_domain48_same_frame_observer\pid45880_wait_short_v2\filled_target_state_oracle.json`.
   Gate result: `status = missing_oracle`, `blocker_confirmed = true`, `filled_rows = 0`,
   `placeholder_rows = 8`, `terminal_candidate_result = false`, source flag remains `0x10`.
-  Remaining action is external: pause the game, run the observer with `--pid <hoi4-pid>` and no
-  `--save`, create a manual save only after the observer starts waiting, and do not unpause before
-  the save completes. That run should either fill the oracle for `+0xC0`/`+0xC8` interpretation
-  validation or produce same-frame mismatch evidence.
+  This path is superseded for production extraction by the v29/v31 target-location root proof, but
+  remains useful if a future build invalidates `subobject+0x1D8`.
 - Damaged-building contract: `construction_buildings_state_damage_fixture_gate` requires at least
   one expected damaged row where `level_at_0x40 > healthy_level_at_0x42`, validates undamaged
   controls, then encodes and decodes the compact payload. Use it with real live+save damaged-frame
@@ -185,7 +227,10 @@ replay_native/runs/construction_buildings_state_damage_live_20260701_v14_target_
 
 ## Registration-only patch plan
 
-Detailed patch plan: `REGISTRATION_PATCH_PLAN.md`.
+Detailed patch plan: `REGISTRATION_PATCH_PLAN.md`. The file now contains exact minimal hunks for:
+registry descriptor status/schedulability, collector dependency/imports, the process-memory
+adapter, the root adapter from shared country and topology roots, the domain perf/data append path,
+recorder dependency, recorder decode helper, and domain-48 dispatch arm.
 
 1. Use the registry assignment `48 = construction_buildings_state_damage_live`; do not perform
    lane-local id discovery.
@@ -202,11 +247,11 @@ Detailed patch plan: `REGISTRATION_PATCH_PLAN.md`.
 6. Reuse existing shared country roots for construction and existing map topology roots for
    state/province building/resource rows. Do not duplicate owner, controller, or occupation
    semantics beyond state/province join keys.
-7. Keep construction target-state absent and set
-   `SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE` until a live/save-aligned fixture validates
-   the exact root. Do not infer it from template id or province/state ownership. When a root is
-   validated, clear the unavailable flag and emit `target_state_id` for every construction row; the
-   lane gate rejects partial target-state emission.
+7. Pass complete state roots and province-to-state province roots so the lane can emit target state
+   for every construction row from `subobject+0x1D8 -> target_location +0x6C`. Do not infer target
+   state from owner/controller/occupation. If any row cannot resolve, the lane deliberately clears
+   all target states and sets `SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE`; the lane gate
+   rejects partial target-state emission.
 8. Keep `healthy_level` behind a row flag. If `healthy_level > level`, missing, or otherwise
    incoherent, omit it or set partial data rather than emitting guessed damage. If the live probe
    sees only `healthy_level == level`, treat that as undamaged-frame coherence, not damaged
@@ -216,6 +261,9 @@ Detailed patch plan: `REGISTRATION_PATCH_PLAN.md`.
    the older combined manifest.
 10. Add host summary units for construction rows, state building rows, province building rows,
    resource rows, and damaged building rows.
+11. After registration, the shared scheduler should match the v34 host-shaped cadence: one
+    domain-48 perf record, one domain-48 data record, and one frame-end record for each scheduled
+    game hour, with no target-state unavailable badge on accepted captures.
 
 ## Required production proof after integration slot
 
@@ -243,4 +291,5 @@ Acceptance:
 - Speed-five/current-equivalent cadence is hourly-or-better with zero skipped hours.
 - Rows include construction queues when present, state/province building rows, and state resource
   rows.
-- Damage rows are accepted only after a damaged-frame proof validates `healthy_level` semantics.
+- Construction rows include target state for every row and do not set the unavailable badge.
+- Damage rows use the validated `healthy_level` semantics and remain fail-closed on incoherent rows.

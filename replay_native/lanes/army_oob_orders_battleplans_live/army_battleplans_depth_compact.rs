@@ -13,15 +13,19 @@ pub const RECORD_TYPE_DOMAIN_DATA: u16 = 3;
 pub const DOMAIN_ARMY_BATTLEPLANS_DEPTH: u16 = 54;
 pub const DOMAIN_FRAME: u16 = 1000;
 
-pub const HEADER_LEN: usize = 40;
+pub const HEADER_LEN: usize = 52;
 pub const ROW_LEN: usize = 64;
 pub const TARGET_ROW_LEN: usize = 8;
+pub const PATH_GEOMETRY_ROW_LEN: usize = 8;
+pub const DIRECT_ROOT_ROW_LEN: usize = 64;
+pub const DIRECT_ROOT_MEMBER_ROW_LEN: usize = 8;
 
 pub const FLAG_DELETED: u32 = 1;
 pub const FLAG_TARGET_STATES: u32 = 1 << 1;
 pub const FLAG_TARGET_STATE_COUNT: u32 = 1 << 2;
 pub const FLAG_NON_TYPE5_GEOMETRY_BLOCKED: u32 = 1 << 3;
 pub const FLAG_EXECUTION_BLOCKED: u32 = 1 << 4;
+pub const FLAG_PATH_GEOMETRY: u32 = 1 << 5;
 
 pub const STATUS_NONE: u32 = 0;
 pub const STATUS_EXACT: u32 = 1;
@@ -30,6 +34,19 @@ pub const STATUS_UNSUPPORTED: u32 = 3;
 pub const STATUS_OVERFLOW: u32 = 4;
 pub const STATUS_VALIDATION_FAILED: u32 = 5;
 pub const STATUS_FIXTURE_REQUIRED: u32 = 6;
+pub const STATUS_COLD_PREFLIGHT_ONLY: u32 = 7;
+
+pub const DIRECT_KIND_ARMY: u32 = 1;
+pub const DIRECT_KIND_ARMY_GROUP: u32 = 2;
+pub const DIRECT_KIND_THEATRE: u32 = 5;
+
+pub const DIRECT_FLAG_DELETED: u32 = 1;
+pub const DIRECT_FLAG_PARENT: u32 = 1 << 1;
+pub const DIRECT_FLAG_OWNER: u32 = 1 << 2;
+pub const DIRECT_FLAG_ENGINE_MEMBER_COUNT: u32 = 1 << 3;
+pub const DIRECT_FLAG_MISSING_MEMBER_COUNT: u32 = 1 << 4;
+pub const DIRECT_FLAG_MEMBER_IDS: u32 = 1 << 5;
+pub const DIRECT_FLAG_ORDER_COUNTS: u32 = 1 << 6;
 
 const STATUS_WORKER_PANIC: u32 = 1 << 6;
 const STATUS_BRIDGE_UNAVAILABLE: u32 = 1 << 7;
@@ -41,6 +58,9 @@ const FAIL_STATUS_MASK: u32 =
 const MAX_ARMY_ID: u32 = i32::MAX as u32;
 const MAX_SLOT_INDEX: u32 = 64;
 const MAX_STATE_ID: u32 = 65_535;
+const MAX_PROVINCE_ID: u32 = 65_535;
+const MAX_DIRECT_ID: u32 = 4_000_000;
+const MAX_DIRECT_MEMBER_ROWS: usize = 250_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BattleplanDepthRow {
@@ -50,10 +70,32 @@ pub struct BattleplanDepthRow {
     pub slot_index: u32,
     pub order_type: i32,
     pub target_states: Vec<u32>,
+    pub path_provinces: Vec<u32>,
     pub target_declared_count: Option<u32>,
     pub target_status: u32,
     pub geometry_status: u32,
     pub execution_status: u32,
+    pub assigned_units_status: u32,
+    pub order_linkage_status: u32,
+    pub stance_status: u32,
+    pub aggressiveness_status: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectRootRow {
+    pub kind: u32,
+    pub object_id: u32,
+    pub deleted: bool,
+    pub parent_id: Option<u32>,
+    pub owner_tag_db_id: Option<u32>,
+    pub member_ids: Vec<u32>,
+    pub engine_member_count: Option<u32>,
+    pub missing_member_count: Option<u32>,
+    pub order_count: Option<u32>,
+    pub non_type5_order_count: Option<u32>,
+    pub parent_status: u32,
+    pub member_status: u32,
+    pub root_status: u32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -62,8 +104,20 @@ pub struct DomainTotals {
     pub rows: u64,
     pub changed_rows: u64,
     pub target_rows: u64,
+    pub path_geometry_rows: u64,
+    pub non_type5_exact_path_rows: u64,
     pub unsupported_geometry_rows: u64,
     pub execution_unknown_rows: u64,
+    pub assigned_units_exact_rows: u64,
+    pub order_linkage_exact_rows: u64,
+    pub stance_unknown_rows: u64,
+    pub aggressiveness_unknown_rows: u64,
+    pub direct_root_rows: u64,
+    pub direct_root_member_rows: u64,
+    pub direct_army_rows: u64,
+    pub direct_army_group_rows: u64,
+    pub direct_theatre_rows: u64,
+    pub direct_cold_preflight_rows: u64,
     pub status_flags_or: u32,
 }
 
@@ -84,6 +138,7 @@ pub struct GateSummary {
 
 pub fn encode_depth_payload(
     rows: &[BattleplanDepthRow],
+    direct_roots: &[DirectRootRow],
     elapsed_wall_ms: u64,
     status_flags: u32,
     changed_rows: u32,
@@ -91,6 +146,11 @@ pub fn encode_depth_payload(
     observed_order_rows: u32,
 ) -> Vec<u8> {
     let target_count = rows.iter().map(|row| row.target_states.len()).sum::<usize>();
+    let path_geometry_count = rows.iter().map(|row| row.path_provinces.len()).sum::<usize>();
+    let direct_member_count = direct_roots
+        .iter()
+        .map(|row| row.member_ids.len())
+        .sum::<usize>();
     let unsupported_geometry_rows = rows
         .iter()
         .filter(|row| !row.deleted && row.geometry_status == STATUS_FIXTURE_REQUIRED)
@@ -101,8 +161,14 @@ pub fn encode_depth_payload(
         .filter(|row| !row.deleted && row.execution_status == STATUS_FIXTURE_REQUIRED)
         .count()
         .min(u32::MAX as usize) as u32;
-
-    let mut out = Vec::with_capacity(HEADER_LEN + rows.len() * ROW_LEN + target_count * TARGET_ROW_LEN);
+    let mut out = Vec::with_capacity(
+        HEADER_LEN
+            + rows.len() * ROW_LEN
+            + target_count * TARGET_ROW_LEN
+            + path_geometry_count * PATH_GEOMETRY_ROW_LEN
+            + direct_roots.len() * DIRECT_ROOT_ROW_LEN
+            + direct_member_count * DIRECT_ROOT_MEMBER_ROW_LEN,
+    );
     out.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
     out.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
     out.extend_from_slice(&changed_rows.to_le_bytes());
@@ -112,8 +178,12 @@ pub fn encode_depth_payload(
     out.extend_from_slice(&(target_count.min(u32::MAX as usize) as u32).to_le_bytes());
     out.extend_from_slice(&unsupported_geometry_rows.to_le_bytes());
     out.extend_from_slice(&execution_unknown_rows.to_le_bytes());
+    out.extend_from_slice(&(direct_roots.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    out.extend_from_slice(&(direct_member_count.min(u32::MAX as usize) as u32).to_le_bytes());
+    out.extend_from_slice(&(path_geometry_count.min(u32::MAX as usize) as u32).to_le_bytes());
 
     let mut target_cursor = 0u32;
+    let mut path_cursor = 0u32;
     for row in rows {
         let mut flags = 0u32;
         if row.deleted {
@@ -131,31 +201,112 @@ pub fn encode_depth_payload(
         if row.execution_status == STATUS_FIXTURE_REQUIRED {
             flags |= FLAG_EXECUTION_BLOCKED;
         }
-        let target_first = if row.target_states.is_empty() { 0 } else { target_cursor };
+        if !row.path_provinces.is_empty() {
+            flags |= FLAG_PATH_GEOMETRY;
+        }
+        debug_assert!(
+            row.target_states.is_empty() || row.path_provinces.is_empty(),
+            "domain-54 row can encode one child range only"
+        );
+        let child_first = if !row.target_states.is_empty() {
+            target_cursor
+        } else if !row.path_provinces.is_empty() {
+            path_cursor
+        } else {
+            0
+        };
+        let child_count = if !row.target_states.is_empty() {
+            row.target_states.len().min(u32::MAX as usize) as u32
+        } else if !row.path_provinces.is_empty() {
+            row.path_provinces.len().min(u32::MAX as usize) as u32
+        } else {
+            0
+        };
         out.extend_from_slice(&row.army_id.to_le_bytes());
         out.extend_from_slice(&row.generation.to_le_bytes());
         for value in [
             flags,
             row.slot_index,
             row.order_type as u32,
-            target_first,
-            row.target_states.len().min(u32::MAX as usize) as u32,
+            child_first,
+            child_count,
             row.target_declared_count.unwrap_or(0),
             row.target_status,
             row.geometry_status,
             row.execution_status,
-            0,
-            0,
+            row.assigned_units_status,
+            row.order_linkage_status,
+            row.stance_status,
+            row.aggressiveness_status,
+        ] {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        target_cursor = target_cursor.saturating_add(row.target_states.len().min(u32::MAX as usize) as u32);
+        path_cursor = path_cursor.saturating_add(row.path_provinces.len().min(u32::MAX as usize) as u32);
+    }
+    for row in rows {
+        for state_id in &row.target_states {
+            out.extend_from_slice(&state_id.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+        }
+    }
+    for row in rows {
+        for province_id in &row.path_provinces {
+            out.extend_from_slice(&province_id.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+        }
+    }
+    let mut member_cursor = 0u32;
+    for row in direct_roots {
+        let mut flags = 0u32;
+        if row.deleted {
+            flags |= DIRECT_FLAG_DELETED;
+        }
+        if row.parent_id.is_some() {
+            flags |= DIRECT_FLAG_PARENT;
+        }
+        if row.owner_tag_db_id.is_some() {
+            flags |= DIRECT_FLAG_OWNER;
+        }
+        if row.engine_member_count.is_some() {
+            flags |= DIRECT_FLAG_ENGINE_MEMBER_COUNT;
+        }
+        if row.missing_member_count.is_some() {
+            flags |= DIRECT_FLAG_MISSING_MEMBER_COUNT;
+        }
+        if !row.member_ids.is_empty() {
+            flags |= DIRECT_FLAG_MEMBER_IDS;
+        }
+        if row.order_count.is_some() || row.non_type5_order_count.is_some() {
+            flags |= DIRECT_FLAG_ORDER_COUNTS;
+        }
+        let member_count = row.member_ids.len().min(u32::MAX as usize) as u32;
+        let member_first = if member_count == 0 { 0 } else { member_cursor };
+        for value in [
+            row.kind,
+            row.object_id,
+            flags,
+            row.parent_id.unwrap_or(0),
+            row.owner_tag_db_id.unwrap_or(0),
+            member_first,
+            member_count,
+            row.engine_member_count.unwrap_or(0),
+            row.missing_member_count.unwrap_or(0),
+            row.order_count.unwrap_or(0),
+            row.non_type5_order_count.unwrap_or(0),
+            row.parent_status,
+            row.member_status,
+            row.root_status,
             0,
             0,
         ] {
             out.extend_from_slice(&value.to_le_bytes());
         }
-        target_cursor = target_cursor.saturating_add(row.target_states.len().min(u32::MAX as usize) as u32);
+        member_cursor = member_cursor.saturating_add(member_count);
     }
-    for row in rows {
-        for state_id in &row.target_states {
-            out.extend_from_slice(&state_id.to_le_bytes());
+    for row in direct_roots {
+        for member_id in &row.member_ids {
+            out.extend_from_slice(&member_id.to_le_bytes());
             out.extend_from_slice(&0u32.to_le_bytes());
         }
     }
@@ -164,7 +315,7 @@ pub fn encode_depth_payload(
 
 pub fn decode_depth_payload(offset: usize, payload: &[u8], summary: &mut GateSummary) {
     if payload.len() < HEADER_LEN {
-        summary.parse_errors.push(format!("offset {offset}: depth payload shorter than 40 bytes"));
+        summary.parse_errors.push(format!("offset {offset}: depth payload shorter than {HEADER_LEN} bytes"));
         return;
     }
     let row_count = read_u32(payload, 8) as usize;
@@ -175,9 +326,15 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8], summary: &mut GateSum
     let target_count = read_u32(payload, 28) as usize;
     let unsupported_geometry_rows = read_u32(payload, 32) as usize;
     let execution_unknown_rows = read_u32(payload, 36) as usize;
+    let direct_root_count = read_u32(payload, 40) as usize;
+    let direct_member_count = read_u32(payload, 44) as usize;
+    let path_geometry_count = read_u32(payload, 48) as usize;
     let expected_len = HEADER_LEN
         .saturating_add(row_count.saturating_mul(ROW_LEN))
-        .saturating_add(target_count.saturating_mul(TARGET_ROW_LEN));
+        .saturating_add(target_count.saturating_mul(TARGET_ROW_LEN))
+        .saturating_add(path_geometry_count.saturating_mul(PATH_GEOMETRY_ROW_LEN))
+        .saturating_add(direct_root_count.saturating_mul(DIRECT_ROOT_ROW_LEN))
+        .saturating_add(direct_member_count.saturating_mul(DIRECT_ROOT_MEMBER_ROW_LEN));
     if payload.len() != expected_len {
         summary.parse_errors.push(format!(
             "offset {offset}: depth payload length {} != {expected_len}",
@@ -194,11 +351,18 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8], summary: &mut GateSum
     if observed_army_rows == 0 && row_count != 0 {
         summary.parse_errors.push(format!("offset {offset}: emitted rows with zero observed armies"));
     }
+    if direct_member_count > MAX_DIRECT_MEMBER_ROWS {
+        summary.parse_errors.push(format!("offset {offset}: direct root member count exceeds limit"));
+    }
 
     summary.totals.data_records = summary.totals.data_records.saturating_add(1);
     summary.totals.rows = summary.totals.rows.saturating_add(row_count as u64);
     summary.totals.changed_rows = summary.totals.changed_rows.saturating_add(changed_rows as u64);
     summary.totals.target_rows = summary.totals.target_rows.saturating_add(target_count as u64);
+    summary.totals.path_geometry_rows = summary
+        .totals
+        .path_geometry_rows
+        .saturating_add(path_geometry_count as u64);
     summary.totals.unsupported_geometry_rows = summary
         .totals
         .unsupported_geometry_rows
@@ -212,25 +376,27 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8], summary: &mut GateSum
 
     let mut cursor = HEADER_LEN;
     let mut declared_targets = 0usize;
+    let mut declared_paths = 0usize;
     let mut seen = BTreeSet::new();
     let mut measured_unsupported_geometry_rows = 0usize;
     let mut measured_execution_unknown_rows = 0usize;
+    let mut measured_non_type5_exact_path_rows = 0usize;
     for row_index in 0..row_count {
         let army_id = read_u32(payload, cursor);
         let generation = read_u64(payload, cursor + 4);
         let flags = read_u32(payload, cursor + 12);
         let slot_index = read_u32(payload, cursor + 16);
         let order_type = read_i32(payload, cursor + 20);
-        let target_first = read_u32(payload, cursor + 24) as usize;
-        let row_target_count = read_u32(payload, cursor + 28) as usize;
+        let child_first = read_u32(payload, cursor + 24) as usize;
+        let child_count = read_u32(payload, cursor + 28) as usize;
         let target_declared = read_u32(payload, cursor + 32);
         let target_status = read_u32(payload, cursor + 36);
         let geometry_status = read_u32(payload, cursor + 40);
         let execution_status = read_u32(payload, cursor + 44);
-        let reserved0 = read_u32(payload, cursor + 48);
-        let reserved1 = read_u32(payload, cursor + 52);
-        let reserved2 = read_u32(payload, cursor + 56);
-        let reserved3 = read_u32(payload, cursor + 60);
+        let assigned_units_status = read_u32(payload, cursor + 48);
+        let order_linkage_status = read_u32(payload, cursor + 52);
+        let stance_status = read_u32(payload, cursor + 56);
+        let aggressiveness_status = read_u32(payload, cursor + 60);
         cursor += ROW_LEN;
 
         let deleted = flags & FLAG_DELETED != 0;
@@ -247,29 +413,72 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8], summary: &mut GateSum
             | FLAG_TARGET_STATES
             | FLAG_TARGET_STATE_COUNT
             | FLAG_NON_TYPE5_GEOMETRY_BLOCKED
-            | FLAG_EXECUTION_BLOCKED;
+            | FLAG_EXECUTION_BLOCKED
+            | FLAG_PATH_GEOMETRY;
         if flags & !known != 0 {
             summary.parse_errors.push(format!("offset {offset}: row {row_index} has unknown flags"));
         }
         if target_status > STATUS_FIXTURE_REQUIRED
             || geometry_status > STATUS_FIXTURE_REQUIRED
             || execution_status > STATUS_FIXTURE_REQUIRED
+            || assigned_units_status > STATUS_COLD_PREFLIGHT_ONLY
+            || order_linkage_status > STATUS_COLD_PREFLIGHT_ONLY
+            || stance_status > STATUS_COLD_PREFLIGHT_ONLY
+            || aggressiveness_status > STATUS_COLD_PREFLIGHT_ONLY
         {
             summary.parse_errors.push(format!("offset {offset}: row {row_index} has bad status"));
         }
-        if deleted && (target_first != 0 || row_target_count != 0 || target_declared != 0) {
+        if deleted && (child_first != 0 || child_count != 0 || target_declared != 0) {
             summary.parse_errors.push(format!("offset {offset}: deleted row {row_index} has target fields"));
         }
-        if flags & FLAG_TARGET_STATES != 0 {
-            let target_end = target_first.saturating_add(row_target_count);
+        let has_target = flags & FLAG_TARGET_STATES != 0;
+        let has_path = flags & FLAG_PATH_GEOMETRY != 0;
+        if has_target && has_path {
+            summary.parse_errors.push(format!(
+                "offset {offset}: row {row_index} has both target-state and path-geometry flags"
+            ));
+        }
+        if has_target {
+            let target_end = child_first.saturating_add(child_count);
             if target_end > target_count {
                 summary
                     .parse_errors
                     .push(format!("offset {offset}: row {row_index} target range exceeds child table"));
             }
-            declared_targets = declared_targets.saturating_add(row_target_count);
-        } else if target_first != 0 || row_target_count != 0 {
-            summary.parse_errors.push(format!("offset {offset}: row {row_index} has target range without flag"));
+            declared_targets = declared_targets.saturating_add(child_count);
+            if order_type != 5 {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: non-type-5 row {row_index} has target-state child rows"));
+            }
+        }
+        if has_path {
+            let path_end = child_first.saturating_add(child_count);
+            if path_end > path_geometry_count {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: row {row_index} path range exceeds child table"));
+            }
+            if child_count == 0 {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: row {row_index} has empty path geometry range"));
+            }
+            declared_paths = declared_paths.saturating_add(child_count);
+            if order_type == 5 {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: type-5 row {row_index} has path geometry"));
+            }
+            if geometry_status != STATUS_EXACT {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: row {row_index} has path geometry without exact geometry status"));
+            }
+        } else if !has_target && (child_first != 0 || child_count != 0) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: row {row_index} has child range without target/path flag"
+            ));
         }
         if flags & FLAG_TARGET_STATE_COUNT == 0 && target_declared != 0 {
             summary.parse_errors.push(format!("offset {offset}: row {row_index} has target count without flag"));
@@ -277,21 +486,70 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8], summary: &mut GateSum
         if !deleted && order_type == 5 && target_status != STATUS_EXACT {
             summary.parse_errors.push(format!("offset {offset}: type-5 row {row_index} is not exact"));
         }
-        if !deleted && order_type != 5 && geometry_status == STATUS_FIXTURE_REQUIRED {
-            measured_unsupported_geometry_rows += 1;
+        if !deleted && order_type != 5 {
+            if geometry_status == STATUS_FIXTURE_REQUIRED {
+                measured_unsupported_geometry_rows += 1;
+            } else if geometry_status == STATUS_EXACT {
+                if has_path {
+                    measured_non_type5_exact_path_rows += 1;
+                    summary.totals.non_type5_exact_path_rows =
+                        summary.totals.non_type5_exact_path_rows.saturating_add(1);
+                } else {
+                    summary
+                        .parse_errors
+                        .push(format!("offset {offset}: exact non-type-5 row {row_index} lacks path geometry"));
+                }
+            }
         }
         if !deleted && execution_status == STATUS_FIXTURE_REQUIRED {
             measured_execution_unknown_rows += 1;
         }
-        if reserved0 != 0 || reserved1 != 0 || reserved2 != 0 || reserved3 != 0 {
-            summary.parse_errors.push(format!("offset {offset}: row {row_index} has nonzero reserved field"));
+        if !deleted {
+            if assigned_units_status == STATUS_EXACT {
+                summary.totals.assigned_units_exact_rows =
+                    summary.totals.assigned_units_exact_rows.saturating_add(1);
+            } else {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: row {row_index} lacks exact assigned-unit status"));
+            }
+            if order_linkage_status == STATUS_EXACT {
+                summary.totals.order_linkage_exact_rows =
+                    summary.totals.order_linkage_exact_rows.saturating_add(1);
+            } else {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: row {row_index} lacks exact order-linkage status"));
+            }
+            if stance_status == STATUS_UNKNOWN {
+                summary.totals.stance_unknown_rows =
+                    summary.totals.stance_unknown_rows.saturating_add(1);
+            }
+            if aggressiveness_status == STATUS_UNKNOWN {
+                summary.totals.aggressiveness_unknown_rows =
+                    summary.totals.aggressiveness_unknown_rows.saturating_add(1);
+            }
+        } else if assigned_units_status != STATUS_NONE
+            || order_linkage_status != STATUS_NONE
+            || stance_status != STATUS_NONE
+            || aggressiveness_status != STATUS_NONE
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: deleted row {row_index} has live residual statuses"
+            ));
         }
     }
     if declared_targets != target_count {
         summary.parse_errors.push(format!("offset {offset}: target child count mismatch"));
     }
+    if declared_paths != path_geometry_count {
+        summary.parse_errors.push(format!("offset {offset}: path geometry child count mismatch"));
+    }
     if measured_unsupported_geometry_rows != unsupported_geometry_rows {
         summary.parse_errors.push(format!("offset {offset}: unsupported geometry row count mismatch"));
+    }
+    if measured_non_type5_exact_path_rows > path_geometry_count {
+        summary.parse_errors.push(format!("offset {offset}: exact path row count exceeds path child rows"));
     }
     if measured_execution_unknown_rows != execution_unknown_rows {
         summary.parse_errors.push(format!("offset {offset}: execution unknown row count mismatch"));
@@ -306,6 +564,246 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8], summary: &mut GateSum
         if reserved != 0 {
             summary.parse_errors.push(format!("offset {offset}: target row {row_index} has nonzero reserved"));
         }
+    }
+    for row_index in 0..path_geometry_count {
+        let province_id = read_u32(payload, cursor);
+        let reserved = read_u32(payload, cursor + 4);
+        cursor += PATH_GEOMETRY_ROW_LEN;
+        if province_id == 0 || province_id > MAX_PROVINCE_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: path geometry row {row_index} has bad province id"
+            ));
+        }
+        if reserved != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: path geometry row {row_index} has nonzero reserved"
+            ));
+        }
+    }
+    decode_direct_root_rows(
+        offset,
+        payload,
+        &mut cursor,
+        direct_root_count,
+        direct_member_count,
+        summary,
+    );
+}
+
+fn decode_direct_root_rows(
+    offset: usize,
+    payload: &[u8],
+    cursor: &mut usize,
+    direct_root_count: usize,
+    direct_member_count: usize,
+    summary: &mut GateSummary,
+) {
+    summary.totals.direct_root_rows = summary
+        .totals
+        .direct_root_rows
+        .saturating_add(direct_root_count as u64);
+    summary.totals.direct_root_member_rows = summary
+        .totals
+        .direct_root_member_rows
+        .saturating_add(direct_member_count as u64);
+
+    let mut declared_members = 0usize;
+    let mut seen = BTreeSet::new();
+    for row_index in 0..direct_root_count {
+        let kind = read_u32(payload, *cursor);
+        let object_id = read_u32(payload, *cursor + 4);
+        let flags = read_u32(payload, *cursor + 8);
+        let parent_id = read_u32(payload, *cursor + 12);
+        let owner_tag_db_id = read_u32(payload, *cursor + 16);
+        let member_first = read_u32(payload, *cursor + 20) as usize;
+        let member_count = read_u32(payload, *cursor + 24) as usize;
+        let engine_member_count = read_u32(payload, *cursor + 28);
+        let missing_member_count = read_u32(payload, *cursor + 32);
+        let order_count = read_u32(payload, *cursor + 36);
+        let non_type5_order_count = read_u32(payload, *cursor + 40);
+        let parent_status = read_u32(payload, *cursor + 44);
+        let member_status = read_u32(payload, *cursor + 48);
+        let root_status = read_u32(payload, *cursor + 52);
+        let reserved0 = read_u32(payload, *cursor + 56);
+        let reserved1 = read_u32(payload, *cursor + 60);
+        *cursor += DIRECT_ROOT_ROW_LEN;
+
+        match kind {
+            DIRECT_KIND_ARMY => {
+                summary.totals.direct_army_rows =
+                    summary.totals.direct_army_rows.saturating_add(1)
+            }
+            DIRECT_KIND_ARMY_GROUP => {
+                summary.totals.direct_army_group_rows =
+                    summary.totals.direct_army_group_rows.saturating_add(1)
+            }
+            DIRECT_KIND_THEATRE => {
+                summary.totals.direct_theatre_rows =
+                    summary.totals.direct_theatre_rows.saturating_add(1)
+            }
+            _ => summary
+                .parse_errors
+                .push(format!("offset {offset}: direct root row {row_index} has bad kind {kind}")),
+        }
+        if object_id == 0 || object_id > MAX_DIRECT_ID {
+            summary
+                .parse_errors
+                .push(format!("offset {offset}: direct root row {row_index} has bad object id"));
+        }
+        if !seen.insert((kind, object_id, flags & DIRECT_FLAG_DELETED != 0)) {
+            summary
+                .parse_errors
+                .push(format!("offset {offset}: duplicate direct root row {row_index}"));
+        }
+        let known_flags = DIRECT_FLAG_DELETED
+            | DIRECT_FLAG_PARENT
+            | DIRECT_FLAG_OWNER
+            | DIRECT_FLAG_ENGINE_MEMBER_COUNT
+            | DIRECT_FLAG_MISSING_MEMBER_COUNT
+            | DIRECT_FLAG_MEMBER_IDS
+            | DIRECT_FLAG_ORDER_COUNTS;
+        if flags & !known_flags != 0 {
+            summary
+                .parse_errors
+                .push(format!("offset {offset}: direct root row {row_index} has unknown flags"));
+        }
+        validate_direct_optional_ref(
+            summary,
+            offset,
+            row_index,
+            flags & DIRECT_FLAG_PARENT != 0,
+            parent_id,
+            "parent_id",
+        );
+        validate_direct_optional_ref(
+            summary,
+            offset,
+            row_index,
+            flags & DIRECT_FLAG_OWNER != 0,
+            owner_tag_db_id,
+            "owner_tag_db_id",
+        );
+        validate_direct_optional_count(
+            summary,
+            offset,
+            row_index,
+            flags & DIRECT_FLAG_ENGINE_MEMBER_COUNT != 0,
+            engine_member_count,
+            "engine_member_count",
+        );
+        validate_direct_optional_count(
+            summary,
+            offset,
+            row_index,
+            flags & DIRECT_FLAG_MISSING_MEMBER_COUNT != 0,
+            missing_member_count,
+            "missing_member_count",
+        );
+        if flags & DIRECT_FLAG_ORDER_COUNTS == 0 && (order_count != 0 || non_type5_order_count != 0) {
+            summary
+                .parse_errors
+                .push(format!("offset {offset}: direct root row {row_index} has order counts without flag"));
+        }
+        if non_type5_order_count > order_count {
+            summary
+                .parse_errors
+                .push(format!("offset {offset}: direct root row {row_index} non-type5 count exceeds order count"));
+        }
+        for (name, status) in [
+            ("parent", parent_status),
+            ("member", member_status),
+            ("root", root_status),
+        ] {
+            if status > STATUS_COLD_PREFLIGHT_ONLY {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: direct root row {row_index} has bad {name} status"));
+            }
+        }
+        if root_status == STATUS_COLD_PREFLIGHT_ONLY {
+            summary.totals.direct_cold_preflight_rows =
+                summary.totals.direct_cold_preflight_rows.saturating_add(1);
+        }
+        if flags & DIRECT_FLAG_MEMBER_IDS != 0 {
+            let member_end = member_first.saturating_add(member_count);
+            if member_end > direct_member_count {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: direct root row {row_index} member range exceeds child table"));
+            }
+            declared_members = declared_members.saturating_add(member_count);
+        } else if member_first != 0 || member_count != 0 {
+            summary
+                .parse_errors
+                .push(format!("offset {offset}: direct root row {row_index} has member fields without flag"));
+        }
+        if reserved0 != 0 || reserved1 != 0 {
+            summary
+                .parse_errors
+                .push(format!("offset {offset}: direct root row {row_index} has nonzero reserved field"));
+        }
+    }
+    if declared_members != direct_member_count {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: direct root member child count mismatch"));
+    }
+    for row_index in 0..direct_member_count {
+        let member_id = read_u32(payload, *cursor);
+        let reserved = read_u32(payload, *cursor + 4);
+        *cursor += DIRECT_ROOT_MEMBER_ROW_LEN;
+        if member_id == 0 || member_id > MAX_DIRECT_ID {
+            summary
+                .parse_errors
+                .push(format!("offset {offset}: direct root member row {row_index} has bad id"));
+        }
+        if reserved != 0 {
+            summary
+                .parse_errors
+                .push(format!("offset {offset}: direct root member row {row_index} has nonzero reserved"));
+        }
+    }
+}
+
+fn validate_direct_optional_ref(
+    summary: &mut GateSummary,
+    offset: usize,
+    row_index: usize,
+    present: bool,
+    value: u32,
+    field: &str,
+) {
+    if present {
+        if value == 0 || value > MAX_DIRECT_ID {
+            summary
+                .parse_errors
+                .push(format!("offset {offset}: direct root row {row_index} has bad {field}"));
+        }
+    } else if value != 0 {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: direct root row {row_index} has {field} without flag"));
+    }
+}
+
+fn validate_direct_optional_count(
+    summary: &mut GateSummary,
+    offset: usize,
+    row_index: usize,
+    present: bool,
+    value: u32,
+    field: &str,
+) {
+    if present {
+        if value > MAX_DIRECT_ID {
+            summary
+                .parse_errors
+                .push(format!("offset {offset}: direct root row {row_index} has bad {field}"));
+        }
+    } else if value != 0 {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: direct root row {row_index} has {field} without flag"));
     }
 }
 
@@ -436,7 +934,7 @@ fn main() {
         return;
     }
     println!(
-        "status={} records={} frames={} hours={:?}..{:?} rows={} target_rows={} unsupported_geometry_rows={} execution_unknown_rows={} status_flags=0x{:X}",
+        "status={} records={} frames={} hours={:?}..{:?} rows={} target_rows={} path_geometry_rows={} non_type5_exact_path_rows={} unsupported_geometry_rows={} execution_unknown_rows={} status_flags=0x{:X}",
         if errors.is_empty() { "PASS" } else { "FAIL" },
         summary.record_count,
         summary.frame_end_count,
@@ -444,6 +942,8 @@ fn main() {
         summary.last_hour,
         summary.totals.rows,
         summary.totals.target_rows,
+        summary.totals.path_geometry_rows,
+        summary.totals.non_type5_exact_path_rows,
         summary.totals.unsupported_geometry_rows,
         summary.totals.execution_unknown_rows,
         summary.status_flags_or
@@ -502,8 +1002,20 @@ fn print_json_gate_summary(summary: &GateSummary, errors: &[String], min_game_ho
             "  \"rows\": {},\n",
             "  \"changed_rows\": {},\n",
             "  \"target_rows\": {},\n",
+            "  \"path_geometry_rows\": {},\n",
+            "  \"non_type5_exact_path_rows\": {},\n",
             "  \"unsupported_geometry_rows\": {},\n",
             "  \"execution_unknown_rows\": {},\n",
+            "  \"assigned_units_exact_rows\": {},\n",
+            "  \"order_linkage_exact_rows\": {},\n",
+            "  \"stance_unknown_rows\": {},\n",
+            "  \"aggressiveness_unknown_rows\": {},\n",
+            "  \"direct_root_rows\": {},\n",
+            "  \"direct_root_member_rows\": {},\n",
+            "  \"direct_army_rows\": {},\n",
+            "  \"direct_army_group_rows\": {},\n",
+            "  \"direct_theatre_rows\": {},\n",
+            "  \"direct_cold_preflight_rows\": {},\n",
             "  \"status_flags_or\": {},\n",
             "  \"failure_status_flags\": {}\n",
             "}}\n"
@@ -528,8 +1040,20 @@ fn print_json_gate_summary(summary: &GateSummary, errors: &[String], min_game_ho
         summary.totals.rows,
         summary.totals.changed_rows,
         summary.totals.target_rows,
+        summary.totals.path_geometry_rows,
+        summary.totals.non_type5_exact_path_rows,
         summary.totals.unsupported_geometry_rows,
         summary.totals.execution_unknown_rows,
+        summary.totals.assigned_units_exact_rows,
+        summary.totals.order_linkage_exact_rows,
+        summary.totals.stance_unknown_rows,
+        summary.totals.aggressiveness_unknown_rows,
+        summary.totals.direct_root_rows,
+        summary.totals.direct_root_member_rows,
+        summary.totals.direct_army_rows,
+        summary.totals.direct_army_group_rows,
+        summary.totals.direct_theatre_rows,
+        summary.totals.direct_cold_preflight_rows,
         summary.status_flags_or,
         failure_status_flags,
     );
@@ -594,10 +1118,15 @@ mod tests {
                     slot_index: 0,
                     order_type: 5,
                     target_states: vec![123, 456],
+                    path_provinces: Vec::new(),
                     target_declared_count: Some(2),
                     target_status: STATUS_EXACT,
                     geometry_status: STATUS_EXACT,
                     execution_status: STATUS_FIXTURE_REQUIRED,
+                    assigned_units_status: STATUS_EXACT,
+                    order_linkage_status: STATUS_EXACT,
+                    stance_status: STATUS_UNKNOWN,
+                    aggressiveness_status: STATUS_UNKNOWN,
                 },
                 BattleplanDepthRow {
                     army_id: 18,
@@ -606,12 +1135,32 @@ mod tests {
                     slot_index: 1,
                     order_type: 2,
                     target_states: Vec::new(),
+                    path_provinces: Vec::new(),
                     target_declared_count: None,
                     target_status: STATUS_UNSUPPORTED,
                     geometry_status: STATUS_FIXTURE_REQUIRED,
                     execution_status: STATUS_FIXTURE_REQUIRED,
+                    assigned_units_status: STATUS_EXACT,
+                    order_linkage_status: STATUS_EXACT,
+                    stance_status: STATUS_UNKNOWN,
+                    aggressiveness_status: STATUS_UNKNOWN,
                 },
             ],
+            &[DirectRootRow {
+                kind: DIRECT_KIND_ARMY,
+                object_id: 17,
+                deleted: false,
+                parent_id: Some(301),
+                owner_tag_db_id: Some(47),
+                member_ids: vec![101, 102],
+                engine_member_count: Some(3),
+                missing_member_count: Some(1),
+                order_count: Some(2),
+                non_type5_order_count: Some(1),
+                parent_status: STATUS_EXACT,
+                member_status: STATUS_EXACT,
+                root_status: STATUS_COLD_PREFLIGHT_ONLY,
+            }],
             11,
             0,
             2,
@@ -623,8 +1172,18 @@ mod tests {
         assert_eq!(summary.parse_errors, Vec::<String>::new());
         assert_eq!(summary.totals.rows, 2);
         assert_eq!(summary.totals.target_rows, 2);
+        assert_eq!(summary.totals.path_geometry_rows, 0);
+        assert_eq!(summary.totals.non_type5_exact_path_rows, 0);
         assert_eq!(summary.totals.unsupported_geometry_rows, 1);
         assert_eq!(summary.totals.execution_unknown_rows, 2);
+        assert_eq!(summary.totals.assigned_units_exact_rows, 2);
+        assert_eq!(summary.totals.order_linkage_exact_rows, 2);
+        assert_eq!(summary.totals.stance_unknown_rows, 2);
+        assert_eq!(summary.totals.aggressiveness_unknown_rows, 2);
+        assert_eq!(summary.totals.direct_root_rows, 1);
+        assert_eq!(summary.totals.direct_root_member_rows, 2);
+        assert_eq!(summary.totals.direct_army_rows, 1);
+        assert_eq!(summary.totals.direct_cold_preflight_rows, 1);
     }
 
     #[test]
@@ -637,11 +1196,17 @@ mod tests {
                 slot_index: 0,
                 order_type: 5,
                 target_states: Vec::new(),
+                path_provinces: Vec::new(),
                 target_declared_count: Some(0),
                 target_status: STATUS_UNSUPPORTED,
                 geometry_status: STATUS_UNKNOWN,
                 execution_status: STATUS_FIXTURE_REQUIRED,
+                assigned_units_status: STATUS_EXACT,
+                order_linkage_status: STATUS_EXACT,
+                stance_status: STATUS_UNKNOWN,
+                aggressiveness_status: STATUS_UNKNOWN,
             }],
+            &[],
             11,
             0,
             1,
@@ -651,5 +1216,42 @@ mod tests {
         let mut summary = GateSummary::default();
         decode_depth_payload(0, &payload, &mut summary);
         assert!(summary.parse_errors.iter().any(|err| err.contains("type-5 row 0 is not exact")));
+    }
+
+    #[test]
+    fn encodes_and_decodes_non_type5_exact_path_geometry_rows() {
+        let payload = encode_depth_payload(
+            &[BattleplanDepthRow {
+                army_id: 19,
+                generation: 11,
+                deleted: false,
+                slot_index: 2,
+                order_type: 3,
+                target_states: Vec::new(),
+                path_provinces: vec![1001, 1002, 1003],
+                target_declared_count: None,
+                target_status: STATUS_UNSUPPORTED,
+                geometry_status: STATUS_EXACT,
+                execution_status: STATUS_FIXTURE_REQUIRED,
+                assigned_units_status: STATUS_EXACT,
+                order_linkage_status: STATUS_EXACT,
+                stance_status: STATUS_UNKNOWN,
+                aggressiveness_status: STATUS_UNKNOWN,
+            }],
+            &[],
+            11,
+            0,
+            1,
+            1,
+            1,
+        );
+        let mut summary = GateSummary::default();
+        decode_depth_payload(0, &payload, &mut summary);
+        assert_eq!(summary.parse_errors, Vec::<String>::new());
+        assert_eq!(summary.totals.rows, 1);
+        assert_eq!(summary.totals.target_rows, 0);
+        assert_eq!(summary.totals.path_geometry_rows, 3);
+        assert_eq!(summary.totals.non_type5_exact_path_rows, 1);
+        assert_eq!(summary.totals.unsupported_geometry_rows, 0);
     }
 }

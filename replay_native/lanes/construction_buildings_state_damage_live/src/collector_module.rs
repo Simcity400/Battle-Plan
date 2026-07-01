@@ -1,5 +1,5 @@
 use crate::{
-    encode_lane_frame, gate_lane_frame, read_country_construction_queue,
+    encode_lane_frame, gate_lane_frame, read_country_construction_queue_with_target_states,
     read_province_building_rows, read_state_building_rows, read_state_resource_rows,
     CountryConstructionRoot, GateReport, LaneFrame, LaneMemory, ProvinceRoot, StateRoot,
     SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE, SOURCE_FLAG_DLL_NATIVE,
@@ -46,11 +46,13 @@ pub fn collect_domain48_frame<M: LaneMemory>(mem: &M, roots: CollectorRoots) -> 
     let mut resource_rows = Vec::new();
 
     for root in &roots.country_roots {
-        match read_country_construction_queue(mem, root.clone()) {
+        match read_country_construction_queue_with_target_states(
+            mem,
+            root.clone(),
+            &roots.state_roots,
+            &roots.province_roots,
+        ) {
             Some(mut rows) => {
-                for row in &mut rows {
-                    row.target_state_id = None;
-                }
                 construction_rows.append(&mut rows);
             }
             None => stats.failed_country_roots = stats.failed_country_roots.saturating_add(1),
@@ -94,6 +96,22 @@ pub fn collect_domain48_frame<M: LaneMemory>(mem: &M, roots: CollectorRoots) -> 
         status_flags |= STATUS_PARTIAL_DATA;
     }
 
+    let all_construction_targets_present = !construction_rows.is_empty()
+        && construction_rows
+            .iter()
+            .all(|row| row.target_state_id.is_some());
+    if !all_construction_targets_present {
+        for row in &mut construction_rows {
+            row.target_state_id = None;
+        }
+    }
+
+    let target_state_source_flag = if all_construction_targets_present {
+        0
+    } else {
+        SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE
+    };
+
     let frame = LaneFrame {
         game_hour_raw: roots.game_hour_raw,
         status_flags,
@@ -101,7 +119,7 @@ pub fn collect_domain48_frame<M: LaneMemory>(mem: &M, roots: CollectorRoots) -> 
             | SOURCE_FLAG_SHARED_COUNTRY_ROOTS
             | SOURCE_FLAG_SHARED_MAP_TOPOLOGY
             | SOURCE_FLAG_HEALTHY_LEVEL_CANDIDATE
-            | SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE,
+            | target_state_source_flag,
         observed_country_roots: roots.country_roots.len().min(u32::MAX as usize) as u32,
         observed_state_roots: roots.state_roots.len().min(u32::MAX as usize) as u32,
         observed_province_roots: roots.province_roots.len().min(u32::MAX as usize) as u32,

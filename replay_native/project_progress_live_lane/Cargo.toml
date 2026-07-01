@@ -16,5 +16,13 @@ path = "src/bin/proof_from_probe.rs"
 name = "project_progress_residual_proof"
 path = "src/bin/residual_proof.rs"
 
+[[bin]]
+name = "project_progress_lifecycle_stream_proof"
+path = "src/bin/lifecycle_stream_proof.rs"
+
+[[bin]]
+name = "project_progress_full_residual_audit"
+path = "src/bin/full_residual_audit.rs"
+
 [dependencies]
 serde_json = "1"

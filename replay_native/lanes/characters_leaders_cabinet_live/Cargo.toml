@@ -21,4 +21,17 @@ name = "replay_fixture_verify"
 path = "src/bin/replay_fixture_verify.rs"
 required-features = ["replay-verify"]
 
+[[bin]]
+name = "replay_record_verify"
+path = "src/bin/replay_record_verify.rs"
+required-features = ["replay-verify"]
+
+[[bin]]
+name = "adapter_fixture_gate"
+path = "src/bin/adapter_fixture_gate.rs"
+
+[[bin]]
+name = "scheduled_adapter_benchmark"
+path = "src/bin/scheduled_adapter_benchmark.rs"
+
 [workspace]

@@ -29,6 +29,11 @@ The fixture must create a visible active naval battle with both sides present:
    native naval OOB/ships path available so each non-convoy combat member's
    CShip instance can be joined to task-force id, fleet id, strength, org, XP,
    and sunk-convoy counters.
+7. The bridge must supply both front province/location and strategic region.
+   Location is read from the validated body/front route; region is the static
+   `map/strategicregions/*.txt` province-to-region join. The synthetic proof
+   fixture uses province `2799`, which maps to strategic region `18` in
+   `18-Channel.txt`.
 
 ## Expected Live Evidence
 
@@ -45,6 +50,8 @@ The fixture probe must prove this exact route:
 - group member vector: `group+0x08` data, `group+0x14` size
 - `CFEXMember` vtable: `module+0x29F9608`
 - member handle: `CFEXMember+0x08`
+- front location: `body+0x28 -> CProvince+0xA4`
+- strategic region: static `map/strategicregions/*.txt` province-to-region map
 - current CShip route: `CFEXMember+0x08` high u32 ship instance id resolves to
   `CShip+0x08` high u32 through CShip vtable `module+0x2941748`
 - current native OOB route: the same CShip instance resolves through
@@ -61,6 +68,7 @@ Detection passes only when the probe output has:
 - `bridge_row_count >= 1`
 - `member_bridge_row_count >= 2`
 - attacker and defender `CFEXMember` rows for the same combat id/generation
+- every lifecycle bridge row has `location_id` and `region_id`
 - `non_convoy_member_count >= 1`
 - `cship_unresolved_member_count == 0`
 - every non-convoy member row has task-force and fleet ids
@@ -71,13 +79,37 @@ Detection passes only when the probe output has:
 
 ## Detection Commands
 
+Preferred one-command lane harness:
+
+```powershell
+$hoi4Pid = (Get-Process the game | Select-Object -First 1 -ExpandProperty Id)
+python replay_native\lanes\naval_combat_live\tools\active_fixture_proof.py `
+  --pid $hoi4Pid `
+  --workers 4 `
+  --timeout-s 1800 `
+  --poll-s 5 `
+  --require-two-sided `
+  --require-cship-join `
+  --out-dir replay_native\runs\naval_combat_live_active_fixture_harness_870ebf_<fixture>
+```
+
+When a valid fixture appears, this writes `bridge.txt`,
+`member_bridge.jsonl`, `cship_task_force_index.json`,
+`active_fixture_input.json`, runs:
+
+```powershell
+cargo run --manifest-path replay_native\lanes\naval_combat_live\Cargo.toml --bin naval_combat_lane_proof -- --out-dir <out>\rust_fixture_proof --fixture-json <out>\active_fixture_input.json
+```
+
+and verifies `<out>\rust_fixture_proof\native_session.battleplan`.
+
 Use this first to prove the active fixture and write bridge rows:
 
 ```powershell
-$pid = (Get-Process the game | Select-Object -First 1 -ExpandProperty Id)
-$out = "replay_native\runs\naval_combat_live_active_fixture_870ebf_20260701_v2"
+$hoi4Pid = (Get-Process the game | Select-Object -First 1 -ExpandProperty Id)
+$out = "replay_native\runs\naval_combat_live_active_fixture_870ebf_20260701_v3"
 python memory_reader\combat\naval_combat_live_fixture_probe.py `
-  --pid $pid `
+  --pid $hoi4Pid `
   --workers 4 `
   --require-two-sided `
   --require-cship-join `
@@ -87,10 +119,10 @@ python memory_reader\combat\naval_combat_live_fixture_probe.py `
 Use this for a bounded wait while the user creates the battle:
 
 ```powershell
-$pid = (Get-Process the game | Select-Object -First 1 -ExpandProperty Id)
-$out = "replay_native\runs\naval_combat_live_active_fixture_watch_870ebf_20260701_v2"
+$hoi4Pid = (Get-Process the game | Select-Object -First 1 -ExpandProperty Id)
+$out = "replay_native\runs\naval_combat_live_active_fixture_watch_870ebf_20260701_v3"
 python memory_reader\combat\naval_combat_live_watch_gate.py `
-  --pid $pid `
+  --pid $hoi4Pid `
   --workers 4 `
   --timeout-s 1800 `
   --poll-s 5 `
@@ -108,15 +140,15 @@ When `bridge.txt` is non-empty, run the lane-local bridge proof:
 ```powershell
 python memory_reader\combat\naval_combat_compact_proof.py `
   --bridge-file $out\bridge.txt `
-  --out-dir replay_native\runs\naval_combat_live_detected_bridge_compact_870ebf_20260701_v2
+  --out-dir replay_native\runs\naval_combat_live_detected_bridge_compact_870ebf_20260701_v3
 ```
 
 The lane-local Rust/synthetic replay proof remains:
 
 ```powershell
 cargo test --manifest-path replay_native\lanes\naval_combat_live\Cargo.toml
-cargo run --manifest-path replay_native\lanes\naval_combat_live\Cargo.toml --bin naval_combat_lane_proof -- --out-dir replay_native\runs\naval_combat_live_lane_stack_870ebf_20260701_v2
-cargo run --manifest-path replay_native\snapshot\Cargo.toml --bin pack_replay -- verify replay_native\runs\naval_combat_live_lane_stack_870ebf_20260701_v2\native_session.battleplan
+cargo run --manifest-path replay_native\lanes\naval_combat_live\Cargo.toml --bin naval_combat_lane_proof -- --out-dir replay_native\runs\naval_combat_live_lane_stack_870ebf_20260701_v4
+cargo run --manifest-path replay_native\snapshot\Cargo.toml --bin pack_replay -- verify replay_native\runs\naval_combat_live_lane_stack_870ebf_20260701_v4\native_session.battleplan
 ```
 
 ## Production Proof After Registration
@@ -167,9 +199,12 @@ The production proof can count only if all of these are true:
 - `skipped_game_hours == 0`.
 - The compact stream includes typed domain data records for both domains `49`
   and `50` during the active combat window.
-- Domain `49` has at least one active lifecycle row.
+- Domain `49` has start/update/end lifecycle rows for the same combat, and
+  every lifecycle row has both `location_id` and `region_id`.
 - Domain `50` has attacker and defender member rows for the same
   combat id/generation.
+- Domain `50` emits deleted member rows when a combat ends, and when a member
+  disappears from an otherwise active combat.
 - At least one non-convoy member row has a validated current CShip join.
 - Every CShip-validated member row has task-force/fleet linkage and current
   CShip hull telemetry.
@@ -189,6 +224,10 @@ Treat these as candidate rejection evidence:
   vtable, handle, side, registry, and front validation.
 - Body/side/registry validation passes, but either side has zero
   `CFEXMember` rows under a visible fleet-vs-fleet fixture.
+- Body validation passes, but `body+0x28 -> CProvince+0xA4` cannot provide a
+  valid location id for the lifecycle row.
+- Location validation passes, but static strategic-region data cannot map that
+  province to a region id.
 - A non-convoy `CFEXMember` row has a ship instance id that cannot resolve
   through current CShip `module+0x2941748`.
 - A non-convoy CShip-validated member lacks task-force/fleet linkage from the
@@ -207,16 +246,55 @@ There is no remaining non-combat naval route in this lane that can complete
 domains `49/50` without an active battle fixture.
 
 - Current CShip resolver is already validated live:
-  `module+0x2941748`, `current_validated_count=1772`, and stale
-  `module+0x2931998` is rejected with `old_hit_count=0`.
+  `module+0x2941748`, `current_validated_count=1617`, and stale
+  `module+0x2931998` is rejected with `old_hit_count=0`. Refreshed route proof:
+  `replay_native/runs/naval_combat_live_cship_route_870ebf_20260701_v3/naval_combat_cship_route_probe.json`.
+- Current OOB task-force/fleet linkage is validated without an active combat:
+  `replay_native/runs/naval_combat_live_oob_task_fleet_870ebf_20260701_v1/naval_oob_gap_probe.json`
+  reports `CGameState module+0x3316E90`, `CGameState+0x310` country table,
+  `CFleet module+0x294BF28`, `CTaskForce module+0x294C660`, `CShip
+  module+0x2941748`, `CTaskForce+0x338/+0x344` ship vector, 432 countries, 139
+  fleets, 163 task forces, 1288 ships, and 163/163 task forces with derived
+  strategic regions.
+- Current fixture-independent root audit:
+  `replay_native/runs/naval_combat_live_fixture_independent_roots_870ebf_20260701_v1/fixture_independent_roots_audit.json`
+  reports 432 countries, 142 fleets, 163 task forces, and 1303 ships. All 1303
+  ships have task-force/fleet linkage plus `CShip+0x6F8` strength,
+  `CShip+0x700` organisation, `CShip+0x708` experience, and `CShip+0x3C`
+  sunk-convoy counters; 158 ships have nonzero sunk-convoy counters. It also
+  validates `CTaskForce+0x18` current location and 163/163 task forces with
+  derived strategic regions.
+- Current fixture-independent rejections/blockers:
+  `theatre_linkage.status=rejected_direct_pointer_scan` with zero direct
+  `CTheatre` pointer offsets in `CFleet[0x0..0x1800]` and
+  `CTaskForce[0x0..0x800]`; `mission_order_candidates.status=blocked_fixture_required`
+  with 40/40 single-snapshot candidate offsets all zero; and
+  `home_base_port_candidates.status=blocked_fixture_required` with province
+  pointer/id candidates requiring a before/after port or home-base change.
 - Current live fixture probe still has no combat/member rows:
   PID `45880`, SHA
   `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`,
   `body_hit_count=0`, `validated_combat_count=0`, `bridge_row_count=0`,
   `member_bridge_row_count=0`. Refreshed probe:
-  `replay_native/runs/naval_combat_live_lane_stack_870ebf_20260701_v2/live_fixture_probe/naval_combat_live_fixture_probe.json`
-  also reports `status=fixture_absent`, `sha256_ok=true`, and zero body,
-  bridge, member, resolved, or unresolved CShip rows.
+  `replay_native/runs/naval_combat_live_current_fixture_probe_870ebf_20260701_v3/naval_combat_live_fixture_probe.json`
+  reports `status=fixture_absent`, `scan.status=scanned`, `sha256_ok=true`,
+  `scan.elapsed_s=6.0`, and zero body, bridge, member, resolved, or unresolved
+  CShip rows.
+- Current active harness proof:
+  `replay_native/runs/naval_combat_live_active_fixture_harness_870ebf_20260701_v4/active_fixture_harness_summary.json`
+  reports five bounded polls against PID `45880`, `status=timeout_no_validated_fixture`,
+  `final_fixture_status=fixture_absent`, `scan.status=scanned`,
+  `sha256_ok=true`, and every poll at `body_hit_count=0`,
+  `bridge_row_count=0`, and `member_bridge_row_count=0`.
+- Current fixture-json mode proof:
+  `replay_native/runs/naval_combat_live_fixture_json_mode_870ebf_20260701_v1/rust_fixture_proof/naval_combat_live_lane_stack_proof.json`
+  passes the same Rust path the active harness calls after detection, with 1
+  lifecycle row, 2 member rows, 1 location row, 1 region row, 1
+  CShip/task-force/fleet linked member, byte-matched compact stream, and
+  verified `.battleplan`.
+- Static strategic-region mapping is validated for the lane fixture:
+  `<local-path> of Iron IV\map\strategicregions\18-Channel.txt`
+  has `id=18` and contains province `2799`.
 - The long watcher already ran `58` polls and ended
   `timeout_no_validated_fixture` with first and last `body_hit_count=0`.
 - Prior current-build direct scans also found no active combat-family bodies:

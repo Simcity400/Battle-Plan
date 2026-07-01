@@ -35,6 +35,7 @@ pub const ROW_COUNTRY_LEADER_ROLE: u8 = 4;
 pub const ROW_ACTIVE_RULER: u8 = 5;
 pub const ROW_ADVISOR_ROSTER: u8 = 6;
 pub const ROW_APPOINTED_ADVISOR: u8 = 7;
+pub const ROW_CHARACTER_PORTRAIT: u8 = 8;
 
 pub const UNIT_LEADER_ARMY: u8 = 1;
 pub const UNIT_LEADER_NAVY: u8 = 2;
@@ -49,6 +50,7 @@ const TRAIT_ROW_LEN: u8 = 16;
 const COUNTRY_LEADER_ROLE_ROW_LEN: u8 = 20;
 const ACTIVE_RULER_ROW_LEN: u8 = 28;
 const ADVISOR_ROW_LEN: u8 = 24;
+const CHARACTER_PORTRAIT_ROW_LEN: u8 = 24;
 const ADVISOR_CABINET_BUCKETS: &[&[u8]] = &[
     b"political_advisor",
     b"army_chief",
@@ -122,6 +124,15 @@ pub struct AdvisorRow<'a> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CharacterPortraitRow<'a> {
+    pub country_tag_db_id: u32,
+    pub char_id: u32,
+    pub role: &'a str,
+    pub size: &'a str,
+    pub gfx: &'a str,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CharacterLaneRow<'a> {
     Character(CharacterRow<'a>),
     UnitLeader(UnitLeaderRow<'a>),
@@ -130,6 +141,7 @@ pub enum CharacterLaneRow<'a> {
     ActiveRuler(ActiveRulerRow<'a>),
     AdvisorRoster(AdvisorRow<'a>),
     AppointedAdvisor(AdvisorRow<'a>),
+    CharacterPortrait(CharacterPortraitRow<'a>),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -144,6 +156,7 @@ pub struct Domain44GateSummary {
     pub active_ruler_rows: u64,
     pub advisor_roster_rows: u64,
     pub appointed_advisor_rows: u64,
+    pub character_portrait_rows: u64,
     pub string_count: u64,
     pub string_bytes: u64,
     pub data_units_total: BTreeMap<&'static str, u64>,
@@ -202,6 +215,7 @@ struct RowCounts {
     active_rulers: u32,
     advisor_roster: u32,
     appointed_advisors: u32,
+    character_portraits: u32,
 }
 
 pub fn encode_payload(
@@ -300,6 +314,20 @@ pub fn encode_payload(
             CharacterLaneRow::AppointedAdvisor(row) => {
                 counts.appointed_advisors = counts.appointed_advisors.saturating_add(1);
                 encode_advisor_row(&mut row_bytes, &mut strings, ROW_APPOINTED_ADVISOR, row);
+            }
+            CharacterLaneRow::CharacterPortrait(row) => {
+                counts.character_portraits = counts.character_portraits.saturating_add(1);
+                push_header(
+                    &mut row_bytes,
+                    ROW_CHARACTER_PORTRAIT,
+                    CHARACTER_PORTRAIT_ROW_LEN,
+                    0,
+                );
+                push_u32(&mut row_bytes, row.country_tag_db_id);
+                push_u32(&mut row_bytes, row.char_id);
+                push_u32(&mut row_bytes, strings.intern(Some(row.role)));
+                push_u32(&mut row_bytes, strings.intern(Some(row.size)));
+                push_u32(&mut row_bytes, strings.intern(Some(row.gfx)));
             }
         }
     }
@@ -434,6 +462,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
     let mut seen_country_roles = BTreeSet::new();
     let mut seen_active_rulers = BTreeSet::new();
     let mut seen_advisor_rows = BTreeSet::new();
+    let mut seen_portrait_rows = BTreeSet::new();
     let mut declared_trait_counts = BTreeMap::<u32, u16>::new();
     let mut observed_trait_counts = BTreeMap::<u32, u16>::new();
 
@@ -746,6 +775,53 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
                     ));
                 }
             }
+            ROW_CHARACTER_PORTRAIT => {
+                require_len(
+                    &mut summary,
+                    offset,
+                    row_index,
+                    kind,
+                    row_len,
+                    CHARACTER_PORTRAIT_ROW_LEN,
+                );
+                let country = read_u32(payload, cursor + 4);
+                let char_id = read_u32(payload, cursor + 8);
+                let role_sid = read_u32(payload, cursor + 12);
+                let size_sid = read_u32(payload, cursor + 16);
+                let gfx_sid = read_u32(payload, cursor + 20);
+                summary.character_portrait_rows = summary.character_portrait_rows.saturating_add(1);
+                validate_country(&mut summary, offset, row_index, country, false);
+                validate_character(&mut summary, offset, row_index, char_id);
+                validate_required_string(
+                    &mut summary,
+                    offset,
+                    row_index,
+                    "portrait_role",
+                    role_sid,
+                    strings.len(),
+                );
+                validate_required_string(
+                    &mut summary,
+                    offset,
+                    row_index,
+                    "portrait_size",
+                    size_sid,
+                    strings.len(),
+                );
+                validate_required_string(
+                    &mut summary,
+                    offset,
+                    row_index,
+                    "portrait_gfx",
+                    gfx_sid,
+                    strings.len(),
+                );
+                if !seen_portrait_rows.insert((country, char_id, role_sid, size_sid, gfx_sid)) {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: row {row_index} duplicates character portrait row"
+                    ));
+                }
+            }
             _ => summary.parse_errors.push(format!(
                 "offset {offset}: row {row_index} has unknown row kind {kind}"
             )),
@@ -856,6 +932,12 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
         &mut summary,
         "appointed_advisor_rows",
         observed_appointed_advisors,
+    );
+    let character_portrait_rows = summary.character_portrait_rows;
+    add_unit(
+        &mut summary,
+        "character_portrait_rows",
+        character_portrait_rows,
     );
     summary
 }
@@ -1120,7 +1202,7 @@ fn summary_json(
     }
     units.push('}');
     format!(
-        "{{\"domain\":\"{}\",\"domain_id\":{},\"wrapped_record\":{},\"payload_bytes\":{},\"status_flags_or\":{},\"schema_flags_or\":{},\"row_count_total\":{},\"character_rows\":{},\"unit_leader_rows\":{},\"unit_leader_trait_rows\":{},\"country_leader_role_rows\":{},\"active_ruler_rows\":{},\"advisor_roster_rows\":{},\"appointed_advisor_rows\":{},\"string_count\":{},\"string_bytes\":{},\"data_units_total\":{},\"parse_errors\":{}}}",
+        "{{\"domain\":\"{}\",\"domain_id\":{},\"wrapped_record\":{},\"payload_bytes\":{},\"status_flags_or\":{},\"schema_flags_or\":{},\"row_count_total\":{},\"character_rows\":{},\"unit_leader_rows\":{},\"unit_leader_trait_rows\":{},\"country_leader_role_rows\":{},\"active_ruler_rows\":{},\"advisor_roster_rows\":{},\"appointed_advisor_rows\":{},\"character_portrait_rows\":{},\"string_count\":{},\"string_bytes\":{},\"data_units_total\":{},\"parse_errors\":{}}}",
         json_escape(DOMAIN_NAME),
         DOMAIN_ID,
         wrapped_record,
@@ -1135,6 +1217,7 @@ fn summary_json(
         summary.active_ruler_rows,
         summary.advisor_roster_rows,
         summary.appointed_advisor_rows,
+        summary.character_portrait_rows,
         summary.string_count,
         summary.string_bytes,
         units,
@@ -1243,6 +1326,13 @@ mod tests {
                 ledger: Some("political_advisor"),
                 idea_token: "ENG_maxwell_aitken",
             }),
+            CharacterLaneRow::CharacterPortrait(CharacterPortraitRow {
+                country_tag_db_id: 3,
+                char_id: 2458,
+                role: "army",
+                size: "large",
+                gfx: "GFX_portrait_SOV_georgy_zhukov",
+            }),
         ];
         let payload = encode_payload(
             123,
@@ -1263,17 +1353,25 @@ mod tests {
             SCHEMA_ROOTS_VALIDATED
         );
         assert_eq!(summary.status_flags_or, 0);
-        assert_eq!(summary.row_count_total, 8);
+        assert_eq!(summary.row_count_total, 9);
         assert_eq!(summary.unit_leader_rows, 1);
         assert_eq!(summary.trait_rows, 2);
         assert_eq!(summary.active_ruler_rows, 1);
         assert_eq!(summary.appointed_advisor_rows, 1);
+        assert_eq!(summary.character_portrait_rows, 1);
         assert_eq!(
             summary
                 .data_units_total
                 .get("unit_leader_trait_rows")
                 .copied(),
             Some(2)
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("character_portrait_rows")
+                .copied(),
+            Some(1)
         );
 
         let compact = encode_compact_data_record(7, 42, &payload);

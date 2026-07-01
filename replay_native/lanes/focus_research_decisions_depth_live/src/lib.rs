@@ -16,6 +16,7 @@ const DOMAIN_FRAME: u16 = 1000;
 const DEPTH_HEADER_LEN: usize = 48;
 const RESEARCH_ETA_ROW_LEN: usize = 80;
 const DECISION_STATUS_ROW_LEN: usize = 28;
+const DECISION_TARGET_ROW_FIXED_LEN: usize = 16;
 const BADGE_ROW_FIXED_LEN: usize = 20;
 
 const DEPTH_STATUS_FOCUS_PAUSE_BADGED: u32 = 1;
@@ -73,6 +74,19 @@ const DECISION_EVENT_DAY_DELTA: u32 = 3;
 const DECISION_EVENT_STATE_CHANGED: u32 = 4;
 const DECISION_EVENT_STATUS_COUNTS_CHANGED: u32 = 5;
 
+const DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED: u32 = 1;
+const DECISION_TARGET_FLAG_COUNTRY_TAG: u32 = 1;
+const DECISION_TARGET_FLAG_RECORD_0X20: u32 = 1 << 1;
+const DECISION_TARGET_FLAG_NUMERIC_ID: u32 = 1 << 2;
+const DECISION_TARGET_FLAG_RECORD_0X24: u32 = 1 << 3;
+const DECISION_TARGET_FLAG_KNOWN_MASK: u32 = DECISION_TARGET_FLAG_COUNTRY_TAG
+    | DECISION_TARGET_FLAG_RECORD_0X20
+    | DECISION_TARGET_FLAG_NUMERIC_ID
+    | DECISION_TARGET_FLAG_RECORD_0X24;
+const DECISION_TARGET_UNKNOWN_ID: u32 = u32::MAX;
+const DECISION_TARGET_MAX_TAG_DB_ID: u32 = 4096;
+const DECISION_TARGET_MAX_NUMERIC_ID: u32 = 1_000_000;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DepthGateSummary {
     pub data_records: u64,
@@ -83,6 +97,9 @@ pub struct DepthGateSummary {
     pub research_eta_rows: u64,
     pub decision_status_rows: u64,
     pub decision_event_rows: u64,
+    pub decision_target_rows: u64,
+    pub decision_country_target_rows: u64,
+    pub decision_numeric_target_rows: u64,
     pub badge_rows: u64,
     pub focus_pause_badge_rows: u64,
     pub decision_target_badge_rows: u64,
@@ -107,6 +124,7 @@ pub struct DepthProof {
     pub source_research_slot_rows: u64,
     pub source_decision_country_rows: u64,
     pub source_timed_decision_rows: u64,
+    pub source_targeted_timed_decision_rows: u64,
     pub depth_data_records: u64,
     pub focus_event_rows: u64,
     pub focus_completed_exact_rows: u64,
@@ -115,6 +133,9 @@ pub struct DepthProof {
     pub research_eta_rows: u64,
     pub decision_status_rows: u64,
     pub decision_event_rows: u64,
+    pub decision_target_rows: u64,
+    pub decision_country_target_rows: u64,
+    pub decision_numeric_target_rows: u64,
     pub badge_rows: u64,
     pub focus_pause_badge_rows: u64,
     pub decision_target_badge_rows: u64,
@@ -150,7 +171,8 @@ impl DepthProof {
                 "    \"focus_country_rows\": {source_focus_rows},\n",
                 "    \"active_research_slot_rows\": {source_research_slot_rows},\n",
                 "    \"decision_country_rows\": {source_decision_country_rows},\n",
-                "    \"timed_decision_rows\": {source_timed_decision_rows}\n",
+                "    \"timed_decision_rows\": {source_timed_decision_rows},\n",
+                "    \"targeted_timed_decision_rows\": {source_targeted_timed_decision_rows}\n",
                 "  }},\n",
                 "  \"depth_output\": {{\n",
                 "    \"bytes\": {depth_bytes},\n",
@@ -162,6 +184,9 @@ impl DepthProof {
                 "    \"research_eta_rows\": {research_eta_rows},\n",
                 "    \"decision_status_rows\": {decision_status_rows},\n",
                 "    \"decision_event_rows\": {decision_event_rows},\n",
+                "    \"decision_target_rows\": {decision_target_rows},\n",
+                "    \"decision_country_target_rows\": {decision_country_target_rows},\n",
+                "    \"decision_numeric_target_rows\": {decision_numeric_target_rows},\n",
                 "    \"badge_rows\": {badge_rows},\n",
                 "    \"badge_rows_by_kind\": {{\n",
                 "      \"focus_pause_fail_closed\": {focus_pause_badge_rows},\n",
@@ -193,6 +218,7 @@ impl DepthProof {
             source_research_slot_rows = self.source_research_slot_rows,
             source_decision_country_rows = self.source_decision_country_rows,
             source_timed_decision_rows = self.source_timed_decision_rows,
+            source_targeted_timed_decision_rows = self.source_targeted_timed_decision_rows,
             depth_bytes = self.depth_stream.len(),
             depth_records = self.depth_data_records,
             focus_event_rows = self.focus_event_rows,
@@ -202,6 +228,9 @@ impl DepthProof {
             research_eta_rows = self.research_eta_rows,
             decision_status_rows = self.decision_status_rows,
             decision_event_rows = self.decision_event_rows,
+            decision_target_rows = self.decision_target_rows,
+            decision_country_target_rows = self.decision_country_target_rows,
+            decision_numeric_target_rows = self.decision_numeric_target_rows,
             badge_rows = self.badge_rows,
             focus_pause_badge_rows = self.focus_pause_badge_rows,
             decision_target_badge_rows = self.decision_target_badge_rows,
@@ -252,6 +281,7 @@ pub struct DecisionCountryState {
     pub decisions_taken_bucket_count: u32,
     pub re_enable_count: u32,
     pub timed_live: Vec<TimedDecisionState>,
+    pub targeted_timed_live: Vec<TargetedTimedDecisionState>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -260,6 +290,14 @@ pub struct TimedDecisionState {
     pub decision: String,
     pub days: i32,
     pub state: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TargetedTimedDecisionState {
+    pub tag_db_id: u32,
+    pub decision: String,
+    pub target_tag_db_id: Option<u32>,
+    pub target_numeric_id: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -320,6 +358,15 @@ pub struct DecisionEventRow {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DecisionTargetRow {
+    pub tag_db_id: u32,
+    pub target_id: u32,
+    pub flags: u32,
+    pub source_kind: u32,
+    pub decision: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BadgeRow {
     pub kind: u32,
     pub flags: u32,
@@ -336,6 +383,7 @@ pub struct DepthFrameRows {
     pub research_eta: Vec<ResearchEtaRow>,
     pub decision_status: Vec<DecisionStatusRow>,
     pub decision_events: Vec<DecisionEventRow>,
+    pub decision_targets: Vec<DecisionTargetRow>,
     pub badges: Vec<BadgeRow>,
     pub observed_focus_rows: u32,
     pub observed_research_slot_rows: u32,
@@ -590,6 +638,25 @@ impl Deriver {
                 timed_live_count: state.timed_live.len().min(u32::MAX as usize) as u32,
             };
             self.pending.decision_status.push(status);
+            for targeted in &state.targeted_timed_live {
+                if let Some(target_tag_db_id) = targeted.target_tag_db_id {
+                    self.pending.decision_targets.push(DecisionTargetRow {
+                        tag_db_id: state.tag_db_id,
+                        target_id: target_tag_db_id,
+                        flags: DECISION_TARGET_FLAG_COUNTRY_TAG | DECISION_TARGET_FLAG_RECORD_0X20,
+                        source_kind: DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED,
+                        decision: Some(targeted.decision.clone()),
+                    });
+                } else if let Some(target_numeric_id) = targeted.target_numeric_id {
+                    self.pending.decision_targets.push(DecisionTargetRow {
+                        tag_db_id: state.tag_db_id,
+                        target_id: target_numeric_id,
+                        flags: DECISION_TARGET_FLAG_NUMERIC_ID | DECISION_TARGET_FLAG_RECORD_0X24,
+                        source_kind: DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED,
+                        decision: Some(targeted.decision.clone()),
+                    });
+                }
+            }
             if let Some(previous) = self.decision_by_tag.get(&state.tag_db_id).cloned() {
                 self.derive_decision_events(game_hour_raw, &previous.state, &state);
             }
@@ -852,6 +919,12 @@ pub fn derive_depth_stream(raw: &[u8]) -> Result<DepthProof, String> {
                                     .map(|row| row.timed_live.len() as u64)
                                     .sum::<u64>(),
                             );
+                        proof.source_targeted_timed_decision_rows =
+                            proof.source_targeted_timed_decision_rows.saturating_add(
+                                rows.iter()
+                                    .map(|row| row.targeted_timed_live.len() as u64)
+                                    .sum::<u64>(),
+                            );
                         deriver.apply_decision_rows(record.game_hour_raw, rows);
                     }
                     Err(err) => proof
@@ -889,6 +962,23 @@ pub fn derive_depth_stream(raw: &[u8]) -> Result<DepthProof, String> {
                 proof.decision_event_rows = proof
                     .decision_event_rows
                     .saturating_add(rows.decision_events.len() as u64);
+                proof.decision_target_rows = proof
+                    .decision_target_rows
+                    .saturating_add(rows.decision_targets.len() as u64);
+                proof.decision_country_target_rows =
+                    proof.decision_country_target_rows.saturating_add(
+                        rows.decision_targets
+                            .iter()
+                            .filter(|row| row.flags & DECISION_TARGET_FLAG_COUNTRY_TAG != 0)
+                            .count() as u64,
+                    );
+                proof.decision_numeric_target_rows =
+                    proof.decision_numeric_target_rows.saturating_add(
+                        rows.decision_targets
+                            .iter()
+                            .filter(|row| row.flags & DECISION_TARGET_FLAG_NUMERIC_ID != 0)
+                            .count() as u64,
+                    );
                 proof.badge_rows = proof.badge_rows.saturating_add(rows.badges.len() as u64);
                 let payload = encode_depth_payload(&rows);
                 let summary = decode_depth_payload(offset, &payload);
@@ -920,6 +1010,9 @@ pub fn derive_depth_stream(raw: &[u8]) -> Result<DepthProof, String> {
     };
     proof.skipped_game_hours = skipped_hours(&frame_hours);
     proof.focus_pause_badge_rows = depth_gate.focus_pause_badge_rows;
+    proof.decision_target_rows = depth_gate.decision_target_rows;
+    proof.decision_country_target_rows = depth_gate.decision_country_target_rows;
+    proof.decision_numeric_target_rows = depth_gate.decision_numeric_target_rows;
     proof.decision_target_badge_rows = depth_gate.decision_target_badge_rows;
     proof.direct_event_badge_rows = depth_gate.direct_event_badge_rows;
     proof.depth_parse_errors = depth_gate.parse_errors;
@@ -932,7 +1025,10 @@ pub fn encode_depth_payload(rows: &DepthFrameRows) -> Vec<u8> {
     apply_required_badges(&mut normalized);
     let rows = &normalized;
     let mut payload = Vec::new();
-    payload.extend_from_slice(&0u64.to_le_bytes());
+    payload.extend_from_slice(
+        &(rows.decision_targets.len().min(u32::MAX as usize) as u32).to_le_bytes(),
+    );
+    payload.extend_from_slice(&0u32.to_le_bytes());
     payload.extend_from_slice(&rows.status_flags.to_le_bytes());
     payload
         .extend_from_slice(&(rows.focus_events.len().min(u32::MAX as usize) as u32).to_le_bytes());
@@ -1002,6 +1098,13 @@ pub fn encode_depth_payload(rows: &DepthFrameRows) -> Vec<u8> {
         payload.extend_from_slice(&row.current_state.to_le_bytes());
         append_compact_string(&mut payload, row.decision.as_deref());
     }
+    for row in &rows.decision_targets {
+        payload.extend_from_slice(&row.tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&row.target_id.to_le_bytes());
+        payload.extend_from_slice(&row.flags.to_le_bytes());
+        payload.extend_from_slice(&row.source_kind.to_le_bytes());
+        append_compact_string(&mut payload, row.decision.as_deref());
+    }
     for row in &rows.badges {
         payload.extend_from_slice(&row.kind.to_le_bytes());
         payload.extend_from_slice(&row.flags.to_le_bytes());
@@ -1023,6 +1126,8 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
         ));
         return summary;
     }
+    let decision_target_count = read_u32_le(payload, 0) as usize;
+    let schema_flags = read_u32_le(payload, 4);
     let status_flags = read_u32_le(payload, 8);
     let focus_count = read_u32_le(payload, 12) as usize;
     let research_count = read_u32_le(payload, 16) as usize;
@@ -1031,6 +1136,11 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
     let observed_focus_rows = read_u32_le(payload, 28);
     let observed_decision_rows = read_u32_le(payload, 36);
     let badge_count = read_u32_le(payload, 44) as usize;
+    if schema_flags != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: {DOMAIN_NAME} header schema_flags must be zero, got {schema_flags}"
+        ));
+    }
     if status_flags & !DEPTH_STATUS_KNOWN_MASK != 0 {
         summary.parse_errors.push(format!(
             "offset {offset}: {DOMAIN_NAME} status_flags has unknown bits: {status_flags}"
@@ -1047,6 +1157,7 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
     summary.research_eta_rows = research_count as u64;
     summary.decision_status_rows = decision_status_count as u64;
     summary.decision_event_rows = decision_event_count as u64;
+    summary.decision_target_rows = decision_target_count as u64;
     summary.badge_rows = badge_count as u64;
 
     let mut cursor = DEPTH_HEADER_LEN;
@@ -1267,6 +1378,7 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
     }
 
     let mut seen_decision_status = BTreeSet::new();
+    let mut targeted_timed_status_count_by_tag = BTreeMap::new();
     for row_index in 0..decision_status_count {
         if let Err(err) = require_remaining(
             payload,
@@ -1302,6 +1414,7 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
                 "offset {offset}: decision status row {row_index} duplicates tag_db_id {tag_db_id}"
             ));
         }
+        targeted_timed_status_count_by_tag.insert(tag_db_id, counts[2]);
     }
 
     for row_index in 0..decision_event_count {
@@ -1351,6 +1464,114 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
             summary.parse_errors.push(format!(
                 "offset {offset}: decision state-change row {row_index} did not change state"
             ));
+        }
+    }
+
+    let mut decision_target_rows_by_tag: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut seen_decision_targets = BTreeSet::new();
+    for row_index in 0..decision_target_count {
+        if let Err(err) = require_remaining(
+            payload,
+            cursor,
+            DECISION_TARGET_ROW_FIXED_LEN,
+            "decision target row",
+        ) {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return summary;
+        }
+        let tag_db_id = read_u32_le(payload, cursor);
+        let target_id = read_u32_le(payload, cursor + 4);
+        let flags = read_u32_le(payload, cursor + 8);
+        let source_kind = read_u32_le(payload, cursor + 12);
+        cursor += DECISION_TARGET_ROW_FIXED_LEN;
+        let decision = read_compact_string(payload, &mut cursor, "decision target token")
+            .unwrap_or_else(|err| {
+                summary.parse_errors.push(format!("offset {offset}: {err}"));
+                String::new()
+            });
+
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision target row {row_index} has zero tag_db_id"
+            ));
+        }
+        if flags & !DECISION_TARGET_FLAG_KNOWN_MASK != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision target row {row_index} has unknown flags {flags}"
+            ));
+        }
+        let has_country_flag = flags & DECISION_TARGET_FLAG_COUNTRY_TAG != 0;
+        let has_numeric_flag = flags & DECISION_TARGET_FLAG_NUMERIC_ID != 0;
+        let has_record_0x20 = flags & DECISION_TARGET_FLAG_RECORD_0X20 != 0;
+        let has_record_0x24 = flags & DECISION_TARGET_FLAG_RECORD_0X24 != 0;
+        if has_country_flag == has_numeric_flag {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision target row {row_index} must have exactly one target kind flag"
+            ));
+        }
+        if has_country_flag && (!has_record_0x20 || has_record_0x24) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision target row {row_index} is missing required country/record+0x20 flags"
+            ));
+        }
+        if has_numeric_flag && (!has_record_0x24 || has_record_0x20) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision target row {row_index} is missing required numeric/record+0x24 flags"
+            ));
+        }
+        if has_country_flag
+            && (target_id == 0
+                || target_id == DECISION_TARGET_UNKNOWN_ID
+                || target_id > DECISION_TARGET_MAX_TAG_DB_ID)
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision target row {row_index} has invalid country target id {target_id}"
+            ));
+        }
+        if has_numeric_flag
+            && (target_id == 0
+                || target_id == DECISION_TARGET_UNKNOWN_ID
+                || target_id > DECISION_TARGET_MAX_NUMERIC_ID)
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision target row {row_index} has invalid numeric target id {target_id}"
+            ));
+        }
+        if source_kind != DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision target row {row_index} has invalid source_kind {source_kind}"
+            ));
+        }
+        if decision.is_empty() {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision target row {row_index} has no decision token"
+            ));
+        }
+        if !seen_decision_targets.insert((tag_db_id, target_id, source_kind, decision.clone())) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision target row {row_index} duplicates owner/target/decision key"
+            ));
+        }
+        if has_country_flag {
+            summary.decision_country_target_rows =
+                summary.decision_country_target_rows.saturating_add(1);
+        }
+        if has_numeric_flag {
+            summary.decision_numeric_target_rows =
+                summary.decision_numeric_target_rows.saturating_add(1);
+        }
+        let count = decision_target_rows_by_tag.entry(tag_db_id).or_insert(0);
+        *count = count.saturating_add(1);
+    }
+    for (tag_db_id, target_rows) in decision_target_rows_by_tag {
+        match targeted_timed_status_count_by_tag.get(&tag_db_id).copied() {
+            Some(status_count) if target_rows <= status_count => {}
+            Some(status_count) => summary.parse_errors.push(format!(
+                "offset {offset}: decision target rows {target_rows} exceed targeted_timed_count {status_count} for tag_db_id {tag_db_id}"
+            )),
+            None => summary.parse_errors.push(format!(
+                "offset {offset}: decision target rows exist without a decision status row for tag_db_id {tag_db_id}"
+            )),
         }
     }
 
@@ -1714,6 +1935,7 @@ fn decode_decisions_payload(payload: &[u8]) -> Result<Vec<DecisionCountryState>,
             decisions_taken_bucket_count: read_u32_le(payload, cursor + 20),
             re_enable_count: read_u32_le(payload, cursor + 24),
             timed_live: Vec::new(),
+            targeted_timed_live: Vec::new(),
         });
         cursor += 32;
     }
@@ -1735,6 +1957,87 @@ fn decode_decisions_payload(payload: &[u8]) -> Result<Vec<DecisionCountryState>,
                 state,
             });
     }
+    let mut targeted_timed_by_tag: BTreeMap<u32, Vec<TargetedTimedDecisionState>> = BTreeMap::new();
+    if cursor < payload.len() {
+        require_remaining(
+            payload,
+            cursor,
+            4,
+            "targeted timed decision extension header",
+        )?;
+        let targeted_timed_count = read_u32_le(payload, cursor) as usize;
+        cursor += 4;
+        for _ in 0..targeted_timed_count {
+            require_remaining(payload, cursor, 12, "targeted timed decision row")?;
+            let tag_db_id = read_u32_le(payload, cursor);
+            let target_id = read_u32_le(payload, cursor + 4);
+            let flags = read_u32_le(payload, cursor + 8);
+            cursor += 12;
+            let decision =
+                read_compact_string(payload, &mut cursor, "targeted timed decision token")?;
+            if flags & !DECISION_TARGET_FLAG_KNOWN_MASK != 0 {
+                return Err(format!(
+                    "targeted timed decision row has unknown target flags {flags}"
+                ));
+            }
+            let has_country_flag = flags & DECISION_TARGET_FLAG_COUNTRY_TAG != 0;
+            let has_record_0x20 = flags & DECISION_TARGET_FLAG_RECORD_0X20 != 0;
+            let has_numeric_flag = flags & DECISION_TARGET_FLAG_NUMERIC_ID != 0;
+            let has_record_0x24 = flags & DECISION_TARGET_FLAG_RECORD_0X24 != 0;
+            if has_country_flag && has_numeric_flag {
+                return Err(
+                    "targeted timed decision row has multiple target kind flags".to_string()
+                );
+            }
+            if has_country_flag != has_record_0x20 {
+                return Err(
+                    "targeted timed decision row has inconsistent country/record+0x20 flags"
+                        .to_string(),
+                );
+            }
+            if has_numeric_flag != has_record_0x24 {
+                return Err(
+                    "targeted timed decision row has inconsistent numeric/record+0x24 flags"
+                        .to_string(),
+                );
+            }
+            if has_country_flag
+                && (target_id == 0
+                    || target_id == DECISION_TARGET_UNKNOWN_ID
+                    || target_id > DECISION_TARGET_MAX_TAG_DB_ID)
+            {
+                return Err(format!(
+                    "targeted timed decision row has invalid country target id {target_id}"
+                ));
+            }
+            if has_numeric_flag
+                && (target_id == 0
+                    || target_id == DECISION_TARGET_UNKNOWN_ID
+                    || target_id > DECISION_TARGET_MAX_NUMERIC_ID)
+            {
+                return Err(format!(
+                    "targeted timed decision row has invalid numeric target id {target_id}"
+                ));
+            }
+            targeted_timed_by_tag
+                .entry(tag_db_id)
+                .or_default()
+                .push(TargetedTimedDecisionState {
+                    tag_db_id,
+                    decision,
+                    target_tag_db_id: if has_country_flag {
+                        Some(target_id)
+                    } else {
+                        None
+                    },
+                    target_numeric_id: if has_numeric_flag {
+                        Some(target_id)
+                    } else {
+                        None
+                    },
+                });
+        }
+    }
     if cursor != payload.len() {
         return Err(format!(
             "decisions payload has {} trailing byte(s)",
@@ -1744,6 +2047,9 @@ fn decode_decisions_payload(payload: &[u8]) -> Result<Vec<DecisionCountryState>,
     for row in &mut rows {
         if let Some(timed) = timed_by_tag.remove(&row.tag_db_id) {
             row.timed_live = timed;
+        }
+        if let Some(targeted_timed) = targeted_timed_by_tag.remove(&row.tag_db_id) {
+            row.targeted_timed_live = targeted_timed;
         }
     }
     Ok(rows)
@@ -1840,6 +2146,15 @@ fn merge_depth_gate(out: &mut DepthGateSummary, next: DepthGateSummary) {
     out.decision_event_rows = out
         .decision_event_rows
         .saturating_add(next.decision_event_rows);
+    out.decision_target_rows = out
+        .decision_target_rows
+        .saturating_add(next.decision_target_rows);
+    out.decision_country_target_rows = out
+        .decision_country_target_rows
+        .saturating_add(next.decision_country_target_rows);
+    out.decision_numeric_target_rows = out
+        .decision_numeric_target_rows
+        .saturating_add(next.decision_numeric_target_rows);
     out.badge_rows = out.badge_rows.saturating_add(next.badge_rows);
     out.focus_pause_badge_rows = out
         .focus_pause_badge_rows
@@ -2045,7 +2360,7 @@ mod tests {
                 tag_db_id: 47,
                 active_timed_count: 1,
                 targeted_count: 2,
-                targeted_timed_count: 0,
+                targeted_timed_count: 1,
                 decisions_taken_bucket_count: 0,
                 re_enable_count: 1,
                 timed_live_count: 1,
@@ -2059,6 +2374,13 @@ mod tests {
                 previous_state: 0,
                 current_state: 0,
                 decision: Some("POR_countdown".to_string()),
+            }],
+            decision_targets: vec![DecisionTargetRow {
+                tag_db_id: 47,
+                target_id: 21,
+                flags: DECISION_TARGET_FLAG_COUNTRY_TAG | DECISION_TARGET_FLAG_RECORD_0X20,
+                source_kind: DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED,
+                decision: Some("POR_targeted_timed_country".to_string()),
             }],
             observed_focus_rows: 1,
             observed_research_slot_rows: 1,
@@ -2077,6 +2399,9 @@ mod tests {
         assert_eq!(summary.research_eta_rows, 1);
         assert_eq!(summary.decision_status_rows, 1);
         assert_eq!(summary.decision_event_rows, 1);
+        assert_eq!(summary.decision_target_rows, 1);
+        assert_eq!(summary.decision_country_target_rows, 1);
+        assert_eq!(summary.decision_numeric_target_rows, 0);
         assert_eq!(summary.badge_rows, 3);
         assert_eq!(summary.focus_pause_badge_rows, 1);
         assert_eq!(summary.decision_target_badge_rows, 1);
@@ -2138,6 +2463,7 @@ mod tests {
                 days: 44,
                 state: 0,
             }],
+            targeted_timed_live: Vec::new(),
         });
         append_h4cr_record(
             &mut stream,
@@ -2210,6 +2536,7 @@ mod tests {
                 days: 43,
                 state: 0,
             }],
+            targeted_timed_live: Vec::new(),
         });
         append_h4cr_record(
             &mut stream,
@@ -2244,10 +2571,152 @@ mod tests {
         assert_eq!(proof.research_eta_rows, 1);
         assert_eq!(proof.decision_event_rows, 2);
         assert_eq!(proof.decision_status_rows, 2);
+        assert_eq!(proof.decision_target_rows, 0);
+        assert_eq!(proof.decision_country_target_rows, 0);
+        assert_eq!(proof.decision_numeric_target_rows, 0);
         assert_eq!(proof.badge_rows, 6);
         assert_eq!(proof.focus_pause_badge_rows, 2);
         assert_eq!(proof.decision_target_badge_rows, 2);
         assert_eq!(proof.direct_event_badge_rows, 2);
+    }
+
+    #[test]
+    fn derives_targeted_timed_target_rows_from_extended_decisions_payload() {
+        let mut stream = Vec::new();
+        let decisions = decisions_payload(DecisionCountryState {
+            tag_db_id: 47,
+            active_timed_count: 0,
+            targeted_count: 0,
+            targeted_timed_count: 2,
+            decisions_taken_bucket_count: 0,
+            re_enable_count: 0,
+            timed_live: Vec::new(),
+            targeted_timed_live: vec![
+                TargetedTimedDecisionState {
+                    tag_db_id: 47,
+                    decision: "POR_targeted_country_decision".to_string(),
+                    target_tag_db_id: Some(21),
+                    target_numeric_id: None,
+                },
+                TargetedTimedDecisionState {
+                    tag_db_id: 47,
+                    decision: "POR_numeric_target_decision".to_string(),
+                    target_tag_db_id: None,
+                    target_numeric_id: Some(1043),
+                },
+            ],
+        });
+        append_h4cr_record(
+            &mut stream,
+            1,
+            200,
+            DOMAIN_DECISIONS,
+            RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &decisions,
+        );
+        append_h4cr_record(
+            &mut stream,
+            2,
+            200,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            0,
+            &[],
+        );
+
+        let proof = derive_depth_stream(&stream).expect("derive proof");
+        assert!(proof.parse_errors.is_empty(), "{:?}", proof.parse_errors);
+        assert!(
+            proof.depth_parse_errors.is_empty(),
+            "{:?}",
+            proof.depth_parse_errors
+        );
+        assert_eq!(proof.source_targeted_timed_decision_rows, 2);
+        assert_eq!(proof.decision_status_rows, 1);
+        assert_eq!(proof.decision_target_rows, 2);
+        assert_eq!(proof.decision_country_target_rows, 1);
+        assert_eq!(proof.decision_numeric_target_rows, 1);
+        assert_eq!(proof.decision_target_badge_rows, 1);
+    }
+
+    #[test]
+    fn derives_exact_focus_completion_from_completed_token_delta() {
+        let mut stream = Vec::new();
+        let mut seq = 1u64;
+
+        let focus_1 = focus_payload(FocusState {
+            tag_db_id: 47,
+            completed_count: Some(1),
+            progress_raw: Some(6_800_000),
+            current: Some("POR_old_focus".to_string()),
+            current_continuous: None,
+            completed_tokens: vec!["POR_prior_focus".to_string()],
+        });
+        append_h4cr_record(
+            &mut stream,
+            seq,
+            100,
+            DOMAIN_FOCUS,
+            RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &focus_1,
+        );
+        seq += 1;
+        append_h4cr_record(
+            &mut stream,
+            seq,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            0,
+            &[],
+        );
+        seq += 1;
+
+        let focus_2 = focus_payload(FocusState {
+            tag_db_id: 47,
+            completed_count: Some(2),
+            progress_raw: None,
+            current: None,
+            current_continuous: None,
+            completed_tokens: vec![
+                "POR_prior_focus".to_string(),
+                "POR_newly_completed_focus".to_string(),
+            ],
+        });
+        append_h4cr_record(
+            &mut stream,
+            seq,
+            101,
+            DOMAIN_FOCUS,
+            RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &focus_2,
+        );
+        seq += 1;
+        append_h4cr_record(
+            &mut stream,
+            seq,
+            101,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            0,
+            &[],
+        );
+
+        let proof = derive_depth_stream(&stream).expect("derive proof");
+        assert!(proof.parse_errors.is_empty(), "{:?}", proof.parse_errors);
+        assert!(
+            proof.depth_parse_errors.is_empty(),
+            "{:?}",
+            proof.depth_parse_errors
+        );
+        assert_eq!(proof.source_frames, 2);
+        assert_eq!(proof.focus_event_rows, 2);
+        assert_eq!(proof.focus_completed_exact_rows, 1);
+        assert_eq!(proof.focus_completed_inferred_rows, 0);
+        assert_eq!(proof.focus_completed_unresolved_rows, 0);
     }
 
     #[test]
@@ -2277,6 +2746,64 @@ mod tests {
             .parse_errors
             .iter()
             .any(|err| err.contains("delta does not match progress")));
+    }
+
+    #[test]
+    fn depth_gate_rejects_bad_decision_country_target_row() {
+        let rows = DepthFrameRows {
+            decision_status: vec![DecisionStatusRow {
+                tag_db_id: 47,
+                active_timed_count: 0,
+                targeted_count: 0,
+                targeted_timed_count: 1,
+                decisions_taken_bucket_count: 0,
+                re_enable_count: 0,
+                timed_live_count: 0,
+            }],
+            decision_targets: vec![DecisionTargetRow {
+                tag_db_id: 47,
+                target_id: DECISION_TARGET_UNKNOWN_ID,
+                flags: DECISION_TARGET_FLAG_COUNTRY_TAG,
+                source_kind: DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED,
+                decision: Some("POR_targeted_country_decision".to_string()),
+            }],
+            observed_decision_rows: 1,
+            ..DepthFrameRows::default()
+        };
+        let summary = decode_depth_payload(13, &encode_depth_payload(&rows));
+        assert!(summary.parse_errors.iter().any(|err| {
+            err.contains("decision target row 0") && err.contains("invalid country target id")
+        }));
+        assert!(summary.parse_errors.iter().any(|err| {
+            err.contains("decision target row 0")
+                && err.contains("missing required country/record+0x20 flags")
+        }));
+    }
+
+    #[test]
+    fn decisions_payload_rejects_bad_target_extension_flags() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        payload.extend_from_slice(&0b11u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        payload.extend_from_slice(&21u32.to_le_bytes());
+        payload.extend_from_slice(&DECISION_TARGET_FLAG_COUNTRY_TAG.to_le_bytes());
+        append_compact_string(&mut payload, Some("POR_targeted_country_decision"));
+
+        let err = decode_decisions_payload(&payload).expect_err("bad target flags rejected");
+        assert!(err.contains("inconsistent country/record+0x20 flags"));
     }
 
     #[test]
@@ -2420,6 +2947,28 @@ mod tests {
             payload.extend_from_slice(&timed.days.to_le_bytes());
             payload.extend_from_slice(&timed.state.to_le_bytes());
             append_compact_string(&mut payload, Some(&timed.decision));
+        }
+        if !row.targeted_timed_live.is_empty() {
+            payload.extend_from_slice(&(row.targeted_timed_live.len() as u32).to_le_bytes());
+            for targeted in row.targeted_timed_live {
+                payload.extend_from_slice(&targeted.tag_db_id.to_le_bytes());
+                let (target_id, flags) = if let Some(target_tag_db_id) = targeted.target_tag_db_id {
+                    (
+                        target_tag_db_id,
+                        DECISION_TARGET_FLAG_COUNTRY_TAG | DECISION_TARGET_FLAG_RECORD_0X20,
+                    )
+                } else if let Some(target_numeric_id) = targeted.target_numeric_id {
+                    (
+                        target_numeric_id,
+                        DECISION_TARGET_FLAG_NUMERIC_ID | DECISION_TARGET_FLAG_RECORD_0X24,
+                    )
+                } else {
+                    (DECISION_TARGET_UNKNOWN_ID, 0)
+                };
+                payload.extend_from_slice(&target_id.to_le_bytes());
+                payload.extend_from_slice(&flags.to_le_bytes());
+                append_compact_string(&mut payload, Some(&targeted.decision));
+            }
         }
         payload
     }

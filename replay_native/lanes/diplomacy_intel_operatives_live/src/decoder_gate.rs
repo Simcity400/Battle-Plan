@@ -1,4 +1,5 @@
 use crate::compact::{decode_payload, Domain53GateSummary, DOMAIN_ID_PROPOSED};
+use std::collections::BTreeMap;
 
 pub const COMPACT_RECORD_MAGIC: &[u8; 4] = b"H4CR";
 pub const COMPACT_RECORD_VERSION: u16 = 1;
@@ -22,6 +23,7 @@ pub struct Domain53RecordGateSummary {
     pub status_flags_or: u32,
     pub data_rows_total: u64,
     pub data_changed_rows_total: u64,
+    pub data_units_total: BTreeMap<&'static str, u64>,
     pub parse_errors: Vec<String>,
 }
 
@@ -127,6 +129,10 @@ fn merge_payload_summary(out: &mut Domain53RecordGateSummary, payload: Domain53G
     out.data_changed_rows_total = out
         .data_changed_rows_total
         .saturating_add(payload.data_changed_rows_total);
+    for (name, count) in payload.data_units_total {
+        let entry = out.data_units_total.entry(name).or_default();
+        *entry = entry.saturating_add(count);
+    }
     out.parse_errors.extend(payload.parse_errors);
 }
 
@@ -163,7 +169,35 @@ mod tests {
         let summary = decode_domain53_record(0, &record);
 
         assert_eq!(summary.record_count, 1);
-        assert_eq!(summary.data_rows_total, 9);
+        assert_eq!(summary.data_rows_total, 20);
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("agency_capacity_cluster_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("compact_state_event_rows")
+                .copied(),
+            Some(8)
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("compact_state_event_relation_opinion_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("compact_state_event_country_faction_group_rows")
+                .copied(),
+            Some(1)
+        );
         assert!(
             summary.parse_errors.is_empty(),
             "{:?}",

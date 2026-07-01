@@ -40,7 +40,7 @@ MAX_SUPPLY_RAW = live_probe.MAX_SUPPLY_RAW
 CSUPPLYSYSTEM_VTABLE0_RVA = live_probe.CSUPPLYSYSTEM_VTABLE0_RVA
 CSUPPLYSYSTEM_VTABLE1_RVA = live_probe.CSUPPLYSYSTEM_VTABLE1_RVA
 KNOWN_DIRECT_ARRAY_OFFSETS = {
-    0x10: "+0x10 previously rejected direct array",
+    0x10: "+0x10 filtered efficiency rows emitted by live_probe; raw full-array semantics still require oracle",
     0x138: "+0x138 previously rejected direct array",
     0x150: "+0x150 previously rejected direct array",
 }
@@ -296,11 +296,11 @@ def _write_outputs(out_dir: Path, report: Dict[str, Any]) -> None:
         "",
         "## Residual Field Verdicts",
         "",
-        "- Exact per-province supply / remaining supply amount: not emitted. The live scan found no field that is both province-sized and production-safe without a same-frame tooltip/save oracle.",
+        "- Exact per-province supply / remaining supply amount: not emitted. The live scan found no exact displayed remaining field that is both province-sized and production-safe without a same-frame tooltip/save oracle.",
         "- Attrition flags and reason: not emitted. Current validated division roots expose supply/fuel pressure, but no pinned attrition reason field or function output.",
         "- Hub motorization: not emitted. Hub/building roots are validated, but no current-build motorization setting root is pinned.",
         "- Convoy/logistics pressure: not emitted. Existing convoy/fuel data in other domains is not an exact supply-pressure root for this lane.",
-        "- CSupplySystem province-input path: narrowed to the scanned vtable object and pointer/count fields listed above; no compact field is production-safe yet.",
+        "- CSupplySystem province-input path: `+0x10` is emitted by `live_probe.py` as filtered bounded efficiency/fulfilment rows; raw full-array semantics still require anchors for rejected/packed entries. `+0x138` and `+0x150` remain un-emitted under current guards.",
         "",
         "## Required Fixture To Unblock",
         "",
@@ -308,6 +308,7 @@ def _write_outputs(out_dir: Path, report: Dict[str, Any]) -> None:
         "- Controlled hub motorization toggle fixture with before/after samples for the same hub/province.",
         "- Controlled attrition fixture with a known division attrition reason visible in UI/save state.",
         "- Controlled overseas/convoy supply-pressure fixture with known convoy/logistics shortage state.",
+        "- See `RESIDUAL_FIXTURE_CONTRACTS.md` for exact anchor and differential requirements.",
     ]
     (out_dir / "RESIDUAL_PROBE.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
 

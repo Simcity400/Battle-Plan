@@ -1,12 +1,18 @@
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const LANE_COMPACT_MAGIC: [u8; 4] = *b"PPL1";
 pub const LANE_COMPACT_VERSION: u16 = 2;
 pub const LANE_HEADER_LEN: usize = 32;
 pub const PROJECT_STATE_ROW_LEN: usize = 48;
 pub const PROJECT_BREAKTHROUGH_ROW_LEN: usize = 16;
+pub const LANE_EVENT_MAGIC: [u8; 4] = *b"PLE1";
+pub const LANE_EVENT_VERSION: u16 = 1;
+pub const LANE_EVENT_HEADER_LEN: usize = 16;
+pub const PROJECT_LIFECYCLE_EVENT_ROW_LEN: usize = 32;
+pub const PROJECT_EVENT_KIND_COMPLETION_CHANGED: u16 = 1;
+pub const PROJECT_EVENT_KIND_BREAKTHROUGH_DELTA: u16 = 2;
 
 pub const PROJECT_STATE_MACHINE_VTABLE_RVA: usize = 0x2A19358;
 pub const PROJECT_PROTOTYPE_STATE_VTABLE_RVA: usize = 0x2A19300;
@@ -113,6 +119,23 @@ pub struct GateReport {
     pub state_rows: usize,
     pub breakthrough_rows: usize,
     pub status_flags: u32,
+    pub errors: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectLifecycleEvent {
+    pub kind: u16,
+    pub key_a: u32,
+    pub key_b: u32,
+    pub before: u32,
+    pub after: u32,
+    pub delta: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventGateReport {
+    pub ok: bool,
+    pub events: usize,
     pub errors: Vec<String>,
 }
 
@@ -409,6 +432,155 @@ pub fn gate_lane_frame(bytes: &[u8]) -> GateReport {
     }
 }
 
+pub fn derive_lifecycle_events(
+    previous: &LaneFrame,
+    next: &LaneFrame,
+) -> Vec<ProjectLifecycleEvent> {
+    let mut events = Vec::new();
+    let previous_states: BTreeMap<(u32, u32), u32> = previous
+        .state_rows
+        .iter()
+        .map(|row| {
+            (
+                (row.id, row.static_def_handle),
+                completion_flag_value(row.state_flags),
+            )
+        })
+        .collect();
+    for row in &next.state_rows {
+        let key = (row.id, row.static_def_handle);
+        if let Some(before) = previous_states.get(&key).copied() {
+            let after = completion_flag_value(row.state_flags);
+            if before != after {
+                events.push(ProjectLifecycleEvent {
+                    kind: PROJECT_EVENT_KIND_COMPLETION_CHANGED,
+                    key_a: row.id,
+                    key_b: row.static_def_handle,
+                    before,
+                    after,
+                    delta: after as i64 - before as i64,
+                });
+            }
+        }
+    }
+
+    let previous_breakthrough: BTreeMap<(u32, u32), u32> = previous
+        .breakthrough_rows
+        .iter()
+        .map(|row| ((row.tag_db_id, row.specialization_handle), row.points_raw))
+        .collect();
+    for row in &next.breakthrough_rows {
+        let key = (row.tag_db_id, row.specialization_handle);
+        if let Some(before) = previous_breakthrough.get(&key).copied() {
+            if before != row.points_raw {
+                events.push(ProjectLifecycleEvent {
+                    kind: PROJECT_EVENT_KIND_BREAKTHROUGH_DELTA,
+                    key_a: row.tag_db_id,
+                    key_b: row.specialization_handle,
+                    before,
+                    after: row.points_raw,
+                    delta: row.points_raw as i64 - before as i64,
+                });
+            }
+        }
+    }
+    events.sort_by_key(|event| (event.kind, event.key_a, event.key_b));
+    events
+}
+
+pub fn encode_lifecycle_events(events: &[ProjectLifecycleEvent]) -> Vec<u8> {
+    let mut out =
+        Vec::with_capacity(LANE_EVENT_HEADER_LEN + events.len() * PROJECT_LIFECYCLE_EVENT_ROW_LEN);
+    out.extend_from_slice(&LANE_EVENT_MAGIC);
+    out.extend_from_slice(&LANE_EVENT_VERSION.to_le_bytes());
+    out.extend_from_slice(&(LANE_EVENT_HEADER_LEN as u16).to_le_bytes());
+    out.extend_from_slice(&(events.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    out.extend_from_slice(&(PROJECT_LIFECYCLE_EVENT_ROW_LEN as u16).to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    for event in events {
+        out.extend_from_slice(&event.kind.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&event.key_a.to_le_bytes());
+        out.extend_from_slice(&event.key_b.to_le_bytes());
+        out.extend_from_slice(&event.before.to_le_bytes());
+        out.extend_from_slice(&event.after.to_le_bytes());
+        out.extend_from_slice(&event.delta.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+    }
+    out
+}
+
+pub fn decode_lifecycle_events(bytes: &[u8]) -> Result<Vec<ProjectLifecycleEvent>, String> {
+    if bytes.len() < LANE_EVENT_HEADER_LEN {
+        return Err(format!("event frame too short: {}", bytes.len()));
+    }
+    if bytes[0..4] != LANE_EVENT_MAGIC {
+        return Err("event magic mismatch".to_string());
+    }
+    if read_u16_le(bytes, 4) != LANE_EVENT_VERSION {
+        return Err("event version mismatch".to_string());
+    }
+    let header_len = read_u16_le(bytes, 6) as usize;
+    if header_len != LANE_EVENT_HEADER_LEN {
+        return Err(format!("unexpected event header_len {header_len}"));
+    }
+    let event_count = read_u32_le(bytes, 8) as usize;
+    let row_len = read_u16_le(bytes, 12) as usize;
+    if row_len != PROJECT_LIFECYCLE_EVENT_ROW_LEN {
+        return Err("event row length mismatch".to_string());
+    }
+    if read_u16_le(bytes, 14) != 0 {
+        return Err("event reserved header field is nonzero".to_string());
+    }
+    let expected_len = LANE_EVENT_HEADER_LEN.saturating_add(event_count.saturating_mul(row_len));
+    if bytes.len() != expected_len {
+        return Err(format!(
+            "event frame length {} != expected {expected_len}",
+            bytes.len()
+        ));
+    }
+    let mut events = Vec::with_capacity(event_count);
+    let mut cursor = LANE_EVENT_HEADER_LEN;
+    for idx in 0..event_count {
+        let kind = read_u16_le(bytes, cursor);
+        if read_u16_le(bytes, cursor + 2) != 0 {
+            return Err(format!("event row {idx} reserved field is nonzero"));
+        }
+        let event = ProjectLifecycleEvent {
+            kind,
+            key_a: read_u32_le(bytes, cursor + 4),
+            key_b: read_u32_le(bytes, cursor + 8),
+            before: read_u32_le(bytes, cursor + 12),
+            after: read_u32_le(bytes, cursor + 16),
+            delta: read_i64_le(bytes, cursor + 20),
+        };
+        if read_u32_le(bytes, cursor + 28) != 0 {
+            return Err(format!(
+                "event row {idx} trailing reserved field is nonzero"
+            ));
+        }
+        validate_lifecycle_event(idx, &event)?;
+        events.push(event);
+        cursor += row_len;
+    }
+    Ok(events)
+}
+
+pub fn gate_lifecycle_events(bytes: &[u8]) -> EventGateReport {
+    match decode_lifecycle_events(bytes) {
+        Ok(events) => EventGateReport {
+            ok: true,
+            events: events.len(),
+            errors: Vec::new(),
+        },
+        Err(err) => EventGateReport {
+            ok: false,
+            events: 0,
+            errors: vec![err],
+        },
+    }
+}
+
 fn read_state_enum<M: ProjectMemory>(mem: &M, state_addr: usize) -> Option<u32> {
     read_bounded_u32(
         mem,
@@ -550,6 +722,66 @@ fn validate_breakthrough_row(idx: usize, row: &ProjectBreakthroughRow) -> Result
     Ok(())
 }
 
+fn completion_flag_value(state_flags: u32) -> u32 {
+    if state_flags & PROJECT_STATE_FLAG_COMPLETED != 0 {
+        1
+    } else {
+        0
+    }
+}
+
+fn validate_lifecycle_event(idx: usize, event: &ProjectLifecycleEvent) -> Result<(), String> {
+    if event.before == event.after {
+        return Err(format!("event row {idx} has no value change"));
+    }
+    let expected_delta = event.after as i64 - event.before as i64;
+    if event.delta != expected_delta {
+        return Err(format!(
+            "event row {idx} delta {} != expected {expected_delta}",
+            event.delta
+        ));
+    }
+    match event.kind {
+        PROJECT_EVENT_KIND_COMPLETION_CHANGED => {
+            if event.key_a == 0 || event.key_a > MAX_PROJECT_ID {
+                return Err(format!(
+                    "event row {idx} invalid project id {}",
+                    event.key_a
+                ));
+            }
+            if event.key_b == 0 || event.key_b > MAX_PROJECT_HANDLE {
+                return Err(format!(
+                    "event row {idx} invalid static_def_handle {}",
+                    event.key_b
+                ));
+            }
+            if event.before > 1 || event.after > 1 {
+                return Err(format!("event row {idx} invalid completion transition"));
+            }
+        }
+        PROJECT_EVENT_KIND_BREAKTHROUGH_DELTA => {
+            if event.key_a == 0 {
+                return Err(format!("event row {idx} invalid tag_db_id"));
+            }
+            if event.key_b == 0 || event.key_b > MAX_PROJECT_HANDLE {
+                return Err(format!(
+                    "event row {idx} invalid specialization_handle {}",
+                    event.key_b
+                ));
+            }
+            if event.before > MAX_PROJECT_BREAKTHROUGH_POINTS
+                || event.after > MAX_PROJECT_BREAKTHROUGH_POINTS
+            {
+                return Err(format!("event row {idx} invalid breakthrough points"));
+            }
+        }
+        other => {
+            return Err(format!("event row {idx} unknown kind {other}"));
+        }
+    }
+    Ok(())
+}
+
 fn read_u16_le(bytes: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
 }
@@ -569,6 +801,19 @@ fn read_i32_le(bytes: &[u8], offset: usize) -> i32 {
         bytes[offset + 1],
         bytes[offset + 2],
         bytes[offset + 3],
+    ])
+}
+
+fn read_i64_le(bytes: &[u8], offset: usize) -> i64 {
+    i64::from_le_bytes([
+        bytes[offset],
+        bytes[offset + 1],
+        bytes[offset + 2],
+        bytes[offset + 3],
+        bytes[offset + 4],
+        bytes[offset + 5],
+        bytes[offset + 6],
+        bytes[offset + 7],
     ])
 }
 
@@ -796,5 +1041,138 @@ mod tests {
         let gate = gate_lane_frame(&encoded);
         assert!(!gate.ok);
         assert!(gate.errors[0].contains("current_state_offset"));
+    }
+
+    #[test]
+    fn compact_gate_rejects_unknown_state_flags() {
+        let frame = LaneFrame {
+            game_hour_raw: 123,
+            status_flags: 0,
+            state_rows: vec![ProjectStateRow {
+                id: 91_234,
+                static_def_handle: 6_655,
+                current_state_offset: 0x18,
+                current_state_enum: 0,
+                prototype_state_enum: 0,
+                simple_state_1_enum: 1,
+                simple_state_2_enum: 2,
+                simple_state_3_enum: 3,
+                prototype_iterations: 7,
+                phase_progress_raw: 1,
+                phase_target_raw: 60,
+                state_flags: 0x8000_0000,
+            }],
+            breakthrough_rows: vec![ProjectBreakthroughRow {
+                tag_db_id: 47,
+                specialization_handle: 22_214,
+                points_raw: 12_345,
+            }],
+        };
+        let encoded = encode_lane_frame(&frame);
+        let gate = gate_lane_frame(&encoded);
+        assert!(!gate.ok);
+        assert!(gate.errors[0].contains("state_flags"));
+    }
+
+    #[test]
+    fn extractor_rejects_unknown_completed_flag_encoding() {
+        let base = 0x1400_0000usize;
+        let project_vtable = base + 0x2A1_9300;
+        let layout = ProjectLayout::from_module_base(base, 0x2A1_9300);
+        let project = 0x2000_0000usize;
+        let sm = 0x2100_0000usize;
+        let mut mem = FakeMemory::default();
+        mem.write_u64(project, project_vtable as u64);
+        mem.write_u64(project + PROJECT_PROJECT_OFF_STATE_MACHINE_PTR, sm as u64);
+        mem.write_u64(sm, layout.state_machine_vtable as u64);
+        mem.write_u8(sm + PROJECT_STATE_MACHINE_OFF_NOT_COMPLETED_FLAG, 2);
+
+        let row = read_project_state_row(
+            &mem,
+            ProjectPin {
+                addr: project,
+                id: 91_234,
+                static_def_handle: 6_655,
+            },
+            layout,
+        );
+
+        assert_eq!(row, None);
+    }
+
+    #[test]
+    fn lifecycle_delta_events_round_trip_and_gate() {
+        let previous = LaneFrame {
+            game_hour_raw: 123,
+            status_flags: 0,
+            state_rows: vec![ProjectStateRow {
+                id: 91_234,
+                static_def_handle: 6_655,
+                current_state_offset: 0x18,
+                current_state_enum: 0,
+                prototype_state_enum: 0,
+                simple_state_1_enum: 1,
+                simple_state_2_enum: 2,
+                simple_state_3_enum: 3,
+                prototype_iterations: 7,
+                phase_progress_raw: 1,
+                phase_target_raw: 60,
+                state_flags: 0,
+            }],
+            breakthrough_rows: vec![ProjectBreakthroughRow {
+                tag_db_id: 47,
+                specialization_handle: 22_214,
+                points_raw: 12_345,
+            }],
+        };
+        let mut next = previous.clone();
+        next.game_hour_raw = 124;
+        next.state_rows[0].state_flags = PROJECT_STATE_FLAG_COMPLETED;
+        next.breakthrough_rows[0].points_raw = 12_405;
+
+        let events = derive_lifecycle_events(&previous, &next);
+        assert_eq!(
+            events,
+            vec![
+                ProjectLifecycleEvent {
+                    kind: PROJECT_EVENT_KIND_COMPLETION_CHANGED,
+                    key_a: 91_234,
+                    key_b: 6_655,
+                    before: 0,
+                    after: 1,
+                    delta: 1,
+                },
+                ProjectLifecycleEvent {
+                    kind: PROJECT_EVENT_KIND_BREAKTHROUGH_DELTA,
+                    key_a: 47,
+                    key_b: 22_214,
+                    before: 12_345,
+                    after: 12_405,
+                    delta: 60,
+                },
+            ]
+        );
+
+        let encoded = encode_lifecycle_events(&events);
+        assert_eq!(decode_lifecycle_events(&encoded).unwrap(), events);
+        let gate = gate_lifecycle_events(&encoded);
+        assert!(gate.ok, "{:?}", gate.errors);
+        assert_eq!(gate.events, 2);
+    }
+
+    #[test]
+    fn lifecycle_gate_rejects_malformed_delta() {
+        let event = ProjectLifecycleEvent {
+            kind: PROJECT_EVENT_KIND_BREAKTHROUGH_DELTA,
+            key_a: 47,
+            key_b: 22_214,
+            before: 12_345,
+            after: 12_405,
+            delta: 1,
+        };
+        let encoded = encode_lifecycle_events(&[event]);
+        let gate = gate_lifecycle_events(&encoded);
+        assert!(!gate.ok);
+        assert!(gate.errors[0].contains("delta"));
     }
 }

@@ -26,6 +26,7 @@ pub fn manifest_json(stream_bytes: &[u8]) -> Result<Vec<u8>, String> {
             gate.parse_errors
         ));
     }
+    let data_units_total = gate.data_units_total.clone();
     serde_json::to_vec_pretty(&json!({
         "session_id": "domain53_lane_local",
         "replay_game_id": GAME_ID,
@@ -70,9 +71,7 @@ pub fn manifest_json(stream_bytes: &[u8]) -> Result<Vec<u8>, String> {
                     "status_flags_or": gate.status_flags_or,
                     "data_rows_total": gate.data_rows_total,
                     "data_changed_rows_total": gate.data_changed_rows_total,
-                    "data_units_total": {
-                        "diplomacy_intel_rows": gate.data_rows_total
-                    },
+                    "data_units_total": data_units_total,
                     "omitted_unresolved_fields": [
                         "war_lifecycle_detail",
                         "operation_detail",

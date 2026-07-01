@@ -57,7 +57,7 @@ fn run() -> Result<(), String> {
     fs::write(&stream_fs_path, &stream).map_err(|err| format!("write stream failed: {err}"))?;
 
     let manifest = format!(
-        "{{\n  \"schema\": \"characters_leaders_cabinet_live.domain47.fixture_manifest.v1\",\n  \"domain\": \"{}\",\n  \"domain_id\": {},\n  \"stream_format\": \"compact\",\n  \"record_type\": \"DOMAIN_DATA\",\n  \"scheduled_domains\": [\"{}\"],\n  \"compact\": {{\n    \"payload_bytes\": {},\n    \"record_bytes\": {},\n    \"row_count_total\": {},\n    \"advisor_roster_rows\": {},\n    \"appointed_advisor_rows\": {},\n    \"status_flags_or\": {},\n    \"schema_flags_or\": {}\n  }},\n  \"source\": \"lane-local fixture record, not live DLL capture\"\n}}\n",
+        "{{\n  \"schema\": \"characters_leaders_cabinet_live.domain47.fixture_manifest.v1\",\n  \"domain\": \"{}\",\n  \"domain_id\": {},\n  \"stream_format\": \"compact\",\n  \"record_type\": \"DOMAIN_DATA\",\n  \"scheduled_domains\": [\"{}\"],\n  \"compact\": {{\n    \"payload_bytes\": {},\n    \"record_bytes\": {},\n    \"row_count_total\": {},\n    \"advisor_roster_rows\": {},\n    \"appointed_advisor_rows\": {},\n    \"character_portrait_rows\": {},\n    \"status_flags_or\": {},\n    \"schema_flags_or\": {}\n  }},\n  \"source\": \"lane-local fixture record, not live DLL capture\"\n}}\n",
         compact::DOMAIN_NAME,
         compact::DOMAIN_ID,
         compact::DOMAIN_NAME,
@@ -66,6 +66,7 @@ fn run() -> Result<(), String> {
         decoded.row_count_total,
         decoded.advisor_roster_rows,
         decoded.appointed_advisor_rows,
+        decoded.character_portrait_rows,
         decoded.status_flags_or,
         decoded.schema_flags_or,
     );
@@ -137,7 +138,7 @@ fn run() -> Result<(), String> {
     }
 
     let summary = format!(
-        "{{\n  \"result\": \"verified\",\n  \"domain\": \"{}\",\n  \"domain_id\": {},\n  \"hoi4replay_path\": \"{}\",\n  \"collector_stream_path\": \"{}\",\n  \"manifest_path\": \"{}\",\n  \"hoi4replay_bytes\": {},\n  \"collector_stream_bytes\": {},\n  \"payload_bytes\": {},\n  \"row_count_total\": {},\n  \"advisor_roster_rows\": {},\n  \"appointed_advisor_rows\": {},\n  \"schema_flags_or\": {},\n  \"status_flags_or\": {},\n  \"container_game_id\": \"{}\",\n  \"verified_stream_entry\": \"{}\",\n  \"verified_stream_bytes\": {},\n  \"parse_errors\": []\n}}\n",
+        "{{\n  \"result\": \"verified\",\n  \"domain\": \"{}\",\n  \"domain_id\": {},\n  \"hoi4replay_path\": \"{}\",\n  \"collector_stream_path\": \"{}\",\n  \"manifest_path\": \"{}\",\n  \"hoi4replay_bytes\": {},\n  \"collector_stream_bytes\": {},\n  \"payload_bytes\": {},\n  \"row_count_total\": {},\n  \"advisor_roster_rows\": {},\n  \"appointed_advisor_rows\": {},\n  \"character_portrait_rows\": {},\n  \"schema_flags_or\": {},\n  \"status_flags_or\": {},\n  \"container_game_id\": \"{}\",\n  \"verified_stream_entry\": \"{}\",\n  \"verified_stream_bytes\": {},\n  \"parse_errors\": []\n}}\n",
         compact::DOMAIN_NAME,
         compact::DOMAIN_ID,
         json_path(&replay_path),
@@ -149,6 +150,7 @@ fn run() -> Result<(), String> {
         decoded.row_count_total,
         decoded.advisor_roster_rows,
         decoded.appointed_advisor_rows,
+        decoded.character_portrait_rows,
         decoded.schema_flags_or,
         decoded.status_flags_or,
         container.game_id(),

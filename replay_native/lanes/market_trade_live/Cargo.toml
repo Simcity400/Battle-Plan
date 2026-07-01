@@ -9,6 +9,18 @@ edition = "2021"
 name = "market_trade_live_lane"
 path = "src/lib.rs"
 
+[dependencies]
+serde_json = "1"
+snapshot = { path = "../../snapshot" }
+
 [[bin]]
 name = "market_trade_gate"
 path = "src/bin/market_trade_gate.rs"
+
+[[bin]]
+name = "residual_report"
+path = "src/bin/residual_report.rs"
+
+[[bin]]
+name = "replay_pack_proof"
+path = "src/bin/replay_pack_proof.rs"

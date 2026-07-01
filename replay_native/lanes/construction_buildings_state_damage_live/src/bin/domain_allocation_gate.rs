@@ -71,6 +71,7 @@ fn main() -> Result<(), String> {
         &[
             "reserved",
             "lane_ready_shared_registration_blocked_remaining_matrix",
+            "lane_ready_shared_adapter_registration_blocked_remaining_matrix",
         ],
         &mut errors,
     );
@@ -78,12 +79,17 @@ fn main() -> Result<(), String> {
         &registry_domains,
         48,
         DOMAIN_NAME,
-        &["reserved", "lane_ready_target_state_oracle_blocked"],
+        &[
+            "reserved",
+            "lane_ready_target_state_oracle_blocked",
+            "target_state_same_frame_observer_ready_external_save_ui_action_blocked",
+        ],
         &mut errors,
     );
 
     if !registry_doc
         .contains("| 48 | `construction_buildings_state_damage_live` | lane-ready; target-state oracle fixture blocked |")
+        && !registry_doc.contains("| 48 | `construction_buildings_state_damage_live` | target-state observer ready; external same-frame save/UI action blocked |")
         && !registry_doc.contains("| 48 | `construction_buildings_state_damage_live` | reserved |")
     {
         errors.push(
@@ -166,7 +172,11 @@ fn main() -> Result<(), String> {
                 &registry_domains,
                 48,
                 DOMAIN_NAME,
-                &["reserved", "lane_ready_target_state_oracle_blocked"],
+                &[
+                    "reserved",
+                    "lane_ready_target_state_oracle_blocked",
+                    "target_state_same_frame_observer_ready_external_save_ui_action_blocked",
+                ],
             ),
             "shared_entrypoint_hooks_absent": !shared_collector_entrypoint_hooked && !shared_recorder_entrypoint_hooked,
             "meaning": "registry descriptor is present; production collector/recorder hooks remain slot-gated"

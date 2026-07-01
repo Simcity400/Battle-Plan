@@ -139,6 +139,15 @@ pub struct AdvisorRecord {
     pub idea_token: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CharacterPortraitRecord {
+    pub country_tag_db_id: u32,
+    pub char_id: u32,
+    pub role: String,
+    pub size: String,
+    pub gfx: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LaneFrame {
     pub elapsed_wall_ms: u64,
@@ -151,6 +160,7 @@ pub struct LaneFrame {
     pub active_rulers: Vec<ActiveRulerRecord>,
     pub advisor_roster: Vec<AdvisorRecord>,
     pub appointed_advisors: Vec<AdvisorRecord>,
+    pub character_portraits: Vec<CharacterPortraitRecord>,
 }
 
 impl LaneFrame {
@@ -172,7 +182,8 @@ impl LaneFrame {
                 + self.country_leader_roles.len()
                 + self.active_rulers.len()
                 + self.advisor_roster.len()
-                + self.appointed_advisors.len(),
+                + self.appointed_advisors.len()
+                + self.character_portraits.len(),
         );
         rows.extend(self.characters.iter().map(|row| {
             compact::CharacterLaneRow::Character(compact::CharacterRow {
@@ -243,6 +254,15 @@ impl LaneFrame {
                 slot: row.slot.as_deref(),
                 ledger: row.ledger.as_deref(),
                 idea_token: row.idea_token.as_str(),
+            })
+        }));
+        rows.extend(self.character_portraits.iter().map(|row| {
+            compact::CharacterLaneRow::CharacterPortrait(compact::CharacterPortraitRow {
+                country_tag_db_id: row.country_tag_db_id,
+                char_id: row.char_id,
+                role: row.role.as_str(),
+                size: row.size.as_str(),
+                gfx: row.gfx.as_str(),
             })
         }));
         rows
@@ -486,8 +506,11 @@ pub fn validate_registry_assignment(registry_json: &str) -> Result<(), ExtractEr
         ));
     }
     if !(window.contains("\"status\": \"reserved\"")
-        || window.contains("\"status\": \"lane_ready_shared_registration_blocked_remaining_matrix\"")
-        || window.contains("\"status\": \"lane_ready_shared_adapter_registration_blocked_remaining_matrix\"")
+        || window
+            .contains("\"status\": \"lane_ready_shared_registration_blocked_remaining_matrix\"")
+        || window.contains(
+            "\"status\": \"lane_ready_shared_adapter_registration_blocked_remaining_matrix\"",
+        )
         || window.contains("\"status\": \"active_integration\"")
         || window.contains("\"status\": \"production_complete\""))
     {

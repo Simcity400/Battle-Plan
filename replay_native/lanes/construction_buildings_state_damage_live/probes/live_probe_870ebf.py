@@ -50,7 +50,15 @@ MAX_PRODUCTION_VECTOR_ENTRIES = 4096
 
 STATE_VTABLE_RVA = 0x29206C0
 STATE_OFF_SID = 0x58
+STATE_OFF_DEF = 0x30
 STATE_OFF_BUILDINGS_VEC = 0x158
+STATE_DEF_OFF_RESOURCES_PTR = 0xF8
+STATE_DEF_OFF_RESOURCES_SIZE = 0x100
+STATE_DEF_OFF_RESOURCES_CAP = 0x104
+STATE_RESOURCE_STRIDE = 0x10
+STATE_RESOURCE_NO_ID = 0xFFFFFFFF
+STATE_RESOURCE_MAX_ROWS = 16
+STATE_RESOURCE_MAX_ABS_RAW = 100_000_000
 
 CPROVINCE_VTABLE_RVA = 0x295AF68
 CPROVINCE_OFF_ID = 0xA4
@@ -542,6 +550,7 @@ def scan_building_health(p: Any, topology: dict[str, Any], max_states: int, max_
         "healthy_greater_than_level": 0,
         "healthy_missing": 0,
         "damaged_examples": [],
+        "undamaged_examples": [],
         "invalid_examples": [],
     }
     for state_id, state_ptr in state_items[:max_states]:
@@ -615,6 +624,18 @@ def consume_building_vector(
         stats["healthy_readable"] += 1
         if healthy == level:
             stats["healthy_equals_level"] += 1
+            if len(stats["undamaged_examples"]) < 16:
+                stats["undamaged_examples"].append(
+                    {
+                        "scope": scope,
+                        "location_id": location_id,
+                        "state_id": state_id,
+                        "building_ptr": hex(building_ptr),
+                        "type_id": type_id,
+                        "level_at_0x40": level,
+                        "healthy_level_at_0x42": healthy,
+                    }
+                )
         elif healthy < level:
             stats["healthy_less_than_level"] += 1
             if len(stats["damaged_examples"]) < 16:
@@ -645,6 +666,97 @@ def consume_building_vector(
                 )
 
 
+def scan_state_resources(
+    p: Any,
+    topology: dict[str, Any],
+    max_states: int,
+) -> dict[str, Any]:
+    state_items = sorted((int(k), int(v, 16)) for k, v in topology.get("state_by_id", {}).items())
+    stats: dict[str, Any] = {
+        "state_vectors_scanned": 0,
+        "states_with_resources": 0,
+        "resource_rows": 0,
+        "invalid_resource_vectors": 0,
+        "invalid_resource_rows": 0,
+        "samples": [],
+        "invalid_examples": [],
+    }
+    for state_id, state_ptr in state_items[:max_states]:
+        stats["state_vectors_scanned"] += 1
+        state_def = try_u64(p, state_ptr + STATE_OFF_DEF)
+        if not is_heap(state_def):
+            continue
+        data = try_u64(p, state_def + STATE_DEF_OFF_RESOURCES_PTR)
+        size = try_u32(p, state_def + STATE_DEF_OFF_RESOURCES_SIZE)
+        cap = try_u32(p, state_def + STATE_DEF_OFF_RESOURCES_CAP)
+        if size is None or cap is None:
+            stats["invalid_resource_vectors"] += 1
+            continue
+        logical = state_resource_logical_rows(size, cap)
+        if logical is None:
+            stats["invalid_resource_vectors"] += 1
+            continue
+        if logical == 0:
+            continue
+        if not is_heap(data):
+            stats["invalid_resource_vectors"] += 1
+            continue
+        raw = p.try_read(data, logical * STATE_RESOURCE_STRIDE)
+        if len(raw) != logical * STATE_RESOURCE_STRIDE:
+            stats["invalid_resource_vectors"] += 1
+            continue
+        rows_for_state = 0
+        for index in range(logical):
+            offset = index * STATE_RESOURCE_STRIDE
+            amount_raw = struct.unpack_from("<i", raw, offset)[0]
+            resource_id = struct.unpack_from("<I", raw, offset + 8)[0]
+            if resource_id == STATE_RESOURCE_NO_ID:
+                continue
+            if not (0 <= amount_raw <= STATE_RESOURCE_MAX_ABS_RAW):
+                stats["invalid_resource_rows"] += 1
+                if len(stats["invalid_examples"]) < 16:
+                    stats["invalid_examples"].append(
+                        {
+                            "state_id": state_id,
+                            "state_ptr": hex(state_ptr),
+                            "resource_id": resource_id,
+                            "amount_raw": amount_raw,
+                        }
+                    )
+                continue
+            rows_for_state += 1
+            stats["resource_rows"] += 1
+            if len(stats["samples"]) < 32:
+                stats["samples"].append(
+                    {
+                        "state_id": state_id,
+                        "state_ptr": hex(state_ptr),
+                        "resource_id": resource_id,
+                        "amount_raw": amount_raw,
+                    }
+                )
+        if rows_for_state:
+            stats["states_with_resources"] += 1
+    if stats["resource_rows"] and not stats["invalid_resource_rows"]:
+        stats["verdict"] = "state_resource_rows_live_readable"
+    elif stats["resource_rows"]:
+        stats["verdict"] = "state_resource_rows_partially_readable"
+    else:
+        stats["verdict"] = "state_resource_rows_not_observed"
+    return stats
+
+
+def state_resource_logical_rows(size: int, cap: int) -> int | None:
+    if size == 0:
+        return 0
+    if size > STATE_RESOURCE_MAX_ROWS:
+        return None
+    logical = cap if cap != 0 and cap < size else size
+    if logical > STATE_RESOURCE_MAX_ROWS:
+        return None
+    return logical
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", required=True, help="path to write live_probe_870ebf.json")
@@ -668,6 +780,7 @@ def main() -> int:
             "line_count": len(construction_lines),
         }
         building_health: dict[str, Any] = {"verdict": "not_attempted_topology_skipped"}
+        state_resources: dict[str, Any] = {"verdict": "not_attempted_topology_skipped"}
         if not args.skip_topology:
             topology = scan_cprovince_roots(p, max_regions=args.max_regions)
             target_candidates = scan_target_candidates(construction_lines, topology, p)
@@ -678,6 +791,11 @@ def main() -> int:
                 topology,
                 max_states=args.max_health_states,
                 max_provinces=args.max_health_provinces,
+            )
+            state_resources = scan_state_resources(
+                p,
+                topology,
+                max_states=args.max_health_states,
             )
         result = {
             "schema": "construction_buildings_state_damage_live_probe_870ebf_v1",
@@ -714,6 +832,13 @@ def main() -> int:
                     "state_vtable_rva": hex(STATE_VTABLE_RVA),
                     "state_id": hex(STATE_OFF_SID),
                 },
+                "state_resources": {
+                    "state_def_offset": hex(STATE_OFF_DEF),
+                    "resources_ptr_offset": hex(STATE_DEF_OFF_RESOURCES_PTR),
+                    "resources_size_offset": hex(STATE_DEF_OFF_RESOURCES_SIZE),
+                    "resources_cap_offset": hex(STATE_DEF_OFF_RESOURCES_CAP),
+                    "resource_stride": STATE_RESOURCE_STRIDE,
+                },
             },
             "country_roots": country_meta,
             "construction": {
@@ -747,9 +872,11 @@ def main() -> int:
             },
             "target_state_candidates": target_candidates,
             "building_health": building_health,
+            "state_resources": state_resources,
             "verdict": {
                 "construction_target_state": target_candidates.get("verdict"),
                 "healthy_level_0x42": building_health.get("verdict"),
+                "state_resources": state_resources.get("verdict"),
             },
         }
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)

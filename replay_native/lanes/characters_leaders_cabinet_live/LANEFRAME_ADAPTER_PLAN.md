@@ -1,17 +1,29 @@
 # characters_leaders_cabinet_live LaneFrame Adapter Plan
 
-Status: lane-local integration plan only. Do not apply shared collector edits
-from this lane packet without the shared integration owner serializing the hook.
+Status: lane-local adapter implemented in `src/adapter.rs` and fixture-proven in
+`replay_native/runs/characters_leaders_cabinet_live_20260701_adapter_fixture_v1/`.
+Do not apply shared collector edits from this lane packet without the shared
+integration owner serializing the hook.
 
 The lane-owned mini stack already exposes:
 
 - `extractor::LaneFrame`
+- `adapter::build_lane_frame_from_adapter_input(mem, roots, &AdapterInput)`
+- `scheduled::read_native_scheduled_frame(mem, &NativeRootCache, NativeFrameInput)`
 - `dll_collector::LaneCollectorModule::collect_frame(game_hour_raw, &LaneFrame)`
 - domain-47 compact encoder/decoder gate
 
-The missing production integration is the adapter that populates `LaneFrame`
-from the one injected DLL collector's live roots. An empty frame or
-source-unavailable placeholder is not acceptable.
+The missing production integration is the shared root cache and scheduled
+collector call that feeds live roots into lane-local `NativeRootCache` plus
+per-frame `NativeFrameInput`. An empty frame or source-unavailable placeholder
+is not acceptable.
+
+For shared production, prefer the lane-owned scheduled API over direct adapter
+calls. The shared collector should populate `NativeRootCache` outside hook-held
+callbacks, build `NativeFrameInput` from current country/politics roots on each
+scheduled frame, then call `scheduled::read_native_scheduled_frame`. That
+function owns adapter execution, compact payload encoding, Rust gate counters,
+and status flag propagation.
 
 ## Required Shared Inputs
 
@@ -31,6 +43,29 @@ Add a domain-47 root cache beside the other compact tracker/root caches:
 - static role metadata loaded outside hook callbacks:
   advisor idea token -> slot/bucket/static traits, character token -> portraits
   and role metadata where needed.
+
+Map those shared values into lane-owned adapter structs:
+
+- `ResolvedTypeRoots`: current module base plus RTTI/vtable-derived class roots
+  for `CCharacter`, `CArmyLeader`, `CNavyLeader`, `CCountryLeader`,
+  `CAdvisor`, and `CUnitLeaderTrait`.
+- `AdapterInput.characters`: validated `CCharacter*` warm pins plus optional
+  static/display token closure.
+- `AdapterInput.unit_leaders`: validated `CArmyLeader*` and `CNavyLeader*`
+  warm pins, country tag database id, leader kind, and optional static/display
+  token closure.
+- `AdapterInput.unit_leader_trait_tokens`: validated `CUnitLeaderTrait*`
+  definition roots mapped to trait tokens.
+- `AdapterInput.country_leader_roles`: validated `CCountryLeader*` roots,
+  country tag database id, and optional token/name closure.
+- `AdapterInput.countries`: country bridge rows with `CCountry*`, tag database
+  id, ruling-party token/name if available, and country-scoped active politics
+  idea tokens for appointed-advisor intersection.
+- `AdapterInput.advisors`: validated `CAdvisor*` roots plus static advisor
+  idea token, slot, and cabinet ledger/bucket hints from `common/characters`.
+- `AdapterInput.portraits`: static character portrait metadata from
+  `common/characters`, keyed by `(country_tag_db_id, char_id)`. The adapter
+  emits only portraits whose character identity is also known from live rows.
 
 ## Adapter Flow
 
@@ -79,14 +114,28 @@ Add a domain-47 root cache beside the other compact tracker/root caches:
    - Intersect active idea tokens with the validated advisor roster idea tokens.
    - Do not sweep `CAdvisor` for a hired boolean in the hourly hot path.
 
-8. Emit compact data through:
+8. Encode compact data through the lane-owned scheduled API:
+
+   ```rust
+   scheduled::read_native_scheduled_frame(&mem, &cache, frame_input)
+   ```
+
+   For isolated lane fixtures, `LaneCollectorModule::collect_frame` can still
+   wrap a prebuilt `LaneFrame`:
 
    ```rust
    LaneCollectorModule::collect_frame(game_hour_raw, &frame)
    ```
 
-9. Append the domain-47 `DOMAIN_DATA` record and a matching `DOMAIN_PERF`
-   record in deterministic sequence after domain `46`.
+9. For shared production capture, append the payload through the shared
+   coordinator's `append_compact_record` helper and add a matching
+   `DOMAIN_PERF` record in deterministic sequence after domain `46`.
+
+The adapter fixture proves this shape with one row in every row family:
+character, unit leader, unit-leader trait, country-leader role, active ruler,
+advisor roster, appointed advisor, and character portrait. It is not shared DLL
+capture; it validates that the remaining shared work is input translation and
+scheduling rather than lane-local frame construction.
 
 ## Failure Semantics
 

@@ -96,22 +96,30 @@ Result:
 
 Fresh bounded remaining-field probes:
 
-- `garrison_scalar_probe.py`: current live/save pair has `392` save garrison
-  rows, `248` live garrison rows, `39` key matches, `19` same-law matches, and
-  verdict `fixture_insufficient`. Pinned inline candidates remain rejected:
-  `strength_ratio` candidates at `0x10`, `0x78`, `0x7C`, and fixed `0xF0`
-  missed the non-default rows; `garrison_required` fixed `0xF8` matched
-  `0/19`; `army_manpower_need` `0x88` only matched `7/19` and is rejected by
-  low match ratio. Keep garrison need/equilibrium/progress badged
+- `garrison_scalar_probe.py`: v23 current live/save pair has `368` save
+  garrison rows, `305` live garrison rows, `296` key matches, `295` same-law
+  matches, and verdict `scanned_garrison_candidates_rejected_current_fixture`.
+  Inline candidates for `strength_ratio`, `garrison_required`, and
+  `army_manpower_need` are rejected; direct/root pointer candidates from
+  `CStateGarrisonData+0x0..0x17F` are rejected; and manpower/equipment detail
+  candidates for `manpower_pool` value, `equipment_need` values, and
+  reinforcement request count all have `0` threshold scopes. The fixture has
+  `340` manpower-pool rows, all single-tag and all matching the emitted
+  controller tag. Keep garrison scalar/manpower/equipment detail badged
   unavailable.
-- `remaining_fields_probe.py`: resistance speed `0x280` validated `85/85`
-  delta rows; compliance speed `0x2B0` validated `224/224` delta rows. The
+- `remaining_fields_probe.py`: v23 resistance speed `0x280` validated `92/92`
+  delta rows; compliance speed `0x2B0` validated `277/277` delta rows. The
   occupation object graph remains validated for state/tag/law joins:
   `CStateGarrisonData+0x50` is the `CState` join and `+0x58` is the
   `CCountryOccupationData` join; `+0x48` again had `0` controller-country and
-  `0` occupied-country matches. Collaboration/GIE detail remains fixture
-  blocked: `countries.<TAG>.collaboration` is empty, and all `8/8`
-  `government_in_exile_tag` rows are leader-context rows.
+  `0` occupied-country matches. Collaboration/GIE detail remains unwired but
+  current candidates are rejected: `countries.<TAG>.collaboration` is empty,
+  all `101/101` `government_in_exile_tag` rows are asset-scope rows, and the
+  targeted country-scope GIE graph over
+  `BEL/ENG/FRA/HOL/LUX/NOR/PHI/POL/USA/YUG` has `10/10` valid
+  collaboration-status roots, `1` `CCountryCollaborationData` hit, `16`
+  scalar/tag hits, and `0` contract-match scopes. Verdict:
+  `rejected_targeted_scalar_hits_no_gie_contract_current_fixture`.
 
 ## Collector Hook
 

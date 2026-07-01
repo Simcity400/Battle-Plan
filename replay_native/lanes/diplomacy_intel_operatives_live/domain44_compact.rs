@@ -45,6 +45,8 @@ pub const KIND_OPERATIVE: u16 = 7;
 pub const KIND_CRYPTOLOGY: u16 = 8;
 pub const KIND_OPERATION_ANCHOR: u16 = 9;
 pub const KIND_INTEL_MAP: u16 = 10;
+pub const KIND_AGENCY_CAPACITY_CLUSTER: u16 = 11;
+pub const KIND_COMPACT_STATE_EVENT: u16 = 12;
 
 pub const COUNTRY_FLAG_AT_WAR: u16 = 1;
 pub const COUNTRY_FLAG_CASUALTIES: u16 = 1 << 1;
@@ -67,12 +69,14 @@ pub const REL_KIND_LICENCE_PRODUCTION: u16 = 13;
 
 pub const AGENCY_FLAG_NAME_HASH: u16 = 1;
 pub const AGENCY_FLAG_ICON_HASH: u16 = 1 << 1;
+pub const AGENCY_CAPACITY_FLAG_RAW_E4_F0_F4: u16 = 1;
 
 pub const OPERATIVE_FLAG_DETECTED: u16 = 1;
 pub const OPERATIVE_FLAG_SKILL_PRESENT: u16 = 1 << 1;
 pub const OPERATIVE_FLAG_EXPERIENCE_PRESENT: u16 = 1 << 2;
 pub const OPERATIVE_FLAG_NAME_HASH: u16 = 1 << 3;
 pub const OPERATIVE_FLAG_CAPTURED: u16 = 1 << 4;
+pub const OPERATIVE_FLAG_LIFECYCLE_PRESENT: u16 = 1 << 5;
 
 pub const CRYPTO_FLAG_DECRYPTING: u16 = 1;
 
@@ -82,12 +86,25 @@ pub const OPERATION_FLAG_TARGET_PRESENT: u16 = 1 << 2;
 
 pub const INTEL_MAP_FLAG_RESISTED: u16 = 1;
 
+pub const STATE_EVENT_FLAG_TARGET_PRESENT: u16 = 1;
+pub const STATE_EVENT_KIND_OBSERVED: u16 = 1;
+pub const STATE_EVENT_SOURCE_RELATION_FLAG: u16 = 1;
+pub const STATE_EVENT_SOURCE_SUBJECT_AUTONOMY: u16 = 2;
+pub const STATE_EVENT_SOURCE_AGENCY_SCALAR: u16 = 3;
+pub const STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE: u16 = 4;
+pub const STATE_EVENT_SOURCE_AGENCY_CAPACITY: u16 = 5;
+pub const STATE_EVENT_SOURCE_CRYPTOLOGY: u16 = 6;
+pub const STATE_EVENT_SOURCE_RELATION_OPINION: u16 = 7;
+pub const STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP: u16 = 8;
+
 pub const MAX_TAG_DB_ID: u32 = 2_048;
 pub const MAX_CASUALTIES: i64 = 50_000_000;
 pub const MAX_OPINION_ABS: i32 = 200;
 pub const MAX_OPERATIVES_PER_AGENCY: u32 = 128;
+pub const MAX_AGENCY_CAPACITY_CLUSTER_VALUE: u32 = 128;
 pub const MAX_OPERATIVE_ID: u32 = i32::MAX as u32;
 pub const MAX_OPERATIVE_SKILL: u32 = 15;
+pub const MAX_OPERATIVE_LIFECYCLE_FLAG: u32 = 1024;
 pub const MAX_FIXED_RAW: i32 = 1_000_000_000;
 pub const MAX_XP_RAW: i64 = 1_000_000_000_000;
 pub const MAX_CRYPTO_AMOUNT_RAW: i64 = 1_000_000_000_000;
@@ -95,6 +112,7 @@ pub const MAX_OPERATION_ID: u32 = i32::MAX as u32;
 pub const MAX_OPERATION_SLOTS: u32 = 16;
 pub const MAX_OPERATION_PHASES: u32 = 32;
 pub const MAX_INTEL_PERCENT_RAW: i32 = 100_000;
+pub const MAX_STATE_EVENT_VALUE_RAW: i64 = 1_000_000_000_000;
 
 const ROW_COUNTRY_LEN: usize = 24;
 const ROW_WAR_LEN: usize = 32;
@@ -102,10 +120,12 @@ const ROW_OPINION_LEN: usize = 16;
 const ROW_RELATION_FLAG_LEN: usize = 16;
 const ROW_SUBJECT_LEN: usize = 24;
 const ROW_AGENCY_LEN: usize = 48;
+const ROW_AGENCY_CAPACITY_CLUSTER_LEN: usize = 24;
 const ROW_OPERATIVE_LEN: usize = 40;
 const ROW_CRYPTOLOGY_LEN: usize = 32;
 const ROW_OPERATION_ANCHOR_LEN: usize = 32;
 const ROW_INTEL_MAP_LEN: usize = 32;
+const ROW_COMPACT_STATE_EVENT_LEN: usize = 32;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiplomacyIntelSnapshot {
@@ -118,10 +138,12 @@ pub struct DiplomacyIntelSnapshot {
     pub relation_flags: Vec<RelationFlagRow>,
     pub subjects: Vec<SubjectRow>,
     pub agencies: Vec<AgencyRow>,
+    pub agency_capacity_clusters: Vec<AgencyCapacityClusterRow>,
     pub operatives: Vec<OperativeRow>,
     pub cryptology: Vec<CryptologyRow>,
     pub operation_anchors: Vec<OperationAnchorRow>,
     pub intel_map: Vec<IntelMapRow>,
+    pub state_events: Vec<StateEventRow>,
 }
 
 impl DiplomacyIntelSnapshot {
@@ -133,10 +155,12 @@ impl DiplomacyIntelSnapshot {
             self.relation_flags.len(),
             self.subjects.len(),
             self.agencies.len(),
+            self.agency_capacity_clusters.len(),
             self.operatives.len(),
             self.cryptology.len(),
             self.operation_anchors.len(),
             self.intel_map.len(),
+            self.state_events.len(),
         ]
         .iter()
         .fold(0u32, |acc, count| {
@@ -216,6 +240,15 @@ pub struct AgencyRow {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgencyCapacityClusterRow {
+    pub owner_tag_db_id: u32,
+    pub value_0xe4: u32,
+    pub value_0xf0: u32,
+    pub value_0xf4: u32,
+    pub proof_hash: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OperativeRow {
     pub owner_tag_db_id: u32,
     pub op_id: u32,
@@ -225,6 +258,7 @@ pub struct OperativeRow {
     pub experience_raw: Option<i64>,
     pub name_hash: u64,
     pub state_hash: u32,
+    pub lifecycle_flag: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -256,6 +290,17 @@ pub struct IntelMapRow {
     pub resisted: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateEventRow {
+    pub owner_tag_db_id: u32,
+    pub target_tag_db_id: Option<u32>,
+    pub event_kind: u16,
+    pub source_kind: u16,
+    pub object_hash: u32,
+    pub value_hash: u32,
+    pub value_raw: i64,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Domain53GateSummary {
     pub status_flags_or: u32,
@@ -285,7 +330,7 @@ pub fn encode_payload(snapshot: &DiplomacyIntelSnapshot) -> Vec<u8> {
     payload.extend_from_slice(&(snapshot.cryptology.len() as u32).to_le_bytes());
     payload.extend_from_slice(&(snapshot.operation_anchors.len() as u32).to_le_bytes());
     payload.extend_from_slice(&(snapshot.intel_map.len() as u32).to_le_bytes());
-    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&(snapshot.agency_capacity_clusters.len() as u32).to_le_bytes());
 
     for row in &snapshot.countries {
         let mut flags = COUNTRY_FLAG_FACTION_GROUP;
@@ -355,6 +400,15 @@ pub fn encode_payload(snapshot: &DiplomacyIntelSnapshot) -> Vec<u8> {
         payload.extend_from_slice(&row.name_hash.to_le_bytes());
         payload.extend_from_slice(&row.icon_hash.to_le_bytes());
     }
+    for row in &snapshot.agency_capacity_clusters {
+        payload.extend_from_slice(&KIND_AGENCY_CAPACITY_CLUSTER.to_le_bytes());
+        payload.extend_from_slice(&AGENCY_CAPACITY_FLAG_RAW_E4_F0_F4.to_le_bytes());
+        payload.extend_from_slice(&row.owner_tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&row.value_0xe4.to_le_bytes());
+        payload.extend_from_slice(&row.value_0xf0.to_le_bytes());
+        payload.extend_from_slice(&row.value_0xf4.to_le_bytes());
+        payload.extend_from_slice(&row.proof_hash.to_le_bytes());
+    }
     for row in &snapshot.operatives {
         let mut flags = 0u16;
         if row.detected {
@@ -372,6 +426,9 @@ pub fn encode_payload(snapshot: &DiplomacyIntelSnapshot) -> Vec<u8> {
         if row.name_hash != 0 {
             flags |= OPERATIVE_FLAG_NAME_HASH;
         }
+        if row.lifecycle_flag.is_some() {
+            flags |= OPERATIVE_FLAG_LIFECYCLE_PRESENT;
+        }
         payload.extend_from_slice(&KIND_OPERATIVE.to_le_bytes());
         payload.extend_from_slice(&flags.to_le_bytes());
         payload.extend_from_slice(&row.owner_tag_db_id.to_le_bytes());
@@ -380,7 +437,7 @@ pub fn encode_payload(snapshot: &DiplomacyIntelSnapshot) -> Vec<u8> {
         payload.extend_from_slice(&row.experience_raw.unwrap_or(0).to_le_bytes());
         payload.extend_from_slice(&row.name_hash.to_le_bytes());
         payload.extend_from_slice(&row.state_hash.to_le_bytes());
-        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&row.lifecycle_flag.unwrap_or(0).to_le_bytes());
     }
     for row in &snapshot.cryptology {
         let flags = if row.decrypting {
@@ -429,6 +486,21 @@ pub fn encode_payload(snapshot: &DiplomacyIntelSnapshot) -> Vec<u8> {
         payload.extend_from_slice(&row.air_raw.to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
     }
+    for row in &snapshot.state_events {
+        let mut flags = 0u16;
+        if row.target_tag_db_id.is_some() {
+            flags |= STATE_EVENT_FLAG_TARGET_PRESENT;
+        }
+        payload.extend_from_slice(&KIND_COMPACT_STATE_EVENT.to_le_bytes());
+        payload.extend_from_slice(&flags.to_le_bytes());
+        payload.extend_from_slice(&row.owner_tag_db_id.to_le_bytes());
+        payload.extend_from_slice(&row.target_tag_db_id.unwrap_or(0).to_le_bytes());
+        payload.extend_from_slice(&row.event_kind.to_le_bytes());
+        payload.extend_from_slice(&row.source_kind.to_le_bytes());
+        payload.extend_from_slice(&row.object_hash.to_le_bytes());
+        payload.extend_from_slice(&row.value_hash.to_le_bytes());
+        payload.extend_from_slice(&row.value_raw.to_le_bytes());
+    }
     payload
 }
 
@@ -447,7 +519,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
     let status_flags = read_u32_le(payload, 16);
     let schema_version = read_u32_le(payload, 20);
     let fixed_scale_raw = read_u32_le(payload, 24);
-    let expected_counts = ExpectedCounts {
+    let mut expected_counts = ExpectedCounts {
         country: read_u32_le(payload, 28) as usize,
         war: read_u32_le(payload, 32) as usize,
         opinion: read_u32_le(payload, 36) as usize,
@@ -458,8 +530,13 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
         cryptology: read_u32_le(payload, 56) as usize,
         operation_anchor: read_u32_le(payload, 60) as usize,
         intel_map: read_u32_le(payload, 64) as usize,
+        agency_capacity_cluster: read_u32_le(payload, 68) as usize,
+        compact_state_event: 0,
     };
-    let reserved0 = read_u32_le(payload, 68);
+    let header_count_sum = expected_counts.sum();
+    if header_count_sum <= row_count {
+        expected_counts.compact_state_event = row_count - header_count_sum;
+    }
 
     summary.status_flags_or |= status_flags;
     if schema_version != SCHEMA_VERSION {
@@ -472,20 +549,14 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
             "offset {offset}: diplomacy/intel fixed_scale_raw {fixed_scale_raw} != {FIXED_SCALE_RAW}"
         ));
     }
-    if reserved0 != 0 {
-        summary.parse_errors.push(format!(
-            "offset {offset}: diplomacy/intel header reserved field is nonzero"
-        ));
-    }
     if changed_rows > row_count {
         summary.parse_errors.push(format!(
             "offset {offset}: diplomacy/intel changed_rows {changed_rows} > row_count {row_count}"
         ));
     }
-    if expected_counts.sum() != row_count {
+    if header_count_sum > row_count {
         summary.parse_errors.push(format!(
-            "offset {offset}: diplomacy/intel row_count {row_count} != sum of per-kind counts {}",
-            expected_counts.sum()
+            "offset {offset}: diplomacy/intel row_count {row_count} is smaller than sum of header per-kind counts {header_count_sum}"
         ));
     }
 
@@ -497,13 +568,17 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
     let mut seen_flags = BTreeSet::new();
     let mut seen_subjects = BTreeSet::new();
     let mut seen_agencies = BTreeSet::new();
+    let mut seen_agency_capacity_clusters = BTreeSet::new();
     let mut seen_operatives = BTreeSet::new();
     let mut seen_crypto = BTreeSet::new();
     let mut seen_operations = BTreeSet::new();
     let mut seen_intel_map = BTreeSet::new();
+    let mut seen_state_events = BTreeSet::new();
     let mut country_war_projection_rows = 0usize;
     let mut operation_detail_resisted_rows = 0usize;
     let mut intel_map_resisted_rows = 0usize;
+    let mut operative_lifecycle_rows = 0usize;
+    let mut state_event_source_counts = StateEventSourceCounts::default();
 
     if status_flags & !KNOWN_STATUS_FLAGS != 0 {
         summary.parse_errors.push(format!(
@@ -603,8 +678,23 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
                     &mut summary,
                 );
             }
+            KIND_AGENCY_CAPACITY_CLUSTER => {
+                decoded_counts.agency_capacity_cluster += 1;
+                validate_agency_capacity_cluster_row(
+                    offset,
+                    row_index,
+                    payload,
+                    cursor,
+                    &mut seen_agency_capacity_clusters,
+                    &mut summary,
+                );
+            }
             KIND_OPERATIVE => {
                 decoded_counts.operative += 1;
+                let flags = read_u16_le(payload, cursor + 2);
+                if flags & OPERATIVE_FLAG_LIFECYCLE_PRESENT != 0 {
+                    operative_lifecycle_rows = operative_lifecycle_rows.saturating_add(1);
+                }
                 validate_operative_row(
                     offset,
                     row_index,
@@ -653,6 +743,18 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
                     payload,
                     cursor,
                     &mut seen_intel_map,
+                    &mut summary,
+                );
+            }
+            KIND_COMPACT_STATE_EVENT => {
+                decoded_counts.compact_state_event += 1;
+                state_event_source_counts.add(read_u16_le(payload, cursor + 14));
+                validate_state_event_row(
+                    offset,
+                    row_index,
+                    payload,
+                    cursor,
+                    &mut seen_state_events,
                     &mut summary,
                 );
             }
@@ -718,7 +820,17 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
     );
     add_unit(&mut summary, "subject_rows", decoded_counts.subject);
     add_unit(&mut summary, "intel_agency_rows", decoded_counts.agency);
+    add_unit(
+        &mut summary,
+        "agency_capacity_cluster_rows",
+        decoded_counts.agency_capacity_cluster,
+    );
     add_unit(&mut summary, "operative_rows", decoded_counts.operative);
+    add_unit(
+        &mut summary,
+        "operative_lifecycle_rows",
+        operative_lifecycle_rows,
+    );
     add_unit(&mut summary, "cryptology_rows", decoded_counts.cryptology);
     add_unit(
         &mut summary,
@@ -726,6 +838,12 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
         decoded_counts.operation_anchor,
     );
     add_unit(&mut summary, "intel_map_rows", decoded_counts.intel_map);
+    add_unit(
+        &mut summary,
+        "compact_state_event_rows",
+        decoded_counts.compact_state_event,
+    );
+    add_state_event_source_units(&mut summary, state_event_source_counts);
     summary
 }
 
@@ -750,10 +868,97 @@ struct ExpectedCounts {
     relation_flag: usize,
     subject: usize,
     agency: usize,
+    agency_capacity_cluster: usize,
     operative: usize,
     cryptology: usize,
     operation_anchor: usize,
     intel_map: usize,
+    compact_state_event: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct StateEventSourceCounts {
+    relation_flag: usize,
+    relation_opinion: usize,
+    subject_autonomy: usize,
+    country_faction_group: usize,
+    agency_scalar: usize,
+    operative_lifecycle: usize,
+    agency_capacity: usize,
+    cryptology: usize,
+}
+
+impl StateEventSourceCounts {
+    fn add(&mut self, source_kind: u16) {
+        match source_kind {
+            STATE_EVENT_SOURCE_RELATION_FLAG => {
+                self.relation_flag = self.relation_flag.saturating_add(1)
+            }
+            STATE_EVENT_SOURCE_RELATION_OPINION => {
+                self.relation_opinion = self.relation_opinion.saturating_add(1)
+            }
+            STATE_EVENT_SOURCE_SUBJECT_AUTONOMY => {
+                self.subject_autonomy = self.subject_autonomy.saturating_add(1)
+            }
+            STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP => {
+                self.country_faction_group = self.country_faction_group.saturating_add(1)
+            }
+            STATE_EVENT_SOURCE_AGENCY_SCALAR => {
+                self.agency_scalar = self.agency_scalar.saturating_add(1)
+            }
+            STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE => {
+                self.operative_lifecycle = self.operative_lifecycle.saturating_add(1)
+            }
+            STATE_EVENT_SOURCE_AGENCY_CAPACITY => {
+                self.agency_capacity = self.agency_capacity.saturating_add(1)
+            }
+            STATE_EVENT_SOURCE_CRYPTOLOGY => self.cryptology = self.cryptology.saturating_add(1),
+            _ => {}
+        }
+    }
+}
+
+fn add_state_event_source_units(summary: &mut Domain53GateSummary, counts: StateEventSourceCounts) {
+    add_unit(
+        summary,
+        "compact_state_event_relation_flag_rows",
+        counts.relation_flag,
+    );
+    add_unit(
+        summary,
+        "compact_state_event_relation_opinion_rows",
+        counts.relation_opinion,
+    );
+    add_unit(
+        summary,
+        "compact_state_event_subject_autonomy_rows",
+        counts.subject_autonomy,
+    );
+    add_unit(
+        summary,
+        "compact_state_event_country_faction_group_rows",
+        counts.country_faction_group,
+    );
+    add_unit(
+        summary,
+        "compact_state_event_agency_scalar_rows",
+        counts.agency_scalar,
+    );
+    add_unit(
+        summary,
+        "compact_state_event_operative_lifecycle_rows",
+        counts.operative_lifecycle,
+    );
+    add_unit(
+        summary,
+        "compact_state_event_agency_capacity_rows",
+        counts.agency_capacity,
+    );
+    add_unit(
+        summary,
+        "compact_state_event_cryptology_rows",
+        counts.cryptology,
+    );
 }
 
 impl ExpectedCounts {
@@ -764,10 +969,12 @@ impl ExpectedCounts {
             .saturating_add(self.relation_flag)
             .saturating_add(self.subject)
             .saturating_add(self.agency)
+            .saturating_add(self.agency_capacity_cluster)
             .saturating_add(self.operative)
             .saturating_add(self.cryptology)
             .saturating_add(self.operation_anchor)
             .saturating_add(self.intel_map)
+            .saturating_add(self.compact_state_event)
     }
 }
 
@@ -779,10 +986,12 @@ fn row_len(kind: u16) -> Option<usize> {
         KIND_RELATION_FLAG => Some(ROW_RELATION_FLAG_LEN),
         KIND_SUBJECT => Some(ROW_SUBJECT_LEN),
         KIND_AGENCY => Some(ROW_AGENCY_LEN),
+        KIND_AGENCY_CAPACITY_CLUSTER => Some(ROW_AGENCY_CAPACITY_CLUSTER_LEN),
         KIND_OPERATIVE => Some(ROW_OPERATIVE_LEN),
         KIND_CRYPTOLOGY => Some(ROW_CRYPTOLOGY_LEN),
         KIND_OPERATION_ANCHOR => Some(ROW_OPERATION_ANCHOR_LEN),
         KIND_INTEL_MAP => Some(ROW_INTEL_MAP_LEN),
+        KIND_COMPACT_STATE_EVENT => Some(ROW_COMPACT_STATE_EVENT_LEN),
         _ => None,
     }
 }
@@ -1056,6 +1265,62 @@ fn validate_agency_row(
     }
 }
 
+fn validate_agency_capacity_cluster_row(
+    offset: usize,
+    row_index: usize,
+    payload: &[u8],
+    cursor: usize,
+    seen: &mut BTreeSet<u32>,
+    summary: &mut Domain53GateSummary,
+) {
+    let flags = read_u16_le(payload, cursor + 2);
+    let owner = read_u32_le(payload, cursor + 4);
+    let value_0xe4 = read_u32_le(payload, cursor + 8);
+    let value_0xf0 = read_u32_le(payload, cursor + 12);
+    let value_0xf4 = read_u32_le(payload, cursor + 16);
+    let proof_hash = read_u32_le(payload, cursor + 20);
+    if !valid_tag(owner) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: agency capacity cluster row {row_index} has invalid owner {owner}"
+        ));
+    } else if !seen.insert(owner) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: agency capacity cluster row {row_index} duplicates owner {owner}"
+        ));
+    }
+    if flags & !AGENCY_CAPACITY_FLAG_RAW_E4_F0_F4 != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: agency capacity cluster row {row_index} has unknown flags {flags}"
+        ));
+    }
+    if flags & AGENCY_CAPACITY_FLAG_RAW_E4_F0_F4 == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: agency capacity cluster row {row_index} lacks raw E4/F0/F4 flag"
+        ));
+    }
+    for (label, value) in [
+        ("value_0xe4", value_0xe4),
+        ("value_0xf0", value_0xf0),
+        ("value_0xf4", value_0xf4),
+    ] {
+        if value > MAX_AGENCY_CAPACITY_CLUSTER_VALUE {
+            summary.parse_errors.push(format!(
+                "offset {offset}: agency capacity cluster row {row_index} has invalid {label} {value}"
+            ));
+        }
+    }
+    if value_0xe4 != value_0xf4 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: agency capacity cluster row {row_index} has value_0xe4 {value_0xe4} != value_0xf4 {value_0xf4}"
+        ));
+    }
+    if proof_hash == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: agency capacity cluster row {row_index} has zero proof_hash"
+        ));
+    }
+}
+
 fn validate_operative_row(
     offset: usize,
     row_index: usize,
@@ -1070,8 +1335,8 @@ fn validate_operative_row(
     let skill = read_u32_le(payload, cursor + 12);
     let experience_raw = read_i64_le(payload, cursor + 16);
     let name_hash = read_u64_le(payload, cursor + 24);
-    let _state_hash = read_u32_le(payload, cursor + 32);
-    let reserved = read_u32_le(payload, cursor + 36);
+    let state_hash = read_u32_le(payload, cursor + 32);
+    let lifecycle_flag = read_u32_le(payload, cursor + 36);
     if !valid_tag(owner) {
         summary.parse_errors.push(format!(
             "offset {offset}: operative row {row_index} has invalid owner {owner}"
@@ -1091,7 +1356,8 @@ fn validate_operative_row(
             | OPERATIVE_FLAG_SKILL_PRESENT
             | OPERATIVE_FLAG_EXPERIENCE_PRESENT
             | OPERATIVE_FLAG_NAME_HASH
-            | OPERATIVE_FLAG_CAPTURED)
+            | OPERATIVE_FLAG_CAPTURED
+            | OPERATIVE_FLAG_LIFECYCLE_PRESENT)
         != 0
     {
         summary.parse_errors.push(format!(
@@ -1124,10 +1390,22 @@ fn validate_operative_row(
             "offset {offset}: operative row {row_index} has name_hash without flag"
         ));
     }
-    if reserved != 0 {
+    if flags & OPERATIVE_FLAG_LIFECYCLE_PRESENT == 0 && lifecycle_flag != 0 {
         summary.parse_errors.push(format!(
-            "offset {offset}: operative row {row_index} reserved field is nonzero"
+            "offset {offset}: operative row {row_index} has lifecycle_flag without present flag"
         ));
+    }
+    if flags & OPERATIVE_FLAG_LIFECYCLE_PRESENT != 0 {
+        if !(1..=MAX_OPERATIVE_LIFECYCLE_FLAG).contains(&lifecycle_flag) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: operative row {row_index} has invalid lifecycle_flag {lifecycle_flag}"
+            ));
+        }
+        if state_hash == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: operative row {row_index} has lifecycle flag without state_hash"
+            ));
+        }
     }
 }
 
@@ -1286,6 +1564,78 @@ fn validate_intel_map_row(
     }
 }
 
+fn validate_state_event_row(
+    offset: usize,
+    row_index: usize,
+    payload: &[u8],
+    cursor: usize,
+    seen: &mut BTreeSet<(u16, u16, u32, u32, u32)>,
+    summary: &mut Domain53GateSummary,
+) {
+    let flags = read_u16_le(payload, cursor + 2);
+    let owner = read_u32_le(payload, cursor + 4);
+    let target = read_u32_le(payload, cursor + 8);
+    let event_kind = read_u16_le(payload, cursor + 12);
+    let source_kind = read_u16_le(payload, cursor + 14);
+    let object_hash = read_u32_le(payload, cursor + 16);
+    let value_hash = read_u32_le(payload, cursor + 20);
+    let value_raw = read_i64_le(payload, cursor + 24);
+
+    if !valid_tag(owner) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: compact state event row {row_index} has invalid owner {owner}"
+        ));
+    }
+    if flags & !STATE_EVENT_FLAG_TARGET_PRESENT != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: compact state event row {row_index} has unknown flags {flags}"
+        ));
+    }
+    if flags & STATE_EVENT_FLAG_TARGET_PRESENT != 0 {
+        if !valid_tag(target) || target == owner {
+            summary.parse_errors.push(format!(
+                "offset {offset}: compact state event row {row_index} has invalid target {target}"
+            ));
+        }
+    } else if target != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: compact state event row {row_index} has target without flag"
+        ));
+    }
+    if !known_state_event_kind(event_kind) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: compact state event row {row_index} has unknown event_kind {event_kind}"
+        ));
+    }
+    if !known_state_event_source(source_kind) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: compact state event row {row_index} has unknown source_kind {source_kind}"
+        ));
+    }
+    if object_hash == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: compact state event row {row_index} has zero object_hash"
+        ));
+    }
+    if value_hash == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: compact state event row {row_index} has zero value_hash"
+        ));
+    }
+    if !(-MAX_STATE_EVENT_VALUE_RAW..=MAX_STATE_EVENT_VALUE_RAW).contains(&value_raw) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: compact state event row {row_index} has invalid value_raw {value_raw}"
+        ));
+    }
+
+    let key = (event_kind, source_kind, owner, target, object_hash);
+    if object_hash != 0 && !seen.insert(key) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: compact state event row {row_index} duplicates state event key"
+        ));
+    }
+}
+
 fn validate_pair(
     offset: usize,
     label: &str,
@@ -1303,6 +1653,24 @@ fn validate_pair(
 
 fn valid_tag(value: u32) -> bool {
     value > 0 && value <= MAX_TAG_DB_ID
+}
+
+fn known_state_event_kind(event_kind: u16) -> bool {
+    matches!(event_kind, STATE_EVENT_KIND_OBSERVED)
+}
+
+fn known_state_event_source(source_kind: u16) -> bool {
+    matches!(
+        source_kind,
+        STATE_EVENT_SOURCE_RELATION_FLAG
+            | STATE_EVENT_SOURCE_SUBJECT_AUTONOMY
+            | STATE_EVENT_SOURCE_AGENCY_SCALAR
+            | STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE
+            | STATE_EVENT_SOURCE_AGENCY_CAPACITY
+            | STATE_EVENT_SOURCE_CRYPTOLOGY
+            | STATE_EVENT_SOURCE_RELATION_OPINION
+            | STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP
+    )
 }
 
 fn known_relation_kind(flag_kind: u16) -> bool {
@@ -1390,8 +1758,8 @@ mod tests {
                 | STATUS_INTEL_MAP_RESISTED
                 | STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED
         );
-        assert_eq!(summary.data_rows_total, 10);
-        assert_eq!(summary.data_changed_rows_total, 10);
+        assert_eq!(summary.data_rows_total, 19);
+        assert_eq!(summary.data_changed_rows_total, 19);
         assert_eq!(
             summary.data_units_total.get("relation_flag_rows").copied(),
             Some(1)
@@ -1400,6 +1768,41 @@ mod tests {
             summary
                 .data_units_total
                 .get("operation_anchor_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("agency_capacity_cluster_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("operative_lifecycle_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("compact_state_event_rows")
+                .copied(),
+            Some(8)
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("compact_state_event_relation_opinion_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            summary
+                .data_units_total
+                .get("compact_state_event_country_faction_group_rows")
                 .copied(),
             Some(1)
         );
@@ -1428,7 +1831,8 @@ mod tests {
             + ROW_OPINION_LEN
             + ROW_RELATION_FLAG_LEN
             + ROW_SUBJECT_LEN
-            + ROW_AGENCY_LEN;
+            + ROW_AGENCY_LEN
+            + ROW_AGENCY_CAPACITY_CLUSTER_LEN;
         let mut malformed = payload;
         malformed[operative_offset + 2..operative_offset + 4].copy_from_slice(&0u16.to_le_bytes());
 
@@ -1446,6 +1850,10 @@ mod tests {
             .parse_errors
             .iter()
             .any(|error| error.contains("name_hash without flag")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("lifecycle_flag without present flag")));
     }
 
     #[test]
@@ -1547,6 +1955,27 @@ mod tests {
     }
 
     #[test]
+    fn rejects_agency_capacity_cluster_without_e4_f4_mirror() {
+        let payload = encode_payload(&fixture_snapshot());
+        let capacity_offset = HEADER_LEN
+            + ROW_COUNTRY_LEN
+            + ROW_WAR_LEN
+            + ROW_OPINION_LEN
+            + ROW_RELATION_FLAG_LEN
+            + ROW_SUBJECT_LEN
+            + ROW_AGENCY_LEN;
+        let mut malformed = payload;
+        malformed[capacity_offset + 16..capacity_offset + 20].copy_from_slice(&8u32.to_le_bytes());
+
+        let summary = decode_payload(0, &malformed);
+
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("value_0xe4") && error.contains("value_0xf4")));
+    }
+
+    #[test]
     fn rejects_resisted_intel_map_rows_without_top_level_badge() {
         let mut snapshot = fixture_snapshot();
         snapshot.status_flags &= !STATUS_INTEL_MAP_RESISTED;
@@ -1557,6 +1986,33 @@ mod tests {
         assert!(summary.parse_errors.iter().any(|error| {
             error.contains("resisted intel-map row") && error.contains("STATUS_INTEL_MAP_RESISTED")
         }));
+    }
+
+    #[test]
+    fn rejects_compact_state_event_with_unknown_source() {
+        let payload = encode_payload(&fixture_snapshot());
+        let state_event_offset = HEADER_LEN
+            + ROW_COUNTRY_LEN
+            + ROW_WAR_LEN
+            + ROW_OPINION_LEN
+            + ROW_RELATION_FLAG_LEN
+            + ROW_SUBJECT_LEN
+            + ROW_AGENCY_LEN
+            + ROW_AGENCY_CAPACITY_CLUSTER_LEN
+            + ROW_OPERATIVE_LEN
+            + ROW_CRYPTOLOGY_LEN
+            + ROW_OPERATION_ANCHOR_LEN
+            + ROW_INTEL_MAP_LEN;
+        let mut malformed = payload;
+        malformed[state_event_offset + 14..state_event_offset + 16]
+            .copy_from_slice(&999u16.to_le_bytes());
+
+        let summary = decode_payload(0, &malformed);
+
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("unknown source_kind 999")));
     }
 
     #[test]
@@ -1621,6 +2077,13 @@ mod tests {
                 name_hash: stable_hash64("Abwehr"),
                 icon_hash: stable_hash64("GFX_intelligence_agency_logo_ger"),
             }],
+            agency_capacity_clusters: vec![AgencyCapacityClusterRow {
+                owner_tag_db_id: 2,
+                value_0xe4: 9,
+                value_0xf0: 10,
+                value_0xf4: 9,
+                proof_hash: stable_hash32("agency_capacity_offsets_e4_f0_f4"),
+            }],
             operatives: vec![OperativeRow {
                 owner_tag_db_id: 1,
                 op_id: 11_387,
@@ -1629,7 +2092,8 @@ mod tests {
                 skill: Some(2),
                 experience_raw: Some(71_372_000),
                 name_hash: stable_hash64("Johann Hein"),
-                state_hash: stable_hash32("on_mission"),
+                state_hash: stable_hash32("lifeflag_47"),
+                lifecycle_flag: Some(47),
             }],
             cryptology: vec![CryptologyRow {
                 owner_tag_db_id: 1,
@@ -1654,6 +2118,80 @@ mod tests {
                 air_raw: 0,
                 resisted: true,
             }],
+            state_events: vec![
+                StateEventRow {
+                    owner_tag_db_id: 1,
+                    target_tag_db_id: Some(3),
+                    event_kind: STATE_EVENT_KIND_OBSERVED,
+                    source_kind: STATE_EVENT_SOURCE_RELATION_FLAG,
+                    object_hash: stable_hash32("relation_flag_market_access"),
+                    value_hash: stable_hash32("directed_false"),
+                    value_raw: REL_KIND_MARKET_ACCESS_RIGHTS as i64,
+                },
+                StateEventRow {
+                    owner_tag_db_id: 1,
+                    target_tag_db_id: Some(22),
+                    event_kind: STATE_EVENT_KIND_OBSERVED,
+                    source_kind: STATE_EVENT_SOURCE_SUBJECT_AUTONOMY,
+                    object_hash: stable_hash32("autonomy_puppet"),
+                    value_hash: stable_hash32("autonomy_ratio_40000"),
+                    value_raw: 40_000,
+                },
+                StateEventRow {
+                    owner_tag_db_id: 1,
+                    target_tag_db_id: Some(3),
+                    event_kind: STATE_EVENT_KIND_OBSERVED,
+                    source_kind: STATE_EVENT_SOURCE_RELATION_OPINION,
+                    object_hash: stable_hash32("relation_opinion"),
+                    value_hash: stable_hash32("opinion_neg120"),
+                    value_raw: -120,
+                },
+                StateEventRow {
+                    owner_tag_db_id: 1,
+                    target_tag_db_id: None,
+                    event_kind: STATE_EVENT_KIND_OBSERVED,
+                    source_kind: STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP,
+                    object_hash: stable_hash32("country_faction_group"),
+                    value_hash: stable_hash32("faction_group_42"),
+                    value_raw: 42,
+                },
+                StateEventRow {
+                    owner_tag_db_id: 1,
+                    target_tag_db_id: None,
+                    event_kind: STATE_EVENT_KIND_OBSERVED,
+                    source_kind: STATE_EVENT_SOURCE_AGENCY_SCALAR,
+                    object_hash: stable_hash32("agency_upgrade_progress_raw"),
+                    value_hash: stable_hash32("agency_upgrade_progress_2400000"),
+                    value_raw: 2_400_000,
+                },
+                StateEventRow {
+                    owner_tag_db_id: 1,
+                    target_tag_db_id: None,
+                    event_kind: STATE_EVENT_KIND_OBSERVED,
+                    source_kind: STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE,
+                    object_hash: stable_hash32("operative_11387_lifecycle"),
+                    value_hash: stable_hash32("lifeflag_47"),
+                    value_raw: 47,
+                },
+                StateEventRow {
+                    owner_tag_db_id: 2,
+                    target_tag_db_id: None,
+                    event_kind: STATE_EVENT_KIND_OBSERVED,
+                    source_kind: STATE_EVENT_SOURCE_AGENCY_CAPACITY,
+                    object_hash: stable_hash32("agency_capacity_offsets_e4_f0_f4"),
+                    value_hash: stable_hash32("agency_capacity_9_10_9"),
+                    value_raw: 10,
+                },
+                StateEventRow {
+                    owner_tag_db_id: 1,
+                    target_tag_db_id: Some(3),
+                    event_kind: STATE_EVENT_KIND_OBSERVED,
+                    source_kind: STATE_EVENT_SOURCE_CRYPTOLOGY,
+                    object_hash: stable_hash32("cryptology_amount_raw"),
+                    value_hash: stable_hash32("cryptology_amount_960000000"),
+                    value_raw: 960_000_000,
+                },
+            ],
         }
     }
 }

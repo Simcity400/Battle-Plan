@@ -7,10 +7,13 @@ use naval_combat_live_lane::{
     CshipSnapshotRow, MemberBridgeRow, NavalCombatBodyBridgeRow, ValidatedCombatSnapshot,
     CURRENT_870EBF_CSHIP_ROUTE, DOMAIN_NAVAL_COMBAT_LIFECYCLE, DOMAIN_NAVAL_COMBAT_MEMBERS,
 };
+use serde::Deserialize;
+use serde_json::{json, Value};
 use snapshot::{pack, Container, ExpectedIdentity, PackEntry, PackIdentity};
 
 fn main() {
     let mut out_dir = PathBuf::from("replay_native/runs/naval_combat_live_lane_stack_proof");
+    let mut fixture_json_path: Option<PathBuf> = None;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--out-dir" {
@@ -19,6 +22,12 @@ fn main() {
                 std::process::exit(2);
             };
             out_dir = PathBuf::from(value);
+        } else if arg == "--fixture-json" {
+            let Some(value) = args.next() else {
+                eprintln!("--fixture-json requires a path");
+                std::process::exit(2);
+            };
+            fixture_json_path = Some(PathBuf::from(value));
         } else {
             eprintln!("unknown argument: {arg}");
             std::process::exit(2);
@@ -28,6 +37,16 @@ fn main() {
     if let Err(err) = fs::create_dir_all(&out_dir) {
         eprintln!("create {} failed: {err}", out_dir.display());
         std::process::exit(1);
+    }
+
+    if let Some(path) = fixture_json_path {
+        match run_fixture_json_proof(&path, &out_dir) {
+            Ok(ok) => std::process::exit(if ok { 0 } else { 1 }),
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
     }
 
     let fixture = fixture();
@@ -83,7 +102,12 @@ fn main() {
     }
 
     let replay_path = out_dir.join("native_session.battleplan");
-    let replay_verify = match write_and_verify_replay(&replay_path, &compact_stream) {
+    let replay_verify = match write_and_verify_replay(
+        &replay_path,
+        &compact_stream,
+        "naval_combat_live_lane_synthetic",
+        "lane-local-compact-v1",
+    ) {
         Ok(report) => report,
         Err(err) => {
             eprintln!("replay verification failed: {err}");
@@ -110,9 +134,12 @@ fn main() {
             "  \"lifecycle_rows\": {},\n",
             "  \"member_rows\": {},\n",
             "  \"two_sided_combat_count\": {},\n",
+            "  \"lifecycle_location_row_count\": {},\n",
+            "  \"lifecycle_region_row_count\": {},\n",
             "  \"lifecycle_started_row_count\": {},\n",
             "  \"lifecycle_updated_row_count\": {},\n",
             "  \"lifecycle_ended_row_count\": {},\n",
+            "  \"member_deleted_row_count\": {},\n",
             "  \"cship_validated_member_count\": {},\n",
             "  \"task_force_linked_member_count\": {},\n",
             "  \"fleet_linked_member_count\": {},\n",
@@ -134,9 +161,12 @@ fn main() {
         gate.summary.lifecycle_row_count,
         gate.summary.member_row_count,
         gate.summary.two_sided_combat_count,
+        gate.summary.lifecycle_location_row_count,
+        gate.summary.lifecycle_region_row_count,
         gate.summary.lifecycle_started_row_count,
         gate.summary.lifecycle_updated_row_count,
         gate.summary.lifecycle_ended_row_count,
+        gate.summary.member_deleted_row_count,
         gate.summary.cship_validated_member_count,
         gate.summary.task_force_linked_member_count,
         gate.summary.fleet_linked_member_count,
@@ -156,6 +186,9 @@ fn main() {
             && gate.summary.lifecycle_started_row_count > 0
             && gate.summary.lifecycle_updated_row_count > 0
             && gate.summary.lifecycle_ended_row_count > 0
+            && gate.summary.lifecycle_location_row_count == gate.summary.lifecycle_row_count
+            && gate.summary.lifecycle_region_row_count == gate.summary.lifecycle_row_count
+            && gate.summary.member_deleted_row_count > 0
             && gate.summary.task_force_linked_member_count > 0
             && gate.summary.fleet_linked_member_count > 0
             && gate.summary.hull_telemetry_member_count > 0
@@ -168,6 +201,273 @@ fn main() {
     );
 }
 
+#[derive(Debug, Deserialize)]
+struct FixtureProofInput {
+    #[serde(default)]
+    source: Value,
+    #[serde(default = "default_game_hour_raw")]
+    game_hour_raw: i32,
+    #[serde(default = "default_elapsed_wall_ms")]
+    elapsed_wall_ms: u64,
+    snapshots: Vec<FixtureSnapshotInput>,
+    cships: Vec<CshipSnapshotInput>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FixtureSnapshotInput {
+    lifecycle: LifecycleInput,
+    #[serde(default)]
+    members: Vec<MemberInput>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LifecycleInput {
+    combat_id: u32,
+    generation: u64,
+    body_ptr: u64,
+    location_id: Option<u32>,
+    region_id: Option<u32>,
+    attacker_member_count: u32,
+    defender_member_count: u32,
+    attacker_positioning_milli: Option<i32>,
+    defender_positioning_milli: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MemberInput {
+    combat_id: u32,
+    generation: u64,
+    side: String,
+    group_index: u32,
+    member_index: u32,
+    member_ptr: u64,
+    unit_type_tag: u32,
+    ship_instance_id: Option<u32>,
+    #[serde(default)]
+    is_convoy: bool,
+    owner_tag_db_id: Option<u32>,
+    designed_max_strength_raw: Option<u32>,
+    #[serde(default)]
+    battle_slot_index_raw: u32,
+    state_bitmask: Option<u32>,
+    engagement_weight_raw: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CshipSnapshotInput {
+    instance_id: u32,
+    body_ptr: u64,
+    #[serde(default = "default_cship_vtable_rva")]
+    vtable_rva: u64,
+    #[serde(default = "default_cship_type_tag")]
+    handle_type_tag: u32,
+    alias_instance_id: u32,
+    #[serde(default = "default_cship_ref100")]
+    ref100_sentinel_raw: u32,
+    task_force_id: Option<u32>,
+    fleet_id: Option<u32>,
+    strength_raw: u32,
+    organisation_raw: u32,
+    experience_raw: u32,
+    sunk_convoys: u32,
+    category_enum: u32,
+}
+
+fn run_fixture_json_proof(fixture_path: &PathBuf, out_dir: &PathBuf) -> Result<bool, String> {
+    let input_text = fs::read_to_string(fixture_path)
+        .map_err(|err| format!("read {} failed: {err}", fixture_path.display()))?;
+    let input: FixtureProofInput = serde_json::from_str(input_text.trim_start_matches('\u{feff}'))
+        .map_err(|err| format!("parse {} failed: {err}", fixture_path.display()))?;
+    let snapshots = input.to_snapshots()?;
+    let cships = input.to_cships()?;
+    let frame = build_capture_frame(
+        &snapshots,
+        &cships,
+        1,
+        input.game_hour_raw,
+        input.elapsed_wall_ms,
+    )
+    .map_err(|errors| format!("fixture-json capture failed: {errors:?}"))?;
+
+    let compact_path = out_dir.join("naval_combat_live_domain49_50_compact.bin");
+    fs::write(&compact_path, &frame.compact_stream)
+        .map_err(|err| format!("write {} failed: {err}", compact_path.display()))?;
+    let gate = gate_stream(&frame.compact_stream);
+    let gate_json = result_json(&gate);
+    let gate_path = out_dir.join("naval_combat_live_domain49_50_gate.json");
+    fs::write(&gate_path, &gate_json)
+        .map_err(|err| format!("write {} failed: {err}", gate_path.display()))?;
+
+    let replay_path = out_dir.join("native_session.battleplan");
+    let replay_verify = write_and_verify_replay(
+        &replay_path,
+        &frame.compact_stream,
+        "naval_combat_live_active_fixture_bridge",
+        "lane-local-active-fixture-v1",
+    )?;
+    let ok = gate.ok
+        && gate.summary.lifecycle_row_count > 0
+        && gate.summary.member_row_count > 0
+        && gate.summary.two_sided_combat_count > 0
+        && gate.summary.lifecycle_location_row_count == gate.summary.lifecycle_row_count
+        && gate.summary.lifecycle_region_row_count == gate.summary.lifecycle_row_count
+        && gate.summary.cship_validated_member_count > 0
+        && gate.summary.task_force_linked_member_count == gate.summary.cship_validated_member_count
+        && gate.summary.fleet_linked_member_count == gate.summary.cship_validated_member_count
+        && gate.summary.hull_telemetry_member_count == gate.summary.cship_validated_member_count
+        && gate.summary.sunk_convoy_telemetry_member_count
+            == gate.summary.cship_validated_member_count
+        && replay_verify.verified
+        && replay_verify.byte_match;
+
+    let report = json!({
+        "status": if ok { "passed" } else { "failed" },
+        "proof_kind": "active_fixture_bridge_json",
+        "domains": {
+            "49": "naval_combat_lifecycle_live",
+            "50": "naval_combat_members_live"
+        },
+        "domain_ids": [DOMAIN_NAVAL_COMBAT_LIFECYCLE, DOMAIN_NAVAL_COMBAT_MEMBERS],
+        "fixture_json_path": fixture_path.to_string_lossy(),
+        "source": input.source,
+        "compact_path": compact_path.to_string_lossy(),
+        "gate_path": gate_path.to_string_lossy(),
+        "replay_path": replay_path.to_string_lossy(),
+        "hoi4replay_verified": replay_verify.verified,
+        "collector_compact_stream_byte_match": replay_verify.byte_match,
+        "collector_compact_stream_bytes": replay_verify.collector_compact_stream_bytes,
+        "gate_ok": gate.ok,
+        "gate_errors": gate.errors,
+        "lifecycle_rows": gate.summary.lifecycle_row_count,
+        "member_rows": gate.summary.member_row_count,
+        "two_sided_combat_count": gate.summary.two_sided_combat_count,
+        "lifecycle_location_row_count": gate.summary.lifecycle_location_row_count,
+        "lifecycle_region_row_count": gate.summary.lifecycle_region_row_count,
+        "lifecycle_started_row_count": gate.summary.lifecycle_started_row_count,
+        "lifecycle_updated_row_count": gate.summary.lifecycle_updated_row_count,
+        "lifecycle_ended_row_count": gate.summary.lifecycle_ended_row_count,
+        "member_deleted_row_count": gate.summary.member_deleted_row_count,
+        "cship_validated_member_count": gate.summary.cship_validated_member_count,
+        "task_force_linked_member_count": gate.summary.task_force_linked_member_count,
+        "fleet_linked_member_count": gate.summary.fleet_linked_member_count,
+        "hull_telemetry_member_count": gate.summary.hull_telemetry_member_count,
+        "sunk_convoy_telemetry_member_count": gate.summary.sunk_convoy_telemetry_member_count,
+    });
+    let proof_path = out_dir.join("naval_combat_live_lane_stack_proof.json");
+    fs::write(
+        &proof_path,
+        serde_json::to_string_pretty(&report).map_err(|err| err.to_string())? + "\n",
+    )
+    .map_err(|err| format!("write {} failed: {err}", proof_path.display()))?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+    );
+    Ok(ok)
+}
+
+impl FixtureProofInput {
+    fn to_snapshots(&self) -> Result<Vec<ValidatedCombatSnapshot>, String> {
+        self.snapshots
+            .iter()
+            .map(FixtureSnapshotInput::to_snapshot)
+            .collect()
+    }
+
+    fn to_cships(&self) -> Result<Vec<CshipSnapshotRow>, String> {
+        self.cships.iter().map(CshipSnapshotInput::to_row).collect()
+    }
+}
+
+impl FixtureSnapshotInput {
+    fn to_snapshot(&self) -> Result<ValidatedCombatSnapshot, String> {
+        Ok(ValidatedCombatSnapshot {
+            lifecycle: NavalCombatBodyBridgeRow {
+                combat_id: self.lifecycle.combat_id,
+                generation: self.lifecycle.generation,
+                body_ptr: self.lifecycle.body_ptr,
+                location_id: self.lifecycle.location_id,
+                region_id: self.lifecycle.region_id,
+                attacker_member_count: self.lifecycle.attacker_member_count,
+                defender_member_count: self.lifecycle.defender_member_count,
+                attacker_positioning_milli: self.lifecycle.attacker_positioning_milli,
+                defender_positioning_milli: self.lifecycle.defender_positioning_milli,
+            },
+            members: self
+                .members
+                .iter()
+                .map(MemberInput::to_row)
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+}
+
+impl MemberInput {
+    fn to_row(&self) -> Result<MemberBridgeRow, String> {
+        let side = match self.side.as_str() {
+            "attacker" => CombatSide::Attacker,
+            "defender" => CombatSide::Defender,
+            other => return Err(format!("unknown fixture member side {other:?}")),
+        };
+        Ok(MemberBridgeRow {
+            combat_id: self.combat_id,
+            generation: self.generation,
+            side,
+            group_index: self.group_index,
+            member_index: self.member_index,
+            member_ptr: self.member_ptr,
+            unit_type_tag: self.unit_type_tag,
+            ship_instance_id: self.ship_instance_id,
+            is_convoy: self.is_convoy,
+            owner_tag_db_id: self.owner_tag_db_id,
+            designed_max_strength_raw: self.designed_max_strength_raw,
+            battle_slot_index_raw: self.battle_slot_index_raw,
+            state_bitmask: self.state_bitmask,
+            engagement_weight_raw: self.engagement_weight_raw,
+        })
+    }
+}
+
+impl CshipSnapshotInput {
+    fn to_row(&self) -> Result<CshipSnapshotRow, String> {
+        Ok(CshipSnapshotRow {
+            instance_id: self.instance_id,
+            body_ptr: self.body_ptr,
+            vtable_rva: self.vtable_rva,
+            handle_type_tag: self.handle_type_tag,
+            alias_instance_id: self.alias_instance_id,
+            ref100_sentinel_raw: self.ref100_sentinel_raw,
+            task_force_id: self.task_force_id,
+            fleet_id: self.fleet_id,
+            strength_raw: self.strength_raw,
+            organisation_raw: self.organisation_raw,
+            experience_raw: self.experience_raw,
+            sunk_convoys: self.sunk_convoys,
+            category_enum: self.category_enum,
+        })
+    }
+}
+
+fn default_game_hour_raw() -> i32 {
+    0
+}
+
+fn default_elapsed_wall_ms() -> u64 {
+    1_000
+}
+
+fn default_cship_vtable_rva() -> u64 {
+    CURRENT_870EBF_CSHIP_ROUTE.cship_vtable_rva
+}
+
+fn default_cship_type_tag() -> u32 {
+    CURRENT_870EBF_CSHIP_ROUTE.type_tag
+}
+
+fn default_cship_ref100() -> u32 {
+    CURRENT_870EBF_CSHIP_ROUTE.ref100_sentinel_raw
+}
+
 struct ReplayVerifyReport {
     verified: bool,
     byte_match: bool,
@@ -177,25 +477,31 @@ struct ReplayVerifyReport {
 fn write_and_verify_replay(
     replay_path: &PathBuf,
     compact_stream: &[u8],
+    game_id: &str,
+    schema_version: &str,
 ) -> Result<ReplayVerifyReport, String> {
-    const GAME_ID: &str = "naval_combat_live_lane_synthetic";
-    let index = br#"{"game_id":"naval_combat_live_lane_synthetic","schema_version":"lane-local-compact-v1","snapshots":[]}"#;
+    let index = format!(
+        "{{\"game_id\":{},\"schema_version\":{},\"snapshots\":[]}}",
+        json_str(game_id),
+        json_str(schema_version)
+    )
+    .into_bytes();
     let entries = vec![
         PackEntry {
-            path: format!("payload/{GAME_ID}/index.json"),
-            bytes: index.to_vec(),
+            path: format!("payload/{game_id}/index.json"),
+            bytes: index,
             role: "index",
             hour_index: None,
         },
         PackEntry {
-            path: format!("payload/{GAME_ID}/collector_stream.bin"),
+            path: format!("payload/{game_id}/collector_stream.bin"),
             bytes: compact_stream.to_vec(),
             role: "collector_compact_stream",
             hour_index: None,
         },
     ];
     let identity = PackIdentity {
-        schema_version: Some("lane-local-compact-v1".to_string()),
+        schema_version: Some(schema_version.to_string()),
         build_exe_sha256: Some(
             "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad".to_string(),
         ),
@@ -203,7 +509,7 @@ fn write_and_verify_replay(
         mod_identity: None,
         created_utc: Some("2026-07-01T00:00:00Z".to_string()),
     };
-    let replay = pack(GAME_ID, &entries, &identity, true).map_err(|err| err.to_string())?;
+    let replay = pack(game_id, &entries, &identity, true).map_err(|err| err.to_string())?;
     fs::write(replay_path, replay).map_err(|err| err.to_string())?;
     let container = Container::open(replay_path, &ExpectedIdentity::default())
         .map_err(|err| err.to_string())?;
@@ -235,6 +541,7 @@ fn fixture() -> ValidatedCombatSnapshot {
             generation: 1,
             body_ptr: 0x22aa_0004_000,
             location_id: Some(2799),
+            region_id: Some(18),
             attacker_member_count: 1,
             defender_member_count: 1,
             attacker_positioning_milli: Some(812),
