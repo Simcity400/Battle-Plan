@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 air_wings_variants_lifecycle_live_lane = { path = "../lanes/air_wings_variants_lifecycle_live" }
 scripted_state_flags_variables_live_lane = { path = "../lanes/scripted_state_flags_variables_live" }
+occupation_resistance_compliance_live_lane = { path = "../lanes/occupation_resistance_compliance_live" }
 serde_json = "1"
 snapshot = { path = "../snapshot" }
 

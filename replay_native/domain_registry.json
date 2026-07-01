@@ -42,7 +42,7 @@
     { "id": 49, "name": "naval_combat_lifecycle_live", "status": "fixture_blocked_no_active_battle_current_cship_route_validated" },
     { "id": 50, "name": "naval_combat_members_live", "status": "fixture_blocked_no_active_battle_current_cship_route_validated" },
     { "id": 51, "name": "scripted_state_flags_variables_live", "status": "validated_lane_slice_shared_registered_open_opaque_roots" },
-    { "id": 52, "name": "occupation_resistance_compliance_live", "status": "validated_lane_slice_occupation_state_rows_shared_registration_blocked" },
+    { "id": 52, "name": "occupation_resistance_compliance_live", "status": "validated_slice_occupation_state_rows_shared_registered_open_garrison_collaboration" },
     { "id": 53, "name": "diplomacy_intel_operatives_live", "status": "lane_ready_operation_rvas_rejected_intel_incoming_fixtures_blocked" },
     { "id": 54, "name": "army_battleplans_depth_live", "status": "battleplan_redraw_toggle_observer_ready_external_fixture_action_blocked" },
     { "id": 1000, "name": "frame", "status": "infrastructure" }

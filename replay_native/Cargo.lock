@@ -311,6 +311,7 @@ name = "collector"
 version = "0.1.0"
 dependencies = [
  "air_wings_variants_lifecycle_live_lane",
+ "occupation_resistance_compliance_live_lane",
  "scripted_state_flags_variables_live_lane",
 ]
 
@@ -1096,6 +1097,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d079845b37af429bfe5dfa76e6d087d788031045b25cfc6fd898486fd9847666"
 
 [[package]]
+name = "occupation_resistance_compliance_live_lane"
+version = "0.1.0"
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1277,6 +1282,7 @@ name = "recorder_host"
 version = "0.1.0"
 dependencies = [
  "air_wings_variants_lifecycle_live_lane",
+ "occupation_resistance_compliance_live_lane",
  "scripted_state_flags_variables_live_lane",
  "serde_json",
  "snapshot",

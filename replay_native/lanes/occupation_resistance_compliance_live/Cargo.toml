@@ -1,0 +1,7 @@
+[package]
+name = "occupation_resistance_compliance_live_lane"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"

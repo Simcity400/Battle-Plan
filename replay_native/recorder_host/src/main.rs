@@ -1,6 +1,7 @@
 #![recursion_limit = "256"]
 
 use recorder_host::compact_domain_registry;
+use occupation_resistance_compliance_live_lane as occupation52;
 use serde_json::{json, Value};
 use snapshot::{pack, Container, ExpectedIdentity, PackEntry, PackIdentity};
 use std::collections::{BTreeMap, BTreeSet};
@@ -65,6 +66,7 @@ const COMPACT_FIXED_SCALE_RAW: u32 = 100000;
 const COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE: u16 = 45;
 const COMPACT_DOMAIN_AIR_VARIANT_ARCHETYPES: u16 = 46;
 const COMPACT_DOMAIN_SCRIPTED_STATE_FLAGS_VARIABLES_LIVE: u16 = 51;
+const COMPACT_DOMAIN_OCCUPATION_RESISTANCE_COMPLIANCE_LIVE: u16 = 52;
 #[cfg(test)]
 const COMPACT_AIR_VARIANT_ARCHETYPE_ROW_FLAG_ARCHETYPE: u32 = 1 << 1;
 #[cfg(test)]
@@ -1589,6 +1591,13 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     }
                     COMPACT_DOMAIN_SCRIPTED_STATE_FLAGS_VARIABLES_LIVE => {
                         decode_compact_scripted_state_flags_variables_data_payload(
+                            offset,
+                            payload,
+                            &mut summary,
+                        )
+                    }
+                    COMPACT_DOMAIN_OCCUPATION_RESISTANCE_COMPLIANCE_LIVE => {
+                        decode_compact_occupation_resistance_compliance_data_payload(
                             offset,
                             payload,
                             &mut summary,
@@ -6009,6 +6018,32 @@ fn decode_compact_scripted_state_flags_variables_data_payload(
             .data_changed_rows_total
             .saturating_add(verdict.summary.data_changed_rows_total);
         for (name, count) in verdict.summary.data_units_total {
+            let entry = domain.data_units_total.entry(name.to_string()).or_default();
+            *entry = entry.saturating_add(count);
+        }
+    }
+}
+
+fn decode_compact_occupation_resistance_compliance_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    let lane_summary = occupation52::domain52_compact::decode_payload(offset, payload);
+    summary.status_flags_or |= lane_summary.status_flags_or;
+    summary.parse_errors.extend(lane_summary.parse_errors);
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_OCCUPATION_RESISTANCE_COMPLIANCE_LIVE)
+    {
+        domain.status_flags_or |= lane_summary.status_flags_or;
+        domain.data_rows_total = domain
+            .data_rows_total
+            .saturating_add(lane_summary.data_rows_total);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(lane_summary.data_changed_rows_total);
+        for (name, count) in lane_summary.data_units_total {
             let entry = domain.data_units_total.entry(name.to_string()).or_default();
             *entry = entry.saturating_add(count);
         }

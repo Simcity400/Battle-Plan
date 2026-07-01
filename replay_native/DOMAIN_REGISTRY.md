@@ -63,7 +63,7 @@ Status vocabulary:
 | 49 | `naval_combat_lifecycle_live` | fixture-blocked: no active battle in current process; current CShip route validated | naval combat |
 | 50 | `naval_combat_members_live` | fixture-blocked: no active battle in current process; current CShip route validated | naval combat |
 | 51 | `scripted_state_flags_variables_live` | validated lane slice: shared registered; country/global/state variables and token/date/value flags; open opaque roots | scripted state/flags/variables |
-| 52 | `occupation_resistance_compliance_live` | validated lane slice: occupation state rows; shared registration blocked | occupation/resistance/compliance |
+| 52 | `occupation_resistance_compliance_live` | validated slice: shared registered occupation state rows; garrison scalar/collaboration detail open | occupation/resistance/compliance |
 | 53 | `diplomacy_intel_operatives_live` | lane-ready; stale operation RVAs rejected; operation/intel-map/incoming-action fixtures blocked | diplomacy/intel/operatives |
 | 54 | `army_battleplans_depth_live` | redraw/toggle observer ready; external fixture action blocked | army OOB/orders/battleplans depth |
 | 1000 | `frame` | compact stream framing/perf records | recorder infrastructure |
