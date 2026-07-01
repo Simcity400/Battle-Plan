@@ -190,9 +190,16 @@ sample hour. The lane gate decodes both domain-51 payloads, reports zero skipped
 hours, and keeps delayed-event/scripted-GUI unresolved-root badges out of
 partial/source failure. The replay proof packs the stream into
 `native_session.battleplan` and verifies that the embedded
-`collector_compact_stream` bytes match the source stream. Live DLL speed-five
-proof remains blocked until the shared collector/recorder registration slot
-opens.
+`collector_compact_stream` bytes match the source stream. The shared
+collector/recorder registration slot is wired for live proof; remaining
+completion claims must stay scoped to the validated slice.
+
+Shared live proof artifact:
+`replay_native/runs/domain51_shared_live_20260701T163828/native_session_manifest.json`.
+It scheduled only `scripted_state_flags_variables_live`, emitted `162`
+domain-51 compact data records across `162` frame hours, advanced `161` game
+hours with `0` skipped hours, had no partial/source/worker/bridge failures, and
+passed shared `pack_replay verify` for `native_session.battleplan`.
 
 Delayed-event blocker proof:
 `replay_native/runs/scripted_state_flags_variables_live_870ebf_20260701_delayed_event_blocker_v1/delayed_event_fixture_audit.json`.
@@ -230,10 +237,10 @@ These are not production decoded by this lane yet:
   token-only because their token dictionary text pointers failed read.
 - global variables/flags: current `870ebf` roots are pinned at
   `CGameState + 0x980 -> CVariables` and `CGameState + 0x258 -> CFlagManager`;
-  production DLL/Rust integration is still not wired.
+  shared DLL/Rust integration emits the validated slice.
 - state flags/variables: current `870ebf` roots are pinned at
-  `CState + 0x7F8 -> CVariables` and `CState + 0x540 -> CFlagManager`; state
-  flag name resolution was not run in the state proof, so unresolved rows remain
+  `CState + 0x7F8 -> CVariables` and `CState + 0x540 -> CFlagManager`; shared
+  DLL/Rust integration emits token/date/value rows, and unresolved names remain
   token-only/badged until a dictionary pass.
 - delayed events: `saved_event_target` is rejected as a validation proxy, and
   the current save oracle has no non-empty `countries.*.delayed_event` fixture;

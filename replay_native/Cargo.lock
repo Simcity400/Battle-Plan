@@ -311,6 +311,7 @@ name = "collector"
 version = "0.1.0"
 dependencies = [
  "air_wings_variants_lifecycle_live_lane",
+ "scripted_state_flags_variables_live_lane",
 ]
 
 [[package]]
@@ -1276,6 +1277,7 @@ name = "recorder_host"
 version = "0.1.0"
 dependencies = [
  "air_wings_variants_lifecycle_live_lane",
+ "scripted_state_flags_variables_live_lane",
  "serde_json",
  "snapshot",
 ]
@@ -1384,6 +1386,10 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "scripted_state_flags_variables_live_lane"
+version = "0.1.0"
 
 [[package]]
 name = "scrub"

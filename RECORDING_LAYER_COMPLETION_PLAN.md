@@ -205,8 +205,16 @@ each remaining field.
   flags are no longer fixture-blocked. The current build validated
   `CCountry+0x230 -> CFlagManager` with `651` flag rows, `650` named rows, and
   one token-only unresolved positive row that must remain badged. The lane-local
-  H4CR stream/replay proof decoded and verified, but shared live DLL
-  registration remains open.
+  H4CR stream/replay proof decoded and verified. Shared collector/recorder
+  registration is now wired as a validated slice with open opaque roots, not a
+  whole-concept completion claim. Live shared proof
+  `replay_native/runs/domain51_shared_live_20260701T163828` scheduled only
+  `scripted_state_flags_variables_live`, emitted `162` domain-51 compact data
+  records over `162` hourly frames, advanced `161` game hours with `0` skipped
+  hours, reported no partial/source/worker/bridge failures, and passed
+  `pack_replay verify` for `native_session.battleplan`. The shared DLL adapter
+  emits validated variables plus flag token/date/value rows; flag names remain
+  token-only/badged until the dictionary pass is wired into the live adapter.
 - Domain `52` `occupation_resistance_compliance_live`: current-head lane-local
   proof validated occupation state rows and narrowed/rejected garrison scalar
   candidates. It remains shared-registration blocked and is not speed-five

@@ -64,6 +64,7 @@ const COMPACT_TECH_LIVE_PROGRESS_SCALE_RAW: u32 = 100000;
 const COMPACT_FIXED_SCALE_RAW: u32 = 100000;
 const COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE: u16 = 45;
 const COMPACT_DOMAIN_AIR_VARIANT_ARCHETYPES: u16 = 46;
+const COMPACT_DOMAIN_SCRIPTED_STATE_FLAGS_VARIABLES_LIVE: u16 = 51;
 #[cfg(test)]
 const COMPACT_AIR_VARIANT_ARCHETYPE_ROW_FLAG_ARCHETYPE: u32 = 1 << 1;
 #[cfg(test)]
@@ -1581,6 +1582,13 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     }
                     COMPACT_DOMAIN_AIR_VARIANT_ARCHETYPES => {
                         decode_compact_air_variant_archetypes_data_payload(
+                            offset,
+                            payload,
+                            &mut summary,
+                        )
+                    }
+                    COMPACT_DOMAIN_SCRIPTED_STATE_FLAGS_VARIABLES_LIVE => {
+                        decode_compact_scripted_state_flags_variables_data_payload(
                             offset,
                             payload,
                             &mut summary,
@@ -5980,6 +5988,33 @@ fn decode_compact_air_variant_archetypes_data_payload(
         }
     }
 }
+
+fn decode_compact_scripted_state_flags_variables_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    let verdict = scripted_state_flags_variables_live_lane::gate_domain51_payload(offset, payload);
+    summary.status_flags_or |= verdict.summary.status_flags_or;
+    summary.parse_errors.extend(verdict.summary.parse_errors);
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_SCRIPTED_STATE_FLAGS_VARIABLES_LIVE)
+    {
+        domain.status_flags_or |= verdict.summary.status_flags_or;
+        domain.data_rows_total = domain
+            .data_rows_total
+            .saturating_add(verdict.summary.data_rows_total);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(verdict.summary.data_changed_rows_total);
+        for (name, count) in verdict.summary.data_units_total {
+            let entry = domain.data_units_total.entry(name.to_string()).or_default();
+            *entry = entry.saturating_add(count);
+        }
+    }
+}
+
 fn decode_compact_air_variant_upgrades_data_payload(
     offset: usize,
     payload: &[u8],

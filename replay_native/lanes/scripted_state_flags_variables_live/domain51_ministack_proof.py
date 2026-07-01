@@ -17,6 +17,7 @@ VALID_PRE_INTEGRATION_STATUSES = {
     "reserved",
     "lane_ready_opaque_positive_fixtures_blocked",
     "validated_lane_slice_positive_country_flags_shared_registration_blocked",
+    "validated_lane_slice_shared_registered_open_opaque_roots",
 }
 
 LANE_DIR = Path(__file__).resolve().parent
