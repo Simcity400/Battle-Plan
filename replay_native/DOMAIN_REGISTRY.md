@@ -4,6 +4,10 @@ This is the orchestrator-owned source of truth for compact domain IDs. Lane
 subagents must not choose IDs independently. If a lane needs a new domain, the
 orchestrator assigns it here first.
 
+For scope-sensitive status, read `EXTRACTION_SCOPE_STATUS.md` alongside this
+registry. The registry status is a compact label; that file lists what each
+validated slice actually covers and what remains open for full replay fidelity.
+
 Registration rule: lane implementation lives in lane-owned collector/decoder
 modules. Shared `collector/src/lib.rs` and `recorder_host/src/main.rs` changes
 should be registration hooks only unless the orchestrator explicitly creates or
@@ -54,7 +58,7 @@ Status vocabulary:
 | 40 | `stockpile_variant_upgrades` | existing compact domain | stockpile |
 | 41 | `projects_live` | partial validated slice: facilities/scientists/progress/completed bit; start/reward fixture blocked | projects |
 | 42 | `air_combat_losses_live` | validated slice: loss/reinforcement delta; direct event root rejected; not full air combat | air combat losses |
-| 43 | `market_trade_live` | validated slice: purchase contracts; omitted accounting fixed; D04 buyer unresolved | market/trade |
+| 43 | `market_trade_live` | validated slice: purchase contracts; dynamic D-tag buyer resolved; omitted candidates/full trade economy open | market/trade |
 | 44 | `supply_logistics_attrition_live` | validated slice: supply/logistics subset; direct `CSupplySystem` arrays rejected; exact province supply wall open | supply/logistics |
 | 45 | `focus_research_decisions_depth_live` | validated slice: transition depth; decision body candidates rejected; unresolved fields open | focus/research/decisions depth |
 | 46 | `air_variant_archetypes_live` | validated slice: variant archetypes; token `20378` resolved; shared token hook/full air lifecycle open | air wings/variants lifecycle |

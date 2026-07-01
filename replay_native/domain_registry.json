@@ -33,7 +33,7 @@
     { "id": 40, "name": "stockpile_variant_upgrades", "status": "existing" },
     { "id": 41, "name": "projects_live", "status": "partial_validated_slice_facilities_scientists_progress_completed_bit_start_reward_fixture_blocked" },
     { "id": 42, "name": "air_combat_losses_live", "status": "validated_slice_loss_delta_direct_event_root_rejected_not_full_air_combat" },
-    { "id": 43, "name": "market_trade_live", "status": "validated_slice_purchase_contracts_omitted_accounting_fixed_d04_buyer_unresolved" },
+    { "id": 43, "name": "market_trade_live", "status": "validated_slice_purchase_contracts_dtag_buyer_resolved_omitted_candidates_open_not_full_trade" },
     { "id": 44, "name": "supply_logistics_attrition_live", "status": "validated_slice_supply_subset_csupply_direct_arrays_rejected_exact_supply_wall" },
     { "id": 45, "name": "focus_research_decisions_depth_live", "status": "validated_slice_transition_depth_decision_body_candidates_rejected_open_fields" },
     { "id": 46, "name": "air_variant_archetypes_live", "status": "validated_slice_variant_archetype_token20378_resolved_shared_token_hook_open" },
