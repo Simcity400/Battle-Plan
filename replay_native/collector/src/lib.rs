@@ -646,7 +646,7 @@ mod attach_log {
     const AIR_VARIANT_STAT_RANGE_SCALE_RAW: u32 = 1_000;
     const PROJECT_FACILITY_VTABLE_RVA: usize = 0x295AC30;
     const PROJECT_CPROJECT_VTABLE_RVA: usize = 0x296C270;
-    const PROJECT_CHARACTER_VTABLE_RVA: usize = 0x272B088;
+    const PROJECT_CHARACTER_VTABLE_RVA: usize = 0x2967E30;
     const PROJECT_SCIENTIST_VTABLE_RVA: usize = 0x2967E88;
     const PROJECT_PROGRAM_STATUS_A_VTABLE_RVA: usize = 0x295AC88;
     const PROJECT_PROGRAM_STATUS_B_VTABLE_RVA: usize = 0x295ACA8;
@@ -671,10 +671,12 @@ mod attach_log {
     const PROJECT_PROJECT_OFF_ITERATIONS: usize = 0x74;
     const COUNTRY_OFF_PROGRAM_STATUS: usize = 0xFA8;
     const PROJECT_PROGRAM_STATUS_OFF_POOL: usize = 0x18;
+    const PROJECT_PROGRAM_STATUS_OFF_PROGRAMS: usize = 0x20;
     const PROJECT_POOL_OFF_FIRST_PROJECT: usize = 0x10;
     const PROJECT_COUNTRY_STRIDE: usize = 0x1C0;
     const MIN_PROJECTS_PER_COUNTRY: usize = 16;
     const MAX_PROJECTS_PER_COUNTRY: usize = 64;
+    const MAX_PROJECT_FACILITIES_PER_COUNTRY: usize = 64;
     const PROJECT_CHARACTER_OFF_TYPE: usize = 0x08;
     const PROJECT_CHARACTER_OFF_ID: usize = 0x0C;
     const PROJECT_CHARACTER_OFF_DISPLAY: usize = 0x28;
@@ -2957,6 +2959,13 @@ mod attach_log {
     const COMPACT_PROJECT_SCIENTIST_ROW_FLAG_DISPLAY_NAME: u32 = 1 << 1;
     const COMPACT_PROJECT_SCIENTIST_ROW_FLAG_TRAIT_COUNT: u32 = 1 << 2;
     const COMPACT_PROJECT_SCIENTIST_ROW_FLAG_SKILLS: u32 = 1 << 3;
+    #[cfg(test)]
+    const COMPACT_PROJECT_HEADER_LEN: usize = 64;
+    const COMPACT_PROJECT_HEADER_EXT_ROOT_REASON_COUNTERS: u32 = 2;
+    #[cfg(test)]
+    const COMPACT_PROJECT_ROOT_COUNTERS_LEN: usize = 24;
+    #[cfg(test)]
+    const COMPACT_PROJECT_ROOT_REASON_COUNTERS_LEN: usize = 48;
     const COMPACT_MAP_DETAIL_SAMPLE_MIN_ROWS: usize = 512;
     const COMPACT_MAP_DETAIL_SAMPLE_MAX_WORKERS: usize = 8;
     const COMPACT_POLITICS_SHARD_MIN_ROWS: usize = 96;
@@ -3207,11 +3216,20 @@ mod attach_log {
         changed_rows: u32,
         status_flags: u32,
         observed_facility_rows: u32,
+        // Emitted currently-worked project rows. Rooted CProject candidates stay
+        // cache/debug-only as project_pins and do not drive compact coverage.
         observed_project_rows: u32,
         observed_scientist_rows: u32,
         scan_ms: u64,
         bridge_rows_supplied: u32,
         source_kind: u32,
+        invalid_program_status_countries: u32,
+        invalid_facility_countries: u32,
+        invalid_project_pool_countries: u32,
+        neutral_program_status_countries: u32,
+        neutral_facility_countries: u32,
+        neutral_project_pool_countries: u32,
+        root_reasons: ProjectRootReasonCounters,
     }
 
     struct CompactAirVariantReserveRead {
@@ -11804,6 +11822,13 @@ mod attach_log {
             scan_ms: 0,
             bridge_rows_supplied: 0,
             source_kind: 0,
+            invalid_program_status_countries: 0,
+            invalid_facility_countries: 0,
+            invalid_project_pool_countries: 0,
+            neutral_program_status_countries: 0,
+            neutral_facility_countries: 0,
+            neutral_project_pool_countries: 0,
+            root_reasons: ProjectRootReasonCounters::default(),
         }
     }
 
@@ -14014,8 +14039,6 @@ mod attach_log {
             .facilities
             .len()
             .min(u32::MAX as usize) as u32;
-        let observed_project_rows =
-            state.special_projects.projects.len().min(u32::MAX as usize) as u32;
         let observed_scientist_rows = state
             .special_projects
             .scientists
@@ -14031,19 +14054,37 @@ mod attach_log {
                 changed_rows: 0,
                 status_flags: status_flags | COMPACT_STATUS_SOURCE_UNAVAILABLE,
                 observed_facility_rows,
-                observed_project_rows,
+                observed_project_rows: 0,
                 observed_scientist_rows,
                 scan_ms: state.special_projects.scan_ms,
                 bridge_rows_supplied: state.special_projects.bridge_rows_supplied,
                 source_kind,
+                invalid_program_status_countries: state
+                    .special_projects
+                    .invalid_program_status_countries,
+                invalid_facility_countries: state.special_projects.invalid_facility_countries,
+                invalid_project_pool_countries: state
+                    .special_projects
+                    .invalid_project_pool_countries,
+                neutral_program_status_countries: state
+                    .special_projects
+                    .neutral_program_status_countries,
+                neutral_facility_countries: state.special_projects.neutral_facility_countries,
+                neutral_project_pool_countries: state
+                    .special_projects
+                    .neutral_project_pool_countries,
+                root_reasons: state.special_projects.root_reasons,
             };
+        }
+        if state.special_projects.partial_country_root_count() > 0 {
+            status_flags |= COMPACT_STATUS_PARTIAL_DATA;
         }
 
         let (facilities, projects, scientists) = state.special_projects.rows(state.base);
-        let observed_project_rows = projects.len().min(u32::MAX as usize) as u32;
         if facilities.is_empty() && projects.is_empty() && scientists.is_empty() {
             status_flags |= COMPACT_STATUS_SOURCE_UNAVAILABLE;
         }
+        let observed_project_rows = projects.len().min(u32::MAX as usize) as u32;
         if facilities.len() < observed_facility_rows as usize
             || scientists.len() < observed_scientist_rows as usize
         {
@@ -14067,12 +14108,25 @@ mod attach_log {
             scan_ms: state.special_projects.scan_ms,
             bridge_rows_supplied: state.special_projects.bridge_rows_supplied,
             source_kind,
+            invalid_program_status_countries: state
+                .special_projects
+                .invalid_program_status_countries,
+            invalid_facility_countries: state.special_projects.invalid_facility_countries,
+            invalid_project_pool_countries: state.special_projects.invalid_project_pool_countries,
+            neutral_program_status_countries: state
+                .special_projects
+                .neutral_program_status_countries,
+            neutral_facility_countries: state.special_projects.neutral_facility_countries,
+            neutral_project_pool_countries: state.special_projects.neutral_project_pool_countries,
+            root_reasons: state.special_projects.root_reasons,
         }
     }
 
     fn compact_projects_source_kind(cache: &SpecialProjectsCache) -> u32 {
         match cache.status {
-            "verified" | "country_project_pool_verified" => COMPACT_PROJECT_SOURCE_SCAN,
+            "verified" | "country_project_pool_verified" | "country_project_pool_partial" => {
+                COMPACT_PROJECT_SOURCE_SCAN
+            }
             "bridge_verified" => COMPACT_PROJECT_SOURCE_BRIDGE,
             _ => 0,
         }
@@ -19601,8 +19655,81 @@ mod attach_log {
         payload.extend_from_slice(&read.observed_scientist_rows.to_le_bytes());
         payload.extend_from_slice(&read.bridge_rows_supplied.to_le_bytes());
         payload.extend_from_slice(&read.source_kind.to_le_bytes());
-        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_PROJECT_HEADER_EXT_ROOT_REASON_COUNTERS.to_le_bytes());
         payload.extend_from_slice(&read.scan_ms.to_le_bytes());
+        payload.extend_from_slice(&read.invalid_program_status_countries.to_le_bytes());
+        payload.extend_from_slice(&read.invalid_facility_countries.to_le_bytes());
+        payload.extend_from_slice(&read.invalid_project_pool_countries.to_le_bytes());
+        payload.extend_from_slice(&read.neutral_program_status_countries.to_le_bytes());
+        payload.extend_from_slice(&read.neutral_facility_countries.to_le_bytes());
+        payload.extend_from_slice(&read.neutral_project_pool_countries.to_le_bytes());
+        payload.extend_from_slice(
+            &read
+                .root_reasons
+                .invalid_facility_root_read_fail
+                .to_le_bytes(),
+        );
+        payload.extend_from_slice(
+            &read
+                .root_reasons
+                .invalid_facility_slot_read_fail
+                .to_le_bytes(),
+        );
+        payload.extend_from_slice(
+            &read
+                .root_reasons
+                .invalid_facility_candidate_vtable_read_fail
+                .to_le_bytes(),
+        );
+        payload.extend_from_slice(
+            &read
+                .root_reasons
+                .invalid_facility_candidate_sentinel_after_pin
+                .to_le_bytes(),
+        );
+        payload.extend_from_slice(
+            &read
+                .root_reasons
+                .invalid_facility_candidate_fields_invalid
+                .to_le_bytes(),
+        );
+        payload.extend_from_slice(
+            &read
+                .root_reasons
+                .invalid_project_pool_root_read_fail
+                .to_le_bytes(),
+        );
+        payload.extend_from_slice(
+            &read
+                .root_reasons
+                .invalid_project_pool_vtable_read_fail
+                .to_le_bytes(),
+        );
+        payload.extend_from_slice(
+            &read
+                .root_reasons
+                .invalid_project_pool_first_project_read_fail
+                .to_le_bytes(),
+        );
+        payload.extend_from_slice(
+            &read
+                .root_reasons
+                .invalid_project_candidate_vtable_read_fail
+                .to_le_bytes(),
+        );
+        payload.extend_from_slice(
+            &read
+                .root_reasons
+                .invalid_project_candidate_sentinel_after_pin
+                .to_le_bytes(),
+        );
+        payload.extend_from_slice(
+            &read
+                .root_reasons
+                .invalid_project_candidate_fields_invalid
+                .to_le_bytes(),
+        );
+        payload.extend_from_slice(&read.root_reasons.invalid_project_short_array.to_le_bytes());
 
         for row in &read.facilities {
             let mut flags = 0u32;
@@ -20361,6 +20488,22 @@ mod attach_log {
         char_id: u32,
     }
 
+    #[derive(Clone, Copy, Default)]
+    struct ProjectRootReasonCounters {
+        invalid_facility_root_read_fail: u32,
+        invalid_facility_slot_read_fail: u32,
+        invalid_facility_candidate_vtable_read_fail: u32,
+        invalid_facility_candidate_sentinel_after_pin: u32,
+        invalid_facility_candidate_fields_invalid: u32,
+        invalid_project_pool_root_read_fail: u32,
+        invalid_project_pool_vtable_read_fail: u32,
+        invalid_project_pool_first_project_read_fail: u32,
+        invalid_project_candidate_vtable_read_fail: u32,
+        invalid_project_candidate_sentinel_after_pin: u32,
+        invalid_project_candidate_fields_invalid: u32,
+        invalid_project_short_array: u32,
+    }
+
     #[derive(Clone)]
     struct SpecialProjectsCache {
         status: &'static str,
@@ -20370,6 +20513,20 @@ mod attach_log {
         projects: Vec<ProjectPin>,
         scientists: Vec<ProjectScientistPin>,
         too_many: bool,
+        invalid_program_status_countries: u32,
+        invalid_facility_countries: u32,
+        invalid_project_pool_countries: u32,
+        neutral_program_status_countries: u32,
+        neutral_facility_countries: u32,
+        neutral_project_pool_countries: u32,
+        root_reasons: ProjectRootReasonCounters,
+    }
+
+    enum ProjectRootRead<T> {
+        Absent,
+        Valid(T),
+        Partial(T),
+        Invalid,
     }
 
     #[derive(Clone)]
@@ -21268,6 +21425,13 @@ mod attach_log {
                 projects: Vec::new(),
                 scientists: Vec::new(),
                 too_many: false,
+                invalid_program_status_countries: 0,
+                invalid_facility_countries: 0,
+                invalid_project_pool_countries: 0,
+                neutral_program_status_countries: 0,
+                neutral_facility_countries: 0,
+                neutral_project_pool_countries: 0,
+                root_reasons: ProjectRootReasonCounters::default(),
             }
         }
 
@@ -21292,38 +21456,171 @@ mod attach_log {
             let Some(pool_vtable) = base.checked_add(PROJECT_POOL_VTABLE_RVA) else {
                 return Self::not_attempted("profile_mismatch");
             };
+            let Some(facility_vtable) = base.checked_add(PROJECT_FACILITY_VTABLE_RVA) else {
+                return Self::not_attempted("profile_mismatch");
+            };
             let Some(project_vtable) = base.checked_add(PROJECT_CPROJECT_VTABLE_RVA) else {
                 return Self::not_attempted("profile_mismatch");
             };
 
+            let mut facilities_by_addr: BTreeMap<usize, ProjectFacilityPin> = BTreeMap::new();
             let mut projects_by_addr: BTreeMap<usize, ProjectPin> = BTreeMap::new();
+            let mut invalid_program_status_countries = 0u32;
+            let mut invalid_facility_countries = 0u32;
+            let mut invalid_project_pool_countries = 0u32;
+            let mut neutral_program_status_countries = 0u32;
+            let mut neutral_facility_countries = 0u32;
+            let mut neutral_project_pool_countries = 0u32;
+            let mut root_reasons = ProjectRootReasonCounters::default();
             for country in &country_identity.rows {
-                let Some(pins) = project_pins_from_country_object(
+                let status_ptr = match program_status_from_country_object(
                     country.object_ptr,
                     status_a_vtable,
                     status_b_vtable,
+                ) {
+                    ProjectRootRead::Valid(status_ptr) => status_ptr,
+                    ProjectRootRead::Absent => {
+                        neutral_program_status_countries =
+                            neutral_program_status_countries.saturating_add(1);
+                        continue;
+                    }
+                    ProjectRootRead::Invalid | ProjectRootRead::Partial(_) => {
+                        invalid_program_status_countries =
+                            invalid_program_status_countries.saturating_add(1);
+                        continue;
+                    }
+                };
+                match facility_pins_from_program_status(
+                    status_ptr,
+                    facility_vtable,
+                    &mut root_reasons,
+                ) {
+                    ProjectRootRead::Valid(pins) => {
+                        for pin in pins {
+                            facilities_by_addr.insert(pin.addr, pin);
+                            if facilities_by_addr.len() > MAX_PROJECT_FACILITIES {
+                                return Self {
+                                    status: "too_many",
+                                    scan_ms: 0,
+                                    bridge_rows_supplied: 0,
+                                    facilities: Vec::new(),
+                                    projects: Vec::new(),
+                                    scientists: Vec::new(),
+                                    too_many: true,
+                                    invalid_program_status_countries,
+                                    invalid_facility_countries,
+                                    invalid_project_pool_countries,
+                                    neutral_program_status_countries,
+                                    neutral_facility_countries,
+                                    neutral_project_pool_countries,
+                                    root_reasons,
+                                };
+                            }
+                        }
+                    }
+                    ProjectRootRead::Partial(pins) => {
+                        invalid_facility_countries = invalid_facility_countries.saturating_add(1);
+                        for pin in pins {
+                            facilities_by_addr.insert(pin.addr, pin);
+                            if facilities_by_addr.len() > MAX_PROJECT_FACILITIES {
+                                return Self {
+                                    status: "too_many",
+                                    scan_ms: 0,
+                                    bridge_rows_supplied: 0,
+                                    facilities: Vec::new(),
+                                    projects: Vec::new(),
+                                    scientists: Vec::new(),
+                                    too_many: true,
+                                    invalid_program_status_countries,
+                                    invalid_facility_countries,
+                                    invalid_project_pool_countries,
+                                    neutral_program_status_countries,
+                                    neutral_facility_countries,
+                                    neutral_project_pool_countries,
+                                    root_reasons,
+                                };
+                            }
+                        }
+                    }
+                    ProjectRootRead::Absent => {
+                        neutral_facility_countries = neutral_facility_countries.saturating_add(1);
+                    }
+                    ProjectRootRead::Invalid => {
+                        invalid_facility_countries = invalid_facility_countries.saturating_add(1);
+                    }
+                }
+                match project_pins_from_program_status(
+                    status_ptr,
                     pool_vtable,
                     project_vtable,
-                ) else {
-                    continue;
-                };
-                for pin in pins {
-                    projects_by_addr.insert(pin.addr, pin);
-                    if projects_by_addr.len() > MAX_PROJECT_PROJECT_PINS {
-                        return Self {
-                            status: "too_many",
-                            scan_ms: 0,
-                            bridge_rows_supplied: 0,
-                            facilities: Vec::new(),
-                            projects: Vec::new(),
-                            scientists: Vec::new(),
-                            too_many: true,
-                        };
+                    &mut root_reasons,
+                ) {
+                    ProjectRootRead::Valid(pins) => {
+                        for pin in pins {
+                            projects_by_addr.insert(pin.addr, pin);
+                            if projects_by_addr.len() > MAX_PROJECT_PROJECT_PINS {
+                                return Self {
+                                    status: "too_many",
+                                    scan_ms: 0,
+                                    bridge_rows_supplied: 0,
+                                    facilities: Vec::new(),
+                                    projects: Vec::new(),
+                                    scientists: Vec::new(),
+                                    too_many: true,
+                                    invalid_program_status_countries,
+                                    invalid_facility_countries,
+                                    invalid_project_pool_countries,
+                                    neutral_program_status_countries,
+                                    neutral_facility_countries,
+                                    neutral_project_pool_countries,
+                                    root_reasons,
+                                };
+                            }
+                        }
+                    }
+                    ProjectRootRead::Partial(pins) => {
+                        invalid_project_pool_countries =
+                            invalid_project_pool_countries.saturating_add(1);
+                        for pin in pins {
+                            projects_by_addr.insert(pin.addr, pin);
+                            if projects_by_addr.len() > MAX_PROJECT_PROJECT_PINS {
+                                return Self {
+                                    status: "too_many",
+                                    scan_ms: 0,
+                                    bridge_rows_supplied: 0,
+                                    facilities: Vec::new(),
+                                    projects: Vec::new(),
+                                    scientists: Vec::new(),
+                                    too_many: true,
+                                    invalid_program_status_countries,
+                                    invalid_facility_countries,
+                                    invalid_project_pool_countries,
+                                    neutral_program_status_countries,
+                                    neutral_facility_countries,
+                                    neutral_project_pool_countries,
+                                    root_reasons,
+                                };
+                            }
+                        }
+                    }
+                    ProjectRootRead::Absent => {
+                        neutral_project_pool_countries =
+                            neutral_project_pool_countries.saturating_add(1);
+                    }
+                    ProjectRootRead::Invalid => {
+                        invalid_project_pool_countries =
+                            invalid_project_pool_countries.saturating_add(1);
                     }
                 }
             }
+            let facilities: Vec<ProjectFacilityPin> = facilities_by_addr.into_values().collect();
             let projects: Vec<ProjectPin> = projects_by_addr.into_values().collect();
-            let status = if projects.is_empty() {
+            let partial = invalid_program_status_countries > 0
+                || invalid_facility_countries > 0
+                || invalid_project_pool_countries > 0;
+            let status = if partial {
+                "country_project_pool_partial"
+            } else if facilities.is_empty() && projects.is_empty() {
                 "country_project_pool_empty"
             } else {
                 "country_project_pool_verified"
@@ -21332,10 +21629,17 @@ mod attach_log {
                 status,
                 scan_ms: 0,
                 bridge_rows_supplied: 0,
-                facilities: Vec::new(),
+                facilities,
                 projects,
                 scientists: Vec::new(),
                 too_many: false,
+                invalid_program_status_countries,
+                invalid_facility_countries,
+                invalid_project_pool_countries,
+                neutral_program_status_countries,
+                neutral_facility_countries,
+                neutral_project_pool_countries,
+                root_reasons,
             }
         }
 
@@ -21355,6 +21659,13 @@ mod attach_log {
                     projects: Vec::new(),
                     scientists: Vec::new(),
                     too_many: false,
+                    invalid_program_status_countries: 0,
+                    invalid_facility_countries: 0,
+                    invalid_project_pool_countries: 0,
+                    neutral_program_status_countries: 0,
+                    neutral_facility_countries: 0,
+                    neutral_project_pool_countries: 0,
+                    root_reasons: ProjectRootReasonCounters::default(),
                 };
             }
             if hits.too_many {
@@ -21366,6 +21677,13 @@ mod attach_log {
                     projects: Vec::new(),
                     scientists: Vec::new(),
                     too_many: true,
+                    invalid_program_status_countries: 0,
+                    invalid_facility_countries: 0,
+                    invalid_project_pool_countries: 0,
+                    neutral_program_status_countries: 0,
+                    neutral_facility_countries: 0,
+                    neutral_project_pool_countries: 0,
+                    root_reasons: ProjectRootReasonCounters::default(),
                 };
             }
             let facility_vtable = base.saturating_add(PROJECT_FACILITY_VTABLE_RVA);
@@ -21403,6 +21721,13 @@ mod attach_log {
                 projects,
                 scientists,
                 too_many: false,
+                invalid_program_status_countries: 0,
+                invalid_facility_countries: 0,
+                invalid_project_pool_countries: 0,
+                neutral_program_status_countries: 0,
+                neutral_facility_countries: 0,
+                neutral_project_pool_countries: 0,
+                root_reasons: ProjectRootReasonCounters::default(),
             }
         }
 
@@ -21465,6 +21790,13 @@ mod attach_log {
                 projects,
                 scientists,
                 too_many: false,
+                invalid_program_status_countries: 0,
+                invalid_facility_countries: 0,
+                invalid_project_pool_countries: 0,
+                neutral_program_status_countries: 0,
+                neutral_facility_countries: 0,
+                neutral_project_pool_countries: 0,
+                root_reasons: ProjectRootReasonCounters::default(),
             }
         }
 
@@ -21478,7 +21810,10 @@ mod attach_log {
         ) {
             if !matches!(
                 self.status,
-                "verified" | "bridge_verified" | "country_project_pool_verified"
+                "verified"
+                    | "bridge_verified"
+                    | "country_project_pool_verified"
+                    | "country_project_pool_partial"
             ) || self.too_many
             {
                 return (Vec::new(), Vec::new(), Vec::new());
@@ -21520,19 +21855,37 @@ mod attach_log {
             (facilities, projects, scientists)
         }
 
+        fn partial_country_root_count(&self) -> u32 {
+            self.invalid_program_status_countries
+                .saturating_add(self.invalid_facility_countries)
+                .saturating_add(self.invalid_project_pool_countries)
+        }
+
         fn root_json(&self) -> String {
             format!(
                 "\"special_projects_identity\":{{\"status\":\"{}\",\
                  \"scan_ms\":{},\"bridge_rows_supplied\":{},\
                  \"facility_pins\":{},\"project_pins\":{},\
-                 \"scientist_pins\":{},\"too_many\":{}}}",
+                 \"scientist_pins\":{},\"too_many\":{},\
+                 \"invalid_program_status_countries\":{},\
+                 \"invalid_facility_countries\":{},\
+                 \"invalid_project_pool_countries\":{},\
+                 \"neutral_program_status_countries\":{},\
+                 \"neutral_facility_countries\":{},\
+                 \"neutral_project_pool_countries\":{}}}",
                 self.status,
                 self.scan_ms,
                 self.bridge_rows_supplied,
                 self.facilities.len(),
                 self.projects.len(),
                 self.scientists.len(),
-                self.too_many
+                self.too_many,
+                self.invalid_program_status_countries,
+                self.invalid_facility_countries,
+                self.invalid_project_pool_countries,
+                self.neutral_program_status_countries,
+                self.neutral_facility_countries,
+                self.neutral_project_pool_countries
             )
         }
     }
@@ -21687,47 +22040,234 @@ mod attach_log {
         Some(ProjectScientistPin { addr, char_id })
     }
 
-    fn project_pins_from_country_object(
+    fn program_status_from_country_object(
         country_ptr: usize,
         status_a_vtable: usize,
         status_b_vtable: usize,
+    ) -> ProjectRootRead<usize> {
+        if !is_map_control_heap_pointer(country_ptr) {
+            return ProjectRootRead::Invalid;
+        }
+        let Some(status_addr) = country_ptr.checked_add(COUNTRY_OFF_PROGRAM_STATUS) else {
+            return ProjectRootRead::Invalid;
+        };
+        let Some(status_ptr) = read_u64(status_addr).map(|value| value as usize) else {
+            return ProjectRootRead::Invalid;
+        };
+        if status_ptr == 0 {
+            return ProjectRootRead::Absent;
+        }
+        if !is_map_control_heap_pointer(status_ptr) {
+            return ProjectRootRead::Invalid;
+        }
+        let Some(primary_vtable) = read_u64(status_ptr).map(|value| value as usize) else {
+            return ProjectRootRead::Invalid;
+        };
+        let Some(secondary_addr) = status_ptr.checked_add(8) else {
+            return ProjectRootRead::Invalid;
+        };
+        let Some(secondary_vtable) = read_u64(secondary_addr).map(|value| value as usize) else {
+            return ProjectRootRead::Invalid;
+        };
+        if primary_vtable != status_a_vtable || secondary_vtable != status_b_vtable {
+            return ProjectRootRead::Invalid;
+        }
+        ProjectRootRead::Valid(status_ptr)
+    }
+
+    fn facility_pins_from_program_status(
+        status_ptr: usize,
+        facility_vtable: usize,
+        root_reasons: &mut ProjectRootReasonCounters,
+    ) -> ProjectRootRead<Vec<ProjectFacilityPin>> {
+        let Some(programs_addr) = status_ptr.checked_add(PROJECT_PROGRAM_STATUS_OFF_PROGRAMS)
+        else {
+            root_reasons.invalid_facility_root_read_fail = root_reasons
+                .invalid_facility_root_read_fail
+                .saturating_add(1);
+            return ProjectRootRead::Invalid;
+        };
+        let Some(program_ptrs) = read_u64(programs_addr).map(|value| value as usize) else {
+            root_reasons.invalid_facility_root_read_fail = root_reasons
+                .invalid_facility_root_read_fail
+                .saturating_add(1);
+            return ProjectRootRead::Invalid;
+        };
+        if program_ptrs == 0 {
+            return ProjectRootRead::Absent;
+        }
+        if !is_map_control_heap_pointer(program_ptrs) {
+            return ProjectRootRead::Absent;
+        }
+        let mut pins = Vec::new();
+        for index in 0..MAX_PROJECT_FACILITIES_PER_COUNTRY {
+            let Some(offset) = index.checked_mul(8) else {
+                root_reasons.invalid_facility_slot_read_fail = root_reasons
+                    .invalid_facility_slot_read_fail
+                    .saturating_add(1);
+                return project_root_partial_or_invalid(pins);
+            };
+            let Some(slot) = program_ptrs.checked_add(offset) else {
+                root_reasons.invalid_facility_slot_read_fail = root_reasons
+                    .invalid_facility_slot_read_fail
+                    .saturating_add(1);
+                return project_root_partial_or_invalid(pins);
+            };
+            let Some(addr) = read_u64(slot).map(|value| value as usize) else {
+                root_reasons.invalid_facility_slot_read_fail = root_reasons
+                    .invalid_facility_slot_read_fail
+                    .saturating_add(1);
+                return project_root_partial_or_invalid(pins);
+            };
+            if addr == 0 {
+                return if pins.is_empty() {
+                    ProjectRootRead::Absent
+                } else {
+                    ProjectRootRead::Valid(pins)
+                };
+            }
+            if !is_map_control_heap_pointer(addr) {
+                return if pins.is_empty() {
+                    ProjectRootRead::Absent
+                } else {
+                    ProjectRootRead::Valid(pins)
+                };
+            }
+            let Some(vtable) = read_u64(addr).map(|value| value as usize) else {
+                root_reasons.invalid_facility_candidate_vtable_read_fail = root_reasons
+                    .invalid_facility_candidate_vtable_read_fail
+                    .saturating_add(1);
+                return project_root_partial_or_invalid(pins);
+            };
+            if vtable != facility_vtable {
+                return if pins.is_empty() {
+                    ProjectRootRead::Absent
+                } else {
+                    ProjectRootRead::Valid(pins)
+                };
+            }
+            let Some(pin) = project_facility_pin(addr, facility_vtable) else {
+                root_reasons.invalid_facility_candidate_fields_invalid = root_reasons
+                    .invalid_facility_candidate_fields_invalid
+                    .saturating_add(1);
+                return project_root_partial_or_invalid(pins);
+            };
+            pins.push(pin);
+        }
+        if pins.is_empty() {
+            ProjectRootRead::Absent
+        } else {
+            ProjectRootRead::Valid(pins)
+        }
+    }
+
+    fn project_pins_from_program_status(
+        status_ptr: usize,
         pool_vtable: usize,
         project_vtable: usize,
-    ) -> Option<Vec<ProjectPin>> {
-        if !is_map_control_heap_pointer(country_ptr) {
-            return None;
+        root_reasons: &mut ProjectRootReasonCounters,
+    ) -> ProjectRootRead<Vec<ProjectPin>> {
+        let Some(pool_addr) = status_ptr.checked_add(PROJECT_PROGRAM_STATUS_OFF_POOL) else {
+            root_reasons.invalid_project_pool_root_read_fail = root_reasons
+                .invalid_project_pool_root_read_fail
+                .saturating_add(1);
+            return ProjectRootRead::Invalid;
+        };
+        let Some(pool_ptr) = read_u64(pool_addr).map(|value| value as usize) else {
+            root_reasons.invalid_project_pool_root_read_fail = root_reasons
+                .invalid_project_pool_root_read_fail
+                .saturating_add(1);
+            return ProjectRootRead::Invalid;
+        };
+        if pool_ptr == 0 {
+            return ProjectRootRead::Absent;
         }
-        let status_ptr = read_u64(country_ptr.checked_add(COUNTRY_OFF_PROGRAM_STATUS)?)? as usize;
-        if !is_map_control_heap_pointer(status_ptr)
-            || read_u64(status_ptr)? as usize != status_a_vtable
-            || read_u64(status_ptr.checked_add(8)?)? as usize != status_b_vtable
-        {
-            return None;
+        if !is_map_control_heap_pointer(pool_ptr) {
+            return ProjectRootRead::Absent;
         }
-        let pool_ptr = read_u64(status_ptr.checked_add(PROJECT_PROGRAM_STATUS_OFF_POOL)?)? as usize;
-        if !is_map_control_heap_pointer(pool_ptr) || read_u64(pool_ptr)? as usize != pool_vtable {
-            return None;
+        let Some(pool_vtable_actual) = read_u64(pool_ptr).map(|value| value as usize) else {
+            root_reasons.invalid_project_pool_vtable_read_fail = root_reasons
+                .invalid_project_pool_vtable_read_fail
+                .saturating_add(1);
+            return ProjectRootRead::Invalid;
+        };
+        if pool_vtable_actual != pool_vtable {
+            return ProjectRootRead::Absent;
         }
-        let first_project =
-            read_u64(pool_ptr.checked_add(PROJECT_POOL_OFF_FIRST_PROJECT)?)? as usize;
+        let Some(first_addr) = pool_ptr.checked_add(PROJECT_POOL_OFF_FIRST_PROJECT) else {
+            root_reasons.invalid_project_pool_first_project_read_fail = root_reasons
+                .invalid_project_pool_first_project_read_fail
+                .saturating_add(1);
+            return ProjectRootRead::Invalid;
+        };
+        let Some(first_project) = read_u64(first_addr).map(|value| value as usize) else {
+            root_reasons.invalid_project_pool_first_project_read_fail = root_reasons
+                .invalid_project_pool_first_project_read_fail
+                .saturating_add(1);
+            return ProjectRootRead::Invalid;
+        };
+        if first_project == 0 {
+            return ProjectRootRead::Absent;
+        }
         if !is_map_control_heap_pointer(first_project) {
-            return None;
+            return ProjectRootRead::Absent;
         }
         let mut pins = Vec::new();
         for index in 0..MAX_PROJECTS_PER_COUNTRY {
-            let Some(addr) = first_project.checked_add(index.checked_mul(PROJECT_COUNTRY_STRIDE)?)
-            else {
-                break;
+            let Some(offset) = index.checked_mul(PROJECT_COUNTRY_STRIDE) else {
+                root_reasons.invalid_project_candidate_vtable_read_fail = root_reasons
+                    .invalid_project_candidate_vtable_read_fail
+                    .saturating_add(1);
+                return project_root_partial_or_invalid(pins);
             };
+            let Some(addr) = first_project.checked_add(offset) else {
+                root_reasons.invalid_project_candidate_vtable_read_fail = root_reasons
+                    .invalid_project_candidate_vtable_read_fail
+                    .saturating_add(1);
+                return project_root_partial_or_invalid(pins);
+            };
+            let Some(vtable) = read_u64(addr).map(|value| value as usize) else {
+                root_reasons.invalid_project_candidate_vtable_read_fail = root_reasons
+                    .invalid_project_candidate_vtable_read_fail
+                    .saturating_add(1);
+                return project_root_partial_or_invalid(pins);
+            };
+            if vtable == 0 {
+                return if pins.is_empty() {
+                    ProjectRootRead::Absent
+                } else {
+                    ProjectRootRead::Valid(pins)
+                };
+            }
+            if vtable != project_vtable {
+                return if pins.is_empty() {
+                    ProjectRootRead::Absent
+                } else {
+                    ProjectRootRead::Valid(pins)
+                };
+            }
             let Some(pin) = project_pin(addr, project_vtable) else {
-                break;
+                root_reasons.invalid_project_candidate_fields_invalid = root_reasons
+                    .invalid_project_candidate_fields_invalid
+                    .saturating_add(1);
+                return project_root_partial_or_invalid(pins);
             };
             pins.push(pin);
         }
         if pins.len() < MIN_PROJECTS_PER_COUNTRY {
-            return None;
+            root_reasons.invalid_project_short_array =
+                root_reasons.invalid_project_short_array.saturating_add(1);
+            return project_root_partial_or_invalid(pins);
         }
-        Some(pins)
+        ProjectRootRead::Valid(pins)
+    }
+
+    fn project_root_partial_or_invalid<T>(pins: Vec<T>) -> ProjectRootRead<Vec<T>> {
+        if pins.is_empty() {
+            ProjectRootRead::Invalid
+        } else {
+            ProjectRootRead::Partial(pins)
+        }
     }
 
     fn write_sinks(file: Option<&mut std::fs::File>, pipe: Option<Handle>, bytes: &[u8]) {
@@ -21834,7 +22374,7 @@ mod attach_log {
         let active = active_flag == 1
             && raw_active_project_handle > 0
             && raw_active_project_handle <= MAX_PROJECT_HANDLE;
-        if active_flag != 0 && !active && raw_active_project_handle <= MAX_PROJECT_HANDLE {
+        if active_flag == 1 && !active {
             return None;
         }
         let active_project_handle = if active { raw_active_project_handle } else { 0 };
@@ -27580,6 +28120,29 @@ mod attach_log {
         use super::*;
         use std::fs;
 
+        #[repr(align(8))]
+        struct AlignedBytes<const N: usize> {
+            bytes: [u8; N],
+        }
+
+        impl<const N: usize> AlignedBytes<N> {
+            fn new() -> Box<Self> {
+                Box::new(Self { bytes: [0u8; N] })
+            }
+
+            fn addr(&self) -> usize {
+                self.bytes.as_ptr() as usize
+            }
+
+            fn write_u64(&mut self, offset: usize, value: u64) {
+                self.bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+            }
+
+            fn write_u32(&mut self, offset: usize, value: u32) {
+                self.bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+
         fn raw_test_control() -> CollectorControl {
             CollectorControl {
                 duration_ms: 8000,
@@ -28947,6 +29510,26 @@ mod attach_log {
                 scan_ms: 77,
                 bridge_rows_supplied: 0,
                 source_kind: COMPACT_PROJECT_SOURCE_SCAN,
+                invalid_program_status_countries: 5,
+                invalid_facility_countries: 6,
+                invalid_project_pool_countries: 7,
+                neutral_program_status_countries: 8,
+                neutral_facility_countries: 9,
+                neutral_project_pool_countries: 10,
+                root_reasons: ProjectRootReasonCounters {
+                    invalid_facility_root_read_fail: 11,
+                    invalid_facility_slot_read_fail: 12,
+                    invalid_facility_candidate_vtable_read_fail: 13,
+                    invalid_facility_candidate_sentinel_after_pin: 14,
+                    invalid_facility_candidate_fields_invalid: 15,
+                    invalid_project_pool_root_read_fail: 16,
+                    invalid_project_pool_vtable_read_fail: 17,
+                    invalid_project_pool_first_project_read_fail: 18,
+                    invalid_project_candidate_vtable_read_fail: 19,
+                    invalid_project_candidate_sentinel_after_pin: 20,
+                    invalid_project_candidate_fields_invalid: 21,
+                    invalid_project_short_array: 22,
+                },
             };
             let payload = compact_projects_data_payload(&read, 96);
 
@@ -28960,26 +29543,54 @@ mod attach_log {
             assert_eq!(u32::from_le_bytes(payload[20..24].try_into().unwrap()), 1);
             assert_eq!(u32::from_le_bytes(payload[24..28].try_into().unwrap()), 1);
             assert_eq!(u32::from_le_bytes(payload[28..32].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[32..36].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[36..40].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[40..44].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(payload[52..56].try_into().unwrap()), 2);
             assert_eq!(u64::from_le_bytes(payload[56..64].try_into().unwrap()), 77);
-            assert_eq!(u32::from_le_bytes(payload[64..68].try_into().unwrap()), 118);
-            assert_eq!(u32::from_le_bytes(payload[68..72].try_into().unwrap()), 341);
+            assert_eq!(u32::from_le_bytes(payload[64..68].try_into().unwrap()), 5);
+            assert_eq!(u32::from_le_bytes(payload[68..72].try_into().unwrap()), 6);
+            assert_eq!(u32::from_le_bytes(payload[72..76].try_into().unwrap()), 7);
+            assert_eq!(u32::from_le_bytes(payload[76..80].try_into().unwrap()), 8);
+            assert_eq!(u32::from_le_bytes(payload[80..84].try_into().unwrap()), 9);
+            assert_eq!(u32::from_le_bytes(payload[84..88].try_into().unwrap()), 10);
+            for (index, expected) in (11u32..=22).enumerate() {
+                let start = 88 + index * 4;
+                assert_eq!(
+                    u32::from_le_bytes(payload[start..start + 4].try_into().unwrap()),
+                    expected
+                );
+            }
             assert_eq!(
-                u32::from_le_bytes(payload[72..76].try_into().unwrap()),
+                u32::from_le_bytes(payload[136..140].try_into().unwrap()),
+                118
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[140..144].try_into().unwrap()),
+                341
+            );
+            assert_eq!(
+                u32::from_le_bytes(payload[144..148].try_into().unwrap()),
                 COMPACT_PROJECT_FACILITY_ROW_FLAG_ACTIVE
                     | COMPACT_PROJECT_FACILITY_ROW_FLAG_SCIENTIST
                     | COMPACT_PROJECT_FACILITY_ROW_FLAG_BUILDING
             );
             assert_eq!(
-                u32::from_le_bytes(payload[96..100].try_into().unwrap()),
+                u32::from_le_bytes(payload[168..172].try_into().unwrap()),
                 91_234
             );
             assert_eq!(
-                u32::from_le_bytes(payload[120..124].try_into().unwrap()),
+                u32::from_le_bytes(payload[192..196].try_into().unwrap()),
                 44
             );
-            assert_eq!(u32::from_le_bytes(payload[128..132].try_into().unwrap()), 3);
-            assert_eq!(i32::from_le_bytes(payload[132..136].try_into().unwrap()), 4);
-            let string_start = 64 + 32 + 24 + 32;
+            assert_eq!(u32::from_le_bytes(payload[200..204].try_into().unwrap()), 3);
+            assert_eq!(i32::from_le_bytes(payload[204..208].try_into().unwrap()), 4);
+            let string_start = COMPACT_PROJECT_HEADER_LEN
+                + COMPACT_PROJECT_ROOT_COUNTERS_LEN
+                + COMPACT_PROJECT_ROOT_REASON_COUNTERS_LEN
+                + 32
+                + 24
+                + 32;
             assert_eq!(
                 u16::from_le_bytes(payload[string_start..string_start + 2].try_into().unwrap()),
                 19
@@ -32999,12 +33610,390 @@ mod attach_log {
                 }],
                 scientists: Vec::new(),
                 too_many: false,
+                invalid_program_status_countries: 0,
+                invalid_facility_countries: 0,
+                invalid_project_pool_countries: 0,
+                neutral_program_status_countries: 0,
+                neutral_facility_countries: 0,
+                neutral_project_pool_countries: 0,
+                root_reasons: ProjectRootReasonCounters::default(),
             };
 
             assert_eq!(
                 compact_projects_source_kind(&cache),
                 COMPACT_PROJECT_SOURCE_SCAN
             );
+        }
+
+        #[test]
+        fn compact_projects_partials_country_project_pool_root_failures() {
+            let state = CollectorState {
+                base: 0,
+                daily_addr: 0,
+                long_string_addr: 0,
+                daily_match: true,
+                long_string_match: true,
+                date_ptr: 0,
+                country_database_ptr: 0,
+                country_identity: CountryIdentityCache::not_attempted("test"),
+                special_projects: SpecialProjectsCache {
+                    status: "country_project_pool_partial",
+                    scan_ms: 0,
+                    bridge_rows_supplied: 0,
+                    facilities: Vec::new(),
+                    projects: Vec::new(),
+                    scientists: Vec::new(),
+                    too_many: false,
+                    invalid_program_status_countries: 1,
+                    invalid_facility_countries: 0,
+                    invalid_project_pool_countries: 1,
+                    neutral_program_status_countries: 0,
+                    neutral_facility_countries: 3,
+                    neutral_project_pool_countries: 4,
+                    root_reasons: ProjectRootReasonCounters::default(),
+                },
+                weather: CompactWeatherRoot::default(),
+            };
+
+            let read = read_compact_projects(&state, COMPACT_STATUS_EXTRACTION_PERF_GATE);
+
+            assert_ne!(read.status_flags & COMPACT_STATUS_PARTIAL_DATA, 0);
+            assert_ne!(read.status_flags & COMPACT_STATUS_SOURCE_UNAVAILABLE, 0);
+            assert_eq!(read.observed_project_rows, 0);
+            assert_eq!(read.changed_rows, 0);
+            assert!(state
+                .special_projects
+                .root_json()
+                .contains("\"invalid_program_status_countries\":1"));
+            assert!(state
+                .special_projects
+                .root_json()
+                .contains("\"invalid_project_pool_countries\":1"));
+        }
+
+        #[test]
+        fn compact_projects_neutral_country_project_pool_absence_does_not_partial() {
+            let state = CollectorState {
+                base: 0,
+                daily_addr: 0,
+                long_string_addr: 0,
+                daily_match: true,
+                long_string_match: true,
+                date_ptr: 0,
+                country_database_ptr: 0,
+                country_identity: CountryIdentityCache::not_attempted("test"),
+                special_projects: SpecialProjectsCache {
+                    status: "country_project_pool_empty",
+                    scan_ms: 0,
+                    bridge_rows_supplied: 0,
+                    facilities: Vec::new(),
+                    projects: Vec::new(),
+                    scientists: Vec::new(),
+                    too_many: false,
+                    invalid_program_status_countries: 0,
+                    invalid_facility_countries: 0,
+                    invalid_project_pool_countries: 0,
+                    neutral_program_status_countries: 5,
+                    neutral_facility_countries: 7,
+                    neutral_project_pool_countries: 7,
+                    root_reasons: ProjectRootReasonCounters::default(),
+                },
+                weather: CompactWeatherRoot::default(),
+            };
+
+            let read = read_compact_projects(&state, COMPACT_STATUS_EXTRACTION_PERF_GATE);
+
+            assert_eq!(state.special_projects.partial_country_root_count(), 0);
+            assert_eq!(read.status_flags & COMPACT_STATUS_PARTIAL_DATA, 0);
+            assert_ne!(read.status_flags & COMPACT_STATUS_SOURCE_UNAVAILABLE, 0);
+            assert!(state
+                .special_projects
+                .root_json()
+                .contains("\"neutral_program_status_countries\":5"));
+            assert!(state
+                .special_projects
+                .root_json()
+                .contains("\"neutral_facility_countries\":7"));
+            assert!(state
+                .special_projects
+                .root_json()
+                .contains("\"neutral_project_pool_countries\":7"));
+        }
+
+        #[test]
+        fn compact_projects_empty_sentinel_roots_are_neutral_before_first_pin() {
+            let facility_vtable = HEAP_LO + 0x1000;
+            let pool_vtable = HEAP_LO + 0x2000;
+            let project_vtable = HEAP_LO + 0x3000;
+            let sentinel_vtable = HEAP_LO + 0x4000;
+            let mut status = AlignedBytes::<0x40>::new();
+            let mut program_slots = AlignedBytes::<0x10>::new();
+            let mut facility_sentinel = AlignedBytes::<0x20>::new();
+            let mut pool = AlignedBytes::<0x20>::new();
+            let mut project_sentinel = AlignedBytes::<0x20>::new();
+            assert!(is_map_control_heap_pointer(status.addr()));
+            assert!(is_map_control_heap_pointer(program_slots.addr()));
+            assert!(is_map_control_heap_pointer(facility_sentinel.addr()));
+            assert!(is_map_control_heap_pointer(pool.addr()));
+            assert!(is_map_control_heap_pointer(project_sentinel.addr()));
+
+            let mut root_reasons = ProjectRootReasonCounters::default();
+            status.write_u64(PROJECT_PROGRAM_STATUS_OFF_PROGRAMS, 1);
+            match facility_pins_from_program_status(
+                status.addr(),
+                facility_vtable,
+                &mut root_reasons,
+            ) {
+                ProjectRootRead::Absent => {}
+                _ => panic!("facility root sentinel pointer should be neutral"),
+            }
+            facility_sentinel.write_u64(0, sentinel_vtable as u64);
+            program_slots.write_u64(0, facility_sentinel.addr() as u64);
+            status.write_u64(
+                PROJECT_PROGRAM_STATUS_OFF_PROGRAMS,
+                program_slots.addr() as u64,
+            );
+            match facility_pins_from_program_status(
+                status.addr(),
+                facility_vtable,
+                &mut root_reasons,
+            ) {
+                ProjectRootRead::Absent => {}
+                _ => panic!("facility sentinel before first pin should be neutral"),
+            }
+
+            status.write_u64(PROJECT_PROGRAM_STATUS_OFF_POOL, 1);
+            match project_pins_from_program_status(
+                status.addr(),
+                pool_vtable,
+                project_vtable,
+                &mut root_reasons,
+            ) {
+                ProjectRootRead::Absent => {}
+                _ => panic!("project pool root sentinel pointer should be neutral"),
+            }
+            pool.write_u64(0, sentinel_vtable as u64);
+            status.write_u64(PROJECT_PROGRAM_STATUS_OFF_POOL, pool.addr() as u64);
+            match project_pins_from_program_status(
+                status.addr(),
+                pool_vtable,
+                project_vtable,
+                &mut root_reasons,
+            ) {
+                ProjectRootRead::Absent => {}
+                _ => panic!("project pool root sentinel vtable should be neutral"),
+            }
+            project_sentinel.write_u64(0, sentinel_vtable as u64);
+            pool.write_u64(0, pool_vtable as u64);
+            pool.write_u64(
+                PROJECT_POOL_OFF_FIRST_PROJECT,
+                project_sentinel.addr() as u64,
+            );
+            status.write_u64(PROJECT_PROGRAM_STATUS_OFF_POOL, pool.addr() as u64);
+            match project_pins_from_program_status(
+                status.addr(),
+                pool_vtable,
+                project_vtable,
+                &mut root_reasons,
+            ) {
+                ProjectRootRead::Absent => {}
+                _ => panic!("project pool sentinel before first pin should be neutral"),
+            }
+            assert_eq!(root_reasons.invalid_facility_root_read_fail, 0);
+            assert_eq!(
+                root_reasons.invalid_facility_candidate_sentinel_after_pin,
+                0
+            );
+            assert_eq!(root_reasons.invalid_project_pool_root_read_fail, 0);
+            assert_eq!(root_reasons.invalid_project_candidate_sentinel_after_pin, 0);
+        }
+
+        #[test]
+        fn compact_projects_populated_roots_accept_later_sentinel_terminator() {
+            const PROJECT_TEST_BYTES: usize = PROJECT_COUNTRY_STRIDE * 2 + 0x80;
+            let facility_vtable = HEAP_LO + 0x1000;
+            let pool_vtable = HEAP_LO + 0x2000;
+            let project_vtable = HEAP_LO + 0x3000;
+            let sentinel_vtable = HEAP_LO + 0x4000;
+            let mut status = AlignedBytes::<0x40>::new();
+            let mut program_slots = AlignedBytes::<0x18>::new();
+            let mut facility = AlignedBytes::<0x200>::new();
+            let mut facility_sentinel = AlignedBytes::<0x20>::new();
+            let mut pool = AlignedBytes::<0x20>::new();
+            let mut project_array = AlignedBytes::<PROJECT_TEST_BYTES>::new();
+            assert!(is_map_control_heap_pointer(status.addr()));
+            assert!(is_map_control_heap_pointer(program_slots.addr()));
+            assert!(is_map_control_heap_pointer(facility.addr()));
+            assert!(is_map_control_heap_pointer(facility_sentinel.addr()));
+            assert!(is_map_control_heap_pointer(pool.addr()));
+            assert!(is_map_control_heap_pointer(project_array.addr()));
+
+            let mut root_reasons = ProjectRootReasonCounters::default();
+            facility.write_u64(0, facility_vtable as u64);
+            facility.write_u32(PROJECT_FACILITY_OFF_TYPE, PROJECT_FACILITY_TYPE);
+            facility.write_u32(PROJECT_FACILITY_OFF_ID, 118);
+            facility.write_u32(PROJECT_FACILITY_OFF_PROVINCE, 341);
+            facility_sentinel.write_u64(0, sentinel_vtable as u64);
+            program_slots.write_u64(0, facility.addr() as u64);
+            program_slots.write_u64(8, facility_sentinel.addr() as u64);
+            status.write_u64(
+                PROJECT_PROGRAM_STATUS_OFF_PROGRAMS,
+                program_slots.addr() as u64,
+            );
+            match facility_pins_from_program_status(
+                status.addr(),
+                facility_vtable,
+                &mut root_reasons,
+            ) {
+                ProjectRootRead::Valid(pins) => {
+                    assert_eq!(pins.len(), 1);
+                    assert_eq!(pins[0].facility_id, 118);
+                }
+                _ => panic!("facility sentinel after a valid pin should terminate normally"),
+            }
+
+            project_array.write_u64(0, project_vtable as u64);
+            project_array.write_u32(PROJECT_PROJECT_OFF_TYPE, PROJECT_PROJECT_TYPE);
+            project_array.write_u32(PROJECT_PROJECT_OFF_ID, 77);
+            project_array.write_u32(PROJECT_PROJECT_OFF_DEF_HANDLE, 9001);
+            project_array.write_u64(PROJECT_COUNTRY_STRIDE, sentinel_vtable as u64);
+            pool.write_u64(0, pool_vtable as u64);
+            pool.write_u64(PROJECT_POOL_OFF_FIRST_PROJECT, project_array.addr() as u64);
+            status.write_u64(PROJECT_PROGRAM_STATUS_OFF_POOL, pool.addr() as u64);
+            match project_pins_from_program_status(
+                status.addr(),
+                pool_vtable,
+                project_vtable,
+                &mut root_reasons,
+            ) {
+                ProjectRootRead::Valid(pins) => {
+                    assert_eq!(pins.len(), 1);
+                    assert_eq!(pins[0].project_id, 77);
+                }
+                _ => panic!("project sentinel after a valid pin should terminate normally"),
+            }
+            assert_eq!(
+                root_reasons.invalid_facility_candidate_sentinel_after_pin,
+                0
+            );
+            assert_eq!(root_reasons.invalid_project_candidate_sentinel_after_pin, 0);
+        }
+
+        #[test]
+        fn compact_projects_matched_vtable_bad_fields_after_pin_stay_partial() {
+            const PROJECT_TEST_BYTES: usize = PROJECT_COUNTRY_STRIDE * 2 + 0x80;
+            let facility_vtable = HEAP_LO + 0x1000;
+            let pool_vtable = HEAP_LO + 0x2000;
+            let project_vtable = HEAP_LO + 0x3000;
+            let mut status = AlignedBytes::<0x40>::new();
+            let mut program_slots = AlignedBytes::<0x18>::new();
+            let mut facility = AlignedBytes::<0x200>::new();
+            let mut bad_facility = AlignedBytes::<0x200>::new();
+            let mut pool = AlignedBytes::<0x20>::new();
+            let mut project_array = AlignedBytes::<PROJECT_TEST_BYTES>::new();
+            let mut root_reasons = ProjectRootReasonCounters::default();
+            assert!(is_map_control_heap_pointer(status.addr()));
+            assert!(is_map_control_heap_pointer(program_slots.addr()));
+            assert!(is_map_control_heap_pointer(facility.addr()));
+            assert!(is_map_control_heap_pointer(bad_facility.addr()));
+            assert!(is_map_control_heap_pointer(pool.addr()));
+            assert!(is_map_control_heap_pointer(project_array.addr()));
+
+            facility.write_u64(0, facility_vtable as u64);
+            facility.write_u32(PROJECT_FACILITY_OFF_TYPE, PROJECT_FACILITY_TYPE);
+            facility.write_u32(PROJECT_FACILITY_OFF_ID, 118);
+            facility.write_u32(PROJECT_FACILITY_OFF_PROVINCE, 341);
+            bad_facility.write_u64(0, facility_vtable as u64);
+            program_slots.write_u64(0, facility.addr() as u64);
+            program_slots.write_u64(8, bad_facility.addr() as u64);
+            status.write_u64(
+                PROJECT_PROGRAM_STATUS_OFF_PROGRAMS,
+                program_slots.addr() as u64,
+            );
+            match facility_pins_from_program_status(
+                status.addr(),
+                facility_vtable,
+                &mut root_reasons,
+            ) {
+                ProjectRootRead::Partial(pins) => {
+                    assert_eq!(pins.len(), 1);
+                    assert_eq!(pins[0].facility_id, 118);
+                }
+                _ => panic!("matched facility vtable with bad fields after pin should be partial"),
+            }
+
+            project_array.write_u64(0, project_vtable as u64);
+            project_array.write_u32(PROJECT_PROJECT_OFF_TYPE, PROJECT_PROJECT_TYPE);
+            project_array.write_u32(PROJECT_PROJECT_OFF_ID, 77);
+            project_array.write_u32(PROJECT_PROJECT_OFF_DEF_HANDLE, 9001);
+            project_array.write_u64(PROJECT_COUNTRY_STRIDE, project_vtable as u64);
+            pool.write_u64(0, pool_vtable as u64);
+            pool.write_u64(PROJECT_POOL_OFF_FIRST_PROJECT, project_array.addr() as u64);
+            status.write_u64(PROJECT_PROGRAM_STATUS_OFF_POOL, pool.addr() as u64);
+            match project_pins_from_program_status(
+                status.addr(),
+                pool_vtable,
+                project_vtable,
+                &mut root_reasons,
+            ) {
+                ProjectRootRead::Partial(pins) => {
+                    assert_eq!(pins.len(), 1);
+                    assert_eq!(pins[0].project_id, 77);
+                }
+                _ => panic!("matched project vtable with bad fields after pin should be partial"),
+            }
+            assert_eq!(root_reasons.invalid_facility_candidate_fields_invalid, 1);
+            assert_eq!(root_reasons.invalid_project_candidate_fields_invalid, 1);
+        }
+
+        #[test]
+        fn compact_projects_candidate_pins_do_not_inflate_observed_project_rows() {
+            let candidate_projects = (0..128)
+                .map(|index| ProjectPin {
+                    addr: index * 8,
+                    project_id: index as u32 + 1,
+                    static_def_handle: index as u32 + 10_000,
+                })
+                .collect::<Vec<_>>();
+            let state = CollectorState {
+                base: 0,
+                daily_addr: 0,
+                long_string_addr: 0,
+                daily_match: true,
+                long_string_match: true,
+                date_ptr: 0,
+                country_database_ptr: 0,
+                country_identity: CountryIdentityCache::not_attempted("test"),
+                special_projects: SpecialProjectsCache {
+                    status: "country_project_pool_verified",
+                    scan_ms: 0,
+                    bridge_rows_supplied: 0,
+                    facilities: Vec::new(),
+                    projects: candidate_projects,
+                    scientists: Vec::new(),
+                    too_many: false,
+                    invalid_program_status_countries: 0,
+                    invalid_facility_countries: 0,
+                    invalid_project_pool_countries: 0,
+                    neutral_program_status_countries: 0,
+                    neutral_facility_countries: 0,
+                    neutral_project_pool_countries: 0,
+                    root_reasons: ProjectRootReasonCounters::default(),
+                },
+                weather: CompactWeatherRoot::default(),
+            };
+
+            let read = read_compact_projects(&state, COMPACT_STATUS_EXTRACTION_PERF_GATE);
+            let payload = compact_projects_data_payload(&read, 0);
+
+            assert_eq!(state.special_projects.projects.len(), 128);
+            assert_eq!(read.projects.len(), 0);
+            assert_eq!(read.observed_project_rows, 0);
+            assert_eq!(read.changed_rows, 0);
+            assert_ne!(read.status_flags & COMPACT_STATUS_SOURCE_UNAVAILABLE, 0);
+            assert_eq!(read.status_flags & COMPACT_STATUS_PARTIAL_DATA, 0);
+            assert_eq!(u32::from_le_bytes(payload[24..28].try_into().unwrap()), 0);
+            assert_eq!(u32::from_le_bytes(payload[36..40].try_into().unwrap()), 0);
         }
 
         #[test]

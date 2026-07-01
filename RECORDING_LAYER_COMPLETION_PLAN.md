@@ -179,9 +179,16 @@ Current recorder-facing bridge status:
   path entirely inside the DLL/Rust compact stream, advanced 35 game hours with
   zero skipped hours, emitted 36 project data records and 540 worked-project
   rows, verified `.battleplan`, and recorded
-  `projects_root_source = dll_project_cache`. The remaining work is to anchor
-  facilities/scientists and project progress/completion before the whole
-  `projects_live` segment is complete.
+  `projects_root_source = dll_project_cache`. The follow-up
+  `compact_projects_facilities_native_20260701_v12` walked validated
+  `CProgramStatus+0x20 -> CProgram*` facility pointers in the same no-bridge
+  DLL/Rust path, advanced 53 game hours with zero skipped hours, emitted 54
+  project data records, captured 1782 facility rows and 1241 worked-project
+  rows, verified `.battleplan`, and showed no source/partial/worker failures.
+  This run also used exact per-hour compact coverage and root-reason counters
+  to prove normal project/facility terminators are not data loss. The
+  remaining work is to anchor full scientist character rows and project
+  progress/completion before the whole `projects_live` segment is complete.
 - A live vanilla run on 2026-06-28 processed 2 bounded worker bursts: 359 raw
   collector observations became 10 unique hourly replay snapshots, advanced 9
   in-game hours with zero skipped hours, verified the replay container, and left
@@ -614,10 +621,12 @@ Tasks:
   and save-proven project parsers into collector domain plans. The bridge-backed
   `projects_live` catalog slice covers facilities, scientists, and currently
   worked project rows for validation, while the no-bridge DLL path currently
-  covers worked `CProject` rows through the anchored country project pool only.
+  covers anchored `CProgram` facility rows and worked `CProject` rows through
+  the country program-status roots.
   Normal production-shaped runs should prefer the DLL project-pool path; the
   cache-first `special_projects_bridge` and cold heap sweep remain development
-  validation/discovery tools until facility/scientist roots are anchored.
+  validation/discovery tools until full scientist character rows and project
+  progress/completion are anchored.
 - Keep scheduled DLL `focus_live` on the validated `CCountry` path and add only
   the missing pause/event-marker proof rather than reopening the old Python
   scan model.
@@ -1580,14 +1589,16 @@ that explicitly claim `projects_live`, rejects pointer/tag-db diagnostics, and
 summarizes project row counts in manifests. The production-shaped no-bridge path
 now resolves worked `CProject` rows from validated country objects via
 `CCountry+0xFA8 -> CProgramStatus+0x18 -> CProjectPool+0x10 -> CProject`
-inside the DLL. The cache-first `special_projects_bridge` remains a
+inside the DLL, and now resolves `CProgram` facility rows from
+`CProgramStatus+0x20` in the same anchored path. The cache-first
+`special_projects_bridge` remains a
 development/validation path for the wider catalog: Python preflight validates
 cached facility, project, and scientist roots or performs a cold discovery only
 when `--allow-special-projects-cold-scan` is explicitly paired with
 `--preflight-special-projects`; the DLL then revalidates those roots in-process
 and emits `special_projects_identity.status = bridge_verified` when usable.
 The older `special_projects_scan = true` heap sweep remains available but is
-not the normal/speed-five path. Facility/scientist roots, project
+not the normal/speed-five path. Full scientist character rows, project
 progress/completion, owner attribution, and resolved project definition tokens
 remain open.
 
@@ -1596,7 +1607,7 @@ remain open.
 `--special-projects-bridge` / `--special-projects-bridge-file` so bounded
 preflight/cache discovery can feed the DLL without placing Python in the hourly
 recording loop. A quick RTTI pass refreshed the project vtables for `870ebf`
-(`CProgram` 0x295AC30, `CProject` 0x296C270, `CCharacter` 0x272B088,
+(`CProgram` 0x295AC30, `CProject` 0x296C270, `CCharacter` 0x2967E30,
 `CScientist` 0x2967E88), and the cache preflight hit in 0.391s after one
 87.344s cold bootstrap. The live compact proof
 `replay_native/runs/compact_projects_bridge_20260701_v4` advanced 35 game
@@ -1621,7 +1632,17 @@ records with 540 currently worked project rows, had no source/partial/worker
 failures, kept the compact stream ordered and decodable, and passed
 `.battleplan` verification. The manifest records
 `projects_root_source = dll_project_cache` plus partial DLL-native debt because
-facility/scientist roots and project progress/completion are not yet anchored.
+facility/scientist roots and project progress/completion were not yet anchored.
+The follow-up `compact_projects_facilities_native_20260701_v12` added anchored
+facility capture through `CProgramStatus+0x20 -> CProgram*`, used no bridge and
+no scan, advanced 53 game hours with zero skipped hours, emitted 54 typed
+`projects_live` data records with 1782 facility rows and 1241 currently worked
+project rows, had no source/partial/worker failures, kept the compact stream
+ordered and decodable, passed exact per-hour data-record coverage, decoded
+root-reason counters, and passed `.battleplan` verification. The manifest
+records `projects_root_source = dll_project_cache` with `partial_data_seen =
+false`; the remaining `projects_live` debt is full scientist rows and project
+progress/completion.
 
 Remaining Phase 2 gaps:
 
@@ -2210,6 +2231,16 @@ worked-project rows, had no source/partial/worker failures, and verified the
 replay container. This closes the worked-`CProject` hot-loop root debt, but not
 the whole special-project segment: facilities, scientists, progress/completion,
 and resolved definition joins still need anchored DLL coverage.
+
+2026-07-01 no-bridge facility hardening follow-up
+`replay_native/runs/compact_projects_facilities_native_20260701_v12` extended
+the same anchored DLL path with `CProgramStatus+0x20 -> CProgram*` facility
+rows, exact per-hour compact coverage, and project-root reason counters. It
+used no bridge rows and no heap-scan flag, advanced 53 game hours with zero
+skipped hours, emitted 54 typed `projects_live` records with 1782 facility rows
+and 1241 currently worked project rows, had no source/partial/worker failures,
+kept the compact stream ordered/decodable, and verified
+`native_session.battleplan`.
 
 ### Phase 8: Diplomacy, Intel, Market, Logistics, Weather
 

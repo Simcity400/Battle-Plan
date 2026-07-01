@@ -502,10 +502,12 @@ Scheduled special projects:
   `collector_control.json`;
 - the default no-bridge current-build path follows validated `CCountry` rows to
   `CCountry+0xFA8 -> CProgramStatus`, validates the paired status vtables,
-  follows `CProgramStatus+0x18 -> CProjectPool`, validates the pool vtable, then
-  walks contiguous `CProject` rows from `CProjectPool+0x10` at stride `0x1C0`.
-  This path emits currently worked project rows only; facility and scientist
-  roots are still separate unresolved work;
+  walks consecutive validated `CProgram` facility pointers from
+  `CProgramStatus+0x20`, follows `CProgramStatus+0x18 -> CProjectPool`,
+  validates the pool vtable, then walks contiguous `CProject` rows from
+  `CProjectPool+0x10` at stride `0x1C0`. This path emits facility rows plus
+  currently worked project rows; full scientist character rows are still a
+  separate unresolved root;
 - the full-catalog development/validation path remains bridge-first debt:
   Python preflight resolves or validates cached
   `facility:<id>:<province>:0xptr`, `project:<id>:<static_def_handle>:0xptr`,
@@ -527,6 +529,10 @@ Scheduled special projects:
   observed/emitted counts, and source/partial failure flags. Idle current-build
   facility sentinels are normalized to
   `active = false, active_project_handle = 0`;
+- compact `projects_live` reports `project_rows` as emitted currently-worked
+  project rows; `project_observed_project_rows` is the rooted `CProject`
+  candidate count used for fail-closed validation, not another emitted-row
+  count;
 - the slice intentionally omits project progress/completion, owner attribution,
   and resolved project definition names until those roots/joins are separately
   pinned;
@@ -569,8 +575,20 @@ Scheduled special projects:
   currently worked project rows, had no source/partial/worker failures, kept the
   stream ordered/decodable, verified `native_session.battleplan`, and recorded
   `projects_root_source = "dll_project_cache"`. The manifest intentionally
-  keeps this as partial DLL-native coverage until facility/scientist roots are
-  anchored;
+  kept this as partial DLL-native coverage because facility and scientist roots
+  were still open;
+- 2026-07-01 no-bridge anchored facility follow-up
+  `replay_native/runs/compact_projects_facilities_native_20260701_v12` used the
+  same DLL/Rust compact path with no `special_projects_bridge` rows and no
+  `special_projects_scan`, now walking `CProgramStatus+0x20` for validated
+  `CProgram` facility rows. The compact stream advanced 53 game hours with zero
+  skipped hours, emitted 54 `projects_live` data records, produced 1782 facility
+  rows and 1241 currently worked project rows, had no source/partial/worker
+  failures, kept the stream ordered/decodable, passed exact per-hour
+  data-record coverage, decoded root-reason counters, verified
+  `native_session.battleplan`, and recorded `projects_root_source =
+  "dll_project_cache"`. The facility/worked-project slice is production-shaped;
+  full scientist character rows and project progress/completion remain open;
 - worker-poll frames stay light and must not carry `special_projects`.
 
 Scheduled country fuel:

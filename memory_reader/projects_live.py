@@ -82,7 +82,7 @@ BUILD_PROFILES = {
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad": {
         "facility_vtable_rva": 0x295AC30,
         "project_vtable_rva": 0x296C270,
-        "character_vtable_rva": 0x272B088,
+        "character_vtable_rva": 0x2967E30,
         "scientist_vtable_rva": 0x2967E88,
     },
 }

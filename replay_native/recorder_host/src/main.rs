@@ -157,6 +157,10 @@ const COMPACT_AIR_VARIANT_UPGRADE_MAX_VARIANT_ID: u32 = i32::MAX as u32;
 const COMPACT_AIR_VARIANT_UPGRADE_MAX_INDEX: u32 = 256;
 const COMPACT_AIR_VARIANT_UPGRADE_MAX_LEVEL: u32 = 255;
 const COMPACT_PROJECT_HEADER_LEN: usize = 64;
+const COMPACT_PROJECT_HEADER_EXT_ROOT_COUNTERS: u32 = 1;
+const COMPACT_PROJECT_HEADER_EXT_ROOT_REASON_COUNTERS: u32 = 2;
+const COMPACT_PROJECT_ROOT_COUNTERS_LEN: usize = 24;
+const COMPACT_PROJECT_ROOT_REASON_COUNTERS_LEN: usize = 48;
 const COMPACT_PROJECT_FACILITY_ROW_LEN: usize = 32;
 const COMPACT_PROJECT_ROW_LEN: usize = 24;
 const COMPACT_PROJECT_SCIENTIST_ROW_LEN: usize = 32;
@@ -336,7 +340,9 @@ struct CompactSummary {
     max_record_len: usize,
     domains_seen: BTreeSet<u16>,
     per_domain: BTreeMap<u16, CompactDomainSummary>,
-    per_hour_domains: BTreeMap<i32, BTreeSet<u16>>,
+    frame_end_hour_counts: BTreeMap<i32, usize>,
+    per_hour_perf_domain_counts: BTreeMap<i32, BTreeMap<u16, usize>>,
+    per_hour_data_domain_counts: BTreeMap<i32, BTreeMap<u16, usize>>,
     frame_times_us: Vec<u64>,
     status_flags_or: u32,
     unique_hours: Vec<i32>,
@@ -1212,7 +1218,6 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
         total_bytes: raw.len(),
         ..CompactSummary::default()
     };
-    let mut hour_set = BTreeSet::new();
     let mut offset = 0usize;
     let mut previous_sequence: Option<u64> = None;
     while offset < raw.len() {
@@ -1289,11 +1294,12 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     let changed_unit_count = read_u32_le(payload, 28) as u64;
                     let status_flags = read_u32_le(payload, 32);
                     summary.status_flags_or |= status_flags;
-                    summary
-                        .per_hour_domains
+                    *summary
+                        .per_hour_perf_domain_counts
                         .entry(game_hour_raw)
                         .or_default()
-                        .insert(domain_id);
+                        .entry(domain_id)
+                        .or_default() += 1;
                     let domain = summary.per_domain.entry(domain_id).or_default();
                     domain.record_count += 1;
                     domain.row_count_total = domain.row_count_total.saturating_add(row_count);
@@ -1310,6 +1316,12 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
             }
             COMPACT_RECORD_TYPE_DOMAIN_DATA => {
                 summary.domain_data_record_count += 1;
+                *summary
+                    .per_hour_data_domain_counts
+                    .entry(game_hour_raw)
+                    .or_default()
+                    .entry(domain_id)
+                    .or_default() += 1;
                 let domain = summary.per_domain.entry(domain_id).or_default();
                 domain.data_record_count += 1;
                 match domain_id {
@@ -1390,7 +1402,10 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
             }
             COMPACT_RECORD_TYPE_FRAME_END => {
                 summary.frame_end_record_count += 1;
-                hour_set.insert(game_hour_raw);
+                *summary
+                    .frame_end_hour_counts
+                    .entry(game_hour_raw)
+                    .or_default() += 1;
                 if payload.len() < 32 {
                     summary.parse_errors.push(format!(
                         "offset {offset}: frame-end payload is {} byte(s), expected at least 32",
@@ -1409,7 +1424,7 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
         }
         offset = offset.saturating_add(record_len);
     }
-    summary.unique_hours = hour_set.iter().copied().collect();
+    summary.unique_hours = summary.frame_end_hour_counts.keys().copied().collect();
     summary.first_hour = summary.unique_hours.first().copied();
     summary.last_hour = summary.unique_hours.last().copied();
     summary.skipped_hours = skipped_hours(&summary.unique_hours);
@@ -5176,8 +5191,75 @@ fn decode_compact_projects_data_payload(
     let observed_scientist_rows = read_u32_le(payload, 40) as usize;
     let bridge_rows_supplied = read_u32_le(payload, 44) as usize;
     let source_kind = read_u32_le(payload, 48);
-    let reserved = read_u32_le(payload, 52);
+    let header_extension = read_u32_le(payload, 52);
     let scan_ms = read_u64_le(payload, 56);
+    let mut project_header_len = COMPACT_PROJECT_HEADER_LEN;
+    let mut invalid_program_status_countries = 0usize;
+    let mut invalid_facility_countries = 0usize;
+    let mut invalid_project_pool_countries = 0usize;
+    let mut neutral_program_status_countries = 0usize;
+    let mut neutral_facility_countries = 0usize;
+    let mut neutral_project_pool_countries = 0usize;
+    let mut invalid_facility_root_read_fail = 0usize;
+    let mut invalid_facility_slot_read_fail = 0usize;
+    let mut invalid_facility_candidate_vtable_read_fail = 0usize;
+    let mut invalid_facility_candidate_sentinel_after_pin = 0usize;
+    let mut invalid_facility_candidate_fields_invalid = 0usize;
+    let mut invalid_project_pool_root_read_fail = 0usize;
+    let mut invalid_project_pool_vtable_read_fail = 0usize;
+    let mut invalid_project_pool_first_project_read_fail = 0usize;
+    let mut invalid_project_candidate_vtable_read_fail = 0usize;
+    let mut invalid_project_candidate_sentinel_after_pin = 0usize;
+    let mut invalid_project_candidate_fields_invalid = 0usize;
+    let mut invalid_project_short_array = 0usize;
+    match header_extension {
+        0 => {}
+        COMPACT_PROJECT_HEADER_EXT_ROOT_COUNTERS
+        | COMPACT_PROJECT_HEADER_EXT_ROOT_REASON_COUNTERS => {
+            project_header_len = COMPACT_PROJECT_HEADER_LEN + COMPACT_PROJECT_ROOT_COUNTERS_LEN;
+            if payload.len() < project_header_len {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: projects data payload is {} byte(s), expected at least {project_header_len} for root counter header extension",
+                    payload.len()
+                ));
+                return;
+            }
+            invalid_program_status_countries = read_u32_le(payload, 64) as usize;
+            invalid_facility_countries = read_u32_le(payload, 68) as usize;
+            invalid_project_pool_countries = read_u32_le(payload, 72) as usize;
+            neutral_program_status_countries = read_u32_le(payload, 76) as usize;
+            neutral_facility_countries = read_u32_le(payload, 80) as usize;
+            neutral_project_pool_countries = read_u32_le(payload, 84) as usize;
+            if header_extension == COMPACT_PROJECT_HEADER_EXT_ROOT_REASON_COUNTERS {
+                project_header_len += COMPACT_PROJECT_ROOT_REASON_COUNTERS_LEN;
+                if payload.len() < project_header_len {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: projects data payload is {} byte(s), expected at least {project_header_len} for root reason counter header extension",
+                        payload.len()
+                    ));
+                    return;
+                }
+                invalid_facility_root_read_fail = read_u32_le(payload, 88) as usize;
+                invalid_facility_slot_read_fail = read_u32_le(payload, 92) as usize;
+                invalid_facility_candidate_vtable_read_fail = read_u32_le(payload, 96) as usize;
+                invalid_facility_candidate_sentinel_after_pin = read_u32_le(payload, 100) as usize;
+                invalid_facility_candidate_fields_invalid = read_u32_le(payload, 104) as usize;
+                invalid_project_pool_root_read_fail = read_u32_le(payload, 108) as usize;
+                invalid_project_pool_vtable_read_fail = read_u32_le(payload, 112) as usize;
+                invalid_project_pool_first_project_read_fail = read_u32_le(payload, 116) as usize;
+                invalid_project_candidate_vtable_read_fail = read_u32_le(payload, 120) as usize;
+                invalid_project_candidate_sentinel_after_pin = read_u32_le(payload, 124) as usize;
+                invalid_project_candidate_fields_invalid = read_u32_le(payload, 128) as usize;
+                invalid_project_short_array = read_u32_le(payload, 132) as usize;
+            }
+        }
+        other => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: projects header extension field has unknown value {other}"
+            ));
+            return;
+        }
+    }
     summary.status_flags_or |= status_flags;
     if row_count
         != facility_count
@@ -5221,11 +5303,6 @@ fn decode_compact_projects_data_payload(
             "offset {offset}: projects bridge source has zero bridge_rows_supplied"
         ));
     }
-    if reserved != 0 {
-        summary.parse_errors.push(format!(
-            "offset {offset}: projects header reserved field is nonzero"
-        ));
-    }
     let Some(facility_bytes) = facility_count.checked_mul(COMPACT_PROJECT_FACILITY_ROW_LEN) else {
         summary.parse_errors.push(format!(
             "offset {offset}: projects facility byte count overflow"
@@ -5245,7 +5322,7 @@ fn decode_compact_projects_data_payload(
         ));
         return;
     };
-    let fixed_end = COMPACT_PROJECT_HEADER_LEN
+    let fixed_end = project_header_len
         .saturating_add(facility_bytes)
         .saturating_add(project_bytes)
         .saturating_add(scientist_bytes);
@@ -5290,9 +5367,117 @@ fn decode_compact_projects_data_payload(
         "project_bridge_rows_supplied",
         bridge_rows_supplied,
     );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_invalid_program_status_countries",
+        invalid_program_status_countries,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_invalid_facility_countries",
+        invalid_facility_countries,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_invalid_project_pool_countries",
+        invalid_project_pool_countries,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_neutral_program_status_countries",
+        neutral_program_status_countries,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_neutral_facility_countries",
+        neutral_facility_countries,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_neutral_project_pool_countries",
+        neutral_project_pool_countries,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_invalid_facility_root_read_fail",
+        invalid_facility_root_read_fail,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_invalid_facility_slot_read_fail",
+        invalid_facility_slot_read_fail,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_invalid_facility_candidate_vtable_read_fail",
+        invalid_facility_candidate_vtable_read_fail,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_invalid_facility_candidate_sentinel_after_pin",
+        invalid_facility_candidate_sentinel_after_pin,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_invalid_facility_candidate_fields_invalid",
+        invalid_facility_candidate_fields_invalid,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_invalid_project_pool_root_read_fail",
+        invalid_project_pool_root_read_fail,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_invalid_project_pool_vtable_read_fail",
+        invalid_project_pool_vtable_read_fail,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_invalid_project_pool_first_project_read_fail",
+        invalid_project_pool_first_project_read_fail,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_invalid_project_candidate_vtable_read_fail",
+        invalid_project_candidate_vtable_read_fail,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_invalid_project_candidate_sentinel_after_pin",
+        invalid_project_candidate_sentinel_after_pin,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_invalid_project_candidate_fields_invalid",
+        invalid_project_candidate_fields_invalid,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        41,
+        "project_invalid_project_short_array",
+        invalid_project_short_array,
+    );
     add_compact_domain_data_unit(summary, 41, "project_scan_ms", scan_ms as usize);
 
-    let mut cursor = COMPACT_PROJECT_HEADER_LEN;
+    let mut cursor = project_header_len;
     let mut facility_flags = Vec::with_capacity(facility_count);
     let mut seen_facilities = BTreeSet::new();
     for row_index in 0..facility_count {
@@ -7190,19 +7375,94 @@ fn compact_domain_coverage_errors(
     summary: &CompactSummary,
     expected_domains: &[u16],
 ) -> Vec<String> {
-    if expected_domains.is_empty() {
-        return Vec::new();
-    }
     let mut errors = Vec::new();
+    let frame_hours: BTreeSet<i32> = summary.frame_end_hour_counts.keys().copied().collect();
+    let mut all_record_hours = frame_hours.clone();
+    all_record_hours.extend(summary.per_hour_perf_domain_counts.keys().copied());
+    all_record_hours.extend(summary.per_hour_data_domain_counts.keys().copied());
+
+    for hour in &all_record_hours {
+        let frame_count = summary
+            .frame_end_hour_counts
+            .get(hour)
+            .copied()
+            .unwrap_or(0);
+        if frame_count != 1 {
+            errors.push(format!(
+                "game_hour_raw {hour}: frame_end_count {frame_count} != 1"
+            ));
+        }
+    }
+    if expected_domains.is_empty() {
+        return errors;
+    }
+
     for hour in &summary.unique_hours {
-        let present = summary.per_hour_domains.get(hour);
         for expected in expected_domains {
-            if !present
-                .map(|domains| domains.contains(expected))
-                .unwrap_or(false)
-            {
+            let perf_count = summary
+                .per_hour_perf_domain_counts
+                .get(hour)
+                .and_then(|domains| domains.get(expected))
+                .copied()
+                .unwrap_or(0);
+            if perf_count == 0 {
                 errors.push(format!(
                     "game_hour_raw {hour}: missing compact domain {}",
+                    compact_domain_name(*expected)
+                ));
+            } else if perf_count != 1 {
+                errors.push(format!(
+                    "game_hour_raw {hour}: compact domain {} perf_record_count {perf_count} != 1",
+                    compact_domain_name(*expected)
+                ));
+            }
+            if compact_domain_requires_data_record(*expected) {
+                let data_count = summary
+                    .per_hour_data_domain_counts
+                    .get(hour)
+                    .and_then(|domains| domains.get(expected))
+                    .copied()
+                    .unwrap_or(0);
+                if data_count == 0 {
+                    errors.push(format!(
+                        "game_hour_raw {hour}: missing compact domain {} data record",
+                        compact_domain_name(*expected)
+                    ));
+                } else if data_count != 1 {
+                    errors.push(format!(
+                        "game_hour_raw {hour}: compact domain {} data_record_count {data_count} != 1",
+                        compact_domain_name(*expected)
+                    ));
+                }
+            }
+        }
+    }
+    for (hour, domain_counts) in &summary.per_hour_perf_domain_counts {
+        if frame_hours.contains(hour) {
+            continue;
+        }
+        for expected in expected_domains {
+            let perf_count = domain_counts.get(expected).copied().unwrap_or(0);
+            if perf_count != 0 {
+                errors.push(format!(
+                    "game_hour_raw {hour}: compact domain {} perf_record_count {perf_count} on non-frame hour",
+                    compact_domain_name(*expected)
+                ));
+            }
+        }
+    }
+    for (hour, domain_counts) in &summary.per_hour_data_domain_counts {
+        if frame_hours.contains(hour) {
+            continue;
+        }
+        for expected in expected_domains {
+            if !compact_domain_requires_data_record(*expected) {
+                continue;
+            }
+            let data_count = domain_counts.get(expected).copied().unwrap_or(0);
+            if data_count != 0 {
+                errors.push(format!(
+                    "game_hour_raw {hour}: compact domain {} data_record_count {data_count} on non-frame hour",
                     compact_domain_name(*expected)
                 ));
             }
@@ -7409,7 +7669,7 @@ fn compact_projects_root_source(cfg: &Config, summary: &CompactSummary) -> &'sta
 fn compact_projects_root_discovery_debt(source: &str) -> &'static str {
     match source {
         "dll_project_cache" => {
-            "partial DLL-native path: CProject rows came from the anchored country project pool; facility/scientist roots still need anchored DLL coverage before projects_live is fully DLL-complete"
+            "partial DLL-native path: CProject rows and CProgram facility rows came from anchored country program-status roots; full scientist character rows and project progress/completion still need anchored DLL coverage before projects_live is fully DLL-complete"
         }
         "dll_startup_heap_scan" => {
             "temporary debt: one-time DLL startup heap scan is outside the hot loop, but projects still need an anchored root/container or cached Rust-host discovery before full DLL-complete status"
@@ -7828,6 +8088,143 @@ mod tests {
         assert!(errors
             .iter()
             .any(|err| err.contains("fuel_live data_record_count")));
+    }
+
+    #[test]
+    fn compact_coverage_requires_data_record_on_each_frame_hour() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            10,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(1_250, 355, 12, 44, 44),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            10,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_fuel_data_payload(&[(47, 4_046_848, 14_950_400, 245_760, -73_728)]),
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            10,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_fuel_data_payload(&[(47, 3_932_160, 14_950_400, 65_536, -32_768)]),
+        );
+        append_test_compact_record(
+            &mut raw,
+            4,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(2_000, 1),
+        );
+        append_test_compact_record(
+            &mut raw,
+            5,
+            101,
+            10,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(1_500, 355, 10, 40, 40),
+        );
+        append_test_compact_record(
+            &mut raw,
+            6,
+            101,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(2_250, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        let errors = compact_domain_coverage_errors(&summary, &[10]);
+
+        assert_eq!(summary.frame_end_record_count, 2);
+        assert_eq!(summary.per_domain.get(&10).unwrap().data_record_count, 2);
+        assert!(errors
+            .iter()
+            .any(|err| err
+                .contains("game_hour_raw 101: missing compact domain fuel_live data record")));
+    }
+
+    #[test]
+    fn compact_coverage_rejects_duplicate_data_record_on_frame_hour() {
+        let mut raw = Vec::new();
+        let mut sequence = 1;
+        append_test_fuel_compact_frame(&mut raw, &mut sequence, 100, 47);
+        append_test_compact_record(
+            &mut raw,
+            sequence,
+            100,
+            10,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_fuel_data_payload(&[(48, 3_932_160, 14_950_400, 65_536, -32_768)]),
+        );
+        sequence += 1;
+        append_test_fuel_compact_frame(&mut raw, &mut sequence, 101, 49);
+
+        let summary = summarize_compact_stream(&raw);
+        let errors = compact_domain_coverage_errors(&summary, &[10]);
+
+        assert_eq!(summary.frame_end_record_count, 2);
+        assert_eq!(summary.per_domain.get(&10).unwrap().data_record_count, 3);
+        assert!(errors.iter().any(|err| err
+            .contains("game_hour_raw 100: compact domain fuel_live data_record_count 2 != 1")));
+    }
+
+    #[test]
+    fn compact_coverage_rejects_expected_data_record_on_non_frame_hour() {
+        let mut raw = Vec::new();
+        let mut sequence = 1;
+        append_test_fuel_compact_frame(&mut raw, &mut sequence, 100, 47);
+        append_test_compact_record(
+            &mut raw,
+            sequence,
+            102,
+            10,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_fuel_data_payload(&[(48, 3_932_160, 14_950_400, 65_536, -32_768)]),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        let errors = compact_domain_coverage_errors(&summary, &[10]);
+
+        assert_eq!(summary.frame_end_record_count, 1);
+        assert!(errors
+            .iter()
+            .any(|err| err.contains("game_hour_raw 102: frame_end_count 0 != 1")));
+        assert!(errors.iter().any(|err| err.contains(
+            "game_hour_raw 102: compact domain fuel_live data_record_count 1 on non-frame hour"
+        )));
+    }
+
+    #[test]
+    fn compact_coverage_rejects_duplicate_balanced_frame_perf_data_bundle() {
+        let mut raw = Vec::new();
+        let mut sequence = 1;
+        append_test_fuel_compact_frame(&mut raw, &mut sequence, 100, 47);
+        append_test_fuel_compact_frame(&mut raw, &mut sequence, 100, 48);
+        append_test_fuel_compact_frame(&mut raw, &mut sequence, 101, 49);
+
+        let summary = summarize_compact_stream(&raw);
+        let errors = compact_domain_coverage_errors(&summary, &[10]);
+
+        assert_eq!(summary.frame_end_record_count, 3);
+        assert_eq!(summary.per_domain.get(&10).unwrap().record_count, 3);
+        assert_eq!(summary.per_domain.get(&10).unwrap().data_record_count, 3);
+        assert!(errors
+            .iter()
+            .any(|err| err.contains("game_hour_raw 100: frame_end_count 2 != 1")));
+        assert!(errors.iter().any(|err| err
+            .contains("game_hour_raw 100: compact domain fuel_live perf_record_count 2 != 1")));
+        assert!(errors.iter().any(|err| err
+            .contains("game_hour_raw 100: compact domain fuel_live data_record_count 2 != 1")));
     }
 
     #[test]
@@ -9142,6 +9539,68 @@ mod tests {
             projects.data_units_total.get("project_scan_ms").copied(),
             Some(77)
         );
+        assert_eq!(
+            projects
+                .data_units_total
+                .get("project_invalid_program_status_countries")
+                .copied(),
+            Some(5)
+        );
+        assert_eq!(
+            projects
+                .data_units_total
+                .get("project_invalid_facility_countries")
+                .copied(),
+            Some(6)
+        );
+        assert_eq!(
+            projects
+                .data_units_total
+                .get("project_invalid_project_pool_countries")
+                .copied(),
+            Some(7)
+        );
+        assert_eq!(
+            projects
+                .data_units_total
+                .get("project_neutral_program_status_countries")
+                .copied(),
+            Some(8)
+        );
+        assert_eq!(
+            projects
+                .data_units_total
+                .get("project_neutral_facility_countries")
+                .copied(),
+            Some(9)
+        );
+        assert_eq!(
+            projects
+                .data_units_total
+                .get("project_neutral_project_pool_countries")
+                .copied(),
+            Some(10)
+        );
+        for (unit, expected) in [
+            ("project_invalid_facility_root_read_fail", 11),
+            ("project_invalid_facility_slot_read_fail", 12),
+            ("project_invalid_facility_candidate_vtable_read_fail", 13),
+            ("project_invalid_facility_candidate_sentinel_after_pin", 14),
+            ("project_invalid_facility_candidate_fields_invalid", 15),
+            ("project_invalid_project_pool_root_read_fail", 16),
+            ("project_invalid_project_pool_vtable_read_fail", 17),
+            ("project_invalid_project_pool_first_project_read_fail", 18),
+            ("project_invalid_project_candidate_vtable_read_fail", 19),
+            ("project_invalid_project_candidate_sentinel_after_pin", 20),
+            ("project_invalid_project_candidate_fields_invalid", 21),
+            ("project_invalid_project_short_array", 22),
+        ] {
+            assert_eq!(
+                projects.data_units_total.get(unit).copied(),
+                Some(expected),
+                "{unit}"
+            );
+        }
         assert_eq!(compact_domain_id("projects_live"), Some(41));
         assert_eq!(compact_domain_name(41), "projects_live");
         let mut cfg = test_config(vec!["projects_live"], None);
@@ -11302,8 +11761,17 @@ mod tests {
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
         payload.extend_from_slice(&COMPACT_PROJECT_SOURCE_SCAN.to_le_bytes());
-        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_PROJECT_HEADER_EXT_ROOT_REASON_COUNTERS.to_le_bytes());
         payload.extend_from_slice(&77u64.to_le_bytes());
+        payload.extend_from_slice(&5u32.to_le_bytes());
+        payload.extend_from_slice(&6u32.to_le_bytes());
+        payload.extend_from_slice(&7u32.to_le_bytes());
+        payload.extend_from_slice(&8u32.to_le_bytes());
+        payload.extend_from_slice(&9u32.to_le_bytes());
+        payload.extend_from_slice(&10u32.to_le_bytes());
+        for value in 11u32..=22 {
+            payload.extend_from_slice(&value.to_le_bytes());
+        }
 
         payload.extend_from_slice(&118u32.to_le_bytes());
         payload.extend_from_slice(&341u32.to_le_bytes());
@@ -11677,5 +12145,40 @@ mod tests {
         out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
         out.extend_from_slice(&0u32.to_le_bytes());
         out.extend_from_slice(payload);
+    }
+
+    fn append_test_fuel_compact_frame(
+        out: &mut Vec<u8>,
+        next_sequence: &mut u64,
+        game_hour_raw: i32,
+        tag_db_id: u32,
+    ) {
+        append_test_compact_record(
+            out,
+            *next_sequence,
+            game_hour_raw,
+            10,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(1_250, 1, 1, 1, 1),
+        );
+        *next_sequence += 1;
+        append_test_compact_record(
+            out,
+            *next_sequence,
+            game_hour_raw,
+            10,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_fuel_data_payload(&[(tag_db_id, 4_046_848, 14_950_400, 245_760, -73_728)]),
+        );
+        *next_sequence += 1;
+        append_test_compact_record(
+            out,
+            *next_sequence,
+            game_hour_raw,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(2_000, 1),
+        );
+        *next_sequence += 1;
     }
 }
