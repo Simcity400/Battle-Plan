@@ -1,0 +1,3283 @@
+"""Session-oriented recorder entrypoint for the in-process collector.
+
+This module is the first bridge from the bounded speed-five proof command to a
+normal collector recording path. It still uses the proven bounded worker under
+the hood, but it wraps that run with explicit session lifecycle artifacts and a
+session manifest that avoids local absolute paths.
+"""
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import hashlib
+import json
+from pathlib import Path
+import re
+import time
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+from replay import schema
+
+from . import continuity as _continuity
+from . import process_identity as _process_identity
+from .collector_advisor_tokens import resolve_advisor_token_filter_preflight
+from .collector_air_wing_bridge import resolve_air_wing_body_bridge_preflight
+from .collector_army_order_bridge import resolve_army_body_bridge_preflight
+from .collector_diplomacy_bridge import resolve_war_relation_bridge_preflight
+from .collector_frames import (
+    COLLECTOR_BACKEND,
+    COLLECTOR_ABI_VERSION,
+    latest_verified_root_probe,
+    snapshot_from_collector_frame,
+    snapshot_from_root_probe_frame,
+    validate_collector_frame,
+)
+from .collector_country_bridge import resolve_country_object_bridge_preflight
+from .collector_division_bridge import resolve_division_body_bridge_preflight
+from .collector_naval_combat_bridge import (
+    resolve_naval_combat_body_bridge_preflight,
+)
+from .collector_oob_command_bridge import resolve_oob_command_bridge_preflight
+from .collector_ship_bridge import resolve_ship_body_bridge_preflight
+from .collector_special_projects_bridge import (
+    resolve_special_projects_bridge_preflight,
+)
+from .collector_map_bridge import (
+    resolve_province_control_preflight,
+    resolve_state_control_preflight,
+)
+from .collector_probe_record import record_probes
+from .collector_idea_groups import resolve_idea_group_filter_preflight
+from .collector_tech_defs import resolve_tech_def_filter_preflight
+from .durable_store import CaptureLock, DurableCaptureStore
+from .recorder.cadence import RecorderCadence
+from .replay_writer import ReplayRecorder, _verify_container
+
+
+DEFAULT_OUT_ROOT = Path("replay_interface/replay/snapshots/_collector_session")
+DEFAULT_DWELL_S = 0.25
+DEFAULT_SAMPLE_MS = 10
+RESEARCH_LIVE_POINTS_FACTOR_BASIS = "live_progress_delta"
+RESEARCH_LIVE_POINTS_FACTOR_MAX = 1_000_000.0
+
+
+@dataclass
+class CollectorFrameResult:
+    frame_type: Optional[str]
+    sequence: Optional[int]
+    date: Optional[str]
+    hour_index: Optional[int]
+    written_path: Optional[str]
+    canonical: bool
+    skipped_reason: Optional[str] = None
+    error: Optional[str] = None
+
+
+class CollectorFrameSession:
+    """Write decoded collector frames through the normal durable replay path."""
+
+    def __init__(
+        self,
+        *,
+        game_id: str,
+        store_root: Path,
+        replay_path: Optional[Path] = None,
+        target_step_hours: int = 1,
+        pid: Optional[int] = None,
+        process_instance_id: Optional[str] = None,
+        modset: Optional[Dict[str, Any]] = None,
+        build_exe_sha256: Optional[str] = None,
+        build_pinned: bool = True,
+        finalize_every: int = 6,
+    ) -> None:
+        self.game_id = game_id
+        self.store = DurableCaptureStore(str(store_root))
+        self.pid = pid
+        self.process_instance_id = (
+            process_instance_id
+            or (f"collector-pid-{pid}" if pid is not None else "collector-unknown")
+        )
+        self.cadence = RecorderCadence(target_step_hours=target_step_hours)
+        state = _continuity.ContinuityState.from_dict(
+            self.store.load_continuity_state(game_id))
+        self.tracker = _continuity.ContinuityTracker(state)
+        self.recorder = None
+        if replay_path is not None:
+            self.recorder = ReplayRecorder(
+                store_root=self.store.root,
+                game_id=game_id,
+                out_path=str(replay_path),
+                modset=modset,
+                build_exe_sha256=build_exe_sha256,
+                build_pinned=build_pinned,
+                schema_version=schema.SCHEMA_VERSION,
+            )
+        self._captures_since_finalize = 0
+        self._finalize_every = max(1, int(finalize_every))
+        self._results: List[CollectorFrameResult] = []
+        self._last_snapshot: Optional[Dict[str, Any]] = None
+        self._research_tech_defs_loaded = False
+        self._research_tech_defs: Optional[Dict[str, Any]] = None
+        self._research_static_tech_defs = _empty_research_static_tech_defs_metadata()
+        self._research_live_progress = _empty_research_live_progress_stats()
+        self._sequences: List[int] = []
+        self._sequence_bursts: Dict[int, List[int]] = {}
+        self.invalid_frames = 0
+        self.invalid_frame_errors: List[str] = []
+        self.finalize_error: Optional[str] = None
+
+    def record_frames(self, frames: Iterable[Dict[str, Any]]) -> List[CollectorFrameResult]:
+        lock = CaptureLock(self.store.lock_path(self.game_id))
+        lock.acquire(steal=False)
+        try:
+            for frame in frames:
+                self._results.append(self.record_frame(frame))
+            self.finalize()
+            return list(self._results)
+        finally:
+            lock.release()
+
+    def record_frame(self, frame: Dict[str, Any]) -> CollectorFrameResult:
+        problems = validate_collector_frame(frame)
+        if problems:
+            self.invalid_frames += 1
+            err = "; ".join(problems)
+            self.invalid_frame_errors.append(err)
+            return CollectorFrameResult(
+                frame_type=frame.get("type") if isinstance(frame, dict) else None,
+                sequence=None,
+                date=None,
+                hour_index=None,
+                written_path=None,
+                canonical=False,
+                error=err,
+            )
+
+        sequence = frame.get("sequence")
+        if isinstance(sequence, int):
+            self._sequences.append(sequence)
+            worker_burst_index = frame.get("worker_burst_index")
+            if isinstance(worker_burst_index, int):
+                self._sequence_bursts.setdefault(
+                    worker_burst_index, []).append(sequence)
+        frame_type = frame.get("type")
+        if frame_type not in ("collector_started", "snapshot"):
+            return CollectorFrameResult(
+                frame_type=frame_type,
+                sequence=sequence if isinstance(sequence, int) else None,
+                date=frame.get("date") if isinstance(frame.get("date"), str) else None,
+                hour_index=None,
+                written_path=None,
+                canonical=False,
+                skipped_reason="non_snapshot_frame",
+            )
+
+        try:
+            if latest_verified_root_probe([frame]) is not None:
+                snap = snapshot_from_root_probe_frame(frame, self.game_id)
+            else:
+                snap = snapshot_from_collector_frame(frame, self.game_id)
+        except Exception as exc:
+            self.invalid_frames += 1
+            err = str(exc)
+            self.invalid_frame_errors.append(err)
+            return CollectorFrameResult(
+                frame_type=frame_type,
+                sequence=sequence if isinstance(sequence, int) else None,
+                date=None,
+                hour_index=None,
+                written_path=None,
+                canonical=False,
+                error=err,
+            )
+
+        decision = self.cadence.plan(
+            _CollectorDateInfo(snap.get("date"), trusted=True))
+        if not decision.should_capture:
+            return CollectorFrameResult(
+                frame_type=frame_type,
+                sequence=sequence if isinstance(sequence, int) else None,
+                date=snap.get("date"),
+                hour_index=snap.get("hour_index"),
+                written_path=None,
+                canonical=False,
+                skipped_reason=decision.reason,
+            )
+
+        _derive_research_live_points_factor(snap, self._last_snapshot)
+        _attach_research_live_progress(snap, self._research_tech_defs_for_progress())
+        _merge_research_live_progress_stats(
+            self._research_live_progress,
+            _snapshot_research_live_progress_stats(snap),
+        )
+
+        proposal = self.tracker.compute(
+            process_instance_id=self.process_instance_id,
+            pid=self.pid,
+            hour_index=snap.get("hour_index"),
+        )
+        tags = proposal.tags
+        self.tracker.stamp(snap, tags)
+        path = self.store.write_snapshot(snap, allow_unknown_hour=False)
+        self.tracker.commit(proposal)
+        self.store.save_continuity_state(self.game_id,
+                                         self.tracker.state.to_dict())
+        self.cadence.commit(decision)
+        if self.recorder is not None:
+            self.recorder.on_snapshot_written(path)
+            self._captures_since_finalize += 1
+            if self._captures_since_finalize >= self._finalize_every:
+                self._captures_since_finalize = 0
+                self._finalize_recorder()
+        self._last_snapshot = snap
+        return CollectorFrameResult(
+            frame_type=frame_type,
+            sequence=sequence if isinstance(sequence, int) else None,
+            date=snap.get("date"),
+            hour_index=snap.get("hour_index"),
+            written_path=path,
+            canonical=True,
+        )
+
+    def finalize(self) -> Optional[str]:
+        if self.recorder is None:
+            return None
+        path = self._finalize_recorder()
+        if path is not None:
+            if not self.patch_recording_diagnostics(path):
+                self.finalize_error = "recording diagnostics patch failed"
+            else:
+                try:
+                    if not _verify_container(path):
+                        self.finalize_error = "replay verification failed after diagnostics patch"
+                except Exception as exc:
+                    self.finalize_error = str(exc)
+        return path
+
+    def diagnostics(self) -> Dict[str, Any]:
+        diagnostics = self.cadence.to_manifest()
+        diagnostics["collector"] = {
+            "backend": COLLECTOR_BACKEND,
+            "session_mode": "collector_frame_session_v0",
+            "invalid_frames": int(self.invalid_frames),
+            "invalid_frame_errors": list(self.invalid_frame_errors[-8:]),
+            "finalize_error": self.finalize_error,
+            "transport_sequence": self._transport_sequence_diagnostics(),
+            "research_static_tech_defs": dict(self._research_static_tech_defs),
+            "research_live_progress": dict(self._research_live_progress),
+        }
+        return diagnostics
+
+    def _research_tech_defs_for_progress(self) -> Optional[Dict[str, Any]]:
+        if self._research_tech_defs_loaded:
+            return self._research_tech_defs
+        self._research_tech_defs_loaded = True
+        try:
+            from models import research_progress as RP  # noqa: E402
+        except Exception:
+            self._research_tech_defs = None
+            return None
+        try:
+            path = Path(RP.default_tech_defs_path())
+            tech_defs = RP.load_static_tech_defs(str(path))
+        except Exception:
+            tech_defs = None
+        self._research_tech_defs = tech_defs if isinstance(tech_defs, dict) else None
+        self._research_static_tech_defs = _research_static_tech_defs_metadata(
+            path if "path" in locals() else None,
+            self._research_tech_defs,
+            RP,
+        )
+        return self._research_tech_defs
+
+    def patch_recording_diagnostics(self, replay_path: str) -> bool:
+        from .recorder.manifest_diagnostics import patch_manifest_diagnostics
+
+        return patch_manifest_diagnostics(replay_path, self.diagnostics())
+
+    def _finalize_recorder(self) -> Optional[str]:
+        if self.recorder is None:
+            return None
+        try:
+            path = self.recorder.finalize()
+            try:
+                if _verify_container(path):
+                    self.finalize_error = None
+                else:
+                    self.finalize_error = "replay verification failed"
+            except Exception as exc:
+                self.finalize_error = str(exc)
+            return path
+        except Exception as exc:
+            self.finalize_error = str(exc)
+            return None
+
+    def _transport_sequence_diagnostics(self) -> Dict[str, Any]:
+        sequences = list(self._sequences)
+        duplicates = len(sequences) - len(set(sequences))
+        nonmonotonic = sum(
+            1 for a, b in zip(sequences, sequences[1:]) if b <= a
+        )
+        burst_local = []
+        for burst_index in sorted(self._sequence_bursts):
+            burst_sequences = self._sequence_bursts[burst_index]
+            burst_duplicates = len(burst_sequences) - len(set(burst_sequences))
+            burst_nonmonotonic = sum(
+                1 for a, b in zip(burst_sequences, burst_sequences[1:])
+                if b <= a
+            )
+            burst_local.append({
+                "worker_burst_index": burst_index,
+                "count": len(burst_sequences),
+                "first": burst_sequences[0] if burst_sequences else None,
+                "last": burst_sequences[-1] if burst_sequences else None,
+                "monotonic": burst_nonmonotonic == 0,
+                "nonmonotonic_pairs": burst_nonmonotonic,
+                "duplicate_sequences": burst_duplicates,
+            })
+        burst_local_duplicates = sum(
+            int(b.get("duplicate_sequences") or 0) for b in burst_local)
+        burst_local_nonmonotonic = sum(
+            int(b.get("nonmonotonic_pairs") or 0) for b in burst_local)
+        has_bursts = bool(burst_local)
+        return {
+            "mode": "burst_local" if has_bursts else "global",
+            "count": len(sequences),
+            "first": sequences[0] if sequences else None,
+            "last": sequences[-1] if sequences else None,
+            "monotonic": (
+                burst_local_nonmonotonic == 0 if has_bursts
+                else nonmonotonic == 0
+            ),
+            "nonmonotonic_pairs": (
+                burst_local_nonmonotonic if has_bursts else nonmonotonic
+            ),
+            "duplicate_sequences": (
+                burst_local_duplicates if has_bursts else duplicates
+            ),
+            "global_monotonic": nonmonotonic == 0,
+            "global_nonmonotonic_pairs": nonmonotonic,
+            "global_duplicate_sequences": duplicates,
+            "burst_local": burst_local,
+        }
+
+
+def _empty_research_live_progress_stats() -> Dict[str, Any]:
+    return {
+        "live_progress_frames": 0,
+        "live_progress_rows": 0,
+        "static_cost_progress_frames": 0,
+        "static_cost_progress_rows": 0,
+        "dll_base_required_progress_frames": 0,
+        "dll_base_required_progress_rows": 0,
+        "speed_frames": 0,
+        "speed_rows": 0,
+        "eta_frames": 0,
+        "eta_rows": 0,
+        "max_live_progress_rows_per_frame": 0,
+        "max_static_cost_progress_rows_per_frame": 0,
+        "max_dll_base_required_progress_rows_per_frame": 0,
+        "max_speed_rows_per_frame": 0,
+        "max_eta_rows_per_frame": 0,
+        "max_points_factor_milli": 0,
+        "progress_unavailable_reasons": {},
+        "eta_unavailable_reasons": {},
+    }
+
+
+def _empty_research_static_tech_defs_metadata() -> Dict[str, Any]:
+    return {
+        "status": "not_loaded",
+        "path": "game_defs/out/technologies.json",
+        "sha256": None,
+        "tech_count": 0,
+        "no_research_cost_count": 0,
+        "tree_visible_count": 0,
+        "hidden_count": 0,
+        "base_research_points_per_cost": None,
+    }
+
+
+def _research_static_tech_defs_metadata(
+    path: Optional[Path],
+    tech_defs: Optional[Dict[str, Any]],
+    research_progress_module: Any,
+) -> Dict[str, Any]:
+    meta = _empty_research_static_tech_defs_metadata()
+    base_points = getattr(
+        research_progress_module,
+        "BASE_RESEARCH_POINTS_PER_COST",
+        None,
+    )
+    if isinstance(base_points, (int, float)) and not isinstance(base_points, bool):
+        if float(base_points).is_integer():
+            meta["base_research_points_per_cost"] = int(base_points)
+        else:
+            meta["base_research_points_per_cost"] = str(base_points)
+    if path is not None:
+        meta["path"] = _repo_relative_path(path)
+        try:
+            meta["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            meta["status"] = "missing_file"
+            return meta
+    if not isinstance(tech_defs, dict):
+        meta["status"] = "unavailable"
+        return meta
+    meta["status"] = "loaded"
+    meta["tech_count"] = len(tech_defs)
+    meta["no_research_cost_count"] = sum(
+        1
+        for row in tech_defs.values()
+        if isinstance(row, dict) and row.get("research_cost") is None
+    )
+    meta["tree_visible_count"] = sum(
+        1
+        for row in tech_defs.values()
+        if isinstance(row, dict) and row.get("tree_visible") is True
+    )
+    meta["hidden_count"] = sum(
+        1
+        for row in tech_defs.values()
+        if isinstance(row, dict) and row.get("tree_visible") is False
+    )
+    return meta
+
+
+def _repo_relative_path(path: Path) -> str:
+    try:
+        repo_root = Path(__file__).resolve().parents[1]
+        return path.resolve().relative_to(repo_root).as_posix()
+    except (OSError, ValueError):
+        return path.name
+
+
+def _merge_research_live_progress_stats(
+    target: Dict[str, Any],
+    source: Dict[str, Any],
+) -> None:
+    for key in (
+        "live_progress_frames",
+        "live_progress_rows",
+        "static_cost_progress_frames",
+        "static_cost_progress_rows",
+        "dll_base_required_progress_frames",
+        "dll_base_required_progress_rows",
+        "speed_frames",
+        "speed_rows",
+        "eta_frames",
+        "eta_rows",
+    ):
+        target[key] = int(target.get(key) or 0) + int(source.get(key) or 0)
+    for key in (
+        "max_live_progress_rows_per_frame",
+        "max_static_cost_progress_rows_per_frame",
+        "max_dll_base_required_progress_rows_per_frame",
+        "max_speed_rows_per_frame",
+        "max_eta_rows_per_frame",
+    ):
+        target[key] = max(int(target.get(key) or 0), int(source.get(key) or 0))
+    target["max_points_factor_milli"] = max(
+        int(target.get("max_points_factor_milli") or 0),
+        int(source.get("max_points_factor_milli") or 0),
+    )
+    _merge_count_map(
+        target,
+        source,
+        "progress_unavailable_reasons",
+    )
+    _merge_count_map(
+        target,
+        source,
+        "eta_unavailable_reasons",
+    )
+
+
+def _merge_count_map(
+    target: Dict[str, Any],
+    source: Dict[str, Any],
+    key: str,
+) -> None:
+    target_map = target.get(key)
+    if not isinstance(target_map, dict):
+        target_map = {}
+        target[key] = target_map
+    source_map = source.get(key)
+    if not isinstance(source_map, dict):
+        return
+    for reason, count in source_map.items():
+        if not isinstance(reason, str):
+            continue
+        if not isinstance(count, int) or isinstance(count, bool):
+            continue
+        target_map[reason] = int(target_map.get(reason) or 0) + int(count)
+
+
+def _derive_research_live_points_factor(
+    snap: Dict[str, Any],
+    previous: Optional[Dict[str, Any]],
+) -> None:
+    if not isinstance(previous, dict):
+        return
+    current_hour = _snapshot_hour_index(snap)
+    previous_hour = _snapshot_hour_index(previous)
+    if current_hour is None or previous_hour is None:
+        return
+    elapsed_hours = current_hour - previous_hour
+    if elapsed_hours <= 0:
+        return
+    elapsed_days = elapsed_hours / 24.0
+    if elapsed_days <= 0:
+        return
+    previous_slots = _research_slots_by_tag_and_key(previous)
+    countries = snap.get("countries")
+    if not isinstance(countries, dict):
+        return
+    for tag, country in countries.items():
+        if not isinstance(tag, str) or not isinstance(country, dict):
+            continue
+        research = country.get("research")
+        if not isinstance(research, dict):
+            continue
+        slots = research.get("in_progress_live")
+        if not isinstance(slots, list):
+            continue
+        previous_by_key = previous_slots.get(tag) or {}
+        for slot in slots:
+            if not isinstance(slot, dict):
+                continue
+            key = _research_slot_delta_key(slot)
+            if key is None:
+                continue
+            previous_progress = previous_by_key.get(key)
+            current_progress = _research_live_slot_progress(slot)
+            if previous_progress is None or current_progress is None:
+                continue
+            delta = current_progress - previous_progress
+            if delta <= 0:
+                continue
+            points_factor = delta / elapsed_days
+            if not (
+                points_factor > 0
+                and points_factor <= RESEARCH_LIVE_POINTS_FACTOR_MAX
+            ):
+                continue
+            slot["points_factor"] = round(points_factor, 6)
+            slot["points_factor_basis"] = RESEARCH_LIVE_POINTS_FACTOR_BASIS
+            slot["points_factor_elapsed_hours"] = int(elapsed_hours)
+
+
+def _attach_research_live_progress(
+    snap: Dict[str, Any],
+    tech_defs: Optional[Dict[str, Any]],
+) -> None:
+    try:
+        from models import research_progress as RP  # noqa: E402
+    except Exception:
+        return
+    try:
+        RP.enrich_snapshot_research_progress(snap, tech_defs)
+    except Exception:
+        return
+
+
+def _snapshot_research_live_progress_stats(snap: Dict[str, Any]) -> Dict[str, Any]:
+    stats = _empty_research_live_progress_stats()
+    live_progress_rows = 0
+    static_cost_progress_rows = 0
+    dll_base_required_progress_rows = 0
+    speed_rows = 0
+    eta_rows = 0
+    max_points_factor = 0.0
+    countries = snap.get("countries")
+    if not isinstance(countries, dict):
+        return stats
+    for country in countries.values():
+        if not isinstance(country, dict):
+            continue
+        research = country.get("research")
+        if not isinstance(research, dict):
+            continue
+        slots = research.get("in_progress_live")
+        if not isinstance(slots, list):
+            continue
+        for slot in slots:
+            if not isinstance(slot, dict):
+                continue
+            if _finite_float(slot.get("live_progress_units")) is not None:
+                live_progress_rows += 1
+            progress_basis = slot.get("progress_basis")
+            has_derived_base_progress = (
+                _finite_float(slot.get("progress_pct")) is not None
+                and _finite_float(slot.get("required_points_base")) is not None
+                and _finite_float(slot.get("remaining_points_base")) is not None
+            )
+            if (
+                progress_basis == "live_progress_units/static_research_cost"
+                and has_derived_base_progress
+            ):
+                static_cost_progress_rows += 1
+            if (
+                progress_basis == "live_progress_units/dll_base_required_points"
+                and has_derived_base_progress
+            ):
+                dll_base_required_progress_rows += 1
+            progress_reason = slot.get("progress_unavailable_reason")
+            if isinstance(progress_reason, str) and progress_reason:
+                _inc_count_map(stats, "progress_unavailable_reasons", progress_reason)
+            eta_reason = slot.get("eta_unavailable_reason")
+            if isinstance(eta_reason, str) and eta_reason:
+                _inc_count_map(stats, "eta_unavailable_reasons", eta_reason)
+            if slot.get("points_factor_basis") != RESEARCH_LIVE_POINTS_FACTOR_BASIS:
+                continue
+            points_factor = _finite_float(slot.get("points_factor"))
+            if points_factor is None or points_factor <= 0:
+                continue
+            speed_rows += 1
+            max_points_factor = max(max_points_factor, points_factor)
+            eta_days = slot.get("eta_days")
+            if isinstance(eta_days, int) and not isinstance(eta_days, bool):
+                eta_rows += 1
+    if live_progress_rows:
+        stats["live_progress_frames"] = 1
+        stats["live_progress_rows"] = live_progress_rows
+        stats["max_live_progress_rows_per_frame"] = live_progress_rows
+    if static_cost_progress_rows:
+        stats["static_cost_progress_frames"] = 1
+        stats["static_cost_progress_rows"] = static_cost_progress_rows
+        stats["max_static_cost_progress_rows_per_frame"] = static_cost_progress_rows
+    if dll_base_required_progress_rows:
+        stats["dll_base_required_progress_frames"] = 1
+        stats["dll_base_required_progress_rows"] = dll_base_required_progress_rows
+        stats["max_dll_base_required_progress_rows_per_frame"] = (
+            dll_base_required_progress_rows
+        )
+    if speed_rows:
+        stats["speed_frames"] = 1
+        stats["speed_rows"] = speed_rows
+        stats["max_speed_rows_per_frame"] = speed_rows
+        stats["max_points_factor_milli"] = int(round(max_points_factor * 1000.0))
+    if eta_rows:
+        stats["eta_frames"] = 1
+        stats["eta_rows"] = eta_rows
+        stats["max_eta_rows_per_frame"] = eta_rows
+    return stats
+
+
+def _inc_count_map(stats: Dict[str, Any], key: str, reason: str) -> None:
+    counts = stats.get(key)
+    if not isinstance(counts, dict):
+        counts = {}
+        stats[key] = counts
+    counts[reason] = int(counts.get(reason) or 0) + 1
+
+
+def _research_slots_by_tag_and_key(
+    snap: Dict[str, Any],
+) -> Dict[str, Dict[Tuple[int, int, int], float]]:
+    out: Dict[str, Dict[Tuple[int, int, int], float]] = {}
+    countries = snap.get("countries")
+    if not isinstance(countries, dict):
+        return out
+    for tag, country in countries.items():
+        if not isinstance(tag, str) or not isinstance(country, dict):
+            continue
+        research = country.get("research")
+        if not isinstance(research, dict):
+            continue
+        slots = research.get("in_progress_live")
+        if not isinstance(slots, list):
+            continue
+        by_key: Dict[Tuple[int, int, int], float] = {}
+        for slot in slots:
+            if not isinstance(slot, dict):
+                continue
+            key = _research_slot_delta_key(slot)
+            progress = _research_live_slot_progress(slot)
+            if key is not None and progress is not None:
+                by_key[key] = progress
+        if by_key:
+            out[tag] = by_key
+    return out
+
+
+def _research_slot_delta_key(
+    slot: Dict[str, Any],
+) -> Optional[Tuple[int, int, int]]:
+    slot_index = _bounded_int(slot.get("slot_index"), minimum=0, maximum=64)
+    handle = _bounded_int(slot.get("tech_handle_raw"), minimum=0, maximum=10_000_000)
+    def_index = _bounded_int(
+        slot.get("tech_def_index_raw"), minimum=0, maximum=10_000_000)
+    if slot_index is None or handle is None or def_index is None:
+        return None
+    return (slot_index, handle, def_index)
+
+
+def _research_live_slot_progress(slot: Dict[str, Any]) -> Optional[float]:
+    progress = _finite_float(slot.get("live_progress_units"))
+    if progress is not None:
+        return progress
+    return _finite_float(slot.get("progress_units"))
+
+
+def _snapshot_hour_index(snap: Dict[str, Any]) -> Optional[int]:
+    value = snap.get("hour_index")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    date = snap.get("date")
+    if isinstance(date, str):
+        try:
+            return schema.date_to_hour_index(date)
+        except Exception:
+            return None
+    return None
+
+
+def _bounded_int(value: Any, *, minimum: int, maximum: int) -> Optional[int]:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if minimum <= value <= maximum:
+        return int(value)
+    return None
+
+
+def _finite_float(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    parsed = float(value)
+    if parsed != parsed or parsed in (float("inf"), float("-inf")):
+        return None
+    return parsed
+
+
+@dataclass
+class _CollectorDateInfo:
+    date: Optional[str]
+    trusted: bool = True
+    source: str = "collector"
+
+
+def record_collector_session(
+    pid: int,
+    dll: Path,
+    out_root: Path = DEFAULT_OUT_ROOT,
+    *,
+    game_id: str = "collector_session",
+    store_root: Optional[Path] = None,
+    duration_s: float = 8.0,
+    sample_ms: int = DEFAULT_SAMPLE_MS,
+    dwell_s: float = DEFAULT_DWELL_S,
+    worker_bursts: int = 1,
+    burst_interval_s: float = 0.0,
+    until_game_hours: Optional[int] = None,
+    max_wall_s: Optional[float] = None,
+    require_hourly_cadence: Optional[bool] = None,
+    country_object_bridge: Any = None,
+    country_record_bridge: Any = None,
+    division_body_bridge: Any = None,
+    army_body_bridge: Any = None,
+    naval_combat_body_bridge: Any = None,
+    air_wing_body_bridge: Any = None,
+    ship_body_bridge: Any = None,
+    oob_command_bridge: Any = None,
+    special_projects_bridge: Any = None,
+    war_relation_bridge: Any = None,
+    tech_def_filter: Any = None,
+    preflight_country_object_bridge: bool = False,
+    allow_country_cold_scan: bool = False,
+    preflight_division_movement: bool = False,
+    allow_division_cold_scan: bool = False,
+    preflight_army_orders: bool = False,
+    allow_army_cold_scan: bool = False,
+    preflight_naval_combat: bool = False,
+    preflight_air_wings: bool = False,
+    allow_air_wing_cold_scan: bool = False,
+    preflight_ships: bool = False,
+    allow_ship_cold_scan: bool = False,
+    preflight_oob_command: bool = False,
+    allow_oob_command_cold_scan: bool = False,
+    preflight_special_projects: bool = False,
+    allow_special_projects_cold_scan: bool = False,
+    preflight_war_relations: bool = False,
+    preflight_tech_defs: bool = False,
+    allow_tech_def_cold_scan: bool = False,
+    preflight_state_control: bool = False,
+    preflight_province_control: bool = False,
+    allow_province_cold_scan: bool = False,
+    scheduled_domains: Optional[Iterable[str]] = None,
+    lightweight_root_frame: bool = False,
+) -> Path:
+    """Record one collector-backed session and write session lifecycle metadata.
+
+    The current DLL worker is bounded, so ``duration_s`` is the session duration
+    for this bridge. Later, the same session manifest shape can wrap a true
+    start/stop collector without changing downstream diagnostics.
+    """
+    if duration_s <= 0:
+        raise ValueError("duration_s must be > 0")
+    if sample_ms < 10:
+        raise ValueError("sample_ms must be >= 10")
+    if worker_bursts < 1:
+        raise ValueError("worker_bursts must be >= 1")
+    if burst_interval_s < 0:
+        raise ValueError("burst_interval_s must be >= 0")
+    if max_wall_s is not None and max_wall_s <= 0:
+        raise ValueError("max_wall_s must be > 0")
+    if allow_province_cold_scan and not preflight_province_control:
+        raise ValueError("allow_province_cold_scan requires preflight_province_control")
+    if allow_country_cold_scan and not preflight_country_object_bridge:
+        raise ValueError("allow_country_cold_scan requires preflight_country_object_bridge")
+    if allow_division_cold_scan and not preflight_division_movement:
+        raise ValueError("allow_division_cold_scan requires preflight_division_movement")
+    if allow_army_cold_scan and not preflight_army_orders:
+        raise ValueError("allow_army_cold_scan requires preflight_army_orders")
+    if allow_air_wing_cold_scan and not preflight_air_wings:
+        raise ValueError("allow_air_wing_cold_scan requires preflight_air_wings")
+    if allow_ship_cold_scan and not preflight_ships:
+        raise ValueError("allow_ship_cold_scan requires preflight_ships")
+    if allow_oob_command_cold_scan and not preflight_oob_command:
+        raise ValueError("allow_oob_command_cold_scan requires preflight_oob_command")
+    if allow_special_projects_cold_scan and not preflight_special_projects:
+        raise ValueError(
+            "allow_special_projects_cold_scan requires preflight_special_projects"
+        )
+    if allow_tech_def_cold_scan and not preflight_tech_defs:
+        raise ValueError("allow_tech_def_cold_scan requires preflight_tech_defs")
+
+    started_utc = datetime.now(timezone.utc).isoformat()
+    started_monotonic = time.monotonic()
+    default_wall_s = (
+        float(duration_s) * float(worker_bursts)
+        + float(burst_interval_s) * float(max(worker_bursts - 1, 0))
+        + 7.0
+    )
+    effective_max_wall_s = (
+        max_wall_s if max_wall_s is not None else default_wall_s
+    )
+    hourly_required = (
+        until_game_hours is not None
+        if require_hourly_cadence is None else bool(require_hourly_cadence)
+    )
+    country_object_bridge_preflight = {
+        "enabled": bool(preflight_country_object_bridge),
+        "status": "not_requested",
+        "row_count": 0,
+        "allow_cold_scan": bool(allow_country_cold_scan),
+    }
+    if country_object_bridge is None and preflight_country_object_bridge:
+        preflight = resolve_country_object_bridge_preflight(
+            pid,
+            cache_path=out_root / "_preflight_cache" / "country_array.json",
+            allow_cold_scan=allow_country_cold_scan,
+        )
+        country_object_bridge_preflight = preflight.diagnostics
+        country_object_bridge_preflight["enabled"] = True
+        country_object_bridge_preflight["allow_cold_scan"] = bool(allow_country_cold_scan)
+        if preflight.usable:
+            country_object_bridge = preflight.encoded
+            country_record_bridge = preflight.record_encoded
+    division_body_bridge_preflight = {
+        "enabled": bool(preflight_division_movement),
+        "status": "not_requested",
+        "row_count": 0,
+        "allow_cold_scan": bool(allow_division_cold_scan),
+    }
+    if division_body_bridge is None and preflight_division_movement:
+        preflight = resolve_division_body_bridge_preflight(
+            pid,
+            cache_path=out_root / "_preflight_cache" / "division_bodies.json",
+            allow_cold_scan=allow_division_cold_scan,
+        )
+        division_body_bridge_preflight = preflight.diagnostics
+        division_body_bridge_preflight["enabled"] = True
+        division_body_bridge_preflight["allow_cold_scan"] = bool(
+            allow_division_cold_scan)
+        if preflight.usable:
+            division_body_bridge = preflight.encoded
+    army_body_bridge_preflight = {
+        "enabled": bool(preflight_army_orders),
+        "status": "not_requested",
+        "row_count": 0,
+        "allow_cold_scan": bool(allow_army_cold_scan),
+    }
+    if army_body_bridge is None and preflight_army_orders:
+        preflight = resolve_army_body_bridge_preflight(
+            pid,
+            cache_path=out_root / "_preflight_cache" / "army_bodies.json",
+            allow_cold_scan=allow_army_cold_scan,
+        )
+        army_body_bridge_preflight = preflight.diagnostics
+        army_body_bridge_preflight["enabled"] = True
+        army_body_bridge_preflight["allow_cold_scan"] = bool(allow_army_cold_scan)
+        if preflight.usable:
+            army_body_bridge = preflight.encoded
+    naval_combat_body_bridge_preflight = {
+        "enabled": bool(preflight_naval_combat),
+        "status": "not_requested",
+        "row_count": 0,
+    }
+    if naval_combat_body_bridge is None and preflight_naval_combat:
+        preflight = resolve_naval_combat_body_bridge_preflight(pid)
+        naval_combat_body_bridge_preflight = preflight.diagnostics
+        naval_combat_body_bridge_preflight["enabled"] = True
+        if preflight.usable:
+            naval_combat_body_bridge = preflight.encoded
+    air_wing_body_bridge_preflight = {
+        "enabled": bool(preflight_air_wings),
+        "status": "not_requested",
+        "row_count": 0,
+        "allow_cold_scan": bool(allow_air_wing_cold_scan),
+    }
+    if air_wing_body_bridge is None and preflight_air_wings:
+        preflight = resolve_air_wing_body_bridge_preflight(
+            pid,
+            cache_path=out_root / "_preflight_cache" / "air_wing_bodies.json",
+            allow_cold_scan=allow_air_wing_cold_scan,
+        )
+        air_wing_body_bridge_preflight = preflight.diagnostics
+        air_wing_body_bridge_preflight["enabled"] = True
+        air_wing_body_bridge_preflight["allow_cold_scan"] = bool(
+            allow_air_wing_cold_scan)
+        if preflight.usable:
+            air_wing_body_bridge = preflight.encoded
+    ship_body_bridge_preflight = {
+        "enabled": bool(preflight_ships),
+        "status": "not_requested",
+        "row_count": 0,
+        "allow_cold_scan": bool(allow_ship_cold_scan),
+    }
+    if ship_body_bridge is None and preflight_ships:
+        preflight = resolve_ship_body_bridge_preflight(
+            pid,
+            cache_path=out_root / "_preflight_cache" / "ship_bodies.json",
+            allow_cold_scan=allow_ship_cold_scan,
+        )
+        ship_body_bridge_preflight = preflight.diagnostics
+        ship_body_bridge_preflight["enabled"] = True
+        ship_body_bridge_preflight["allow_cold_scan"] = bool(allow_ship_cold_scan)
+        if preflight.usable:
+            ship_body_bridge = preflight.encoded
+    oob_command_bridge_preflight = {
+        "enabled": bool(preflight_oob_command),
+        "status": "not_requested",
+        "row_count": 0,
+        "allow_cold_scan": bool(allow_oob_command_cold_scan),
+    }
+    if oob_command_bridge is None and preflight_oob_command:
+        preflight = resolve_oob_command_bridge_preflight(
+            pid,
+            cache_path=out_root / "_preflight_cache" / "oob_command_roots.json",
+            allow_cold_scan=allow_oob_command_cold_scan,
+        )
+        oob_command_bridge_preflight = preflight.diagnostics
+        oob_command_bridge_preflight["enabled"] = True
+        oob_command_bridge_preflight["allow_cold_scan"] = bool(
+            allow_oob_command_cold_scan)
+        if preflight.usable:
+            oob_command_bridge = preflight.encoded
+    special_projects_bridge_preflight = {
+        "enabled": bool(preflight_special_projects),
+        "status": "not_requested",
+        "row_count": 0,
+        "allow_cold_scan": bool(allow_special_projects_cold_scan),
+    }
+    if special_projects_bridge is None and preflight_special_projects:
+        preflight = resolve_special_projects_bridge_preflight(
+            pid,
+            cache_path=out_root / "_preflight_cache" / "special_projects_roots.json",
+            allow_cold_scan=allow_special_projects_cold_scan,
+        )
+        special_projects_bridge_preflight = preflight.diagnostics
+        special_projects_bridge_preflight["enabled"] = True
+        special_projects_bridge_preflight["allow_cold_scan"] = bool(
+            allow_special_projects_cold_scan)
+        if preflight.usable:
+            special_projects_bridge = preflight.encoded
+    war_relation_bridge_preflight = {
+        "enabled": bool(preflight_war_relations),
+        "status": "not_requested",
+        "row_count": 0,
+    }
+    if war_relation_bridge is None and preflight_war_relations:
+        preflight = resolve_war_relation_bridge_preflight(pid)
+        war_relation_bridge_preflight = preflight.diagnostics
+        war_relation_bridge_preflight["enabled"] = True
+        if preflight.usable:
+            war_relation_bridge = preflight.encoded
+    map_control_state_roots = None
+    map_control_province_bridge = None
+    map_control_controller_bridge = None
+    state_control_preflight = {
+        "enabled": bool(preflight_state_control),
+        "status": "not_requested",
+        "row_count": 0,
+    }
+    province_control_preflight = {
+        "enabled": bool(preflight_province_control),
+        "status": "not_requested",
+        "row_count": 0,
+    }
+    advisor_token_filter_preflight = resolve_advisor_token_filter_preflight(pid)
+    advisor_token_filter = (
+        advisor_token_filter_preflight.encoded
+        if advisor_token_filter_preflight.usable else None
+    )
+    tech_def_filter_preflight = {
+        "enabled": bool(preflight_tech_defs),
+        "status": "not_requested",
+        "row_count": 0,
+        "allow_cold_scan": bool(allow_tech_def_cold_scan),
+    }
+    if tech_def_filter is None and preflight_tech_defs:
+        preflight = resolve_tech_def_filter_preflight(
+            pid,
+            cache_path=out_root / "_preflight_cache" / "tech_defs.json",
+            allow_cold_scan=allow_tech_def_cold_scan,
+        )
+        tech_def_filter_preflight = preflight.diagnostics
+        tech_def_filter_preflight["enabled"] = True
+        tech_def_filter_preflight["allow_cold_scan"] = bool(allow_tech_def_cold_scan)
+        if preflight.usable:
+            tech_def_filter = preflight.encoded
+    idea_group_filter_preflight = resolve_idea_group_filter_preflight(pid)
+    idea_group_filter = (
+        idea_group_filter_preflight.encoded
+        if idea_group_filter_preflight.usable else None
+    )
+    preflight_cache_root = out_root / "_preflight_cache"
+    if preflight_state_control:
+        preflight = resolve_state_control_preflight(
+            pid,
+            cache_path=preflight_cache_root / "state_roots.json",
+        )
+        state_control_preflight = preflight.diagnostics
+        state_control_preflight["enabled"] = True
+        if preflight.usable:
+            map_control_state_roots = getattr(preflight, "state_roots_encoded", None)
+    if preflight_province_control:
+        preflight = resolve_province_control_preflight(
+            pid,
+            cache_path=preflight_cache_root / "province_control.json",
+            state_cache_path=preflight_cache_root / "state_roots.json",
+            allow_cold_scan=allow_province_cold_scan,
+        )
+        province_control_preflight = preflight.diagnostics
+        province_control_preflight["enabled"] = True
+        province_control_preflight["allow_cold_scan"] = bool(allow_province_cold_scan)
+        if preflight.usable:
+            map_control_province_bridge = getattr(
+                preflight, "province_bridge_encoded", None)
+            map_control_controller_bridge = getattr(
+                preflight, "controller_bridge_encoded", None)
+
+    run_dir = record_probes(
+        pid,
+        dll,
+        out_root,
+        dwell_s=dwell_s,
+        game_id=game_id,
+        store_root=None,
+        repeat=worker_bursts,
+        interval_s=burst_interval_s,
+        until_game_hours=until_game_hours,
+        max_wall_s=effective_max_wall_s,
+        unique_store_hours_only=True,
+        worker_duration_s=duration_s,
+        worker_sample_ms=sample_ms,
+        require_hourly_cadence=hourly_required,
+        write_snapshot_artifacts=False,
+        country_object_bridge=country_object_bridge,
+        country_record_bridge=country_record_bridge,
+        division_body_bridge=division_body_bridge,
+        army_body_bridge=army_body_bridge,
+        naval_combat_body_bridge=naval_combat_body_bridge,
+        air_wing_body_bridge=air_wing_body_bridge,
+        ship_body_bridge=ship_body_bridge,
+        oob_command_bridge=oob_command_bridge,
+        special_projects_bridge=special_projects_bridge,
+        war_relation_bridge=war_relation_bridge,
+        map_control_state_roots=map_control_state_roots,
+        map_control_province_bridge=map_control_province_bridge,
+        map_control_controller_bridge=map_control_controller_bridge,
+        scheduled_snapshot_step_hours=1,
+        scheduled_domains=scheduled_domains,
+        lightweight_root_frame=lightweight_root_frame,
+        advisor_token_filter=advisor_token_filter,
+        tech_def_filter=tech_def_filter,
+        idea_group_filter=idea_group_filter,
+    )
+
+    probe_manifest_path = run_dir / "manifest.json"
+    probe_manifest = json.loads(probe_manifest_path.read_text(encoding="utf-8"))
+    session_id = _probe_session_id(run_dir, probe_manifest)
+    session_store_root = (
+        Path(store_root) / session_id if store_root is not None else run_dir / "store"
+    )
+    replay_path = run_dir / f"{game_id}.battleplan"
+    raw_frames = _frames_from_probe_manifest(
+        run_dir,
+        probe_manifest,
+        unique_game_hours_only=False,
+    )
+    raw_frame_payload_summary = _collector_frame_payload_summary(raw_frames)
+    map_control_quality = _map_control_quality_summary(
+        state_control_preflight=state_control_preflight,
+        province_control_preflight=province_control_preflight,
+        probe_manifest=probe_manifest,
+        payload_summary=raw_frame_payload_summary,
+    )
+    raw_stream_transport = _collector_stream_transport_summary(raw_frames)
+    frame_stream_path = _write_collector_frame_stream(
+        run_dir,
+        "collector_frames.jsonl",
+        raw_frames,
+    )
+    frames = _frames_from_probe_manifest(
+        run_dir,
+        probe_manifest,
+        unique_game_hours_only=True,
+    )
+    build_exe_sha256, modset = _profile_metadata_from_frames(frames)
+    frame_session = CollectorFrameSession(
+        game_id=game_id,
+        store_root=session_store_root,
+        replay_path=replay_path if frames else None,
+        target_step_hours=1,
+        pid=pid,
+        process_instance_id=_collector_process_instance_id(
+            pid, frames, build_exe_sha256),
+        modset=modset,
+        build_exe_sha256=build_exe_sha256,
+        build_pinned=build_exe_sha256 is not None,
+        finalize_every=6,
+    )
+    if frame_stream_path is not None and frame_session.recorder is not None:
+        frame_session.recorder.add_collector_raw_stream(str(frame_stream_path))
+    frame_results = frame_session.record_frames(frames)
+    stopped_utc = datetime.now(timezone.utc).isoformat()
+    elapsed_wall_s = time.monotonic() - started_monotonic
+    session_errors = _session_failure_errors(
+        probe_manifest=probe_manifest,
+        frame_results=frame_results,
+        frame_session=frame_session,
+        replay_path=replay_path,
+        map_control_quality=map_control_quality,
+    )
+
+    session_start = _session_frame(
+        "session_start",
+        session_id=session_id,
+        game_id=game_id,
+        pid=pid,
+        quality_status="session_started",
+        started_utc=started_utc,
+        duration_ms=_ms(duration_s),
+        sample_ms=sample_ms,
+        worker_bursts=worker_bursts,
+        burst_interval_ms=_ms(burst_interval_s),
+    )
+    session_stop = _session_frame(
+        "session_stop",
+        session_id=session_id,
+        game_id=game_id,
+        pid=pid,
+        quality_status=(
+            "session_error" if session_errors else _stop_quality(probe_manifest)
+        ),
+        started_utc=started_utc,
+        stopped_utc=stopped_utc,
+        elapsed_wall_ms=_ms(elapsed_wall_s),
+        stop_reason=probe_manifest.get("stop_reason"),
+        sample_count=probe_manifest.get("sample_count", len(frame_results)),
+        processed_frame_count=len(frame_results),
+        stored_snapshot_count=sum(1 for r in frame_results if r.written_path),
+        hourly_requirement=probe_manifest.get("hourly_requirement"),
+    )
+
+    _write_json(run_dir / "session_start.json", session_start)
+    _write_json(run_dir / "session_stop.json", session_stop)
+    _write_json(
+        run_dir / "session_manifest.json",
+        {
+            "type": "collector_session_manifest",
+            "session_id": session_id,
+            "created_utc": started_utc,
+            "stopped_utc": stopped_utc,
+            "runtime_source": COLLECTOR_BACKEND,
+            "mode": "bounded_worker_session_poll",
+            "game_id": game_id,
+            "pid": pid,
+            "dll": Path(dll).name,
+            "duration_ms": _ms(duration_s),
+            "sample_ms": sample_ms,
+            "dwell_ms": _ms(dwell_s),
+            "worker_bursts": worker_bursts,
+            "burst_interval_ms": _ms(burst_interval_s),
+            "until_game_hours": until_game_hours,
+            "max_wall_ms": _ms(effective_max_wall_s),
+            "require_hourly_cadence": hourly_required,
+            "country_object_bridge_preflight": country_object_bridge_preflight,
+            "country_object_bridge_supplied": probe_manifest.get(
+                "country_object_bridge_supplied"),
+            "country_object_bridge_rows": probe_manifest.get(
+                "country_object_bridge_rows"),
+            "country_record_bridge_supplied": probe_manifest.get(
+                "country_record_bridge_supplied"),
+            "country_record_bridge_rows": probe_manifest.get(
+                "country_record_bridge_rows"),
+            "special_projects_scan": probe_manifest.get("special_projects_scan"),
+            "division_body_bridge_preflight": division_body_bridge_preflight,
+            "division_body_bridge_supplied": probe_manifest.get(
+                "division_body_bridge_supplied"),
+            "division_body_bridge_rows": probe_manifest.get(
+                "division_body_bridge_rows"),
+            "army_body_bridge_preflight": army_body_bridge_preflight,
+            "army_body_bridge_supplied": probe_manifest.get(
+                "army_body_bridge_supplied"),
+            "army_body_bridge_rows": probe_manifest.get(
+                "army_body_bridge_rows"),
+            "naval_combat_body_bridge_preflight": naval_combat_body_bridge_preflight,
+            "naval_combat_body_bridge_supplied": probe_manifest.get(
+                "naval_combat_body_bridge_supplied"),
+            "naval_combat_body_bridge_rows": probe_manifest.get(
+                "naval_combat_body_bridge_rows"),
+            "air_wing_body_bridge_preflight": air_wing_body_bridge_preflight,
+            "air_wing_body_bridge_supplied": probe_manifest.get(
+                "air_wing_body_bridge_supplied"),
+            "air_wing_body_bridge_rows": probe_manifest.get(
+                "air_wing_body_bridge_rows"),
+            "ship_body_bridge_preflight": ship_body_bridge_preflight,
+            "ship_body_bridge_supplied": probe_manifest.get(
+                "ship_body_bridge_supplied"),
+            "ship_body_bridge_rows": probe_manifest.get(
+                "ship_body_bridge_rows"),
+            "oob_command_bridge_preflight": oob_command_bridge_preflight,
+            "oob_command_bridge_supplied": probe_manifest.get(
+                "oob_command_bridge_supplied"),
+            "oob_command_bridge_rows": probe_manifest.get(
+                "oob_command_bridge_rows"),
+            "special_projects_bridge_preflight": special_projects_bridge_preflight,
+            "special_projects_bridge_supplied": probe_manifest.get(
+                "special_projects_bridge_supplied"),
+            "special_projects_bridge_rows": probe_manifest.get(
+                "special_projects_bridge_rows"),
+            "war_relation_bridge_preflight": war_relation_bridge_preflight,
+            "war_relation_bridge_supplied": probe_manifest.get(
+                "war_relation_bridge_supplied"),
+            "war_relation_bridge_rows": probe_manifest.get(
+                "war_relation_bridge_rows"),
+            "state_control_preflight": state_control_preflight,
+            "province_control_preflight": province_control_preflight,
+            "map_control_state_roots_supplied": probe_manifest.get(
+                "map_control_state_roots_supplied"),
+            "map_control_state_root_rows": probe_manifest.get(
+                "map_control_state_root_rows"),
+            "map_control_province_bridge_supplied": probe_manifest.get(
+                "map_control_province_bridge_supplied"),
+            "map_control_controller_bridge_supplied": probe_manifest.get(
+                "map_control_controller_bridge_supplied"),
+            "map_control_controller_bridge_rows": probe_manifest.get(
+                "map_control_controller_bridge_rows"),
+            "advisor_token_filter_preflight": advisor_token_filter_preflight.diagnostics,
+            "advisor_token_filter_supplied": probe_manifest.get(
+                "advisor_token_filter_supplied"),
+            "advisor_token_filter_tokens": probe_manifest.get(
+                "advisor_token_filter_tokens"),
+            "advisor_token_filter_sha256": probe_manifest.get(
+                "advisor_token_filter_sha256"),
+            "tech_def_filter_preflight": tech_def_filter_preflight,
+            "tech_def_filter_supplied": probe_manifest.get(
+                "tech_def_filter_supplied"),
+            "tech_def_filter_rows": probe_manifest.get(
+                "tech_def_filter_rows"),
+            "tech_def_filter_sha256": probe_manifest.get(
+                "tech_def_filter_sha256"),
+            "idea_group_filter_preflight": idea_group_filter_preflight.diagnostics,
+            "idea_group_filter_supplied": probe_manifest.get(
+                "idea_group_filter_supplied"),
+            "idea_group_filter_rows": probe_manifest.get(
+                "idea_group_filter_rows"),
+            "idea_group_filter_sha256": probe_manifest.get(
+                "idea_group_filter_sha256"),
+            "proof_compat_manifest": "manifest.json",
+            "session_start_frame": "session_start.json",
+            "session_stop_frame": "session_stop.json",
+            "collector_frame_stream": frame_stream_path.name if frame_stream_path else None,
+            "raw_collector_frame_count": len(raw_frames),
+            "duplicate_game_hour_frame_count": max(0, len(raw_frames) - len(frames)),
+            "collector_frame_payload_summary": raw_frame_payload_summary,
+            "map_control_quality": map_control_quality,
+            "canonical_snapshot_step_hours": 1,
+            "frame_stream_granularity": {
+                "sample_ms": sample_ms,
+                "stores_every_valid_collector_frame": True,
+                "canonical_snapshots_unique_game_hours_only": True,
+            },
+            "replay_file": replay_path.name,
+            "replay_verified": _safe_verify_container(replay_path),
+            "probe_stop_reason": probe_manifest.get("stop_reason"),
+            "session_errors": session_errors,
+            "elapsed_wall_ms": _ms(elapsed_wall_s),
+            "sample_count": probe_manifest.get("sample_count", len(frame_results)),
+            "processed_frame_count": len(frame_results),
+            "stored_snapshot_count": sum(1 for r in frame_results if r.written_path),
+            "unique_game_date_count": probe_manifest.get("unique_game_date_count"),
+            "game_hours_advanced": probe_manifest.get("game_hours_advanced"),
+            "skipped_game_hours": probe_manifest.get("skipped_game_hours"),
+            "hourly_requirement": probe_manifest.get("hourly_requirement"),
+            "recording_diagnostics": frame_session.diagnostics(),
+            "transport": {
+                "worker_pipe_token_count": len(
+                    probe_manifest.get("worker_pipe_tokens") or []),
+                "sequence_mode": probe_manifest.get("transport_sequence_mode"),
+                "monotonic_sequence": probe_manifest.get(
+                    "monotonic_transport_sequence"),
+                "duplicate_sequences": probe_manifest.get(
+                    "duplicate_transport_sequences"),
+                "burst_local_monotonic_sequence": probe_manifest.get(
+                    "burst_local_monotonic_transport_sequence"),
+                "burst_local_duplicate_sequences": probe_manifest.get(
+                    "burst_local_duplicate_transport_sequences"),
+                "bursts": probe_manifest.get("transport_bursts") or [],
+                "first_sequence": probe_manifest.get("first_sequence"),
+                "last_sequence": probe_manifest.get("last_sequence"),
+                "raw_stream": raw_stream_transport,
+            },
+        },
+    )
+    if session_errors:
+        raise RuntimeError("collector session failed closed: "
+                           + "; ".join(session_errors[:8]))
+    return run_dir
+
+
+def _frames_from_probe_manifest(
+    run_dir: Path,
+    probe_manifest: Dict[str, Any],
+    *,
+    unique_game_hours_only: bool = True,
+) -> List[Dict[str, Any]]:
+    frames: List[Dict[str, Any]] = []
+    errors: List[str] = []
+    session_id = _probe_session_id(run_dir, probe_manifest)
+    samples = probe_manifest.get("samples")
+    if not isinstance(samples, list):
+        raise RuntimeError("collector probe manifest samples missing or not list")
+    entries: List[Tuple[str, int, Dict[str, Any]]] = [
+        ("samples", i, sample) for i, sample in enumerate(samples)
+    ]
+    if not unique_game_hours_only:
+        raw_entries = probe_manifest.get("raw_frames") or []
+        if not isinstance(raw_entries, list):
+            raise RuntimeError("collector probe manifest raw_frames not list")
+        entries.extend(
+            ("raw_frames", i, sample) for i, sample in enumerate(raw_entries)
+        )
+        entries.sort(key=lambda item: _manifest_entry_order(item[2]))
+    for label, i, sample in entries:
+        if not isinstance(sample, dict):
+            errors.append(f"{label}[{i}] not object")
+            continue
+        frame_name = sample.get("frame")
+        if not isinstance(frame_name, str):
+            errors.append(f"{label}[{i}].frame missing")
+            continue
+        frame_rel = Path(frame_name)
+        if frame_rel.name != frame_name:
+            errors.append(f"{label}[{i}].frame unsafe path")
+            continue
+        frame_path = run_dir / frame_rel
+        try:
+            frame = json.loads(frame_path.read_text(encoding="utf-8"))
+        except OSError as exc:
+            errors.append(f"{label}[{i}].frame unreadable: {exc}")
+            continue
+        except ValueError as exc:
+            errors.append(f"{label}[{i}].frame invalid json: {exc}")
+            continue
+        frame_session_id = frame.get("session_id")
+        if frame_session_id is None:
+            frame["session_id"] = session_id
+        elif frame_session_id != session_id:
+            errors.append(
+                f"{label}[{i}].frame session_id {frame_session_id!r} != "
+                f"{session_id!r}")
+            continue
+        for key in ("worker_burst_index", "burst_sample_index", "worker_pipe_token"):
+            if key in sample and key not in frame:
+                frame[key] = sample[key]
+        problems = validate_collector_frame(frame)
+        if problems:
+            errors.append(
+                f"{label}[{i}].frame invalid: {'; '.join(problems)}")
+            continue
+        frames.append(frame)
+    if errors:
+        raise RuntimeError("collector probe frame load failed: "
+                           + "; ".join(errors[:8]))
+    if unique_game_hours_only:
+        return _prefer_scheduled_frames_by_game_hour(frames)
+    return frames
+
+
+def _manifest_entry_order(entry: Dict[str, Any]) -> Tuple[int, int, int]:
+    burst = entry.get("worker_burst_index")
+    burst_sample = entry.get("burst_sample_index")
+    sample_index = entry.get("sample_index", entry.get("raw_index"))
+    return (
+        burst if isinstance(burst, int) else 1 << 30,
+        burst_sample if isinstance(burst_sample, int) else 1 << 30,
+        sample_index if isinstance(sample_index, int) else 1 << 30,
+    )
+
+
+def _prefer_scheduled_frames_by_game_hour(
+    frames: Iterable[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    selected: List[Dict[str, Any]] = []
+    by_raw_hour: Dict[int, int] = {}
+    for frame in frames:
+        root_probe = frame.get("root_probe")
+        raw_hour = (
+            root_probe.get("current_game_date_raw")
+            if isinstance(root_probe, dict) else None
+        )
+        if not isinstance(raw_hour, int):
+            selected.append(frame)
+            continue
+        existing_index = by_raw_hour.get(raw_hour)
+        if existing_index is None:
+            by_raw_hour[raw_hour] = len(selected)
+            selected.append(frame)
+            continue
+        existing = selected[existing_index]
+        if (
+            existing.get("capture_boundary") != "scheduled_hour_snapshot"
+            and frame.get("capture_boundary") == "scheduled_hour_snapshot"
+        ):
+            selected[existing_index] = frame
+    return selected
+
+
+def _collector_frame_payload_summary(frames: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+    domains_seen: set[str] = set()
+    frames_with_states = 0
+    frames_with_provinces = 0
+    frames_with_countries = 0
+    max_country_rows = 0
+    max_state_rows = 0
+    max_province_rows = 0
+    state_control_frames = 0
+    province_control_frames = 0
+    state_ownership_frames = 0
+    state_detail_frames = 0
+    country_scalars_frames = 0
+    country_misc_frames = 0
+    fuel_live_frames = 0
+    focus_live_frames = 0
+    tech_live_frames = 0
+    projects_live_frames = 0
+    decisions_live_frames = 0
+    diplomacy_live_frames = 0
+    politics_live_frames = 0
+    politics_residuals_frames = 0
+    buildings_live_frames = 0
+    scheduled_production_domain_frames = 0
+    scheduled_focus_domain_frames = 0
+    scheduled_tech_domain_frames = 0
+    scheduled_projects_domain_frames = 0
+    scheduled_decisions_domain_frames = 0
+    scheduled_diplomacy_domain_frames = 0
+    scheduled_politics_domain_frames = 0
+    scheduled_politics_residuals_domain_frames = 0
+    scheduled_state_detail_domain_frames = 0
+    scheduled_buildings_domain_frames = 0
+    country_rows_with_scalar_payloads = 0
+    country_rows_with_non_null_scalar_values = 0
+    max_country_scalar_rows_per_frame = 0
+    frames_with_production_payloads = 0
+    country_rows_with_production_payloads = 0
+    max_production_country_rows_per_frame = 0
+    frames_with_focus_payloads = 0
+    country_rows_with_focus_payloads = 0
+    max_focus_country_rows_per_frame = 0
+    max_focus_completed_rows_per_country = 0
+    frames_with_research_payloads = 0
+    country_rows_with_research_payloads = 0
+    max_research_country_rows_per_frame = 0
+    max_research_active_rows_per_country = 0
+    research_named_slot_frames = 0
+    research_named_slot_rows = 0
+    country_rows_with_research_named_slots = 0
+    max_research_named_slot_rows_per_frame = 0
+    max_research_named_slot_rows_per_country = 0
+    research_live_progress_slot_frames = 0
+    research_live_progress_slot_rows = 0
+    country_rows_with_research_live_progress_slots = 0
+    max_research_live_progress_rows_per_frame = 0
+    max_research_live_progress_rows_per_country = 0
+    frames_with_special_projects_payloads = 0
+    special_project_facility_rows = 0
+    special_project_rows = 0
+    special_project_scientist_rows = 0
+    special_project_active_facility_rows = 0
+    special_project_facility_active_project_links = 0
+    special_project_facility_scientist_links = 0
+    special_project_iteration_rows = 0
+    special_project_worked_facility_links = 0
+    max_special_project_facilities_per_frame = 0
+    max_special_project_rows_per_frame = 0
+    max_special_project_scientists_per_frame = 0
+    max_special_project_active_facilities_per_frame = 0
+    max_special_project_active_project_links_per_frame = 0
+    max_special_project_facility_scientist_links_per_frame = 0
+    max_special_project_worked_facility_links_per_frame = 0
+    frames_with_decisions_payloads = 0
+    country_rows_with_decisions_payloads = 0
+    max_decisions_country_rows_per_frame = 0
+    max_decisions_status_keys_per_country = 0
+    max_decisions_timed_rows_per_country = 0
+    frames_with_diplomacy_payloads = 0
+    country_rows_with_diplomacy_payloads = 0
+    country_rows_with_diplomacy_at_war = 0
+    country_rows_with_diplomacy_casualties = 0
+    max_diplomacy_country_rows_per_frame = 0
+    max_diplomacy_faction_groups_per_frame = 0
+    diplomacy_war_relation_frames = 0
+    diplomacy_war_relation_rows = 0
+    max_diplomacy_war_relations_per_frame = 0
+    max_diplomacy_casualty_sum_per_frame = 0
+    diplomacy_war_subtype_warning_frames = 0
+    frames_with_politics_payloads = 0
+    country_rows_with_politics_payloads = 0
+    max_politics_country_rows_per_frame = 0
+    country_rows_with_politics_ideas = 0
+    max_politics_idea_rows_per_country = 0
+    politics_leader_frames = 0
+    country_rows_with_politics_leader = 0
+    max_politics_leader_rows_per_frame = 0
+    country_rows_with_politics_laws = 0
+    country_rows_with_politics_idea_groups = 0
+    country_rows_with_politics_advisor_ideas = 0
+    country_rows_with_politics_ideas_other = 0
+    country_rows_with_politics_national_spirits = 0
+    max_politics_law_keys_per_country = 0
+    max_politics_idea_group_keys_per_country = 0
+    max_politics_advisor_idea_keys_per_country = 0
+    max_politics_advisor_idea_tokens_per_country = 0
+    max_politics_ideas_other_tokens_per_country = 0
+    max_politics_national_spirit_tokens_per_country = 0
+    frames_with_politics_residual_payloads = 0
+    country_rows_with_politics_residual_payloads = 0
+    max_politics_residual_country_rows_per_frame = 0
+    country_rows_with_appointed_advisors = 0
+    country_rows_with_appointed_advisor_details = 0
+    country_rows_with_appointed_advisor_slots = 0
+    country_rows_with_appointed_advisor_ledgers = 0
+    appointed_advisor_rows = 0
+    appointed_advisor_detail_rows = 0
+    appointed_advisor_slot_rows = 0
+    appointed_advisor_ledger_rows = 0
+    max_appointed_advisors_per_country = 0
+    max_appointed_advisor_details_per_country = 0
+    max_appointed_advisor_slots_per_country = 0
+    max_appointed_advisor_ledgers_per_country = 0
+    frames_with_building_payloads = 0
+    state_rows_with_buildings = 0
+    province_rows_with_buildings = 0
+    state_rows_with_nonempty_buildings = 0
+    province_rows_with_nonempty_buildings = 0
+    state_resource_frames = 0
+    state_rows_with_resources = 0
+    state_rows_with_nonempty_resources = 0
+    state_resource_entries = 0
+    max_state_resource_rows_per_frame = 0
+    max_state_resource_entries_per_state = 0
+    max_state_building_rows_per_frame = 0
+    max_province_building_rows_per_frame = 0
+    max_building_types_per_location = 0
+    max_production_stockpile_entries = 0
+    max_production_military_line_rows = 0
+    max_production_naval_line_rows = 0
+    construction_queue_frames = 0
+    country_rows_with_construction_queue = 0
+    construction_queue_rows = 0
+    max_construction_queue_rows_per_frame = 0
+    max_construction_queue_rows_per_country = 0
+    production_on_lightweight_frames = 0
+    focus_on_lightweight_frames = 0
+    tech_on_lightweight_frames = 0
+    projects_on_lightweight_frames = 0
+    decisions_on_lightweight_frames = 0
+    diplomacy_on_lightweight_frames = 0
+    politics_on_lightweight_frames = 0
+    politics_residuals_on_lightweight_frames = 0
+    buildings_on_lightweight_frames = 0
+    frames_by_type: Dict[str, int] = {}
+    raw_event_types_seen: set[str] = set()
+    raw_event_type_counts: Dict[str, int] = {}
+    raw_event_domain_counts: Dict[str, int] = {}
+    raw_event_type_domain_counts: Dict[str, int] = {}
+    raw_delta_domains_seen: set[str] = set()
+    raw_delta_domain_counts: Dict[str, int] = {}
+    raw_delta_domain_object_counts: Dict[str, int] = {}
+    raw_delta_domain_null_counts: Dict[str, int] = {}
+    raw_delta_domain_worker_poll_counts: Dict[str, int] = {}
+    raw_delta_domain_scheduled_counts: Dict[str, int] = {}
+    raw_gap_domains_seen: set[str] = set()
+    raw_gap_domain_counts: Dict[str, int] = {}
+    oob_command_leader_skill_rows = 0
+    oob_command_leader_traits_rows = 0
+    oob_command_leader_trait_tokens = 0
+    oob_command_leader_trait_exact_rows = 0
+    max_oob_command_leader_trait_tokens_per_row = 0
+    oob_command_exact_army_leader_detail_rows = 0
+    oob_command_exact_army_leader_trait_tokens = 0
+    max_oob_command_exact_army_leader_trait_tokens_per_row = 0
+    country_object_identity_statuses: Dict[str, int] = {}
+    country_object_identity_max_object_count = 0
+    country_object_identity_max_scan_ms = 0
+    frames_by_capture_boundary: Dict[str, int] = {}
+    heavy_payload_on_lightweight_frames = 0
+    for frame in frames:
+        frame_type = frame.get("type")
+        if isinstance(frame_type, str):
+            frames_by_type[frame_type] = frames_by_type.get(frame_type, 0) + 1
+        if frame_type == "event":
+            domain = frame.get("domain")
+            if isinstance(domain, str):
+                raw_event_domain_counts[domain] = (
+                    raw_event_domain_counts.get(domain, 0) + 1
+                )
+            event_type = frame.get("event_type")
+            if not isinstance(event_type, str):
+                payload = frame.get("payload")
+                if isinstance(payload, dict):
+                    event_type = payload.get("event_type")
+            if isinstance(event_type, str):
+                raw_event_types_seen.add(event_type)
+                raw_event_type_counts[event_type] = (
+                    raw_event_type_counts.get(event_type, 0) + 1
+                )
+                if isinstance(domain, str):
+                    domain_key = f"{domain}:{event_type}"
+                    raw_event_type_domain_counts[domain_key] = (
+                        raw_event_type_domain_counts.get(domain_key, 0) + 1
+                    )
+        elif frame_type == "domain_delta":
+            domain = frame.get("domain")
+            if isinstance(domain, str):
+                raw_delta_domains_seen.add(domain)
+                raw_delta_domain_counts[domain] = (
+                    raw_delta_domain_counts.get(domain, 0) + 1
+                )
+                if frame.get("capture_boundary") == "worker_poll":
+                    raw_delta_domain_worker_poll_counts[domain] = (
+                        raw_delta_domain_worker_poll_counts.get(domain, 0) + 1
+                    )
+                elif frame.get("capture_boundary") == "scheduled_hour_snapshot":
+                    raw_delta_domain_scheduled_counts[domain] = (
+                        raw_delta_domain_scheduled_counts.get(domain, 0) + 1
+                    )
+                payload = frame.get("payload")
+                if isinstance(payload, dict):
+                    after = payload.get("after")
+                    if isinstance(after, dict):
+                        raw_delta_domain_object_counts[domain] = (
+                            raw_delta_domain_object_counts.get(domain, 0) + 1
+                        )
+                        if domain == "oob_command":
+                            leader_skill = after.get("leader_skill")
+                            if isinstance(leader_skill, int) and not isinstance(
+                                leader_skill, bool
+                            ):
+                                oob_command_leader_skill_rows += 1
+                            leader_traits = after.get("leader_traits")
+                            if isinstance(leader_traits, list):
+                                oob_command_leader_traits_rows += 1
+                                oob_command_leader_trait_tokens += len(leader_traits)
+                                max_oob_command_leader_trait_tokens_per_row = max(
+                                    max_oob_command_leader_trait_tokens_per_row,
+                                    len(leader_traits),
+                                )
+                            if after.get("leader_trait_status") == "exact":
+                                oob_command_leader_trait_exact_rows += 1
+                            if (
+                                after.get("entity_kind") == "army"
+                                and isinstance(after.get("leader_id"), int)
+                                and not isinstance(after.get("leader_id"), bool)
+                                and after.get("leader_status") == "exact"
+                                and isinstance(leader_skill, int)
+                                and not isinstance(leader_skill, bool)
+                                and isinstance(leader_traits, list)
+                                and after.get("leader_trait_status") == "exact"
+                            ):
+                                oob_command_exact_army_leader_detail_rows += 1
+                                oob_command_exact_army_leader_trait_tokens += (
+                                    len(leader_traits))
+                                max_oob_command_exact_army_leader_trait_tokens_per_row = max(
+                                    max_oob_command_exact_army_leader_trait_tokens_per_row,
+                                    len(leader_traits),
+                                )
+                    elif after is None:
+                        raw_delta_domain_null_counts[domain] = (
+                            raw_delta_domain_null_counts.get(domain, 0) + 1
+                        )
+                if _is_raw_gap_domain_delta(frame):
+                    raw_gap_domains_seen.add(domain)
+                    raw_gap_domain_counts[domain] = (
+                        raw_gap_domain_counts.get(domain, 0) + 1
+                    )
+        elif frame_type == "gap":
+            domain = frame.get("domain")
+            if isinstance(domain, str):
+                raw_gap_domains_seen.add(domain)
+                raw_gap_domain_counts[domain] = (
+                    raw_gap_domain_counts.get(domain, 0) + 1
+                )
+        boundary = frame.get("capture_boundary")
+        if isinstance(boundary, str):
+            frames_by_capture_boundary[boundary] = (
+                frames_by_capture_boundary.get(boundary, 0) + 1
+            )
+        domains = frame.get("domains")
+        if isinstance(domains, list):
+            for domain in domains:
+                if isinstance(domain, str):
+                    domains_seen.add(domain)
+            if "state_control" in domains:
+                state_control_frames += 1
+            if "province_control" in domains:
+                province_control_frames += 1
+            if "state_ownership" in domains:
+                state_ownership_frames += 1
+            if "state_detail" in domains:
+                state_detail_frames += 1
+            if "country_scalars" in domains:
+                country_scalars_frames += 1
+            if "country_misc" in domains:
+                country_misc_frames += 1
+            if "fuel_live" in domains:
+                fuel_live_frames += 1
+            if "focus_live" in domains:
+                focus_live_frames += 1
+            if "tech_live" in domains:
+                tech_live_frames += 1
+            if "projects_live" in domains:
+                projects_live_frames += 1
+            if "decisions_live" in domains:
+                decisions_live_frames += 1
+            if "diplomacy_live" in domains:
+                diplomacy_live_frames += 1
+            if "politics_live" in domains:
+                politics_live_frames += 1
+            if "politics_residuals" in domains:
+                politics_residuals_frames += 1
+            if "buildings_live" in domains:
+                buildings_live_frames += 1
+            production_domain_claimed = "production_live" in domains
+            focus_domain_claimed = "focus_live" in domains
+            tech_domain_claimed = "tech_live" in domains
+            projects_domain_claimed = "projects_live" in domains
+            decisions_domain_claimed = "decisions_live" in domains
+            diplomacy_domain_claimed = "diplomacy_live" in domains
+            politics_domain_claimed = "politics_live" in domains
+            politics_residuals_domain_claimed = "politics_residuals" in domains
+            state_detail_domain_claimed = "state_detail" in domains
+            buildings_domain_claimed = "buildings_live" in domains
+        else:
+            production_domain_claimed = False
+            focus_domain_claimed = False
+            tech_domain_claimed = False
+            projects_domain_claimed = False
+            decisions_domain_claimed = False
+            diplomacy_domain_claimed = False
+            politics_domain_claimed = False
+            politics_residuals_domain_claimed = False
+            state_detail_domain_claimed = False
+            buildings_domain_claimed = False
+        root_probe = frame.get("root_probe")
+        if isinstance(root_probe, dict):
+            identity = root_probe.get("country_object_identity")
+            if isinstance(identity, dict):
+                status = identity.get("status")
+                if isinstance(status, str):
+                    country_object_identity_statuses[status] = (
+                        country_object_identity_statuses.get(status, 0) + 1)
+                object_count = _int_value(identity.get("object_count"))
+                country_object_identity_max_object_count = max(
+                    country_object_identity_max_object_count, object_count)
+                scan_ms = _int_value(identity.get("scan_ms"))
+                country_object_identity_max_scan_ms = max(
+                    country_object_identity_max_scan_ms, scan_ms)
+        if (
+            production_domain_claimed
+            and boundary == "scheduled_hour_snapshot"
+        ):
+            scheduled_production_domain_frames += 1
+        if (
+            focus_domain_claimed
+            and boundary == "scheduled_hour_snapshot"
+        ):
+            scheduled_focus_domain_frames += 1
+        if (
+            tech_domain_claimed
+            and boundary == "scheduled_hour_snapshot"
+        ):
+            scheduled_tech_domain_frames += 1
+        if (
+            projects_domain_claimed
+            and boundary == "scheduled_hour_snapshot"
+        ):
+            scheduled_projects_domain_frames += 1
+        if (
+            decisions_domain_claimed
+            and boundary == "scheduled_hour_snapshot"
+        ):
+            scheduled_decisions_domain_frames += 1
+        if (
+            diplomacy_domain_claimed
+            and boundary == "scheduled_hour_snapshot"
+        ):
+            scheduled_diplomacy_domain_frames += 1
+        if (
+            politics_domain_claimed
+            and boundary == "scheduled_hour_snapshot"
+        ):
+            scheduled_politics_domain_frames += 1
+        if (
+            politics_residuals_domain_claimed
+            and boundary == "scheduled_hour_snapshot"
+        ):
+            scheduled_politics_residuals_domain_frames += 1
+        if (
+            state_detail_domain_claimed
+            and boundary == "scheduled_hour_snapshot"
+        ):
+            scheduled_state_detail_domain_frames += 1
+        if (
+            buildings_domain_claimed
+            and boundary == "scheduled_hour_snapshot"
+        ):
+            scheduled_buildings_domain_frames += 1
+        countries = frame.get("countries")
+        scalar_rows_in_frame = 0
+        production_rows_in_frame = 0
+        focus_rows_in_frame = 0
+        research_rows_in_frame = 0
+        research_named_rows_in_frame = 0
+        research_live_progress_rows_in_frame = 0
+        decisions_rows_in_frame = 0
+        diplomacy_rows_in_frame = 0
+        diplomacy_faction_groups_in_frame: set[int] = set()
+        politics_rows_in_frame = 0
+        politics_leader_rows_in_frame = 0
+        politics_residual_rows_in_frame = 0
+        construction_queue_rows_in_frame = 0
+        state_building_rows_in_frame = 0
+        state_resource_rows_in_frame = 0
+        state_resource_entries_in_frame = 0
+        province_building_rows_in_frame = 0
+        heavy_payload_in_lightweight_frame = False
+        special_projects = frame.get("special_projects")
+        special_projects_payload_in_frame = False
+        diplomacy_live = frame.get("diplomacy_live")
+        diplomacy_sidecar_payload_in_frame = False
+        if isinstance(diplomacy_live, dict):
+            war_relations = diplomacy_live.get("war_relations")
+            if isinstance(war_relations, list):
+                diplomacy_sidecar_payload_in_frame = True
+                if war_relations:
+                    diplomacy_war_relation_frames += 1
+                    diplomacy_war_relation_rows += len(war_relations)
+                    max_diplomacy_war_relations_per_frame = max(
+                        max_diplomacy_war_relations_per_frame,
+                        len(war_relations),
+                    )
+                    casualty_sum = 0
+                    for relation in war_relations:
+                        if not isinstance(relation, dict):
+                            continue
+                        for key in ("first_casualties", "second_casualties"):
+                            value = relation.get(key)
+                            if isinstance(value, int) and not isinstance(value, bool):
+                                casualty_sum += max(0, value)
+                    max_diplomacy_casualty_sum_per_frame = max(
+                        max_diplomacy_casualty_sum_per_frame,
+                        casualty_sum,
+                    )
+            subtype_warning = diplomacy_live.get("subtype_warning")
+            if isinstance(subtype_warning, dict) and subtype_warning:
+                diplomacy_sidecar_payload_in_frame = True
+                diplomacy_war_subtype_warning_frames += 1
+            faction_members = diplomacy_live.get("faction_members")
+            if isinstance(faction_members, dict):
+                diplomacy_sidecar_payload_in_frame = True
+        if isinstance(special_projects, dict):
+            facilities = special_projects.get("facilities")
+            projects = special_projects.get("projects")
+            scientists = special_projects.get("scientists")
+            if isinstance(facilities, list):
+                special_projects_payload_in_frame = True
+                special_project_facility_rows += len(facilities)
+                active_facilities_in_frame = 0
+                active_project_links_in_frame = 0
+                facility_scientist_links_in_frame = 0
+                for facility in facilities:
+                    if not isinstance(facility, dict):
+                        continue
+                    if facility.get("active") is True:
+                        active_facilities_in_frame += 1
+                    active_project_handle = facility.get("active_project_handle")
+                    if (
+                        isinstance(active_project_handle, int)
+                        and not isinstance(active_project_handle, bool)
+                        and active_project_handle > 0
+                    ):
+                        active_project_links_in_frame += 1
+                    scientist_char_id = facility.get("scientist_char_id")
+                    if (
+                        isinstance(scientist_char_id, int)
+                        and not isinstance(scientist_char_id, bool)
+                        and scientist_char_id > 0
+                    ):
+                        facility_scientist_links_in_frame += 1
+                special_project_active_facility_rows += active_facilities_in_frame
+                special_project_facility_active_project_links += (
+                    active_project_links_in_frame)
+                special_project_facility_scientist_links += (
+                    facility_scientist_links_in_frame)
+                max_special_project_facilities_per_frame = max(
+                    max_special_project_facilities_per_frame,
+                    len(facilities),
+                )
+                max_special_project_active_facilities_per_frame = max(
+                    max_special_project_active_facilities_per_frame,
+                    active_facilities_in_frame,
+                )
+                max_special_project_active_project_links_per_frame = max(
+                    max_special_project_active_project_links_per_frame,
+                    active_project_links_in_frame,
+                )
+                max_special_project_facility_scientist_links_per_frame = max(
+                    max_special_project_facility_scientist_links_per_frame,
+                    facility_scientist_links_in_frame,
+                )
+            if isinstance(projects, list):
+                special_projects_payload_in_frame = True
+                special_project_rows += len(projects)
+                iteration_rows_in_frame = 0
+                worked_facility_links_in_frame = 0
+                for project in projects:
+                    if not isinstance(project, dict):
+                        continue
+                    iterations = project.get("iterations")
+                    if (
+                        isinstance(iterations, int)
+                        and not isinstance(iterations, bool)
+                        and iterations >= 0
+                    ):
+                        iteration_rows_in_frame += 1
+                    worked_at_facility = project.get("worked_at_facility")
+                    if (
+                        isinstance(worked_at_facility, int)
+                        and not isinstance(worked_at_facility, bool)
+                        and worked_at_facility > 0
+                    ):
+                        worked_facility_links_in_frame += 1
+                special_project_iteration_rows += iteration_rows_in_frame
+                special_project_worked_facility_links += (
+                    worked_facility_links_in_frame)
+                max_special_project_rows_per_frame = max(
+                    max_special_project_rows_per_frame,
+                    len(projects),
+                )
+                max_special_project_worked_facility_links_per_frame = max(
+                    max_special_project_worked_facility_links_per_frame,
+                    worked_facility_links_in_frame,
+                )
+            if isinstance(scientists, list):
+                special_projects_payload_in_frame = True
+                special_project_scientist_rows += len(scientists)
+                max_special_project_scientists_per_frame = max(
+                    max_special_project_scientists_per_frame,
+                    len(scientists),
+                )
+        if special_projects_payload_in_frame:
+            frames_with_special_projects_payloads += 1
+        if isinstance(countries, dict):
+            frames_with_countries += 1
+            max_country_rows = max(max_country_rows, len(countries))
+            for row in countries.values():
+                if not isinstance(row, dict):
+                    continue
+                scalars = row.get("scalars")
+                if isinstance(scalars, dict):
+                    scalar_rows_in_frame += 1
+                    if any(
+                        isinstance(value, (int, float)) and not isinstance(value, bool)
+                        for value in scalars.values()
+                    ):
+                        country_rows_with_non_null_scalar_values += 1
+                politics = row.get("politics")
+                if politics is not None:
+                    politics_rows_in_frame += 1
+                    if isinstance(politics, dict):
+                        if (
+                            "last_election" in politics
+                            or "elections_allowed" in politics
+                        ):
+                            politics_residual_rows_in_frame += 1
+                        appointed_advisors = politics.get("appointed_advisors")
+                        if isinstance(appointed_advisors, list):
+                            country_rows_with_appointed_advisors += 1
+                            appointed_advisor_rows += len(appointed_advisors)
+                            max_appointed_advisors_per_country = max(
+                                max_appointed_advisors_per_country,
+                                len(appointed_advisors),
+                            )
+                        advisor_details = politics.get("appointed_advisor_details")
+                        if isinstance(advisor_details, list):
+                            country_rows_with_appointed_advisor_details += 1
+                            appointed_advisor_detail_rows += len(advisor_details)
+                            max_appointed_advisor_details_per_country = max(
+                                max_appointed_advisor_details_per_country,
+                                len(advisor_details),
+                            )
+                        advisor_slots = politics.get("appointed_advisor_slots")
+                        if isinstance(advisor_slots, dict):
+                            token_count = sum(
+                                len(tokens)
+                                for tokens in advisor_slots.values()
+                                if isinstance(tokens, list)
+                            )
+                            country_rows_with_appointed_advisor_slots += 1
+                            appointed_advisor_slot_rows += token_count
+                            max_appointed_advisor_slots_per_country = max(
+                                max_appointed_advisor_slots_per_country,
+                                token_count,
+                            )
+                        advisor_ledgers = politics.get("appointed_advisor_ledgers")
+                        if isinstance(advisor_ledgers, dict):
+                            token_count = sum(
+                                len(tokens)
+                                for tokens in advisor_ledgers.values()
+                                if isinstance(tokens, list)
+                            )
+                            country_rows_with_appointed_advisor_ledgers += 1
+                            appointed_advisor_ledger_rows += token_count
+                            max_appointed_advisor_ledgers_per_country = max(
+                                max_appointed_advisor_ledgers_per_country,
+                                token_count,
+                            )
+                        leader = politics.get("leader")
+                        if isinstance(leader, dict) and isinstance(
+                            leader.get("char_id"), int
+                        ):
+                            politics_leader_rows_in_frame += 1
+                        ideas = politics.get("ideas")
+                        if isinstance(ideas, list):
+                            country_rows_with_politics_ideas += 1
+                            max_politics_idea_rows_per_country = max(
+                                max_politics_idea_rows_per_country, len(ideas))
+                        laws = politics.get("laws")
+                        if isinstance(laws, dict):
+                            if laws:
+                                country_rows_with_politics_laws += 1
+                            max_politics_law_keys_per_country = max(
+                                max_politics_law_keys_per_country,
+                                len(laws),
+                            )
+                        idea_groups = politics.get("idea_groups")
+                        if isinstance(idea_groups, dict):
+                            country_rows_with_politics_idea_groups += 1
+                            max_politics_idea_group_keys_per_country = max(
+                                max_politics_idea_group_keys_per_country,
+                                len(idea_groups),
+                            )
+                        advisor_ideas = politics.get("advisor_ideas")
+                        if isinstance(advisor_ideas, dict):
+                            token_count = sum(
+                                len(tokens)
+                                for tokens in advisor_ideas.values()
+                                if isinstance(tokens, list)
+                            )
+                            if token_count > 0:
+                                country_rows_with_politics_advisor_ideas += 1
+                                max_politics_advisor_idea_keys_per_country = max(
+                                    max_politics_advisor_idea_keys_per_country,
+                                    len(advisor_ideas),
+                                )
+                                max_politics_advisor_idea_tokens_per_country = max(
+                                    max_politics_advisor_idea_tokens_per_country,
+                                    token_count,
+                                )
+                        ideas_other = politics.get("ideas_other")
+                        if isinstance(ideas_other, list):
+                            country_rows_with_politics_ideas_other += 1
+                            max_politics_ideas_other_tokens_per_country = max(
+                                max_politics_ideas_other_tokens_per_country,
+                                len(ideas_other),
+                            )
+                        national_spirits = politics.get("national_spirits")
+                        if isinstance(national_spirits, list):
+                            country_rows_with_politics_national_spirits += 1
+                            max_politics_national_spirit_tokens_per_country = max(
+                                max_politics_national_spirit_tokens_per_country,
+                                len(national_spirits),
+                            )
+                focus = row.get("focus")
+                if focus is not None:
+                    focus_rows_in_frame += 1
+                    if isinstance(focus, dict):
+                        completed = focus.get("completed")
+                        if isinstance(completed, list):
+                            max_focus_completed_rows_per_country = max(
+                                max_focus_completed_rows_per_country,
+                                len(completed),
+                            )
+                research = row.get("research")
+                if research is not None:
+                    research_rows_in_frame += 1
+                    if isinstance(research, dict):
+                        active_research = research.get("active_research")
+                        if isinstance(active_research, list):
+                            max_research_active_rows_per_country = max(
+                                max_research_active_rows_per_country,
+                                len(active_research),
+                            )
+                            named_rows = 0
+                            live_progress_rows = 0
+                            for slot in active_research:
+                                if not isinstance(slot, dict):
+                                    continue
+                                tech_name = slot.get("tech_name")
+                                if isinstance(tech_name, str) and tech_name:
+                                    named_rows += 1
+                                if _finite_float(slot.get("live_progress_units")) is not None:
+                                    live_progress_rows += 1
+                            if named_rows:
+                                country_rows_with_research_named_slots += 1
+                                research_named_rows_in_frame += named_rows
+                                max_research_named_slot_rows_per_country = max(
+                                    max_research_named_slot_rows_per_country,
+                                    named_rows,
+                                )
+                            if live_progress_rows:
+                                country_rows_with_research_live_progress_slots += 1
+                                research_live_progress_rows_in_frame += (
+                                    live_progress_rows)
+                                max_research_live_progress_rows_per_country = max(
+                                    max_research_live_progress_rows_per_country,
+                                    live_progress_rows,
+                                )
+                decisions = row.get("decisions")
+                if decisions is not None:
+                    decisions_rows_in_frame += 1
+                    if isinstance(decisions, dict):
+                        status_present = decisions.get("status_present")
+                        if isinstance(status_present, dict):
+                            max_decisions_status_keys_per_country = max(
+                                max_decisions_status_keys_per_country,
+                                len(status_present),
+                            )
+                        timed_live = decisions.get("timed_live")
+                        if isinstance(timed_live, list):
+                            max_decisions_timed_rows_per_country = max(
+                                max_decisions_timed_rows_per_country,
+                                len(timed_live),
+                            )
+                diplomacy = row.get("diplomacy")
+                if diplomacy is not None:
+                    diplomacy_rows_in_frame += 1
+                    if isinstance(diplomacy, dict):
+                        faction_group = diplomacy.get("faction_group")
+                        if isinstance(faction_group, int) and not isinstance(
+                            faction_group, bool
+                        ):
+                            diplomacy_faction_groups_in_frame.add(faction_group)
+                        at_war = diplomacy.get("at_war")
+                        if isinstance(at_war, list):
+                            country_rows_with_diplomacy_at_war += 1
+                        casualties = diplomacy.get("casualties")
+                        if isinstance(casualties, int) and not isinstance(casualties, bool):
+                            country_rows_with_diplomacy_casualties += 1
+                production = row.get("production")
+                if production is None:
+                    continue
+                production_rows_in_frame += 1
+                if not isinstance(production, dict):
+                    continue
+                stockpile = production.get("stockpile")
+                if isinstance(stockpile, dict):
+                    max_production_stockpile_entries = max(
+                        max_production_stockpile_entries, len(stockpile))
+                military_lines = production.get("military_lines")
+                if isinstance(military_lines, list):
+                    max_production_military_line_rows = max(
+                        max_production_military_line_rows, len(military_lines))
+                naval_lines = production.get("naval_lines")
+                if isinstance(naval_lines, list):
+                    max_production_naval_line_rows = max(
+                        max_production_naval_line_rows, len(naval_lines))
+                construction_queue = production.get("construction_queue")
+                if isinstance(construction_queue, list):
+                    country_rows_with_construction_queue += 1
+                    construction_queue_rows_in_frame += len(construction_queue)
+                    max_construction_queue_rows_per_country = max(
+                        max_construction_queue_rows_per_country,
+                        len(construction_queue),
+                    )
+        if scalar_rows_in_frame:
+            country_rows_with_scalar_payloads += scalar_rows_in_frame
+            max_country_scalar_rows_per_frame = max(
+                max_country_scalar_rows_per_frame,
+                scalar_rows_in_frame,
+            )
+        if production_rows_in_frame:
+            frames_with_production_payloads += 1
+            country_rows_with_production_payloads += production_rows_in_frame
+            max_production_country_rows_per_frame = max(
+                max_production_country_rows_per_frame,
+                production_rows_in_frame,
+            )
+        if construction_queue_rows_in_frame:
+            construction_queue_frames += 1
+            construction_queue_rows += construction_queue_rows_in_frame
+            max_construction_queue_rows_per_frame = max(
+                max_construction_queue_rows_per_frame,
+                construction_queue_rows_in_frame,
+            )
+        if focus_rows_in_frame:
+            frames_with_focus_payloads += 1
+            country_rows_with_focus_payloads += focus_rows_in_frame
+            max_focus_country_rows_per_frame = max(
+                max_focus_country_rows_per_frame,
+                focus_rows_in_frame,
+            )
+        if research_rows_in_frame:
+            frames_with_research_payloads += 1
+            country_rows_with_research_payloads += research_rows_in_frame
+            max_research_country_rows_per_frame = max(
+                max_research_country_rows_per_frame,
+                research_rows_in_frame,
+            )
+        if research_named_rows_in_frame:
+            research_named_slot_frames += 1
+            research_named_slot_rows += research_named_rows_in_frame
+            max_research_named_slot_rows_per_frame = max(
+                max_research_named_slot_rows_per_frame,
+                research_named_rows_in_frame,
+            )
+        if research_live_progress_rows_in_frame:
+            research_live_progress_slot_frames += 1
+            research_live_progress_slot_rows += research_live_progress_rows_in_frame
+            max_research_live_progress_rows_per_frame = max(
+                max_research_live_progress_rows_per_frame,
+                research_live_progress_rows_in_frame,
+            )
+        if decisions_rows_in_frame:
+            frames_with_decisions_payloads += 1
+            country_rows_with_decisions_payloads += decisions_rows_in_frame
+            max_decisions_country_rows_per_frame = max(
+                max_decisions_country_rows_per_frame,
+                decisions_rows_in_frame,
+            )
+        if diplomacy_rows_in_frame:
+            frames_with_diplomacy_payloads += 1
+            country_rows_with_diplomacy_payloads += diplomacy_rows_in_frame
+            max_diplomacy_country_rows_per_frame = max(
+                max_diplomacy_country_rows_per_frame,
+                diplomacy_rows_in_frame,
+            )
+            max_diplomacy_faction_groups_per_frame = max(
+                max_diplomacy_faction_groups_per_frame,
+                len(diplomacy_faction_groups_in_frame),
+            )
+        if politics_rows_in_frame:
+            frames_with_politics_payloads += 1
+            country_rows_with_politics_payloads += politics_rows_in_frame
+            max_politics_country_rows_per_frame = max(
+                max_politics_country_rows_per_frame,
+                politics_rows_in_frame,
+            )
+        if politics_leader_rows_in_frame:
+            politics_leader_frames += 1
+            country_rows_with_politics_leader += politics_leader_rows_in_frame
+            max_politics_leader_rows_per_frame = max(
+                max_politics_leader_rows_per_frame,
+                politics_leader_rows_in_frame,
+            )
+        if politics_residual_rows_in_frame:
+            frames_with_politics_residual_payloads += 1
+            country_rows_with_politics_residual_payloads += (
+                politics_residual_rows_in_frame)
+            max_politics_residual_country_rows_per_frame = max(
+                max_politics_residual_country_rows_per_frame,
+                politics_residual_rows_in_frame,
+            )
+        if (
+            boundary == "worker_poll"
+            and (production_domain_claimed or production_rows_in_frame)
+        ):
+            production_on_lightweight_frames += 1
+            heavy_payload_in_lightweight_frame = True
+        if (
+            boundary == "worker_poll"
+            and (focus_domain_claimed or focus_rows_in_frame)
+        ):
+            focus_on_lightweight_frames += 1
+            heavy_payload_in_lightweight_frame = True
+        if (
+            boundary == "worker_poll"
+            and (tech_domain_claimed or research_rows_in_frame)
+        ):
+            tech_on_lightweight_frames += 1
+            heavy_payload_in_lightweight_frame = True
+        if (
+            boundary == "worker_poll"
+            and (projects_domain_claimed or special_projects_payload_in_frame)
+        ):
+            projects_on_lightweight_frames += 1
+            heavy_payload_in_lightweight_frame = True
+        if (
+            boundary == "worker_poll"
+            and (decisions_domain_claimed or decisions_rows_in_frame)
+        ):
+            decisions_on_lightweight_frames += 1
+            heavy_payload_in_lightweight_frame = True
+        if (
+            boundary == "worker_poll"
+            and (
+                diplomacy_domain_claimed
+                or diplomacy_rows_in_frame
+                or diplomacy_sidecar_payload_in_frame
+            )
+        ):
+            diplomacy_on_lightweight_frames += 1
+            heavy_payload_in_lightweight_frame = True
+        if (
+            boundary == "worker_poll"
+            and (politics_domain_claimed or politics_rows_in_frame)
+        ):
+            politics_on_lightweight_frames += 1
+            heavy_payload_in_lightweight_frame = True
+        if (
+            boundary == "worker_poll"
+            and (
+                politics_residuals_domain_claimed
+                or politics_residual_rows_in_frame
+            )
+        ):
+            politics_residuals_on_lightweight_frames += 1
+            heavy_payload_in_lightweight_frame = True
+        states = frame.get("states")
+        if isinstance(states, dict):
+            frames_with_states += 1
+            max_state_rows = max(max_state_rows, len(states))
+            for row in states.values():
+                if not isinstance(row, dict):
+                    continue
+                buildings = row.get("buildings")
+                if isinstance(buildings, dict):
+                    state_building_rows_in_frame += 1
+                    max_building_types_per_location = max(
+                        max_building_types_per_location,
+                        len(buildings),
+                    )
+                    if buildings:
+                        state_rows_with_nonempty_buildings += 1
+                resources = row.get("resources")
+                if isinstance(resources, dict):
+                    state_resource_rows_in_frame += 1
+                    state_resource_entries_in_frame += len(resources)
+                    max_state_resource_entries_per_state = max(
+                        max_state_resource_entries_per_state,
+                        len(resources),
+                    )
+                    if resources:
+                        state_rows_with_nonempty_resources += 1
+            if states and boundary == "worker_poll":
+                heavy_payload_in_lightweight_frame = True
+        provinces = frame.get("provinces")
+        if isinstance(provinces, dict):
+            frames_with_provinces += 1
+            max_province_rows = max(max_province_rows, len(provinces))
+            for row in provinces.values():
+                if not isinstance(row, dict):
+                    continue
+                buildings = row.get("buildings")
+                if isinstance(buildings, dict):
+                    province_building_rows_in_frame += 1
+                    max_building_types_per_location = max(
+                        max_building_types_per_location,
+                        len(buildings),
+                    )
+                    if buildings:
+                        province_rows_with_nonempty_buildings += 1
+            if provinces and boundary == "worker_poll":
+                heavy_payload_in_lightweight_frame = True
+        if state_building_rows_in_frame or province_building_rows_in_frame:
+            frames_with_building_payloads += 1
+            state_rows_with_buildings += state_building_rows_in_frame
+            province_rows_with_buildings += province_building_rows_in_frame
+            max_state_building_rows_per_frame = max(
+                max_state_building_rows_per_frame,
+                state_building_rows_in_frame,
+            )
+            max_province_building_rows_per_frame = max(
+                max_province_building_rows_per_frame,
+                province_building_rows_in_frame,
+            )
+        if state_resource_rows_in_frame:
+            state_resource_frames += 1
+            state_rows_with_resources += state_resource_rows_in_frame
+            state_resource_entries += state_resource_entries_in_frame
+            max_state_resource_rows_per_frame = max(
+                max_state_resource_rows_per_frame,
+                state_resource_rows_in_frame,
+            )
+        if (
+            boundary == "worker_poll"
+            and (
+                buildings_domain_claimed
+                or state_building_rows_in_frame
+                or province_building_rows_in_frame
+            )
+        ):
+            buildings_on_lightweight_frames += 1
+            heavy_payload_in_lightweight_frame = True
+        if boundary == "worker_poll" and heavy_payload_in_lightweight_frame:
+            heavy_payload_on_lightweight_frames += 1
+    return {
+        "frames_by_type": dict(sorted(frames_by_type.items())),
+        "raw_event_frame_count": frames_by_type.get("event", 0),
+        "raw_domain_delta_frame_count": frames_by_type.get("domain_delta", 0),
+        "raw_gap_frame_count": frames_by_type.get("gap", 0),
+        "raw_event_types_seen": sorted(raw_event_types_seen),
+        "raw_event_type_counts": dict(sorted(raw_event_type_counts.items())),
+        "raw_event_domain_counts": dict(sorted(raw_event_domain_counts.items())),
+        "raw_event_type_domain_counts": dict(
+            sorted(raw_event_type_domain_counts.items())),
+        "raw_delta_domains_seen": sorted(raw_delta_domains_seen),
+        "raw_delta_domain_counts": dict(sorted(raw_delta_domain_counts.items())),
+        "raw_delta_domain_object_counts": dict(
+            sorted(raw_delta_domain_object_counts.items())),
+        "raw_delta_domain_null_counts": dict(
+            sorted(raw_delta_domain_null_counts.items())),
+        "raw_delta_domain_worker_poll_counts": dict(
+            sorted(raw_delta_domain_worker_poll_counts.items())),
+        "raw_delta_domain_scheduled_counts": dict(
+            sorted(raw_delta_domain_scheduled_counts.items())),
+        "raw_gap_domains_seen": sorted(raw_gap_domains_seen),
+        "raw_gap_domain_counts": dict(sorted(raw_gap_domain_counts.items())),
+        "oob_command_leader_skill_rows": oob_command_leader_skill_rows,
+        "oob_command_leader_traits_rows": oob_command_leader_traits_rows,
+        "oob_command_leader_trait_tokens": oob_command_leader_trait_tokens,
+        "oob_command_leader_trait_exact_rows": (
+            oob_command_leader_trait_exact_rows),
+        "max_oob_command_leader_trait_tokens_per_row": (
+            max_oob_command_leader_trait_tokens_per_row),
+        "oob_command_exact_army_leader_detail_rows": (
+            oob_command_exact_army_leader_detail_rows),
+        "oob_command_exact_army_leader_trait_tokens": (
+            oob_command_exact_army_leader_trait_tokens),
+        "max_oob_command_exact_army_leader_trait_tokens_per_row": (
+            max_oob_command_exact_army_leader_trait_tokens_per_row),
+        "domains_seen": sorted(domains_seen),
+        "frames_by_capture_boundary": dict(sorted(frames_by_capture_boundary.items())),
+        "scheduled_snapshot_frame_count": frames_by_capture_boundary.get(
+            "scheduled_hour_snapshot", 0),
+        "lightweight_poll_frame_count": frames_by_capture_boundary.get(
+            "worker_poll", 0),
+        "heavy_payload_on_lightweight_frames": heavy_payload_on_lightweight_frames,
+        "frames_with_countries": frames_with_countries,
+        "frames_with_states": frames_with_states,
+        "frames_with_provinces": frames_with_provinces,
+        "max_country_rows": max_country_rows,
+        "country_scalars_frames": country_scalars_frames,
+        "country_misc_frames": country_misc_frames,
+        "fuel_live_frames": fuel_live_frames,
+        "focus_live_frames": focus_live_frames,
+        "tech_live_frames": tech_live_frames,
+        "projects_live_frames": projects_live_frames,
+        "decisions_live_frames": decisions_live_frames,
+        "diplomacy_live_frames": diplomacy_live_frames,
+        "politics_live_frames": politics_live_frames,
+        "politics_residuals_frames": politics_residuals_frames,
+        "buildings_live_frames": buildings_live_frames,
+        "country_rows_with_scalar_payloads": country_rows_with_scalar_payloads,
+        "country_rows_with_non_null_scalar_values": (
+            country_rows_with_non_null_scalar_values),
+        "max_country_scalar_rows_per_frame": max_country_scalar_rows_per_frame,
+        "country_object_identity_statuses": dict(sorted(
+            country_object_identity_statuses.items())),
+        "country_object_identity_max_object_count": (
+            country_object_identity_max_object_count),
+        "country_object_identity_max_scan_ms": country_object_identity_max_scan_ms,
+        "max_state_rows": max_state_rows,
+        "max_province_rows": max_province_rows,
+        "state_ownership_frames": state_ownership_frames,
+        "state_control_frames": state_control_frames,
+        "province_control_frames": province_control_frames,
+        "state_detail_frames": state_detail_frames,
+        "scheduled_production_domain_frames": scheduled_production_domain_frames,
+        "scheduled_focus_domain_frames": scheduled_focus_domain_frames,
+        "scheduled_tech_domain_frames": scheduled_tech_domain_frames,
+        "scheduled_projects_domain_frames": scheduled_projects_domain_frames,
+        "scheduled_decisions_domain_frames": scheduled_decisions_domain_frames,
+        "scheduled_diplomacy_domain_frames": (
+            scheduled_diplomacy_domain_frames),
+        "scheduled_politics_domain_frames": scheduled_politics_domain_frames,
+        "scheduled_politics_residuals_domain_frames": (
+            scheduled_politics_residuals_domain_frames),
+        "scheduled_state_detail_domain_frames": scheduled_state_detail_domain_frames,
+        "scheduled_buildings_domain_frames": scheduled_buildings_domain_frames,
+        "frames_with_production_payloads": frames_with_production_payloads,
+        "country_rows_with_production_payloads": (
+            country_rows_with_production_payloads),
+        "max_production_country_rows_per_frame": (
+            max_production_country_rows_per_frame),
+        "max_production_stockpile_entries": max_production_stockpile_entries,
+        "max_production_military_line_rows": max_production_military_line_rows,
+        "max_production_naval_line_rows": max_production_naval_line_rows,
+        "construction_queue_frames": construction_queue_frames,
+        "country_rows_with_construction_queue": (
+            country_rows_with_construction_queue),
+        "construction_queue_rows": construction_queue_rows,
+        "max_construction_queue_rows_per_frame": (
+            max_construction_queue_rows_per_frame),
+        "max_construction_queue_rows_per_country": (
+            max_construction_queue_rows_per_country),
+        "production_on_lightweight_frames": production_on_lightweight_frames,
+        "frames_with_focus_payloads": frames_with_focus_payloads,
+        "country_rows_with_focus_payloads": country_rows_with_focus_payloads,
+        "max_focus_country_rows_per_frame": max_focus_country_rows_per_frame,
+        "max_focus_completed_rows_per_country": (
+            max_focus_completed_rows_per_country),
+        "focus_on_lightweight_frames": focus_on_lightweight_frames,
+        "frames_with_research_payloads": frames_with_research_payloads,
+        "country_rows_with_research_payloads": (
+            country_rows_with_research_payloads),
+        "max_research_country_rows_per_frame": (
+            max_research_country_rows_per_frame),
+        "max_research_active_rows_per_country": (
+            max_research_active_rows_per_country),
+        "research_named_slot_frames": research_named_slot_frames,
+        "research_named_slot_rows": research_named_slot_rows,
+        "country_rows_with_research_named_slots": (
+            country_rows_with_research_named_slots),
+        "max_research_named_slot_rows_per_frame": (
+            max_research_named_slot_rows_per_frame),
+        "max_research_named_slot_rows_per_country": (
+            max_research_named_slot_rows_per_country),
+        "research_live_progress_slot_frames": (
+            research_live_progress_slot_frames),
+        "research_live_progress_slot_rows": research_live_progress_slot_rows,
+        "country_rows_with_research_live_progress_slots": (
+            country_rows_with_research_live_progress_slots),
+        "max_research_live_progress_rows_per_frame": (
+            max_research_live_progress_rows_per_frame),
+        "max_research_live_progress_rows_per_country": (
+            max_research_live_progress_rows_per_country),
+        "tech_on_lightweight_frames": tech_on_lightweight_frames,
+        "frames_with_special_projects_payloads": (
+            frames_with_special_projects_payloads),
+        "special_project_facility_rows": special_project_facility_rows,
+        "special_project_rows": special_project_rows,
+        "special_project_scientist_rows": special_project_scientist_rows,
+        "special_project_active_facility_rows": (
+            special_project_active_facility_rows),
+        "special_project_facility_active_project_links": (
+            special_project_facility_active_project_links),
+        "special_project_facility_scientist_links": (
+            special_project_facility_scientist_links),
+        "special_project_iteration_rows": special_project_iteration_rows,
+        "special_project_worked_facility_links": (
+            special_project_worked_facility_links),
+        "max_special_project_facilities_per_frame": (
+            max_special_project_facilities_per_frame),
+        "max_special_project_rows_per_frame": max_special_project_rows_per_frame,
+        "max_special_project_scientists_per_frame": (
+            max_special_project_scientists_per_frame),
+        "max_special_project_active_facilities_per_frame": (
+            max_special_project_active_facilities_per_frame),
+        "max_special_project_active_project_links_per_frame": (
+            max_special_project_active_project_links_per_frame),
+        "max_special_project_facility_scientist_links_per_frame": (
+            max_special_project_facility_scientist_links_per_frame),
+        "max_special_project_worked_facility_links_per_frame": (
+            max_special_project_worked_facility_links_per_frame),
+        "projects_on_lightweight_frames": projects_on_lightweight_frames,
+        "frames_with_decisions_payloads": frames_with_decisions_payloads,
+        "country_rows_with_decisions_payloads": (
+            country_rows_with_decisions_payloads),
+        "max_decisions_country_rows_per_frame": (
+            max_decisions_country_rows_per_frame),
+        "max_decisions_status_keys_per_country": (
+            max_decisions_status_keys_per_country),
+        "max_decisions_timed_rows_per_country": (
+            max_decisions_timed_rows_per_country),
+        "decisions_on_lightweight_frames": decisions_on_lightweight_frames,
+        "frames_with_diplomacy_payloads": frames_with_diplomacy_payloads,
+        "country_rows_with_diplomacy_payloads": (
+            country_rows_with_diplomacy_payloads),
+        "country_rows_with_diplomacy_at_war": (
+            country_rows_with_diplomacy_at_war),
+        "country_rows_with_diplomacy_casualties": (
+            country_rows_with_diplomacy_casualties),
+        "max_diplomacy_country_rows_per_frame": (
+            max_diplomacy_country_rows_per_frame),
+        "max_diplomacy_faction_groups_per_frame": (
+            max_diplomacy_faction_groups_per_frame),
+        "diplomacy_war_relation_frames": diplomacy_war_relation_frames,
+        "diplomacy_war_relation_rows": diplomacy_war_relation_rows,
+        "max_diplomacy_war_relations_per_frame": (
+            max_diplomacy_war_relations_per_frame),
+        "max_diplomacy_casualty_sum_per_frame": (
+            max_diplomacy_casualty_sum_per_frame),
+        "diplomacy_war_subtype_warning_frames": (
+            diplomacy_war_subtype_warning_frames),
+        "diplomacy_on_lightweight_frames": diplomacy_on_lightweight_frames,
+        "frames_with_politics_payloads": frames_with_politics_payloads,
+        "country_rows_with_politics_payloads": (
+            country_rows_with_politics_payloads),
+        "max_politics_country_rows_per_frame": (
+            max_politics_country_rows_per_frame),
+        "country_rows_with_politics_ideas": country_rows_with_politics_ideas,
+        "max_politics_idea_rows_per_country": max_politics_idea_rows_per_country,
+        "politics_leader_frames": politics_leader_frames,
+        "country_rows_with_politics_leader": country_rows_with_politics_leader,
+        "max_politics_leader_rows_per_frame": max_politics_leader_rows_per_frame,
+        "country_rows_with_politics_laws": (
+            country_rows_with_politics_laws),
+        "max_politics_law_keys_per_country": (
+            max_politics_law_keys_per_country),
+        "country_rows_with_politics_idea_groups": (
+            country_rows_with_politics_idea_groups),
+        "country_rows_with_politics_advisor_ideas": (
+            country_rows_with_politics_advisor_ideas),
+        "country_rows_with_politics_ideas_other": (
+            country_rows_with_politics_ideas_other),
+        "country_rows_with_politics_national_spirits": (
+            country_rows_with_politics_national_spirits),
+        "max_politics_idea_group_keys_per_country": (
+            max_politics_idea_group_keys_per_country),
+        "max_politics_advisor_idea_keys_per_country": (
+            max_politics_advisor_idea_keys_per_country),
+        "max_politics_advisor_idea_tokens_per_country": (
+            max_politics_advisor_idea_tokens_per_country),
+        "max_politics_ideas_other_tokens_per_country": (
+            max_politics_ideas_other_tokens_per_country),
+        "max_politics_national_spirit_tokens_per_country": (
+            max_politics_national_spirit_tokens_per_country),
+        "politics_on_lightweight_frames": politics_on_lightweight_frames,
+        "frames_with_politics_residual_payloads": (
+            frames_with_politics_residual_payloads),
+        "country_rows_with_politics_residual_payloads": (
+            country_rows_with_politics_residual_payloads),
+        "max_politics_residual_country_rows_per_frame": (
+            max_politics_residual_country_rows_per_frame),
+        "country_rows_with_appointed_advisors": (
+            country_rows_with_appointed_advisors),
+        "country_rows_with_appointed_advisor_details": (
+            country_rows_with_appointed_advisor_details),
+        "country_rows_with_appointed_advisor_slots": (
+            country_rows_with_appointed_advisor_slots),
+        "country_rows_with_appointed_advisor_ledgers": (
+            country_rows_with_appointed_advisor_ledgers),
+        "appointed_advisor_rows": appointed_advisor_rows,
+        "appointed_advisor_detail_rows": appointed_advisor_detail_rows,
+        "appointed_advisor_slot_rows": appointed_advisor_slot_rows,
+        "appointed_advisor_ledger_rows": appointed_advisor_ledger_rows,
+        "max_appointed_advisors_per_country": (
+            max_appointed_advisors_per_country),
+        "max_appointed_advisor_details_per_country": (
+            max_appointed_advisor_details_per_country),
+        "max_appointed_advisor_slots_per_country": (
+            max_appointed_advisor_slots_per_country),
+        "max_appointed_advisor_ledgers_per_country": (
+            max_appointed_advisor_ledgers_per_country),
+        "politics_residuals_on_lightweight_frames": (
+            politics_residuals_on_lightweight_frames),
+        "frames_with_building_payloads": frames_with_building_payloads,
+        "state_rows_with_buildings": state_rows_with_buildings,
+        "province_rows_with_buildings": province_rows_with_buildings,
+        "state_rows_with_nonempty_buildings": state_rows_with_nonempty_buildings,
+        "province_rows_with_nonempty_buildings": (
+            province_rows_with_nonempty_buildings),
+        "state_resource_frames": state_resource_frames,
+        "state_rows_with_resources": state_rows_with_resources,
+        "state_rows_with_nonempty_resources": state_rows_with_nonempty_resources,
+        "state_resource_entries": state_resource_entries,
+        "max_state_resource_rows_per_frame": max_state_resource_rows_per_frame,
+        "max_state_resource_entries_per_state": (
+            max_state_resource_entries_per_state),
+        "max_state_building_rows_per_frame": max_state_building_rows_per_frame,
+        "max_province_building_rows_per_frame": max_province_building_rows_per_frame,
+        "max_building_types_per_location": max_building_types_per_location,
+        "buildings_on_lightweight_frames": buildings_on_lightweight_frames,
+    }
+
+
+def _map_control_quality_summary(
+    *,
+    state_control_preflight: Dict[str, Any],
+    province_control_preflight: Dict[str, Any],
+    probe_manifest: Dict[str, Any],
+    payload_summary: Dict[str, Any],
+) -> Dict[str, Any]:
+    scheduled_frames = _int_value(
+        payload_summary.get("scheduled_snapshot_frame_count"))
+    requested_domains: List[str] = []
+    captured_domains: List[str] = []
+    omitted_domains: Dict[str, str] = {}
+
+    if state_control_preflight.get("enabled"):
+        requested_domains.extend(["state_ownership", "state_control"])
+        reason = _map_control_request_blocker(
+            state_control_preflight,
+            supplied=bool(probe_manifest.get("map_control_state_roots_supplied")),
+            supplied_label="state_roots_not_supplied",
+            scheduled_frames=scheduled_frames,
+        )
+        if reason is not None:
+            omitted_domains["state_ownership"] = reason
+            omitted_domains["state_control"] = reason
+        else:
+            if _int_value(payload_summary.get("state_ownership_frames")) > 0:
+                captured_domains.append("state_ownership")
+            else:
+                omitted_domains["state_ownership"] = "no_scheduled_domain_frames"
+            if _int_value(payload_summary.get("state_control_frames")) > 0:
+                captured_domains.append("state_control")
+            else:
+                omitted_domains["state_control"] = "no_scheduled_domain_frames"
+
+    if province_control_preflight.get("enabled"):
+        requested_domains.append("province_control")
+        reason = _map_control_request_blocker(
+            province_control_preflight,
+            supplied=(
+                bool(probe_manifest.get("map_control_province_bridge_supplied"))
+                and bool(probe_manifest.get("map_control_controller_bridge_supplied"))
+            ),
+            supplied_label="province_or_controller_bridge_not_supplied",
+            scheduled_frames=scheduled_frames,
+        )
+        if reason is not None:
+            omitted_domains["province_control"] = reason
+        elif _int_value(payload_summary.get("province_control_frames")) > 0:
+            captured_domains.append("province_control")
+        else:
+            omitted_domains["province_control"] = "no_scheduled_domain_frames"
+
+    observed_map_domains = (
+        ("state_ownership", "state_ownership_frames"),
+        ("state_control", "state_control_frames"),
+        ("state_detail", "scheduled_state_detail_domain_frames"),
+        ("province_control", "province_control_frames"),
+    )
+    for domain, count_key in observed_map_domains:
+        if _int_value(payload_summary.get(count_key)) > 0:
+            captured_domains.append(domain)
+            omitted_domains.pop(domain, None)
+
+    heavy_payload_on_lightweight_frames = _int_value(
+        payload_summary.get("heavy_payload_on_lightweight_frames"))
+    fail_closed = bool(omitted_domains) or heavy_payload_on_lightweight_frames > 0
+    return {
+        "requested_domains": sorted(set(requested_domains)),
+        "captured_domains": sorted(set(captured_domains)),
+        "omitted_domains": dict(sorted(omitted_domains.items())),
+        "scheduled_snapshot_frame_count": scheduled_frames,
+        "state_control_frames": _int_value(
+            payload_summary.get("state_control_frames")),
+        "state_detail_frames": _int_value(
+            payload_summary.get("state_detail_frames")),
+        "scheduled_state_detail_domain_frames": _int_value(
+            payload_summary.get("scheduled_state_detail_domain_frames")),
+        "state_ownership_frames": _int_value(
+            payload_summary.get("state_ownership_frames")),
+        "province_control_frames": _int_value(
+            payload_summary.get("province_control_frames")),
+        "map_control_state_roots_supplied": bool(
+            probe_manifest.get("map_control_state_roots_supplied")),
+        "map_control_state_root_rows": _int_value(
+            probe_manifest.get("map_control_state_root_rows")),
+        "map_control_province_bridge_supplied": bool(
+            probe_manifest.get("map_control_province_bridge_supplied")),
+        "map_control_controller_bridge_supplied": bool(
+            probe_manifest.get("map_control_controller_bridge_supplied")),
+        "map_control_controller_bridge_rows": _int_value(
+            probe_manifest.get("map_control_controller_bridge_rows")),
+        "heavy_payload_on_lightweight_frames": heavy_payload_on_lightweight_frames,
+        "fail_closed": fail_closed,
+    }
+
+
+def _map_control_request_blocker(
+    preflight: Dict[str, Any],
+    *,
+    supplied: bool,
+    supplied_label: str,
+    scheduled_frames: int,
+) -> Optional[str]:
+    status = preflight.get("status")
+    if status != "resolved":
+        return "preflight_unresolved:%s" % (status or "unknown")
+    if not supplied:
+        return supplied_label
+    if scheduled_frames <= 0:
+        return "no_scheduled_snapshot_frames"
+    return None
+
+
+def _int_value(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _is_raw_gap_domain_delta(frame: Dict[str, Any]) -> bool:
+    if frame.get("confidence") == "gap":
+        return True
+    entity_key = frame.get("entity_key")
+    if isinstance(entity_key, str) and ":gap:" in entity_key:
+        return True
+    payload = frame.get("payload")
+    if isinstance(payload, dict):
+        after = payload.get("after")
+        if isinstance(after, dict) and after.get("status") == "validation_failed":
+            return True
+    return False
+
+
+def _collector_stream_transport_summary(
+    frames: Iterable[Dict[str, Any]],
+) -> Dict[str, Any]:
+    frame_list = list(frames)
+    sequences = [
+        frame.get("sequence") for frame in frame_list
+        if isinstance(frame.get("sequence"), int)
+    ]
+    by_burst: Dict[int, List[int]] = {}
+    for frame in frame_list:
+        burst = frame.get("worker_burst_index")
+        sequence = frame.get("sequence")
+        if isinstance(burst, int) and isinstance(sequence, int):
+            by_burst.setdefault(burst, []).append(sequence)
+    burst_summaries = [
+        {
+            "worker_burst_index": burst,
+            **_sequence_summary(seq),
+        }
+        for burst, seq in sorted(by_burst.items())
+    ]
+    collector_started_count = sum(
+        1 for frame in frame_list if frame.get("type") == "collector_started"
+    )
+    return {
+        "frame_count": len(frame_list),
+        "sequence_count": len(sequences),
+        "mode": "burst_local" if burst_summaries else "global",
+        **_sequence_summary(sequences),
+        "collector_started_frame_count": collector_started_count,
+        "average_frames_per_collector_started": (
+            len(frame_list) / collector_started_count
+            if collector_started_count else None
+        ),
+        "burst_local": burst_summaries,
+        "burst_local_monotonic_sequence": all(
+            item["monotonic_sequence"] for item in burst_summaries
+        ) if burst_summaries else _sequence_summary(sequences)["monotonic_sequence"],
+        "burst_local_duplicate_sequences": sum(
+            int(item["duplicate_sequences"]) for item in burst_summaries
+        ),
+        "burst_local_missing_sequences": sum(
+            int(item["missing_sequences"]) for item in burst_summaries
+        ),
+        "burst_local_max_sequence_gap": max(
+            (int(item["max_sequence_gap"]) for item in burst_summaries),
+            default=_sequence_summary(sequences)["max_sequence_gap"],
+        ),
+    }
+
+
+def _sequence_summary(sequences: List[int]) -> Dict[str, Any]:
+    duplicates = len(sequences) - len(set(sequences))
+    nonmonotonic = sum(
+        1 for a, b in zip(sequences, sequences[1:]) if b <= a
+    )
+    positive_gaps = [
+        max(b - a - 1, 0) for a, b in zip(sequences, sequences[1:]) if b > a
+    ]
+    return {
+        "count": len(sequences),
+        "first_sequence": sequences[0] if sequences else None,
+        "last_sequence": sequences[-1] if sequences else None,
+        "monotonic_sequence": nonmonotonic == 0,
+        "nonmonotonic_pairs": nonmonotonic,
+        "duplicate_sequences": duplicates,
+        "missing_sequences": sum(positive_gaps),
+        "max_sequence_gap": max(positive_gaps, default=0),
+    }
+
+
+def _write_collector_frame_stream(
+    run_dir: Path,
+    filename: str,
+    frames: Iterable[Dict[str, Any]],
+) -> Optional[Path]:
+    frame_list = list(frames)
+    if not frame_list:
+        return None
+    path = run_dir / filename
+    with path.open("w", encoding="utf-8", newline="\n") as fh:
+        for frame in frame_list:
+            fh.write(json.dumps(frame, sort_keys=True, separators=(",", ":")))
+            fh.write("\n")
+    return path
+
+
+def _profile_metadata_from_frames(
+    frames: Iterable[Dict[str, Any]],
+) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+    profile_label: Optional[str] = None
+    for frame in frames:
+        root_probe = latest_verified_root_probe([frame])
+        if isinstance(root_probe, dict) and isinstance(root_probe.get("profile"), str):
+            profile_label = root_probe["profile"]
+            break
+    if not profile_label:
+        return None, None
+    profile_path = Path(__file__).with_name("collector_profiles") / f"{profile_label}.json"
+    try:
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, None
+    exe_sha = profile.get("exe_sha256")
+    if not (
+        isinstance(exe_sha, str)
+        and len(exe_sha) == 64
+        and all(c in "0123456789abcdefABCDEF" for c in exe_sha)
+    ):
+        exe_sha = None
+    modset = profile.get("mod_profile")
+    return exe_sha, modset if isinstance(modset, dict) else None
+
+
+def _probe_session_id(run_dir: Path, probe_manifest: Dict[str, Any]) -> str:
+    value = probe_manifest.get("session_id")
+    if isinstance(value, str) and value:
+        return value
+    return run_dir.name
+
+
+def _collector_process_instance_id(
+    pid: int,
+    frames: Iterable[Dict[str, Any]],
+    build_exe_sha256: Optional[str],
+) -> str:
+    exe_sha256 = build_exe_sha256
+    if exe_sha256 is None:
+        for frame in frames:
+            value = frame.get("exe_sha256")
+            if isinstance(value, str) and value:
+                exe_sha256 = value
+                break
+    create_time = _process_identity._process_create_time_100ns(pid)
+    if create_time is not None and exe_sha256:
+        payload = "%s|%d|%d" % (exe_sha256, int(pid), int(create_time))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    return f"collector-pid-{pid}"
+
+
+def _session_failure_errors(
+    *,
+    probe_manifest: Dict[str, Any],
+    frame_results: List[CollectorFrameResult],
+    frame_session: CollectorFrameSession,
+    replay_path: Path,
+    map_control_quality: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    errors: List[str] = []
+    attach_errors = probe_manifest.get("attach_errors")
+    if isinstance(attach_errors, list) and attach_errors:
+        errors.append(
+            "attach_errors:" + "|".join(
+                str(e)[:160] for e in attach_errors[:4]))
+    if frame_session.invalid_frames:
+        errors.append(f"invalid_frames:{frame_session.invalid_frames}")
+    if frame_session.finalize_error:
+        errors.append(f"finalize_error:{_safe_error_text(frame_session.finalize_error)}")
+    if not frame_results and probe_manifest.get("sample_count", 0):
+        errors.append("no_manifest_frames_loaded")
+    expected_unique = probe_manifest.get("unique_game_date_count")
+    written_count = sum(1 for result in frame_results if result.written_path)
+    if isinstance(expected_unique, int) and written_count < expected_unique:
+        errors.append(
+            f"durable_snapshot_count:{written_count}<unique_game_date_count:{expected_unique}")
+    result_errors = [r.error for r in frame_results if r.error]
+    if result_errors:
+        errors.append("frame_result_errors:" + "|".join(result_errors[:4]))
+    if isinstance(map_control_quality, dict):
+        omitted = map_control_quality.get("omitted_domains")
+        if isinstance(omitted, dict) and omitted:
+            parts = [
+                f"{domain}:{reason}"
+                for domain, reason in sorted(omitted.items())
+            ]
+            errors.append("map_control_omitted:" + "|".join(parts[:4]))
+        heavy_light = map_control_quality.get("heavy_payload_on_lightweight_frames")
+        if isinstance(heavy_light, int) and heavy_light > 0:
+            errors.append(f"map_control_lightweight_payload:{heavy_light}")
+    if not replay_path.exists():
+        errors.append("replay_file_missing")
+    elif not _safe_verify_container(replay_path):
+        errors.append("replay_verification_failed")
+    return errors
+
+
+def _safe_verify_container(replay_path: Path) -> bool:
+    try:
+        return _verify_container(str(replay_path))
+    except Exception:
+        return False
+
+
+def _safe_error_text(value: str) -> str:
+    value = re.sub(r"[A-Za-z]:\\[^;\n\r]+", "<path>", str(value))
+    value = re.sub(r"/[^;\n\r ]+", "<path>", value)
+    return value[:200]
+
+
+def _session_frame(frame_type: str, **fields: Any) -> Dict[str, Any]:
+    frame: Dict[str, Any] = {
+        "type": frame_type,
+        "backend": COLLECTOR_BACKEND,
+        "abi_version": COLLECTOR_ABI_VERSION,
+        "domains": [],
+    }
+    frame.update(fields)
+    return frame
+
+
+def _ms(seconds: float) -> int:
+    return int(round(max(0.0, float(seconds)) * 1000.0))
+
+
+def _stop_quality(probe_manifest: Dict[str, Any]) -> str:
+    requirement = probe_manifest.get("hourly_requirement")
+    if isinstance(requirement, dict) and requirement.get("required"):
+        return "session_complete" if requirement.get("met") else "session_gap"
+    if probe_manifest.get("sample_count", 0):
+        return "session_complete"
+    return "session_no_samples"
+
+
+def _write_json(path: Path, data: Dict[str, Any]) -> None:
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8")
+
+
+def _main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Record a collector-backed session using the in-process DLL"
+    )
+    parser.add_argument("--pid", type=int, required=True)
+    parser.add_argument("--dll", type=Path, required=True)
+    parser.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT)
+    parser.add_argument("--store-root", type=Path, default=None)
+    parser.add_argument("--game-id", default="collector_session")
+    parser.add_argument("--duration-s", type=float, default=8.0)
+    parser.add_argument("--sample-ms", type=int, default=DEFAULT_SAMPLE_MS)
+    parser.add_argument("--dwell-s", type=float, default=DEFAULT_DWELL_S)
+    parser.add_argument("--worker-bursts", type=int, default=1)
+    parser.add_argument("--burst-interval-s", type=float, default=0.0)
+    parser.add_argument("--until-game-hours", type=int, default=None)
+    parser.add_argument("--max-wall-s", type=float, default=None)
+    parser.add_argument(
+        "--preflight-country-object-bridge",
+        action="store_true",
+        help="resolve live country object pointers before recording; no saves required",
+    )
+    parser.add_argument(
+        "--allow-country-cold-scan",
+        action="store_true",
+        help="allow slow country-array heap locators during preflight",
+    )
+    parser.add_argument(
+        "--preflight-division-movement",
+        action="store_true",
+        help="resolve live division bodies before recording movement deltas",
+    )
+    parser.add_argument(
+        "--allow-division-cold-scan",
+        action="store_true",
+        help="allow the slow division body locator during preflight",
+    )
+    parser.add_argument(
+        "--preflight-army-orders",
+        action="store_true",
+        help="resolve live army bodies before recording battle-plan order deltas",
+    )
+    parser.add_argument(
+        "--allow-army-cold-scan",
+        action="store_true",
+        help="allow the slow army body locator during preflight",
+    )
+    parser.add_argument(
+        "--preflight-naval-combat",
+        action="store_true",
+        help="resolve active naval combat bodies before recording raw naval combat deltas",
+    )
+    parser.add_argument(
+        "--preflight-air-wings",
+        action="store_true",
+        help="resolve live air-wing bodies before recording raw wing telemetry deltas",
+    )
+    parser.add_argument(
+        "--allow-air-wing-cold-scan",
+        action="store_true",
+        help="allow the slow air-wing vtable scan during preflight",
+    )
+    parser.add_argument(
+        "--preflight-ships",
+        action="store_true",
+        help="resolve live CShip bodies before recording raw ship telemetry deltas",
+    )
+    parser.add_argument(
+        "--allow-ship-cold-scan",
+        action="store_true",
+        help="allow the slow global CShip vtable scan during preflight",
+    )
+    parser.add_argument(
+        "--preflight-oob-command",
+        action="store_true",
+        help="resolve live command hierarchy roots before recording raw OOB deltas",
+    )
+    parser.add_argument(
+        "--allow-oob-command-cold-scan",
+        action="store_true",
+        help="allow the slow OOB command vtable scan during preflight",
+    )
+    parser.add_argument(
+        "--preflight-special-projects",
+        action="store_true",
+        help="resolve live special-project roots before recording projects_live",
+    )
+    parser.add_argument(
+        "--allow-special-projects-cold-scan",
+        action="store_true",
+        help="allow the slow special-project vtable scans during preflight",
+    )
+    parser.add_argument(
+        "--preflight-war-relations",
+        action="store_true",
+        help="resolve live war_relation rows before recording diplomacy war/casualty data",
+    )
+    parser.add_argument(
+        "--preflight-tech-defs",
+        action="store_true",
+        help="resolve live tech handle names before enriching active research rows",
+    )
+    parser.add_argument(
+        "--allow-tech-def-cold-scan",
+        action="store_true",
+        help="allow the slow tech-definition registry scan during preflight",
+    )
+    parser.add_argument(
+        "--preflight-state-control",
+        action="store_true",
+        help="resolve/cache live state owner/controller roots before recording",
+    )
+    parser.add_argument(
+        "--preflight-province-control",
+        action="store_true",
+        help="use cached live province-control bridge if available; no cold scan by default",
+    )
+    parser.add_argument(
+        "--allow-province-cold-scan",
+        action="store_true",
+        help="allow the slow province array locator during preflight",
+    )
+    parser.add_argument(
+        "--scheduled-domain",
+        action="append",
+        default=None,
+        help=(
+            "limit scheduled heavy snapshot payloads to this domain; repeat for "
+            "multiple domains. Omit for the default all-domain schedule."
+        ),
+    )
+    parser.add_argument(
+        "--lightweight-root-frame",
+        action="store_true",
+        help="omit full country rows from root frames unless requested domains need them",
+    )
+    parser.add_argument(
+        "--allow-hourly-gaps",
+        action="store_true",
+        help="write diagnostics but exit 0 even if requested hourly coverage has gaps",
+    )
+    args = parser.parse_args()
+
+    run_dir = record_collector_session(
+        args.pid,
+        args.dll,
+        args.out_root,
+        game_id=args.game_id,
+        store_root=args.store_root,
+        duration_s=args.duration_s,
+        sample_ms=args.sample_ms,
+        dwell_s=args.dwell_s,
+        worker_bursts=args.worker_bursts,
+        burst_interval_s=args.burst_interval_s,
+        until_game_hours=args.until_game_hours,
+        max_wall_s=args.max_wall_s,
+        require_hourly_cadence=(
+            not args.allow_hourly_gaps if args.until_game_hours is not None else False
+        ),
+        preflight_country_object_bridge=args.preflight_country_object_bridge,
+        allow_country_cold_scan=args.allow_country_cold_scan,
+        preflight_division_movement=args.preflight_division_movement,
+        allow_division_cold_scan=args.allow_division_cold_scan,
+        preflight_army_orders=args.preflight_army_orders,
+        allow_army_cold_scan=args.allow_army_cold_scan,
+        preflight_naval_combat=args.preflight_naval_combat,
+        preflight_air_wings=args.preflight_air_wings,
+        allow_air_wing_cold_scan=args.allow_air_wing_cold_scan,
+        preflight_ships=args.preflight_ships,
+        allow_ship_cold_scan=args.allow_ship_cold_scan,
+        preflight_oob_command=args.preflight_oob_command,
+        allow_oob_command_cold_scan=args.allow_oob_command_cold_scan,
+        preflight_special_projects=args.preflight_special_projects,
+        allow_special_projects_cold_scan=args.allow_special_projects_cold_scan,
+        preflight_war_relations=args.preflight_war_relations,
+        preflight_tech_defs=args.preflight_tech_defs,
+        allow_tech_def_cold_scan=args.allow_tech_def_cold_scan,
+        preflight_state_control=args.preflight_state_control,
+        preflight_province_control=args.preflight_province_control,
+        allow_province_cold_scan=args.allow_province_cold_scan,
+        scheduled_domains=args.scheduled_domain,
+        lightweight_root_frame=args.lightweight_root_frame,
+    )
+    print(run_dir)
+    manifest = json.loads((run_dir / "session_manifest.json").read_text(
+        encoding="utf-8"))
+    requirement = manifest.get("hourly_requirement") or {}
+    return 0 if requirement.get("met", True) else 2
+
+
+__all__ = [
+    "CollectorFrameResult",
+    "CollectorFrameSession",
+    "DEFAULT_DWELL_S",
+    "DEFAULT_OUT_ROOT",
+    "DEFAULT_SAMPLE_MS",
+    "record_collector_session",
+]
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

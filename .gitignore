@@ -16,30 +16,37 @@ desktop.ini
 *.old
 
 # --- Generated / heavy game assets (regenerable via extract.py; keep the source scripts) ---
-game_assets/assets/
-game_assets/gui/
-game_assets/sprites.json
-game_assets/portraits.json
-game_assets/*_report.json
-map_pipeline/assets/*.png
+replay_interface/game_assets/assets/
+replay_interface/game_assets/gui/
+replay_interface/game_assets/sprites.json
+replay_interface/game_assets/portraits.json
+replay_interface/game_assets/*_report.json
+replay_interface/map_pipeline/assets/*.png
 
 # --- Generated outputs (melted saves, rendered snapshots) ---
-save_oracle/output*/
-replay/snapshots/
+extractor/save_oracle/output*/
+replay_interface/replay/snapshots/
 
 # --- Native replay UI rendered PNGs (contain copyrighted game art; regenerable
 #     via the demo/app binaries) — never commit ---
-replay_native/*/out/
+extractor/native/*/out/
+replay_interface/native/*/out/
 
 # Native collector/recorder proof outputs and ad hoc cargo target dirs.
-replay_native/runs/
-replay_native/**/runs/
-replay_native/**/proofs/
-replay_native/**/proof_current_head_*/
-replay_native/**/proof_current*/
-replay_native/target*/
-replay_native/**/target/
-replay_native/**/proof_out/
+extractor/native/runs/
+extractor/native/**/runs/
+extractor/native/**/proofs/
+extractor/native/**/proof_current_head_*/
+extractor/native/**/proof_current*/
+extractor/native/target*/
+extractor/native/**/target/
+extractor/native/**/proof_out/
+replay_interface/native/runs/
+replay_interface/native/**/runs/
+replay_interface/native/**/proofs/
+replay_interface/native/target*/
+replay_interface/native/**/target/
+replay_interface/native/**/proof_out/
 *.pdb
 
 # --- Scratch / RE scan working dir (incl. crack_archive/: archived one-shot RE
@@ -52,22 +59,22 @@ re_scratch/crack_archive/
 # dumps under memory_reader/ use leading underscores or crack/scratch dirs.
 # Keep durable readers/manifests tracked under explicit non-underscore names.
 capture_perf_probe.py
-memory_reader/_*/
-memory_reader/_*.py
-memory_reader/_*.json
-memory_reader/_*.txt
-memory_reader/_*.out
-memory_reader/_*.err
-memory_reader/*.log
-memory_reader/*.ckpt
-memory_reader/focus_crack/
-memory_reader/re_scratch*
-memory_reader/**/_*.py
-memory_reader/**/_*.json
-memory_reader/**/*.out
-memory_reader/**/*.log
-memory_reader/**/*.err
-memory_reader/**/*.pkl
+extractor/memory_reader/_*/
+extractor/memory_reader/_*.py
+extractor/memory_reader/_*.json
+extractor/memory_reader/_*.txt
+extractor/memory_reader/_*.out
+extractor/memory_reader/_*.err
+extractor/memory_reader/*.log
+extractor/memory_reader/*.ckpt
+extractor/memory_reader/focus_crack/
+extractor/memory_reader/re_scratch*
+extractor/memory_reader/**/_*.py
+extractor/memory_reader/**/_*.json
+extractor/memory_reader/**/*.out
+extractor/memory_reader/**/*.log
+extractor/memory_reader/**/*.err
+extractor/memory_reader/**/*.pkl
 
 # Codex/Claude local app state, never project source.
 .agents/
@@ -78,7 +85,7 @@ memory_reader/**/*.pkl
 CODE_REVIEW.md
 
 # --- Distributable recorder (PyInstaller) build outputs: the 19 MB one-file EXE
-#     + the build cache are regenerable via live_capture/recorder/build_recorder.py;
+#     + the build cache are regenerable via extractor/live_capture/recorder/build_recorder.py;
 #     never commit the binary/cache (only the spec + entrypoint + build script). ---
 dist/
 build_pyi/

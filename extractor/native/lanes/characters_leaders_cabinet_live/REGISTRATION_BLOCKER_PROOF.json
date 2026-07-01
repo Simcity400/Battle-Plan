@@ -1,0 +1,54 @@
+{
+  "schema": "characters_leaders_cabinet_live.registration_blocker.v1",
+  "lane": "characters_leaders_cabinet_live",
+  "domain_id": 47,
+  "result": "blocked",
+  "backlog_reduced": true,
+  "patch_artifact": "extractor/native/lanes/characters_leaders_cabinet_live/DOMAIN47_REGISTRATION_ONLY.patch",
+  "patch_check": {
+    "command": "git apply --check --verbose extractor\native\\lanes\\characters_leaders_cabinet_live\\DOMAIN47_REGISTRATION_ONLY.patch",
+    "result": "passed",
+    "applied": false
+  },
+  "registry_state": {
+    "domain_46": {
+      "name": "air_variant_archetypes_live",
+      "status_in_domain_registry_json": "production_complete",
+      "status_in_domain_registry_md": "production-complete"
+    },
+    "domain_47": {
+      "name": "characters_leaders_cabinet_live",
+      "status_in_domain_registry_json": "lane_ready_shared_registration_blocked_remaining_matrix",
+      "status_in_domain_registry_md": "lane-ready; shared registration blocked; remaining matrix written"
+    }
+  },
+  "shared_registration_state": {
+    "collector_registry_domain47": "Reserved, schedulable=false",
+    "recorder_registry_domain47": "Reserved, schedulable=false",
+    "collector_append_hook": "absent",
+    "recorder_decoder_hook": "absent"
+  },
+  "remaining_shared_blocker": {
+    "reason_not_applied": "shared collector/recorder files are not edited by this lane subagent; the apply-ready patch covers registry/dependency/recorder decode only and current shared collector still lacks a real live CollectorState -> LaneFrame adapter",
+    "collector_hook_points": [
+      "extractor/native/collector/src/lib.rs build_compact_extraction_gate_records scheduled enabled flag block",
+      "extractor/native/collector/src/lib.rs read-handle locals and thread::scope spawn/join block",
+      "extractor/native/collector/src/lib.rs domain perf/data append sequencing after air_variant_archetypes",
+      "extractor/native/collector/src/lib.rs append_compact_* data helper section near append_compact_air_variant_archetypes_data_record"
+    ],
+    "adapter_required": "characters_leaders_cabinet_live_lane::extractor::LaneFrame must be populated from live CollectorState country/politics roots, active politics idea tokens, and validated character/leader/advisor roots before LaneCollectorModule::collect_frame can be called honestly"
+  },
+  "lane_proof": {
+    "rust_tests": "17 passed; 0 failed",
+    "appointed_transition_fixture": "before=0, after_add=3, after_remove=1",
+    "domain47_replay_fixture": {
+      "result": "verified",
+      "hoi4replay": "extractor/native/runs/characters_leaders_cabinet_live_20260701_replay_fixture_v1/native_session.battleplan",
+      "collector_stream_bytes": 321,
+      "verified_stream_bytes": 321,
+      "appointed_advisor_rows": 3,
+      "parse_errors": []
+    }
+  },
+  "unbreakable_until": "shared integration owner applies DOMAIN47_REGISTRATION_ONLY.patch, lands the real collector-frame adapter/hot-loop hook from REGISTRATION_HOOK_PLAN.md, then runs live speed-five/current-equivalent DLL-only proof"
+}

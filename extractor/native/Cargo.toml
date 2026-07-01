@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = [
+    "snapshot",
+    "collector",
+    "recorder_host",
+    "lanes/air_wings_variants_lifecycle_live",
+    "lanes/scripted_state_flags_variables_live",
+    "lanes/occupation_resistance_compliance_live",
+]
+
+# Native extraction workspace: DLL collector, Rust recorder host, compact
+# extraction lane crates, and replay container support.

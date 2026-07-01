@@ -1,0 +1,9 @@
+[tool.pytest.ini_options]
+pythonpath = [
+    "extractor",
+    "replay_interface",
+]
+testpaths = [
+    "extractor",
+    "replay_interface",
+]

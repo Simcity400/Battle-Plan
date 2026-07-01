@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = [
+    "map_viewer",
+    "terrain_capture",
+]
+
+# Native replay-interface workspace: map viewer and game-backed capture helpers
+# used to rebuild the visual replay surface.
