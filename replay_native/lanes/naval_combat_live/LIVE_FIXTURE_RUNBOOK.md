@@ -25,6 +25,10 @@ The fixture must create a visible active naval battle with both sides present:
    `bridge.txt` and `member_bridge.jsonl`.
 5. For lifecycle-end proof, keep recording until that same battle ends and the
    compact stream contains the corresponding lifecycle deletion/end evidence.
+6. For task-force/fleet linkage and damage telemetry, run with the current
+   native naval OOB/ships path available so each non-convoy combat member's
+   CShip instance can be joined to task-force id, fleet id, strength, org, XP,
+   and sunk-convoy counters.
 
 ## Expected Live Evidence
 
@@ -43,6 +47,9 @@ The fixture probe must prove this exact route:
 - member handle: `CFEXMember+0x08`
 - current CShip route: `CFEXMember+0x08` high u32 ship instance id resolves to
   `CShip+0x08` high u32 through CShip vtable `module+0x2941748`
+- current native OOB route: the same CShip instance resolves through
+  `CGameState+0x310 -> CCountry+0x278 -> CFleet* -> CTaskForce/CShip`, with
+  `CTaskForce+0x330` parent fleet and `CTaskForce+0x338/+0x344` ship members
 
 Detection passes only when the probe output has:
 
@@ -56,6 +63,9 @@ Detection passes only when the probe output has:
 - attacker and defender `CFEXMember` rows for the same combat id/generation
 - `non_convoy_member_count >= 1`
 - `cship_unresolved_member_count == 0`
+- every non-convoy member row has task-force and fleet ids
+- every non-convoy member row has current CShip strength/org/XP/sunk-convoy
+  telemetry
 - non-empty `bridge.txt`
 - non-empty `member_bridge.jsonl`
 
@@ -65,7 +75,7 @@ Use this first to prove the active fixture and write bridge rows:
 
 ```powershell
 $pid = (Get-Process the game | Select-Object -First 1 -ExpandProperty Id)
-$out = "replay_native\runs\naval_combat_live_active_fixture_870ebf_20260701_v1"
+$out = "replay_native\runs\naval_combat_live_active_fixture_870ebf_20260701_v2"
 python memory_reader\combat\naval_combat_live_fixture_probe.py `
   --pid $pid `
   --workers 4 `
@@ -78,7 +88,7 @@ Use this for a bounded wait while the user creates the battle:
 
 ```powershell
 $pid = (Get-Process the game | Select-Object -First 1 -ExpandProperty Id)
-$out = "replay_native\runs\naval_combat_live_active_fixture_watch_870ebf_20260701_v1"
+$out = "replay_native\runs\naval_combat_live_active_fixture_watch_870ebf_20260701_v2"
 python memory_reader\combat\naval_combat_live_watch_gate.py `
   --pid $pid `
   --workers 4 `
@@ -98,15 +108,15 @@ When `bridge.txt` is non-empty, run the lane-local bridge proof:
 ```powershell
 python memory_reader\combat\naval_combat_compact_proof.py `
   --bridge-file $out\bridge.txt `
-  --out-dir replay_native\runs\naval_combat_live_detected_bridge_compact_870ebf_20260701_v1
+  --out-dir replay_native\runs\naval_combat_live_detected_bridge_compact_870ebf_20260701_v2
 ```
 
 The lane-local Rust/synthetic replay proof remains:
 
 ```powershell
 cargo test --manifest-path replay_native\lanes\naval_combat_live\Cargo.toml
-cargo run --manifest-path replay_native\lanes\naval_combat_live\Cargo.toml --bin naval_combat_lane_proof -- --out-dir replay_native\runs\naval_combat_live_lane_stack_870ebf_20260701_v1
-cargo run --manifest-path replay_native\snapshot\Cargo.toml --bin pack_replay -- verify replay_native\runs\naval_combat_live_lane_stack_870ebf_20260701_v1\native_session.battleplan
+cargo run --manifest-path replay_native\lanes\naval_combat_live\Cargo.toml --bin naval_combat_lane_proof -- --out-dir replay_native\runs\naval_combat_live_lane_stack_870ebf_20260701_v2
+cargo run --manifest-path replay_native\snapshot\Cargo.toml --bin pack_replay -- verify replay_native\runs\naval_combat_live_lane_stack_870ebf_20260701_v2\native_session.battleplan
 ```
 
 ## Production Proof After Registration
@@ -161,6 +171,8 @@ The production proof can count only if all of these are true:
 - Domain `50` has attacker and defender member rows for the same
   combat id/generation.
 - At least one non-convoy member row has a validated current CShip join.
+- Every CShip-validated member row has task-force/fleet linkage and current
+  CShip hull telemetry.
 - No `source_unavailable`, `partial_data`, `bridge_unavailable`, or
   `worker_panic` status is present.
 - `.battleplan` verification passes and the embedded compact stream byte-matches
@@ -179,6 +191,8 @@ Treat these as candidate rejection evidence:
   `CFEXMember` rows under a visible fleet-vs-fleet fixture.
 - A non-convoy `CFEXMember` row has a ship instance id that cannot resolve
   through current CShip `module+0x2941748`.
+- A non-convoy CShip-validated member lacks task-force/fleet linkage from the
+  current native OOB path.
 - The integrated compact run emits domain `49/50` rows that fail the lane gate
   or compact replay gate.
 
@@ -199,7 +213,10 @@ domains `49/50` without an active battle fixture.
   PID `45880`, SHA
   `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`,
   `body_hit_count=0`, `validated_combat_count=0`, `bridge_row_count=0`,
-  `member_bridge_row_count=0`.
+  `member_bridge_row_count=0`. Refreshed probe:
+  `replay_native/runs/naval_combat_live_lane_stack_870ebf_20260701_v2/live_fixture_probe/naval_combat_live_fixture_probe.json`
+  also reports `status=fixture_absent`, `sha256_ok=true`, and zero body,
+  bridge, member, resolved, or unresolved CShip rows.
 - The long watcher already ran `58` polls and ended
   `timeout_no_validated_fixture` with first and last `body_hit_count=0`.
 - Prior current-build direct scans also found no active combat-family bodies:

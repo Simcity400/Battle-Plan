@@ -108,6 +108,10 @@ granted.
      token.
 4. Feed the tracker from already validated DLL roots, not from Python/saves:
    - focus rows from `CCountry+0x1370` and `CCountry+0x1380`;
+   - for direct completed-focus closure, compact focus rows must include a
+     bounded completed-token vector, or the depth tracker must receive an exact
+     completed-token delta before the compact row discards it; do not rely only
+     on `completed_count` plus previous-current inference;
    - research rows from `CCountry+0xF60`, research slots, live progress, and
      base required points;
    - decision rows from `CCountry+0xFA0` and active timed decisions.
@@ -118,7 +122,10 @@ granted.
    - do not emit non-timed targeted/cooldown decision body token, target, or
      cooldown detail;
    - do not emit targeted-timed target detail until `record+0x20` or another
-     target field is proven by a stronger invariant than tag-id coincidence.
+     target field is proven by a stronger invariant than tag-id coincidence;
+   - if the capture is running with `compact_country_frame=true`, verify that
+     exact completed-focus tokens are still present in the depth payload before
+     claiming direct completed-focus closure.
 
 ## Rust Recorder Patch
 
@@ -177,6 +184,8 @@ After the shared patch is granted and applied:
    - DLL-only source for depth rows;
    - compact stream contains the final depth domain;
    - Rust recorder decodes the final depth domain with zero parse errors;
+   - exact completed-focus closure rows are present when a focus completes, or
+     the proof explicitly records the field as blocked;
    - `.battleplan` pack verifies;
    - hourly-or-lower cadence;
    - zero skipped hours;

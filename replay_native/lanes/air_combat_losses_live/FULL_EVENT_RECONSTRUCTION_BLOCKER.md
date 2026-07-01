@@ -5,7 +5,7 @@ Status: validated slice only. Do not call full air combat complete.
 The accepted production slice is air-wing strength/equipment delta rows for
 losses, reinforcements, deletes, mission region, and equipment amount deltas.
 The full sortie/combat event reconstruction backlog remains open except for
-the direct opposed event-root candidate rejected here.
+the direct opposed event-root candidates rejected here.
 
 ## Backlog item narrowed
 
@@ -14,6 +14,9 @@ Rejected candidate:
 - Direct `StrategicAirManager` / airbase-owner-container / air-wing-pool object
   that holds opposed air-wing body/object references and can serve as a full
   sortie/combat/loss event root.
+- Direct air-wing-body attached heap object that carries opposed air-wing refs
+  or tactical event-state shape for sortie/combat/loss-cause/ace/reinforcement
+  reconstruction.
 
 This rejection narrows the search for:
 
@@ -25,8 +28,8 @@ This rejection narrows the search for:
 - ace participation;
 - rich reinforcement reason.
 
-It does not prove those fields are impossible. It only proves this bounded
-direct-reference route is not the production path on the live 870ebf profile.
+It does not prove those fields are impossible. It only proves these bounded
+direct-reference routes are not the production path on the live 870ebf profile.
 
 ## Live proof
 
@@ -103,6 +106,77 @@ without a new anchor or a changed criterion. Useful next roots would need to
 come from a different evidence source, such as an event hook/function xref,
 combat-resolution disassembly, a proven active ace assignment frame, or a wider
 root chain outside the scanned manager/container/pool fields.
+
+## Rejected air-wing-body attachment event-root search
+
+Probe:
+
+- `replay_native/lanes/air_combat_losses_live/body_attachment_event_root_probe.py`
+
+Proof artifact:
+
+- `replay_native/lanes/air_combat_losses_live/proofs/body_attachment_event_root_rejection_20260701_v1/body_attachment_event_root_probe_870ebf.json`
+
+Command:
+
+```powershell
+python replay_native\lanes\air_combat_losses_live\body_attachment_event_root_probe.py --pid 45880 --duration-s 30 --interval-s 0.10 --body-span 0x300 --target-span 0x600 --max-wings 160 --out-dir replay_native\lanes\air_combat_losses_live\proofs\body_attachment_event_root_rejection_20260701_v1
+```
+
+Root validation:
+
+- exe SHA-256 matched `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`;
+- daily update sentinel matched at `module+0x1D4390`;
+- long-string sentinel matched at `module+0x526A40`;
+- `CGameState` root: `module+0x3316E90 -> CGameState*`;
+- current date: `CGameState+0x468`;
+- `StrategicAirManager`: `CGameState+0x690`;
+- `StrategicAirManager` vtable: `module+0x2942118`.
+
+Observed live activity:
+
+- air-wing rows observed: `434`;
+- rows with mission region: `185`;
+- temporal samples: `165`;
+- advanced game hours: `54`;
+- skipped game hours: `0`;
+- loss-like deltas captured: `22` examples;
+- reinforcement-like deltas captured: `16` examples;
+- hourly-or-lower sampling: passed.
+
+Rejected body-attachment search:
+
+- source span: `air_wing_body+0x0..0x300`;
+- target span: `target+0x0..0x600`;
+- source wings scanned: `160`;
+- source fields scanned: `15360`;
+- heap pointer fields observed: `1629`;
+- module-vtable targets observed: `277`;
+- candidate body attachments classified: `115`;
+- opposed event-root candidates found: `0`;
+- status: `rejected_no_body_attached_opposed_event_root`;
+- classification: `rejected_body_attached_opposed_event_root`.
+
+Criterion:
+
+- active or sampled air-wing body has a direct heap pointer field, outside
+  known pool/mission-region/equipment-bank fields;
+- the target object has a module-local vtable outside the already-known body,
+  object, pool, and region vtables;
+- event-root upgrade requires direct opposed air-wing refs, meaning at least two
+  owner tags with wing refs and either a region ref or a source-wing ref in the
+  target scan span.
+
+Result:
+
+- `0` body-attached opposed event-root candidates;
+- candidates with region refs only were not accepted as combat event roots;
+- candidates without direct wing/region refs were rejected;
+- no compact schema change is justified from this path.
+
+Do not retry this exact body-attachment route as a full event root without a new
+structure hypothesis, a wider root chain justified by disassembly, or an active
+ace/combat-resolution fixture that changes the criterion.
 
 ## Current validated slice, not full completion
 

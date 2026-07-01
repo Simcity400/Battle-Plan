@@ -130,6 +130,8 @@ pub struct CshipSnapshotRow {
     pub handle_type_tag: u32,
     pub alias_instance_id: u32,
     pub ref100_sentinel_raw: u32,
+    pub task_force_id: Option<u32>,
+    pub fleet_id: Option<u32>,
     pub strength_raw: u32,
     pub organisation_raw: u32,
     pub experience_raw: u32,
@@ -231,6 +233,115 @@ pub fn build_capture_frame(
     })
 }
 
+pub fn build_transition_capture_frame(
+    previous: &[ValidatedCombatSnapshot],
+    current: &[ValidatedCombatSnapshot],
+    cships: &[CshipSnapshotRow],
+    sequence_start: u64,
+    game_hour_raw: i32,
+    elapsed_wall_ms: u64,
+) -> Result<CaptureFrame, Vec<String>> {
+    let mut errors = Vec::new();
+    if previous.is_empty() && current.is_empty() {
+        errors.push(
+            "no previous or current naval combat snapshots; lifecycle transition fixture is required"
+                .to_string(),
+        );
+        return Err(errors);
+    }
+
+    let cship_index = index_cships(cships, &mut errors);
+    let previous_by_key = index_snapshots(previous, &mut errors);
+    let current_by_key = index_snapshots(current, &mut errors);
+
+    let mut lifecycle_rows = Vec::new();
+    let mut raw_member_rows = Vec::new();
+    for snapshot in current_by_key.values() {
+        if snapshot.lifecycle.attacker_member_count == 0
+            || snapshot.lifecycle.defender_member_count == 0
+        {
+            errors.push(format!(
+                "combat {}:{} is not two-sided",
+                snapshot.lifecycle.combat_id, snapshot.lifecycle.generation
+            ));
+        }
+        lifecycle_rows.push(LifecycleRow {
+            combat_id: snapshot.lifecycle.combat_id,
+            generation: snapshot.lifecycle.generation,
+            body_ptr: snapshot.lifecycle.body_ptr,
+            deleted: false,
+            location_id: snapshot.lifecycle.location_id,
+            attacker_member_count: Some(snapshot.lifecycle.attacker_member_count),
+            defender_member_count: Some(snapshot.lifecycle.defender_member_count),
+            attacker_positioning_milli: snapshot.lifecycle.attacker_positioning_milli,
+            defender_positioning_milli: snapshot.lifecycle.defender_positioning_milli,
+        });
+        raw_member_rows.extend(snapshot.members.iter().cloned());
+    }
+
+    for (key, snapshot) in previous_by_key.iter() {
+        if current_by_key.contains_key(key) {
+            continue;
+        }
+        lifecycle_rows.push(LifecycleRow {
+            combat_id: snapshot.lifecycle.combat_id,
+            generation: snapshot.lifecycle.generation,
+            body_ptr: snapshot.lifecycle.body_ptr,
+            deleted: true,
+            location_id: snapshot.lifecycle.location_id,
+            attacker_member_count: Some(snapshot.lifecycle.attacker_member_count),
+            defender_member_count: Some(snapshot.lifecycle.defender_member_count),
+            attacker_positioning_milli: snapshot.lifecycle.attacker_positioning_milli,
+            defender_positioning_milli: snapshot.lifecycle.defender_positioning_milli,
+        });
+    }
+
+    if lifecycle_rows.is_empty() {
+        errors.push("no lifecycle rows emitted from transition fixture".to_string());
+    }
+
+    let member_rows = if raw_member_rows.is_empty() {
+        Vec::new()
+    } else {
+        match validate_member_cship_joins(&raw_member_rows, &cship_index) {
+            Ok(rows) => rows,
+            Err(mut join_errors) => {
+                errors.append(&mut join_errors);
+                Vec::new()
+            }
+        }
+    };
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    let lifecycle_payload =
+        encode_lifecycle_payload(elapsed_wall_ms, STATUS_DELTA_DATA, &lifecycle_rows);
+    let member_payload = encode_member_payload(elapsed_wall_ms, STATUS_DELTA_DATA, &member_rows);
+    let mut compact_stream = Vec::new();
+    compact_stream.extend_from_slice(&compact_record(
+        sequence_start,
+        game_hour_raw,
+        DOMAIN_NAVAL_COMBAT_LIFECYCLE,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &lifecycle_payload,
+    ));
+    compact_stream.extend_from_slice(&compact_record(
+        sequence_start.saturating_add(1),
+        game_hour_raw,
+        DOMAIN_NAVAL_COMBAT_MEMBERS,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &member_payload,
+    ));
+
+    Ok(CaptureFrame {
+        compact_stream,
+        lifecycle_rows,
+        member_rows,
+        status_flags: STATUS_DELTA_DATA,
+    })
+}
+
 pub fn validate_member_cship_joins(
     members: &[MemberBridgeRow],
     cships: &BTreeMap<u32, CshipSnapshotRow>,
@@ -290,6 +401,16 @@ pub fn validate_member_cship_joins(
             };
             match cships.get(&ship_id) {
                 Some(cship) if cship_row_matches_current_route(cship) => {
+                    if cship.task_force_id.is_none() {
+                        errors.push(format!(
+                            "ship_instance_id {ship_id} missing task-force linkage from current OOB path"
+                        ));
+                    }
+                    if cship.fleet_id.is_none() {
+                        errors.push(format!(
+                            "ship_instance_id {ship_id} missing fleet linkage from current OOB path"
+                        ));
+                    }
                     cship_join_validated = true;
                     cship_join_count = cship_join_count.saturating_add(1);
                 }
@@ -320,6 +441,30 @@ pub fn validate_member_cship_joins(
             battle_slot_index_raw: member.battle_slot_index_raw,
             state_bitmask: member.state_bitmask,
             engagement_weight_raw: member.engagement_weight_raw,
+            task_force_id: member
+                .ship_instance_id
+                .and_then(|ship_id| cships.get(&ship_id))
+                .and_then(|cship| cship.task_force_id),
+            fleet_id: member
+                .ship_instance_id
+                .and_then(|ship_id| cships.get(&ship_id))
+                .and_then(|cship| cship.fleet_id),
+            strength_raw: member
+                .ship_instance_id
+                .and_then(|ship_id| cships.get(&ship_id))
+                .map(|cship| cship.strength_raw),
+            organisation_raw: member
+                .ship_instance_id
+                .and_then(|ship_id| cships.get(&ship_id))
+                .map(|cship| cship.organisation_raw),
+            experience_raw: member
+                .ship_instance_id
+                .and_then(|ship_id| cships.get(&ship_id))
+                .map(|cship| cship.experience_raw),
+            sunk_convoys: member
+                .ship_instance_id
+                .and_then(|ship_id| cships.get(&ship_id))
+                .map(|cship| cship.sunk_convoys),
         });
     }
 
@@ -361,6 +506,23 @@ fn index_cships(
     index
 }
 
+fn index_snapshots<'a>(
+    snapshots: &'a [ValidatedCombatSnapshot],
+    errors: &mut Vec<String>,
+) -> BTreeMap<(u32, u64), &'a ValidatedCombatSnapshot> {
+    let mut index = BTreeMap::new();
+    for snapshot in snapshots {
+        let key = (snapshot.lifecycle.combat_id, snapshot.lifecycle.generation);
+        if index.insert(key, snapshot).is_some() {
+            errors.push(format!(
+                "duplicate naval combat snapshot combat={} generation={}",
+                key.0, key.1
+            ));
+        }
+    }
+    index
+}
+
 fn cship_row_matches_current_route(row: &CshipSnapshotRow) -> bool {
     row.instance_id != 0
         && row.vtable_rva == CURRENT_870EBF_CSHIP_ROUTE.cship_vtable_rva
@@ -382,6 +544,8 @@ mod tests {
             handle_type_tag: CURRENT_870EBF_CSHIP_ROUTE.type_tag,
             alias_instance_id: id,
             ref100_sentinel_raw: CURRENT_870EBF_CSHIP_ROUTE.ref100_sentinel_raw,
+            task_force_id: Some(477),
+            fleet_id: Some(88),
             strength_raw: 10_000_000,
             organisation_raw: 9_000_000,
             experience_raw: 100_000,
@@ -445,9 +609,21 @@ mod tests {
         assert_eq!(frame.lifecycle_rows.len(), 1);
         assert_eq!(frame.member_rows.len(), 2);
         assert!(frame.member_rows.iter().any(|row| row.cship_join_validated));
+        assert!(frame
+            .member_rows
+            .iter()
+            .any(|row| row.task_force_id == Some(477) && row.fleet_id == Some(88)));
+        assert!(frame
+            .member_rows
+            .iter()
+            .any(|row| row.strength_raw == Some(10_000_000)
+                && row.organisation_raw == Some(9_000_000)));
         let gate = gate_stream(&frame.compact_stream);
         assert!(gate.ok, "{:?}", gate.errors);
         assert_eq!(gate.summary.two_sided_combat_count, 1);
+        assert_eq!(gate.summary.task_force_linked_member_count, 1);
+        assert_eq!(gate.summary.fleet_linked_member_count, 1);
+        assert_eq!(gate.summary.hull_telemetry_member_count, 1);
     }
 
     #[test]
@@ -464,5 +640,38 @@ mod tests {
         assert!(errors
             .iter()
             .any(|error| error.contains("active two-sided fixture is required")));
+    }
+
+    #[test]
+    fn transition_frame_emits_lifecycle_end_rows() {
+        let active = fixture();
+        let start =
+            build_transition_capture_frame(&[], &[active.clone()], &[cship(1001)], 10, 512, 5)
+                .unwrap();
+        let end =
+            build_transition_capture_frame(&[active], &[], &[cship(1001)], 12, 513, 8).unwrap();
+        assert_eq!(end.lifecycle_rows.len(), 1);
+        assert!(end.lifecycle_rows[0].deleted);
+
+        let mut stream = start.compact_stream;
+        stream.extend_from_slice(&end.compact_stream);
+        let gate = gate_stream(&stream);
+        assert!(gate.ok, "{:?}", gate.errors);
+        assert_eq!(gate.summary.lifecycle_started_row_count, 1);
+        assert_eq!(gate.summary.lifecycle_ended_row_count, 1);
+    }
+
+    #[test]
+    fn rejects_cship_without_oob_linkage() {
+        let mut unlinked = cship(1001);
+        unlinked.task_force_id = None;
+        unlinked.fleet_id = None;
+        let errors = build_capture_frame(&[fixture()], &[unlinked], 10, 512, 5).unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("missing task-force linkage")));
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("missing fleet linkage")));
     }
 }

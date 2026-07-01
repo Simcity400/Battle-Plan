@@ -13,7 +13,7 @@ pub const DOMAIN_NAVAL_COMBAT_MEMBERS_NAME: &str = "naval_combat_members_live";
 pub const SCHEMA_VERSION: u16 = 1;
 pub const PAYLOAD_HEADER_LEN: usize = 28;
 pub const LIFECYCLE_ROW_LEN: usize = 72;
-pub const MEMBER_ROW_LEN: usize = 72;
+pub const MEMBER_ROW_LEN: usize = 88;
 
 pub const STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
 pub const STATUS_PARTIAL_DATA: u32 = 1 << 9;
@@ -35,6 +35,12 @@ pub const MEMBER_STATE_BITMASK_PRESENT: u32 = 1 << 4;
 pub const MEMBER_ENGAGEMENT_WEIGHT_PRESENT: u32 = 1 << 5;
 pub const MEMBER_CSHIP_JOIN_VALIDATED: u32 = 1 << 6;
 pub const MEMBER_IS_CONVOY: u32 = 1 << 7;
+pub const MEMBER_TASK_FORCE_PRESENT: u32 = 1 << 8;
+pub const MEMBER_FLEET_PRESENT: u32 = 1 << 9;
+pub const MEMBER_STRENGTH_PRESENT: u32 = 1 << 10;
+pub const MEMBER_ORGANISATION_PRESENT: u32 = 1 << 11;
+pub const MEMBER_EXPERIENCE_PRESENT: u32 = 1 << 12;
+pub const MEMBER_SUNK_CONVOYS_PRESENT: u32 = 1 << 13;
 
 pub const MAX_COMBAT_ID: u32 = 0x7fff_ffff;
 pub const MAX_SHIP_INSTANCE_ID: u32 = 4_000_000;
@@ -44,6 +50,9 @@ pub const MAX_MEMBER_INDEX: u32 = 1_000;
 pub const MAX_BATTLE_SLOT_INDEX: u32 = 4_096;
 pub const MAX_LOCATION_ID: u32 = 1_000_000;
 pub const MAX_DESIGNED_STRENGTH_RAW: u32 = 1_000_000_000;
+pub const MAX_FIXED_POINT_RAW: u32 = 1_000_000_000;
+pub const MAX_SUNK_CONVOYS: u32 = 1_000_000;
+pub const MAX_OOB_ID: u32 = 4_000_000;
 pub const CSHIP_TYPE_TAG: u32 = 51;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -105,6 +114,12 @@ pub struct MemberRow {
     pub battle_slot_index_raw: u32,
     pub state_bitmask: Option<u32>,
     pub engagement_weight_raw: Option<i32>,
+    pub task_force_id: Option<u32>,
+    pub fleet_id: Option<u32>,
+    pub strength_raw: Option<u32>,
+    pub organisation_raw: Option<u32>,
+    pub experience_raw: Option<u32>,
+    pub sunk_convoys: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -132,7 +147,14 @@ pub struct GateSummary {
     pub member_row_count: u64,
     pub active_combat_count: u64,
     pub two_sided_combat_count: u64,
+    pub lifecycle_started_row_count: u64,
+    pub lifecycle_updated_row_count: u64,
+    pub lifecycle_ended_row_count: u64,
     pub cship_validated_member_count: u64,
+    pub task_force_linked_member_count: u64,
+    pub fleet_linked_member_count: u64,
+    pub hull_telemetry_member_count: u64,
+    pub sunk_convoy_telemetry_member_count: u64,
     pub convoy_member_count: u64,
     pub status_flags_or: u32,
     pub per_domain: BTreeMap<u16, DomainSummary>,
@@ -190,6 +212,13 @@ struct DecodedMemberRow {
     state_bitmask: u32,
     engagement_weight_raw: i32,
     reserved: u32,
+    task_force_id: u32,
+    fleet_id: u32,
+    strength_raw: u32,
+    organisation_raw: u32,
+    sunk_convoys: u32,
+    experience_raw: u32,
+    reserved_tail: u32,
 }
 
 pub fn encode_lifecycle_payload(
@@ -283,6 +312,24 @@ pub fn encode_member_payload(
         if row.engagement_weight_raw.is_some() {
             flags |= MEMBER_ENGAGEMENT_WEIGHT_PRESENT;
         }
+        if row.task_force_id.is_some() {
+            flags |= MEMBER_TASK_FORCE_PRESENT;
+        }
+        if row.fleet_id.is_some() {
+            flags |= MEMBER_FLEET_PRESENT;
+        }
+        if row.strength_raw.is_some() {
+            flags |= MEMBER_STRENGTH_PRESENT;
+        }
+        if row.organisation_raw.is_some() {
+            flags |= MEMBER_ORGANISATION_PRESENT;
+        }
+        if row.experience_raw.is_some() {
+            flags |= MEMBER_EXPERIENCE_PRESENT;
+        }
+        if row.sunk_convoys.is_some() {
+            flags |= MEMBER_SUNK_CONVOYS_PRESENT;
+        }
         push_u32(&mut payload, row.combat_id);
         push_u64(&mut payload, row.generation);
         push_u32(&mut payload, flags);
@@ -297,7 +344,12 @@ pub fn encode_member_payload(
         push_u32(&mut payload, row.state_bitmask.unwrap_or(0));
         push_i32(&mut payload, row.engagement_weight_raw.unwrap_or(0));
         push_u32(&mut payload, 0);
-        push_u64(&mut payload, 0);
+        push_u32(&mut payload, row.task_force_id.unwrap_or(0));
+        push_u32(&mut payload, row.fleet_id.unwrap_or(0));
+        push_u32(&mut payload, row.strength_raw.unwrap_or(0));
+        push_u32(&mut payload, row.organisation_raw.unwrap_or(0));
+        push_u32(&mut payload, row.sunk_convoys.unwrap_or(0));
+        push_u32(&mut payload, row.experience_raw.unwrap_or(0));
         push_u32(&mut payload, 0);
     }
     append_empty_string_table(&mut payload);
@@ -371,6 +423,10 @@ pub fn decode_members_data_payload(offset: usize, payload: &[u8]) -> PayloadDeco
     add_payload_unit(&mut summary, "naval_combat_member_rows", rows.len());
     let mut cship_validated_rows = 0usize;
     let mut convoy_rows = 0usize;
+    let mut task_force_linked_rows = 0usize;
+    let mut fleet_linked_rows = 0usize;
+    let mut hull_telemetry_rows = 0usize;
+    let mut sunk_convoy_telemetry_rows = 0usize;
     for (row_index, row) in rows.iter().enumerate() {
         validate_decoded_member_row(offset, row_index, row, &mut errors);
         if row.flags & MEMBER_CSHIP_JOIN_VALIDATED != 0 {
@@ -379,6 +435,18 @@ pub fn decode_members_data_payload(offset: usize, payload: &[u8]) -> PayloadDeco
         if row.flags & MEMBER_IS_CONVOY != 0 {
             convoy_rows = convoy_rows.saturating_add(1);
         }
+        if row.flags & MEMBER_TASK_FORCE_PRESENT != 0 {
+            task_force_linked_rows = task_force_linked_rows.saturating_add(1);
+        }
+        if row.flags & MEMBER_FLEET_PRESENT != 0 {
+            fleet_linked_rows = fleet_linked_rows.saturating_add(1);
+        }
+        if row.flags & (MEMBER_STRENGTH_PRESENT | MEMBER_ORGANISATION_PRESENT) != 0 {
+            hull_telemetry_rows = hull_telemetry_rows.saturating_add(1);
+        }
+        if row.flags & MEMBER_SUNK_CONVOYS_PRESENT != 0 {
+            sunk_convoy_telemetry_rows = sunk_convoy_telemetry_rows.saturating_add(1);
+        }
     }
     add_payload_unit(
         &mut summary,
@@ -386,6 +454,26 @@ pub fn decode_members_data_payload(offset: usize, payload: &[u8]) -> PayloadDeco
         cship_validated_rows,
     );
     add_payload_unit(&mut summary, "naval_combat_convoy_member_rows", convoy_rows);
+    add_payload_unit(
+        &mut summary,
+        "naval_combat_task_force_linked_member_rows",
+        task_force_linked_rows,
+    );
+    add_payload_unit(
+        &mut summary,
+        "naval_combat_fleet_linked_member_rows",
+        fleet_linked_rows,
+    );
+    add_payload_unit(
+        &mut summary,
+        "naval_combat_hull_telemetry_member_rows",
+        hull_telemetry_rows,
+    );
+    add_payload_unit(
+        &mut summary,
+        "naval_combat_sunk_convoy_telemetry_member_rows",
+        sunk_convoy_telemetry_rows,
+    );
     summary.parse_errors = errors;
     summary
 }
@@ -409,6 +497,7 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
     };
     let mut last_sequence: Option<u64> = None;
     let mut lifecycle_keys = BTreeSet::new();
+    let mut seen_lifecycle_keys = BTreeSet::new();
     let mut member_sides: BTreeMap<(u32, u64), BTreeSet<CombatSide>> = BTreeMap::new();
 
     for record in records {
@@ -443,7 +532,25 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
                 for (row_index, row) in rows.into_iter().enumerate() {
                     validate_decoded_lifecycle_row(record.offset, row_index, &row, &mut errors);
                     if row.flags & LIFECYCLE_ROW_DELETED == 0 {
-                        lifecycle_keys.insert((row.combat_id, row.generation));
+                        let key = (row.combat_id, row.generation);
+                        lifecycle_keys.insert(key);
+                        if seen_lifecycle_keys.insert(key) {
+                            summary.lifecycle_started_row_count =
+                                summary.lifecycle_started_row_count.saturating_add(1);
+                        } else {
+                            summary.lifecycle_updated_row_count =
+                                summary.lifecycle_updated_row_count.saturating_add(1);
+                        }
+                    } else {
+                        let key = (row.combat_id, row.generation);
+                        summary.lifecycle_ended_row_count =
+                            summary.lifecycle_ended_row_count.saturating_add(1);
+                        if !seen_lifecycle_keys.contains(&key) {
+                            errors.push(format!(
+                                "offset {}: lifecycle end row for combat {}:{} was not preceded by an active row",
+                                record.offset, key.0, key.1
+                            ));
+                        }
                     }
                 }
             }
@@ -464,6 +571,22 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
                     if row.flags & MEMBER_CSHIP_JOIN_VALIDATED != 0 {
                         summary.cship_validated_member_count =
                             summary.cship_validated_member_count.saturating_add(1);
+                    }
+                    if row.flags & MEMBER_TASK_FORCE_PRESENT != 0 {
+                        summary.task_force_linked_member_count =
+                            summary.task_force_linked_member_count.saturating_add(1);
+                    }
+                    if row.flags & MEMBER_FLEET_PRESENT != 0 {
+                        summary.fleet_linked_member_count =
+                            summary.fleet_linked_member_count.saturating_add(1);
+                    }
+                    if row.flags & (MEMBER_STRENGTH_PRESENT | MEMBER_ORGANISATION_PRESENT) != 0 {
+                        summary.hull_telemetry_member_count =
+                            summary.hull_telemetry_member_count.saturating_add(1);
+                    }
+                    if row.flags & MEMBER_SUNK_CONVOYS_PRESENT != 0 {
+                        summary.sunk_convoy_telemetry_member_count =
+                            summary.sunk_convoy_telemetry_member_count.saturating_add(1);
                     }
                     if row.flags & MEMBER_ROW_DELETED == 0 {
                         if let Some(side) = CombatSide::from_wire_id(row.side) {
@@ -534,6 +657,21 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
     if summary.member_row_count > 0 && summary.cship_validated_member_count == 0 {
         errors.push("member rows exist but no non-convoy CShip join was validated".to_string());
     }
+    if summary.cship_validated_member_count > 0
+        && summary.task_force_linked_member_count < summary.cship_validated_member_count
+    {
+        errors.push("not every CShip-validated combat member has task-force linkage".to_string());
+    }
+    if summary.cship_validated_member_count > 0
+        && summary.fleet_linked_member_count < summary.cship_validated_member_count
+    {
+        errors.push("not every CShip-validated combat member has fleet linkage".to_string());
+    }
+    if summary.cship_validated_member_count > 0
+        && summary.hull_telemetry_member_count < summary.cship_validated_member_count
+    {
+        errors.push("not every CShip-validated combat member has hull telemetry".to_string());
+    }
 
     GateResult {
         ok: errors.is_empty(),
@@ -577,8 +715,50 @@ pub fn result_json(result: &GateResult) -> String {
     );
     push_json_u64_field(
         &mut out,
+        "lifecycle_started_row_count",
+        result.summary.lifecycle_started_row_count,
+        true,
+    );
+    push_json_u64_field(
+        &mut out,
+        "lifecycle_updated_row_count",
+        result.summary.lifecycle_updated_row_count,
+        true,
+    );
+    push_json_u64_field(
+        &mut out,
+        "lifecycle_ended_row_count",
+        result.summary.lifecycle_ended_row_count,
+        true,
+    );
+    push_json_u64_field(
+        &mut out,
         "cship_validated_member_count",
         result.summary.cship_validated_member_count,
+        true,
+    );
+    push_json_u64_field(
+        &mut out,
+        "task_force_linked_member_count",
+        result.summary.task_force_linked_member_count,
+        true,
+    );
+    push_json_u64_field(
+        &mut out,
+        "fleet_linked_member_count",
+        result.summary.fleet_linked_member_count,
+        true,
+    );
+    push_json_u64_field(
+        &mut out,
+        "hull_telemetry_member_count",
+        result.summary.hull_telemetry_member_count,
+        true,
+    );
+    push_json_u64_field(
+        &mut out,
+        "sunk_convoy_telemetry_member_count",
+        result.summary.sunk_convoy_telemetry_member_count,
         true,
     );
     push_json_u64_field(
@@ -720,6 +900,13 @@ fn decode_member_payload(
             state_bitmask: read_u32(payload, cursor + 48),
             engagement_weight_raw: read_i32(payload, cursor + 52),
             reserved: read_u32(payload, cursor + 56),
+            task_force_id: read_u32(payload, cursor + 60),
+            fleet_id: read_u32(payload, cursor + 64),
+            strength_raw: read_u32(payload, cursor + 68),
+            organisation_raw: read_u32(payload, cursor + 72),
+            sunk_convoys: read_u32(payload, cursor + 76),
+            experience_raw: read_u32(payload, cursor + 80),
+            reserved_tail: read_u32(payload, cursor + 84),
         });
         cursor += MEMBER_ROW_LEN;
     }
@@ -883,6 +1070,11 @@ fn validate_decoded_member_row(
             "offset {offset}: member row {row_index} reserved field is nonzero"
         ));
     }
+    if row.reserved_tail != 0 {
+        errors.push(format!(
+            "offset {offset}: member row {row_index} trailing reserved field is nonzero"
+        ));
+    }
     if row.group_index > MAX_GROUP_INDEX {
         errors.push(format!(
             "offset {offset}: member row {row_index} group_index {} exceeds {MAX_GROUP_INDEX}",
@@ -972,6 +1164,78 @@ fn validate_decoded_member_row(
             "offset {offset}: member row {row_index} has engagement weight without flag"
         ));
     }
+    if row.flags & MEMBER_TASK_FORCE_PRESENT != 0 {
+        if row.task_force_id == 0 || row.task_force_id > MAX_OOB_ID {
+            errors.push(format!(
+                "offset {offset}: member row {row_index} invalid task_force_id {}",
+                row.task_force_id
+            ));
+        }
+    } else if row.task_force_id != 0 {
+        errors.push(format!(
+            "offset {offset}: member row {row_index} has task_force_id without flag"
+        ));
+    }
+    if row.flags & MEMBER_FLEET_PRESENT != 0 {
+        if row.fleet_id == 0 || row.fleet_id > MAX_OOB_ID {
+            errors.push(format!(
+                "offset {offset}: member row {row_index} invalid fleet_id {}",
+                row.fleet_id
+            ));
+        }
+    } else if row.fleet_id != 0 {
+        errors.push(format!(
+            "offset {offset}: member row {row_index} has fleet_id without flag"
+        ));
+    }
+    if row.flags & MEMBER_STRENGTH_PRESENT != 0 {
+        if row.strength_raw > MAX_FIXED_POINT_RAW {
+            errors.push(format!(
+                "offset {offset}: member row {row_index} strength_raw {} exceeds {MAX_FIXED_POINT_RAW}",
+                row.strength_raw
+            ));
+        }
+    } else if row.strength_raw != 0 {
+        errors.push(format!(
+            "offset {offset}: member row {row_index} has strength_raw without flag"
+        ));
+    }
+    if row.flags & MEMBER_ORGANISATION_PRESENT != 0 {
+        if row.organisation_raw > MAX_FIXED_POINT_RAW {
+            errors.push(format!(
+                "offset {offset}: member row {row_index} organisation_raw {} exceeds {MAX_FIXED_POINT_RAW}",
+                row.organisation_raw
+            ));
+        }
+    } else if row.organisation_raw != 0 {
+        errors.push(format!(
+            "offset {offset}: member row {row_index} has organisation_raw without flag"
+        ));
+    }
+    if row.flags & MEMBER_EXPERIENCE_PRESENT != 0 {
+        if row.experience_raw > MAX_FIXED_POINT_RAW {
+            errors.push(format!(
+                "offset {offset}: member row {row_index} experience_raw {} exceeds {MAX_FIXED_POINT_RAW}",
+                row.experience_raw
+            ));
+        }
+    } else if row.experience_raw != 0 {
+        errors.push(format!(
+            "offset {offset}: member row {row_index} has experience_raw without flag"
+        ));
+    }
+    if row.flags & MEMBER_SUNK_CONVOYS_PRESENT != 0 {
+        if row.sunk_convoys > MAX_SUNK_CONVOYS {
+            errors.push(format!(
+                "offset {offset}: member row {row_index} sunk_convoys {} exceeds {MAX_SUNK_CONVOYS}",
+                row.sunk_convoys
+            ));
+        }
+    } else if row.sunk_convoys != 0 {
+        errors.push(format!(
+            "offset {offset}: member row {row_index} has sunk_convoys without flag"
+        ));
+    }
 }
 
 fn record_domain_data(
@@ -1024,6 +1288,32 @@ fn validate_member_row(row: &MemberRow) -> Result<(), String> {
     if let Some(owner) = row.owner_tag_db_id {
         if owner > MAX_OWNER_TAG_DB_ID {
             return Err("invalid owner_tag_db_id".to_string());
+        }
+    }
+    if let Some(task_force_id) = row.task_force_id {
+        if task_force_id == 0 || task_force_id > MAX_OOB_ID {
+            return Err("invalid task_force_id".to_string());
+        }
+    }
+    if let Some(fleet_id) = row.fleet_id {
+        if fleet_id == 0 || fleet_id > MAX_OOB_ID {
+            return Err("invalid fleet_id".to_string());
+        }
+    }
+    for (label, value) in [
+        ("strength_raw", row.strength_raw),
+        ("organisation_raw", row.organisation_raw),
+        ("experience_raw", row.experience_raw),
+    ] {
+        if let Some(value) = value {
+            if value > MAX_FIXED_POINT_RAW {
+                return Err(format!("invalid {label}"));
+            }
+        }
+    }
+    if let Some(sunk_convoys) = row.sunk_convoys {
+        if sunk_convoys > MAX_SUNK_CONVOYS {
+            return Err("invalid sunk_convoys".to_string());
         }
     }
     Ok(())
@@ -1199,6 +1489,12 @@ mod tests {
                 battle_slot_index_raw: 0,
                 state_bitmask: Some(1),
                 engagement_weight_raw: Some(1_000),
+                task_force_id: Some(477),
+                fleet_id: Some(88),
+                strength_raw: Some(9_500_000),
+                organisation_raw: Some(8_750_000),
+                experience_raw: Some(100_000),
+                sunk_convoys: Some(0),
             },
             MemberRow {
                 combat_id: 240_580,
@@ -1215,6 +1511,12 @@ mod tests {
                 battle_slot_index_raw: 1,
                 state_bitmask: Some(1),
                 engagement_weight_raw: Some(500),
+                task_force_id: None,
+                fleet_id: None,
+                strength_raw: None,
+                organisation_raw: None,
+                experience_raw: None,
+                sunk_convoys: None,
             },
         ];
         let lifecycle_payload = encode_lifecycle_payload(42, STATUS_DELTA_DATA, &lifecycle);
@@ -1245,6 +1547,10 @@ mod tests {
         assert_eq!(result.summary.member_row_count, 2);
         assert_eq!(result.summary.two_sided_combat_count, 1);
         assert_eq!(result.summary.cship_validated_member_count, 1);
+        assert_eq!(result.summary.task_force_linked_member_count, 1);
+        assert_eq!(result.summary.fleet_linked_member_count, 1);
+        assert_eq!(result.summary.hull_telemetry_member_count, 1);
+        assert_eq!(result.summary.sunk_convoy_telemetry_member_count, 1);
         assert_eq!(result.summary.convoy_member_count, 1);
     }
 
@@ -1298,6 +1604,27 @@ mod tests {
                 .copied(),
             Some(1)
         );
+        assert_eq!(
+            member_summary
+                .data_units_total
+                .get("naval_combat_task_force_linked_member_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            member_summary
+                .data_units_total
+                .get("naval_combat_fleet_linked_member_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            member_summary
+                .data_units_total
+                .get("naval_combat_hull_telemetry_member_rows")
+                .copied(),
+            Some(1)
+        );
     }
 
     #[test]
@@ -1346,6 +1673,12 @@ mod tests {
             battle_slot_index_raw: 0,
             state_bitmask: None,
             engagement_weight_raw: None,
+            task_force_id: None,
+            fleet_id: None,
+            strength_raw: None,
+            organisation_raw: None,
+            experience_raw: None,
+            sunk_convoys: None,
         };
         let panic = std::panic::catch_unwind(|| {
             let _ = encode_member_payload(42, STATUS_DELTA_DATA, &[row]);

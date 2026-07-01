@@ -49,7 +49,7 @@ ROW_FLAG_EXPERIENCE_PRESENT = 1 << 2
 DEFAULT_PACKET_RUN = REPO / "replay_native" / "runs" / "characters_leaders_cabinet_live_20260701_integration_packet_v2"
 DEFAULT_STATIC_RUN = REPO / "replay_native" / "runs" / "characters_leaders_cabinet_live_20260701_static_semantic_closure_v1"
 DEFAULT_APPOINTED_RUN = REPO / "replay_native" / "runs" / "characters_leaders_cabinet_live_20260701_appointed_transition_fixture_v1"
-DEFAULT_OUT_DIR = REPO / "replay_native" / "runs" / "characters_leaders_cabinet_live_20260701_parking_matrix_v1"
+DEFAULT_OUT_DIR = REPO / "replay_native" / "runs" / "characters_leaders_cabinet_live_20260701_parking_matrix_v2"
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -222,6 +222,53 @@ def _advisor_dynamic_field_counts(character_dir: Path) -> dict[str, int]:
     return dict(counts)
 
 
+def _portrait_static_counts(character_dir: Path) -> dict[str, Any]:
+    counts = collections.Counter()
+    by_role = collections.Counter()
+    by_size = collections.Counter()
+    samples: list[dict[str, Any]] = []
+    for path in sorted(character_dir.glob("*.txt")):
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
+        root = STATIC._parse_document(text)
+        for chars in STATIC._blocks(root, "characters"):
+            for character_token, values in chars.items():
+                if character_token == "__items__":
+                    continue
+                for character in [value for value in values if isinstance(value, dict)]:
+                    portrait_blocks = STATIC._blocks(character, "portraits")
+                    if not portrait_blocks:
+                        continue
+                    counts["characters_with_portrait_block"] += 1
+                    for portraits in portrait_blocks:
+                        for role, role_values in portraits.items():
+                            if role == "__items__":
+                                continue
+                            for role_block in [value for value in role_values if isinstance(value, dict)]:
+                                for size in ("small", "large"):
+                                    for gfx in role_block.get(size, []):
+                                        if not isinstance(gfx, str):
+                                            continue
+                                        counts["portrait_entries"] += 1
+                                        by_role[role] += 1
+                                        by_size[size] += 1
+                                        if len(samples) < 12:
+                                            samples.append({
+                                                "character_token": character_token,
+                                                "role": role,
+                                                "size": size,
+                                                "gfx": gfx,
+                                                "source": str(path),
+                                                "line": STATIC._line_for(text, f"{character_token}=")
+                                                or STATIC._line_for(text, f"{character_token} ="),
+                                            })
+    return {
+        "counts": dict(counts),
+        "by_role": dict(by_role),
+        "by_size": dict(by_size),
+        "sample": samples,
+    }
+
+
 def _matrix(args: argparse.Namespace) -> dict[str, Any]:
     live = _read_json(args.live_roots_proof)
     static = _read_json(args.static_closure)
@@ -236,6 +283,7 @@ def _matrix(args: argparse.Namespace) -> dict[str, Any]:
     live_checks = live["checks"]
     compact_counts = compact["counts"]
     header = compact["header"]
+    portrait_static = _portrait_static_counts(character_dir)
 
     rows = [
         {
@@ -248,6 +296,18 @@ def _matrix(args: argparse.Namespace) -> dict[str, Any]:
                 f"compact country-leader role rows with name: {compact_counts.get('country_leader_role_name_present', 0)}/{header['country_leader_role_rows']}",
             ],
             "remaining": "Generic character rows currently carry neither names nor tokens in the production compact artifact; role/leader/ruler rows carry the usable names/tokens. Do not claim full character localization closure until character-row token/name emission is wired.",
+        },
+        {
+            "item": "character portraits",
+            "status": "static_sidecar_validated_schema_gap_blocked",
+            "evidence": [
+                "portraits are static common/characters metadata, not mutable hourly memory state",
+                f"static characters with portrait blocks: {portrait_static['counts'].get('characters_with_portrait_block', 0)}",
+                f"static portrait entries: {portrait_static['counts'].get('portrait_entries', 0)}",
+                f"portrait entries by role: {portrait_static['by_role']}",
+                f"compact generic character rows with token: {compact_counts.get('character_token_present', 0)}/{header['character_rows']}",
+            ],
+            "remaining": "Current domain-47 row schema has no portrait field and generic character rows do not emit character tokens. Portraits can be joined as static sidecar metadata for token-bearing role rows, but full character portrait closure needs either generic character token emission plus a static sidecar or an explicit schema extension.",
         },
         {
             "item": "unit leader XP, skill level, stat bytes, trait membership",
@@ -284,6 +344,17 @@ def _matrix(args: argparse.Namespace) -> dict[str, Any]:
             "remaining": "Army/fleet command assignment is a runtime OOB/navy path, not lane-local character roster closure.",
         },
         {
+            "item": "broader character relationships",
+            "status": "validated_edges_only_broader_graph_blocked_or_scope_split",
+            "evidence": [
+                "validated edge: CCharacter+0xA8 unit-leader pointer is guarded in lane-local raw character reads",
+                "validated edge: CAdvisor+0x10 -> CCharacter, with CCharacter+0x68 tag-db-id and +0x0C char-id",
+                "validated edge: CCountryLeader+0x08 -> CCharacter",
+                "validated edge: active ruler is politics-side ruling-party vector, not a CCharacter/CCountryLeader active flag",
+            ],
+            "remaining": "The lane emits character role/cabinet edges only. Runtime command assignment is owned by OOB/navy lanes; general scripted relationships or effect-derived links need a separate static/effects decoder and must not be inferred into domain 47.",
+        },
+        {
             "item": "country leader party and ideology beyond static closure",
             "status": "party_validated_subideology_partially_validated_deeper_runtime_blocked",
             "evidence": [
@@ -313,6 +384,16 @@ def _matrix(args: argparse.Namespace) -> dict[str, Any]:
                 f"joined roster rows with allowed/available/visible scripts: {static['candidate_rejections']['advisor_availability_or_active_status_from_static_definition']['advisor_roster_rows_with_static_availability_or_visibility_script']}",
             ],
             "remaining": "Availability predicates require trigger evaluation against live country state; domain 47 must not emit them as active state.",
+        },
+        {
+            "item": "CollectorState to LaneFrame shared adapter",
+            "status": "hard_blocked_with_lane_local_adapter_plan",
+            "evidence": [
+                "CollectorState currently exposes base/date/country_database/country_identity/special_projects/weather, but no domain-47 character root cache or LaneFrame adapter.",
+                "lane module exposes LaneCollectorModule::collect_frame(game_hour_raw, &LaneFrame), so the missing work is population, not wrapping/encoding.",
+                "domain 47 remains unscheduled in shared collector/recorder entrypoints per validate_merge_ready_blocker.py.",
+            ],
+            "remaining": "Shared integration owner must add a character-root cache, resolve current-build RTTI type roots outside hook callbacks, reuse country_identity and politics active ideas, populate LaneFrame, then register domain 47. Exact lane-local plan: replay_native/lanes/characters_leaders_cabinet_live/LANEFRAME_ADAPTER_PLAN.md.",
         },
         {
             "item": "national-spirit/law idea classification",
@@ -349,6 +430,7 @@ def _matrix(args: argparse.Namespace) -> dict[str, Any]:
         },
         "compact_inventory": compact,
         "advisor_static_dynamic_key_scan": advisor_dynamic,
+        "portrait_static_scan": portrait_static,
         "matrix": rows,
     }
 

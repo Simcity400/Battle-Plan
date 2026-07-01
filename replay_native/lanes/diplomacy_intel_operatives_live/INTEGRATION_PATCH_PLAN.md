@@ -11,7 +11,9 @@ Current lane-local production stack:
   and war root.
 - `domain44_compact.rs` is the historical filename for the final domain 53
   compact row schema and decoder. It rejects war rows/country war projections
-  when `STATUS_WAR_ROOT_UNVALIDATED` is set, rejects fabricated operative
+  when `STATUS_WAR_ROOT_UNVALIDATED` is set, requires the current schema to
+  badge emitted war rows/projections with
+  `STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED`, rejects fabricated operative
   fields, and rejects resisted operation/intel-map rows unless the top-level
   badges are present.
 - `src/decoder_gate.rs` wraps and decodes the recorder-facing `H4CR` domain data
@@ -66,6 +68,8 @@ Current validated roots for source mask `0x7F`:
 
 Fail-closed roots still excluded from source mask `0x7F`:
 
+- War lifecycle detail: current war rows are a validated tag-pair/casualty
+  slice only; embedded date scalar and war grouping/name remain unvalidated.
 - Operation detail: current operation RTTI is definition surface only;
   `accepted_for_operation_detail=false`.
 - Intel-map percentages: fixture/root still missing.

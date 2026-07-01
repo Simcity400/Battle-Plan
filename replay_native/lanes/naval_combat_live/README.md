@@ -11,12 +11,15 @@ collector/recorder integration slot.
 ## Files
 
 - `src/domain49_50_naval_combat_live.rs`: compact encoder/decoder/gate for
-  lifecycle and member rows, including recorder-facing payload summary decoders.
+  lifecycle and member rows, including recorder-facing payload summary decoders
+  for lifecycle start/update/end rows, task-force/fleet links, and CShip hull
+  telemetry.
 - `src/extractor.rs`: collector-side extraction boundary for validated
   `CNavalCombat -> CNavalCombatant -> registry -> CFEXMember` rows plus the
-  current `CFEXMember -> CShip` join.
+  current `CFEXMember -> CShip -> CTaskForce/CFleet` join.
 - `src/bin/naval_combat_lane_proof.rs`: proof harness that emits a domain
-  `49/50` compact stream, gate JSON, and lane-local `.battleplan`.
+  `49/50` compact start/update/end stream, gate JSON, and lane-local
+  `.battleplan`.
 - `REGISTRATION_HOOK_PLAN.md`: registration-only collector/recorder patch plan
   for domains `49` and `50`.
 - `LIVE_FIXTURE_RUNBOOK.md`: exact in-game fixture contract, probe commands,
@@ -30,6 +33,10 @@ collector/recorder integration slot.
 - `CShip+0x710`: `10000000` sentinel
 - `CFEXMember+0x08` high u32 ship instance id must resolve to that current
   `CShip` route for every non-convoy ship member.
+- Non-convoy combat members must also carry the OOB link supplied by the
+  current native naval OOB path: task-force id, fleet id, and current CShip
+  strength/org/XP/sunk-convoy telemetry. The lane gate fails closed if any
+  CShip-validated member lacks this enrichment.
 
 ## Candidate Lifecycle/Member Roots
 
@@ -64,16 +71,21 @@ part of this lane-local package.
 
 ```powershell
 cargo test --manifest-path replay_native\lanes\naval_combat_live\Cargo.toml
-cargo run --manifest-path replay_native\lanes\naval_combat_live\Cargo.toml --bin naval_combat_lane_proof -- --out-dir replay_native\runs\naval_combat_live_lane_stack_870ebf_20260701_v1
-cargo run --manifest-path replay_native\snapshot\Cargo.toml --bin pack_replay -- verify replay_native\runs\naval_combat_live_lane_stack_870ebf_20260701_v1\native_session.battleplan
-python memory_reader\combat\naval_combat_cship_route_probe.py --pid 45880 --workers 4 --out-dir replay_native\runs\naval_combat_live_lane_stack_870ebf_20260701_v1\cship_route_probe --member-bridge-file replay_native\runs\naval_combat_live_lane_stack_870ebf_20260701_v1\live_fixture_probe\member_bridge.jsonl
-python memory_reader\combat\naval_combat_live_fixture_probe.py --pid 45880 --workers 4 --require-two-sided --require-cship-join --out-dir replay_native\runs\naval_combat_live_lane_stack_870ebf_20260701_v1\live_fixture_probe
+cargo run --manifest-path replay_native\lanes\naval_combat_live\Cargo.toml --bin naval_combat_lane_proof -- --out-dir replay_native\runs\naval_combat_live_lane_stack_870ebf_20260701_v2
+cargo run --manifest-path replay_native\snapshot\Cargo.toml --bin pack_replay -- verify replay_native\runs\naval_combat_live_lane_stack_870ebf_20260701_v2\native_session.battleplan
+python memory_reader\combat\naval_combat_cship_route_probe.py --pid 45880 --workers 4 --out-dir replay_native\runs\naval_combat_live_lane_stack_870ebf_20260701_v2\cship_route_probe --member-bridge-file replay_native\runs\naval_combat_live_lane_stack_870ebf_20260701_v2\live_fixture_probe\member_bridge.jsonl
+python memory_reader\combat\naval_combat_live_fixture_probe.py --pid 45880 --workers 4 --require-two-sided --require-cship-join --out-dir replay_native\runs\naval_combat_live_lane_stack_870ebf_20260701_v2\live_fixture_probe
 ```
+
+Current lane-local proof `naval_combat_live_lane_stack_870ebf_20260701_v2`
+passed with 3 lifecycle rows (1 start, 1 update, 1 end), 4 member rows, 2
+CShip-validated members, 2 task-force/fleet linked members, 2 hull telemetry
+members, and byte-matched `.battleplan` verification.
 
 ## Remaining Blocker
 
 The current live process has no active `CNavalCombat` body hits for
 `module+0x29B6660`; see
-`replay_native/runs/naval_combat_live_lane_stack_870ebf_20260701_v1/live_fixture_probe/naval_combat_live_fixture_probe.json`.
+`replay_native/runs/naval_combat_live_lane_stack_870ebf_20260701_v2/live_fixture_probe/naval_combat_live_fixture_probe.json`.
 This blocks live lifecycle/member proof only, not the lane-local compact module.
 Use `LIVE_FIXTURE_RUNBOOK.md` for the exact battle fixture and proof commands.

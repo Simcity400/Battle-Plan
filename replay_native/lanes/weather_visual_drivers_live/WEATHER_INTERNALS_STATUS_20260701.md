@@ -7,7 +7,8 @@ state and visual map drivers already proven through the compact stream.
 
 ## Status
 
-- Completion status: `NOT COMPLETE` for the whole weather concept.
+- Completion status: `COMPLETE` for the residual internals audit lane by exact
+  candidate rejection/narrowing; `NOT COMPLETE` for the whole weather concept.
 - Validated slice: realized weather state plus province visual drivers.
 - Backlog reduced: yes.
 - Exact backlog item narrowed: non-visual weather internals are no longer a
@@ -16,6 +17,8 @@ state and visual map drivers already proven through the compact stream.
   particles if product scope requires them, and exact generative
   formula/RNG/name mapping if the product requires reconstructing the engine's
   weather generator rather than replaying captured realized frames.
+- Detailed required report fields live in
+  `RESIDUAL_INTERNALS_AUDIT_20260701.md`.
 
 ## Evidence
 

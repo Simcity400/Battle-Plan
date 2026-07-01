@@ -171,6 +171,24 @@ class DecodeStreamLifecycleTests(unittest.TestCase):
         )
         self.assertIsNone(proof.derive_airframe_family("not_an_airframe_token"))
 
+    def test_derives_legacy_airframe_family_and_role_from_live_token_name(self) -> None:
+        self.assertEqual(
+            proof.derive_airframe_family("fighter_equipment_0"),
+            "small_plane_airframe",
+        )
+        self.assertEqual(proof.derive_airframe_role("fighter_equipment_0"), "fighter")
+        self.assertEqual(
+            proof.derive_airframe_family("cv_CAS_equipment_2"),
+            "cv_small_plane_cas_airframe",
+        )
+        self.assertEqual(proof.derive_airframe_role("cv_CAS_equipment_2"), "cas")
+        self.assertEqual(
+            proof.derive_airframe_family("tac_bomber_equipment_3"),
+            "medium_plane_airframe",
+        )
+        self.assertEqual(proof.derive_airframe_role("tac_bomber_equipment_3"), "tactical_bomber")
+        self.assertIsNone(proof.derive_airframe_family("prefix_fighter_equipment_0_suffix"))
+
     def test_source_line_matches_exact_token_boundaries(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "source.txt"

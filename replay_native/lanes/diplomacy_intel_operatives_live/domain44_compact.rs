@@ -24,6 +24,7 @@ pub const STATUS_OPERATIONS_DETAIL_RESISTED: u32 = 1 << 16;
 pub const STATUS_INTEL_MAP_RESISTED: u32 = 1 << 17;
 pub const STATUS_WAR_ROOT_UNVALIDATED: u32 = 1 << 18;
 pub const STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED: u32 = 1 << 19;
+pub const STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED: u32 = 1 << 20;
 
 pub const KNOWN_STATUS_FLAGS: u32 = STATUS_SOURCE_UNAVAILABLE
     | STATUS_PARTIAL_DATA
@@ -31,7 +32,8 @@ pub const KNOWN_STATUS_FLAGS: u32 = STATUS_SOURCE_UNAVAILABLE
     | STATUS_OPERATIONS_DETAIL_RESISTED
     | STATUS_INTEL_MAP_RESISTED
     | STATUS_WAR_ROOT_UNVALIDATED
-    | STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED;
+    | STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED
+    | STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED;
 
 pub const KIND_COUNTRY_DIPLOMACY: u16 = 1;
 pub const KIND_WAR_RELATION: u16 = 2;
@@ -676,6 +678,14 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
     {
         summary.parse_errors.push(format!(
             "offset {offset}: diplomacy/intel badges war root unvalidated but emits {} war relation row(s) and {} country war projection row(s)",
+            decoded_counts.war, country_war_projection_rows
+        ));
+    }
+    if status_flags & STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED == 0
+        && (decoded_counts.war != 0 || country_war_projection_rows != 0)
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: diplomacy/intel emits {} war relation row(s) and {} country war projection row(s) without STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED; schema v{SCHEMA_VERSION} has no war name/grouping/start-date fields",
             decoded_counts.war, country_war_projection_rows
         ));
     }
@@ -1375,7 +1385,10 @@ mod tests {
         );
         assert_eq!(
             summary.status_flags_or,
-            STATUS_PARTIAL_DATA | STATUS_OPERATIONS_DETAIL_RESISTED | STATUS_INTEL_MAP_RESISTED
+            STATUS_PARTIAL_DATA
+                | STATUS_OPERATIONS_DETAIL_RESISTED
+                | STATUS_INTEL_MAP_RESISTED
+                | STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED
         );
         assert_eq!(summary.data_rows_total, 10);
         assert_eq!(summary.data_changed_rows_total, 10);
@@ -1471,6 +1484,10 @@ mod tests {
             summary.status_flags_or & STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED != 0,
             "incoming action queue badge should survive decode"
         );
+        assert!(
+            summary.status_flags_or & STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED != 0,
+            "war lifecycle detail badge should survive decode"
+        );
     }
 
     #[test]
@@ -1498,6 +1515,20 @@ mod tests {
         assert!(summary.parse_errors.iter().any(|error| {
             error.contains("badges war root unvalidated")
                 && error.contains("country war projection")
+        }));
+    }
+
+    #[test]
+    fn rejects_war_rows_without_lifecycle_detail_badge() {
+        let mut snapshot = fixture_snapshot();
+        snapshot.status_flags &= !STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED;
+        let payload = encode_payload(&snapshot);
+
+        let summary = decode_payload(0, &payload);
+
+        assert!(summary.parse_errors.iter().any(|error| {
+            error.contains("STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED")
+                && error.contains("war name/grouping/start-date")
         }));
     }
 
@@ -1547,7 +1578,8 @@ mod tests {
             elapsed_wall_ms: 123,
             status_flags: STATUS_PARTIAL_DATA
                 | STATUS_OPERATIONS_DETAIL_RESISTED
-                | STATUS_INTEL_MAP_RESISTED,
+                | STATUS_INTEL_MAP_RESISTED
+                | STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED,
             changed_rows: None,
             countries: vec![CountryDiplomacyRow {
                 tag_db_id: 1,

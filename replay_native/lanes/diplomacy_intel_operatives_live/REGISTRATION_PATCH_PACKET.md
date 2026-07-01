@@ -93,6 +93,9 @@ Required behavior:
 - `read_domain53` must build typed rows only from source mask `0x7F` roots.
 - It must not emit war rows or country at-war/casualty projections without
   `SOURCE_PROOF_WAR_ROOT_870EBF`.
+- It must keep `STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED` set on schema-v1 war
+  rows/projections until `SOURCE_PROOF_WAR_LIFECYCLE_DETAIL_870EBF` proves
+  start-date scalar and war grouping/name extraction.
 - It must encode operation detail and intel-map percentage gaps as omitted/badged
   fields, not `SOURCE_UNAVAILABLE` or `PARTIAL_DATA`.
 - If `build_domain53_payload(...).ok() == false`, suppress the data record and
@@ -215,6 +218,8 @@ Expected semantic counters after the lane-local proof:
 - `operation_anchor_rows`
 - `intel_map_rows`
 - `war_relation_rows` must remain `0` until the war root is accepted.
+- `STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED` must be present whenever schema-v1
+  war rows or country war/casualty projections are emitted.
 
 ## Required Shared Proof After Slot Opens
 
@@ -228,5 +233,5 @@ show:
 - no `WORKER_PANIC`, `BRIDGE_UNAVAILABLE`, `SOURCE_UNAVAILABLE`, or
   `PARTIAL_DATA` bits for domain `53`;
 - `.battleplan` container opens and preserves `collector_stream.bin` bytes;
-- unresolved war/operation/intel-map/incoming-action surfaces are omitted/badged,
-  not guessed.
+- unresolved war-lifecycle/operation/intel-map/incoming-action surfaces are
+  omitted/badged, not guessed.

@@ -8,8 +8,7 @@ use std::path::Path;
 pub const REPLAY_SCHEMA_VERSION: &str = "native_collector_session_v1";
 pub const GAME_ID: &str = "domain53_lane_local";
 pub const STREAM_PATH: &str = "payload/domain53_lane_local/collector_raw/collector_stream.bin";
-pub const MANIFEST_PATH: &str =
-    "payload/domain53_lane_local/recorder/native_session_manifest.json";
+pub const MANIFEST_PATH: &str = "payload/domain53_lane_local/recorder/native_session_manifest.json";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplayVerification {
@@ -75,6 +74,7 @@ pub fn manifest_json(stream_bytes: &[u8]) -> Result<Vec<u8>, String> {
                         "diplomacy_intel_rows": gate.data_rows_total
                     },
                     "omitted_unresolved_fields": [
+                        "war_lifecycle_detail",
                         "operation_detail",
                         "intel_map_percentages",
                         "incoming_diplomatic_action_queue"
@@ -208,7 +208,8 @@ mod tests {
 
     #[test]
     fn packs_and_verifies_domain53_replay_container() {
-        let extraction = build_domain53_payload(proof_fixture_rows(), CURRENT_VALIDATED_SOURCE_PROOFS);
+        let extraction =
+            build_domain53_payload(proof_fixture_rows(), CURRENT_VALIDATED_SOURCE_PROOFS);
         assert!(extraction.ok(), "{:?}", extraction.errors);
         let stream = encode_domain53_data_record(1, 43_800_024, &extraction.payload);
         let manifest = manifest_json(&stream).unwrap();

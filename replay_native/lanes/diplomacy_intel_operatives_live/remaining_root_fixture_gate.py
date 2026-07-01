@@ -35,6 +35,17 @@ REQUIRED_WAR_FIXTURE_FIELDS = (
     "ui_or_save_at_war_evidence",
 )
 
+REQUIRED_WAR_LIFECYCLE_FIXTURE_FIELDS = (
+    "build_sha256",
+    "same_tick_utc",
+    "war_name_or_id",
+    "attacker_tags",
+    "defender_tags",
+    "start_date_scalar",
+    "war_grouping_or_handle",
+    "ui_or_save_war_lifecycle_evidence",
+)
+
 REQUIRED_OPERATION_FIXTURE_FIELDS = (
     "build_sha256",
     "same_tick_utc",
@@ -68,6 +79,29 @@ REQUIRED_INCOMING_ACTION_FIXTURE_FIELDS = (
 )
 
 FIXTURE_CONTRACTS = {
+    "war_lifecycle_detail": {
+        "positive_fixture": {
+            "setup": "current 870ebf live tick with at least one active war whose UI/save identity and start date are visible or save-corroborated same-tick",
+            "must_identify": [
+                "war_name_or_id",
+                "attacker_tags",
+                "defender_tags",
+                "start_date_scalar",
+                "war_grouping_or_handle",
+            ],
+            "acceptance_rule": (
+                "a candidate must join the accepted tag-pair/casualty row pool to "
+                "a stable war grouping/name and decode the embedded date scalar "
+                "from live memory, then warm-revalidate the same owner sets and "
+                "start date against the fixture"
+            ),
+        },
+        "rejection_rule": (
+            "tag-pair casualty rows alone are not war lifecycle detail; embedded "
+            "date RTTI without scalar date fields and relation-entry scans without "
+            "a stable war grouping/name remain a validated slice, not complete war replay"
+        ),
+    },
     "operation_detail": {
         "positive_fixture": {
             "setup": "current 870ebf live tick with at least one running intelligence operation visible for an owner country",
@@ -294,6 +328,43 @@ def summarize_operation_blocker(path: Path, report: dict[str, Any], fixture: dic
     }
 
 
+def summarize_war_lifecycle_blocker(
+    fixture: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    row = fixture_section(fixture, "war_lifecycle_detail")
+    missing = missing_fields(row, REQUIRED_WAR_LIFECYCLE_FIXTURE_FIELDS)
+    if not missing:
+        return None
+    return {
+        "id": "war_lifecycle_detail",
+        "status": "fixture_missing",
+        "reason": (
+            "current war tag-pair/casualty rows are accepted, but embedded date "
+            "scalar decode and higher-level war grouping/name are not validated"
+        ),
+        "accepted_slice": {
+            "war_root": "current 870ebf global row pool keyed by tag pair",
+            "fields": [
+                "first_tag_id",
+                "second_tag_id",
+                "first_casualties",
+                "second_casualties",
+                "echo_tags",
+                "current date RTTI pointer presence",
+            ],
+        },
+        "required_fixture": {
+            "section": "war_lifecycle_detail",
+            "missing_fields": missing,
+            "fields": list(REQUIRED_WAR_LIFECYCLE_FIXTURE_FIELDS),
+        },
+        "positive_fixture_contract": FIXTURE_CONTRACTS["war_lifecycle_detail"][
+            "positive_fixture"
+        ],
+        "rejection_rule": FIXTURE_CONTRACTS["war_lifecycle_detail"]["rejection_rule"],
+    }
+
+
 def summarize_fixture_only_blocker(
     fixture: dict[str, Any] | None,
     section: str,
@@ -345,6 +416,9 @@ def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     war_blocker = summarize_war_blocker(war_path, war_report, fixture)
     if war_blocker:
         blockers.append(war_blocker)
+    war_lifecycle_blocker = summarize_war_lifecycle_blocker(fixture)
+    if war_lifecycle_blocker:
+        blockers.append(war_lifecycle_blocker)
     operation_blocker = summarize_operation_blocker(operation_path, operation_report, fixture)
     if operation_blocker:
         blockers.append(operation_blocker)
@@ -407,6 +481,7 @@ def build_report(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             "Do not edit shared collector/recorder entrypoints while another lane owns the slot.",
             "When a slot opens, register domain 53 only after this gate exits 0 against current 870ebf proof.",
             "War root is accepted only when the current war-shape proof remains accepted.",
+            "Keep war lifecycle detail badged unavailable until start-date scalar and war grouping/name are validated.",
             "Keep operation rows resisted while operation_detail remains blocked.",
             "Keep intel-map percentages resisted while intel_map_percentages remains blocked.",
             "Keep incoming-action queue badged unavailable while incoming_diplomatic_action_queue remains blocked.",

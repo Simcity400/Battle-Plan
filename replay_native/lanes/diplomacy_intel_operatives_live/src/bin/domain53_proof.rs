@@ -46,7 +46,10 @@ fn main() {
     let record = encode_domain53_data_record(1, 43_800_024, &extraction.payload);
     let record_summary = decode_domain53_record(0, &record);
     if !record_summary.parse_errors.is_empty() {
-        eprintln!("domain53 record gate failed: {:?}", record_summary.parse_errors);
+        eprintln!(
+            "domain53 record gate failed: {:?}",
+            record_summary.parse_errors
+        );
         std::process::exit(1);
     }
 
@@ -126,6 +129,7 @@ fn proof_json(
             "  \"hoi4replay_collector_stream_bytes\": {replay_stream_bytes},\n",
             "  \"fail_closed\": {{\n",
             "    \"war_root_unvalidated\": false,\n",
+            "    \"war_lifecycle_detail_unvalidated\": true,\n",
             "    \"incoming_action_queue_unvalidated\": true,\n",
             "    \"operation_detail_resisted\": true,\n",
             "    \"intel_map_resisted\": true\n",

@@ -3,7 +3,8 @@ use crate::compact::{
     DiplomacyIntelSnapshot, Domain53GateSummary, IntelMapRow, OperationAnchorRow, OperativeRow,
     OpinionRow, RelationFlagRow, SubjectRow, WarRelationRow, DOMAIN_ID_PROPOSED,
     REL_KIND_GUARANTEE, STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED, STATUS_INTEL_MAP_RESISTED,
-    STATUS_OPERATIONS_DETAIL_RESISTED, STATUS_WAR_ROOT_UNVALIDATED,
+    STATUS_OPERATIONS_DETAIL_RESISTED, STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED,
+    STATUS_WAR_ROOT_UNVALIDATED,
 };
 
 pub const EXPECTED_HOI4_SHA256_870EBF: &str =
@@ -19,6 +20,7 @@ pub const SOURCE_PROOF_WAR_ROOT_870EBF: u64 = 1 << 6;
 pub const SOURCE_PROOF_OPERATION_DETAIL_870EBF: u64 = 1 << 7;
 pub const SOURCE_PROOF_INTEL_MAP_PERCENTAGES_870EBF: u64 = 1 << 8;
 pub const SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF: u64 = 1 << 9;
+pub const SOURCE_PROOF_WAR_LIFECYCLE_DETAIL_870EBF: u64 = 1 << 10;
 
 pub const KNOWN_SOURCE_PROOFS: u64 = SOURCE_PROOF_BUILD_SHA_870EBF
     | SOURCE_PROOF_COUNTRY_ROOTS_870EBF
@@ -29,7 +31,8 @@ pub const KNOWN_SOURCE_PROOFS: u64 = SOURCE_PROOF_BUILD_SHA_870EBF
     | SOURCE_PROOF_WAR_ROOT_870EBF
     | SOURCE_PROOF_OPERATION_DETAIL_870EBF
     | SOURCE_PROOF_INTEL_MAP_PERCENTAGES_870EBF
-    | SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF;
+    | SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF
+    | SOURCE_PROOF_WAR_LIFECYCLE_DETAIL_870EBF;
 
 pub const CURRENT_VALIDATED_SOURCE_PROOFS: u64 = SOURCE_PROOF_BUILD_SHA_870EBF
     | SOURCE_PROOF_COUNTRY_ROOTS_870EBF
@@ -205,6 +208,11 @@ pub fn build_domain53_payload(
             );
         }
     }
+    if has(source_proofs, SOURCE_PROOF_WAR_LIFECYCLE_DETAIL_870EBF) {
+        snapshot.status_flags &= !STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED;
+    } else {
+        snapshot.status_flags |= STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED;
+    }
 
     if has(source_proofs, SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF) {
         snapshot.status_flags &= !STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED;
@@ -369,6 +377,10 @@ mod tests {
             0
         );
         assert_ne!(
+            report.gate_summary.status_flags_or & STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED,
+            0
+        );
+        assert_ne!(
             report.gate_summary.status_flags_or & STATUS_OPERATIONS_DETAIL_RESISTED,
             0
         );
@@ -426,6 +438,29 @@ mod tests {
     }
 
     #[test]
+    fn badges_war_lifecycle_detail_until_source_proof_exists() {
+        let mut rows = proof_fixture_rows();
+        rows.wars.push(WarRelationRow {
+            first_tag_db_id: 1,
+            second_tag_db_id: 3,
+            first_casualties: 100,
+            second_casualties: 200,
+        });
+
+        let report = build_domain53_payload(rows, CURRENT_VALIDATED_SOURCE_PROOFS);
+
+        assert!(report.ok(), "{:?}", report.errors);
+        assert_ne!(
+            report.gate_summary.status_flags_or & STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED,
+            0
+        );
+        assert_eq!(
+            report.gate_summary.status_flags_or & STATUS_WAR_ROOT_UNVALIDATED,
+            0
+        );
+    }
+
+    #[test]
     fn rejects_unresisted_operation_without_operation_detail_root() {
         let mut rows = proof_fixture_rows();
         rows.operation_anchors[0].detail_resisted = false;
@@ -467,7 +502,10 @@ mod tests {
         assert!(evidence.contains("module+0x29A6540"));
         assert!(evidence.contains("module+0x293F790"));
         assert!(evidence.contains("module+0x2702388"));
-        assert_ne!(CURRENT_VALIDATED_SOURCE_PROOFS & SOURCE_PROOF_WAR_ROOT_870EBF, 0);
+        assert_ne!(
+            CURRENT_VALIDATED_SOURCE_PROOFS & SOURCE_PROOF_WAR_ROOT_870EBF,
+            0
+        );
     }
 
     #[test]
@@ -477,15 +515,15 @@ mod tests {
         assert!(report.ok(), "{:?}", report.errors);
         assert_eq!(
             report.gate_summary.status_flags_or
-                & (crate::compact::STATUS_SOURCE_UNAVAILABLE
-                    | crate::compact::STATUS_PARTIAL_DATA),
+                & (crate::compact::STATUS_SOURCE_UNAVAILABLE | crate::compact::STATUS_PARTIAL_DATA),
             0
         );
         assert_ne!(
             report.gate_summary.status_flags_or
                 & (STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED
                     | STATUS_OPERATIONS_DETAIL_RESISTED
-                    | STATUS_INTEL_MAP_RESISTED),
+                    | STATUS_INTEL_MAP_RESISTED
+                    | STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED),
             0
         );
         assert_eq!(

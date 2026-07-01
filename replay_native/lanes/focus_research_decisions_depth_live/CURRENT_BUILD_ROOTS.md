@@ -25,6 +25,9 @@ Proof files:
 - `replay_native/lanes/focus_research_decisions_depth_live/proofs/current_roots_20260701_v4/decision_body_samples.jsonl`
 - `replay_native/lanes/focus_research_decisions_depth_live/proofs/decision_body_candidate_gate_20260701_v1/decision_body_candidate_gate.json`
 - `replay_native/lanes/focus_research_decisions_depth_live/proofs/decision_body_candidate_gate_20260701_v1/DECISION_BODY_CANDIDATE_GATE.md`
+- `replay_native/lanes/focus_research_decisions_depth_live/proofs/integrated_depth_gate_20260701_v1/depth_gate_manifest.json`
+- `replay_native/lanes/focus_research_decisions_depth_live/proofs/residual_blocker_gate_20260701_v1/residual_blocker_gate.json`
+- `replay_native/lanes/focus_research_decisions_depth_live/proofs/residual_blocker_gate_20260701_v1/RESIDUAL_BLOCKER_GATE.md`
 
 ## Build And Base Roots
 
@@ -78,6 +81,25 @@ Lane-local badge:
 - source domain `12` (`focus_live`)
 - evidence code `1`
 - detail `focus_pause_flag_fail_closed_no_paused_true_ground_truth`
+
+## Direct Completed-Focus Token Closure
+
+The integrated domain `45` gate over
+`replay_native/runs/focus_research_decisions_depth_live_integrated_870ebf_20260701_v1/collector_stream.bin`
+decoded `89` depth data records with zero parse errors. It saw:
+
+- `9` focus event rows
+- `0` exact completed-focus closure rows
+- `1` inferred completed-focus closure row
+- `0` unresolved completed-focus closure rows
+
+Verdict: direct completed-focus token closure is still blocked in the current
+compact production path. The integrated proof ran with `compact_country_frame =
+true`, and the current shared collector compact focus read omits the completed
+focus vector in compact mode. Completion rows can therefore only infer a token
+from the previous active focus unless the shared compact focus reader starts
+emitting bounded completed tokens or a lane-specific collector hook emits exact
+completed-token deltas.
 
 ## Decision Bodies
 
@@ -163,6 +185,15 @@ keyed by owner tag, decision token, and known target country/state/province for
 records with vtable `0x27D5038`. Until then, keep targeted/cooldown target
 details fail-closed and do not emit partial target fields.
 
+The residual blocker gate also rejects a definition-agnostic universal target
+layout for `active_targeted_timed_decision`: candidate country-tag offsets are
+sparse or constant across sampled records (`record+0x20` appears as a valid tag
+on only `490/1620` rows; `record+0x50` is the constant tag `15:SPR` on
+`1620/1620` rows; country-pointer candidates at `+0x60/+0x70` appear on only
+`6/1620` and `1/1620` rows). The remaining plausible path is definition-aware or
+variant target decoding, which needs the same-frame oracle or static decision
+target-type metadata.
+
 Lane-local badge:
 
 - status flag bit `1`
@@ -215,3 +246,11 @@ derives:
   - decision target fields fail-closed badge rows `87`
   - direct event hooks unavailable badge rows `87`
 - source/depth parse errors `[]`
+
+The integrated production-shaped proof from
+`replay_native/runs/focus_research_decisions_depth_live_integrated_870ebf_20260701_v1`
+already verifies domain `45` through compact DLL/Rust `.battleplan` packing with
+zero skipped hours and no source/partial/worker/bridge failures, but the residual
+blocker gate remains `NOT COMPLETE` because all three fail-closed badges are
+still present and exact completed-focus token closure did not occur in compact
+production.

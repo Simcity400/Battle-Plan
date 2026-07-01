@@ -4,9 +4,9 @@ The old slot-ready packet is not enough under replay_native/DOMAIN_REGISTRY.md.
 This gate proves whether the lane can be exercised through the shared
 DLL/Rust compact stream without editing shared entrypoints. A validated
 `blocked` result is intentional evidence: domain 47 is assigned to this lane,
-but the current shared collector/recorder do not have the registration hooks
-needed for live speed-five/.battleplan proof, and the active integration slot is
-owned by air.
+but the current shared collector/recorder do not have the registration hooks or
+CollectorState-to-LaneFrame adapter needed for live speed-five/.battleplan
+proof.
 """
 
 from __future__ import annotations
@@ -142,14 +142,25 @@ def validate() -> dict:
         f"| {DOMAIN_ID} | `{DOMAIN_NAME}` | reserved |" in registry_doc
         or f"| {DOMAIN_ID} | `{DOMAIN_NAME}` | lane-ready; shared registration blocked; remaining matrix written |"
         in registry_doc
+        or f"| {DOMAIN_ID} | `{DOMAIN_NAME}` | lane-ready; shared adapter/registration blocked; remaining matrix written |"
+        in registry_doc
     )
     registry_ok = (
         registry.get("owner") == "orchestrator"
         and lane_domain.get("name") == DOMAIN_NAME
         and lane_registry_status
-        in {"reserved", "lane_ready_shared_registration_blocked_remaining_matrix"}
+        in {
+            "reserved",
+            "lane_ready_shared_registration_blocked_remaining_matrix",
+            "lane_ready_shared_adapter_registration_blocked_remaining_matrix",
+        }
         and air_domain.get("name") == AIR_DOMAIN_NAME
-        and air_domain.get("status") in {"active_integration", "production_complete"}
+        and air_domain.get("status")
+        in {
+            "active_integration",
+            "production_complete",
+            "validated_slice_variant_archetype_token20378_resolved_shared_token_hook_open",
+        }
         and lane_registry_doc_present
     )
 
@@ -195,6 +206,10 @@ def validate() -> dict:
             "ActiveIntegration",
             True,
         )
+    )
+    domain46_shared_descriptor_present = (
+        _contains_regex(collector_registry, rf"domain\(\s*{AIR_DOMAIN_ID},\s*\"{AIR_DOMAIN_NAME}\"")
+        and _contains_regex(recorder_registry, rf"domain\(\s*{AIR_DOMAIN_ID},\s*\"{AIR_DOMAIN_NAME}\"")
     )
 
     compact_id_ok = _contains_regex(compact, r"pub const DOMAIN_ID\s*:\s*u16\s*=\s*47\s*;")
@@ -243,7 +258,7 @@ def validate() -> dict:
 
     blocked = (
         registry_ok
-        and domain46_registered_in_shared_files
+        and domain46_shared_descriptor_present
         and shared_absent
         and compact_id_ok
         and lane_module_present
@@ -264,6 +279,7 @@ def validate() -> dict:
         },
         "shared_registration": shared_registration,
         "domain46_registered_in_shared_files": domain46_registered_in_shared_files,
+        "domain46_shared_descriptor_present": domain46_shared_descriptor_present,
         "lane_compact_domain_id_ok": compact_id_ok,
         "lane_module_present": lane_module_present,
         "rust_fixture_gate": {
@@ -327,6 +343,7 @@ def main() -> None:
         "domain_id": result["domain_id"],
         "shared_registration_absent": not any(result["shared_registration"].values()),
         "domain46_registered_in_shared_files": result["domain46_registered_in_shared_files"],
+        "domain46_shared_descriptor_present": result["domain46_shared_descriptor_present"],
         "lane_module_present": result["lane_module_present"],
         "live_dev_appointed_rows": result["live_dev_proof"]["appointed_advisor_rows"],
         "fixture_appointed_rows": result["nonzero_transition_fixture"]["appointed_advisor_rows"],

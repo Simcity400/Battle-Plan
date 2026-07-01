@@ -130,3 +130,8 @@ RNG cursors as a required current-state replay extraction row, classifies
 `SWeatherPerRegion +0x58/+0x70` active vectors as redundant for non-visual
 gameplay state when they agree with `phenomenon >= 1`, and leaves exact
 generator/RNG/name parity as open-computed if product scope requires it.
+
+`RESIDUAL_INTERNALS_AUDIT_20260701.md` is the explicit closeout for the residual
+internals lane: no additional non-visual current-state compact records are
+required beyond the validated domain-24 realized weather/visual-driver payload.
+It does not claim whole-weather completion or close-zoom particle parity.

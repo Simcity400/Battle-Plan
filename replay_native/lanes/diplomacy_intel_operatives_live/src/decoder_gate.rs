@@ -63,7 +63,10 @@ pub fn decode_domain53_record(offset: usize, bytes: &[u8]) -> Domain53RecordGate
         return out;
     }
 
-    merge_payload_summary(&mut out, decode_payload(offset + COMPACT_RECORD_HEADER_LEN, payload));
+    merge_payload_summary(
+        &mut out,
+        decode_payload(offset + COMPACT_RECORD_HEADER_LEN, payload),
+    );
     out
 }
 
@@ -152,7 +155,8 @@ mod tests {
 
     #[test]
     fn wraps_and_decodes_domain53_record() {
-        let extraction = build_domain53_payload(proof_fixture_rows(), CURRENT_VALIDATED_SOURCE_PROOFS);
+        let extraction =
+            build_domain53_payload(proof_fixture_rows(), CURRENT_VALIDATED_SOURCE_PROOFS);
         assert!(extraction.ok(), "{:?}", extraction.errors);
 
         let record = encode_domain53_data_record(7, 43_800_024, &extraction.payload);
@@ -160,12 +164,17 @@ mod tests {
 
         assert_eq!(summary.record_count, 1);
         assert_eq!(summary.data_rows_total, 9);
-        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
     }
 
     #[test]
     fn rejects_wrong_domain_id() {
-        let extraction = build_domain53_payload(proof_fixture_rows(), CURRENT_VALIDATED_SOURCE_PROOFS);
+        let extraction =
+            build_domain53_payload(proof_fixture_rows(), CURRENT_VALIDATED_SOURCE_PROOFS);
         let mut record = encode_domain53_data_record(7, 43_800_024, &extraction.payload);
         record[20..22].copy_from_slice(&52u16.to_le_bytes());
 

@@ -22,6 +22,8 @@ Lane-owned module now exists:
 - Compact schema/encoder/decoder gate: `domain47_compact.rs`, exported as
   `domain47_characters_leaders_cabinet_live`.
 - Rust fixture gate: `src/bin/appointed_fixture_gate.rs`.
+- LaneFrame adapter contract:
+  `replay_native/lanes/characters_leaders_cabinet_live/LANEFRAME_ADAPTER_PLAN.md`.
 
 Registration-only collector patch when this lane receives the shared slot:
 
@@ -77,6 +79,8 @@ Current collector blocker:
   politics active ideas, and validated character/leader/advisor roots. A
   placeholder empty/source-unavailable frame would not satisfy merge-ready
   acceptance.
+- `LANEFRAME_ADAPTER_PLAN.md` now specifies the exact required shared inputs,
+  row population flow, failure flags, and proof gate for that adapter.
 
 Required collector inputs:
 

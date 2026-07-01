@@ -12,6 +12,8 @@ Lane-owned production files:
 - `src/extractor.rs`: lane-owned extractor core contract, validated live roots
   and offsets, same-session token-dictionary classification helpers.
 - `src/lib.rs`: lane module exports.
+- `REGISTRATION_PATCH_PLAN.md`: exact shared collector/recorder hook plan; no
+  shared entrypoints are edited by this lane packet.
 
 Validated roots and offsets:
 
@@ -78,6 +80,17 @@ Follow-up validated-slice closure:
   `role=maritime_patrol_plane`, backed by `common/script_enums.txt`,
   `common/technologies/bba_air_techs.txt`, and
   `common/units/equipment/x_plane_airframes.txt`.
+- The Rust encoder now exposes
+  `build_air_variant_archetype_payload_with_token_dictionary`, the exact
+  shared-hook adapter expected from the orchestrator: pass
+  `equipment_token_raw -> token_name` and domain 46 resolves dictionary-backed
+  rows before falling back to raw token badges. The lane tests prove token
+  `20378` resolves through this adapter without a static-heuristic fallback.
+- Base-airframe/role closure covers the current modular airframe families and
+  legacy air equipment names such as `fighter_equipment_*`,
+  `CAS_equipment_*`, `nav_bomber_equipment_*`, `tac_bomber_equipment_*`,
+  `strat_bomber_equipment_*`, jet variants, carrier variants, scouts, and
+  transports.
 - The integrated v3 compact stream remains the proof artifact for fail-closed
   raw fallback rows (`112` static-heuristic rows, `0` unresolved rows). Emitting
   the semantic maritime-patrol token in domain 46 still requires the
@@ -86,9 +99,16 @@ Follow-up validated-slice closure:
 
 Registration-only patch plan:
 
+See `REGISTRATION_PATCH_PLAN.md`.
+
 1. Keep domain ID `46` from `replay_native/domain_registry.json`.
-2. Shared collector hook uses the lane crate for active row closure and compact
-   encoding; the remaining DLL-local memory walk is the coordinator adapter.
+2. Shared collector hook passes the shared same-session token dictionary into
+   `build_air_variant_archetype_payload_with_token_dictionary`.
 3. Shared recorder hook maps domain `46`/wire name `air_variant_archetypes` to
    the lane decoder/gate and only merges lane counters into the recorder
    summary.
+
+Scope warning: this remains a validated lifecycle/archetype slice, not full air
+operational or combat replay. Aces, sortie/combat pairing, exact displayed
+air-superiority percentages, and loss cause/source remain outside domain 46
+unless a future root/domain captures them or rejects them with exact proof.

@@ -32,7 +32,7 @@ Not owned here:
 - `src/extractor.rs`: DLL-collector-side module shape for typed validated rows.
   It admits current `870ebf` source proof mask `0x7F` for country, relation,
   agency, cryptology, operative, and war rows, and fails closed on operation
-  detail, intel-map percentages, and incoming action queue.
+  detail, war lifecycle detail, intel-map percentages, and incoming action queue.
 - `src/decoder_gate.rs`: lane-owned Rust recorder gate for compact domain `53`
   `H4CR` domain-data records.
 - `src/replay_verify.rs`: lane-local `.battleplan` pack/verify path using
@@ -46,8 +46,8 @@ Not owned here:
 - `domain44_slot_ready.rs`: lane-local integration admission layer. It wraps the
   compact encoder/decoder with source-proof bits so a future shared integration
   slot can emit only domain `53` rows backed by current `870ebf` roots, while
-  automatically badging unresolved incoming-action, operation-detail, and
-  intel-map percentage gaps.
+  automatically badging unresolved incoming-action, operation-detail, war
+  lifecycle detail, and intel-map percentage gaps.
 - `live_probe.py`: read-only proof wrapper over existing validated live readers.
   It writes sanitized counts/root evidence for development proof. It is not a
   hot-loop capture path.
@@ -64,10 +64,10 @@ Not owned here:
   `16022851` operation-definition RVAs. It does not claim running-operation
   detail extraction.
 - `remaining_root_fixture_gate.py`: lane-local executable no-go gate for the
-  unresolved war, operation-detail, intel-map percentage, and incoming-action
-  roots. It consumes current proof artifacts plus an optional same-tick fixture
-  JSON and exits `2` with exact blocker evidence until all four surfaces have
-  current-build accepted roots.
+  unresolved war lifecycle detail, operation-detail, intel-map percentage, and
+  incoming-action roots. It consumes current proof artifacts plus an optional
+  same-tick fixture JSON and exits `2` with exact blocker evidence until all
+  four surfaces have current-build accepted roots.
 - `INTEGRATION_PATCH_PLAN.md`: exact registration-only shared patch plan for
   when the orchestrator opens an integration slot.
 - `REGISTRATION_PATCH_PACKET.md`: concrete shared registry, collector
@@ -191,7 +191,11 @@ Still not pinned:
   row shape are validated, but the embedded date object's scalar date fields and
   higher-level war lifecycle grouping/name are not decoded yet. Relation-entry
   pointer/range joins were also not observed in v13, so treat the row pool as a
-  global pool keyed by tag pair plus warm address validation.
+  validated slice: global tag-pair/casualty rows keyed by tag pair plus warm
+  address validation. Compact frames must carry
+  `STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED` until
+  `SOURCE_PROOF_WAR_LIFECYCLE_DETAIL_870EBF` proves start-date scalar and war
+  grouping/name extraction.
 - Running operation full detail. The current `870ebf` operation RTTI definition
   surface is pinned and the stale `16022851` operation-definition RVAs are
   rejected, but the running `COperation` struct fields are still not decoded.
@@ -206,9 +210,10 @@ Still not pinned:
 
 The executable fixture contract for the remaining gaps is
 `remaining_root_fixture_gate.py`. Required fixture sections are
-`operation_detail`, `intel_map_percentages`, and `incoming_action_queue`; each
-must be same-tick current-build evidence before the gate can clear those gaps.
-Use `fixture_contract.template.json` for the positive fixture shape.
+`war_lifecycle_detail`, `operation_detail`, `intel_map_percentages`, and
+`incoming_action_queue`; each must be same-tick current-build evidence before
+the gate can clear those gaps. Use `fixture_contract.template.json` for the
+positive fixture shape.
 
 ## Compact schema
 
@@ -226,7 +231,8 @@ stable keys, invalid tag pairs, fabricated skill/experience fields without
 presence flags, and resisted intel-map rows that still emit guessed values. It
 also rejects unknown top-level status bits, resisted operation/intel-map rows
 without matching top-level badges, and any war rows or country war projections
-emitted while `STATUS_WAR_ROOT_UNVALIDATED` is set.
+emitted while `STATUS_WAR_ROOT_UNVALIDATED` is set or emitted without
+`STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED` under schema v1.
 
 `domain44_slot_ready.rs` adds the source-proof admission contract for the shared
 slot handoff:
@@ -241,9 +247,13 @@ slot handoff:
   `51=scripted_state_live`, and
   `52=occupation_resistance_compliance_live`;
 - current accepted source proofs are build SHA, country roots, relation roots,
-  agency root, cryptology root, and operative root;
+  agency root, cryptology root, operative root, and war root;
 - war rows and country war/casualty projections require
   `SOURCE_PROOF_WAR_ROOT_870EBF`;
+- war rows and country war/casualty projections remain lifecycle-incomplete
+  unless `SOURCE_PROOF_WAR_LIFECYCLE_DETAIL_870EBF` is present; without that
+  proof, the payload is badged with
+  `STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED`;
 - unresisted operation rows require `SOURCE_PROOF_OPERATION_DETAIL_870EBF`;
 - unresisted intel-map rows require
   `SOURCE_PROOF_INTEL_MAP_PERCENTAGES_870EBF`;

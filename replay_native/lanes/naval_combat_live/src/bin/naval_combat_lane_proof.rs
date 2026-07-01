@@ -3,9 +3,9 @@ use std::fs;
 use std::path::PathBuf;
 
 use naval_combat_live_lane::{
-    build_capture_frame, gate_stream, result_json, CombatSide, CshipSnapshotRow, MemberBridgeRow,
-    NavalCombatBodyBridgeRow, ValidatedCombatSnapshot, CURRENT_870EBF_CSHIP_ROUTE,
-    DOMAIN_NAVAL_COMBAT_LIFECYCLE, DOMAIN_NAVAL_COMBAT_MEMBERS,
+    build_capture_frame, build_transition_capture_frame, gate_stream, result_json, CombatSide,
+    CshipSnapshotRow, MemberBridgeRow, NavalCombatBodyBridgeRow, ValidatedCombatSnapshot,
+    CURRENT_870EBF_CSHIP_ROUTE, DOMAIN_NAVAL_COMBAT_LIFECYCLE, DOMAIN_NAVAL_COMBAT_MEMBERS,
 };
 use snapshot::{pack, Container, ExpectedIdentity, PackEntry, PackIdentity};
 
@@ -31,21 +31,50 @@ fn main() {
     }
 
     let fixture = fixture();
+    let mut updated_fixture = fixture.clone();
+    updated_fixture.lifecycle.attacker_positioning_milli = Some(835);
+    updated_fixture.members[0].engagement_weight_raw = Some(1_250);
     let cships = [cship(1001)];
-    let frame = match build_capture_frame(&[fixture], &cships, 100, 60787539, 7) {
+    let start =
+        match build_transition_capture_frame(&[], &[fixture.clone()], &cships, 100, 60787539, 7) {
+            Ok(frame) => frame,
+            Err(errors) => {
+                eprintln!("synthetic start fixture unexpectedly failed: {errors:?}");
+                std::process::exit(1);
+            }
+        };
+    let update = match build_transition_capture_frame(
+        &[fixture.clone()],
+        &[updated_fixture.clone()],
+        &cships,
+        102,
+        60787540,
+        17,
+    ) {
         Ok(frame) => frame,
         Err(errors) => {
-            eprintln!("synthetic fixture unexpectedly failed: {errors:?}");
+            eprintln!("synthetic update fixture unexpectedly failed: {errors:?}");
             std::process::exit(1);
         }
     };
+    let end =
+        match build_transition_capture_frame(&[updated_fixture], &[], &cships, 104, 60787541, 29) {
+            Ok(frame) => frame,
+            Err(errors) => {
+                eprintln!("synthetic end fixture unexpectedly failed: {errors:?}");
+                std::process::exit(1);
+            }
+        };
+    let mut compact_stream = start.compact_stream;
+    compact_stream.extend_from_slice(&update.compact_stream);
+    compact_stream.extend_from_slice(&end.compact_stream);
     let compact_path = out_dir.join("naval_combat_live_domain49_50_compact.bin");
-    if let Err(err) = fs::write(&compact_path, &frame.compact_stream) {
+    if let Err(err) = fs::write(&compact_path, &compact_stream) {
         eprintln!("write {} failed: {err}", compact_path.display());
         std::process::exit(1);
     }
 
-    let gate = gate_stream(&frame.compact_stream);
+    let gate = gate_stream(&compact_stream);
     let gate_json = result_json(&gate);
     let gate_path = out_dir.join("naval_combat_live_domain49_50_gate.json");
     if let Err(err) = fs::write(&gate_path, &gate_json) {
@@ -54,7 +83,7 @@ fn main() {
     }
 
     let replay_path = out_dir.join("native_session.battleplan");
-    let replay_verify = match write_and_verify_replay(&replay_path, &frame.compact_stream) {
+    let replay_verify = match write_and_verify_replay(&replay_path, &compact_stream) {
         Ok(report) => report,
         Err(err) => {
             eprintln!("replay verification failed: {err}");
@@ -81,7 +110,14 @@ fn main() {
             "  \"lifecycle_rows\": {},\n",
             "  \"member_rows\": {},\n",
             "  \"two_sided_combat_count\": {},\n",
+            "  \"lifecycle_started_row_count\": {},\n",
+            "  \"lifecycle_updated_row_count\": {},\n",
+            "  \"lifecycle_ended_row_count\": {},\n",
             "  \"cship_validated_member_count\": {},\n",
+            "  \"task_force_linked_member_count\": {},\n",
+            "  \"fleet_linked_member_count\": {},\n",
+            "  \"hull_telemetry_member_count\": {},\n",
+            "  \"sunk_convoy_telemetry_member_count\": {},\n",
             "  \"empty_fixture_rejected\": {},\n",
             "  \"empty_fixture_errors\": {}\n",
             "}}\n"
@@ -98,7 +134,14 @@ fn main() {
         gate.summary.lifecycle_row_count,
         gate.summary.member_row_count,
         gate.summary.two_sided_combat_count,
+        gate.summary.lifecycle_started_row_count,
+        gate.summary.lifecycle_updated_row_count,
+        gate.summary.lifecycle_ended_row_count,
         gate.summary.cship_validated_member_count,
+        gate.summary.task_force_linked_member_count,
+        gate.summary.fleet_linked_member_count,
+        gate.summary.hull_telemetry_member_count,
+        gate.summary.sunk_convoy_telemetry_member_count,
         !empty_fixture_errors.is_empty(),
         json_string_array(&empty_fixture_errors),
     );
@@ -108,11 +151,21 @@ fn main() {
         std::process::exit(1);
     }
     println!("{proof_json}");
-    std::process::exit(if gate.ok && !empty_fixture_errors.is_empty() {
-        0
-    } else {
-        1
-    });
+    std::process::exit(
+        if gate.ok
+            && gate.summary.lifecycle_started_row_count > 0
+            && gate.summary.lifecycle_updated_row_count > 0
+            && gate.summary.lifecycle_ended_row_count > 0
+            && gate.summary.task_force_linked_member_count > 0
+            && gate.summary.fleet_linked_member_count > 0
+            && gate.summary.hull_telemetry_member_count > 0
+            && !empty_fixture_errors.is_empty()
+        {
+            0
+        } else {
+            1
+        },
+    );
 }
 
 struct ReplayVerifyReport {
@@ -232,6 +285,8 @@ fn cship(id: u32) -> CshipSnapshotRow {
         handle_type_tag: CURRENT_870EBF_CSHIP_ROUTE.type_tag,
         alias_instance_id: id,
         ref100_sentinel_raw: CURRENT_870EBF_CSHIP_ROUTE.ref100_sentinel_raw,
+        task_force_id: Some(477),
+        fleet_id: Some(88),
         strength_raw: 10_000_000,
         organisation_raw: 9_000_000,
         experience_raw: 100_000,

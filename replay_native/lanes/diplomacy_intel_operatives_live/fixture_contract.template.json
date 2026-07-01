@@ -1,4 +1,14 @@
 {
+  "war_lifecycle_detail": {
+    "build_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+    "same_tick_utc": "",
+    "war_name_or_id": "",
+    "attacker_tags": [],
+    "defender_tags": [],
+    "start_date_scalar": null,
+    "war_grouping_or_handle": "",
+    "ui_or_save_war_lifecycle_evidence": ""
+  },
   "operation_detail": {
     "build_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
     "same_tick_utc": "",

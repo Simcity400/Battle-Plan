@@ -158,19 +158,33 @@ TOKEN_RECORD_VTABLE_OFF = 0x18
 TOKEN_RECORD_ID = 0x08
 TOKEN_RECORD_TEXT_PTR = 0x10
 
-MODULAR_AIRFRAME_FAMILIES = (
-    "cv_small_plane_naval_bomber_airframe",
-    "small_plane_naval_bomber_airframe",
-    "medium_plane_scout_plane_airframe",
-    "medium_plane_fighter_airframe",
-    "large_plane_maritime_patrol_plane_airframe",
-    "cv_small_plane_cas_airframe",
-    "small_plane_cas_airframe",
-    "cv_small_plane_airframe",
-    "small_plane_airframe",
-    "medium_plane_airframe",
-    "large_plane_airframe",
-    "transport_plane_equipment",
+AIRFRAME_FAMILY_RULES = (
+    ("cv_small_plane_naval_bomber_airframe", "cv_small_plane_naval_bomber_airframe", "naval_bomber"),
+    ("small_plane_naval_bomber_airframe", "small_plane_naval_bomber_airframe", "naval_bomber"),
+    ("medium_plane_scout_plane_airframe", "medium_plane_scout_plane_airframe", "scout"),
+    ("medium_plane_fighter_airframe", "medium_plane_fighter_airframe", "heavy_fighter"),
+    ("large_plane_maritime_patrol_plane_airframe", "large_plane_maritime_patrol_plane_airframe", "maritime_patrol_plane"),
+    ("cv_small_plane_cas_airframe", "cv_small_plane_cas_airframe", "cas"),
+    ("small_plane_cas_airframe", "small_plane_cas_airframe", "cas"),
+    ("cv_small_plane_airframe", "cv_small_plane_airframe", None),
+    ("small_plane_airframe", "small_plane_airframe", None),
+    ("medium_plane_airframe", "medium_plane_airframe", None),
+    ("large_plane_airframe", "large_plane_airframe", None),
+    ("transport_plane_equipment", "transport_plane_equipment", "transport"),
+    ("cv_CAS_equipment", "cv_small_plane_cas_airframe", "cas"),
+    ("CAS_equipment", "small_plane_cas_airframe", "cas"),
+    ("cv_nav_bomber_equipment", "cv_small_plane_naval_bomber_airframe", "naval_bomber"),
+    ("nav_bomber_equipment", "small_plane_naval_bomber_airframe", "naval_bomber"),
+    ("cv_fighter_equipment", "cv_small_plane_airframe", "fighter"),
+    ("fighter_equipment", "small_plane_airframe", "fighter"),
+    ("jet_fighter_equipment", "small_plane_airframe", "fighter"),
+    ("supersonic_fighter_equipment", "small_plane_airframe", "fighter"),
+    ("heavy_fighter_equipment", "medium_plane_fighter_airframe", "heavy_fighter"),
+    ("tac_bomber_equipment", "medium_plane_airframe", "tactical_bomber"),
+    ("jet_tac_bomber_equipment", "medium_plane_airframe", "tactical_bomber"),
+    ("strat_bomber_equipment", "large_plane_airframe", "strategic_bomber"),
+    ("jet_strat_bomber_equipment", "large_plane_airframe", "strategic_bomber"),
+    ("scout_plane_equipment", "medium_plane_scout_plane_airframe", "scout"),
 )
 
 # These pairs are deliberately treated as probe candidates, not as a trusted map.
@@ -1082,12 +1096,24 @@ def live_token_dictionary_probe(pid: int | None, wanted_tokens: set[int], max_co
         proc.close()
 
 
+def match_airframe_rule(token_name: str, needle: str) -> bool:
+    if token_name == needle:
+        return True
+    suffix = token_name[len(needle) :] if token_name.startswith(needle) else None
+    return isinstance(suffix, str) and bool(re.fullmatch(r"_\d+", suffix))
+
+
 def derive_airframe_family(token_name: str) -> str | None:
-    for family in MODULAR_AIRFRAME_FAMILIES:
-        if token_name == family or token_name.startswith(family + "_"):
-            suffix = token_name[len(family) :]
-            if suffix == "" or re.fullmatch(r"_\d+", suffix):
-                return family
+    for needle, family, _role in AIRFRAME_FAMILY_RULES:
+        if match_airframe_rule(token_name, needle):
+            return family
+    return None
+
+
+def derive_airframe_role(token_name: str) -> str | None:
+    for needle, _family, role in AIRFRAME_FAMILY_RULES:
+        if match_airframe_rule(token_name, needle):
+            return role
     return None
 
 
@@ -1175,6 +1201,7 @@ def build_archetype_closure(
             token_names.add(name)
         catalog = equipment_catalog.get(name) if isinstance(name, str) else None
         family = derive_airframe_family(name) if isinstance(name, str) else None
+        role = derive_airframe_role(name) if isinstance(name, str) else None
         token_rows.append(
             {
                 "equipment_token_raw": token,
@@ -1182,6 +1209,7 @@ def build_archetype_closure(
                 "in_compact_active_superiority": token in compact_active_tokens,
                 "in_current_live_air_wings": token in current_live_tokens,
                 "base_airframe_family": family,
+                "role": role,
                 "catalog_status": "equipment_archetypes_hit" if isinstance(catalog, dict) else "missing_from_equipment_archetypes_catalog",
                 "catalog_archetype": catalog.get("archetype") if isinstance(catalog, dict) else None,
                 "catalog_year": catalog.get("year") if isinstance(catalog, dict) else None,
@@ -1194,7 +1222,9 @@ def build_archetype_closure(
     compact_catalog_hits = [row for row in compact_rows if row["catalog_status"] == "equipment_archetypes_hit"]
     compact_catalog_missing = [row for row in compact_rows if row["catalog_status"] != "equipment_archetypes_hit"]
     compact_family_closed = [row for row in compact_rows if row["base_airframe_family"]]
+    compact_role_closed = [row for row in compact_rows if row["role"]]
     current_family_closed = [row for row in current_rows if row["base_airframe_family"]]
+    current_role_closed = [row for row in current_rows if row["role"]]
     missing_source_rows: list[dict[str, Any]] = []
     for row in compact_catalog_missing:
         name = row["name"]
@@ -1204,6 +1234,7 @@ def build_archetype_closure(
                 "equipment_token_raw": row["equipment_token_raw"],
                 "name": name,
                 "base_airframe_family": row["base_airframe_family"],
+                "role": row["role"],
                 "script_enums_present": bool(source_row.get("script_enums_present")),
                 "bba_air_techs_present": bool(source_row.get("bba_air_techs_present")),
                 "equipment_source_present": bool(source_row.get("equipment_source_present")),
@@ -1231,17 +1262,20 @@ def build_archetype_closure(
         "compact_active_token_count": len(compact_active_tokens),
         "compact_active_dictionary_rows": len(compact_rows),
         "compact_active_base_airframe_name_rows": len(compact_family_closed),
+        "compact_active_role_name_rows": len(compact_role_closed),
         "compact_active_equipment_catalog_hits": len(compact_catalog_hits),
         "compact_active_equipment_catalog_missing": len(compact_catalog_missing),
         "current_live_token_count": len(current_live_tokens),
         "current_live_dictionary_rows": len(current_rows),
         "current_live_base_airframe_name_rows": len(current_family_closed),
+        "current_live_role_name_rows": len(current_role_closed),
         "all_token_rows": token_rows,
         "compact_active_catalog_missing_tokens": [
             {
                 "equipment_token_raw": row["equipment_token_raw"],
                 "name": row["name"],
                 "base_airframe_family": row["base_airframe_family"],
+                "role": row["role"],
             }
             for row in compact_catalog_missing
         ],

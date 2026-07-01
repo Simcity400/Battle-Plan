@@ -43,7 +43,10 @@ sources used by the lane-local proof stack:
 - Completed focus token is exact only when a completed-token list is present in
   the source payload. In compact delta streams, the lane can infer a completion
   token from the previous current focus when the completed count increases and
-  the current focus clears or changes; that row is flagged as inferred.
+  the current focus clears or changes; that row is flagged as inferred. The
+  integrated compact domain `45` proof currently has `0` exact completed-token
+  rows and `1` inferred completed-token row because compact focus reads omit the
+  completed vector.
 - Decision targeted/cooldown record bodies are narrowed:
   - non-timed targeted/cooldown records at vtable `0x27D4F00` reject the
     timed-definition layout;
@@ -67,7 +70,8 @@ sources used by the lane-local proof stack:
   - `active_targeted_timed_decision+0x60/+0x70` as universal exact
     country-target pointer fields.
   The remaining target-body blocker is a same-frame oracle for records with
-  vtable `0x27D5038`, not another retry of these rejected offsets.
+  vtable `0x27D5038` or static decision target-type metadata for a
+  definition-aware variant layout, not another retry of these rejected offsets.
 
 ## Badge Gates
 

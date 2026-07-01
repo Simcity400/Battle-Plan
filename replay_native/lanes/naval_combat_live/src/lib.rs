@@ -13,7 +13,7 @@ pub use domain49_50_naval_combat_live::{
 };
 
 pub use extractor::{
-    build_capture_frame, validate_member_cship_joins, CaptureFrame, CshipRoute, CshipSnapshotRow,
-    ExtractorOffsets, MemberBridgeRow, NavalCombatBodyBridgeRow, ValidatedCombatSnapshot,
-    CURRENT_870EBF_CSHIP_ROUTE, CURRENT_870EBF_OFFSETS,
+    build_capture_frame, build_transition_capture_frame, validate_member_cship_joins, CaptureFrame,
+    CshipRoute, CshipSnapshotRow, ExtractorOffsets, MemberBridgeRow, NavalCombatBodyBridgeRow,
+    ValidatedCombatSnapshot, CURRENT_870EBF_CSHIP_ROUTE, CURRENT_870EBF_OFFSETS,
 };

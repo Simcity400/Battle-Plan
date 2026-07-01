@@ -20,6 +20,7 @@ THIS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = THIS_DIR.parents[2]
 COLLECTOR = REPO_ROOT / "replay_native" / "collector" / "src" / "lib.rs"
 RECORDER = REPO_ROOT / "replay_native" / "recorder_host" / "src" / "main.rs"
+RECORDER_COMPACT_REGISTRY = REPO_ROOT / "replay_native" / "recorder_host" / "src" / "compact_domain_registry.rs"
 REGISTRY_JSON = REPO_ROOT / "replay_native" / "domain_registry.json"
 LANE_SCHEMA = THIS_DIR / "src" / "domain46_air_variant_archetypes_live.rs"
 
@@ -90,6 +91,21 @@ def recorder_domain_name_map(text: str) -> dict[int, str]:
     return out
 
 
+def compact_registry_domain_map(text: str) -> tuple[dict[str, int], dict[int, str]]:
+    ids: dict[str, int] = {}
+    names: dict[int, str] = {}
+    rx = re.compile(
+        r"domain\(\s*(\d+)\s*,\s*\"([^\"]+)\"\s*,\s*\"([^\"]+)\"",
+        re.MULTILINE,
+    )
+    for value, registry_name, wire_name in rx.findall(text):
+        domain_id = int(value)
+        ids[registry_name] = domain_id
+        ids[wire_name] = domain_id
+        names[domain_id] = registry_name
+    return ids, names
+
+
 def check_anchor(text: str, name: str, pattern: str) -> dict[str, Any]:
     hit = first_hit(text, pattern)
     return {
@@ -101,15 +117,30 @@ def check_anchor(text: str, name: str, pattern: str) -> dict[str, Any]:
     }
 
 
+def map_anchor(name: str, ok: bool, evidence: str) -> dict[str, Any]:
+    return {
+        "name": name,
+        "ok": ok,
+        "pattern": "parsed_compact_domain_registry_or_legacy_match",
+        "line": None,
+        "text": evidence if ok else None,
+    }
+
+
 def build_gate() -> dict[str, Any]:
     collector = read_text(COLLECTOR)
     recorder = read_text(RECORDER)
+    recorder_compact_registry = read_text(RECORDER_COMPACT_REGISTRY)
+    recorder_combined = recorder + "\n" + recorder_compact_registry
     schema = read_text(LANE_SCHEMA)
     registry = json.loads(read_text(REGISTRY_JSON))
 
     collector_ids = collector_domain_ids(collector)
     recorder_ids = recorder_domain_id_map(recorder)
+    compact_registry_ids, compact_registry_names = compact_registry_domain_map(recorder_compact_registry)
+    recorder_ids.update(compact_registry_ids)
     recorder_names = recorder_domain_name_map(recorder)
+    recorder_names.update(compact_registry_names)
     occupied_ids = sorted(set(collector_ids.values()) | set(recorder_ids.values()) | set(recorder_names.keys()))
 
     collector_anchors = [
@@ -132,10 +163,26 @@ def build_gate() -> dict[str, Any]:
         check_anchor(recorder, "decode_air_variant_defs", r"fn\s+decode_compact_air_variant_defs_data_payload\("),
         check_anchor(recorder, "decode_air_variant_stats", r"fn\s+decode_compact_air_variant_stats_data_payload\("),
         check_anchor(recorder, "decode_air_superiority_inputs", r"fn\s+decode_compact_air_superiority_inputs_data_payload\("),
-        check_anchor(recorder, "domain_id_44_supply", r'"supply_logistics_attrition_live"\s*=>\s*Some\(44\)'),
-        check_anchor(recorder, "domain_name_44_supply", r'44\s*=>\s*"supply_logistics_attrition_live"'),
-        check_anchor(recorder, "domain_id_45_frd", r'"focus_research_decisions_depth_live"\s*=>\s*\{'),
-        check_anchor(recorder, "domain_name_45_frd", r'COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE\s*=>\s*\{'),
+        map_anchor(
+            "domain_id_44_supply",
+            recorder_ids.get("supply_logistics_attrition_live") == 44,
+            "supply_logistics_attrition_live -> 44",
+        ),
+        map_anchor(
+            "domain_name_44_supply",
+            recorder_names.get(44) == "supply_logistics_attrition_live",
+            '44 -> "supply_logistics_attrition_live"',
+        ),
+        map_anchor(
+            "domain_id_45_frd",
+            recorder_ids.get("focus_research_decisions_depth_live") == 45,
+            "focus_research_decisions_depth_live -> 45",
+        ),
+        map_anchor(
+            "domain_name_45_frd",
+            recorder_names.get(45) == "focus_research_decisions_depth_live",
+            '45 -> "focus_research_decisions_depth_live"',
+        ),
     ]
     schema_anchors = [
         check_anchor(schema, "lane_schema_assigned_domain_id", r"DOMAIN_ID:\s*u16\s*=\s*46"),
@@ -185,6 +232,7 @@ def build_gate() -> dict[str, Any]:
         ),
         "collector_path": str(COLLECTOR),
         "recorder_path": str(RECORDER),
+        "recorder_compact_registry_path": str(RECORDER_COMPACT_REGISTRY),
         "lane_schema_path": str(LANE_SCHEMA),
         "domain_name": DOMAIN_NAME,
         "rejected_provisional_domain_ids": list(REJECTED_PROVISIONAL_DOMAIN_IDS),

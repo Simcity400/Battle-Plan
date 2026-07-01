@@ -3,7 +3,8 @@ mod domain44_compact;
 use domain44_compact::{
     decode_payload, domain_id_rejection_reason, encode_payload, DiplomacyIntelSnapshot,
     Domain53GateSummary, DOMAIN_ID_PROPOSED, STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED,
-    STATUS_INTEL_MAP_RESISTED, STATUS_OPERATIONS_DETAIL_RESISTED, STATUS_WAR_ROOT_UNVALIDATED,
+    STATUS_INTEL_MAP_RESISTED, STATUS_OPERATIONS_DETAIL_RESISTED,
+    STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED, STATUS_WAR_ROOT_UNVALIDATED,
 };
 
 pub const EXPECTED_HOI4_SHA256_870EBF: &str =
@@ -20,6 +21,7 @@ pub const SOURCE_PROOF_WAR_ROOT_870EBF: u64 = 1 << 6;
 pub const SOURCE_PROOF_OPERATION_DETAIL_870EBF: u64 = 1 << 7;
 pub const SOURCE_PROOF_INTEL_MAP_PERCENTAGES_870EBF: u64 = 1 << 8;
 pub const SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF: u64 = 1 << 9;
+pub const SOURCE_PROOF_WAR_LIFECYCLE_DETAIL_870EBF: u64 = 1 << 10;
 
 pub const KNOWN_SOURCE_PROOFS: u64 = SOURCE_PROOF_BUILD_SHA_870EBF
     | SOURCE_PROOF_COUNTRY_ROOTS_870EBF
@@ -30,7 +32,8 @@ pub const KNOWN_SOURCE_PROOFS: u64 = SOURCE_PROOF_BUILD_SHA_870EBF
     | SOURCE_PROOF_WAR_ROOT_870EBF
     | SOURCE_PROOF_OPERATION_DETAIL_870EBF
     | SOURCE_PROOF_INTEL_MAP_PERCENTAGES_870EBF
-    | SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF;
+    | SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF
+    | SOURCE_PROOF_WAR_LIFECYCLE_DETAIL_870EBF;
 
 pub const CURRENT_VALIDATED_SOURCE_PROOFS: u64 = SOURCE_PROOF_BUILD_SHA_870EBF
     | SOURCE_PROOF_COUNTRY_ROOTS_870EBF
@@ -132,6 +135,11 @@ pub fn admit_slot_payload(
                     .to_string(),
             );
         }
+    }
+    if has(source_proofs, SOURCE_PROOF_WAR_LIFECYCLE_DETAIL_870EBF) {
+        snapshot.status_flags &= !STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED;
+    } else {
+        snapshot.status_flags |= STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED;
     }
 
     if has(source_proofs, SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF) {
@@ -237,6 +245,7 @@ mod tests {
 
         assert!(report.ok, "{:?}", report.errors);
         assert_eq!(report.emitted_status_flags & STATUS_WAR_ROOT_UNVALIDATED, 0);
+        assert!(report.emitted_status_flags & STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED != 0);
         assert!(report.emitted_status_flags & STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED != 0);
         assert!(report.emitted_status_flags & STATUS_OPERATIONS_DETAIL_RESISTED != 0);
         assert!(report.emitted_status_flags & STATUS_INTEL_MAP_RESISTED != 0);
@@ -306,6 +315,25 @@ mod tests {
 
         assert!(report.ok, "{:?}", report.errors);
         assert_eq!(report.emitted_status_flags & STATUS_WAR_ROOT_UNVALIDATED, 0);
+        assert!(report.emitted_status_flags & STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED != 0);
+    }
+
+    #[test]
+    fn war_lifecycle_detail_remains_badged_with_current_root_only() {
+        let mut snapshot = gap_badged_snapshot();
+        snapshot.wars.push(WarRelationRow {
+            first_tag_db_id: 1,
+            second_tag_db_id: 2,
+            first_casualties: 0,
+            second_casualties: 0,
+        });
+        snapshot.countries[0].at_war_count = 1;
+
+        let report = admit_slot_payload(snapshot, CURRENT_VALIDATED_SOURCE_PROOFS);
+
+        assert!(report.ok, "{:?}", report.errors);
+        assert_eq!(report.emitted_status_flags & STATUS_WAR_ROOT_UNVALIDATED, 0);
+        assert!(report.emitted_status_flags & STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED != 0);
     }
 
     #[test]

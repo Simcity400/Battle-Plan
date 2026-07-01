@@ -45,6 +45,10 @@ against the current `870ebf` process without rediscovery.
 - `domain44_supply_logistics_attrition.rs`: compact domain 44 payload contract plus decoder/gate tests.
 - `live_probe.py`: read-only current-build live proof runner. Writes `proof.json`, `PROOF.md`, and
   `domain44_payload.bin` under `replay_native/runs/supply_logistics_attrition_live_*`.
+- `residual_probe.py`: read-only current-build residual scanner. It tests the bounded
+  `CSupplySystem` structure hypothesis by scanning the vtable-shaped object for province-sized
+  pointer/count fields, classifies numeric layouts, and writes `residual_probe.json` plus
+  `RESIDUAL_PROBE.md`.
 
 ## Proof Commands
 
@@ -54,6 +58,7 @@ rustc --test replay_native\lanes\supply_logistics_attrition_live\domain44_supply
 & $env:TEMP\domain44_supply_tests.exe --nocapture
 rustc replay_native\lanes\supply_logistics_attrition_live\domain44_supply_logistics_attrition.rs -o $env:TEMP\domain44_supply_decode.exe
 & $env:TEMP\domain44_supply_decode.exe replay_native\runs\supply_logistics_attrition_live_870ebf_20260701_v2\domain44_payload.bin
+python replay_native\lanes\supply_logistics_attrition_live\residual_probe.py --pid 45880 --out-dir replay_native\runs\supply_logistics_attrition_live_residual_870ebf_20260701_v2
 ```
 
 Current gate coverage is six tests: valid decode, header counter/missing badge rejection,
@@ -69,6 +74,26 @@ Current lane-local live proof:
 That proof validates only the accepted slice. It does not complete the whole supply concept:
 exact per-province supply, attrition reason, hub motorization, convoy/logistics pressure,
 and CSupplySystem province-input arrays remain explicitly badged or rejected.
+
+## Residual Probe Contract
+
+`residual_probe.py` does not retry the old `+0x10`, `+0x138`, or `+0x150` direct arrays as a
+standalone path. It tests a broader structure hypothesis: all aligned pointer/count fields within
+the first `0x400` bytes of the current-build `CSupplySystem` vtable object are scanned for
+province-sized arrays and classified as `i32`, `u32`, `f32`, and `f64` layouts at 4- and 8-byte
+strides. Any bounded numeric candidate remains `unproven` until a same-frame tooltip/save oracle
+or controlled action fixture validates the field's semantic meaning.
+
+The current blockers are exact fixture/root blockers, not acceptable omissions:
+
+- exact per-province supply / remaining supply amount requires a same-frame province tooltip or
+  save oracle for candidate validation;
+- attrition flag/reason requires a controlled division attrition fixture with a visible or saved
+  reason;
+- hub motorization requires a controlled hub motorization toggle fixture;
+- convoy/logistics pressure requires a controlled overseas/convoy supply-pressure fixture;
+- any new `CSupplySystem` province-input path must satisfy province-indexed bounds and semantic
+  oracle validation before it can replace the mandatory badge row.
 
 ## Integration Patch Plan
 

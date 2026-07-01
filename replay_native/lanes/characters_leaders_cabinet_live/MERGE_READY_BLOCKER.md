@@ -23,10 +23,10 @@ python replay_native\lanes\characters_leaders_cabinet_live\validate_merge_ready_
 Expected result:
 
 - registry assigns domain `47` to this lane;
-- registry marks domain `46` / `air_variant_archetypes_live` as
-  `production_complete`;
+- registry marks domain `46` / `air_variant_archetypes_live` as the current
+  validated slice with shared token hook/full air lifecycle still open;
 - registry marks domain `47` as
-  `lane_ready_shared_registration_blocked_remaining_matrix`;
+  `lane_ready_shared_adapter_registration_blocked_remaining_matrix`;
 - shared collector/recorder files have no domain-47 registration hooks:
   no raw token, domain const, collector append, recorder id mapping, recorder
   name mapping, or recorder decoder;
@@ -47,7 +47,8 @@ work below:
    recorder.
 2. Add the collector adapter that populates the existing lane-owned `LaneFrame`
    from live `CollectorState` country/politics roots and the validated
-   character/leader/advisor roots.
+   character/leader/advisor roots. The exact lane-local adapter contract is
+   `replay_native/lanes/characters_leaders_cabinet_live/LANEFRAME_ADAPTER_PLAN.md`.
 3. Route the lane-owned domain-47 encoder/gate through those hooks.
 4. Run the compact DLL/Rust extraction gate with domain `47` scheduled.
 5. Require zero skipped hours, no worker/source/partial/bridge flags, ordered

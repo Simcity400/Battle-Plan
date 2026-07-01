@@ -34,11 +34,13 @@ When the orchestrator grants a collector slot, the registration-only patch is:
    `requires_data_record=true` unchanged.
 3. Add one callout in the existing DLL compact coordinator/scheduler for these
    scheduled names. The coordinator supplies already validated root/member
-   bridge rows plus current CShip rows to
+   bridge rows plus OOB-enriched current CShip rows to
    `naval_combat_live_lane::build_capture_frame`.
 4. Append the returned compact stream records only when `build_capture_frame`
    succeeds. The lane fails closed on empty or one-sided fixtures, unresolved
-   non-convoy `CFEXMember -> CShip` joins, and status failure flags.
+   non-convoy `CFEXMember -> CShip` joins, missing task-force/fleet links,
+   missing CShip strength/org/XP/sunk-convoy telemetry, and status failure
+   flags.
 5. Do not schedule domains `49/50` in a live run with no active two-sided
    fixture. In that state the module remains ready, but live combat proof is
    externally blocked; emitting scheduled-but-empty production domains would
@@ -67,7 +69,11 @@ When the orchestrator grants a recorder slot, the registration-only patch is:
    - add `data_units_total` keys:
      `naval_combat_lifecycle_rows`, `naval_combat_member_rows`,
      `naval_combat_cship_validated_member_rows`,
-     `naval_combat_convoy_member_rows`
+     `naval_combat_convoy_member_rows`,
+     `naval_combat_task_force_linked_member_rows`,
+     `naval_combat_fleet_linked_member_rows`,
+     `naval_combat_hull_telemetry_member_rows`,
+     `naval_combat_sunk_convoy_telemetry_member_rows`
    - promote any `parse_errors` to compact decoder errors.
 6. Keep the full stream gate for proof runs:
    `naval_combat_live_lane::gate_stream` must pass for a domain `49/50`
@@ -79,8 +85,8 @@ The integration commit may be accepted only after all of these pass:
 
 ```powershell
 cargo test --manifest-path replay_native\lanes\naval_combat_live\Cargo.toml
-cargo run --manifest-path replay_native\lanes\naval_combat_live\Cargo.toml --bin naval_combat_lane_proof -- --out-dir replay_native\runs\naval_combat_live_lane_stack_870ebf_20260701_v1
-cargo run --manifest-path replay_native\snapshot\Cargo.toml --bin pack_replay -- verify replay_native\runs\naval_combat_live_lane_stack_870ebf_20260701_v1\native_session.battleplan
+cargo run --manifest-path replay_native\lanes\naval_combat_live\Cargo.toml --bin naval_combat_lane_proof -- --out-dir replay_native\runs\naval_combat_live_lane_stack_870ebf_20260701_v2
+cargo run --manifest-path replay_native\snapshot\Cargo.toml --bin pack_replay -- verify replay_native\runs\naval_combat_live_lane_stack_870ebf_20260701_v2\native_session.battleplan
 python memory_reader\combat\naval_combat_live_fixture_probe.py --pid <pid> --workers 4 --require-two-sided --require-cship-join --out-dir replay_native\runs\naval_combat_live_<fixture>\live_fixture_probe
 ```
 
@@ -95,3 +101,9 @@ The current live blocker is combat-only. The same 870ebf process validates the
 non-combat CShip resolver route, but the active naval-combat body/member root
 cannot be proven until an in-game two-sided naval battle creates `CFEXMember`
 rows for both sides.
+
+The lane-local v2 proof already exercises the post-registration payload shape:
+1 lifecycle start, 1 update, 1 end, 4 member rows, 2 CShip-validated members,
+2 task-force/fleet linked members, 2 hull telemetry members, and byte-matched
+`.battleplan` verification. It is synthetic and does not replace the live
+speed-five fixture proof.

@@ -77,6 +77,9 @@ const DECISION_EVENT_STATUS_COUNTS_CHANGED: u32 = 5;
 pub struct DepthGateSummary {
     pub data_records: u64,
     pub focus_event_rows: u64,
+    pub focus_completed_exact_rows: u64,
+    pub focus_completed_inferred_rows: u64,
+    pub focus_completed_unresolved_rows: u64,
     pub research_eta_rows: u64,
     pub decision_status_rows: u64,
     pub decision_event_rows: u64,
@@ -106,6 +109,9 @@ pub struct DepthProof {
     pub source_timed_decision_rows: u64,
     pub depth_data_records: u64,
     pub focus_event_rows: u64,
+    pub focus_completed_exact_rows: u64,
+    pub focus_completed_inferred_rows: u64,
+    pub focus_completed_unresolved_rows: u64,
     pub research_eta_rows: u64,
     pub decision_status_rows: u64,
     pub decision_event_rows: u64,
@@ -150,6 +156,9 @@ impl DepthProof {
                 "    \"bytes\": {depth_bytes},\n",
                 "    \"data_records\": {depth_records},\n",
                 "    \"focus_event_rows\": {focus_event_rows},\n",
+                "    \"focus_completed_exact_rows\": {focus_completed_exact_rows},\n",
+                "    \"focus_completed_inferred_rows\": {focus_completed_inferred_rows},\n",
+                "    \"focus_completed_unresolved_rows\": {focus_completed_unresolved_rows},\n",
                 "    \"research_eta_rows\": {research_eta_rows},\n",
                 "    \"decision_status_rows\": {decision_status_rows},\n",
                 "    \"decision_event_rows\": {decision_event_rows},\n",
@@ -187,6 +196,9 @@ impl DepthProof {
             depth_bytes = self.depth_stream.len(),
             depth_records = self.depth_data_records,
             focus_event_rows = self.focus_event_rows,
+            focus_completed_exact_rows = self.focus_completed_exact_rows,
+            focus_completed_inferred_rows = self.focus_completed_inferred_rows,
+            focus_completed_unresolved_rows = self.focus_completed_unresolved_rows,
             research_eta_rows = self.research_eta_rows,
             decision_status_rows = self.decision_status_rows,
             decision_event_rows = self.decision_event_rows,
@@ -854,6 +866,20 @@ pub fn derive_depth_stream(raw: &[u8]) -> Result<DepthProof, String> {
                 proof.focus_event_rows = proof
                     .focus_event_rows
                     .saturating_add(rows.focus_events.len() as u64);
+                for row in &rows.focus_events {
+                    if row.kind == FOCUS_EVENT_COMPLETED_COUNT_INCREASED {
+                        if row.flags & FOCUS_FLAG_COMPLETED_TOKEN_EXACT != 0 {
+                            proof.focus_completed_exact_rows =
+                                proof.focus_completed_exact_rows.saturating_add(1);
+                        } else if row.flags & FOCUS_FLAG_COMPLETED_TOKEN_INFERRED != 0 {
+                            proof.focus_completed_inferred_rows =
+                                proof.focus_completed_inferred_rows.saturating_add(1);
+                        } else {
+                            proof.focus_completed_unresolved_rows =
+                                proof.focus_completed_unresolved_rows.saturating_add(1);
+                        }
+                    }
+                }
                 proof.research_eta_rows = proof
                     .research_eta_rows
                     .saturating_add(rows.research_eta.len() as u64);
@@ -1077,6 +1103,23 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
             ));
         }
         if kind == FOCUS_EVENT_COMPLETED_COUNT_INCREASED {
+            if flags & FOCUS_FLAG_COMPLETED_TOKEN_EXACT != 0
+                && flags & FOCUS_FLAG_COMPLETED_TOKEN_INFERRED != 0
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: focus completed row {row_index} has both exact and inferred completed-token flags"
+                ));
+            }
+            if flags & FOCUS_FLAG_COMPLETED_TOKEN_EXACT != 0 {
+                summary.focus_completed_exact_rows =
+                    summary.focus_completed_exact_rows.saturating_add(1);
+            } else if flags & FOCUS_FLAG_COMPLETED_TOKEN_INFERRED != 0 {
+                summary.focus_completed_inferred_rows =
+                    summary.focus_completed_inferred_rows.saturating_add(1);
+            } else {
+                summary.focus_completed_unresolved_rows =
+                    summary.focus_completed_unresolved_rows.saturating_add(1);
+            }
             if current_completed != u32::MAX
                 && previous_completed != u32::MAX
                 && current_completed <= previous_completed
@@ -1440,6 +1483,26 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
     summary
 }
 
+pub fn gate_existing_depth_stream(raw: &[u8]) -> DepthGateSummary {
+    let mut offset = 0usize;
+    let mut summary = DepthGateSummary::default();
+    while offset < raw.len() {
+        match parse_h4cr_record(raw, offset) {
+            Ok(record) => {
+                if record.domain_id == DOMAIN_ID && record.record_type == RECORD_TYPE_DOMAIN_DATA {
+                    merge_depth_gate(&mut summary, decode_depth_payload(offset, record.payload));
+                }
+                offset = record.next_offset;
+            }
+            Err(err) => {
+                summary.parse_errors.push(err);
+                break;
+            }
+        }
+    }
+    summary
+}
+
 fn derive_research_eta_row(
     previous_hour: i32,
     previous: &ResearchSlotState,
@@ -1761,6 +1824,15 @@ fn append_h4cr_record(
 fn merge_depth_gate(out: &mut DepthGateSummary, next: DepthGateSummary) {
     out.data_records = out.data_records.saturating_add(next.data_records);
     out.focus_event_rows = out.focus_event_rows.saturating_add(next.focus_event_rows);
+    out.focus_completed_exact_rows = out
+        .focus_completed_exact_rows
+        .saturating_add(next.focus_completed_exact_rows);
+    out.focus_completed_inferred_rows = out
+        .focus_completed_inferred_rows
+        .saturating_add(next.focus_completed_inferred_rows);
+    out.focus_completed_unresolved_rows = out
+        .focus_completed_unresolved_rows
+        .saturating_add(next.focus_completed_unresolved_rows);
     out.research_eta_rows = out.research_eta_rows.saturating_add(next.research_eta_rows);
     out.decision_status_rows = out
         .decision_status_rows

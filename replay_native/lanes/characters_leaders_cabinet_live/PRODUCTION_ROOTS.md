@@ -262,7 +262,7 @@ Rejected/static-only candidates:
   route.
 
 Parking matrix
-`replay_native/runs/characters_leaders_cabinet_live_20260701_parking_matrix_v1/`
+`replay_native/runs/characters_leaders_cabinet_live_20260701_parking_matrix_v2/`
 inventories the remaining deeper field backlog after static semantic closure:
 
 - generic compact `character` rows currently carry neither name nor token
@@ -272,6 +272,11 @@ inventories the remaining deeper field backlog after static semantic closure:
   `1751/1967` country-leader role names, `1863/1967` country-leader role
   tokens). Do not claim full character localization closure until generic
   character-row token/name emission is wired.
+- portraits are static `common/characters` metadata. The v2 matrix validates
+  `4941` static characters with portrait blocks and `6289` portrait entries
+  (`army=4737`, `civilian=1492`, `navy=60`) but parks them as a schema/static
+  sidecar gap because current domain-47 rows have no portrait field and generic
+  character rows still emit `0/14071` tokens.
 - unit-leader XP/skill/stat/trait compact coverage is complete for emitted
   unit-leader rows (`1533/1533` skill, XP, and stat rows; `3884`
   unit-leader-trait rows). Runtime army/fleet command assignment remains an
@@ -284,6 +289,16 @@ inventories the remaining deeper field backlog after static semantic closure:
 - appointed cabinet edge cases are blocked on either live integrated hourly
   capture or another nonzero live fixture. The lane-local ENG fixture validates
   transition counts `before=0`, `after_add=3`, `after_remove=1`.
+- broader relationship closure is intentionally limited to validated role edges:
+  `CCharacter+0xA8` unit-leader pointer, `CAdvisor+0x10 -> CCharacter`,
+  `CCountryLeader+0x08 -> CCharacter`, and the politics-side active-ruler chain.
+  Runtime command assignment remains an OOB/navy concern, and scripted/effect
+  relationships require a separate decoder.
+- shared adapter closure is hard-blocked until the one injected collector
+  populates the lane-owned `LaneFrame` from `CollectorState`, country identity,
+  politics active ideas, and validated character/advisor/leader roots. The exact
+  lane-local adapter plan is
+  `replay_native/lanes/characters_leaders_cabinet_live/LANEFRAME_ADAPTER_PLAN.md`.
 
 ## Compact Payload
 
