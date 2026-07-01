@@ -70,6 +70,11 @@ Status vocabulary:
 | 52 | `occupation_resistance_compliance_live` | validated slice: shared registered occupation state rows; garrison scalar/collaboration detail open | occupation/resistance/compliance |
 | 53 | `diplomacy_intel_operatives_live` | lane-ready; stale operation RVAs rejected; operation/intel-map/incoming-action fixtures blocked | diplomacy/intel/operatives |
 | 54 | `army_battleplans_depth_live` | redraw/toggle observer ready; external fixture action blocked | army OOB/orders/battleplans depth |
+| 55 | `land_combat_detail_events_live` | assigned; production lane active for tactics/reserves/width/casualty/equipment-loss event closure | land combat details |
+| 56 | `naval_missions_status_live` | assigned; production lane active for naval mission/home-base/repair/retreat rows | naval missions/status |
+| 57 | `session_multiplayer_metadata_live` | assigned; production lane active for player-country, speed/pause, chat/notification metadata | session/multiplayer metadata |
+| 58 | `country_economy_counters_live` | assigned; production lane active for factory/resource/consumer-goods UI counter closure | country economy counters |
+| 59 | `templates_equipment_catalog_live` | assigned; production lane active for division-template/equipment catalog closure | templates/equipment catalog |
 | 1000 | `frame` | compact stream framing/perf records | recorder infrastructure |
 
 ## Lane Acceptance Under This Registry
