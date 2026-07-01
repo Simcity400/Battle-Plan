@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -51,6 +51,8 @@ fn main() -> Result<(), String> {
         evaluation.status.as_str(),
         "validated_subobject_0xc0"
             | "validated_subobject_0xc8"
+            | "validated_subobject_0xc0_raw_province_id_mapped_state"
+            | "validated_subobject_0xc8_raw_province_id_mapped_state"
             | "rejected_subobject_0xc0_and_0xc8"
     );
     let proof = json!({
@@ -88,8 +90,11 @@ fn main() -> Result<(), String> {
             "c0_matches": evaluation.c0_matches,
             "c8_matches": evaluation.c8_matches,
             "neither_matches": evaluation.neither_matches,
+            "no_candidate_interpretation_matches": evaluation.no_candidate_interpretation_matches,
             "mixed_or_inconclusive_rows": evaluation.mixed_or_inconclusive_rows,
             "unique_expected_target_states": evaluation.unique_expected_target_states,
+            "candidate_interpretation_matches": evaluation.candidate_interpretation_matches,
+            "winning_candidate_interpretation": evaluation.winning_candidate_interpretation,
             "result_detail": evaluation.result_detail,
         },
         "fail_closed_contract": {
@@ -157,15 +162,19 @@ fn build_contract(focus_path: &Path, focus_proof: &Value) -> Value {
             "cost_raw",
             "produced_raw",
             "candidates.sub+0xC0.candidate_state_id",
+            "candidates.sub+0xC0.candidate_mapped_state_id",
             "candidates.sub+0xC8.candidate_state_id",
+            "candidates.sub+0xC8.candidate_mapped_state_id",
             "expected_target_state_id"
         ],
         "pass_fail_rule": {
             "minimum_filled_rows": 4,
             "minimum_unique_expected_target_states": 2,
             "validate_subobject_0xC0": "All filled distinguishing rows have expected_target_state_id == candidates.sub+0xC0.candidate_state_id and at least two unique expected states.",
+            "validate_subobject_0xC0_province_mapped": "All filled distinguishing rows have expected_target_state_id == candidates.sub+0xC0.candidate_mapped_state_id and at least two unique expected states.",
             "validate_subobject_0xC8": "All filled distinguishing rows have expected_target_state_id == candidates.sub+0xC8.candidate_state_id and at least two unique expected states.",
-            "reject_both": "All filled distinguishing rows have expected_target_state_id different from both candidate state ids.",
+            "validate_subobject_0xC8_province_mapped": "All filled distinguishing rows have expected_target_state_id == candidates.sub+0xC8.candidate_mapped_state_id and at least two unique expected states.",
+            "reject_all": "All filled distinguishing rows have expected_target_state_id different from every candidate interpretation.",
             "inconclusive": "Any mixed match pattern, unchanged line-key mismatch, fewer than four filled rows, or fewer than two unique expected states."
         },
         "required_rows": rows,
@@ -238,8 +247,11 @@ struct Evaluation {
     c0_matches: usize,
     c8_matches: usize,
     neither_matches: usize,
+    no_candidate_interpretation_matches: usize,
     mixed_or_inconclusive_rows: usize,
     unique_expected_target_states: Vec<u64>,
+    candidate_interpretation_matches: BTreeMap<String, usize>,
+    winning_candidate_interpretation: Option<String>,
     result_detail: String,
 }
 
@@ -255,8 +267,10 @@ fn evaluate_contract(contract: &Value) -> Evaluation {
     let mut c0_matches = 0usize;
     let mut c8_matches = 0usize;
     let mut neither_matches = 0usize;
+    let mut no_candidate_interpretation_matches = 0usize;
     let mut mixed_or_inconclusive_rows = 0usize;
     let mut expected_states = BTreeSet::new();
+    let mut candidate_interpretation_matches = BTreeMap::new();
 
     for row in rows {
         if row.get("expected_target_state_id").and_then(Value::as_str) == Some(PLACEHOLDER) {
@@ -271,7 +285,12 @@ fn evaluate_contract(contract: &Value) -> Evaluation {
         expected_states.insert(expected);
         let c0 = candidate_state(&row, "sub+0xC0");
         let c8 = candidate_state(&row, "sub+0xC8");
-        if c0.is_some() && c8.is_some() && c0 != c8 {
+        let interpretations = candidate_interpretations(&row);
+        let unique_candidate_states: BTreeSet<u64> = interpretations
+            .iter()
+            .map(|(_, state_id)| *state_id)
+            .collect();
+        if unique_candidate_states.len() > 1 || (c0.is_some() && c8.is_some() && c0 != c8) {
             distinguishing_rows += 1;
         }
         match (c0 == Some(expected), c8 == Some(expected)) {
@@ -279,6 +298,16 @@ fn evaluate_contract(contract: &Value) -> Evaluation {
             (false, true) => c8_matches += 1,
             (false, false) => neither_matches += 1,
             (true, true) => mixed_or_inconclusive_rows += 1,
+        }
+        let mut matched_any_interpretation = false;
+        for (label, state_id) in interpretations {
+            if state_id == expected {
+                *candidate_interpretation_matches.entry(label).or_insert(0) += 1;
+                matched_any_interpretation = true;
+            }
+        }
+        if !matched_any_interpretation {
+            no_candidate_interpretation_matches += 1;
         }
     }
 
@@ -291,6 +320,11 @@ fn evaluate_contract(contract: &Value) -> Evaluation {
         .get("pass_fail_rule")
         .and_then(|rule| get_u64(rule, "minimum_unique_expected_target_states"))
         .unwrap_or(2) as usize;
+
+    let winning_candidate_interpretation = candidate_interpretation_matches
+        .iter()
+        .find(|(_, count)| **count == filled_rows)
+        .map(|(label, _)| label.clone());
 
     let (status, result_detail) = if filled_rows == 0 && placeholder_rows > 0 {
         (
@@ -325,10 +359,16 @@ fn evaluate_contract(contract: &Value) -> Evaluation {
             "validated_subobject_0xc8".to_string(),
             "All filled distinguishing rows match subobject+0xC8.".to_string(),
         )
-    } else if neither_matches == filled_rows && c0_matches == 0 && c8_matches == 0 {
+    } else if let Some(label) = &winning_candidate_interpretation {
+        (
+            validation_status_for_label(label),
+            format!("All filled distinguishing rows match {label}."),
+        )
+    } else if no_candidate_interpretation_matches == filled_rows {
         (
             "rejected_subobject_0xc0_and_0xc8".to_string(),
-            "All filled distinguishing rows differ from both candidates.".to_string(),
+            "All filled distinguishing rows differ from every candidate interpretation."
+                .to_string(),
         )
     } else {
         (
@@ -345,8 +385,11 @@ fn evaluate_contract(contract: &Value) -> Evaluation {
         c0_matches,
         c8_matches,
         neither_matches,
+        no_candidate_interpretation_matches,
         mixed_or_inconclusive_rows,
         unique_expected_target_states,
+        candidate_interpretation_matches,
+        winning_candidate_interpretation,
         result_detail,
     }
 }
@@ -356,6 +399,70 @@ fn candidate_state(row: &Value, key: &str) -> Option<u64> {
         .and_then(|candidates| candidates.get(key))
         .and_then(|candidate| candidate.get("candidate_state_id"))
         .and_then(Value::as_u64)
+}
+
+fn candidate_interpretations(row: &Value) -> Vec<(String, u64)> {
+    let mut out = Vec::new();
+    for key in ["sub+0xC0", "sub+0xC8"] {
+        let Some(candidate) = row
+            .get("candidates")
+            .and_then(|candidates| candidates.get(key))
+        else {
+            continue;
+        };
+        if let Some(state_id) = candidate.get("candidate_state_id").and_then(Value::as_u64) {
+            out.push((format!("{key}.raw_state_id"), state_id));
+        }
+        if let Some(state_id) = candidate
+            .get("candidate_mapped_state_id")
+            .and_then(Value::as_u64)
+        {
+            out.push((format!("{key}.raw_province_id_mapped_state"), state_id));
+        }
+        if let Some(interpretations) = candidate
+            .get("candidate_interpretations")
+            .and_then(Value::as_object)
+        {
+            if let Some(state_id) = interpretations
+                .get("raw_state_id")
+                .and_then(|value| value.get("candidate_state_id"))
+                .and_then(Value::as_u64)
+            {
+                let label = format!("{key}.raw_state_id");
+                if !out.iter().any(|(existing, _)| existing == &label) {
+                    out.push((label, state_id));
+                }
+            }
+            if let Some(state_id) = interpretations
+                .get("raw_province_id_mapped_state")
+                .and_then(|value| value.get("candidate_state_id"))
+                .and_then(Value::as_u64)
+            {
+                let label = format!("{key}.raw_province_id_mapped_state");
+                if !out.iter().any(|(existing, _)| existing == &label) {
+                    out.push((label, state_id));
+                }
+            }
+        }
+    }
+    out
+}
+
+fn validation_status_for_label(label: &str) -> String {
+    match label {
+        "sub+0xC0.raw_state_id" => "validated_subobject_0xc0".to_string(),
+        "sub+0xC8.raw_state_id" => "validated_subobject_0xc8".to_string(),
+        "sub+0xC0.raw_province_id_mapped_state" => {
+            "validated_subobject_0xc0_raw_province_id_mapped_state".to_string()
+        }
+        "sub+0xC8.raw_province_id_mapped_state" => {
+            "validated_subobject_0xc8_raw_province_id_mapped_state".to_string()
+        }
+        _ => format!(
+            "validated_{}",
+            label.replace(['+', '.'], "_").to_ascii_lowercase()
+        ),
+    }
 }
 
 fn read_json(path: &Path) -> Result<Value, String> {
@@ -448,6 +555,35 @@ mod tests {
         assert_eq!(eval.neither_matches, 4);
     }
 
+    #[test]
+    fn validates_province_mapped_state_candidate_before_rejecting() {
+        let contract = json!({
+            "pass_fail_rule": {
+                "minimum_filled_rows": 4,
+                "minimum_unique_expected_target_states": 2,
+            },
+            "required_rows": [
+                row_with_c8_mapped_state(10, 31, 400, 400),
+                row_with_c8_mapped_state(11, 15, 213, 213),
+                row_with_c8_mapped_state(12, 31, 400, 400),
+                row_with_c8_mapped_state(13, 15, 213, 213),
+            ],
+        });
+
+        let eval = evaluate_contract(&contract);
+
+        assert_eq!(
+            eval.status,
+            "validated_subobject_0xc8_raw_province_id_mapped_state"
+        );
+        assert_eq!(eval.neither_matches, 4);
+        assert_eq!(eval.no_candidate_interpretation_matches, 0);
+        assert_eq!(
+            eval.winning_candidate_interpretation.as_deref(),
+            Some("sub+0xC8.raw_province_id_mapped_state")
+        );
+    }
+
     fn row(c0: u64, c8: u64, expected: impl Into<Value>) -> Value {
         json!({
             "tag_db_id": 1,
@@ -462,6 +598,35 @@ mod tests {
                 "sub+0xC8": { "candidate_state_id": c8 },
             },
             "expected_target_state_id": expected.into(),
+        })
+    }
+
+    fn row_with_c8_mapped_state(c0: u64, c8: u64, c8_mapped: u64, expected: u64) -> Value {
+        json!({
+            "tag_db_id": 1,
+            "line_id": c0 + c8 + c8_mapped,
+            "priority": c0,
+            "template_id": 20002,
+            "active_factories": 1,
+            "cost_raw": 720000000u64,
+            "produced_raw": 1u64,
+            "candidates": {
+                "sub+0xC0": { "candidate_state_id": c0 },
+                "sub+0xC8": {
+                    "candidate_state_id": c8,
+                    "candidate_mapped_state_id": c8_mapped,
+                    "candidate_interpretations": {
+                        "raw_state_id": {
+                            "candidate_state_id": c8
+                        },
+                        "raw_province_id_mapped_state": {
+                            "candidate_state_id": c8_mapped,
+                            "candidate_province_id": c8
+                        }
+                    }
+                },
+            },
+            "expected_target_state_id": expected,
         })
     }
 }

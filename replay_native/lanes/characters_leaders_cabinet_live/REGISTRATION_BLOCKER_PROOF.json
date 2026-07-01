@@ -18,8 +18,8 @@
     },
     "domain_47": {
       "name": "characters_leaders_cabinet_live",
-      "status_in_domain_registry_json": "reserved",
-      "status_in_domain_registry_md": "reserved"
+      "status_in_domain_registry_json": "lane_ready_shared_registration_blocked_remaining_matrix",
+      "status_in_domain_registry_md": "lane-ready; shared registration blocked; remaining matrix written"
     }
   },
   "shared_registration_state": {
@@ -28,27 +28,18 @@
     "collector_append_hook": "absent",
     "recorder_decoder_hook": "absent"
   },
-  "active_shared_worktree_conflict": {
-    "reason_not_applied": "shared collector/recorder integration files are already actively modified by other lanes; applying the collector hot-loop hook now would overlap scheduling/read/append blocks",
-    "dirty_shared_files_observed": [
-      "replay_native/Cargo.toml",
-      "replay_native/collector/Cargo.toml",
-      "replay_native/collector/src/lib.rs",
-      "replay_native/recorder_host/Cargo.toml",
-      "replay_native/recorder_host/src/main.rs",
-      "replay_native/DOMAIN_REGISTRY.md",
-      "replay_native/domain_registry.json",
-      "replay_native/collector/src/domain_registry.rs",
-      "replay_native/recorder_host/src/compact_domain_registry.rs"
+  "remaining_shared_blocker": {
+    "reason_not_applied": "shared collector/recorder files are not edited by this lane subagent; the apply-ready patch covers registry/dependency/recorder decode only and current shared collector still lacks a real live CollectorState -> LaneFrame adapter",
+    "collector_hook_points": [
+      "replay_native/collector/src/lib.rs build_compact_extraction_gate_records scheduled enabled flag block",
+      "replay_native/collector/src/lib.rs read-handle locals and thread::scope spawn/join block",
+      "replay_native/collector/src/lib.rs domain perf/data append sequencing after air_variant_archetypes",
+      "replay_native/collector/src/lib.rs append_compact_* data helper section near append_compact_air_variant_archetypes_data_record"
     ],
-    "collector_hook_conflict_points": [
-      "replay_native/collector/src/lib.rs scheduled domain enabled flags around air_variant_archetypes/market/supply/focus depth",
-      "replay_native/collector/src/lib.rs read-handle block around air_variant_archetype_read",
-      "replay_native/collector/src/lib.rs append sequencing around append_compact_air_variant_archetypes_data_record"
-    ]
+    "adapter_required": "characters_leaders_cabinet_live_lane::extractor::LaneFrame must be populated from live CollectorState country/politics roots, active politics idea tokens, and validated character/leader/advisor roots before LaneCollectorModule::collect_frame can be called honestly"
   },
   "lane_proof": {
-    "rust_tests": "14 passed with replay-verify feature",
+    "rust_tests": "17 passed; 0 failed",
     "appointed_transition_fixture": "before=0, after_add=3, after_remove=1",
     "domain47_replay_fixture": {
       "result": "verified",
@@ -59,5 +50,5 @@
       "parse_errors": []
     }
   },
-  "unbreakable_until": "shared integration owner applies DOMAIN47_REGISTRATION_ONLY.patch and the collector hot-loop hook from REGISTRATION_HOOK_PLAN.md, then runs live speed-five/current-equivalent DLL-only proof"
+  "unbreakable_until": "shared integration owner applies DOMAIN47_REGISTRATION_ONLY.patch, lands the real collector-frame adapter/hot-loop hook from REGISTRATION_HOOK_PLAN.md, then runs live speed-five/current-equivalent DLL-only proof"
 }

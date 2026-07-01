@@ -3,7 +3,8 @@
 This module intentionally does not touch the shared Rust collector/recorder
 entrypoints. It uses the validated 870ebf CPurchaseContract vtable root and
 packs a compact binary frame stream that mirrors the intended production row
-shape for a later Rust integration slot.
+shape for a later Rust integration slot. The lane-local format explicitly keeps
+omitted vtable candidates separate from true partial/missing extractable rows.
 """
 
 from __future__ import annotations
@@ -63,7 +64,7 @@ MAX_VARIANT_ID = 2_147_483_647
 MAX_AMOUNT_RAW = 1_000_000_000_000_000
 
 MAGIC = b"H4MT"
-VERSION = 1
+VERSION = 2
 FRAME_HEADER = struct.Struct("<4sHHHHIqIIIIIIIIII")
 ROW = struct.Struct("<IIIIIIqIIII")
 HEADER_LEN = FRAME_HEADER.size
@@ -89,6 +90,22 @@ STATUS_INVALID = 0
 STATUS_VALID = 1
 STATUS_UNREADABLE = 2
 
+OMITTED_NOT_PARTIAL_REASONS = {
+    "candidate_vtable_invalid",
+    "candidate_contract_unreadable",
+    "candidate_type_invalid",
+    "candidate_contract_id_invalid",
+    "candidate_seller_tag_invalid",
+    "candidate_buyer_tag_invalid",
+    "candidate_duplicate_identical",
+}
+
+MISSING_EXTRACTABLE_REASONS = {
+    "candidate_seller_country_unresolved",
+    "candidate_buyer_country_unresolved",
+    "candidate_duplicate_conflict",
+}
+
 
 @dataclass(frozen=True)
 class MarketTradeRow:
@@ -102,6 +119,10 @@ class MarketTradeRow:
     equipment_subbuf_status: int
     delivery_subbuf_status: int
     buyer_ptr_status: int
+
+
+def is_complete_contract_row(row: MarketTradeRow) -> bool:
+    return (row.flags & KNOWN_FLAGS) == KNOWN_FLAGS
 
 
 @dataclass(frozen=True)
@@ -133,12 +154,16 @@ class MarketTradeFrame:
         return sum(
             1
             for row in self.rows
-            if row.flags & FLAG_BUYER_PTR_VALID == 0
-            or row.flags & FLAG_EQUIPMENT_SUBBUF_VALID == 0
-            or row.flags & FLAG_DELIVERY_SUBBUF_VALID == 0
-            or row.flags & FLAG_VARIANT_VALID == 0
-            or row.flags & FLAG_AMOUNT_VALID == 0
+            if not is_complete_contract_row(row)
         )
+
+    @property
+    def missing_extractable_rows(self) -> int:
+        return self.structural_partial_rows + self.partial_field_rows
+
+
+def candidate_reason_is_omitted_not_partial(reason: str) -> bool:
+    return reason in OMITTED_NOT_PARTIAL_REASONS
 
 
 def safe_i32(p: winmem.Process, addr: int) -> int | None:
@@ -312,7 +337,10 @@ def extract_frame_from_candidates(
             p, addr, contract_vtable, variant_vtable, id_to_country
         )
         if row is None:
-            omitted += 1
+            if candidate_reason_is_omitted_not_partial(reason):
+                omitted += 1
+            else:
+                structural += 1
             count(reason)
         elif row.contract_id in rows_by_id:
             if rows_by_id[row.contract_id] == row:
@@ -324,7 +352,8 @@ def extract_frame_from_candidates(
         else:
             rows_by_id[row.contract_id] = row
     rows = [rows_by_id[key] for key in sorted(rows_by_id)]
-    status_flags = STATUS_STRUCTURAL_PARTIAL if structural else 0
+    partial_field_rows = sum(1 for row in rows if not is_complete_contract_row(row))
+    status_flags = STATUS_STRUCTURAL_PARTIAL if structural or partial_field_rows else 0
     return MarketTradeFrame(
         game_hour_raw=game_hour_raw,
         elapsed_wall_ms=elapsed_wall_ms,
@@ -357,7 +386,7 @@ def encode_frame(frame: MarketTradeFrame) -> bytes:
         frame.amount_valid_rows,
         frame.partial_field_rows,
         SCALE_RAW,
-        0,
+        frame.omitted_candidate_rows,
     )
     for row in frame.rows:
         out += ROW.pack(
@@ -402,15 +431,15 @@ def decode_frames(blob: bytes) -> tuple[list[MarketTradeFrame], list[str]]:
             amount_valid_rows,
             partial_field_rows,
             scale_raw,
-            reserved1,
+            omitted_candidate_rows,
         ) = unpacked
         if magic != MAGIC:
             errors.append(f"offset {pos}: bad magic {magic!r}")
             break
         if version != VERSION or header_len != HEADER_LEN or row_len != ROW_LEN:
             errors.append(f"offset {pos}: incompatible frame header")
-        if reserved0 or reserved1:
-            errors.append(f"offset {pos}: nonzero reserved header fields")
+        if reserved0:
+            errors.append(f"offset {pos}: nonzero reserved header field")
         if emitted_contract_rows != row_count:
             errors.append(f"offset {pos}: emitted rows {emitted_contract_rows} != {row_count}")
         if observed_contract_rows < row_count:
@@ -482,12 +511,20 @@ def decode_frames(blob: bytes) -> tuple[list[MarketTradeFrame], list[str]]:
         if partial_field_rows != computed_partial:
             errors.append(f"offset {pos}: partial field count mismatch")
         skipped_contract_rows = max(0, observed_contract_rows - emitted_contract_rows)
-        structural_partial_rows = (
-            skipped_contract_rows if status_flags & STATUS_STRUCTURAL_PARTIAL else 0
-        )
-        omitted_candidate_rows = (
-            0 if status_flags & STATUS_STRUCTURAL_PARTIAL else skipped_contract_rows
-        )
+        if omitted_candidate_rows > skipped_contract_rows:
+            errors.append(
+                f"offset {pos}: omitted candidates {omitted_candidate_rows} > skipped {skipped_contract_rows}"
+            )
+            omitted_candidate_rows = skipped_contract_rows
+        structural_partial_rows = skipped_contract_rows - omitted_candidate_rows
+        if structural_partial_rows and not (status_flags & STATUS_STRUCTURAL_PARTIAL):
+            errors.append(
+                f"offset {pos}: structural partial rows present without status flag"
+            )
+        if partial_field_rows and not (status_flags & STATUS_STRUCTURAL_PARTIAL):
+            errors.append(
+                f"offset {pos}: partial contract fields present without status flag"
+            )
         frames.append(
             MarketTradeFrame(
                 game_hour_raw,
@@ -523,6 +560,7 @@ def gate_frames(frames: list[MarketTradeFrame], errors: list[str], min_game_hour
     partial_field_rows = [frame.partial_field_rows for frame in frames]
     omitted_candidate_rows = [frame.omitted_candidate_rows for frame in frames]
     structural_partial_rows = [frame.structural_partial_rows for frame in frames]
+    missing_extractable_rows = [frame.missing_extractable_rows for frame in frames]
     problems = []
     if errors:
         problems.append("decode_errors")
@@ -534,6 +572,9 @@ def gate_frames(frames: list[MarketTradeFrame], errors: list[str], min_game_hour
         problems.append("source_unavailable")
     if status_or & STATUS_STRUCTURAL_PARTIAL:
         problems.append("structural_partial")
+    if max(partial_field_rows) if partial_field_rows else 0:
+        if "structural_partial" not in problems:
+            problems.append("partial_contract_fields")
     return {
         "ok": not problems,
         "problems": problems,
@@ -550,18 +591,24 @@ def gate_frames(frames: list[MarketTradeFrame], errors: list[str], min_game_hour
         "row_count_max": max(row_counts) if row_counts else 0,
         "partial_field_rows_min": min(partial_field_rows) if partial_field_rows else 0,
         "partial_field_rows_max": max(partial_field_rows) if partial_field_rows else 0,
+        "partial_field_rows_total": sum(partial_field_rows),
         "omitted_candidate_rows_min": (
             min(omitted_candidate_rows) if omitted_candidate_rows else 0
         ),
         "omitted_candidate_rows_max": (
             max(omitted_candidate_rows) if omitted_candidate_rows else 0
         ),
+        "omitted_candidate_rows_total": sum(omitted_candidate_rows),
         "structural_partial_rows_min": (
             min(structural_partial_rows) if structural_partial_rows else 0
         ),
         "structural_partial_rows_max": (
             max(structural_partial_rows) if structural_partial_rows else 0
         ),
+        "structural_partial_rows_total": sum(structural_partial_rows),
+        "missing_extractable_rows_total": sum(missing_extractable_rows),
+        "omitted_not_partial_seen": bool(sum(omitted_candidate_rows)),
+        "missing_extractable_seen": bool(sum(missing_extractable_rows)),
     }
 
 
@@ -571,6 +618,23 @@ def aggregate_omission_reasons(frames: Iterable[MarketTradeFrame]) -> dict[str, 
         for reason, count in (frame.omission_reasons or {}).items():
             out[reason] = out.get(reason, 0) + count
     return dict(sorted(out.items()))
+
+
+def classify_omission_reasons(reasons: dict[str, int]) -> dict:
+    omitted = {
+        reason: count
+        for reason, count in reasons.items()
+        if candidate_reason_is_omitted_not_partial(reason)
+    }
+    missing = {
+        reason: count
+        for reason, count in reasons.items()
+        if not candidate_reason_is_omitted_not_partial(reason)
+    }
+    return {
+        "omitted_not_partial_reasons": dict(sorted(omitted.items())),
+        "missing_extractable_reasons": dict(sorted(missing.items())),
+    }
 
 
 def capture(args: argparse.Namespace) -> dict:
@@ -611,8 +675,10 @@ def capture(args: argparse.Namespace) -> dict:
                 time.sleep(args.sample_ms / 1000.0)
     decoded, errors = decode_frames(bytes(encoded))
     gate = gate_frames(decoded, errors, args.min_game_hours)
+    omission_reasons = aggregate_omission_reasons(frames)
+    omission_classes = classify_omission_reasons(omission_reasons)
     proof = {
-        "schema": "market_trade_live_lane_local_compact_proof_v1",
+        "schema": "market_trade_live_lane_local_compact_proof_v2",
         "utc": datetime.now(timezone.utc).isoformat(),
         "pid": pid,
         "duration_s": args.duration_s,
@@ -635,15 +701,33 @@ def capture(args: argparse.Namespace) -> dict:
             "CPurchaseContract.type": CPURCHASE_CONTRACT_TYPE,
             "variant_vtable_rva": hex(VARIANT_VTABLE_RVA),
         },
+        "scope": {
+            "validated_slice": (
+                "NInternationalMarket::CPurchaseContract seller/buyer/contract/"
+                "type/equipment/delivery fields"
+            ),
+            "not_full_trade_economy": True,
+            "open_misses": [
+                "resource import/export",
+                "licensing",
+                "market access / diplomatic trade context",
+                "non-purchase-contract market extras",
+            ],
+        },
         "gate": gate,
         "extraction_diagnostics": {
-            "omission_reasons": aggregate_omission_reasons(frames),
+            "omission_reasons": omission_reasons,
+            **omission_classes,
             "omitted_candidate_rows_total": sum(
                 frame.omitted_candidate_rows for frame in frames
             ),
             "structural_partial_rows_total": sum(
                 frame.structural_partial_rows for frame in frames
             ),
+            "missing_extractable_rows_total": sum(
+                frame.missing_extractable_rows for frame in frames
+            ),
+            "omitted_candidates_are_partial_failure": False,
         },
         "decode_errors": errors[:20],
         "first_frame": asdict(decoded[0]) if decoded else None,

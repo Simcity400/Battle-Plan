@@ -125,6 +125,104 @@ Retroactive current-lane status under this rule:
 | `naval_combat_live` | `ACTIVE / NOT COMPLETE` | Promote naval combat lifecycle/member roots to compact records, or return an exact fixture/root blocker that narrows the search space. |
 | `air_combat_losses_live` | `ACTIVE / NOT COMPLETE` | Promote sortie/combat/loss/reinforcement capture to compact records, or conclusively reject exact candidate roots and document the remaining production path. |
 
+2026-07-01 status wording correction:
+
+The registry no longer treats a proof-gated slice as whole-concept completion.
+`validated slice` means the named scope passed the DLL/compact/Rust replay gate.
+It does not mean every replay-relevant field in that gameplay concept is
+captured. Whole-concept completion requires every replay-relevant extractable
+field to be production-captured, or an exact blocker/conclusive rejection for
+each remaining field.
+
+| Domain | Validated slice | Still open / not concept-complete |
+| --- | --- | --- |
+| `weather_live` / 24 | Weather visual drivers passed the production gate. | Non-visual meteorological internals remain reopened for audit unless proven non-replay-relevant or captured. |
+| `supply_logistics_attrition_live` / 44 | Province logistics/building rows, hubs, railways, infrastructure, division supply/deficit/fuel proxy passed. | Exact province supply tooltip/remaining amount, attrition reason, hub motorization, convoy/logistics pressure, and `CSupplySystem` arrays remain open or badged. |
+| `focus_research_decisions_depth_live` / 45 | Transition-depth slice passed: focus transitions/counts/current/continuous focus, research ETA/speed deltas, active timed decisions. | Focus paused state, direct completed-focus token closure, decision target/cooldown bodies, and direct engine events remain unresolved or badged. |
+| `air_variant_archetypes_live` / 46 | Active air variant archetype classification passed. | Not full air lifecycle; ace identity/wing assignment, raw token fallbacks, and richer wing lifecycle semantics remain open or assigned elsewhere. |
+| `air_combat_losses_live` / 42 | Loss/reinforcement/delete delta slice passed. | Not full air combat; sortie lifecycle, combat pairing, kill attribution, loss cause/source, tactical engagement state, ace participation, and reinforcement reason remain open. |
+| `market_trade_live` / 43 | International-market purchase contract slice passed. | Not full trade economy; omitted candidates, resource trade/import-export, lend lease, licensing, market access, and diplomatic trade context remain open. |
+| `projects_live` / 41 | Facilities, currently worked projects, scientists, progress/state/completed-bit slices passed. | Not full projects; start/reward history and exact reward/completion semantics remain open. |
+| `scientists_live` under 41 | Country-owned scientist roster extraction passed; bad `CGameState+0x520/+0x524` candidate rejected. | Not full characters/cabinet; leader/advisor/cabinet semantics remain in domain 47. |
+
+2026-07-01 lane-owner follow-up under tightened wording:
+
+- Domain `47` `characters_leaders_cabinet_live`: lane-local packet was repaired
+  and its registration patch now apply-checks against `bc0797784`. This is
+  backlog reduction, not production completion. The exact blocker is shared
+  collector adapter work: `collector/src/lib.rs` still needs scheduled enable
+  plumbing plus a real `CollectorState` / country-politics / character-root to
+  lane `LaneFrame` adapter before the lane can emit honest domain-47 records.
+- Domain `48` `construction_buildings_state_damage_live`: target-state oracle
+  blocker is narrowed to external same-frame save/UI action. `subobject+0x60`
+  is rejected as state or province id. A runnable observer now attaches to live
+  PID `45880`, emits the oracle contract input shape, and fails closed until the
+  user produces a same-frame save/UI oracle for `+0xC0/+0xC8`.
+- Domain `41` `projects_live`: fresh autosave proof revalidated the completed
+  byte and rejected current start/reward-history candidates. Start fields inside
+  `CProjectStateMachine[0..0x280)`, `CProject+0x74 iterations != 0`, legacy
+  reward RVAs, and `CProgramStatus+0x58/+0x60/+0x68` as fired reward history
+  are rejected. Remaining project start/reward history now needs a controlled
+  before/after in-game project start and reward-option selection/save pair.
+- Domain `42` `air_combat_losses_live`: full air-combat event reconstruction is
+  still open, but the bounded direct opposed event-root candidate was rejected.
+  The existing loss/reinforcement delta slice remains the validated production
+  slice; sortie lifecycle, combat pairing, kill attribution, cause/source,
+  tactical engagement state, ace participation, and reinforcement reason remain
+  open.
+- Domain `24` `weather_live`: weather visual drivers remain the validated slice.
+  Current-state non-visual internals are no longer treated as a compact
+  extraction blocker for replay visuals; RNG/generator/phase details remain
+  open as computed/visual-parity work, not concept completion.
+- Domain `44` `supply_logistics_attrition_live`: exact province supply remains
+  open, but direct `CSupplySystem` array candidates `+0x10`, `+0x138`, and
+  `+0x150` were rejected on the current build and should not be retried without
+  a new structure hypothesis.
+- Domain `43` `market_trade_live`: omitted purchase-contract accounting was
+  tightened. Current live evidence has zero omitted-not-partial rows and three
+  missing-extractable rows, all unresolved buyer country `D04` / tag-db `368`.
+  Full trade economy remains open for resource trade, lend lease, licensing,
+  market access, and diplomatic context.
+- Domain `45` `focus_research_decisions_depth_live`: decision target/cooldown
+  candidate space narrowed. The current build rejected 22 body field/layout
+  candidates for exact/universal target/cooldown fields; the transition-depth
+  slice remains validated, but unresolved focus/decision internals remain open.
+- Domain `46` `air_variant_archetypes_live`: extractable token miss
+  `equipment_token_raw=20378` was closed as
+  `large_plane_maritime_patrol_plane_airframe_1`, mapped to
+  `large_plane_maritime_patrol_plane_airframe` /
+  `maritime_patrol_plane`. The full air lifecycle remains open, and shared
+  hooks still need to pass token names to remove fallback rows in integrated
+  compact streams.
+- Domains `49`/`50` `naval_combat_*`: the current process has no active naval
+  combat fixture. Probe evidence found zero `CNavalCombat` body hits at
+  `module+0x29B6660`, while the current `CShip` route
+  `module+0x2941748` validated `1819/1819` rows and the stale
+  `module+0x2931998` route was rejected. The remaining blocker is a visible
+  two-sided active fleet battle held long enough to capture start/update/end and
+  member rows.
+- Domain `51` `scripted_state_flags_variables_live`: positive opaque country
+  flags are no longer fixture-blocked. The current build validated
+  `CCountry+0x230 -> CFlagManager` with `651` flag rows, `650` named rows, and
+  one token-only unresolved positive row that must remain badged. The lane-local
+  H4CR stream/replay proof decoded and verified, but shared live DLL
+  registration remains open.
+- Domain `52` `occupation_resistance_compliance_live`: current-head lane-local
+  proof validated occupation state rows and narrowed/rejected garrison scalar
+  candidates. It remains shared-registration blocked and is not speed-five
+  production-complete until scheduled through the one DLL/Rust recorder path.
+- Domain `53` `diplomacy_intel_operatives_live`: candidate space narrowed for
+  operation detail. Heap scan rejected stale `16022851` operation RVAs
+  `0x26F4BB0`, `0x26F4B60`, `0x26F4DE0`, `0x26F4CB0`, and `0x26F4C70`;
+  current `COperation` RTTI presence was observed but is not an accepted running
+  operation detail root. Remaining blockers are operation owner/target/progress,
+  intel-map percentage fixture, and incoming diplomatic action queue root.
+- Domain `54` `army_battleplans_depth_live`: redraw/toggle fixture blocker is
+  now narrowed to external in-game action with a runnable observer. Live
+  readiness on pid `45880` found type-2 and type-3 order targets and produced
+  an `observe` command that waits for user redraw/toggle actions before the
+  lane can validate `+0x70/+0x78`, `+0xC0/+0xC8`, and execution-state fields.
+
 2026-07-01 production checkpoint:
 
 - Domain `41` `projects_live` now emits the validated project-state completed

@@ -3,15 +3,16 @@
 Domain registry assignment:
 
 - Final domain: `47 = characters_leaders_cabinet_live`.
-- `replay_native/domain_registry.json` currently assigns id `47` to this lane with
-  status `reserved`.
+- `replay_native/domain_registry.json` currently assigns id `47` to this lane
+  with status `lane_ready_shared_registration_blocked_remaining_matrix`.
 - `replay_native/DOMAIN_REGISTRY.md` currently marks id `46` as
-  `air_variant_archetypes_live` production-complete and id `47` as this lane's
-  reserved id.
-- `DOMAIN47_REGISTRATION_ONLY.patch` is the exact low-conflict shared patch for
-  registry activation, Cargo dependencies, and recorder-side domain-47 decode.
-  It is intentionally not applied while shared collector/recorder files are
-  actively dirty from other lanes.
+  `air_variant_archetypes_live` production-complete and id `47` as
+  lane-ready with shared registration blocked.
+- `DOMAIN47_REGISTRATION_ONLY.patch` is an apply-checkable HEAD
+  `bc0797784` patch for registry activation, Cargo dependencies, and
+  recorder-side domain-47 decode. It deliberately does not claim merge-ready
+  collector extraction, because the shared collector still lacks the
+  `CollectorState`/country-politics/character-root to lane `LaneFrame` adapter.
 
 Lane-owned module now exists:
 
@@ -46,7 +47,7 @@ Registration-only collector patch when this lane receives the shared slot:
    ```
 
 3. In `replay_native/collector/src/lib.rs`, add only registration/scheduling
-   glue:
+   glue after the lane-local adapter exists:
 
    - raw scheduled token:
      `RAW_CHARACTERS_LEADERS_CABINET_LIVE_DOMAIN =
@@ -61,14 +62,21 @@ Registration-only collector patch when this lane receives the shared slot:
 4. Do not inline the domain-47 schema or decoder into `collector/src/lib.rs`.
    The shared collector should only pass roots/rows into the lane module.
 
-Current collector conflict:
+Current collector blocker:
 
-- `replay_native/collector/src/lib.rs` is already modified by other active lanes.
-- The domain-47 hook points overlap the same hot-loop blocks currently touched by
-  those edits: scheduled enabled flags around the air archetype/supply/market
-  section, read-handle setup around the air archetype read block, and compact
-  append sequencing around the domain data append block.
-- This is why `DOMAIN47_REGISTRATION_ONLY.patch` excludes `collector/src/lib.rs`.
+- `replay_native/collector/src/lib.rs` has the hook points, but no domain-47
+  collector adapter exists yet.
+- The exact hook points are:
+  `build_compact_extraction_gate_records` scheduled enabled flags,
+  read-handle locals, `thread::scope` spawn/join, domain perf/data append
+  sequencing after `air_variant_archetypes`, and a payload append helper near
+  `append_compact_air_variant_archetypes_data_record`.
+- The lane crate exposes `LaneCollectorModule::collect_frame(game_hour_raw,
+  &LaneFrame)`, but the shared collector cannot honestly call it until a real
+  live `LaneFrame` is populated from `CollectorState`, country bridge records,
+  politics active ideas, and validated character/leader/advisor roots. A
+  placeholder empty/source-unavailable frame would not satisfy merge-ready
+  acceptance.
 
 Required collector inputs:
 
@@ -111,7 +119,10 @@ Registration-only recorder patch when this lane receives the shared slot:
    that calls the lane adapter. Do not inline row parsing there.
 
 `DOMAIN47_REGISTRATION_ONLY.patch` includes the exact match-based recorder
-adapter, mirroring the existing domain-46 lane-summary merge pattern.
+adapter, mirroring the existing domain-46 lane-summary merge pattern. It is
+enough to make domain-47 recorder decode/gate and scheduled-domain coverage
+available once collector data records exist; it is not enough to create those
+records.
 
 Live proof route once hooks are wired:
 

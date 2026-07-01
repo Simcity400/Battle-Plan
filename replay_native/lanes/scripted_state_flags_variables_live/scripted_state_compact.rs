@@ -24,6 +24,9 @@ pub const VALUE_FLAG_TOKEN_ONLY: u32 = 3;
 pub const VALUE_DELAYED_EVENT_OPAQUE: u32 = 4;
 pub const VALUE_SCRIPTED_GUI_OPAQUE: u32 = 5;
 
+pub const DELAYED_EVENTS_BADGE_KEY: &str = "root_unresolved:delayed_events";
+pub const SCRIPTED_GUI_BADGE_KEY: &str = "root_unresolved:scripted_gui_open_state";
+
 pub const ROW_FLAG_KEY_PRESENT: u32 = 1;
 pub const ROW_FLAG_TOKEN_PRESENT: u32 = 1 << 1;
 pub const ROW_FLAG_VALUE_PRESENT: u32 = 1 << 2;
@@ -323,6 +326,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain51GateSummary {
                 "offset {offset}: scripted state row {row_index} key is {key_len} byte(s), max {MAX_KEY_BYTES}"
             ));
         }
+        let mut key_bytes_for_row = None;
         if key_offset
             .checked_add(key_len)
             .map_or(true, |end| end > key_table.len())
@@ -332,6 +336,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain51GateSummary {
             ));
         } else if key_len != 0 {
             let key_bytes = &key_table[key_offset..key_offset + key_len];
+            key_bytes_for_row = Some(key_bytes);
             if !is_printable_key(key_bytes) {
                 summary.parse_errors.push(format!(
                     "offset {offset}: scripted state row {row_index} key has non-printable bytes"
@@ -366,9 +371,25 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain51GateSummary {
         }
         if value_kind == VALUE_DELAYED_EVENT_OPAQUE {
             decoded_delayed_event_rows = decoded_delayed_event_rows.saturating_add(1);
+            validate_opaque_badge_key(
+                offset,
+                row_index,
+                "delayed-event",
+                key_bytes_for_row,
+                DELAYED_EVENTS_BADGE_KEY,
+                &mut summary,
+            );
         }
         if value_kind == VALUE_SCRIPTED_GUI_OPAQUE {
             decoded_scripted_gui_rows = decoded_scripted_gui_rows.saturating_add(1);
+            validate_opaque_badge_key(
+                offset,
+                row_index,
+                "scripted-GUI",
+                key_bytes_for_row,
+                SCRIPTED_GUI_BADGE_KEY,
+                &mut summary,
+            );
         }
         let row_key = (
             scope_kind,
@@ -400,6 +421,32 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain51GateSummary {
             "offset {offset}: scripted state token_only_rows {token_only_rows} != decoded {decoded_token_only_rows}"
         ));
     }
+    if token_only_rows > 0 && status_flags & STATUS_FLAG_NAMES_PARTIAL == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: scripted state token-only flag rows require STATUS_FLAG_NAMES_PARTIAL"
+        ));
+    }
+    if decoded_delayed_event_rows > 0 && status_flags & STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: delayed-event opaque rows require STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED"
+        ));
+    }
+    if status_flags & STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED != 0 && decoded_delayed_event_rows == 0
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED set without delayed-event opaque badge row"
+        ));
+    }
+    if decoded_scripted_gui_rows > 0 && status_flags & STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: scripted-GUI opaque rows require STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED"
+        ));
+    }
+    if status_flags & STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED != 0 && decoded_scripted_gui_rows == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED set without scripted-GUI opaque badge row"
+        ));
+    }
     add_unit(
         &mut summary,
         "scripted_delayed_event_opaque_rows",
@@ -411,6 +458,21 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain51GateSummary {
         decoded_scripted_gui_rows,
     );
     summary
+}
+
+fn validate_opaque_badge_key(
+    offset: usize,
+    row_index: usize,
+    badge_kind: &str,
+    key_bytes: Option<&[u8]>,
+    expected_key: &str,
+    summary: &mut Domain51GateSummary,
+) {
+    if key_bytes != Some(expected_key.as_bytes()) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: scripted state {badge_kind} opaque row {row_index} has wrong badge key"
+        ));
+    }
 }
 
 fn validate_scope(
@@ -563,7 +625,7 @@ mod tests {
         ];
         let header = ScriptedStateHeader {
             elapsed_wall_ms: 8,
-            status_flags: STATUS_DELTA_DATA | STATUS_PARTIAL_DATA,
+            status_flags: STATUS_DELTA_DATA | STATUS_PARTIAL_DATA | STATUS_FLAG_NAMES_PARTIAL,
             changed_rows: 3,
             observed_scopes: 2,
             measured_scopes: 1,
@@ -578,7 +640,7 @@ mod tests {
         );
         assert_eq!(
             summary.status_flags_or,
-            STATUS_DELTA_DATA | STATUS_PARTIAL_DATA
+            STATUS_DELTA_DATA | STATUS_PARTIAL_DATA | STATUS_FLAG_NAMES_PARTIAL
         );
         assert_eq!(summary.data_rows_total, 3);
         assert_eq!(summary.data_changed_rows_total, 3);
@@ -683,7 +745,7 @@ mod tests {
                 scope_kind: SCOPE_GLOBAL,
                 owner_id: 0,
                 value_kind: VALUE_DELAYED_EVENT_OPAQUE,
-                key: Some("root_unresolved:delayed_events".to_string()),
+                key: Some(DELAYED_EVENTS_BADGE_KEY.to_string()),
                 token_id: None,
                 value_raw: None,
                 date_hour_raw: None,
@@ -693,7 +755,7 @@ mod tests {
                 scope_kind: SCOPE_GLOBAL,
                 owner_id: 0,
                 value_kind: VALUE_SCRIPTED_GUI_OPAQUE,
-                key: Some("root_unresolved:scripted_gui_open_state".to_string()),
+                key: Some(SCRIPTED_GUI_BADGE_KEY.to_string()),
                 token_id: None,
                 value_raw: None,
                 date_hour_raw: None,
@@ -735,5 +797,110 @@ mod tests {
                 .copied(),
             Some(1)
         );
+    }
+
+    #[test]
+    fn rejects_unresolved_status_without_opaque_badge_row() {
+        let header = ScriptedStateHeader {
+            elapsed_wall_ms: 1,
+            status_flags: STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED,
+            changed_rows: 0,
+            observed_scopes: 1,
+            measured_scopes: 0,
+            rejected_scopes: 1,
+        };
+        let payload = encode_payload(&header, &[]);
+        let summary = decode_payload(12, &payload);
+
+        assert!(summary.parse_errors.iter().any(|error| {
+            error.contains(
+                "STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED set without delayed-event opaque badge row",
+            )
+        }));
+    }
+
+    #[test]
+    fn rejects_opaque_badge_row_without_status_bit() {
+        let rows = vec![ScriptedStateRow {
+            scope_kind: SCOPE_GLOBAL,
+            owner_id: 0,
+            value_kind: VALUE_SCRIPTED_GUI_OPAQUE,
+            key: Some(SCRIPTED_GUI_BADGE_KEY.to_string()),
+            token_id: None,
+            value_raw: None,
+            date_hour_raw: None,
+            deleted: false,
+        }];
+        let header = ScriptedStateHeader {
+            elapsed_wall_ms: 1,
+            status_flags: 0,
+            changed_rows: 1,
+            observed_scopes: 1,
+            measured_scopes: 0,
+            rejected_scopes: 1,
+        };
+        let payload = encode_payload(&header, &rows);
+        let summary = decode_payload(13, &payload);
+
+        assert!(summary.parse_errors.iter().any(|error| {
+            error.contains("scripted-GUI opaque rows require STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED")
+        }));
+    }
+
+    #[test]
+    fn rejects_opaque_badge_row_with_wrong_key() {
+        let rows = vec![ScriptedStateRow {
+            scope_kind: SCOPE_GLOBAL,
+            owner_id: 0,
+            value_kind: VALUE_DELAYED_EVENT_OPAQUE,
+            key: Some("root_unresolved:wrong".to_string()),
+            token_id: None,
+            value_raw: None,
+            date_hour_raw: None,
+            deleted: false,
+        }];
+        let header = ScriptedStateHeader {
+            elapsed_wall_ms: 1,
+            status_flags: STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED,
+            changed_rows: 1,
+            observed_scopes: 1,
+            measured_scopes: 0,
+            rejected_scopes: 1,
+        };
+        let payload = encode_payload(&header, &rows);
+        let summary = decode_payload(14, &payload);
+
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("delayed-event opaque row 0 has wrong badge key")));
+    }
+
+    #[test]
+    fn rejects_token_only_flags_without_partial_names_status() {
+        let rows = vec![ScriptedStateRow {
+            scope_kind: SCOPE_COUNTRY,
+            owner_id: 1,
+            value_kind: VALUE_FLAG_TOKEN_ONLY,
+            key: None,
+            token_id: Some(0xB5E5),
+            value_raw: Some(1),
+            date_hour_raw: Some(13_443),
+            deleted: false,
+        }];
+        let header = ScriptedStateHeader {
+            elapsed_wall_ms: 1,
+            status_flags: 0,
+            changed_rows: 1,
+            observed_scopes: 1,
+            measured_scopes: 1,
+            rejected_scopes: 0,
+        };
+        let payload = encode_payload(&header, &rows);
+        let summary = decode_payload(15, &payload);
+
+        assert!(summary.parse_errors.iter().any(|error| {
+            error.contains("token-only flag rows require STATUS_FLAG_NAMES_PARTIAL")
+        }));
     }
 }

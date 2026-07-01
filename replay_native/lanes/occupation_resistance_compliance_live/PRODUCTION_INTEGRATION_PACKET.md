@@ -44,7 +44,31 @@ Current shared-file availability proof, checked for this lane update:
 - Numeric `52` occurrences in current shared files are payload offsets,
   `DIVISION_TEMPLATE_TYPE`, or test values, not compact domain assignments.
 
-Fresh lane-local proof:
+Current-HEAD lane-local proof:
+
+- `replay_native/lanes/occupation_resistance_compliance_live/proof_current_head_20260701_bc0797784`
+  refreshed the lane against HEAD `bc0797784` and live build
+  `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`.
+- `live_probe.py`: domain `52`, `1081` state rows, `319` occupied rows,
+  `279` garrison-template rows, `0` invalid state rows, and `69404` compact
+  stream bytes.
+- `collector_module.rs` tests: `9 passed`; `domain52_compact.rs` tests:
+  `5 passed`; `replay_verify` tests: `2 passed`.
+- `domain52_gate.rs --stream live_probe/collector_stream.bin` decoded
+  `records_seen=3`, `domain_data_records=1`, `rows=1081`, with no parse errors.
+- `replay_verify --run-dir live_probe --game-id orc52` wrote
+  `native_session.battleplan`, verified all entries through
+  `snapshot::Container`, and byte-compared `69404` compact stream bytes
+  unchanged.
+- `remaining_fields_probe.py` now validates resistance speed `0x280`
+  (`85/85` delta rows) and compliance speed `0x2B0` (`224/224` delta rows).
+  `CStateGarrisonData+0x48` remains rejected as country identity.
+- `garrison_scalar_probe.py` keeps pinned garrison scalar candidates rejected
+  or fixture-blocked; collaboration/GIE detail remains fixture-blocked because
+  the save fixture has empty country collaboration payloads and all `8/8`
+  `government_in_exile_tag` rows are leader-context rows.
+
+Earlier lane-local proof:
 
 - `replay_native/runs/occupation_resistance_compliance_live_870ebf_20260701_v17_replay_verify/collector_stream.bin`
   contains compact records with domain `52` and frame domain `1000`.

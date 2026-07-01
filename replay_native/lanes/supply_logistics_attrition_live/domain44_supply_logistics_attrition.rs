@@ -232,19 +232,48 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
                         "offset {offset}: supply logistics province row {row_index} has invalid state_id {join_id}"
                     ));
                 }
-                for (label, value) in [
-                    ("rail", value_a_raw),
-                    ("supply_node", value_b_raw),
-                    ("naval_supply_hub", value_c_raw),
-                    ("infrastructure", value_d_raw),
-                    ("building_count", aux_raw),
-                ] {
-                    if !(0..=MAX_BUILDING_LEVEL).contains(&value) {
-                        summary.parse_errors.push(format!(
-                            "offset {offset}: supply logistics province row {row_index} has invalid {label} {value}"
-                        ));
-                    }
+                if owner_tag_db_id != 0 {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics province row {row_index} has nonzero owner_tag_db_id"
+                    ));
                 }
+                if flags & ROW_FLAG_LIVE_BUILDING_VECTOR == 0 {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics province row {row_index} missing live building vector flag"
+                    ));
+                }
+                for (label, value, flag) in [
+                    ("rail", value_a_raw, ROW_FLAG_RAIL),
+                    ("supply_node", value_b_raw, ROW_FLAG_SUPPLY_NODE),
+                    ("naval_supply_hub", value_c_raw, ROW_FLAG_NAVAL_SUPPLY_HUB),
+                    ("infrastructure", value_d_raw, ROW_FLAG_INFRASTRUCTURE),
+                ] {
+                    validate_nonnegative_value(
+                        offset,
+                        &mut summary,
+                        row_index,
+                        label,
+                        value,
+                        MAX_BUILDING_LEVEL,
+                    );
+                    validate_presence_flag(
+                        offset,
+                        &mut summary,
+                        row_index,
+                        label,
+                        value,
+                        flags,
+                        flag,
+                    );
+                }
+                validate_nonnegative_value(
+                    offset,
+                    &mut summary,
+                    row_index,
+                    "building_count",
+                    aux_raw,
+                    MAX_BUILDING_LEVEL,
+                );
                 add_unit(&mut summary, "province_logistics_rows", 1);
             }
             ROW_KIND_DIVISION_SUPPLY => {
@@ -263,6 +292,11 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
                         "offset {offset}: supply logistics division row {row_index} has invalid province_id {join_id}"
                     ));
                 }
+                if flags & ROW_FLAG_PROXY_VALUE == 0 {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: supply logistics division row {row_index} missing proxy flag"
+                    ));
+                }
                 if flags & ROW_FLAG_DIVISION_OWNER != 0 {
                     if owner_tag_db_id == 0 || owner_tag_db_id > MAX_TAG_DB_ID {
                         summary.parse_errors.push(format!(
@@ -274,47 +308,84 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
                         "offset {offset}: supply logistics division row {row_index} has owner without owner flag"
                     ));
                 }
-                if !(0..=MAX_SUPPLY_RAW).contains(&value_a_raw) {
-                    summary.parse_errors.push(format!(
-                        "offset {offset}: supply logistics division row {row_index} has invalid current_supply_raw {value_a_raw}"
-                    ));
+                for (label, value, max_value, flag) in [
+                    (
+                        "current_supply_raw",
+                        value_a_raw,
+                        MAX_SUPPLY_RAW,
+                        ROW_FLAG_DIVISION_CURRENT_SUPPLY,
+                    ),
+                    (
+                        "max_supply_raw",
+                        value_b_raw,
+                        MAX_SUPPLY_RAW,
+                        ROW_FLAG_DIVISION_MAX_SUPPLY,
+                    ),
+                    (
+                        "supply_gain_raw",
+                        value_c_raw,
+                        MAX_SUPPLY_GAIN_RAW,
+                        ROW_FLAG_DIVISION_SUPPLY_GAIN,
+                    ),
+                ] {
+                    validate_nonnegative_value(
+                        offset,
+                        &mut summary,
+                        row_index,
+                        label,
+                        value,
+                        max_value,
+                    );
+                    validate_presence_flag(
+                        offset,
+                        &mut summary,
+                        row_index,
+                        label,
+                        value,
+                        flags,
+                        flag,
+                    );
                 }
-                if !(0..=MAX_SUPPLY_RAW).contains(&value_b_raw) {
-                    summary.parse_errors.push(format!(
-                        "offset {offset}: supply logistics division row {row_index} has invalid max_supply_raw {value_b_raw}"
-                    ));
-                }
-                if !(0..=MAX_SUPPLY_GAIN_RAW).contains(&value_c_raw) {
-                    summary.parse_errors.push(format!(
-                        "offset {offset}: supply logistics division row {row_index} has invalid supply_gain_raw {value_c_raw}"
-                    ));
-                }
-                if !(0..=MAX_SUPPLY_RAW).contains(&value_d_raw) {
-                    summary.parse_errors.push(format!(
-                        "offset {offset}: supply logistics division row {row_index} has invalid supply_deficit_raw {value_d_raw}"
-                    ));
-                }
+                validate_nonnegative_value(
+                    offset,
+                    &mut summary,
+                    row_index,
+                    "supply_deficit_raw",
+                    value_d_raw,
+                    MAX_SUPPLY_RAW,
+                );
                 let expected_deficit = value_b_raw.saturating_sub(value_a_raw).max(0);
                 if value_d_raw != expected_deficit {
                     summary.parse_errors.push(format!(
                         "offset {offset}: supply logistics division row {row_index} has supply_deficit_raw {value_d_raw} but expected {expected_deficit}"
                     ));
                 }
-                if value_d_raw != 0 && flags & ROW_FLAG_DIVISION_SUPPLY_DEFICIT == 0 {
-                    summary.parse_errors.push(format!(
-                        "offset {offset}: supply logistics division row {row_index} has nonzero supply_deficit_raw without deficit flag"
-                    ));
-                }
-                if aux_raw != 0 && flags & ROW_FLAG_DIVISION_FUEL == 0 {
-                    summary.parse_errors.push(format!(
-                        "offset {offset}: supply logistics division row {row_index} has nonzero fuel_raw without fuel flag"
-                    ));
-                }
-                if !(0..=MAX_DIVISION_FUEL_RAW).contains(&aux_raw) {
-                    summary.parse_errors.push(format!(
-                        "offset {offset}: supply logistics division row {row_index} has invalid fuel_raw {aux_raw}"
-                    ));
-                }
+                validate_presence_flag(
+                    offset,
+                    &mut summary,
+                    row_index,
+                    "supply_deficit_raw",
+                    value_d_raw,
+                    flags,
+                    ROW_FLAG_DIVISION_SUPPLY_DEFICIT,
+                );
+                validate_nonnegative_value(
+                    offset,
+                    &mut summary,
+                    row_index,
+                    "fuel_raw",
+                    aux_raw,
+                    MAX_DIVISION_FUEL_RAW,
+                );
+                validate_presence_flag(
+                    offset,
+                    &mut summary,
+                    row_index,
+                    "fuel_raw",
+                    aux_raw,
+                    flags,
+                    ROW_FLAG_DIVISION_FUEL,
+                );
                 if flags & ROW_FLAG_DIVISION_SUPPLY_DEFICIT != 0 {
                     add_unit(&mut summary, "division_supply_deficit_rows", 1);
                 }
@@ -419,7 +490,10 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
         ("attrition wall", has_attrition_wall),
         ("motorization wall", has_motorization_wall),
         ("convoy pressure wall", has_convoy_pressure_wall),
-        ("csupply candidate rejection", has_csupply_candidate_rejected),
+        (
+            "csupply candidate rejection",
+            has_csupply_candidate_rejected,
+        ),
     ] {
         if !present {
             summary.parse_errors.push(format!(
@@ -432,14 +506,53 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
     summary.province_rows_total = decoded_province_rows as u64;
     summary.division_rows_total = decoded_division_rows as u64;
     summary.badge_rows_total = decoded_badge_rows as u64;
-    add_unit(&mut summary, "observed_province_roots", observed_province_roots);
-    add_unit(&mut summary, "observed_division_roots", observed_division_roots);
+    add_unit(
+        &mut summary,
+        "observed_province_roots",
+        observed_province_roots,
+    );
+    add_unit(
+        &mut summary,
+        "observed_division_roots",
+        observed_division_roots,
+    );
     summary
 }
 
 fn add_unit(summary: &mut Domain44GateSummary, key: &'static str, value: usize) {
     let entry = summary.data_units_total.entry(key).or_default();
     *entry = entry.saturating_add(value as u64);
+}
+
+fn validate_nonnegative_value(
+    offset: usize,
+    summary: &mut Domain44GateSummary,
+    row_index: usize,
+    label: &str,
+    value: i32,
+    max_value: i32,
+) {
+    if !(0..=max_value).contains(&value) {
+        summary.parse_errors.push(format!(
+            "offset {offset}: supply logistics row {row_index} has invalid {label} {value}"
+        ));
+    }
+}
+
+fn validate_presence_flag(
+    offset: usize,
+    summary: &mut Domain44GateSummary,
+    row_index: usize,
+    label: &str,
+    value: i32,
+    flags: u32,
+    flag: u32,
+) {
+    if value != 0 && flags & flag == 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: supply logistics row {row_index} has nonzero {label} without presence flag"
+        ));
+    }
 }
 
 fn read_u32_le(payload: &[u8], offset: usize) -> u32 {
@@ -470,8 +583,14 @@ fn main() {
     println!("province_rows_total={}", summary.province_rows_total);
     println!("division_rows_total={}", summary.division_rows_total);
     println!("badge_rows_total={}", summary.badge_rows_total);
-    println!("observed_province_roots={}", summary.observed_province_roots);
-    println!("observed_division_roots={}", summary.observed_division_roots);
+    println!(
+        "observed_province_roots={}",
+        summary.observed_province_roots
+    );
+    println!(
+        "observed_division_roots={}",
+        summary.observed_division_roots
+    );
     println!("status_flags_or={:#x}", summary.status_flags_or);
     println!("data_units_total={:?}", summary.data_units_total);
     if summary.parse_errors.is_empty() {
@@ -495,7 +614,10 @@ mod tests {
                 entity_id: 2068,
                 join_id: 64,
                 owner_tag_db_id: 0,
-                flags: ROW_FLAG_RAIL | ROW_FLAG_SUPPLY_NODE | ROW_FLAG_LIVE_BUILDING_VECTOR,
+                flags: ROW_FLAG_RAIL
+                    | ROW_FLAG_SUPPLY_NODE
+                    | ROW_FLAG_INFRASTRUCTURE
+                    | ROW_FLAG_LIVE_BUILDING_VECTOR,
                 value_a_raw: 5,
                 value_b_raw: 2,
                 value_c_raw: 0,
@@ -598,14 +720,21 @@ mod tests {
         };
         let payload = encode_payload(&header, &rows);
         let summary = decode_payload(32, &payload);
-        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
         assert_eq!(summary.data_rows_total, 7);
         assert_eq!(summary.province_rows_total, 1);
         assert_eq!(summary.division_rows_total, 1);
         assert_eq!(summary.badge_rows_total, 5);
         assert_eq!(summary.observed_province_roots, 13_414);
         assert_eq!(
-            summary.data_units_total.get("division_supply_rows").copied(),
+            summary
+                .data_units_total
+                .get("division_supply_rows")
+                .copied(),
             Some(1)
         );
         assert_eq!(
@@ -731,11 +860,85 @@ mod tests {
         assert!(summary
             .parse_errors
             .iter()
-            .any(|err| err.contains("without deficit flag")));
+            .any(|err| err.contains("nonzero supply_deficit_raw without presence flag")));
         assert!(summary
             .parse_errors
             .iter()
-            .any(|err| err.contains("without fuel flag")));
+            .any(|err| err.contains("nonzero fuel_raw without presence flag")));
+    }
+
+    #[test]
+    fn rejects_missing_province_and_division_contract_flags() {
+        let rows = vec![
+            SupplyLogisticsRow {
+                row_kind: ROW_KIND_PROVINCE_LOGISTICS,
+                entity_id: 2068,
+                join_id: 64,
+                owner_tag_db_id: 99,
+                flags: 0,
+                value_a_raw: 1,
+                value_b_raw: 0,
+                value_c_raw: 0,
+                value_d_raw: 3,
+                aux_raw: 1,
+            },
+            SupplyLogisticsRow {
+                row_kind: ROW_KIND_DIVISION_SUPPLY,
+                entity_id: 42,
+                join_id: 2068,
+                owner_tag_db_id: 0,
+                flags: ROW_FLAG_DIVISION_CURRENT_SUPPLY,
+                value_a_raw: 100_000,
+                value_b_raw: 200_000,
+                value_c_raw: 10_000,
+                value_d_raw: 100_000,
+                aux_raw: 5_000,
+            },
+        ];
+        let header = SupplyLogisticsHeader {
+            elapsed_wall_ms: 1,
+            status_flags: STATUS_COMPACT_HEALTH_OK,
+            changed_rows: rows.len() as u32,
+            province_rows: 1,
+            division_rows: 1,
+            badge_rows: 0,
+            observed_province_roots: 1,
+            observed_division_roots: 1,
+        };
+        let payload = encode_payload(&header, &rows);
+        let summary = decode_payload(0, &payload);
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("nonzero owner_tag_db_id")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("missing live building vector flag")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("nonzero rail without presence flag")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("missing proxy flag")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("nonzero max_supply_raw without presence flag")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("nonzero supply_gain_raw without presence flag")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("nonzero supply_deficit_raw without presence flag")));
+        assert!(summary
+            .parse_errors
+            .iter()
+            .any(|err| err.contains("nonzero fuel_raw without presence flag")));
     }
 
     #[test]

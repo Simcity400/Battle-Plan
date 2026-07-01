@@ -411,12 +411,14 @@ pub fn gate_depth_stream(bytes: &[u8], min_game_hours: i32) -> Vec<String> {
 
 #[cfg(not(test))]
 fn main() {
-    let mut args = std::env::args().skip(1);
-    let Some(stream_path) = args.next() else {
-        eprintln!("usage: army_battleplans_depth_compact <depth_stream.bin> [min_game_hours]");
+    let mut args = std::env::args().skip(1).collect::<Vec<_>>();
+    let json_output = args.iter().any(|arg| arg == "--json");
+    args.retain(|arg| arg != "--json");
+    let Some(stream_path) = args.first() else {
+        eprintln!("usage: army_battleplans_depth_compact <depth_stream.bin> [min_game_hours] [--json]");
         std::process::exit(2);
     };
-    let min_game_hours = args.next().and_then(|value| value.parse::<i32>().ok()).unwrap_or(5);
+    let min_game_hours = args.get(1).and_then(|value| value.parse::<i32>().ok()).unwrap_or(5);
     let bytes = match std::fs::read(&stream_path) {
         Ok(bytes) => bytes,
         Err(err) => {
@@ -426,6 +428,13 @@ fn main() {
     };
     let summary = decode_compact_stream(&bytes);
     let errors = gate_depth_stream(&bytes, min_game_hours);
+    if json_output {
+        print_json_gate_summary(&summary, &errors, min_game_hours);
+        if !errors.is_empty() {
+            std::process::exit(1);
+        }
+        return;
+    }
     println!(
         "status={} records={} frames={} hours={:?}..{:?} rows={} target_rows={} unsupported_geometry_rows={} execution_unknown_rows={} status_flags=0x{:X}",
         if errors.is_empty() { "PASS" } else { "FAIL" },
@@ -445,6 +454,113 @@ fn main() {
         }
         std::process::exit(1);
     }
+}
+
+#[cfg(not(test))]
+fn print_json_gate_summary(summary: &GateSummary, errors: &[String], min_game_hours: i32) {
+    let advanced = match (summary.first_hour, summary.last_hour) {
+        (Some(first), Some(last)) => Some(last.saturating_sub(first)),
+        _ => None,
+    };
+    let expected_hours = advanced.map(|value| value.saturating_add(1).max(0) as usize);
+    let zero_skipped_hours = expected_hours
+        .map(|expected| summary.unique_frame_hours.len() == expected)
+        .unwrap_or(false);
+    let one_frame_per_hour = summary
+        .unique_frame_hours
+        .iter()
+        .all(|hour| summary.per_hour_frame_records.get(hour).copied().unwrap_or(0) == 1);
+    let one_depth_record_per_hour = summary
+        .unique_frame_hours
+        .iter()
+        .all(|hour| summary.per_hour_depth_records.get(hour).copied().unwrap_or(0) == 1);
+    let failure_status_flags = summary.status_flags_or & FAIL_STATUS_MASK;
+    let ordered = summary.ordering_errors.is_empty();
+    let decodable = summary.parse_errors.is_empty();
+    let hourly_or_lower = zero_skipped_hours && one_frame_per_hour && one_depth_record_per_hour;
+    println!(
+        concat!(
+            "{{\n",
+            "  \"status\": \"{}\",\n",
+            "  \"errors\": {},\n",
+            "  \"domain_id\": {},\n",
+            "  \"domain_name\": \"army_battleplans_depth_live\",\n",
+            "  \"min_game_hours\": {},\n",
+            "  \"records\": {},\n",
+            "  \"frame_end_records\": {},\n",
+            "  \"depth_data_records\": {},\n",
+            "  \"first_hour\": {},\n",
+            "  \"last_hour\": {},\n",
+            "  \"game_hours_advanced\": {},\n",
+            "  \"unique_frame_hours\": {},\n",
+            "  \"zero_skipped_hours\": {},\n",
+            "  \"one_frame_per_hour\": {},\n",
+            "  \"one_depth_record_per_hour\": {},\n",
+            "  \"hourly_or_lower\": {},\n",
+            "  \"ordered\": {},\n",
+            "  \"decodable\": {},\n",
+            "  \"rows\": {},\n",
+            "  \"changed_rows\": {},\n",
+            "  \"target_rows\": {},\n",
+            "  \"unsupported_geometry_rows\": {},\n",
+            "  \"execution_unknown_rows\": {},\n",
+            "  \"status_flags_or\": {},\n",
+            "  \"failure_status_flags\": {}\n",
+            "}}\n"
+        ),
+        if errors.is_empty() { "PASS" } else { "FAIL" },
+        json_string_array(errors),
+        DOMAIN_ARMY_BATTLEPLANS_DEPTH,
+        min_game_hours,
+        summary.record_count,
+        summary.frame_end_count,
+        summary.totals.data_records,
+        json_opt_i32(summary.first_hour),
+        json_opt_i32(summary.last_hour),
+        json_opt_i32(advanced),
+        summary.unique_frame_hours.len(),
+        zero_skipped_hours,
+        one_frame_per_hour,
+        one_depth_record_per_hour,
+        hourly_or_lower,
+        ordered,
+        decodable,
+        summary.totals.rows,
+        summary.totals.changed_rows,
+        summary.totals.target_rows,
+        summary.totals.unsupported_geometry_rows,
+        summary.totals.execution_unknown_rows,
+        summary.status_flags_or,
+        failure_status_flags,
+    );
+}
+
+#[cfg(not(test))]
+fn json_opt_i32(value: Option<i32>) -> String {
+    value.map(|inner| inner.to_string()).unwrap_or_else(|| "null".to_string())
+}
+
+#[cfg(not(test))]
+fn json_string_array(values: &[String]) -> String {
+    let parts = values.iter().map(|value| format!("\"{}\"", json_escape(value))).collect::<Vec<_>>();
+    format!("[{}]", parts.join(", "))
+}
+
+#[cfg(not(test))]
+fn json_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            ch if ch.is_control() => out.push_str(&format!("\\u{:04X}", ch as u32)),
+            ch => out.push(ch),
+        }
+    }
+    out
 }
 
 fn read_u16(data: &[u8], offset: usize) -> u16 {

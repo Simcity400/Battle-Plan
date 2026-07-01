@@ -54,6 +54,20 @@ sources used by the lane-local proof stack:
   This lane records count/status transitions and active timed-decision rows, and
   leaves exact target/cooldown body detail fail-closed with badge kind `2` and
   status flag bit `1`.
+- The v4 decision-body candidate gate rejects exact offsets that should not be
+  retried as production target fields on build `870ebf`:
+  - timed-body `record+0x10 -> CDecisionDef` for
+    `decisions_taken_bucket`, `active_targeted_decision`, and
+    `decision_to_re_enable`;
+  - `active_targeted_decision+0x54/+0x78` and
+    `decisions_taken_bucket+0x54/+0x78` as exact target tags;
+  - `active_targeted_timed_decision+0x50` as an exact target tag;
+  - `active_targeted_timed_decision+0x20/+0x24/+0x28/+0x30/+0x34/+0x5C/+0x60/+0x64/+0x70/+0x74/+0x78/+0x7C`
+    as universal exact country-target tag fields;
+  - `active_targeted_timed_decision+0x60/+0x70` as universal exact
+    country-target pointer fields.
+  The remaining target-body blocker is a same-frame oracle for records with
+  vtable `0x27D5038`, not another retry of these rejected offsets.
 
 ## Badge Gates
 

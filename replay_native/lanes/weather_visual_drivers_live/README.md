@@ -119,3 +119,14 @@ Existing live compact stream evidence is summarized in
 
 Live `870ebf` province-root validation and the nonzero-province lane-local payload
 are in `replay_native/runs/weather_visual_drivers_live_870ebf_20260701_v2/`.
+
+## Internals audit
+
+`WEATHER_INTERNALS_STATUS_20260701.md` is the lane-local status note for the
+non-visual weather-internals question. It deliberately uses validated-slice
+language: region/province realized weather and visual map drivers are proven,
+but the whole weather concept is not marked complete. The note rejects weather
+RNG cursors as a required current-state replay extraction row, classifies
+`SWeatherPerRegion +0x58/+0x70` active vectors as redundant for non-visual
+gameplay state when they agree with `phenomenon >= 1`, and leaves exact
+generator/RNG/name parity as open-computed if product scope requires it.

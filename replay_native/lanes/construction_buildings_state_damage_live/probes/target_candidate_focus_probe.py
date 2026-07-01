@@ -29,26 +29,55 @@ FOCUS_OFFSETS = (0xC0, 0xC8)
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", required=True)
+    parser.add_argument("--pid", type=int, default=None)
     parser.add_argument("--max-regions", type=int, default=None)
     args = parser.parse_args()
 
-    started = time.time()
-    p = live.winmem.open_process("hoi4.exe")
-    if p is None:
-        raise SystemExit("hoi4.exe not running")
-    with p:
-        fingerprint = p.fingerprint()
-        country_roots, country_meta = live.read_country_roots(p, max_regions=args.max_regions)
-        lines = live.read_construction_lines(p, country_roots)
-        topology = live.scan_cprovince_roots(p, max_regions=args.max_regions)
-        state_details = read_state_details(p, topology)
-        analyses = analyze_offsets(p, lines, state_details)
-        fixture_request = build_fixture_request(p, lines, state_details)
+    result = run_probe(pid=args.pid, max_regions=args.max_regions)
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    with open(args.out, "w", encoding="utf-8") as handle:
+        json.dump(result, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    print(
+        json.dumps(
+            {
+                "out": args.out,
+                "construction_lines": result["construction_queue"]["line_count"],
+                "verdict": result["verdict"],
+                "duration_ms": result["duration_ms"],
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
 
-    result = {
+
+def run_probe(pid: int | None = None, max_regions: int | None = None) -> dict[str, Any]:
+    started = time.time()
+    p = open_target_process(pid)
+    with p:
+        process_meta = {
+            "requested_pid": pid,
+            "pid": getattr(p, "pid", None),
+            "module_name": getattr(p, "module_name", None),
+            "module_base": hex(getattr(p, "module_base", 0) or 0),
+            "module_size": getattr(p, "module_size", None),
+            "module_path": getattr(p, "module_path", None),
+        }
+        fingerprint = p.fingerprint()
+        country_roots, country_meta = live.read_country_roots(p, max_regions=max_regions)
+        lines = live.read_construction_lines(p, country_roots)
+        topology = live.scan_cprovince_roots(p, max_regions=max_regions)
+        state_details = read_state_details(p, topology)
+        province_details = read_province_details(topology, state_details)
+        analyses = analyze_offsets(p, lines, state_details, province_details)
+        fixture_request = build_fixture_request(p, lines, state_details, province_details)
+
+    return {
         "schema": "construction_buildings_state_damage_live_target_candidate_focus_v1",
         "build_profile": live.BUILD_PROFILE,
         "duration_ms": round((time.time() - started) * 1000),
+        "process": process_meta,
         "fingerprint": fingerprint,
         "country_roots": {
             "resolver": country_meta.get("resolver"),
@@ -69,6 +98,7 @@ def main() -> int:
         },
         "state_details": {
             "state_count": len(state_details),
+            "province_count": len(province_details),
             "owner_offset": hex(STATE_OFF_OWNER),
             "controller_offset": hex(STATE_OFF_CTRL),
         },
@@ -76,22 +106,15 @@ def main() -> int:
         "fixture_request": fixture_request,
         "verdict": focus_verdict(analyses),
     }
-    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
-    with open(args.out, "w", encoding="utf-8") as handle:
-        json.dump(result, handle, indent=2, sort_keys=True)
-        handle.write("\n")
-    print(
-        json.dumps(
-            {
-                "out": args.out,
-                "construction_lines": len(lines),
-                "verdict": result["verdict"],
-                "duration_ms": result["duration_ms"],
-            },
-            sort_keys=True,
-        )
-    )
-    return 0
+
+
+def open_target_process(pid: int | None) -> Any:
+    if pid is not None:
+        return live.winmem.Process(pid, "hoi4.exe")
+    p = live.winmem.open_process("hoi4.exe")
+    if p is None:
+        raise SystemExit("hoi4.exe not running")
+    return p
 
 
 def read_state_details(p: Any, topology: dict[str, Any]) -> dict[int, dict[str, int | str | None]]:
@@ -107,10 +130,29 @@ def read_state_details(p: Any, topology: dict[str, Any]) -> dict[int, dict[str, 
     return out
 
 
+def read_province_details(
+    topology: dict[str, Any],
+    state_details: dict[int, dict[str, int | str | None]],
+) -> dict[int, dict[str, int | str | None]]:
+    out: dict[int, dict[str, int | str | None]] = {}
+    for province_raw, detail in topology.get("province_by_id", {}).items():
+        province_id = int(province_raw)
+        state_id = int(detail["state_id"])
+        mapped_state = state_details.get(state_id, {})
+        out[province_id] = {
+            "province_id": province_id,
+            "state_id": state_id,
+            "owner_tag_db_id": mapped_state.get("owner_tag_db_id"),
+            "controller_tag_db_id": mapped_state.get("controller_tag_db_id"),
+        }
+    return out
+
+
 def analyze_offsets(
     p: Any,
     lines: list[dict[str, Any]],
     state_details: dict[int, dict[str, int | str | None]],
+    province_details: dict[int, dict[str, int | str | None]],
 ) -> list[dict[str, Any]]:
     analyses: list[dict[str, Any]] = []
     for offset in FOCUS_OFFSETS:
@@ -123,9 +165,7 @@ def analyze_offsets(
             raw = live.try_u32(p, sub_ptr + offset)
             if raw is None:
                 continue
-            detail = state_details.get(raw)
-            owner = detail.get("owner_tag_db_id") if detail else None
-            controller = detail.get("controller_tag_db_id") if detail else None
+            detail = candidate_detail(raw, line["tag_db_id"], state_details, province_details)
             rows.append(
                 {
                     "tag_db_id": line["tag_db_id"],
@@ -133,15 +173,31 @@ def analyze_offsets(
                     "priority": line["priority"],
                     "template_id": line.get("template_id"),
                     "raw_value": raw,
-                    "state_exists": detail is not None,
-                    "candidate_state_id": raw if detail else None,
-                    "candidate_owner_tag_db_id": owner,
-                    "candidate_controller_tag_db_id": controller,
-                    "owner_matches_line_tag": owner == line["tag_db_id"],
-                    "controller_matches_line_tag": controller == line["tag_db_id"],
-                    "owner_or_controller_matches_line_tag": (
-                        owner == line["tag_db_id"] or controller == line["tag_db_id"]
+                    "state_exists": detail["state_exists"],
+                    "candidate_state_id": detail["candidate_state_id"],
+                    "candidate_owner_tag_db_id": detail["candidate_owner_tag_db_id"],
+                    "candidate_controller_tag_db_id": detail["candidate_controller_tag_db_id"],
+                    "owner_matches_line_tag": (
+                        detail["candidate_owner_tag_db_id"] == line["tag_db_id"]
                     ),
+                    "controller_matches_line_tag": (
+                        detail["candidate_controller_tag_db_id"] == line["tag_db_id"]
+                    ),
+                    "owner_or_controller_matches_line_tag": detail[
+                        "owner_or_controller_matches_line_tag"
+                    ],
+                    "province_exists": detail["province_exists"],
+                    "candidate_province_id": detail["candidate_province_id"],
+                    "candidate_mapped_state_id": detail["candidate_mapped_state_id"],
+                    "mapped_state_owner_tag_db_id": detail[
+                        "mapped_state_owner_tag_db_id"
+                    ],
+                    "mapped_state_controller_tag_db_id": detail[
+                        "mapped_state_controller_tag_db_id"
+                    ],
+                    "mapped_state_owner_or_controller_matches_line_tag": detail[
+                        "mapped_state_owner_or_controller_matches_line_tag"
+                    ],
                     "raw_equals_line_tag_db_id": raw == line["tag_db_id"],
                 }
             )
@@ -152,9 +208,20 @@ def analyze_offsets(
 def summarize_offset(offset: int, rows: list[dict[str, Any]]) -> dict[str, Any]:
     state_rows = [row for row in rows if row["state_exists"]]
     match_rows = [row for row in state_rows if row["owner_or_controller_matches_line_tag"]]
+    province_rows = [row for row in rows if row["province_exists"]]
+    mapped_match_rows = [
+        row for row in province_rows if row["mapped_state_owner_or_controller_matches_line_tag"]
+    ]
     raw_equals_tag = [row for row in rows if row["raw_equals_line_tag_db_id"]]
     unique_raw = sorted({row["raw_value"] for row in rows})
     unique_state = sorted({row["candidate_state_id"] for row in state_rows if row["candidate_state_id"]})
+    unique_mapped_state = sorted(
+        {
+            row["candidate_mapped_state_id"]
+            for row in province_rows
+            if row["candidate_mapped_state_id"]
+        }
+    )
     unique_owner = sorted(
         {
             row["candidate_owner_tag_db_id"]
@@ -169,8 +236,22 @@ def summarize_offset(offset: int, rows: list[dict[str, Any]]) -> dict[str, Any]:
             if row["candidate_controller_tag_db_id"] is not None
         }
     )
+    unique_mapped_owner = sorted(
+        {
+            row["mapped_state_owner_tag_db_id"]
+            for row in province_rows
+            if row["mapped_state_owner_tag_db_id"] is not None
+        }
+    )
+    unique_mapped_controller = sorted(
+        {
+            row["mapped_state_controller_tag_db_id"]
+            for row in province_rows
+            if row["mapped_state_controller_tag_db_id"] is not None
+        }
+    )
     verdict = "fixture_blocked"
-    if state_rows and not match_rows:
+    if state_rows and not match_rows and not province_rows:
         verdict = "rejected_no_owner_or_controller_match"
     elif raw_equals_tag and len(raw_equals_tag) == len(rows):
         verdict = "rejected_raw_equals_line_tag_db_id"
@@ -184,12 +265,20 @@ def summarize_offset(offset: int, rows: list[dict[str, Any]]) -> dict[str, Any]:
         "raw_equals_line_tag_count": len(raw_equals_tag),
         "unique_raw_count": len(unique_raw),
         "unique_state_count": len(unique_state),
+        "province_existing_line_count": len(province_rows),
+        "province_mapped_owner_or_controller_match_count": len(mapped_match_rows),
+        "unique_mapped_state_count": len(unique_mapped_state),
         "unique_owner_tag_count": len(unique_owner),
         "unique_controller_tag_count": len(unique_controller),
+        "unique_mapped_owner_tag_count": len(unique_mapped_owner),
+        "unique_mapped_controller_tag_count": len(unique_mapped_controller),
         "unique_raw_values": unique_raw[:64],
         "unique_state_ids": unique_state[:64],
+        "unique_mapped_state_ids": unique_mapped_state[:64],
         "unique_owner_tag_ids": unique_owner[:64],
         "unique_controller_tag_ids": unique_controller[:64],
+        "unique_mapped_owner_tag_ids": unique_mapped_owner[:64],
+        "unique_mapped_controller_tag_ids": unique_mapped_controller[:64],
         "mismatch_samples": [
             row
             for row in state_rows
@@ -218,6 +307,7 @@ def build_fixture_request(
     p: Any,
     lines: list[dict[str, Any]],
     state_details: dict[int, dict[str, int | str | None]],
+    province_details: dict[int, dict[str, int | str | None]],
 ) -> dict[str, Any]:
     rows = []
     seen: set[tuple[int, int, int]] = set()
@@ -227,7 +317,7 @@ def build_fixture_request(
         lambda row: row["candidates"]["sub+0xC0"]["owner_or_controller_matches_line_tag"],
         lambda row: row["candidates"]["sub+0xC8"]["owner_or_controller_matches_line_tag"],
     ):
-        for row in focus_rows(p, lines, state_details):
+        for row in focus_rows(p, lines, state_details, province_details):
             key = (row["tag_db_id"], row["line_id"], row["priority"])
             if key in seen or not selector(row):
                 continue
@@ -260,6 +350,7 @@ def focus_rows(
     p: Any,
     lines: list[dict[str, Any]],
     state_details: dict[int, dict[str, int | str | None]],
+    province_details: dict[int, dict[str, int | str | None]],
 ) -> list[dict[str, Any]]:
     out = []
     for line in lines:
@@ -273,10 +364,12 @@ def focus_rows(
                 live.try_u32(p, sub_ptr + offset),
                 line["tag_db_id"],
                 state_details,
+                province_details,
             )
         out.append(
             {
                 "tag_db_id": line["tag_db_id"],
+                "tag": line.get("tag"),
                 "line_id": line["line_id"],
                 "priority": line["priority"],
                 "template_id": line.get("template_id"),
@@ -296,10 +389,15 @@ def candidate_detail(
     raw: int | None,
     line_tag_db_id: int,
     state_details: dict[int, dict[str, int | str | None]],
+    province_details: dict[int, dict[str, int | str | None]],
 ) -> dict[str, Any]:
     detail = state_details.get(raw) if raw is not None else None
+    province = province_details.get(raw) if raw is not None else None
     owner = detail.get("owner_tag_db_id") if detail else None
     controller = detail.get("controller_tag_db_id") if detail else None
+    mapped_owner = province.get("owner_tag_db_id") if province else None
+    mapped_controller = province.get("controller_tag_db_id") if province else None
+    mapped_state_id = province.get("state_id") if province else None
     return {
         "raw_value": raw,
         "candidate_state_id": raw if detail else None,
@@ -309,6 +407,31 @@ def candidate_detail(
         "owner_or_controller_matches_line_tag": (
             owner == line_tag_db_id or controller == line_tag_db_id
         ),
+        "candidate_province_id": raw if province else None,
+        "candidate_mapped_state_id": mapped_state_id,
+        "province_exists": province is not None,
+        "mapped_state_owner_tag_db_id": mapped_owner,
+        "mapped_state_controller_tag_db_id": mapped_controller,
+        "mapped_state_owner_or_controller_matches_line_tag": (
+            mapped_owner == line_tag_db_id or mapped_controller == line_tag_db_id
+        ),
+        "candidate_interpretations": {
+            "raw_state_id": {
+                "candidate_state_id": raw if detail else None,
+                "state_exists": detail is not None,
+                "owner_or_controller_matches_line_tag": (
+                    owner == line_tag_db_id or controller == line_tag_db_id
+                ),
+            },
+            "raw_province_id_mapped_state": {
+                "candidate_province_id": raw if province else None,
+                "candidate_state_id": mapped_state_id,
+                "province_exists": province is not None,
+                "owner_or_controller_matches_line_tag": (
+                    mapped_owner == line_tag_db_id or mapped_controller == line_tag_db_id
+                ),
+            },
+        },
     }
 
 

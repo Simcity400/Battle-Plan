@@ -66,6 +66,24 @@ Production proof:
   avg `24104us`, max `42029us`, p95 `34741us`; frame max `89316us`,
   p95 `53643us`.
 
+Follow-up validated-slice closure:
+
+- Fresh lane proof
+  `replay_native/lanes/air_wings_variants_lifecycle_live/proofs/domain46_live_token_lifecycle_20260701_v2/`
+  validates the live token dictionary route on pid `45880` and resolves raw
+  equipment token `20378` to
+  `large_plane_maritime_patrol_plane_airframe_1`.
+- The lane-local classifier now maps that token family to
+  `base_airframe=large_plane_maritime_patrol_plane_airframe` and
+  `role=maritime_patrol_plane`, backed by `common/script_enums.txt`,
+  `common/technologies/bba_air_techs.txt`, and
+  `common/units/equipment/x_plane_airframes.txt`.
+- The integrated v3 compact stream remains the proof artifact for fail-closed
+  raw fallback rows (`112` static-heuristic rows, `0` unresolved rows). Emitting
+  the semantic maritime-patrol token in domain 46 still requires the
+  orchestrator-owned shared hook to pass live dictionary names into the lane
+  encoder.
+
 Registration-only patch plan:
 
 1. Keep domain ID `46` from `replay_native/domain_registry.json`.

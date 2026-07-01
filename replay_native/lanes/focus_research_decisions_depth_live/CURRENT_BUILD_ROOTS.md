@@ -20,6 +20,11 @@ Proof files:
 - `replay_native/runs/focus_research_decisions_depth_live_current_roots_20260701_v3/root_probe_manifest.json`
 - `replay_native/runs/focus_research_decisions_depth_live_current_roots_20260701_v3/focus_pause_samples.jsonl`
 - `replay_native/runs/focus_research_decisions_depth_live_current_roots_20260701_v3/decision_body_samples.jsonl`
+- `replay_native/lanes/focus_research_decisions_depth_live/proofs/current_roots_20260701_v4/root_probe_manifest.json`
+- `replay_native/lanes/focus_research_decisions_depth_live/proofs/current_roots_20260701_v4/focus_pause_samples.jsonl`
+- `replay_native/lanes/focus_research_decisions_depth_live/proofs/current_roots_20260701_v4/decision_body_samples.jsonl`
+- `replay_native/lanes/focus_research_decisions_depth_live/proofs/decision_body_candidate_gate_20260701_v1/decision_body_candidate_gate.json`
+- `replay_native/lanes/focus_research_decisions_depth_live/proofs/decision_body_candidate_gate_20260701_v1/DECISION_BODY_CANDIDATE_GATE.md`
 
 ## Build And Base Roots
 
@@ -110,6 +115,53 @@ Narrowed but not complete:
   `SOV_set_up_puppet_state_in_turkey` has `record+0x20 = 21`, which resolves to
   `TUR` through the current tag table. Other fields also contain valid tag ids,
   so `+0x20` is a candidate, not a production-safe exact target field yet.
+
+## Decision Body Candidate Gate Refresh
+
+The lane-local v4 probe and candidate gate reran against PID `45880` on the
+same `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`
+build. The probe sampled:
+
+- `56/56` `decisions_taken_bucket` records at vtable `0x27D4F00`.
+- `5270/5452` `active_targeted_decision` records at vtable `0x27D4F00`.
+- `1620/2786` `active_targeted_timed_decision` records at vtable
+  `0x27D5038`.
+- `1/1` `decision_to_re_enable` records at vtable `0x27D4E60`.
+
+The executable gate rejected `22` candidate layouts/offsets and reduced the
+decision target/cooldown search space:
+
+- `record+0x10 -> CDecisionDef` timed-body layout is rejected for
+  `decisions_taken_bucket`, `active_targeted_decision`, and
+  `decision_to_re_enable`: `0/56`, `0/5270`, and `0/1` sampled rows resolved a
+  decision token or satisfied the timed body gate.
+- `active_targeted_decision+0x54` is rejected as a universal target tag:
+  `5268/5270` sampled rows looked like tag id `170:GAM`, so it is not present
+  on every record and is not record-specific.
+- `active_targeted_decision+0x78` is rejected as an exact target tag:
+  `5270/5270` sampled rows were the constant tag id `15:SPR` across `439`
+  owner countries.
+- `decisions_taken_bucket+0x54` and `+0x78` are rejected as exact target tags:
+  `56/56` rows were constant `170:GAM` and `15:SPR` across `34` owner
+  countries.
+- `active_targeted_timed_decision+0x50` is rejected as an exact target tag:
+  `1620/1620` sampled rows were constant `15:SPR` across `439` owner
+  countries.
+- `active_targeted_timed_decision+0x20`, `+0x24`, `+0x28`, `+0x30`, `+0x34`,
+  `+0x5C`, `+0x60`, `+0x64`, `+0x70`, `+0x74`, `+0x78`, and `+0x7C` are
+  rejected as universal exact country-target tag fields because each is absent
+  as a valid tag id on at least one sampled row. The strongest prior candidate,
+  `+0x20`, only appeared as a valid tag on `490/1620` sampled rows.
+- `active_targeted_timed_decision+0x60` and `+0x70` are rejected as universal
+  country-target pointer fields because they resolved to country pointers on
+  only `6/1620` and `1/1620` sampled rows.
+
+Remaining blocker: `active_targeted_timed_decision` still validates
+`record+0x10 -> CDecisionDef` on `1620/1620` sampled rows, but the exact target
+body field remains blocked. The next useful evidence is a same-frame oracle row
+keyed by owner tag, decision token, and known target country/state/province for
+records with vtable `0x27D5038`. Until then, keep targeted/cooldown target
+details fail-closed and do not emit partial target fields.
 
 Lane-local badge:
 

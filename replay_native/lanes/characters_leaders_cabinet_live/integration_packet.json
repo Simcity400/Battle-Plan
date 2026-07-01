@@ -1,12 +1,12 @@
 {
   "lane": "characters_leaders_cabinet_live",
   "packet_version": 1,
-  "slot_state": "canceled_by_registry_workflow",
-  "shared_integration_slot_blocker": "air owns the shared collector/recorder slot",
+  "slot_state": "lane_ready_shared_registration_blocked_remaining_matrix",
+  "shared_integration_slot_blocker": "domain 47 is assigned lane-ready but remains unschedulable in shared collector/recorder registries, and the shared collector still lacks a live CollectorState -> LaneFrame adapter",
   "final_domain_id": 47,
   "domain_name": "characters_leaders_cabinet_live",
   "previous_provisional_domain_id": 44,
-  "domain_id_reason": "shared id 44 is assigned to supply_logistics_attrition_live, shared id 45 is assigned to focus_research_decisions_depth_live, and orchestrator reserved id 46 for air_variant_archetypes; 47 is the next open compact domain id for this lane in the current shared collector and recorder registries",
+  "domain_id_reason": "shared id 44 is assigned to supply_logistics_attrition_live, shared id 45 is assigned to focus_research_decisions_depth_live, id 46 is production_complete for air_variant_archetypes_live, and orchestrator assigned id 47 to this lane as lane_ready_shared_registration_blocked_remaining_matrix",
   "rejected_domain_ids": [
     {"id": 44, "reason": "occupied by supply_logistics_attrition_live"},
     {"id": 45, "reason": "occupied by focus_research_decisions_depth_live in shared collector and recorder"},
@@ -100,11 +100,11 @@
   ],
   "acceptance_gates": [
     "Rust lane tests pass",
-    "lane validator confirms id 44 is occupied by supply, id 45 is occupied by focus/research/decisions, id 46 is reserved for air_variant_archetypes, id 47 is open in shared files, and shared files are untouched",
+    "lane validator confirms id 44 is occupied by supply, id 45 is occupied by focus/research/decisions, id 46 is production_complete for air_variant_archetypes_live, id 47 is lane-ready in the orchestrator registry, and shared entrypoints are untouched",
     "fresh wrapped compact record decodes with parse_errors=[]",
     "appointed transition fixture validates ENG appointed advisor counts 0 -> 3 -> 1 and the generated domain 47 compact record decodes with appointed_advisor_rows=3 and parse_errors=[]",
-    "when integration slot opens: shared collector emits id 47 domain data each scheduled frame",
-    "when integration slot opens: recorder coverage maps scheduled token to id 47 and requires one data record per scheduled frame",
+    "after shared collector-frame adapter lands: shared collector emits id 47 domain data each scheduled frame from the one injected DLL coordinator",
+    "after shared recorder hook lands: recorder coverage maps scheduled token to id 47, decodes the lane gate, and requires one data record per scheduled frame",
     "production completion still requires DLL-only capture, Rust recorder decode, .battleplan verification, hourly-or-better cadence at speed five/current equivalent, zero skipped hours, and no source/partial/worker/bridge failures"
   ]
 }

@@ -141,6 +141,32 @@ hook, after the orchestrator grants the slot, is:
 
 ## Latest proof
 
+`replay_native/lanes/occupation_resistance_compliance_live/proof_current_head_20260701_bc0797784`
+refreshes the lane against current HEAD `bc0797784`:
+
+- `live_probe.py`: current live `hoi4.exe` build
+  `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`,
+  `1081` state rows, `319` occupied rows, `279` garrison-template rows,
+  `0` invalid state rows, and `69404` compact stream bytes for domain `52`.
+- `collector_module.rs` tests: `9 passed`.
+- `domain52_compact.rs` tests: `5 passed`.
+- `domain52_gate.rs --stream live_probe/collector_stream.bin`:
+  `records_seen=3`, `domain_data_records=1`, `rows=1081`,
+  `occupation_law_token_rows=1030`, `occupation_garrison_template_rows=279`,
+  no parse errors.
+- `replay_verify` tests: `2 passed`; `replay_verify --run-dir
+  live_probe --game-id orc52` wrote `native_session.battleplan`, verified all
+  entries through `snapshot::Container`, and byte-compared `69404` compact
+  stream bytes unchanged.
+- `remaining_fields_probe.py`: resistance speed `0x280` validated `85/85`
+  delta rows and compliance speed `0x2B0` validated `224/224` delta rows.
+  `CStateGarrisonData+0x48` remains rejected as country identity.
+- `garrison_scalar_probe.py`: pinned garrison scalar candidates remain rejected
+  or fixture-blocked; keep need/equilibrium/progress badged unavailable.
+- Collaboration/GIE detail remains fixture-blocked because the current save
+  fixture has empty country collaboration payloads and all `8/8`
+  `government_in_exile_tag` rows are leader-context rows.
+
 `replay_native/runs/occupation_resistance_compliance_live_870ebf_20260701_v17_replay_verify`
 compiled the lane-owned collector module, domain-52 decoder gate, and native
 replay verifier:

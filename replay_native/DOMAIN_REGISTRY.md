@@ -9,6 +9,17 @@ modules. Shared `collector/src/lib.rs` and `recorder_host/src/main.rs` changes
 should be registration hooks only unless the orchestrator explicitly creates or
 migrates the module interface.
 
+Status vocabulary:
+
+- `validated slice` means the named scope passed the DLL/compact/Rust replay
+  gate at hourly-or-better cadence. It does not mean the whole gameplay concept
+  is captured.
+- `concept complete` is reserved for full replay coverage of the concept: every
+  replay-relevant extractable field is captured, or each remaining field has an
+  exact blocker or conclusive rejection.
+- Open walls stay in the status label. Do not compress them back to
+  `production-complete`.
+
 ## Active ID Map
 
 | ID | Domain | Status | Owner lane |
@@ -25,7 +36,7 @@ migrates the module interface.
 | 21 | `land_combats_live` | existing compact domain | land combat |
 | 22 | `map_control_live` | existing compact domain | map control |
 | 23 | `map_detail_live` | existing compact domain | map detail |
-| 24 | `weather_live` | production-complete | weather visual drivers |
+| 24 | `weather_live` | validated slice: weather visual drivers; internals are computed/visual-parity open | weather visual drivers |
 | 26 | `division_equipment_live` | existing compact domain | divisions |
 | 27 | `army_orders_live` | existing compact domain | army orders |
 | 28 | `oob_command_live` | existing compact domain | army OOB |
@@ -41,20 +52,20 @@ migrates the module interface.
 | 38 | `air_superiority_inputs` | existing compact domain | air superiority |
 | 39 | `air_variant_upgrades` | existing compact domain | air variants |
 | 40 | `stockpile_variant_upgrades` | existing compact domain | stockpile |
-| 41 | `projects_live` | production-complete base/project facilities/scientists/progress/completed bit; start/reward blocked | projects |
-| 42 | `air_combat_losses_live` | production-complete | air combat losses |
-| 43 | `market_trade_live` | production-complete | market/trade |
-| 44 | `supply_logistics_attrition_live` | production-complete | supply/logistics |
-| 45 | `focus_research_decisions_depth_live` | production-complete | focus/research/decisions depth |
-| 46 | `air_variant_archetypes_live` | production-complete | air wings/variants lifecycle |
-| 47 | `characters_leaders_cabinet_live` | lane-ready; shared registration blocked; remaining matrix written | characters/leaders/cabinet |
-| 48 | `construction_buildings_state_damage_live` | lane-ready; target-state oracle fixture blocked | construction/buildings/state damage |
-| 49 | `naval_combat_lifecycle_live` | lane-ready; active naval-battle fixture blocked | naval combat |
-| 50 | `naval_combat_members_live` | lane-ready; active naval-battle fixture blocked | naval combat |
-| 51 | `scripted_state_flags_variables_live` | lane-ready; opaque positive fixtures blocked | scripted state/flags/variables |
-| 52 | `occupation_resistance_compliance_live` | lane-ready; shared registration blocked; garrison/collab candidates rejected or fixture-blocked | occupation/resistance/compliance |
-| 53 | `diplomacy_intel_operatives_live` | lane-ready; operation/intel-map/incoming-action fixtures blocked | diplomacy/intel/operatives |
-| 54 | `army_battleplans_depth_live` | lane-ready; battleplan redraw fixture blocked | army OOB/orders/battleplans depth |
+| 41 | `projects_live` | partial validated slice: facilities/scientists/progress/completed bit; start/reward fixture blocked | projects |
+| 42 | `air_combat_losses_live` | validated slice: loss/reinforcement delta; direct event root rejected; not full air combat | air combat losses |
+| 43 | `market_trade_live` | validated slice: purchase contracts; omitted accounting fixed; D04 buyer unresolved | market/trade |
+| 44 | `supply_logistics_attrition_live` | validated slice: supply/logistics subset; direct `CSupplySystem` arrays rejected; exact province supply wall open | supply/logistics |
+| 45 | `focus_research_decisions_depth_live` | validated slice: transition depth; decision body candidates rejected; unresolved fields open | focus/research/decisions depth |
+| 46 | `air_variant_archetypes_live` | validated slice: variant archetypes; token `20378` resolved; shared token hook/full air lifecycle open | air wings/variants lifecycle |
+| 47 | `characters_leaders_cabinet_live` | lane-ready; shared adapter/registration blocked; remaining matrix written | characters/leaders/cabinet |
+| 48 | `construction_buildings_state_damage_live` | target-state observer ready; external same-frame save/UI action blocked | construction/buildings/state damage |
+| 49 | `naval_combat_lifecycle_live` | fixture-blocked: no active battle in current process; current CShip route validated | naval combat |
+| 50 | `naval_combat_members_live` | fixture-blocked: no active battle in current process; current CShip route validated | naval combat |
+| 51 | `scripted_state_flags_variables_live` | validated lane slice: positive country flags; shared registration blocked | scripted state/flags/variables |
+| 52 | `occupation_resistance_compliance_live` | validated lane slice: occupation state rows; shared registration blocked | occupation/resistance/compliance |
+| 53 | `diplomacy_intel_operatives_live` | lane-ready; stale operation RVAs rejected; operation/intel-map/incoming-action fixtures blocked | diplomacy/intel/operatives |
+| 54 | `army_battleplans_depth_live` | redraw/toggle observer ready; external fixture action blocked | army OOB/orders/battleplans depth |
 | 1000 | `frame` | compact stream framing/perf records | recorder infrastructure |
 
 ## Lane Acceptance Under This Registry

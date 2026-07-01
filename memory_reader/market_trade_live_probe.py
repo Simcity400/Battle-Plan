@@ -4,7 +4,9 @@ This probe does not modify the game and does not depend on save parsing. It
 derives the current-build CPurchaseContract vtable from MSVC RTTI, scans the
 heap for live contract objects, and validates the production field path for the
 contract id, seller/buyer tag ids, buyer country pointer, and type-70 equipment
-variant payloads.
+variant payloads. Candidate accounting separates vtable hits that are omitted
+before they become accepted purchase-contract rows from rows that are accepted
+but missing extractable fields.
 """
 
 from __future__ import annotations
@@ -297,12 +299,87 @@ def read_contract(p: winmem.Process, addr: int, country_maps: dict, variant_vtab
         "buyer_tag_db_id": buyer_id,
         "buyer": buyer,
         "buyer_ptr": buyer_ptr,
+        "buyer_ptr_expected": buyer_ptr_expected,
         "buyer_ptr_matches": buyer_ptr_matches,
         "equip_variant_id": equipment_variant_id,
         "delivery_variant_id": delivery_variant_id,
         "amount": amount,
         "price": price,
     }
+
+
+def classify_contract_probe_row(row: dict) -> tuple[str, str]:
+    if row["contract_type"] != 81:
+        return "omitted_not_partial", "candidate_type_invalid"
+    if not row["contract_id"]:
+        return "omitted_not_partial", "candidate_contract_id_invalid"
+    if not row["seller"]:
+        return "missing_extractable", "candidate_seller_tag_unresolved"
+    if not row["buyer"]:
+        return "missing_extractable", "candidate_buyer_tag_unresolved"
+    if not row["buyer_ptr_expected"]:
+        return "missing_extractable", "candidate_buyer_country_unresolved"
+    if not row["buyer_ptr_matches"]:
+        return "missing_extractable", "candidate_buyer_ptr_mismatch"
+    if row["equip_variant_id"] is None:
+        return "missing_extractable", "candidate_equipment_variant_missing"
+    if row["amount"] is None:
+        return "missing_extractable", "candidate_delivery_amount_missing"
+    return "emitted_complete", "emitted_complete"
+
+
+def summarize_contract_probe_rows(rows: list[dict]) -> dict:
+    buckets = {
+        "emitted_complete": 0,
+        "omitted_not_partial": 0,
+        "missing_extractable": 0,
+    }
+    reasons: dict[str, int] = {}
+    for row in rows:
+        bucket, reason = classify_contract_probe_row(row)
+        buckets[bucket] += 1
+        if reason != "emitted_complete":
+            reasons[reason] = reasons.get(reason, 0) + 1
+    return {
+        "candidate_rows": len(rows),
+        "emitted_complete_rows": buckets["emitted_complete"],
+        "omitted_not_partial_rows": buckets["omitted_not_partial"],
+        "missing_extractable_rows": buckets["missing_extractable"],
+        "reasons": dict(sorted(reasons.items())),
+        "omitted_candidates_are_partial_failure": False,
+        "missing_extractable_is_partial_failure": buckets["missing_extractable"] > 0,
+    }
+
+
+def candidate_probe_examples(rows: list[dict], bucket_name: str, limit: int) -> list[dict]:
+    examples = []
+    if limit <= 0:
+        return examples
+    for row in rows:
+        bucket, reason = classify_contract_probe_row(row)
+        if bucket != bucket_name:
+            continue
+        examples.append(
+            {
+                "reason": reason,
+                "addr": hx(row["addr"]),
+                "contract_type": row["contract_type"],
+                "contract_id": row["contract_id"],
+                "seller_tag_db_id": row["seller_tag_db_id"],
+                "seller": row["seller"],
+                "buyer_tag_db_id": row["buyer_tag_db_id"],
+                "buyer": row["buyer"],
+                "buyer_ptr": hx(row["buyer_ptr"]),
+                "buyer_ptr_expected": hx(row["buyer_ptr_expected"]),
+                "equip_variant_id": row["equip_variant_id"],
+                "delivery_variant_id": row["delivery_variant_id"],
+                "amount": row["amount"],
+                "price": row["price"],
+            }
+        )
+        if len(examples) >= limit:
+            break
+    return examples
 
 
 def probe(args):
@@ -330,6 +407,7 @@ def probe(args):
             read_contract(p, addr, country_maps, variant_vtable)
             for addr in heap_hits.get(selected_vtable, [])
         ]
+        candidate_classification = summarize_contract_probe_rows(contracts)
         valid_contracts = [
             row
             for row in contracts
@@ -392,6 +470,9 @@ def probe(args):
                     "buyer_resolved": sum(1 for row in contracts if row["buyer"]),
                     "buyer_ptr_matches": sum(1 for row in contracts if row["buyer_ptr_matches"]),
                     "valid_contract_rows": len(valid_contracts),
+                    "complete_contract_rows": candidate_classification[
+                        "emitted_complete_rows"
+                    ],
                     "equipment_variant_decoded": variant_decoded,
                     "amount_decoded": amount_decoded,
                     "price_decoded": price_decoded,
@@ -405,6 +486,28 @@ def probe(args):
                     else "not_rejected",
                 },
             },
+            "candidate_classification": candidate_classification,
+            "candidate_evidence_examples": {
+                "omitted_not_partial": candidate_probe_examples(
+                    contracts, "omitted_not_partial", args.examples
+                ),
+                "missing_extractable": candidate_probe_examples(
+                    contracts, "missing_extractable", args.examples
+                ),
+            },
+            "scope": {
+                "validated_slice": (
+                    "NInternationalMarket::CPurchaseContract seller/buyer/"
+                    "contract/type/equipment/delivery fields"
+                ),
+                "not_full_trade_economy": True,
+                "blocked_outside_cpurchase_contract_root": [
+                    "resource import/export",
+                    "licensing",
+                    "market access / diplomatic trade context",
+                    "non-purchase-contract market extras",
+                ],
+            },
             "validated_offsets": {
                 "CPurchaseContract.vtable_rva": hx(selected_vtable - p.module_base),
                 "CPurchaseContract.id_type": hx(PC_ID_TYPE),
@@ -417,7 +520,11 @@ def probe(args):
             },
             "examples": [
                 {
-                    key: (hx(value) if key in ("addr", "buyer_ptr") else value)
+                    key: (
+                        hx(value)
+                        if key in ("addr", "buyer_ptr", "buyer_ptr_expected")
+                        else value
+                    )
                     for key, value in row.items()
                 }
                 for row in sorted(valid_contracts, key=lambda item: item["contract_id"] or 0)[

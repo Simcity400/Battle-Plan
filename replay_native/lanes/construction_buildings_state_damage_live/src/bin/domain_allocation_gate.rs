@@ -58,11 +58,10 @@ fn main() -> Result<(), String> {
     }
 
     let registry_domains = registry_domains(&registry);
-    require_registry_domain_status_in(
+    require_registry_domain_present(
         &registry_domains,
         46,
         "air_variant_archetypes_live",
-        &["active_integration", "production_complete"],
         &mut errors,
     );
     require_registry_domain_status_in(
@@ -217,6 +216,22 @@ fn require_registry_domain_status_in(
         errors.push(format!(
             "domain_registry.json missing id {domain_id} name {name} with status in {:?}",
             statuses
+        ));
+    }
+}
+
+fn require_registry_domain_present(
+    domains: &[serde_json::Value],
+    domain_id: u16,
+    name: &str,
+    errors: &mut Vec<String>,
+) {
+    if !domains.iter().any(|domain| {
+        domain.get("id").and_then(serde_json::Value::as_u64) == Some(domain_id.into())
+            && domain.get("name").and_then(serde_json::Value::as_str) == Some(name)
+    }) {
+        errors.push(format!(
+            "domain_registry.json missing id {domain_id} name {name}"
         ));
     }
 }

@@ -9,10 +9,10 @@ Assigned final compact domain:
 
 - `47` = `characters_leaders_cabinet_live`
 
-The old slot-ready packet workflow is canceled. The lane now needs a merge-ready
-lane-owned production mini stack plus live DLL/Rust compact proof before shared
-registration. Current blocker is registration-slot access, not a domain-id or
-fixture-root question.
+The old slot-ready packet workflow is canceled. The lane now has a lane-owned
+mini stack and final domain id, but it is not merge-ready. Current blockers are
+shared registration plus the missing shared collector-frame adapter that turns
+live collector roots into a lane `LaneFrame`.
 
 Bounded blocker gate:
 
@@ -23,8 +23,10 @@ python replay_native\lanes\characters_leaders_cabinet_live\validate_merge_ready_
 Expected result:
 
 - registry assigns domain `47` to this lane;
-- registry marks domain `46` / `air_variant_archetypes_live` as the active
-  integration lane;
+- registry marks domain `46` / `air_variant_archetypes_live` as
+  `production_complete`;
+- registry marks domain `47` as
+  `lane_ready_shared_registration_blocked_remaining_matrix`;
 - shared collector/recorder files have no domain-47 registration hooks:
   no raw token, domain const, collector append, recorder id mapping, recorder
   name mapping, or recorder decoder;
@@ -37,13 +39,17 @@ Expected result:
   `characters_leaders_cabinet_live`.
 
 Therefore the lane cannot truthfully produce a speed-five/current-equivalent
-hourly DLL/Rust `.battleplan` proof while air owns the shared integration slot.
-The next production step, once granted, is registration-only:
+hourly DLL/Rust `.battleplan` proof from the one injected DLL collector yet. The
+next production step is not schema research; it is the narrow shared integration
+work below:
 
 1. Register `characters_leaders_cabinet_live -> 47` in the shared collector and
    recorder.
-2. Route the existing lane-owned domain-47 encoder/gate through those hooks.
-3. Run the compact DLL/Rust extraction gate with domain `47` scheduled.
-4. Require zero skipped hours, no worker/source/partial/bridge flags, ordered
+2. Add the collector adapter that populates the existing lane-owned `LaneFrame`
+   from live `CollectorState` country/politics roots and the validated
+   character/leader/advisor roots.
+3. Route the lane-owned domain-47 encoder/gate through those hooks.
+4. Run the compact DLL/Rust extraction gate with domain `47` scheduled.
+5. Require zero skipped hours, no worker/source/partial/bridge flags, ordered
    domain `47` perf/data records on every frame hour, Rust decode success, and
    `.battleplan` verification.

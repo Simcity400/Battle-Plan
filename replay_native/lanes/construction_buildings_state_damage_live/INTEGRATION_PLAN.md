@@ -144,9 +144,38 @@ replay_native/runs/construction_buildings_state_damage_live_20260701_v14_target_
   `target_state_oracle_contract_gate.json`. The contract requires at least four filled
   `expected_target_state_id` rows from a same-frame save/UI oracle, matched by `tag_db_id`,
   `line_id`, `priority`, `template_id`, `active_factories`, `cost_raw`, and `produced_raw`. It
-  terminally validates `+0xC0`, validates `+0xC8`, rejects both, or reports
+  terminally validates `+0xC0`, validates `+0xC8`, validates a province-id-to-state
+  interpretation of either offset, rejects every interpretation, or reports
   `status = missing_oracle`. The v14 gate currently reports `missing_oracle` with 8 placeholder
   rows and keeps target-state omitted with source flag `0x10`.
+- Refreshed target-state interpretation proof on 2026-07-01: the focused live proof now emits both
+  direct raw-state candidates and raw-province-id mapped-state candidates for `subobject+0xC0` and
+  `subobject+0xC8`. In the current 250-line proof, `+0xC0` was a direct state id on 250/250 rows
+  with 6 unique direct states, and a valid province id on 76/250 rows mapping to 4 unique states.
+  `+0xC8` was a direct state id on 250/250 rows with 2 unique direct states, and a valid province
+  id on 250/250 rows mapping to states `213` or `400`. This does not validate or reject the
+  target-state root without a same-frame save/UI oracle, but it removes the direct-state-only
+  oracle blind spot; future filled oracle rows must be checked against every emitted
+  `candidate_interpretations` entry before rejecting the path.
+- Runnable same-frame target-state observer: lane-local
+  `probes/target_state_same_frame_observer.py` now captures the focused live proof from an explicit
+  `hoi4.exe` PID, waits for a save whose mtime is after the live proof, parses
+  `countries.*.production.general_lines.building.*.building.location`, and writes
+  `filled_target_state_oracle.json` in the shape consumed by
+  `construction_buildings_state_damage_target_state_oracle_contract`.
+  Proof command on PID `45880`:
+  `python replay_native\lanes\construction_buildings_state_damage_live\probes\target_state_same_frame_observer.py --pid 45880 --timeout-s 5 --poll-s 1 --stable-s 1 --out-dir replay_native\lanes\construction_buildings_state_damage_live\target\codex_domain48_same_frame_observer\pid45880_wait_short_v2`.
+  Result: attached to requested PID `45880`, read `300` live construction lines, emitted `8`
+  oracle rows, filled `0`, and marked each row `observer_failure =
+  no_save_after_live_focus_proof` because no same-frame save was created after the live proof.
+  Gate proof command:
+  `cargo run --manifest-path replay_native\lanes\construction_buildings_state_damage_live\Cargo.toml --bin construction_buildings_state_damage_target_state_oracle_contract -- replay_native\lanes\construction_buildings_state_damage_live\target\codex_domain48_same_frame_observer\pid45880_wait_short_v2\target_candidate_focus_probe.json replay_native\lanes\construction_buildings_state_damage_live\target\codex_domain48_same_frame_observer\pid45880_wait_short_v2\target_state_oracle_contract replay_native\lanes\construction_buildings_state_damage_live\target\codex_domain48_same_frame_observer\pid45880_wait_short_v2\filled_target_state_oracle.json`.
+  Gate result: `status = missing_oracle`, `blocker_confirmed = true`, `filled_rows = 0`,
+  `placeholder_rows = 8`, `terminal_candidate_result = false`, source flag remains `0x10`.
+  Remaining action is external: pause the game, run the observer with `--pid <hoi4-pid>` and no
+  `--save`, create a manual save only after the observer starts waiting, and do not unpause before
+  the save completes. That run should either fill the oracle for `+0xC0`/`+0xC8` interpretation
+  validation or produce same-frame mismatch evidence.
 - Damaged-building contract: `construction_buildings_state_damage_fixture_gate` requires at least
   one expected damaged row where `level_at_0x40 > healthy_level_at_0x42`, validates undamaged
   controls, then encodes and decodes the compact payload. Use it with real live+save damaged-frame

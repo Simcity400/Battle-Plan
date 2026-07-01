@@ -137,13 +137,20 @@ def validate() -> dict:
 
     lane_domain = _domain(registry, DOMAIN_ID)
     air_domain = _domain(registry, AIR_DOMAIN_ID)
+    lane_registry_status = lane_domain.get("status")
+    lane_registry_doc_present = (
+        f"| {DOMAIN_ID} | `{DOMAIN_NAME}` | reserved |" in registry_doc
+        or f"| {DOMAIN_ID} | `{DOMAIN_NAME}` | lane-ready; shared registration blocked; remaining matrix written |"
+        in registry_doc
+    )
     registry_ok = (
         registry.get("owner") == "orchestrator"
         and lane_domain.get("name") == DOMAIN_NAME
-        and lane_domain.get("status") == "reserved"
+        and lane_registry_status
+        in {"reserved", "lane_ready_shared_registration_blocked_remaining_matrix"}
         and air_domain.get("name") == AIR_DOMAIN_NAME
         and air_domain.get("status") in {"active_integration", "production_complete"}
-        and f"| {DOMAIN_ID} | `{DOMAIN_NAME}` | reserved |" in registry_doc
+        and lane_registry_doc_present
     )
 
     shared_registration = {
@@ -253,7 +260,7 @@ def validate() -> dict:
         "registry": {
             "lane_domain": lane_domain,
             "domain46": air_domain,
-            "registry_doc_line_present": f"| {DOMAIN_ID} | `{DOMAIN_NAME}` | reserved |" in registry_doc,
+            "registry_doc_line_present": lane_registry_doc_present,
         },
         "shared_registration": shared_registration,
         "domain46_registered_in_shared_files": domain46_registered_in_shared_files,
@@ -297,10 +304,10 @@ def validate() -> dict:
         "hoi4replay_manifests_mentioning_lane": manifest_hits,
         "blocking_condition": (
             "domain 47 is registry-assigned and the lane-owned mini stack/fixture proofs pass, "
-            "but current shared collector/recorder files are actively dirty from other lanes and "
-            "domain 47 remains reserved/unschedulable with no shared collector append or recorder "
-            "decoder hook; applying DOMAIN47_REGISTRATION_ONLY.patch plus the collector hook in "
-            "REGISTRATION_HOOK_PLAN.md requires shared integration ownership"
+            "but domain 47 remains unschedulable in the shared collector/recorder registries with "
+            "no shared collector append or recorder decoder hook. The current lane-local DLL wrapper "
+            "can wrap a LaneFrame, but no collector-frame adapter exists that populates LaneFrame "
+            "from live CollectorState/country-politics caches inside the one injected DLL coordinator."
         ),
         "merge_ready": False,
     }

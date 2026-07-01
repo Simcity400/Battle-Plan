@@ -634,10 +634,11 @@ def build_proof(args: argparse.Namespace) -> dict[str, Any]:
             ),
         },
         "lane_local_compact_schema": {
-            "provisional_domain_id": 44,
-            "domain_name": "air_variant_archetypes",
-            "rust_module": "replay_native/lanes/air_wings_variants_lifecycle_live/domain44_variant_archetype_compact.rs",
-            "integration_status": "lane-local only; shared domain id and recorder map need orchestrator slot",
+            "registry_domain_id": 46,
+            "registry_domain_name": "air_variant_archetypes_live",
+            "wire_domain_name": "air_variant_archetypes",
+            "rust_module": "replay_native/lanes/air_wings_variants_lifecycle_live/src/domain46_air_variant_archetypes_live.rs",
+            "integration_status": "validated slice only; shared entrypoints are orchestrator-owned registration hooks",
         },
         "gate": {
             "ok": not problems,

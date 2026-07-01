@@ -42,7 +42,7 @@ class MarketTradeLiveCompactTests(unittest.TestCase):
             game_hour_raw=60846677,
             elapsed_wall_ms=1234,
             rows=tuple(rows),
-            status_flags=0,
+            status_flags=mt.STATUS_STRUCTURAL_PARTIAL,
             observed_contract_rows=70,
             skipped_contract_rows=0,
         )
@@ -116,7 +116,10 @@ class MarketTradeLiveCompactTests(unittest.TestCase):
         self.assertTrue(gate["ok"])
         self.assertEqual(decoded[0].omitted_candidate_rows, 4)
         self.assertEqual(gate["omitted_candidate_rows_max"], 4)
+        self.assertEqual(gate["omitted_candidate_rows_total"], 4)
+        self.assertTrue(gate["omitted_not_partial_seen"])
         self.assertFalse(gate["structural_partial_seen"])
+        self.assertFalse(gate["missing_extractable_seen"])
 
     def test_gate_rejects_structural_partial_status(self):
         frame = mt.MarketTradeFrame(
@@ -134,6 +137,67 @@ class MarketTradeLiveCompactTests(unittest.TestCase):
 
         self.assertFalse(gate["ok"])
         self.assertIn("structural_partial", gate["problems"])
+        self.assertTrue(gate["missing_extractable_seen"])
+
+    def test_decoder_keeps_mixed_omitted_and_structural_skips_distinct(self):
+        valid_flags = (
+            mt.FLAG_BUYER_PTR_VALID
+            | mt.FLAG_EQUIPMENT_SUBBUF_VALID
+            | mt.FLAG_DELIVERY_SUBBUF_VALID
+            | mt.FLAG_VARIANT_VALID
+            | mt.FLAG_AMOUNT_VALID
+        )
+        frame = mt.MarketTradeFrame(
+            game_hour_raw=1,
+            elapsed_wall_ms=1,
+            rows=(row(1, valid_flags),),
+            status_flags=mt.STATUS_STRUCTURAL_PARTIAL,
+            observed_contract_rows=4,
+            skipped_contract_rows=3,
+            omitted_candidate_rows=2,
+            structural_partial_rows=1,
+        )
+
+        decoded, errors = mt.decode_frames(mt.encode_frame(frame))
+        gate = mt.gate_frames(decoded, errors, min_game_hours=1)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(decoded[0].omitted_candidate_rows, 2)
+        self.assertEqual(decoded[0].structural_partial_rows, 1)
+        self.assertEqual(gate["omitted_candidate_rows_total"], 2)
+        self.assertEqual(gate["structural_partial_rows_total"], 1)
+        self.assertFalse(gate["ok"])
+        self.assertIn("structural_partial", gate["problems"])
+
+    def test_gate_rejects_partial_contract_fields(self):
+        frame = mt.MarketTradeFrame(
+            game_hour_raw=1,
+            elapsed_wall_ms=1,
+            rows=(row(1, mt.FLAG_DELIVERY_SUBBUF_VALID),),
+            status_flags=0,
+            observed_contract_rows=1,
+            skipped_contract_rows=0,
+        )
+
+        gate = mt.gate_frames([frame], [], min_game_hours=1)
+
+        self.assertFalse(gate["ok"])
+        self.assertIn("partial_contract_fields", gate["problems"])
+        self.assertTrue(gate["missing_extractable_seen"])
+
+    def test_country_unresolved_candidate_is_missing_extractable_not_omitted(self):
+        reasons = mt.classify_omission_reasons(
+            {"candidate_buyer_country_unresolved": 3, "candidate_type_invalid": 2}
+        )
+
+        self.assertEqual(
+            reasons["missing_extractable_reasons"],
+            {"candidate_buyer_country_unresolved": 3},
+        )
+        self.assertEqual(
+            reasons["omitted_not_partial_reasons"],
+            {"candidate_type_invalid": 2},
+        )
 
     def test_compact_dimensions_are_integration_stable(self):
         self.assertEqual(mt.HEADER_LEN, 64)

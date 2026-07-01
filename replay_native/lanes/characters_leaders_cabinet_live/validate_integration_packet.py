@@ -42,6 +42,10 @@ def descriptor_has(text: str, domain_id: int, name: str, status: str, schedulabl
     )
 
 
+def domain_status_is(row: dict, *accepted: str) -> bool:
+    return row.get("status") in set(accepted)
+
+
 def main() -> None:
     packet = json.loads(PACKET.read_text(encoding="utf-8"))
     domain_id = int(packet["final_domain_id"])
@@ -62,13 +66,19 @@ def main() -> None:
     require(domain_name == "characters_leaders_cabinet_live", "unexpected domain name")
     require(domains.get(47, {}).get("name") == domain_name,
             "registry does not assign id 47 to this lane")
-    require(domains.get(47, {}).get("status") == "reserved",
-            "registry id 47 is not reserved for this lane")
+    require(domain_status_is(
+        domains.get(47, {}),
+        "reserved",
+        "lane_ready_shared_registration_blocked_remaining_matrix",
+    ), "registry id 47 is not lane-ready/reserved for this lane")
     require(domains.get(46, {}).get("name") == "air_variant_archetypes_live",
             "registry id 46 is not air_variant_archetypes_live")
     require(domains.get(46, {}).get("status") in {"active_integration", "production_complete"},
             "registry id 46 is not occupied by air_variant_archetypes_live")
-    require("| 47 | `characters_leaders_cabinet_live` | reserved |" in registry_doc,
+    require((
+        "| 47 | `characters_leaders_cabinet_live` | reserved |" in registry_doc
+        or "| 47 | `characters_leaders_cabinet_live` | lane-ready; shared registration blocked; remaining matrix written |" in registry_doc
+    ),
             "registry markdown id 47 row missing")
     require(descriptor_has(collector_registry, 44, "supply_logistics_attrition_live",
                            "ProductionComplete", True),
@@ -125,7 +135,7 @@ def main() -> None:
         "shared_id_44_rejected": "supply_logistics_attrition_live",
         "shared_id_45_rejected": "focus_research_decisions_depth_live",
         "shared_id_46_rejected": f"air_variant_archetypes_live {domains.get(46, {}).get('status')}",
-        "shared_id_47_reserved_registry_only": True,
+        "shared_id_47_lane_ready_registry_only": domains.get(47, {}).get("status"),
         "shared_entrypoints_untouched": True,
         "proof": proof_state,
     }, indent=2, sort_keys=True))

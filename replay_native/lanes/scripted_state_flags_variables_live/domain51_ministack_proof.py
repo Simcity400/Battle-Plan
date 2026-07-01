@@ -13,6 +13,11 @@ DOMAIN_ID = 51
 EXPECTED_SHA_870EBF = (
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
 )
+VALID_PRE_INTEGRATION_STATUSES = {
+    "reserved",
+    "lane_ready_opaque_positive_fixtures_blocked",
+    "validated_lane_slice_positive_country_flags_shared_registration_blocked",
+}
 
 LANE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = LANE_DIR.parents[2]
@@ -45,7 +50,7 @@ def registry_assignment():
         "matches": matches,
         "valid": len(matches) == 1
         and matches[0].get("name") == LANE
-        and matches[0].get("status") == "reserved",
+        and matches[0].get("status") in VALID_PRE_INTEGRATION_STATUSES,
     }
 
 

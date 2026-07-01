@@ -67,6 +67,20 @@ and recorder, not multiple independent DLLs or collectors.
 - A candidate was conclusively rejected: exact probe evidence proves it invalid,
   the search space is reduced, and nobody should retry that path.
 
+Important status wording:
+
+- A proof-gated extraction slice is not the same thing as whole-concept replay
+  completion. If only part of a gameplay concept is captured, call it a
+  `validated slice` and name the scope that passed.
+- Do not label a domain or gameplay concept `complete` while replay-relevant,
+  extractable data is still missing, badged, fixture-blocked, or only inferred.
+- "Complete" for a whole concept means every replay-relevant extractable field
+  in that concept is captured through the production path, or each remaining
+  field has an exact blocker or conclusive rejection with proof evidence.
+- Missed extractable data is backlog, not an acceptable omission. Keep agents on
+  the same lane until the data is captured, rejected, or blocked by a real
+  fixture/tooling wall.
+
 Do not accept broad read-only summaries, promising roots without production
 impact, "more research needed", "no compact records implemented yet", "could
 not verify due to time", or file-reading reports as complete.

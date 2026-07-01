@@ -56,9 +56,19 @@ rustc replay_native\lanes\supply_logistics_attrition_live\domain44_supply_logist
 & $env:TEMP\domain44_supply_decode.exe replay_native\runs\supply_logistics_attrition_live_870ebf_20260701_v2\domain44_payload.bin
 ```
 
-Current gate coverage is five tests: valid decode, header counter/missing badge rejection,
-invalid division values, inconsistent supply-deficit/fuel-flag rejection, and malformed badge
-row rejection.
+Current gate coverage is six tests: valid decode, header counter/missing badge rejection,
+invalid division values, inconsistent supply-deficit/fuel-presence rejection,
+province/division contract-flag rejection, and malformed badge row rejection.
+
+Current lane-local live proof:
+
+- `proof_current_20260701_pid45880/PROOF.md`
+- `proof_current_20260701_pid45880/proof.json`
+- `proof_current_20260701_pid45880/domain44_payload.bin`
+
+That proof validates only the accepted slice. It does not complete the whole supply concept:
+exact per-province supply, attrition reason, hub motorization, convoy/logistics pressure,
+and CSupplySystem province-input arrays remain explicitly badged or rejected.
 
 ## Integration Patch Plan
 

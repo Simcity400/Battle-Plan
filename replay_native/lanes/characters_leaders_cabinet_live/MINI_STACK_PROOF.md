@@ -56,7 +56,7 @@ Rust proof commands:
 cargo test --manifest-path replay_native\lanes\characters_leaders_cabinet_live\Cargo.toml
 ```
 
-Result: `14 passed; 0 failed`.
+Result: `17 passed; 0 failed`.
 
 ```powershell
 cargo run --quiet --manifest-path replay_native\lanes\characters_leaders_cabinet_live\Cargo.toml --bin appointed_fixture_gate
@@ -128,11 +128,14 @@ Remaining exact live blocker:
 
 - The lane-local stack can produce and `.battleplan`-verify domain-47 compact
   records.
-- Current registry modules list id 47 as `Reserved` and `schedulable=false`.
+- Current registry source of truth lists id 47 as
+  `lane_ready_shared_registration_blocked_remaining_matrix`; shared collector
+  and recorder registry modules still leave id 47 as `Reserved` and
+  `schedulable=false`.
 - `DOMAIN47_REGISTRATION_ONLY.patch` contains the exact low-conflict shared
   registry/decoder patch. `git apply --check --verbose` passes against the
-  current worktree; the patch is not applied because the shared collector
-  hot-loop hook would overlap active shared edits.
+  current worktree; the patch is not applied because it only covers registry,
+  dependency, and recorder decode/gate hooks.
 - Live speed-five/current-equivalent DLL-only proof still requires shared
-  collector hot-loop ownership because `collector/src/lib.rs` and
-  `recorder_host/src/main.rs` are already actively dirty from other lanes.
+  collector hot-loop ownership plus the missing live `CollectorState` /
+  country-politics / character-root to lane `LaneFrame` adapter.

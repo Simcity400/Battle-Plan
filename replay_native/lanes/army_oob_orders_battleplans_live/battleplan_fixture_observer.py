@@ -141,18 +141,21 @@ def convert_observation_row(row: Any, index: int, actions: set[str]) -> tuple[di
         "order_type": row["order_type"],
         "order_generation": row["order_generation"],
     }
+    validated_offsets = row.get("validated_offsets")
+    if not isinstance(validated_offsets, list) or not validated_offsets:
+        validated_offsets = [
+            {
+                "name": field_name,
+                "offset": candidate,
+                "type": field_type,
+                "evidence": f"{action} changed {candidate} from before.value to after.value",
+            }
+        ]
     if changed:
         base.update(
             {
                 "status": "exact",
-                "validated_offsets": [
-                    {
-                        "name": field_name,
-                        "offset": candidate,
-                        "type": field_type,
-                        "evidence": f"{action} changed {candidate} from before.value to after.value",
-                    }
-                ],
+                "validated_offsets": validated_offsets,
                 "field_values": {field_name: after},
             }
         )

@@ -486,6 +486,8 @@ pub fn validate_registry_assignment(registry_json: &str) -> Result<(), ExtractEr
         ));
     }
     if !(window.contains("\"status\": \"reserved\"")
+        || window.contains("\"status\": \"lane_ready_shared_registration_blocked_remaining_matrix\"")
+        || window.contains("\"status\": \"lane_ready_shared_adapter_registration_blocked_remaining_matrix\"")
         || window.contains("\"status\": \"active_integration\"")
         || window.contains("\"status\": \"production_complete\""))
     {

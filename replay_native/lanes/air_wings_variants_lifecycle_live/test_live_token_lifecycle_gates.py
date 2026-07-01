@@ -165,6 +165,10 @@ class DecodeStreamLifecycleTests(unittest.TestCase):
             proof.derive_airframe_family("transport_plane_equipment_1"),
             "transport_plane_equipment",
         )
+        self.assertEqual(
+            proof.derive_airframe_family("large_plane_maritime_patrol_plane_airframe_1"),
+            "large_plane_maritime_patrol_plane_airframe",
+        )
         self.assertIsNone(proof.derive_airframe_family("not_an_airframe_token"))
 
     def test_source_line_matches_exact_token_boundaries(self) -> None:

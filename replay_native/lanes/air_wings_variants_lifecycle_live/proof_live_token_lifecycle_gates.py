@@ -163,6 +163,7 @@ MODULAR_AIRFRAME_FAMILIES = (
     "small_plane_naval_bomber_airframe",
     "medium_plane_scout_plane_airframe",
     "medium_plane_fighter_airframe",
+    "large_plane_maritime_patrol_plane_airframe",
     "cv_small_plane_cas_airframe",
     "small_plane_cas_airframe",
     "cv_small_plane_airframe",
@@ -1799,6 +1800,26 @@ def build_proof(args: argparse.Namespace) -> dict[str, Any]:
         ),
     }
 
+    if gates["compact_active_base_airframe_names_closed"]:
+        base_airframe_clause = "closed compact-active base-airframe token names"
+    else:
+        base_airframe_clause = (
+            "narrowed compact-active base-airframe token names to "
+            f"{archetype_closure.get('compact_active_base_airframe_name_rows')} of "
+            f"{archetype_closure.get('compact_active_token_count')} dictionary-resolved active tokens"
+        )
+    if gates["compact_active_equipment_archetype_catalog_closed"]:
+        catalog_clause = "closed compact-active equipment_archetypes catalog joins"
+    elif source_enum_catalog_badged:
+        catalog_clause = (
+            "badged "
+            f"{archetype_closure.get('compact_active_equipment_catalog_missing')} compact-active "
+            "equipment_archetypes catalog misses as source-enum and bba_air_techs enabled airframe tokens absent "
+            "from the current generated equipment_archetypes catalog"
+        )
+    else:
+        catalog_clause = "left compact-active equipment_archetypes catalog joins partial"
+
     return {
         "schema": "air_wings_variants_lifecycle_live_token_lifecycle_proof_v1",
         "generated_utc": dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat(),
@@ -1808,9 +1829,7 @@ def build_proof(args: argparse.Namespace) -> dict[str, Any]:
             "Validated current-live active air variant raw equipment token route from StrategicAirManager "
             "through wing equipment banks to CEquipmentVariant +0x18/+0x1C/+0x38; validated the same-session "
             "token/name dictionary route via CCountry+0x230 CFlagManager -> token-record vtable -> token id/text "
-            "records; closed compact-active base-airframe token names; badged the remaining 9 compact-active "
-            "equipment_archetypes catalog misses as source-enum and bba_air_techs enabled airframe tokens absent "
-            "from the current generated equipment_archetypes catalog."
+            f"records; {base_airframe_clause}; {catalog_clause}."
         ),
         "stream": stream,
         "lifecycle_matrix": lifecycle_matrix,
@@ -1861,8 +1880,8 @@ def build_proof(args: argparse.Namespace) -> dict[str, Any]:
                 "rebase": badges["wing_rebase"],
             },
         },
-        "compact_schema_record_changes": "lane-local domain44 Rust schema has live token dictionary/static source source-mask bits; no shared domain id assigned",
-        "rust_decoder_gate_changes": "none in shared recorder; lane-local Rust domain44 decoder counts live-token-dictionary and static-source-enum rows",
+        "compact_schema_record_changes": "lane-local domain46 Rust schema has live token dictionary/static source source-mask bits; full air lifecycle remains outside this validated archetype slice",
+        "rust_decoder_gate_changes": "none in shared recorder; lane-local Rust domain46 decoder counts live-token-dictionary and static-source-enum rows",
         "dll_only": False,
         "dll_only_detail": "collector stream is DLL-only; this validation proof also uses read-only Python live/process and static-source checks",
         "compact_stream": True,

@@ -31,6 +31,29 @@ class BattleplanFixtureObserverTests(unittest.TestCase):
         self.assertEqual(fixture["non_type5_geometry"][0]["status"], "exact")
         self.assertEqual(fixture["battleplan_execution_state"][0]["status"], "exact")
 
+    def test_changed_observations_preserve_validated_offsets(self) -> None:
+        obs = base_observation()
+        obs["observations"][0]["validated_offsets"] = [
+            {
+                "name": "province_path",
+                "offset": "+0x70",
+                "type": "vec<u32>",
+                "evidence": "sampled vector begin pointer",
+            },
+            {
+                "name": "province_path_count",
+                "offset": "+0x78",
+                "type": "u32",
+                "evidence": "sampled vector count",
+            },
+        ]
+
+        fixture, errors = observer.build_fixture(obs, allow_rejection=False)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(fixture["non_type5_geometry"][0]["validated_offsets"]), 2)
+        self.assertEqual(fixture["non_type5_geometry"][0]["validated_offsets"][1]["offset"], "+0x78")
+
     def test_unchanged_observations_build_rejections_when_allowed(self) -> None:
         obs = base_observation()
         obs["observations"][0]["after"] = obs["observations"][0]["before"]

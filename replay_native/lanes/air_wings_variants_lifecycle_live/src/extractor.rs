@@ -169,6 +169,11 @@ const BASE_AIRFRAME_RULES: &[AirframeRule] = &[
         role: Some("heavy_fighter"),
     },
     AirframeRule {
+        needle: "large_plane_maritime_patrol_plane_airframe",
+        base_airframe: "large_plane_maritime_patrol_plane_airframe",
+        role: Some("maritime_patrol_plane"),
+    },
+    AirframeRule {
         needle: "cv_small_plane_cas_airframe",
         base_airframe: "cv_small_plane_cas_airframe",
         role: Some("cas"),
@@ -234,6 +239,20 @@ mod tests {
             Some("transport_plane_equipment")
         );
         assert_eq!(closure.role_token.as_deref(), Some("transport"));
+    }
+
+    #[test]
+    fn classifies_maritime_patrol_airframe() {
+        let closure =
+            classify_equipment_token("large_plane_maritime_patrol_plane_airframe_1").unwrap();
+        assert_eq!(
+            closure.base_airframe_token.as_deref(),
+            Some("large_plane_maritime_patrol_plane_airframe")
+        );
+        assert_eq!(
+            closure.role_token.as_deref(),
+            Some("maritime_patrol_plane")
+        );
     }
 
     #[test]

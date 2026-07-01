@@ -59,6 +59,14 @@ Current-build root validation for fail-closed depth fields:
 ```powershell
 python replay_native\lanes\focus_research_decisions_depth_live\tools\probe_current_roots.py `
   --out-dir replay_native\runs\focus_research_decisions_depth_live_current_roots_20260701_v3
+
+python replay_native\lanes\focus_research_decisions_depth_live\tools\probe_current_roots.py `
+  --out-dir replay_native\lanes\focus_research_decisions_depth_live\proofs\current_roots_20260701_v4 `
+  --sample-limit-per-list 24
+
+python replay_native\lanes\focus_research_decisions_depth_live\tools\analyze_decision_body_candidates.py `
+  --probe-dir replay_native\lanes\focus_research_decisions_depth_live\proofs\current_roots_20260701_v4 `
+  --out-dir replay_native\lanes\focus_research_decisions_depth_live\proofs\decision_body_candidate_gate_20260701_v1
 ```
 
 See `CURRENT_BUILD_ROOTS.md` for the validated/rejected roots and

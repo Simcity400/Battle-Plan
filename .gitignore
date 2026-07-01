@@ -30,6 +30,10 @@ replay_native/*/out/
 
 # Native collector/recorder proof outputs and ad hoc cargo target dirs.
 replay_native/runs/
+replay_native/**/runs/
+replay_native/**/proofs/
+replay_native/**/proof_current_head_*/
+replay_native/**/proof_current*/
 replay_native/target*/
 replay_native/**/target/
 replay_native/**/proof_out/

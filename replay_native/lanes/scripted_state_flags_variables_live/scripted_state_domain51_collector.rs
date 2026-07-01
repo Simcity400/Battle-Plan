@@ -29,8 +29,8 @@ pub const CFLAG_ROW_TOKEN_ID: usize = 0x08;
 pub const CFLAG_ROW_DATE_HOUR: usize = 0x18;
 pub const CFLAG_ROW_VALUE: usize = 0x28;
 
-pub const DELAYED_EVENTS_BADGE_KEY: &str = "root_unresolved:delayed_events";
-pub const SCRIPTED_GUI_BADGE_KEY: &str = "root_unresolved:scripted_gui_open_state";
+pub const DELAYED_EVENTS_BADGE_KEY: &str = compact::DELAYED_EVENTS_BADGE_KEY;
+pub const SCRIPTED_GUI_BADGE_KEY: &str = compact::SCRIPTED_GUI_BADGE_KEY;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScopeReadStatus {

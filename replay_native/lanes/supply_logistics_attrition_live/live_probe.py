@@ -692,16 +692,70 @@ def _write_outputs(out_dir: Path, report: Dict[str, Any], payload: Optional[byte
         }
     proof_path = out_dir / "proof.json"
     proof_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    compact = report.get("compact_payload", {})
+    province_summary = report.get("province_logistics", {}).get("summary", {})
+    division_summary = report.get("division_supply", {}).get("summary", {})
+    schema = report.get("compact_schema", {})
+    candidate = report.get("csupplysystem_candidate", {})
+    candidate_fields = candidate.get("fields", {}) if isinstance(candidate, dict) else {}
+
+    def candidate_field_line(label: str, field: Dict[str, Any]) -> str:
+        if not isinstance(field, dict) or not field:
+            return f"- `{label}`: not observed."
+        return (
+            f"- Rejected `{label}` (`{field.get('array')}`): count `{field.get('count')}`, "
+            f"negative `{field.get('negative')}`, `>100000` `{field.get('gt_100000')}`, "
+            f"`>1000000` `{field.get('gt_1000000')}`, bad_reads `{field.get('bad_reads')}`, "
+            f"min_raw `{field.get('min_raw')}`, max_raw `{field.get('max_raw')}`, "
+            f"verdict `{field.get('verdict')}`."
+        )
+
     md_lines = [
         "# supply_logistics_attrition_live proof",
         "",
         f"- status: `{report['status']}`",
         f"- exe_sha256: `{report.get('process', {}).get('sha256')}`",
-        f"- compact_payload: `{report.get('compact_payload', {}).get('path', 'none')}`",
-        f"- province_rows: `{report.get('province_logistics', {}).get('summary', {}).get('province_rows', 0)}`",
-        f"- division_rows: `{report.get('division_supply', {}).get('summary', {}).get('division_rows', 0)}`",
-        f"- nonzero_supply_deficit_divisions: `{report.get('division_supply', {}).get('summary', {}).get('nonzero_supply_deficit_divisions', 0)}`",
-        f"- fuel_divisions: `{report.get('division_supply', {}).get('summary', {}).get('fuel_divisions', 0)}`",
+        f"- compact_payload: `{compact.get('path', 'none')}`",
+        f"- compact_payload_bytes: `{compact.get('bytes', 0)}`",
+        f"- compact_rows: `{schema.get('row_count', 0)}`",
+        f"- province_rows: `{province_summary.get('province_rows', 0)}`",
+        f"- division_rows: `{division_summary.get('division_rows', 0)}`",
+        f"- badge_rows: `{schema.get('badge_rows', 0)}`",
+        f"- nonzero_supply_deficit_divisions: `{division_summary.get('nonzero_supply_deficit_divisions', 0)}`",
+        f"- fuel_divisions: `{division_summary.get('fuel_divisions', 0)}`",
+        "",
+        "## Validated Slice",
+        "",
+        "- Validated slice only: province logistics/building-derived rows plus division current/max/gain supply, computed deficit, and fuel proxy.",
+        "- Whole supply/logistics/attrition concept is not complete; exact province supply, attrition reason, hub motorization, convoy/logistics pressure, and CSupplySystem province inputs remain outside the emitted data.",
+        "",
+        "## Roots Validated",
+        "",
+        f"- CGameState: `{report.get('roots_validated', {}).get('cgame_state', 'not validated')}`",
+        f"- Province array: `{report.get('roots_validated', {}).get('province_array', 'not validated')}`",
+        f"- Province rows: `{report.get('roots_validated', {}).get('cprovince', 'not validated')}`",
+        f"- State rows: `{report.get('roots_validated', {}).get('state', 'not validated')}`",
+        f"- Building rows: `{report.get('roots_validated', {}).get('building', 'not validated')}`",
+        f"- Division rows: `{report.get('roots_validated', {}).get('division', 'not validated')}`",
+        "",
+        "## Candidate Rejections",
+        "",
+        f"- CSupplySystem status: `{candidate.get('status', 'not observed')}`",
+        f"- CSupplySystem object: `{candidate.get('object', 'none')}`",
+        f"- CSupplySystem vtables: `{candidate.get('vtable0', 'none')}`, `{candidate.get('vtable1', 'none')}`",
+        candidate_field_line(
+            "province_input_a_plus_0x10",
+            candidate_fields.get("province_input_a_plus_0x10", {}),
+        ),
+        candidate_field_line(
+            "province_input_b_plus_0x138",
+            candidate_fields.get("province_input_b_plus_0x138", {}),
+        ),
+        candidate_field_line(
+            "province_input_c_plus_0x150",
+            candidate_fields.get("province_input_c_plus_0x150", {}),
+        ),
+        f"- Verdict: {candidate.get('verdict', 'no candidate verdict')}",
         "",
         "## Wall Badges",
         "",

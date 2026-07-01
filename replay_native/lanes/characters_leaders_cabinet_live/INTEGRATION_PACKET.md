@@ -1,13 +1,12 @@
 # characters_leaders_cabinet_live Integration Packet
 
-Status: canceled by the registry-era workflow. This file is retained as
-historical lane-local schema and patch-plan context only. Current source of
-truth is `replay_native/DOMAIN_REGISTRY.md`,
-`replay_native/domain_registry.json`, and
+Status: lane-ready, not merge-ready. This file is retained as lane-local schema
+and patch-plan context. Current source of truth is
+`replay_native/DOMAIN_REGISTRY.md`, `replay_native/domain_registry.json`, and
 `replay_native/lanes/characters_leaders_cabinet_live/MERGE_READY_BLOCKER.md`.
 
-This packet is lane-local. Do not apply the shared collector/recorder edits
-while air owns the integration slot.
+This packet is lane-local. Do not apply shared collector/recorder edits from a
+subagent unless the shared integration owner serializes the hook.
 
 ## Final Domain Choice
 
@@ -20,7 +19,7 @@ while air owns the integration slot.
   collector already defines `COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE`
   as `45`.
 - Candidate id `46` is rejected for this lane by orchestrator allocation:
-  `air_variant_archetypes` owns the proposed shared id `46`.
+  `air_variant_archetypes_live` is production-complete on shared id `46`.
 
 The lane codec is now `domain47_compact.rs`. The proof harness writes
 `domain47_payload.bin` and `domain47_record.bin`.
@@ -103,7 +102,8 @@ ENG transitions `0 -> 3 -> 1` through the pinned active-idea/advisor-roster
 intersection and the generated domain `47` compact record decodes with
 `appointed_advisor_rows=3` and `parse_errors=[]`.
 
-The remaining production blocker is shared-slot access for integrated DLL/Rust
-hourly capture. Current live domain-47 proof still has measured-empty appointed
-rows, so the nonzero transition proof is fixture-backed rather than an
-integrated hourly `.battleplan` proof.
+The remaining production blockers are shared registration and the missing
+collector-frame adapter for integrated DLL/Rust hourly capture. Current live
+domain-47 proof still has measured-empty appointed rows, so the nonzero
+transition proof is fixture-backed rather than an integrated hourly
+`.battleplan` proof.
