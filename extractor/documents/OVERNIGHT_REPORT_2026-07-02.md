@@ -37,16 +37,19 @@ Prompted by the 53 finding, I audited whether each lane's deep offsets are valid
 
 **Decisive conclusion:** the fail-closed architecture (vtable-identity checks + skip-counting → `PARTIAL_DATA` + retain-on-unknown fold) means **stale offsets can never fabricate data — only produce source-unavailable/partial**. So the **live speed-five proof is the definitive offset validator**: any lane with stale 870ebf offsets will surface domain partial/source failures and fail the `--production` gate (which requires zero such failures). No emergency downgrades beyond 53. **Watch domain 47 specifically during the live proof** — if it shows partial/source-unavailable, its offsets need re-probing.
 
-## Not done (previously blocked on the intermittent Codex sandbox)
-These are ready (packets pre-authored, offline-drafted) but need reliable delegation to apply into shared files:
-- **Lane 54** battleplans — packet + draft ready; 3 apply attempts all hit the sandbox ACL error.
-- **Domain 43/45 slices** — `SLICE_PACKET.md` authored in each lane.
-- **Domain 57 integration** — `INTEGRATION_PACKET.md` + `fold_r2_projection.rs` authored (offsets drafted for `build_profile`).
-- **Cap-constant cleanup (#18)** — mechanical; deferred to avoid unreviewed shared-file edits overnight.
+## COMPLETED after the Codex sandbox was fixed (update)
+All the previously-blocked items are now done, each verified + adversarially gated + committed:
+- **Lane 54** battleplans (`2d52a3c39`) — 4 review rounds; caught a real data-loss bug (one non-exact row was discarding 50 valid orders).
+- **Domains 51/52/56 profile-mismatch hardening** (`da16b80fa`) — a deref-before-failure-check hazard the lane-54 review exposed in already-committed code.
+- **Domain 43 MTD1 + domain 45 country-targets** (`d2f86bcfd`) — 4 rounds; the D45 payload-version discriminator was moved to the H4CR framing level after a real collision was found (a v1 frame whose elapsed-ms bytes spell "FRD2").
+- **Domain 57 session metadata** (`2128c38a2`) — validated partial slice (R4); the one new domain with independently live-870ebf-validated offsets.
+- **Cap-constant cleanup (#18)** (`2807f5462`) — NARROWED after the gate caught it silently making wire-format contract changes on committed domains; kept only behavior-neutral swaps + two D45 fail-closed tests. The 1024/4096 cap divergences are deferred to a deliberate contract-change patch (task #21).
+
+Final full sweep GREEN: Rust workspace 75 test-result blocks, Python 1085 passed, coverage audit PASS. Commits sit on checkpoint `8dd85e295`.
+
+## Domain 53 remains the one withdrawal
+Still `ActiveIntegration`/not-schedulable/out-of-`--production`, fail-closed, needs live-870ebf root re-validation before re-enabling. Everything else is in the profile.
 
 ## Waiting on you
-1. **Batched live speed-five proof** (needs the game unpaused). Run with `--production` + explicit `--scheduled-domain country_identity` + both static-artifact flags. Watch domain 47 for partial/source failures (offset-provenance check). Start with the strict domain-57 probe while still paused.
-2. **Then** the bucket-2 discovery check-in you asked for.
-
-Suggested first move on waking: the Codex sandbox health-check has now passed;
-resume the queue at lane 54.
+1. **Batched live speed-five proof** (needs the game unpaused). Run with `--production` + explicit `--scheduled-domain country_identity` + both static-artifact flags. Watch **domain 47** for partial/source failures (offset provenance still unconfirmed — the live proof is its validator). Start with the strict domain-57 probe while still paused.
+2. **Then** the bucket-2 discovery check-in — including the ~34 root-discovery rows, task #21 (cap harmonization), and re-validating/re-enabling domain 53.
