@@ -64,6 +64,8 @@ const COMPACT_RECORD_VERSION: u16 = compact_contract::COMPACT_RECORD_VERSION;
 const COMPACT_RECORD_TYPE_DOMAIN_PERF: u16 = compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF;
 const COMPACT_RECORD_TYPE_FRAME_END: u16 = compact_contract::COMPACT_RECORD_TYPE_FRAME_END;
 const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA;
+const COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2: u32 =
+    compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2;
 const COMPACT_STATUS_WORKER_PANIC: u32 = compact_contract::COMPACT_STATUS_WORKER_PANIC;
 const COMPACT_STATUS_BRIDGE_UNAVAILABLE: u32 = compact_contract::COMPACT_STATUS_BRIDGE_UNAVAILABLE;
 const COMPACT_STATUS_SOURCE_UNAVAILABLE: u32 = compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE;
@@ -100,9 +102,13 @@ const COMPACT_AIR_VARIANT_ARCHETYPE_SOURCE_LIVE_STATS: u32 = 1;
 const COMPACT_AIR_VARIANT_ARCHETYPE_SOURCE_LIVE_TOKEN_DICTIONARY: u32 = 1 << 5;
 #[cfg(test)]
 const COMPACT_AIR_VARIANT_ARCHETYPE_SOURCE_STATIC_SOURCE_ENUM: u32 = 1 << 6;
-const COMPACT_FRD_DEPTH_HEADER_LEN: usize = 48;
+const COMPACT_FRD_DEPTH_HEADER_LEN_V1: usize = 48;
+const COMPACT_FRD_DEPTH_HEADER_LEN: usize = 56;
+const COMPACT_FRD_DEPTH_SCHEMA_MAGIC: &[u8; 4] = b"FRD2";
+const COMPACT_FRD_DEPTH_SCHEMA_VERSION: u16 = 2;
 const COMPACT_FRD_RESEARCH_ETA_ROW_LEN: usize = 80;
 const COMPACT_FRD_DECISION_STATUS_ROW_LEN: usize = 28;
+const COMPACT_FRD_DECISION_TARGET_ROW_FIXED_LEN: usize = 16;
 const COMPACT_FRD_BADGE_ROW_FIXED_LEN: usize = 20;
 const COMPACT_FRD_STATUS_FOCUS_PAUSE_BADGED: u32 = 1;
 const COMPACT_FRD_STATUS_DECISION_TARGETS_BADGED: u32 = 1 << 1;
@@ -149,10 +155,17 @@ const COMPACT_FRD_DECISION_EVENT_STOPPED: u32 = 2;
 const COMPACT_FRD_DECISION_EVENT_DAY_DELTA: u32 = 3;
 const COMPACT_FRD_DECISION_EVENT_STATE_CHANGED: u32 = 4;
 const COMPACT_FRD_DECISION_EVENT_STATUS_COUNTS_CHANGED: u32 = 5;
+const COMPACT_FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED: u32 = 1;
+const COMPACT_FRD_DECISION_TARGET_FLAG_COUNTRY_TAG: u32 = 1;
+const COMPACT_FRD_DECISION_TARGET_FLAG_RECORD_0X20: u32 = 1 << 1;
+const COMPACT_FRD_DECISION_TARGET_COUNTRY_FLAGS: u32 =
+    COMPACT_FRD_DECISION_TARGET_FLAG_COUNTRY_TAG | COMPACT_FRD_DECISION_TARGET_FLAG_RECORD_0X20;
 const COMPACT_MARKET_TRADE_HEADER_LEN: usize = 48;
 const COMPACT_MARKET_TRADE_ROW_LEN: usize = 48;
 const COMPACT_MARKET_TRADE_CONTRACT_TYPE: u32 = 81;
-const COMPACT_MARKET_TRADE_MAX_TAG_DB_ID: u32 = 2_048;
+const COMPACT_MAX_OWNER_TAG_DB_ID: u32 =
+    compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
+const COMPACT_MARKET_TRADE_MAX_TAG_DB_ID: u32 = COMPACT_MAX_OWNER_TAG_DB_ID;
 const COMPACT_MARKET_TRADE_MAX_CONTRACT_ID: u32 = i32::MAX as u32;
 const COMPACT_MARKET_TRADE_MAX_VARIANT_ID: u32 = i32::MAX as u32;
 const COMPACT_MARKET_TRADE_MAX_AMOUNT_RAW: i64 = 1_000_000_000_000_000;
@@ -161,6 +174,31 @@ const COMPACT_MARKET_TRADE_ROW_FLAG_EQUIPMENT_SUBBUF_VALID: u32 = 1 << 1;
 const COMPACT_MARKET_TRADE_ROW_FLAG_DELIVERY_SUBBUF_VALID: u32 = 1 << 2;
 const COMPACT_MARKET_TRADE_ROW_FLAG_VARIANT_VALID: u32 = 1 << 3;
 const COMPACT_MARKET_TRADE_ROW_FLAG_AMOUNT_VALID: u32 = 1 << 4;
+const COMPACT_MARKET_TRADE_DETAIL_TRAILER_MAGIC: &[u8; 4] = b"MTD1";
+const COMPACT_MARKET_TRADE_DETAIL_TRAILER_VERSION: u16 = 1;
+const COMPACT_MARKET_TRADE_DETAIL_TRAILER_HEADER_LEN: usize = 32;
+const COMPACT_MARKET_TRADE_DETAIL_ROW_LEN: usize = 64;
+const COMPACT_MARKET_TRADE_DETAIL_FLAG_PRICE_VALID: u32 = 1;
+const COMPACT_MARKET_TRADE_DETAIL_FLAG_AMOUNT_VALID: u32 = 1 << 1;
+const COMPACT_MARKET_TRADE_DETAIL_FLAG_SPEED_VALID: u32 = 1 << 2;
+const COMPACT_MARKET_TRADE_DETAIL_FLAG_COMPLETED_VALID: u32 = 1 << 3;
+const COMPACT_MARKET_TRADE_DETAIL_FLAG_DAYS_VALID: u32 = 1 << 4;
+const COMPACT_MARKET_TRADE_DETAIL_FLAG_DELIVERY_COUNTRY_VALID: u32 = 1 << 5;
+const COMPACT_MARKET_TRADE_DETAIL_FLAG_CONVOYS_VALID: u32 = 1 << 6;
+const COMPACT_MARKET_TRADE_DETAIL_FLAG_EFFICIENCY_VALID: u32 = 1 << 7;
+const COMPACT_MARKET_TRADE_DETAIL_FLAG_FACTORY_PROGRESS_VALID: u32 = 1 << 8;
+const COMPACT_MARKET_TRADE_DETAIL_FLAG_EQUIPMENT_PROGRESS_VALID: u32 = 1 << 9;
+const COMPACT_MARKET_TRADE_DETAIL_FLAG_KNOWN_MASK: u32 =
+    COMPACT_MARKET_TRADE_DETAIL_FLAG_PRICE_VALID
+        | COMPACT_MARKET_TRADE_DETAIL_FLAG_AMOUNT_VALID
+        | COMPACT_MARKET_TRADE_DETAIL_FLAG_SPEED_VALID
+        | COMPACT_MARKET_TRADE_DETAIL_FLAG_COMPLETED_VALID
+        | COMPACT_MARKET_TRADE_DETAIL_FLAG_DAYS_VALID
+        | COMPACT_MARKET_TRADE_DETAIL_FLAG_DELIVERY_COUNTRY_VALID
+        | COMPACT_MARKET_TRADE_DETAIL_FLAG_CONVOYS_VALID
+        | COMPACT_MARKET_TRADE_DETAIL_FLAG_EFFICIENCY_VALID
+        | COMPACT_MARKET_TRADE_DETAIL_FLAG_FACTORY_PROGRESS_VALID
+        | COMPACT_MARKET_TRADE_DETAIL_FLAG_EQUIPMENT_PROGRESS_VALID;
 const COMPACT_SUPPLY_LOGISTICS_HEADER_LEN: usize = 48;
 const COMPACT_SUPPLY_LOGISTICS_ROW_LEN: usize = 40;
 const COMPACT_SUPPLY_ROW_KIND_PROVINCE_LOGISTICS: u32 = 1;
@@ -2538,6 +2576,7 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
         let domain_id = read_u16_le(header, 20);
         let record_type = read_u16_le(header, 22);
         let payload_len = read_u32_le(header, 24) as usize;
+        let record_flags = read_u32_le(header, 28);
         let record_len = COMPACT_RECORD_HEADER_LEN.saturating_add(payload_len);
         if record_len > remaining {
             summary.parse_errors.push(format!(
@@ -2711,7 +2750,12 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                         &mut summary,
                     ),
                     COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE => {
-                        decode_compact_frd_depth_data_payload(offset, payload, &mut summary)
+                        decode_compact_frd_depth_data_payload(
+                            offset,
+                            payload,
+                            record_flags,
+                            &mut summary,
+                        )
                     }
                     COMPACT_DOMAIN_AIR_VARIANT_ARCHETYPES => {
                         decode_compact_air_variant_archetypes_data_payload(
@@ -3731,29 +3775,30 @@ fn decode_compact_decisions_data_payload(
 fn decode_compact_frd_depth_data_payload(
     offset: usize,
     payload: &[u8],
+    record_flags: u32,
     summary: &mut CompactSummary,
 ) {
-    if payload.len() < COMPACT_FRD_DEPTH_HEADER_LEN {
-        summary.parse_errors.push(format!(
-            "offset {offset}: focus/research/decisions depth payload is {} byte(s), expected at least {COMPACT_FRD_DEPTH_HEADER_LEN}",
-            payload.len()
-        ));
+    let Some(header) = decode_compact_frd_depth_header(offset, payload, record_flags, summary)
+    else {
         return;
-    }
-    let depth_status_flags = read_u32_le(payload, 8);
-    let focus_count = read_u32_le(payload, 12) as usize;
-    let research_count = read_u32_le(payload, 16) as usize;
-    let decision_status_count = read_u32_le(payload, 20) as usize;
-    let decision_event_count = read_u32_le(payload, 24) as usize;
-    let observed_focus_rows = read_u32_le(payload, 28);
-    let observed_research_slot_rows = read_u32_le(payload, 32) as usize;
-    let observed_decision_rows = read_u32_le(payload, 36);
-    let observed_timed_decision_rows = read_u32_le(payload, 40) as usize;
-    let badge_count = read_u32_le(payload, 44) as usize;
+    };
+    let decision_target_count = header.decision_target_count;
+    let decision_target_omitted_rows = header.decision_target_omitted_rows;
+    let depth_status_flags = header.depth_status_flags;
+    let focus_count = header.focus_count;
+    let research_count = header.research_count;
+    let decision_status_count = header.decision_status_count;
+    let decision_event_count = header.decision_event_count;
+    let observed_focus_rows = header.observed_focus_rows;
+    let observed_research_slot_rows = header.observed_research_slot_rows;
+    let observed_decision_rows = header.observed_decision_rows;
+    let observed_timed_decision_rows = header.observed_timed_decision_rows;
+    let badge_count = header.badge_count;
     let emitted_rows = focus_count
         .saturating_add(research_count)
         .saturating_add(decision_status_count)
         .saturating_add(decision_event_count)
+        .saturating_add(decision_target_count)
         .saturating_add(badge_count);
 
     if depth_status_flags & !COMPACT_FRD_STATUS_KNOWN_MASK != 0 {
@@ -3804,6 +3849,18 @@ fn decode_compact_frd_depth_data_payload(
     add_compact_domain_data_unit(
         summary,
         COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+        "decision_target_rows",
+        decision_target_count,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+        "decision_target_omitted_rows",
+        decision_target_omitted_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
         "depth_badge_rows",
         badge_count,
     );
@@ -3820,7 +3877,7 @@ fn decode_compact_frd_depth_data_payload(
         observed_timed_decision_rows,
     );
 
-    let mut cursor = COMPACT_FRD_DEPTH_HEADER_LEN;
+    let mut cursor = header.header_len;
     let mut seen_focus = BTreeSet::new();
     for row_index in 0..focus_count {
         if let Err(err) = require_compact_remaining(payload, cursor, 36, "focus depth row") {
@@ -4045,6 +4102,7 @@ fn decode_compact_frd_depth_data_payload(
     }
 
     let mut seen_decision_status = BTreeSet::new();
+    let mut targeted_timed_status_count_by_tag = BTreeMap::new();
     for row_index in 0..decision_status_count {
         if let Err(err) = require_compact_remaining(
             payload,
@@ -4080,6 +4138,7 @@ fn decode_compact_frd_depth_data_payload(
                 "offset {offset}: decision status row {row_index} duplicates tag_db_id {tag_db_id}"
             ));
         }
+        targeted_timed_status_count_by_tag.insert(tag_db_id, counts[2]);
     }
 
     for row_index in 0..decision_event_count {
@@ -4141,6 +4200,84 @@ fn decode_compact_frd_depth_data_payload(
             ));
         }
     }
+
+    let mut decision_target_rows_by_tag: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut seen_decision_targets = BTreeSet::new();
+    let mut country_target_rows = 0usize;
+    for row_index in 0..decision_target_count {
+        if let Err(err) = require_compact_remaining(
+            payload,
+            cursor,
+            COMPACT_FRD_DECISION_TARGET_ROW_FIXED_LEN,
+            "decision target row",
+        ) {
+            summary.parse_errors.push(format!("offset {offset}: {err}"));
+            return;
+        }
+        let tag_db_id = read_u32_le(payload, cursor);
+        let target_id = read_u32_le(payload, cursor + 4);
+        let flags = read_u32_le(payload, cursor + 8);
+        let source_kind = read_u32_le(payload, cursor + 12);
+        cursor += COMPACT_FRD_DECISION_TARGET_ROW_FIXED_LEN;
+        let decision = match read_compact_string(payload, &mut cursor, "decision target token") {
+            Ok(decision) => decision,
+            Err(err) => {
+                summary.parse_errors.push(format!("offset {offset}: {err}"));
+                return;
+            }
+        };
+
+        if tag_db_id == 0 || tag_db_id > COMPACT_MAX_OWNER_TAG_DB_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision target row {row_index} has invalid owner tag_db_id {tag_db_id}"
+            ));
+        }
+        if flags != COMPACT_FRD_DECISION_TARGET_COUNTRY_FLAGS {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision target row {row_index} has non-country or unknown flags {flags:#x}"
+            ));
+        }
+        if target_id == 0 || target_id > COMPACT_MAX_OWNER_TAG_DB_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision target row {row_index} has invalid country target id {target_id}"
+            ));
+        }
+        if source_kind != COMPACT_FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision target row {row_index} has invalid source_kind {source_kind}"
+            ));
+        }
+        if decision.is_empty() {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision target row {row_index} has no decision token"
+            ));
+        }
+        if !seen_decision_targets.insert((tag_db_id, target_id, source_kind, decision.clone())) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: decision target row {row_index} duplicates owner/target/source key"
+            ));
+        }
+        country_target_rows = country_target_rows.saturating_add(1);
+        let count = decision_target_rows_by_tag.entry(tag_db_id).or_insert(0);
+        *count = count.saturating_add(1);
+    }
+    for (tag_db_id, target_rows) in decision_target_rows_by_tag {
+        match targeted_timed_status_count_by_tag.get(&tag_db_id).copied() {
+            Some(status_count) if target_rows <= status_count => {}
+            Some(status_count) => summary.parse_errors.push(format!(
+                "offset {offset}: decision target rows {target_rows} exceed targeted_timed_count {status_count} for tag_db_id {tag_db_id}"
+            )),
+            None => summary.parse_errors.push(format!(
+                "offset {offset}: decision target rows exist without a decision status row for tag_db_id {tag_db_id}"
+            )),
+        }
+    }
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+        "decision_country_target_rows",
+        country_target_rows,
+    );
 
     let mut badge_kinds = BTreeSet::new();
     for row_index in 0..badge_count {
@@ -4283,13 +4420,99 @@ fn decode_compact_frd_depth_data_payload(
             ));
         }
     }
-
     if cursor != payload.len() {
         summary.parse_errors.push(format!(
             "offset {offset}: focus/research/decisions depth payload has {} trailing byte(s)",
             payload.len().saturating_sub(cursor)
         ));
     }
+}
+
+#[derive(Clone, Copy)]
+struct CompactFrdDepthHeader {
+    header_len: usize,
+    decision_target_count: usize,
+    decision_target_omitted_rows: usize,
+    depth_status_flags: u32,
+    focus_count: usize,
+    research_count: usize,
+    decision_status_count: usize,
+    decision_event_count: usize,
+    observed_focus_rows: u32,
+    observed_research_slot_rows: usize,
+    observed_decision_rows: u32,
+    observed_timed_decision_rows: usize,
+    badge_count: usize,
+}
+
+fn decode_compact_frd_depth_header(
+    offset: usize,
+    payload: &[u8],
+    record_flags: u32,
+    summary: &mut CompactSummary,
+) -> Option<CompactFrdDepthHeader> {
+    if payload.len() < COMPACT_FRD_DEPTH_HEADER_LEN_V1 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: focus/research/decisions depth payload is {} byte(s), expected at least {COMPACT_FRD_DEPTH_HEADER_LEN_V1}",
+            payload.len()
+        ));
+        return None;
+    }
+    if record_flags & COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2 != 0 {
+        if payload.len() < COMPACT_FRD_DEPTH_HEADER_LEN {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus/research/decisions depth v2 payload is {} byte(s), expected at least {COMPACT_FRD_DEPTH_HEADER_LEN}",
+                payload.len()
+            ));
+            return None;
+        }
+        if payload.get(0..4) != Some(COMPACT_FRD_DEPTH_SCHEMA_MAGIC.as_slice()) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus/research/decisions depth v2 payload is missing FRD2 sanity marker"
+            ));
+            return None;
+        }
+        let schema_version = read_u16_le(payload, 4);
+        let header_len = read_u16_le(payload, 6) as usize;
+        if schema_version != COMPACT_FRD_DEPTH_SCHEMA_VERSION
+            || header_len != COMPACT_FRD_DEPTH_HEADER_LEN
+        {
+            summary.parse_errors.push(format!(
+                "offset {offset}: focus/research/decisions depth v2 header has schema_version {schema_version} and header_len {header_len}"
+            ));
+            return None;
+        }
+        return Some(CompactFrdDepthHeader {
+            header_len,
+            depth_status_flags: read_u32_le(payload, 8),
+            focus_count: read_u32_le(payload, 12) as usize,
+            research_count: read_u32_le(payload, 16) as usize,
+            decision_status_count: read_u32_le(payload, 20) as usize,
+            decision_event_count: read_u32_le(payload, 24) as usize,
+            decision_target_count: read_u32_le(payload, 28) as usize,
+            observed_focus_rows: read_u32_le(payload, 32),
+            observed_research_slot_rows: read_u32_le(payload, 36) as usize,
+            observed_decision_rows: read_u32_le(payload, 40),
+            observed_timed_decision_rows: read_u32_le(payload, 44) as usize,
+            badge_count: read_u32_le(payload, 48) as usize,
+            decision_target_omitted_rows: read_u32_le(payload, 52) as usize,
+        });
+    }
+    Some(CompactFrdDepthHeader {
+        header_len: COMPACT_FRD_DEPTH_HEADER_LEN_V1,
+        decision_target_count: 0,
+        decision_target_omitted_rows: 0,
+        depth_status_flags: read_u32_le(payload, 8),
+        focus_count: read_u32_le(payload, 12) as usize,
+        research_count: read_u32_le(payload, 16) as usize,
+        decision_status_count: read_u32_le(payload, 20) as usize,
+        decision_event_count: read_u32_le(payload, 24) as usize,
+        observed_focus_rows: read_u32_le(payload, 28),
+        observed_research_slot_rows: read_u32_le(payload, 32) as usize,
+        observed_decision_rows: read_u32_le(payload, 36),
+        observed_timed_decision_rows: read_u32_le(payload, 40) as usize,
+        badge_count: read_u32_le(payload, 44) as usize,
+    })
 }
 
 fn decode_compact_diplomacy_data_payload(
@@ -8644,11 +8867,11 @@ fn decode_compact_market_trade_data_payload(
             "offset {offset}: market trade scale_raw {scale_raw} != {COMPACT_FIXED_SCALE_RAW}"
         ));
     }
-    let expected_len = COMPACT_MARKET_TRADE_HEADER_LEN
+    let core_end = COMPACT_MARKET_TRADE_HEADER_LEN
         .saturating_add(row_count.saturating_mul(COMPACT_MARKET_TRADE_ROW_LEN));
-    if payload.len() != expected_len {
+    if payload.len() < core_end {
         summary.parse_errors.push(format!(
-            "offset {offset}: market trade data payload is {} byte(s), expected {expected_len}",
+            "offset {offset}: market trade data payload is {} byte(s), expected at least {core_end}",
             payload.len()
         ));
         return;
@@ -8885,6 +9108,392 @@ fn decode_compact_market_trade_data_payload(
                 "offset {offset}: market trade header {name} {expected} != computed {actual}"
             ));
         }
+    }
+    if cursor < payload.len() {
+        let detail_rows = decode_compact_market_trade_detail_trailer(
+            offset,
+            payload,
+            cursor,
+            &seen_contracts,
+            summary,
+        );
+        add_compact_domain_data_unit(summary, 43, "market_trade_detail_rows", detail_rows);
+        add_compact_domain_data_unit(
+            summary,
+            43,
+            "market_trade_detail_omitted_rows",
+            row_count.saturating_sub(detail_rows),
+        );
+    } else {
+        add_compact_domain_data_unit(summary, 43, "market_trade_detail_rows", 0);
+        add_compact_domain_data_unit(summary, 43, "market_trade_detail_omitted_rows", row_count);
+    }
+}
+
+fn decode_compact_market_trade_detail_trailer(
+    offset: usize,
+    payload: &[u8],
+    trailer_offset: usize,
+    core_contracts: &BTreeSet<u32>,
+    summary: &mut CompactSummary,
+) -> usize {
+    if payload.get(trailer_offset..trailer_offset.saturating_add(4))
+        != Some(COMPACT_MARKET_TRADE_DETAIL_TRAILER_MAGIC.as_slice())
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade trailing bytes are not MTD1 detail trailer"
+        ));
+        return 0;
+    }
+    if let Err(err) = require_compact_remaining(
+        payload,
+        trailer_offset,
+        COMPACT_MARKET_TRADE_DETAIL_TRAILER_HEADER_LEN,
+        "market trade MTD1 trailer header",
+    ) {
+        summary.parse_errors.push(format!("offset {offset}: {err}"));
+        return 0;
+    }
+
+    let version = read_u16_le(payload, trailer_offset + 4);
+    let header_len = read_u16_le(payload, trailer_offset + 6) as usize;
+    let row_len = read_u16_le(payload, trailer_offset + 8) as usize;
+    let reserved0 = read_u16_le(payload, trailer_offset + 10);
+    let row_count = read_u32_le(payload, trailer_offset + 12) as usize;
+    let price_valid_rows = read_u32_le(payload, trailer_offset + 16) as usize;
+    let speed_valid_rows = read_u32_le(payload, trailer_offset + 20) as usize;
+    let delivery_route_valid_rows = read_u32_le(payload, trailer_offset + 24) as usize;
+    let progress_valid_rows = read_u32_le(payload, trailer_offset + 28) as usize;
+
+    if version != COMPACT_MARKET_TRADE_DETAIL_TRAILER_VERSION {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade MTD1 version {version} != {}",
+            COMPACT_MARKET_TRADE_DETAIL_TRAILER_VERSION
+        ));
+    }
+    if header_len != COMPACT_MARKET_TRADE_DETAIL_TRAILER_HEADER_LEN
+        || row_len != COMPACT_MARKET_TRADE_DETAIL_ROW_LEN
+        || reserved0 != 0
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade MTD1 header shape is invalid"
+        ));
+    }
+
+    let expected_len = trailer_offset
+        .saturating_add(header_len)
+        .saturating_add(row_count.saturating_mul(row_len));
+    if payload.len() != expected_len {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade MTD1 len {} != {expected_len}",
+            payload.len()
+        ));
+        return row_count;
+    }
+
+    let mut seen_detail_contracts = BTreeSet::new();
+    let mut computed_price = 0usize;
+    let mut computed_speed = 0usize;
+    let mut computed_completed = 0usize;
+    let mut computed_days = 0usize;
+    let mut computed_delivery_country = 0usize;
+    let mut computed_convoys = 0usize;
+    let mut computed_efficiency = 0usize;
+    let mut computed_delivery_route = 0usize;
+    let mut computed_progress = 0usize;
+    let mut cursor = trailer_offset + header_len;
+    for row_index in 0..row_count {
+        let contract_id = read_u32_le(payload, cursor);
+        let flags = read_u32_le(payload, cursor + 4);
+        let price_raw = read_i64_le(payload, cursor + 8);
+        let amount_raw = read_i64_le(payload, cursor + 16);
+        let speed_raw = read_i32_le(payload, cursor + 24);
+        let completed_raw = read_i32_le(payload, cursor + 28);
+        let days = read_i32_le(payload, cursor + 32);
+        let delivery_country_tag_db_id = read_u32_le(payload, cursor + 36);
+        let convoys_assigned = read_i32_le(payload, cursor + 40);
+        let convoys_total = read_i32_le(payload, cursor + 44);
+        let efficiency_raw = read_i32_le(payload, cursor + 48);
+        let factory_cic_progress_raw = read_i32_le(payload, cursor + 52);
+        let equipment_transfer_progress_raw = read_i32_le(payload, cursor + 56);
+        let reserved = read_u32_le(payload, cursor + 60);
+        cursor += row_len;
+
+        if contract_id == 0 || contract_id > COMPACT_MARKET_TRADE_MAX_CONTRACT_ID {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade MTD1 row {row_index} has invalid contract_id {contract_id}"
+            ));
+        } else if !core_contracts.contains(&contract_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade MTD1 row {row_index} references missing contract_id {contract_id}"
+            ));
+        } else if !seen_detail_contracts.insert(contract_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade MTD1 row {row_index} duplicates contract_id {contract_id}"
+            ));
+        }
+        if flags == 0 || flags & !COMPACT_MARKET_TRADE_DETAIL_FLAG_KNOWN_MASK != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade MTD1 row {row_index} has invalid flags {flags:#x}"
+            ));
+        }
+        if reserved != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade MTD1 row {row_index} reserved field is nonzero"
+            ));
+        }
+        validate_market_trade_detail_presence_i64(
+            summary,
+            offset,
+            row_index,
+            "price_raw",
+            price_raw,
+            flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_PRICE_VALID != 0,
+            1,
+            COMPACT_MARKET_TRADE_MAX_AMOUNT_RAW,
+        );
+        validate_market_trade_detail_presence_i64(
+            summary,
+            offset,
+            row_index,
+            "amount_raw",
+            amount_raw,
+            flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_AMOUNT_VALID != 0,
+            1,
+            COMPACT_MARKET_TRADE_MAX_AMOUNT_RAW,
+        );
+        validate_market_trade_detail_presence_i32(
+            summary,
+            offset,
+            row_index,
+            "speed_raw",
+            speed_raw,
+            flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_SPEED_VALID != 0,
+            0,
+            1_000_000_000,
+        );
+        validate_market_trade_detail_presence_i32(
+            summary,
+            offset,
+            row_index,
+            "completed_raw",
+            completed_raw,
+            flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_COMPLETED_VALID != 0,
+            0,
+            1,
+        );
+        validate_market_trade_detail_presence_i32(
+            summary,
+            offset,
+            row_index,
+            "days",
+            days,
+            flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_DAYS_VALID != 0,
+            -1,
+            100_000,
+        );
+        if flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_DELIVERY_COUNTRY_VALID != 0 {
+            if delivery_country_tag_db_id == 0
+                || delivery_country_tag_db_id > COMPACT_MARKET_TRADE_MAX_TAG_DB_ID
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: market trade MTD1 row {row_index} has invalid delivery_country_tag_db_id {delivery_country_tag_db_id}"
+                ));
+            }
+        } else if delivery_country_tag_db_id != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade MTD1 row {row_index} has delivery_country_tag_db_id without flag"
+            ));
+        }
+        if flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_CONVOYS_VALID != 0 {
+            if convoys_assigned < 0 || convoys_total < 0 || convoys_assigned > convoys_total {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: market trade MTD1 row {row_index} has invalid convoy counts {convoys_assigned}/{convoys_total}"
+                ));
+            }
+        } else if convoys_assigned != 0 || convoys_total != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade MTD1 row {row_index} has convoy counts without flag"
+            ));
+        }
+        validate_market_trade_detail_presence_i32(
+            summary,
+            offset,
+            row_index,
+            "efficiency_raw",
+            efficiency_raw,
+            flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_EFFICIENCY_VALID != 0,
+            0,
+            COMPACT_FIXED_SCALE_RAW as i32,
+        );
+        validate_market_trade_detail_presence_i32(
+            summary,
+            offset,
+            row_index,
+            "factory_cic_progress_raw",
+            factory_cic_progress_raw,
+            flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_FACTORY_PROGRESS_VALID != 0,
+            0,
+            COMPACT_FIXED_SCALE_RAW as i32,
+        );
+        validate_market_trade_detail_presence_i32(
+            summary,
+            offset,
+            row_index,
+            "equipment_transfer_progress_raw",
+            equipment_transfer_progress_raw,
+            flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_EQUIPMENT_PROGRESS_VALID != 0,
+            0,
+            COMPACT_FIXED_SCALE_RAW as i32,
+        );
+
+        computed_price += usize::from(flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_PRICE_VALID != 0);
+        computed_speed += usize::from(flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_SPEED_VALID != 0);
+        computed_completed +=
+            usize::from(flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_COMPLETED_VALID != 0);
+        computed_days += usize::from(flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_DAYS_VALID != 0);
+        computed_delivery_country +=
+            usize::from(flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_DELIVERY_COUNTRY_VALID != 0);
+        computed_convoys +=
+            usize::from(flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_CONVOYS_VALID != 0);
+        computed_efficiency +=
+            usize::from(flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_EFFICIENCY_VALID != 0);
+        computed_delivery_route += usize::from(
+            flags
+                & (COMPACT_MARKET_TRADE_DETAIL_FLAG_DELIVERY_COUNTRY_VALID
+                    | COMPACT_MARKET_TRADE_DETAIL_FLAG_CONVOYS_VALID
+                    | COMPACT_MARKET_TRADE_DETAIL_FLAG_EFFICIENCY_VALID)
+                != 0,
+        );
+        computed_progress += usize::from(
+            flags
+                & (COMPACT_MARKET_TRADE_DETAIL_FLAG_FACTORY_PROGRESS_VALID
+                    | COMPACT_MARKET_TRADE_DETAIL_FLAG_EQUIPMENT_PROGRESS_VALID)
+                != 0,
+        );
+    }
+
+    for (name, expected, actual) in [
+        ("price_valid_rows", price_valid_rows, computed_price),
+        ("speed_valid_rows", speed_valid_rows, computed_speed),
+        (
+            "delivery_route_valid_rows",
+            delivery_route_valid_rows,
+            computed_delivery_route,
+        ),
+        (
+            "progress_valid_rows",
+            progress_valid_rows,
+            computed_progress,
+        ),
+    ] {
+        if expected != actual {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade MTD1 {name} {expected} != computed {actual}"
+            ));
+        }
+    }
+
+    add_compact_domain_data_unit(
+        summary,
+        43,
+        "market_trade_detail_price_valid_rows",
+        computed_price,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        43,
+        "market_trade_detail_speed_valid_rows",
+        computed_speed,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        43,
+        "market_trade_detail_completed_valid_rows",
+        computed_completed,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        43,
+        "market_trade_detail_days_valid_rows",
+        computed_days,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        43,
+        "market_trade_detail_delivery_country_valid_rows",
+        computed_delivery_country,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        43,
+        "market_trade_detail_convoy_valid_rows",
+        computed_convoys,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        43,
+        "market_trade_detail_efficiency_valid_rows",
+        computed_efficiency,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        43,
+        "market_trade_detail_delivery_route_valid_rows",
+        computed_delivery_route,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        43,
+        "market_trade_detail_progress_valid_rows",
+        computed_progress,
+    );
+    row_count
+}
+
+fn validate_market_trade_detail_presence_i64(
+    summary: &mut CompactSummary,
+    offset: usize,
+    row_index: usize,
+    name: &str,
+    value: i64,
+    present: bool,
+    min: i64,
+    max: i64,
+) {
+    if present {
+        if !(min..=max).contains(&value) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade MTD1 row {row_index} has invalid {name} {value}"
+            ));
+        }
+    } else if value != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade MTD1 row {row_index} has {name} without flag"
+        ));
+    }
+}
+
+fn validate_market_trade_detail_presence_i32(
+    summary: &mut CompactSummary,
+    offset: usize,
+    row_index: usize,
+    name: &str,
+    value: i32,
+    present: bool,
+    min: i32,
+    max: i32,
+) {
+    if present {
+        if !(min..=max).contains(&value) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: market trade MTD1 row {row_index} has invalid {name} {value}"
+            ));
+        }
+    } else if value != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: market trade MTD1 row {row_index} has {name} without flag"
+        ));
     }
 }
 
@@ -14522,6 +15131,83 @@ mod tests {
     }
 
     #[test]
+    fn compact_summary_decodes_market_trade_mtd1_detail_rows() {
+        let mut payload = test_market_trade_data_payload(true);
+        append_test_mtd1_row(
+            &mut payload,
+            1405,
+            COMPACT_MARKET_TRADE_DETAIL_FLAG_PRICE_VALID
+                | COMPACT_MARKET_TRADE_DETAIL_FLAG_AMOUNT_VALID
+                | COMPACT_MARKET_TRADE_DETAIL_FLAG_SPEED_VALID
+                | COMPACT_MARKET_TRADE_DETAIL_FLAG_COMPLETED_VALID
+                | COMPACT_MARKET_TRADE_DETAIL_FLAG_DAYS_VALID
+                | COMPACT_MARKET_TRADE_DETAIL_FLAG_DELIVERY_COUNTRY_VALID
+                | COMPACT_MARKET_TRADE_DETAIL_FLAG_CONVOYS_VALID
+                | COMPACT_MARKET_TRADE_DETAIL_FLAG_EFFICIENCY_VALID
+                | COMPACT_MARKET_TRADE_DETAIL_FLAG_FACTORY_PROGRESS_VALID
+                | COMPACT_MARKET_TRADE_DETAIL_FLAG_EQUIPMENT_PROGRESS_VALID,
+        );
+        let mut summary = CompactSummary::default();
+        summary.per_domain.entry(43).or_default();
+
+        decode_compact_market_trade_data_payload(0, &payload, &mut summary);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let market = summary.per_domain.get(&43).unwrap();
+        assert_eq!(
+            market
+                .data_units_total
+                .get("market_trade_detail_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            market
+                .data_units_total
+                .get("market_trade_detail_omitted_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            market
+                .data_units_total
+                .get("market_trade_detail_progress_valid_rows")
+                .copied(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn compact_summary_rejects_unflagged_market_trade_mtd1_speed() {
+        let mut payload = test_market_trade_data_payload(true);
+        append_test_mtd1_row(
+            &mut payload,
+            1405,
+            COMPACT_MARKET_TRADE_DETAIL_FLAG_PRICE_VALID,
+        );
+        let row_start = COMPACT_MARKET_TRADE_HEADER_LEN
+            + 2 * COMPACT_MARKET_TRADE_ROW_LEN
+            + COMPACT_MARKET_TRADE_DETAIL_TRAILER_HEADER_LEN;
+        payload[row_start + 24..row_start + 28].copy_from_slice(&100_000i32.to_le_bytes());
+        let mut summary = CompactSummary::default();
+
+        decode_compact_market_trade_data_payload(0, &payload, &mut summary);
+
+        assert!(
+            summary
+                .parse_errors
+                .iter()
+                .any(|err| err.contains("speed_raw without flag")),
+            "{:?}",
+            summary.parse_errors
+        );
+    }
+
+    #[test]
     fn compact_summary_decodes_supply_logistics_attrition_data_record() {
         let mut raw = Vec::new();
         append_test_compact_record(
@@ -14664,12 +15350,13 @@ mod tests {
             COMPACT_RECORD_TYPE_DOMAIN_PERF,
             &test_domain_payload_with_status(300, 3, 7, 7, 7, COMPACT_STATUS_DELTA_DATA),
         );
-        append_test_compact_record(
+        append_test_compact_record_with_flags(
             &mut raw,
             2,
             100,
             COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
             COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
             &test_frd_depth_data_payload(true),
         );
         append_test_compact_record(
@@ -14720,6 +15407,10 @@ mod tests {
             Some(1)
         );
         assert_eq!(
+            depth.data_units_total.get("decision_target_rows").copied(),
+            None
+        );
+        assert_eq!(
             depth.data_units_total.get("depth_badge_rows").copied(),
             Some(3)
         );
@@ -14738,12 +15429,181 @@ mod tests {
         let payload = test_frd_depth_data_payload(false);
         let mut summary = CompactSummary::default();
 
-        decode_compact_frd_depth_data_payload(0, &payload, &mut summary);
+        decode_compact_frd_depth_data_payload(
+            0,
+            &payload,
+            COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &mut summary,
+        );
 
         assert!(summary
             .parse_errors
             .iter()
             .any(|err| err.contains("missing required direct event hooks badge row")));
+    }
+
+    #[test]
+    fn compact_summary_decodes_frd_country_target_rows() {
+        let payload = test_frd_depth_data_payload_with_target(
+            true,
+            Some(COMPACT_FRD_DECISION_TARGET_COUNTRY_FLAGS),
+        );
+        let mut summary = CompactSummary::default();
+        summary
+            .per_domain
+            .entry(COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE)
+            .or_default();
+
+        decode_compact_frd_depth_data_payload(
+            0,
+            &payload,
+            COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &mut summary,
+        );
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let depth = summary
+            .per_domain
+            .get(&COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE)
+            .unwrap();
+        assert_eq!(
+            depth.data_units_total.get("decision_target_rows").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            depth
+                .data_units_total
+                .get("decision_country_target_rows")
+                .copied(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn compact_summary_decodes_frd_old_header_without_elapsed_as_target_count() {
+        let payload = test_frd_depth_data_payload_old_header();
+        let mut summary = CompactSummary::default();
+        summary
+            .per_domain
+            .entry(COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE)
+            .or_default();
+
+        decode_compact_frd_depth_data_payload(0, &payload, 0, &mut summary);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let depth = summary
+            .per_domain
+            .get(&COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE)
+            .unwrap();
+        assert_eq!(depth.data_rows_total, 7);
+        assert_eq!(
+            depth.data_units_total.get("decision_status_rows").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            depth.data_units_total.get("decision_target_rows").copied(),
+            None
+        );
+    }
+
+    #[test]
+    fn compact_summary_decodes_frd_old_header_frd2_elapsed_collision_as_v1() {
+        let payload = test_frd_depth_data_payload_old_header_with_elapsed(843_338_310);
+        assert_eq!(&payload[0..4], b"FRD2");
+        let mut summary = CompactSummary::default();
+        summary
+            .per_domain
+            .entry(COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE)
+            .or_default();
+
+        decode_compact_frd_depth_data_payload(0, &payload, 0, &mut summary);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let depth = summary
+            .per_domain
+            .get(&COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE)
+            .unwrap();
+        assert_eq!(depth.data_rows_total, 7);
+        assert_eq!(
+            depth.data_units_total.get("decision_status_rows").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            depth.data_units_total.get("decision_target_rows").copied(),
+            None
+        );
+    }
+
+    #[test]
+    fn compact_summary_decodes_frd_target_omitted_rows() {
+        let mut payload = test_frd_depth_data_payload_with_target(
+            true,
+            Some(COMPACT_FRD_DECISION_TARGET_COUNTRY_FLAGS),
+        );
+        payload[52..56].copy_from_slice(&1u32.to_le_bytes());
+        let mut summary = CompactSummary::default();
+        summary
+            .per_domain
+            .entry(COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE)
+            .or_default();
+
+        decode_compact_frd_depth_data_payload(
+            0,
+            &payload,
+            COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &mut summary,
+        );
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let depth = summary
+            .per_domain
+            .get(&COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE)
+            .unwrap();
+        assert_eq!(
+            depth
+                .data_units_total
+                .get("decision_target_omitted_rows")
+                .copied(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn compact_summary_rejects_frd_numeric_target_flags_in_country_slice() {
+        let payload = test_frd_depth_data_payload_with_target(true, Some(1u32 << 2));
+        let mut summary = CompactSummary::default();
+
+        decode_compact_frd_depth_data_payload(
+            0,
+            &payload,
+            COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &mut summary,
+        );
+
+        assert!(
+            summary
+                .parse_errors
+                .iter()
+                .any(|err| err.contains("non-country or unknown flags")),
+            "{:?}",
+            summary.parse_errors
+        );
     }
 
     #[test]
@@ -18414,24 +19274,159 @@ mod tests {
         payload
     }
 
+    fn append_test_mtd1_row(payload: &mut Vec<u8>, contract_id: u32, flags: u32) {
+        let price_valid = u32::from(flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_PRICE_VALID != 0);
+        let speed_valid = u32::from(flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_SPEED_VALID != 0);
+        let delivery_route_valid = u32::from(
+            flags
+                & (COMPACT_MARKET_TRADE_DETAIL_FLAG_DELIVERY_COUNTRY_VALID
+                    | COMPACT_MARKET_TRADE_DETAIL_FLAG_CONVOYS_VALID
+                    | COMPACT_MARKET_TRADE_DETAIL_FLAG_EFFICIENCY_VALID)
+                != 0,
+        );
+        let progress_valid = u32::from(
+            flags
+                & (COMPACT_MARKET_TRADE_DETAIL_FLAG_FACTORY_PROGRESS_VALID
+                    | COMPACT_MARKET_TRADE_DETAIL_FLAG_EQUIPMENT_PROGRESS_VALID)
+                != 0,
+        );
+        payload.extend_from_slice(COMPACT_MARKET_TRADE_DETAIL_TRAILER_MAGIC);
+        payload.extend_from_slice(&COMPACT_MARKET_TRADE_DETAIL_TRAILER_VERSION.to_le_bytes());
+        payload.extend_from_slice(
+            &(COMPACT_MARKET_TRADE_DETAIL_TRAILER_HEADER_LEN as u16).to_le_bytes(),
+        );
+        payload.extend_from_slice(&(COMPACT_MARKET_TRADE_DETAIL_ROW_LEN as u16).to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&price_valid.to_le_bytes());
+        payload.extend_from_slice(&speed_valid.to_le_bytes());
+        payload.extend_from_slice(&delivery_route_valid.to_le_bytes());
+        payload.extend_from_slice(&progress_valid.to_le_bytes());
+
+        payload.extend_from_slice(&contract_id.to_le_bytes());
+        payload.extend_from_slice(&flags.to_le_bytes());
+        payload.extend_from_slice(
+            &(if flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_PRICE_VALID != 0 {
+                7_000_000i64
+            } else {
+                0
+            })
+            .to_le_bytes(),
+        );
+        payload.extend_from_slice(
+            &(if flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_AMOUNT_VALID != 0 {
+                21_700_000i64
+            } else {
+                0
+            })
+            .to_le_bytes(),
+        );
+        payload.extend_from_slice(
+            &(if flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_SPEED_VALID != 0 {
+                125_000i32
+            } else {
+                0
+            })
+            .to_le_bytes(),
+        );
+        payload.extend_from_slice(
+            &(if flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_COMPLETED_VALID != 0 {
+                1i32
+            } else {
+                0
+            })
+            .to_le_bytes(),
+        );
+        payload.extend_from_slice(
+            &(if flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_DAYS_VALID != 0 {
+                42i32
+            } else {
+                0
+            })
+            .to_le_bytes(),
+        );
+        payload.extend_from_slice(
+            &(if flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_DELIVERY_COUNTRY_VALID != 0 {
+                67u32
+            } else {
+                0
+            })
+            .to_le_bytes(),
+        );
+        payload.extend_from_slice(
+            &(if flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_CONVOYS_VALID != 0 {
+                3i32
+            } else {
+                0
+            })
+            .to_le_bytes(),
+        );
+        payload.extend_from_slice(
+            &(if flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_CONVOYS_VALID != 0 {
+                5i32
+            } else {
+                0
+            })
+            .to_le_bytes(),
+        );
+        payload.extend_from_slice(
+            &(if flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_EFFICIENCY_VALID != 0 {
+                90_000i32
+            } else {
+                0
+            })
+            .to_le_bytes(),
+        );
+        payload.extend_from_slice(
+            &(if flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_FACTORY_PROGRESS_VALID != 0 {
+                45_000i32
+            } else {
+                0
+            })
+            .to_le_bytes(),
+        );
+        payload.extend_from_slice(
+            &(if flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_EQUIPMENT_PROGRESS_VALID != 0 {
+                50_000i32
+            } else {
+                0
+            })
+            .to_le_bytes(),
+        );
+        payload.extend_from_slice(&0u32.to_le_bytes());
+    }
+
     fn test_frd_depth_data_payload(include_direct_event_badge: bool) -> Vec<u8> {
+        test_frd_depth_data_payload_with_target(include_direct_event_badge, None)
+    }
+
+    fn test_frd_depth_data_payload_with_target(
+        include_direct_event_badge: bool,
+        decision_target_flags: Option<u32>,
+    ) -> Vec<u8> {
         let badge_count = if include_direct_event_badge {
             3u32
         } else {
             2u32
         };
+        let decision_target_count = u32::from(decision_target_flags.is_some());
+        let targeted_timed_count = decision_target_count;
         let mut payload = Vec::new();
-        payload.extend_from_slice(&1_000u64.to_le_bytes());
+        payload.extend_from_slice(b"FRD2");
+        payload.extend_from_slice(&COMPACT_FRD_DEPTH_SCHEMA_VERSION.to_le_bytes());
+        payload.extend_from_slice(&(COMPACT_FRD_DEPTH_HEADER_LEN as u16).to_le_bytes());
         payload.extend_from_slice(&COMPACT_FRD_STATUS_KNOWN_MASK.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&decision_target_count.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&badge_count.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
 
         payload.extend_from_slice(&47u32.to_le_bytes());
         payload.extend_from_slice(&COMPACT_FRD_FOCUS_EVENT_COMPLETED_COUNT_INCREASED.to_le_bytes());
@@ -18470,7 +19465,7 @@ mod tests {
         payload.extend_from_slice(&47u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
-        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&targeted_timed_count.to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
@@ -18483,6 +19478,16 @@ mod tests {
         payload.extend_from_slice(&0i32.to_le_bytes());
         payload.extend_from_slice(&0i32.to_le_bytes());
         append_test_compact_string(&mut payload, "POR_countdown");
+
+        if let Some(flags) = decision_target_flags {
+            payload.extend_from_slice(&47u32.to_le_bytes());
+            payload.extend_from_slice(&12u32.to_le_bytes());
+            payload.extend_from_slice(&flags.to_le_bytes());
+            payload.extend_from_slice(
+                &COMPACT_FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED.to_le_bytes(),
+            );
+            append_test_compact_string(&mut payload, "POR_targeted_country_mission");
+        }
 
         payload.extend_from_slice(&COMPACT_FRD_BADGE_KIND_FOCUS_PAUSE_FAIL_CLOSED.to_le_bytes());
         payload.extend_from_slice(
@@ -18539,6 +19544,20 @@ mod tests {
         payload
     }
 
+    fn test_frd_depth_data_payload_old_header_with_elapsed(elapsed_wall_ms: u64) -> Vec<u8> {
+        let v2 = test_frd_depth_data_payload_with_target(true, None);
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
+        payload.extend_from_slice(&v2[8..28]);
+        payload.extend_from_slice(&v2[32..52]);
+        payload.extend_from_slice(&v2[COMPACT_FRD_DEPTH_HEADER_LEN..]);
+        payload
+    }
+
+    fn test_frd_depth_data_payload_old_header() -> Vec<u8> {
+        test_frd_depth_data_payload_old_header_with_elapsed(1000)
+    }
+
     fn append_test_compact_string(payload: &mut Vec<u8>, value: &str) {
         let bytes = value.as_bytes();
         payload.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
@@ -18553,6 +19572,26 @@ mod tests {
         record_type: u16,
         payload: &[u8],
     ) {
+        append_test_compact_record_with_flags(
+            out,
+            sequence,
+            game_hour_raw,
+            domain_id,
+            record_type,
+            0,
+            payload,
+        );
+    }
+
+    fn append_test_compact_record_with_flags(
+        out: &mut Vec<u8>,
+        sequence: u64,
+        game_hour_raw: i32,
+        domain_id: u16,
+        record_type: u16,
+        record_flags: u32,
+        payload: &[u8],
+    ) {
         out.extend_from_slice(COMPACT_RECORD_MAGIC);
         out.extend_from_slice(&COMPACT_RECORD_VERSION.to_le_bytes());
         out.extend_from_slice(&(COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes());
@@ -18561,7 +19600,7 @@ mod tests {
         out.extend_from_slice(&domain_id.to_le_bytes());
         out.extend_from_slice(&record_type.to_le_bytes());
         out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&record_flags.to_le_bytes());
         out.extend_from_slice(payload);
     }
 

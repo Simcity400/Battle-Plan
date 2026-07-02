@@ -1024,6 +1024,9 @@ pub fn encode_depth_payload(rows: &DepthFrameRows) -> Vec<u8> {
     let mut normalized = rows.clone();
     apply_required_badges(&mut normalized);
     let rows = &normalized;
+    // Lane-local proof format only. The shared H4CR D45 wire payload is
+    // collector-encoded, selected by the H4CR record-header schema-v2 flag, and
+    // redundantly sanity-checked with its FRD2 header by recorder_host.
     let mut payload = Vec::new();
     payload.extend_from_slice(
         &(rows.decision_targets.len().min(u32::MAX as usize) as u32).to_le_bytes(),

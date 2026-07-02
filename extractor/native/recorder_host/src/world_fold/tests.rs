@@ -1,11 +1,11 @@
 use super::*;
 use characters_leaders_cabinet_live_lane as domain47_lane;
 use compact_contract::{
-    calendar::DATE_EPOCH_CONST, COMPACT_STATUS_BRIDGE_UNAVAILABLE, COMPACT_STATUS_DELTA_DATA,
-    COMPACT_STATUS_NO_CLOCK, COMPACT_STATUS_NO_SCALAR_SOURCE, COMPACT_STATUS_PARTIAL_DATA,
-    COMPACT_STATUS_PROFILE_MISMATCH, COMPACT_STATUS_SOURCE_UNAVAILABLE,
-    COMPACT_STATUS_STATE_UNAVAILABLE, COMPACT_STATUS_TRANSITION_BASELINE_RESET,
-    COMPACT_STATUS_WORKER_PANIC,
+    calendar::DATE_EPOCH_CONST, COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+    COMPACT_STATUS_BRIDGE_UNAVAILABLE, COMPACT_STATUS_DELTA_DATA, COMPACT_STATUS_NO_CLOCK,
+    COMPACT_STATUS_NO_SCALAR_SOURCE, COMPACT_STATUS_PARTIAL_DATA, COMPACT_STATUS_PROFILE_MISMATCH,
+    COMPACT_STATUS_SOURCE_UNAVAILABLE, COMPACT_STATUS_STATE_UNAVAILABLE,
+    COMPACT_STATUS_TRANSITION_BASELINE_RESET, COMPACT_STATUS_WORKER_PANIC,
 };
 
 // --- synthetic H4CR stream builders --------------------------------------
@@ -18,6 +18,26 @@ fn push_record(
     record_type: u16,
     payload: &[u8],
 ) {
+    push_record_with_flags(
+        out,
+        sequence,
+        game_hour_raw,
+        domain_id,
+        record_type,
+        0,
+        payload,
+    );
+}
+
+fn push_record_with_flags(
+    out: &mut Vec<u8>,
+    sequence: u64,
+    game_hour_raw: i32,
+    domain_id: u16,
+    record_type: u16,
+    record_flags: u32,
+    payload: &[u8],
+) {
     out.extend_from_slice(COMPACT_RECORD_MAGIC);
     out.extend_from_slice(&COMPACT_RECORD_VERSION.to_le_bytes());
     out.extend_from_slice(&(COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes());
@@ -26,7 +46,7 @@ fn push_record(
     out.extend_from_slice(&domain_id.to_le_bytes());
     out.extend_from_slice(&record_type.to_le_bytes());
     out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&record_flags.to_le_bytes());
     out.extend_from_slice(payload);
 }
 
@@ -287,15 +307,25 @@ fn raw_for(hour_index: i64) -> i32 {
 }
 
 fn snapshot_for_domain_records(records: Vec<(u16, Vec<u8>)>) -> Value {
+    snapshot_for_domain_records_with_flags(
+        records
+            .into_iter()
+            .map(|(domain_id, payload)| (domain_id, payload, 0))
+            .collect(),
+    )
+}
+
+fn snapshot_for_domain_records_with_flags(records: Vec<(u16, Vec<u8>, u32)>) -> Value {
     let raw = raw_for(16_959_360);
     let mut stream = Vec::new();
-    for (index, (domain_id, payload)) in records.iter().enumerate() {
-        push_record(
+    for (index, (domain_id, payload, record_flags)) in records.iter().enumerate() {
+        push_record_with_flags(
             &mut stream,
             index as u64 + 1,
             raw,
             *domain_id,
             COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            *record_flags,
             payload,
         );
     }
@@ -628,12 +658,24 @@ fn chunk3_projects_payload(status: u32) -> Vec<u8> {
 }
 
 fn chunk3_frd_payload() -> Vec<u8> {
+    chunk3_frd_payload_versioned(true, 0)
+}
+
+fn chunk3_frd_payload_versioned(include_target: bool, omitted_targets: u32) -> Vec<u8> {
     let mut out = vec![0u8; FRD_HEADER_LEN];
-    put_u64_at(&mut out, 0, 1_000);
+    out[0..4].copy_from_slice(b"FRD2");
+    out[4..6].copy_from_slice(&FRD_SCHEMA_VERSION.to_le_bytes());
+    out[6..8].copy_from_slice(&(FRD_HEADER_LEN as u16).to_le_bytes());
     put_u32_at(&mut out, 8, 7);
-    for offset in [12usize, 16, 20, 24, 28, 32, 36, 40, 44] {
+    put_u32_at(&mut out, 12, 1);
+    put_u32_at(&mut out, 16, 1);
+    put_u32_at(&mut out, 20, 1);
+    put_u32_at(&mut out, 24, 1);
+    put_u32_at(&mut out, 28, u32::from(include_target));
+    for offset in [32usize, 36, 40, 44, 48] {
         put_u32_at(&mut out, offset, 1);
     }
+    put_u32_at(&mut out, 52, omitted_targets);
     for value in [
         47,
         FRD_FOCUS_COMPLETED_COUNT_INCREASED,
@@ -680,6 +722,14 @@ fn chunk3_frd_payload() -> Vec<u8> {
     push_i32(&mut out, 1);
     push_str(&mut out, "decision_x");
 
+    if include_target {
+        push_u32(&mut out, 47);
+        push_u32(&mut out, 48);
+        push_u32(&mut out, FRD_DECISION_TARGET_COUNTRY_FLAGS);
+        push_u32(&mut out, FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED);
+        push_str(&mut out, "decision_target_country");
+    }
+
     for value in [3, 3, 45, 1, 3] {
         push_u32(&mut out, value);
     }
@@ -687,6 +737,20 @@ fn chunk3_frd_payload() -> Vec<u8> {
         &mut out,
         "direct_event_hooks_unavailable_transitions_derived_from_compact_frames",
     );
+    out
+}
+
+fn chunk3_frd_payload_old_header() -> Vec<u8> {
+    chunk3_frd_payload_old_header_with_elapsed(1000)
+}
+
+fn chunk3_frd_payload_old_header_with_elapsed(elapsed_wall_ms: u64) -> Vec<u8> {
+    let v2 = chunk3_frd_payload_versioned(false, 0);
+    let mut out = Vec::new();
+    out.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
+    out.extend_from_slice(&v2[8..28]);
+    out.extend_from_slice(&v2[32..52]);
+    out.extend_from_slice(&v2[FRD_HEADER_LEN..]);
     out
 }
 
@@ -921,10 +985,14 @@ fn chunk3_folds_d41_projects_with_raw_handle_r2_fields() {
 }
 
 #[test]
-fn chunk3_folds_d45_depth_annotations_without_target_extension() {
-    let snapshot = snapshot_for_domain_records(vec![
-        (18, country_identity_payload(&[(47, "GER")])),
-        (45, chunk3_frd_payload()),
+fn chunk3_folds_d45_depth_annotations_and_country_targets() {
+    let snapshot = snapshot_for_domain_records_with_flags(vec![
+        (18, country_identity_payload(&[(47, "GER"), (48, "SPR")]), 0),
+        (
+            45,
+            chunk3_frd_payload(),
+            COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+        ),
     ]);
 
     let ger = &snapshot["countries"]["GER"];
@@ -937,11 +1005,85 @@ fn chunk3_folds_d45_depth_annotations_without_target_extension() {
         ger["decisions"]["_r2_depth_status"]["targeted_timed_count"],
         json!(2)
     );
+    assert_eq!(
+        ger["decisions"]["_r2_depth_targets"][0]["decision"],
+        json!("decision_target_country")
+    );
+    assert_eq!(
+        ger["decisions"]["_r2_depth_targets"][0]["target"],
+        json!("SPR")
+    );
     assert!(ger["decisions"].get("_r2_depth_target_rows").is_none());
     assert_eq!(
         snapshot["provenance"]["collector"]["_r2_depth_badges"][0]["source_domain_id"],
         json!(45)
     );
+}
+
+#[test]
+fn chunk3_folds_d45_old_header_without_treating_elapsed_as_targets() {
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(47, "GER")])),
+        (45, chunk3_frd_payload_old_header()),
+    ]);
+
+    let ger = &snapshot["countries"]["GER"];
+    assert_eq!(
+        ger["decisions"]["_r2_depth_status"]["targeted_timed_count"],
+        json!(2)
+    );
+    assert!(ger["decisions"].get("_r2_depth_targets").is_none());
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn chunk3_folds_d45_old_header_frd2_elapsed_collision_as_v1() {
+    let payload = chunk3_frd_payload_old_header_with_elapsed(843_338_310);
+    assert_eq!(&payload[0..4], b"FRD2");
+    let snapshot = snapshot_for_domain_records(vec![
+        (18, country_identity_payload(&[(47, "GER")])),
+        (45, payload),
+    ]);
+
+    let ger = &snapshot["countries"]["GER"];
+    assert_eq!(
+        ger["decisions"]["_r2_depth_status"]["targeted_timed_count"],
+        json!(2)
+    );
+    assert!(ger["decisions"].get("_r2_depth_targets").is_none());
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn chunk3_folds_d45_omitted_targets_as_partial_provenance_note() {
+    let snapshot = snapshot_for_domain_records_with_flags(vec![
+        (18, country_identity_payload(&[(47, "GER"), (48, "SPR")]), 0),
+        (
+            45,
+            chunk3_frd_payload_versioned(true, 1),
+            COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+        ),
+    ]);
+
+    let ger = &snapshot["countries"]["GER"];
+    assert_eq!(
+        ger["decisions"]["_r2_depth_targets"][0]["target"],
+        json!("SPR")
+    );
+    assert!(snapshot["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("omitted 1 unreadable targeted-timed country target row")));
 }
 
 #[test]
@@ -3352,6 +3494,43 @@ fn d43_payload(status_flags: u32) -> Vec<u8> {
     payload
 }
 
+fn append_d43_mtd1_detail(payload: &mut Vec<u8>) {
+    let flags = MARKET_TRADE_DETAIL_FLAG_PRICE_VALID
+        | MARKET_TRADE_DETAIL_FLAG_AMOUNT_VALID
+        | MARKET_TRADE_DETAIL_FLAG_SPEED_VALID
+        | MARKET_TRADE_DETAIL_FLAG_COMPLETED_VALID
+        | MARKET_TRADE_DETAIL_FLAG_DAYS_VALID
+        | MARKET_TRADE_DETAIL_FLAG_DELIVERY_COUNTRY_VALID
+        | MARKET_TRADE_DETAIL_FLAG_CONVOYS_VALID
+        | MARKET_TRADE_DETAIL_FLAG_EFFICIENCY_VALID
+        | MARKET_TRADE_DETAIL_FLAG_FACTORY_PROGRESS_VALID
+        | MARKET_TRADE_DETAIL_FLAG_EQUIPMENT_PROGRESS_VALID;
+    payload.extend_from_slice(MARKET_TRADE_DETAIL_TRAILER_MAGIC);
+    payload.extend_from_slice(&MARKET_TRADE_DETAIL_TRAILER_VERSION.to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_DETAIL_TRAILER_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&(MARKET_TRADE_DETAIL_ROW_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&0u16.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1405u32.to_le_bytes());
+    payload.extend_from_slice(&flags.to_le_bytes());
+    payload.extend_from_slice(&7_000_000i64.to_le_bytes());
+    payload.extend_from_slice(&21_700_000i64.to_le_bytes());
+    payload.extend_from_slice(&125_000i32.to_le_bytes());
+    payload.extend_from_slice(&1i32.to_le_bytes());
+    payload.extend_from_slice(&42i32.to_le_bytes());
+    payload.extend_from_slice(&67u32.to_le_bytes());
+    payload.extend_from_slice(&3i32.to_le_bytes());
+    payload.extend_from_slice(&5i32.to_le_bytes());
+    payload.extend_from_slice(&90_000i32.to_le_bytes());
+    payload.extend_from_slice(&45_000i32.to_le_bytes());
+    payload.extend_from_slice(&50_000i32.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+}
+
 fn d43_empty_payload() -> Vec<u8> {
     let mut payload = Vec::new();
     payload.extend_from_slice(&0u64.to_le_bytes());
@@ -3679,6 +3858,37 @@ fn folds_d43_trade_contracts_world_and_per_country_views() {
         snap["countries"]["SAF"]["economy"]["market_stockpile"],
         Value::Null
     );
+}
+
+#[test]
+fn folds_d43_mtd1_detail_fields_without_discarding_partial_core_rows() {
+    let mut payload = d43_payload(COMPACT_STATUS_PARTIAL_DATA);
+    append_d43_mtd1_detail(&mut payload);
+
+    let snap = chunk1_one_snapshot(vec![
+        (18, country_identity_payload(&[(34, "SAF"), (67, "ENG")])),
+        (43, payload),
+    ]);
+
+    let contract = &snap["diplomacy_world"]["trade_contracts"][0];
+    assert_eq!(contract["prices"][0]["amount_raw"], json!(7_000_000));
+    assert_eq!(contract["delivery_country"], json!("ENG"));
+    assert_eq!(contract["convoys"]["assigned"], json!(3));
+    assert_eq!(contract["delivery_efficiency"], json!(0.9));
+    assert_eq!(contract["days"], json!(42));
+    assert_eq!(contract["completed"], json!(true));
+    assert_eq!(
+        contract["r2_market_trade_live"]["factory_cic_progress_raw"],
+        json!(45_000)
+    );
+    assert!(snap["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("market_trade_live partial status")));
 }
 
 #[test]

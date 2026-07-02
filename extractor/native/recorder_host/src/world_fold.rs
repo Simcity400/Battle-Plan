@@ -25,9 +25,10 @@ use characters_leaders_cabinet_live_lane as domain47;
 use compact_contract::calendar::{date_from_raw, hour_index_from_raw};
 use compact_contract::{
     compact_status_is_failure, COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC,
-    COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_VERSION,
-    COMPACT_STATUS_DELTA_DATA, COMPACT_STATUS_FAILURE_MASK, COMPACT_STATUS_PARTIAL_DATA,
-    COMPACT_STATUS_SOURCE_UNAVAILABLE, COMPACT_STATUS_TRANSITION_BASELINE_RESET,
+    COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2, COMPACT_RECORD_TYPE_DOMAIN_DATA,
+    COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_VERSION, COMPACT_STATUS_DELTA_DATA,
+    COMPACT_STATUS_FAILURE_MASK, COMPACT_STATUS_PARTIAL_DATA, COMPACT_STATUS_SOURCE_UNAVAILABLE,
+    COMPACT_STATUS_TRANSITION_BASELINE_RESET,
 };
 use construction_buildings_state_damage_live_lane as domain48;
 use diplomacy_intel_operatives_live as diplomacy53;
@@ -60,6 +61,7 @@ const SUPPLY_LOGISTICS_ROW_LEN: usize = 40;
 const MARKET_TRADE_HEADER_LEN: usize = 48;
 const MARKET_TRADE_ROW_LEN: usize = 48;
 const MARKET_TRADE_CONTRACT_TYPE: u32 = 81;
+const MARKET_TRADE_MAX_AMOUNT_RAW: i64 = 1_000_000_000_000_000;
 
 const OCC_ROW_FLAG_OWNER: u32 = 1;
 const OCC_ROW_FLAG_CONTROLLER: u32 = 1 << 1;
@@ -145,6 +147,30 @@ const MARKET_TRADE_KNOWN_FLAGS: u32 = MARKET_TRADE_FLAG_BUYER_PTR_VALID
     | MARKET_TRADE_FLAG_DELIVERY_SUBBUF_VALID
     | MARKET_TRADE_FLAG_VARIANT_VALID
     | MARKET_TRADE_FLAG_AMOUNT_VALID;
+const MARKET_TRADE_DETAIL_TRAILER_MAGIC: &[u8; 4] = b"MTD1";
+const MARKET_TRADE_DETAIL_TRAILER_VERSION: u16 = 1;
+const MARKET_TRADE_DETAIL_TRAILER_HEADER_LEN: usize = 32;
+const MARKET_TRADE_DETAIL_ROW_LEN: usize = 64;
+const MARKET_TRADE_DETAIL_FLAG_PRICE_VALID: u32 = 1;
+const MARKET_TRADE_DETAIL_FLAG_AMOUNT_VALID: u32 = 1 << 1;
+const MARKET_TRADE_DETAIL_FLAG_SPEED_VALID: u32 = 1 << 2;
+const MARKET_TRADE_DETAIL_FLAG_COMPLETED_VALID: u32 = 1 << 3;
+const MARKET_TRADE_DETAIL_FLAG_DAYS_VALID: u32 = 1 << 4;
+const MARKET_TRADE_DETAIL_FLAG_DELIVERY_COUNTRY_VALID: u32 = 1 << 5;
+const MARKET_TRADE_DETAIL_FLAG_CONVOYS_VALID: u32 = 1 << 6;
+const MARKET_TRADE_DETAIL_FLAG_EFFICIENCY_VALID: u32 = 1 << 7;
+const MARKET_TRADE_DETAIL_FLAG_FACTORY_PROGRESS_VALID: u32 = 1 << 8;
+const MARKET_TRADE_DETAIL_FLAG_EQUIPMENT_PROGRESS_VALID: u32 = 1 << 9;
+const MARKET_TRADE_DETAIL_FLAGS_KNOWN: u32 = MARKET_TRADE_DETAIL_FLAG_PRICE_VALID
+    | MARKET_TRADE_DETAIL_FLAG_AMOUNT_VALID
+    | MARKET_TRADE_DETAIL_FLAG_SPEED_VALID
+    | MARKET_TRADE_DETAIL_FLAG_COMPLETED_VALID
+    | MARKET_TRADE_DETAIL_FLAG_DAYS_VALID
+    | MARKET_TRADE_DETAIL_FLAG_DELIVERY_COUNTRY_VALID
+    | MARKET_TRADE_DETAIL_FLAG_CONVOYS_VALID
+    | MARKET_TRADE_DETAIL_FLAG_EFFICIENCY_VALID
+    | MARKET_TRADE_DETAIL_FLAG_FACTORY_PROGRESS_VALID
+    | MARKET_TRADE_DETAIL_FLAG_EQUIPMENT_PROGRESS_VALID;
 
 const DIVISIONS_DOMAIN_ID: u16 = 20;
 const WEATHER_DOMAIN_ID: u16 = 24;
@@ -265,11 +291,15 @@ const SPECIAL_PROJECTS_SCIENTIST_KNOWN_FLAGS: u32 = SPECIAL_PROJECTS_SCIENTIST_N
     | SPECIAL_PROJECTS_SCIENTIST_SKILLS;
 const SPECIAL_PROJECTS_PROJECT_STATE_COMPLETED: u32 = 1;
 
-const FRD_HEADER_LEN: usize = 48;
+const FRD_HEADER_LEN_V1: usize = 48;
+const FRD_HEADER_LEN: usize = 56;
+const FRD_SCHEMA_MAGIC: &[u8; 4] = b"FRD2";
+const FRD_SCHEMA_VERSION: u16 = 2;
 const FRD_FOCUS_ROW_FIXED_LEN: usize = 36;
 const FRD_RESEARCH_ROW_LEN: usize = 80;
 const FRD_DECISION_STATUS_ROW_LEN: usize = 28;
 const FRD_DECISION_EVENT_ROW_FIXED_LEN: usize = 28;
+const FRD_DECISION_TARGET_ROW_FIXED_LEN: usize = 16;
 const FRD_BADGE_ROW_FIXED_LEN: usize = 20;
 const FRD_FOCUS_COMPLETED_COUNT_INCREASED: u32 = 1;
 const FRD_FOCUS_CURRENT_STARTED: u32 = 2;
@@ -280,6 +310,12 @@ const FRD_FOCUS_FLAG_COMPLETED_TOKEN_INFERRED: u32 = 1;
 const FRD_FOCUS_FLAG_COMPLETED_TOKEN_EXACT: u32 = 1 << 1;
 const FRD_RESEARCH_FLAG_ETA_AVAILABLE: u32 = 1 << 2;
 const FRD_RESEARCH_FLAG_BASE_PRESENT: u32 = 1 << 5;
+const FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED: u32 = 1;
+const FRD_DECISION_TARGET_FLAG_COUNTRY_TAG: u32 = 1;
+const FRD_DECISION_TARGET_FLAG_RECORD_0X20: u32 = 1 << 1;
+const FRD_DECISION_TARGET_COUNTRY_FLAGS: u32 =
+    FRD_DECISION_TARGET_FLAG_COUNTRY_TAG | FRD_DECISION_TARGET_FLAG_RECORD_0X20;
+const FRD_MAX_TARGET_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 
 const SCRIPTED_STATE_HEADER_LEN: usize = 64;
 const SCRIPTED_STATE_ROW_LEN: usize = 48;
@@ -464,6 +500,7 @@ pub struct WorldFold {
     frd_focus_metrics: BTreeMap<u32, FrdFocusMetricsState>,
     frd_research_live: BTreeMap<FrdResearchKey, FrdResearchLiveState>,
     frd_decision_status: BTreeMap<u32, FrdDecisionStatusState>,
+    frd_decision_targets: BTreeMap<u32, Vec<FrdDecisionTargetState>>,
     frd_focus_events_this_hour: BTreeMap<u32, Vec<FrdFocusDepthEventState>>,
     frd_decision_events_this_hour: BTreeMap<u32, Vec<FrdDecisionEventState>>,
     frd_depth_badges_this_hour: Vec<FrdDepthBadgeState>,
@@ -607,6 +644,7 @@ impl WorldFold {
             frd_focus_metrics: BTreeMap::new(),
             frd_research_live: BTreeMap::new(),
             frd_decision_status: BTreeMap::new(),
+            frd_decision_targets: BTreeMap::new(),
             frd_focus_events_this_hour: BTreeMap::new(),
             frd_decision_events_this_hour: BTreeMap::new(),
             frd_depth_badges_this_hour: Vec::new(),
@@ -683,6 +721,7 @@ impl WorldFold {
             let domain_id = read_u16(header, 20);
             let record_type = read_u16(header, 22);
             let payload_len = read_u32(header, 24) as usize;
+            let record_flags = read_u32(header, 28);
             let record_len = COMPACT_RECORD_HEADER_LEN.saturating_add(payload_len);
             if record_len > remaining {
                 break;
@@ -692,7 +731,7 @@ impl WorldFold {
                 if self.record_is_for_finalized_hour(game_hour_raw) {
                     self.record_late_domain_data(game_hour_raw);
                 } else {
-                    self.apply_domain_data(domain_id, payload);
+                    self.apply_domain_data(domain_id, payload, record_flags);
                 }
             } else if record_type == COMPACT_RECORD_TYPE_FRAME_END {
                 self.finish_hour(game_hour_raw);
@@ -1145,6 +1184,18 @@ impl WorldFold {
             ensure_json_object_mut(country, "decisions")
                 .insert("_r2_depth_status".into(), status.to_json());
         }
+        for (tag_db_id, targets) in &self.frd_decision_targets {
+            let country = ensure_country_projection_object(countries, self, *tag_db_id, unresolved);
+            ensure_json_object_mut(country, "decisions").insert(
+                "_r2_depth_targets".into(),
+                Value::Array(
+                    targets
+                        .iter()
+                        .map(|row| row.to_json(self, unresolved))
+                        .collect(),
+                ),
+            );
+        }
         for (tag_db_id, events) in &self.frd_decision_events_this_hour {
             let country = ensure_country_projection_object(countries, self, *tag_db_id, unresolved);
             ensure_json_object_mut(country, "decisions").insert(
@@ -1218,7 +1269,7 @@ impl WorldFold {
             .unwrap_or(Value::Null)
     }
 
-    fn apply_domain_data(&mut self, domain_id: u16, payload: &[u8]) {
+    fn apply_domain_data(&mut self, domain_id: u16, payload: &[u8], record_flags: u32) {
         let result = match domain_id {
             10 => self.fold_fuel(payload),
             11 => self.fold_production(payload),
@@ -1253,7 +1304,7 @@ impl WorldFold {
             42 => self.fold_air_combat_losses(payload),
             43 => self.fold_market_trade(payload),
             44 => self.fold_supply_logistics_attrition(payload),
-            45 => self.fold_focus_research_decisions_depth(payload),
+            45 => self.fold_focus_research_decisions_depth(payload, record_flags),
             46 => self.fold_air_variant_archetypes(payload),
             47 => self.fold_characters_leaders_cabinet_live(payload),
             48 => self.fold_construction_buildings_state_damage(payload),
@@ -6021,8 +6072,12 @@ impl WorldFold {
     }
 
     // --- DOMAIN 45 focus/research/decisions depth ------------------------
-    fn fold_focus_research_decisions_depth(&mut self, payload: &[u8]) -> Result<(), String> {
-        let parsed = match parse_frd_depth_payload(payload) {
+    fn fold_focus_research_decisions_depth(
+        &mut self,
+        payload: &[u8],
+        record_flags: u32,
+    ) -> Result<(), String> {
+        let parsed = match parse_frd_depth_payload(payload, record_flags) {
             Ok(parsed) => parsed,
             Err(err) => {
                 self.record_domain_problem(
@@ -6037,6 +6092,12 @@ impl WorldFold {
             self.note(
                 "focus_research_decisions_depth depth_status_flags was zero; folded rows remain row-derived only".to_string(),
             );
+        }
+        if parsed.decision_target_omitted_rows > 0 {
+            self.note(format!(
+                "focus_research_decisions_depth kept valid decision rows but omitted {} unreadable targeted-timed country target row(s)",
+                parsed.decision_target_omitted_rows
+            ));
         }
 
         for row in parsed.focus_rows {
@@ -6079,8 +6140,19 @@ impl WorldFold {
                 row,
             );
         }
+        let mut observed_decision_status_tags = BTreeSet::new();
         for row in parsed.decision_status_rows {
+            observed_decision_status_tags.insert(row.tag_db_id);
             self.frd_decision_status.insert(row.tag_db_id, row);
+        }
+        for tag_db_id in observed_decision_status_tags {
+            self.frd_decision_targets.remove(&tag_db_id);
+        }
+        for row in parsed.decision_target_rows {
+            self.frd_decision_targets
+                .entry(row.tag_db_id)
+                .or_default()
+                .push(row);
         }
         for row in parsed.decision_event_rows {
             self.frd_decision_events_this_hour
@@ -7611,18 +7683,25 @@ impl WorldFold {
         let row_count = read_u32(payload, 8) as usize;
         let status_flags = read_u32(payload, 16);
         let scale_raw = read_u32(payload, 44);
-        let expected =
+        let core_end =
             MARKET_TRADE_HEADER_LEN.saturating_add(row_count.saturating_mul(MARKET_TRADE_ROW_LEN));
-        if payload.len() != expected {
-            return Err(format!("market trade len {} != {expected}", payload.len()));
+        if payload.len() < core_end {
+            return Err(format!("market trade len {} < {core_end}", payload.len()));
         }
-        if compact_status_is_failure(status_flags) {
+        let hard_failure_mask = COMPACT_STATUS_FAILURE_MASK & !COMPACT_STATUS_PARTIAL_DATA;
+        if status_flags & hard_failure_mask != 0 {
             self.market_trade_unknown_this_hour = true;
             self.note(format!(
                 "market_trade_live failure status {:#x}; trade contracts unknown this hour",
-                status_flags & COMPACT_STATUS_FAILURE_MASK
+                status_flags & hard_failure_mask
             ));
             return Ok(());
+        }
+        if status_flags & COMPACT_STATUS_PARTIAL_DATA != 0 {
+            self.note(
+                "market_trade_live partial status; folded available trade contracts with omissions"
+                    .to_string(),
+            );
         }
         if scale_raw != FIXED_SCALE as u32 {
             return Err(format!(
@@ -7630,9 +7709,15 @@ impl WorldFold {
                 FIXED_SCALE as u32
             ));
         }
+        let detail_rows = if payload.len() > core_end {
+            parse_market_trade_detail_trailer(payload, core_end)?
+        } else {
+            BTreeMap::new()
+        };
 
         let mut contracts = Vec::with_capacity(row_count);
         let mut seen_contracts = BTreeSet::new();
+        let mut seen_contract_ids = BTreeSet::new();
         let mut cursor = MARKET_TRADE_HEADER_LEN;
         for row_index in 0..row_count {
             let contract_id = read_u32(payload, cursor);
@@ -7656,6 +7741,7 @@ impl WorldFold {
                     "market trade row {row_index} duplicates contract identity {contract_id}:{contract_type}"
                 ));
             }
+            seen_contract_ids.insert(contract_id);
             if contract_type != MARKET_TRADE_CONTRACT_TYPE {
                 return Err(format!(
                     "market trade row {row_index} has unexpected contract_type {contract_type}"
@@ -7717,10 +7803,66 @@ impl WorldFold {
                     "delivery_subbuf_status": delivery_subbuf_status,
                 }),
             );
+            if let Some(detail) = detail_rows.get(&contract_id).copied() {
+                apply_market_trade_detail_to_contract(&mut contract, detail);
+            }
             contracts.push(Value::Object(contract));
+        }
+        for contract_id in detail_rows.keys() {
+            if !seen_contract_ids.contains(contract_id) {
+                return Err(format!(
+                    "market trade MTD1 references missing contract_id {contract_id}"
+                ));
+            }
         }
 
         self.market_trade_contracts = Some(contracts);
+        Ok(())
+    }
+
+    // --- DOMAIN 43 MTD1 purchase-contract detail trailer ------------------
+
+    fn validate_market_trade_detail_i64(
+        row_index: usize,
+        name: &str,
+        value: i64,
+        present: bool,
+        min: i64,
+        max: i64,
+    ) -> Result<(), String> {
+        if present {
+            if !(min..=max).contains(&value) {
+                return Err(format!(
+                    "market trade MTD1 row {row_index} has invalid {name} {value}"
+                ));
+            }
+        } else if value != 0 {
+            return Err(format!(
+                "market trade MTD1 row {row_index} has {name} without flag"
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_market_trade_detail_i32(
+        row_index: usize,
+        name: &str,
+        value: i32,
+        present: bool,
+        min: i32,
+        max: i32,
+    ) -> Result<(), String> {
+        if present {
+            if !(min..=max).contains(&value) {
+                return Err(format!(
+                    "market trade MTD1 row {row_index} has invalid {name} {value}"
+                ));
+            }
+        } else if value != 0 {
+            return Err(format!(
+                "market trade MTD1 row {row_index} has {name} without flag"
+            ));
+        }
         Ok(())
     }
 
@@ -8895,6 +9037,23 @@ impl FrdResearchLiveState {
     }
 }
 
+#[derive(Clone, Copy)]
+struct MarketTradeDetailFoldRow {
+    contract_id: u32,
+    flags: u32,
+    price_raw: i64,
+    amount_raw: i64,
+    speed_raw: i32,
+    completed_raw: i32,
+    days: i32,
+    delivery_country_tag_db_id: u32,
+    convoys_assigned: i32,
+    convoys_total: i32,
+    efficiency_raw: i32,
+    factory_cic_progress_raw: i32,
+    equipment_transfer_progress_raw: i32,
+}
+
 struct FrdDecisionStatusState {
     tag_db_id: u32,
     active_timed_count: u32,
@@ -8941,6 +9100,28 @@ impl FrdDecisionEventState {
     }
 }
 
+#[derive(Clone)]
+struct FrdDecisionTargetState {
+    tag_db_id: u32,
+    target_tag_db_id: u32,
+    flags: u32,
+    source_kind: u32,
+    decision: String,
+}
+
+impl FrdDecisionTargetState {
+    fn to_json(&self, fold: &WorldFold, unresolved: &mut BTreeSet<u32>) -> Value {
+        json!({
+            "decision": self.decision,
+            "target": fold.country_ref_json(self.target_tag_db_id, unresolved),
+            "target_tag_db_id": self.target_tag_db_id,
+            "flags": self.flags,
+            "source_kind": self.source_kind,
+            "source": "CDecisionStatus+0xE8 record+0x20",
+        })
+    }
+}
+
 struct FrdDepthBadgeState {
     kind: u32,
     flags: u32,
@@ -8969,6 +9150,8 @@ struct FrdDepthFrame {
     research_rows: Vec<FrdResearchLiveState>,
     decision_status_rows: Vec<FrdDecisionStatusState>,
     decision_event_rows: Vec<FrdDecisionEventState>,
+    decision_target_rows: Vec<FrdDecisionTargetState>,
+    decision_target_omitted_rows: u32,
     badges: Vec<FrdDepthBadgeState>,
 }
 
@@ -9481,23 +9664,257 @@ fn validate_weather_i32_optional(
     Ok(())
 }
 
-fn parse_frd_depth_payload(payload: &[u8]) -> Result<FrdDepthFrame, String> {
+fn parse_market_trade_detail_trailer(
+    payload: &[u8],
+    trailer_offset: usize,
+) -> Result<BTreeMap<u32, MarketTradeDetailFoldRow>, String> {
+    if payload.get(trailer_offset..trailer_offset.saturating_add(4))
+        != Some(MARKET_TRADE_DETAIL_TRAILER_MAGIC.as_slice())
+    {
+        return Err("market trade trailing bytes are not MTD1 detail trailer".to_string());
+    }
     need(
         payload,
-        FRD_HEADER_LEN,
-        "focus_research_decisions_depth header",
+        trailer_offset + MARKET_TRADE_DETAIL_TRAILER_HEADER_LEN,
+        "market trade MTD1 header",
     )?;
-    let _elapsed_wall_ms = read_u64(payload, 0);
-    let depth_status_flags = read_u32(payload, 8);
-    let focus_count = read_u32(payload, 12) as usize;
-    let research_count = read_u32(payload, 16) as usize;
-    let decision_status_count = read_u32(payload, 20) as usize;
-    let decision_event_count = read_u32(payload, 24) as usize;
-    let observed_focus_count = read_u32(payload, 28) as usize;
-    let observed_research_count = read_u32(payload, 32) as usize;
-    let observed_decision_status_count = read_u32(payload, 36) as usize;
-    let observed_decision_event_count = read_u32(payload, 40) as usize;
-    let badge_count = read_u32(payload, 44) as usize;
+    let version = read_u16(payload, trailer_offset + 4);
+    let header_len = read_u16(payload, trailer_offset + 6) as usize;
+    let row_len = read_u16(payload, trailer_offset + 8) as usize;
+    let reserved0 = read_u16(payload, trailer_offset + 10);
+    let row_count = read_u32(payload, trailer_offset + 12) as usize;
+    if version != MARKET_TRADE_DETAIL_TRAILER_VERSION
+        || header_len != MARKET_TRADE_DETAIL_TRAILER_HEADER_LEN
+        || row_len != MARKET_TRADE_DETAIL_ROW_LEN
+        || reserved0 != 0
+    {
+        return Err("market trade MTD1 header shape is invalid".to_string());
+    }
+    let expected = trailer_offset
+        .saturating_add(header_len)
+        .saturating_add(row_count.saturating_mul(row_len));
+    if payload.len() != expected {
+        return Err(format!(
+            "market trade MTD1 len {} != {expected}",
+            payload.len()
+        ));
+    }
+
+    let mut rows = BTreeMap::new();
+    let mut cursor = trailer_offset + header_len;
+    for row_index in 0..row_count {
+        let row = MarketTradeDetailFoldRow {
+            contract_id: read_u32(payload, cursor),
+            flags: read_u32(payload, cursor + 4),
+            price_raw: read_i64(payload, cursor + 8),
+            amount_raw: read_i64(payload, cursor + 16),
+            speed_raw: read_i32(payload, cursor + 24),
+            completed_raw: read_i32(payload, cursor + 28),
+            days: read_i32(payload, cursor + 32),
+            delivery_country_tag_db_id: read_u32(payload, cursor + 36),
+            convoys_assigned: read_i32(payload, cursor + 40),
+            convoys_total: read_i32(payload, cursor + 44),
+            efficiency_raw: read_i32(payload, cursor + 48),
+            factory_cic_progress_raw: read_i32(payload, cursor + 52),
+            equipment_transfer_progress_raw: read_i32(payload, cursor + 56),
+        };
+        let reserved = read_u32(payload, cursor + 60);
+        cursor += row_len;
+
+        if row.contract_id == 0 {
+            return Err(format!(
+                "market trade MTD1 row {row_index} has zero contract_id"
+            ));
+        }
+        if row.flags == 0 || row.flags & !MARKET_TRADE_DETAIL_FLAGS_KNOWN != 0 {
+            return Err(format!(
+                "market trade MTD1 row {row_index} has invalid flags {:#x}",
+                row.flags
+            ));
+        }
+        if reserved != 0 {
+            return Err(format!(
+                "market trade MTD1 row {row_index} reserved is nonzero"
+            ));
+        }
+        WorldFold::validate_market_trade_detail_i64(
+            row_index,
+            "price_raw",
+            row.price_raw,
+            row.flags & MARKET_TRADE_DETAIL_FLAG_PRICE_VALID != 0,
+            1,
+            MARKET_TRADE_MAX_AMOUNT_RAW,
+        )?;
+        WorldFold::validate_market_trade_detail_i64(
+            row_index,
+            "amount_raw",
+            row.amount_raw,
+            row.flags & MARKET_TRADE_DETAIL_FLAG_AMOUNT_VALID != 0,
+            1,
+            MARKET_TRADE_MAX_AMOUNT_RAW,
+        )?;
+        WorldFold::validate_market_trade_detail_i32(
+            row_index,
+            "speed_raw",
+            row.speed_raw,
+            row.flags & MARKET_TRADE_DETAIL_FLAG_SPEED_VALID != 0,
+            0,
+            1_000_000_000,
+        )?;
+        WorldFold::validate_market_trade_detail_i32(
+            row_index,
+            "completed_raw",
+            row.completed_raw,
+            row.flags & MARKET_TRADE_DETAIL_FLAG_COMPLETED_VALID != 0,
+            0,
+            1,
+        )?;
+        WorldFold::validate_market_trade_detail_i32(
+            row_index,
+            "days",
+            row.days,
+            row.flags & MARKET_TRADE_DETAIL_FLAG_DAYS_VALID != 0,
+            -1,
+            100_000,
+        )?;
+        if row.flags & MARKET_TRADE_DETAIL_FLAG_DELIVERY_COUNTRY_VALID != 0 {
+            if row.delivery_country_tag_db_id == 0
+                || row.delivery_country_tag_db_id
+                    > compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID
+            {
+                return Err(format!(
+                    "market trade MTD1 row {row_index} has invalid delivery_country_tag_db_id {}",
+                    row.delivery_country_tag_db_id
+                ));
+            }
+        } else if row.delivery_country_tag_db_id != 0 {
+            return Err(format!(
+                "market trade MTD1 row {row_index} has delivery_country_tag_db_id without flag"
+            ));
+        }
+        if row.flags & MARKET_TRADE_DETAIL_FLAG_CONVOYS_VALID != 0 {
+            if row.convoys_assigned < 0
+                || row.convoys_total < 0
+                || row.convoys_assigned > row.convoys_total
+            {
+                return Err(format!(
+                    "market trade MTD1 row {row_index} has invalid convoy counts {}/{}",
+                    row.convoys_assigned, row.convoys_total
+                ));
+            }
+        } else if row.convoys_assigned != 0 || row.convoys_total != 0 {
+            return Err(format!(
+                "market trade MTD1 row {row_index} has convoy counts without flag"
+            ));
+        }
+        WorldFold::validate_market_trade_detail_i32(
+            row_index,
+            "efficiency_raw",
+            row.efficiency_raw,
+            row.flags & MARKET_TRADE_DETAIL_FLAG_EFFICIENCY_VALID != 0,
+            0,
+            FIXED_SCALE as i32,
+        )?;
+        WorldFold::validate_market_trade_detail_i32(
+            row_index,
+            "factory_cic_progress_raw",
+            row.factory_cic_progress_raw,
+            row.flags & MARKET_TRADE_DETAIL_FLAG_FACTORY_PROGRESS_VALID != 0,
+            0,
+            FIXED_SCALE as i32,
+        )?;
+        WorldFold::validate_market_trade_detail_i32(
+            row_index,
+            "equipment_transfer_progress_raw",
+            row.equipment_transfer_progress_raw,
+            row.flags & MARKET_TRADE_DETAIL_FLAG_EQUIPMENT_PROGRESS_VALID != 0,
+            0,
+            FIXED_SCALE as i32,
+        )?;
+        if rows.insert(row.contract_id, row).is_some() {
+            return Err(format!(
+                "market trade MTD1 row {row_index} duplicates contract_id {}",
+                row.contract_id
+            ));
+        }
+    }
+    Ok(rows)
+}
+
+fn apply_market_trade_detail_to_contract(
+    contract: &mut Map<String, Value>,
+    detail: MarketTradeDetailFoldRow,
+) {
+    if detail.flags & MARKET_TRADE_DETAIL_FLAG_PRICE_VALID != 0 {
+        contract.insert(
+            "prices".into(),
+            json!([{
+                "amount": detail.price_raw as f64 / FIXED_SCALE,
+                "amount_raw": detail.price_raw,
+            }]),
+        );
+    }
+    if detail.flags & MARKET_TRADE_DETAIL_FLAG_SPEED_VALID != 0 {
+        contract.insert("speed".into(), json!(detail.speed_raw as f64 / FIXED_SCALE));
+    }
+    if detail.flags & MARKET_TRADE_DETAIL_FLAG_DELIVERY_COUNTRY_VALID != 0 {
+        contract.insert(
+            "delivery_country".into(),
+            json!(detail.delivery_country_tag_db_id.to_string()),
+        );
+    }
+    if detail.flags & MARKET_TRADE_DETAIL_FLAG_CONVOYS_VALID != 0 {
+        contract.insert(
+            "convoys".into(),
+            json!({
+                "assigned": detail.convoys_assigned,
+                "total": detail.convoys_total,
+            }),
+        );
+    }
+    if detail.flags & MARKET_TRADE_DETAIL_FLAG_EFFICIENCY_VALID != 0 {
+        contract.insert(
+            "delivery_efficiency".into(),
+            json!(detail.efficiency_raw as f64 / FIXED_SCALE),
+        );
+    }
+    if detail.flags & MARKET_TRADE_DETAIL_FLAG_DAYS_VALID != 0 {
+        contract.insert("days".into(), json!(detail.days));
+    }
+    if detail.flags & MARKET_TRADE_DETAIL_FLAG_COMPLETED_VALID != 0 {
+        contract.insert("completed".into(), json!(detail.completed_raw != 0));
+    }
+
+    let r2 = ensure_json_object_mut(contract, "r2_market_trade_live");
+    r2.insert("detail_flags".into(), json!(detail.flags));
+    r2.insert("amount_raw".into(), json!(detail.amount_raw));
+    r2.insert("speed_raw".into(), json!(detail.speed_raw));
+    r2.insert("completed_raw".into(), json!(detail.completed_raw));
+    r2.insert("efficiency_raw".into(), json!(detail.efficiency_raw));
+    r2.insert(
+        "factory_cic_progress_raw".into(),
+        json!(detail.factory_cic_progress_raw),
+    );
+    r2.insert(
+        "equipment_transfer_progress_raw".into(),
+        json!(detail.equipment_transfer_progress_raw),
+    );
+}
+
+fn parse_frd_depth_payload(payload: &[u8], record_flags: u32) -> Result<FrdDepthFrame, String> {
+    let header = parse_frd_depth_header(payload, record_flags)?;
+    let decision_target_count = header.decision_target_count;
+    let decision_target_omitted_rows = header.decision_target_omitted_rows;
+    let depth_status_flags = header.depth_status_flags;
+    let focus_count = header.focus_count;
+    let research_count = header.research_count;
+    let decision_status_count = header.decision_status_count;
+    let decision_event_count = header.decision_event_count;
+    let observed_focus_count = header.observed_focus_count;
+    let observed_research_count = header.observed_research_count;
+    let observed_decision_status_count = header.observed_decision_status_count;
+    let observed_decision_event_count = header.observed_decision_event_count;
+    let badge_count = header.badge_count;
     ensure_count_at_most(
         "focus_research_decisions_depth",
         "focus_count",
@@ -9527,7 +9944,7 @@ fn parse_frd_depth_payload(payload: &[u8]) -> Result<FrdDepthFrame, String> {
         observed_decision_event_count,
     )?;
 
-    let mut cursor = FRD_HEADER_LEN;
+    let mut cursor = header.header_len;
     let mut focus_rows = Vec::with_capacity(focus_count);
     for _ in 0..focus_count {
         need(payload, cursor + FRD_FOCUS_ROW_FIXED_LEN, "frd focus row")?;
@@ -9632,6 +10049,86 @@ fn parse_frd_depth_payload(payload: &[u8]) -> Result<FrdDepthFrame, String> {
         });
     }
 
+    let targeted_timed_status_count_by_tag: BTreeMap<u32, u32> = decision_status_rows
+        .iter()
+        .map(|row| (row.tag_db_id, row.targeted_timed_count))
+        .collect();
+    let mut decision_target_rows_by_tag: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut seen_decision_targets = BTreeSet::new();
+    let mut decision_target_rows = Vec::with_capacity(decision_target_count);
+    for row_index in 0..decision_target_count {
+        need(
+            payload,
+            cursor + FRD_DECISION_TARGET_ROW_FIXED_LEN,
+            "frd decision target row",
+        )?;
+        let tag_db_id = read_u32(payload, cursor);
+        let target_tag_db_id = read_u32(payload, cursor + 4);
+        let flags = read_u32(payload, cursor + 8);
+        let source_kind = read_u32(payload, cursor + 12);
+        cursor += FRD_DECISION_TARGET_ROW_FIXED_LEN;
+        let decision = read_string(payload, &mut cursor, "frd decision target token")?;
+        if tag_db_id == 0 || tag_db_id > FRD_MAX_TARGET_TAG_DB_ID {
+            return Err(format!(
+                "frd decision target row {row_index} has invalid owner tag_db_id {tag_db_id}"
+            ));
+        }
+        if flags != FRD_DECISION_TARGET_COUNTRY_FLAGS {
+            return Err(format!(
+                "frd decision target row {row_index} has non-country flags {flags:#x}"
+            ));
+        }
+        if target_tag_db_id == 0 || target_tag_db_id > FRD_MAX_TARGET_TAG_DB_ID {
+            return Err(format!(
+                "frd decision target row {row_index} has invalid country target id {target_tag_db_id}"
+            ));
+        }
+        if source_kind != FRD_DECISION_TARGET_SOURCE_ACTIVE_TARGETED_TIMED {
+            return Err(format!(
+                "frd decision target row {row_index} has invalid source_kind {source_kind}"
+            ));
+        }
+        if decision.is_empty() {
+            return Err(format!(
+                "frd decision target row {row_index} has no decision token"
+            ));
+        }
+        if !seen_decision_targets.insert((
+            tag_db_id,
+            target_tag_db_id,
+            source_kind,
+            decision.clone(),
+        )) {
+            return Err(format!(
+                "frd decision target row {row_index} duplicates owner/target/source key"
+            ));
+        }
+        let count = decision_target_rows_by_tag.entry(tag_db_id).or_insert(0);
+        *count = count.saturating_add(1);
+        decision_target_rows.push(FrdDecisionTargetState {
+            tag_db_id,
+            target_tag_db_id,
+            flags,
+            source_kind,
+            decision,
+        });
+    }
+    for (tag_db_id, target_rows) in decision_target_rows_by_tag {
+        match targeted_timed_status_count_by_tag.get(&tag_db_id).copied() {
+            Some(status_count) if target_rows <= status_count => {}
+            Some(status_count) => {
+                return Err(format!(
+                    "frd decision target rows {target_rows} exceed targeted_timed_count {status_count} for tag_db_id {tag_db_id}"
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "frd decision target rows exist without a decision status row for tag_db_id {tag_db_id}"
+                ));
+            }
+        }
+    }
+
     let mut badges = Vec::with_capacity(badge_count);
     for _ in 0..badge_count {
         need(payload, cursor + FRD_BADGE_ROW_FIXED_LEN, "frd badge row")?;
@@ -9663,7 +10160,83 @@ fn parse_frd_depth_payload(payload: &[u8]) -> Result<FrdDepthFrame, String> {
         research_rows,
         decision_status_rows,
         decision_event_rows,
+        decision_target_rows,
+        decision_target_omitted_rows,
         badges,
+    })
+}
+
+struct FrdDepthHeader {
+    header_len: usize,
+    decision_target_count: usize,
+    decision_target_omitted_rows: u32,
+    depth_status_flags: u32,
+    focus_count: usize,
+    research_count: usize,
+    decision_status_count: usize,
+    decision_event_count: usize,
+    observed_focus_count: usize,
+    observed_research_count: usize,
+    observed_decision_status_count: usize,
+    observed_decision_event_count: usize,
+    badge_count: usize,
+}
+
+fn parse_frd_depth_header(payload: &[u8], record_flags: u32) -> Result<FrdDepthHeader, String> {
+    need(
+        payload,
+        FRD_HEADER_LEN_V1,
+        "focus_research_decisions_depth header",
+    )?;
+    if record_flags & COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2 != 0 {
+        need(
+            payload,
+            FRD_HEADER_LEN,
+            "focus_research_decisions_depth v2 header",
+        )?;
+        if payload.get(0..4) != Some(FRD_SCHEMA_MAGIC.as_slice()) {
+            return Err(
+                "focus_research_decisions_depth v2 header is missing FRD2 sanity marker"
+                    .to_string(),
+            );
+        }
+        let version = read_u16(payload, 4);
+        let header_len = read_u16(payload, 6) as usize;
+        if version != FRD_SCHEMA_VERSION || header_len != FRD_HEADER_LEN {
+            return Err(format!(
+                "focus_research_decisions_depth v2 header has version {version} and len {header_len}"
+            ));
+        }
+        return Ok(FrdDepthHeader {
+            header_len,
+            depth_status_flags: read_u32(payload, 8),
+            focus_count: read_u32(payload, 12) as usize,
+            research_count: read_u32(payload, 16) as usize,
+            decision_status_count: read_u32(payload, 20) as usize,
+            decision_event_count: read_u32(payload, 24) as usize,
+            decision_target_count: read_u32(payload, 28) as usize,
+            observed_focus_count: read_u32(payload, 32) as usize,
+            observed_research_count: read_u32(payload, 36) as usize,
+            observed_decision_status_count: read_u32(payload, 40) as usize,
+            observed_decision_event_count: read_u32(payload, 44) as usize,
+            badge_count: read_u32(payload, 48) as usize,
+            decision_target_omitted_rows: read_u32(payload, 52),
+        });
+    }
+    Ok(FrdDepthHeader {
+        header_len: FRD_HEADER_LEN_V1,
+        decision_target_count: 0,
+        decision_target_omitted_rows: 0,
+        depth_status_flags: read_u32(payload, 8),
+        focus_count: read_u32(payload, 12) as usize,
+        research_count: read_u32(payload, 16) as usize,
+        decision_status_count: read_u32(payload, 20) as usize,
+        decision_event_count: read_u32(payload, 24) as usize,
+        observed_focus_count: read_u32(payload, 28) as usize,
+        observed_research_count: read_u32(payload, 32) as usize,
+        observed_decision_status_count: read_u32(payload, 36) as usize,
+        observed_decision_event_count: read_u32(payload, 40) as usize,
+        badge_count: read_u32(payload, 44) as usize,
     })
 }
 

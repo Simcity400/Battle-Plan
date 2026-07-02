@@ -150,6 +150,41 @@ pub const DOMAIN53_HEAP_HI: usize = 0x7FF000000000;
 pub const DOMAIN53_MAX_COUNTRY_TABLE_SLOTS: u32 = 4_096;
 pub const DOMAIN53_MAX_VECTOR_ROWS: u32 = 8_192;
 
+/// Domain 43 market-trade purchase-contract layout for the supported 870ebf
+/// profile. Provenance: MTD1 lane validation in
+/// `extractor/native/lanes/market_trade_live/SLICE_PACKET.md` matched 63
+/// same-tick purchase-contract detail rows on the current build. The price
+/// root remains the shared equipment-subbuffer root at `+0x38`; these offsets
+/// cover the purchase-contract object and detail fields only.
+pub const DOMAIN43_PURCHASE_CONTRACT_VTABLE_RVA: usize = 0x2954C70;
+pub const DOMAIN43_PURCHASE_CONTRACT_ID_TYPE: usize = 0x08;
+pub const DOMAIN43_PURCHASE_CONTRACT_ID_ID: usize = 0x0C;
+pub const DOMAIN43_PURCHASE_CONTRACT_EQUIPMENT_SUBBUF: usize = 0x38;
+pub const DOMAIN43_PURCHASE_CONTRACT_SELLER_TAG_DB_ID: usize = 0x58;
+pub const DOMAIN43_PURCHASE_CONTRACT_BUYER_TAG_DB_ID: usize = 0x5C;
+pub const DOMAIN43_PURCHASE_CONTRACT_DELIVERY_COUNTRY_TAG_DB_ID: usize = 0x5C;
+pub const DOMAIN43_PURCHASE_CONTRACT_DELIVERY_SUBBUF: usize = 0x80;
+pub const DOMAIN43_PURCHASE_CONTRACT_SPEED_RAW: usize = 0xC0;
+pub const DOMAIN43_PURCHASE_CONTRACT_CONVOYS_ASSIGNED: usize = 0x118;
+pub const DOMAIN43_PURCHASE_CONTRACT_CONVOYS_TOTAL: usize = 0x11C;
+pub const DOMAIN43_PURCHASE_CONTRACT_BUYER_PTR: usize = 0x128;
+pub const DOMAIN43_PURCHASE_CONTRACT_EFFICIENCY_RAW: usize = 0x1C0;
+pub const DOMAIN43_PURCHASE_CONTRACT_DAYS: usize = 0x1D0;
+pub const DOMAIN43_PURCHASE_CONTRACT_FACTORY_CIC_PROGRESS_RAW: usize = 0x1E0;
+pub const DOMAIN43_PURCHASE_CONTRACT_EQUIPMENT_TRANSFER_PROGRESS_RAW: usize = 0x1E8;
+pub const DOMAIN43_PURCHASE_CONTRACT_COMPLETED_RAW: usize = 0x25C;
+pub const DOMAIN43_PURCHASE_CONTRACT_TYPE: u32 = 81;
+
+/// Domain 45 targeted-timed decision country-target layout for the supported
+/// 870ebf profile. Provenance: focus/research/decisions depth lane validation
+/// in `extractor/native/lanes/focus_research_decisions_depth_live/SLICE_PACKET.md`
+/// matched 1061 save/live country-target rows on the current build. Numeric
+/// targets, province targets, cooldowns, and body fields remain excluded.
+pub const DOMAIN45_DECISION_STATUS_TARGETED_TIMED: usize = 0xE8;
+pub const DOMAIN45_TARGETED_TIMED_DECISION_VTABLE_RVA: usize = 0x27D5038;
+pub const DOMAIN45_TARGETED_TIMED_DECISION_DEF: usize = 0x10;
+pub const DOMAIN45_TARGETED_TIMED_DECISION_COUNTRY_TARGET: usize = 0x20;
+
 /// Domain 48 state/province/building offsets for the supported profile.
 pub const STATE_VTABLE_RVA: usize = 0x29206C0;
 pub const STATE_OFF_SID: usize = 0x58;

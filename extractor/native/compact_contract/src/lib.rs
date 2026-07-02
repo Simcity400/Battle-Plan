@@ -24,6 +24,14 @@ pub const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = 3;
 
 pub const MAX_SCHEDULED_DOMAINS: usize = 64;
 
+/// H4CR record-header `flags` bit reserved for payload-schema selection.
+///
+/// This is framing metadata, not a compact status flag. Domain 45
+/// `focus_research_decisions_depth_live` uses it to select the schema-v2
+/// payload shape from outside the payload so legacy elapsed-time bytes cannot
+/// collide with an in-payload magic marker.
+pub const COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2: u32 = 1 << 31;
+
 // --- Compact stream status flags (record header `flags` field) -------------
 
 pub const COMPACT_STATUS_STATE_UNAVAILABLE: u32 = 1 << 0;
