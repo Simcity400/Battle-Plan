@@ -7,6 +7,7 @@ use compact_contract::{
     COMPACT_STATUS_SOURCE_UNAVAILABLE, COMPACT_STATUS_STATE_UNAVAILABLE,
     COMPACT_STATUS_TRANSITION_BASELINE_RESET, COMPACT_STATUS_WORKER_PANIC,
 };
+use session_multiplayer_metadata_live as session57_lane;
 
 // --- synthetic H4CR stream builders --------------------------------------
 
@@ -81,6 +82,73 @@ fn country_identity_payload(rows: &[(u32, &str)]) -> Vec<u8> {
 
 fn domain47_payload(status_flags: u32, rows: &[domain47_lane::CharacterLaneRow<'_>]) -> Vec<u8> {
     domain47_lane::encode_payload(0, status_flags, domain47_lane::SCHEMA_ROOTS_VALIDATED, rows)
+}
+
+fn domain57_payload(
+    root_evidence_mask: u32,
+    player_rows: Vec<session57_lane::PlayerCountryRow>,
+    event_rows: Vec<session57_lane::SessionEventRow>,
+    status_flags: u32,
+) -> Vec<u8> {
+    let source_flags = session57_lane::SOURCE_FLAG_DLL_NATIVE
+        | if root_evidence_mask != 0 {
+            session57_lane::SOURCE_FLAG_SESSION_ROOT_VALIDATED
+        } else {
+            0
+        };
+    session57_lane::encode_payload(&session57_lane::SessionMetadataFrame {
+        game_hour_raw: raw_for(16_959_360),
+        status_flags,
+        source_flags,
+        schema_flags: 0,
+        root_evidence_mask,
+        player_country_rows: player_rows,
+        event_rows,
+    })
+}
+
+fn domain57_player_row(tag: &str, tag_db_id: u32) -> session57_lane::PlayerCountryRow {
+    session57_lane::PlayerCountryRow {
+        player_key_hash: 42,
+        player_name: "fixture name ignored".into(),
+        country_tag: tag.into(),
+        tag_db_id,
+        session_slot: 7,
+        flags: session57_lane::PLAYER_FLAG_HUMAN
+            | session57_lane::PLAYER_FLAG_HOST
+            | session57_lane::PLAYER_FLAG_CONNECTED,
+        valid_from_hour_raw: raw_for(16_959_360),
+    }
+}
+
+fn domain57_event_row(
+    kind: session57_lane::SessionEventKind,
+    value_i32: i32,
+) -> session57_lane::SessionEventRow {
+    session57_lane::SessionEventRow {
+        kind,
+        flags: session57_lane::EVENT_FLAG_DIRECT_CAPTURE,
+        actor_key_hash: 0,
+        actor_name: String::new(),
+        text: if matches!(
+            kind,
+            session57_lane::SessionEventKind::Chat
+                | session57_lane::SessionEventKind::SystemMessage
+                | session57_lane::SessionEventKind::Alert
+                | session57_lane::SessionEventKind::Notification
+        ) {
+            "fixture text".into()
+        } else {
+            String::new()
+        },
+        tag_db_id: 0,
+        value_i32,
+        related_value_i32: 0,
+        command_sequence: 0,
+        event_hour_raw: raw_for(16_959_360),
+        event_source_id: 0,
+        event_state: 0,
+    }
 }
 
 fn fuel_payload(rows: &[(u32, i64, i64, i64, i64)]) -> Vec<u8> {
@@ -4791,6 +4859,117 @@ fn chunk2_folds_d56_naval_status_under_oob_extra_without_owning_entities() {
         .unwrap()
         .iter()
         .any(|domain| domain["domain_id"] == json!(56)));
+}
+
+#[test]
+fn chunk2_folds_d57_session_metadata_under_top_level_r2_sidecar() {
+    let payload = domain57_payload(
+        DOMAIN57_ROOT_PLAYER_COUNTRY | DOMAIN57_ROOT_PAUSE_CLOCK,
+        vec![domain57_player_row("IRE", 29)],
+        vec![domain57_event_row(
+            session57_lane::SessionEventKind::Pause,
+            1,
+        )],
+        0,
+    );
+    let snap = chunk1_one_snapshot(vec![(57, payload)]);
+
+    let sidecar = &snap[DOMAIN57_R2_KEY];
+    assert_eq!(sidecar["players_by_country"]["state"], json!("known"));
+    assert_eq!(
+        sidecar["players_by_country"]["rows"][0]["country_tag"],
+        json!("IRE")
+    );
+    assert_eq!(
+        sidecar["players_by_country"]["rows"][0]["tag_db_id"],
+        json!(29)
+    );
+    assert_eq!(
+        sidecar["players_by_country"]["rows"][0]["is_human_controlled"],
+        json!(true)
+    );
+    assert_eq!(
+        sidecar["players_by_country"]["rows"][0]["human_marker"],
+        json!(true)
+    );
+    assert_eq!(
+        sidecar["players_by_country"]["rows"][0]["human_name"]["state"],
+        json!("not_sourced")
+    );
+    assert_eq!(
+        sidecar["players_by_country"]["rows"][0]["player_key_hash"]["state"],
+        json!("not_sourced")
+    );
+    assert_eq!(
+        sidecar["players_by_country"]["rows"][0]["session_slot"]["state"],
+        json!("not_sourced")
+    );
+    assert_eq!(
+        sidecar["players_by_country"]["rows"][0]["host"]["state"],
+        json!("not_sourced")
+    );
+    assert_eq!(
+        sidecar["players_by_country"]["rows"][0]["connected"]["state"],
+        json!("not_sourced")
+    );
+    assert_eq!(sidecar["pause"]["state"], json!("known"));
+    assert_eq!(sidecar["pause"]["is_paused"], json!(true));
+    assert!(snap["countries"].as_object().unwrap().is_empty());
+    assert!(snap["world"].get("session").is_none());
+    assert!(snap["world"].get("scenario").is_none());
+    assert_eq!(snap["provenance"]["mod"], Value::Null);
+}
+
+#[test]
+fn chunk2_d57_zero_human_rows_is_unavailable_but_pause_can_still_fold() {
+    let payload = domain57_payload(
+        DOMAIN57_ROOT_PLAYER_COUNTRY | DOMAIN57_ROOT_PAUSE_CLOCK,
+        Vec::new(),
+        vec![domain57_event_row(
+            session57_lane::SessionEventKind::Pause,
+            0,
+        )],
+        session57_lane::STATUS_SOURCE_UNAVAILABLE | session57_lane::STATUS_PARTIAL_DATA,
+    );
+    let snap = chunk1_one_snapshot(vec![(57, payload)]);
+
+    let sidecar = &snap[DOMAIN57_R2_KEY];
+    assert_eq!(sidecar["players_by_country"]["state"], json!("unavailable"));
+    assert_eq!(
+        sidecar["players_by_country"]["rows"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_eq!(sidecar["pause"]["state"], json!("known"));
+    assert_eq!(sidecar["pause"]["is_paused"], json!(false));
+    assert!(snap["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(57)
+            && problem["problem"] == json!("players_by_country_unavailable")));
+}
+
+#[test]
+fn chunk2_d57_game_speed_event_is_ignored_until_root_is_pinned() {
+    let payload = domain57_payload(
+        DOMAIN57_ROOT_PLAYER_COUNTRY,
+        vec![domain57_player_row("IRE", 29)],
+        vec![domain57_event_row(
+            session57_lane::SessionEventKind::GameSpeed,
+            3,
+        )],
+        session57_lane::STATUS_PARTIAL_DATA,
+    );
+    let snap = chunk1_one_snapshot(vec![(57, payload)]);
+
+    let sidecar = &snap[DOMAIN57_R2_KEY];
+    assert_eq!(sidecar["players_by_country"]["state"], json!("known"));
+    assert_eq!(sidecar["pause"]["state"], json!("unavailable"));
+    assert!(snap["world"].get("session").is_none());
+    assert!(snap["world"].get("scenario").is_none());
 }
 
 #[test]

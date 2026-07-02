@@ -133,10 +133,17 @@ mod tests {
             Some(55)
         );
         assert_eq!(
+            id_for_scheduled_name("session_multiplayer_metadata_live"),
+            Some(57)
+        );
+        assert_eq!(
             id_for_scheduled_name("characters_leaders_cabinet_live"),
             Some(47)
         );
-        assert_eq!(id_for_scheduled_name("diplomacy_intel_operatives_live"), None);
+        assert_eq!(
+            id_for_scheduled_name("diplomacy_intel_operatives_live"),
+            None
+        );
         assert_eq!(
             wire_name_for_id(47),
             Some("characters_leaders_cabinet_live")
@@ -144,6 +151,10 @@ mod tests {
         assert_eq!(
             wire_name_for_id(53),
             Some("diplomacy_intel_operatives_live")
+        );
+        assert_eq!(
+            wire_name_for_id(57),
+            Some("session_multiplayer_metadata_live")
         );
         assert_eq!(id_for_scheduled_name("air_variant_archetypes_live"), None);
         assert_eq!(wire_name_for_id(46), Some("air_variant_archetypes"));
@@ -154,6 +165,7 @@ mod tests {
         assert!(!requires_data_record(1000));
         assert!(requires_data_record(53));
         assert!(requires_data_record(46));
+        assert!(requires_data_record(57));
     }
 
     #[test]

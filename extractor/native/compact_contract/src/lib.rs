@@ -686,8 +686,8 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         57,
         "session_multiplayer_metadata_live",
         "session_multiplayer_metadata_live",
-        CompactDomainStatus::Reserved,
-        false,
+        CompactDomainStatus::ValidatedPartialSlice,
+        true,
         true,
         &[],
     ),
@@ -883,6 +883,10 @@ mod tests {
         assert!(
             profile_ids.contains(&56),
             "domain 56 is a validated slice with explicit open gaps"
+        );
+        assert!(
+            profile_ids.contains(&57),
+            "domain 57 is a validated partial slice"
         );
         assert!(
             profile_ids.contains(&54),

@@ -19,7 +19,8 @@ The live-root proof is lane-local: `live_probe_session.py` and
 ## Packet File List
 
 - `INTEGRATION_PACKET.md`: this shared integration packet.
-- `fold_r2_projection.rs`: standalone draft replay fold module and tests.
+- The draft fold projection has been applied into
+  `recorder_host/src/world_fold.rs` and its tests.
 - Existing evidence kept as-is: `README.md`, `live_probe_session.py`,
   `live_probe_session_strict.json`, `src/lib.rs`, `src/bin/proof.rs`.
 
@@ -53,7 +54,7 @@ a native session/player block:
         "country_tag": "IRE",
         "tag_db_id": 29,
         "is_human_controlled": true,
-        "human_status_raw": 1,
+        "human_marker": true,
         "human_name": { "state": "not_sourced" },
         "player_key_hash": { "state": "not_sourced" },
         "session_slot": { "state": "not_sourced" },
@@ -74,6 +75,10 @@ Pause is a world-scoped per-hour state. It should be folded as state for the
 snapshot hour, not as a fabricated user command event. A future schema pass can
 move this sidecar into `world.session` or a top-level `session` block; until then
 the R2 sidecar keeps provenance explicit.
+
+The raw `+0x388` human-status byte is not currently carried by the compact row;
+MP status-code semantics would require a lane schema field plus collector and
+wire round-trip work.
 
 Three-state semantics:
 
@@ -223,7 +228,8 @@ Fold:
 
 - Build `_r2_session_multiplayer_metadata_live.players_by_country` from
   player-country rows when `SOURCE_FLAG_SESSION_ROOT_VALIDATED` and the
-  player-country root evidence bit are set.
+  player-country root evidence bit are set. Emit only the normalized
+  `human_marker`; do not fabricate the raw `+0x388` status byte.
 - Do not write `countries[*].human_name`.
 - Do not infer AI countries from the absence of a player row.
 - Fold pause into `_r2_session_multiplayer_metadata_live.pause` as the per-hour
@@ -233,12 +239,9 @@ Fold:
 - If pause clock roots fail or the vtable check fails, set
   `pause.state = "unavailable"`.
 
-The draft pure fold module is `fold_r2_projection.rs`; run it with:
-
-```powershell
-rustc --edition 2021 --test extractor/native/lanes/session_multiplayer_metadata_live/fold_r2_projection.rs -o $env:TEMP\domain57_fold_r2_tests.exe
-& $env:TEMP\domain57_fold_r2_tests.exe
-```
+The draft pure fold module has been deleted after its logic was moved into
+`recorder_host/src/world_fold.rs`; keep future fold coverage in the recorder
+host tests.
 
 ## Descriptor And Registry Drafts
 

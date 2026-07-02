@@ -47,6 +47,7 @@ dependencies = [
  "naval_missions_status_live_lane",
  "occupation_resistance_compliance_live_lane",
  "scripted_state_flags_variables_live_lane",
+ "session_multiplayer_metadata_live",
 ]
 
 [[package]]
@@ -217,6 +218,7 @@ dependencies = [
  "occupation_resistance_compliance_live_lane",
  "scripted_state_flags_variables_live_lane",
  "serde_json",
+ "session_multiplayer_metadata_live",
  "snapshot",
 ]
 

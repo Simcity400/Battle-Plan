@@ -41,6 +41,40 @@ pub const COUNTRY_DATABASE_OFFSET: usize = 0x33189C8;
 /// panics on high sparse slots.
 pub const MAX_COMPACT_OWNER_TAG_DB_ID: u32 = 2_048;
 
+/// Domain 57 session multiplayer metadata roots for supported build 870ebf.
+///
+/// Provenance: 2026-07-02 passive live probe validation
+/// (`live_probe_session.py`) passed the strict SP oracle twice with Ireland as
+/// human-controlled TAG `IRE` at tag-db index 29. The values are current-build
+/// sentinels only; if the profile sentinel/build SHA changes, these offsets must
+/// be revalidated before domain 57 is scheduled.
+pub const DOMAIN57_CGAMESTATE_SINGLETON_RVA: usize = 0x3316E90;
+pub const DOMAIN57_CGAMESTATE_PLAYER_COUNTRY_COUNT: usize = 0x394;
+pub const DOMAIN57_CGAMESTATE_COUNTRY_COUNT: usize = DOMAIN57_CGAMESTATE_PLAYER_COUNTRY_COUNT;
+pub const DOMAIN57_CGAMESTATE_HUMAN_STATUS_ARRAY: usize = 0x388;
+pub const DOMAIN57_CGAMESTATE_COUNTRY_HANDLE_ARRAY: usize = 0x310;
+pub const DOMAIN57_COUNTRY_HANDLE_SLOT_INDEX: usize = 0x08;
+pub const DOMAIN57_COUNTRY_HANDLE_LOCALIZED_NAME_UNINTEGRATED: usize = 0x10;
+pub const DOMAIN57_COUNTRY_HANDLE_LOCALIZED_NAME: usize =
+    DOMAIN57_COUNTRY_HANDLE_LOCALIZED_NAME_UNINTEGRATED;
+pub const DOMAIN57_CGAMESTATE_COUNTRY_TAG_RECORDS: usize = 0x358;
+pub const DOMAIN57_CGAMESTATE_SLOT_TAG_ARRAY: usize = DOMAIN57_CGAMESTATE_COUNTRY_TAG_RECORDS;
+pub const DOMAIN57_COUNTRY_TAG_RECORD_STRIDE: usize = 0x20;
+pub const DOMAIN57_COUNTRY_TAG_RECORD_TAG: usize = 0x00;
+
+/// Domain 57 pause-clock roots for supported build 870ebf.
+///
+/// Provenance: the same 2026-07-02 passive probe validated both clock singleton
+/// slots and required the clock object's vtable identity before trusting the
+/// pause bool at `+0x6C1`. Keep the vtable check in readers; the bool offset is
+/// not valid without the `module+0x2952510` identity match.
+pub const DOMAIN57_CLOCK_SINGLETON_A_RVA: usize = 0x33172E0;
+pub const DOMAIN57_CLOCK_SINGLETON_B_RVA: usize = 0x33172E8;
+pub const DOMAIN57_CLOCK_SINGLETON_SLOT_A_RVA: usize = DOMAIN57_CLOCK_SINGLETON_A_RVA;
+pub const DOMAIN57_CLOCK_SINGLETON_SLOT_B_RVA: usize = DOMAIN57_CLOCK_SINGLETON_B_RVA;
+pub const DOMAIN57_CLOCK_VTABLE_RVA: usize = 0x2952510;
+pub const DOMAIN57_CLOCK_IS_PAUSED: usize = 0x6C1;
+
 /// Domain 54 army/order battleplan offsets for the supported profile.
 ///
 /// Current-build provenance is documented in

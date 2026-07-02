@@ -24,10 +24,10 @@ use army_battleplans_depth_live_lane as battleplans54;
 use characters_leaders_cabinet_live_lane as domain47;
 use compact_contract::calendar::{date_from_raw, hour_index_from_raw};
 use compact_contract::{
-    compact_status_is_failure, COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC,
-    COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2, COMPACT_RECORD_TYPE_DOMAIN_DATA,
-    COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_VERSION, COMPACT_STATUS_DELTA_DATA,
-    COMPACT_STATUS_FAILURE_MASK, COMPACT_STATUS_PARTIAL_DATA, COMPACT_STATUS_SOURCE_UNAVAILABLE,
+    compact_status_is_failure, COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2, COMPACT_RECORD_HEADER_LEN,
+    COMPACT_RECORD_MAGIC, COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_FRAME_END,
+    COMPACT_RECORD_VERSION, COMPACT_STATUS_DELTA_DATA, COMPACT_STATUS_FAILURE_MASK,
+    COMPACT_STATUS_PARTIAL_DATA, COMPACT_STATUS_SOURCE_UNAVAILABLE,
     COMPACT_STATUS_TRANSITION_BASELINE_RESET,
 };
 use construction_buildings_state_damage_live_lane as domain48;
@@ -35,6 +35,7 @@ use diplomacy_intel_operatives_live as diplomacy53;
 use land_combat_detail_events_live_lane as land_detail55;
 use naval_missions_status_live_lane as naval56;
 use serde_json::{json, Map, Value};
+use session_multiplayer_metadata_live as session57;
 
 const SCHEMA_VERSION: &str = "1";
 
@@ -199,11 +200,15 @@ const SCRIPTED_STATE_DOMAIN_ID: u16 = 51;
 const DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID: u16 = diplomacy53::DOMAIN_ID;
 const ARMY_BATTLEPLANS_DEPTH_DOMAIN_ID: u16 = battleplans54::DOMAIN_ID;
 const NAVAL_MISSIONS_STATUS_DOMAIN_ID: u16 = 56;
+const SESSION_MULTIPLAYER_METADATA_DOMAIN_ID: u16 = session57::DOMAIN_ID;
 const DOMAIN47_R2_KEY: &str = "_r2_characters_leaders_cabinet_live";
 const CONSTRUCTION_BUILDINGS_STATE_DAMAGE_EXTRA_KEY: &str =
     "construction_buildings_state_damage_live";
 const DOMAIN53_EXTRA_KEY: &str = "domain53_extra";
 const DOMAIN53_R2_KEY: &str = "_r2_diplomacy_intel_operatives_live";
+const DOMAIN57_R2_KEY: &str = "_r2_session_multiplayer_metadata_live";
+const DOMAIN57_ROOT_PLAYER_COUNTRY: u32 = 1 << 0;
+const DOMAIN57_ROOT_PAUSE_CLOCK: u32 = 1 << 1;
 
 const ROW_FLAG_DELETED_LOW_BIT: u32 = 1;
 const AIR_STRENGTH_DELTA_ROW_FLAG_DELETED: u32 = 1 << 2;
@@ -439,7 +444,7 @@ const AIR_VARIANT_ARCHETYPE_KNOWN_FLAGS: u32 = ROW_FLAG_DELETED_LOW_BIT
 /// The set of domains this fold understands and folds into world state.
 pub const FOLDED_DOMAIN_IDS: &[u16] = &[
     10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
-    36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54, 55, 56,
+    36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54, 55, 56, 57,
 ];
 
 /// A running world-state accumulator. Feed every H4CR record; snapshots are
@@ -519,6 +524,8 @@ pub struct WorldFold {
     /// existence; D56 only annotates validated task-force status under
     /// `order_of_battle.extra.naval_missions_status_live`.
     naval_missions_status: BTreeMap<u32, NavalMissionTaskForceFoldRow>,
+    /// D57 validated partial session metadata sidecar for the current hour.
+    session_multiplayer_metadata_this_hour: Option<Domain57FoldState>,
     /// D54 R2-projected active army battleplan depth annotations. D27 owns
     /// `battle_plan_orders`; D54 writes only its named extra bucket.
     army_battleplans_depth: BTreeMap<ArmyBattleplanDepthKey, ArmyBattleplanDepthOrder>,
@@ -614,6 +621,20 @@ struct Domain53WorldOverlay {
     subjects: Vec<diplomacy53::compact::SubjectRow>,
 }
 
+#[derive(Default, Clone)]
+struct Domain57FoldState {
+    players_by_country: Option<Vec<Domain57PlayerCountryProjection>>,
+    pause_is_paused: Option<bool>,
+}
+
+#[derive(Clone)]
+struct Domain57PlayerCountryProjection {
+    country_tag: String,
+    tag_db_id: u32,
+    human_marker: bool,
+    valid_from_hour_raw: i32,
+}
+
 impl WorldFold {
     pub fn new(game_id: impl Into<String>) -> Self {
         WorldFold {
@@ -656,6 +677,7 @@ impl WorldFold {
             oob_commands: BTreeMap::new(),
             ships: BTreeMap::new(),
             naval_missions_status: BTreeMap::new(),
+            session_multiplayer_metadata_this_hour: None,
             army_battleplans_depth: BTreeMap::new(),
             army_battleplans_depth_unknown_this_hour: false,
             army_battleplans_depth_omitted_non_exact_this_hour: 0,
@@ -885,6 +907,7 @@ impl WorldFold {
         self.domain53_world_overlay_this_hour = Domain53WorldOverlay::default();
         self.supply_unknown_this_hour = false;
         self.market_trade_unknown_this_hour = false;
+        self.session_multiplayer_metadata_this_hour = None;
         self.army_battleplans_depth_unknown_this_hour = false;
         self.army_battleplans_depth_omitted_non_exact_this_hour = 0;
         self.army_battleplans_depth_path_omitted_this_hour = 0;
@@ -1269,6 +1292,57 @@ impl WorldFold {
             .unwrap_or(Value::Null)
     }
 
+    fn build_domain57_session_sidecar(&self) -> Option<Value> {
+        let state = self.session_multiplayer_metadata_this_hour.as_ref()?;
+        let players_by_country = if let Some(rows) = &state.players_by_country {
+            let mut rows = rows.clone();
+            rows.sort_by(|a, b| {
+                a.country_tag
+                    .cmp(&b.country_tag)
+                    .then(a.tag_db_id.cmp(&b.tag_db_id))
+            });
+            json!({
+                "state": "known",
+                "rows": rows
+                    .iter()
+                    .map(|row| {
+                        json!({
+                            "country_tag": row.country_tag.as_str(),
+                            "tag_db_id": row.tag_db_id,
+                            "is_human_controlled": true,
+                            "human_marker": row.human_marker,
+                            "human_name": { "state": "not_sourced" },
+                            "player_key_hash": { "state": "not_sourced" },
+                            "session_slot": { "state": "not_sourced" },
+                            "host": { "state": "not_sourced" },
+                            "connected": { "state": "not_sourced" },
+                            "valid_from_hour_raw": row.valid_from_hour_raw,
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            })
+        } else {
+            json!({
+                "state": "unavailable",
+                "rows": [],
+            })
+        };
+        let pause = match state.pause_is_paused {
+            Some(is_paused) => json!({
+                "state": "known",
+                "is_paused": is_paused,
+            }),
+            None => json!({
+                "state": "unavailable",
+                "is_paused": Value::Null,
+            }),
+        };
+        Some(json!({
+            "players_by_country": players_by_country,
+            "pause": pause,
+        }))
+    }
+
     fn apply_domain_data(&mut self, domain_id: u16, payload: &[u8], record_flags: u32) {
         let result = match domain_id {
             10 => self.fold_fuel(payload),
@@ -1314,6 +1388,7 @@ impl WorldFold {
             54 => self.fold_army_battleplans_depth(payload),
             55 => self.fold_land_combat_detail_events(payload),
             56 => self.fold_naval_missions_status(payload),
+            57 => self.fold_session_multiplayer_metadata(payload),
             _ => {
                 self.unfolded_domains_this_hour.insert(domain_id);
                 return;
@@ -1751,6 +1826,7 @@ impl WorldFold {
         let strategic_air_value = self.build_strategic_air(&mut unresolved);
         let world_value = self.build_world_value();
         let special_projects_value = self.build_special_projects_value(&mut unresolved);
+        let session_multiplayer_metadata_value = self.build_domain57_session_sidecar();
 
         // resolved only when we have a map AND every keyed/referenced id
         // resolved. Keep this after all section builders: OOB, designs, naval
@@ -1785,7 +1861,7 @@ impl WorldFold {
             ));
         }
 
-        json!({
+        let mut snapshot = json!({
             "schema_version": SCHEMA_VERSION,
             "game_id": self.game_id,
             "date": date,
@@ -1815,7 +1891,13 @@ impl WorldFold {
             "special_projects": special_projects_value,
             "world": world_value,
             "events": [],
-        })
+        });
+        if let Some(value) = session_multiplayer_metadata_value {
+            if let Some(obj) = snapshot.as_object_mut() {
+                obj.insert(DOMAIN57_R2_KEY.into(), value);
+            }
+        }
+        snapshot
     }
 
     fn build_combats(&self) -> (Value, Vec<(u32, u64)>) {
@@ -7234,6 +7316,140 @@ impl WorldFold {
         Ok(())
     }
 
+    // --- DOMAIN 57 session_multiplayer_metadata_live (R2 sidecar) --------
+    fn fold_session_multiplayer_metadata(&mut self, payload: &[u8]) -> Result<(), String> {
+        let gate = session57::gate_payload(payload);
+        if !gate.ok {
+            return Err(gate.errors.join("; "));
+        }
+
+        need(payload, session57::PAYLOAD_HEADER_LEN, "domain57 header")?;
+        let status_flags = read_u32(payload, 20);
+        let source_flags = read_u32(payload, 24);
+        let player_count = read_u32(payload, 28) as usize;
+        let event_count = read_u32(payload, 32) as usize;
+        let string_bytes = read_u32(payload, 36) as usize;
+        let root_evidence_mask = read_u32(payload, 44);
+        let player_bytes = player_count
+            .checked_mul(session57::PLAYER_COUNTRY_ROW_LEN)
+            .ok_or("domain57 player row byte overflow")?;
+        let event_bytes = event_count
+            .checked_mul(session57::SESSION_EVENT_ROW_LEN)
+            .ok_or("domain57 event row byte overflow")?;
+        let strings_start = session57::PAYLOAD_HEADER_LEN
+            .checked_add(player_bytes)
+            .and_then(|value| value.checked_add(event_bytes))
+            .ok_or("domain57 strings offset overflow")?;
+        let expected_len = strings_start
+            .checked_add(string_bytes)
+            .ok_or("domain57 payload len overflow")?;
+        if expected_len != payload.len() {
+            return Err(format!("domain57 len {} != {expected_len}", payload.len()));
+        }
+        let strings = &payload[strings_start..];
+
+        let mut player_rows = Vec::new();
+        let mut cursor = session57::PAYLOAD_HEADER_LEN;
+        for row_index in 0..player_count {
+            let row = &payload[cursor..cursor + session57::PLAYER_COUNTRY_ROW_LEN];
+            cursor += session57::PLAYER_COUNTRY_ROW_LEN;
+            let country_tag = d57_string_ref(strings, read_u32(row, 16), read_u16(row, 14))?;
+            let tag_db_id = read_u32(row, 20);
+            let flags = read_u32(row, 28);
+            let valid_from_hour_raw = read_i32(row, 32);
+            if flags & session57::PLAYER_FLAG_HUMAN == 0 {
+                self.record_domain_problem(
+                    SESSION_MULTIPLAYER_METADATA_DOMAIN_ID,
+                    "non_human_player_row_ignored",
+                );
+                continue;
+            }
+            if !valid_domain57_country_tag(&country_tag) {
+                return Err(format!("domain57 player row {row_index} invalid TAG"));
+            }
+            if tag_db_id == 0
+                || tag_db_id > compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID
+            {
+                return Err(format!(
+                    "domain57 player row {row_index} invalid tag_db_id {tag_db_id}"
+                ));
+            }
+            // The compact row does not carry the raw +0x388 status byte; this
+            // is only the normalized nonzero-human marker for the partial slice.
+            player_rows.push(Domain57PlayerCountryProjection {
+                country_tag,
+                tag_db_id,
+                human_marker: true,
+                valid_from_hour_raw,
+            });
+        }
+
+        let mut pause_is_paused = None;
+        for _ in 0..event_count {
+            let row = &payload[cursor..cursor + session57::SESSION_EVENT_ROW_LEN];
+            cursor += session57::SESSION_EVENT_ROW_LEN;
+            let raw_kind = read_u16(row, 0);
+            let Some(kind) = session57::SessionEventKind::from_raw(raw_kind) else {
+                continue;
+            };
+            if kind != session57::SessionEventKind::Pause {
+                continue;
+            }
+            let value_i32 = read_i32(row, 32);
+            if value_i32 != 0 && value_i32 != 1 {
+                return Err(format!("domain57 pause value {value_i32} is not 0/1"));
+            }
+            pause_is_paused = Some(value_i32 != 0);
+        }
+
+        let hard_failure = status_flags
+            & (session57::STATUS_WORKER_PANIC | session57::STATUS_BRIDGE_UNAVAILABLE)
+            != 0;
+        let source_root_validated =
+            (source_flags & session57::SOURCE_FLAG_SESSION_ROOT_VALIDATED) != 0;
+        let player_root_validated =
+            source_root_validated && (root_evidence_mask & DOMAIN57_ROOT_PLAYER_COUNTRY) != 0;
+        let pause_root_validated =
+            source_root_validated && (root_evidence_mask & DOMAIN57_ROOT_PAUSE_CLOCK) != 0;
+
+        let players_known = !hard_failure && player_root_validated && !player_rows.is_empty();
+        let pause_known = !hard_failure && pause_root_validated && pause_is_paused.is_some();
+        self.session_multiplayer_metadata_this_hour = Some(Domain57FoldState {
+            players_by_country: players_known.then_some(player_rows),
+            pause_is_paused: if pause_known { pause_is_paused } else { None },
+        });
+
+        if status_flags & session57::STATUS_SOURCE_UNAVAILABLE != 0 {
+            self.record_domain_problem(
+                SESSION_MULTIPLAYER_METADATA_DOMAIN_ID,
+                "source_unavailable",
+            );
+        }
+        if status_flags & session57::STATUS_PARTIAL_DATA != 0 {
+            self.record_domain_problem(SESSION_MULTIPLAYER_METADATA_DOMAIN_ID, "partial_data");
+        }
+        if !players_known {
+            self.record_domain_problem(
+                SESSION_MULTIPLAYER_METADATA_DOMAIN_ID,
+                "players_by_country_unavailable",
+            );
+        }
+        if !pause_known {
+            self.record_domain_problem(SESSION_MULTIPLAYER_METADATA_DOMAIN_ID, "pause_unavailable");
+        }
+
+        if players_known || pause_known {
+            self.mark_fold_domain_success(SESSION_MULTIPLAYER_METADATA_DOMAIN_ID);
+        } else {
+            self.mark_fold_domain_unknown(
+                SESSION_MULTIPLAYER_METADATA_DOMAIN_ID,
+                "source_unavailable",
+                "session_multiplayer_metadata_live unavailable this hour",
+            );
+        }
+        Ok(())
+    }
+
     // --- DOMAIN 56 naval_missions_status_live (R2 OOB annotation) --------
     fn fold_naval_missions_status(&mut self, payload: &[u8]) -> Result<(), String> {
         let decoded =
@@ -10402,6 +10618,24 @@ fn domain_descriptor_json(domain_id: u16) -> Value {
         "domain_id": domain_id,
         "domain": domain_name(domain_id),
     })
+}
+
+fn d57_string_ref(strings: &[u8], off: u32, len: u16) -> Result<String, String> {
+    let start = off as usize;
+    let len = len as usize;
+    let end = start
+        .checked_add(len)
+        .ok_or("domain57 string ref overflow")?;
+    let bytes = strings
+        .get(start..end)
+        .ok_or("domain57 string ref out of bounds")?;
+    std::str::from_utf8(bytes)
+        .map(str::to_string)
+        .map_err(|err| format!("domain57 string ref invalid utf-8: {err}"))
+}
+
+fn valid_domain57_country_tag(tag: &str) -> bool {
+    tag.len() == 3 && tag != "---" && tag.bytes().all(|byte| byte.is_ascii_uppercase())
 }
 
 fn detail_event_kind_name(event_kind: u32) -> Option<&'static str> {

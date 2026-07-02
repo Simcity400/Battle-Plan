@@ -10,6 +10,7 @@ use occupation_resistance_compliance_live_lane as occupation52;
 use recorder_host::compact_domain_registry;
 use recorder_host::world_fold::{WorldFold, FOLDED_DOMAIN_IDS};
 use serde_json::{json, Value};
+use session_multiplayer_metadata_live as session57;
 use snapshot::sha256::{to_hex, Sha256};
 use snapshot::{pack, Container, ExpectedIdentity, PackEntry, PackIdentity};
 use std::collections::{BTreeMap, BTreeSet};
@@ -90,6 +91,7 @@ const COMPACT_DOMAIN_DIPLOMACY_INTEL_OPERATIVES_LIVE: u16 = diplomacy53::DOMAIN_
 const COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE: u16 = battleplans54::DOMAIN_ID;
 const COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE: u16 = 55;
 const COMPACT_DOMAIN_NAVAL_MISSIONS_STATUS_LIVE: u16 = 56;
+const COMPACT_DOMAIN_SESSION_MULTIPLAYER_METADATA_LIVE: u16 = session57::DOMAIN_ID;
 #[cfg(test)]
 const COMPACT_AIR_VARIANT_ARCHETYPE_ROW_FLAG_ARCHETYPE: u32 = 1 << 1;
 #[cfg(test)]
@@ -2815,6 +2817,13 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     }
                     COMPACT_DOMAIN_NAVAL_MISSIONS_STATUS_LIVE => {
                         decode_compact_naval_missions_status_live_data_payload(
+                            offset,
+                            payload,
+                            &mut summary,
+                        )
+                    }
+                    COMPACT_DOMAIN_SESSION_MULTIPLAYER_METADATA_LIVE => {
+                        decode_compact_session_multiplayer_metadata_live_data_payload(
                             offset,
                             payload,
                             &mut summary,
@@ -7748,6 +7757,52 @@ fn decode_compact_naval_missions_status_live_data_payload(
             let entry = domain.data_units_total.entry(name.to_string()).or_default();
             *entry = entry.saturating_add(count);
         }
+    }
+}
+
+fn decode_compact_session_multiplayer_metadata_live_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    let gate = session57::gate_payload(payload);
+    summary.status_flags_or |= gate.summary.status_flags;
+    summary.parse_errors.extend(
+        gate.errors
+            .into_iter()
+            .map(|err| format!("offset {offset}: {err}")),
+    );
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_SESSION_MULTIPLAYER_METADATA_LIVE)
+    {
+        domain.status_flags_or |= gate.summary.status_flags;
+        let player_rows = gate.summary.player_country_rows as u64;
+        let event_rows = gate.summary.event_rows as u64;
+        domain.data_rows_total = domain
+            .data_rows_total
+            .saturating_add(player_rows.saturating_add(event_rows));
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(player_rows.saturating_add(event_rows));
+        *domain
+            .data_units_total
+            .entry("session_player_country_rows".into())
+            .or_default() += player_rows;
+        *domain
+            .data_units_total
+            .entry("session_event_rows".into())
+            .or_default() += event_rows;
+        let pause_rows = gate
+            .summary
+            .event_kind_counts
+            .get(&(session57::SessionEventKind::Pause as u16))
+            .copied()
+            .unwrap_or(0);
+        *domain
+            .data_units_total
+            .entry("session_pause_rows".into())
+            .or_default() += pause_rows;
     }
 }
 

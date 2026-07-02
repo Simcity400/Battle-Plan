@@ -130,6 +130,10 @@ mod tests {
             Some(56)
         );
         assert_eq!(
+            registry.id_for_scheduled_name("session_multiplayer_metadata_live"),
+            Some(57)
+        );
+        assert_eq!(
             registry.id_for_scheduled_name("army_battleplans_depth_live"),
             Some(54)
         );
@@ -154,6 +158,10 @@ mod tests {
             Some(CompactDomainStatus::ValidatedSliceOpenGaps)
         );
         assert_eq!(
+            registry.by_id(57).map(|d| d.status),
+            Some(CompactDomainStatus::ValidatedPartialSlice)
+        );
+        assert_eq!(
             assigned_descriptor_by_name("air_variant_archetypes_live").map(|d| d.id),
             Some(46)
         );
@@ -162,7 +170,7 @@ mod tests {
     #[test]
     fn reserved_lane_ids_are_assigned_but_not_scheduled() {
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
-        for id in [49, 50, 53, 57, 58, 59] {
+        for id in [49, 50, 53, 58, 59] {
             assert!(
                 assigned_descriptor_by_id(id).is_some(),
                 "domain {id} must be assigned in compact_contract"

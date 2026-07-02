@@ -17,3 +17,4 @@ diplomacy_intel_operatives_live = { path = "../lanes/diplomacy_intel_operatives_
 land_combat_detail_events_live_lane = { path = "../lanes/land_combat_detail_events_live" }
 army_battleplans_depth_live_lane = { path = "../lanes/army_battleplans_depth_live" }
 naval_missions_status_live_lane = { path = "../lanes/naval_missions_status_live" }
+session_multiplayer_metadata_live = { path = "../lanes/session_multiplayer_metadata_live" }
