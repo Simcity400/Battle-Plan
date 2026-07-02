@@ -6,7 +6,10 @@ Active repo-wide documentation:
 | --- | --- |
 | `AGENTS.md` | Canonical operating rules for agents. |
 | `CLAUDE.md` | Minimal compatibility notes for Claude-oriented handoffs. |
-| `DESIGN.md` | Current product vision and active source-of-truth map. |
+| `DESIGN.md` | Current product vision and goals. |
 
 Historical repo-wide protocols and superseded design/status material live in
 `archive/`. They are evidence, not current direction.
+
+The root `../AGENTS.md` is a tooling-discovery pointer only. Keep the actual
+agent rules in this folder.
