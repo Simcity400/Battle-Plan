@@ -24,7 +24,10 @@ The active product status is tracked in:
 
 - `../coverage_audit/memory_manifest.json`
 - `../coverage_audit/COVERAGE_REPORT.md`
-- `../IN_PROCESS_COLLECTOR_PLAN.md`
+- `../documents/MASTER_EXTRACTION_CONTRACT.md`
+
+Historical collector migration notes are archived at
+`../documents/archive/plans/IN_PROCESS_COLLECTOR_PLAN.md`.
 
 ## Safety Contract
 

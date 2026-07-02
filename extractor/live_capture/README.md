@@ -22,7 +22,9 @@ proof gates, and `.battleplan` validation/writer integration. It may attach the
 DLL, run proof gates, validate manifests/replay files, and perform temporary
 bounded preflight discovery. It must not walk memory hourly/sub-hourly, own the
 production hot extraction loop, or be required to keep up with speed five. See
-`../IN_PROCESS_COLLECTOR_PLAN.md` for the collector migration plan and
+`../documents/MASTER_EXTRACTION_CONTRACT.md` for the current extractor backlog,
+`../documents/archive/plans/IN_PROCESS_COLLECTOR_PLAN.md` for historical
+collector planning context, and
 `../../replay_interface/documents/HOI4REPLAY_CONTAINER_SPEC.md` for the portable recording format.
 
 ## Main Pieces

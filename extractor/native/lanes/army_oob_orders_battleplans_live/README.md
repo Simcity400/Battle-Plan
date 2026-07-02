@@ -1,4 +1,6 @@
 # army_oob_orders_battleplans_live lane
+> Active lane note: this README is the only active lane-local documentation. Historical plans, proof reports, blocker notes, and registration packets for this lane are archived under ../../../documents/archive/native_lanes/army_oob_orders_battleplans_live/. Current extraction completion status lives in ../../../documents/MASTER_EXTRACTION_CONTRACT.md.
+
 
 Lane scope: land army/army-group command hierarchy, commander assignment,
 formation membership, selected army order roots, battle-plan target slices, and
@@ -384,7 +386,7 @@ and rejects the complete plain contiguous/fixed-stride pointer-table path:
   (`471/477` armies, `238/242` army groups, `91/101` theatres), so this proves
   references exist but does not provide a bounded root manager/table source.
 
-`ARMY_BATTLEPLANS_DEPTH_REGISTRATION_PLAN.md` is the exact registration-only
+`../../../documents/archive/native_lanes/army_oob_orders_battleplans_live/ARMY_BATTLEPLANS_DEPTH_REGISTRATION_PLAN.md` is the exact registration-only
 hook plan for the collector registry/coordinator and Rust recorder. It is not
 applied while another lane owns the shared integration slot.
 

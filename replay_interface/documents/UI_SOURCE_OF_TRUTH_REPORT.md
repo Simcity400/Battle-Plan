@@ -2,10 +2,9 @@
 
 Purpose: give UI agents a clear operating directive for the native replay UI,
 including the strategic map and every map-adjacent interaction. This report does
-not replace `MASTER_PROGRESS.md`, `BINDING_MAP_COVERAGE.md`,
-`INTERACTION_PARITY_INVENTORY.md`, or the executable interaction contracts. It
-states the product standard and the proof expected before an agent claims a UI
-surface behaves like the game.
+not create a second progress ledger. It states the product standard and the
+proof expected before an agent claims a UI surface behaves like Hearts of Iron
+IV.
 
 ## Product Standard
 
@@ -222,12 +221,14 @@ For every UI view or interaction an agent touches:
    - no fabricated data on absent/null inputs;
    - scrub A-to-B-to-A does not carry stale state;
    - missing selected rows fail closed instead of selecting a fallback.
-9. Update the appropriate canonical ledger:
-   - `MASTER_PROGRESS.md` for current status changes;
-   - `INTERACTION_PARITY_INVENTORY.md` for interaction evidence;
-   - `BINDING_MAP_COVERAGE.md` or `BINDING_MAP_*.md` for binding and gap changes;
-   - `extractor/coverage_audit/memory_manifest.json` and `COVERAGE_REPORT.md` for data-row
-     coverage changes.
+9. Update the appropriate active source of truth:
+   - `MAP_REPLICA_PLAN.md` for map/interface implementation direction;
+   - `REPLAY_SCHEMA.md` for replay-state schema changes;
+   - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md` for missing captured
+     data that blocks UI fidelity;
+   - `extractor/coverage_audit/memory_manifest.json` and
+     `extractor/coverage_audit/COVERAGE_REPORT.md` for data-row coverage
+     changes.
 
 ## User-Help Requests To Surface Early
 

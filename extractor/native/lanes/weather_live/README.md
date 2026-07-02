@@ -1,8 +1,10 @@
 # weather_live residuals lane
+> Active lane note: this README is the only active lane-local documentation. Historical plans, proof reports, blocker notes, and registration packets for this lane are archived under ../../../documents/archive/native_lanes/weather_live/. Current extraction completion status lives in ../../../documents/MASTER_EXTRACTION_CONTRACT.md.
+
 
 Lane-local proof package for domain 24 `weather_live` residuals. This lane does
 not claim whole-weather completion. The newest superseding residual report is
-`WEATHER_REMAINING_BLOCKERS_CLOSED_20260701.md`; the older closeout files are
+`../../../documents/archive/native_lanes/weather_live/WEATHER_REMAINING_BLOCKERS_CLOSED_20260701.md`; the older closeout files are
 accepted backlog-reduction slices only. The current acceptance boundary keeps
 shared sandstorm registration/proof orchestrator-owned and keeps the whole
 weather concept/domain 24 marked not complete. The lane narrows the user's audit
@@ -83,14 +85,14 @@ Results: lane tests `4 passed`; payload gate decoded `439056` bytes, `13719`
 rows, `13414` province visual rows, no parse errors; collector weather tests
 `2 passed`.
 
-See `WEATHER_FULL_REPLAY_RESIDUALS_CLOSEOUT_20260701.md` for the exact
+See `../../../documents/archive/native_lanes/weather_live/WEATHER_FULL_REPLAY_RESIDUALS_CLOSEOUT_20260701.md` for the exact
 accepted candidate-rejection slice, and
-`WEATHER_FULL_REPLAY_RESIDUALS_FINAL_20260701.md` for the first residual
-resolution pass, `WEATHER_FULL_REPLAY_RESIDUALS_CONTINUED_20260701.md` for
+`../../../documents/archive/native_lanes/weather_live/WEATHER_FULL_REPLAY_RESIDUALS_FINAL_20260701.md` for the first residual
+resolution pass, `../../../documents/archive/native_lanes/weather_live/WEATHER_FULL_REPLAY_RESIDUALS_CONTINUED_20260701.md` for
 sandstorm flag blocker removal, and
-`WEATHER_SANDSTORM_V3_LANE_LOCAL_PROOF_20260701.md` plus
-`SANDSTORM_DOMAIN24_V3_REGISTRATION_PLAN_20260701.md` for the lane-local
+`../../../documents/archive/native_lanes/weather_live/WEATHER_SANDSTORM_V3_LANE_LOCAL_PROOF_20260701.md` plus
+`../../../documents/archive/native_lanes/weather_live/SANDSTORM_DOMAIN24_V3_REGISTRATION_PLAN_20260701.md` for the lane-local
 compact/Rust v3 path. See
-`WEATHER_REMAINING_BLOCKERS_CLOSED_20260701.md` for the `+0x78` enum-candidate
+`../../../documents/archive/native_lanes/weather_live/WEATHER_REMAINING_BLOCKERS_CLOSED_20260701.md` for the `+0x78` enum-candidate
 rejection, close-zoom particle/entity blocker evidence, and no-unblocked-weather
 residual conclusion for this lane slice.

@@ -1,4 +1,6 @@
 # naval_missions_status_live
+> Active lane note: this README is the only active lane-local documentation. Historical plans, proof reports, blocker notes, and registration packets for this lane are archived under ../../../documents/archive/native_lanes/naval_missions_status_live/. Current extraction completion status lives in ../../../documents/MASTER_EXTRACTION_CONTRACT.md.
+
 
 Lane-local production-shaped stack for final compact domain 56,
 `naval_missions_status_live`.
@@ -20,7 +22,7 @@ No shared collector, recorder, or master status files were edited.
 - `domain56_compact.rs`: final domain-56 wire schema, payload encoder, compact
   stream gate, and tests.
 - `naval_missions_status_probe.py`: bounded live proof probe against `hoi4.exe`.
-- `REGISTRATION_PATCH_PLAN.md`: exact shared registration plan for the
+- `../../../documents/archive/native_lanes/naval_missions_status_live/REGISTRATION_PATCH_PLAN.md`: exact shared registration plan for the
   orchestrator.
 
 Proof output:

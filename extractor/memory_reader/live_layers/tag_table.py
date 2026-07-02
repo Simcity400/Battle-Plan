@@ -42,8 +42,9 @@ OFF_CAP = 0x18
 SSO_CAP = 15
 SENTINEL = "---"
 
-# Heap range (RESEARCH_memory_reader / owner crack). The table lives in the
-# game-state arena but we scan the whole committed heap to stay build-robust.
+# Heap range from the archived memory-reader research / owner crack. The table
+# lives in the game-state arena but we scan the whole committed heap to stay
+# build-robust.
 HEAP_LO = 0x10000000000
 HEAP_HI = 0x7FF000000000
 

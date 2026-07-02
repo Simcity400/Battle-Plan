@@ -1,6 +1,8 @@
 # naval_combat_live lane-local production stack
+> Active lane note: this README is the only active lane-local documentation. Historical plans, proof reports, blocker notes, and registration packets for this lane are archived under ../../../documents/archive/native_lanes/naval_combat_live/. Current extraction completion status lives in ../../../documents/MASTER_EXTRACTION_CONTRACT.md.
 
-This lane owns compact domains assigned by `extractor/native/DOMAIN_REGISTRY.md`:
+
+This lane owns compact domains assigned by `extractor/documents/DOMAIN_REGISTRY.md`:
 
 - `49 = naval_combat_lifecycle_live`
 - `50 = naval_combat_members_live`
@@ -29,9 +31,9 @@ collector/recorder integration slot.
   CShip damage/counter roots, CShip task-force/fleet linkage, task-force
   location/region roots, mission/order candidates, home-base candidates, and
   direct theatre pointer rejection.
-- `REGISTRATION_HOOK_PLAN.md`: registration-only collector/recorder patch plan
+- `../../../documents/archive/native_lanes/naval_combat_live/REGISTRATION_HOOK_PLAN.md`: registration-only collector/recorder patch plan
   for domains `49` and `50`.
-- `LIVE_FIXTURE_RUNBOOK.md`: exact in-game fixture contract, probe commands,
+- `../../../documents/archive/native_lanes/naval_combat_live/LIVE_FIXTURE_RUNBOOK.md`: exact in-game fixture contract, probe commands,
   speed-five proof thresholds, and non-combat route audit.
 
 ## Current Validated Subset
@@ -81,7 +83,7 @@ process:
 
 ## Integration Patch Plan
 
-See `REGISTRATION_HOOK_PLAN.md`. The shared integration must stay
+See `../../../documents/archive/native_lanes/naval_combat_live/REGISTRATION_HOOK_PLAN.md`. The shared integration must stay
 registration-only until the orchestrator grants the slot: dependency entries,
 domain `49/50` activation, one DLL coordinator callout, two recorder decode
 dispatch arms, and proof commands. No broad shared entrypoint implementation is
@@ -146,5 +148,5 @@ The same process validates the current CShip route at
 `extractor/native/runs/naval_combat_live_cship_route_870ebf_20260701_v3/naval_combat_cship_route_probe.json`
 with `current_validated_count=1617` and rejects the stale CShip RVA with
 `old_hit_count=0`. This blocks live lifecycle/member proof only, not the
-lane-local compact module. Use `LIVE_FIXTURE_RUNBOOK.md` for the exact battle
+lane-local compact module. Use `../../../documents/archive/native_lanes/naval_combat_live/LIVE_FIXTURE_RUNBOOK.md` for the exact battle
 fixture and proof commands.

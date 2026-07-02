@@ -7,7 +7,7 @@ module still implements the full read-only validation FUNNEL designed for live
 weather; it locates a candidate
 region-indexed weather array and scores it, but it FAILS CLOSED unless the
 candidate clears strong negative controls AND (when the game is running) a
-temporal-drift gate. See RESEARCH_weather.md for the method, the residual, and
+temporal-drift gate. See extractor/documents/archive/research/RESEARCH_weather.md for the method, the residual, and
 exactly what a ground-truth confirmation still needs.
 
 WHY THIS IS HARD (the honest part):

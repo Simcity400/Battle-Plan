@@ -686,7 +686,7 @@ Always present; `null`-but-present until a live read folds them.
 ### 13.2 `supply`
 | field | type | source | notes |
 |-------|------|--------|-------|
-| `by_province` | obj\|null | M | `{province_id: {current, capacity, gain, divisions}}` — the validated division-province supply PROXY (where troops are). The exact tooltip supply NUMBER is a documented wall; see `extractor/memory_reader/supply_solver_offsets.draft.json` and `extractor/documents/RESEARCH_logistics_intel.md`. |
+| `by_province` | obj\|null | M | `{province_id: {current, capacity, gain, divisions}}` — the validated division-province supply PROXY (where troops are). The exact tooltip supply NUMBER is a documented wall; see `extractor/memory_reader/supply_solver_offsets.draft.json` and `extractor/documents/archive/research/RESEARCH_logistics_intel.md`. |
 | `source` | str\|null | — | `"M"` when a live read filled it, else `null` |
 | `confidence` | str\|null | — | e.g. `"division_province_proxy"` |
 

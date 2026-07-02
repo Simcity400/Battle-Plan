@@ -13,7 +13,7 @@ The logistics map layers split into a SAVE-anchored part and a LIVE part:
     genuinely live-only target (see supply_live.py for the status / wall).
 
 Why save-anchored here (and not live): an exhaustive read-only memory hunt on
-build 16022851 (see RESEARCH_logistics_intel.md) established that building LEVELS
+build 16022851 (see extractor/documents/archive/research/RESEARCH_logistics_intel.md) established that building LEVELS
 are NOT stored as a dense province/state-indexed scalar array, NOT as AoS records
 keyed by the raw province_id, and NOT with an inline building-type name string per
 instance. They live in a building manager keyed by a building-type *id* with the

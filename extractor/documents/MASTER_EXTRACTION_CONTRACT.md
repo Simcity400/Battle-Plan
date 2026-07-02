@@ -1,13 +1,13 @@
 # Master Replay Extraction Contract
 
-This is the top-level checklist for deciding whether the recording layer is
-actually done for a full 1:1 Battle Plan.
+This is the active top-level checklist for deciding whether the recording layer
+is actually done for a full 1:1 Battle Plan.
 
-It is intentionally stricter than `extractor/documents/DOMAIN_REGISTRY.md` and
-`extractor/documents/EXTRACTION_SCOPE_STATUS.md`.
+It is the only active extraction completion ledger. Older completion plans,
+scoped-status summaries, research notes, and lane handoff packets are archived
+under `extractor/documents/archive/` and are evidence only.
 
 - `extractor/documents/DOMAIN_REGISTRY.md` assigns compact domain IDs.
-- `extractor/documents/EXTRACTION_SCOPE_STATUS.md` explains current scoped slice status.
 - This file is the master contract: if every row here is closed, the extractor
   should have no known missed replay-relevant data.
 

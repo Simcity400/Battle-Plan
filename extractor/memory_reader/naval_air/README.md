@@ -51,7 +51,7 @@ builds it live by summing each present wing's `effective_planes` (wing`+0x160`) 
 strategic_region (wing`+0xB0`→region`+0x58`) and owner (wing`+0x28`→pool→`+0x40`→country`+0x90`).
 `effective_planes` is the faithful color proxy for the exact per-wing scalar (= `effective_planes ×
 variant air_superiority stat × modifiers`, a drifting cache); validated == the save oracle 12/12
-buckets exactly. See `RESEARCH_naval_air.md` §4b.
+buckets exactly. See `../../documents/archive/research/RESEARCH_naval_air.md` §4b.
 
 ## Hard rules
 READ-ONLY (`PROCESS_VM_READ | PROCESS_QUERY_INFORMATION`); no writes/injection/suspension;
@@ -59,4 +59,5 @@ build-gated by exe sha256; reads clamped to VirtualQuery region ends; arena-scop
 (`0x1F600000000..0x1FA00000000`); fail-closed + double-read revalidation of the dominance
 container header; NULL/empty container → `[]` (no data), not a hard failure.
 
-See `RESEARCH_naval_air.md` for the full method, validation, Codex review, and residuals.
+See `../../documents/archive/research/RESEARCH_naval_air.md` for the full method,
+validation, Codex review, and residuals.

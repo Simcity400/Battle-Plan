@@ -1,4 +1,6 @@
 # focus_research_decisions_depth_live
+> Active lane note: this README is the only active lane-local documentation. Historical plans, proof reports, blocker notes, and registration packets for this lane are archived under ../../../documents/archive/native_lanes/focus_research_decisions_depth_live/. Current extraction completion status lives in ../../../documents/MASTER_EXTRACTION_CONTRACT.md.
+
 
 Lane-local production stack for focus/research/decision depth records beyond the
 already-proven base compact `focus_live`, `tech_live`, and `decisions_live`
@@ -78,7 +80,7 @@ That proof has `144` depth records, `1` exact completed-focus row, `0`
 inferred rows, `0` unresolved rows, `432` badge rows, zero parse errors, zero
 skipped hours, and verified `.battleplan` output. The shared collector hunk
 needed for that behavior is not applied by this lane; it is documented for the
-orchestrator in `SHARED_RESIDUAL_PATCH_PLAN.md`.
+orchestrator in `../../../documents/archive/native_lanes/focus_research_decisions_depth_live/SHARED_RESIDUAL_PATCH_PLAN.md`.
 
 Current-build root validation for fail-closed depth fields:
 
@@ -161,9 +163,9 @@ python extractor\native\lanes\focus_research_decisions_depth_live\tools\analyze_
   --out-dir extractor\native\lanes\focus_research_decisions_depth_live\proofs\residual_blocker_gate_20260701_v10
 ```
 
-See `CURRENT_BUILD_ROOTS.md` for the validated/rejected roots,
-`INTEGRATION_PATCH_PLAN.md` for the domain-45 integration shape, and
-`SHARED_RESIDUAL_PATCH_PLAN.md` for residual-specific shared hunks that require
+See `../../../documents/archive/native_lanes/focus_research_decisions_depth_live/CURRENT_BUILD_ROOTS.md` for the validated/rejected roots,
+`../../../documents/archive/native_lanes/focus_research_decisions_depth_live/INTEGRATION_PATCH_PLAN.md` for the domain-45 integration shape, and
+`../../../documents/archive/native_lanes/focus_research_decisions_depth_live/SHARED_RESIDUAL_PATCH_PLAN.md` for residual-specific shared hunks that require
 an orchestrator slot.
 
 Current residual status is `NOT COMPLETE`: direct completed-focus token closure
@@ -216,5 +218,5 @@ contract, so direct hooks remain blocked.
 
 ## Integration Plan
 
-The exact shared patch plan is in `INTEGRATION_PATCH_PLAN.md`. Keep this lane
+The exact shared patch plan is in `../../../documents/archive/native_lanes/focus_research_decisions_depth_live/INTEGRATION_PATCH_PLAN.md`. Keep this lane
 isolated until the orchestrator grants a shared integration slot.

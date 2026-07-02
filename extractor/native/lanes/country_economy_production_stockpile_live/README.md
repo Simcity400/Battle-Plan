@@ -1,4 +1,6 @@
 # country_economy_production_stockpile_live
+> Active lane note: this README is the only active lane-local documentation. Historical plans, proof reports, blocker notes, and registration packets for this lane are archived under ../../../documents/archive/native_lanes/country_economy_production_stockpile_live/. Current extraction completion status lives in ../../../documents/MASTER_EXTRACTION_CONTRACT.md.
+
 
 Lane-local production stack for country economy, production, fuel, and stockpile
 variant replay records.

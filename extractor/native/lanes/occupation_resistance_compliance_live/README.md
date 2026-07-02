@@ -1,4 +1,6 @@
 # Occupation Resistance Compliance Live Lane
+> Active lane note: this README is the only active lane-local documentation. Historical plans, proof reports, blocker notes, and registration packets for this lane are archived under ../../../documents/archive/native_lanes/occupation_resistance_compliance_live/. Current extraction completion status lives in ../../../documents/MASTER_EXTRACTION_CONTRACT.md.
+
 
 Lane-local production stack for `occupation_resistance_compliance_live`.
 

@@ -1,4 +1,6 @@
 # market_trade_live
+> Active lane note: this README is the only active lane-local documentation. Historical plans, proof reports, blocker notes, and registration packets for this lane are archived under ../../../documents/archive/native_lanes/market_trade_live/. Current extraction completion status lives in ../../../documents/MASTER_EXTRACTION_CONTRACT.md.
+
 
 Lane-local decoder, gates, probes, and registration plan for compact domain `43`
 (`market_trade_live`).
@@ -241,7 +243,7 @@ Classified residuals:
   purchase-contract mapping, not full lend-lease replay.
 
 Exact remaining blocker contract:
-`extractor/native/lanes/market_trade_live/RESIDUAL_BLOCKERS_20260701.md`.
+`../../../documents/archive/native_lanes/market_trade_live/RESIDUAL_BLOCKERS_20260701.md`.
 
 Additional narrowed residual proofs:
 
@@ -360,7 +362,7 @@ cargo run --manifest-path extractor\native\snapshot\Cargo.toml --bin pack_replay
 ## Registration Plan
 
 Exact patch plan:
-`extractor/native/lanes/market_trade_live/REGISTRATION_PATCH_PLAN_20260701.md`.
+`../../../documents/archive/native_lanes/market_trade_live/REGISTRATION_PATCH_PLAN_20260701.md`.
 
 The lane packet does not edit shared entrypoints. The orchestrator should
 serialize shared registration after assigning final sibling record ids or a

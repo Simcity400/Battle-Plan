@@ -1,4 +1,6 @@
 # weather_visual_drivers_live
+> Active lane note: this README is the only active lane-local documentation. Historical plans, proof reports, blocker notes, and registration packets for this lane are archived under ../../../documents/archive/native_lanes/weather_visual_drivers_live/. Current extraction completion status lives in ../../../documents/MASTER_EXTRACTION_CONTRACT.md.
+
 
 Lane-local production stack for the remaining weather visual-driver extraction work.
 
@@ -122,7 +124,7 @@ are in `extractor/native/runs/weather_visual_drivers_live_870ebf_20260701_v2/`.
 
 ## Internals audit
 
-`WEATHER_INTERNALS_STATUS_20260701.md` is the lane-local status note for the
+`../../../documents/archive/native_lanes/weather_visual_drivers_live/WEATHER_INTERNALS_STATUS_20260701.md` is the lane-local status note for the
 non-visual weather-internals question. It deliberately uses validated-slice
 language: region/province realized weather and visual map drivers are proven,
 but the whole weather concept is not marked complete. The note rejects weather
@@ -131,7 +133,7 @@ RNG cursors as a required current-state replay extraction row, classifies
 gameplay state when they agree with `phenomenon >= 1`, and leaves exact
 generator/RNG/name parity as open-computed if product scope requires it.
 
-`RESIDUAL_INTERNALS_AUDIT_20260701.md` is the explicit closeout for the residual
+`../../../documents/archive/native_lanes/weather_visual_drivers_live/RESIDUAL_INTERNALS_AUDIT_20260701.md` is the explicit closeout for the residual
 internals lane: no additional non-visual current-state compact records are
 required beyond the validated domain-24 realized weather/visual-driver payload.
 It does not claim whole-weather completion or close-zoom particle parity.

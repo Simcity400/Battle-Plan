@@ -1,4 +1,6 @@
 # diplomacy_intel_operatives_live lane
+> Active lane note: this README is the only active lane-local documentation. Historical plans, proof reports, blocker notes, and registration packets for this lane are archived under ../../../documents/archive/native_lanes/diplomacy_intel_operatives_live/. Current extraction completion status lives in ../../../documents/MASTER_EXTRACTION_CONTRACT.md.
+
 
 Private replay extraction lane for diplomacy, intelligence, and operatives. This
 directory is intentionally isolated from shared collector and recorder entrypoints
@@ -78,20 +80,20 @@ Not owned here:
   actions/queues, intel map percentages, operations, operatives, spy networks,
   agency state, and compact event/state records are all proven through the
   production-shaped path.
-- `INTEGRATION_PATCH_PLAN.md`: exact registration-only shared patch plan for
+- `../../../documents/archive/native_lanes/diplomacy_intel_operatives_live/INTEGRATION_PATCH_PLAN.md`: exact registration-only shared patch plan for
   when the orchestrator opens an integration slot.
-- `REGISTRATION_PATCH_PACKET.md`: concrete shared registry, collector
+- `../../../documents/archive/native_lanes/diplomacy_intel_operatives_live/REGISTRATION_PATCH_PACKET.md`: concrete shared registry, collector
   coordinator, and recorder hook packet for the integration owner.
-- `OPERATIVE_LIFECYCLE_REGISTRATION_PATCH.md`: exact shared collector/recorder
+- `../../../documents/archive/native_lanes/diplomacy_intel_operatives_live/OPERATIVE_LIFECYCLE_REGISTRATION_PATCH.md`: exact shared collector/recorder
   patch details for preserving v20 `operative_lifecycle_rows` through domain 53.
 - `validate_operative_lifecycle_registration_patch.py`: lane-local verifier for
   the lifecycle registration patch details and v20 proof counters.
-- `AGENCY_CAPACITY_REGISTRATION_PATCH.md`: exact shared collector/recorder patch
+- `../../../documents/archive/native_lanes/diplomacy_intel_operatives_live/AGENCY_CAPACITY_REGISTRATION_PATCH.md`: exact shared collector/recorder patch
   details for preserving v22 raw `agency_capacity_cluster_rows`.
 - `validate_agency_capacity_registration_patch.py`: lane-local verifier for the
   raw agency-capacity registration details, v16 semantic rejection proof, and
   v22 proof counters.
-- `STATE_EVENTS_REGISTRATION_PATCH.md`: exact shared collector/recorder patch
+- `../../../documents/archive/native_lanes/diplomacy_intel_operatives_live/STATE_EVENTS_REGISTRATION_PATCH.md`: exact shared collector/recorder patch
   details for preserving v26 `compact_state_event_rows`.
 - `validate_state_events_registration_patch.py`: lane-local verifier for the
   state-event registration details, v26 proof counters, and proposed

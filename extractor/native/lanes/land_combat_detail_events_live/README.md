@@ -1,4 +1,6 @@
 # land_combat_detail_events_live lane-local stack
+> Active lane note: this README is the only active lane-local documentation. Historical plans, proof reports, blocker notes, and registration packets for this lane are archived under ../../../documents/archive/native_lanes/land_combat_detail_events_live/. Current extraction completion status lives in ../../../documents/MASTER_EXTRACTION_CONTRACT.md.
+
 
 Domain 55 is assigned to `land_combat_detail_events_live`.
 

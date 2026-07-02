@@ -11,8 +11,9 @@ weather. The melted save does persist realized weather:
 - region weather values such as temperature, next weather change, phenomenon
   flags, and `arctic_water`
 
-Current collector/data status is in `../../IN_PROCESS_COLLECTOR_PLAN.md`; data
-evidence is in `../../coverage_audit/COVERAGE_REPORT.md`.
+Current collector/data status is in
+`../../documents/MASTER_EXTRACTION_CONTRACT.md`; data evidence is in
+`../../coverage_audit/COVERAGE_REPORT.md`.
 
 ## Evidence
 
@@ -20,7 +21,8 @@ evidence is in `../../coverage_audit/COVERAGE_REPORT.md`.
   map rendering slices.
 - Snow, mud, and frozen-sea visual data are wired into the native map path.
 - Weather clock/scan lessons and offsets are documented in
-  `weather_offsets.draft.json` and `../../RESEARCH_weather.md`.
+  `weather_offsets.draft.json` and
+  `../../documents/archive/research/RESEARCH_weather.md`.
 
 ## Evidence Boundaries
 

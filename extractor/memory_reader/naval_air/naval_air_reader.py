@@ -56,7 +56,7 @@ It is NOT air superiority.
     vector-indirect / POD-pool / state-distributed-onto-unit-struct storage remain unclosed and need
     a controlled BEFORE/DURING/AFTER temporal diff of a real surface battle. See
     naval_air_offsets.draft.json ('naval_air_combat', incl. pass2_relaunch_2026_06_25) +
-    RESEARCH_naval_air.md section 5/5b for the full negative + re-anchor recipe.
+    extractor/documents/archive/research/RESEARCH_naval_air.md section 5/5b for the full negative + re-anchor recipe.
 
 HARD RULES honored (same as combat_enum.py): READ-ONLY memory (PROCESS_VM_READ |
 PROCESS_QUERY_INFORMATION); never writes/injects/suspends; build-gated by exe sha256; every

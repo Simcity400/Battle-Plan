@@ -1,6 +1,6 @@
 """phase0.py - read-only verification CLI for the Battle Plan memory reader.
 
-This is the Python half of the Phase-0 loop in RESEARCH_memory_reader.md.
+This is the Python half of the Phase-0 loop in extractor/documents/archive/research/RESEARCH_memory_reader.md.
 Cheat Engine (run by you, on the live game) does the *discovery*; this tool
 *verifies* each finding read-only from Python and is the harness we grow into
 the real reader.

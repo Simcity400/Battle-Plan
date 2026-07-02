@@ -10,7 +10,8 @@ WHY AN *ESTIMATE*, NOT THE EXACT NUMBER (wall W2)
 The per-province "supply available" NUMBER that the in-game Supply map mode
 shows (the "20/20" tooltip) is a SOLVER OUTPUT. It is proven NOT stored in the
 save as a per-province slot, and NOT readable from live memory without UI/code
-anchoring -- a documented wall (DESIGN B2 / RESEARCH_logistics_intel.md
+anchoring -- a documented wall (archived logistics research:
+extractor/documents/archive/research/RESEARCH_logistics_intel.md
 "Supply [residual]" / supply_live.py module docstring; multiple negative,
 Codex-confirmed pinning passes). A parallel Ghidra effort is decompiling the
 solver and will land it as ``memory_reader.logistics_intel.supply_solver``;

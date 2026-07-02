@@ -17,13 +17,24 @@ directory map.
 
 ## Source Of Truth
 
-- Extraction completion: `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
-- Extraction domain IDs: `extractor/documents/DOMAIN_REGISTRY.md`
-- Recording-layer plan: `extractor/documents/RECORDING_LAYER_COMPLETION_PLAN.md`
-- Collector architecture: `extractor/documents/IN_PROCESS_COLLECTOR_PLAN.md`
-- Replay container format: `replay_interface/documents/HOI4REPLAY_CONTAINER_SPEC.md`
-- Replay schema notes: `replay_interface/documents/REPLAY_SCHEMA.md`
+- Product vision: `documents/DESIGN.md`
 - Agent rules: `documents/AGENTS.md`
+- Extraction completion and remaining backlog:
+  `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
+- Extraction domain IDs: `extractor/documents/DOMAIN_REGISTRY.md`
+- Reverse-engineering/tooling setup:
+  `extractor/documents/REVERSE_ENGINEERING_TOOLING.md`
+- Replay container format:
+  `replay_interface/documents/HOI4REPLAY_CONTAINER_SPEC.md`
+- Replay schema: `replay_interface/documents/REPLAY_SCHEMA.md`
+- Replay map/interface standards:
+  `replay_interface/documents/MAP_REPLICA_PLAN.md` and
+  `replay_interface/documents/UI_SOURCE_OF_TRUTH_REPORT.md`
+
+Historical plans, old status reports, research notes, and lane packets are kept
+under `documents/archive/` or `extractor/documents/archive/`. Treat archived
+files as evidence only; do not use them as the current plan unless the active
+source-of-truth document explicitly promotes them.
 
 ## Common Checks
 

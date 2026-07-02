@@ -1,5 +1,5 @@
 {
-  "_comment": "Template for the per-build memory layout the Cheat Engine discovery produces. Copy to layout.<sha256-prefix>.json and fill the FILL_ME fields as each Phase-0 step succeeds. Offsets shown are STARTING HINTS cribbed from the open Hexorg v1.3 table (RESEARCH_memory_reader.md appendix) and MUST be re-verified on the user's 1.19.x build - they will likely differ.",
+  "_comment": "Template for the per-build memory layout the Cheat Engine discovery produces. Copy to layout.<sha256-prefix>.json and fill the FILL_ME fields as each Phase-0 step succeeds. Offsets shown are STARTING HINTS cribbed from the open Hexorg v1.3 table (extractor/documents/archive/research/RESEARCH_memory_reader.md appendix) and MUST be re-verified on the user's 1.19.x build - they will likely differ.",
 
   "build": {
     "exe_sha256": "FILL_ME (from: phase0.py info)",

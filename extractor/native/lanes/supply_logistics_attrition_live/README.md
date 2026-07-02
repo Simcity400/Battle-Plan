@@ -1,4 +1,6 @@
 # supply_logistics_attrition_live
+> Active lane note: this README is the only active lane-local documentation. Historical plans, proof reports, blocker notes, and registration packets for this lane are archived under ../../../documents/archive/native_lanes/supply_logistics_attrition_live/. Current extraction completion status lives in ../../../documents/MASTER_EXTRACTION_CONTRACT.md.
+
 
 Lane-local production stack for current-build supply/logistics/attrition capture.
 
@@ -70,7 +72,7 @@ against the current `870ebf` process without rediscovery.
   plus a temporal/network differential.
 - `cprovince_residual_probe_tests.py`: stdlib unit tests for the candidate classifier and tooltip
   anchor gate.
-- `RESIDUAL_FIXTURE_CONTRACTS.md`: exact same-frame oracle and differential contracts for the
+- `../../../documents/archive/native_lanes/supply_logistics_attrition_live/RESIDUAL_FIXTURE_CONTRACTS.md`: exact same-frame oracle and differential contracts for the
   remaining exact supply, attrition, hub motorization, convoy/logistics pressure, and CSupply
   sibling-array residuals.
 - `exact_supply_tooltip_anchors.template.json`: starter anchor file for the CProvince exact
@@ -92,7 +94,7 @@ against the current `870ebf` process without rediscovery.
   exact level field without a same-frame mixed-level fixture.
 - `Cargo.toml` / `src/bin/replay_pack_proof.rs`: lane-local compact stream and `.battleplan`
   packing proof for the domain 44 payload.
-- `REGISTRATION_PATCH_PLAN.md`: exact minimal collector/recorder registration patch plan.
+- `../../../documents/archive/native_lanes/supply_logistics_attrition_live/REGISTRATION_PATCH_PLAN.md`: exact minimal collector/recorder registration patch plan.
 
 ## Proof Commands
 
@@ -209,7 +211,7 @@ The current blockers are exact fixture/root blockers, not acceptable omissions:
 - any new `CSupplySystem` sibling path must satisfy province-indexed bounds and semantic oracle
   validation before it can replace the mandatory badge row.
 
-See `RESIDUAL_FIXTURE_CONTRACTS.md` for the exact oracle and differential requirements.
+See `../../../documents/archive/native_lanes/supply_logistics_attrition_live/RESIDUAL_FIXTURE_CONTRACTS.md` for the exact oracle and differential requirements.
 
 ## Compact Schema Delta
 
@@ -242,7 +244,7 @@ with zero parse errors, packed into `.battleplan`, and verified by `pack_replay`
 
 ## Integration Patch Plan
 
-See `REGISTRATION_PATCH_PLAN.md` and `CSUPPLY_ROOT_HARDENING_PATCH.md`. The shared registry
+See `../../../documents/archive/native_lanes/supply_logistics_attrition_live/REGISTRATION_PATCH_PLAN.md` and `../../../documents/archive/native_lanes/supply_logistics_attrition_live/CSUPPLY_ROOT_HARDENING_PATCH.md`. The shared registry
 already has domain `44`; the CSupply row kind is registered and decodable, but the shared
 collector must replace in-frame vtable discovery with the direct `CGameState+0x3D8` root and
 then rerun speed-five/current-equivalent hourly proof.

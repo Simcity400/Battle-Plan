@@ -4,9 +4,10 @@ This is the orchestrator-owned source of truth for compact domain IDs. Lane
 subagents must not choose IDs independently. If a lane needs a new domain, the
 orchestrator assigns it here first.
 
-For scope-sensitive status, read `extractor/documents/EXTRACTION_SCOPE_STATUS.md` alongside this
-registry. The registry status is a compact label; that file lists what each
-validated slice actually covers and what remains open for full replay fidelity.
+For scope-sensitive status, read `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
+alongside this registry. The registry status is a compact label; the master
+contract lists what each validated slice actually covers and what remains open
+for full replay fidelity.
 
 Registration rule: lane implementation lives in lane-owned collector/decoder
 modules. Shared `collector/src/lib.rs` and `recorder_host/src/main.rs` changes

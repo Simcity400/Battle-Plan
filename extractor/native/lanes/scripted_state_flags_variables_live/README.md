@@ -1,4 +1,6 @@
 # scripted_state_flags_variables_live lane
+> Active lane note: this README is the only active lane-local documentation. Historical plans, proof reports, blocker notes, and registration packets for this lane are archived under ../../../documents/archive/native_lanes/scripted_state_flags_variables_live/. Current extraction completion status lives in ../../../documents/MASTER_EXTRACTION_CONTRACT.md.
+
 
 Lane scope: opaque scripted/causal state for faithful replay or provenance badges.
 This lane intentionally captures keys and raw values, not semantic

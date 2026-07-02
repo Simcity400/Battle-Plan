@@ -1,4 +1,6 @@
 # division_state_movement_live lane
+> Active lane note: this README is the only active lane-local documentation. Historical plans, proof reports, blocker notes, and registration packets for this lane are archived under ../../../documents/archive/native_lanes/division_state_movement_live/. Current extraction completion status lives in ../../../documents/MASTER_EXTRACTION_CONTRACT.md.
+
 
 Lane scope: compact per-division live state and deltas for replay. This lane is
 intentionally local-first: it defines and gates the current domain-20 compact

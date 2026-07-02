@@ -22,7 +22,10 @@ hoi4.exe -> injected DLL collector/coordinator -> compact records -> Rust record
 
 - `../documents/MASTER_EXTRACTION_CONTRACT.md`
 - `../documents/DOMAIN_REGISTRY.md`
-- `../documents/EXTRACTION_SCOPE_STATUS.md`
+- `../documents/REVERSE_ENGINEERING_TOOLING.md`
+
+Historical lane packets, registration plans, blocker reports, and old status
+notes are archived under `../documents/archive/native_lanes/`.
 
 ## Checks
 

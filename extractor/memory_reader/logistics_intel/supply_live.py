@@ -11,7 +11,7 @@ STATUS on build 16022851 (read-only, by-shape + by-structure):
     structural search is exhausted; the field is manager-owned (reached via a pointer from
     the CProvince object into an embedded sub-record), and no read-only method can prove
     WHICH sibling fixed-point field is "available" (vs demand / used / capacity / throughput
-    / cache) without LIVE-UI ANCHORING. See RESEARCH_logistics_intel.md "Supply [residual]".
+    / cache) without LIVE-UI ANCHORING. See extractor/documents/archive/research/RESEARCH_logistics_intel.md "Supply [residual]".
   * 2026-06-25 PROXY-MATCH PASS (negative, validated): an attempt to pin the slot WITHOUT UI
     by matching CProvince body slots against the division proxy as ground truth FAILED. Best
     exact match = 3/1252 troop provinces == the shuffled-permutation negative control (= no
@@ -261,7 +261,7 @@ def enumerate_provinces(p):
     NOTE: this pool gives every province (incl. empty land + sea), unlike enumerate_supply
     which only covers troop provinces. The exact per-province supply NUMBER is NOT yet
     readable from these objects (no inline scalar; manager-owned sub-record; needs UI). See
-    RESEARCH_logistics_intel.md "Supply [residual]".
+    extractor/documents/archive/research/RESEARCH_logistics_intel.md "Supply [residual]".
     """
     if not _verify_build(p):
         return {}

@@ -1,4 +1,6 @@
 # naval_oob_fleets_ships_live
+> Active lane note: this README is the only active lane-local documentation. Historical plans, proof reports, blocker notes, and registration packets for this lane are archived under ../../../documents/archive/native_lanes/naval_oob_fleets_ships_live/. Current extraction completion status lives in ../../../documents/MASTER_EXTRACTION_CONTRACT.md.
+
 
 Lane-local proof stack for naval OOB, inventory, and continuity compact domains.
 This lane owns fleet/task-force/ship OOB state. It does not own active naval

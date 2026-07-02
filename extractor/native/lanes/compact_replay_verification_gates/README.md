@@ -1,4 +1,6 @@
 # compact_replay_verification_gates
+> Active lane note: this README is the only active lane-local documentation. Historical plans, proof reports, blocker notes, and registration packets for this lane are archived under ../../../documents/archive/native_lanes/compact_replay_verification_gates/. Current extraction completion status lives in ../../../documents/MASTER_EXTRACTION_CONTRACT.md.
+
 
 Lane-local verification infrastructure for compact replay proof runs. This lane
 does not own gameplay extraction. It validates whether another lane's compact
