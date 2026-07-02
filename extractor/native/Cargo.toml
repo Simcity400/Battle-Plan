@@ -1,12 +1,27 @@
 [workspace]
 resolver = "2"
 members = [
+    "compact_contract",
     "snapshot",
     "collector",
     "recorder_host",
     "lanes/air_wings_variants_lifecycle_live",
     "lanes/scripted_state_flags_variables_live",
     "lanes/occupation_resistance_compliance_live",
+    "lanes/characters_leaders_cabinet_live",
+    "lanes/compact_replay_verification_gates",
+    "lanes/construction_buildings_state_damage_live",
+    "lanes/country_economy_counters_live",
+    "lanes/country_economy_production_stockpile_live",
+    "lanes/diplomacy_intel_operatives_live",
+    "lanes/event_timeline_change_log_live",
+    "lanes/focus_research_decisions_depth_live",
+    "lanes/land_combat_detail_events_live",
+    "lanes/market_trade_live",
+    "lanes/naval_combat_live",
+    "lanes/naval_missions_status_live",
+    "lanes/session_multiplayer_metadata_live",
+    "lanes/supply_logistics_attrition_live",
 ]
 
 # Native extraction workspace: DLL collector, Rust recorder host, compact

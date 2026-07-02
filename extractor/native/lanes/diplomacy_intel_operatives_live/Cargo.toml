@@ -3,13 +3,12 @@ name = "diplomacy_intel_operatives_live"
 version = "0.1.0"
 edition = "2021"
 
-[workspace]
-
 [lib]
 name = "diplomacy_intel_operatives_live"
 path = "src/lib.rs"
 
 [dependencies]
+compact_contract = { path = "../../compact_contract" }
 serde_json = "1"
 snapshot = { path = "../../snapshot" }
 

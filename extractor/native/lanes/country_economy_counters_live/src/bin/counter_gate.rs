@@ -100,5 +100,6 @@ fn required(value: Option<&String>, flag: &str) -> Result<String, String> {
 }
 
 fn usage() -> String {
-    "usage: counter_gate --stream domain58_stream.bin [--out gate.json] [--min-game-hours 1]".to_string()
+    "usage: counter_gate --stream domain58_stream.bin [--out gate.json] [--min-game-hours 1]"
+        .to_string()
 }

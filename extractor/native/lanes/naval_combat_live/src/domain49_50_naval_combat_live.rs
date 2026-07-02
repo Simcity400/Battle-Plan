@@ -1809,7 +1809,7 @@ mod tests {
     }
 
     #[test]
-    fn registry_ids_match_orchestrator_assignment() {
+    fn registry_ids_match_compact_domain_assignment() {
         let registry = include_str!("../../../domain_registry.json");
         assert!(registry.contains("\"id\": 49"));
         assert!(registry.contains("\"name\": \"naval_combat_lifecycle_live\""));

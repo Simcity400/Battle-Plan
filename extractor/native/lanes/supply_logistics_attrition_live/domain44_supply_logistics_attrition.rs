@@ -157,13 +157,12 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
         ));
         return summary;
     }
-    let header_len = if payload.len() >= HEADER_LEN
-        && payload.len().saturating_sub(HEADER_LEN) % ROW_LEN == 0
-    {
-        HEADER_LEN
-    } else {
-        HEADER_LEN_LEGACY
-    };
+    let header_len =
+        if payload.len() >= HEADER_LEN && payload.len().saturating_sub(HEADER_LEN) % ROW_LEN == 0 {
+            HEADER_LEN
+        } else {
+            HEADER_LEN_LEGACY
+        };
 
     let row_count = read_u32_le(payload, 8) as usize;
     let changed_rows = read_u32_le(payload, 12) as usize;
@@ -194,11 +193,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
             "offset {offset}: supply logistics changed_rows {changed_rows} > row_count {row_count}"
         ));
     }
-    if province_rows
-        + division_rows
-        + badge_rows
-        + csupply_input_rows
-        + pressure_candidate_rows
+    if province_rows + division_rows + badge_rows + csupply_input_rows + pressure_candidate_rows
         != row_count
     {
         summary.parse_errors.push(format!(
@@ -443,18 +438,14 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
                         "offset {offset}: supply logistics csupply input row {row_index} has nonzero join/owner fields"
                     ));
                 }
-                if flags
-                    & (ROW_FLAG_CSUPPLY_EFFICIENCY | ROW_FLAG_CSUPPLY_PROVINCE_ARRAY)
+                if flags & (ROW_FLAG_CSUPPLY_EFFICIENCY | ROW_FLAG_CSUPPLY_PROVINCE_ARRAY)
                     != (ROW_FLAG_CSUPPLY_EFFICIENCY | ROW_FLAG_CSUPPLY_PROVINCE_ARRAY)
                 {
                     summary.parse_errors.push(format!(
                         "offset {offset}: supply logistics csupply input row {row_index} missing required csupply flags"
                     ));
                 }
-                if flags
-                    & !(ROW_FLAG_CSUPPLY_EFFICIENCY | ROW_FLAG_CSUPPLY_PROVINCE_ARRAY)
-                    != 0
-                {
+                if flags & !(ROW_FLAG_CSUPPLY_EFFICIENCY | ROW_FLAG_CSUPPLY_PROVINCE_ARRAY) != 0 {
                     summary.parse_errors.push(format!(
                         "offset {offset}: supply logistics csupply input row {row_index} has non-csupply flags"
                     ));
@@ -475,8 +466,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
                 add_unit(&mut summary, "csupply_efficiency_rows", 1);
             }
             ROW_KIND_FOREIGN_HOMEBASE_PRESSURE_CANDIDATE => {
-                decoded_pressure_candidate_rows =
-                    decoded_pressure_candidate_rows.saturating_add(1);
+                decoded_pressure_candidate_rows = decoded_pressure_candidate_rows.saturating_add(1);
                 if entity_id == 0 || entity_id > MAX_PROVINCE_ID {
                     summary.parse_errors.push(format!(
                         "offset {offset}: supply logistics pressure candidate row {row_index} has invalid province_id {entity_id}"
@@ -492,8 +482,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
                         "offset {offset}: supply logistics pressure candidate row {row_index} has nonzero join_id {join_id}"
                     ));
                 }
-                if flags
-                    & (ROW_FLAG_FOREIGN_HOMEBASE_PRESSURE | ROW_FLAG_PRESSURE_CANDIDATE_LAYOUT)
+                if flags & (ROW_FLAG_FOREIGN_HOMEBASE_PRESSURE | ROW_FLAG_PRESSURE_CANDIDATE_LAYOUT)
                     != (ROW_FLAG_FOREIGN_HOMEBASE_PRESSURE | ROW_FLAG_PRESSURE_CANDIDATE_LAYOUT)
                 {
                     summary.parse_errors.push(format!(

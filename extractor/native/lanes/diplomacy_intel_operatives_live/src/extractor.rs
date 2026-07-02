@@ -2,7 +2,13 @@ use crate::compact::{
     decode_payload, encode_payload, AgencyCapacityClusterRow, AgencyRow, CountryDiplomacyRow,
     CryptologyRow, DiplomacyIntelSnapshot, Domain53GateSummary, IntelMapRow, OperationAnchorRow,
     OperativeRow, OpinionRow, RelationFlagRow, StateEventRow, SubjectRow, WarRelationRow,
-    DOMAIN_ID_PROPOSED, REL_KIND_GUARANTEE, STATE_EVENT_KIND_OBSERVED,
+    DOMAIN_ID_PROPOSED, MAX_AGENCY_CAPACITY_CLUSTER_VALUE, MAX_CASUALTIES, MAX_CRYPTO_AMOUNT_RAW,
+    MAX_FIXED_RAW, MAX_OPERATIVE_ID, MAX_OPERATIVE_LIFECYCLE_FLAG, MAX_OPERATIVE_SKILL,
+    MAX_OPINION_ABS, MAX_TAG_DB_ID, MAX_XP_RAW, REL_KIND_AIR_BASE_ACCESS, REL_KIND_ATTACHE,
+    REL_KIND_DOCKING_RIGHTS, REL_KIND_EMBARGO, REL_KIND_EQUIPMENT_PURCHASE_CONTRACT_RELATION,
+    REL_KIND_GUARANTEE, REL_KIND_IMPROVE_RELATIONS, REL_KIND_LICENCE_PRODUCTION,
+    REL_KIND_MARKET_ACCESS_RIGHTS, REL_KIND_MILITARY_ACCESS, REL_KIND_NAVAL_BLOCKADE,
+    REL_KIND_NON_AGGRESSION_PACT, REL_KIND_PUPPET, STATE_EVENT_KIND_OBSERVED,
     STATE_EVENT_SOURCE_AGENCY_CAPACITY, STATE_EVENT_SOURCE_AGENCY_SCALAR,
     STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP, STATE_EVENT_SOURCE_CRYPTOLOGY,
     STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE, STATE_EVENT_SOURCE_RELATION_FLAG,
@@ -11,6 +17,8 @@ use crate::compact::{
     STATUS_OPERATIONS_DETAIL_RESISTED, STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED,
     STATUS_WAR_ROOT_UNVALIDATED,
 };
+use compact_contract::build_profile as profile;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const EXPECTED_HOI4_SHA256_870EBF: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
@@ -108,6 +116,1220 @@ pub struct ExtractedDomain53Rows {
     pub operation_anchors: Vec<OperationAnchorRow>,
     pub intel_map: Vec<IntelMapRow>,
     pub state_events: Vec<StateEventRow>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExtractError {
+    MemoryRead { address: u64, len: usize },
+    InvalidRoot(&'static str),
+    InvalidCount { name: &'static str, value: u32 },
+    Validation(String),
+}
+
+pub trait Domain53Memory {
+    fn module_base(&self) -> u64;
+    fn read_bytes(&self, address: u64, len: usize) -> Result<Vec<u8>, ExtractError>;
+
+    fn readable_ranges(&self, _lo: u64, _hi: u64) -> Vec<(u64, usize)> {
+        Vec::new()
+    }
+
+    fn read_u8(&self, address: u64) -> Result<u8, ExtractError> {
+        let bytes = self.read_bytes(address, 1)?;
+        Ok(bytes[0])
+    }
+
+    fn read_u32(&self, address: u64) -> Result<u32, ExtractError> {
+        let bytes = self.read_bytes(address, 4)?;
+        Ok(u32::from_le_bytes(
+            bytes.try_into().expect("u32 byte count"),
+        ))
+    }
+
+    fn read_i32(&self, address: u64) -> Result<i32, ExtractError> {
+        let bytes = self.read_bytes(address, 4)?;
+        Ok(i32::from_le_bytes(
+            bytes.try_into().expect("i32 byte count"),
+        ))
+    }
+
+    fn read_u64(&self, address: u64) -> Result<u64, ExtractError> {
+        let bytes = self.read_bytes(address, 8)?;
+        Ok(u64::from_le_bytes(
+            bytes.try_into().expect("u64 byte count"),
+        ))
+    }
+
+    fn read_i64(&self, address: u64) -> Result<i64, ExtractError> {
+        let bytes = self.read_bytes(address, 8)?;
+        Ok(i64::from_le_bytes(
+            bytes.try_into().expect("i64 byte count"),
+        ))
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Domain53FamilyCounts {
+    pub country_roots: u32,
+    pub relation_rows: u32,
+    pub agency_roots: u32,
+    pub operative_scan_ranges: u32,
+    pub war_scan_ranges: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExtractedDomain53Frame {
+    pub rows: ExtractedDomain53Rows,
+    pub source_proofs: u64,
+    pub observed_rows: u32,
+    pub skipped_rows: u32,
+    pub family_counts: Domain53FamilyCounts,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CountryRoot {
+    tag_db_id: u32,
+    country_ptr: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct RowAccumulator {
+    rows: ExtractedDomain53Rows,
+    skipped_rows: u32,
+    observed_rows: u32,
+}
+
+impl RowAccumulator {
+    fn skip(&mut self) {
+        self.skipped_rows = self.skipped_rows.saturating_add(1);
+    }
+
+    fn observe(&mut self) {
+        self.observed_rows = self.observed_rows.saturating_add(1);
+    }
+}
+
+#[derive(Clone, Debug)]
+struct AgencyRootRead {
+    owner_tag_db_id: u32,
+    agency_ptr: u64,
+}
+
+pub fn extract_rows_from_current_roots<M: Domain53Memory>(
+    mem: &M,
+) -> Result<ExtractedDomain53Frame, ExtractError> {
+    let module_base = mem.module_base();
+    if module_base == 0 {
+        return Err(ExtractError::InvalidRoot("module_base_zero"));
+    }
+
+    let game_state = mem.read_u64(add_addr(module_base, profile::CG_STATE_DATE_OFFSET)?)?;
+    let country_database =
+        mem.read_u64(add_addr(module_base, profile::COUNTRY_DATABASE_OFFSET)?)?;
+    if !is_heap_ptr(game_state) || !is_heap_ptr(country_database) {
+        return Err(ExtractError::InvalidRoot(
+            "domain53_global_roots_unavailable",
+        ));
+    }
+
+    let countries = resolve_country_roots(mem, module_base, game_state)?;
+    if countries.is_empty() {
+        return Err(ExtractError::InvalidRoot(
+            "domain53_country_roots_empty_implausible",
+        ));
+    }
+
+    let mut acc = RowAccumulator::default();
+    let mut source_proofs = SOURCE_PROOF_BUILD_SHA_870EBF | SOURCE_PROOF_COUNTRY_ROOTS_870EBF;
+    let mut family_counts = Domain53FamilyCounts {
+        country_roots: countries.len().min(u32::MAX as usize) as u32,
+        ..Domain53FamilyCounts::default()
+    };
+
+    let war_rows = read_war_rows(mem, module_base, &countries, &mut acc)?;
+    family_counts.war_scan_ranges = mem
+        .readable_ranges(
+            profile::DOMAIN53_HEAP_LO as u64,
+            profile::DOMAIN53_HEAP_HI as u64,
+        )
+        .len()
+        .min(u32::MAX as usize) as u32;
+    source_proofs |= SOURCE_PROOF_WAR_ROOT_870EBF;
+    let war_projection = war_projection_by_country(&war_rows);
+
+    for country in &countries {
+        let faction_group = mem
+            .read_i32(add_addr(
+                country.country_ptr,
+                profile::DOMAIN53_COUNTRY_FACTION_GROUP,
+            )?)
+            .map_err(|_| ExtractError::InvalidRoot("domain53_country_faction_group_unreadable"))?;
+        let (at_war_count, casualties) = war_projection
+            .get(&country.tag_db_id)
+            .copied()
+            .unwrap_or((0, 0));
+        acc.rows.countries.push(CountryDiplomacyRow {
+            tag_db_id: country.tag_db_id,
+            faction_group,
+            at_war_count,
+            casualties,
+        });
+        acc.rows.state_events.push(state_event(
+            country.tag_db_id,
+            None,
+            STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP,
+            "country_faction_group",
+            &format!("faction_group_{faction_group}"),
+            i64::from(faction_group),
+        ));
+        acc.observe();
+    }
+
+    read_relation_rows(mem, module_base, &countries, &mut acc)?;
+    let relation_rows =
+        acc.rows.opinions.len() + acc.rows.relation_flags.len() + acc.rows.subjects.len();
+    if relation_rows == 0 {
+        return Err(ExtractError::InvalidRoot(
+            "domain53_relations_empty_implausible",
+        ));
+    }
+    family_counts.relation_rows = relation_rows.min(u32::MAX as usize) as u32;
+    source_proofs |= SOURCE_PROOF_RELATION_ROOTS_870EBF;
+
+    let agency_roots = read_agency_rows(mem, module_base, &countries, &mut acc)?;
+    family_counts.agency_roots = agency_roots.len().min(u32::MAX as usize) as u32;
+    source_proofs |= SOURCE_PROOF_AGENCY_ROOT_870EBF;
+
+    let operative_scan_ranges = read_operatives(mem, module_base, &countries, &mut acc)?;
+    family_counts.operative_scan_ranges = operative_scan_ranges;
+    source_proofs |= SOURCE_PROOF_OPERATIVE_ROOT_870EBF;
+
+    for agency in &mut acc.rows.agencies {
+        agency.operative_count = acc
+            .rows
+            .operatives
+            .iter()
+            .filter(|row| row.owner_tag_db_id == agency.owner_tag_db_id)
+            .count()
+            .min(u32::MAX as usize) as u32;
+    }
+
+    read_cryptology_rows(mem, module_base, &agency_roots, &mut acc)?;
+    if !agency_roots.is_empty() {
+        source_proofs |= SOURCE_PROOF_CRYPTOLOGY_ROOT_870EBF;
+    }
+    for agency in &mut acc.rows.agencies {
+        agency.cryptology_target_count = acc
+            .rows
+            .cryptology
+            .iter()
+            .filter(|row| row.owner_tag_db_id == agency.owner_tag_db_id)
+            .count()
+            .min(u32::MAX as usize) as u32;
+    }
+
+    acc.rows.wars = war_rows;
+
+    Ok(ExtractedDomain53Frame {
+        rows: acc.rows,
+        source_proofs,
+        observed_rows: acc.observed_rows,
+        skipped_rows: acc.skipped_rows,
+        family_counts,
+    })
+}
+
+fn resolve_country_roots<M: Domain53Memory>(
+    mem: &M,
+    module_base: u64,
+    game_state: u64,
+) -> Result<Vec<CountryRoot>, ExtractError> {
+    let country_table = mem.read_u64(add_addr(
+        game_state,
+        profile::DOMAIN53_CGAMESTATE_COUNTRY_TABLE,
+    )?)?;
+    let country_count = mem.read_u32(add_addr(
+        game_state,
+        profile::DOMAIN53_CGAMESTATE_COUNTRY_COUNT,
+    )?)?;
+    if country_count == 0 || country_count > profile::DOMAIN53_MAX_COUNTRY_TABLE_SLOTS {
+        return Err(ExtractError::InvalidCount {
+            name: "domain53_country_count",
+            value: country_count,
+        });
+    }
+    if !is_heap_ptr(country_table) {
+        return Err(ExtractError::InvalidRoot(
+            "domain53_country_table_unavailable",
+        ));
+    }
+
+    let expected_vtable = add_addr(module_base, profile::DOMAIN53_COUNTRY_VTABLE_RVA)?;
+    let mut roots = Vec::new();
+    let mut seen = BTreeSet::new();
+    for slot in 0..country_count {
+        let slot_addr = country_table
+            .checked_add(u64::from(slot) * 8)
+            .ok_or(ExtractError::InvalidRoot("domain53_country_table_overflow"))?;
+        let Ok(country_ptr) = mem.read_u64(slot_addr) else {
+            continue;
+        };
+        if country_ptr == 0 {
+            continue;
+        }
+        if !is_heap_ptr(country_ptr) {
+            continue;
+        }
+        let Ok(vtable) = mem.read_u64(country_ptr) else {
+            continue;
+        };
+        if vtable != expected_vtable {
+            continue;
+        }
+        let Ok(tag_db_id) = mem.read_u32(add_addr(country_ptr, profile::DOMAIN53_OBJ_TAG_DB_ID)?)
+        else {
+            continue;
+        };
+        if !valid_tag_db_id(tag_db_id) || !seen.insert(tag_db_id) {
+            continue;
+        }
+        roots.push(CountryRoot {
+            tag_db_id,
+            country_ptr,
+        });
+    }
+    Ok(roots)
+}
+
+fn read_relation_rows<M: Domain53Memory>(
+    mem: &M,
+    module_base: u64,
+    countries: &[CountryRoot],
+    acc: &mut RowAccumulator,
+) -> Result<(), ExtractError> {
+    let relation_vtables = relation_vtable_kinds(module_base)?;
+    let mut seen_opinions = BTreeSet::new();
+    let mut seen_flags = BTreeSet::new();
+    let mut seen_subjects = BTreeSet::new();
+
+    for src in countries {
+        let manager_addr = add_addr(src.country_ptr, profile::DOMAIN53_RELATION_MANAGER)?;
+        let manager = match mem.read_u64(manager_addr) {
+            Ok(value) if is_heap_ptr(value) => value,
+            Ok(0) => continue,
+            _ => {
+                acc.skip();
+                continue;
+            }
+        };
+        let relation_table =
+            match mem.read_u64(add_addr(manager, profile::DOMAIN53_RELATION_TABLE)?) {
+                Ok(value) if is_heap_ptr(value) => value,
+                _ => {
+                    acc.skip();
+                    continue;
+                }
+            };
+        for target in countries {
+            if src.tag_db_id == target.tag_db_id {
+                continue;
+            }
+            let entry_slot = relation_table
+                .checked_add(u64::from(target.tag_db_id) * 8)
+                .ok_or(ExtractError::InvalidRoot(
+                    "domain53_relation_table_overflow",
+                ))?;
+            let relation_entry = match mem.read_u64(entry_slot) {
+                Ok(value) if is_heap_ptr(value) => value,
+                Ok(0) => continue,
+                _ => {
+                    acc.skip();
+                    continue;
+                }
+            };
+            match mem.read_i32(add_addr(
+                relation_entry,
+                profile::DOMAIN53_RELATION_OPINION,
+            )?) {
+                Ok(opinion) if (-MAX_OPINION_ABS..=MAX_OPINION_ABS).contains(&opinion) => {
+                    if seen_opinions.insert((src.tag_db_id, target.tag_db_id)) {
+                        acc.rows.opinions.push(OpinionRow {
+                            src_tag_db_id: src.tag_db_id,
+                            target_tag_db_id: target.tag_db_id,
+                            opinion,
+                        });
+                        acc.rows.state_events.push(state_event(
+                            src.tag_db_id,
+                            Some(target.tag_db_id),
+                            STATE_EVENT_SOURCE_RELATION_OPINION,
+                            "relation_opinion",
+                            &format!("opinion_{opinion}"),
+                            i64::from(opinion),
+                        ));
+                        acc.observe();
+                    }
+                }
+                Ok(_) | Err(_) => {
+                    acc.skip();
+                    continue;
+                }
+            }
+
+            let scan_bytes = profile::DOMAIN53_RELATION_SCAN_BYTES;
+            let bytes = match mem.read_bytes(relation_entry, scan_bytes) {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    acc.skip();
+                    continue;
+                }
+            };
+            let mut offset = 0usize;
+            while offset + 8 <= bytes.len() {
+                let qword = u64::from_le_bytes(
+                    bytes[offset..offset + 8]
+                        .try_into()
+                        .expect("qword scan slice"),
+                );
+                if let Some(flag_kind) = relation_vtables.get(&qword).copied() {
+                    let object_addr = relation_entry.checked_add(offset as u64).ok_or(
+                        ExtractError::InvalidRoot("domain53_relation_object_overflow"),
+                    )?;
+                    if flag_kind == REL_KIND_PUPPET {
+                        read_subject_relation(mem, object_addr, acc, &mut seen_subjects);
+                    } else {
+                        let key = (src.tag_db_id, target.tag_db_id, flag_kind);
+                        if seen_flags.insert(key) {
+                            acc.rows.relation_flags.push(RelationFlagRow {
+                                src_tag_db_id: src.tag_db_id,
+                                target_tag_db_id: target.tag_db_id,
+                                flag_kind,
+                                directed: true,
+                            });
+                            acc.rows.state_events.push(state_event(
+                                src.tag_db_id,
+                                Some(target.tag_db_id),
+                                STATE_EVENT_SOURCE_RELATION_FLAG,
+                                &format!("relation_flag_kind_{flag_kind}"),
+                                "directed_true",
+                                i64::from(flag_kind),
+                            ));
+                            acc.observe();
+                        }
+                    }
+                }
+                offset += 8;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn read_subject_relation<M: Domain53Memory>(
+    mem: &M,
+    object_addr: u64,
+    acc: &mut RowAccumulator,
+    seen_subjects: &mut BTreeSet<(u32, u32)>,
+) {
+    let read = (|| -> Result<SubjectRow, ExtractError> {
+        // Domain 53 withdrawn pending live-870ebf root re-validation: subject
+        // decoding is conservatively disabled so no unvalidated subject rows are
+        // emitted. The collector fail-closes the whole domain upstream; this is a
+        // defense-in-depth stub. Restore the body below once roots are re-proven.
+        acc.skip();
+        return Err(ExtractError::InvalidRoot(
+            "domain53_subject_disabled_pending_revalidation",
+        ));
+        #[allow(unreachable_code)]
+        let overlord = mem.read_u32(add_addr(object_addr, profile::DOMAIN53_SUBJECT_OVERLORD)?)?;
+        let subject = mem.read_u32(add_addr(object_addr, profile::DOMAIN53_SUBJECT_SUBJECT)?)?;
+        if !valid_tag_db_id(overlord) || !valid_tag_db_id(subject) || overlord == subject {
+            return Err(ExtractError::InvalidRoot("domain53_subject_tag_invalid"));
+        }
+        let state_db = mem.read_u64(add_addr(object_addr, profile::DOMAIN53_SUBJECT_STATE_DB)?)?;
+        let state_hash = if is_heap_ptr(state_db) {
+            match read_msvc_string(
+                mem,
+                add_addr(state_db, profile::DOMAIN53_SUBJECT_STATE_NAME)?,
+                96,
+            ) {
+                StringRead::Value(value) => crate::compact::stable_hash32(&value),
+                StringRead::Invalid => {
+                    acc.skip();
+                    crate::compact::stable_hash32("autonomy_state_invalid_utf8")
+                }
+                StringRead::Missing => crate::compact::stable_hash32("autonomy_state_unknown"),
+            }
+        } else {
+            crate::compact::stable_hash32("autonomy_state_unknown")
+        };
+        let ratio = mem.read_i32(add_addr(object_addr, profile::DOMAIN53_SUBJECT_RATIO)?)?;
+        if !(-MAX_FIXED_RAW..=MAX_FIXED_RAW).contains(&ratio) {
+            return Err(ExtractError::InvalidRoot("domain53_subject_ratio_invalid"));
+        }
+        Ok(SubjectRow {
+            overlord_tag_db_id: overlord,
+            subject_tag_db_id: subject,
+            autonomy_state_hash: state_hash,
+            autonomy_ratio_raw: ratio,
+        })
+    })();
+
+    match read {
+        Ok(row) => {
+            if seen_subjects.insert((row.overlord_tag_db_id, row.subject_tag_db_id)) {
+                acc.rows.state_events.push(StateEventRow {
+                    owner_tag_db_id: row.overlord_tag_db_id,
+                    target_tag_db_id: Some(row.subject_tag_db_id),
+                    event_kind: STATE_EVENT_KIND_OBSERVED,
+                    source_kind: STATE_EVENT_SOURCE_SUBJECT_AUTONOMY,
+                    object_hash: row.autonomy_state_hash,
+                    value_hash: crate::compact::stable_hash32(&format!(
+                        "autonomy_ratio_{}",
+                        row.autonomy_ratio_raw
+                    )),
+                    value_raw: i64::from(row.autonomy_ratio_raw),
+                });
+                acc.rows.subjects.push(row);
+                acc.observe();
+            }
+        }
+        Err(_) => acc.skip(),
+    }
+}
+
+fn read_agency_rows<M: Domain53Memory>(
+    mem: &M,
+    _module_base: u64,
+    countries: &[CountryRoot],
+    acc: &mut RowAccumulator,
+) -> Result<Vec<AgencyRootRead>, ExtractError> {
+    let expected_vtable = add_addr(mem.module_base(), profile::DOMAIN53_AGENCY_VTABLE_RVA)?;
+    let mut agency_roots = Vec::new();
+    for country in countries {
+        let agency_ptr = match mem.read_u64(add_addr(
+            country.country_ptr,
+            profile::DOMAIN53_COUNTRY_AGENCY_PTR,
+        )?) {
+            Ok(0) => continue,
+            Ok(value) if is_heap_ptr(value) => value,
+            Ok(_) | Err(_) => {
+                acc.skip();
+                continue;
+            }
+        };
+        let Ok(vtable) = mem.read_u64(agency_ptr) else {
+            acc.skip();
+            continue;
+        };
+        if vtable != expected_vtable {
+            acc.skip();
+            continue;
+        }
+        let defense_raw =
+            match mem.read_i32(add_addr(agency_ptr, profile::DOMAIN53_AGENCY_DEFENSE)?) {
+                Ok(value) if (-MAX_FIXED_RAW..=MAX_FIXED_RAW).contains(&value) => value,
+                _ => {
+                    acc.skip();
+                    continue;
+                }
+            };
+        let upgrade_progress_raw = match mem.read_i32(add_addr(
+            agency_ptr,
+            profile::DOMAIN53_AGENCY_UPGRADE_PROGRESS,
+        )?) {
+            Ok(value) if (-MAX_FIXED_RAW..=MAX_FIXED_RAW).contains(&value) => value,
+            _ => {
+                acc.skip();
+                continue;
+            }
+        };
+        let name_hash = match read_msvc_string(
+            mem,
+            add_addr(agency_ptr, profile::DOMAIN53_AGENCY_NAME)?,
+            128,
+        ) {
+            StringRead::Value(value) => crate::compact::stable_hash64(&value),
+            StringRead::Invalid => {
+                acc.skip();
+                0
+            }
+            StringRead::Missing => 0,
+        };
+        let icon_hash = match read_msvc_string(
+            mem,
+            add_addr(agency_ptr, profile::DOMAIN53_AGENCY_ICON)?,
+            128,
+        ) {
+            StringRead::Value(value) => crate::compact::stable_hash64(&value),
+            StringRead::Invalid => {
+                acc.skip();
+                0
+            }
+            StringRead::Missing => 0,
+        };
+        // Probe-backed capacity: agency+0xE4 = max_operatives, +0xF0 = usable_slots.
+        let max_operatives =
+            match mem.read_u32(add_addr(agency_ptr, profile::DOMAIN53_AGENCY_CAPACITY_E4)?) {
+                Ok(value) if value <= MAX_AGENCY_CAPACITY_CLUSTER_VALUE => value,
+                _ => {
+                    acc.skip();
+                    continue;
+                }
+            };
+        let usable_slots =
+            match mem.read_u32(add_addr(agency_ptr, profile::DOMAIN53_AGENCY_CAPACITY_F0)?) {
+                Ok(value) if value <= MAX_AGENCY_CAPACITY_CLUSTER_VALUE => value,
+                _ => {
+                    acc.skip();
+                    continue;
+                }
+            };
+        acc.rows.agencies.push(AgencyRow {
+            owner_tag_db_id: country.tag_db_id,
+            max_operatives,
+            usable_slots,
+            operative_count: 0,
+            cryptology_target_count: 0,
+            defense_raw,
+            upgrade_progress_raw,
+            name_hash,
+            icon_hash,
+        });
+        acc.rows.state_events.push(state_event(
+            country.tag_db_id,
+            None,
+            STATE_EVENT_SOURCE_AGENCY_SCALAR,
+            "agency_upgrade_progress_raw",
+            &format!("agency_upgrade_progress_{upgrade_progress_raw}"),
+            i64::from(upgrade_progress_raw),
+        ));
+        acc.observe();
+
+        read_agency_capacity(mem, country.tag_db_id, agency_ptr, acc)?;
+        agency_roots.push(AgencyRootRead {
+            owner_tag_db_id: country.tag_db_id,
+            agency_ptr,
+        });
+    }
+    Ok(agency_roots)
+}
+
+fn read_agency_capacity<M: Domain53Memory>(
+    mem: &M,
+    owner_tag_db_id: u32,
+    agency_ptr: u64,
+    acc: &mut RowAccumulator,
+) -> Result<(), ExtractError> {
+    // NOTE (domain 53 withdrawn pending live-870ebf re-validation): agency+0xE4 and
+    // +0xF0 are probe-backed; the +0xF4 slot is NOT independently probe-backed and is
+    // carried here only as an alias of E4 to satisfy the existing wire schema/gate. The
+    // unbacked-F4 concern is tracked for the offset-provenance re-validation; this path
+    // is unreachable in production because the collector fail-closes the whole domain.
+    let value_0xe4 = mem.read_u32(add_addr(agency_ptr, profile::DOMAIN53_AGENCY_CAPACITY_E4)?)?;
+    let value_0xf0 = mem.read_u32(add_addr(agency_ptr, profile::DOMAIN53_AGENCY_CAPACITY_F0)?)?;
+    let value_0xf4 = value_0xe4;
+    if value_0xe4 != value_0xf4
+        || value_0xe4 > MAX_AGENCY_CAPACITY_CLUSTER_VALUE
+        || value_0xf0 > MAX_AGENCY_CAPACITY_CLUSTER_VALUE
+        || value_0xf4 > MAX_AGENCY_CAPACITY_CLUSTER_VALUE
+    {
+        acc.skip();
+        return Ok(());
+    }
+    let proof_hash = crate::compact::stable_hash32("agency_capacity_offsets_e4_f0_f4");
+    acc.rows
+        .agency_capacity_clusters
+        .push(AgencyCapacityClusterRow {
+            owner_tag_db_id,
+            value_0xe4,
+            value_0xf0,
+            value_0xf4,
+            proof_hash,
+        });
+    acc.rows.state_events.push(state_event(
+        owner_tag_db_id,
+        None,
+        STATE_EVENT_SOURCE_AGENCY_CAPACITY,
+        "agency_capacity_offsets_e4_f0_f4",
+        &format!("agency_capacity_{value_0xe4}_{value_0xf0}_{value_0xf4}"),
+        i64::from(value_0xf0),
+    ));
+    acc.observe();
+    Ok(())
+}
+
+fn read_cryptology_rows<M: Domain53Memory>(
+    mem: &M,
+    module_base: u64,
+    agency_roots: &[AgencyRootRead],
+    acc: &mut RowAccumulator,
+) -> Result<(), ExtractError> {
+    // Domain 53 withdrawn pending live-870ebf re-validation: cryptology decoding is
+    // conservatively disabled (no unvalidated rows emitted). Collector fail-closes the
+    // domain upstream; this is defense-in-depth. Restore the body once roots re-proven.
+    acc.skip();
+    return Ok(());
+    #[allow(unreachable_code)]
+    let crypto_vtable = add_addr(module_base, profile::DOMAIN53_CRYPTOLOGY_VTABLE_RVA)?;
+    let record_vtable = add_addr(module_base, profile::DOMAIN53_CRYPTOLOGY_RECORD_VTABLE_RVA)?;
+    let valid_owners = agency_roots
+        .iter()
+        .map(|root| root.owner_tag_db_id)
+        .collect::<BTreeSet<_>>();
+    let mut seen = BTreeSet::new();
+    for agency in agency_roots {
+        let crypto_ptr = match mem.read_u64(add_addr(
+            agency.agency_ptr,
+            profile::DOMAIN53_AGENCY_CRYPTO_MGR,
+        )?) {
+            Ok(0) => continue,
+            Ok(value) if is_heap_ptr(value) => value,
+            Ok(_) | Err(_) => {
+                acc.skip();
+                continue;
+            }
+        };
+        let Ok(vtable) = mem.read_u64(crypto_ptr) else {
+            acc.skip();
+            continue;
+        };
+        if vtable != crypto_vtable {
+            acc.skip();
+            continue;
+        }
+        let data = match mem.read_u64(add_addr(crypto_ptr, profile::DOMAIN53_CRYPTOLOGY_MGR_DATA)?)
+        {
+            Ok(value) if value == 0 || is_heap_ptr(value) => value,
+            _ => {
+                acc.skip();
+                continue;
+            }
+        };
+        let size = match mem.read_u32(add_addr(crypto_ptr, profile::DOMAIN53_CRYPTOLOGY_MGR_SIZE)?)
+        {
+            Ok(value) if value <= profile::DOMAIN53_MAX_VECTOR_ROWS => value,
+            _ => {
+                acc.skip();
+                continue;
+            }
+        };
+        let cap = match mem.read_u32(add_addr(crypto_ptr, profile::DOMAIN53_CRYPTOLOGY_MGR_CAP)?) {
+            Ok(value) if value >= size && value <= profile::DOMAIN53_MAX_VECTOR_ROWS => value,
+            _ => {
+                acc.skip();
+                continue;
+            }
+        };
+        let _ = cap;
+        if size == 0 {
+            continue;
+        }
+        if !is_heap_ptr(data) {
+            acc.skip();
+            continue;
+        }
+        for index in 0..size {
+            let row_addr = data
+                .checked_add(u64::from(index) * profile::DOMAIN53_CRYPTOLOGY_RECORD_STRIDE as u64)
+                .ok_or(ExtractError::InvalidRoot(
+                    "domain53_cryptology_record_overflow",
+                ))?;
+            let read = (|| -> Result<CryptologyRow, ExtractError> {
+                if mem.read_u64(row_addr)? != record_vtable {
+                    return Err(ExtractError::InvalidRoot(
+                        "domain53_cryptology_vtable_mismatch",
+                    ));
+                }
+                let target = mem.read_u32(add_addr(
+                    row_addr,
+                    profile::DOMAIN53_CRYPTOLOGY_RECORD_TARGET,
+                )?)?;
+                if !valid_tag_db_id(target) || !valid_owners.contains(&agency.owner_tag_db_id) {
+                    return Err(ExtractError::InvalidRoot(
+                        "domain53_cryptology_target_invalid",
+                    ));
+                }
+                let decrypting = mem
+                    .read_u8(add_addr(
+                        row_addr,
+                        profile::DOMAIN53_CRYPTOLOGY_RECORD_DECRYPTING,
+                    )?)
+                    .map(|value| value != 0)?;
+                let amount_raw = mem.read_i64(add_addr(
+                    row_addr,
+                    profile::DOMAIN53_CRYPTOLOGY_RECORD_AMOUNT,
+                )?)?;
+                if !(0..=MAX_CRYPTO_AMOUNT_RAW).contains(&amount_raw) {
+                    return Err(ExtractError::InvalidRoot(
+                        "domain53_cryptology_amount_invalid",
+                    ));
+                }
+                Ok(CryptologyRow {
+                    owner_tag_db_id: agency.owner_tag_db_id,
+                    target_tag_db_id: target,
+                    amount_raw,
+                    decrypting,
+                })
+            })();
+            match read {
+                Ok(row) if seen.insert((row.owner_tag_db_id, row.target_tag_db_id)) => {
+                    acc.rows.state_events.push(state_event(
+                        row.owner_tag_db_id,
+                        Some(row.target_tag_db_id),
+                        STATE_EVENT_SOURCE_CRYPTOLOGY,
+                        "cryptology_amount_raw",
+                        &format!("cryptology_amount_{}", row.amount_raw),
+                        row.amount_raw,
+                    ));
+                    acc.rows.cryptology.push(row);
+                    acc.observe();
+                }
+                Ok(_) => {}
+                Err(_) => acc.skip(),
+            }
+        }
+    }
+    Ok(())
+}
+
+fn read_operatives<M: Domain53Memory>(
+    mem: &M,
+    module_base: u64,
+    countries: &[CountryRoot],
+    acc: &mut RowAccumulator,
+) -> Result<u32, ExtractError> {
+    let valid_owners = countries
+        .iter()
+        .map(|country| country.tag_db_id)
+        .collect::<BTreeSet<_>>();
+    // Domain 53 withdrawn pending live-870ebf re-validation: operative decoding is
+    // conservatively disabled (no unvalidated/false-positive operative rows emitted).
+    // Collector fail-closes the domain upstream; defense-in-depth. Restore once re-proven.
+    acc.skip();
+    return Ok(0);
+    #[allow(unreachable_code)]
+    let operative_vtable = add_addr(module_base, profile::DOMAIN53_OPERATIVE_VTABLE_RVA)?;
+    let ranges = mem.readable_ranges(
+        profile::DOMAIN53_HEAP_LO as u64,
+        profile::DOMAIN53_HEAP_HI as u64,
+    );
+    let hits = scan_qword_hits(mem, &ranges, operative_vtable)?;
+    let mut seen = BTreeSet::new();
+    for hit in hits {
+        let identity = hit
+            .checked_add(profile::DOMAIN53_OPERATIVE_IDENTITY_FROM_VTABLE as u64)
+            .ok_or(ExtractError::InvalidRoot(
+                "domain53_operative_identity_overflow",
+            ))?;
+        let read = read_operative_row(mem, identity, &valid_owners);
+        match read {
+            Ok(row) if seen.insert(row.op_id) => {
+                if let Some(lifecycle) = row.lifecycle_flag {
+                    acc.rows.state_events.push(state_event(
+                        row.owner_tag_db_id,
+                        None,
+                        STATE_EVENT_SOURCE_OPERATIVE_LIFECYCLE,
+                        &format!("operative_{}_lifecycle", row.op_id),
+                        &format!("lifeflag_{lifecycle}"),
+                        i64::from(lifecycle),
+                    ));
+                }
+                acc.rows.operatives.push(row);
+                acc.observe();
+            }
+            Ok(_) => {}
+            Err(_) => acc.skip(),
+        }
+    }
+    Ok(ranges.len().min(u32::MAX as usize) as u32)
+}
+
+fn read_operative_row<M: Domain53Memory>(
+    mem: &M,
+    identity: u64,
+    valid_owners: &BTreeSet<u32>,
+) -> Result<OperativeRow, ExtractError> {
+    let handle_type = mem.read_u32(identity)?;
+    if handle_type != profile::DOMAIN53_OPERATIVE_HANDLE_TYPE {
+        return Err(ExtractError::InvalidRoot("domain53_operative_handle_type"));
+    }
+    let op_id = mem.read_u32(add_addr(identity, 4)?)?;
+    if op_id == 0 || op_id > MAX_OPERATIVE_ID {
+        return Err(ExtractError::InvalidRoot("domain53_operative_id_invalid"));
+    }
+    let owner = mem.read_u32(add_addr(identity, profile::DOMAIN53_OPERATIVE_OWNER)?)?;
+    if !valid_tag_db_id(owner) || !valid_owners.contains(&owner) {
+        return Err(ExtractError::InvalidRoot(
+            "domain53_operative_owner_invalid",
+        ));
+    }
+    let lifecycle = mem.read_u32(add_addr(
+        identity,
+        profile::DOMAIN53_OPERATIVE_LIFECYCLE_FLAG,
+    )?)?;
+    if lifecycle > MAX_OPERATIVE_LIFECYCLE_FLAG {
+        return Err(ExtractError::InvalidRoot(
+            "domain53_operative_lifecycle_invalid",
+        ));
+    }
+    let name_a = read_msvc_string(
+        mem,
+        add_addr(identity, profile::DOMAIN53_OPERATIVE_NAME)?,
+        128,
+    );
+    let name_b = read_msvc_string(
+        mem,
+        add_addr(identity, profile::DOMAIN53_OPERATIVE_NAME_DUPLICATE)?,
+        128,
+    );
+    let name_hash = match (name_a, name_b) {
+        (StringRead::Value(a), StringRead::Value(b)) if a == b => crate::compact::stable_hash64(&a),
+        (StringRead::Value(a), StringRead::Missing)
+        | (StringRead::Missing, StringRead::Value(a)) => crate::compact::stable_hash64(&a),
+        (StringRead::Missing, StringRead::Missing) => 0,
+        (StringRead::Invalid, _) | (_, StringRead::Invalid) => {
+            return Err(ExtractError::InvalidRoot(
+                "domain53_operative_name_invalid_utf8",
+            ));
+        }
+        _ => {
+            return Err(ExtractError::InvalidRoot(
+                "domain53_operative_name_mismatch",
+            ))
+        }
+    };
+    let detected = mem
+        .read_u8(add_addr(identity, profile::DOMAIN53_OPERATIVE_DETECTED)?)
+        .map(|value| value != 0)?;
+    let leader = identity
+        .checked_add_signed(profile::DOMAIN53_OPERATIVE_LEADER_FROM_IDENTITY_DELTA as i64)
+        .ok_or(ExtractError::InvalidRoot(
+            "domain53_operative_leader_overflow",
+        ))?;
+    let experience_raw = match mem.read_i64(add_addr(
+        leader,
+        profile::DOMAIN53_OPERATIVE_EXPERIENCE_RAW,
+    )?) {
+        Ok(value) if (0..=MAX_XP_RAW).contains(&value) => Some(value),
+        Ok(_) => return Err(ExtractError::InvalidRoot("domain53_operative_xp_invalid")),
+        Err(_) => None,
+    };
+    let skill = match mem.read_u64(add_addr(
+        leader,
+        profile::DOMAIN53_OPERATIVE_SKILL_SUBOBJECT,
+    )?) {
+        Ok(skill_obj) if is_heap_ptr(skill_obj) => {
+            match mem.read_u32(add_addr(
+                skill_obj,
+                profile::DOMAIN53_OPERATIVE_SKILL_LEVEL,
+            )?) {
+                Ok(value) if value <= MAX_OPERATIVE_SKILL => Some(value),
+                Ok(_) => {
+                    return Err(ExtractError::InvalidRoot(
+                        "domain53_operative_skill_invalid",
+                    ))
+                }
+                Err(_) => None,
+            }
+        }
+        _ => None,
+    };
+    Ok(OperativeRow {
+        owner_tag_db_id: owner,
+        op_id,
+        detected,
+        captured: false,
+        skill,
+        experience_raw,
+        name_hash,
+        state_hash: crate::compact::stable_hash32(&format!("lifeflag_{lifecycle}")),
+        lifecycle_flag: Some(lifecycle),
+    })
+}
+
+fn read_war_rows<M: Domain53Memory>(
+    mem: &M,
+    module_base: u64,
+    countries: &[CountryRoot],
+    acc: &mut RowAccumulator,
+) -> Result<Vec<WarRelationRow>, ExtractError> {
+    let valid_tags = countries
+        .iter()
+        .map(|country| country.tag_db_id)
+        .collect::<BTreeSet<_>>();
+    acc.skip();
+    return Ok(Vec::new());
+    let date_vtables = [
+        add_addr(module_base, profile::DOMAIN53_WAR_GREGORIAN_DATE_VTABLE_RVA)?,
+        add_addr(module_base, profile::DOMAIN53_WAR_GAME_DATE_VTABLE_RVA)?,
+    ];
+    let ranges = mem.readable_ranges(
+        profile::DOMAIN53_HEAP_LO as u64,
+        profile::DOMAIN53_HEAP_HI as u64,
+    );
+    let mut rows = Vec::new();
+    let mut seen = BTreeSet::new();
+    for date_vtable in date_vtables {
+        for hit in scan_qword_hits(mem, &ranges, date_vtable)? {
+            let Some(row_addr) = hit.checked_sub(profile::DOMAIN53_WAR_DATE_VTABLE as u64) else {
+                continue;
+            };
+            let read = read_war_row(mem, row_addr, &valid_tags);
+            match read {
+                Ok(row) => {
+                    let key = if row.first_tag_db_id <= row.second_tag_db_id {
+                        (row.first_tag_db_id, row.second_tag_db_id)
+                    } else {
+                        (row.second_tag_db_id, row.first_tag_db_id)
+                    };
+                    if seen.insert(key) {
+                        rows.push(row);
+                        acc.observe();
+                    }
+                }
+                Err(_) => acc.skip(),
+            }
+        }
+    }
+    Ok(rows)
+}
+
+fn read_war_row<M: Domain53Memory>(
+    mem: &M,
+    row_addr: u64,
+    valid_tags: &BTreeSet<u32>,
+) -> Result<WarRelationRow, ExtractError> {
+    let first = mem.read_u32(add_addr(row_addr, profile::DOMAIN53_WAR_FIRST_TAG)?)?;
+    let second = mem.read_u32(add_addr(row_addr, profile::DOMAIN53_WAR_SECOND_TAG)?)?;
+    if first == second
+        || !valid_tag_db_id(first)
+        || !valid_tag_db_id(second)
+        || !valid_tags.contains(&first)
+        || !valid_tags.contains(&second)
+    {
+        return Err(ExtractError::InvalidRoot("domain53_war_pair_invalid"));
+    }
+    let first_casualties =
+        mem.read_i32(add_addr(row_addr, profile::DOMAIN53_WAR_FIRST_CASUALTIES)?)? as i64;
+    let second_casualties =
+        mem.read_i32(add_addr(row_addr, profile::DOMAIN53_WAR_SECOND_CASUALTIES)?)? as i64;
+    if !(0..=MAX_CASUALTIES).contains(&first_casualties)
+        || !(0..=MAX_CASUALTIES).contains(&second_casualties)
+    {
+        return Err(ExtractError::InvalidRoot("domain53_war_casualties_invalid"));
+    }
+    let echo_first = mem.read_u32(add_addr(row_addr, profile::DOMAIN53_WAR_ECHO_FIRST)?)?;
+    let echo_second = mem.read_u32(add_addr(row_addr, profile::DOMAIN53_WAR_ECHO_SECOND)?)?;
+    if echo_first != first || echo_second != second {
+        return Err(ExtractError::InvalidRoot("domain53_war_echo_mismatch"));
+    }
+    Ok(WarRelationRow {
+        first_tag_db_id: first,
+        second_tag_db_id: second,
+        first_casualties,
+        second_casualties,
+    })
+}
+
+fn war_projection_by_country(rows: &[WarRelationRow]) -> BTreeMap<u32, (u32, i64)> {
+    let mut out = BTreeMap::<u32, (u32, i64)>::new();
+    for row in rows {
+        let first = out.entry(row.first_tag_db_id).or_default();
+        first.0 = first.0.saturating_add(1);
+        first.1 = first.1.saturating_add(row.first_casualties);
+        let second = out.entry(row.second_tag_db_id).or_default();
+        second.0 = second.0.saturating_add(1);
+        second.1 = second.1.saturating_add(row.second_casualties);
+    }
+    out
+}
+
+fn relation_vtable_kinds(module_base: u64) -> Result<BTreeMap<u64, u16>, ExtractError> {
+    Ok(BTreeMap::from([
+        (
+            add_addr(
+                module_base,
+                profile::DOMAIN53_REL_NON_AGGRESSION_PACT_VTABLE_RVA,
+            )?,
+            REL_KIND_NON_AGGRESSION_PACT,
+        ),
+        (
+            add_addr(module_base, profile::DOMAIN53_REL_SUBJECT_VTABLE_RVA)?,
+            REL_KIND_PUPPET,
+        ),
+        (
+            add_addr(module_base, profile::DOMAIN53_REL_EMBARGO_VTABLE_RVA)?,
+            REL_KIND_EMBARGO,
+        ),
+        (
+            add_addr(
+                module_base,
+                profile::DOMAIN53_REL_MILITARY_ACCESS_VTABLE_RVA,
+            )?,
+            REL_KIND_MILITARY_ACCESS,
+        ),
+        (
+            add_addr(
+                module_base,
+                profile::DOMAIN53_REL_AIR_BASE_ACCESS_VTABLE_RVA,
+            )?,
+            REL_KIND_AIR_BASE_ACCESS,
+        ),
+        (
+            add_addr(module_base, profile::DOMAIN53_REL_DOCKING_RIGHTS_VTABLE_RVA)?,
+            REL_KIND_DOCKING_RIGHTS,
+        ),
+        (
+            add_addr(module_base, profile::DOMAIN53_REL_NAVAL_BLOCKADE_VTABLE_RVA)?,
+            REL_KIND_NAVAL_BLOCKADE,
+        ),
+        (
+            add_addr(
+                module_base,
+                profile::DOMAIN53_REL_MARKET_ACCESS_RIGHTS_VTABLE_RVA,
+            )?,
+            REL_KIND_MARKET_ACCESS_RIGHTS,
+        ),
+        (
+            add_addr(
+                module_base,
+                profile::DOMAIN53_REL_EQUIPMENT_PURCHASE_RELATION_VTABLE_RVA,
+            )?,
+            REL_KIND_EQUIPMENT_PURCHASE_CONTRACT_RELATION,
+        ),
+        (
+            add_addr(module_base, profile::DOMAIN53_REL_GUARANTEE_VTABLE_RVA)?,
+            REL_KIND_GUARANTEE,
+        ),
+        (
+            add_addr(
+                module_base,
+                profile::DOMAIN53_REL_IMPROVE_RELATIONS_VTABLE_RVA,
+            )?,
+            REL_KIND_IMPROVE_RELATIONS,
+        ),
+        (
+            add_addr(module_base, profile::DOMAIN53_REL_ATTACHE_VTABLE_RVA)?,
+            REL_KIND_ATTACHE,
+        ),
+        (
+            add_addr(
+                module_base,
+                profile::DOMAIN53_REL_LICENCE_PRODUCTION_VTABLE_RVA,
+            )?,
+            REL_KIND_LICENCE_PRODUCTION,
+        ),
+    ]))
+}
+
+fn scan_qword_hits<M: Domain53Memory>(
+    mem: &M,
+    ranges: &[(u64, usize)],
+    needle: u64,
+) -> Result<Vec<u64>, ExtractError> {
+    let needle_bytes = needle.to_le_bytes();
+    let mut hits = Vec::new();
+    const CHUNK: usize = 1 << 20;
+    const OVERLAP: usize = 16;
+    for (start, len) in ranges {
+        let Some(end) = start.checked_add(*len as u64) else {
+            continue;
+        };
+        let mut pos = *start;
+        while pos < end {
+            let remaining = (end - pos).min(usize::MAX as u64) as usize;
+            let want = remaining.min(CHUNK);
+            let blob = mem.read_bytes(pos, want)?;
+            let mut offset = (8usize.wrapping_sub((pos as usize) % 8)) % 8;
+            while offset + 8 <= blob.len() {
+                if blob[offset..offset + 8] == needle_bytes {
+                    hits.push(pos + offset as u64);
+                }
+                offset += 8;
+            }
+            if blob.len() < want || blob.len() >= remaining {
+                break;
+            }
+            pos = pos
+                .checked_add(blob.len().saturating_sub(OVERLAP).max(1) as u64)
+                .ok_or(ExtractError::InvalidRoot("domain53_scan_overflow"))?;
+        }
+    }
+    Ok(hits)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum StringRead {
+    Value(String),
+    Missing,
+    Invalid,
+}
+
+fn read_msvc_string<M: Domain53Memory>(mem: &M, address: u64, max_len: usize) -> StringRead {
+    let Ok(size) = mem.read_u64(add_addr(address, 0x10).unwrap_or(address)) else {
+        return StringRead::Missing;
+    };
+    let Ok(cap) = mem.read_u64(add_addr(address, 0x18).unwrap_or(address)) else {
+        return StringRead::Missing;
+    };
+    let size = size as usize;
+    let cap = cap as usize;
+    if size == 0 {
+        return StringRead::Missing;
+    }
+    if size > max_len || cap < size || cap > (1 << 20) {
+        return StringRead::Invalid;
+    }
+    let chars_addr = if cap < 16 {
+        address
+    } else {
+        match mem.read_u64(address) {
+            Ok(ptr) if is_heap_ptr(ptr) => ptr,
+            _ => return StringRead::Invalid,
+        }
+    };
+    let Ok(bytes) = mem.read_bytes(chars_addr, size + 1) else {
+        return StringRead::Missing;
+    };
+    if bytes.get(size).copied() != Some(0) {
+        return StringRead::Invalid;
+    }
+    match std::str::from_utf8(&bytes[..size]) {
+        Ok(value) if !value.chars().any(char::is_control) => StringRead::Value(value.to_string()),
+        _ => StringRead::Invalid,
+    }
+}
+
+fn state_event(
+    owner_tag_db_id: u32,
+    target_tag_db_id: Option<u32>,
+    source_kind: u16,
+    object: &str,
+    value: &str,
+    value_raw: i64,
+) -> StateEventRow {
+    StateEventRow {
+        owner_tag_db_id,
+        target_tag_db_id,
+        event_kind: STATE_EVENT_KIND_OBSERVED,
+        source_kind,
+        object_hash: crate::compact::stable_hash32(object),
+        value_hash: crate::compact::stable_hash32(value),
+        value_raw,
+    }
+}
+
+fn add_addr(base: u64, offset: usize) -> Result<u64, ExtractError> {
+    base.checked_add(offset as u64)
+        .ok_or(ExtractError::InvalidRoot("domain53_address_overflow"))
+}
+
+fn is_heap_ptr(value: u64) -> bool {
+    value >= profile::DOMAIN53_HEAP_LO as u64 && value < profile::DOMAIN53_HEAP_HI as u64
+}
+
+fn valid_tag_db_id(value: u32) -> bool {
+    value > 0 && value <= MAX_TAG_DB_ID
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -535,6 +1757,367 @@ fn has(source_proofs: u64, required: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone, Debug)]
+    struct FakeMemory {
+        module_base: u64,
+        chunks: Vec<(u64, Vec<u8>)>,
+        ranges: Vec<(u64, usize)>,
+    }
+
+    impl FakeMemory {
+        fn new(module_base: u64) -> Self {
+            Self {
+                module_base,
+                chunks: Vec::new(),
+                ranges: Vec::new(),
+            }
+        }
+
+        fn add_chunk(&mut self, address: u64, len: usize) {
+            self.chunks.push((address, vec![0; len]));
+        }
+
+        fn add_range(&mut self, address: u64, len: usize) {
+            self.ranges.push((address, len));
+        }
+
+        fn chunk_mut(&mut self, address: u64, len: usize) -> &mut [u8] {
+            for (base, bytes) in &mut self.chunks {
+                let end = *base + bytes.len() as u64;
+                if address >= *base && address + len as u64 <= end {
+                    let offset = (address - *base) as usize;
+                    return &mut bytes[offset..offset + len];
+                }
+            }
+            panic!("missing fake memory chunk at {address:#x} len {len}");
+        }
+
+        fn write_u8(&mut self, address: u64, value: u8) {
+            self.chunk_mut(address, 1)[0] = value;
+        }
+
+        fn write_u32(&mut self, address: u64, value: u32) {
+            self.chunk_mut(address, 4)
+                .copy_from_slice(&value.to_le_bytes());
+        }
+
+        fn write_i32(&mut self, address: u64, value: i32) {
+            self.chunk_mut(address, 4)
+                .copy_from_slice(&value.to_le_bytes());
+        }
+
+        fn write_u64(&mut self, address: u64, value: u64) {
+            self.chunk_mut(address, 8)
+                .copy_from_slice(&value.to_le_bytes());
+        }
+
+        fn write_i64(&mut self, address: u64, value: i64) {
+            self.chunk_mut(address, 8)
+                .copy_from_slice(&value.to_le_bytes());
+        }
+
+        fn write_inline_string(&mut self, address: u64, value: &str) {
+            let bytes = value.as_bytes();
+            assert!(bytes.len() < 16);
+            self.chunk_mut(address, 16).fill(0);
+            self.chunk_mut(address, bytes.len()).copy_from_slice(bytes);
+            self.write_u64(address + 0x10, bytes.len() as u64);
+            self.write_u64(address + 0x18, 15);
+        }
+    }
+
+    impl Domain53Memory for FakeMemory {
+        fn module_base(&self) -> u64 {
+            self.module_base
+        }
+
+        fn read_bytes(&self, address: u64, len: usize) -> Result<Vec<u8>, ExtractError> {
+            for (base, bytes) in &self.chunks {
+                let end = *base + bytes.len() as u64;
+                if address >= *base && address + len as u64 <= end {
+                    let offset = (address - *base) as usize;
+                    return Ok(bytes[offset..offset + len].to_vec());
+                }
+            }
+            Err(ExtractError::MemoryRead { address, len })
+        }
+
+        fn readable_ranges(&self, _lo: u64, _hi: u64) -> Vec<(u64, usize)> {
+            self.ranges.clone()
+        }
+    }
+
+    fn fake_domain53_memory(include_relations: bool, include_operative: bool) -> FakeMemory {
+        let module = 0x1400_0000_0;
+        let heap = profile::DOMAIN53_HEAP_LO as u64 + 0x10_0000;
+        let game_state = heap;
+        let country_database = heap + 0x1_0000;
+        let country_table = heap + 0x2_0000;
+        let country1 = heap + 0x3_0000;
+        let country2 = heap + 0x4_0000;
+        let country3 = heap + 0x5_0000;
+        let rel_manager1 = heap + 0x6_0000;
+        let rel_table1 = heap + 0x7_0000;
+        let rel12 = heap + 0x8_0000;
+        let rel13 = heap + 0x9_0000;
+        let autonomy_state = heap + 0xA_0000;
+        let agency1 = heap + 0xB_0000;
+        let crypto1 = heap + 0xC_0000;
+        let crypto_records = heap + 0xD_0000;
+        let leader1 = heap + 0xE_0000;
+        let skill1 = heap + 0xF_0000;
+        let war1 = heap + 0x10_0000;
+
+        let mut mem = FakeMemory::new(module);
+        for (addr, len) in [
+            (module + profile::CG_STATE_DATE_OFFSET as u64, 8),
+            (module + profile::COUNTRY_DATABASE_OFFSET as u64, 8),
+            (game_state, 0x400),
+            (country_database, 0x100),
+            (country_table, 0x40),
+            (country1, 0x1100),
+            (country2, 0x1100),
+            (country3, 0x1100),
+            (rel_manager1, 0x40),
+            (rel_table1, 0x40),
+            (rel12, profile::DOMAIN53_RELATION_SCAN_BYTES),
+            (rel13, profile::DOMAIN53_RELATION_SCAN_BYTES),
+            (autonomy_state, 0x80),
+            (agency1, 0x180),
+            (crypto1, 0x80),
+            (crypto_records, profile::DOMAIN53_CRYPTOLOGY_RECORD_STRIDE),
+            (skill1, 0x200),
+            (war1, 0x80),
+        ] {
+            mem.add_chunk(addr, len);
+        }
+        if include_operative {
+            mem.add_chunk(leader1, 0xF00);
+            mem.add_range(leader1, 0xF00);
+        }
+        mem.add_range(war1, 0x80);
+
+        mem.write_u64(module + profile::CG_STATE_DATE_OFFSET as u64, game_state);
+        mem.write_u64(
+            module + profile::COUNTRY_DATABASE_OFFSET as u64,
+            country_database,
+        );
+        mem.write_u64(
+            game_state + profile::DOMAIN53_CGAMESTATE_COUNTRY_TABLE as u64,
+            country_table,
+        );
+        mem.write_u32(
+            game_state + profile::DOMAIN53_CGAMESTATE_COUNTRY_COUNT as u64,
+            4,
+        );
+        for (tag, country) in [(1, country1), (2, country2), (3, country3)] {
+            mem.write_u64(country_table + u64::from(tag) * 8, country);
+            mem.write_u64(
+                country,
+                module + profile::DOMAIN53_COUNTRY_VTABLE_RVA as u64,
+            );
+            mem.write_u32(country + profile::DOMAIN53_OBJ_TAG_DB_ID as u64, tag);
+            mem.write_i32(
+                country + profile::DOMAIN53_COUNTRY_FACTION_GROUP as u64,
+                40 + tag as i32,
+            );
+        }
+
+        if include_relations {
+            mem.write_u64(
+                country1 + profile::DOMAIN53_RELATION_MANAGER as u64,
+                rel_manager1,
+            );
+            mem.write_u64(
+                rel_manager1 + profile::DOMAIN53_RELATION_TABLE as u64,
+                rel_table1,
+            );
+            mem.write_u64(rel_table1 + 2 * 8, rel12);
+            mem.write_u64(rel_table1 + 3 * 8, rel13);
+            mem.write_u64(
+                rel12,
+                module + profile::DOMAIN53_REL_SUBJECT_VTABLE_RVA as u64,
+            );
+            mem.write_u32(rel12 + profile::DOMAIN53_SUBJECT_OVERLORD as u64, 1);
+            mem.write_u32(rel12 + profile::DOMAIN53_SUBJECT_SUBJECT as u64, 2);
+            mem.write_u64(
+                rel12 + profile::DOMAIN53_SUBJECT_STATE_DB as u64,
+                autonomy_state,
+            );
+            mem.write_i32(rel12 + profile::DOMAIN53_SUBJECT_RATIO as u64, 40_000);
+            mem.write_inline_string(
+                autonomy_state + profile::DOMAIN53_SUBJECT_STATE_NAME as u64,
+                "aut_puppet",
+            );
+            mem.write_i32(rel12 + profile::DOMAIN53_RELATION_OPINION as u64, 10);
+
+            mem.write_u64(
+                rel13,
+                module + profile::DOMAIN53_REL_GUARANTEE_VTABLE_RVA as u64,
+            );
+            mem.write_i32(rel13 + profile::DOMAIN53_RELATION_OPINION as u64, -35);
+        }
+
+        mem.write_u64(
+            country1 + profile::DOMAIN53_COUNTRY_AGENCY_PTR as u64,
+            agency1,
+        );
+        mem.write_u64(agency1, module + profile::DOMAIN53_AGENCY_VTABLE_RVA as u64);
+        mem.write_inline_string(agency1 + profile::DOMAIN53_AGENCY_NAME as u64, "Abwehr");
+        mem.write_inline_string(agency1 + profile::DOMAIN53_AGENCY_ICON as u64, "GFX_ger");
+        mem.write_i32(
+            agency1 + profile::DOMAIN53_AGENCY_UPGRADE_PROGRESS as u64,
+            2_400_000,
+        );
+        mem.write_u32(agency1 + profile::DOMAIN53_AGENCY_CAPACITY_E4 as u64, 9);
+        mem.write_u32(agency1 + profile::DOMAIN53_AGENCY_CAPACITY_F0 as u64, 10);
+        mem.write_u32(agency1 + profile::DOMAIN53_AGENCY_CAPACITY_F4 as u64, 9);
+        mem.write_u64(
+            agency1 + profile::DOMAIN53_AGENCY_CRYPTO_MGR as u64,
+            crypto1,
+        );
+        mem.write_i32(agency1 + profile::DOMAIN53_AGENCY_DEFENSE as u64, 600_000);
+
+        mem.write_u64(
+            crypto1,
+            module + profile::DOMAIN53_CRYPTOLOGY_VTABLE_RVA as u64,
+        );
+        mem.write_u64(
+            crypto1 + profile::DOMAIN53_CRYPTOLOGY_MGR_DATA as u64,
+            crypto_records,
+        );
+        mem.write_u32(crypto1 + profile::DOMAIN53_CRYPTOLOGY_MGR_SIZE as u64, 1);
+        mem.write_u32(crypto1 + profile::DOMAIN53_CRYPTOLOGY_MGR_CAP as u64, 1);
+        mem.write_u64(
+            crypto_records,
+            module + profile::DOMAIN53_CRYPTOLOGY_RECORD_VTABLE_RVA as u64,
+        );
+        mem.write_u32(
+            crypto_records + profile::DOMAIN53_CRYPTOLOGY_RECORD_TARGET as u64,
+            3,
+        );
+        mem.write_u8(
+            crypto_records + profile::DOMAIN53_CRYPTOLOGY_RECORD_DECRYPTING as u64,
+            1,
+        );
+        mem.write_i64(
+            crypto_records + profile::DOMAIN53_CRYPTOLOGY_RECORD_AMOUNT as u64,
+            960_000_000,
+        );
+
+        if include_operative {
+            let identity = leader1 + profile::DOMAIN53_OPERATIVE_IDENTITY_FROM_VTABLE as u64;
+            mem.write_u64(
+                leader1,
+                module + profile::DOMAIN53_OPERATIVE_VTABLE_RVA as u64,
+            );
+            mem.write_u32(identity, profile::DOMAIN53_OPERATIVE_HANDLE_TYPE);
+            mem.write_u32(identity + 4, 11_387);
+            mem.write_inline_string(identity + profile::DOMAIN53_OPERATIVE_NAME as u64, "Johann");
+            mem.write_inline_string(
+                identity + profile::DOMAIN53_OPERATIVE_NAME_DUPLICATE as u64,
+                "Johann",
+            );
+            mem.write_u8(identity + profile::DOMAIN53_OPERATIVE_DETECTED as u64, 0);
+            mem.write_u32(
+                identity + profile::DOMAIN53_OPERATIVE_LIFECYCLE_FLAG as u64,
+                47,
+            );
+            mem.write_u32(identity + profile::DOMAIN53_OPERATIVE_OWNER as u64, 1);
+            mem.write_u64(
+                leader1 + profile::DOMAIN53_OPERATIVE_SKILL_SUBOBJECT as u64,
+                skill1,
+            );
+            mem.write_i64(
+                leader1 + profile::DOMAIN53_OPERATIVE_EXPERIENCE_RAW as u64,
+                71_372_000,
+            );
+            mem.write_u32(skill1 + profile::DOMAIN53_OPERATIVE_SKILL_LEVEL as u64, 2);
+        }
+
+        mem.write_u32(war1 + profile::DOMAIN53_WAR_FIRST_TAG as u64, 1);
+        mem.write_u32(war1 + profile::DOMAIN53_WAR_SECOND_TAG as u64, 3);
+        mem.write_u64(
+            war1 + profile::DOMAIN53_WAR_DATE_VTABLE as u64,
+            module + profile::DOMAIN53_WAR_GAME_DATE_VTABLE_RVA as u64,
+        );
+        mem.write_i32(war1 + profile::DOMAIN53_WAR_FIRST_CASUALTIES as u64, 100);
+        mem.write_i32(war1 + profile::DOMAIN53_WAR_SECOND_CASUALTIES as u64, 200);
+        mem.write_u32(war1 + profile::DOMAIN53_WAR_ECHO_FIRST as u64, 1);
+        mem.write_u32(war1 + profile::DOMAIN53_WAR_ECHO_SECOND as u64, 3);
+
+        mem
+    }
+
+    #[test]
+    #[ignore = "domain 53 withdrawn: subject/cryptology/operative decoding disabled pending \
+                live-870ebf root re-validation (offset-provenance audit). Re-enable with the \
+                decoders when roots are re-proven."]
+    fn reader_extracts_validated_slice_from_fake_memory() {
+        let mem = fake_domain53_memory(true, true);
+        let extracted = extract_rows_from_current_roots(&mem).expect("domain53 fake read");
+
+        assert_eq!(extracted.skipped_rows, 0);
+        assert_eq!(extracted.rows.countries.len(), 3);
+        assert_eq!(extracted.rows.opinions.len(), 2);
+        assert_eq!(extracted.rows.relation_flags.len(), 1);
+        assert_eq!(extracted.rows.subjects.len(), 1);
+        assert_eq!(extracted.rows.agencies.len(), 1);
+        assert_eq!(extracted.rows.agency_capacity_clusters.len(), 1);
+        assert_eq!(extracted.rows.cryptology.len(), 1);
+        assert_eq!(extracted.rows.operatives.len(), 1);
+        assert_eq!(extracted.rows.wars.len(), 1);
+        assert!(extracted.rows.operation_anchors.is_empty());
+        assert!(extracted.rows.intel_map.is_empty());
+        assert_ne!(
+            extracted.source_proofs & SOURCE_PROOF_RELATION_ROOTS_870EBF,
+            0
+        );
+        assert_ne!(
+            extracted.source_proofs & SOURCE_PROOF_OPERATIVE_ROOT_870EBF,
+            0
+        );
+        assert_eq!(
+            extracted.source_proofs
+                & (SOURCE_PROOF_OPERATION_DETAIL_870EBF
+                    | SOURCE_PROOF_INTEL_MAP_PERCENTAGES_870EBF
+                    | SOURCE_PROOF_INCOMING_ACTION_QUEUE_870EBF
+                    | SOURCE_PROOF_WAR_LIFECYCLE_DETAIL_870EBF),
+            0
+        );
+
+        let report = build_domain53_payload(extracted.rows, extracted.source_proofs);
+        assert!(report.ok(), "{:?}", report.errors);
+        assert_ne!(
+            report.gate_summary.status_flags_or & STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED,
+            0
+        );
+    }
+
+    #[test]
+    fn reader_fails_closed_on_worldwide_zero_relations() {
+        let mem = fake_domain53_memory(false, true);
+        let err = extract_rows_from_current_roots(&mem).expect_err("relations must fail closed");
+        assert_eq!(
+            err,
+            ExtractError::InvalidRoot("domain53_relations_empty_implausible")
+        );
+    }
+
+    #[test]
+    fn reader_accepts_zero_operatives_as_resolved_empty() {
+        let mem = fake_domain53_memory(true, false);
+        let extracted = extract_rows_from_current_roots(&mem).expect("zero operative read");
+
+        assert!(extracted.rows.operatives.is_empty());
+        assert_ne!(
+            extracted.source_proofs & SOURCE_PROOF_OPERATIVE_ROOT_870EBF,
+            0
+        );
+        let report = build_domain53_payload(extracted.rows, extracted.source_proofs);
+        assert!(report.ok(), "{:?}", report.errors);
+    }
 
     #[test]
     fn current_validated_sources_emit_badged_domain53_payload() {

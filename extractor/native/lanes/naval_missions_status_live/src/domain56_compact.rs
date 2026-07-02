@@ -17,7 +17,7 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub const HEADER_LEN: usize = 44;
 pub const ROW_LEN: usize = 64;
 pub const MAX_OOB_ID: u32 = 4_000_000;
-pub const MAX_OWNER_TAG_DB_ID: u32 = 2_048;
+pub const MAX_OWNER_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 pub const MAX_PROVINCE_ID: u32 = 1_000_000;
 pub const MAX_REGION_ID: u32 = 100_000;
 pub const MAX_MISSION_ENUM: u32 = 64;
@@ -29,11 +29,18 @@ pub const MAX_SUNK_CONVOYS: u32 = 1_000_000;
 pub const STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
 pub const STATUS_PARTIAL_DATA: u32 = 1 << 9;
 pub const STATUS_DELTA_DATA: u32 = 1 << 10;
-pub const STATUS_MISSION_FIXTURE_REQUIRED: u32 = 1 << 11;
-pub const STATUS_HOME_BASE_FIXTURE_REQUIRED: u32 = 1 << 12;
-pub const STATUS_REPAIR_RETREAT_FIXTURE_REQUIRED: u32 = 1 << 13;
-pub const STATUS_CONVOY_CONTEXT_FIXTURE_REQUIRED: u32 = 1 << 14;
+pub const STATUS_MISSION_FIXTURE_REQUIRED: u32 = 1 << 16;
+pub const STATUS_HOME_BASE_FIXTURE_REQUIRED: u32 = 1 << 17;
+pub const STATUS_REPAIR_RETREAT_FIXTURE_REQUIRED: u32 = 1 << 18;
+pub const STATUS_CONVOY_CONTEXT_FIXTURE_REQUIRED: u32 = 1 << 19;
 pub const FAILURE_STATUS_MASK: u32 = STATUS_SOURCE_UNAVAILABLE | STATUS_PARTIAL_DATA;
+pub const KNOWN_SOURCE_STATUS_MASK: u32 = STATUS_SOURCE_UNAVAILABLE
+    | STATUS_PARTIAL_DATA
+    | STATUS_DELTA_DATA
+    | STATUS_MISSION_FIXTURE_REQUIRED
+    | STATUS_HOME_BASE_FIXTURE_REQUIRED
+    | STATUS_REPAIR_RETREAT_FIXTURE_REQUIRED
+    | STATUS_CONVOY_CONTEXT_FIXTURE_REQUIRED;
 
 pub const FLAG_HAS_MISSION: u32 = 1 << 0;
 pub const FLAG_HAS_MISSION_STATE: u32 = 1 << 1;
@@ -113,6 +120,12 @@ pub struct Domain56GateSummary {
     pub ordering_errors: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DecodedNavalMissionStatusPayload {
+    pub header: NavalMissionStatusHeader,
+    pub rows: Vec<NavalMissionStatusRow>,
+}
+
 impl Domain56GateSummary {
     pub fn gate_passed(&self) -> bool {
         self.parse_errors.is_empty()
@@ -122,7 +135,105 @@ impl Domain56GateSummary {
     }
 }
 
-pub fn encode_payload(header: &NavalMissionStatusHeader, rows: &[NavalMissionStatusRow]) -> Vec<u8> {
+pub fn decode_status_payload(
+    offset: usize,
+    payload: &[u8],
+) -> Result<DecodedNavalMissionStatusPayload, Vec<String>> {
+    let mut errors = Vec::new();
+    if payload.len() < HEADER_LEN {
+        errors.push(format!(
+            "offset {offset}: domain 56 payload is {} byte(s), expected at least {HEADER_LEN}",
+            payload.len()
+        ));
+        return Err(errors);
+    }
+
+    let row_count = read_u32(payload, 8) as usize;
+    let header = NavalMissionStatusHeader {
+        elapsed_wall_ms: read_u64(payload, 0),
+        changed_rows: read_u32(payload, 12),
+        status_flags: read_u32(payload, 16),
+        observed_task_forces: read_u32(payload, 20),
+        validated_location_rows: read_u32(payload, 24),
+        derived_region_rows: read_u32(payload, 28),
+        fixture_required_rows: read_u32(payload, 32),
+        convoy_sunk_count_rows: read_u32(payload, 36),
+    };
+    let schema_version = read_u32(payload, 40);
+    let expected_len = HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
+
+    if schema_version != SCHEMA_VERSION {
+        errors.push(format!(
+            "offset {offset}: domain 56 schema version {schema_version} != {SCHEMA_VERSION}"
+        ));
+    }
+    if payload.len() != expected_len {
+        errors.push(format!(
+            "offset {offset}: domain 56 payload is {} byte(s), expected {expected_len}",
+            payload.len()
+        ));
+        return Err(errors);
+    }
+    if header.changed_rows > row_count as u32 {
+        errors.push(format!(
+            "offset {offset}: changed_rows {} exceeds row_count {row_count}",
+            header.changed_rows
+        ));
+    }
+    if header.validated_location_rows > row_count as u32
+        || header.derived_region_rows > row_count as u32
+        || header.fixture_required_rows > row_count as u32
+    {
+        errors.push(format!(
+            "offset {offset}: header row counters exceed row_count {row_count}"
+        ));
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut rows = Vec::with_capacity(row_count);
+    for index in 0..row_count {
+        let cursor = HEADER_LEN + index * ROW_LEN;
+        let row = NavalMissionStatusRow {
+            task_force_id: read_u32(payload, cursor),
+            fleet_id: read_u32(payload, cursor + 4),
+            owner_tag_db_id: read_u32(payload, cursor + 8),
+            flags: read_u32(payload, cursor + 12),
+            mission_enum: read_u32(payload, cursor + 16),
+            mission_state: read_u32(payload, cursor + 20),
+            location_province_id: read_u32(payload, cursor + 24),
+            strategic_region_id: read_u32(payload, cursor + 28),
+            home_base_province_id: read_u32(payload, cursor + 32),
+            repair_base_province_id: read_u32(payload, cursor + 36),
+            repair_progress_milli: read_u32(payload, cursor + 40),
+            retreat_state: read_u32(payload, cursor + 44),
+            sunk_convoys: read_u32(payload, cursor + 48),
+            convoy_route_context_id: read_u32(payload, cursor + 52),
+            source_status: read_u32(payload, cursor + 56),
+            reserved0: read_u32(payload, cursor + 60),
+        };
+        if !seen.insert(row.task_force_id) {
+            errors.push(format!(
+                "offset {offset}: duplicate task_force_id {}",
+                row.task_force_id
+            ));
+        }
+        if let Err(err) = validate_row(&row, index) {
+            errors.push(format!("offset {offset}: {err}"));
+        }
+        rows.push(row);
+    }
+
+    if errors.is_empty() {
+        Ok(DecodedNavalMissionStatusPayload { header, rows })
+    } else {
+        Err(errors)
+    }
+}
+
+pub fn encode_payload(
+    header: &NavalMissionStatusHeader,
+    rows: &[NavalMissionStatusRow],
+) -> Vec<u8> {
     let mut payload = Vec::with_capacity(HEADER_LEN + rows.len() * ROW_LEN);
     push_u64(&mut payload, header.elapsed_wall_ms);
     push_u32(&mut payload, rows.len() as u32);
@@ -182,7 +293,11 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain56GateSummary {
     summary.row_count_total = row_count as u64;
     summary.changed_rows_total = changed_rows as u64;
     add_unit(&mut summary, "naval_mission_status_rows", row_count);
-    add_unit(&mut summary, "naval_mission_observed_task_forces", observed_task_forces);
+    add_unit(
+        &mut summary,
+        "naval_mission_observed_task_forces",
+        observed_task_forces,
+    );
     add_unit(
         &mut summary,
         "naval_mission_validated_location_rows",
@@ -221,7 +336,10 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain56GateSummary {
             "offset {offset}: changed_rows {changed_rows} exceeds row_count {row_count}"
         ));
     }
-    if validated_location_rows > row_count || derived_region_rows > row_count || fixture_required_rows > row_count {
+    if validated_location_rows > row_count
+        || derived_region_rows > row_count
+        || fixture_required_rows > row_count
+    {
         summary.parse_errors.push(format!(
             "offset {offset}: header row counters exceed row_count {row_count}"
         ));
@@ -259,9 +377,10 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain56GateSummary {
             reserved0: read_u32(payload, cursor + 60),
         };
         if !seen.insert(row.task_force_id) {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: duplicate task_force_id {}", row.task_force_id));
+            summary.parse_errors.push(format!(
+                "offset {offset}: duplicate task_force_id {}",
+                row.task_force_id
+            ));
         }
         if let Err(err) = validate_row(&row, index) {
             summary.parse_errors.push(format!("offset {offset}: {err}"));
@@ -297,12 +416,24 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain56GateSummary {
 
     add_unit(&mut summary, "naval_mission_location_rows", location_rows);
     add_unit(&mut summary, "naval_mission_region_rows", region_rows);
-    add_unit(&mut summary, "naval_mission_rows_with_mission", mission_rows);
+    add_unit(
+        &mut summary,
+        "naval_mission_rows_with_mission",
+        mission_rows,
+    );
     add_unit(&mut summary, "naval_mission_home_base_rows", home_base_rows);
     add_unit(&mut summary, "naval_mission_repair_rows", repair_rows);
     add_unit(&mut summary, "naval_mission_retreat_rows", retreat_rows);
-    add_unit(&mut summary, "naval_mission_convoy_route_rows", convoy_route_rows);
-    add_unit(&mut summary, "naval_mission_sunk_convoy_rows", sunk_convoy_rows);
+    add_unit(
+        &mut summary,
+        "naval_mission_convoy_route_rows",
+        convoy_route_rows,
+    );
+    add_unit(
+        &mut summary,
+        "naval_mission_sunk_convoy_rows",
+        sunk_convoy_rows,
+    );
     add_unit(&mut summary, "naval_mission_fixture_rows", fixture_rows);
     summary
 }
@@ -342,7 +473,9 @@ pub fn gate_stream(raw: &[u8]) -> Domain56GateSummary {
         }
         let header = &raw[offset..offset + COMPACT_RECORD_HEADER_LEN];
         if &header[0..4] != COMPACT_RECORD_MAGIC {
-            summary.parse_errors.push(format!("offset {offset}: invalid record magic"));
+            summary
+                .parse_errors
+                .push(format!("offset {offset}: invalid record magic"));
             break;
         }
         let version = read_u16(header, 4);
@@ -391,9 +524,9 @@ pub fn gate_stream(raw: &[u8]) -> Domain56GateSummary {
             COMPACT_RECORD_TYPE_DOMAIN_DATA => {}
             COMPACT_RECORD_TYPE_DOMAIN_PERF => {}
             COMPACT_RECORD_TYPE_FRAME_END => summary.frame_end_record_count += 1,
-            _ => summary
-                .parse_errors
-                .push(format!("offset {offset}: unsupported record type {record_type}")),
+            _ => summary.parse_errors.push(format!(
+                "offset {offset}: unsupported record type {record_type}"
+            )),
         }
         offset = payload_end;
     }
@@ -410,7 +543,10 @@ fn validate_row(row: &NavalMissionStatusRow, index: usize) -> Result<(), String>
         ));
     }
     if row.flags & !KNOWN_ROW_FLAGS != 0 {
-        return Err(format!("row {index} has unknown flags 0x{:X}", row.flags & !KNOWN_ROW_FLAGS));
+        return Err(format!(
+            "row {index} has unknown flags 0x{:X}",
+            row.flags & !KNOWN_ROW_FLAGS
+        ));
     }
     validate_optional_max(
         row.flags & FLAG_HAS_MISSION != 0,
@@ -484,6 +620,12 @@ fn validate_row(row: &NavalMissionStatusRow, index: usize) -> Result<(), String>
     )?;
     if row.reserved0 != 0 {
         return Err(format!("row {index} reserved0 must be zero"));
+    }
+    if row.source_status & !KNOWN_SOURCE_STATUS_MASK != 0 {
+        return Err(format!(
+            "row {index} source_status has unknown bits 0x{:X}",
+            row.source_status & !KNOWN_SOURCE_STATUS_MASK
+        ));
     }
     Ok(())
 }
@@ -559,11 +701,31 @@ fn summary_json(summary: &Domain56GateSummary) -> String {
     out.push_str("{\n");
     json_bool(&mut out, "gate_passed", summary.gate_passed(), true);
     json_u64(&mut out, "record_count", summary.record_count, true);
-    json_u64(&mut out, "data_record_count", summary.data_record_count, true);
-    json_u64(&mut out, "frame_end_record_count", summary.frame_end_record_count, true);
+    json_u64(
+        &mut out,
+        "data_record_count",
+        summary.data_record_count,
+        true,
+    );
+    json_u64(
+        &mut out,
+        "frame_end_record_count",
+        summary.frame_end_record_count,
+        true,
+    );
     json_u64(&mut out, "row_count_total", summary.row_count_total, true);
-    json_u64(&mut out, "changed_rows_total", summary.changed_rows_total, true);
-    json_u64(&mut out, "status_flags_or", summary.status_flags_or as u64, true);
+    json_u64(
+        &mut out,
+        "changed_rows_total",
+        summary.changed_rows_total,
+        true,
+    );
+    json_u64(
+        &mut out,
+        "status_flags_or",
+        summary.status_flags_or as u64,
+        true,
+    );
     out.push_str("  \"data_units_total\": {");
     for (index, (key, value)) in summary.data_units_total.iter().enumerate() {
         if index > 0 {
@@ -679,7 +841,9 @@ mod tests {
                 task_force_id: 618,
                 fleet_id: 615,
                 owner_tag_db_id: 47,
-                flags: FLAG_HAS_LOCATION | FLAG_VALIDATED_DIRECT | FLAG_ACTIVE_BATTLE_FIXTURE_REQUIRED,
+                flags: FLAG_HAS_LOCATION
+                    | FLAG_VALIDATED_DIRECT
+                    | FLAG_ACTIVE_BATTLE_FIXTURE_REQUIRED,
                 location_province_id: 12390,
                 source_status: STATUS_CONVOY_CONTEXT_FIXTURE_REQUIRED,
                 ..NavalMissionStatusRow::default()
@@ -706,14 +870,20 @@ mod tests {
             &rows,
         );
         let summary = decode_payload(0, &payload);
-        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
         assert_eq!(summary.row_count_total, 2);
         assert_eq!(
             summary.data_units_total.get("naval_mission_location_rows"),
             Some(&2)
         );
         assert_eq!(
-            summary.data_units_total.get("naval_mission_sunk_convoy_rows"),
+            summary
+                .data_units_total
+                .get("naval_mission_sunk_convoy_rows"),
             Some(&1)
         );
     }
@@ -753,6 +923,47 @@ mod tests {
         assert!(summary.gate_passed(), "{:?}", summary.parse_errors);
         assert_eq!(summary.data_record_count, 1);
         assert_eq!(summary.frame_end_record_count, 1);
+    }
+
+    #[test]
+    fn fixture_required_status_bits_do_not_overlap_shared_failure_mask() {
+        const SHARED_FAILURE_MASK: u32 = (1 << 0)
+            | (1 << 1)
+            | (1 << 2)
+            | (1 << 3)
+            | (1 << 6)
+            | (1 << 7)
+            | (1 << 8)
+            | (1 << 9)
+            | (1 << 12);
+        let fixture_bits = STATUS_MISSION_FIXTURE_REQUIRED
+            | STATUS_HOME_BASE_FIXTURE_REQUIRED
+            | STATUS_REPAIR_RETREAT_FIXTURE_REQUIRED
+            | STATUS_CONVOY_CONTEXT_FIXTURE_REQUIRED;
+        assert_eq!(fixture_bits & SHARED_FAILURE_MASK, 0);
+    }
+
+    #[test]
+    fn decodes_payload_with_rows_for_world_fold() {
+        let rows = sample_rows();
+        let payload = encode_payload(
+            &NavalMissionStatusHeader {
+                elapsed_wall_ms: 42,
+                changed_rows: 2,
+                observed_task_forces: 2,
+                validated_location_rows: 2,
+                derived_region_rows: 1,
+                fixture_required_rows: 2,
+                convoy_sunk_count_rows: 1,
+                ..NavalMissionStatusHeader::default()
+            },
+            &rows,
+        );
+        let decoded = decode_status_payload(0, &payload).unwrap();
+        assert_eq!(decoded.header.changed_rows, 2);
+        assert_eq!(decoded.rows.len(), 2);
+        assert_eq!(decoded.rows[0].task_force_id, 617);
+        assert_eq!(decoded.rows[0].strategic_region_id, 31);
     }
 
     #[test]

@@ -3,8 +3,6 @@ name = "country_economy_production_stockpile_live_lane"
 version = "0.1.0"
 edition = "2021"
 
-[workspace]
-
 [lib]
 name = "country_economy_production_stockpile_live_lane"
 path = "src/lib.rs"

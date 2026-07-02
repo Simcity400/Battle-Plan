@@ -571,9 +571,9 @@ pub fn summarize_compact_stream(raw: &[u8]) -> CompactStreamSummary {
         }
         if let Some(prev) = previous_sequence {
             if sequence <= prev {
-                summary.ordering_errors.push(format!(
-                    "offset {offset}: sequence {sequence} after {prev}"
-                ));
+                summary
+                    .ordering_errors
+                    .push(format!("offset {offset}: sequence {sequence} after {prev}"));
             }
         }
         previous_sequence = Some(sequence);
@@ -601,8 +601,9 @@ pub fn summarize_compact_stream(raw: &[u8]) -> CompactStreamSummary {
             RECORD_TYPE_DOMAIN_PERF => {
                 domain.perf_records = domain.perf_records.saturating_add(1);
                 if payload.len() >= 32 {
-                    domain.row_count_total =
-                        domain.row_count_total.saturating_add(read_u32_le(payload, 16) as u64);
+                    domain.row_count_total = domain
+                        .row_count_total
+                        .saturating_add(read_u32_le(payload, 16) as u64);
                     domain.changed_rows_total = domain
                         .changed_rows_total
                         .saturating_add(read_u32_le(payload, 20) as u64);
@@ -718,7 +719,13 @@ pub fn decode_counter_payload(offset: usize, payload: &[u8]) -> CounterPayloadSu
             source_ref_id: read_u32_le(payload, cursor + 44),
         };
         cursor += COUNTER_ROW_LEN;
-        validate_counter_row(offset, row_index, &row, &mut summary.parse_errors, &mut seen);
+        validate_counter_row(
+            offset,
+            row_index,
+            &row,
+            &mut summary.parse_errors,
+            &mut seen,
+        );
         match row.status {
             COUNTER_STATUS_VALIDATED_SLICE => validated = validated.saturating_add(1),
             COUNTER_STATUS_SCHEMA_BLOCKED => schema = schema.saturating_add(1),
@@ -883,7 +890,11 @@ mod tests {
 
         let decoded = decode_counter_payload(0, &payload);
 
-        assert!(decoded.parse_errors.is_empty(), "{:?}", decoded.parse_errors);
+        assert!(
+            decoded.parse_errors.is_empty(),
+            "{:?}",
+            decoded.parse_errors
+        );
         assert_eq!(decoded.row_count, rows.len() as u32);
         assert_eq!(decoded.validated_slice_rows, 2);
         assert_eq!(decoded.schema_blocked_rows, 1);
@@ -913,7 +924,14 @@ mod tests {
             RECORD_TYPE_DOMAIN_DATA,
             &encode_counter_payload(1, STATUS_LANE_LOCAL_PROOF, &rows),
         );
-        append_compact_record(&mut stream, 3, 100, DOMAIN_FRAME, RECORD_TYPE_FRAME_END, &[]);
+        append_compact_record(
+            &mut stream,
+            3,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &[],
+        );
 
         let gate = gate_counter_stream(&stream, 1);
 

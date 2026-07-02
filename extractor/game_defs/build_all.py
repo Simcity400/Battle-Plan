@@ -31,6 +31,9 @@ import parse_focus_def
 import parse_templates
 import parse_world_defs
 import parse_characters
+import parse_localisation
+import parse_idea_tech_loc
+import parse_decisions
 
 
 def main():
@@ -61,6 +64,9 @@ def main():
         ("templates", lambda: parse_templates.parse_templates(layers)),
         ("world_defs", lambda: parse_world_defs.parse_world_defs(layers, loc)),
         ("characters", lambda: parse_characters.parse_characters(layers)),
+        ("localisation", lambda: parse_localisation.parse_localisation(layers)),
+        ("idea_tech_loc_keys", lambda: parse_idea_tech_loc.parse_idea_tech_loc_keys(layers)),
+        ("decisions", lambda: parse_decisions.parse_decisions(layers)),
     ]
     summary = {}
     for name, fn in jobs:

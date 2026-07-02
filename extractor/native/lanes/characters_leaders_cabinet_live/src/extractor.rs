@@ -6,12 +6,19 @@ use crate::domain47_characters_leaders_cabinet_live as compact;
 pub const DOMAIN_ID: u16 = compact::DOMAIN_ID;
 pub const DOMAIN_NAME: &str = compact::DOMAIN_NAME;
 
-pub const CCHARACTER_RTTI_RVA: u32 = 0x2967E30;
-pub const CARMY_LEADER_RTTI_RVA: u32 = 0x293F538;
-pub const CNAVY_LEADER_RTTI_RVA: u32 = 0x293F650;
-pub const CCOUNTRY_LEADER_RTTI_RVA: u32 = 0x296A720;
-pub const CADVISOR_RTTI_RVA: u32 = 0x2990E60;
-pub const CUNIT_LEADER_TRAIT_RTTI_RVA: u32 = 0x292F160;
+pub const CCHARACTER_RTTI_RVA: u32 =
+    compact_contract::build_profile::DOMAIN47_CCHARACTER_VTABLE_RVA as u32;
+pub const CARMY_LEADER_RTTI_RVA: u32 =
+    compact_contract::build_profile::DOMAIN47_CARMY_LEADER_VTABLE_RVA as u32;
+pub const CNAVY_LEADER_RTTI_RVA: u32 =
+    compact_contract::build_profile::DOMAIN47_CNAVY_LEADER_VTABLE_RVA as u32;
+pub const CCOUNTRY_LEADER_RTTI_RVA: u32 =
+    compact_contract::build_profile::DOMAIN47_CCOUNTRY_LEADER_VTABLE_RVA as u32;
+pub const CADVISOR_RTTI_RVA: u32 =
+    compact_contract::build_profile::DOMAIN47_CADVISOR_RTTI_RVA_BLOCKED_PENDING_REVALIDATION as u32;
+pub const CUNIT_LEADER_TRAIT_RTTI_RVA: u32 =
+    compact_contract::build_profile::DOMAIN47_CUNIT_LEADER_TRAIT_VTABLE_RVA_BLOCKED_PENDING_REVALIDATION
+        as u32;
 
 pub const CCOUNTRY_POLITICAL_STATUS_OFF: u64 = 0xF90;
 pub const CPOLITICAL_STATUS_RULING_PARTY_OFF: u64 = 0xD0;
@@ -512,6 +519,7 @@ pub fn validate_registry_assignment(registry_json: &str) -> Result<(), ExtractEr
             "\"status\": \"lane_ready_shared_adapter_registration_blocked_remaining_matrix\"",
         )
         || window.contains("\"status\": \"active_integration\"")
+        || window.contains("\"status\": \"validated_slice_open_gaps\"")
         || window.contains("\"status\": \"production_complete\""))
     {
         return Err(ExtractError::RegistryMismatch(

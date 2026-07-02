@@ -14,7 +14,7 @@ pub const SKILL_NONE: u32 = u32::MAX;
 pub const BYTE_NONE: u8 = u8::MAX;
 pub const EXPERIENCE_RAW_NONE: i32 = i32::MIN;
 pub const MAX_STRING_BYTES: usize = 160;
-pub const MAX_TAG_DB_ID: u32 = 2_048;
+pub const MAX_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 pub const MAX_CHARACTER_ID: u32 = 2_000_000;
 pub const MAX_UNIT_LEADER_ID: u32 = i32::MAX as u32;
 pub const MAX_TRAITS_PER_LEADER: u16 = 64;
@@ -163,6 +163,80 @@ pub struct Domain44GateSummary {
     pub parse_errors: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DecodedDomain47Payload {
+    pub status_flags: u32,
+    pub schema_flags: u32,
+    pub rows: Vec<DecodedDomain47Row>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DecodedDomain47Row {
+    Character {
+        country_tag_db_id: u32,
+        char_id: u32,
+        name: Option<String>,
+        token: Option<String>,
+    },
+    UnitLeader {
+        country_tag_db_id: u32,
+        unit_leader_id: u32,
+        char_id: u32,
+        leader_kind: u8,
+        skill: Option<u32>,
+        experience_raw: Option<i32>,
+        attack: Option<u8>,
+        defense: Option<u8>,
+        planning: Option<u8>,
+        logistics: Option<u8>,
+        maneuvering: Option<u8>,
+        coordination: Option<u8>,
+        token: Option<String>,
+        name: Option<String>,
+    },
+    UnitLeaderTrait {
+        unit_leader_id: u32,
+        ordinal: u16,
+        trait_token: String,
+    },
+    CountryLeaderRole {
+        country_tag_db_id: u32,
+        char_id: u32,
+        name: Option<String>,
+        token: Option<String>,
+    },
+    ActiveRuler {
+        country_tag_db_id: u32,
+        char_id: u32,
+        ruling_party: Option<String>,
+        name: Option<String>,
+        token: Option<String>,
+        leader_vec_size: u16,
+        ambiguous: bool,
+    },
+    AdvisorRoster {
+        country_tag_db_id: u32,
+        char_id: u32,
+        slot: Option<String>,
+        ledger: Option<String>,
+        idea_token: String,
+    },
+    AppointedAdvisor {
+        country_tag_db_id: u32,
+        char_id: u32,
+        slot: Option<String>,
+        ledger: Option<String>,
+        idea_token: String,
+    },
+    CharacterPortrait {
+        country_tag_db_id: u32,
+        char_id: u32,
+        role: String,
+        size: String,
+        gfx: String,
+    },
+}
+
 #[derive(Default)]
 struct StringTable {
     values: Vec<String>,
@@ -179,10 +253,8 @@ impl StringTable {
             "character lane string exceeds max length"
         );
         assert!(
-            value
-                .bytes()
-                .all(|b| b == b' ' || (0x21..=0x7e).contains(&b)),
-            "character lane string must be printable ASCII"
+            is_domain47_string_value(value),
+            "character lane string must be valid non-control UTF-8"
         );
         if let Some(id) = self.by_value.get(value) {
             return *id;
@@ -203,6 +275,10 @@ impl StringTable {
             out.extend_from_slice(value.as_bytes());
         }
     }
+}
+
+fn is_domain47_string_value(value: &str) -> bool {
+    !value.chars().any(char::is_control)
 }
 
 #[derive(Default)]
@@ -427,12 +503,14 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
             return summary;
         }
         let raw = &payload[cursor..cursor + len];
-        if std::str::from_utf8(raw).is_err()
-            || !raw.iter().all(|b| *b == b' ' || (0x21..=0x7e).contains(b))
-        {
-            summary.parse_errors.push(format!(
-                "offset {offset}: string table entry {index} is not printable ASCII"
-            ));
+        match std::str::from_utf8(raw) {
+            Ok(value) if is_domain47_string_value(value) => {}
+            Ok(_) => summary.parse_errors.push(format!(
+                "offset {offset}: string table entry {index} contains control characters"
+            )),
+            Err(_) => summary.parse_errors.push(format!(
+                "offset {offset}: string table entry {index} is invalid UTF-8"
+            )),
         }
         strings.push(raw);
         cursor += len;
@@ -942,6 +1020,201 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
     summary
 }
 
+pub fn decode_payload_rows(
+    offset: usize,
+    payload: &[u8],
+) -> Result<DecodedDomain47Payload, Vec<String>> {
+    let summary = decode_payload(offset, payload);
+    if !summary.parse_errors.is_empty() {
+        return Err(summary.parse_errors);
+    }
+    decode_payload_rows_checked(payload).map_err(|err| vec![format!("offset {offset}: {err}")])
+}
+
+fn decode_payload_rows_checked(payload: &[u8]) -> Result<DecodedDomain47Payload, String> {
+    need_payload(payload, HEADER_LEN, "domain47 header")?;
+    let status_flags = read_u32(payload, 8);
+    let expected_total = read_u32(payload, 12) as usize;
+    let string_count = read_u32(payload, 16) as usize;
+    let string_bytes = read_u32(payload, 20) as usize;
+    let row_bytes = read_u32(payload, 52) as usize;
+    let schema_flags = read_u32(payload, 56);
+
+    let mut cursor = HEADER_LEN;
+    let string_end = cursor
+        .checked_add(string_bytes)
+        .ok_or("domain47 string table length overflow")?;
+    need_payload(payload, string_end, "domain47 string table")?;
+    let mut strings = Vec::with_capacity(string_count);
+    for index in 0..string_count {
+        need_payload(payload, cursor + 2, "domain47 string length")?;
+        let len = read_u16(payload, cursor) as usize;
+        cursor += 2;
+        if len > MAX_STRING_BYTES {
+            return Err(format!(
+                "domain47 string {index} exceeds {MAX_STRING_BYTES} bytes"
+            ));
+        }
+        need_payload(payload, cursor + len, "domain47 string bytes")?;
+        let raw = &payload[cursor..cursor + len];
+        let value = std::str::from_utf8(raw)
+            .map_err(|err| format!("domain47 string {index} invalid UTF-8: {err}"))?;
+        if !is_domain47_string_value(value) {
+            return Err(format!(
+                "domain47 string {index} contains control characters"
+            ));
+        }
+        strings.push(value.to_string());
+        cursor += len;
+    }
+    if cursor != string_end {
+        return Err("domain47 decoded string table length mismatch".into());
+    }
+
+    let rows_end = cursor
+        .checked_add(row_bytes)
+        .ok_or("domain47 row bytes overflow")?;
+    if rows_end != payload.len() {
+        return Err(format!(
+            "domain47 row bytes {row_bytes} do not match payload remainder {}",
+            payload.len().saturating_sub(cursor)
+        ));
+    }
+
+    let mut rows = Vec::with_capacity(expected_total);
+    while cursor < rows_end {
+        need_payload(payload, cursor + 4, "domain47 row header")?;
+        let kind = payload[cursor];
+        let row_len = payload[cursor + 1] as usize;
+        let flags = read_u16(payload, cursor + 2);
+        if row_len < 4 {
+            return Err(format!(
+                "domain47 row kind {kind} has invalid length {row_len}"
+            ));
+        }
+        need_payload(payload, cursor + row_len, "domain47 row body")?;
+        match kind {
+            ROW_CHARACTER => {
+                require_decode_len(kind, row_len, CHARACTER_ROW_LEN)?;
+                rows.push(DecodedDomain47Row::Character {
+                    country_tag_db_id: read_u32(payload, cursor + 4),
+                    char_id: read_u32(payload, cursor + 8),
+                    name: decoded_optional_string(&strings, read_u32(payload, cursor + 12))?,
+                    token: decoded_optional_string(&strings, read_u32(payload, cursor + 16))?,
+                });
+            }
+            ROW_UNIT_LEADER => {
+                require_decode_len(kind, row_len, UNIT_LEADER_ROW_LEN)?;
+                let skill_raw = read_u32(payload, cursor + 16);
+                let experience_raw = read_i32(payload, cursor + 20);
+                rows.push(DecodedDomain47Row::UnitLeader {
+                    country_tag_db_id: read_u32(payload, cursor + 4),
+                    unit_leader_id: read_u32(payload, cursor + 8),
+                    char_id: read_u32(payload, cursor + 12),
+                    leader_kind: payload[cursor + 40],
+                    skill: if (flags & ROW_FLAG_SKILL_PRESENT) != 0 && skill_raw != SKILL_NONE {
+                        Some(skill_raw)
+                    } else {
+                        None
+                    },
+                    experience_raw: if (flags & ROW_FLAG_EXPERIENCE_PRESENT) != 0
+                        && experience_raw != EXPERIENCE_RAW_NONE
+                    {
+                        Some(experience_raw)
+                    } else {
+                        None
+                    },
+                    token: decoded_optional_string(&strings, read_u32(payload, cursor + 24))?,
+                    name: decoded_optional_string(&strings, read_u32(payload, cursor + 28))?,
+                    attack: decoded_optional_byte(payload[cursor + 34]),
+                    defense: decoded_optional_byte(payload[cursor + 35]),
+                    planning: decoded_optional_byte(payload[cursor + 36]),
+                    logistics: decoded_optional_byte(payload[cursor + 37]),
+                    maneuvering: decoded_optional_byte(payload[cursor + 38]),
+                    coordination: decoded_optional_byte(payload[cursor + 39]),
+                });
+            }
+            ROW_UNIT_LEADER_TRAIT => {
+                require_decode_len(kind, row_len, TRAIT_ROW_LEN)?;
+                rows.push(DecodedDomain47Row::UnitLeaderTrait {
+                    unit_leader_id: read_u32(payload, cursor + 4),
+                    ordinal: read_u16(payload, cursor + 8),
+                    trait_token: decoded_required_string(&strings, read_u32(payload, cursor + 12))?,
+                });
+            }
+            ROW_COUNTRY_LEADER_ROLE => {
+                require_decode_len(kind, row_len, COUNTRY_LEADER_ROLE_ROW_LEN)?;
+                rows.push(DecodedDomain47Row::CountryLeaderRole {
+                    country_tag_db_id: read_u32(payload, cursor + 4),
+                    char_id: read_u32(payload, cursor + 8),
+                    name: decoded_optional_string(&strings, read_u32(payload, cursor + 12))?,
+                    token: decoded_optional_string(&strings, read_u32(payload, cursor + 16))?,
+                });
+            }
+            ROW_ACTIVE_RULER => {
+                require_decode_len(kind, row_len, ACTIVE_RULER_ROW_LEN)?;
+                rows.push(DecodedDomain47Row::ActiveRuler {
+                    country_tag_db_id: read_u32(payload, cursor + 4),
+                    char_id: read_u32(payload, cursor + 8),
+                    ruling_party: decoded_optional_string(
+                        &strings,
+                        read_u32(payload, cursor + 12),
+                    )?,
+                    name: decoded_optional_string(&strings, read_u32(payload, cursor + 16))?,
+                    token: decoded_optional_string(&strings, read_u32(payload, cursor + 20))?,
+                    leader_vec_size: read_u16(payload, cursor + 24),
+                    ambiguous: (flags & ROW_FLAG_AMBIGUOUS) != 0,
+                });
+            }
+            ROW_ADVISOR_ROSTER | ROW_APPOINTED_ADVISOR => {
+                require_decode_len(kind, row_len, ADVISOR_ROW_LEN)?;
+                let row = (
+                    read_u32(payload, cursor + 4),
+                    read_u32(payload, cursor + 8),
+                    decoded_optional_string(&strings, read_u32(payload, cursor + 12))?,
+                    decoded_optional_string(&strings, read_u32(payload, cursor + 16))?,
+                    decoded_required_string(&strings, read_u32(payload, cursor + 20))?,
+                );
+                if kind == ROW_ADVISOR_ROSTER {
+                    rows.push(DecodedDomain47Row::AdvisorRoster {
+                        country_tag_db_id: row.0,
+                        char_id: row.1,
+                        slot: row.2,
+                        ledger: row.3,
+                        idea_token: row.4,
+                    });
+                } else {
+                    rows.push(DecodedDomain47Row::AppointedAdvisor {
+                        country_tag_db_id: row.0,
+                        char_id: row.1,
+                        slot: row.2,
+                        ledger: row.3,
+                        idea_token: row.4,
+                    });
+                }
+            }
+            ROW_CHARACTER_PORTRAIT => {
+                require_decode_len(kind, row_len, CHARACTER_PORTRAIT_ROW_LEN)?;
+                rows.push(DecodedDomain47Row::CharacterPortrait {
+                    country_tag_db_id: read_u32(payload, cursor + 4),
+                    char_id: read_u32(payload, cursor + 8),
+                    role: decoded_required_string(&strings, read_u32(payload, cursor + 12))?,
+                    size: decoded_required_string(&strings, read_u32(payload, cursor + 16))?,
+                    gfx: decoded_required_string(&strings, read_u32(payload, cursor + 20))?,
+                });
+            }
+            _ => return Err(format!("domain47 unknown row kind {kind}")),
+        }
+        cursor += row_len;
+    }
+
+    Ok(DecodedDomain47Payload {
+        status_flags,
+        schema_flags,
+        rows,
+    })
+}
+
 fn encode_advisor_row(
     row_bytes: &mut Vec<u8>,
     strings: &mut StringTable,
@@ -1116,6 +1389,43 @@ fn add_unit(summary: &mut Domain44GateSummary, key: &'static str, value: u64) {
     }
     let entry = summary.data_units_total.entry(key).or_default();
     *entry = entry.saturating_add(value);
+}
+
+fn need_payload(payload: &[u8], at_least: usize, label: &str) -> Result<(), String> {
+    if payload.len() < at_least {
+        Err(format!(
+            "{label}: need {at_least} bytes, have {}",
+            payload.len()
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn require_decode_len(kind: u8, got: usize, want: u8) -> Result<(), String> {
+    if got != want as usize {
+        Err(format!("domain47 row kind {kind} length {got} != {}", want))
+    } else {
+        Ok(())
+    }
+}
+
+fn decoded_optional_byte(raw: u8) -> Option<u8> {
+    (raw != BYTE_NONE).then_some(raw)
+}
+
+fn decoded_optional_string(strings: &[String], string_id: u32) -> Result<Option<String>, String> {
+    if string_id == STRING_NONE {
+        return Ok(None);
+    }
+    decoded_required_string(strings, string_id).map(Some)
+}
+
+fn decoded_required_string(strings: &[String], string_id: u32) -> Result<String, String> {
+    strings
+        .get(string_id as usize)
+        .cloned()
+        .ok_or_else(|| format!("domain47 invalid string id {string_id}"))
 }
 
 #[cfg(not(test))]
@@ -1411,6 +1721,45 @@ mod tests {
         );
         assert_eq!(summary.appointed_advisor_rows, 0);
         assert_eq!(summary.active_ruler_rows, 1);
+    }
+
+    #[test]
+    fn preserves_utf8_display_names() {
+        let rows = vec![
+            CharacterLaneRow::Character(CharacterRow {
+                country_tag_db_id: 1,
+                char_id: 701,
+                name: Some("Günther Lütjens"),
+                token: Some("GER_gunther_lutjens"),
+            }),
+            CharacterLaneRow::ActiveRuler(ActiveRulerRow {
+                country_tag_db_id: 1,
+                char_id: 701,
+                ruling_party: Some("neutrality"),
+                name: Some("Günther Lütjens"),
+                token: Some("GER_gunther_lutjens"),
+                leader_vec_size: 1,
+                ambiguous: false,
+            }),
+        ];
+        let payload = encode_payload(25, 0, SCHEMA_ROOTS_VALIDATED, &rows);
+        let summary = decode_payload(0, &payload);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let decoded = decode_payload_rows(0, &payload).unwrap();
+        assert!(decoded.rows.iter().any(|row| matches!(
+            row,
+            DecodedDomain47Row::Character { name: Some(name), .. }
+                if name == "Günther Lütjens"
+        )));
+        assert!(decoded.rows.iter().any(|row| matches!(
+            row,
+            DecodedDomain47Row::ActiveRuler { name: Some(name), .. }
+                if name == "Günther Lütjens"
+        )));
     }
 
     #[test]

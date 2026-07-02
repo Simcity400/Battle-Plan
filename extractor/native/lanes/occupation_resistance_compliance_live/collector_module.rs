@@ -334,7 +334,10 @@ pub fn read_country_occupation_status<M: OccupationMemory>(
             continue;
         }
         let country_ok = mem.read_u64(country_ptr).ok() == Some(country_vtable)
-            && mem.read_u32(country_ptr + COUNTRY_OFF_TAG_DB_ID as u64).ok() == Some(tag_id);
+            && mem
+                .read_u32(country_ptr + COUNTRY_OFF_TAG_DB_ID as u64)
+                .ok()
+                == Some(tag_id);
         if !country_ok {
             continue;
         }
@@ -345,7 +348,8 @@ pub fn read_country_occupation_status<M: OccupationMemory>(
         let collab_ptr = mem
             .read_u64(country_ptr + COUNTRY_OFF_COLLABORATION_STATUS as u64)
             .unwrap_or(0);
-        let collab_valid = is_heap_ptr(collab_ptr) && mem.read_u64(collab_ptr).ok() == Some(collab_vtable);
+        let collab_valid =
+            is_heap_ptr(collab_ptr) && mem.read_u64(collab_ptr).ok() == Some(collab_vtable);
         if collab_valid {
             summary.valid_collaboration_status_roots =
                 summary.valid_collaboration_status_roots.saturating_add(1);
@@ -378,8 +382,7 @@ pub fn read_country_occupation_status<M: OccupationMemory>(
             if let Some(name) = read_pdx_string(mem, law_ptr + OCCUPATION_LAW_NAME_OFF as u64) {
                 rec.default_law_ptr = law_ptr;
                 rec.default_law_token_id = fnv1a32(&name);
-                summary.valid_default_law_roots =
-                    summary.valid_default_law_roots.saturating_add(1);
+                summary.valid_default_law_roots = summary.valid_default_law_roots.saturating_add(1);
             }
         }
 
@@ -506,9 +509,14 @@ fn read_state_row<M: OccupationMemory>(
     if owner > MAX_TAG_DB_ID || controller > MAX_TAG_DB_ID {
         return Ok(None);
     }
-    if [resistance_raw, resistance_speed_raw, compliance_raw, compliance_speed_raw]
-        .into_iter()
-        .any(|value| value.abs() > MAX_ABS_FIXED_RAW)
+    if [
+        resistance_raw,
+        resistance_speed_raw,
+        compliance_raw,
+        compliance_speed_raw,
+    ]
+    .into_iter()
+    .any(|value| value.abs() > MAX_ABS_FIXED_RAW)
     {
         return Ok(None);
     }
@@ -726,15 +734,27 @@ mod tests {
         mem.write_u64(COUNTRY_2, MODULE_BASE + COUNTRY_VTABLE_RVA as u64);
         mem.write_u32(COUNTRY_2 + COUNTRY_OFF_TAG_DB_ID as u64, 2);
         mem.write_u64(COUNTRY_2 + COUNTRY_OFF_OCCUPATION_STATUS as u64, STATUS_2);
-        mem.write_u64(COUNTRY_2 + COUNTRY_OFF_COLLABORATION_STATUS as u64, COLLAB_2);
-        mem.write_u64(COLLAB_2, MODULE_BASE + COUNTRY_COLLABORATION_STATUS_VTABLE_RVA as u64);
+        mem.write_u64(
+            COUNTRY_2 + COUNTRY_OFF_COLLABORATION_STATUS as u64,
+            COLLAB_2,
+        );
+        mem.write_u64(
+            COLLAB_2,
+            MODULE_BASE + COUNTRY_COLLABORATION_STATUS_VTABLE_RVA as u64,
+        );
 
-        mem.write_u64(STATUS_2, MODULE_BASE + COUNTRY_OCCUPATION_STATUS_VTABLE_RVA as u64);
+        mem.write_u64(
+            STATUS_2,
+            MODULE_BASE + COUNTRY_OCCUPATION_STATUS_VTABLE_RVA as u64,
+        );
         mem.write_u64(
             STATUS_2 + COUNTRY_OCCUPATION_STATUS_SECONDARY_VTABLE_OFF as u64,
             MODULE_BASE + COUNTRY_OCCUPATION_STATUS_SECONDARY_VTABLE_RVA as u64,
         );
-        mem.write_u64(STATUS_2 + COUNTRY_OCCUPATION_STATUS_DEFAULT_LAW_OFF as u64, LAW_2);
+        mem.write_u64(
+            STATUS_2 + COUNTRY_OCCUPATION_STATUS_DEFAULT_LAW_OFF as u64,
+            LAW_2,
+        );
         mem.write_u64(
             STATUS_2 + COUNTRY_OCCUPATION_STATUS_GARRISON_TEMPLATE_OFF as u64,
             TEMPLATE_2,
@@ -746,8 +766,14 @@ mod tests {
             "military_governor_occupation",
         );
 
-        mem.write_u64(TEMPLATE_2, MODULE_BASE + DIVISION_TEMPLATE_VTABLE_RVA as u64);
-        mem.write_u32(TEMPLATE_2 + DIVISION_TEMPLATE_OFF_TYPE as u64, template_type);
+        mem.write_u64(
+            TEMPLATE_2,
+            MODULE_BASE + DIVISION_TEMPLATE_VTABLE_RVA as u64,
+        );
+        mem.write_u32(
+            TEMPLATE_2 + DIVISION_TEMPLATE_OFF_TYPE as u64,
+            template_type,
+        );
         mem.write_u32(TEMPLATE_2 + DIVISION_TEMPLATE_OFF_ID as u64, 4183);
 
         mem.write_u64(STATE_10, MODULE_BASE + STATE_VTABLE_RVA as u64);
@@ -787,7 +813,11 @@ mod tests {
         let encoded = encode_rows(25, 0, extracted.observed_state_rows, &extracted.rows);
         assert_eq!(compact::DOMAIN_ID, 52);
         let summary = compact::decode_payload(0, &encoded.payload);
-        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
         assert_eq!(summary.data_rows_total, 1);
         assert_eq!(
             summary
@@ -824,7 +854,9 @@ mod tests {
         let second = tracker.encode_frame(2, 0, extracted.observed_state_rows, &extracted.rows);
         assert!(second.rows.is_empty());
         assert!(second.header.status_flags & compact::STATUS_DELTA_DATA != 0);
-        assert!(compact::decode_payload(0, &second.payload).parse_errors.is_empty());
+        assert!(compact::decode_payload(0, &second.payload)
+            .parse_errors
+            .is_empty());
 
         extracted.rows[0].resistance_raw += 1000;
         let third = tracker.encode_frame(3, 0, extracted.observed_state_rows, &extracted.rows);

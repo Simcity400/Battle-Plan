@@ -34,6 +34,7 @@ from pathlib import Path
 
 import resolver as R
 from paradox_parser import Node
+from clausewitz_source_scan import character_name_token_kinds
 
 
 def _scalar(v):
@@ -74,9 +75,14 @@ def _country_leader(blk: Node):
     }
 
 
-def parse_character(cid: str, node: Node, rel: str) -> dict:
-    rec = {"id": cid, "name": _scalar(node.get("name")), "roles": [],
-           "source_file": rel}
+def parse_character(cid: str, node: Node, rel: str, name_token_kind: str | None = None) -> dict:
+    rec = {
+        "id": cid,
+        "name": _scalar(node.get("name")),
+        "name_token_kind": name_token_kind,
+        "roles": [],
+        "source_file": rel,
+    }
     adv = node.get("advisor")
     if isinstance(adv, Node):
         rec["roles"].append("advisor")
@@ -100,17 +106,22 @@ def parse_characters(layers) -> dict:
     ordered = R.ordered_files(layers, "common/characters", (".txt",))
     for rel, abspath in ordered:
         try:
+            name_token_kinds = character_name_token_kinds(
+                Path(abspath).read_text(encoding="utf-8-sig", errors="replace")
+            )
             root = R.parse_file(abspath)
         except Exception as e:
             print(f"[characters] WARN {rel}: {e}", file=sys.stderr)
             continue
+        label = layers[R._layer_prio_fn(layers)(abspath)].label
         block = root.get("characters")
         if not isinstance(block, Node):
             continue
         for cid, body in block.entries:
             if not isinstance(body, Node) or not cid:
                 continue
-            rec = parse_character(cid, body, rel)
+            rec = parse_character(cid, body, rel, name_token_kinds.get(cid))
+            rec["source_layer"] = label
             if not rec["roles"]:
                 # still keep (portrait-only character) but mark
                 rec["roles"] = []

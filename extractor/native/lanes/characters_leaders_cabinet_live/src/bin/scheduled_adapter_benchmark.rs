@@ -368,6 +368,7 @@ fn build_live_scale_fixture(
     let cache = NativeRootCache {
         roots: Some(roots()),
         roots_validated: true,
+        skipped_root_rows: 0,
         characters,
         unit_leaders,
         unit_leader_trait_tokens: trait_defs,

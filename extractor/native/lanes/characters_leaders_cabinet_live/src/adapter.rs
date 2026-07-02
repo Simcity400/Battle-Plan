@@ -26,6 +26,7 @@ pub const CNAVY_LEADER_COORDINATION_OFF: u64 = 0xF98;
 pub struct AdapterInput {
     pub elapsed_wall_ms: u64,
     pub status_flags: u32,
+    pub skipped_input_rows: u32,
     pub characters: Vec<CharacterRoot>,
     pub unit_leaders: Vec<UnitLeaderRoot>,
     pub unit_leader_trait_tokens: Vec<TraitDefinitionRoot>,
@@ -139,11 +140,14 @@ pub fn build_lane_frame_from_adapter_input<M: LaneMemory>(
         .collect::<BTreeMap<_, _>>();
 
     let mut known_characters = BTreeSet::new();
+    let mut character_identity = BTreeMap::<(u32, u32), (Option<String>, Option<String>)>::new();
     stats.character_roots_seen = input.characters.len().min(u32::MAX as usize) as u32;
     for root in &input.characters {
         match read_character_raw_fields(mem, roots, root.character_addr) {
             Ok(raw) => {
-                known_characters.insert((raw.country_tag_db_id, raw.char_id));
+                let key = (raw.country_tag_db_id, raw.char_id);
+                known_characters.insert(key);
+                character_identity.insert(key, (root.name.clone(), root.token.clone()));
                 frame.characters.push(CharacterRecord {
                     country_tag_db_id: raw.country_tag_db_id,
                     char_id: raw.char_id,
@@ -197,7 +201,17 @@ pub fn build_lane_frame_from_adapter_input<M: LaneMemory>(
             root.ruler_name.clone(),
             root.ruler_token.clone(),
         ) {
-            Ok(row) => {
+            Ok(mut row) => {
+                if let Some((name, token)) =
+                    character_identity.get(&(row.country_tag_db_id, row.char_id))
+                {
+                    if row.name.is_none() {
+                        row.name = name.clone();
+                    }
+                    if row.token.is_none() {
+                        row.token = token.clone();
+                    }
+                }
                 known_characters.insert((row.country_tag_db_id, row.char_id));
                 frame.active_rulers.push(row);
             }
@@ -249,6 +263,9 @@ pub fn build_lane_frame_from_adapter_input<M: LaneMemory>(
     stats.portrait_rows = frame.character_portraits.len().min(u32::MAX as usize) as u32;
 
     if stats.has_rejections() {
+        frame.status_flags |= compact::STATUS_PARTIAL_DATA;
+    }
+    if input.skipped_input_rows != 0 {
         frame.status_flags |= compact::STATUS_PARTIAL_DATA;
     }
     if input.countries.is_empty() {
@@ -368,24 +385,26 @@ fn read_unit_leader<M: LaneMemory>(
             addr: root.leader_addr + CUNIT_LEADER_EXPERIENCE_RAW_OFF,
             field: "CUnitLeader.experience_raw",
         })?;
-    let trait_vector = read_unit_leader_trait_vector(mem, root.leader_addr)?;
     let mut trait_rows = Vec::new();
     let mut missing_trait_tokens = 0u32;
-    for (ordinal, trait_addr) in trait_vector.trait_ptrs.iter().copied().enumerate() {
-        require_vtable(
-            mem,
-            trait_addr,
-            roots.cunit_leader_trait_vtable,
-            "CUnitLeaderTrait",
-        )?;
-        if let Some(token) = trait_tokens.get(&trait_addr) {
-            trait_rows.push(UnitLeaderTraitRecord {
-                unit_leader_id,
-                ordinal: ordinal.min(u16::MAX as usize) as u16,
-                trait_token: (*token).to_string(),
-            });
-        } else {
-            missing_trait_tokens = missing_trait_tokens.saturating_add(1);
+    if roots.cunit_leader_trait_vtable != 0 && !trait_tokens.is_empty() {
+        let trait_vector = read_unit_leader_trait_vector(mem, root.leader_addr)?;
+        for (ordinal, trait_addr) in trait_vector.trait_ptrs.iter().copied().enumerate() {
+            require_vtable(
+                mem,
+                trait_addr,
+                roots.cunit_leader_trait_vtable,
+                "CUnitLeaderTrait",
+            )?;
+            if let Some(token) = trait_tokens.get(&trait_addr) {
+                trait_rows.push(UnitLeaderTraitRecord {
+                    unit_leader_id,
+                    ordinal: ordinal.min(u16::MAX as usize) as u16,
+                    trait_token: (*token).to_string(),
+                });
+            } else {
+                missing_trait_tokens = missing_trait_tokens.saturating_add(1);
+            }
         }
     }
     let stat_offsets = stat_offsets(root.leader_kind);

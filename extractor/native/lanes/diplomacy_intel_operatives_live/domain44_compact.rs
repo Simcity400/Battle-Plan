@@ -17,18 +17,37 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub const HEADER_LEN: usize = 72;
 pub const FIXED_SCALE_RAW: u32 = 100_000;
 
+pub const STATUS_STATE_UNAVAILABLE: u32 = compact_contract::COMPACT_STATUS_STATE_UNAVAILABLE;
+pub const STATUS_BRIDGE_UNAVAILABLE: u32 = compact_contract::COMPACT_STATUS_BRIDGE_UNAVAILABLE;
+pub const STATUS_PROFILE_MISMATCH: u32 = compact_contract::COMPACT_STATUS_PROFILE_MISMATCH;
+pub const STATUS_NO_CLOCK: u32 = compact_contract::COMPACT_STATUS_NO_CLOCK;
+pub const STATUS_NO_SCALAR_SOURCE: u32 = compact_contract::COMPACT_STATUS_NO_SCALAR_SOURCE;
+pub const STATUS_EXTRACTION_PERF_GATE: u32 = compact_contract::COMPACT_STATUS_EXTRACTION_PERF_GATE;
+pub const STATUS_WORKER_PANIC: u32 = compact_contract::COMPACT_STATUS_WORKER_PANIC;
 pub const STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
 pub const STATUS_PARTIAL_DATA: u32 = 1 << 9;
 pub const STATUS_DELTA_DATA: u32 = 1 << 10;
+pub const STATUS_TRANSITION_BASELINE_RESET: u32 =
+    compact_contract::COMPACT_STATUS_TRANSITION_BASELINE_RESET;
+pub const STATUS_CONTROL_INVALID: u32 = compact_contract::COMPACT_STATUS_CONTROL_INVALID;
 pub const STATUS_OPERATIONS_DETAIL_RESISTED: u32 = 1 << 16;
 pub const STATUS_INTEL_MAP_RESISTED: u32 = 1 << 17;
 pub const STATUS_WAR_ROOT_UNVALIDATED: u32 = 1 << 18;
 pub const STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED: u32 = 1 << 19;
 pub const STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED: u32 = 1 << 20;
 
-pub const KNOWN_STATUS_FLAGS: u32 = STATUS_SOURCE_UNAVAILABLE
+pub const KNOWN_STATUS_FLAGS: u32 = STATUS_STATE_UNAVAILABLE
+    | STATUS_BRIDGE_UNAVAILABLE
+    | STATUS_PROFILE_MISMATCH
+    | STATUS_NO_CLOCK
+    | STATUS_NO_SCALAR_SOURCE
+    | STATUS_EXTRACTION_PERF_GATE
+    | STATUS_WORKER_PANIC
+    | STATUS_SOURCE_UNAVAILABLE
     | STATUS_PARTIAL_DATA
     | STATUS_DELTA_DATA
+    | STATUS_TRANSITION_BASELINE_RESET
+    | STATUS_CONTROL_INVALID
     | STATUS_OPERATIONS_DETAIL_RESISTED
     | STATUS_INTEL_MAP_RESISTED
     | STATUS_WAR_ROOT_UNVALIDATED
@@ -97,7 +116,7 @@ pub const STATE_EVENT_SOURCE_CRYPTOLOGY: u16 = 6;
 pub const STATE_EVENT_SOURCE_RELATION_OPINION: u16 = 7;
 pub const STATE_EVENT_SOURCE_COUNTRY_FACTION_GROUP: u16 = 8;
 
-pub const MAX_TAG_DB_ID: u32 = 2_048;
+pub const MAX_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 pub const MAX_CASUALTIES: i64 = 50_000_000;
 pub const MAX_OPINION_ABS: i32 = 200;
 pub const MAX_OPERATIVES_PER_AGENCY: u32 = 128;
@@ -845,6 +864,172 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain53GateSummary {
     );
     add_state_event_source_units(&mut summary, state_event_source_counts);
     summary
+}
+
+pub fn decode_snapshot_payload(
+    offset: usize,
+    payload: &[u8],
+) -> Result<DiplomacyIntelSnapshot, Vec<String>> {
+    let summary = decode_payload(offset, payload);
+    if !summary.parse_errors.is_empty() {
+        return Err(summary.parse_errors);
+    }
+    if payload.len() < HEADER_LEN {
+        return Err(vec![format!(
+            "offset {offset}: diplomacy/intel payload is {} byte(s), expected at least {HEADER_LEN}",
+            payload.len()
+        )]);
+    }
+    let elapsed_wall_ms = read_u64_le(payload, 0);
+    let row_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12);
+    let status_flags = read_u32_le(payload, 16);
+    let mut snapshot = DiplomacyIntelSnapshot {
+        elapsed_wall_ms,
+        status_flags,
+        changed_rows: Some(changed_rows),
+        ..DiplomacyIntelSnapshot::default()
+    };
+    let mut cursor = HEADER_LEN;
+    for _ in 0..row_count {
+        let kind = read_u16_le(payload, cursor);
+        match kind {
+            KIND_COUNTRY_DIPLOMACY => {
+                snapshot.countries.push(CountryDiplomacyRow {
+                    tag_db_id: read_u32_le(payload, cursor + 4),
+                    faction_group: read_i32_le(payload, cursor + 8),
+                    at_war_count: read_u32_le(payload, cursor + 12),
+                    casualties: read_i64_le(payload, cursor + 16),
+                });
+            }
+            KIND_WAR_RELATION => {
+                snapshot.wars.push(WarRelationRow {
+                    first_tag_db_id: read_u32_le(payload, cursor + 4),
+                    second_tag_db_id: read_u32_le(payload, cursor + 8),
+                    first_casualties: read_i64_le(payload, cursor + 12),
+                    second_casualties: read_i64_le(payload, cursor + 20),
+                });
+            }
+            KIND_OPINION => {
+                snapshot.opinions.push(OpinionRow {
+                    src_tag_db_id: read_u32_le(payload, cursor + 4),
+                    target_tag_db_id: read_u32_le(payload, cursor + 8),
+                    opinion: read_i32_le(payload, cursor + 12),
+                });
+            }
+            KIND_RELATION_FLAG => {
+                let flags = read_u32_le(payload, cursor + 4);
+                snapshot.relation_flags.push(RelationFlagRow {
+                    src_tag_db_id: read_u32_le(payload, cursor + 8),
+                    target_tag_db_id: read_u32_le(payload, cursor + 12),
+                    flag_kind: read_u16_le(payload, cursor + 2),
+                    directed: flags & REL_FLAG_DIRECTED != 0,
+                });
+            }
+            KIND_SUBJECT => {
+                snapshot.subjects.push(SubjectRow {
+                    overlord_tag_db_id: read_u32_le(payload, cursor + 4),
+                    subject_tag_db_id: read_u32_le(payload, cursor + 8),
+                    autonomy_state_hash: read_u32_le(payload, cursor + 12),
+                    autonomy_ratio_raw: read_i32_le(payload, cursor + 16),
+                });
+            }
+            KIND_AGENCY => {
+                snapshot.agencies.push(AgencyRow {
+                    owner_tag_db_id: read_u32_le(payload, cursor + 4),
+                    max_operatives: read_u32_le(payload, cursor + 8),
+                    usable_slots: read_u32_le(payload, cursor + 12),
+                    operative_count: read_u32_le(payload, cursor + 16),
+                    cryptology_target_count: read_u32_le(payload, cursor + 20),
+                    defense_raw: read_i32_le(payload, cursor + 24),
+                    upgrade_progress_raw: read_i32_le(payload, cursor + 28),
+                    name_hash: read_u64_le(payload, cursor + 32),
+                    icon_hash: read_u64_le(payload, cursor + 40),
+                });
+            }
+            KIND_AGENCY_CAPACITY_CLUSTER => {
+                snapshot
+                    .agency_capacity_clusters
+                    .push(AgencyCapacityClusterRow {
+                        owner_tag_db_id: read_u32_le(payload, cursor + 4),
+                        value_0xe4: read_u32_le(payload, cursor + 8),
+                        value_0xf0: read_u32_le(payload, cursor + 12),
+                        value_0xf4: read_u32_le(payload, cursor + 16),
+                        proof_hash: read_u32_le(payload, cursor + 20),
+                    });
+            }
+            KIND_OPERATIVE => {
+                let flags = read_u16_le(payload, cursor + 2);
+                snapshot.operatives.push(OperativeRow {
+                    owner_tag_db_id: read_u32_le(payload, cursor + 4),
+                    op_id: read_u32_le(payload, cursor + 8),
+                    detected: flags & OPERATIVE_FLAG_DETECTED != 0,
+                    captured: flags & OPERATIVE_FLAG_CAPTURED != 0,
+                    skill: (flags & OPERATIVE_FLAG_SKILL_PRESENT != 0)
+                        .then(|| read_u32_le(payload, cursor + 12)),
+                    experience_raw: (flags & OPERATIVE_FLAG_EXPERIENCE_PRESENT != 0)
+                        .then(|| read_i64_le(payload, cursor + 16)),
+                    name_hash: if flags & OPERATIVE_FLAG_NAME_HASH != 0 {
+                        read_u64_le(payload, cursor + 24)
+                    } else {
+                        0
+                    },
+                    state_hash: read_u32_le(payload, cursor + 32),
+                    lifecycle_flag: (flags & OPERATIVE_FLAG_LIFECYCLE_PRESENT != 0)
+                        .then(|| read_u32_le(payload, cursor + 36)),
+                });
+            }
+            KIND_CRYPTOLOGY => {
+                let flags = read_u16_le(payload, cursor + 2);
+                snapshot.cryptology.push(CryptologyRow {
+                    owner_tag_db_id: read_u32_le(payload, cursor + 4),
+                    target_tag_db_id: read_u32_le(payload, cursor + 8),
+                    amount_raw: read_i64_le(payload, cursor + 12),
+                    decrypting: flags & CRYPTO_FLAG_DECRYPTING != 0,
+                });
+            }
+            KIND_OPERATION_ANCHOR => {
+                let flags = read_u16_le(payload, cursor + 2);
+                snapshot.operation_anchors.push(OperationAnchorRow {
+                    owner_tag_db_id: read_u32_le(payload, cursor + 4),
+                    operation_id: read_u32_le(payload, cursor + 8),
+                    target_tag_db_id: (flags & OPERATION_FLAG_TARGET_PRESENT != 0)
+                        .then(|| read_u32_le(payload, cursor + 12)),
+                    slot_count: read_u32_le(payload, cursor + 16),
+                    phase_count: read_u32_le(payload, cursor + 20),
+                    detail_resisted: flags & OPERATION_FLAG_DETAIL_RESISTED != 0,
+                });
+            }
+            KIND_INTEL_MAP => {
+                let flags = read_u16_le(payload, cursor + 2);
+                snapshot.intel_map.push(IntelMapRow {
+                    owner_tag_db_id: read_u32_le(payload, cursor + 4),
+                    target_tag_db_id: read_u32_le(payload, cursor + 8),
+                    civilian_raw: read_i32_le(payload, cursor + 12),
+                    army_raw: read_i32_le(payload, cursor + 16),
+                    navy_raw: read_i32_le(payload, cursor + 20),
+                    air_raw: read_i32_le(payload, cursor + 24),
+                    resisted: flags & INTEL_MAP_FLAG_RESISTED != 0,
+                });
+            }
+            KIND_COMPACT_STATE_EVENT => {
+                let flags = read_u16_le(payload, cursor + 2);
+                snapshot.state_events.push(StateEventRow {
+                    owner_tag_db_id: read_u32_le(payload, cursor + 4),
+                    target_tag_db_id: (flags & STATE_EVENT_FLAG_TARGET_PRESENT != 0)
+                        .then(|| read_u32_le(payload, cursor + 8)),
+                    event_kind: read_u16_le(payload, cursor + 12),
+                    source_kind: read_u16_le(payload, cursor + 14),
+                    object_hash: read_u32_le(payload, cursor + 16),
+                    value_hash: read_u32_le(payload, cursor + 20),
+                    value_raw: read_i64_le(payload, cursor + 24),
+                });
+            }
+            _ => unreachable!("decode_payload already validated row kind"),
+        }
+        cursor += row_len(kind).expect("decode_payload already validated row kind");
+    }
+    Ok(snapshot)
 }
 
 pub fn stable_hash64(value: &str) -> u64 {
@@ -1722,7 +1907,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn production_domain_id_is_reserved_53() {
+    fn production_domain_id_is_53() {
         assert_eq!(DOMAIN_ID_PROPOSED, 53);
         assert_eq!(domain_id_rejection_reason(DOMAIN_ID_PROPOSED), None);
     }

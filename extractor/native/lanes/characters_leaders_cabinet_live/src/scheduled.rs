@@ -14,6 +14,7 @@ use crate::extractor::{
 pub struct NativeRootCache {
     pub roots: Option<ResolvedTypeRoots>,
     pub roots_validated: bool,
+    pub skipped_root_rows: u32,
     pub characters: Vec<CharacterRoot>,
     pub unit_leaders: Vec<UnitLeaderRoot>,
     pub unit_leader_trait_tokens: Vec<TraitDefinitionRoot>,
@@ -35,12 +36,28 @@ impl NativeRootCache {
     pub fn has_stable_roots(&self) -> bool {
         self.roots_validated && self.roots.is_some() && self.stable_root_count() != 0
     }
+
+    pub fn shared_collector_excluded_root_count(&self) -> usize {
+        self.unit_leader_trait_tokens.len() + self.advisors.len() + self.portraits.len()
+    }
+
+    pub fn shared_collector_excluded_roots_are_empty(&self) -> bool {
+        self.shared_collector_excluded_root_count() == 0
+    }
+
+    pub fn debug_assert_shared_collector_excluded_roots_empty(&self) {
+        debug_assert!(
+            self.shared_collector_excluded_roots_are_empty(),
+            "shared domain47 collector must not populate unit_leader_trait, advisor_roster, appointed_advisor, or character_portrait roots until CUnitLeaderTrait/CAdvisor/static portrait roots are revalidated"
+        );
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NativeFrameInput {
     pub elapsed_wall_ms: u64,
     pub status_flags: u32,
+    pub skipped_input_rows: u32,
     pub countries: Vec<CountryPoliticsRoot>,
 }
 
@@ -71,7 +88,16 @@ pub fn read_native_scheduled_frame<M: LaneMemory>(
             &cache.roots.expect("checked by has_stable_roots"),
             &adapter_input,
         );
-        (adapter_result.frame, adapter_result.stats)
+        if cache.skipped_root_rows != 0
+            || adapter_result.stats.has_rejections()
+            || adapter_input.skipped_input_rows != 0
+        {
+            let mut frame = LaneFrame::new(adapter_input.elapsed_wall_ms);
+            frame.status_flags = adapter_input.status_flags | compact::STATUS_PARTIAL_DATA;
+            (frame, adapter_result.stats)
+        } else {
+            (adapter_result.frame, adapter_result.stats)
+        }
     } else {
         let mut frame = LaneFrame::new(frame_input.elapsed_wall_ms);
         frame.status_flags = frame_input.status_flags
@@ -102,6 +128,25 @@ pub fn read_native_scheduled_frame<M: LaneMemory>(
     }
 }
 
+pub fn empty_native_scheduled_read(elapsed_wall_ms: u64, status_flags: u32) -> NativeScheduledRead {
+    let mut frame = LaneFrame::new(elapsed_wall_ms);
+    frame.status_flags = status_flags;
+    let payload = encode_frame_payload(&frame);
+    let gate = compact::decode_payload(0, &payload);
+    NativeScheduledRead {
+        domain_id: DOMAIN_ID,
+        domain_name: DOMAIN_NAME,
+        payload,
+        read_time_us: 0,
+        row_count: 0,
+        data_units_total: 0,
+        status_flags: gate.status_flags_or | frame.status_flags,
+        schema_flags: gate.schema_flags_or,
+        adapter_stats: AdapterBuildStats::default(),
+        parse_errors: gate.parse_errors,
+    }
+}
+
 pub fn adapter_input_from_cache(
     cache: &NativeRootCache,
     frame_input: NativeFrameInput,
@@ -109,6 +154,7 @@ pub fn adapter_input_from_cache(
     AdapterInput {
         elapsed_wall_ms: frame_input.elapsed_wall_ms,
         status_flags: frame_input.status_flags,
+        skipped_input_rows: frame_input.skipped_input_rows,
         characters: cache.characters.clone(),
         unit_leaders: cache.unit_leaders.clone(),
         unit_leader_trait_tokens: cache.unit_leader_trait_tokens.clone(),
@@ -230,6 +276,7 @@ mod tests {
         let cache = NativeRootCache {
             roots: Some(roots()),
             roots_validated: true,
+            skipped_root_rows: 0,
             characters: vec![CharacterRoot {
                 character_addr: character,
                 name: Some("Maxwell Aitken".to_string()),
@@ -288,6 +335,45 @@ mod tests {
         assert_eq!(read.row_count, 8);
         assert_eq!(read.adapter_stats.appointed_advisor_rows, 1);
         assert_eq!(read.adapter_stats.portrait_rows, 1);
+    }
+
+    #[test]
+    fn skipped_root_rows_emit_rowless_partial_read() {
+        let mut mem = FakeMemory::default();
+        let character = 0x1000;
+        write_character(&mut mem, character, 1458, 2);
+
+        let cache = NativeRootCache {
+            roots: Some(roots()),
+            roots_validated: true,
+            skipped_root_rows: 1,
+            characters: vec![CharacterRoot {
+                character_addr: character,
+                name: Some("Maxwell Aitken".to_string()),
+                token: Some("ENG_maxwell_aitken".to_string()),
+            }],
+            ..NativeRootCache::default()
+        };
+
+        let read = read_native_scheduled_frame(&mem, &cache, NativeFrameInput::default());
+        assert_ne!(read.status_flags & compact::STATUS_PARTIAL_DATA, 0);
+        assert_eq!(read.row_count, 0);
+        assert_eq!(read.data_units_total, 0);
+        let decoded = compact::decode_payload_rows(0, &read.payload).unwrap();
+        assert_ne!(decoded.status_flags & compact::STATUS_PARTIAL_DATA, 0);
+        assert!(decoded.rows.is_empty());
+    }
+
+    #[test]
+    fn shared_collector_excluded_root_guard_flags_blocked_roots() {
+        let mut cache = NativeRootCache::default();
+        assert!(cache.shared_collector_excluded_roots_are_empty());
+        cache.unit_leader_trait_tokens.push(TraitDefinitionRoot {
+            trait_addr: 0x2300,
+            token: "old_guard".to_string(),
+        });
+        assert_eq!(cache.shared_collector_excluded_root_count(), 1);
+        assert!(!cache.shared_collector_excluded_roots_are_empty());
     }
 
     fn roots() -> ResolvedTypeRoots {

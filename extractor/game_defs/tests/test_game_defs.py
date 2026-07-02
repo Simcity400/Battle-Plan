@@ -33,6 +33,7 @@ import parse_focus_def        # noqa: E402
 import parse_templates        # noqa: E402
 import parse_world_defs       # noqa: E402
 import parse_characters       # noqa: E402
+import parse_localisation     # noqa: E402
 
 
 def _have_vanilla():
@@ -358,6 +359,31 @@ def test_characters(layers):
     assert adv["cost"] == "100" and "navy_capital_ship_2" in adv["traits"]
     # commander roster present (officer-corps / unit-leader views)
     assert out["meta"]["by_role"].get("corps_commander", 0) > 50
+
+
+
+# --- localisation (R3 token -> localised-name join) -----------------------
+def test_localisation(layers):
+    out = parse_localisation.parse_localisation(layers)
+    m = out["meta"]
+    assert m["key_count"] > 50000, m
+    assert m["overrides"] > 0, "no mod-over-vanilla loc overrides detected"
+    # a known loc key resolves with the raw $VAR$ token intact (not resolved)
+    wf = out["keys"].get("WHILE_FOCUSING")
+    assert wf and wf["has_interpolation"] and "$EFF$" in wf["raw"]
+    assert "$EFF$" in wf["name"], "interpolation token must stay verbatim"
+
+
+def test_localisation_mod_override_wins(layers):
+    # Same mod-override key the resolver-level test already pins
+    # (test_loc_mod_override_wins), re-verified through parse_localisation's
+    # richer per-key record (name/raw/source_layer), not just LocDB.resolve().
+    out = parse_localisation.parse_localisation(layers)
+    tip = out["keys"].get("LOADING_TIP_0")
+    assert tip, "LOADING_TIP_0 missing"
+    assert "Mussolini" not in tip["name"] and "humiliating" not in tip["name"], \
+        f"vanilla loc leaked through, mod override failed: {tip}"
+    assert tip["source_layer"] != "vanilla", tip
 
 
 if __name__ == "__main__":

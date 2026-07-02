@@ -1,0 +1,149 @@
+{
+  "passed": true,
+  "targets": {
+    "game_hour_raw": {
+      "current_raw": 60828184,
+      "current_date": "1943.11.9.17",
+      "start_raw": 60759371,
+      "start_date": "1936.1.1.12"
+    },
+    "country_count": 440,
+    "player_country_roots": {
+      "status_ptr": "0x1647994a5c0",
+      "slot_base": "0x1645a9ca240",
+      "handle_ptr": "0x164254249d0"
+    },
+    "player_country_rows": [
+      {
+        "gs_index": 29,
+        "status": 1,
+        "slot_index": 29,
+        "tag": "IRE",
+        "name": "Ireland"
+      }
+    ],
+    "pause": {
+      "clock_singleton": "0x164fce30fd0",
+      "clock_singleton_alt": "0x164fce30fd0",
+      "both_slots_same_object": true,
+      "vtable": "0x7ff7dfee2510",
+      "expected_vtable": "0x7ff7dfee2510",
+      "is_paused_byte_offset": "0x6c1",
+      "expected_paused": 1,
+      "is_paused_reads": [
+        1,
+        1,
+        1
+      ]
+    },
+    "host_lobby_metadata": {
+      "status": "SP-limited",
+      "note": "Single-player session: only the local human country is observable (via CGameState+0x388 status array -> TAG). No CGameLobby/CPlayerLobby player-connection structure is populated, so player_name / player_key_hash / session_slot / host / connected flags cannot be validated from SP. Fail closed on all MP-only fields."
+    }
+  },
+  "checks": [
+    {
+      "name": "build_profile.daily_update_sentinel",
+      "pass": true,
+      "result": "PASS",
+      "required": true,
+      "detail": "module+0x1D4390"
+    },
+    {
+      "name": "build_profile.get_long_string_sentinel",
+      "pass": true,
+      "result": "PASS",
+      "required": true,
+      "detail": "module+0x526A40"
+    },
+    {
+      "name": "CGameState resolved",
+      "pass": true,
+      "result": "PASS",
+      "required": true,
+      "detail": "u64[module+0x3316E90] = 0x163EE169920"
+    },
+    {
+      "name": "date oracle plausible",
+      "pass": true,
+      "result": "PASS",
+      "required": true,
+      "detail": "current=1943.11.9.17 start=1936.1.1.12"
+    },
+    {
+      "name": "country count sane",
+      "pass": true,
+      "result": "PASS",
+      "required": true,
+      "detail": "CGameState+0x394 = 440 (required 1..4095)"
+    },
+    {
+      "name": "player-country array roots nonzero",
+      "pass": true,
+      "result": "PASS",
+      "required": true,
+      "detail": "status=0x1647994A5C0 slots=0x1645A9CA240 handles=0x164254249D0"
+    },
+    {
+      "name": "player-country rows stable (2 reads)",
+      "pass": true,
+      "result": "PASS",
+      "required": true,
+      "detail": "read1=[('IRE', 'Ireland')] read2=[('IRE', 'Ireland')]"
+    },
+    {
+      "name": "single-player: exactly one human country",
+      "pass": true,
+      "result": "PASS",
+      "required": true,
+      "detail": "human rows=1"
+    },
+    {
+      "name": "human country TAG+name resolve",
+      "pass": true,
+      "result": "PASS",
+      "required": true,
+      "detail": "TAG=IRE name='Ireland' (gs_index=29 slot_index=29)"
+    },
+    {
+      "name": "player-country strict oracle",
+      "pass": true,
+      "result": "PASS",
+      "required": true,
+      "detail": "observed TAG=IRE name='Ireland' gs_index=29 slot_index=29; expected TAG=IRE name='Ireland' index=29"
+    },
+    {
+      "name": "clock singleton both static slots agree",
+      "pass": true,
+      "result": "PASS",
+      "required": true,
+      "detail": "slot+0x33172E0=0x164FCE30FD0 slot+0x33172E8=0x164FCE30FD0"
+    },
+    {
+      "name": "clock singleton vtable identity",
+      "pass": true,
+      "result": "PASS",
+      "required": true,
+      "detail": "vtable=0x7FF7DFEE2510 expected=0x7FF7DFEE2510 (module+0x2952510)"
+    },
+    {
+      "name": "pause flag matches expected oracle",
+      "pass": true,
+      "result": "PASS",
+      "required": true,
+      "detail": "clock+0x6C1 = [1, 1, 1] (expected 1; flip unverified, read-only)"
+    }
+  ],
+  "process": {
+    "pid": 27804,
+    "module_base": "0x7ff7dd590000",
+    "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+  },
+  "args": {
+    "expect_tag": "IRE",
+    "expect_name": "Ireland",
+    "expect_index": 29,
+    "allow_unverified_oracle": false,
+    "expect_paused": 1
+  }
+}

@@ -6,8 +6,7 @@ edition = "2021"
 [lib]
 path = "src/lib.rs"
 
-[workspace]
-
 [dependencies]
+compact_contract = { path = "../../compact_contract" }
 serde_json = "1"
 snapshot = { path = "../../snapshot" }

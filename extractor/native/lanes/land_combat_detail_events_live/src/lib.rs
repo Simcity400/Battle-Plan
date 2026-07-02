@@ -12,10 +12,12 @@ pub const SCHEMA_VERSION: u16 = 1;
 pub const PAYLOAD_HEADER_LEN: usize = 28;
 pub const DETAIL_EVENT_ROW_LEN: usize = 52;
 
-pub const STATUS_DELTA_DATA: u32 = 1 << 10;
-pub const STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
-pub const STATUS_PARTIAL_DATA: u32 = 1 << 9;
-pub const FAILURE_STATUS_MASK: u32 = STATUS_SOURCE_UNAVAILABLE | STATUS_PARTIAL_DATA;
+pub const STATUS_DELTA_DATA: u32 = compact_contract::COMPACT_STATUS_DELTA_DATA;
+pub const STATUS_SOURCE_UNAVAILABLE: u32 = compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE;
+pub const STATUS_PARTIAL_DATA: u32 = compact_contract::COMPACT_STATUS_PARTIAL_DATA;
+pub const STATUS_TRANSITION_BASELINE_RESET: u32 =
+    compact_contract::COMPACT_STATUS_TRANSITION_BASELINE_RESET;
+pub const FAILURE_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_FAILURE_MASK;
 
 pub const EVENT_PHASE_STARTED: u32 = 1;
 pub const EVENT_PHASE_UPDATED: u32 = 2;
@@ -113,6 +115,80 @@ pub struct GateResult {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CaptureFrame {
     pub compact_stream: Vec<u8>,
+    pub rows: Vec<DetailEventRow>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LandCombatDetailTracker {
+    previous: Vec<LandCombatSnapshot>,
+    pending_rebaseline: bool,
+    last_frame_rebaselined: bool,
+}
+
+impl LandCombatDetailTracker {
+    pub fn reset_transition_baseline(&mut self) {
+        self.previous.clear();
+        self.pending_rebaseline = true;
+        self.last_frame_rebaselined = false;
+    }
+
+    pub fn last_frame_rebaselined(&self) -> bool {
+        self.last_frame_rebaselined
+    }
+}
+
+pub trait LandCombatDetailMemory {
+    fn land_combat_snapshots(&self) -> Result<Vec<LandCombatSnapshot>, Vec<String>>;
+}
+
+pub fn collect_transition_capture_frame<M: LandCombatDetailMemory>(
+    memory: &M,
+    tracker: &mut LandCombatDetailTracker,
+    sequence: u64,
+    game_hour_raw: i32,
+    elapsed_wall_ms: u64,
+) -> Result<CaptureFrame, Vec<String>> {
+    let current = memory.land_combat_snapshots()?;
+    if tracker.pending_rebaseline {
+        let payload = encode_detail_events_payload(
+            elapsed_wall_ms,
+            STATUS_DELTA_DATA | STATUS_PARTIAL_DATA | STATUS_TRANSITION_BASELINE_RESET,
+            &[],
+        );
+        let mut compact_stream = Vec::new();
+        append_compact_record(
+            &mut compact_stream,
+            sequence,
+            game_hour_raw,
+            DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload,
+        );
+        tracker.previous = current;
+        tracker.pending_rebaseline = false;
+        tracker.last_frame_rebaselined = true;
+        return Ok(CaptureFrame {
+            compact_stream,
+            rows: Vec::new(),
+        });
+    }
+    let frame = build_transition_capture_frame(
+        tracker.previous.as_slice(),
+        current.as_slice(),
+        sequence,
+        game_hour_raw,
+        elapsed_wall_ms,
+    )?;
+    tracker.previous = current;
+    tracker.last_frame_rebaselined = false;
+    Ok(frame)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DecodedDetailEventsPayload {
+    pub elapsed_wall_ms: u64,
+    pub status_flags: u32,
     pub rows: Vec<DetailEventRow>,
 }
 
@@ -278,7 +354,7 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
         if domain_id == DOMAIN_LAND_COMBAT_DETAIL_EVENTS
             && record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA
         {
-            decode_detail_events_payload(
+            decode_detail_events_payload_into_summary(
                 cursor,
                 &data[payload_start..payload_end],
                 &mut summary,
@@ -331,23 +407,22 @@ pub fn result_json(gate: &GateResult) -> String {
     )
 }
 
-fn decode_detail_events_payload(
+pub fn decode_detail_events_payload(
     offset: usize,
     payload: &[u8],
-    summary: &mut GateSummary,
-    errors: &mut Vec<String>,
-) {
+) -> Result<DecodedDetailEventsPayload, Vec<String>> {
+    let mut errors = Vec::new();
     if payload.len() < PAYLOAD_HEADER_LEN {
         errors.push(format!("offset {offset}: detail payload too short"));
-        return;
+        return Err(errors);
     }
     let version = read_u16(payload, 0);
     let row_len = read_u16(payload, 2) as usize;
+    let elapsed_wall_ms = read_u64(payload, 4);
     let status_flags = read_u32(payload, 12);
     let row_count = read_u32(payload, 16) as usize;
     let string_count = read_u32(payload, 20);
     let reserved = read_u32(payload, 24);
-    summary.status_flags_or |= status_flags;
     if version != SCHEMA_VERSION {
         errors.push(format!(
             "offset {offset}: detail schema version {version} != {SCHEMA_VERSION}"
@@ -369,10 +444,10 @@ fn decode_detail_events_payload(
             "offset {offset}: detail payload len {} != expected {expected_len}",
             payload.len()
         ));
-        return;
+        return Err(errors);
     }
-    summary.row_count = summary.row_count.saturating_add(row_count as u64);
     let mut seen = BTreeSet::new();
+    let mut rows = Vec::with_capacity(row_count);
     let mut cursor = PAYLOAD_HEADER_LEN;
     for row_index in 0..row_count {
         let row = DecodedRow {
@@ -390,7 +465,70 @@ fn decode_detail_events_payload(
             reserved: read_u32(payload, cursor + 48),
         };
         cursor += row_len;
-        validate_decoded_row(offset, row_index, &row, &mut seen, errors);
+        validate_decoded_row(offset, row_index, &row, &mut seen, &mut errors);
+        rows.push(DetailEventRow {
+            combat_id: row.combat_id,
+            generation: row.generation,
+            event_kind: row.event_kind,
+            side: match row.side {
+                SIDE_ATTACKER => Some(CombatSide::Attacker),
+                SIDE_DEFENDER => Some(CombatSide::Defender),
+                _ => None,
+            },
+            division_id: if row.flags & FLAG_DIVISION_PRESENT != 0 {
+                Some(row.division_id)
+            } else {
+                None
+            },
+            location: if row.flags & FLAG_LOCATION_PRESENT != 0 {
+                Some(row.location)
+            } else {
+                None
+            },
+            day: if row.flags & FLAG_DAY_PRESENT != 0 {
+                Some(row.day)
+            } else {
+                None
+            },
+            duration: if row.flags & FLAG_DURATION_PRESENT != 0 {
+                Some(row.duration)
+            } else {
+                None
+            },
+            old_side_count: row.old_side_count,
+            new_side_count: row.new_side_count,
+            flags: row.flags,
+        });
+    }
+    if errors.is_empty() {
+        Ok(DecodedDetailEventsPayload {
+            elapsed_wall_ms,
+            status_flags,
+            rows,
+        })
+    } else {
+        Err(errors)
+    }
+}
+
+fn decode_detail_events_payload_into_summary(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut GateSummary,
+    errors: &mut Vec<String>,
+) {
+    if payload.len() >= 16 {
+        summary.status_flags_or |= read_u32(payload, 12);
+    }
+    let decoded = match decode_detail_events_payload(offset, payload) {
+        Ok(decoded) => decoded,
+        Err(mut decode_errors) => {
+            errors.append(&mut decode_errors);
+            return;
+        }
+    };
+    summary.row_count = summary.row_count.saturating_add(decoded.rows.len() as u64);
+    for row in decoded.rows {
         match row.event_kind {
             EVENT_PHASE_STARTED => summary.phase_started_rows += 1,
             EVENT_PHASE_UPDATED => summary.phase_updated_rows += 1,
@@ -721,6 +859,16 @@ fn json_string_array(values: &[String]) -> String {
 mod tests {
     use super::*;
 
+    struct TestMemory {
+        snapshots: Vec<LandCombatSnapshot>,
+    }
+
+    impl LandCombatDetailMemory for TestMemory {
+        fn land_combat_snapshots(&self) -> Result<Vec<LandCombatSnapshot>, Vec<String>> {
+            Ok(self.snapshots.clone())
+        }
+    }
+
     #[test]
     fn transition_emits_phase_and_participant_events() {
         let old = [snapshot(42, 7, 1000, &[1001, 1002], &[2001])];
@@ -753,6 +901,33 @@ mod tests {
         assert_eq!(gate.summary.phase_ended_rows, 1);
         assert_eq!(gate.summary.participant_joined_rows, 1);
         assert_eq!(gate.summary.participant_left_unclassified_rows, 1);
+    }
+
+    #[test]
+    fn reset_transition_baseline_rebaselines_without_synthetic_events() {
+        let mut tracker = LandCombatDetailTracker::default();
+        let first = TestMemory {
+            snapshots: vec![snapshot(42, 7, 1000, &[1001], &[2001])],
+        };
+        let changed_after_gap = TestMemory {
+            snapshots: vec![snapshot(42, 7, 1000, &[1001, 1002], &[2001, 2002])],
+        };
+
+        let first_frame =
+            collect_transition_capture_frame(&first, &mut tracker, 1, 60_787_539, 1).unwrap();
+        assert!(!first_frame.rows.is_empty());
+
+        tracker.reset_transition_baseline();
+        let reset_frame =
+            collect_transition_capture_frame(&changed_after_gap, &mut tracker, 2, 60_787_541, 2)
+                .unwrap();
+        assert!(reset_frame.rows.is_empty());
+        assert!(tracker.last_frame_rebaselined());
+        let payload = &reset_frame.compact_stream[COMPACT_RECORD_HEADER_LEN..];
+        let decoded = decode_detail_events_payload(COMPACT_RECORD_HEADER_LEN, payload).unwrap();
+        assert_eq!(decoded.rows.len(), 0);
+        assert_ne!(decoded.status_flags & STATUS_TRANSITION_BASELINE_RESET, 0);
+        assert_ne!(decoded.status_flags & STATUS_PARTIAL_DATA, 0);
     }
 
     fn snapshot(

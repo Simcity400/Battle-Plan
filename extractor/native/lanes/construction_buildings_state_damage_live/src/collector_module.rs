@@ -24,6 +24,21 @@ pub struct CollectorStats {
     pub failed_state_building_roots: u32,
     pub failed_state_resource_roots: u32,
     pub failed_province_building_roots: u32,
+    pub skipped_construction_rows: u32,
+    pub skipped_building_rows: u32,
+    pub skipped_resource_rows: u32,
+}
+
+impl CollectorStats {
+    fn has_partial_data(&self) -> bool {
+        self.failed_country_roots > 0
+            || self.failed_state_building_roots > 0
+            || self.failed_state_resource_roots > 0
+            || self.failed_province_building_roots > 0
+            || self.skipped_construction_rows > 0
+            || self.skipped_building_rows > 0
+            || self.skipped_resource_rows > 0
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,8 +67,11 @@ pub fn collect_domain48_frame<M: LaneMemory>(mem: &M, roots: CollectorRoots) -> 
             &roots.state_roots,
             &roots.province_roots,
         ) {
-            Some(mut rows) => {
-                construction_rows.append(&mut rows);
+            Some(mut read) => {
+                stats.skipped_construction_rows = stats
+                    .skipped_construction_rows
+                    .saturating_add(read.skipped_rows);
+                construction_rows.append(&mut read.rows);
             }
             None => stats.failed_country_roots = stats.failed_country_roots.saturating_add(1),
         }
@@ -61,14 +79,24 @@ pub fn collect_domain48_frame<M: LaneMemory>(mem: &M, roots: CollectorRoots) -> 
 
     for root in &roots.state_roots {
         match read_state_building_rows(mem, roots.module_base, *root) {
-            Some(mut rows) => building_rows.append(&mut rows),
+            Some(mut read) => {
+                stats.skipped_building_rows = stats
+                    .skipped_building_rows
+                    .saturating_add(read.skipped_rows);
+                building_rows.append(&mut read.rows);
+            }
             None => {
                 stats.failed_state_building_roots =
                     stats.failed_state_building_roots.saturating_add(1);
             }
         }
         match read_state_resource_rows(mem, *root) {
-            Some(mut rows) => resource_rows.append(&mut rows),
+            Some(mut read) => {
+                stats.skipped_resource_rows = stats
+                    .skipped_resource_rows
+                    .saturating_add(read.skipped_rows);
+                resource_rows.append(&mut read.rows);
+            }
             None => {
                 stats.failed_state_resource_roots =
                     stats.failed_state_resource_roots.saturating_add(1);
@@ -78,7 +106,12 @@ pub fn collect_domain48_frame<M: LaneMemory>(mem: &M, roots: CollectorRoots) -> 
 
     for root in &roots.province_roots {
         match read_province_building_rows(mem, roots.module_base, *root) {
-            Some(mut rows) => building_rows.append(&mut rows),
+            Some(mut read) => {
+                stats.skipped_building_rows = stats
+                    .skipped_building_rows
+                    .saturating_add(read.skipped_rows);
+                building_rows.append(&mut read.rows);
+            }
             None => {
                 stats.failed_province_building_roots =
                     stats.failed_province_building_roots.saturating_add(1);
@@ -87,13 +120,11 @@ pub fn collect_domain48_frame<M: LaneMemory>(mem: &M, roots: CollectorRoots) -> 
     }
 
     let mut status_flags = 0u32;
-    if stats.failed_country_roots
-        + stats.failed_state_building_roots
-        + stats.failed_state_resource_roots
-        + stats.failed_province_building_roots
-        > 0
-    {
+    if stats.has_partial_data() {
         status_flags |= STATUS_PARTIAL_DATA;
+        construction_rows.clear();
+        building_rows.clear();
+        resource_rows.clear();
     }
 
     let all_construction_targets_present = !construction_rows.is_empty()

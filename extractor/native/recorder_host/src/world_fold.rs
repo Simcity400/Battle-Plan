@@ -1,0 +1,9614 @@
+//! Fold decoded compact records into per-game-hour world-state snapshots shaped
+//! like `replay_interface/documents/REPLAY_SCHEMA.md`.
+//!
+//! The recorder already packs the raw compact stream for audit; this module
+//! additionally maintains a running world state, applies each DOMAIN_DATA record
+//! (full-replace for full domains, delta-apply for delta domains), and on each
+//! FRAME_END emits one snapshot for that game hour. `finish()` yields the
+//! per-hour snapshot JSON bytes ready to pack as `role: "snapshot"` entries.
+//!
+//! TAG resolution: compact records key country rows by numeric `tag_db_id`. The
+//! `country_identity` domain (id 18) carries a per-frame `tag_db_id -> TAG` map;
+//! when present we re-key `countries` and every country-valued field (state
+//! owner/controller, province controller, division owner, and the map layer
+//! mirrors) by TAG and set `tag_db_id_index.resolved = true`. Per REPLAY_SCHEMA
+//! §0.2 a TAG is never fabricated: any tag_db_id with no mapping keeps its
+//! stringified numeric key, `resolved` stays false, and a note records the gap.
+//! Without any domain-18 record we fall back to numeric keys throughout with
+//! `resolved = false`, the fail-closed choice; raw ids are preserved, never
+//! guessed strings.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use characters_leaders_cabinet_live_lane as domain47;
+use compact_contract::calendar::{date_from_raw, hour_index_from_raw};
+use compact_contract::{
+    compact_status_is_failure, COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC,
+    COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_VERSION,
+    COMPACT_STATUS_DELTA_DATA, COMPACT_STATUS_FAILURE_MASK, COMPACT_STATUS_PARTIAL_DATA,
+    COMPACT_STATUS_SOURCE_UNAVAILABLE, COMPACT_STATUS_TRANSITION_BASELINE_RESET,
+};
+use construction_buildings_state_damage_live_lane as domain48;
+use diplomacy_intel_operatives_live as diplomacy53;
+use land_combat_detail_events_live_lane as land_detail55;
+use naval_missions_status_live_lane as naval56;
+use serde_json::{json, Map, Value};
+
+const SCHEMA_VERSION: &str = "1";
+
+const FUEL_SCALE: f64 = 32768.0;
+const PRODUCTION_SCALE: f64 = 100_000.0;
+const TECH_PROGRESS_SCALE: f64 = 1000.0;
+const TECH_LIVE_SCALE: f64 = 100_000.0;
+const FIXED_SCALE: f64 = 100_000.0;
+
+const DIVISION_ROW_LEN: usize = 88;
+const DIVISION_FLAG_DELETED: u32 = 1 << 12;
+const LAND_COMBAT_ROW_LEN: usize = 40;
+const LAND_COMBAT_PARTICIPANT_ROW_LEN: usize = 24;
+const MAP_STATE_ROW_LEN: usize = 16;
+const MAP_PROVINCE_ROW_LEN: usize = 16;
+const OCCUPATION_HEADER_LEN: usize = 52;
+const OCCUPATION_ROW_LEN: usize = 64;
+const MAP_DETAIL_HEADER_LEN: usize = 48;
+const MAP_DETAIL_STATE_ROW_LEN: usize = 28;
+const MAP_DETAIL_PROVINCE_ROW_LEN: usize = 20;
+const MAP_DETAIL_ENTRY_ROW_LEN: usize = 12;
+const SUPPLY_LOGISTICS_HEADER_LEN: usize = 48;
+const SUPPLY_LOGISTICS_ROW_LEN: usize = 40;
+const MARKET_TRADE_HEADER_LEN: usize = 48;
+const MARKET_TRADE_ROW_LEN: usize = 48;
+const MARKET_TRADE_CONTRACT_TYPE: u32 = 81;
+
+const OCC_ROW_FLAG_OWNER: u32 = 1;
+const OCC_ROW_FLAG_CONTROLLER: u32 = 1 << 1;
+const OCC_ROW_FLAG_RESISTANCE: u32 = 1 << 2;
+const OCC_ROW_FLAG_COMPLIANCE: u32 = 1 << 3;
+const OCC_ROW_FLAG_OCCUPIED_STATE: u32 = 1 << 4;
+const OCC_ROW_FLAG_OCCUPIED_TAG_DERIVED: u32 = 1 << 5;
+const OCC_ROW_FLAG_OCCUPATION_LAW_TOKEN: u32 = 1 << 6;
+const OCC_ROW_FLAG_GARRISON_TEMPLATE: u32 = 1 << 7;
+const OCC_ROW_FLAG_RESISTANCE_SPEED_UNAVAILABLE: u32 = 1 << 8;
+const OCC_ROW_FLAG_GARRISON_SIGNALS_UNAVAILABLE: u32 = 1 << 9;
+const OCC_ROW_FLAG_OCCUPATION_LAW_UNAVAILABLE: u32 = 1 << 10;
+const OCC_ROW_FLAG_RESISTANCE_SPEED: u32 = 1 << 11;
+const OCC_ROW_FLAG_COMPLIANCE_SPEED: u32 = 1 << 12;
+const OCC_ROW_FLAG_OCCUPATION_STATUS_ROOT: u32 = 1 << 13;
+const OCC_ROW_FLAG_COUNTRY_DEFAULT_LAW_TOKEN: u32 = 1 << 14;
+const OCC_ROW_KNOWN_FLAGS: u32 = OCC_ROW_FLAG_OWNER
+    | OCC_ROW_FLAG_CONTROLLER
+    | OCC_ROW_FLAG_RESISTANCE
+    | OCC_ROW_FLAG_COMPLIANCE
+    | OCC_ROW_FLAG_OCCUPIED_STATE
+    | OCC_ROW_FLAG_OCCUPIED_TAG_DERIVED
+    | OCC_ROW_FLAG_OCCUPATION_LAW_TOKEN
+    | OCC_ROW_FLAG_GARRISON_TEMPLATE
+    | OCC_ROW_FLAG_RESISTANCE_SPEED_UNAVAILABLE
+    | OCC_ROW_FLAG_GARRISON_SIGNALS_UNAVAILABLE
+    | OCC_ROW_FLAG_OCCUPATION_LAW_UNAVAILABLE
+    | OCC_ROW_FLAG_RESISTANCE_SPEED
+    | OCC_ROW_FLAG_COMPLIANCE_SPEED
+    | OCC_ROW_FLAG_OCCUPATION_STATUS_ROOT
+    | OCC_ROW_FLAG_COUNTRY_DEFAULT_LAW_TOKEN;
+
+const SUPPLY_ROW_KIND_PROVINCE_LOGISTICS: u32 = 1;
+const SUPPLY_ROW_KIND_DIVISION_SUPPLY: u32 = 2;
+const SUPPLY_ROW_KIND_COMPUTED_BADGE: u32 = 3;
+const SUPPLY_ROW_KIND_CSUPPLY_PROVINCE_INPUT: u32 = 4;
+const SUPPLY_ROW_FLAG_RAIL: u32 = 1;
+const SUPPLY_ROW_FLAG_SUPPLY_NODE: u32 = 1 << 1;
+const SUPPLY_ROW_FLAG_NAVAL_SUPPLY_HUB: u32 = 1 << 2;
+const SUPPLY_ROW_FLAG_INFRASTRUCTURE: u32 = 1 << 3;
+const SUPPLY_ROW_FLAG_LIVE_BUILDING_VECTOR: u32 = 1 << 4;
+const SUPPLY_ROW_FLAG_DIVISION_CURRENT_SUPPLY: u32 = 1 << 5;
+const SUPPLY_ROW_FLAG_DIVISION_MAX_SUPPLY: u32 = 1 << 6;
+const SUPPLY_ROW_FLAG_DIVISION_SUPPLY_GAIN: u32 = 1 << 7;
+const SUPPLY_ROW_FLAG_DIVISION_OWNER: u32 = 1 << 8;
+const SUPPLY_ROW_FLAG_EXACT_SUPPLY_WALL: u32 = 1 << 9;
+const SUPPLY_ROW_FLAG_ATTRITION_WALL: u32 = 1 << 10;
+const SUPPLY_ROW_FLAG_PROXY_VALUE: u32 = 1 << 11;
+const SUPPLY_ROW_FLAG_DIVISION_SUPPLY_DEFICIT: u32 = 1 << 12;
+const SUPPLY_ROW_FLAG_DIVISION_FUEL: u32 = 1 << 13;
+const SUPPLY_ROW_FLAG_MOTORIZATION_WALL: u32 = 1 << 14;
+const SUPPLY_ROW_FLAG_CONVOY_PRESSURE_WALL: u32 = 1 << 15;
+const SUPPLY_ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED: u32 = 1 << 16;
+const SUPPLY_ROW_FLAG_CSUPPLY_EFFICIENCY: u32 = 1 << 17;
+const SUPPLY_ROW_FLAG_CSUPPLY_PROVINCE_ARRAY: u32 = 1 << 18;
+const SUPPLY_ROW_KNOWN_FLAGS: u32 = SUPPLY_ROW_FLAG_RAIL
+    | SUPPLY_ROW_FLAG_SUPPLY_NODE
+    | SUPPLY_ROW_FLAG_NAVAL_SUPPLY_HUB
+    | SUPPLY_ROW_FLAG_INFRASTRUCTURE
+    | SUPPLY_ROW_FLAG_LIVE_BUILDING_VECTOR
+    | SUPPLY_ROW_FLAG_DIVISION_CURRENT_SUPPLY
+    | SUPPLY_ROW_FLAG_DIVISION_MAX_SUPPLY
+    | SUPPLY_ROW_FLAG_DIVISION_SUPPLY_GAIN
+    | SUPPLY_ROW_FLAG_DIVISION_OWNER
+    | SUPPLY_ROW_FLAG_EXACT_SUPPLY_WALL
+    | SUPPLY_ROW_FLAG_ATTRITION_WALL
+    | SUPPLY_ROW_FLAG_PROXY_VALUE
+    | SUPPLY_ROW_FLAG_DIVISION_SUPPLY_DEFICIT
+    | SUPPLY_ROW_FLAG_DIVISION_FUEL
+    | SUPPLY_ROW_FLAG_MOTORIZATION_WALL
+    | SUPPLY_ROW_FLAG_CONVOY_PRESSURE_WALL
+    | SUPPLY_ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED
+    | SUPPLY_ROW_FLAG_CSUPPLY_EFFICIENCY
+    | SUPPLY_ROW_FLAG_CSUPPLY_PROVINCE_ARRAY;
+
+const MARKET_TRADE_FLAG_BUYER_PTR_VALID: u32 = 1;
+const MARKET_TRADE_FLAG_EQUIPMENT_SUBBUF_VALID: u32 = 1 << 1;
+const MARKET_TRADE_FLAG_DELIVERY_SUBBUF_VALID: u32 = 1 << 2;
+const MARKET_TRADE_FLAG_VARIANT_VALID: u32 = 1 << 3;
+const MARKET_TRADE_FLAG_AMOUNT_VALID: u32 = 1 << 4;
+const MARKET_TRADE_KNOWN_FLAGS: u32 = MARKET_TRADE_FLAG_BUYER_PTR_VALID
+    | MARKET_TRADE_FLAG_EQUIPMENT_SUBBUF_VALID
+    | MARKET_TRADE_FLAG_DELIVERY_SUBBUF_VALID
+    | MARKET_TRADE_FLAG_VARIANT_VALID
+    | MARKET_TRADE_FLAG_AMOUNT_VALID;
+
+const DIVISIONS_DOMAIN_ID: u16 = 20;
+const WEATHER_DOMAIN_ID: u16 = 24;
+const DIVISION_EQUIPMENT_DOMAIN_ID: u16 = 26;
+const ARMY_ORDER_DOMAIN_ID: u16 = 27;
+const OOB_COMMAND_DOMAIN_ID: u16 = 28;
+const SHIPS_DOMAIN_ID: u16 = 29;
+const AIR_WINGS_DOMAIN_ID: u16 = 30;
+const AIR_REGION_ACTIVITY_DOMAIN_ID: u16 = 31;
+const AIR_WING_LOADOUTS_DOMAIN_ID: u16 = 32;
+const AIR_VARIANT_DEFS_DOMAIN_ID: u16 = 33;
+const AIR_BASE_STATUS_DOMAIN_ID: u16 = 34;
+const AIR_VARIANT_STATS_DOMAIN_ID: u16 = 35;
+const AIR_VARIANT_RESERVES_DOMAIN_ID: u16 = 36;
+const STOCKPILE_VARIANT_DEFS_DOMAIN_ID: u16 = 37;
+const AIR_SUPERIORITY_INPUTS_DOMAIN_ID: u16 = 38;
+const AIR_VARIANT_UPGRADES_DOMAIN_ID: u16 = 39;
+const STOCKPILE_VARIANT_UPGRADES_DOMAIN_ID: u16 = 40;
+const SPECIAL_PROJECTS_DOMAIN_ID: u16 = 41;
+const AIR_COMBAT_LOSSES_DOMAIN_ID: u16 = 42;
+const FOCUS_RESEARCH_DECISIONS_DEPTH_DOMAIN_ID: u16 = 45;
+const AIR_VARIANT_ARCHETYPES_DOMAIN_ID: u16 = 46;
+const CHARACTERS_LEADERS_CABINET_DOMAIN_ID: u16 = 47;
+const CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID: u16 = 48;
+const SCRIPTED_STATE_DOMAIN_ID: u16 = 51;
+const DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID: u16 = diplomacy53::DOMAIN_ID;
+const NAVAL_MISSIONS_STATUS_DOMAIN_ID: u16 = 56;
+const DOMAIN47_R2_KEY: &str = "_r2_characters_leaders_cabinet_live";
+const CONSTRUCTION_BUILDINGS_STATE_DAMAGE_EXTRA_KEY: &str =
+    "construction_buildings_state_damage_live";
+const DOMAIN53_EXTRA_KEY: &str = "domain53_extra";
+const DOMAIN53_R2_KEY: &str = "_r2_diplomacy_intel_operatives_live";
+
+const ROW_FLAG_DELETED_LOW_BIT: u32 = 1;
+const AIR_STRENGTH_DELTA_ROW_FLAG_DELETED: u32 = 1 << 2;
+
+const WEATHER_HEADER_LEN: usize = 48;
+const WEATHER_REGION_ROW_LEN: usize = 32;
+const WEATHER_PROVINCE_ROW_LEN: usize = 32;
+const WEATHER_REGION_ROWS: usize = 305;
+const WEATHER_MIN_PROVINCE_ROWS: usize = 10_000;
+const WEATHER_MAX_PROVINCE_ROWS: usize = 65_536;
+const WEATHER_MAX_REGION_ID: u32 = 304;
+const WEATHER_MAX_PHENOMENON: u32 = 16;
+const WEATHER_MAX_TEMPERATURE_RAW: i32 = 10_000_000;
+const WEATHER_MAX_TEMP_CHANGE_RAW: i32 = 10_000_000;
+const WEATHER_MAX_PRECIP_RAW: i32 = 100_000_000;
+const WEATHER_MAX_ACTIVE_MODIFIERS: u32 = 4_096;
+const WEATHER_REGION_RAIN_LIGHT: u32 = 1;
+const WEATHER_REGION_RAIN_HEAVY: u32 = 1 << 1;
+const WEATHER_REGION_SNOW: u32 = 1 << 2;
+const WEATHER_REGION_BLIZZARD: u32 = 1 << 3;
+const WEATHER_REGION_ARCTIC_WATER: u32 = 1 << 4;
+const WEATHER_REGION_ACTIVE_SIGNAL: u32 = 1 << 5;
+const WEATHER_REGION_PHENOMENON_ACTIVE: u32 = 1 << 6;
+const WEATHER_REGION_SANDSTORM: u32 = 1 << 7;
+const WEATHER_REGION_KNOWN_FLAGS: u32 = WEATHER_REGION_RAIN_LIGHT
+    | WEATHER_REGION_RAIN_HEAVY
+    | WEATHER_REGION_SNOW
+    | WEATHER_REGION_BLIZZARD
+    | WEATHER_REGION_ARCTIC_WATER
+    | WEATHER_REGION_ACTIVE_SIGNAL
+    | WEATHER_REGION_PHENOMENON_ACTIVE
+    | WEATHER_REGION_SANDSTORM;
+const WEATHER_PROVINCE_TEMP_PRESENT: u32 = 1;
+const WEATHER_PROVINCE_TEMP_CHANGE_PRESENT: u32 = 1 << 1;
+const WEATHER_PROVINCE_WATER_PRESENT: u32 = 1 << 2;
+const WEATHER_PROVINCE_SNOW_PRESENT: u32 = 1 << 3;
+const WEATHER_PROVINCE_MUD_PRESENT: u32 = 1 << 4;
+const WEATHER_PROVINCE_MUD_ACTIVE: u32 = 1 << 5;
+const WEATHER_PROVINCE_CUSTOM_MODIFIER_COUNT_PRESENT: u32 = 1 << 6;
+const WEATHER_PROVINCE_STRUCT_VALIDATED: u32 = 1 << 7;
+const WEATHER_PROVINCE_MAP_RECOLOR: u32 = 1 << 8;
+const WEATHER_PROVINCE_DYNAMIC_LUT: u32 = 1 << 9;
+const WEATHER_PROVINCE_KNOWN_FLAGS: u32 = WEATHER_PROVINCE_TEMP_PRESENT
+    | WEATHER_PROVINCE_TEMP_CHANGE_PRESENT
+    | WEATHER_PROVINCE_WATER_PRESENT
+    | WEATHER_PROVINCE_SNOW_PRESENT
+    | WEATHER_PROVINCE_MUD_PRESENT
+    | WEATHER_PROVINCE_MUD_ACTIVE
+    | WEATHER_PROVINCE_CUSTOM_MODIFIER_COUNT_PRESENT
+    | WEATHER_PROVINCE_STRUCT_VALIDATED
+    | WEATHER_PROVINCE_MAP_RECOLOR
+    | WEATHER_PROVINCE_DYNAMIC_LUT;
+
+const DIVISION_EQUIPMENT_HEADER_LEN: usize = 40;
+const DIVISION_EQUIPMENT_ROOT_ROW_LEN: usize = 24;
+const DIVISION_EQUIPMENT_ENTRY_ROW_LEN: usize = 16;
+const DIVISION_EQUIPMENT_ROOT_FLAG_TEMPLATE_PRESENT: u32 = 1;
+const DIVISION_EQUIPMENT_ROOT_FLAG_DELETED: u32 = 2;
+const DIVISION_EQUIPMENT_ROOT_KNOWN_FLAGS: u32 =
+    DIVISION_EQUIPMENT_ROOT_FLAG_TEMPLATE_PRESENT | DIVISION_EQUIPMENT_ROOT_FLAG_DELETED;
+
+const SPECIAL_PROJECTS_HEADER_BASE_LEN: usize = 64;
+const SPECIAL_PROJECTS_HEADER_ROOT_COUNTERS_LEN: usize = 24;
+const SPECIAL_PROJECTS_HEADER_REASON_COUNTERS_LEN: usize = 48;
+const SPECIAL_PROJECTS_HEADER_PROGRESS_LEN: usize = 16;
+const SPECIAL_PROJECTS_FACILITY_ROW_LEN: usize = 32;
+const SPECIAL_PROJECTS_PROJECT_ROW_LEN: usize = 24;
+const SPECIAL_PROJECTS_SCIENTIST_ROW_LEN: usize = 32;
+const SPECIAL_PROJECTS_PROJECT_STATE_ROW_LEN: usize = 48;
+const SPECIAL_PROJECTS_BREAKTHROUGH_ROW_LEN: usize = 16;
+const SPECIAL_PROJECTS_FACILITY_ACTIVE_PROJECT: u32 = 1;
+const SPECIAL_PROJECTS_FACILITY_SCIENTIST: u32 = 1 << 1;
+const SPECIAL_PROJECTS_FACILITY_BUILDING: u32 = 1 << 2;
+const SPECIAL_PROJECTS_FACILITY_KNOWN_FLAGS: u32 = SPECIAL_PROJECTS_FACILITY_ACTIVE_PROJECT
+    | SPECIAL_PROJECTS_FACILITY_SCIENTIST
+    | SPECIAL_PROJECTS_FACILITY_BUILDING;
+const SPECIAL_PROJECTS_PROJECT_WORKED_FACILITY: u32 = 1;
+const SPECIAL_PROJECTS_SCIENTIST_NAME_TOKEN: u32 = 1;
+const SPECIAL_PROJECTS_SCIENTIST_DISPLAY_NAME: u32 = 1 << 1;
+const SPECIAL_PROJECTS_SCIENTIST_TRAIT_COUNT: u32 = 1 << 2;
+const SPECIAL_PROJECTS_SCIENTIST_SKILLS: u32 = 1 << 3;
+const SPECIAL_PROJECTS_SCIENTIST_KNOWN_FLAGS: u32 = SPECIAL_PROJECTS_SCIENTIST_NAME_TOKEN
+    | SPECIAL_PROJECTS_SCIENTIST_DISPLAY_NAME
+    | SPECIAL_PROJECTS_SCIENTIST_TRAIT_COUNT
+    | SPECIAL_PROJECTS_SCIENTIST_SKILLS;
+const SPECIAL_PROJECTS_PROJECT_STATE_COMPLETED: u32 = 1;
+
+const FRD_HEADER_LEN: usize = 48;
+const FRD_FOCUS_ROW_FIXED_LEN: usize = 36;
+const FRD_RESEARCH_ROW_LEN: usize = 80;
+const FRD_DECISION_STATUS_ROW_LEN: usize = 28;
+const FRD_DECISION_EVENT_ROW_FIXED_LEN: usize = 28;
+const FRD_BADGE_ROW_FIXED_LEN: usize = 20;
+const FRD_FOCUS_COMPLETED_COUNT_INCREASED: u32 = 1;
+const FRD_FOCUS_CURRENT_STARTED: u32 = 2;
+const FRD_FOCUS_STOPPED: u32 = 3;
+const FRD_FOCUS_CHANGED: u32 = 4;
+const FRD_FOCUS_CONTINUOUS_KIND: u32 = 2;
+const FRD_FOCUS_FLAG_COMPLETED_TOKEN_INFERRED: u32 = 1;
+const FRD_FOCUS_FLAG_COMPLETED_TOKEN_EXACT: u32 = 1 << 1;
+const FRD_RESEARCH_FLAG_ETA_AVAILABLE: u32 = 1 << 2;
+const FRD_RESEARCH_FLAG_BASE_PRESENT: u32 = 1 << 5;
+
+const SCRIPTED_STATE_HEADER_LEN: usize = 64;
+const SCRIPTED_STATE_ROW_LEN: usize = 48;
+const SCRIPTED_STATE_STATUS_FLAG_NAMES_PARTIAL: u32 = 1 << 11;
+const SCRIPTED_STATE_STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED: u32 = 1 << 12;
+const SCRIPTED_STATE_STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED: u32 = 1 << 13;
+const SCRIPTED_STATE_OPAQUE_STATUS_MASK: u32 = SCRIPTED_STATE_STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED
+    | SCRIPTED_STATE_STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED;
+const SCRIPTED_STATE_SCOPE_GLOBAL: u32 = 1;
+const SCRIPTED_STATE_SCOPE_COUNTRY: u32 = 2;
+const SCRIPTED_STATE_SCOPE_STATE: u32 = 3;
+const SCRIPTED_STATE_VALUE_VARIABLE_FIXED_I64: u32 = 1;
+const SCRIPTED_STATE_VALUE_FLAG_NAMED: u32 = 2;
+const SCRIPTED_STATE_VALUE_FLAG_TOKEN_ONLY: u32 = 3;
+const SCRIPTED_STATE_VALUE_DELAYED_EVENT_OPAQUE: u32 = 4;
+const SCRIPTED_STATE_VALUE_SCRIPTED_GUI_OPAQUE: u32 = 5;
+const SCRIPTED_STATE_ROW_FLAG_KEY_PRESENT: u32 = 1;
+const SCRIPTED_STATE_ROW_FLAG_TOKEN_PRESENT: u32 = 1 << 1;
+const SCRIPTED_STATE_ROW_FLAG_VALUE_PRESENT: u32 = 1 << 2;
+const SCRIPTED_STATE_ROW_FLAG_DATE_PRESENT: u32 = 1 << 3;
+const SCRIPTED_STATE_ROW_FLAG_DELETED: u32 = 1 << 4;
+const SCRIPTED_STATE_ROW_KNOWN_FLAGS: u32 = SCRIPTED_STATE_ROW_FLAG_KEY_PRESENT
+    | SCRIPTED_STATE_ROW_FLAG_TOKEN_PRESENT
+    | SCRIPTED_STATE_ROW_FLAG_VALUE_PRESENT
+    | SCRIPTED_STATE_ROW_FLAG_DATE_PRESENT
+    | SCRIPTED_STATE_ROW_FLAG_DELETED;
+
+const ARMY_ORDER_HEADER_LEN: usize = 40;
+const ARMY_ORDER_ROW_LEN: usize = 48;
+const ARMY_ORDER_TARGET_ROW_LEN: usize = 8;
+const OOB_COMMAND_HEADER_LEN: usize = 48;
+const OOB_COMMAND_ROW_LEN: usize = 80;
+const OOB_COMMAND_MEMBER_ROW_LEN: usize = 8;
+const SHIP_HEADER_LEN: usize = 40;
+const SHIP_FIXED_ROW_LEN: usize = 40;
+const AIR_WING_HEADER_LEN: usize = 36;
+const AIR_WING_ROW_LEN: usize = 40;
+const AIR_REGION_ACTIVITY_HEADER_LEN: usize = 36;
+const AIR_REGION_ACTIVITY_ROW_LEN: usize = 32;
+const AIR_WING_LOADOUT_HEADER_LEN: usize = 44;
+const AIR_WING_LOADOUT_ROW_LEN: usize = 32;
+const AIR_WING_LOADOUT_ENTRY_ROW_LEN: usize = 16;
+const VARIANT_DEF_HEADER_LEN: usize = 44;
+const VARIANT_DEF_ROW_LEN: usize = 24;
+const VARIANT_DEF_MODULE_ROW_LEN: usize = 8;
+const AIR_BASE_STATUS_HEADER_LEN: usize = 36;
+const AIR_BASE_STATUS_ROW_LEN: usize = 32;
+const AIR_VARIANT_STATS_HEADER_LEN: usize = 36;
+const AIR_VARIANT_STATS_ROW_LEN: usize = 64;
+const AIR_VARIANT_RESERVE_HEADER_LEN: usize = 48;
+const AIR_VARIANT_RESERVE_ROW_LEN: usize = 24;
+const AIR_SUPERIORITY_INPUT_HEADER_LEN: usize = 52;
+const AIR_SUPERIORITY_INPUT_ROW_LEN: usize = 48;
+const VARIANT_UPGRADE_HEADER_LEN: usize = 44;
+const VARIANT_UPGRADE_ROW_LEN: usize = 16;
+const VARIANT_UPGRADE_ENTRY_ROW_LEN: usize = 8;
+const AIR_COMBAT_LOSS_HEADER_LEN: usize = 48;
+const AIR_COMBAT_LOSS_ROW_LEN: usize = 68;
+const AIR_VARIANT_ARCHETYPE_HEADER_LEN: usize = 48;
+const AIR_VARIANT_ARCHETYPE_ROW_LEN: usize = 32;
+
+const OOB_KIND_ARMY: u32 = 1;
+const OOB_KIND_ARMY_GROUP: u32 = 2;
+const OOB_KIND_FLEET: u32 = 3;
+const OOB_KIND_TASK_FORCE: u32 = 4;
+
+const ARMY_ORDER_ROW_FLAG_TARGET_STATES: u32 = 1 << 1;
+const ARMY_ORDER_ROW_FLAG_TARGET_STATE_COUNT: u32 = 1 << 2;
+const ARMY_ORDER_KNOWN_FLAGS: u32 = ROW_FLAG_DELETED_LOW_BIT
+    | ARMY_ORDER_ROW_FLAG_TARGET_STATES
+    | ARMY_ORDER_ROW_FLAG_TARGET_STATE_COUNT;
+const OOB_ROW_FLAG_PARENT: u32 = 1 << 1;
+const OOB_ROW_FLAG_OWNER: u32 = 1 << 2;
+const OOB_ROW_FLAG_LEADER: u32 = 1 << 3;
+const OOB_ROW_FLAG_LEADER_SKILL: u32 = 1 << 4;
+const OOB_ROW_FLAG_MEMBER_COUNT_ENGINE: u32 = 1 << 5;
+const OOB_ROW_FLAG_MISSING_MEMBER_COUNT: u32 = 1 << 6;
+const OOB_ROW_FLAG_LOCATION: u32 = 1 << 7;
+const OOB_KNOWN_FLAGS: u32 = ROW_FLAG_DELETED_LOW_BIT
+    | OOB_ROW_FLAG_PARENT
+    | OOB_ROW_FLAG_OWNER
+    | OOB_ROW_FLAG_LEADER
+    | OOB_ROW_FLAG_LEADER_SKILL
+    | OOB_ROW_FLAG_MEMBER_COUNT_ENGINE
+    | OOB_ROW_FLAG_MISSING_MEMBER_COUNT
+    | OOB_ROW_FLAG_LOCATION;
+const SHIP_ROW_FLAG_TASK_FORCE: u32 = 1 << 1;
+const SHIP_ROW_FLAG_DEFINITION: u32 = 1 << 2;
+const SHIP_ROW_FLAG_OWNER: u32 = 1 << 3;
+const SHIP_KNOWN_FLAGS: u32 = ROW_FLAG_DELETED_LOW_BIT
+    | SHIP_ROW_FLAG_TASK_FORCE
+    | SHIP_ROW_FLAG_DEFINITION
+    | SHIP_ROW_FLAG_OWNER;
+const AIR_WING_ROW_FLAG_MISSION_REGION: u32 = 1 << 1;
+const AIR_WING_KNOWN_FLAGS: u32 = ROW_FLAG_DELETED_LOW_BIT | AIR_WING_ROW_FLAG_MISSION_REGION;
+const AIR_STRENGTH_DELTA_ROW_FLAG_LOSS: u32 = 1;
+const AIR_STRENGTH_DELTA_ROW_FLAG_REINFORCEMENT: u32 = 1 << 1;
+const AIR_STRENGTH_DELTA_ROW_FLAG_MISSION_REGION: u32 = 1 << 3;
+const AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK: u32 = 1 << 4;
+const AIR_STRENGTH_DELTA_KNOWN_FLAGS: u32 = AIR_STRENGTH_DELTA_ROW_FLAG_LOSS
+    | AIR_STRENGTH_DELTA_ROW_FLAG_REINFORCEMENT
+    | AIR_STRENGTH_DELTA_ROW_FLAG_DELETED
+    | AIR_STRENGTH_DELTA_ROW_FLAG_MISSION_REGION
+    | AIR_STRENGTH_DELTA_ROW_FLAG_EQUIPMENT_SCALE_OK;
+const VARIANT_DEF_ROW_FLAG_DISPLAY_NAME: u32 = 1;
+const VARIANT_DEF_ROW_FLAG_VARIANT_NAME: u32 = 1 << 1;
+const VARIANT_DEF_ROW_FLAG_MODULES: u32 = 1 << 2;
+const VARIANT_DEF_KNOWN_FLAGS: u32 = VARIANT_DEF_ROW_FLAG_DISPLAY_NAME
+    | VARIANT_DEF_ROW_FLAG_VARIANT_NAME
+    | VARIANT_DEF_ROW_FLAG_MODULES;
+const AIR_VARIANT_ARCHETYPE_ROW_FLAG_ARCHETYPE: u32 = 1 << 1;
+const AIR_VARIANT_ARCHETYPE_ROW_FLAG_BASE_AIRFRAME: u32 = 1 << 2;
+const AIR_VARIANT_ARCHETYPE_ROW_FLAG_ROLE: u32 = 1 << 3;
+const AIR_VARIANT_ARCHETYPE_ROW_FLAG_AIR_SUPERIORITY_WEIGHT: u32 = 1 << 4;
+const AIR_VARIANT_ARCHETYPE_KNOWN_FLAGS: u32 = ROW_FLAG_DELETED_LOW_BIT
+    | AIR_VARIANT_ARCHETYPE_ROW_FLAG_ARCHETYPE
+    | AIR_VARIANT_ARCHETYPE_ROW_FLAG_BASE_AIRFRAME
+    | AIR_VARIANT_ARCHETYPE_ROW_FLAG_ROLE
+    | AIR_VARIANT_ARCHETYPE_ROW_FLAG_AIR_SUPERIORITY_WEIGHT;
+
+/// The set of domains this fold understands and folds into world state.
+pub const FOLDED_DOMAIN_IDS: &[u16] = &[
+    10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
+    36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 55, 56,
+];
+
+/// A running world-state accumulator. Feed every H4CR record; snapshots are
+/// captured on FRAME_END and returned by [`WorldFold::finish`].
+pub struct WorldFold {
+    game_id: String,
+    /// countries keyed by stringified tag_db_id (see module note on TAG resolution)
+    countries: BTreeMap<String, Map<String, Value>>,
+    /// states keyed by state-id string
+    states: BTreeMap<String, Map<String, Value>>,
+    /// provinces keyed by province-id string
+    provinces: BTreeMap<String, Map<String, Value>>,
+    /// D22-owned state fields keyed by state-id string.
+    map_control_states: BTreeMap<String, Map<String, Value>>,
+    /// D22-owned province fields keyed by province-id string.
+    map_control_provinces: BTreeMap<String, Map<String, Value>>,
+    /// divisions keyed by div_uid ("div_id:div_type"), carried across hours
+    divisions: BTreeMap<String, Map<String, Value>>,
+    /// D26-owned equipment rows keyed only by owner/div_id. They are joined to
+    /// D20 divisions at snapshot build only when that key is unique.
+    division_equipment: BTreeMap<DivisionEquipmentKey, Vec<DivisionEquipmentEntryState>>,
+    division_equipment_touched_this_hour: BTreeSet<DivisionEquipmentKey>,
+    /// D26 keys invalidated by D20 division deletes this hour. They are pruned
+    /// at hour close so equipment cannot survive a deleted division and later
+    /// attach to a reused owner/div_id with a different D20 div_type.
+    division_equipment_deleted_division_keys_this_hour: BTreeSet<DivisionEquipmentKey>,
+    /// Active land combats keyed by combat_id; a proven domain 21 snapshot
+    /// full-replaces this set. Failed or absent snapshots never imply empty.
+    combats: BTreeMap<u32, CombatState>,
+    /// Domain 55 event annotations for the current hour only.
+    combat_detail_events_this_hour: BTreeMap<(u32, u64), CombatDetailEnrichment>,
+    /// D23 per-province detail used to rebuild state-folded province buildings
+    /// and the renderer mirror without exposing non-schema province fields.
+    map_detail_province_state_ids: BTreeMap<String, u32>,
+    map_detail_province_buildings: BTreeMap<String, Map<String, Value>>,
+    map_detail_live: Option<Value>,
+    /// D48 full-frame construction/building/resource damage extras for the
+    /// current hour only. D23 owns canonical state resources/buildings fields.
+    domain48_known_this_hour: bool,
+    domain48_unknown_this_hour: bool,
+    /// D53 diplomacy/intel/operative validated slice, projected only for the
+    /// current hour under 53-owned keys.
+    domain53_known_this_hour: bool,
+    domain53_country_overlays_this_hour: BTreeMap<u32, Domain53CountryOverlay>,
+    domain53_world_overlay_this_hour: Domain53WorldOverlay,
+    /// D43 world-scoped market contracts; full-replaced by each successful frame.
+    market_trade_contracts: Option<Vec<Value>>,
+    /// D44 live supply proxy sidecar; full-replaced by each successful frame.
+    supply: Option<Map<String, Value>>,
+    /// D24 R2 weather overlay projected under `map._r2_weather_live`.
+    weather_live: Option<WeatherLiveState>,
+    /// D41 top-level special-projects snapshot.
+    special_projects: Option<SpecialProjectsState>,
+    /// D45 focus/research/decision depth annotations. D12 owns first-class
+    /// focus fields; D45 can fill them only when absent while also writing R2
+    /// sidecars. Event rows and badges are per-hour provenance; live counters
+    /// are carried until replaced.
+    frd_focus_metrics: BTreeMap<u32, FrdFocusMetricsState>,
+    frd_research_live: BTreeMap<FrdResearchKey, FrdResearchLiveState>,
+    frd_decision_status: BTreeMap<u32, FrdDecisionStatusState>,
+    frd_focus_events_this_hour: BTreeMap<u32, Vec<FrdFocusDepthEventState>>,
+    frd_decision_events_this_hour: BTreeMap<u32, Vec<FrdDecisionEventState>>,
+    frd_depth_badges_this_hour: Vec<FrdDepthBadgeState>,
+    /// D51 scripted state accumulators. Country/state scoped leaves are stored
+    /// in the shared `countries`/`states` objects and cleared by D51 only.
+    scripted_world_flags: BTreeMap<String, ScriptFlagState>,
+    scripted_world_variables: BTreeMap<String, f64>,
+    scripted_world_token_only_flags: BTreeMap<u32, ScriptFlagState>,
+    scripted_world_opaque_badges: Vec<ScriptedOpaqueBadgeState>,
+    /// Chunk2 order-of-battle/design/air accumulators. These remain domain-owned
+    /// internally and are merged into shared snapshot sections only at build time.
+    army_orders: BTreeMap<ArmyOrderKey, ArmyOrderState>,
+    oob_commands: BTreeMap<OobCommandKey, OobCommandState>,
+    ships: BTreeMap<u32, ShipState>,
+    /// D56 R2-projected naval task-force status annotations. D28 owns OOB
+    /// existence; D56 only annotates validated task-force status under
+    /// `order_of_battle.extra.naval_missions_status_live`.
+    naval_missions_status: BTreeMap<u32, NavalMissionTaskForceFoldRow>,
+    air_wings: BTreeMap<AirWingKey, AirWingState>,
+    air_wing_loadouts: BTreeMap<AirWingKey, AirWingLoadoutState>,
+    /// D32 loadout keys touched this hour or invalidated by a D30 delete. At
+    /// hour close these are checked against D30-owned wing existence and pruned
+    /// once if proven orphaned, so stale loadouts cannot resurrect later wings.
+    air_wing_loadout_orphan_check_keys_this_hour: BTreeSet<AirWingKey>,
+    air_region_activity: BTreeMap<AirRegionActivityKey, AirRegionActivityState>,
+    air_base_status: BTreeMap<u32, AirBaseStatusState>,
+    air_variant_defs: BTreeMap<u32, VariantDefState>,
+    air_variant_stats: BTreeMap<u32, AirVariantStatsState>,
+    air_variant_upgrades: BTreeMap<u32, Vec<VariantUpgradeState>>,
+    air_variant_archetypes: BTreeMap<u32, AirVariantArchetypeState>,
+    stockpile_variant_defs: BTreeMap<u32, VariantDefState>,
+    stockpile_variant_upgrades: BTreeMap<u32, Vec<VariantUpgradeState>>,
+    air_variant_reserves: BTreeMap<AirVariantReserveKey, AirVariantReserveState>,
+    air_superiority_inputs: BTreeMap<AirSuperiorityInputKey, AirSuperiorityInputState>,
+    air_combat_losses_this_hour: Option<Vec<AirCombatLossState>>,
+    /// Successful stateful fold domains. Used to distinguish absent-never-seen
+    /// from a measured empty baseline when building schema containers.
+    successful_fold_domains_seen: BTreeSet<u16>,
+    /// Domains that were present this hour but unknown/fail-closed. Their
+    /// accumulators are retained, but owned leaves emit null for this snapshot.
+    fold_domains_unknown_this_hour: BTreeSet<u16>,
+    /// Whether this hour has a proven active-combat snapshot. Without one,
+    /// `combats` is emitted as null even though the carried state is retained
+    /// internally for the next proven full snapshot.
+    land_combats_known_this_hour: bool,
+    land_combats_unknown_note_this_hour: Option<String>,
+    /// tag_db_id -> TAG string from the country_identity domain (18); carried
+    /// across hours and full-replaced whenever a domain-18 record arrives. Used
+    /// at snapshot-build time to re-key country-valued fields by TAG.
+    tag_by_db_id: BTreeMap<u32, String>,
+    /// domains that fed at least one row this hour (ordered, deduped)
+    domains_this_hour: Vec<u16>,
+    /// decoded domain data records received this hour that are not folded into
+    /// the snapshot shape yet.
+    unfolded_domains_this_hour: BTreeSet<u16>,
+    /// per-hour domain problems that should be machine-visible in provenance.
+    domain_problems_this_hour: Vec<DomainProblem>,
+    /// per-hour fail-closed notes (decode issues that skipped a domain fold)
+    notes_this_hour: Vec<String>,
+    /// Delta-capable domains that have successfully applied a full baseline.
+    delta_baselines_seen: BTreeSet<u16>,
+    /// Domain 20 was explicitly unknown for this hour; keep the accumulator for
+    /// future deltas, but emit null for the affected snapshot.
+    divisions_unknown_this_hour: bool,
+    /// Domain 22 was explicitly unknown for this hour; keep the accumulator for
+    /// future deltas, but emit null for the affected snapshot.
+    map_control_unknown_this_hour: bool,
+    /// Domain 52 was explicitly unknown for this hour; keep the accumulator for
+    /// future deltas, but emit null for affected occupation fields.
+    occupation_unknown_this_hour: bool,
+    /// Domain 23 was explicitly unknown for this hour; keep the accumulator for
+    /// future deltas, but emit null for affected map-detail fields.
+    map_detail_unknown_this_hour: bool,
+    /// Domain 44 was explicitly unknown for this hour; keep the accumulator, but
+    /// emit null for affected supply fields.
+    supply_unknown_this_hour: bool,
+    /// Domain 43 was explicitly unknown for this hour; keep the accumulator, but
+    /// emit null for trade contract fields.
+    market_trade_unknown_this_hour: bool,
+    /// DOMAIN_DATA records dropped because their hour was already finalized.
+    late_records_dropped_since_last_snapshot: BTreeMap<i64, usize>,
+    /// finished snapshots: (hour_index, date, json_bytes)
+    out: Vec<(i64, String, Vec<u8>)>,
+    /// hours already emitted, to reject a duplicate FRAME_END for a game hour
+    /// (the game campaign hour counts are small enough that this remains bounded).
+    emitted_hours: BTreeSet<i64>,
+}
+
+#[derive(Default, Clone)]
+struct Domain53CountryOverlay {
+    country: Option<diplomacy53::compact::CountryDiplomacyRow>,
+    opinions: Vec<diplomacy53::compact::OpinionRow>,
+    relation_flags: Vec<diplomacy53::compact::RelationFlagRow>,
+    agency: Option<diplomacy53::compact::AgencyRow>,
+    agency_capacity: Option<diplomacy53::compact::AgencyCapacityClusterRow>,
+    operatives: Vec<diplomacy53::compact::OperativeRow>,
+    cryptology: Vec<diplomacy53::compact::CryptologyRow>,
+    state_events: Vec<diplomacy53::compact::StateEventRow>,
+}
+
+#[derive(Default, Clone)]
+struct Domain53WorldOverlay {
+    status_flags: u32,
+    wars: Vec<diplomacy53::compact::WarRelationRow>,
+    subjects: Vec<diplomacy53::compact::SubjectRow>,
+}
+
+impl WorldFold {
+    pub fn new(game_id: impl Into<String>) -> Self {
+        WorldFold {
+            game_id: game_id.into(),
+            countries: BTreeMap::new(),
+            states: BTreeMap::new(),
+            provinces: BTreeMap::new(),
+            map_control_states: BTreeMap::new(),
+            map_control_provinces: BTreeMap::new(),
+            divisions: BTreeMap::new(),
+            division_equipment: BTreeMap::new(),
+            division_equipment_touched_this_hour: BTreeSet::new(),
+            division_equipment_deleted_division_keys_this_hour: BTreeSet::new(),
+            combats: BTreeMap::new(),
+            combat_detail_events_this_hour: BTreeMap::new(),
+            map_detail_province_state_ids: BTreeMap::new(),
+            map_detail_province_buildings: BTreeMap::new(),
+            map_detail_live: None,
+            domain48_known_this_hour: false,
+            domain48_unknown_this_hour: false,
+            domain53_known_this_hour: false,
+            domain53_country_overlays_this_hour: BTreeMap::new(),
+            domain53_world_overlay_this_hour: Domain53WorldOverlay::default(),
+            market_trade_contracts: None,
+            supply: None,
+            weather_live: None,
+            special_projects: None,
+            frd_focus_metrics: BTreeMap::new(),
+            frd_research_live: BTreeMap::new(),
+            frd_decision_status: BTreeMap::new(),
+            frd_focus_events_this_hour: BTreeMap::new(),
+            frd_decision_events_this_hour: BTreeMap::new(),
+            frd_depth_badges_this_hour: Vec::new(),
+            scripted_world_flags: BTreeMap::new(),
+            scripted_world_variables: BTreeMap::new(),
+            scripted_world_token_only_flags: BTreeMap::new(),
+            scripted_world_opaque_badges: Vec::new(),
+            army_orders: BTreeMap::new(),
+            oob_commands: BTreeMap::new(),
+            ships: BTreeMap::new(),
+            naval_missions_status: BTreeMap::new(),
+            air_wings: BTreeMap::new(),
+            air_wing_loadouts: BTreeMap::new(),
+            air_wing_loadout_orphan_check_keys_this_hour: BTreeSet::new(),
+            air_region_activity: BTreeMap::new(),
+            air_base_status: BTreeMap::new(),
+            air_variant_defs: BTreeMap::new(),
+            air_variant_stats: BTreeMap::new(),
+            air_variant_upgrades: BTreeMap::new(),
+            air_variant_archetypes: BTreeMap::new(),
+            stockpile_variant_defs: BTreeMap::new(),
+            stockpile_variant_upgrades: BTreeMap::new(),
+            air_variant_reserves: BTreeMap::new(),
+            air_superiority_inputs: BTreeMap::new(),
+            air_combat_losses_this_hour: None,
+            successful_fold_domains_seen: BTreeSet::new(),
+            fold_domains_unknown_this_hour: BTreeSet::new(),
+            land_combats_known_this_hour: false,
+            land_combats_unknown_note_this_hour: None,
+            tag_by_db_id: BTreeMap::new(),
+            domains_this_hour: Vec::new(),
+            unfolded_domains_this_hour: BTreeSet::new(),
+            domain_problems_this_hour: Vec::new(),
+            notes_this_hour: Vec::new(),
+            delta_baselines_seen: BTreeSet::new(),
+            divisions_unknown_this_hour: false,
+            map_control_unknown_this_hour: false,
+            occupation_unknown_this_hour: false,
+            map_detail_unknown_this_hour: false,
+            supply_unknown_this_hour: false,
+            market_trade_unknown_this_hour: false,
+            late_records_dropped_since_last_snapshot: BTreeMap::new(),
+            out: Vec::new(),
+            emitted_hours: BTreeSet::new(),
+        }
+    }
+
+    /// Walk a whole compact stream, folding every DOMAIN_DATA record and
+    /// snapshotting on every FRAME_END. Malformed framing stops the walk (the
+    /// recorder's `summarize_compact_stream` already reports framing errors).
+    pub fn ingest_stream(&mut self, raw: &[u8]) {
+        let mut offset = 0usize;
+        while offset < raw.len() {
+            let remaining = raw.len() - offset;
+            if remaining < COMPACT_RECORD_HEADER_LEN {
+                break;
+            }
+            let header = &raw[offset..offset + COMPACT_RECORD_HEADER_LEN];
+            if &header[0..4] != COMPACT_RECORD_MAGIC {
+                break;
+            }
+            if read_u16(header, 4) != COMPACT_RECORD_VERSION {
+                break;
+            }
+            let header_len = read_u16(header, 6) as usize;
+            if header_len != COMPACT_RECORD_HEADER_LEN {
+                break;
+            }
+            let game_hour_raw = read_i32(header, 16);
+            let domain_id = read_u16(header, 20);
+            let record_type = read_u16(header, 22);
+            let payload_len = read_u32(header, 24) as usize;
+            let record_len = COMPACT_RECORD_HEADER_LEN.saturating_add(payload_len);
+            if record_len > remaining {
+                break;
+            }
+            let payload = &raw[offset + COMPACT_RECORD_HEADER_LEN..offset + record_len];
+            if record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
+                if self.record_is_for_finalized_hour(game_hour_raw) {
+                    self.record_late_domain_data(game_hour_raw);
+                } else {
+                    self.apply_domain_data(domain_id, payload);
+                }
+            } else if record_type == COMPACT_RECORD_TYPE_FRAME_END {
+                self.finish_hour(game_hour_raw);
+            }
+            offset += record_len;
+        }
+    }
+
+    fn note(&mut self, msg: impl Into<String>) {
+        self.notes_this_hour.push(msg.into());
+    }
+
+    fn mark_domain(&mut self, domain_id: u16) {
+        if !self.domains_this_hour.contains(&domain_id) {
+            self.domains_this_hour.push(domain_id);
+        }
+    }
+
+    fn record_domain_problem(&mut self, domain_id: u16, problem: &'static str) {
+        if !self
+            .domain_problems_this_hour
+            .iter()
+            .any(|entry| entry.domain_id == domain_id && entry.problem == problem)
+        {
+            self.domain_problems_this_hour
+                .push(DomainProblem { domain_id, problem });
+        }
+    }
+
+    fn mark_fold_domain_success(&mut self, domain_id: u16) {
+        self.successful_fold_domains_seen.insert(domain_id);
+    }
+
+    fn mark_fold_domain_unknown(
+        &mut self,
+        domain_id: u16,
+        problem: &'static str,
+        note: impl Into<String>,
+    ) {
+        self.fold_domains_unknown_this_hour.insert(domain_id);
+        self.record_domain_problem(domain_id, problem);
+        self.note(note);
+    }
+
+    fn fold_domain_unknown(&self, domain_id: u16) -> bool {
+        self.fold_domains_unknown_this_hour.contains(&domain_id)
+    }
+
+    fn fold_domain_seen(&self, domain_id: u16) -> bool {
+        self.successful_fold_domains_seen.contains(&domain_id)
+    }
+
+    fn handle_compact_failure(
+        &mut self,
+        domain_id: u16,
+        domain_name: &'static str,
+        status_flags: u32,
+    ) -> bool {
+        if compact_status_is_failure(status_flags) {
+            self.mark_fold_domain_unknown(
+                domain_id,
+                "compact_status_failure",
+                format!("{domain_name} state unknown this hour; accumulator retained"),
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    fn reject_delta_before_baseline(
+        &mut self,
+        domain_id: u16,
+        domain_name: &'static str,
+        status_flags: u32,
+    ) -> bool {
+        if (status_flags & COMPACT_STATUS_DELTA_DATA) != 0
+            && !self.delta_baselines_seen.contains(&domain_id)
+        {
+            self.mark_fold_domain_unknown(
+                domain_id,
+                "delta_before_baseline",
+                format!(
+                    "{domain_name} delta_before_baseline; owned snapshot leaf unknown this hour"
+                ),
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    fn replace_or_sparse_after_first(&mut self, domain_id: u16, status_flags: u32) -> bool {
+        let delta = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
+        if delta || self.delta_baselines_seen.contains(&domain_id) {
+            true
+        } else {
+            self.delta_baselines_seen.insert(domain_id);
+            false
+        }
+    }
+
+    fn implicit_delta_baseline_or_sparse(&mut self, domain_id: u16) -> bool {
+        if self.delta_baselines_seen.insert(domain_id) {
+            false
+        } else {
+            true
+        }
+    }
+
+    fn record_is_for_finalized_hour(&self, game_hour_raw: i32) -> bool {
+        hour_index_from_raw(game_hour_raw)
+            .map(|hour_index| self.emitted_hours.contains(&hour_index))
+            .unwrap_or(false)
+    }
+
+    fn record_late_domain_data(&mut self, game_hour_raw: i32) {
+        if let Some(hour_index) = hour_index_from_raw(game_hour_raw) {
+            *self
+                .late_records_dropped_since_last_snapshot
+                .entry(hour_index)
+                .or_default() += 1;
+        }
+    }
+
+    fn reset_hour_state(&mut self) {
+        self.domains_this_hour.clear();
+        self.unfolded_domains_this_hour.clear();
+        self.domain_problems_this_hour.clear();
+        self.notes_this_hour.clear();
+        self.combat_detail_events_this_hour.clear();
+        self.air_combat_losses_this_hour = None;
+        self.air_wing_loadout_orphan_check_keys_this_hour.clear();
+        self.division_equipment_touched_this_hour.clear();
+        self.division_equipment_deleted_division_keys_this_hour
+            .clear();
+        self.frd_focus_events_this_hour.clear();
+        self.frd_decision_events_this_hour.clear();
+        self.frd_depth_badges_this_hour.clear();
+        self.fold_domains_unknown_this_hour.clear();
+        self.land_combats_known_this_hour = false;
+        self.land_combats_unknown_note_this_hour = None;
+        self.divisions_unknown_this_hour = false;
+        self.map_control_unknown_this_hour = false;
+        self.occupation_unknown_this_hour = false;
+        self.map_detail_unknown_this_hour = false;
+        self.domain48_known_this_hour = false;
+        self.domain48_unknown_this_hour = false;
+        self.domain53_known_this_hour = false;
+        self.domain53_country_overlays_this_hour.clear();
+        self.domain53_world_overlay_this_hour = Domain53WorldOverlay::default();
+        self.supply_unknown_this_hour = false;
+        self.market_trade_unknown_this_hour = false;
+    }
+
+    /// Mutable country object for a tag_db_id, created empty on first use.
+    fn country_mut(&mut self, tag_db_id: u32) -> &mut Map<String, Value> {
+        self.countries.entry(tag_db_id.to_string()).or_default()
+    }
+
+    /// Resolve a numeric tag_db_id key ("47") to its TAG string ("GER"). Falls
+    /// back to the numeric key (recording the gap in `unresolved`) when the id is
+    /// not a parseable u32 or has no country_identity mapping. Never fabricates.
+    fn resolve_country_key(
+        &self,
+        numeric_key: &str,
+        unresolved: &mut std::collections::BTreeSet<u32>,
+    ) -> String {
+        match numeric_key.parse::<u32>() {
+            Ok(id) => match self.tag_by_db_id.get(&id) {
+                Some(tag) => tag.clone(),
+                None => {
+                    unresolved.insert(id);
+                    numeric_key.to_string()
+                }
+            },
+            // A non-numeric key is already a TAG (or otherwise resolved); pass through.
+            Err(_) => numeric_key.to_string(),
+        }
+    }
+
+    /// Rewrite a country-valued JSON string field ("47" -> "GER") in place. Null
+    /// or non-string values are left untouched; unmapped ids stay numeric and are
+    /// recorded in `unresolved`.
+    fn resolve_country_value(
+        &self,
+        value: Option<&mut Value>,
+        unresolved: &mut std::collections::BTreeSet<u32>,
+    ) {
+        if let Some(Value::String(s)) = value {
+            let resolved = self.resolve_country_key(s, unresolved);
+            *s = resolved;
+        }
+    }
+
+    fn resolve_country_fields(
+        &self,
+        country: &mut Map<String, Value>,
+        unresolved: &mut std::collections::BTreeSet<u32>,
+    ) {
+        if let Some(Value::Object(diplomacy)) = country.get_mut("diplomacy") {
+            if let Some(Value::Array(lend_lease)) = diplomacy.get_mut("lend_lease") {
+                self.resolve_contract_list(lend_lease, unresolved);
+            }
+        }
+    }
+
+    fn resolve_contract_list(
+        &self,
+        contracts: &mut [Value],
+        unresolved: &mut std::collections::BTreeSet<u32>,
+    ) {
+        for contract in contracts {
+            if let Value::Object(obj) = contract {
+                self.resolve_contract_fields(obj, unresolved);
+            }
+        }
+    }
+
+    fn resolve_contract_fields(
+        &self,
+        contract: &mut Map<String, Value>,
+        unresolved: &mut std::collections::BTreeSet<u32>,
+    ) {
+        for key in ["seller", "buyer", "counterpart", "delivery_country"] {
+            self.resolve_country_value(contract.get_mut(key), unresolved);
+        }
+    }
+
+    fn project_market_trade_lend_lease(
+        &self,
+        countries: &mut Map<String, Value>,
+        contracts: &[Value],
+        unknown: bool,
+        unresolved: &mut BTreeSet<u32>,
+    ) {
+        for contract in contracts {
+            let Value::Object(contract_obj) = contract else {
+                continue;
+            };
+            let Some(seller) = contract_obj.get("seller").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(buyer) = contract_obj.get("buyer").and_then(Value::as_str) else {
+                continue;
+            };
+            for (country_ref, counterpart, direction) in
+                [(seller, buyer, "outgoing"), (buyer, seller, "incoming")]
+            {
+                let country_key = self.resolve_country_key(country_ref, unresolved);
+                let country = countries
+                    .entry(country_key)
+                    .or_insert_with(|| Value::Object(Map::new()));
+                if !country.is_object() {
+                    *country = Value::Object(Map::new());
+                }
+                let Value::Object(country) = country else {
+                    unreachable!("country projection entry was just made object");
+                };
+                let diplomacy = ensure_json_object_mut(country, "diplomacy");
+                if unknown {
+                    diplomacy.insert("lend_lease".into(), Value::Null);
+                    continue;
+                }
+                let mut projection = contract_obj.clone();
+                projection.insert("direction".into(), json!(direction));
+                projection.insert("counterpart".into(), json!(counterpart));
+                projection.insert("r2_market_trade_projection".into(), json!(true));
+                ensure_json_array_mut(diplomacy, "lend_lease").push(Value::Object(projection));
+            }
+        }
+    }
+
+    fn resolve_occupation_fields(
+        &self,
+        state: &mut Map<String, Value>,
+        unresolved: &mut std::collections::BTreeSet<u32>,
+    ) {
+        if let Some(Value::Object(occupation)) = state.get_mut("occupation") {
+            for key in ["occupier_tag", "occupied_country_tag"] {
+                self.resolve_country_value(occupation.get_mut(key), unresolved);
+            }
+        }
+    }
+
+    fn resolve_supply_fields(
+        &self,
+        supply: &mut Map<String, Value>,
+        unresolved: &mut std::collections::BTreeSet<u32>,
+    ) {
+        let Some(Value::Object(by_province)) = supply.get_mut("by_province") else {
+            return;
+        };
+        for province in by_province.values_mut() {
+            let Value::Object(province) = province else {
+                continue;
+            };
+            let Some(Value::Array(divisions)) = province.get_mut("divisions") else {
+                continue;
+            };
+            for division in divisions {
+                if let Value::Object(division) = division {
+                    self.resolve_country_value(division.get_mut("owner"), unresolved);
+                }
+            }
+        }
+    }
+
+    fn build_divisions(&self, unresolved: &mut BTreeSet<u32>) -> (Vec<Value>, Vec<String>) {
+        let mut division_objects = self.divisions.clone();
+        let mut join_index: BTreeMap<DivisionEquipmentKey, Vec<String>> = BTreeMap::new();
+        for (uid, division) in &division_objects {
+            if let Some(key) = division_equipment_join_key(division) {
+                join_index.entry(key).or_default().push(uid.clone());
+            }
+        }
+
+        let mut unmatched_touched = 0usize;
+        let mut ambiguous_touched = 0usize;
+        if self.fold_domain_unknown(DIVISION_EQUIPMENT_DOMAIN_ID) {
+            if self.fold_domain_seen(DIVISION_EQUIPMENT_DOMAIN_ID)
+                || !self.division_equipment.is_empty()
+            {
+                for division in division_objects.values_mut() {
+                    division.insert("equipment".into(), Value::Null);
+                }
+            }
+        } else {
+            for (key, equipment) in &self.division_equipment {
+                match join_index.get(key).map(Vec::as_slice) {
+                    Some([uid]) => {
+                        if let Some(division) = division_objects.get_mut(uid) {
+                            division.insert(
+                                "equipment".into(),
+                                Value::Array(
+                                    equipment
+                                        .iter()
+                                        .map(DivisionEquipmentEntryState::to_json)
+                                        .collect(),
+                                ),
+                            );
+                        }
+                    }
+                    Some(matches) if matches.len() > 1 => {
+                        if self.division_equipment_touched_this_hour.contains(key) {
+                            ambiguous_touched = ambiguous_touched.saturating_add(1);
+                        }
+                    }
+                    _ => {
+                        if self.division_equipment_touched_this_hour.contains(key) {
+                            unmatched_touched = unmatched_touched.saturating_add(1);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut notes = Vec::new();
+        if unmatched_touched > 0 || ambiguous_touched > 0 {
+            notes.push(format!(
+                "division_equipment_live dropped {unmatched_touched} unmatched and {ambiguous_touched} ambiguous owner/division join row(s)"
+            ));
+        }
+
+        let divisions = division_objects
+            .values_mut()
+            .map(|out| {
+                self.resolve_country_value(out.get_mut("owner"), unresolved);
+                Value::Object(out.clone())
+            })
+            .collect();
+        (divisions, notes)
+    }
+
+    fn project_frd_annotations(
+        &self,
+        countries: &mut Map<String, Value>,
+        unresolved: &mut BTreeSet<u32>,
+    ) {
+        for (tag_db_id, metrics) in &self.frd_focus_metrics {
+            let country = ensure_country_projection_object(countries, self, *tag_db_id, unresolved);
+            let focus = ensure_json_object_mut(country, "focus");
+            // D12 owns the first-class focus fields. D45 provides an absent-only
+            // fallback for depth-only snapshots and always mirrors the value in
+            // R2 sidecars so ownership remains explicit.
+            if let Some(current) = &metrics.current {
+                focus.entry("current").or_insert_with(|| json!(current));
+                focus.insert("_r2_depth_current".into(), json!(current));
+            }
+            if let Some(current_continuous) = &metrics.current_continuous {
+                focus
+                    .entry("current_continuous")
+                    .or_insert_with(|| json!(current_continuous));
+                focus.insert(
+                    "_r2_depth_current_continuous".into(),
+                    json!(current_continuous),
+                );
+            }
+            if let Some(completed_count) = metrics.completed_count {
+                focus
+                    .entry("completed_count")
+                    .or_insert_with(|| json!(completed_count));
+                focus.insert("_r2_depth_completed_count".into(), json!(completed_count));
+            }
+            if !metrics.completed_tokens.is_empty() {
+                focus.insert(
+                    "_r2_depth_completed".into(),
+                    Value::Array(
+                        metrics
+                            .completed_tokens
+                            .iter()
+                            .map(|token| json!(token))
+                            .collect(),
+                    ),
+                );
+            }
+        }
+
+        for (tag_db_id, events) in &self.frd_focus_events_this_hour {
+            let country = ensure_country_projection_object(countries, self, *tag_db_id, unresolved);
+            ensure_json_object_mut(country, "focus").insert(
+                "_r2_depth_events".into(),
+                Value::Array(
+                    events
+                        .iter()
+                        .map(FrdFocusDepthEventState::to_json)
+                        .collect(),
+                ),
+            );
+        }
+
+        let mut research_by_tag: BTreeMap<u32, Vec<Value>> = BTreeMap::new();
+        for (key, row) in &self.frd_research_live {
+            research_by_tag
+                .entry(key.tag_db_id)
+                .or_default()
+                .push(row.to_json());
+        }
+        for (tag_db_id, rows) in research_by_tag {
+            let country = ensure_country_projection_object(countries, self, tag_db_id, unresolved);
+            ensure_json_object_mut(country, "research")
+                .insert("_r2_depth_in_progress_live".into(), Value::Array(rows));
+        }
+
+        for (tag_db_id, status) in &self.frd_decision_status {
+            let country = ensure_country_projection_object(countries, self, *tag_db_id, unresolved);
+            ensure_json_object_mut(country, "decisions")
+                .insert("_r2_depth_status".into(), status.to_json());
+        }
+        for (tag_db_id, events) in &self.frd_decision_events_this_hour {
+            let country = ensure_country_projection_object(countries, self, *tag_db_id, unresolved);
+            ensure_json_object_mut(country, "decisions").insert(
+                "_r2_depth_events".into(),
+                Value::Array(events.iter().map(FrdDecisionEventState::to_json).collect()),
+            );
+        }
+    }
+
+    fn build_world_value(&self) -> Value {
+        if self.fold_domain_unknown(SCRIPTED_STATE_DOMAIN_ID) {
+            if self.fold_domain_seen(SCRIPTED_STATE_DOMAIN_ID)
+                || !self.scripted_world_flags.is_empty()
+                || !self.scripted_world_variables.is_empty()
+                || !self.scripted_world_token_only_flags.is_empty()
+                || !self.scripted_world_opaque_badges.is_empty()
+            {
+                return json!({
+                    "flags": Value::Null,
+                    "variables": Value::Null,
+                    "_r2_token_only_flags": Value::Null,
+                    "_r2_scripted_state_badges": Value::Null,
+                });
+            }
+            return json!({});
+        }
+
+        let mut world = Map::new();
+        if self.fold_domain_seen(SCRIPTED_STATE_DOMAIN_ID) || !self.scripted_world_flags.is_empty()
+        {
+            world.insert(
+                "flags".into(),
+                Value::Object(script_flag_map_json(&self.scripted_world_flags)),
+            );
+        }
+        if self.fold_domain_seen(SCRIPTED_STATE_DOMAIN_ID)
+            || !self.scripted_world_variables.is_empty()
+        {
+            world.insert(
+                "variables".into(),
+                Value::Object(f64_map_json(&self.scripted_world_variables)),
+            );
+        }
+        if !self.scripted_world_token_only_flags.is_empty() {
+            world.insert(
+                "_r2_token_only_flags".into(),
+                Value::Object(token_flag_map_json(&self.scripted_world_token_only_flags)),
+            );
+        }
+        if !self.scripted_world_opaque_badges.is_empty() {
+            world.insert(
+                "_r2_scripted_state_badges".into(),
+                Value::Array(
+                    self.scripted_world_opaque_badges
+                        .iter()
+                        .map(ScriptedOpaqueBadgeState::to_json)
+                        .collect(),
+                ),
+            );
+        }
+        Value::Object(world)
+    }
+
+    fn build_special_projects_value(&self, unresolved: &mut BTreeSet<u32>) -> Value {
+        if self.fold_domain_unknown(SPECIAL_PROJECTS_DOMAIN_ID) {
+            return Value::Null;
+        }
+        self.special_projects
+            .as_ref()
+            .map(|projects| projects.to_json(self, unresolved))
+            .unwrap_or(Value::Null)
+    }
+
+    fn apply_domain_data(&mut self, domain_id: u16, payload: &[u8]) {
+        let result = match domain_id {
+            10 => self.fold_fuel(payload),
+            11 => self.fold_production(payload),
+            12 => self.fold_focus(payload),
+            13 => self.fold_tech(payload),
+            14 => self.fold_politics(payload),
+            15 => self.fold_politics_residuals(payload),
+            16 => self.fold_decisions(payload),
+            17 => self.fold_diplomacy(payload),
+            18 => self.fold_country_identity(payload),
+            20 => self.fold_divisions(payload),
+            21 => self.fold_land_combats(payload),
+            22 => self.fold_map_control(payload),
+            23 => self.fold_map_detail(payload),
+            24 => self.fold_weather(payload),
+            26 => self.fold_division_equipment(payload),
+            27 => self.fold_army_orders(payload),
+            28 => self.fold_oob_command(payload),
+            29 => self.fold_ships(payload),
+            30 => self.fold_air_wings(payload),
+            31 => self.fold_air_region_activity(payload),
+            32 => self.fold_air_wing_loadouts(payload),
+            33 => self.fold_air_variant_defs(payload, AIR_VARIANT_DEFS_DOMAIN_ID),
+            34 => self.fold_air_base_status(payload),
+            35 => self.fold_air_variant_stats(payload),
+            36 => self.fold_air_variant_reserves(payload),
+            37 => self.fold_air_variant_defs(payload, STOCKPILE_VARIANT_DEFS_DOMAIN_ID),
+            38 => self.fold_air_superiority_inputs(payload),
+            39 => self.fold_variant_upgrades(payload, AIR_VARIANT_UPGRADES_DOMAIN_ID),
+            40 => self.fold_variant_upgrades(payload, STOCKPILE_VARIANT_UPGRADES_DOMAIN_ID),
+            41 => self.fold_special_projects(payload),
+            42 => self.fold_air_combat_losses(payload),
+            43 => self.fold_market_trade(payload),
+            44 => self.fold_supply_logistics_attrition(payload),
+            45 => self.fold_focus_research_decisions_depth(payload),
+            46 => self.fold_air_variant_archetypes(payload),
+            47 => self.fold_characters_leaders_cabinet_live(payload),
+            48 => self.fold_construction_buildings_state_damage(payload),
+            51 => self.fold_scripted_state(payload),
+            52 => self.fold_occupation_resistance_compliance(payload),
+            53 => self.fold_diplomacy_intel_operatives(payload),
+            55 => self.fold_land_combat_detail_events(payload),
+            56 => self.fold_naval_missions_status(payload),
+            _ => {
+                self.unfolded_domains_this_hour.insert(domain_id);
+                return;
+            }
+        };
+        match result {
+            Ok(()) => self.mark_domain(domain_id),
+            Err(err) => self.note(format!("domain {domain_id} fold skipped: {err}")),
+        }
+    }
+
+    fn finish_hour(&mut self, game_hour_raw: i32) {
+        let Some(hour_index) = hour_index_from_raw(game_hour_raw) else {
+            // fail closed: an out-of-range game hour cannot key a snapshot
+            self.note(format!(
+                "frame_end skipped: game_hour_raw {game_hour_raw} out of range"
+            ));
+            self.reset_hour_state();
+            return;
+        };
+        if self.emitted_hours.contains(&hour_index) {
+            self.note(format!("frame_end duplicate for hour_index {hour_index}"));
+            self.reset_hour_state();
+            return;
+        }
+        let date = date_from_raw(game_hour_raw).unwrap_or_default();
+        self.prune_division_equipment_for_deleted_divisions_current_hour();
+        self.prune_air_wing_loadout_orphans_for_current_hour();
+        self.prepare_domain48_for_snapshot();
+        let snapshot = self.build_snapshot(hour_index, &date);
+        let bytes = serde_json::to_vec(&snapshot).expect("snapshot serializes");
+        self.out.push((hour_index, date, bytes));
+        self.emitted_hours.insert(hour_index);
+        self.late_records_dropped_since_last_snapshot.clear();
+        self.reset_hour_state();
+    }
+
+    fn prepare_domain48_for_snapshot(&mut self) {
+        if !self.domain48_known_this_hour {
+            self.clear_domain48_extras();
+        }
+        if self.domain48_unknown_this_hour {
+            self.note(
+                "construction_buildings_state_damage_live unknown this hour; domain extras omitted",
+            );
+        }
+    }
+
+    fn prune_division_equipment_for_deleted_divisions_current_hour(&mut self) {
+        if self
+            .division_equipment_deleted_division_keys_this_hour
+            .is_empty()
+            || !self.domains_this_hour.contains(&DIVISIONS_DOMAIN_ID)
+            || self.divisions_unknown_this_hour
+        {
+            return;
+        }
+
+        let mut dropped = 0usize;
+        for key in self
+            .division_equipment_deleted_division_keys_this_hour
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            if self.division_equipment.remove(&key).is_some() {
+                dropped = dropped.saturating_add(1);
+            }
+        }
+        if dropped > 0 {
+            self.note(format!(
+                "division_equipment_live pruned {dropped} row(s) after D20 division deletion"
+            ));
+        }
+    }
+
+    fn prune_air_wing_loadout_orphans_for_current_hour(&mut self) {
+        if self.air_wing_loadout_orphan_check_keys_this_hour.is_empty()
+            || !self.fold_domain_seen(AIR_WINGS_DOMAIN_ID)
+            || self.fold_domain_unknown(AIR_WINGS_DOMAIN_ID)
+        {
+            return;
+        }
+
+        let mut dropped = 0usize;
+        for key in self
+            .air_wing_loadout_orphan_check_keys_this_hour
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            if self.air_wings.contains_key(&key) {
+                continue;
+            }
+            if self.air_wing_loadouts.remove(&key).is_some() {
+                dropped = dropped.saturating_add(1);
+            }
+        }
+        if dropped > 0 {
+            self.note(format!(
+                "air_wing_loadouts dropped {dropped} orphan row(s) without a D30 air_wings owner row"
+            ));
+        }
+    }
+
+    fn build_snapshot(&self, hour_index: i64, date: &str) -> Value {
+        // Track every tag_db_id we key or reference this hour that has no TAG
+        // mapping, so we never claim full resolution when a gap exists.
+        let mut unresolved: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+        let have_map = !self.tag_by_db_id.is_empty();
+
+        // Countries: re-key numeric-id keys by TAG when resolvable. A country whose
+        // id has no mapping keeps its numeric key (never fabricate a TAG, §0.2).
+        let mut countries = Map::new();
+        for (numeric_key, obj) in &self.countries {
+            let key = self.resolve_country_key(numeric_key, &mut unresolved);
+            let mut out = obj.clone();
+            self.resolve_country_fields(&mut out, &mut unresolved);
+            if self.fold_domain_unknown(SCRIPTED_STATE_DOMAIN_ID) {
+                mask_scripted_country_extra(&mut out);
+            }
+            countries.insert(key, Value::Object(out));
+        }
+        if !self.fold_domain_unknown(FOCUS_RESEARCH_DECISIONS_DEPTH_DOMAIN_ID) {
+            self.project_frd_annotations(&mut countries, &mut unresolved);
+        }
+        if self.domain53_known_this_hour {
+            self.project_domain53_country_overlays(&mut countries, &mut unresolved);
+        }
+
+        // States: merge sibling-domain fields with D22-owned map-control fields.
+        // Unknown domains mask only their own fields, not the whole shared object.
+        let mut states = Map::new();
+        let state_keys: BTreeSet<String> = self
+            .states
+            .keys()
+            .chain(self.map_control_states.keys())
+            .cloned()
+            .collect();
+        for sid in state_keys {
+            let mut out = self.states.get(&sid).cloned().unwrap_or_default();
+            if let Some(map_control) = self.map_control_states.get(&sid) {
+                for key in ["owner", "controller"] {
+                    if let Some(value) = map_control.get(key) {
+                        out.insert(
+                            key.into(),
+                            if self.map_control_unknown_this_hour {
+                                Value::Null
+                            } else {
+                                value.clone()
+                            },
+                        );
+                    }
+                }
+            }
+            if !self.map_control_unknown_this_hour {
+                self.resolve_country_value(out.get_mut("owner"), &mut unresolved);
+                self.resolve_country_value(out.get_mut("controller"), &mut unresolved);
+            }
+            if self.occupation_unknown_this_hour {
+                if out.contains_key("occupation") {
+                    out.insert("occupation".into(), Value::Null);
+                }
+                if out.contains_key("occupation_law") {
+                    out.insert("occupation_law".into(), Value::Null);
+                }
+            } else {
+                self.resolve_occupation_fields(&mut out, &mut unresolved);
+            }
+            if self.map_detail_unknown_this_hour {
+                for key in ["resources", "buildings", "province_buildings"] {
+                    if out.contains_key(key) {
+                        out.insert(key.into(), Value::Null);
+                    }
+                }
+            }
+            if self.fold_domain_unknown(SCRIPTED_STATE_DOMAIN_ID) {
+                if out.contains_key("_r2_scripted_state") {
+                    out.insert("_r2_scripted_state".into(), Value::Null);
+                }
+            }
+            states.insert(sid, Value::Object(out));
+        }
+
+        // Provinces: merge sibling-domain fields with D22-owned map-control fields.
+        let mut provinces = Map::new();
+        let province_keys: BTreeSet<String> = self
+            .provinces
+            .keys()
+            .chain(self.map_control_provinces.keys())
+            .cloned()
+            .collect();
+        for pid in province_keys {
+            let mut out = self.provinces.get(&pid).cloned().unwrap_or_default();
+            if let Some(map_control) = self.map_control_provinces.get(&pid) {
+                for key in ["controller", "state_id"] {
+                    if let Some(value) = map_control.get(key) {
+                        out.insert(
+                            key.into(),
+                            if self.map_control_unknown_this_hour {
+                                Value::Null
+                            } else {
+                                value.clone()
+                            },
+                        );
+                    }
+                }
+            }
+            if !self.map_control_unknown_this_hour {
+                self.resolve_country_value(out.get_mut("controller"), &mut unresolved);
+            }
+            provinces.insert(pid, Value::Object(out));
+        }
+
+        // Divisions: merge D26 equipment only when owner/div_id joins exactly
+        // one live D20 division, then re-key owner country value by TAG.
+        let (divisions, division_equipment_notes) = self.build_divisions(&mut unresolved);
+        let (combats, dropped_detail_event_keys) = self.build_combats();
+
+        // map layer mirrors (raster-renderer convenience, §8), built from the
+        // already-resolved state/province objects so they carry TAG values too.
+        let mut owner_by_state = Map::new();
+        if !self.map_control_unknown_this_hour {
+            for (sid, obj) in states.iter() {
+                if let Some(owner) = obj.get("owner") {
+                    owner_by_state.insert(sid.clone(), owner.clone());
+                }
+            }
+        }
+        let mut control_by_province = Map::new();
+        if !self.map_control_unknown_this_hour {
+            for (pid, obj) in provinces.iter() {
+                if let Some(controller) = obj.get("controller") {
+                    control_by_province.insert(pid.clone(), controller.clone());
+                }
+            }
+        }
+
+        let mut diplomacy_world = Map::new();
+        diplomacy_world.insert("wars".into(), json!({}));
+        diplomacy_world.insert("factions".into(), json!({}));
+        diplomacy_world.insert("subjects".into(), json!([]));
+        if self.domain53_known_this_hour {
+            self.project_domain53_diplomacy_world(&mut diplomacy_world, &mut unresolved);
+        }
+        if self.market_trade_unknown_this_hour {
+            diplomacy_world.insert("trade_contracts".into(), Value::Null);
+            if let Some(contracts) = &self.market_trade_contracts {
+                self.project_market_trade_lend_lease(
+                    &mut countries,
+                    contracts,
+                    true,
+                    &mut unresolved,
+                );
+            }
+        } else if let Some(contracts) = &self.market_trade_contracts {
+            let mut contracts = contracts.clone();
+            self.resolve_contract_list(&mut contracts, &mut unresolved);
+            if !contracts.is_empty() {
+                self.project_market_trade_lend_lease(
+                    &mut countries,
+                    &contracts,
+                    false,
+                    &mut unresolved,
+                );
+                diplomacy_world.insert("trade_contracts".into(), Value::Array(contracts));
+            }
+        }
+
+        let supply_value = if self.supply_unknown_this_hour {
+            json!({
+                "by_province": Value::Null,
+                "source": Value::Null,
+                "confidence": Value::Null,
+                "r2_logistics_attrition": Value::Null,
+            })
+        } else if let Some(supply) = &self.supply {
+            let mut out = supply.clone();
+            self.resolve_supply_fields(&mut out, &mut unresolved);
+            Value::Object(out)
+        } else {
+            json!({})
+        };
+
+        let mut domains: Vec<Value> = self
+            .domains_this_hour
+            .iter()
+            .map(|id| json!(compact_contract::wire_name_for_id(*id).unwrap_or("unknown")))
+            .collect();
+        domains.sort_by(|a, b| a.as_str().unwrap_or("").cmp(b.as_str().unwrap_or("")));
+
+        let mut notes = self.notes_this_hour.clone();
+        notes.extend(division_equipment_notes);
+        if self.divisions_unknown_this_hour {
+            notes.push("divisions state unknown this hour; accumulator retained for the next valid baseline/delta".to_string());
+        }
+        if self.map_control_unknown_this_hour {
+            notes.push("map_control state unknown this hour; accumulator retained for the next valid baseline/delta".to_string());
+        }
+        if self.occupation_unknown_this_hour {
+            notes.push("occupation_resistance_compliance_live state unknown this hour; accumulator retained for the next valid baseline/delta".to_string());
+        }
+        if self.map_detail_unknown_this_hour {
+            notes.push("map_detail state unknown this hour; accumulator retained for the next valid baseline/delta".to_string());
+        }
+        if self.supply_unknown_this_hour {
+            notes.push("supply_logistics_attrition_live state unknown this hour; accumulator retained for the next valid frame".to_string());
+        }
+        if self.market_trade_unknown_this_hour {
+            notes.push("market_trade_live state unknown this hour; accumulator retained for the next valid frame".to_string());
+        }
+        if let Some(orphan_rows) = self
+            .naval_missions_status_orphan_rows()
+            .filter(|count| *count > 0)
+        {
+            notes.push(format!(
+                "naval_missions_status_live kept {orphan_rows} task-force status row(s) without a D28 OOB task-force owner row under order_of_battle.extra"
+            ));
+        }
+        if let Some(note) = &self.land_combats_unknown_note_this_hour {
+            notes.push(note.clone());
+        }
+        if !dropped_detail_event_keys.is_empty() {
+            let keys: Vec<String> = dropped_detail_event_keys
+                .iter()
+                .map(|(combat_id, generation)| format!("{combat_id}:{generation}"))
+                .collect();
+            notes.push(format!(
+                "land_combat_detail_events_live dropped for unknown active combat key(s): {}",
+                keys.join(",")
+            ));
+        }
+        if !self.late_records_dropped_since_last_snapshot.is_empty() {
+            let drops: Vec<String> = self
+                .late_records_dropped_since_last_snapshot
+                .iter()
+                .map(|(hour_index, count)| format!("{hour_index}:{count}"))
+                .collect();
+            notes.push(format!(
+                "late domain data records dropped for already-finalized hour(s): {}",
+                drops.join(",")
+            ));
+        }
+
+        let domain_problems: Vec<Value> = self
+            .domain_problems_this_hour
+            .iter()
+            .map(|problem| {
+                json!({
+                    "domain_id": problem.domain_id,
+                    "domain": domain_name(problem.domain_id),
+                    "problem": problem.problem,
+                })
+            })
+            .collect();
+        let unfolded_domains: Vec<Value> = self
+            .unfolded_domains_this_hour
+            .iter()
+            .map(|domain_id| domain_descriptor_json(*domain_id))
+            .collect();
+        let late_records_dropped: Vec<Value> = self
+            .late_records_dropped_since_last_snapshot
+            .iter()
+            .map(|(hour_index, count)| {
+                json!({
+                    "hour_index": hour_index,
+                    "count": count,
+                })
+            })
+            .collect();
+        let mut collector = Map::new();
+        collector.insert("captured".into(), json!(true));
+        collector.insert("backend".into(), json!("in_process_collector"));
+        collector.insert("domains".into(), Value::Array(domains));
+        collector.insert("domain_problems".into(), Value::Array(domain_problems));
+        collector.insert("unfolded_domains".into(), Value::Array(unfolded_domains));
+        collector.insert(
+            "late_records_dropped".into(),
+            Value::Array(late_records_dropped),
+        );
+        if !self.frd_depth_badges_this_hour.is_empty() {
+            collector.insert(
+                "_r2_depth_badges".into(),
+                Value::Array(
+                    self.frd_depth_badges_this_hour
+                        .iter()
+                        .map(FrdDepthBadgeState::to_json)
+                        .collect(),
+                ),
+            );
+        }
+
+        let divisions_value = if self.divisions_unknown_this_hour {
+            Value::Null
+        } else {
+            Value::Array(divisions)
+        };
+        let states_value = Value::Object(states);
+        let provinces_value = Value::Object(provinces);
+        let mut map = Map::new();
+        map.insert(
+            "owner_by_state".into(),
+            if self.map_control_unknown_this_hour {
+                Value::Null
+            } else {
+                Value::Object(owner_by_state)
+            },
+        );
+        map.insert(
+            "control_by_province".into(),
+            if self.map_control_unknown_this_hour {
+                Value::Null
+            } else {
+                Value::Object(control_by_province)
+            },
+        );
+        if self.map_detail_unknown_this_hour {
+            if self.map_detail_live.is_some() {
+                map.insert("map_detail_live".into(), Value::Null);
+            }
+        } else if let Some(layer) = &self.map_detail_live {
+            map.insert("map_detail_live".into(), layer.clone());
+        };
+        if self.fold_domain_unknown(WEATHER_DOMAIN_ID) {
+            if self.weather_live.is_some() || self.fold_domain_seen(WEATHER_DOMAIN_ID) {
+                map.insert("_r2_weather_live".into(), Value::Null);
+            }
+        } else if let Some(weather) = &self.weather_live {
+            map.insert("_r2_weather_live".into(), weather.to_json());
+        }
+        let map_value = Value::Object(map);
+        let order_of_battle_value = self.build_order_of_battle(&mut unresolved);
+        let designs_value = self.build_designs(&mut unresolved);
+        let naval_air_value = self.build_naval_air(&mut unresolved);
+        let strategic_air_value = self.build_strategic_air(&mut unresolved);
+        let world_value = self.build_world_value();
+        let special_projects_value = self.build_special_projects_value(&mut unresolved);
+
+        // resolved only when we have a map AND every keyed/referenced id
+        // resolved. Keep this after all section builders: OOB, designs, naval
+        // air, strategic air, and special projects can all add country refs.
+        let resolved = have_map && unresolved.is_empty();
+        let tag_db_id_index = if !have_map {
+            json!({
+                "resolved": false,
+                "key": "tag_db_id",
+                "reason": "no country_identity (domain 18) tag_db_id -> TAG map yet",
+            })
+        } else if resolved {
+            json!({ "resolved": true, "key": "tag" })
+        } else {
+            let gaps: Vec<String> = unresolved.iter().map(u32::to_string).collect();
+            json!({
+                "resolved": false,
+                "key": "tag",
+                "reason": format!(
+                    "country_identity map present but {} tag_db_id(s) unmapped; those keys stay numeric",
+                    gaps.len()
+                ),
+                "unresolved_tag_db_ids": gaps,
+            })
+        };
+        if have_map && !unresolved.is_empty() {
+            let gaps: Vec<String> = unresolved.iter().map(u32::to_string).collect();
+            notes.push(format!(
+                "tag_db_id -> TAG unresolved for {}: {}",
+                gaps.len(),
+                gaps.join(",")
+            ));
+        }
+
+        json!({
+            "schema_version": SCHEMA_VERSION,
+            "game_id": self.game_id,
+            "date": date,
+            "hour_index": hour_index,
+            "save_version": Value::Null,
+            "provenance": {
+                "collector": Value::Object(collector),
+                "mod": Value::Null,
+                "notes": notes,
+            },
+            "tag_db_id_index": tag_db_id_index,
+            "countries": Value::Object(countries),
+            "states": states_value,
+            "provinces": provinces_value,
+            "divisions": divisions_value,
+            "combats": combats,
+            "diplomacy_world": Value::Object(diplomacy_world),
+            "map": map_value,
+            "designs": designs_value,
+            "order_of_battle": order_of_battle_value,
+            "naval_air": naval_air_value,
+            "supply": supply_value,
+            "strategic_air": strategic_air_value,
+            "strategic_operatives": {},
+            "raids": {},
+            "world_events": {},
+            "special_projects": special_projects_value,
+            "world": world_value,
+            "events": [],
+        })
+    }
+
+    fn build_combats(&self) -> (Value, Vec<(u32, u64)>) {
+        if !self.land_combats_known_this_hour {
+            let dropped = self
+                .combat_detail_events_this_hour
+                .keys()
+                .copied()
+                .collect();
+            return (Value::Null, dropped);
+        }
+        let mut out = Vec::with_capacity(self.combats.len());
+        for combat in self.combats.values() {
+            let mut obj = Map::new();
+            obj.insert("combat_id".into(), json!(combat.combat_id));
+            obj.insert("kind".into(), json!("land"));
+            obj.insert("location_province".into(), option_u32_json(combat.location));
+            obj.insert("attackers".into(), option_u32_vec_json(&combat.attackers));
+            obj.insert("defenders".into(), option_u32_vec_json(&combat.defenders));
+            obj.insert("combat_width".into(), Value::Null);
+            obj.insert("terrain".into(), Value::Null);
+            obj.insert("progress".into(), Value::Null);
+            obj.insert("modifiers".into(), Value::Null);
+
+            if let Some(detail) = self
+                .combat_detail_events_this_hour
+                .get(&(combat.combat_id, combat.generation))
+            {
+                let mut detail_obj = Map::new();
+                if let Some(phase_event) = &detail.phase_event {
+                    detail_obj.insert("phase_event".into(), json!(phase_event));
+                }
+                if let Some(generation) = detail.generation {
+                    detail_obj.insert("generation".into(), json!(generation));
+                } else {
+                    detail_obj.insert("generation".into(), json!(combat.generation));
+                }
+                if let Some(location) = detail.location {
+                    detail_obj.insert("location_province".into(), json!(location));
+                }
+                if let Some(day) = detail.day {
+                    detail_obj.insert("age_days".into(), json!(day));
+                }
+                if let Some(duration) = detail.duration {
+                    detail_obj.insert("duration_days".into(), json!(duration));
+                }
+                if !detail.participant_events.is_empty() {
+                    detail_obj.insert(
+                        "participant_events".into(),
+                        Value::Array(detail.participant_events.clone()),
+                    );
+                }
+                if !detail_obj.is_empty() {
+                    obj.insert(
+                        "land_combat_detail_events_live".into(),
+                        Value::Object(detail_obj),
+                    );
+                }
+            }
+
+            out.push(Value::Object(obj));
+        }
+        let dropped = self
+            .combat_detail_events_this_hour
+            .keys()
+            .copied()
+            .filter(|(combat_id, generation)| {
+                !self
+                    .combats
+                    .get(combat_id)
+                    .is_some_and(|combat| combat.generation == *generation)
+            })
+            .collect();
+        (Value::Array(out), dropped)
+    }
+
+    fn country_ref_json(&self, tag_db_id: u32, unresolved: &mut BTreeSet<u32>) -> Value {
+        if tag_db_id == 0 {
+            Value::Null
+        } else {
+            json!(self.resolve_country_key(&tag_db_id.to_string(), unresolved))
+        }
+    }
+
+    fn project_domain53_country_overlays(
+        &self,
+        countries: &mut Map<String, Value>,
+        unresolved: &mut BTreeSet<u32>,
+    ) {
+        for (tag_db_id, overlay) in &self.domain53_country_overlays_this_hour {
+            let key = self.resolve_country_key(&tag_db_id.to_string(), unresolved);
+            let entry = countries
+                .entry(key)
+                .or_insert_with(|| Value::Object(Map::new()));
+            let Some(country) = entry.as_object_mut() else {
+                continue;
+            };
+
+            if overlay.country.is_some()
+                || !overlay.opinions.is_empty()
+                || !overlay.relation_flags.is_empty()
+            {
+                let diplomacy = ensure_json_object_mut(country, "diplomacy");
+                diplomacy.insert(
+                    DOMAIN53_EXTRA_KEY.into(),
+                    Value::Object(self.domain53_diplomacy_extra(overlay, unresolved)),
+                );
+            }
+            if overlay.agency.is_some()
+                || overlay.agency_capacity.is_some()
+                || !overlay.operatives.is_empty()
+                || !overlay.cryptology.is_empty()
+            {
+                let intel = ensure_json_object_mut(country, "intel");
+                intel.insert(
+                    DOMAIN53_EXTRA_KEY.into(),
+                    Value::Object(self.domain53_intel_extra(overlay, unresolved)),
+                );
+            }
+            if !overlay.state_events.is_empty() {
+                let extra = ensure_json_object_mut(country, "extra");
+                extra.insert(
+                    DOMAIN53_R2_KEY.into(),
+                    Value::Object(self.domain53_state_events_extra(overlay, unresolved)),
+                );
+            }
+        }
+    }
+
+    fn domain53_diplomacy_extra(
+        &self,
+        overlay: &Domain53CountryOverlay,
+        unresolved: &mut BTreeSet<u32>,
+    ) -> Map<String, Value> {
+        let mut out = Map::new();
+        if let Some(row) = &overlay.country {
+            out.insert("faction_group".into(), json!(row.faction_group));
+            out.insert("at_war_count".into(), json!(row.at_war_count));
+            out.insert("casualties".into(), json!(row.casualties));
+        }
+        if !overlay.opinions.is_empty() {
+            out.insert(
+                "opinion_rows".into(),
+                Value::Array(
+                    overlay
+                        .opinions
+                        .iter()
+                        .map(|row| {
+                            json!({
+                                "target": self.country_ref_json(row.target_tag_db_id, unresolved),
+                                "target_tag_db_id": row.target_tag_db_id,
+                                "opinion": row.opinion,
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        if !overlay.relation_flags.is_empty() {
+            out.insert(
+                "relation_flags".into(),
+                Value::Array(
+                    overlay
+                        .relation_flags
+                        .iter()
+                        .map(|row| {
+                            json!({
+                                "target": self.country_ref_json(row.target_tag_db_id, unresolved),
+                                "target_tag_db_id": row.target_tag_db_id,
+                                "flag_kind": row.flag_kind,
+                                "flag_name": domain53_relation_flag_name(row.flag_kind),
+                                "directed": row.directed,
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        out
+    }
+
+    fn domain53_intel_extra(
+        &self,
+        overlay: &Domain53CountryOverlay,
+        unresolved: &mut BTreeSet<u32>,
+    ) -> Map<String, Value> {
+        let mut out = Map::new();
+        if let Some(row) = &overlay.agency {
+            out.insert(
+                "agency_scalars".into(),
+                json!({
+                    "max_operatives_unresolved": row.max_operatives,
+                    "usable_slots_unresolved": row.usable_slots,
+                    "operative_count": row.operative_count,
+                    "cryptology_target_count": row.cryptology_target_count,
+                    "defense_raw": row.defense_raw,
+                    "upgrade_progress_raw": row.upgrade_progress_raw,
+                    "name_hash": row.name_hash,
+                    "icon_hash": row.icon_hash,
+                }),
+            );
+        }
+        if let Some(row) = &overlay.agency_capacity {
+            out.insert(
+                "raw_capacity_cluster".into(),
+                json!({
+                    "value_0xe4": row.value_0xe4,
+                    "value_0xf0": row.value_0xf0,
+                    "value_0xf4": row.value_0xf4,
+                    "proof_hash": row.proof_hash,
+                    "semantic_status": "raw_offsets_unresolved",
+                }),
+            );
+        }
+        if !overlay.operatives.is_empty() {
+            out.insert(
+                "operative_lifecycle_rows".into(),
+                Value::Array(
+                    overlay
+                        .operatives
+                        .iter()
+                        .map(|row| {
+                            json!({
+                                "op_id": row.op_id,
+                                "detected": row.detected,
+                                "captured_unvalidated": row.captured,
+                                "skill": row.skill,
+                                "experience_raw": row.experience_raw,
+                                "name_hash": row.name_hash,
+                                "state_hash": row.state_hash,
+                                "lifecycle_flag": row.lifecycle_flag,
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        if !overlay.cryptology.is_empty() {
+            out.insert(
+                "cryptology_targets".into(),
+                Value::Array(
+                    overlay
+                        .cryptology
+                        .iter()
+                        .map(|row| {
+                            json!({
+                                "target": self.country_ref_json(row.target_tag_db_id, unresolved),
+                                "target_tag_db_id": row.target_tag_db_id,
+                                "amount_raw": row.amount_raw,
+                                "decrypting": row.decrypting,
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        out
+    }
+
+    fn domain53_state_events_extra(
+        &self,
+        overlay: &Domain53CountryOverlay,
+        unresolved: &mut BTreeSet<u32>,
+    ) -> Map<String, Value> {
+        let mut out = Map::new();
+        out.insert(
+            "state_events".into(),
+            Value::Array(
+                overlay
+                    .state_events
+                    .iter()
+                    .map(|row| {
+                        json!({
+                            "target": row.target_tag_db_id.map(|tag| self.country_ref_json(tag, unresolved)),
+                            "target_tag_db_id": row.target_tag_db_id,
+                            "event_kind": row.event_kind,
+                            "source_kind": row.source_kind,
+                            "object_hash": row.object_hash,
+                            "value_hash": row.value_hash,
+                            "value_raw": row.value_raw,
+                        })
+                    })
+                    .collect(),
+            ),
+        );
+        out
+    }
+
+    fn project_domain53_diplomacy_world(
+        &self,
+        diplomacy_world: &mut Map<String, Value>,
+        unresolved: &mut BTreeSet<u32>,
+    ) {
+        let mut extra = Map::new();
+        extra.insert(
+            "status_flags".into(),
+            json!(self.domain53_world_overlay_this_hour.status_flags),
+        );
+        extra.insert(
+            "omitted_unresolved".into(),
+            json!([
+                "operation_detail_fixture_blocked",
+                "spy_network_intel_map_percentages_fixture_blocked",
+                "incoming_action_queues_fixture_blocked",
+                "war_lifecycle_semantics_unvalidated",
+                "agency_capacity_semantics_unresolved",
+                "operative_full_semantics_unvalidated"
+            ]),
+        );
+        if !self.domain53_world_overlay_this_hour.wars.is_empty() {
+            extra.insert(
+                "war_relation_rows".into(),
+                Value::Array(
+                    self.domain53_world_overlay_this_hour
+                        .wars
+                        .iter()
+                        .map(|row| {
+                            json!({
+                                "first": self.country_ref_json(row.first_tag_db_id, unresolved),
+                                "second": self.country_ref_json(row.second_tag_db_id, unresolved),
+                                "first_tag_db_id": row.first_tag_db_id,
+                                "second_tag_db_id": row.second_tag_db_id,
+                                "first_casualties": row.first_casualties,
+                                "second_casualties": row.second_casualties,
+                                "lifecycle_unvalidated": true,
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        if !self.domain53_world_overlay_this_hour.subjects.is_empty() {
+            extra.insert(
+                "subject_autonomy_rows".into(),
+                Value::Array(
+                    self.domain53_world_overlay_this_hour
+                        .subjects
+                        .iter()
+                        .map(|row| {
+                            json!({
+                                "overlord": self.country_ref_json(row.overlord_tag_db_id, unresolved),
+                                "subject": self.country_ref_json(row.subject_tag_db_id, unresolved),
+                                "overlord_tag_db_id": row.overlord_tag_db_id,
+                                "subject_tag_db_id": row.subject_tag_db_id,
+                                "autonomy_state_hash": row.autonomy_state_hash,
+                                "autonomy_ratio_raw": row.autonomy_ratio_raw,
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        diplomacy_world.insert(DOMAIN53_EXTRA_KEY.into(), Value::Object(extra));
+    }
+
+    fn build_order_of_battle(&self, unresolved: &mut BTreeSet<u32>) -> Value {
+        let mut out = Map::new();
+        let mut by_country: BTreeMap<String, OobCountryCounts> = BTreeMap::new();
+
+        if self.fold_domain_unknown(ARMY_ORDER_DOMAIN_ID) {
+            out.insert("battle_plan_orders".into(), Value::Null);
+        } else if self.fold_domain_seen(ARMY_ORDER_DOMAIN_ID) {
+            out.insert(
+                "battle_plan_orders".into(),
+                Value::Array(
+                    self.army_orders
+                        .values()
+                        .map(|order| {
+                            json!({
+                                "army": order.army_id,
+                                "order_instance": {
+                                    "type": order.order_type,
+                                    "states": order.target_states,
+                                    "_r2_army_order_capture": {
+                                        "generation": order.generation,
+                                        "slot_index": order.slot_index,
+                                        "target_state_declared_count": order.target_state_declared_count,
+                                        "target_status_code": order.target_status_code,
+                                    },
+                                },
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
+
+        if self.fold_domain_unknown(OOB_COMMAND_DOMAIN_ID) {
+            for key in ["army_groups", "armies", "fleets"] {
+                out.insert(key.into(), Value::Null);
+            }
+        } else if self.fold_domain_seen(OOB_COMMAND_DOMAIN_ID) {
+            let mut army_groups = Vec::new();
+            let mut armies = Vec::new();
+            let mut fleets: BTreeMap<u32, Map<String, Value>> = BTreeMap::new();
+            let mut task_forces_by_fleet: BTreeMap<u32, Vec<Value>> = BTreeMap::new();
+            for row in self.oob_commands.values() {
+                let owner = self.country_ref_json(row.owner_tag_db_id, unresolved);
+                if let Some(owner_key) = owner.as_str() {
+                    let counts = by_country.entry(owner_key.to_string()).or_default();
+                    match row.kind {
+                        OOB_KIND_ARMY => counts.armies = counts.armies.saturating_add(1),
+                        OOB_KIND_ARMY_GROUP => {
+                            counts.army_groups = counts.army_groups.saturating_add(1)
+                        }
+                        OOB_KIND_FLEET => counts.fleets = counts.fleets.saturating_add(1),
+                        OOB_KIND_TASK_FORCE => {
+                            counts.task_forces = counts.task_forces.saturating_add(1)
+                        }
+                        _ => {}
+                    }
+                }
+                let capture = json!({
+                    "kind": row.kind,
+                    "parent_status": row.parent_status,
+                    "member_status": row.member_status,
+                    "owner_status": row.owner_status,
+                    "leader_status": row.leader_status,
+                    "leader_trait_status": row.leader_trait_status,
+                    "logical_member_count": row.logical_member_count,
+                    "member_count_engine": row.member_count_engine,
+                    "missing_member_count": row.missing_member_count,
+                    "leader_trait_count": row.leader_trait_count,
+                    "location_province_id": row.location_province_id,
+                });
+                match row.kind {
+                    OOB_KIND_ARMY_GROUP => army_groups.push(json!({
+                        "id": row.object_id,
+                        "owner": owner,
+                        "leader": row.leader_id,
+                        "leader_skill": row.leader_skill,
+                        "army_refs": row.members,
+                        "_r2_oob_command_capture": capture,
+                    })),
+                    OOB_KIND_ARMY => armies.push(json!({
+                        "id": row.object_id,
+                        "owner": owner,
+                        "leader": row.leader_id,
+                        "leader_skill": row.leader_skill,
+                        "members": row.members,
+                        "member_count": row.logical_member_count,
+                        "field_marshal_group": row.parent_id,
+                        "_r2_oob_command_capture": capture,
+                    })),
+                    OOB_KIND_FLEET => {
+                        let mut fleet = Map::new();
+                        fleet.insert("id".into(), json!(row.object_id));
+                        fleet.insert("owner".into(), owner);
+                        fleet.insert(
+                            "leader".into(),
+                            row.leader_id.map_or(Value::Null, |id| json!(id)),
+                        );
+                        fleet.insert("_r2_oob_command_capture".into(), capture);
+                        fleets.insert(row.object_id, fleet);
+                    }
+                    OOB_KIND_TASK_FORCE => {
+                        let mut task_force = Map::new();
+                        task_force.insert("id".into(), json!(row.object_id));
+                        task_force.insert("owner".into(), owner);
+                        task_force.insert(
+                            "location_province".into(),
+                            row.location_province_id.map_or(Value::Null, |id| json!(id)),
+                        );
+                        if self.fold_domain_unknown(SHIPS_DOMAIN_ID) {
+                            task_force.insert("ships".into(), Value::Null);
+                        } else if self.fold_domain_seen(SHIPS_DOMAIN_ID) {
+                            task_force.insert(
+                                "ships".into(),
+                                Value::Array(
+                                    self.ships
+                                        .values()
+                                        .filter(|ship| ship.task_force_id == Some(row.object_id))
+                                        .map(|ship| self.ship_json(ship, unresolved))
+                                        .collect(),
+                                ),
+                            );
+                        }
+                        task_force.insert("_r2_oob_command_capture".into(), capture);
+                        task_forces_by_fleet
+                            .entry(row.parent_id.unwrap_or(0))
+                            .or_default()
+                            .push(Value::Object(task_force));
+                    }
+                    _ => {}
+                }
+            }
+            for (fleet_id, task_forces) in task_forces_by_fleet {
+                if fleet_id == 0 {
+                    continue;
+                }
+                fleets
+                    .entry(fleet_id)
+                    .or_insert_with(|| {
+                        let mut fleet = Map::new();
+                        fleet.insert("id".into(), json!(fleet_id));
+                        fleet
+                    })
+                    .insert("task_forces".into(), Value::Array(task_forces));
+            }
+            out.insert("army_groups".into(), Value::Array(army_groups));
+            out.insert("armies".into(), Value::Array(armies));
+            out.insert(
+                "fleets".into(),
+                Value::Array(fleets.into_values().map(Value::Object).collect()),
+            );
+        }
+
+        if self.fold_domain_unknown(SHIPS_DOMAIN_ID) {
+            out.insert("ships".into(), Value::Null);
+        } else if self.fold_domain_seen(SHIPS_DOMAIN_ID) {
+            let mut ships = Vec::new();
+            for ship in self.ships.values() {
+                if let Some(owner) = self.ship_owner_key(ship, unresolved) {
+                    let counts = by_country.entry(owner).or_default();
+                    counts.ships = counts.ships.saturating_add(1);
+                }
+                ships.push(self.ship_json(ship, unresolved));
+            }
+            out.insert("ships".into(), Value::Array(ships));
+        }
+
+        if self.fold_domain_unknown(AIR_WINGS_DOMAIN_ID) {
+            out.insert("air_wings".into(), Value::Null);
+        } else if self.fold_domain_seen(AIR_WINGS_DOMAIN_ID) {
+            let mut air_wings = Vec::new();
+            for key in self.air_wings.keys() {
+                let mut wing = Map::new();
+                wing.insert("id".into(), json!(key.wing_id));
+                wing.insert(
+                    "owner".into(),
+                    self.country_ref_json(key.owner_tag_db_id, unresolved),
+                );
+                let base = self
+                    .air_wings
+                    .get(key)
+                    .expect("iterating D30-owned air_wings keys");
+                wing.insert("count".into(), json!(base.count));
+                wing.insert("mission_type".into(), json!(base.mission_mask));
+                wing.insert(
+                    "strategic_region".into(),
+                    base.mission_region.map_or(Value::Null, |id| json!(id)),
+                );
+                wing.insert("effective_planes".into(), json!(base.effective_planes));
+                wing.insert(
+                    "_r2_air_wing_capture".into(),
+                    json!({
+                        "generation": base.generation,
+                        "mission_mask": base.mission_mask,
+                    }),
+                );
+                if let Some(owner) = self.air_wing_owner_key(key, unresolved) {
+                    let counts = by_country.entry(owner).or_default();
+                    counts.air_wings = counts.air_wings.saturating_add(1);
+                    counts.planes = counts.planes.saturating_add(base.count as u64);
+                }
+                if self.fold_domain_unknown(AIR_WING_LOADOUTS_DOMAIN_ID) {
+                    wing.insert("equipment".into(), Value::Null);
+                    wing.insert("_r2_air_wing_loadout".into(), Value::Null);
+                } else if let Some(loadout) = self.air_wing_loadouts.get(key) {
+                    wing.insert(
+                        "air_base".into(),
+                        loadout.air_base_id.map_or(Value::Null, |id| json!(id)),
+                    );
+                    wing.insert(
+                        "equipment".into(),
+                        Value::Array(
+                            loadout
+                                .equipment
+                                .iter()
+                                .map(|entry| {
+                                    json!([
+                                        entry.variant_id,
+                                        Value::Null,
+                                        entry.amount_raw as f64 / FIXED_SCALE
+                                    ])
+                                })
+                                .collect(),
+                        ),
+                    );
+                    wing.insert(
+                        "_r2_air_wing_loadout".into(),
+                        json!({
+                            "air_base_id": loadout.air_base_id,
+                            "equipment": loadout.equipment.iter().map(|entry| {
+                                json!({
+                                    "variant_id": entry.variant_id,
+                                    "amount_raw": entry.amount_raw,
+                                    "amount": entry.amount_raw as f64 / FIXED_SCALE,
+                                })
+                            }).collect::<Vec<_>>(),
+                        }),
+                    );
+                }
+                air_wings.push(Value::Object(wing));
+            }
+            out.insert("air_wings".into(), Value::Array(air_wings));
+        }
+
+        if !by_country.is_empty() {
+            out.insert(
+                "by_country".into(),
+                Value::Object(
+                    by_country
+                        .into_iter()
+                        .map(|(country, counts)| (country, counts.to_json()))
+                        .collect(),
+                ),
+            );
+        }
+
+        if self.fold_domain_unknown(NAVAL_MISSIONS_STATUS_DOMAIN_ID) {
+            ensure_json_object_mut(&mut out, "extra")
+                .insert("naval_missions_status_live".into(), Value::Null);
+        } else if self.fold_domain_seen(NAVAL_MISSIONS_STATUS_DOMAIN_ID) {
+            let naval_status = self.build_naval_missions_status_extra(unresolved);
+            ensure_json_object_mut(&mut out, "extra")
+                .insert("naval_missions_status_live".into(), naval_status);
+        }
+
+        Value::Object(out)
+    }
+
+    fn build_naval_missions_status_extra(&self, unresolved: &mut BTreeSet<u32>) -> Value {
+        let oob_join_checked = self.naval_missions_status_oob_join_checked();
+        let orphan_rows = self.naval_missions_status_orphan_rows().unwrap_or(0);
+        let mut rows = Vec::with_capacity(self.naval_missions_status.len());
+        for row in self.naval_missions_status.values() {
+            let oob_command_task_force_seen =
+                match self.naval_missions_status_oob_task_force_seen(row.task_force_id) {
+                    Some(seen) => json!(seen),
+                    None => Value::Null,
+                };
+            rows.push(json!({
+                "task_force_id": row.task_force_id,
+                "fleet_id": row.fleet_id,
+                "owner": self.country_ref_json(row.owner_tag_db_id, unresolved),
+                "owner_tag_db_id": row.owner_tag_db_id,
+                "location_province_id": option_u32_json(row.location_province_id),
+                "strategic_region_id": option_u32_json(row.strategic_region_id),
+                "mission_enum": option_u32_json(row.mission_enum),
+                "mission_state": option_u32_json(row.mission_state),
+                "home_base_province_id": option_u32_json(row.home_base_province_id),
+                "repair_base_province_id": option_u32_json(row.repair_base_province_id),
+                "repair_progress_milli": option_u32_json(row.repair_progress_milli),
+                "retreat_state": option_u32_json(row.retreat_state),
+                "sunk_convoys": option_u32_json(row.sunk_convoys),
+                "convoy_route_context_id": option_u32_json(row.convoy_route_context_id),
+                "fixture_required": row.fixture_required,
+                "active_battle_fixture_required": row.active_battle_fixture_required,
+                "source_status_flags": row.source_status,
+                "oob_command_task_force_seen": oob_command_task_force_seen,
+            }));
+        }
+        rows.sort_by(|a, b| {
+            let ak = (
+                a.get("owner_tag_db_id")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                a.get("fleet_id").and_then(Value::as_u64).unwrap_or(0),
+                a.get("task_force_id").and_then(Value::as_u64).unwrap_or(0),
+            );
+            let bk = (
+                b.get("owner_tag_db_id")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                b.get("fleet_id").and_then(Value::as_u64).unwrap_or(0),
+                b.get("task_force_id").and_then(Value::as_u64).unwrap_or(0),
+            );
+            ak.cmp(&bk)
+        });
+        json!({
+            "source": "C",
+            "confidence": "validated_slice",
+            "projection": "R2 order_of_battle.extra annotation",
+            "task_force_existence_owner_domain": "oob_command_live",
+            "ship_existence_owner_domain": "ships",
+            "task_force_count": rows.len(),
+            "validated_location_rows": rows.iter().filter(|row| row.get("location_province_id") != Some(&Value::Null)).count(),
+            "derived_region_rows": rows.iter().filter(|row| row.get("strategic_region_id") != Some(&Value::Null)).count(),
+            "fixture_required_rows": rows.iter().filter(|row| {
+                row.get("fixture_required").and_then(Value::as_bool).unwrap_or(false)
+                    || row.get("active_battle_fixture_required").and_then(Value::as_bool).unwrap_or(false)
+            }).count(),
+            "convoy_sunk_count_rows": rows.iter().filter(|row| row.get("sunk_convoys") != Some(&Value::Null)).count(),
+            "oob_command_join_checked": oob_join_checked,
+            "oob_command_orphan_rows": orphan_rows,
+            "task_forces": rows,
+        })
+    }
+
+    fn naval_missions_status_oob_join_checked(&self) -> bool {
+        self.fold_domain_seen(OOB_COMMAND_DOMAIN_ID)
+            && !self.fold_domain_unknown(OOB_COMMAND_DOMAIN_ID)
+    }
+
+    fn naval_missions_status_oob_task_force_seen(&self, task_force_id: u32) -> Option<bool> {
+        if !self.naval_missions_status_oob_join_checked() {
+            return None;
+        }
+        Some(self.oob_commands.contains_key(&OobCommandKey {
+            kind: OOB_KIND_TASK_FORCE,
+            object_id: task_force_id,
+        }))
+    }
+
+    fn naval_missions_status_orphan_rows(&self) -> Option<usize> {
+        if !self.fold_domain_seen(NAVAL_MISSIONS_STATUS_DOMAIN_ID)
+            || self.fold_domain_unknown(NAVAL_MISSIONS_STATUS_DOMAIN_ID)
+            || !self.naval_missions_status_oob_join_checked()
+        {
+            return None;
+        }
+        Some(
+            self.naval_missions_status
+                .keys()
+                .filter(|task_force_id| {
+                    self.naval_missions_status_oob_task_force_seen(**task_force_id) == Some(false)
+                })
+                .count(),
+        )
+    }
+
+    fn ship_owner_key(&self, ship: &ShipState, unresolved: &mut BTreeSet<u32>) -> Option<String> {
+        (ship.owner_tag_db_id != 0)
+            .then(|| self.resolve_country_key(&ship.owner_tag_db_id.to_string(), unresolved))
+    }
+
+    fn air_wing_owner_key(
+        &self,
+        key: &AirWingKey,
+        unresolved: &mut BTreeSet<u32>,
+    ) -> Option<String> {
+        (key.owner_tag_db_id != 0)
+            .then(|| self.resolve_country_key(&key.owner_tag_db_id.to_string(), unresolved))
+    }
+
+    fn ship_json(&self, ship: &ShipState, unresolved: &mut BTreeSet<u32>) -> Value {
+        json!({
+            "id": ship.instance_id,
+            "task_force": ship.task_force_id,
+            "definition": ship.definition,
+            "category": ship.category_enum,
+            "strength": ship.strength_raw as f64 / FIXED_SCALE,
+            "organisation": ship.organisation_raw as f64 / FIXED_SCALE,
+            "experience": ship.experience_raw as f64 / FIXED_SCALE,
+            "sunk_convoys": ship.sunk_convoys,
+            "_r2_ship_owner": {
+                "owner_tag_db_id": ship.owner_tag_db_id,
+                "owner": self.country_ref_json(ship.owner_tag_db_id, unresolved),
+            },
+        })
+    }
+
+    fn build_designs(&self, unresolved: &mut BTreeSet<u32>) -> Value {
+        let mut out = Map::new();
+        let mut live_variant_ids: BTreeSet<u32> = BTreeSet::new();
+        live_variant_ids.extend(self.air_variant_defs.keys().copied());
+        live_variant_ids.extend(self.air_variant_stats.keys().copied());
+        live_variant_ids.extend(self.air_variant_upgrades.keys().copied());
+        live_variant_ids.extend(self.air_variant_archetypes.keys().copied());
+        if !live_variant_ids.is_empty()
+            || self.fold_domain_unknown(AIR_VARIANT_DEFS_DOMAIN_ID)
+            || self.fold_domain_unknown(AIR_VARIANT_STATS_DOMAIN_ID)
+            || self.fold_domain_unknown(AIR_VARIANT_UPGRADES_DOMAIN_ID)
+            || self.fold_domain_unknown(AIR_VARIANT_ARCHETYPES_DOMAIN_ID)
+        {
+            if live_variant_ids.is_empty() {
+                out.insert("equipment_variants_live".into(), Value::Null);
+            } else {
+                let mut variants = Map::new();
+                for variant_id in live_variant_ids {
+                    let mut variant = Map::new();
+                    variant.insert("variant_id".into(), json!(variant_id));
+                    variant.insert("source".into(), json!("C"));
+                    if self.fold_domain_unknown(AIR_VARIANT_DEFS_DOMAIN_ID) {
+                        variant.insert("live_definition".into(), Value::Null);
+                    } else if let Some(definition) = self.air_variant_defs.get(&variant_id) {
+                        variant.insert("live_definition".into(), definition.to_json());
+                    }
+                    if self.fold_domain_unknown(AIR_VARIANT_STATS_DOMAIN_ID) {
+                        variant.insert("live_stats".into(), Value::Null);
+                    } else if let Some(stats) = self.air_variant_stats.get(&variant_id) {
+                        variant.insert("live_stats".into(), stats.to_json());
+                    }
+                    if self.fold_domain_unknown(AIR_VARIANT_UPGRADES_DOMAIN_ID) {
+                        variant.insert("upgrade_levels".into(), Value::Null);
+                    } else if let Some(upgrades) = self.air_variant_upgrades.get(&variant_id) {
+                        variant.insert(
+                            "upgrade_levels".into(),
+                            Value::Array(
+                                upgrades.iter().map(VariantUpgradeState::to_json).collect(),
+                            ),
+                        );
+                    }
+                    if self.fold_domain_unknown(AIR_VARIANT_ARCHETYPES_DOMAIN_ID) {
+                        variant.insert("archetype".into(), Value::Null);
+                        variant.insert("_r2_air_variant_archetypes".into(), Value::Null);
+                    } else if let Some(archetype) = self.air_variant_archetypes.get(&variant_id) {
+                        variant.insert(
+                            "archetype".into(),
+                            archetype
+                                .archetype_token
+                                .as_ref()
+                                .map(|value| json!(value))
+                                .unwrap_or(Value::Null),
+                        );
+                        variant.insert("_r2_air_variant_archetypes".into(), archetype.to_json());
+                    }
+                    variants.insert(variant_id.to_string(), Value::Object(variant));
+                }
+                out.insert("equipment_variants_live".into(), Value::Object(variants));
+            }
+        }
+
+        if self.fold_domain_unknown(STOCKPILE_VARIANT_DEFS_DOMAIN_ID) {
+            out.insert("_r2_stockpile_variant_defs".into(), Value::Null);
+        } else if self.fold_domain_seen(STOCKPILE_VARIANT_DEFS_DOMAIN_ID) {
+            out.insert(
+                "_r2_stockpile_variant_defs".into(),
+                Value::Object(
+                    self.stockpile_variant_defs
+                        .iter()
+                        .map(|(variant_id, definition)| {
+                            (variant_id.to_string(), definition.to_json())
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        if self.fold_domain_unknown(STOCKPILE_VARIANT_UPGRADES_DOMAIN_ID) {
+            out.insert("_r2_stockpile_variant_upgrades".into(), Value::Null);
+        } else if self.fold_domain_seen(STOCKPILE_VARIANT_UPGRADES_DOMAIN_ID) {
+            out.insert(
+                "_r2_stockpile_variant_upgrades".into(),
+                Value::Object(
+                    self.stockpile_variant_upgrades
+                        .iter()
+                        .map(|(variant_id, upgrades)| {
+                            (
+                                variant_id.to_string(),
+                                Value::Array(
+                                    upgrades.iter().map(VariantUpgradeState::to_json).collect(),
+                                ),
+                            )
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        if self.fold_domain_unknown(AIR_VARIANT_RESERVES_DOMAIN_ID) {
+            out.insert("_r2_air_variant_reserves".into(), Value::Null);
+        } else if self.fold_domain_seen(AIR_VARIANT_RESERVES_DOMAIN_ID) {
+            out.insert(
+                "_r2_air_variant_reserves".into(),
+                Value::Array(
+                    self.air_variant_reserves
+                        .values()
+                        .map(|reserve| {
+                            json!({
+                                "owner": self.country_ref_json(reserve.tag_db_id, unresolved),
+                                "tag_db_id": reserve.tag_db_id,
+                                "variant_id": reserve.variant_id,
+                                "amount": reserve.amount_raw as f64 / FIXED_SCALE,
+                                "amount_raw": reserve.amount_raw,
+                                "scale_raw": reserve.scale_raw,
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        Value::Object(out)
+    }
+
+    fn build_naval_air(&self, unresolved: &mut BTreeSet<u32>) -> Value {
+        let mut out = Map::new();
+        self.insert_air_region_activity(&mut out, unresolved);
+        self.insert_air_superiority_inputs(&mut out, unresolved);
+        self.insert_air_combat_losses(&mut out, unresolved);
+        Value::Object(out)
+    }
+
+    fn build_strategic_air(&self, unresolved: &mut BTreeSet<u32>) -> Value {
+        let mut out = Map::new();
+        if self.fold_domain_unknown(AIR_BASE_STATUS_DOMAIN_ID) {
+            out.insert("air_bases".into(), Value::Null);
+        } else if self.fold_domain_seen(AIR_BASE_STATUS_DOMAIN_ID) {
+            out.insert(
+                "air_bases".into(),
+                Value::Array(
+                    self.air_base_status
+                        .values()
+                        .map(|base| {
+                            json!({
+                                "id": base.air_base_id,
+                                "state": base.state_id,
+                                "capacity": base.capacity,
+                                "level": base.building_level,
+                                "_r2_air_base_status": {
+                                    "building_level": base.building_level,
+                                    "based_wing_count": base.based_wing_count,
+                                    "based_plane_count": base.based_plane_count,
+                                },
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        self.insert_air_region_activity(&mut out, unresolved);
+        self.insert_air_superiority_inputs(&mut out, unresolved);
+        self.insert_air_combat_losses(&mut out, unresolved);
+        Value::Object(out)
+    }
+
+    fn insert_air_region_activity(
+        &self,
+        out: &mut Map<String, Value>,
+        unresolved: &mut BTreeSet<u32>,
+    ) {
+        if self.fold_domain_unknown(AIR_REGION_ACTIVITY_DOMAIN_ID) {
+            out.insert("_r2_air_region_activity".into(), Value::Null);
+        } else if self.fold_domain_seen(AIR_REGION_ACTIVITY_DOMAIN_ID) {
+            out.insert(
+                "_r2_air_region_activity".into(),
+                Value::Array(
+                    self.air_region_activity
+                        .values()
+                        .map(|row| {
+                            json!({
+                                "region_id": row.region_id,
+                                "owner": self.country_ref_json(row.owner_tag_db_id, unresolved),
+                                "owner_tag_db_id": row.owner_tag_db_id,
+                                "mission_mask": row.mission_mask,
+                                "wing_count": row.wing_count,
+                                "plane_count": row.plane_count,
+                                "effective_planes": row.effective_planes,
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
+    }
+
+    fn insert_air_superiority_inputs(
+        &self,
+        out: &mut Map<String, Value>,
+        unresolved: &mut BTreeSet<u32>,
+    ) {
+        if self.fold_domain_unknown(AIR_SUPERIORITY_INPUTS_DOMAIN_ID) {
+            out.insert("_r2_air_superiority_inputs".into(), Value::Null);
+        } else if self.fold_domain_seen(AIR_SUPERIORITY_INPUTS_DOMAIN_ID) {
+            out.insert(
+                "_r2_air_superiority_inputs".into(),
+                Value::Array(
+                    self.air_superiority_inputs
+                        .values()
+                        .map(|row| {
+                            json!({
+                                "region_id": row.region_id,
+                                "owner": self.country_ref_json(row.owner_tag_db_id, unresolved),
+                                "owner_tag_db_id": row.owner_tag_db_id,
+                                "mission_mask": row.mission_mask,
+                                "variant_id": row.variant_id,
+                                "equipment_token_raw": row.equipment_token_raw,
+                                "equipment_type_token_raw": row.equipment_type_token_raw,
+                                "interface_type_raw": row.interface_type_raw,
+                                "wing_count": row.wing_count,
+                                "amount": row.amount_raw as f64 / FIXED_SCALE,
+                                "amount_raw": row.amount_raw,
+                                "scale_raw": row.scale_raw,
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
+    }
+
+    fn insert_air_combat_losses(
+        &self,
+        out: &mut Map<String, Value>,
+        unresolved: &mut BTreeSet<u32>,
+    ) {
+        if self.fold_domain_unknown(AIR_COMBAT_LOSSES_DOMAIN_ID) {
+            out.insert("_r2_air_combat_losses_live".into(), Value::Null);
+        } else if let Some(losses) = &self.air_combat_losses_this_hour {
+            out.insert(
+                "_r2_air_combat_losses_live".into(),
+                Value::Array(
+                    losses
+                        .iter()
+                        .map(|row| row.to_json(self, unresolved))
+                        .collect(),
+                ),
+            );
+        }
+    }
+
+    // --- DOMAIN 10 fuel_live (full each frame) ----------------------------
+    fn fold_fuel(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(payload, 24, "fuel header")?;
+        let row_count = read_u32(payload, 8) as usize;
+        let expected = 24 + row_count * 40;
+        if payload.len() != expected {
+            return Err(format!("fuel len {} != {expected}", payload.len()));
+        }
+        for i in 0..row_count {
+            let base = 24 + i * 40;
+            let tag_db_id = read_u32(payload, base);
+            if tag_db_id == 0 {
+                return Err("fuel row with zero tag_db_id".into());
+            }
+            let current = read_i64(payload, base + 8) as f64 / FUEL_SCALE;
+            let max = read_i64(payload, base + 16) as f64 / FUEL_SCALE;
+            let gain = read_i64(payload, base + 24) as f64 / FUEL_SCALE;
+            let cost = read_i64(payload, base + 32) as f64 / FUEL_SCALE;
+            let country = self.country_mut(tag_db_id);
+            country.insert(
+                "fuel".into(),
+                json!({ "current": current, "max": max, "gain": gain, "cost": cost }),
+            );
+        }
+        Ok(())
+    }
+
+    // --- DOMAIN 11 production_live (full each frame) -----------------------
+    fn fold_production(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(payload, 40, "production header")?;
+        let country_count = read_u32(payload, 8) as usize;
+        let stockpile_count = read_u32(payload, 24) as usize;
+        let military_count = read_u32(payload, 28) as usize;
+        let naval_count = read_u32(payload, 32) as usize;
+        let construction_count = read_u32(payload, 36) as usize;
+        let line_count = military_count + naval_count;
+        let expected = 40 + stockpile_count * 16 + line_count * 32 + construction_count * 32;
+        if payload.len() != expected {
+            return Err(format!("production len {} != {expected}", payload.len()));
+        }
+        let _ = country_count;
+
+        // clear any prior production block for every country we touch this frame
+        // by building fresh per-tag accumulators; full-replace semantics.
+        let mut per_tag: BTreeMap<u32, ProductionAccum> = BTreeMap::new();
+
+        let mut cursor = 40usize;
+        for _ in 0..stockpile_count {
+            let tag = read_u32(payload, cursor);
+            let variant_id = read_u32(payload, cursor + 4);
+            let amount = read_i64(payload, cursor + 8) as f64 / PRODUCTION_SCALE;
+            per_tag.entry(tag).or_default().stockpile.push(json!({
+                "id": variant_id.to_string(),
+                "amount": amount,
+            }));
+            cursor += 16;
+        }
+        for _ in 0..line_count {
+            let tag = read_u32(payload, cursor);
+            let kind = read_u32(payload, cursor + 4);
+            let line_id = read_i32(payload, cursor + 8);
+            let active_factories = read_i32(payload, cursor + 12);
+            let cost = read_i32(payload, cursor + 16) as f64 / PRODUCTION_SCALE;
+            let speed = read_i32(payload, cursor + 20) as f64 / PRODUCTION_SCALE;
+            let produced = read_i32(payload, cursor + 24) as f64 / PRODUCTION_SCALE;
+            let amount = read_i32(payload, cursor + 28);
+            let row = json!({
+                "id": line_id,
+                "active_factories": active_factories,
+                "cost": cost,
+                "speed": speed,
+                "produced": produced,
+                "amount": amount,
+            });
+            let accum = per_tag.entry(tag).or_default();
+            if kind == 2 {
+                accum.naval_lines.push(row);
+            } else {
+                accum.military_lines.push(row);
+            }
+            cursor += 32;
+        }
+        for _ in 0..construction_count {
+            let tag = read_u32(payload, cursor);
+            let line_id = read_u32(payload, cursor + 4);
+            let template_id = read_u32(payload, cursor + 8);
+            let active_factories = read_i32(payload, cursor + 12);
+            let cost = read_i32(payload, cursor + 16) as f64 / PRODUCTION_SCALE;
+            let produced = read_i32(payload, cursor + 20) as f64 / PRODUCTION_SCALE;
+            let priority = read_u32(payload, cursor + 24);
+            let mut row = Map::new();
+            row.insert("id".into(), json!(line_id.to_string()));
+            if template_id != u32::MAX {
+                row.insert("template_id".into(), json!(template_id));
+            }
+            row.insert("active_factories".into(), json!(active_factories));
+            row.insert("cost".into(), json!(cost));
+            row.insert("produced".into(), json!(produced));
+            row.insert("priority".into(), json!(priority));
+            per_tag
+                .entry(tag)
+                .or_default()
+                .construction_queue
+                .push(Value::Object(row));
+            cursor += 32;
+        }
+
+        for (tag, accum) in per_tag {
+            let country = self.country_mut(tag);
+            country.insert(
+                "production".into(),
+                json!({
+                    "stockpile": accum.stockpile,
+                    "military_lines": accum.military_lines,
+                    "naval_lines": accum.naval_lines,
+                    "construction_queue": accum.construction_queue,
+                }),
+            );
+        }
+        Ok(())
+    }
+
+    // --- DOMAIN 12 focus_live (full each frame) ---------------------------
+    fn fold_focus(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(payload, 28, "focus header")?;
+        let country_count = read_u32(payload, 8) as usize;
+        let completed_token_count = read_u32(payload, 24) as usize;
+        let mut cursor = 28usize;
+        // collect completed tokens per tag first pass is not possible (rows come
+        // after country rows), so read countries then completed tokens.
+        let mut per_tag: BTreeMap<u32, Map<String, Value>> = BTreeMap::new();
+        for _ in 0..country_count {
+            let tag = read_u32(payload, cursor);
+            let flags = read_u32(payload, cursor + 4);
+            let completed_count = read_u32(payload, cursor + 8);
+            let progress_raw = read_i32(payload, cursor + 12);
+            cursor += 16;
+            let focus_tree = read_string(payload, &mut cursor, "focus tree")?;
+            let current = read_string(payload, &mut cursor, "focus current")?;
+            let current_continuous = read_string(payload, &mut cursor, "focus current continuous")?;
+            let mut obj = Map::new();
+            obj.insert("focus_tree".into(), string_or_null(&focus_tree));
+            obj.insert(
+                "completed_count".into(),
+                if completed_count == u32::MAX {
+                    Value::Null
+                } else {
+                    json!(completed_count)
+                },
+            );
+            obj.insert("current".into(), string_or_null(&current));
+            obj.insert(
+                "current_continuous".into(),
+                string_or_null(&current_continuous),
+            );
+            // progress present only when flag bit 4 is set
+            if flags & (1 << 4) != 0 {
+                obj.insert("progress".into(), json!(progress_raw as f64 / FIXED_SCALE));
+            } else {
+                obj.insert("progress".into(), Value::Null);
+            }
+            obj.insert("completed".into(), json!([]));
+            per_tag.insert(tag, obj);
+        }
+        for _ in 0..completed_token_count {
+            let tag = read_u32(payload, cursor);
+            cursor += 4;
+            let token = read_string(payload, &mut cursor, "focus completed token")?;
+            if let Some(obj) = per_tag.get_mut(&tag) {
+                if let Some(Value::Array(list)) = obj.get_mut("completed") {
+                    list.push(json!(token));
+                }
+            }
+        }
+        for (tag, obj) in per_tag {
+            self.country_mut(tag)
+                .insert("focus".into(), Value::Object(obj));
+        }
+        Ok(())
+    }
+
+    // --- DOMAIN 13 tech_live (full each frame) ----------------------------
+    fn fold_tech(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(payload, 32, "tech header")?;
+        let country_count = read_u32(payload, 8) as usize;
+        let active_count = read_u32(payload, 28) as usize;
+        let expected = 32 + country_count * 16 + active_count * 40;
+        if payload.len() != expected {
+            return Err(format!("tech len {} != {expected}", payload.len()));
+        }
+        let mut cursor = 32usize;
+        let mut per_tag: BTreeMap<u32, Map<String, Value>> = BTreeMap::new();
+        for _ in 0..country_count {
+            let tag = read_u32(payload, cursor);
+            let completed = read_u32(payload, cursor + 8);
+            let slots = read_u32(payload, cursor + 12);
+            cursor += 16;
+            let mut obj = Map::new();
+            obj.insert("tech_count".into(), json!(completed));
+            obj.insert("research_slots".into(), json!(slots));
+            obj.insert("in_progress_live".into(), json!([]));
+            per_tag.insert(tag, obj);
+        }
+        for _ in 0..active_count {
+            let tag = read_u32(payload, cursor);
+            let slot_index = read_u32(payload, cursor + 4);
+            let tech_handle = read_u32(payload, cursor + 8);
+            let tech_def_index = read_u32(payload, cursor + 12);
+            let progress = read_i32(payload, cursor + 16) as f64 / TECH_PROGRESS_SCALE;
+            let live_progress = read_i64(payload, cursor + 24) as f64 / TECH_LIVE_SCALE;
+            let base_required = read_i64(payload, cursor + 32) as f64 / TECH_LIVE_SCALE;
+            cursor += 40;
+            let slot = json!({
+                "slot_index": slot_index,
+                "tech_handle": tech_handle,
+                "tech_def_index": tech_def_index,
+                "progress": progress,
+                "live_progress": live_progress,
+                "base_required_points": base_required,
+            });
+            if let Some(obj) = per_tag.get_mut(&tag) {
+                if let Some(Value::Array(list)) = obj.get_mut("in_progress_live") {
+                    list.push(slot);
+                }
+            }
+        }
+        for (tag, obj) in per_tag {
+            self.country_mut(tag)
+                .insert("research".into(), Value::Object(obj));
+        }
+        Ok(())
+    }
+
+    // --- DOMAIN 14 politics_live (full each frame) ------------------------
+    fn fold_politics(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(payload, 40, "politics header")?;
+        let country_count = read_u32(payload, 8) as usize;
+        let popularity_count = read_u32(payload, 24) as usize;
+        let law_count = read_u32(payload, 28) as usize;
+        let advisor_count = read_u32(payload, 32) as usize;
+        let spirit_count = read_u32(payload, 36) as usize;
+        let mut cursor = 40usize;
+        let mut per_tag: BTreeMap<u32, Map<String, Value>> = BTreeMap::new();
+        for _ in 0..country_count {
+            need(payload, cursor + 28, "politics country row")?;
+            let tag = read_u32(payload, cursor);
+            cursor += 28;
+            let ruling_party = read_string(payload, &mut cursor, "ruling_party")?;
+            let leader_name = read_string(payload, &mut cursor, "leader_name")?;
+            let leader_token = read_string(payload, &mut cursor, "leader_token")?;
+            let leader_ideology = read_string(payload, &mut cursor, "leader_ideology")?;
+            let mut obj = Map::new();
+            obj.insert("ruling_party".into(), string_or_null(&ruling_party));
+            obj.insert("leader_name".into(), string_or_null(&leader_name));
+            obj.insert("leader_token".into(), string_or_null(&leader_token));
+            obj.insert("leader_ideology".into(), string_or_null(&leader_ideology));
+            obj.insert("party_popularities".into(), json!({}));
+            obj.insert("laws".into(), json!({}));
+            obj.insert("appointed_advisors".into(), json!([]));
+            obj.insert("national_spirits".into(), json!([]));
+            per_tag.insert(tag, obj);
+        }
+        for _ in 0..popularity_count {
+            let tag = read_u32(payload, cursor);
+            cursor += 4;
+            let ideology = read_string(payload, &mut cursor, "popularity ideology")?;
+            let value = read_i32(payload, cursor) as f64 / FIXED_SCALE;
+            cursor += 4;
+            if let Some(obj) = per_tag.get_mut(&tag) {
+                if let Some(Value::Object(pop)) = obj.get_mut("party_popularities") {
+                    pop.insert(ideology, json!(value));
+                }
+            }
+        }
+        for _ in 0..law_count {
+            let tag = read_u32(payload, cursor);
+            cursor += 4;
+            let group = read_string(payload, &mut cursor, "law group")?;
+            let token = read_string(payload, &mut cursor, "law token")?;
+            if let Some(obj) = per_tag.get_mut(&tag) {
+                if let Some(Value::Object(laws)) = obj.get_mut("laws") {
+                    laws.insert(group, json!(token));
+                }
+            }
+        }
+        for _ in 0..advisor_count {
+            let tag = read_u32(payload, cursor);
+            cursor += 4;
+            let _group = read_string(payload, &mut cursor, "advisor group")?;
+            let token = read_string(payload, &mut cursor, "advisor token")?;
+            if let Some(obj) = per_tag.get_mut(&tag) {
+                if let Some(Value::Array(list)) = obj.get_mut("appointed_advisors") {
+                    list.push(json!(token));
+                }
+            }
+        }
+        for _ in 0..spirit_count {
+            let tag = read_u32(payload, cursor);
+            cursor += 4;
+            let token = read_string(payload, &mut cursor, "spirit token")?;
+            if let Some(obj) = per_tag.get_mut(&tag) {
+                if let Some(Value::Array(list)) = obj.get_mut("national_spirits") {
+                    list.push(json!(token));
+                }
+            }
+        }
+        for (tag, obj) in per_tag {
+            merge_into(self.country_mut(tag), "politics", obj);
+        }
+        Ok(())
+    }
+
+    // --- DOMAIN 15 politics_residuals (full each frame) -------------------
+    fn fold_politics_residuals(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(payload, 24, "politics residuals header")?;
+        let country_count = read_u32(payload, 8) as usize;
+        let advisor_detail_count = read_u32(payload, 20) as usize;
+        let mut cursor = 24usize;
+        let mut per_tag: BTreeMap<u32, Map<String, Value>> = BTreeMap::new();
+        for _ in 0..country_count {
+            need(payload, cursor + 16, "politics residuals country row")?;
+            let tag = read_u32(payload, cursor);
+            let _flags = read_u32(payload, cursor + 4);
+            let elections_allowed = read_u32(payload, cursor + 8);
+            cursor += 16;
+            let last_election = read_string(payload, &mut cursor, "last_election")?;
+            let mut obj = Map::new();
+            obj.insert("last_election".into(), string_or_null(&last_election));
+            obj.insert("elections_allowed".into(), json!(elections_allowed != 0));
+            obj.insert("appointed_advisor_details".into(), json!([]));
+            per_tag.insert(tag, obj);
+        }
+        for _ in 0..advisor_detail_count {
+            let tag = read_u32(payload, cursor);
+            cursor += 4;
+            let idea_token = read_string(payload, &mut cursor, "advisor idea_token")?;
+            let slot = read_string(payload, &mut cursor, "advisor slot")?;
+            let ledger = read_string(payload, &mut cursor, "advisor ledger")?;
+            let character = read_string(payload, &mut cursor, "advisor character")?;
+            let detail = json!({
+                "idea_token": idea_token,
+                "slot": slot,
+                "ledger": ledger,
+                "character": character,
+            });
+            if let Some(obj) = per_tag.get_mut(&tag) {
+                if let Some(Value::Array(list)) = obj.get_mut("appointed_advisor_details") {
+                    list.push(detail);
+                }
+            }
+        }
+        for (tag, obj) in per_tag {
+            merge_into(self.country_mut(tag), "politics", obj);
+        }
+        Ok(())
+    }
+
+    // --- DOMAIN 16 decisions_live (full each frame) -----------------------
+    fn fold_decisions(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(payload, 24, "decisions header")?;
+        let country_count = read_u32(payload, 8) as usize;
+        let timed_count = read_u32(payload, 20) as usize;
+        let mut cursor = 24usize;
+        let mut per_tag: BTreeMap<u32, Map<String, Value>> = BTreeMap::new();
+        for _ in 0..country_count {
+            need(payload, cursor + 32, "decisions country row")?;
+            let tag = read_u32(payload, cursor);
+            let _flags = read_u32(payload, cursor + 4);
+            let active_timed = read_u32(payload, cursor + 8);
+            let active_targeted = read_u32(payload, cursor + 12);
+            let active_targeted_timed = read_u32(payload, cursor + 16);
+            cursor += 32;
+            let mut obj = Map::new();
+            obj.insert(
+                "status_present".into(),
+                json!({
+                    "active_timed": active_timed,
+                    "active_targeted": active_targeted,
+                    "active_targeted_timed": active_targeted_timed,
+                }),
+            );
+            obj.insert("timed_live".into(), json!([]));
+            per_tag.insert(tag, obj);
+        }
+        for _ in 0..timed_count {
+            need(payload, cursor + 12, "decisions timed row")?;
+            let tag = read_u32(payload, cursor);
+            let days = read_i32(payload, cursor + 4);
+            let state = read_i32(payload, cursor + 8);
+            cursor += 12;
+            let decision = read_string(payload, &mut cursor, "timed decision_id")?;
+            let row = json!({ "decision": decision, "days": days, "state": state });
+            if let Some(obj) = per_tag.get_mut(&tag) {
+                if let Some(Value::Array(list)) = obj.get_mut("timed_live") {
+                    list.push(row);
+                }
+            }
+        }
+        for (tag, obj) in per_tag {
+            self.country_mut(tag)
+                .insert("decisions".into(), Value::Object(obj));
+        }
+        Ok(())
+    }
+
+    // --- DOMAIN 17 diplomacy_live (full each frame) -----------------------
+    fn fold_diplomacy(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(payload, 24, "diplomacy header")?;
+        let country_count = read_u32(payload, 8) as usize;
+        let relation_count = read_u32(payload, 20) as usize;
+        let mut cursor = 24usize;
+        let mut per_tag: BTreeMap<u32, Map<String, Value>> = BTreeMap::new();
+        for _ in 0..country_count {
+            need(payload, cursor + 24, "diplomacy country row")?;
+            let tag = read_u32(payload, cursor);
+            let _flags = read_u32(payload, cursor + 4);
+            let faction_group = read_i32(payload, cursor + 8);
+            let at_war_count = read_u32(payload, cursor + 12);
+            let casualties = read_i64(payload, cursor + 16);
+            cursor += 24;
+            let mut obj = Map::new();
+            obj.insert("faction_group".into(), json!(faction_group));
+            obj.insert("at_war_count".into(), json!(at_war_count));
+            obj.insert("casualties".into(), json!(casualties));
+            obj.insert("at_war_with".into(), json!([]));
+            per_tag.insert(tag, obj);
+        }
+        for _ in 0..relation_count {
+            need(payload, cursor + 16, "diplomacy at-war row")?;
+            let tag = read_u32(payload, cursor);
+            let token_len = read_u32(payload, cursor + 4) as usize;
+            let enemy = ascii8(&payload[cursor + 8..cursor + 16], token_len);
+            cursor += 16;
+            if let Some(obj) = per_tag.get_mut(&tag) {
+                if let Some(Value::Array(list)) = obj.get_mut("at_war_with") {
+                    list.push(json!(enemy));
+                }
+            }
+        }
+        for (tag, obj) in per_tag {
+            self.country_mut(tag)
+                .insert("diplomacy".into(), Value::Object(obj));
+        }
+        Ok(())
+    }
+
+    // --- DOMAIN 18 country_identity (full each frame) ----------------------
+    // Header: wall(u64) row_count(u32) changed(u32) status(u32).
+    // Rows: tag_db_id(u32) then a u16-length-prefixed UTF-8 TAG string.
+    fn fold_country_identity(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(payload, 20, "country_identity header")?;
+        let row_count = read_u32(payload, 8) as usize;
+        let status_flags = read_u32(payload, 16);
+        if compact_status_is_failure(status_flags) {
+            self.note(format!(
+                "country_identity failure status {:#x}; tag_db_id map unchanged this hour",
+                status_flags & COMPACT_STATUS_FAILURE_MASK
+            ));
+            return Ok(());
+        }
+        let mut cursor = 20usize;
+        let mut fresh: BTreeMap<u32, String> = BTreeMap::new();
+        for _ in 0..row_count {
+            need(payload, cursor + 4, "country_identity row tag_db_id")?;
+            let tag_db_id = read_u32(payload, cursor);
+            cursor += 4;
+            let tag = read_string(payload, &mut cursor, "country_identity tag")?;
+            if tag_db_id == 0 {
+                return Err("country_identity row with zero tag_db_id".into());
+            }
+            if tag.is_empty() {
+                return Err(format!("country_identity row {tag_db_id} with empty tag"));
+            }
+            fresh.insert(tag_db_id, tag);
+        }
+        if cursor != payload.len() {
+            return Err(format!(
+                "country_identity len {} != consumed {cursor}",
+                payload.len()
+            ));
+        }
+        // full-replace: the domain re-sends the complete live-country map each frame.
+        self.tag_by_db_id = fresh;
+        Ok(())
+    }
+
+    // --- DOMAIN 27 army_orders (full baseline + explicit delta) -----------
+    fn fold_army_orders(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(payload, ARMY_ORDER_HEADER_LEN, "army_orders header")?;
+        let row_count = read_u32(payload, 8) as usize;
+        let status_flags = read_u32(payload, 16);
+        let target_state_count = read_u32(payload, 32) as usize;
+        if self.handle_compact_failure(ARMY_ORDER_DOMAIN_ID, "army_orders", status_flags) {
+            return Ok(());
+        }
+        if self.reject_delta_before_baseline(ARMY_ORDER_DOMAIN_ID, "army_orders", status_flags) {
+            return Ok(());
+        }
+        let rows_end =
+            ARMY_ORDER_HEADER_LEN.saturating_add(row_count.saturating_mul(ARMY_ORDER_ROW_LEN));
+        let expected_len =
+            rows_end.saturating_add(target_state_count.saturating_mul(ARMY_ORDER_TARGET_ROW_LEN));
+        if payload.len() != expected_len {
+            return Err(format!(
+                "army_orders len {} != {expected_len}",
+                payload.len()
+            ));
+        }
+        let mut rows = Vec::with_capacity(row_count);
+        for index in 0..row_count {
+            let base = ARMY_ORDER_HEADER_LEN + index * ARMY_ORDER_ROW_LEN;
+            let flags = read_u32(payload, base + 12);
+            if flags & !ARMY_ORDER_KNOWN_FLAGS != 0 {
+                return Err("army_orders row has unknown flags".into());
+            }
+            let target_first = read_u32(payload, base + 24) as usize;
+            let target_count = read_u32(payload, base + 28) as usize;
+            if flags & ARMY_ORDER_ROW_FLAG_TARGET_STATES == 0
+                && (target_first != 0 || target_count != 0)
+            {
+                return Err("army_orders target range present without flag".into());
+            }
+            let target_end = target_first
+                .checked_add(target_count)
+                .ok_or_else(|| "army_orders target range overflow".to_string())?;
+            if target_end > target_state_count {
+                return Err(format!(
+                    "army_orders target range {target_first}+{target_count} exceeds {target_state_count}"
+                ));
+            }
+            let reserved0 = read_u32(payload, base + 40);
+            let reserved1 = read_u32(payload, base + 44);
+            if reserved0 != 0 || reserved1 != 0 {
+                return Err("army_orders row reserved field is nonzero".into());
+            }
+            rows.push(ArmyOrderRawRow {
+                army_id: read_u32(payload, base),
+                generation: read_u64(payload, base + 4),
+                flags,
+                slot_index: read_u32(payload, base + 16),
+                order_type: read_i32(payload, base + 20),
+                target_first,
+                target_count,
+                target_state_declared_count: read_u32(payload, base + 32),
+                target_status_code: read_u32(payload, base + 36),
+            });
+        }
+        let mut targets = Vec::with_capacity(target_state_count);
+        for index in 0..target_state_count {
+            let base = rows_end + index * ARMY_ORDER_TARGET_ROW_LEN;
+            let state_id = read_u32(payload, base);
+            let reserved = read_u32(payload, base + 4);
+            if reserved != 0 {
+                return Err("army_orders target reserved field is nonzero".into());
+            }
+            targets.push(state_id);
+        }
+        let sparse = self.replace_or_sparse_after_first(ARMY_ORDER_DOMAIN_ID, status_flags);
+        if !sparse {
+            self.army_orders.clear();
+        }
+        for row in rows {
+            let key = ArmyOrderKey {
+                army_id: row.army_id,
+                generation: row.generation,
+                slot_index: row.slot_index,
+            };
+            if row.flags & ROW_FLAG_DELETED_LOW_BIT != 0 {
+                self.army_orders.remove(&key);
+                continue;
+            }
+            let target_end = row.target_first + row.target_count;
+            self.army_orders.insert(
+                key,
+                ArmyOrderState {
+                    army_id: row.army_id,
+                    generation: row.generation,
+                    slot_index: row.slot_index,
+                    order_type: row.order_type,
+                    target_states: targets[row.target_first..target_end].to_vec(),
+                    target_state_declared_count: row.target_state_declared_count,
+                    target_status_code: row.target_status_code,
+                },
+            );
+        }
+        self.mark_fold_domain_success(ARMY_ORDER_DOMAIN_ID);
+        Ok(())
+    }
+
+    // --- DOMAIN 28 oob_command (full baseline + explicit delta) -----------
+    fn fold_oob_command(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(payload, OOB_COMMAND_HEADER_LEN, "oob_command header")?;
+        let row_count = read_u32(payload, 8) as usize;
+        let status_flags = read_u32(payload, 16);
+        let member_count = read_u32(payload, 32) as usize;
+        if self.handle_compact_failure(OOB_COMMAND_DOMAIN_ID, "oob_command", status_flags) {
+            return Ok(());
+        }
+        if self.reject_delta_before_baseline(OOB_COMMAND_DOMAIN_ID, "oob_command", status_flags) {
+            return Ok(());
+        }
+        let rows_end =
+            OOB_COMMAND_HEADER_LEN.saturating_add(row_count.saturating_mul(OOB_COMMAND_ROW_LEN));
+        let expected_len =
+            rows_end.saturating_add(member_count.saturating_mul(OOB_COMMAND_MEMBER_ROW_LEN));
+        if payload.len() != expected_len {
+            return Err(format!(
+                "oob_command len {} != {expected_len}",
+                payload.len()
+            ));
+        }
+        let mut rows = Vec::with_capacity(row_count);
+        for index in 0..row_count {
+            let base = OOB_COMMAND_HEADER_LEN + index * OOB_COMMAND_ROW_LEN;
+            let kind = read_u32(payload, base);
+            if !matches!(
+                kind,
+                OOB_KIND_ARMY | OOB_KIND_ARMY_GROUP | OOB_KIND_FLEET | OOB_KIND_TASK_FORCE
+            ) {
+                return Err("oob_command row has invalid kind".into());
+            }
+            let object_id = read_u32(payload, base + 4);
+            if object_id == 0 {
+                return Err("oob_command row has zero object_id".into());
+            }
+            let flags = read_u32(payload, base + 8);
+            if flags & !OOB_KNOWN_FLAGS != 0 {
+                return Err("oob_command row has unknown flags".into());
+            }
+            let member_first = read_u32(payload, base + 28) as usize;
+            let row_member_count = read_u32(payload, base + 32) as usize;
+            let member_end = member_first
+                .checked_add(row_member_count)
+                .ok_or_else(|| "oob_command member range overflow".to_string())?;
+            if member_end > member_count {
+                return Err(format!(
+                    "oob_command member range {member_first}+{row_member_count} exceeds {member_count}"
+                ));
+            }
+            let leader_skill = read_u32(payload, base + 24);
+            if flags & OOB_ROW_FLAG_LEADER_SKILL == 0 && leader_skill != 0 {
+                return Err("oob_command leader_skill present without flag".into());
+            }
+            let location = read_u32(payload, base + 72);
+            if flags & OOB_ROW_FLAG_LOCATION == 0 && location != 0 {
+                return Err("oob_command location present without flag".into());
+            }
+            let reserved = read_u32(payload, base + 76);
+            if reserved != 0 {
+                return Err("oob_command row reserved field is nonzero".into());
+            }
+            rows.push(OobCommandRawRow {
+                kind,
+                object_id,
+                flags,
+                parent_id: read_u32(payload, base + 12),
+                owner_tag_db_id: read_u32(payload, base + 16),
+                leader_id: read_u32(payload, base + 20),
+                leader_skill,
+                member_first,
+                row_member_count,
+                logical_member_count: read_u32(payload, base + 36),
+                member_count_engine: read_u32(payload, base + 40),
+                missing_member_count: read_u32(payload, base + 44),
+                leader_trait_count: read_u32(payload, base + 48),
+                parent_status: read_u32(payload, base + 52),
+                member_status: read_u32(payload, base + 56),
+                owner_status: read_u32(payload, base + 60),
+                leader_status: read_u32(payload, base + 64),
+                leader_trait_status: read_u32(payload, base + 68),
+                location_province_id: location,
+            });
+        }
+        let mut members = Vec::with_capacity(member_count);
+        for index in 0..member_count {
+            let base = rows_end + index * OOB_COMMAND_MEMBER_ROW_LEN;
+            let member_id = read_u32(payload, base);
+            let reserved = read_u32(payload, base + 4);
+            if reserved != 0 {
+                return Err("oob_command member reserved field is nonzero".into());
+            }
+            members.push(member_id);
+        }
+        let sparse = self.replace_or_sparse_after_first(OOB_COMMAND_DOMAIN_ID, status_flags);
+        if !sparse {
+            self.oob_commands.clear();
+        }
+        for row in rows {
+            let key = OobCommandKey {
+                kind: row.kind,
+                object_id: row.object_id,
+            };
+            if row.flags & ROW_FLAG_DELETED_LOW_BIT != 0 {
+                self.oob_commands.remove(&key);
+                continue;
+            }
+            let member_end = row.member_first + row.row_member_count;
+            self.oob_commands.insert(
+                key,
+                OobCommandState {
+                    kind: row.kind,
+                    object_id: row.object_id,
+                    parent_id: (row.flags & OOB_ROW_FLAG_PARENT != 0).then_some(row.parent_id),
+                    owner_tag_db_id: if row.flags & OOB_ROW_FLAG_OWNER != 0 {
+                        row.owner_tag_db_id
+                    } else {
+                        0
+                    },
+                    leader_id: (row.flags & OOB_ROW_FLAG_LEADER != 0).then_some(row.leader_id),
+                    leader_skill: (row.flags & OOB_ROW_FLAG_LEADER_SKILL != 0)
+                        .then_some(row.leader_skill),
+                    members: members[row.member_first..member_end].to_vec(),
+                    logical_member_count: row.logical_member_count,
+                    member_count_engine: (row.flags & OOB_ROW_FLAG_MEMBER_COUNT_ENGINE != 0)
+                        .then_some(row.member_count_engine),
+                    missing_member_count: (row.flags & OOB_ROW_FLAG_MISSING_MEMBER_COUNT != 0)
+                        .then_some(row.missing_member_count),
+                    leader_trait_count: row.leader_trait_count,
+                    parent_status: row.parent_status,
+                    member_status: row.member_status,
+                    owner_status: row.owner_status,
+                    leader_status: row.leader_status,
+                    leader_trait_status: row.leader_trait_status,
+                    location_province_id: (row.flags & OOB_ROW_FLAG_LOCATION != 0)
+                        .then_some(row.location_province_id),
+                },
+            );
+        }
+        self.mark_fold_domain_success(OOB_COMMAND_DOMAIN_ID);
+        Ok(())
+    }
+
+    // --- DOMAIN 29 ships (collector sparse after first, flag not set) -----
+    fn fold_ships(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(payload, SHIP_HEADER_LEN, "ships header")?;
+        let row_count = read_u32(payload, 8) as usize;
+        let changed_rows = read_u32(payload, 12) as usize;
+        let status_flags = read_u32(payload, 16);
+        let observed_ship_rows = read_u32(payload, 20) as usize;
+        let deleted_rows = read_u32(payload, 28) as usize;
+        let scale_raw = read_u32(payload, 32);
+        let reserved0 = read_u32(payload, 36);
+        ensure_count_at_most(
+            "ships",
+            "changed_rows",
+            changed_rows,
+            "row_count",
+            row_count,
+        )?;
+        ensure_count_at_most(
+            "ships",
+            "deleted_rows",
+            deleted_rows,
+            "row_count",
+            row_count,
+        )?;
+        ensure_row_count_with_deletes(
+            "ships",
+            row_count,
+            "observed_ship_rows",
+            observed_ship_rows,
+            deleted_rows,
+        )?;
+        ensure_fixed_scale("ships", "scale_raw", scale_raw)?;
+        if reserved0 != 0 {
+            return Err("ships header reserved field is nonzero".into());
+        }
+        if self.handle_compact_failure(SHIPS_DOMAIN_ID, "ships", status_flags) {
+            return Ok(());
+        }
+        if self.reject_delta_before_baseline(SHIPS_DOMAIN_ID, "ships", status_flags) {
+            return Ok(());
+        }
+        let mut rows = Vec::with_capacity(row_count);
+        let mut cursor = SHIP_HEADER_LEN;
+        for _ in 0..row_count {
+            need(payload, cursor + SHIP_FIXED_ROW_LEN, "ships fixed row")?;
+            let flags = read_u32(payload, cursor + 4);
+            if flags & !SHIP_KNOWN_FLAGS != 0 {
+                return Err("ships row has unknown flags".into());
+            }
+            let reserved = read_u32(payload, cursor + 36);
+            if reserved != 0 {
+                return Err("ships row reserved field is nonzero".into());
+            }
+            let row = ShipRawRow {
+                instance_id: read_u32(payload, cursor),
+                flags,
+                task_force_id: read_u32(payload, cursor + 8),
+                category_enum: read_u32(payload, cursor + 12),
+                strength_raw: read_u32(payload, cursor + 16),
+                organisation_raw: read_u32(payload, cursor + 20),
+                experience_raw: read_u32(payload, cursor + 24),
+                sunk_convoys: read_u32(payload, cursor + 28),
+                owner_tag_db_id: read_u32(payload, cursor + 32),
+            };
+            cursor += SHIP_FIXED_ROW_LEN;
+            let value = read_string(payload, &mut cursor, "ships definition")?;
+            if value.is_empty() && flags & SHIP_ROW_FLAG_DEFINITION != 0 {
+                return Err("ships definition flag with empty string".into());
+            }
+            if !value.is_empty() && flags & SHIP_ROW_FLAG_DEFINITION == 0 {
+                return Err("ships definition string without flag".into());
+            }
+            rows.push((row, value));
+        }
+        if cursor != payload.len() {
+            return Err("ships payload has trailing bytes".into());
+        }
+        let sparse = self.replace_or_sparse_after_first(SHIPS_DOMAIN_ID, status_flags);
+        if !sparse {
+            self.ships.clear();
+        }
+        for (row, definition) in rows {
+            if row.flags & ROW_FLAG_DELETED_LOW_BIT != 0 {
+                self.ships.remove(&row.instance_id);
+                continue;
+            }
+            self.ships.insert(
+                row.instance_id,
+                ShipState {
+                    instance_id: row.instance_id,
+                    task_force_id: (row.flags & SHIP_ROW_FLAG_TASK_FORCE != 0)
+                        .then_some(row.task_force_id),
+                    category_enum: row.category_enum,
+                    strength_raw: row.strength_raw,
+                    organisation_raw: row.organisation_raw,
+                    experience_raw: row.experience_raw,
+                    sunk_convoys: row.sunk_convoys,
+                    owner_tag_db_id: if row.flags & SHIP_ROW_FLAG_OWNER != 0 {
+                        row.owner_tag_db_id
+                    } else {
+                        0
+                    },
+                    definition: if row.flags & SHIP_ROW_FLAG_DEFINITION != 0 {
+                        Some(definition)
+                    } else {
+                        None
+                    },
+                },
+            );
+        }
+        self.mark_fold_domain_success(SHIPS_DOMAIN_ID);
+        Ok(())
+    }
+
+    // --- DOMAIN 30 air_wings (collector sparse after first, flag not set) --
+    fn fold_air_wings(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(payload, AIR_WING_HEADER_LEN, "air_wings header")?;
+        let row_count = read_u32(payload, 8) as usize;
+        let changed_rows = read_u32(payload, 12) as usize;
+        let status_flags = read_u32(payload, 16);
+        let observed_air_wing_rows = read_u32(payload, 20) as usize;
+        let deleted_rows = read_u32(payload, 24) as usize;
+        let scale_raw = read_u32(payload, 28);
+        let reserved0 = read_u32(payload, 32);
+        ensure_count_at_most(
+            "air_wings",
+            "changed_rows",
+            changed_rows,
+            "row_count",
+            row_count,
+        )?;
+        ensure_count_at_most(
+            "air_wings",
+            "deleted_rows",
+            deleted_rows,
+            "row_count",
+            row_count,
+        )?;
+        ensure_row_count_with_deletes(
+            "air_wings",
+            row_count,
+            "observed_air_wing_rows",
+            observed_air_wing_rows,
+            deleted_rows,
+        )?;
+        ensure_fixed_scale("air_wings", "scale_raw", scale_raw)?;
+        if reserved0 != 0 {
+            return Err("air_wings header reserved field is nonzero".into());
+        }
+        if self.handle_compact_failure(AIR_WINGS_DOMAIN_ID, "air_wings", status_flags) {
+            return Ok(());
+        }
+        if self.reject_delta_before_baseline(AIR_WINGS_DOMAIN_ID, "air_wings", status_flags) {
+            return Ok(());
+        }
+        let expected_len =
+            AIR_WING_HEADER_LEN.saturating_add(row_count.saturating_mul(AIR_WING_ROW_LEN));
+        if payload.len() != expected_len {
+            return Err(format!("air_wings len {} != {expected_len}", payload.len()));
+        }
+        let sparse = self.replace_or_sparse_after_first(AIR_WINGS_DOMAIN_ID, status_flags);
+        if !sparse {
+            self.air_wings.clear();
+        }
+        for index in 0..row_count {
+            let base = AIR_WING_HEADER_LEN + index * AIR_WING_ROW_LEN;
+            let owner_tag_db_id = read_u32(payload, base);
+            let wing_id = read_u32(payload, base + 4);
+            let generation = read_u64(payload, base + 8);
+            let flags = read_u32(payload, base + 16);
+            if flags & !AIR_WING_KNOWN_FLAGS != 0 {
+                return Err("air_wings row has unknown flags".into());
+            }
+            let reserved = read_u32(payload, base + 36);
+            if reserved != 0 {
+                return Err("air_wings row reserved field is nonzero".into());
+            }
+            let key = AirWingKey {
+                owner_tag_db_id,
+                wing_id,
+                generation,
+            };
+            if flags & ROW_FLAG_DELETED_LOW_BIT != 0 {
+                self.air_wings.remove(&key);
+                self.air_wing_loadout_orphan_check_keys_this_hour
+                    .insert(key);
+                continue;
+            }
+            let mission_region_raw = read_u32(payload, base + 28);
+            self.air_wings.insert(
+                key,
+                AirWingState {
+                    generation,
+                    count: read_u32(payload, base + 20),
+                    mission_mask: read_u32(payload, base + 24),
+                    mission_region: (flags & AIR_WING_ROW_FLAG_MISSION_REGION != 0)
+                        .then_some(mission_region_raw),
+                    effective_planes: read_u32(payload, base + 32),
+                },
+            );
+        }
+        self.mark_fold_domain_success(AIR_WINGS_DOMAIN_ID);
+        Ok(())
+    }
+
+    // --- DOMAIN 31 air_region_activity (collector sparse after first) ------
+    fn fold_air_region_activity(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(
+            payload,
+            AIR_REGION_ACTIVITY_HEADER_LEN,
+            "air_region_activity header",
+        )?;
+        let row_count = read_u32(payload, 8) as usize;
+        let changed_rows = read_u32(payload, 12) as usize;
+        let status_flags = read_u32(payload, 16);
+        let observed_bucket_rows = read_u32(payload, 24) as usize;
+        let deleted_rows = read_u32(payload, 28) as usize;
+        let reserved0 = read_u32(payload, 32);
+        ensure_count_at_most(
+            "air_region_activity",
+            "changed_rows",
+            changed_rows,
+            "row_count",
+            row_count,
+        )?;
+        ensure_count_at_most(
+            "air_region_activity",
+            "deleted_rows",
+            deleted_rows,
+            "row_count",
+            row_count,
+        )?;
+        ensure_row_count_with_deletes(
+            "air_region_activity",
+            row_count,
+            "observed_bucket_rows",
+            observed_bucket_rows,
+            deleted_rows,
+        )?;
+        if reserved0 != 0 {
+            return Err("air_region_activity header reserved field is nonzero".into());
+        }
+        if self.handle_compact_failure(
+            AIR_REGION_ACTIVITY_DOMAIN_ID,
+            "air_region_activity",
+            status_flags,
+        ) {
+            return Ok(());
+        }
+        if self.reject_delta_before_baseline(
+            AIR_REGION_ACTIVITY_DOMAIN_ID,
+            "air_region_activity",
+            status_flags,
+        ) {
+            return Ok(());
+        }
+        let expected_len = AIR_REGION_ACTIVITY_HEADER_LEN
+            .saturating_add(row_count.saturating_mul(AIR_REGION_ACTIVITY_ROW_LEN));
+        if payload.len() != expected_len {
+            return Err(format!(
+                "air_region_activity len {} != {expected_len}",
+                payload.len()
+            ));
+        }
+        let sparse =
+            self.replace_or_sparse_after_first(AIR_REGION_ACTIVITY_DOMAIN_ID, status_flags);
+        if !sparse {
+            self.air_region_activity.clear();
+        }
+        for index in 0..row_count {
+            let base = AIR_REGION_ACTIVITY_HEADER_LEN + index * AIR_REGION_ACTIVITY_ROW_LEN;
+            let region_id = read_u32(payload, base);
+            let owner_tag_db_id = read_u32(payload, base + 4);
+            let mission_mask = read_u32(payload, base + 8);
+            let flags = read_u32(payload, base + 12);
+            if flags & !ROW_FLAG_DELETED_LOW_BIT != 0 {
+                return Err("air_region_activity row has unknown flags".into());
+            }
+            let reserved = read_u32(payload, base + 28);
+            if reserved != 0 {
+                return Err("air_region_activity row reserved field is nonzero".into());
+            }
+            let key = AirRegionActivityKey {
+                region_id,
+                owner_tag_db_id,
+                mission_mask,
+            };
+            if flags & ROW_FLAG_DELETED_LOW_BIT != 0 {
+                self.air_region_activity.remove(&key);
+                continue;
+            }
+            self.air_region_activity.insert(
+                key,
+                AirRegionActivityState {
+                    region_id,
+                    owner_tag_db_id,
+                    mission_mask,
+                    wing_count: read_u32(payload, base + 16),
+                    plane_count: read_u32(payload, base + 20),
+                    effective_planes: read_u32(payload, base + 24),
+                },
+            );
+        }
+        self.mark_fold_domain_success(AIR_REGION_ACTIVITY_DOMAIN_ID);
+        Ok(())
+    }
+
+    // --- DOMAIN 32 air_wing_loadouts (collector sparse after first) --------
+    fn fold_air_wing_loadouts(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(
+            payload,
+            AIR_WING_LOADOUT_HEADER_LEN,
+            "air_wing_loadouts header",
+        )?;
+        let row_count = read_u32(payload, 8) as usize;
+        let changed_rows = read_u32(payload, 12) as usize;
+        let status_flags = read_u32(payload, 16);
+        let observed_air_wing_rows = read_u32(payload, 20) as usize;
+        let observed_equipment_rows = read_u32(payload, 24) as usize;
+        let equipment_count = read_u32(payload, 28) as usize;
+        let deleted_rows = read_u32(payload, 32) as usize;
+        let scale_raw = read_u32(payload, 36);
+        let reserved0 = read_u32(payload, 40);
+        ensure_count_at_most(
+            "air_wing_loadouts",
+            "changed_rows",
+            changed_rows,
+            "row_count",
+            row_count,
+        )?;
+        ensure_count_at_most(
+            "air_wing_loadouts",
+            "deleted_rows",
+            deleted_rows,
+            "row_count",
+            row_count,
+        )?;
+        ensure_row_count_with_deletes(
+            "air_wing_loadouts",
+            row_count,
+            "observed_air_wing_rows",
+            observed_air_wing_rows,
+            deleted_rows,
+        )?;
+        if equipment_count > observed_equipment_rows
+            && status_flags & COMPACT_STATUS_DELTA_DATA == 0
+        {
+            return Err(format!(
+                "air_wing_loadouts emitted_equipment_rows {equipment_count} > observed_equipment_rows {observed_equipment_rows}"
+            ));
+        }
+        ensure_fixed_scale("air_wing_loadouts", "scale_raw", scale_raw)?;
+        if reserved0 != 0 {
+            return Err("air_wing_loadouts header reserved field is nonzero".into());
+        }
+        if self.handle_compact_failure(
+            AIR_WING_LOADOUTS_DOMAIN_ID,
+            "air_wing_loadouts",
+            status_flags,
+        ) {
+            return Ok(());
+        }
+        if self.reject_delta_before_baseline(
+            AIR_WING_LOADOUTS_DOMAIN_ID,
+            "air_wing_loadouts",
+            status_flags,
+        ) {
+            return Ok(());
+        }
+        let rows_end = AIR_WING_LOADOUT_HEADER_LEN
+            .saturating_add(row_count.saturating_mul(AIR_WING_LOADOUT_ROW_LEN));
+        let expected_len =
+            rows_end.saturating_add(equipment_count.saturating_mul(AIR_WING_LOADOUT_ENTRY_ROW_LEN));
+        if payload.len() != expected_len {
+            return Err(format!(
+                "air_wing_loadouts len {} != {expected_len}",
+                payload.len()
+            ));
+        }
+        let mut rows = Vec::with_capacity(row_count);
+        for index in 0..row_count {
+            let base = AIR_WING_LOADOUT_HEADER_LEN + index * AIR_WING_LOADOUT_ROW_LEN;
+            let owner_tag_db_id = read_u32(payload, base);
+            let wing_id = read_u32(payload, base + 4);
+            let generation = read_u64(payload, base + 8);
+            let flags = read_u32(payload, base + 16);
+            if flags & !ROW_FLAG_DELETED_LOW_BIT != 0 {
+                return Err("air_wing_loadouts row has unknown flags".into());
+            }
+            let entry_first = read_u32(payload, base + 24) as usize;
+            let entry_count = read_u32(payload, base + 28) as usize;
+            let entry_end = entry_first
+                .checked_add(entry_count)
+                .ok_or_else(|| "air_wing_loadouts equipment range overflow".to_string())?;
+            if entry_end > equipment_count {
+                return Err(format!(
+                    "air_wing_loadouts equipment range {entry_first}+{entry_count} exceeds {equipment_count}"
+                ));
+            }
+            rows.push(AirWingLoadoutRawRow {
+                owner_tag_db_id,
+                wing_id,
+                generation,
+                flags,
+                air_base_id: read_u32(payload, base + 20),
+                entry_first,
+                entry_count,
+            });
+        }
+        let mut equipment = Vec::with_capacity(equipment_count);
+        for index in 0..equipment_count {
+            let base = rows_end + index * AIR_WING_LOADOUT_ENTRY_ROW_LEN;
+            let variant_id = read_u32(payload, base);
+            let reserved = read_u32(payload, base + 4);
+            if reserved != 0 {
+                return Err("air_wing_loadouts equipment reserved field is nonzero".into());
+            }
+            equipment.push(AirWingLoadoutEntryState {
+                variant_id,
+                amount_raw: read_i64(payload, base + 8),
+            });
+        }
+        let sparse = self.replace_or_sparse_after_first(AIR_WING_LOADOUTS_DOMAIN_ID, status_flags);
+        if !sparse {
+            self.air_wing_loadouts.clear();
+        }
+        for row in rows {
+            let key = AirWingKey {
+                owner_tag_db_id: row.owner_tag_db_id,
+                wing_id: row.wing_id,
+                generation: row.generation,
+            };
+            if row.flags & ROW_FLAG_DELETED_LOW_BIT != 0 {
+                self.air_wing_loadouts.remove(&key);
+                continue;
+            }
+            let entry_end = row.entry_first + row.entry_count;
+            self.air_wing_loadout_orphan_check_keys_this_hour
+                .insert(key.clone());
+            self.air_wing_loadouts.insert(
+                key,
+                AirWingLoadoutState {
+                    air_base_id: (row.air_base_id != 0).then_some(row.air_base_id),
+                    equipment: equipment[row.entry_first..entry_end].to_vec(),
+                },
+            );
+        }
+        self.mark_fold_domain_success(AIR_WING_LOADOUTS_DOMAIN_ID);
+        Ok(())
+    }
+
+    // --- DOMAINS 33/37 variant definitions (catalog upsert) ---------------
+    fn fold_air_variant_defs(&mut self, payload: &[u8], domain_id: u16) -> Result<(), String> {
+        let domain_name = if domain_id == AIR_VARIANT_DEFS_DOMAIN_ID {
+            "air_variant_defs"
+        } else {
+            "stockpile_variant_defs"
+        };
+        need(payload, VARIANT_DEF_HEADER_LEN, "variant defs header")?;
+        let row_count = read_u32(payload, 8) as usize;
+        let status_flags = read_u32(payload, 16);
+        let emitted_module_rows = read_u32(payload, 28) as usize;
+        let reserved0 = read_u32(payload, 36);
+        let reserved1 = read_u32(payload, 40);
+        if reserved0 != 0 || reserved1 != 0 {
+            return Err(format!("{domain_name} header reserved field is nonzero"));
+        }
+        if self.handle_compact_failure(domain_id, domain_name, status_flags) {
+            return Ok(());
+        }
+        let rows_end =
+            VARIANT_DEF_HEADER_LEN.saturating_add(row_count.saturating_mul(VARIANT_DEF_ROW_LEN));
+        need(payload, rows_end, "variant defs rows")?;
+        let mut rows = Vec::with_capacity(row_count);
+        let mut declared_modules = 0usize;
+        for index in 0..row_count {
+            let base = VARIANT_DEF_HEADER_LEN + index * VARIANT_DEF_ROW_LEN;
+            let variant_id = read_u32(payload, base);
+            if variant_id == 0 {
+                return Err(format!("{domain_name} row has zero variant_id"));
+            }
+            let flags = read_u32(payload, base + 4);
+            if flags & !VARIANT_DEF_KNOWN_FLAGS != 0 {
+                return Err(format!("{domain_name} row has unknown flags"));
+            }
+            let module_first = read_u32(payload, base + 8) as usize;
+            let module_count = read_u32(payload, base + 12) as usize;
+            if module_count == 0 && flags & VARIANT_DEF_ROW_FLAG_MODULES != 0 {
+                return Err(format!("{domain_name} modules flag without modules"));
+            }
+            if module_count > 0 && flags & VARIANT_DEF_ROW_FLAG_MODULES == 0 {
+                return Err(format!("{domain_name} modules without modules flag"));
+            }
+            let module_end = module_first
+                .checked_add(module_count)
+                .ok_or_else(|| format!("{domain_name} module range overflow"))?;
+            if module_end > emitted_module_rows {
+                return Err(format!(
+                    "{domain_name} module range {module_first}+{module_count} exceeds {emitted_module_rows}"
+                ));
+            }
+            let row_reserved0 = read_u32(payload, base + 16);
+            let row_reserved1 = read_u32(payload, base + 20);
+            if row_reserved0 != 0 || row_reserved1 != 0 {
+                return Err(format!("{domain_name} row reserved field is nonzero"));
+            }
+            declared_modules = declared_modules.saturating_add(module_count);
+            rows.push(VariantDefRawRow {
+                variant_id,
+                flags,
+                module_first,
+                module_count,
+                display_name: None,
+                variant_name: None,
+            });
+        }
+        if declared_modules != emitted_module_rows {
+            return Err(format!(
+                "{domain_name} emitted_module_rows {emitted_module_rows} != declared {declared_modules}"
+            ));
+        }
+        let mut cursor = rows_end;
+        for row in &mut rows {
+            let display_name = read_string(payload, &mut cursor, "variant display name")?;
+            if display_name.is_empty() && row.flags & VARIANT_DEF_ROW_FLAG_DISPLAY_NAME != 0 {
+                return Err(format!("{domain_name} display-name flag with empty string"));
+            }
+            if !display_name.is_empty() && row.flags & VARIANT_DEF_ROW_FLAG_DISPLAY_NAME == 0 {
+                return Err(format!("{domain_name} display name without flag"));
+            }
+            row.display_name =
+                (row.flags & VARIANT_DEF_ROW_FLAG_DISPLAY_NAME != 0).then_some(display_name);
+
+            let variant_name = read_string(payload, &mut cursor, "variant name")?;
+            if variant_name.is_empty() && row.flags & VARIANT_DEF_ROW_FLAG_VARIANT_NAME != 0 {
+                return Err(format!("{domain_name} variant-name flag with empty string"));
+            }
+            if !variant_name.is_empty() && row.flags & VARIANT_DEF_ROW_FLAG_VARIANT_NAME == 0 {
+                return Err(format!("{domain_name} variant name without flag"));
+            }
+            row.variant_name =
+                (row.flags & VARIANT_DEF_ROW_FLAG_VARIANT_NAME != 0).then_some(variant_name);
+        }
+        let mut modules = Vec::with_capacity(emitted_module_rows);
+        for _ in 0..emitted_module_rows {
+            need(
+                payload,
+                cursor + VARIANT_DEF_MODULE_ROW_LEN,
+                "variant def module",
+            )?;
+            let slot_handle = read_u32(payload, cursor);
+            let reserved = read_u32(payload, cursor + 4);
+            cursor += VARIANT_DEF_MODULE_ROW_LEN;
+            if slot_handle == 0 {
+                return Err(format!("{domain_name} module row has zero slot_handle"));
+            }
+            if reserved != 0 {
+                return Err(format!(
+                    "{domain_name} module row reserved field is nonzero"
+                ));
+            }
+            let token = read_string(payload, &mut cursor, "variant def module token")?;
+            if token.is_empty() {
+                return Err(format!("{domain_name} module row has empty token"));
+            }
+            modules.push(VariantDefModuleState { slot_handle, token });
+        }
+        if cursor != payload.len() {
+            return Err(format!("{domain_name} payload has trailing bytes"));
+        }
+        let target = if domain_id == AIR_VARIANT_DEFS_DOMAIN_ID {
+            &mut self.air_variant_defs
+        } else {
+            &mut self.stockpile_variant_defs
+        };
+        for row in rows {
+            let module_end = row.module_first + row.module_count;
+            target.insert(
+                row.variant_id,
+                VariantDefState {
+                    variant_id: row.variant_id,
+                    display_name: row.display_name,
+                    variant_name: row.variant_name,
+                    modules: modules[row.module_first..module_end].to_vec(),
+                },
+            );
+        }
+        self.mark_fold_domain_success(domain_id);
+        Ok(())
+    }
+
+    // --- DOMAIN 34 air_base_status (collector sparse after first) ----------
+    fn fold_air_base_status(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(
+            payload,
+            AIR_BASE_STATUS_HEADER_LEN,
+            "air_base_status header",
+        )?;
+        let row_count = read_u32(payload, 8) as usize;
+        let status_flags = read_u32(payload, 16);
+        let reserved = read_u32(payload, 32);
+        if reserved != 0 {
+            return Err("air_base_status header reserved field is nonzero".into());
+        }
+        if self.handle_compact_failure(AIR_BASE_STATUS_DOMAIN_ID, "air_base_status", status_flags) {
+            return Ok(());
+        }
+        if self.reject_delta_before_baseline(
+            AIR_BASE_STATUS_DOMAIN_ID,
+            "air_base_status",
+            status_flags,
+        ) {
+            return Ok(());
+        }
+        let expected_len = AIR_BASE_STATUS_HEADER_LEN
+            .saturating_add(row_count.saturating_mul(AIR_BASE_STATUS_ROW_LEN));
+        if payload.len() != expected_len {
+            return Err(format!(
+                "air_base_status len {} != {expected_len}",
+                payload.len()
+            ));
+        }
+        let sparse = self.replace_or_sparse_after_first(AIR_BASE_STATUS_DOMAIN_ID, status_flags);
+        if !sparse {
+            self.air_base_status.clear();
+        }
+        for index in 0..row_count {
+            let base = AIR_BASE_STATUS_HEADER_LEN + index * AIR_BASE_STATUS_ROW_LEN;
+            let air_base_id = read_u32(payload, base);
+            let state_id = read_u32(payload, base + 4);
+            let flags = read_u32(payload, base + 8);
+            if flags & !ROW_FLAG_DELETED_LOW_BIT != 0 {
+                return Err("air_base_status row has unknown flags".into());
+            }
+            let row_reserved = read_u32(payload, base + 28);
+            if row_reserved != 0 {
+                return Err("air_base_status row reserved field is nonzero".into());
+            }
+            if flags & ROW_FLAG_DELETED_LOW_BIT != 0 {
+                self.air_base_status.remove(&air_base_id);
+                continue;
+            }
+            self.air_base_status.insert(
+                air_base_id,
+                AirBaseStatusState {
+                    air_base_id,
+                    state_id,
+                    capacity: read_u32(payload, base + 12),
+                    building_level: read_u32(payload, base + 16),
+                    based_wing_count: read_u32(payload, base + 20),
+                    based_plane_count: read_u32(payload, base + 24),
+                },
+            );
+        }
+        self.mark_fold_domain_success(AIR_BASE_STATUS_DOMAIN_ID);
+        Ok(())
+    }
+
+    // --- DOMAIN 35 air_variant_stats (catalog upsert) ----------------------
+    fn fold_air_variant_stats(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(
+            payload,
+            AIR_VARIANT_STATS_HEADER_LEN,
+            "air_variant_stats header",
+        )?;
+        let row_count = read_u32(payload, 8) as usize;
+        let status_flags = read_u32(payload, 16);
+        let fixed_scale_raw = read_u32(payload, 28);
+        let range_scale_raw = read_u32(payload, 32);
+        if fixed_scale_raw == 0 || range_scale_raw == 0 {
+            return Err("air_variant_stats scale fields must be nonzero".into());
+        }
+        if self.handle_compact_failure(
+            AIR_VARIANT_STATS_DOMAIN_ID,
+            "air_variant_stats",
+            status_flags,
+        ) {
+            return Ok(());
+        }
+        let expected_len = AIR_VARIANT_STATS_HEADER_LEN
+            .saturating_add(row_count.saturating_mul(AIR_VARIANT_STATS_ROW_LEN));
+        if payload.len() != expected_len {
+            return Err(format!(
+                "air_variant_stats len {} != {expected_len}",
+                payload.len()
+            ));
+        }
+        for index in 0..row_count {
+            let base = AIR_VARIANT_STATS_HEADER_LEN + index * AIR_VARIANT_STATS_ROW_LEN;
+            let variant_id = read_u32(payload, base);
+            if variant_id == 0 {
+                return Err("air_variant_stats row has zero variant_id".into());
+            }
+            let reserved = read_u32(payload, base + 60);
+            if reserved != 0 {
+                return Err("air_variant_stats row reserved field is nonzero".into());
+            }
+            self.air_variant_stats.insert(
+                variant_id,
+                AirVariantStatsState {
+                    variant_id,
+                    flags: read_u32(payload, base + 4),
+                    equipment_token_raw: read_u32(payload, base + 8),
+                    equipment_type_token_raw: read_u32(payload, base + 12),
+                    interface_type_raw: read_u32(payload, base + 16),
+                    speed_cache_raw: read_i32(payload, base + 20),
+                    range_raw: read_i32(payload, base + 24),
+                    air_attack_raw: read_i32(payload, base + 28),
+                    agility_raw: read_i32(payload, base + 32),
+                    max_speed_raw: read_i32(payload, base + 36),
+                    reliability_raw: read_i32(payload, base + 40),
+                    air_defence_raw: read_i32(payload, base + 44),
+                    thrust_raw: read_i32(payload, base + 48),
+                    fuel_consumption_raw: read_i32(payload, base + 52),
+                    build_cost_ic_raw: read_i32(payload, base + 56),
+                    fixed_scale_raw,
+                    range_scale_raw,
+                },
+            );
+        }
+        self.mark_fold_domain_success(AIR_VARIANT_STATS_DOMAIN_ID);
+        Ok(())
+    }
+
+    // --- DOMAIN 36 air_variant_reserves (collector sparse after first) -----
+    fn fold_air_variant_reserves(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(
+            payload,
+            AIR_VARIANT_RESERVE_HEADER_LEN,
+            "air_variant_reserves header",
+        )?;
+        let row_count = read_u32(payload, 8) as usize;
+        let changed_rows = read_u32(payload, 12) as usize;
+        let status_flags = read_u32(payload, 16);
+        let observed_country_rows = read_u32(payload, 20) as usize;
+        let observed_stockpile_rows = read_u32(payload, 24) as usize;
+        let matched_stockpile_rows = read_u32(payload, 32) as usize;
+        let invalid_country_rows = read_u32(payload, 36) as usize;
+        let deleted_rows = read_u32(payload, 40) as usize;
+        let scale_raw = read_u32(payload, 44);
+        ensure_count_at_most(
+            "air_variant_reserves",
+            "changed_rows",
+            changed_rows,
+            "row_count",
+            row_count,
+        )?;
+        ensure_count_at_most(
+            "air_variant_reserves",
+            "matched_stockpile_rows",
+            matched_stockpile_rows,
+            "observed_stockpile_rows",
+            observed_stockpile_rows,
+        )?;
+        ensure_count_at_most(
+            "air_variant_reserves",
+            "invalid_country_rows",
+            invalid_country_rows,
+            "observed_country_rows",
+            observed_country_rows,
+        )?;
+        ensure_count_at_most(
+            "air_variant_reserves",
+            "deleted_rows",
+            deleted_rows,
+            "row_count",
+            row_count,
+        )?;
+        ensure_fixed_scale("air_variant_reserves", "scale_raw", scale_raw)?;
+        if self.handle_compact_failure(
+            AIR_VARIANT_RESERVES_DOMAIN_ID,
+            "air_variant_reserves",
+            status_flags,
+        ) {
+            return Ok(());
+        }
+        if self.reject_delta_before_baseline(
+            AIR_VARIANT_RESERVES_DOMAIN_ID,
+            "air_variant_reserves",
+            status_flags,
+        ) {
+            return Ok(());
+        }
+        let expected_len = AIR_VARIANT_RESERVE_HEADER_LEN
+            .saturating_add(row_count.saturating_mul(AIR_VARIANT_RESERVE_ROW_LEN));
+        if payload.len() != expected_len {
+            return Err(format!(
+                "air_variant_reserves len {} != {expected_len}",
+                payload.len()
+            ));
+        }
+        let sparse =
+            self.replace_or_sparse_after_first(AIR_VARIANT_RESERVES_DOMAIN_ID, status_flags);
+        if !sparse {
+            self.air_variant_reserves.clear();
+        }
+        for index in 0..row_count {
+            let base = AIR_VARIANT_RESERVE_HEADER_LEN + index * AIR_VARIANT_RESERVE_ROW_LEN;
+            let tag_db_id = read_u32(payload, base);
+            let variant_id = read_u32(payload, base + 4);
+            let flags = read_u32(payload, base + 8);
+            if flags & !ROW_FLAG_DELETED_LOW_BIT != 0 {
+                return Err("air_variant_reserves row has unknown flags".into());
+            }
+            let reserved = read_u32(payload, base + 12);
+            if reserved != 0 {
+                return Err("air_variant_reserves row reserved field is nonzero".into());
+            }
+            let key = AirVariantReserveKey {
+                tag_db_id,
+                variant_id,
+            };
+            if flags & ROW_FLAG_DELETED_LOW_BIT != 0 {
+                self.air_variant_reserves.remove(&key);
+                continue;
+            }
+            self.air_variant_reserves.insert(
+                key,
+                AirVariantReserveState {
+                    tag_db_id,
+                    variant_id,
+                    amount_raw: read_i64(payload, base + 16),
+                    scale_raw,
+                },
+            );
+        }
+        self.mark_fold_domain_success(AIR_VARIANT_RESERVES_DOMAIN_ID);
+        Ok(())
+    }
+
+    // --- DOMAIN 38 air_superiority_inputs (collector sparse after first) ---
+    fn fold_air_superiority_inputs(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(
+            payload,
+            AIR_SUPERIORITY_INPUT_HEADER_LEN,
+            "air_superiority_inputs header",
+        )?;
+        let row_count = read_u32(payload, 8) as usize;
+        let changed_rows = read_u32(payload, 12) as usize;
+        let status_flags = read_u32(payload, 16);
+        let observed_air_wing_rows = read_u32(payload, 20) as usize;
+        let observed_loadout_rows = read_u32(payload, 24) as usize;
+        let observed_equipment_rows = read_u32(payload, 28) as usize;
+        let invalid_variant_rows = read_u32(payload, 40) as usize;
+        let deleted_rows = read_u32(payload, 44) as usize;
+        let scale_raw = read_u32(payload, 48);
+        ensure_count_at_most(
+            "air_superiority_inputs",
+            "changed_rows",
+            changed_rows,
+            "row_count",
+            row_count,
+        )?;
+        ensure_count_at_most(
+            "air_superiority_inputs",
+            "observed_loadout_rows",
+            observed_loadout_rows,
+            "observed_air_wing_rows",
+            observed_air_wing_rows,
+        )?;
+        ensure_count_at_most(
+            "air_superiority_inputs",
+            "invalid_variant_rows",
+            invalid_variant_rows,
+            "observed_equipment_rows",
+            observed_equipment_rows,
+        )?;
+        ensure_count_at_most(
+            "air_superiority_inputs",
+            "deleted_rows",
+            deleted_rows,
+            "row_count",
+            row_count,
+        )?;
+        ensure_row_count_with_deletes(
+            "air_superiority_inputs",
+            row_count,
+            "observed_equipment_rows",
+            observed_equipment_rows,
+            deleted_rows,
+        )?;
+        ensure_fixed_scale("air_superiority_inputs", "scale_raw", scale_raw)?;
+        if self.handle_compact_failure(
+            AIR_SUPERIORITY_INPUTS_DOMAIN_ID,
+            "air_superiority_inputs",
+            status_flags,
+        ) {
+            return Ok(());
+        }
+        if self.reject_delta_before_baseline(
+            AIR_SUPERIORITY_INPUTS_DOMAIN_ID,
+            "air_superiority_inputs",
+            status_flags,
+        ) {
+            return Ok(());
+        }
+        let expected_len = AIR_SUPERIORITY_INPUT_HEADER_LEN
+            .saturating_add(row_count.saturating_mul(AIR_SUPERIORITY_INPUT_ROW_LEN));
+        if payload.len() != expected_len {
+            return Err(format!(
+                "air_superiority_inputs len {} != {expected_len}",
+                payload.len()
+            ));
+        }
+        let sparse =
+            self.replace_or_sparse_after_first(AIR_SUPERIORITY_INPUTS_DOMAIN_ID, status_flags);
+        if !sparse {
+            self.air_superiority_inputs.clear();
+        }
+        for index in 0..row_count {
+            let base = AIR_SUPERIORITY_INPUT_HEADER_LEN + index * AIR_SUPERIORITY_INPUT_ROW_LEN;
+            let region_id = read_u32(payload, base);
+            let owner_tag_db_id = read_u32(payload, base + 4);
+            let mission_mask = read_u32(payload, base + 8);
+            let variant_id = read_u32(payload, base + 12);
+            let flags = read_u32(payload, base + 16);
+            if flags & !ROW_FLAG_DELETED_LOW_BIT != 0 {
+                return Err("air_superiority_inputs row has unknown flags".into());
+            }
+            let reserved = read_u32(payload, base + 36);
+            if reserved != 0 {
+                return Err("air_superiority_inputs row reserved field is nonzero".into());
+            }
+            let key = AirSuperiorityInputKey {
+                region_id,
+                owner_tag_db_id,
+                mission_mask,
+                variant_id,
+            };
+            if flags & ROW_FLAG_DELETED_LOW_BIT != 0 {
+                self.air_superiority_inputs.remove(&key);
+                continue;
+            }
+            self.air_superiority_inputs.insert(
+                key,
+                AirSuperiorityInputState {
+                    region_id,
+                    owner_tag_db_id,
+                    mission_mask,
+                    variant_id,
+                    equipment_token_raw: read_u32(payload, base + 20),
+                    equipment_type_token_raw: read_u32(payload, base + 24),
+                    interface_type_raw: read_u32(payload, base + 28),
+                    wing_count: read_u32(payload, base + 32),
+                    amount_raw: read_i64(payload, base + 40),
+                    scale_raw,
+                },
+            );
+        }
+        self.mark_fold_domain_success(AIR_SUPERIORITY_INPUTS_DOMAIN_ID);
+        Ok(())
+    }
+
+    // --- DOMAINS 39/40 variant upgrades (catalog upsert) ------------------
+    fn fold_variant_upgrades(&mut self, payload: &[u8], domain_id: u16) -> Result<(), String> {
+        let domain_name = if domain_id == AIR_VARIANT_UPGRADES_DOMAIN_ID {
+            "air_variant_upgrades"
+        } else {
+            "stockpile_variant_upgrades"
+        };
+        need(
+            payload,
+            VARIANT_UPGRADE_HEADER_LEN,
+            "variant upgrades header",
+        )?;
+        let row_count = read_u32(payload, 8) as usize;
+        let status_flags = read_u32(payload, 16);
+        let emitted_upgrade_rows = read_u32(payload, 28) as usize;
+        let reserved0 = read_u32(payload, 36);
+        let reserved1 = read_u32(payload, 40);
+        if reserved0 != 0 || reserved1 != 0 {
+            return Err(format!("{domain_name} header reserved field is nonzero"));
+        }
+        if self.handle_compact_failure(domain_id, domain_name, status_flags) {
+            return Ok(());
+        }
+        let rows_end = VARIANT_UPGRADE_HEADER_LEN
+            .saturating_add(row_count.saturating_mul(VARIANT_UPGRADE_ROW_LEN));
+        let expected_len = rows_end
+            .saturating_add(emitted_upgrade_rows.saturating_mul(VARIANT_UPGRADE_ENTRY_ROW_LEN));
+        if payload.len() != expected_len {
+            return Err(format!(
+                "{domain_name} len {} != {expected_len}",
+                payload.len()
+            ));
+        }
+        let mut rows = Vec::with_capacity(row_count);
+        let mut declared_upgrades = 0usize;
+        for index in 0..row_count {
+            let base = VARIANT_UPGRADE_HEADER_LEN + index * VARIANT_UPGRADE_ROW_LEN;
+            let variant_id = read_u32(payload, base);
+            if variant_id == 0 {
+                return Err(format!("{domain_name} row has zero variant_id"));
+            }
+            let flags = read_u32(payload, base + 4);
+            if flags != 0 {
+                return Err(format!("{domain_name} row has unknown flags"));
+            }
+            let upgrade_first = read_u32(payload, base + 8) as usize;
+            let upgrade_count = read_u32(payload, base + 12) as usize;
+            let upgrade_end = upgrade_first
+                .checked_add(upgrade_count)
+                .ok_or_else(|| format!("{domain_name} upgrade range overflow"))?;
+            if upgrade_end > emitted_upgrade_rows {
+                return Err(format!(
+                    "{domain_name} upgrade range {upgrade_first}+{upgrade_count} exceeds {emitted_upgrade_rows}"
+                ));
+            }
+            declared_upgrades = declared_upgrades.saturating_add(upgrade_count);
+            rows.push((variant_id, upgrade_first, upgrade_count));
+        }
+        if declared_upgrades != emitted_upgrade_rows {
+            return Err(format!(
+                "{domain_name} emitted_upgrade_rows {emitted_upgrade_rows} != declared {declared_upgrades}"
+            ));
+        }
+        let mut upgrades = Vec::with_capacity(emitted_upgrade_rows);
+        for index in 0..emitted_upgrade_rows {
+            let base = rows_end + index * VARIANT_UPGRADE_ENTRY_ROW_LEN;
+            upgrades.push(VariantUpgradeState {
+                upgrade_index: read_u32(payload, base),
+                level: read_u32(payload, base + 4),
+            });
+        }
+        let target = if domain_id == AIR_VARIANT_UPGRADES_DOMAIN_ID {
+            &mut self.air_variant_upgrades
+        } else {
+            &mut self.stockpile_variant_upgrades
+        };
+        for (variant_id, upgrade_first, upgrade_count) in rows {
+            let upgrade_end = upgrade_first + upgrade_count;
+            target.insert(variant_id, upgrades[upgrade_first..upgrade_end].to_vec());
+        }
+        self.mark_fold_domain_success(domain_id);
+        Ok(())
+    }
+
+    // --- DOMAIN 42 air_combat_losses (per-hour R2 sidecar, no events[]) ---
+    fn fold_air_combat_losses(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(
+            payload,
+            AIR_COMBAT_LOSS_HEADER_LEN,
+            "air_combat_losses header",
+        )?;
+        let row_count = read_u32(payload, 8) as usize;
+        let changed_rows = read_u32(payload, 12) as usize;
+        let status_flags = read_u32(payload, 16);
+        let loss_rows = read_u32(payload, 28) as usize;
+        let reinforcement_rows = read_u32(payload, 32) as usize;
+        let deleted_rows = read_u32(payload, 36) as usize;
+        let scale_raw = read_u32(payload, 40);
+        let reserved = read_u32(payload, 44);
+        if changed_rows != row_count {
+            return Err("air_combat_losses changed_rows != row_count".into());
+        }
+        ensure_count_at_most(
+            "air_combat_losses",
+            "loss_rows",
+            loss_rows,
+            "row_count",
+            row_count,
+        )?;
+        ensure_count_at_most(
+            "air_combat_losses",
+            "reinforcement_rows",
+            reinforcement_rows,
+            "row_count",
+            row_count,
+        )?;
+        ensure_count_at_most(
+            "air_combat_losses",
+            "deleted_rows",
+            deleted_rows,
+            "row_count",
+            row_count,
+        )?;
+        ensure_fixed_scale("air_combat_losses", "scale_raw", scale_raw)?;
+        if reserved != 0 {
+            return Err("air_combat_losses header reserved field is nonzero".into());
+        }
+        if self.handle_compact_failure(
+            AIR_COMBAT_LOSSES_DOMAIN_ID,
+            "air_combat_losses",
+            status_flags,
+        ) {
+            return Ok(());
+        }
+        let expected_len = AIR_COMBAT_LOSS_HEADER_LEN
+            .saturating_add(row_count.saturating_mul(AIR_COMBAT_LOSS_ROW_LEN));
+        if payload.len() != expected_len {
+            return Err(format!(
+                "air_combat_losses len {} != {expected_len}",
+                payload.len()
+            ));
+        }
+        let mut rows = Vec::with_capacity(row_count);
+        for index in 0..row_count {
+            let base = AIR_COMBAT_LOSS_HEADER_LEN + index * AIR_COMBAT_LOSS_ROW_LEN;
+            let flags = read_u32(payload, base + 16);
+            if flags & !AIR_STRENGTH_DELTA_KNOWN_FLAGS != 0 {
+                return Err("air_combat_losses row has unknown flags".into());
+            }
+            let reserved = read_u32(payload, base + 40);
+            if reserved != 0 {
+                return Err("air_combat_losses row reserved field is nonzero".into());
+            }
+            rows.push(AirCombatLossState {
+                owner_tag_db_id: read_u32(payload, base),
+                wing_id: read_u32(payload, base + 4),
+                generation: read_u64(payload, base + 8),
+                flags,
+                mission_mask: read_u32(payload, base + 20),
+                mission_region: if flags & AIR_STRENGTH_DELTA_ROW_FLAG_MISSION_REGION != 0 {
+                    Some(read_u32(payload, base + 24))
+                } else {
+                    None
+                },
+                old_count: read_u32(payload, base + 28),
+                new_count: read_u32(payload, base + 32),
+                count_delta: read_i32(payload, base + 36),
+                old_equipment_amount_sum: read_i64(payload, base + 44),
+                new_equipment_amount_sum: read_i64(payload, base + 52),
+                equipment_amount_delta: read_i64(payload, base + 60),
+                scale_raw,
+            });
+        }
+        self.air_combat_losses_this_hour = Some(rows);
+        self.mark_fold_domain_success(AIR_COMBAT_LOSSES_DOMAIN_ID);
+        Ok(())
+    }
+
+    // --- DOMAIN 46 air_variant_archetypes (implicit first baseline) --------
+    fn fold_air_variant_archetypes(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(
+            payload,
+            AIR_VARIANT_ARCHETYPE_HEADER_LEN,
+            "air_variant_archetypes header",
+        )?;
+        let row_count = read_u32(payload, 8) as usize;
+        let status_flags = read_u32(payload, 16);
+        let classified_rows = read_u32(payload, 24) as usize;
+        let unresolved_rows = read_u32(payload, 28) as usize;
+        let static_catalog_hash = read_u32(payload, 32);
+        let fixed_scale_raw = read_u32(payload, 36);
+        let reserved0 = read_u32(payload, 40);
+        let reserved1 = read_u32(payload, 44);
+        if classified_rows.saturating_add(unresolved_rows) != row_count {
+            return Err("air_variant_archetypes classified+unresolved != row_count".into());
+        }
+        if fixed_scale_raw == 0 {
+            return Err("air_variant_archetypes fixed scale is zero".into());
+        }
+        if reserved0 != 0 || reserved1 != 0 {
+            return Err("air_variant_archetypes header reserved field is nonzero".into());
+        }
+        if self.handle_compact_failure(
+            AIR_VARIANT_ARCHETYPES_DOMAIN_ID,
+            "air_variant_archetypes",
+            status_flags,
+        ) {
+            return Ok(());
+        }
+        let rows_end = AIR_VARIANT_ARCHETYPE_HEADER_LEN
+            .saturating_add(row_count.saturating_mul(AIR_VARIANT_ARCHETYPE_ROW_LEN));
+        need(payload, rows_end, "air_variant_archetypes rows")?;
+        let mut rows = Vec::with_capacity(row_count);
+        for index in 0..row_count {
+            let base = AIR_VARIANT_ARCHETYPE_HEADER_LEN + index * AIR_VARIANT_ARCHETYPE_ROW_LEN;
+            let variant_id = read_u32(payload, base);
+            if variant_id == 0 {
+                return Err("air_variant_archetypes row has zero variant_id".into());
+            }
+            let flags = read_u32(payload, base + 4);
+            if flags & !AIR_VARIANT_ARCHETYPE_KNOWN_FLAGS != 0 {
+                return Err("air_variant_archetypes row has unknown flags".into());
+            }
+            let reserved = read_u32(payload, base + 28);
+            if reserved != 0 {
+                return Err("air_variant_archetypes row reserved field is nonzero".into());
+            }
+            rows.push(AirVariantArchetypeRawRow {
+                variant_id,
+                flags,
+                equipment_token_raw: read_u32(payload, base + 8),
+                equipment_type_token_raw: read_u32(payload, base + 12),
+                interface_type_raw: read_u32(payload, base + 16),
+                air_superiority_weight_raw: read_i32(payload, base + 20),
+                source_mask: read_u32(payload, base + 24),
+                archetype_token: None,
+                base_airframe_token: None,
+                role_token: None,
+            });
+        }
+        let mut cursor = rows_end;
+        for row in &mut rows {
+            let archetype_token = read_string(payload, &mut cursor, "air archetype token")?;
+            let base_airframe_token = read_string(payload, &mut cursor, "air base airframe token")?;
+            let role_token = read_string(payload, &mut cursor, "air role token")?;
+            row.archetype_token = validate_optional_flagged_string(
+                archetype_token,
+                row.flags,
+                AIR_VARIANT_ARCHETYPE_ROW_FLAG_ARCHETYPE,
+                "air_variant_archetypes archetype",
+            )?;
+            row.base_airframe_token = validate_optional_flagged_string(
+                base_airframe_token,
+                row.flags,
+                AIR_VARIANT_ARCHETYPE_ROW_FLAG_BASE_AIRFRAME,
+                "air_variant_archetypes base_airframe",
+            )?;
+            row.role_token = validate_optional_flagged_string(
+                role_token,
+                row.flags,
+                AIR_VARIANT_ARCHETYPE_ROW_FLAG_ROLE,
+                "air_variant_archetypes role",
+            )?;
+        }
+        if cursor != payload.len() {
+            return Err("air_variant_archetypes payload has trailing bytes".into());
+        }
+        // D46's lane always sets DELTA_DATA, but the first successful frame is a
+        // complete implicit baseline; later frames are sparse upsert/deletes.
+        let sparse = self.implicit_delta_baseline_or_sparse(AIR_VARIANT_ARCHETYPES_DOMAIN_ID);
+        if !sparse {
+            self.air_variant_archetypes.clear();
+        }
+        for row in rows {
+            if row.flags & ROW_FLAG_DELETED_LOW_BIT != 0 {
+                self.air_variant_archetypes.remove(&row.variant_id);
+                continue;
+            }
+            self.air_variant_archetypes.insert(
+                row.variant_id,
+                AirVariantArchetypeState {
+                    variant_id: row.variant_id,
+                    equipment_token_raw: row.equipment_token_raw,
+                    equipment_type_token_raw: row.equipment_type_token_raw,
+                    interface_type_raw: row.interface_type_raw,
+                    air_superiority_weight_raw: if row.flags
+                        & AIR_VARIANT_ARCHETYPE_ROW_FLAG_AIR_SUPERIORITY_WEIGHT
+                        != 0
+                    {
+                        Some(row.air_superiority_weight_raw)
+                    } else {
+                        None
+                    },
+                    source_mask: row.source_mask,
+                    archetype_token: row.archetype_token,
+                    base_airframe_token: row.base_airframe_token,
+                    role_token: row.role_token,
+                    static_catalog_hash,
+                    fixed_scale_raw,
+                },
+            );
+        }
+        self.mark_fold_domain_success(AIR_VARIANT_ARCHETYPES_DOMAIN_ID);
+        Ok(())
+    }
+
+    // --- DOMAIN 47 characters_leaders_cabinet_live (full each frame) ------
+    fn fold_characters_leaders_cabinet_live(&mut self, payload: &[u8]) -> Result<(), String> {
+        let decoded = domain47::decode_payload_rows(0, payload)
+            .map_err(|errors| format!("characters_leaders_cabinet_live: {}", errors.join("; ")))?;
+        if compact_status_is_failure(decoded.status_flags) {
+            self.mark_fold_domain_unknown(
+                CHARACTERS_LEADERS_CABINET_DOMAIN_ID,
+                "failure_status",
+                format!(
+                    "characters_leaders_cabinet_live failure status {:#x}; character/leader/cabinet state retained from prior valid hour",
+                    decoded.status_flags & COMPACT_STATUS_FAILURE_MASK
+                ),
+            );
+            return Ok(());
+        }
+        if (decoded.status_flags & COMPACT_STATUS_DELTA_DATA) != 0 {
+            self.mark_fold_domain_unknown(
+                CHARACTERS_LEADERS_CABINET_DOMAIN_ID,
+                "delta_unsupported",
+                "characters_leaders_cabinet_live DELTA_DATA is unsupported; character/leader/cabinet state retained from prior valid hour",
+            );
+            return Ok(());
+        }
+        if decoded.rows.is_empty() {
+            self.mark_fold_domain_unknown(
+                CHARACTERS_LEADERS_CABINET_DOMAIN_ID,
+                "empty_implausible",
+                "characters_leaders_cabinet_live emitted zero rows without failure status; a loaded campaign with zero live characters is implausible, so prior character/leader/cabinet state was retained",
+            );
+            return Ok(());
+        }
+
+        let excluded_rows = decoded
+            .rows
+            .iter()
+            .filter(|row| {
+                matches!(
+                    row,
+                    domain47::DecodedDomain47Row::UnitLeaderTrait { .. }
+                        | domain47::DecodedDomain47Row::AdvisorRoster { .. }
+                        | domain47::DecodedDomain47Row::AppointedAdvisor { .. }
+                        | domain47::DecodedDomain47Row::CharacterPortrait { .. }
+                )
+            })
+            .count();
+        if excluded_rows != 0 {
+            // Excluded fail-closed scope: unit_leader_trait token rows depend on
+            // a CUnitLeaderTrait vtable root that is blocked pending current-build
+            // revalidation. Advisor roster, appointed advisor, and portrait rows
+            // also stay blocked pending CAdvisor/feed revalidation, and domain 14
+            // remains the owner of politics.appointed_advisors.
+            self.mark_fold_domain_unknown(
+                CHARACTERS_LEADERS_CABINET_DOMAIN_ID,
+                "excluded_rows_present",
+                format!(
+                    "characters_leaders_cabinet_live carried {excluded_rows} excluded advisor/appointee/portrait/trait row(s); prior character/leader/cabinet state retained"
+                ),
+            );
+            return Ok(());
+        }
+
+        self.clear_domain47_country_fields();
+        for row in decoded.rows {
+            match row {
+                domain47::DecodedDomain47Row::Character {
+                    country_tag_db_id,
+                    char_id,
+                    name,
+                    token,
+                } => {
+                    let sidecar = self.domain47_sidecar_mut(country_tag_db_id);
+                    ensure_json_array_mut(sidecar, "characters").push(json!({
+                        "char_id": char_id,
+                        "name": name,
+                        "token": token,
+                    }));
+                }
+                domain47::DecodedDomain47Row::UnitLeader {
+                    country_tag_db_id,
+                    unit_leader_id,
+                    char_id,
+                    leader_kind,
+                    skill,
+                    experience_raw,
+                    attack,
+                    defense,
+                    planning,
+                    logistics,
+                    maneuvering,
+                    coordination,
+                    token,
+                    name,
+                } => {
+                    let sidecar = self.domain47_sidecar_mut(country_tag_db_id);
+                    ensure_json_array_mut(sidecar, "unit_leaders").push(json!({
+                        "unit_leader_id": unit_leader_id,
+                        "char_id": char_id,
+                        "leader_kind": domain47_unit_leader_kind(leader_kind),
+                        "leader_kind_raw": leader_kind,
+                        "skill": skill,
+                        "experience_raw": experience_raw,
+                        "attack": attack,
+                        "defense": defense,
+                        "planning": planning,
+                        "logistics": logistics,
+                        "maneuvering": maneuvering,
+                        "coordination": coordination,
+                        "token": token,
+                        "name": name,
+                    }));
+                }
+                domain47::DecodedDomain47Row::CountryLeaderRole {
+                    country_tag_db_id,
+                    char_id,
+                    name,
+                    token,
+                } => {
+                    let sidecar = self.domain47_sidecar_mut(country_tag_db_id);
+                    ensure_json_array_mut(sidecar, "country_leader_roles").push(json!({
+                        "char_id": char_id,
+                        "name": name,
+                        "token": token,
+                    }));
+                }
+                domain47::DecodedDomain47Row::ActiveRuler {
+                    country_tag_db_id,
+                    char_id,
+                    ruling_party,
+                    name,
+                    token,
+                    leader_vec_size,
+                    ambiguous,
+                } => {
+                    let commanders =
+                        ensure_json_object_mut(self.country_mut(country_tag_db_id), "commanders");
+                    commanders.insert(
+                        "leader".into(),
+                        json!({
+                            "char_id": char_id,
+                            "name": name.clone(),
+                            "token": token.clone(),
+                            "ideology_group": ruling_party.clone(),
+                            "source": "C",
+                            "ambiguous": ambiguous,
+                        }),
+                    );
+                    let sidecar = self.domain47_sidecar_mut(country_tag_db_id);
+                    ensure_json_array_mut(sidecar, "active_rulers").push(json!({
+                        "char_id": char_id,
+                        "ruling_party": ruling_party,
+                        "name": name,
+                        "token": token,
+                        "leader_vec_size": leader_vec_size,
+                        "ambiguous": ambiguous,
+                    }));
+                }
+                domain47::DecodedDomain47Row::UnitLeaderTrait { .. }
+                | domain47::DecodedDomain47Row::AdvisorRoster { .. }
+                | domain47::DecodedDomain47Row::AppointedAdvisor { .. }
+                | domain47::DecodedDomain47Row::CharacterPortrait { .. } => unreachable!(
+                    "excluded domain47 rows are rejected before the fold mutates state"
+                ),
+            }
+        }
+
+        self.mark_fold_domain_success(CHARACTERS_LEADERS_CABINET_DOMAIN_ID);
+        Ok(())
+    }
+
+    fn clear_domain47_country_fields(&mut self) {
+        for country in self.countries.values_mut() {
+            if let Some(Value::Object(commanders)) = country.get_mut("commanders") {
+                commanders.remove("leader");
+                if commanders.is_empty() {
+                    country.remove("commanders");
+                }
+            }
+            if let Some(Value::Object(extra)) = country.get_mut("extra") {
+                extra.remove(DOMAIN47_R2_KEY);
+                if extra.is_empty() {
+                    country.remove("extra");
+                }
+            }
+        }
+    }
+
+    fn domain47_sidecar_mut(&mut self, tag_db_id: u32) -> &mut Map<String, Value> {
+        let extra = ensure_json_object_mut(self.country_mut(tag_db_id), "extra");
+        ensure_json_object_mut(extra, DOMAIN47_R2_KEY)
+    }
+
+    // --- DOMAIN 52 occupation_resistance_compliance_live (baseline + delta) -
+    fn fold_occupation_resistance_compliance(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(payload, OCCUPATION_HEADER_LEN, "occupation header")?;
+        let row_count = read_u32(payload, 8) as usize;
+        let status_flags = read_u32(payload, 16);
+        let expected =
+            OCCUPATION_HEADER_LEN.saturating_add(row_count.saturating_mul(OCCUPATION_ROW_LEN));
+        if payload.len() != expected {
+            return Err(format!("occupation len {} != {expected}", payload.len()));
+        }
+        if compact_status_is_failure(status_flags) {
+            self.occupation_unknown_this_hour = true;
+            self.note(format!(
+                "occupation_resistance_compliance_live failure status {:#x}; occupation fields unknown this hour",
+                status_flags & COMPACT_STATUS_FAILURE_MASK
+            ));
+            return Ok(());
+        }
+        let delta = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
+        if delta && !self.delta_baselines_seen.contains(&52) {
+            self.occupation_unknown_this_hour = true;
+            self.record_domain_problem(52, "delta_before_baseline");
+            self.note(
+                "occupation_resistance_compliance_live delta_before_baseline; occupation fields unknown this hour",
+            );
+            return Ok(());
+        }
+        if !delta {
+            for state in self.states.values_mut() {
+                state.remove("occupation");
+                state.remove("occupation_law");
+            }
+        }
+
+        let mut cursor = OCCUPATION_HEADER_LEN;
+        for row_index in 0..row_count {
+            let state_id = read_u32(payload, cursor);
+            let owner_tag_db_id = read_u32(payload, cursor + 4);
+            let controller_tag_db_id = read_u32(payload, cursor + 8);
+            let occupied_country_tag_db_id = read_u32(payload, cursor + 12);
+            let resistance_raw = read_i32(payload, cursor + 16);
+            let compliance_raw = read_i32(payload, cursor + 20);
+            let resistance_speed_raw = read_i32(payload, cursor + 24);
+            let compliance_speed_raw = read_i32(payload, cursor + 28);
+            let garrison_need_raw = read_i32(payload, cursor + 32);
+            let garrison_equilibrium_raw = read_i32(payload, cursor + 36);
+            let garrison_progress_raw = read_i32(payload, cursor + 40);
+            let occupation_law_token_id = read_u32(payload, cursor + 44);
+            let garrison_template_id = read_u32(payload, cursor + 48);
+            let flags = read_u32(payload, cursor + 52);
+            let reserved1 = read_u32(payload, cursor + 56);
+            let reserved2 = read_u32(payload, cursor + 60);
+            cursor += OCCUPATION_ROW_LEN;
+
+            if state_id == 0 {
+                return Err(format!("occupation row {row_index} has zero state_id"));
+            }
+            if flags & !OCC_ROW_KNOWN_FLAGS != 0 {
+                return Err(format!(
+                    "occupation row {row_index} has unknown flags {flags:#x}"
+                ));
+            }
+            if reserved1 != 0 || reserved2 != 0 {
+                return Err(format!(
+                    "occupation row {row_index} reserved field is nonzero"
+                ));
+            }
+            if flags & OCC_ROW_FLAG_OWNER != 0 && owner_tag_db_id == 0 {
+                return Err(format!(
+                    "occupation row {row_index} has owner flag without tag"
+                ));
+            }
+            if flags & OCC_ROW_FLAG_CONTROLLER != 0 && controller_tag_db_id == 0 {
+                return Err(format!(
+                    "occupation row {row_index} has controller flag without tag"
+                ));
+            }
+            if flags & OCC_ROW_FLAG_OCCUPIED_TAG_DERIVED != 0 && occupied_country_tag_db_id == 0 {
+                return Err(format!(
+                    "occupation row {row_index} has occupied-country flag without tag"
+                ));
+            }
+
+            let mut occupation = Map::new();
+            if flags & OCC_ROW_FLAG_RESISTANCE != 0 {
+                occupation.insert(
+                    "resistance".into(),
+                    json!(resistance_raw as f64 / FIXED_SCALE),
+                );
+            }
+            if flags & OCC_ROW_FLAG_COMPLIANCE != 0 {
+                occupation.insert(
+                    "compliance".into(),
+                    json!(compliance_raw as f64 / FIXED_SCALE),
+                );
+            }
+            if flags & OCC_ROW_FLAG_RESISTANCE_SPEED != 0 {
+                occupation.insert(
+                    "resistance_speed".into(),
+                    json!(resistance_speed_raw as f64 / FIXED_SCALE),
+                );
+            }
+            if flags & OCC_ROW_FLAG_COMPLIANCE_SPEED != 0 {
+                occupation.insert(
+                    "compliance_speed".into(),
+                    json!(compliance_speed_raw as f64 / FIXED_SCALE),
+                );
+            }
+            if flags & OCC_ROW_FLAG_OCCUPIED_STATE != 0 {
+                if flags & OCC_ROW_FLAG_CONTROLLER != 0 {
+                    occupation.insert(
+                        "occupier_tag".into(),
+                        json!(controller_tag_db_id.to_string()),
+                    );
+                }
+                if flags & OCC_ROW_FLAG_OCCUPIED_TAG_DERIVED != 0 {
+                    occupation.insert(
+                        "occupied_country_tag".into(),
+                        json!(occupied_country_tag_db_id.to_string()),
+                    );
+                } else if flags & OCC_ROW_FLAG_OWNER != 0 {
+                    occupation.insert(
+                        "occupied_country_tag".into(),
+                        json!(owner_tag_db_id.to_string()),
+                    );
+                }
+            }
+
+            let mut extra = Map::new();
+            if flags & OCC_ROW_FLAG_RESISTANCE_SPEED_UNAVAILABLE != 0 {
+                extra.insert("resistance_speed_status".into(), json!("unavailable"));
+            }
+            if flags & OCC_ROW_FLAG_GARRISON_SIGNALS_UNAVAILABLE != 0 {
+                extra.insert("garrison_signals_status".into(), json!("unavailable"));
+            } else {
+                extra.insert(
+                    "garrison_need".into(),
+                    json!(garrison_need_raw as f64 / FIXED_SCALE),
+                );
+                extra.insert(
+                    "garrison_equilibrium".into(),
+                    json!(garrison_equilibrium_raw as f64 / FIXED_SCALE),
+                );
+                extra.insert(
+                    "garrison_progress".into(),
+                    json!(garrison_progress_raw as f64 / FIXED_SCALE),
+                );
+            }
+            if flags & OCC_ROW_FLAG_OCCUPATION_LAW_UNAVAILABLE != 0 {
+                extra.insert("occupation_law_status".into(), json!("unavailable"));
+            }
+            if flags & OCC_ROW_FLAG_OCCUPATION_LAW_TOKEN != 0 {
+                extra.insert(
+                    "occupation_law_token_id".into(),
+                    json!(occupation_law_token_id),
+                );
+                extra.insert(
+                    "occupation_law_token_encoding".into(),
+                    json!("fnv1a32_name_hash"),
+                );
+            }
+            if flags & OCC_ROW_FLAG_COUNTRY_DEFAULT_LAW_TOKEN != 0 {
+                extra.insert(
+                    "occupation_law_token_source".into(),
+                    json!("controller_country_default"),
+                );
+            }
+            if flags & OCC_ROW_FLAG_GARRISON_TEMPLATE != 0 {
+                extra.insert("garrison_template_id".into(), json!(garrison_template_id));
+            }
+            if flags & OCC_ROW_FLAG_OCCUPATION_STATUS_ROOT != 0 {
+                extra.insert("occupation_status_root".into(), json!(true));
+            }
+            if !extra.is_empty() {
+                occupation.insert(
+                    "_r2_occupation_resistance_compliance_live".into(),
+                    Value::Object(extra),
+                );
+            }
+
+            let state = self.states.entry(state_id.to_string()).or_default();
+            state.insert("occupation_law".into(), Value::Null);
+            if occupation.is_empty() {
+                state.remove("occupation");
+            } else {
+                state.insert("occupation".into(), Value::Object(occupation));
+            }
+        }
+        if !delta {
+            self.delta_baselines_seen.insert(52);
+        }
+        Ok(())
+    }
+
+    // --- DOMAIN 24 weather_live (baseline + delta, R2 map sidecar) --------
+    fn fold_weather(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(payload, WEATHER_HEADER_LEN, "weather header")?;
+        let region_count = read_u32(payload, 8) as usize;
+        let changed_rows = read_u32(payload, 12) as usize;
+        let status_flags = read_u32(payload, 16);
+        let province_count = read_u32(payload, 20) as usize;
+        let observed_region_rows = read_u32(payload, 24) as usize;
+        let observed_province_rows = read_u32(payload, 28) as usize;
+        let scale_raw = read_u32(payload, 32);
+        let active_region_count = read_u32(payload, 36) as usize;
+        let reserved0 = read_u32(payload, 40);
+        let reserved1 = read_u32(payload, 44);
+        if self.handle_compact_failure(WEATHER_DOMAIN_ID, "weather_live", status_flags) {
+            return Ok(());
+        }
+        if self.reject_delta_before_baseline(WEATHER_DOMAIN_ID, "weather_live", status_flags) {
+            return Ok(());
+        }
+
+        let emitted_rows = region_count.saturating_add(province_count);
+        let expected_len = WEATHER_HEADER_LEN
+            .saturating_add(region_count.saturating_mul(WEATHER_REGION_ROW_LEN))
+            .saturating_add(province_count.saturating_mul(WEATHER_PROVINCE_ROW_LEN));
+        if payload.len() != expected_len {
+            return Err(format!("weather len {} != {expected_len}", payload.len()));
+        }
+        let delta = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
+        ensure_fixed_scale("weather", "scale_raw", scale_raw)?;
+        if observed_region_rows != WEATHER_REGION_ROWS {
+            return Err(format!(
+                "weather observed_region_rows {observed_region_rows} != {WEATHER_REGION_ROWS}"
+            ));
+        }
+        if observed_province_rows != 0
+            && !(WEATHER_MIN_PROVINCE_ROWS..=WEATHER_MAX_PROVINCE_ROWS)
+                .contains(&observed_province_rows)
+        {
+            return Err(format!(
+                "weather observed_province_rows {observed_province_rows} outside {WEATHER_MIN_PROVINCE_ROWS}..={WEATHER_MAX_PROVINCE_ROWS}"
+            ));
+        }
+        if !delta && region_count != WEATHER_REGION_ROWS {
+            return Err(format!(
+                "weather full snapshot region_count {region_count} != {WEATHER_REGION_ROWS}"
+            ));
+        }
+        if !delta && observed_province_rows != 0 && province_count != observed_province_rows {
+            return Err(format!(
+                "weather full snapshot province_count {province_count} != observed_province_rows {observed_province_rows}"
+            ));
+        }
+        if region_count > observed_region_rows {
+            return Err(format!(
+                "weather region_count {region_count} > observed_region_rows {observed_region_rows}"
+            ));
+        }
+        if observed_province_rows == 0 && province_count != 0 {
+            return Err(
+                "weather province_count emitted with zero observed_province_rows".to_string(),
+            );
+        }
+        if province_count > observed_province_rows {
+            return Err(format!(
+                "weather province_count {province_count} > observed_province_rows {observed_province_rows}"
+            ));
+        }
+        if changed_rows > emitted_rows {
+            return Err(format!(
+                "weather changed_rows {changed_rows} > emitted_rows {emitted_rows}"
+            ));
+        }
+        if delta && changed_rows != emitted_rows {
+            return Err(format!(
+                "weather delta changed_rows {changed_rows} != emitted_rows {emitted_rows}"
+            ));
+        }
+        if active_region_count > region_count {
+            return Err(format!(
+                "weather active_region_count {active_region_count} > region_count {region_count}"
+            ));
+        }
+        if reserved0 != 0 || reserved1 != 0 {
+            return Err(format!(
+                "weather reserved fields are nonzero ({reserved0}, {reserved1})"
+            ));
+        }
+
+        let mut regions = Vec::with_capacity(region_count);
+        let mut cursor = WEATHER_HEADER_LEN;
+        let mut seen_regions = BTreeSet::new();
+        let mut computed_active_regions = 0usize;
+        for row_index in 0..region_count {
+            let region_id = read_u32(payload, cursor);
+            let flags = read_u32(payload, cursor + 4);
+            let temperature_raw = read_i32(payload, cursor + 8);
+            let phenomenon = read_u32(payload, cursor + 12);
+            let next_weather_change_raw = read_u32(payload, cursor + 16);
+            let active_modifier_count = read_u32(payload, cursor + 20);
+            let intensity = read_u32(payload, cursor + 24);
+            let row_reserved = read_u32(payload, cursor + 28);
+            cursor += WEATHER_REGION_ROW_LEN;
+            if region_id > WEATHER_MAX_REGION_ID || !seen_regions.insert(region_id) {
+                return Err(format!(
+                    "weather region row {row_index} has invalid/duplicate region_id {region_id}"
+                ));
+            }
+            if flags & !WEATHER_REGION_KNOWN_FLAGS != 0 {
+                return Err(format!(
+                    "weather region row {row_index} has unknown flags {flags}"
+                ));
+            }
+            if !(-WEATHER_MAX_TEMPERATURE_RAW..=WEATHER_MAX_TEMPERATURE_RAW)
+                .contains(&temperature_raw)
+            {
+                return Err(format!(
+                    "weather region row {row_index} has invalid temperature_raw {temperature_raw}"
+                ));
+            }
+            if phenomenon > WEATHER_MAX_PHENOMENON {
+                return Err(format!(
+                    "weather region row {row_index} has invalid phenomenon {phenomenon}"
+                ));
+            }
+            if active_modifier_count > WEATHER_MAX_ACTIVE_MODIFIERS {
+                return Err(format!(
+                    "weather region row {row_index} has invalid active_modifier_count {active_modifier_count}"
+                ));
+            }
+            if flags & WEATHER_REGION_ACTIVE_SIGNAL != 0 {
+                computed_active_regions = computed_active_regions.saturating_add(1);
+            }
+            if row_reserved != 0 {
+                return Err(format!(
+                    "weather region row {row_index} reserved field is {row_reserved}"
+                ));
+            }
+            regions.push(WeatherRegionState {
+                region_id,
+                flags,
+                temperature_raw,
+                phenomenon,
+                next_weather_change_raw,
+                active_modifier_count,
+                intensity,
+                scale_raw,
+            });
+        }
+        if computed_active_regions != active_region_count {
+            return Err(format!(
+                "weather active_region_count {active_region_count} != computed {computed_active_regions}"
+            ));
+        }
+
+        let mut provinces = Vec::with_capacity(province_count);
+        let mut seen_provinces = BTreeSet::new();
+        for row_index in 0..province_count {
+            let province_id = read_u32(payload, cursor);
+            let flags = read_u32(payload, cursor + 4);
+            let temperature_raw = read_i32(payload, cursor + 8);
+            let temperature_change_raw = read_i32(payload, cursor + 12);
+            let water_raw = read_i32(payload, cursor + 16);
+            let snow_raw = read_i32(payload, cursor + 20);
+            let custom_modifier_count = read_u32(payload, cursor + 24);
+            let row_reserved = read_u32(payload, cursor + 28);
+            cursor += WEATHER_PROVINCE_ROW_LEN;
+            if province_id == 0 || !seen_provinces.insert(province_id) {
+                return Err(format!(
+                    "weather province row {row_index} has invalid/duplicate province_id {province_id}"
+                ));
+            }
+            if flags & !WEATHER_PROVINCE_KNOWN_FLAGS != 0 {
+                return Err(format!(
+                    "weather province row {row_index} has unknown flags {flags}"
+                ));
+            }
+            let temp_present = flags & WEATHER_PROVINCE_TEMP_PRESENT != 0;
+            let temp_change_present = flags & WEATHER_PROVINCE_TEMP_CHANGE_PRESENT != 0;
+            let water_present = flags & WEATHER_PROVINCE_WATER_PRESENT != 0;
+            let snow_present = flags & WEATHER_PROVINCE_SNOW_PRESENT != 0;
+            let mud_present = flags & WEATHER_PROVINCE_MUD_PRESENT != 0;
+            let mud_active = flags & WEATHER_PROVINCE_MUD_ACTIVE != 0;
+            let custom_present = flags & WEATHER_PROVINCE_CUSTOM_MODIFIER_COUNT_PRESENT != 0;
+            let map_recolor = flags & WEATHER_PROVINCE_MAP_RECOLOR != 0;
+            let dynamic_lut = flags & WEATHER_PROVINCE_DYNAMIC_LUT != 0;
+            if mud_active && !mud_present {
+                return Err(format!(
+                    "weather province row {row_index} has mud_active without mud_present"
+                ));
+            }
+            if map_recolor != (temp_present || water_present || snow_present) {
+                return Err(format!(
+                    "weather province row {row_index} has inconsistent map recolor flag"
+                ));
+            }
+            if dynamic_lut != (snow_present || mud_present) {
+                return Err(format!(
+                    "weather province row {row_index} has inconsistent dynamic LUT flag"
+                ));
+            }
+            validate_weather_i32_optional(
+                row_index,
+                temp_present,
+                temperature_raw,
+                -WEATHER_MAX_TEMPERATURE_RAW,
+                WEATHER_MAX_TEMPERATURE_RAW,
+                "temperature_raw",
+            )?;
+            validate_weather_i32_optional(
+                row_index,
+                temp_change_present,
+                temperature_change_raw,
+                -WEATHER_MAX_TEMP_CHANGE_RAW,
+                WEATHER_MAX_TEMP_CHANGE_RAW,
+                "temperature_change_raw",
+            )?;
+            validate_weather_i32_optional(
+                row_index,
+                water_present,
+                water_raw,
+                0,
+                WEATHER_MAX_PRECIP_RAW,
+                "water_raw",
+            )?;
+            validate_weather_i32_optional(
+                row_index,
+                snow_present,
+                snow_raw,
+                0,
+                WEATHER_MAX_PRECIP_RAW,
+                "snow_raw",
+            )?;
+            if custom_present {
+                if custom_modifier_count > WEATHER_MAX_ACTIVE_MODIFIERS {
+                    return Err(format!(
+                        "weather province row {row_index} has invalid custom_modifier_count {custom_modifier_count}"
+                    ));
+                }
+            } else if custom_modifier_count != 0 {
+                return Err(format!(
+                    "weather province row {row_index} has custom_modifier_count without presence flag"
+                ));
+            }
+            if row_reserved != 0 {
+                return Err(format!(
+                    "weather province row {row_index} reserved field is {row_reserved}"
+                ));
+            }
+            provinces.push(WeatherProvinceState {
+                province_id,
+                flags,
+                temperature_raw,
+                temperature_change_raw,
+                water_raw,
+                snow_raw,
+                custom_modifier_count,
+                scale_raw,
+            });
+        }
+
+        if !delta {
+            self.weather_live = Some(WeatherLiveState::default());
+            self.delta_baselines_seen.insert(WEATHER_DOMAIN_ID);
+        }
+        let weather = self
+            .weather_live
+            .get_or_insert_with(WeatherLiveState::default);
+        weather.active_region_count = active_region_count as u32;
+        weather.observed_region_rows = observed_region_rows as u32;
+        weather.observed_province_rows = observed_province_rows as u32;
+        weather.scale_raw = scale_raw;
+        for row in regions {
+            weather.regions.insert(row.region_id, row);
+        }
+        for row in provinces {
+            weather.provinces.insert(row.province_id, row);
+        }
+        self.mark_fold_domain_success(WEATHER_DOMAIN_ID);
+        Ok(())
+    }
+
+    // --- DOMAIN 26 division_equipment (baseline + delta) ------------------
+    fn fold_division_equipment(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(
+            payload,
+            DIVISION_EQUIPMENT_HEADER_LEN,
+            "division_equipment header",
+        )?;
+        let row_count = read_u32(payload, 8) as usize;
+        let changed_rows = read_u32(payload, 12) as usize;
+        let status_flags = read_u32(payload, 16);
+        let scale_raw = read_u32(payload, 20);
+        let root_rows = read_u32(payload, 24) as usize;
+        let observed_division_rows = read_u32(payload, 28) as usize;
+        let equipment_entry_count = read_u32(payload, 32) as usize;
+        let observed_equipment_rows = read_u32(payload, 36) as usize;
+        if self.handle_compact_failure(
+            DIVISION_EQUIPMENT_DOMAIN_ID,
+            "division_equipment",
+            status_flags,
+        ) {
+            return Ok(());
+        }
+        if self.reject_delta_before_baseline(
+            DIVISION_EQUIPMENT_DOMAIN_ID,
+            "division_equipment",
+            status_flags,
+        ) {
+            return Ok(());
+        }
+        ensure_fixed_scale("division_equipment", "scale_raw", scale_raw)?;
+        let expected_len = DIVISION_EQUIPMENT_HEADER_LEN
+            .saturating_add(root_rows.saturating_mul(DIVISION_EQUIPMENT_ROOT_ROW_LEN))
+            .saturating_add(equipment_entry_count.saturating_mul(DIVISION_EQUIPMENT_ENTRY_ROW_LEN));
+        if payload.len() != expected_len {
+            return Err(format!(
+                "division_equipment len {} != {expected_len}",
+                payload.len()
+            ));
+        }
+        if row_count != root_rows {
+            return Err(format!(
+                "division_equipment row_count {row_count} != root_rows {root_rows}"
+            ));
+        }
+        if changed_rows > row_count {
+            return Err(format!(
+                "division_equipment changed_rows {changed_rows} > row_count {row_count}"
+            ));
+        }
+        let delta = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
+        if delta && changed_rows != row_count {
+            return Err(format!(
+                "division_equipment delta changed_rows {changed_rows} != row_count {row_count}"
+            ));
+        }
+        if root_rows > observed_division_rows {
+            return Err(format!(
+                "division_equipment root_rows {root_rows} > observed_division_rows {observed_division_rows}"
+            ));
+        }
+        if !delta && root_rows != observed_division_rows {
+            return Err(format!(
+                "division_equipment full root_rows {root_rows} != observed_division_rows {observed_division_rows}"
+            ));
+        }
+        if !delta && equipment_entry_count != observed_equipment_rows {
+            return Err(format!(
+                "division_equipment full equipment_entry_count {equipment_entry_count} != observed_equipment_rows {observed_equipment_rows}"
+            ));
+        }
+        if equipment_entry_count > observed_equipment_rows {
+            return Err(format!(
+                "division_equipment emitted entries {equipment_entry_count} > observed_equipment_rows {observed_equipment_rows}"
+            ));
+        }
+
+        let mut roots = Vec::with_capacity(root_rows);
+        let mut root_key_counts: BTreeMap<DivisionEquipmentKey, usize> = BTreeMap::new();
+        let mut declared_entries = 0usize;
+        let mut cursor = DIVISION_EQUIPMENT_HEADER_LEN;
+        for row_index in 0..root_rows {
+            let owner_tag_db_id = read_u32(payload, cursor);
+            let div_id = read_u32(payload, cursor + 4);
+            let flags = read_u32(payload, cursor + 8);
+            let template_id = read_u32(payload, cursor + 12);
+            let entry_first = read_u32(payload, cursor + 16) as usize;
+            let entry_count = read_u32(payload, cursor + 20) as usize;
+            cursor += DIVISION_EQUIPMENT_ROOT_ROW_LEN;
+            if owner_tag_db_id == 0 {
+                return Err(format!(
+                    "division_equipment row {row_index} has zero owner_tag_db_id"
+                ));
+            }
+            if div_id == 0 {
+                return Err(format!(
+                    "division_equipment row {row_index} has invalid div_id {div_id}"
+                ));
+            }
+            let key = DivisionEquipmentKey {
+                owner_tag_db_id,
+                div_id,
+            };
+            *root_key_counts.entry(key).or_default() += 1;
+            if flags & !DIVISION_EQUIPMENT_ROOT_KNOWN_FLAGS != 0 {
+                return Err(format!(
+                    "division_equipment row {row_index} has unknown flags {flags}"
+                ));
+            }
+            let deleted = flags & DIVISION_EQUIPMENT_ROOT_FLAG_DELETED != 0;
+            let has_template = flags & DIVISION_EQUIPMENT_ROOT_FLAG_TEMPLATE_PRESENT != 0;
+            if deleted {
+                if flags != DIVISION_EQUIPMENT_ROOT_FLAG_DELETED
+                    || template_id != 0
+                    || entry_count != 0
+                    || entry_first > equipment_entry_count
+                {
+                    return Err(format!(
+                        "division_equipment delete row {row_index} has non-delete payload"
+                    ));
+                }
+            } else {
+                if !has_template && template_id != 0 {
+                    return Err(format!(
+                        "division_equipment row {row_index} has template_id without flag"
+                    ));
+                }
+                if entry_first.saturating_add(entry_count) > equipment_entry_count {
+                    return Err(format!(
+                        "division_equipment row {row_index} entry range {entry_first}+{entry_count} exceeds {equipment_entry_count}"
+                    ));
+                }
+            }
+            declared_entries = declared_entries.saturating_add(entry_count);
+            roots.push(DivisionEquipmentRootRow {
+                key,
+                entry_first,
+                entry_count,
+                deleted,
+            });
+        }
+        if declared_entries != equipment_entry_count {
+            return Err(format!(
+                "division_equipment entry_count {equipment_entry_count} != declared {declared_entries}"
+            ));
+        }
+
+        let mut entries = Vec::with_capacity(equipment_entry_count);
+        for entry_index in 0..equipment_entry_count {
+            let variant_id = read_u32(payload, cursor);
+            let reserved = read_u32(payload, cursor + 4);
+            let amount_raw = read_i64(payload, cursor + 8);
+            cursor += DIVISION_EQUIPMENT_ENTRY_ROW_LEN;
+            if variant_id == 0 || variant_id > i32::MAX as u32 {
+                return Err(format!(
+                    "division_equipment entry row {entry_index} has invalid variant_id {variant_id}"
+                ));
+            }
+            if amount_raw <= 0 || amount_raw > 1_000_000_000_000_000 {
+                return Err(format!(
+                    "division_equipment entry row {entry_index} has invalid amount_raw {amount_raw}"
+                ));
+            }
+            if reserved != 0 {
+                return Err(format!(
+                    "division_equipment entry row {entry_index} reserved field is nonzero"
+                ));
+            }
+            entries.push((variant_id, amount_raw));
+        }
+
+        if !delta {
+            self.division_equipment.clear();
+            self.delta_baselines_seen
+                .insert(DIVISION_EQUIPMENT_DOMAIN_ID);
+        }
+        let duplicate_keys = root_key_counts
+            .iter()
+            .filter_map(|(key, count)| (*count > 1).then_some(*key))
+            .collect::<BTreeSet<_>>();
+        let duplicate_rows = duplicate_keys
+            .iter()
+            .filter_map(|key| root_key_counts.get(key))
+            .copied()
+            .sum::<usize>();
+        for key in &duplicate_keys {
+            self.division_equipment_touched_this_hour.insert(*key);
+            self.division_equipment.remove(key);
+        }
+        if duplicate_rows > 0 {
+            self.note(format!(
+                "division_equipment_live dropped {duplicate_rows} duplicate-key row(s); prior equipment for {key_count} ambiguous key(s) cleared",
+                key_count = duplicate_keys.len()
+            ));
+        }
+        let mut seen_entries = BTreeSet::new();
+        for root in roots {
+            if duplicate_keys.contains(&root.key) {
+                continue;
+            }
+            self.division_equipment_touched_this_hour.insert(root.key);
+            if root.deleted {
+                self.division_equipment.remove(&root.key);
+                continue;
+            }
+            let end = root.entry_first + root.entry_count;
+            let equipment: Vec<DivisionEquipmentEntryState> = entries[root.entry_first..end]
+                .iter()
+                .map(|(variant_id, amount_raw)| {
+                    if !seen_entries.insert((root.key.owner_tag_db_id, root.key.div_id, *variant_id))
+                    {
+                        return Err(format!(
+                            "division_equipment row owner={} div_id={} duplicates variant {variant_id}",
+                            root.key.owner_tag_db_id, root.key.div_id
+                        ));
+                    }
+                    Ok(DivisionEquipmentEntryState {
+                        variant_id: *variant_id,
+                        amount_raw: *amount_raw,
+                        scale_raw,
+                    })
+                })
+                .collect::<Result<_, String>>()?;
+            self.division_equipment.insert(root.key, equipment);
+        }
+        self.mark_fold_domain_success(DIVISION_EQUIPMENT_DOMAIN_ID);
+        Ok(())
+    }
+
+    // --- DOMAIN 41 special_projects (full replace) -----------------------
+    fn fold_special_projects(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(
+            payload,
+            SPECIAL_PROJECTS_HEADER_BASE_LEN,
+            "special_projects header",
+        )?;
+        let status_flags = read_u32(payload, 16);
+        let facility_count = read_u32(payload, 20) as usize;
+        let project_count = read_u32(payload, 24) as usize;
+        let scientist_count = read_u32(payload, 28) as usize;
+        let active_facility_count = read_u32(payload, 32) as usize;
+        let active_project_count = read_u32(payload, 36) as usize;
+        let active_scientist_count = read_u32(payload, 40) as usize;
+        let source_kind = read_u32(payload, 48);
+        let header_extension = read_u32(payload, 52);
+        let mut header_len = SPECIAL_PROJECTS_HEADER_BASE_LEN;
+        if header_extension >= 1 {
+            header_len = header_len.saturating_add(SPECIAL_PROJECTS_HEADER_ROOT_COUNTERS_LEN);
+        }
+        if header_extension >= 2 {
+            header_len = header_len.saturating_add(SPECIAL_PROJECTS_HEADER_REASON_COUNTERS_LEN);
+        }
+        let mut project_state_count = 0usize;
+        let mut breakthrough_count = 0usize;
+        if header_extension >= 3 {
+            need(
+                payload,
+                header_len + SPECIAL_PROJECTS_HEADER_PROGRESS_LEN,
+                "special_projects progress extension",
+            )?;
+            project_state_count = read_u32(payload, header_len) as usize;
+            breakthrough_count = read_u32(payload, header_len + 4) as usize;
+            header_len = header_len.saturating_add(SPECIAL_PROJECTS_HEADER_PROGRESS_LEN);
+        }
+        if self.handle_compact_failure(SPECIAL_PROJECTS_DOMAIN_ID, "special_projects", status_flags)
+        {
+            return Ok(());
+        }
+        if facility_count > active_facility_count
+            || project_count > active_project_count
+            || scientist_count > active_scientist_count
+        {
+            return Err("special_projects emitted row count exceeds active count".to_string());
+        }
+
+        let facilities_start = header_len;
+        let projects_start = facilities_start
+            .saturating_add(facility_count.saturating_mul(SPECIAL_PROJECTS_FACILITY_ROW_LEN));
+        let scientists_start = projects_start
+            .saturating_add(project_count.saturating_mul(SPECIAL_PROJECTS_PROJECT_ROW_LEN));
+        let project_states_start = scientists_start
+            .saturating_add(scientist_count.saturating_mul(SPECIAL_PROJECTS_SCIENTIST_ROW_LEN));
+        let breakthroughs_start = project_states_start.saturating_add(
+            project_state_count.saturating_mul(SPECIAL_PROJECTS_PROJECT_STATE_ROW_LEN),
+        );
+        let string_start = breakthroughs_start.saturating_add(
+            breakthrough_count.saturating_mul(SPECIAL_PROJECTS_BREAKTHROUGH_ROW_LEN),
+        );
+        need(payload, string_start, "special_projects rows")?;
+
+        let mut facilities = BTreeMap::new();
+        for index in 0..facility_count {
+            let base = facilities_start + index * SPECIAL_PROJECTS_FACILITY_ROW_LEN;
+            let id = read_u32(payload, base);
+            let province = read_u32(payload, base + 4);
+            let flags = read_u32(payload, base + 8);
+            let active_project_handle = read_u32(payload, base + 12);
+            let scientist_char_id = read_u32(payload, base + 16);
+            let unread_rewards = read_u32(payload, base + 20);
+            let reserved0 = read_u32(payload, base + 24);
+            let reserved1 = read_u32(payload, base + 28);
+            if id == 0 || facilities.contains_key(&id) {
+                return Err(format!("special_projects duplicate/zero facility id {id}"));
+            }
+            if flags & !SPECIAL_PROJECTS_FACILITY_KNOWN_FLAGS != 0 {
+                return Err(format!(
+                    "special_projects facility row {index} unknown flags {flags}"
+                ));
+            }
+            if flags & SPECIAL_PROJECTS_FACILITY_ACTIVE_PROJECT == 0 && active_project_handle != 0 {
+                return Err(format!(
+                    "special_projects facility row {index} active_project handle without flag"
+                ));
+            }
+            if flags & SPECIAL_PROJECTS_FACILITY_SCIENTIST == 0 && scientist_char_id != 0 {
+                return Err(format!(
+                    "special_projects facility row {index} scientist id without flag"
+                ));
+            }
+            if reserved0 != 0 || reserved1 != 0 {
+                return Err(format!(
+                    "special_projects facility row {index} reserved fields are nonzero"
+                ));
+            }
+            facilities.insert(
+                id,
+                SpecialProjectFacilityState {
+                    id,
+                    province,
+                    active_project_handle: (flags & SPECIAL_PROJECTS_FACILITY_ACTIVE_PROJECT != 0)
+                        .then_some(active_project_handle),
+                    scientist_char_id: (flags & SPECIAL_PROJECTS_FACILITY_SCIENTIST != 0)
+                        .then_some(scientist_char_id),
+                    unread_rewards,
+                    building: None,
+                },
+            );
+        }
+
+        let mut projects = BTreeMap::new();
+        for index in 0..project_count {
+            let base = projects_start + index * SPECIAL_PROJECTS_PROJECT_ROW_LEN;
+            let id = read_u32(payload, base);
+            let static_def_handle = read_u32(payload, base + 4);
+            let iterations = read_u32(payload, base + 8);
+            let worked_at_facility = read_u32(payload, base + 12);
+            let flags = read_u32(payload, base + 16);
+            let reserved = read_u32(payload, base + 20);
+            if id == 0 || projects.contains_key(&id) {
+                return Err(format!("special_projects duplicate/zero project id {id}"));
+            }
+            if flags & !SPECIAL_PROJECTS_PROJECT_WORKED_FACILITY != 0 {
+                return Err(format!(
+                    "special_projects project row {index} unknown flags {flags}"
+                ));
+            }
+            if flags & SPECIAL_PROJECTS_PROJECT_WORKED_FACILITY == 0 && worked_at_facility != 0 {
+                return Err(format!(
+                    "special_projects project row {index} worked_at_facility without flag"
+                ));
+            }
+            if reserved != 0 {
+                return Err(format!(
+                    "special_projects project row {index} reserved field is nonzero"
+                ));
+            }
+            projects.insert(
+                id,
+                SpecialProjectState {
+                    id,
+                    static_def_handle,
+                    iterations,
+                    worked_at_facility: (flags & SPECIAL_PROJECTS_PROJECT_WORKED_FACILITY != 0)
+                        .then_some(worked_at_facility),
+                },
+            );
+        }
+
+        let mut scientists = BTreeMap::new();
+        for index in 0..scientist_count {
+            let base = scientists_start + index * SPECIAL_PROJECTS_SCIENTIST_ROW_LEN;
+            let char_id = read_u32(payload, base);
+            let flags = read_u32(payload, base + 4);
+            let trait_count = read_u32(payload, base + 8);
+            let skill_values = [
+                read_i32(payload, base + 12),
+                read_i32(payload, base + 16),
+                read_i32(payload, base + 20),
+                read_i32(payload, base + 24),
+            ];
+            let reserved = read_u32(payload, base + 28);
+            if char_id == 0 || scientists.contains_key(&char_id) {
+                return Err(format!(
+                    "special_projects duplicate/zero scientist id {char_id}"
+                ));
+            }
+            if flags & !SPECIAL_PROJECTS_SCIENTIST_KNOWN_FLAGS != 0 {
+                return Err(format!(
+                    "special_projects scientist row {index} unknown flags {flags}"
+                ));
+            }
+            if flags & SPECIAL_PROJECTS_SCIENTIST_TRAIT_COUNT == 0 && trait_count != 0 {
+                return Err(format!(
+                    "special_projects scientist row {index} trait_count without flag"
+                ));
+            }
+            if flags & SPECIAL_PROJECTS_SCIENTIST_SKILLS == 0 && skill_values != [0, 0, 0, 0] {
+                return Err(format!(
+                    "special_projects scientist row {index} skill values without flag"
+                ));
+            }
+            if reserved != 0 {
+                return Err(format!(
+                    "special_projects scientist row {index} reserved field is nonzero"
+                ));
+            }
+            scientists.insert(
+                char_id,
+                SpecialProjectScientistState {
+                    char_id,
+                    trait_count: (flags & SPECIAL_PROJECTS_SCIENTIST_TRAIT_COUNT != 0)
+                        .then_some(trait_count),
+                    skill_values: (flags & SPECIAL_PROJECTS_SCIENTIST_SKILLS != 0)
+                        .then_some(skill_values),
+                    name_token: None,
+                    display_name: None,
+                },
+            );
+        }
+
+        let mut project_states = BTreeMap::new();
+        for index in 0..project_state_count {
+            let base = project_states_start + index * SPECIAL_PROJECTS_PROJECT_STATE_ROW_LEN;
+            let id = read_u32(payload, base);
+            let flags = read_u32(payload, base + 44);
+            if id == 0 || project_states.contains_key(&id) {
+                return Err(format!(
+                    "special_projects duplicate/zero project state id {id}"
+                ));
+            }
+            if flags & !SPECIAL_PROJECTS_PROJECT_STATE_COMPLETED != 0 {
+                return Err(format!(
+                    "special_projects project state row {index} unknown flags {flags}"
+                ));
+            }
+            project_states.insert(
+                id,
+                SpecialProjectProgressState {
+                    id,
+                    static_def_handle: read_u32(payload, base + 4),
+                    current_state_offset: read_u32(payload, base + 8),
+                    current_state_enum: read_u32(payload, base + 12),
+                    prototype_state_enum: read_u32(payload, base + 16),
+                    simple_state_1_enum: read_u32(payload, base + 20),
+                    simple_state_2_enum: read_u32(payload, base + 24),
+                    simple_state_3_enum: read_u32(payload, base + 28),
+                    prototype_iterations: read_u32(payload, base + 32),
+                    phase_progress_raw: read_u32(payload, base + 36),
+                    phase_target_raw: read_u32(payload, base + 40),
+                    completed: (header_extension >= 4)
+                        .then_some(flags & SPECIAL_PROJECTS_PROJECT_STATE_COMPLETED != 0),
+                },
+            );
+        }
+
+        let mut breakthroughs = Vec::with_capacity(breakthrough_count);
+        for index in 0..breakthrough_count {
+            let base = breakthroughs_start + index * SPECIAL_PROJECTS_BREAKTHROUGH_ROW_LEN;
+            let tag_db_id = read_u32(payload, base);
+            let specialization_handle = read_u32(payload, base + 4);
+            let points_raw = read_u32(payload, base + 8);
+            let reserved = read_u32(payload, base + 12);
+            if reserved != 0 {
+                return Err(format!(
+                    "special_projects breakthrough row {index} reserved field is nonzero"
+                ));
+            }
+            breakthroughs.push(SpecialProjectBreakthroughState {
+                tag_db_id,
+                specialization_handle,
+                points_raw,
+            });
+        }
+
+        let mut cursor = string_start;
+        for facility in facilities.values_mut() {
+            let building = read_string(payload, &mut cursor, "special_projects facility building")?;
+            if !building.is_empty() {
+                facility.building = Some(building);
+            }
+        }
+        for scientist in scientists.values_mut() {
+            let name_token = read_string(payload, &mut cursor, "special_projects scientist token")?;
+            let display_name =
+                read_string(payload, &mut cursor, "special_projects scientist display")?;
+            if !name_token.is_empty() {
+                scientist.name_token = Some(name_token);
+            }
+            if !display_name.is_empty() {
+                scientist.display_name = Some(display_name);
+            }
+        }
+        if cursor != payload.len() {
+            return Err(format!(
+                "special_projects payload has {} trailing byte(s)",
+                payload.len().saturating_sub(cursor)
+            ));
+        }
+
+        let source = match source_kind {
+            1 => "scan".to_string(),
+            2 => "bridge".to_string(),
+            other => format!("unknown:{other}"),
+        };
+        self.special_projects = Some(SpecialProjectsState {
+            facilities,
+            projects,
+            scientists,
+            project_states,
+            breakthroughs,
+            count: project_count as u32,
+            source,
+            header_extension,
+        });
+        self.mark_fold_domain_success(SPECIAL_PROJECTS_DOMAIN_ID);
+        Ok(())
+    }
+
+    // --- DOMAIN 45 focus/research/decisions depth ------------------------
+    fn fold_focus_research_decisions_depth(&mut self, payload: &[u8]) -> Result<(), String> {
+        let parsed = match parse_frd_depth_payload(payload) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                self.record_domain_problem(
+                    FOCUS_RESEARCH_DECISIONS_DEPTH_DOMAIN_ID,
+                    "malformed_payload",
+                );
+                return Err(err);
+            }
+        };
+
+        if parsed.depth_status_flags == 0 {
+            self.note(
+                "focus_research_decisions_depth depth_status_flags was zero; folded rows remain row-derived only".to_string(),
+            );
+        }
+
+        for row in parsed.focus_rows {
+            let metrics = self.frd_focus_metrics.entry(row.tag_db_id).or_default();
+            if row.kind == FRD_FOCUS_COMPLETED_COUNT_INCREASED && row.current_completed != u32::MAX
+            {
+                metrics.completed_count = Some(row.current_completed);
+            }
+            if row.kind == FRD_FOCUS_COMPLETED_COUNT_INCREASED && !row.completed_token.is_empty() {
+                push_unique_string(&mut metrics.completed_tokens, row.completed_token.clone());
+            }
+            if matches!(row.kind, FRD_FOCUS_CURRENT_STARTED | FRD_FOCUS_CHANGED)
+                && !row.to_token.is_empty()
+            {
+                if row.focus_kind == FRD_FOCUS_CONTINUOUS_KIND {
+                    metrics.current_continuous = Some(row.to_token.clone());
+                } else {
+                    metrics.current = Some(row.to_token.clone());
+                }
+            }
+            if row.kind == FRD_FOCUS_STOPPED {
+                if row.focus_kind == FRD_FOCUS_CONTINUOUS_KIND {
+                    metrics.current_continuous = None;
+                } else {
+                    metrics.current = None;
+                }
+            }
+            self.frd_focus_events_this_hour
+                .entry(row.tag_db_id)
+                .or_default()
+                .push(row);
+        }
+
+        for row in parsed.research_rows {
+            self.frd_research_live.insert(
+                FrdResearchKey {
+                    tag_db_id: row.tag_db_id,
+                    slot_index: row.slot_index,
+                },
+                row,
+            );
+        }
+        for row in parsed.decision_status_rows {
+            self.frd_decision_status.insert(row.tag_db_id, row);
+        }
+        for row in parsed.decision_event_rows {
+            self.frd_decision_events_this_hour
+                .entry(row.tag_db_id)
+                .or_default()
+                .push(row);
+        }
+        self.frd_depth_badges_this_hour = parsed.badges;
+        self.mark_fold_domain_success(FOCUS_RESEARCH_DECISIONS_DEPTH_DOMAIN_ID);
+        Ok(())
+    }
+
+    // --- DOMAIN 51 scripted state flags/variables (baseline + delta) ------
+    fn fold_scripted_state(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(payload, SCRIPTED_STATE_HEADER_LEN, "scripted_state header")?;
+        let row_count = read_u32(payload, 8) as usize;
+        let key_bytes_len = read_u32(payload, 12) as usize;
+        let status_flags = read_u32(payload, 20);
+        let fixed_scale = read_u32(payload, 48);
+        let is_delta = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
+        let hard_failure = (status_flags
+            & (COMPACT_STATUS_FAILURE_MASK & !SCRIPTED_STATE_OPAQUE_STATUS_MASK))
+            != 0
+            || (status_flags & (COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA))
+                != 0;
+        if hard_failure {
+            self.mark_fold_domain_unknown(
+                SCRIPTED_STATE_DOMAIN_ID,
+                "compact_status_failure",
+                "scripted_state partial/source failure; owned snapshot leaves unknown this hour",
+            );
+            return Ok(());
+        }
+        if self.reject_delta_before_baseline(
+            SCRIPTED_STATE_DOMAIN_ID,
+            "scripted_state",
+            status_flags,
+        ) {
+            return Ok(());
+        }
+
+        let rows_len = row_count.saturating_mul(SCRIPTED_STATE_ROW_LEN);
+        let key_start = SCRIPTED_STATE_HEADER_LEN.saturating_add(rows_len);
+        let expected_len = key_start.saturating_add(key_bytes_len);
+        if payload.len() != expected_len {
+            return Err(format!(
+                "scripted_state len {} != {expected_len}",
+                payload.len()
+            ));
+        }
+        ensure_fixed_scale("scripted_state", "fixed_scale", fixed_scale)?;
+
+        let key_table = &payload[key_start..expected_len];
+        let mut rows = Vec::with_capacity(row_count);
+        for index in 0..row_count {
+            let base = SCRIPTED_STATE_HEADER_LEN + index * SCRIPTED_STATE_ROW_LEN;
+            let scope_kind = read_u32(payload, base);
+            let owner_id = read_u32(payload, base + 4);
+            let value_kind = read_u32(payload, base + 8);
+            let flags = read_u32(payload, base + 12);
+            if flags & !SCRIPTED_STATE_ROW_KNOWN_FLAGS != 0 {
+                return Err(format!("scripted_state row {index} unknown flags {flags}"));
+            }
+            let key = if flags & SCRIPTED_STATE_ROW_FLAG_KEY_PRESENT != 0 {
+                let key_offset = read_u32(payload, base + 16) as usize;
+                let key_len = read_u32(payload, base + 20) as usize;
+                let Some(bytes) = key_table.get(key_offset..key_offset.saturating_add(key_len))
+                else {
+                    return Err(format!(
+                        "scripted_state row {index} key range out of bounds"
+                    ));
+                };
+                Some(
+                    std::str::from_utf8(bytes)
+                        .map_err(|e| format!("scripted_state row {index} key utf8: {e}"))?
+                        .to_string(),
+                )
+            } else {
+                if read_u32(payload, base + 20) != 0 {
+                    return Err(format!(
+                        "scripted_state row {index} has key_len without key flag"
+                    ));
+                }
+                None
+            };
+            let row = ScriptedStateRow {
+                scope_kind,
+                owner_id,
+                value_kind,
+                key,
+                token_id: (flags & SCRIPTED_STATE_ROW_FLAG_TOKEN_PRESENT != 0)
+                    .then_some(read_u32(payload, base + 24)),
+                date_hour_raw: (flags & SCRIPTED_STATE_ROW_FLAG_DATE_PRESENT != 0)
+                    .then_some(read_i32(payload, base + 28)),
+                value_raw: (flags & SCRIPTED_STATE_ROW_FLAG_VALUE_PRESENT != 0)
+                    .then_some(read_i64(payload, base + 32)),
+                deleted: flags & SCRIPTED_STATE_ROW_FLAG_DELETED != 0,
+            };
+            validate_scripted_state_row(&row)?;
+            rows.push(row);
+        }
+
+        if !is_delta {
+            self.clear_scripted_state_accumulators();
+            self.delta_baselines_seen.insert(SCRIPTED_STATE_DOMAIN_ID);
+        }
+        for row in rows {
+            self.apply_scripted_state_row(&row, fixed_scale)?;
+        }
+        if status_flags & SCRIPTED_STATE_STATUS_FLAG_NAMES_PARTIAL != 0 {
+            self.note("scripted_state folded with token-only flag names partial".to_string());
+        }
+        if status_flags & SCRIPTED_STATE_STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED != 0 {
+            self.note(
+                "scripted_state delayed-event root unresolved; opaque badge rows preserved"
+                    .to_string(),
+            );
+        }
+        if status_flags & SCRIPTED_STATE_STATUS_SCRIPTED_GUI_ROOT_UNRESOLVED != 0 {
+            self.note(
+                "scripted_state scripted-GUI root unresolved; opaque badge rows preserved"
+                    .to_string(),
+            );
+        }
+        self.mark_fold_domain_success(SCRIPTED_STATE_DOMAIN_ID);
+        Ok(())
+    }
+
+    fn clear_scripted_state_accumulators(&mut self) {
+        self.scripted_world_flags.clear();
+        self.scripted_world_variables.clear();
+        self.scripted_world_token_only_flags.clear();
+        self.scripted_world_opaque_badges.clear();
+        for country in self.countries.values_mut() {
+            clear_scripted_country_extra(country);
+        }
+        for state in self.states.values_mut() {
+            state.remove("_r2_scripted_state");
+        }
+    }
+
+    fn apply_scripted_state_row(
+        &mut self,
+        row: &ScriptedStateRow,
+        fixed_scale: u32,
+    ) -> Result<(), String> {
+        match row.value_kind {
+            SCRIPTED_STATE_VALUE_VARIABLE_FIXED_I64 => {
+                let key = row.key.as_ref().expect("validated scripted variable key");
+                if row.deleted {
+                    match row.scope_kind {
+                        SCRIPTED_STATE_SCOPE_GLOBAL => {
+                            self.scripted_world_variables.remove(key);
+                        }
+                        SCRIPTED_STATE_SCOPE_COUNTRY => {
+                            clear_country_extra_key(
+                                self.country_mut(row.owner_id),
+                                "_r2_script_variables",
+                                key,
+                            );
+                        }
+                        SCRIPTED_STATE_SCOPE_STATE => {
+                            clear_state_scripted_key(
+                                self.states.entry(row.owner_id.to_string()).or_default(),
+                                "variables",
+                                key,
+                            );
+                        }
+                        _ => unreachable!("validated scripted variable scope"),
+                    }
+                    return Ok(());
+                }
+                let scale = fixed_scale as f64;
+                let value =
+                    row.value_raw.expect("validated scripted variable value") as f64 / scale;
+                match row.scope_kind {
+                    SCRIPTED_STATE_SCOPE_GLOBAL => {
+                        self.scripted_world_variables.insert(key.clone(), value);
+                    }
+                    SCRIPTED_STATE_SCOPE_COUNTRY => {
+                        let extra = ensure_json_object_mut(self.country_mut(row.owner_id), "extra");
+                        ensure_json_object_mut(extra, "_r2_script_variables")
+                            .insert(key.clone(), json!(value));
+                    }
+                    SCRIPTED_STATE_SCOPE_STATE => {
+                        let scope = ensure_json_object_mut(
+                            self.states.entry(row.owner_id.to_string()).or_default(),
+                            "_r2_scripted_state",
+                        );
+                        ensure_json_object_mut(scope, "variables")
+                            .insert(key.clone(), json!(value));
+                    }
+                    _ => unreachable!("validated scripted variable scope"),
+                }
+            }
+            SCRIPTED_STATE_VALUE_FLAG_NAMED => {
+                let key = row.key.as_ref().expect("validated scripted flag key");
+                if row.deleted {
+                    match row.scope_kind {
+                        SCRIPTED_STATE_SCOPE_GLOBAL => {
+                            self.scripted_world_flags.remove(key);
+                        }
+                        SCRIPTED_STATE_SCOPE_COUNTRY => {
+                            clear_country_extra_key(
+                                self.country_mut(row.owner_id),
+                                "script_flags",
+                                key,
+                            );
+                        }
+                        SCRIPTED_STATE_SCOPE_STATE => {
+                            clear_state_scripted_key(
+                                self.states.entry(row.owner_id.to_string()).or_default(),
+                                "flags",
+                                key,
+                            );
+                        }
+                        _ => unreachable!("validated scripted flag scope"),
+                    }
+                    return Ok(());
+                }
+                let flag = ScriptFlagState {
+                    value_raw: row.value_raw,
+                    date_hour_raw: row.date_hour_raw,
+                };
+                match row.scope_kind {
+                    SCRIPTED_STATE_SCOPE_GLOBAL => {
+                        self.scripted_world_flags.insert(key.clone(), flag);
+                    }
+                    SCRIPTED_STATE_SCOPE_COUNTRY => {
+                        let extra = ensure_json_object_mut(self.country_mut(row.owner_id), "extra");
+                        ensure_json_object_mut(extra, "script_flags")
+                            .insert(key.clone(), flag.to_json());
+                    }
+                    SCRIPTED_STATE_SCOPE_STATE => {
+                        let scope = ensure_json_object_mut(
+                            self.states.entry(row.owner_id.to_string()).or_default(),
+                            "_r2_scripted_state",
+                        );
+                        ensure_json_object_mut(scope, "flags").insert(key.clone(), flag.to_json());
+                    }
+                    _ => unreachable!("validated scripted flag scope"),
+                }
+            }
+            SCRIPTED_STATE_VALUE_FLAG_TOKEN_ONLY => {
+                let token_id = row.token_id.expect("validated scripted token flag token");
+                let flag = ScriptFlagState {
+                    value_raw: row.value_raw,
+                    date_hour_raw: row.date_hour_raw,
+                };
+                if row.deleted {
+                    match row.scope_kind {
+                        SCRIPTED_STATE_SCOPE_GLOBAL => {
+                            self.scripted_world_token_only_flags.remove(&token_id);
+                        }
+                        SCRIPTED_STATE_SCOPE_COUNTRY => {
+                            clear_country_extra_u32_key(
+                                self.country_mut(row.owner_id),
+                                "_r2_token_only_flags",
+                                token_id,
+                            );
+                        }
+                        SCRIPTED_STATE_SCOPE_STATE => {
+                            clear_state_scripted_u32_key(
+                                self.states.entry(row.owner_id.to_string()).or_default(),
+                                "token_only_flags",
+                                token_id,
+                            );
+                        }
+                        _ => unreachable!("validated scripted token scope"),
+                    }
+                    return Ok(());
+                }
+                match row.scope_kind {
+                    SCRIPTED_STATE_SCOPE_GLOBAL => {
+                        self.scripted_world_token_only_flags.insert(token_id, flag);
+                    }
+                    SCRIPTED_STATE_SCOPE_COUNTRY => {
+                        let extra = ensure_json_object_mut(self.country_mut(row.owner_id), "extra");
+                        ensure_json_object_mut(extra, "_r2_token_only_flags")
+                            .insert(token_id.to_string(), flag.to_json());
+                    }
+                    SCRIPTED_STATE_SCOPE_STATE => {
+                        let scope = ensure_json_object_mut(
+                            self.states.entry(row.owner_id.to_string()).or_default(),
+                            "_r2_scripted_state",
+                        );
+                        ensure_json_object_mut(scope, "token_only_flags")
+                            .insert(token_id.to_string(), flag.to_json());
+                    }
+                    _ => unreachable!("validated scripted token scope"),
+                }
+            }
+            SCRIPTED_STATE_VALUE_DELAYED_EVENT_OPAQUE
+            | SCRIPTED_STATE_VALUE_SCRIPTED_GUI_OPAQUE => {
+                self.scripted_world_opaque_badges
+                    .push(ScriptedOpaqueBadgeState {
+                        value_kind: row.value_kind,
+                        scope_kind: row.scope_kind,
+                        owner_id: row.owner_id,
+                        key: row.key.clone(),
+                    });
+            }
+            _ => unreachable!("validated scripted value kind"),
+        }
+        Ok(())
+    }
+
+    // --- DOMAIN 20 divisions_live (baseline + delta) ----------------------
+    fn fold_divisions(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(payload, 32, "divisions header")?;
+        let row_count = read_u32(payload, 8) as usize;
+        let status_flags = read_u32(payload, 16);
+        let expected = 32 + row_count * DIVISION_ROW_LEN;
+        if payload.len() != expected {
+            return Err(format!("divisions len {} != {expected}", payload.len()));
+        }
+        if compact_status_is_failure(status_flags) {
+            self.divisions_unknown_this_hour = true;
+            self.note(format!(
+                "divisions failure status {:#x}; division set unknown this hour",
+                status_flags & COMPACT_STATUS_FAILURE_MASK
+            ));
+            return Ok(());
+        }
+        let delta = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
+        if delta && !self.delta_baselines_seen.contains(&20) {
+            self.divisions_unknown_this_hour = true;
+            self.record_domain_problem(20, "delta_before_baseline");
+            self.note(
+                "divisions delta_before_baseline; division set unknown this hour".to_string(),
+            );
+            return Ok(());
+        }
+        if !delta {
+            // full baseline replaces the whole division set
+            self.divisions.clear();
+        }
+        let mut cursor = 32usize;
+        for _ in 0..row_count {
+            let div_id = read_u32(payload, cursor);
+            let div_type = read_u32(payload, cursor + 4);
+            let flags = read_u32(payload, cursor + 8);
+            let uid = format!("{div_id}:{div_type}");
+            if flags & DIVISION_FLAG_DELETED != 0 {
+                if let Some(key) = self
+                    .divisions
+                    .get(&uid)
+                    .and_then(division_equipment_join_key)
+                {
+                    self.division_equipment_deleted_division_keys_this_hour
+                        .insert(key);
+                }
+                self.divisions.remove(&uid);
+                cursor += DIVISION_ROW_LEN;
+                continue;
+            }
+            let location = read_u32(payload, cursor + 12);
+            let move_target = read_u32(payload, cursor + 16);
+            let movement_progress = read_u32(payload, cursor + 24);
+            let organisation_raw = read_u32(payload, cursor + 32);
+            let strength_raw = read_u32(payload, cursor + 40);
+            let template_id = read_u32(payload, cursor + 52);
+            let owner = read_u32(payload, cursor + 56);
+            let army_id = read_u32(payload, cursor + 60);
+            let experience_raw = read_u32(payload, cursor + 64);
+            let current_supply_raw = read_u32(payload, cursor + 72);
+            let fuel_raw = read_u32(payload, cursor + 80);
+
+            let moving = flags & 1 != 0;
+            let has_target = flags & (1 << 2) != 0;
+            let in_combat = flags & (1 << 4) != 0;
+            let has_owner = flags & (1 << 5) != 0;
+            let has_army = flags & (1 << 6) != 0;
+            let has_experience = flags & (1 << 7) != 0;
+            let has_current_supply = flags & (1 << 9) != 0;
+            let has_fuel = flags & (1 << 11) != 0;
+            let has_template = flags & DIVISION_FLAG_TEMPLATE != 0;
+
+            let mut obj = Map::new();
+            obj.insert("div_uid".into(), json!(uid.clone()));
+            obj.insert("div_id".into(), json!(div_id));
+            obj.insert("div_type".into(), json!(div_type));
+            obj.insert(
+                "owner".into(),
+                if has_owner {
+                    json!(owner.to_string())
+                } else {
+                    Value::Null
+                },
+            );
+            obj.insert("location_province".into(), json!(location));
+            obj.insert(
+                "template_id".into(),
+                if has_template {
+                    json!(template_id)
+                } else {
+                    Value::Null
+                },
+            );
+            obj.insert(
+                "organisation".into(),
+                json!(organisation_raw as f64 / FIXED_SCALE),
+            );
+            obj.insert("strength".into(), json!(strength_raw as f64 / FIXED_SCALE));
+            obj.insert("moving".into(), json!(moving));
+            obj.insert(
+                "move_target_province".into(),
+                if has_target {
+                    json!(move_target)
+                } else {
+                    Value::Null
+                },
+            );
+            obj.insert(
+                "move_progress".into(),
+                if moving {
+                    json!(movement_progress)
+                } else {
+                    Value::Null
+                },
+            );
+            obj.insert("in_combat".into(), json!(in_combat));
+            obj.insert(
+                "experience".into(),
+                if has_experience {
+                    json!(experience_raw as f64 / FIXED_SCALE)
+                } else {
+                    Value::Null
+                },
+            );
+            obj.insert(
+                "supply_status".into(),
+                if has_current_supply {
+                    json!(current_supply_raw as f64 / FIXED_SCALE)
+                } else {
+                    Value::Null
+                },
+            );
+            obj.insert(
+                "fuel".into(),
+                if has_fuel {
+                    json!(fuel_raw as f64 / FIXED_SCALE)
+                } else {
+                    Value::Null
+                },
+            );
+            obj.insert(
+                "army_id".into(),
+                if has_army {
+                    json!(army_id)
+                } else {
+                    Value::Null
+                },
+            );
+            self.divisions.insert(uid, obj);
+            cursor += DIVISION_ROW_LEN;
+        }
+        if !delta {
+            self.delta_baselines_seen.insert(20);
+        }
+        Ok(())
+    }
+
+    // --- DOMAIN 21 land_combats_live (full active snapshot) ---------------
+    fn fold_land_combats(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(payload, 32, "land combats header")?;
+        let combat_count = read_u32(payload, 8) as usize;
+        let status_flags = read_u32(payload, 16);
+        let participant_count = read_u32(payload, 20) as usize;
+        let reserved = read_u32(payload, 28);
+        if reserved != 0 {
+            return Err("land combats header reserved field is nonzero".into());
+        }
+        let expected = 32usize
+            .saturating_add(combat_count.saturating_mul(LAND_COMBAT_ROW_LEN))
+            .saturating_add(participant_count.saturating_mul(LAND_COMBAT_PARTICIPANT_ROW_LEN));
+        if payload.len() != expected {
+            return Err(format!("land combats len {} != {expected}", payload.len()));
+        }
+        if compact_status_is_failure(status_flags) {
+            self.land_combats_known_this_hour = false;
+            let failure_flags = status_flags & COMPACT_STATUS_FAILURE_MASK;
+            self.land_combats_unknown_note_this_hour = Some(format!(
+                "land_combats_live failure status {failure_flags:#x}; combats unknown this hour"
+            ));
+            return Ok(());
+        }
+
+        let mut cursor = 32usize;
+        let mut rows: BTreeMap<(u32, u64), CombatFoldRow> = BTreeMap::new();
+        let mut seen_ids = std::collections::BTreeSet::new();
+        let mut declared_participants = 0usize;
+        for row_index in 0..combat_count {
+            let combat_id = read_u32(payload, cursor);
+            let generation = read_u64(payload, cursor + 4);
+            let flags = read_u32(payload, cursor + 12);
+            let location = read_u32(payload, cursor + 16);
+            let day = read_u32(payload, cursor + 20);
+            let duration = read_u32(payload, cursor + 24);
+            let attacker_count = read_u32(payload, cursor + 28) as usize;
+            let defender_count = read_u32(payload, cursor + 32) as usize;
+            let row_reserved = read_u32(payload, cursor + 36);
+            cursor += LAND_COMBAT_ROW_LEN;
+
+            if combat_id == 0 {
+                return Err(format!("land combat row {row_index} has zero combat_id"));
+            }
+            if !seen_ids.insert(combat_id) {
+                return Err(format!(
+                    "land combat row {row_index} duplicates combat_id {combat_id}"
+                ));
+            }
+            if flags & !0b1_1111 != 0 {
+                return Err(format!(
+                    "land combat row {row_index} has unknown flags {flags}"
+                ));
+            }
+            if flags & 1 != 0 && location == 0 {
+                return Err(format!(
+                    "land combat row {row_index} has invalid location {location}"
+                ));
+            }
+            if flags & 1 == 0 && location != 0 {
+                return Err(format!(
+                    "land combat row {row_index} has location without flag"
+                ));
+            }
+            if flags & (1 << 1) == 0 && day != 0 {
+                return Err(format!("land combat row {row_index} has day without flag"));
+            }
+            if flags & (1 << 2) == 0 && duration != 0 {
+                return Err(format!(
+                    "land combat row {row_index} has duration without flag"
+                ));
+            }
+            if flags & (1 << 3) == 0 && attacker_count != 0 {
+                return Err(format!(
+                    "land combat row {row_index} has attackers without exact flag"
+                ));
+            }
+            if flags & (1 << 4) == 0 && defender_count != 0 {
+                return Err(format!(
+                    "land combat row {row_index} has defenders without exact flag"
+                ));
+            }
+            if row_reserved != 0 {
+                return Err(format!(
+                    "land combat row {row_index} reserved field is nonzero"
+                ));
+            }
+            declared_participants =
+                declared_participants.saturating_add(attacker_count.saturating_add(defender_count));
+            rows.insert(
+                (combat_id, generation),
+                CombatFoldRow {
+                    state: CombatState {
+                        combat_id,
+                        generation,
+                        location: (flags & 1 != 0).then_some(location),
+                        attackers: (flags & (1 << 3) != 0)
+                            .then(|| Vec::with_capacity(attacker_count)),
+                        defenders: (flags & (1 << 4) != 0)
+                            .then(|| Vec::with_capacity(defender_count)),
+                    },
+                    attacker_count,
+                    defender_count,
+                },
+            );
+        }
+        if declared_participants != participant_count {
+            return Err(format!(
+                "land combat participant_count {participant_count} != declared {declared_participants}"
+            ));
+        }
+
+        let mut seen_participants = std::collections::BTreeSet::new();
+        for row_index in 0..participant_count {
+            let combat_id = read_u32(payload, cursor);
+            let generation = read_u64(payload, cursor + 4);
+            let side = read_u32(payload, cursor + 12);
+            let division_id = read_u32(payload, cursor + 16);
+            let row_reserved = read_u32(payload, cursor + 20);
+            cursor += LAND_COMBAT_PARTICIPANT_ROW_LEN;
+            let Some(row) = rows.get_mut(&(combat_id, generation)) else {
+                return Err(format!(
+                    "land combat participant row {row_index} references unknown combat {combat_id}:{generation}"
+                ));
+            };
+            if division_id == 0 {
+                return Err(format!(
+                    "land combat participant row {row_index} has zero division_id"
+                ));
+            }
+            if !seen_participants.insert((combat_id, generation, side, division_id)) {
+                return Err(format!(
+                    "land combat participant row {row_index} duplicates participant"
+                ));
+            }
+            match side {
+                1 => match row.state.attackers.as_mut() {
+                    Some(list) => list.push(division_id),
+                    None => {
+                        return Err(format!(
+                        "land combat participant row {row_index} has attacker without exact flag"
+                    ))
+                    }
+                },
+                2 => match row.state.defenders.as_mut() {
+                    Some(list) => list.push(division_id),
+                    None => {
+                        return Err(format!(
+                        "land combat participant row {row_index} has defender without exact flag"
+                    ))
+                    }
+                },
+                _ => {
+                    return Err(format!(
+                        "land combat participant row {row_index} has invalid side {side}"
+                    ))
+                }
+            }
+            if row_reserved != 0 {
+                return Err(format!(
+                    "land combat participant row {row_index} reserved field is nonzero"
+                ));
+            }
+        }
+
+        let mut fresh = BTreeMap::new();
+        for row in rows.into_values() {
+            if row
+                .state
+                .attackers
+                .as_ref()
+                .is_some_and(|list| list.len() != row.attacker_count)
+            {
+                return Err(format!(
+                    "land combat {} attacker count mismatch",
+                    row.state.combat_id
+                ));
+            }
+            if row
+                .state
+                .defenders
+                .as_ref()
+                .is_some_and(|list| list.len() != row.defender_count)
+            {
+                return Err(format!(
+                    "land combat {} defender count mismatch",
+                    row.state.combat_id
+                ));
+            }
+            fresh.insert(row.state.combat_id, row.state);
+        }
+        // Full active snapshot: a missing combat has disappeared by this hour.
+        self.combats = fresh;
+        self.land_combats_known_this_hour = true;
+        self.land_combats_unknown_note_this_hour = None;
+        Ok(())
+    }
+
+    // --- DOMAIN 55 land_combat_detail_events_live (current-hour events) ----
+    fn fold_land_combat_detail_events(&mut self, payload: &[u8]) -> Result<(), String> {
+        let decoded = land_detail55::decode_detail_events_payload(0, payload)
+            .map_err(|errors| errors.join("; "))?;
+        if decoded.status_flags & COMPACT_STATUS_TRANSITION_BASELINE_RESET != 0 {
+            self.combat_detail_events_this_hour.clear();
+            self.note(format!(
+                "land_combat_detail_events_live transition baseline reset after an unknown gap; detail events may be missing for this hour"
+            ));
+            return Ok(());
+        }
+        if compact_status_is_failure(decoded.status_flags) {
+            self.combat_detail_events_this_hour.clear();
+            let failure_flags = decoded.status_flags & COMPACT_STATUS_FAILURE_MASK;
+            self.note(format!(
+                "land_combat_detail_events_live failure status {failure_flags:#x}; detail enrichment unknown this hour"
+            ));
+            return Ok(());
+        }
+        for row in decoded.rows {
+            let Some(event_name) = detail_event_kind_name(row.event_kind) else {
+                continue;
+            };
+            let entry = self
+                .combat_detail_events_this_hour
+                .entry((row.combat_id, row.generation))
+                .or_default();
+            match row.event_kind {
+                land_detail55::EVENT_PHASE_STARTED
+                | land_detail55::EVENT_PHASE_UPDATED
+                | land_detail55::EVENT_PHASE_ENDED => {
+                    entry.phase_event = Some(event_name.to_string());
+                    entry.generation = Some(row.generation);
+                    if row.location.is_some() {
+                        entry.location = row.location;
+                    }
+                    if row.day.is_some() {
+                        entry.day = row.day;
+                    }
+                    if row.duration.is_some() {
+                        entry.duration = row.duration;
+                    }
+                }
+                land_detail55::EVENT_PARTICIPANT_JOINED
+                | land_detail55::EVENT_PARTICIPANT_LEFT_UNCLASSIFIED => {
+                    if let (Some(side), Some(division_id)) = (row.side, row.division_id) {
+                        let mut obj = Map::new();
+                        obj.insert("event".into(), json!(event_name));
+                        obj.insert("generation".into(), json!(row.generation));
+                        obj.insert(
+                            "side".into(),
+                            json!(match side {
+                                land_detail55::CombatSide::Attacker => "attacker",
+                                land_detail55::CombatSide::Defender => "defender",
+                            }),
+                        );
+                        obj.insert("division_id".into(), json!(division_id));
+                        obj.insert("old_side_count".into(), json!(row.old_side_count));
+                        obj.insert("new_side_count".into(), json!(row.new_side_count));
+                        if row.event_kind == land_detail55::EVENT_PARTICIPANT_LEFT_UNCLASSIFIED {
+                            obj.insert("semantic".into(), json!("left_unclassified"));
+                        }
+                        entry.participant_events.push(Value::Object(obj));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    // --- DOMAIN 48 construction/building/resource damage live sidecar -----
+    fn fold_construction_buildings_state_damage(&mut self, payload: &[u8]) -> Result<(), String> {
+        let decoded = match domain48::decoder_gate::decode_domain48_compact(payload) {
+            Ok(decoded) => decoded,
+            Err(err) => {
+                self.clear_domain48_extras();
+                self.domain48_known_this_hour = false;
+                self.domain48_unknown_this_hour = true;
+                self.record_domain_problem(
+                    CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID,
+                    "decode_failed",
+                );
+                return Err(err);
+            }
+        };
+        let status_flags = decoded.frame.status_flags;
+        if compact_status_is_failure(status_flags) {
+            self.clear_domain48_extras();
+            self.domain48_known_this_hour = false;
+            self.domain48_unknown_this_hour = true;
+            self.mark_fold_domain_unknown(
+                CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID,
+                "compact_status_failure",
+                format!(
+                    "construction_buildings_state_damage_live failure status {:#x}; domain extras unknown this hour",
+                    status_flags & COMPACT_STATUS_FAILURE_MASK
+                ),
+            );
+            return Ok(());
+        }
+        if status_flags & COMPACT_STATUS_DELTA_DATA != 0 {
+            self.clear_domain48_extras();
+            self.domain48_known_this_hour = false;
+            self.domain48_unknown_this_hour = true;
+            self.mark_fold_domain_unknown(
+                CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID,
+                "delta_unsupported",
+                "construction_buildings_state_damage_live DELTA_DATA is unsupported; domain extras unknown this hour",
+            );
+            return Ok(());
+        }
+        if !decoded.gate.ok {
+            self.clear_domain48_extras();
+            self.domain48_known_this_hour = false;
+            self.domain48_unknown_this_hour = true;
+            self.mark_fold_domain_unknown(
+                CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID,
+                "lane_gate_failed",
+                format!(
+                    "construction_buildings_state_damage_live gate failed: {}",
+                    decoded.gate.errors.join("; ")
+                ),
+            );
+            return Ok(());
+        }
+
+        self.clear_domain48_extras();
+        self.domain48_known_this_hour = true;
+        self.domain48_unknown_this_hour = false;
+        self.mark_fold_domain_success(CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID);
+        if status_flags & COMPACT_STATUS_DELTA_DATA == 0 {
+            self.delta_baselines_seen
+                .insert(CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID);
+        }
+
+        let target_state_unavailable = decoded.frame.source_flags
+            & domain48::SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE
+            != 0;
+        let frame = decoded.frame;
+
+        let mut construction_by_country: BTreeMap<u32, Vec<Value>> = BTreeMap::new();
+        for row in frame.construction_rows {
+            let mut obj = Map::new();
+            obj.insert("id".into(), json!(row.line_id));
+            obj.insert("template_id".into(), option_u32_json(row.template_id));
+            obj.insert("active_factories".into(), json!(row.active_factories));
+            obj.insert("cost_raw".into(), json!(row.cost_raw));
+            obj.insert("produced_raw".into(), json!(row.produced_raw));
+            obj.insert("priority".into(), json!(row.priority));
+            if !target_state_unavailable {
+                obj.insert(
+                    "target_state_id".into(),
+                    option_u32_json(row.target_state_id),
+                );
+            }
+            construction_by_country
+                .entry(row.tag_db_id)
+                .or_default()
+                .push(Value::Object(obj));
+        }
+        for (tag_db_id, rows) in construction_by_country {
+            let country = self.country_mut(tag_db_id);
+            let production = ensure_json_object_mut(country, "production");
+            let extra =
+                ensure_json_object_mut(production, CONSTRUCTION_BUILDINGS_STATE_DAMAGE_EXTRA_KEY);
+            extra.insert("construction_queue".into(), Value::Array(rows));
+            extra.insert("source".into(), json!("C"));
+            if target_state_unavailable {
+                extra.insert("target_state_available".into(), json!(false));
+            }
+        }
+
+        let mut state_buildings: BTreeMap<u32, Vec<domain48::BuildingRow>> = BTreeMap::new();
+        let mut province_buildings: BTreeMap<u32, Vec<domain48::BuildingRow>> = BTreeMap::new();
+        for row in frame.building_rows {
+            match row.scope {
+                domain48::SCOPE_STATE => state_buildings.entry(row.state_id).or_default().push(row),
+                domain48::SCOPE_PROVINCE => province_buildings
+                    .entry(row.location_id)
+                    .or_default()
+                    .push(row),
+                other => {
+                    self.clear_domain48_extras();
+                    self.domain48_known_this_hour = false;
+                    self.domain48_unknown_this_hour = true;
+                    return Err(format!("domain48 building row has invalid scope {other}"));
+                }
+            }
+        }
+        for (state_id, rows) in state_buildings {
+            let state = self.states.entry(state_id.to_string()).or_default();
+            let extra =
+                ensure_json_object_mut(state, CONSTRUCTION_BUILDINGS_STATE_DAMAGE_EXTRA_KEY);
+            extra.insert(
+                "state_buildings".into(),
+                domain48_building_rows_by_type(rows),
+            );
+            extra.insert("source".into(), json!("C"));
+        }
+        for (province_id, rows) in province_buildings {
+            let state_id = rows.first().map(|row| row.state_id).unwrap_or_default();
+            let province = self.provinces.entry(province_id.to_string()).or_default();
+            let extra =
+                ensure_json_object_mut(province, CONSTRUCTION_BUILDINGS_STATE_DAMAGE_EXTRA_KEY);
+            extra.insert("state_id".into(), json!(state_id));
+            extra.insert("buildings".into(), domain48_building_rows_by_type(rows));
+            extra.insert("source".into(), json!("C"));
+        }
+
+        for row in frame.resource_rows {
+            let state = self.states.entry(row.state_id.to_string()).or_default();
+            let extra =
+                ensure_json_object_mut(state, CONSTRUCTION_BUILDINGS_STATE_DAMAGE_EXTRA_KEY);
+            let resources = ensure_json_object_mut(extra, "resource_amount_raw_by_id");
+            resources.insert(
+                domain48_resource_key(row.resource_id),
+                json!(row.amount_raw),
+            );
+            extra.insert("source".into(), json!("C"));
+        }
+
+        Ok(())
+    }
+
+    fn clear_domain48_extras(&mut self) {
+        for country in self.countries.values_mut() {
+            let remove_production =
+                if let Some(Value::Object(production)) = country.get_mut("production") {
+                    production.remove(CONSTRUCTION_BUILDINGS_STATE_DAMAGE_EXTRA_KEY);
+                    production.is_empty()
+                } else {
+                    false
+                };
+            if remove_production {
+                country.remove("production");
+            }
+        }
+        for state in self.states.values_mut() {
+            state.remove(CONSTRUCTION_BUILDINGS_STATE_DAMAGE_EXTRA_KEY);
+        }
+        for province in self.provinces.values_mut() {
+            province.remove(CONSTRUCTION_BUILDINGS_STATE_DAMAGE_EXTRA_KEY);
+        }
+    }
+
+    // --- DOMAIN 53 diplomacy_intel_operatives_live (validated R2 slice) ---
+    fn fold_diplomacy_intel_operatives(&mut self, payload: &[u8]) -> Result<(), String> {
+        let decoded = diplomacy53::compact::decode_snapshot_payload(0, payload)
+            .map_err(|errors| errors.join("; "))?;
+        let status_flags = decoded.status_flags;
+        self.domain53_known_this_hour = false;
+        self.domain53_country_overlays_this_hour.clear();
+        self.domain53_world_overlay_this_hour = Domain53WorldOverlay::default();
+
+        if compact_status_is_failure(status_flags) {
+            self.mark_fold_domain_unknown(
+                DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID,
+                "compact_status_failure",
+                format!(
+                    "diplomacy_intel_operatives_live failure status {:#x}; domain53 extras omitted",
+                    status_flags & COMPACT_STATUS_FAILURE_MASK
+                ),
+            );
+            return Err("compact_status_failure".to_string());
+        }
+        if status_flags & COMPACT_STATUS_DELTA_DATA != 0 {
+            self.mark_fold_domain_unknown(
+                DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID,
+                "delta_unsupported",
+                "diplomacy_intel_operatives_live DELTA_DATA is unsupported; domain53 extras omitted",
+            );
+            return Err("delta_unsupported".to_string());
+        }
+        if !decoded.wars.is_empty()
+            && status_flags & diplomacy53::compact::STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED == 0
+        {
+            self.record_domain_problem(
+                DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID,
+                "war_lifecycle_badge_missing",
+            );
+            return Err(
+                "diplomacy_intel_operatives_live war rows lack lifecycle-unvalidated badge"
+                    .to_string(),
+            );
+        }
+        if !decoded.operation_anchors.is_empty() || !decoded.intel_map.is_empty() {
+            self.record_domain_problem(
+                DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID,
+                "excluded_rows_present",
+            );
+            return Err(
+                "diplomacy_intel_operatives_live emitted fixture-blocked operation/intel-map rows"
+                    .to_string(),
+            );
+        }
+
+        for row in decoded.countries {
+            let tag_db_id = row.tag_db_id;
+            self.domain53_country_overlays_this_hour
+                .entry(tag_db_id)
+                .or_default()
+                .country = Some(row);
+        }
+        for row in decoded.opinions {
+            self.domain53_country_overlays_this_hour
+                .entry(row.src_tag_db_id)
+                .or_default()
+                .opinions
+                .push(row);
+        }
+        for row in decoded.relation_flags {
+            self.domain53_country_overlays_this_hour
+                .entry(row.src_tag_db_id)
+                .or_default()
+                .relation_flags
+                .push(row);
+        }
+        for row in decoded.agencies {
+            let owner_tag_db_id = row.owner_tag_db_id;
+            self.domain53_country_overlays_this_hour
+                .entry(owner_tag_db_id)
+                .or_default()
+                .agency = Some(row);
+        }
+        for row in decoded.agency_capacity_clusters {
+            let owner_tag_db_id = row.owner_tag_db_id;
+            self.domain53_country_overlays_this_hour
+                .entry(owner_tag_db_id)
+                .or_default()
+                .agency_capacity = Some(row);
+        }
+        for row in decoded.operatives {
+            self.domain53_country_overlays_this_hour
+                .entry(row.owner_tag_db_id)
+                .or_default()
+                .operatives
+                .push(row);
+        }
+        for row in decoded.cryptology {
+            self.domain53_country_overlays_this_hour
+                .entry(row.owner_tag_db_id)
+                .or_default()
+                .cryptology
+                .push(row);
+        }
+        for row in decoded.state_events {
+            self.domain53_country_overlays_this_hour
+                .entry(row.owner_tag_db_id)
+                .or_default()
+                .state_events
+                .push(row);
+        }
+        self.domain53_world_overlay_this_hour = Domain53WorldOverlay {
+            status_flags,
+            wars: decoded.wars,
+            subjects: decoded.subjects,
+        };
+        self.domain53_known_this_hour = true;
+        self.mark_fold_domain_success(DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID);
+        Ok(())
+    }
+
+    // --- DOMAIN 56 naval_missions_status_live (R2 OOB annotation) --------
+    fn fold_naval_missions_status(&mut self, payload: &[u8]) -> Result<(), String> {
+        let decoded =
+            naval56::decode_status_payload(0, payload).map_err(|errors| errors.join("; "))?;
+        let status_flags = decoded.header.status_flags;
+        if self.handle_compact_failure(
+            NAVAL_MISSIONS_STATUS_DOMAIN_ID,
+            "naval_missions_status_live",
+            status_flags,
+        ) {
+            return Ok(());
+        }
+        if self.reject_delta_before_baseline(
+            NAVAL_MISSIONS_STATUS_DOMAIN_ID,
+            "naval_missions_status_live",
+            status_flags,
+        ) {
+            return Ok(());
+        }
+
+        let delta = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
+        // D56 currently emits full-replace frames and has no deletion tombstone
+        // contract. A valid non-delta frame is therefore the only frame type that
+        // may clear stale task-force status rows.
+        if !delta {
+            self.naval_missions_status.clear();
+        }
+
+        for row in decoded.rows {
+            self.naval_missions_status.insert(
+                row.task_force_id,
+                NavalMissionTaskForceFoldRow {
+                    task_force_id: row.task_force_id,
+                    fleet_id: row.fleet_id,
+                    owner_tag_db_id: row.owner_tag_db_id,
+                    location_province_id: option_flag(
+                        row.flags,
+                        naval56::compact::FLAG_HAS_LOCATION,
+                        row.location_province_id,
+                    ),
+                    strategic_region_id: option_flag(
+                        row.flags,
+                        naval56::compact::FLAG_HAS_REGION,
+                        row.strategic_region_id,
+                    ),
+                    mission_enum: option_flag(
+                        row.flags,
+                        naval56::compact::FLAG_HAS_MISSION,
+                        row.mission_enum,
+                    ),
+                    mission_state: option_flag(
+                        row.flags,
+                        naval56::compact::FLAG_HAS_MISSION_STATE,
+                        row.mission_state,
+                    ),
+                    home_base_province_id: option_flag(
+                        row.flags,
+                        naval56::compact::FLAG_HAS_HOME_BASE,
+                        row.home_base_province_id,
+                    ),
+                    repair_base_province_id: option_flag(
+                        row.flags,
+                        naval56::compact::FLAG_HAS_REPAIR_BASE,
+                        row.repair_base_province_id,
+                    ),
+                    repair_progress_milli: option_flag(
+                        row.flags,
+                        naval56::compact::FLAG_HAS_REPAIR_PROGRESS,
+                        row.repair_progress_milli,
+                    ),
+                    retreat_state: option_flag(
+                        row.flags,
+                        naval56::compact::FLAG_HAS_RETREAT_STATE,
+                        row.retreat_state,
+                    ),
+                    sunk_convoys: option_flag(
+                        row.flags,
+                        naval56::compact::FLAG_HAS_SUNK_CONVOY_COUNT,
+                        row.sunk_convoys,
+                    ),
+                    convoy_route_context_id: option_flag(
+                        row.flags,
+                        naval56::compact::FLAG_HAS_CONVOY_ROUTE_CONTEXT,
+                        row.convoy_route_context_id,
+                    ),
+                    fixture_required: row.flags & naval56::compact::FLAG_FIXTURE_REQUIRED != 0,
+                    active_battle_fixture_required: row.flags
+                        & naval56::compact::FLAG_ACTIVE_BATTLE_FIXTURE_REQUIRED
+                        != 0,
+                    source_status: row.source_status,
+                },
+            );
+        }
+
+        if !delta {
+            self.delta_baselines_seen
+                .insert(NAVAL_MISSIONS_STATUS_DOMAIN_ID);
+        }
+        self.mark_fold_domain_success(NAVAL_MISSIONS_STATUS_DOMAIN_ID);
+        Ok(())
+    }
+
+    // --- DOMAIN 22 map_control_live (baseline + delta) --------------------
+    fn fold_map_control(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(payload, 32, "map control header")?;
+        let state_count = read_u32(payload, 8) as usize;
+        let status_flags = read_u32(payload, 16);
+        let province_count = read_u32(payload, 20) as usize;
+        let expected = 32 + state_count * MAP_STATE_ROW_LEN + province_count * MAP_PROVINCE_ROW_LEN;
+        if payload.len() != expected {
+            return Err(format!("map control len {} != {expected}", payload.len()));
+        }
+        if compact_status_is_failure(status_flags) {
+            self.map_control_unknown_this_hour = true;
+            self.note(format!(
+                "map_control failure status {:#x}; map control state unknown this hour",
+                status_flags & COMPACT_STATUS_FAILURE_MASK
+            ));
+            return Ok(());
+        }
+        let delta = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
+        if delta && !self.delta_baselines_seen.contains(&22) {
+            self.map_control_unknown_this_hour = true;
+            self.record_domain_problem(22, "delta_before_baseline");
+            self.note("map_control delta_before_baseline; map control state unknown this hour");
+            return Ok(());
+        }
+        if !delta {
+            self.map_control_states.clear();
+            self.map_control_provinces.clear();
+        }
+        let mut cursor = 32usize;
+        for _ in 0..state_count {
+            let state_id = read_u32(payload, cursor);
+            let owner = read_u32(payload, cursor + 4);
+            let controller = read_u32(payload, cursor + 8);
+            let flags = read_u32(payload, cursor + 12);
+            cursor += MAP_STATE_ROW_LEN;
+            let obj = self
+                .map_control_states
+                .entry(state_id.to_string())
+                .or_default();
+            obj.insert(
+                "owner".into(),
+                if flags & 1 != 0 {
+                    json!(owner.to_string())
+                } else {
+                    Value::Null
+                },
+            );
+            obj.insert(
+                "controller".into(),
+                if flags & (1 << 1) != 0 {
+                    json!(controller.to_string())
+                } else {
+                    Value::Null
+                },
+            );
+        }
+        for _ in 0..province_count {
+            let province_id = read_u32(payload, cursor);
+            let controller = read_u32(payload, cursor + 4);
+            let state_id = read_u32(payload, cursor + 8);
+            let flags = read_u32(payload, cursor + 12);
+            cursor += MAP_PROVINCE_ROW_LEN;
+            let obj = self
+                .map_control_provinces
+                .entry(province_id.to_string())
+                .or_default();
+            obj.insert(
+                "controller".into(),
+                if flags & 1 != 0 {
+                    json!(controller.to_string())
+                } else {
+                    Value::Null
+                },
+            );
+            obj.insert(
+                "state_id".into(),
+                if flags & (1 << 1) != 0 {
+                    json!(state_id)
+                } else {
+                    Value::Null
+                },
+            );
+        }
+        if !delta {
+            self.delta_baselines_seen.insert(22);
+        }
+        Ok(())
+    }
+
+    // --- DOMAIN 23 map_detail_live (baseline + delta) ---------------------
+    fn fold_map_detail(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(payload, MAP_DETAIL_HEADER_LEN, "map detail header")?;
+        let state_count = read_u32(payload, 8) as usize;
+        let status_flags = read_u32(payload, 16);
+        let province_count = read_u32(payload, 20) as usize;
+        let resource_count = read_u32(payload, 32) as usize;
+        let state_building_count = read_u32(payload, 36) as usize;
+        let province_building_count = read_u32(payload, 40) as usize;
+        let reserved = read_u32(payload, 44);
+        let expected = MAP_DETAIL_HEADER_LEN
+            .saturating_add(state_count.saturating_mul(MAP_DETAIL_STATE_ROW_LEN))
+            .saturating_add(province_count.saturating_mul(MAP_DETAIL_PROVINCE_ROW_LEN))
+            .saturating_add(resource_count.saturating_mul(MAP_DETAIL_ENTRY_ROW_LEN))
+            .saturating_add(state_building_count.saturating_mul(MAP_DETAIL_ENTRY_ROW_LEN))
+            .saturating_add(province_building_count.saturating_mul(MAP_DETAIL_ENTRY_ROW_LEN));
+        if payload.len() != expected {
+            return Err(format!("map detail len {} != {expected}", payload.len()));
+        }
+        if reserved != 0 {
+            return Err("map detail header reserved field is nonzero".into());
+        }
+        if compact_status_is_failure(status_flags) {
+            self.map_detail_unknown_this_hour = true;
+            self.note(format!(
+                "map_detail failure status {:#x}; map detail fields unknown this hour",
+                status_flags & COMPACT_STATUS_FAILURE_MASK
+            ));
+            return Ok(());
+        }
+        let delta = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
+        if delta && !self.delta_baselines_seen.contains(&23) {
+            self.map_detail_unknown_this_hour = true;
+            self.record_domain_problem(23, "delta_before_baseline");
+            self.note("map_detail delta_before_baseline; map detail fields unknown this hour");
+            return Ok(());
+        }
+
+        let mut cursor = MAP_DETAIL_HEADER_LEN;
+        let mut state_rows = Vec::with_capacity(state_count);
+        for row_index in 0..state_count {
+            let row = MapDetailStateRow {
+                state_id: read_u32(payload, cursor),
+                flags: read_u32(payload, cursor + 4),
+                resource_first: read_u32(payload, cursor + 8) as usize,
+                resource_len: read_u32(payload, cursor + 12) as usize,
+                building_first: read_u32(payload, cursor + 16) as usize,
+                building_len: read_u32(payload, cursor + 20) as usize,
+            };
+            let row_reserved = read_u32(payload, cursor + 24);
+            cursor += MAP_DETAIL_STATE_ROW_LEN;
+            if row.state_id == 0 {
+                return Err(format!(
+                    "map detail state row {row_index} has zero state_id"
+                ));
+            }
+            if row.flags & !0b11 != 0 {
+                return Err(format!(
+                    "map detail state row {row_index} has unknown flags {}",
+                    row.flags
+                ));
+            }
+            if row_reserved != 0 {
+                return Err(format!(
+                    "map detail state row {row_index} reserved field is nonzero"
+                ));
+            }
+            validate_map_detail_range(
+                row.flags & 1 != 0,
+                row.resource_first,
+                row.resource_len,
+                resource_count,
+                "map detail state resource",
+            )?;
+            validate_map_detail_range(
+                row.flags & (1 << 1) != 0,
+                row.building_first,
+                row.building_len,
+                state_building_count,
+                "map detail state building",
+            )?;
+            state_rows.push(row);
+        }
+
+        let mut province_rows = Vec::with_capacity(province_count);
+        for row_index in 0..province_count {
+            let row = MapDetailProvinceRow {
+                province_id: read_u32(payload, cursor),
+                state_id: read_u32(payload, cursor + 4),
+                flags: read_u32(payload, cursor + 8),
+                building_first: read_u32(payload, cursor + 12) as usize,
+                building_len: read_u32(payload, cursor + 16) as usize,
+            };
+            cursor += MAP_DETAIL_PROVINCE_ROW_LEN;
+            if row.province_id == 0 {
+                return Err(format!(
+                    "map detail province row {row_index} has zero province_id"
+                ));
+            }
+            if row.flags & !0b11 != 0 {
+                return Err(format!(
+                    "map detail province row {row_index} has unknown flags {}",
+                    row.flags
+                ));
+            }
+            if row.flags & 1 != 0 && row.state_id == 0 {
+                return Err(format!(
+                    "map detail province row {row_index} has state flag without state"
+                ));
+            }
+            if row.flags & 1 == 0 && row.state_id != 0 {
+                return Err(format!(
+                    "map detail province row {row_index} has state without flag"
+                ));
+            }
+            validate_map_detail_range(
+                row.flags & (1 << 1) != 0,
+                row.building_first,
+                row.building_len,
+                province_building_count,
+                "map detail province building",
+            )?;
+            province_rows.push(row);
+        }
+
+        let mut resources = Vec::with_capacity(resource_count);
+        for _ in 0..resource_count {
+            let entry = MapDetailI32Entry {
+                type_id: read_u32(payload, cursor),
+                amount_raw: read_i32(payload, cursor + 4),
+            };
+            let entry_reserved = read_u32(payload, cursor + 8);
+            cursor += MAP_DETAIL_ENTRY_ROW_LEN;
+            if entry.type_id == 0 || entry.type_id == u32::MAX {
+                return Err("map detail resource entry has invalid type_id".into());
+            }
+            if entry_reserved != 0 {
+                return Err("map detail resource entry reserved field is nonzero".into());
+            }
+            resources.push(entry);
+        }
+        let mut state_buildings = Vec::with_capacity(state_building_count);
+        for _ in 0..state_building_count {
+            state_buildings.push(read_map_detail_building_entry(payload, &mut cursor)?);
+        }
+        let mut province_buildings = Vec::with_capacity(province_building_count);
+        for _ in 0..province_building_count {
+            province_buildings.push(read_map_detail_building_entry(payload, &mut cursor)?);
+        }
+
+        if !delta {
+            for state in self.states.values_mut() {
+                state.remove("resources");
+                state.remove("buildings");
+                state.remove("province_buildings");
+            }
+            self.map_detail_province_state_ids.clear();
+            self.map_detail_province_buildings.clear();
+            self.map_detail_live = None;
+        }
+
+        for row in state_rows {
+            let state = self.states.entry(row.state_id.to_string()).or_default();
+            if row.flags & 1 != 0 {
+                state.insert(
+                    "resources".into(),
+                    Value::Object(map_detail_resource_map(
+                        &resources[row.resource_first..row.resource_first + row.resource_len],
+                    )),
+                );
+            }
+            if row.flags & (1 << 1) != 0 {
+                state.insert(
+                    "buildings".into(),
+                    Value::Object(map_detail_building_map(
+                        &state_buildings[row.building_first..row.building_first + row.building_len],
+                    )),
+                );
+            }
+        }
+        for row in province_rows {
+            if row.flags & 1 != 0 {
+                self.map_detail_province_state_ids
+                    .insert(row.province_id.to_string(), row.state_id);
+            }
+            if row.flags & (1 << 1) != 0 {
+                self.map_detail_province_buildings.insert(
+                    row.province_id.to_string(),
+                    map_detail_building_map(
+                        &province_buildings
+                            [row.building_first..row.building_first + row.building_len],
+                    ),
+                );
+            }
+        }
+        self.recompute_map_detail_province_building_totals();
+        self.rebuild_map_detail_layer();
+
+        if !delta {
+            self.delta_baselines_seen.insert(23);
+        }
+        Ok(())
+    }
+
+    fn recompute_map_detail_province_building_totals(&mut self) {
+        for state in self.states.values_mut() {
+            state.remove("province_buildings");
+        }
+        let mut totals: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
+        for (province_id, buildings) in &self.map_detail_province_buildings {
+            let Some(state_id) = self.map_detail_province_state_ids.get(province_id) else {
+                continue;
+            };
+            let state_totals = totals.entry(state_id.to_string()).or_default();
+            for (name, level) in buildings {
+                let add = level.as_u64().unwrap_or(0);
+                let current = state_totals.get(name).and_then(Value::as_u64).unwrap_or(0);
+                state_totals.insert(name.clone(), json!(current.saturating_add(add)));
+            }
+        }
+        for (state_id, buildings) in totals {
+            self.states
+                .entry(state_id)
+                .or_default()
+                .insert("province_buildings".into(), Value::Object(buildings));
+        }
+    }
+
+    fn rebuild_map_detail_layer(&mut self) {
+        let mut resources_by_state = Map::new();
+        let mut buildings_by_state = Map::new();
+        for (state_id, state) in &self.states {
+            if let Some(resources) = state.get("resources") {
+                resources_by_state.insert(state_id.clone(), resources.clone());
+            }
+            if let Some(buildings) = state.get("buildings") {
+                buildings_by_state.insert(state_id.clone(), buildings.clone());
+            }
+        }
+        let mut province_buildings_by_province = Map::new();
+        for (province_id, buildings) in &self.map_detail_province_buildings {
+            province_buildings_by_province
+                .insert(province_id.clone(), Value::Object(buildings.clone()));
+        }
+        self.map_detail_live = Some(json!({
+            "resources_by_state": resources_by_state,
+            "buildings_by_state": buildings_by_state,
+            "province_buildings_by_province": province_buildings_by_province,
+        }));
+    }
+
+    // --- DOMAIN 43 market_trade_live (full current-contract snapshot) ------
+    fn fold_market_trade(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(payload, MARKET_TRADE_HEADER_LEN, "market trade header")?;
+        let row_count = read_u32(payload, 8) as usize;
+        let status_flags = read_u32(payload, 16);
+        let scale_raw = read_u32(payload, 44);
+        let expected =
+            MARKET_TRADE_HEADER_LEN.saturating_add(row_count.saturating_mul(MARKET_TRADE_ROW_LEN));
+        if payload.len() != expected {
+            return Err(format!("market trade len {} != {expected}", payload.len()));
+        }
+        if compact_status_is_failure(status_flags) {
+            self.market_trade_unknown_this_hour = true;
+            self.note(format!(
+                "market_trade_live failure status {:#x}; trade contracts unknown this hour",
+                status_flags & COMPACT_STATUS_FAILURE_MASK
+            ));
+            return Ok(());
+        }
+        if scale_raw != FIXED_SCALE as u32 {
+            return Err(format!(
+                "market trade scale_raw {scale_raw} != {}",
+                FIXED_SCALE as u32
+            ));
+        }
+
+        let mut contracts = Vec::with_capacity(row_count);
+        let mut seen_contracts = BTreeSet::new();
+        let mut cursor = MARKET_TRADE_HEADER_LEN;
+        for row_index in 0..row_count {
+            let contract_id = read_u32(payload, cursor);
+            let contract_type = read_u32(payload, cursor + 4);
+            let flags = read_u32(payload, cursor + 8);
+            let seller_tag_db_id = read_u32(payload, cursor + 12);
+            let buyer_tag_db_id = read_u32(payload, cursor + 16);
+            let equipment_variant_id = read_u32(payload, cursor + 20);
+            let amount_raw = read_i64(payload, cursor + 24);
+            let equipment_subbuf_status = read_u32(payload, cursor + 32);
+            let delivery_subbuf_status = read_u32(payload, cursor + 36);
+            let buyer_ptr_status = read_u32(payload, cursor + 40);
+            let reserved = read_u32(payload, cursor + 44);
+            cursor += MARKET_TRADE_ROW_LEN;
+
+            if contract_id == 0 {
+                return Err(format!("market trade row {row_index} has zero contract_id"));
+            }
+            if !seen_contracts.insert((contract_id, contract_type)) {
+                return Err(format!(
+                    "market trade row {row_index} duplicates contract identity {contract_id}:{contract_type}"
+                ));
+            }
+            if contract_type != MARKET_TRADE_CONTRACT_TYPE {
+                return Err(format!(
+                    "market trade row {row_index} has unexpected contract_type {contract_type}"
+                ));
+            }
+            if seller_tag_db_id == 0 || buyer_tag_db_id == 0 {
+                return Err(format!(
+                    "market trade row {row_index} has zero seller/buyer tag"
+                ));
+            }
+            if flags & !MARKET_TRADE_KNOWN_FLAGS != 0 {
+                return Err(format!(
+                    "market trade row {row_index} has unknown flags {flags:#x}"
+                ));
+            }
+            if reserved != 0 {
+                return Err(format!(
+                    "market trade row {row_index} reserved field is nonzero"
+                ));
+            }
+
+            let mut contract = Map::new();
+            contract.insert(
+                "contract_id".into(),
+                json!(format!("{contract_id}:{contract_type}")),
+            );
+            contract.insert("seller".into(), json!(seller_tag_db_id.to_string()));
+            contract.insert("buyer".into(), json!(buyer_tag_db_id.to_string()));
+            contract.insert("speed".into(), Value::Null);
+            if flags & MARKET_TRADE_FLAG_VARIANT_VALID != 0 {
+                let mut equipment = Map::new();
+                equipment.insert("variant_id".into(), json!(equipment_variant_id));
+                equipment.insert(
+                    "amount".into(),
+                    if flags & MARKET_TRADE_FLAG_AMOUNT_VALID != 0 {
+                        json!(amount_raw as f64 / FIXED_SCALE)
+                    } else {
+                        Value::Null
+                    },
+                );
+                contract.insert("equipments".into(), json!([Value::Object(equipment)]));
+            } else {
+                contract.insert("equipments".into(), Value::Null);
+            }
+            contract.insert("prices".into(), Value::Null);
+            contract.insert("delivery_country".into(), Value::Null);
+            contract.insert("convoys".into(), Value::Null);
+            contract.insert("delivery_efficiency".into(), Value::Null);
+            contract.insert("days".into(), Value::Null);
+            contract.insert("delivery_state".into(), Value::Null);
+            contract.insert("completed".into(), Value::Null);
+            contract.insert(
+                "r2_market_trade_live".into(),
+                json!({
+                    "contract_type": contract_type,
+                    "flags": flags,
+                    "buyer_ptr_status": buyer_ptr_status,
+                    "equipment_subbuf_status": equipment_subbuf_status,
+                    "delivery_subbuf_status": delivery_subbuf_status,
+                }),
+            );
+            contracts.push(Value::Object(contract));
+        }
+
+        self.market_trade_contracts = Some(contracts);
+        Ok(())
+    }
+
+    // --- DOMAIN 44 supply_logistics_attrition_live (full proxy snapshot) ---
+    fn fold_supply_logistics_attrition(&mut self, payload: &[u8]) -> Result<(), String> {
+        need(
+            payload,
+            SUPPLY_LOGISTICS_HEADER_LEN,
+            "supply logistics header",
+        )?;
+        let row_count = read_u32(payload, 8) as usize;
+        let status_flags = read_u32(payload, 16);
+        let scale_raw = read_u32(payload, 20);
+        let province_rows = read_u32(payload, 24) as usize;
+        let division_rows = read_u32(payload, 28) as usize;
+        let badge_rows = read_u32(payload, 32) as usize;
+        let observed_province_roots = read_u32(payload, 36);
+        let observed_division_roots = read_u32(payload, 40);
+        let csupply_input_rows = read_u32(payload, 44) as usize;
+        let expected = SUPPLY_LOGISTICS_HEADER_LEN
+            .saturating_add(row_count.saturating_mul(SUPPLY_LOGISTICS_ROW_LEN));
+        if payload.len() != expected {
+            return Err(format!(
+                "supply logistics len {} != {expected}",
+                payload.len()
+            ));
+        }
+        if compact_status_is_failure(status_flags) {
+            self.supply_unknown_this_hour = true;
+            self.note(format!(
+                "supply_logistics_attrition_live failure status {:#x}; supply sidecar unknown this hour",
+                status_flags & COMPACT_STATUS_FAILURE_MASK
+            ));
+            return Ok(());
+        }
+        if scale_raw != FIXED_SCALE as u32 {
+            return Err(format!(
+                "supply logistics scale_raw {scale_raw} != {}",
+                FIXED_SCALE as u32
+            ));
+        }
+        if province_rows
+            .saturating_add(division_rows)
+            .saturating_add(badge_rows)
+            .saturating_add(csupply_input_rows)
+            != row_count
+        {
+            return Err("supply logistics header row counters do not sum to row_count".into());
+        }
+
+        let mut by_province = Map::new();
+        let mut badges = Vec::new();
+        let mut badge_flags_seen = 0u32;
+        let mut cursor = SUPPLY_LOGISTICS_HEADER_LEN;
+        for row_index in 0..row_count {
+            let row_kind = read_u32(payload, cursor);
+            let entity_id = read_u32(payload, cursor + 4);
+            let join_id = read_u32(payload, cursor + 8);
+            let owner_tag_db_id = read_u32(payload, cursor + 12);
+            let flags = read_u32(payload, cursor + 16);
+            let value_a_raw = read_i32(payload, cursor + 20);
+            let value_b_raw = read_i32(payload, cursor + 24);
+            let value_c_raw = read_i32(payload, cursor + 28);
+            let value_d_raw = read_i32(payload, cursor + 32);
+            let aux_raw = read_i32(payload, cursor + 36);
+            cursor += SUPPLY_LOGISTICS_ROW_LEN;
+
+            if flags & !SUPPLY_ROW_KNOWN_FLAGS != 0 {
+                return Err(format!(
+                    "supply logistics row {row_index} has unknown flags {flags:#x}"
+                ));
+            }
+            match row_kind {
+                SUPPLY_ROW_KIND_PROVINCE_LOGISTICS => {
+                    if entity_id == 0 || join_id == 0 {
+                        return Err(format!(
+                            "supply province row {row_index} has invalid province/state join"
+                        ));
+                    }
+                    if owner_tag_db_id != 0 {
+                        return Err(format!(
+                            "supply province row {row_index} has nonzero owner_tag_db_id"
+                        ));
+                    }
+                    if flags & SUPPLY_ROW_FLAG_LIVE_BUILDING_VECTOR == 0 {
+                        return Err(format!(
+                            "supply province row {row_index} missing live building vector flag"
+                        ));
+                    }
+                    let province = ensure_json_object_mut(&mut by_province, &entity_id.to_string());
+                    ensure_supply_province_defaults(province);
+                    let mut buildings = Map::new();
+                    for (flag, key, value) in [
+                        (SUPPLY_ROW_FLAG_RAIL, "rail_way", value_a_raw),
+                        (SUPPLY_ROW_FLAG_SUPPLY_NODE, "supply_node", value_b_raw),
+                        (
+                            SUPPLY_ROW_FLAG_NAVAL_SUPPLY_HUB,
+                            "naval_supply_hub",
+                            value_c_raw,
+                        ),
+                        (
+                            SUPPLY_ROW_FLAG_INFRASTRUCTURE,
+                            "infrastructure",
+                            value_d_raw,
+                        ),
+                    ] {
+                        if flags & flag != 0 {
+                            buildings.insert(key.into(), json!(value));
+                        }
+                    }
+                    province.insert("logistics_buildings".into(), Value::Object(buildings));
+                    province.insert("state_id".into(), json!(join_id));
+                    if aux_raw != 0 {
+                        province.insert("logistics_building_count".into(), json!(aux_raw));
+                    }
+                }
+                SUPPLY_ROW_KIND_DIVISION_SUPPLY => {
+                    if entity_id == 0 || join_id == 0 {
+                        return Err(format!(
+                            "supply division row {row_index} has invalid raw division/province id"
+                        ));
+                    }
+                    if flags & SUPPLY_ROW_FLAG_PROXY_VALUE == 0 {
+                        return Err(format!(
+                            "supply division row {row_index} missing proxy flag"
+                        ));
+                    }
+                    let province = ensure_json_object_mut(&mut by_province, &join_id.to_string());
+                    ensure_supply_province_defaults(province);
+                    let mut division = Map::new();
+                    division.insert("raw_division_id".into(), json!(entity_id));
+                    division.insert(
+                        "owner".into(),
+                        if flags & SUPPLY_ROW_FLAG_DIVISION_OWNER != 0 {
+                            json!(owner_tag_db_id.to_string())
+                        } else {
+                            Value::Null
+                        },
+                    );
+                    division.insert(
+                        "current_supply".into(),
+                        scaled_value_or_null(
+                            flags,
+                            SUPPLY_ROW_FLAG_DIVISION_CURRENT_SUPPLY,
+                            value_a_raw,
+                        ),
+                    );
+                    division.insert(
+                        "max_supply".into(),
+                        scaled_value_or_null(
+                            flags,
+                            SUPPLY_ROW_FLAG_DIVISION_MAX_SUPPLY,
+                            value_b_raw,
+                        ),
+                    );
+                    division.insert(
+                        "supply_gain".into(),
+                        scaled_value_or_null(
+                            flags,
+                            SUPPLY_ROW_FLAG_DIVISION_SUPPLY_GAIN,
+                            value_c_raw,
+                        ),
+                    );
+                    division.insert(
+                        "supply_deficit".into(),
+                        scaled_value_or_null(
+                            flags,
+                            SUPPLY_ROW_FLAG_DIVISION_SUPPLY_DEFICIT,
+                            value_d_raw,
+                        ),
+                    );
+                    division.insert(
+                        "fuel".into(),
+                        scaled_value_or_null(flags, SUPPLY_ROW_FLAG_DIVISION_FUEL, aux_raw),
+                    );
+                    division.insert(
+                        "r2_logistics_attrition_live".into(),
+                        json!({
+                            "raw_division_id_source": "compact_row_entity_id",
+                            "proxy_value": true,
+                            "flags": flags,
+                        }),
+                    );
+                    ensure_json_array_mut(province, "divisions").push(Value::Object(division));
+                }
+                SUPPLY_ROW_KIND_CSUPPLY_PROVINCE_INPUT => {
+                    let expected_flags =
+                        SUPPLY_ROW_FLAG_CSUPPLY_EFFICIENCY | SUPPLY_ROW_FLAG_CSUPPLY_PROVINCE_ARRAY;
+                    if entity_id == 0 || join_id != 0 || owner_tag_db_id != 0 {
+                        return Err(format!(
+                            "supply csupply row {row_index} has invalid identity fields"
+                        ));
+                    }
+                    if flags != expected_flags {
+                        return Err(format!(
+                            "supply csupply row {row_index} has invalid flags {flags:#x}"
+                        ));
+                    }
+                    let province = ensure_json_object_mut(&mut by_province, &entity_id.to_string());
+                    ensure_supply_province_defaults(province);
+                    province.insert(
+                        "csupply_input".into(),
+                        json!(value_a_raw as f64 / FIXED_SCALE),
+                    );
+                }
+                SUPPLY_ROW_KIND_COMPUTED_BADGE => {
+                    if entity_id != 0 || join_id != 0 || owner_tag_db_id != 0 {
+                        return Err(format!(
+                            "supply badge row {row_index} has nonzero identity fields"
+                        ));
+                    }
+                    let badge_flags = flags
+                        & (SUPPLY_ROW_FLAG_EXACT_SUPPLY_WALL
+                            | SUPPLY_ROW_FLAG_ATTRITION_WALL
+                            | SUPPLY_ROW_FLAG_MOTORIZATION_WALL
+                            | SUPPLY_ROW_FLAG_CONVOY_PRESSURE_WALL
+                            | SUPPLY_ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED);
+                    if badge_flags.count_ones() != 1 || flags != badge_flags {
+                        return Err(format!(
+                            "supply badge row {row_index} must carry exactly one badge flag"
+                        ));
+                    }
+                    let badge = if flags & SUPPLY_ROW_FLAG_EXACT_SUPPLY_WALL != 0 {
+                        "exact_supply_wall"
+                    } else if flags & SUPPLY_ROW_FLAG_ATTRITION_WALL != 0 {
+                        "attrition_wall"
+                    } else if flags & SUPPLY_ROW_FLAG_MOTORIZATION_WALL != 0 {
+                        "motorization_wall"
+                    } else if flags & SUPPLY_ROW_FLAG_CONVOY_PRESSURE_WALL != 0 {
+                        "convoy_pressure_wall"
+                    } else {
+                        "csupply_candidate_rejected"
+                    };
+                    badge_flags_seen |= badge_flags;
+                    badges.push(json!({ "badge": badge, "code": value_a_raw }));
+                }
+                other => {
+                    return Err(format!(
+                        "supply row {row_index} has unknown row_kind {other}"
+                    ));
+                }
+            }
+        }
+        let required_badge_flags = SUPPLY_ROW_FLAG_EXACT_SUPPLY_WALL
+            | SUPPLY_ROW_FLAG_ATTRITION_WALL
+            | SUPPLY_ROW_FLAG_MOTORIZATION_WALL
+            | SUPPLY_ROW_FLAG_CONVOY_PRESSURE_WALL
+            | SUPPLY_ROW_FLAG_CSUPPLY_CANDIDATE_REJECTED;
+        if (badge_flags_seen & required_badge_flags) != required_badge_flags {
+            self.supply_unknown_this_hour = true;
+            self.record_domain_problem(44, "missing_required_badge_rows");
+            self.note(
+                "supply_logistics_attrition_live missing required computed badge rows; supply sidecar unknown this hour",
+            );
+            return Ok(());
+        }
+
+        let mut supply = Map::new();
+        supply.insert("by_province".into(), Value::Object(by_province));
+        supply.insert("source".into(), json!("M"));
+        supply.insert("confidence".into(), json!("division_province_proxy"));
+        supply.insert(
+            "r2_logistics_attrition".into(),
+            json!({
+                "badges": badges,
+                "observed_province_roots": observed_province_roots,
+                "observed_division_roots": observed_division_roots,
+            }),
+        );
+        self.supply = Some(supply);
+        Ok(())
+    }
+
+    /// Consume the fold and return every captured snapshot in emit order.
+    pub fn finish(self) -> Vec<(i64, String, Vec<u8>)> {
+        self.out
+    }
+}
+
+const DIVISION_FLAG_TEMPLATE: u32 = 1 << 13;
+
+#[derive(Default)]
+struct ProductionAccum {
+    stockpile: Vec<Value>,
+    military_lines: Vec<Value>,
+    naval_lines: Vec<Value>,
+    construction_queue: Vec<Value>,
+}
+
+#[derive(Clone)]
+struct CombatState {
+    combat_id: u32,
+    generation: u64,
+    location: Option<u32>,
+    attackers: Option<Vec<u32>>,
+    defenders: Option<Vec<u32>>,
+}
+
+struct CombatFoldRow {
+    state: CombatState,
+    attacker_count: usize,
+    defender_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ArmyOrderKey {
+    army_id: u32,
+    generation: u64,
+    slot_index: u32,
+}
+
+struct ArmyOrderRawRow {
+    army_id: u32,
+    generation: u64,
+    flags: u32,
+    slot_index: u32,
+    order_type: i32,
+    target_first: usize,
+    target_count: usize,
+    target_state_declared_count: u32,
+    target_status_code: u32,
+}
+
+struct ArmyOrderState {
+    army_id: u32,
+    generation: u64,
+    slot_index: u32,
+    order_type: i32,
+    target_states: Vec<u32>,
+    target_state_declared_count: u32,
+    target_status_code: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct OobCommandKey {
+    kind: u32,
+    object_id: u32,
+}
+
+struct OobCommandRawRow {
+    kind: u32,
+    object_id: u32,
+    flags: u32,
+    parent_id: u32,
+    owner_tag_db_id: u32,
+    leader_id: u32,
+    leader_skill: u32,
+    member_first: usize,
+    row_member_count: usize,
+    logical_member_count: u32,
+    member_count_engine: u32,
+    missing_member_count: u32,
+    leader_trait_count: u32,
+    parent_status: u32,
+    member_status: u32,
+    owner_status: u32,
+    leader_status: u32,
+    leader_trait_status: u32,
+    location_province_id: u32,
+}
+
+struct OobCommandState {
+    kind: u32,
+    object_id: u32,
+    parent_id: Option<u32>,
+    owner_tag_db_id: u32,
+    leader_id: Option<u32>,
+    leader_skill: Option<u32>,
+    members: Vec<u32>,
+    logical_member_count: u32,
+    member_count_engine: Option<u32>,
+    missing_member_count: Option<u32>,
+    leader_trait_count: u32,
+    parent_status: u32,
+    member_status: u32,
+    owner_status: u32,
+    leader_status: u32,
+    leader_trait_status: u32,
+    location_province_id: Option<u32>,
+}
+
+#[derive(Default)]
+struct OobCountryCounts {
+    armies: u64,
+    army_groups: u64,
+    divisions_in_armies: u64,
+    fleets: u64,
+    task_forces: u64,
+    ships: u64,
+    air_wings: u64,
+    planes: u64,
+}
+
+impl OobCountryCounts {
+    fn to_json(self) -> Value {
+        json!({
+            "armies": self.armies,
+            "army_groups": self.army_groups,
+            "divisions_in_armies": self.divisions_in_armies,
+            "fleets": self.fleets,
+            "task_forces": self.task_forces,
+            "ships": self.ships,
+            "air_wings": self.air_wings,
+            "planes": self.planes,
+        })
+    }
+}
+
+struct NavalMissionTaskForceFoldRow {
+    task_force_id: u32,
+    fleet_id: u32,
+    owner_tag_db_id: u32,
+    location_province_id: Option<u32>,
+    strategic_region_id: Option<u32>,
+    mission_enum: Option<u32>,
+    mission_state: Option<u32>,
+    home_base_province_id: Option<u32>,
+    repair_base_province_id: Option<u32>,
+    repair_progress_milli: Option<u32>,
+    retreat_state: Option<u32>,
+    sunk_convoys: Option<u32>,
+    convoy_route_context_id: Option<u32>,
+    fixture_required: bool,
+    active_battle_fixture_required: bool,
+    source_status: u32,
+}
+
+struct ShipRawRow {
+    instance_id: u32,
+    flags: u32,
+    task_force_id: u32,
+    category_enum: u32,
+    strength_raw: u32,
+    organisation_raw: u32,
+    experience_raw: u32,
+    sunk_convoys: u32,
+    owner_tag_db_id: u32,
+}
+
+struct ShipState {
+    instance_id: u32,
+    task_force_id: Option<u32>,
+    category_enum: u32,
+    strength_raw: u32,
+    organisation_raw: u32,
+    experience_raw: u32,
+    sunk_convoys: u32,
+    owner_tag_db_id: u32,
+    definition: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct AirWingKey {
+    owner_tag_db_id: u32,
+    wing_id: u32,
+    generation: u64,
+}
+
+struct AirWingState {
+    generation: u64,
+    count: u32,
+    mission_mask: u32,
+    mission_region: Option<u32>,
+    effective_planes: u32,
+}
+
+#[derive(Clone)]
+struct AirWingLoadoutEntryState {
+    variant_id: u32,
+    amount_raw: i64,
+}
+
+struct AirWingLoadoutRawRow {
+    owner_tag_db_id: u32,
+    wing_id: u32,
+    generation: u64,
+    flags: u32,
+    air_base_id: u32,
+    entry_first: usize,
+    entry_count: usize,
+}
+
+struct AirWingLoadoutState {
+    air_base_id: Option<u32>,
+    equipment: Vec<AirWingLoadoutEntryState>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct AirRegionActivityKey {
+    region_id: u32,
+    owner_tag_db_id: u32,
+    mission_mask: u32,
+}
+
+struct AirRegionActivityState {
+    region_id: u32,
+    owner_tag_db_id: u32,
+    mission_mask: u32,
+    wing_count: u32,
+    plane_count: u32,
+    effective_planes: u32,
+}
+
+struct AirBaseStatusState {
+    air_base_id: u32,
+    state_id: u32,
+    capacity: u32,
+    building_level: u32,
+    based_wing_count: u32,
+    based_plane_count: u32,
+}
+
+struct VariantDefRawRow {
+    variant_id: u32,
+    flags: u32,
+    module_first: usize,
+    module_count: usize,
+    display_name: Option<String>,
+    variant_name: Option<String>,
+}
+
+#[derive(Clone)]
+struct VariantDefModuleState {
+    slot_handle: u32,
+    token: String,
+}
+
+struct VariantDefState {
+    variant_id: u32,
+    display_name: Option<String>,
+    variant_name: Option<String>,
+    modules: Vec<VariantDefModuleState>,
+}
+
+impl VariantDefState {
+    fn to_json(&self) -> Value {
+        json!({
+            "variant_id": self.variant_id,
+            "display_name": self.display_name,
+            "variant_name": self.variant_name,
+            "modules": self.modules.iter().map(|module| {
+                json!({
+                    "slot_handle": module.slot_handle,
+                    "token": module.token,
+                })
+            }).collect::<Vec<_>>(),
+            "_r2_variant_def_capture": {
+                "live_variant_id": self.variant_id,
+            },
+        })
+    }
+}
+
+struct AirVariantStatsState {
+    variant_id: u32,
+    flags: u32,
+    equipment_token_raw: u32,
+    equipment_type_token_raw: u32,
+    interface_type_raw: u32,
+    speed_cache_raw: i32,
+    range_raw: i32,
+    air_attack_raw: i32,
+    agility_raw: i32,
+    max_speed_raw: i32,
+    reliability_raw: i32,
+    air_defence_raw: i32,
+    thrust_raw: i32,
+    fuel_consumption_raw: i32,
+    build_cost_ic_raw: i32,
+    fixed_scale_raw: u32,
+    range_scale_raw: u32,
+}
+
+impl AirVariantStatsState {
+    fn to_json(&self) -> Value {
+        let fixed = self.fixed_scale_raw as f64;
+        let range = self.range_scale_raw as f64;
+        json!({
+            "variant_id": self.variant_id,
+            "speed_cache": self.speed_cache_raw as f64 / fixed,
+            "range": self.range_raw as f64 / range,
+            "air_attack": self.air_attack_raw as f64 / fixed,
+            "agility": self.agility_raw as f64 / fixed,
+            "max_speed": self.max_speed_raw as f64 / fixed,
+            "reliability": self.reliability_raw as f64 / fixed,
+            "air_defence": self.air_defence_raw as f64 / fixed,
+            "thrust": self.thrust_raw as f64 / fixed,
+            "fuel_consumption": self.fuel_consumption_raw as f64 / fixed,
+            "build_cost_ic": self.build_cost_ic_raw as f64 / fixed,
+            "_r2_air_variant_stats": {
+                "flags": self.flags,
+                "equipment_token_raw": self.equipment_token_raw,
+                "equipment_type_token_raw": self.equipment_type_token_raw,
+                "interface_type_raw": self.interface_type_raw,
+                "speed_cache_raw": self.speed_cache_raw,
+                "range_raw": self.range_raw,
+                "air_attack_raw": self.air_attack_raw,
+                "agility_raw": self.agility_raw,
+                "max_speed_raw": self.max_speed_raw,
+                "reliability_raw": self.reliability_raw,
+                "air_defence_raw": self.air_defence_raw,
+                "thrust_raw": self.thrust_raw,
+                "fuel_consumption_raw": self.fuel_consumption_raw,
+                "build_cost_ic_raw": self.build_cost_ic_raw,
+                "fixed_scale_raw": self.fixed_scale_raw,
+                "range_scale_raw": self.range_scale_raw,
+            },
+        })
+    }
+}
+
+#[derive(Clone)]
+struct VariantUpgradeState {
+    upgrade_index: u32,
+    level: u32,
+}
+
+impl VariantUpgradeState {
+    fn to_json(&self) -> Value {
+        json!({
+            "upgrade_index": self.upgrade_index,
+            "level": self.level,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct AirVariantReserveKey {
+    tag_db_id: u32,
+    variant_id: u32,
+}
+
+struct AirVariantReserveState {
+    tag_db_id: u32,
+    variant_id: u32,
+    amount_raw: i64,
+    scale_raw: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct AirSuperiorityInputKey {
+    region_id: u32,
+    owner_tag_db_id: u32,
+    mission_mask: u32,
+    variant_id: u32,
+}
+
+struct AirSuperiorityInputState {
+    region_id: u32,
+    owner_tag_db_id: u32,
+    mission_mask: u32,
+    variant_id: u32,
+    equipment_token_raw: u32,
+    equipment_type_token_raw: u32,
+    interface_type_raw: u32,
+    wing_count: u32,
+    amount_raw: i64,
+    scale_raw: u32,
+}
+
+struct AirCombatLossState {
+    owner_tag_db_id: u32,
+    wing_id: u32,
+    generation: u64,
+    flags: u32,
+    mission_mask: u32,
+    mission_region: Option<u32>,
+    old_count: u32,
+    new_count: u32,
+    count_delta: i32,
+    old_equipment_amount_sum: i64,
+    new_equipment_amount_sum: i64,
+    equipment_amount_delta: i64,
+    scale_raw: u32,
+}
+
+impl AirCombatLossState {
+    fn to_json(&self, fold: &WorldFold, unresolved: &mut BTreeSet<u32>) -> Value {
+        json!({
+            "owner": fold.country_ref_json(self.owner_tag_db_id, unresolved),
+            "owner_tag_db_id": self.owner_tag_db_id,
+            "wing_id": self.wing_id,
+            "generation": self.generation,
+            "mission_mask": self.mission_mask,
+            "mission_region": self.mission_region,
+            "old_count": self.old_count,
+            "new_count": self.new_count,
+            "count_delta": self.count_delta,
+            "old_equipment_amount_sum": self.old_equipment_amount_sum as f64 / self.scale_raw as f64,
+            "new_equipment_amount_sum": self.new_equipment_amount_sum as f64 / self.scale_raw as f64,
+            "equipment_amount_delta": self.equipment_amount_delta as f64 / self.scale_raw as f64,
+            "old_equipment_amount_sum_raw": self.old_equipment_amount_sum,
+            "new_equipment_amount_sum_raw": self.new_equipment_amount_sum,
+            "equipment_amount_delta_raw": self.equipment_amount_delta,
+            "flags": self.flags,
+            "scale_raw": self.scale_raw,
+        })
+    }
+}
+
+struct AirVariantArchetypeRawRow {
+    variant_id: u32,
+    flags: u32,
+    equipment_token_raw: u32,
+    equipment_type_token_raw: u32,
+    interface_type_raw: u32,
+    air_superiority_weight_raw: i32,
+    source_mask: u32,
+    archetype_token: Option<String>,
+    base_airframe_token: Option<String>,
+    role_token: Option<String>,
+}
+
+struct AirVariantArchetypeState {
+    variant_id: u32,
+    equipment_token_raw: u32,
+    equipment_type_token_raw: u32,
+    interface_type_raw: u32,
+    air_superiority_weight_raw: Option<i32>,
+    source_mask: u32,
+    archetype_token: Option<String>,
+    base_airframe_token: Option<String>,
+    role_token: Option<String>,
+    static_catalog_hash: u32,
+    fixed_scale_raw: u32,
+}
+
+impl AirVariantArchetypeState {
+    fn to_json(&self) -> Value {
+        json!({
+            "variant_id": self.variant_id,
+            "archetype_token": self.archetype_token,
+            "base_airframe_token": self.base_airframe_token,
+            "role_token": self.role_token,
+            "air_superiority_weight": self
+                .air_superiority_weight_raw
+                .map(|value| value as f64 / self.fixed_scale_raw as f64),
+            "equipment_token_raw": self.equipment_token_raw,
+            "equipment_type_token_raw": self.equipment_type_token_raw,
+            "interface_type_raw": self.interface_type_raw,
+            "air_superiority_weight_raw": self.air_superiority_weight_raw,
+            "source_mask": self.source_mask,
+            "static_catalog_hash": self.static_catalog_hash,
+            "fixed_scale_raw": self.fixed_scale_raw,
+        })
+    }
+}
+
+#[derive(Clone, Default)]
+struct CombatDetailEnrichment {
+    phase_event: Option<String>,
+    generation: Option<u64>,
+    location: Option<u32>,
+    day: Option<u32>,
+    duration: Option<u32>,
+    participant_events: Vec<Value>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct DivisionEquipmentKey {
+    owner_tag_db_id: u32,
+    div_id: u32,
+}
+
+struct DivisionEquipmentRootRow {
+    key: DivisionEquipmentKey,
+    entry_first: usize,
+    entry_count: usize,
+    deleted: bool,
+}
+
+struct DivisionEquipmentEntryState {
+    variant_id: u32,
+    amount_raw: i64,
+    scale_raw: u32,
+}
+
+impl DivisionEquipmentEntryState {
+    fn to_json(&self) -> Value {
+        json!({
+            "equip_id": self.variant_id,
+            "amount": self.amount_raw as f64 / self.scale_raw as f64,
+            "amount_raw": self.amount_raw,
+            "archetype": Value::Null,
+            "equip_type": Value::Null,
+            "_r2_variant_id": self.variant_id,
+        })
+    }
+}
+
+#[derive(Default)]
+struct WeatherLiveState {
+    regions: BTreeMap<u32, WeatherRegionState>,
+    provinces: BTreeMap<u32, WeatherProvinceState>,
+    active_region_count: u32,
+    observed_region_rows: u32,
+    observed_province_rows: u32,
+    scale_raw: u32,
+}
+
+impl WeatherLiveState {
+    fn to_json(&self) -> Value {
+        let mut regions = Map::new();
+        for (id, region) in &self.regions {
+            regions.insert(id.to_string(), region.to_json());
+        }
+        let mut provinces = Map::new();
+        for (id, province) in &self.provinces {
+            provinces.insert(id.to_string(), province.to_json());
+        }
+        json!({
+            "source": "weather_live",
+            "active_region_count": self.active_region_count,
+            "observed_region_rows": self.observed_region_rows,
+            "observed_province_rows": self.observed_province_rows,
+            "scale_raw": self.scale_raw,
+            "regions": regions,
+            "provinces": provinces,
+        })
+    }
+}
+
+struct WeatherRegionState {
+    region_id: u32,
+    flags: u32,
+    temperature_raw: i32,
+    phenomenon: u32,
+    next_weather_change_raw: u32,
+    active_modifier_count: u32,
+    intensity: u32,
+    scale_raw: u32,
+}
+
+impl WeatherRegionState {
+    fn to_json(&self) -> Value {
+        json!({
+            "region_id": self.region_id,
+            "temperature": self.temperature_raw as f64 / self.scale_raw as f64,
+            "temperature_raw": self.temperature_raw,
+            "phenomenon": self.phenomenon,
+            "next_weather_change_raw": self.next_weather_change_raw,
+            "active_modifier_count": self.active_modifier_count,
+            "intensity": self.intensity,
+            "rain_light": self.flags & WEATHER_REGION_RAIN_LIGHT != 0,
+            "rain_heavy": self.flags & WEATHER_REGION_RAIN_HEAVY != 0,
+            "snow": self.flags & WEATHER_REGION_SNOW != 0,
+            "blizzard": self.flags & WEATHER_REGION_BLIZZARD != 0,
+            "arctic_water": self.flags & WEATHER_REGION_ARCTIC_WATER != 0,
+            "active_signal": self.flags & WEATHER_REGION_ACTIVE_SIGNAL != 0,
+            "phenomenon_active": self.flags & WEATHER_REGION_PHENOMENON_ACTIVE != 0,
+            "sandstorm": self.flags & WEATHER_REGION_SANDSTORM != 0,
+        })
+    }
+}
+
+struct WeatherProvinceState {
+    province_id: u32,
+    flags: u32,
+    temperature_raw: i32,
+    temperature_change_raw: i32,
+    water_raw: i32,
+    snow_raw: i32,
+    custom_modifier_count: u32,
+    scale_raw: u32,
+}
+
+impl WeatherProvinceState {
+    fn to_json(&self) -> Value {
+        json!({
+            "province_id": self.province_id,
+            "temperature": optional_scaled_i32(self.flags, WEATHER_PROVINCE_TEMP_PRESENT, self.temperature_raw, self.scale_raw),
+            "temperature_raw": optional_i32(self.flags, WEATHER_PROVINCE_TEMP_PRESENT, self.temperature_raw),
+            "temperature_change": optional_scaled_i32(self.flags, WEATHER_PROVINCE_TEMP_CHANGE_PRESENT, self.temperature_change_raw, self.scale_raw),
+            "temperature_change_raw": optional_i32(self.flags, WEATHER_PROVINCE_TEMP_CHANGE_PRESENT, self.temperature_change_raw),
+            "water": optional_scaled_i32(self.flags, WEATHER_PROVINCE_WATER_PRESENT, self.water_raw, self.scale_raw),
+            "water_raw": optional_i32(self.flags, WEATHER_PROVINCE_WATER_PRESENT, self.water_raw),
+            "snow": optional_scaled_i32(self.flags, WEATHER_PROVINCE_SNOW_PRESENT, self.snow_raw, self.scale_raw),
+            "snow_raw": optional_i32(self.flags, WEATHER_PROVINCE_SNOW_PRESENT, self.snow_raw),
+            "mud_present": self.flags & WEATHER_PROVINCE_MUD_PRESENT != 0,
+            "mud_active": if self.flags & WEATHER_PROVINCE_MUD_PRESENT != 0 {
+                json!(self.flags & WEATHER_PROVINCE_MUD_ACTIVE != 0)
+            } else {
+                Value::Null
+            },
+            "custom_modifier_count": if self.flags & WEATHER_PROVINCE_CUSTOM_MODIFIER_COUNT_PRESENT != 0 {
+                json!(self.custom_modifier_count)
+            } else {
+                Value::Null
+            },
+            "struct_validated": self.flags & WEATHER_PROVINCE_STRUCT_VALIDATED != 0,
+            "map_recolor": self.flags & WEATHER_PROVINCE_MAP_RECOLOR != 0,
+            "dynamic_lut": self.flags & WEATHER_PROVINCE_DYNAMIC_LUT != 0,
+        })
+    }
+}
+
+struct SpecialProjectsState {
+    facilities: BTreeMap<u32, SpecialProjectFacilityState>,
+    projects: BTreeMap<u32, SpecialProjectState>,
+    scientists: BTreeMap<u32, SpecialProjectScientistState>,
+    project_states: BTreeMap<u32, SpecialProjectProgressState>,
+    breakthroughs: Vec<SpecialProjectBreakthroughState>,
+    count: u32,
+    source: String,
+    header_extension: u32,
+}
+
+impl SpecialProjectsState {
+    fn to_json(&self, fold: &WorldFold, unresolved: &mut BTreeSet<u32>) -> Value {
+        let mut facilities = Map::new();
+        for (id, facility) in &self.facilities {
+            facilities.insert(id.to_string(), facility.to_json());
+        }
+        let mut projects = Map::new();
+        for (id, project) in &self.projects {
+            projects.insert(id.to_string(), project.to_json());
+        }
+        let mut scientists = Map::new();
+        for (id, scientist) in &self.scientists {
+            scientists.insert(id.to_string(), scientist.to_json());
+        }
+        let mut project_states = Map::new();
+        for (id, state) in &self.project_states {
+            project_states.insert(id.to_string(), state.to_json());
+        }
+        json!({
+            "count": self.count,
+            "source": self.source,
+            "facilities": facilities,
+            "projects": projects,
+            "scientists": scientists,
+            "_r2_header_extension": self.header_extension,
+            "_r2_project_states": project_states,
+            "_r2_breakthroughs": self.breakthroughs.iter().map(|row| row.to_json(fold, unresolved)).collect::<Vec<_>>(),
+        })
+    }
+}
+
+struct SpecialProjectFacilityState {
+    id: u32,
+    province: u32,
+    active_project_handle: Option<u32>,
+    scientist_char_id: Option<u32>,
+    unread_rewards: u32,
+    building: Option<String>,
+}
+
+impl SpecialProjectFacilityState {
+    fn to_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "province": self.province,
+            "active_project": Value::Null,
+            "scientist_char_id": self.scientist_char_id,
+            "unread_rewards": self.unread_rewards,
+            "building": self.building,
+            "_r2_active_project_handle": self.active_project_handle,
+        })
+    }
+}
+
+struct SpecialProjectState {
+    id: u32,
+    static_def_handle: u32,
+    iterations: u32,
+    worked_at_facility: Option<u32>,
+}
+
+impl SpecialProjectState {
+    fn to_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "static_def": Value::Null,
+            "iterations": self.iterations,
+            "worked_at_facility": self.worked_at_facility,
+            "_r2_static_def_handle": self.static_def_handle,
+        })
+    }
+}
+
+struct SpecialProjectScientistState {
+    char_id: u32,
+    trait_count: Option<u32>,
+    skill_values: Option<[i32; 4]>,
+    name_token: Option<String>,
+    display_name: Option<String>,
+}
+
+impl SpecialProjectScientistState {
+    fn to_json(&self) -> Value {
+        json!({
+            "char_id": self.char_id,
+            "trait_count": self.trait_count,
+            "name_token": self.name_token,
+            "display_name": self.display_name,
+            "_r2_skill_values": self.skill_values,
+        })
+    }
+}
+
+struct SpecialProjectProgressState {
+    id: u32,
+    static_def_handle: u32,
+    current_state_offset: u32,
+    current_state_enum: u32,
+    prototype_state_enum: u32,
+    simple_state_1_enum: u32,
+    simple_state_2_enum: u32,
+    simple_state_3_enum: u32,
+    prototype_iterations: u32,
+    phase_progress_raw: u32,
+    phase_target_raw: u32,
+    completed: Option<bool>,
+}
+
+impl SpecialProjectProgressState {
+    fn to_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "static_def": Value::Null,
+            "current_state": Value::Null,
+            "completed": self.completed,
+            "phase_progress_raw": self.phase_progress_raw,
+            "phase_target_raw": self.phase_target_raw,
+            "_r2_static_def_handle": self.static_def_handle,
+            "_r2_current_state_offset": self.current_state_offset,
+            "_r2_current_state_enum": self.current_state_enum,
+            "_r2_prototype_state_enum": self.prototype_state_enum,
+            "_r2_simple_state_1_enum": self.simple_state_1_enum,
+            "_r2_simple_state_2_enum": self.simple_state_2_enum,
+            "_r2_simple_state_3_enum": self.simple_state_3_enum,
+            "_r2_prototype_iterations": self.prototype_iterations,
+        })
+    }
+}
+
+struct SpecialProjectBreakthroughState {
+    tag_db_id: u32,
+    specialization_handle: u32,
+    points_raw: u32,
+}
+
+impl SpecialProjectBreakthroughState {
+    fn to_json(&self, fold: &WorldFold, unresolved: &mut BTreeSet<u32>) -> Value {
+        json!({
+            "country": fold.country_ref_json(self.tag_db_id, unresolved),
+            "tag_db_id": self.tag_db_id,
+            "specialization": Value::Null,
+            "points_raw": self.points_raw,
+            "_r2_specialization_handle": self.specialization_handle,
+        })
+    }
+}
+
+#[derive(Default)]
+struct FrdFocusMetricsState {
+    current: Option<String>,
+    current_continuous: Option<String>,
+    completed_count: Option<u32>,
+    completed_tokens: Vec<String>,
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct FrdResearchKey {
+    tag_db_id: u32,
+    slot_index: u32,
+}
+
+struct FrdFocusDepthEventState {
+    tag_db_id: u32,
+    kind: u32,
+    focus_kind: u32,
+    flags: u32,
+    previous_completed: u32,
+    current_completed: u32,
+    previous_progress: i32,
+    current_progress: i32,
+    completed_delta: u32,
+    from_token: String,
+    to_token: String,
+    completed_token: String,
+}
+
+impl FrdFocusDepthEventState {
+    fn to_json(&self) -> Value {
+        json!({
+            "kind": self.kind,
+            "focus_kind": self.focus_kind,
+            "previous_completed": self.previous_completed,
+            "current_completed": self.current_completed,
+            "previous_progress": self.previous_progress,
+            "current_progress": self.current_progress,
+            "completed_delta": self.completed_delta,
+            "from_token": self.from_token,
+            "to_token": self.to_token,
+            "completed_token": self.completed_token,
+            "completed_token_exact": self.flags & FRD_FOCUS_FLAG_COMPLETED_TOKEN_EXACT != 0,
+            "completed_token_inferred": self.flags & FRD_FOCUS_FLAG_COMPLETED_TOKEN_INFERRED != 0,
+        })
+    }
+}
+
+struct FrdResearchLiveState {
+    tag_db_id: u32,
+    slot_index: u32,
+    flags: u32,
+    hour_delta: u32,
+    previous_handle: u32,
+    current_handle: u32,
+    previous_def: u32,
+    current_def: u32,
+    previous_progress_raw: i64,
+    current_progress_raw: i64,
+    delta_raw: i64,
+    speed_raw: i64,
+    base_raw: Option<i64>,
+    eta_hours: Option<i64>,
+}
+
+impl FrdResearchLiveState {
+    fn to_json(&self) -> Value {
+        json!({
+            "slot_index": self.slot_index,
+            "current_handle": self.current_handle,
+            "current_def": self.current_def,
+            "previous_handle": self.previous_handle,
+            "previous_def": self.previous_def,
+            "previous_progress_raw": self.previous_progress_raw,
+            "current_progress_raw": self.current_progress_raw,
+            "delta_raw": self.delta_raw,
+            "speed_raw": self.speed_raw,
+            "base_raw": self.base_raw,
+            "eta_hours": self.eta_hours,
+            "hour_delta": self.hour_delta,
+            "flags": self.flags,
+        })
+    }
+}
+
+struct FrdDecisionStatusState {
+    tag_db_id: u32,
+    active_timed_count: u32,
+    targeted_count: u32,
+    targeted_timed_count: u32,
+    decisions_taken_bucket_count: u32,
+    re_enable_count: u32,
+    timed_live_count: u32,
+}
+
+impl FrdDecisionStatusState {
+    fn to_json(&self) -> Value {
+        json!({
+            "active_timed_count": self.active_timed_count,
+            "targeted_count": self.targeted_count,
+            "targeted_timed_count": self.targeted_timed_count,
+            "decisions_taken_bucket_count": self.decisions_taken_bucket_count,
+            "re_enable_count": self.re_enable_count,
+            "timed_live_count": self.timed_live_count,
+        })
+    }
+}
+
+struct FrdDecisionEventState {
+    tag_db_id: u32,
+    kind: u32,
+    previous_days: i32,
+    current_days: i32,
+    previous_state: i32,
+    current_state: i32,
+    decision: String,
+}
+
+impl FrdDecisionEventState {
+    fn to_json(&self) -> Value {
+        json!({
+            "kind": self.kind,
+            "previous_days": self.previous_days,
+            "current_days": self.current_days,
+            "previous_state": self.previous_state,
+            "current_state": self.current_state,
+            "decision": self.decision,
+        })
+    }
+}
+
+struct FrdDepthBadgeState {
+    kind: u32,
+    flags: u32,
+    source_domain_id: u32,
+    affected_count: u32,
+    evidence_code: u32,
+    detail: String,
+}
+
+impl FrdDepthBadgeState {
+    fn to_json(&self) -> Value {
+        json!({
+            "kind": self.kind,
+            "flags": self.flags,
+            "source_domain_id": self.source_domain_id,
+            "affected_count": self.affected_count,
+            "evidence_code": self.evidence_code,
+            "detail": self.detail,
+        })
+    }
+}
+
+struct FrdDepthFrame {
+    depth_status_flags: u32,
+    focus_rows: Vec<FrdFocusDepthEventState>,
+    research_rows: Vec<FrdResearchLiveState>,
+    decision_status_rows: Vec<FrdDecisionStatusState>,
+    decision_event_rows: Vec<FrdDecisionEventState>,
+    badges: Vec<FrdDepthBadgeState>,
+}
+
+#[derive(Clone)]
+struct ScriptFlagState {
+    value_raw: Option<i64>,
+    date_hour_raw: Option<i32>,
+}
+
+impl ScriptFlagState {
+    fn to_json(&self) -> Value {
+        json!({
+            "value_raw": self.value_raw,
+            "date_hour_raw": self.date_hour_raw,
+        })
+    }
+}
+
+struct ScriptedOpaqueBadgeState {
+    value_kind: u32,
+    scope_kind: u32,
+    owner_id: u32,
+    key: Option<String>,
+}
+
+impl ScriptedOpaqueBadgeState {
+    fn to_json(&self) -> Value {
+        json!({
+            "value_kind": self.value_kind,
+            "scope_kind": self.scope_kind,
+            "owner_id": self.owner_id,
+            "key": self.key,
+        })
+    }
+}
+
+struct ScriptedStateRow {
+    scope_kind: u32,
+    owner_id: u32,
+    value_kind: u32,
+    key: Option<String>,
+    token_id: Option<u32>,
+    date_hour_raw: Option<i32>,
+    value_raw: Option<i64>,
+    deleted: bool,
+}
+
+#[derive(Clone)]
+struct DomainProblem {
+    domain_id: u16,
+    problem: &'static str,
+}
+
+struct MapDetailStateRow {
+    state_id: u32,
+    flags: u32,
+    resource_first: usize,
+    resource_len: usize,
+    building_first: usize,
+    building_len: usize,
+}
+
+struct MapDetailProvinceRow {
+    province_id: u32,
+    state_id: u32,
+    flags: u32,
+    building_first: usize,
+    building_len: usize,
+}
+
+struct MapDetailI32Entry {
+    type_id: u32,
+    amount_raw: i32,
+}
+
+struct MapDetailU32Entry {
+    type_id: u32,
+    level: u32,
+}
+
+/// Merge `add` into `country[key]`, preserving keys already written by another
+/// domain (politics_live and politics_residuals both write `politics`).
+fn merge_into(country: &mut Map<String, Value>, key: &str, add: Map<String, Value>) {
+    match country.get_mut(key) {
+        Some(Value::Object(existing)) => {
+            for (k, v) in add {
+                existing.insert(k, v);
+            }
+        }
+        _ => {
+            country.insert(key.into(), Value::Object(add));
+        }
+    }
+}
+
+fn string_or_null(s: &str) -> Value {
+    if s.is_empty() {
+        Value::Null
+    } else {
+        json!(s)
+    }
+}
+
+fn option_u32_json(value: Option<u32>) -> Value {
+    value.map(|item| json!(item)).unwrap_or(Value::Null)
+}
+
+fn domain48_building_rows_by_type(rows: Vec<domain48::BuildingRow>) -> Value {
+    let mut obj = Map::new();
+    for row in rows {
+        let mut detail = Map::new();
+        detail.insert("level".into(), json!(row.level));
+        detail.insert("healthy_level".into(), option_u32_json(row.healthy_level));
+        detail.insert(
+            "damaged".into(),
+            json!(row.healthy_level.is_some_and(|healthy| healthy < row.level)),
+        );
+        obj.insert(domain48_type_key(row.type_id), Value::Object(detail));
+    }
+    Value::Object(obj)
+}
+
+fn domain48_type_key(type_id: u32) -> String {
+    format!("type_0x{type_id:08x}")
+}
+
+fn domain48_resource_key(resource_id: u32) -> String {
+    format!("tid_0x{resource_id:08x}")
+}
+
+fn option_flag(flags: u32, flag: u32, value: u32) -> Option<u32> {
+    (flags & flag != 0).then_some(value)
+}
+
+fn domain53_relation_flag_name(flag_kind: u16) -> &'static str {
+    match flag_kind {
+        diplomacy53::compact::REL_KIND_NON_AGGRESSION_PACT => "non_aggression_pact",
+        diplomacy53::compact::REL_KIND_PUPPET => "subject_relation",
+        diplomacy53::compact::REL_KIND_EMBARGO => "embargo",
+        diplomacy53::compact::REL_KIND_MILITARY_ACCESS => "military_access",
+        diplomacy53::compact::REL_KIND_AIR_BASE_ACCESS => "air_base_access",
+        diplomacy53::compact::REL_KIND_DOCKING_RIGHTS => "docking_rights",
+        diplomacy53::compact::REL_KIND_NAVAL_BLOCKADE => "naval_blockade",
+        diplomacy53::compact::REL_KIND_MARKET_ACCESS_RIGHTS => "market_access_rights",
+        diplomacy53::compact::REL_KIND_EQUIPMENT_PURCHASE_CONTRACT_RELATION => {
+            "equipment_purchase_contract_relation"
+        }
+        diplomacy53::compact::REL_KIND_GUARANTEE => "guarantee",
+        diplomacy53::compact::REL_KIND_IMPROVE_RELATIONS => "improve_relations",
+        diplomacy53::compact::REL_KIND_ATTACHE => "attache",
+        diplomacy53::compact::REL_KIND_LICENCE_PRODUCTION => "licence_production",
+        _ => "unknown",
+    }
+}
+
+fn option_u32_vec_json(value: &Option<Vec<u32>>) -> Value {
+    match value {
+        Some(items) => Value::Array(items.iter().copied().map(|item| json!(item)).collect()),
+        None => Value::Null,
+    }
+}
+
+fn scaled_value_or_null(flags: u32, flag: u32, raw: i32) -> Value {
+    if flags & flag != 0 {
+        json!(raw as f64 / FIXED_SCALE)
+    } else {
+        Value::Null
+    }
+}
+
+fn domain47_unit_leader_kind(kind: u8) -> &'static str {
+    match kind {
+        domain47::UNIT_LEADER_ARMY => "army",
+        domain47::UNIT_LEADER_NAVY => "navy",
+        _ => "unknown",
+    }
+}
+
+fn ensure_json_object_mut<'a>(
+    obj: &'a mut Map<String, Value>,
+    key: &str,
+) -> &'a mut Map<String, Value> {
+    if !matches!(obj.get(key), Some(Value::Object(_))) {
+        obj.insert(key.into(), Value::Object(Map::new()));
+    }
+    match obj.get_mut(key) {
+        Some(Value::Object(map)) => map,
+        _ => unreachable!("object was just inserted"),
+    }
+}
+
+fn ensure_json_array_mut<'a>(obj: &'a mut Map<String, Value>, key: &str) -> &'a mut Vec<Value> {
+    if !matches!(obj.get(key), Some(Value::Array(_))) {
+        obj.insert(key.into(), Value::Array(Vec::new()));
+    }
+    match obj.get_mut(key) {
+        Some(Value::Array(list)) => list,
+        _ => unreachable!("array was just inserted"),
+    }
+}
+
+fn division_equipment_join_key(division: &Map<String, Value>) -> Option<DivisionEquipmentKey> {
+    let div_id = division.get("div_id")?.as_u64()? as u32;
+    let owner = division.get("owner")?.as_str()?.parse::<u32>().ok()?;
+    Some(DivisionEquipmentKey {
+        owner_tag_db_id: owner,
+        div_id,
+    })
+}
+
+fn ensure_country_projection_object<'a>(
+    countries: &'a mut Map<String, Value>,
+    fold: &WorldFold,
+    tag_db_id: u32,
+    unresolved: &mut BTreeSet<u32>,
+) -> &'a mut Map<String, Value> {
+    let key = fold.resolve_country_key(&tag_db_id.to_string(), unresolved);
+    let value = countries
+        .entry(key)
+        .or_insert_with(|| Value::Object(Map::new()));
+    if !value.is_object() {
+        *value = Value::Object(Map::new());
+    }
+    match value {
+        Value::Object(country) => country,
+        _ => unreachable!("country projection was normalized to object"),
+    }
+}
+
+fn push_unique_string(values: &mut Vec<String>, value: String) {
+    if !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+    }
+}
+
+fn mask_scripted_country_extra(country: &mut Map<String, Value>) {
+    let Some(Value::Object(extra)) = country.get_mut("extra") else {
+        return;
+    };
+    for key in [
+        "script_flags",
+        "_r2_script_variables",
+        "_r2_token_only_flags",
+    ] {
+        if extra.contains_key(key) {
+            extra.insert(key.into(), Value::Null);
+        }
+    }
+}
+
+fn clear_scripted_country_extra(country: &mut Map<String, Value>) {
+    let Some(Value::Object(extra)) = country.get_mut("extra") else {
+        return;
+    };
+    for key in [
+        "script_flags",
+        "_r2_script_variables",
+        "_r2_token_only_flags",
+    ] {
+        extra.remove(key);
+    }
+    if extra.is_empty() {
+        country.remove("extra");
+    }
+}
+
+fn clear_country_extra_key(country: &mut Map<String, Value>, section: &str, key: &str) {
+    let Some(Value::Object(extra)) = country.get_mut("extra") else {
+        return;
+    };
+    if let Some(Value::Object(section_obj)) = extra.get_mut(section) {
+        section_obj.remove(key);
+    }
+}
+
+fn clear_country_extra_u32_key(country: &mut Map<String, Value>, section: &str, key: u32) {
+    clear_country_extra_key(country, section, &key.to_string());
+}
+
+fn clear_state_scripted_key(state: &mut Map<String, Value>, section: &str, key: &str) {
+    let Some(Value::Object(scripted)) = state.get_mut("_r2_scripted_state") else {
+        return;
+    };
+    if let Some(Value::Object(section_obj)) = scripted.get_mut(section) {
+        section_obj.remove(key);
+    }
+}
+
+fn clear_state_scripted_u32_key(state: &mut Map<String, Value>, section: &str, key: u32) {
+    clear_state_scripted_key(state, section, &key.to_string());
+}
+
+fn script_flag_map_json(values: &BTreeMap<String, ScriptFlagState>) -> Map<String, Value> {
+    values
+        .iter()
+        .map(|(key, flag)| (key.clone(), flag.to_json()))
+        .collect()
+}
+
+fn f64_map_json(values: &BTreeMap<String, f64>) -> Map<String, Value> {
+    values
+        .iter()
+        .map(|(key, value)| (key.clone(), json!(value)))
+        .collect()
+}
+
+fn token_flag_map_json(values: &BTreeMap<u32, ScriptFlagState>) -> Map<String, Value> {
+    values
+        .iter()
+        .map(|(key, flag)| (key.to_string(), flag.to_json()))
+        .collect()
+}
+
+fn optional_scaled_i32(flags: u32, bit: u32, raw: i32, scale_raw: u32) -> Value {
+    if flags & bit != 0 {
+        json!(raw as f64 / scale_raw as f64)
+    } else {
+        Value::Null
+    }
+}
+
+fn optional_i32(flags: u32, bit: u32, raw: i32) -> Value {
+    if flags & bit != 0 {
+        json!(raw)
+    } else {
+        Value::Null
+    }
+}
+
+fn validate_weather_i32_optional(
+    row_index: usize,
+    present: bool,
+    raw: i32,
+    min: i32,
+    max: i32,
+    label: &str,
+) -> Result<(), String> {
+    if present {
+        if !(min..=max).contains(&raw) {
+            return Err(format!(
+                "weather province row {row_index} has invalid {label} {raw}"
+            ));
+        }
+    } else if raw != 0 {
+        return Err(format!(
+            "weather province row {row_index} has {label} without presence flag"
+        ));
+    }
+    Ok(())
+}
+
+fn parse_frd_depth_payload(payload: &[u8]) -> Result<FrdDepthFrame, String> {
+    need(
+        payload,
+        FRD_HEADER_LEN,
+        "focus_research_decisions_depth header",
+    )?;
+    let _elapsed_wall_ms = read_u64(payload, 0);
+    let depth_status_flags = read_u32(payload, 8);
+    let focus_count = read_u32(payload, 12) as usize;
+    let research_count = read_u32(payload, 16) as usize;
+    let decision_status_count = read_u32(payload, 20) as usize;
+    let decision_event_count = read_u32(payload, 24) as usize;
+    let observed_focus_count = read_u32(payload, 28) as usize;
+    let observed_research_count = read_u32(payload, 32) as usize;
+    let observed_decision_status_count = read_u32(payload, 36) as usize;
+    let observed_decision_event_count = read_u32(payload, 40) as usize;
+    let badge_count = read_u32(payload, 44) as usize;
+    ensure_count_at_most(
+        "focus_research_decisions_depth",
+        "focus_count",
+        focus_count,
+        "observed_focus_count",
+        observed_focus_count,
+    )?;
+    ensure_count_at_most(
+        "focus_research_decisions_depth",
+        "research_count",
+        research_count,
+        "observed_research_count",
+        observed_research_count,
+    )?;
+    ensure_count_at_most(
+        "focus_research_decisions_depth",
+        "decision_status_count",
+        decision_status_count,
+        "observed_decision_status_count",
+        observed_decision_status_count,
+    )?;
+    ensure_count_at_most(
+        "focus_research_decisions_depth",
+        "decision_event_count",
+        decision_event_count,
+        "observed_decision_event_count",
+        observed_decision_event_count,
+    )?;
+
+    let mut cursor = FRD_HEADER_LEN;
+    let mut focus_rows = Vec::with_capacity(focus_count);
+    for _ in 0..focus_count {
+        need(payload, cursor + FRD_FOCUS_ROW_FIXED_LEN, "frd focus row")?;
+        let tag_db_id = read_u32(payload, cursor);
+        let kind = read_u32(payload, cursor + 4);
+        let focus_kind = read_u32(payload, cursor + 8);
+        let flags = read_u32(payload, cursor + 12);
+        let previous_completed = read_u32(payload, cursor + 16);
+        let current_completed = read_u32(payload, cursor + 20);
+        let previous_progress = read_i32(payload, cursor + 24);
+        let current_progress = read_i32(payload, cursor + 28);
+        let completed_delta = read_u32(payload, cursor + 32);
+        cursor += FRD_FOCUS_ROW_FIXED_LEN;
+        let from_token = read_string(payload, &mut cursor, "frd focus from_token")?;
+        let to_token = read_string(payload, &mut cursor, "frd focus to_token")?;
+        let completed_token = read_string(payload, &mut cursor, "frd focus completed_token")?;
+        focus_rows.push(FrdFocusDepthEventState {
+            tag_db_id,
+            kind,
+            focus_kind,
+            flags,
+            previous_completed,
+            current_completed,
+            previous_progress,
+            current_progress,
+            completed_delta,
+            from_token,
+            to_token,
+            completed_token,
+        });
+    }
+
+    let mut research_rows = Vec::with_capacity(research_count);
+    for _ in 0..research_count {
+        need(payload, cursor + FRD_RESEARCH_ROW_LEN, "frd research row")?;
+        let tag_db_id = read_u32(payload, cursor);
+        let slot_index = read_u32(payload, cursor + 4);
+        let flags = read_u32(payload, cursor + 8);
+        research_rows.push(FrdResearchLiveState {
+            tag_db_id,
+            slot_index,
+            flags,
+            hour_delta: read_u32(payload, cursor + 12),
+            previous_handle: read_u32(payload, cursor + 16),
+            current_handle: read_u32(payload, cursor + 20),
+            previous_def: read_u32(payload, cursor + 24),
+            current_def: read_u32(payload, cursor + 28),
+            previous_progress_raw: read_i64(payload, cursor + 32),
+            current_progress_raw: read_i64(payload, cursor + 40),
+            delta_raw: read_i64(payload, cursor + 48),
+            speed_raw: read_i64(payload, cursor + 56),
+            base_raw: (flags & FRD_RESEARCH_FLAG_BASE_PRESENT != 0)
+                .then_some(read_i64(payload, cursor + 64)),
+            eta_hours: (flags & FRD_RESEARCH_FLAG_ETA_AVAILABLE != 0)
+                .then_some(read_i64(payload, cursor + 72)),
+        });
+        cursor += FRD_RESEARCH_ROW_LEN;
+    }
+
+    let mut decision_status_rows = Vec::with_capacity(decision_status_count);
+    for _ in 0..decision_status_count {
+        need(
+            payload,
+            cursor + FRD_DECISION_STATUS_ROW_LEN,
+            "frd decision status row",
+        )?;
+        decision_status_rows.push(FrdDecisionStatusState {
+            tag_db_id: read_u32(payload, cursor),
+            active_timed_count: read_u32(payload, cursor + 4),
+            targeted_count: read_u32(payload, cursor + 8),
+            targeted_timed_count: read_u32(payload, cursor + 12),
+            decisions_taken_bucket_count: read_u32(payload, cursor + 16),
+            re_enable_count: read_u32(payload, cursor + 20),
+            timed_live_count: read_u32(payload, cursor + 24),
+        });
+        cursor += FRD_DECISION_STATUS_ROW_LEN;
+    }
+
+    let mut decision_event_rows = Vec::with_capacity(decision_event_count);
+    for _ in 0..decision_event_count {
+        need(
+            payload,
+            cursor + FRD_DECISION_EVENT_ROW_FIXED_LEN,
+            "frd decision event row",
+        )?;
+        let tag_db_id = read_u32(payload, cursor);
+        let kind = read_u32(payload, cursor + 4);
+        let previous_days = read_i32(payload, cursor + 12);
+        let current_days = read_i32(payload, cursor + 16);
+        let previous_state = read_i32(payload, cursor + 20);
+        let current_state = read_i32(payload, cursor + 24);
+        cursor += FRD_DECISION_EVENT_ROW_FIXED_LEN;
+        let decision = read_string(payload, &mut cursor, "frd decision event token")?;
+        decision_event_rows.push(FrdDecisionEventState {
+            tag_db_id,
+            kind,
+            previous_days,
+            current_days,
+            previous_state,
+            current_state,
+            decision,
+        });
+    }
+
+    let mut badges = Vec::with_capacity(badge_count);
+    for _ in 0..badge_count {
+        need(payload, cursor + FRD_BADGE_ROW_FIXED_LEN, "frd badge row")?;
+        let kind = read_u32(payload, cursor);
+        let flags = read_u32(payload, cursor + 4);
+        let source_domain_id = read_u32(payload, cursor + 8);
+        let affected_count = read_u32(payload, cursor + 12);
+        let evidence_code = read_u32(payload, cursor + 16);
+        cursor += FRD_BADGE_ROW_FIXED_LEN;
+        let detail = read_string(payload, &mut cursor, "frd badge detail")?;
+        badges.push(FrdDepthBadgeState {
+            kind,
+            flags,
+            source_domain_id,
+            affected_count,
+            evidence_code,
+            detail,
+        });
+    }
+    if cursor != payload.len() {
+        return Err(format!(
+            "focus_research_decisions_depth payload has {} trailing byte(s)",
+            payload.len().saturating_sub(cursor)
+        ));
+    }
+    Ok(FrdDepthFrame {
+        depth_status_flags,
+        focus_rows,
+        research_rows,
+        decision_status_rows,
+        decision_event_rows,
+        badges,
+    })
+}
+
+fn validate_scripted_state_row(row: &ScriptedStateRow) -> Result<(), String> {
+    match row.scope_kind {
+        SCRIPTED_STATE_SCOPE_GLOBAL => {
+            if row.owner_id != 0 {
+                return Err("scripted_state global row has nonzero owner_id".to_string());
+            }
+        }
+        SCRIPTED_STATE_SCOPE_COUNTRY | SCRIPTED_STATE_SCOPE_STATE => {
+            if row.owner_id == 0 {
+                return Err("scripted_state scoped row has zero owner_id".to_string());
+            }
+        }
+        other => return Err(format!("scripted_state unsupported scope {other}")),
+    }
+    match row.value_kind {
+        SCRIPTED_STATE_VALUE_VARIABLE_FIXED_I64 => {
+            if row.key.as_ref().map_or(true, String::is_empty) {
+                return Err("scripted_state variable row missing key".to_string());
+            }
+            if !row.deleted && row.value_raw.is_none() {
+                return Err("scripted_state variable row missing value".to_string());
+            }
+        }
+        SCRIPTED_STATE_VALUE_FLAG_NAMED => {
+            if row.key.as_ref().map_or(true, String::is_empty) {
+                return Err("scripted_state named flag row missing key".to_string());
+            }
+        }
+        SCRIPTED_STATE_VALUE_FLAG_TOKEN_ONLY => {
+            if row.token_id.is_none() {
+                return Err("scripted_state token flag row missing token_id".to_string());
+            }
+        }
+        SCRIPTED_STATE_VALUE_DELAYED_EVENT_OPAQUE | SCRIPTED_STATE_VALUE_SCRIPTED_GUI_OPAQUE => {}
+        other => return Err(format!("scripted_state unsupported value_kind {other}")),
+    }
+    Ok(())
+}
+
+fn ensure_supply_province_defaults(province: &mut Map<String, Value>) {
+    province.entry("current").or_insert(Value::Null);
+    province.entry("capacity").or_insert(Value::Null);
+    province.entry("gain").or_insert(Value::Null);
+    province
+        .entry("divisions")
+        .or_insert_with(|| Value::Array(Vec::new()));
+}
+
+fn validate_map_detail_range(
+    present: bool,
+    first: usize,
+    len: usize,
+    total: usize,
+    label: &str,
+) -> Result<(), String> {
+    if !present {
+        if first != 0 || len != 0 {
+            return Err(format!("{label} range present without flag"));
+        }
+    } else if first.saturating_add(len) > total {
+        return Err(format!("{label} range exceeds entry table"));
+    }
+    Ok(())
+}
+
+fn validate_optional_flagged_string(
+    value: String,
+    flags: u32,
+    flag: u32,
+    label: &str,
+) -> Result<Option<String>, String> {
+    if value.is_empty() && flags & flag != 0 {
+        return Err(format!("{label} flag with empty string"));
+    }
+    if !value.is_empty() && flags & flag == 0 {
+        return Err(format!("{label} string without flag"));
+    }
+    Ok((flags & flag != 0).then_some(value))
+}
+
+fn read_map_detail_building_entry(
+    payload: &[u8],
+    cursor: &mut usize,
+) -> Result<MapDetailU32Entry, String> {
+    let entry = MapDetailU32Entry {
+        type_id: read_u32(payload, *cursor),
+        level: read_u32(payload, *cursor + 4),
+    };
+    let reserved = read_u32(payload, *cursor + 8);
+    *cursor += MAP_DETAIL_ENTRY_ROW_LEN;
+    if entry.type_id == 0 {
+        return Err("map detail building entry has zero type_id".into());
+    }
+    if reserved != 0 {
+        return Err("map detail building entry reserved field is nonzero".into());
+    }
+    Ok(entry)
+}
+
+fn map_detail_resource_map(entries: &[MapDetailI32Entry]) -> Map<String, Value> {
+    let mut out = Map::new();
+    for entry in entries {
+        out.insert(
+            map_detail_resource_name(entry.type_id),
+            json!(entry.amount_raw as f64 / FIXED_SCALE),
+        );
+    }
+    out
+}
+
+fn map_detail_building_map(entries: &[MapDetailU32Entry]) -> Map<String, Value> {
+    let mut out = Map::new();
+    for entry in entries {
+        out.insert(map_detail_building_name(entry.type_id), json!(entry.level));
+    }
+    out
+}
+
+fn map_detail_resource_name(resource_id: u32) -> String {
+    match resource_id {
+        0x3E03 => "steel".into(),
+        0x3E05 => "rubber".into(),
+        0x3E06 => "tungsten".into(),
+        0x3E07 => "chromium".into(),
+        0x4E1F => "aluminium".into(),
+        0x4E25 => "coal".into(),
+        0x4E37 => "oil".into(),
+        other => format!("tid_0x{other:X}"),
+    }
+}
+
+fn map_detail_building_name(type_id: u32) -> String {
+    match type_id {
+        0x27D2 => "naval_supply_hub".into(),
+        0x2FAB => "infrastructure".into(),
+        0x2FB6 => "air_base".into(),
+        0x31F6 => "naval_base".into(),
+        0x32B4 => "nuclear_reactor".into(),
+        0x3C8F => "fuel_silo".into(),
+        0x4BF6 => "dockyard".into(),
+        0x4CBE => "supply_node".into(),
+        0x4CC1 => "rail_way".into(),
+        0x4E22 => "arms_factory".into(),
+        0x4E2D => "industrial_complex".into(),
+        0x4E44 => "synthetic_refinery".into(),
+        0x5781 => "bunker".into(),
+        0x5782 => "coastal_bunker".into(),
+        0x6D5B => "anti_air_building".into(),
+        0x6DEF => "radar_station".into(),
+        other => format!("type_0x{other:04X}"),
+    }
+}
+
+fn domain_name(domain_id: u16) -> &'static str {
+    compact_contract::wire_name_for_id(domain_id).unwrap_or("unknown")
+}
+
+fn domain_descriptor_json(domain_id: u16) -> Value {
+    json!({
+        "domain_id": domain_id,
+        "domain": domain_name(domain_id),
+    })
+}
+
+fn detail_event_kind_name(event_kind: u32) -> Option<&'static str> {
+    match event_kind {
+        land_detail55::EVENT_PHASE_STARTED => Some("started"),
+        land_detail55::EVENT_PHASE_UPDATED => Some("updated"),
+        land_detail55::EVENT_PHASE_ENDED => Some("ended"),
+        land_detail55::EVENT_PARTICIPANT_JOINED => Some("participant_joined"),
+        land_detail55::EVENT_PARTICIPANT_LEFT_UNCLASSIFIED => Some("participant_left_unclassified"),
+        _ => None,
+    }
+}
+
+/// Decode a fixed 8-byte ascii token (diplomacy at-war enemy tag), trimmed to
+/// `len` and to the first NUL. Non-utf8 bytes fail closed to an empty string.
+fn ascii8(bytes: &[u8], len: usize) -> String {
+    let take = len.min(bytes.len());
+    let slice = &bytes[..take];
+    let end = slice.iter().position(|b| *b == 0).unwrap_or(slice.len());
+    String::from_utf8_lossy(&slice[..end]).to_string()
+}
+
+fn need(payload: &[u8], at_least: usize, label: &str) -> Result<(), String> {
+    if payload.len() < at_least {
+        Err(format!(
+            "{label}: need {at_least} bytes, have {}",
+            payload.len()
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn ensure_count_at_most(
+    domain: &str,
+    field: &str,
+    value: usize,
+    max_field: &str,
+    max: usize,
+) -> Result<(), String> {
+    if value > max {
+        Err(format!("{domain} {field} {value} > {max_field} {max}"))
+    } else {
+        Ok(())
+    }
+}
+
+fn ensure_row_count_with_deletes(
+    domain: &str,
+    row_count: usize,
+    observed_field: &str,
+    observed_rows: usize,
+    deleted_rows: usize,
+) -> Result<(), String> {
+    let allowed = observed_rows.saturating_add(deleted_rows);
+    if row_count > allowed {
+        Err(format!(
+            "{domain} row_count {row_count} > {observed_field} {observed_rows} + deleted_rows {deleted_rows}"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn ensure_fixed_scale(domain: &str, field: &str, value: u32) -> Result<(), String> {
+    let expected = FIXED_SCALE as u32;
+    if value != expected {
+        Err(format!("{domain} {field} {value} != {expected}"))
+    } else {
+        Ok(())
+    }
+}
+
+/// Read a length-prefixed (u16) UTF-8 string, advancing the cursor. Mirrors the
+/// recorder's `read_compact_string`.
+fn read_string(bytes: &[u8], cursor: &mut usize, label: &str) -> Result<String, String> {
+    need(bytes, *cursor + 2, label)?;
+    let len = read_u16(bytes, *cursor) as usize;
+    *cursor += 2;
+    need(bytes, *cursor + len, label)?;
+    let start = *cursor;
+    *cursor += len;
+    std::str::from_utf8(&bytes[start..start + len])
+        .map(str::to_string)
+        .map_err(|e| format!("{label}: invalid utf-8: {e}"))
+}
+
+fn read_u16(bytes: &[u8], off: usize) -> u16 {
+    u16::from_le_bytes([bytes[off], bytes[off + 1]])
+}
+fn read_u32(bytes: &[u8], off: usize) -> u32 {
+    u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]])
+}
+fn read_u64(bytes: &[u8], off: usize) -> u64 {
+    u64::from_le_bytes([
+        bytes[off],
+        bytes[off + 1],
+        bytes[off + 2],
+        bytes[off + 3],
+        bytes[off + 4],
+        bytes[off + 5],
+        bytes[off + 6],
+        bytes[off + 7],
+    ])
+}
+fn read_i32(bytes: &[u8], off: usize) -> i32 {
+    i32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]])
+}
+fn read_i64(bytes: &[u8], off: usize) -> i64 {
+    i64::from_le_bytes([
+        bytes[off],
+        bytes[off + 1],
+        bytes[off + 2],
+        bytes[off + 3],
+        bytes[off + 4],
+        bytes[off + 5],
+        bytes[off + 6],
+        bytes[off + 7],
+    ])
+}
+
+#[cfg(test)]
+mod tests;

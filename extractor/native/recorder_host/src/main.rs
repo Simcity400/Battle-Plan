@@ -1,13 +1,21 @@
 #![recursion_limit = "256"]
 
+use characters_leaders_cabinet_live_lane as domain47;
+use construction_buildings_state_damage_live_lane as domain48;
+use diplomacy_intel_operatives_live as diplomacy53;
+use land_combat_detail_events_live_lane as land_detail55;
+use naval_missions_status_live_lane as naval56;
 use occupation_resistance_compliance_live_lane as occupation52;
 use recorder_host::compact_domain_registry;
+use recorder_host::world_fold::{WorldFold, FOLDED_DOMAIN_IDS};
 use serde_json::{json, Value};
+use snapshot::sha256::{to_hex, Sha256};
 use snapshot::{pack, Container, ExpectedIdentity, PackEntry, PackIdentity};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::{c_char, c_void, OsStr};
 use std::fs;
+use std::io::Write;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr;
@@ -44,20 +52,26 @@ const ERROR_PIPE_CONNECTED: Dword = 535;
 const ERROR_BROKEN_PIPE: Dword = 109;
 const ERROR_NO_DATA: Dword = 232;
 const ERROR_PIPE_LISTENING: Dword = 536;
+const MOVEFILE_REPLACE_EXISTING: Dword = 0x00000001;
+const MOVEFILE_WRITE_THROUGH: Dword = 0x00000008;
 const GENERIC_READ_BUFFER: usize = 65_536;
 const INVALID_HANDLE_VALUE: isize = -1;
 const TH32CS_SNAPTHREAD: Dword = 0x00000004;
-const COMPACT_RECORD_MAGIC: &[u8; 4] = b"H4CR";
-const COMPACT_RECORD_HEADER_LEN: usize = 32;
-const COMPACT_RECORD_VERSION: u16 = 1;
-const COMPACT_RECORD_TYPE_DOMAIN_PERF: u16 = 1;
-const COMPACT_RECORD_TYPE_FRAME_END: u16 = 2;
-const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = 3;
-const COMPACT_STATUS_WORKER_PANIC: u32 = 1 << 6;
-const COMPACT_STATUS_BRIDGE_UNAVAILABLE: u32 = 1 << 7;
-const COMPACT_STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
-const COMPACT_STATUS_PARTIAL_DATA: u32 = 1 << 9;
-const COMPACT_STATUS_DELTA_DATA: u32 = 1 << 10;
+const COMPACT_RECORD_MAGIC: &[u8; 4] = compact_contract::COMPACT_RECORD_MAGIC;
+const COMPACT_RECORD_HEADER_LEN: usize = compact_contract::COMPACT_RECORD_HEADER_LEN;
+const COMPACT_RECORD_VERSION: u16 = compact_contract::COMPACT_RECORD_VERSION;
+const COMPACT_RECORD_TYPE_DOMAIN_PERF: u16 = compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF;
+const COMPACT_RECORD_TYPE_FRAME_END: u16 = compact_contract::COMPACT_RECORD_TYPE_FRAME_END;
+const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA;
+const COMPACT_STATUS_WORKER_PANIC: u32 = compact_contract::COMPACT_STATUS_WORKER_PANIC;
+const COMPACT_STATUS_BRIDGE_UNAVAILABLE: u32 = compact_contract::COMPACT_STATUS_BRIDGE_UNAVAILABLE;
+const COMPACT_STATUS_SOURCE_UNAVAILABLE: u32 = compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE;
+const COMPACT_STATUS_PARTIAL_DATA: u32 = compact_contract::COMPACT_STATUS_PARTIAL_DATA;
+const COMPACT_STATUS_DELTA_DATA: u32 = compact_contract::COMPACT_STATUS_DELTA_DATA;
+const COMPACT_STATUS_FAILURE_MASK: u32 = compact_contract::COMPACT_STATUS_FAILURE_MASK;
+const COMPACT_STATUS_TRANSITION_BASELINE_RESET: u32 =
+    compact_contract::COMPACT_STATUS_TRANSITION_BASELINE_RESET;
+const COMPACT_STATUS_CONTROL_INVALID: u32 = compact_contract::COMPACT_STATUS_CONTROL_INVALID;
 const COMPACT_FUEL_SCALE_RAW: u32 = 32768;
 const COMPACT_PRODUCTION_SCALE_RAW: u32 = 100000;
 const COMPACT_TECH_PROGRESS_SCALE_RAW: u32 = 1000;
@@ -65,8 +79,13 @@ const COMPACT_TECH_LIVE_PROGRESS_SCALE_RAW: u32 = 100000;
 const COMPACT_FIXED_SCALE_RAW: u32 = 100000;
 const COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE: u16 = 45;
 const COMPACT_DOMAIN_AIR_VARIANT_ARCHETYPES: u16 = 46;
+const COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE: u16 = 47;
+const COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE: u16 = 48;
 const COMPACT_DOMAIN_SCRIPTED_STATE_FLAGS_VARIABLES_LIVE: u16 = 51;
 const COMPACT_DOMAIN_OCCUPATION_RESISTANCE_COMPLIANCE_LIVE: u16 = 52;
+const COMPACT_DOMAIN_DIPLOMACY_INTEL_OPERATIVES_LIVE: u16 = diplomacy53::DOMAIN_ID;
+const COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE: u16 = 55;
+const COMPACT_DOMAIN_NAVAL_MISSIONS_STATUS_LIVE: u16 = 56;
 #[cfg(test)]
 const COMPACT_AIR_VARIANT_ARCHETYPE_ROW_FLAG_ARCHETYPE: u32 = 1 << 1;
 #[cfg(test)]
@@ -444,6 +463,8 @@ extern "system" {
         bytes_read: *mut Dword,
         overlapped: *mut c_void,
     ) -> Bool;
+    fn MoveFileExW(existing_file_name: *const u16, new_file_name: *const u16, flags: Dword)
+        -> Bool;
     fn Thread32First(snapshot: Handle, entry: *mut ThreadEntry32) -> Bool;
     fn Thread32Next(snapshot: Handle, entry: *mut ThreadEntry32) -> Bool;
 }
@@ -474,6 +495,7 @@ struct Config {
     dwell_ms: u64,
     min_game_hours: i32,
     scheduled_domains: Vec<String>,
+    production: bool,
     lightweight_root_frame: bool,
     special_projects_scan: bool,
     compact_country_frame: bool,
@@ -484,6 +506,46 @@ struct Config {
     session_id: String,
     stream_format: StreamFormat,
     extraction_perf_gate: bool,
+    /// Optional pre-built static artifacts to pack into the production container.
+    /// Each entry names a well-known artifact and the on-disk path to its JSON
+    /// payload. Absent = not requested; the container still packs and records the
+    /// absence (fail-closed, never fabricated). A present-but-unreadable path is a
+    /// HARD error (never a silent skip).
+    static_artifacts: Vec<StaticArtifactRequest>,
+}
+
+/// A request to pack one named pre-built static artifact into the container.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StaticArtifactRequest {
+    /// stable artifact name surfaced in the manifest/index (e.g.
+    /// "templates_equipment_catalog", "localisation_join").
+    name: &'static str,
+    /// on-disk path to the artifact JSON payload.
+    path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProductionProfileSummary {
+    enabled: bool,
+    profile_domains: Vec<&'static str>,
+    required_static_artifacts: Vec<&'static str>,
+    profile_domains_not_scheduled: Vec<&'static str>,
+    scheduled_domains_not_in_profile: Vec<String>,
+    missing_required_static_artifacts: Vec<&'static str>,
+}
+
+impl ProductionProfileSummary {
+    fn as_json(&self) -> Value {
+        json!({
+            "enabled": self.enabled,
+            "derivation_rule": compact_contract::PRODUCTION_PROFILE_RULE,
+            "profile_domains": self.profile_domains,
+            "required_static_artifacts": self.required_static_artifacts,
+            "profile_domains_not_scheduled": self.profile_domains_not_scheduled,
+            "scheduled_domains_not_in_profile": self.scheduled_domains_not_in_profile,
+            "missing_required_static_artifacts": self.missing_required_static_artifacts,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -521,6 +583,7 @@ struct Summary {
     first_hour: Option<i32>,
     last_hour: Option<i32>,
     skipped_hours: i32,
+    control_errors: BTreeSet<String>,
     parse_errors: Vec<String>,
 }
 
@@ -535,6 +598,7 @@ struct CompactSummary {
     max_payload_len: usize,
     max_record_len: usize,
     domains_seen: BTreeSet<u16>,
+    unfolded_domain_data: BTreeSet<u16>,
     per_domain: BTreeMap<u16, CompactDomainSummary>,
     frame_end_hour_counts: BTreeMap<i32, usize>,
     per_hour_perf_domain_counts: BTreeMap<i32, BTreeMap<u16, usize>>,
@@ -545,6 +609,7 @@ struct CompactSummary {
     first_hour: Option<i32>,
     last_hour: Option<i32>,
     skipped_hours: i32,
+    late_records_after_frame_end: u64,
     ordering_errors: Vec<String>,
     parse_errors: Vec<String>,
 }
@@ -563,6 +628,7 @@ struct CompactDomainSummary {
     read_times_us: Vec<u64>,
     max_read_time_us: u64,
     status_flags_or: u32,
+    problems: BTreeMap<String, u64>,
 }
 
 fn main() {
@@ -577,8 +643,9 @@ fn run() -> Result<(), String> {
     fs::create_dir_all(&cfg.out_dir).map_err(|e| format!("create out dir failed: {e}"))?;
     let raw_path = cfg.out_dir.join(cfg.stream_format.stream_file_name());
     let manifest_path = cfg.out_dir.join("native_session_manifest.json");
-    let replay_path = cfg.out_dir.join("native_session.battleplan");
+    let normal_replay_path = replay_path_for_gate(&cfg.out_dir, true);
     let replay_game_id = replay_game_id(&cfg.session_id);
+    let production_profile_summary = build_production_profile_summary(&cfg);
     let pipe_token = pipe_token();
     write_control_file(&cfg, &pipe_token)?;
 
@@ -599,12 +666,8 @@ fn run() -> Result<(), String> {
     let (mut manifest, hourly_met) = match cfg.stream_format {
         StreamFormat::Json => {
             let summary = summarize_frames(&pipe_bytes);
-            let hourly_met = summary.skipped_hours == 0
-                && summary
-                    .first_hour
-                    .zip(summary.last_hour)
-                    .map(|(first, last)| last.saturating_sub(first) >= cfg.min_game_hours)
-                    .unwrap_or(false);
+            let hourly_problems = json_hourly_problems(&summary, cfg.min_game_hours);
+            let hourly_met = hourly_problems.is_empty();
             (
                 json!({
                     "schema": "native_collector_session_v1",
@@ -648,8 +711,9 @@ fn run() -> Result<(), String> {
                         "required": true,
                         "requested_game_hours": cfg.min_game_hours,
                         "met": hourly_met,
-                        "problems": if hourly_met { Vec::<String>::new() } else { vec!["hourly_requirement_not_met".to_string()] },
+                        "problems": hourly_problems,
                     },
+                    "collector_control_errors": summary.control_errors.iter().collect::<Vec<_>>(),
                     "parse_errors": summary.parse_errors,
                     "production_path_note": "JSON is debug/proof visibility only; production feasibility must use the compact stream gate",
                 }),
@@ -660,14 +724,13 @@ fn run() -> Result<(), String> {
             let summary = summarize_compact_stream(&pipe_bytes);
             let expected_domain_ids = compact_expected_domain_ids(&cfg.scheduled_domains);
             let coverage_errors = compact_domain_coverage_errors(&summary, &expected_domain_ids);
-            let decodable = summary.parse_errors.is_empty();
-            let ordered = summary.ordering_errors.is_empty();
-            let worker_panic_seen = (summary.status_flags_or & COMPACT_STATUS_WORKER_PANIC) != 0;
-            let bridge_unavailable_seen =
-                (summary.status_flags_or & COMPACT_STATUS_BRIDGE_UNAVAILABLE) != 0;
-            let source_unavailable_seen =
-                (summary.status_flags_or & COMPACT_STATUS_SOURCE_UNAVAILABLE) != 0;
-            let partial_data_seen = (summary.status_flags_or & COMPACT_STATUS_PARTIAL_DATA) != 0;
+            let control_invalid_seen =
+                (summary.status_flags_or & COMPACT_STATUS_CONTROL_INVALID) != 0;
+            let collector_control_errors = if control_invalid_seen {
+                vec!["scheduled_domains_invalid:compact_status_control_invalid".to_string()]
+            } else {
+                Vec::new()
+            };
             let division_root_source = compact_division_root_source(&cfg, &summary);
             let division_root_discovery_debt =
                 compact_division_root_discovery_debt(division_root_source);
@@ -676,19 +739,15 @@ fn run() -> Result<(), String> {
             let projects_root_source = compact_projects_root_source(&cfg, &summary);
             let projects_root_discovery_debt =
                 compact_projects_root_discovery_debt(projects_root_source);
-            let hourly_met = decodable
-                && ordered
-                && !worker_panic_seen
-                && !bridge_unavailable_seen
-                && !source_unavailable_seen
-                && !partial_data_seen
-                && coverage_errors.is_empty()
-                && summary.skipped_hours == 0
-                && summary
-                    .first_hour
-                    .zip(summary.last_hour)
-                    .map(|(first, last)| last.saturating_sub(first) >= cfg.min_game_hours)
-                    .unwrap_or(false);
+            let hourly_problems =
+                compact_hourly_problems(&summary, cfg.min_game_hours, &coverage_errors);
+            let hourly_met = hourly_problems.is_empty();
+            let compact_stream_manifest = compact_stream_manifest_json(
+                &summary,
+                &expected_domain_ids,
+                &coverage_errors,
+                &cfg.scheduled_domains,
+            );
             (
                 json!({
                     "schema": "native_collector_session_v1",
@@ -716,35 +775,7 @@ fn run() -> Result<(), String> {
                     "extraction_perf_gate": cfg.extraction_perf_gate,
                     "idea_group_filter_rows": encoded_row_count(cfg.idea_group_filter.as_deref()),
                     "advisor_token_filter_rows": encoded_row_count(cfg.advisor_token_filter.as_deref()),
-                    "compact_stream": {
-                        "record_magic": "H4CR",
-                        "record_header_len": COMPACT_RECORD_HEADER_LEN,
-                        "record_version": COMPACT_RECORD_VERSION,
-                        "record_count": summary.record_count,
-                        "domain_perf_record_count": summary.domain_perf_record_count,
-                        "domain_data_record_count": summary.domain_data_record_count,
-                        "frame_end_record_count": summary.frame_end_record_count,
-                        "total_bytes": summary.total_bytes,
-                        "total_payload_bytes": summary.total_payload_bytes,
-                        "max_payload_len": summary.max_payload_len,
-                        "max_record_len": summary.max_record_len,
-                        "decodable": decodable,
-                        "ordered": ordered,
-                        "status_flags_or": summary.status_flags_or,
-                        "worker_panic_seen": worker_panic_seen,
-                        "bridge_unavailable_seen": bridge_unavailable_seen,
-                        "source_unavailable_seen": source_unavailable_seen,
-                        "partial_data_seen": partial_data_seen,
-                        "domains_seen": compact_domain_names(&summary.domains_seen),
-                        "expected_domains": compact_domain_names_from_ids(&expected_domain_ids),
-                        "domain_coverage": {
-                            "ok": coverage_errors.is_empty(),
-                            "expected_domain_count": expected_domain_ids.len(),
-                            "errors": coverage_errors.clone(),
-                        },
-                        "per_domain": compact_domain_summaries_json(&summary),
-                        "frame_time_us": timing_summary_json(&summary.frame_times_us),
-                    },
+                    "compact_stream": compact_stream_manifest,
                     "first_game_hour_raw": summary.first_hour,
                     "last_game_hour_raw": summary.last_hour,
                     "unique_game_hour_count": summary.unique_hours.len(),
@@ -754,8 +785,9 @@ fn run() -> Result<(), String> {
                         "required": true,
                         "requested_game_hours": cfg.min_game_hours,
                         "met": hourly_met,
-                        "problems": compact_hourly_problems(&summary, cfg.min_game_hours, &coverage_errors),
+                        "problems": hourly_problems,
                     },
+                    "collector_control_errors": collector_control_errors,
                     "parse_errors": summary.parse_errors,
                     "ordering_errors": summary.ordering_errors,
                     "production_path_note": "compact DLL stream gate: no full JSON root frames in the live extraction path; the Rust recorder packs the raw compact stream into .battleplan for durability",
@@ -764,15 +796,36 @@ fn run() -> Result<(), String> {
             )
         }
     };
+    let gate_problems = manifest_hourly_problems(&manifest);
+    let replay_path = replay_path_for_gate(&cfg.out_dir, hourly_met);
+    let normal_quarantine = (!hourly_met).then(|| quarantine_normal_replay(&normal_replay_path));
+    let replay_file_name = replay_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("native_session.battleplan")
+        .to_string();
+    let normal_replay_file_name = normal_replay_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("native_session.battleplan")
+        .to_string();
     if let Some(obj) = manifest.as_object_mut() {
-        obj.insert(
-            "replay_file".to_string(),
-            json!(replay_path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("native_session.battleplan")),
-        );
+        obj.insert("replay_file".to_string(), json!(replay_file_name.clone()));
         obj.insert("replay_game_id".to_string(), json!(replay_game_id));
+        obj.insert(
+            "replay_artifact".to_string(),
+            json!({
+                "normal_file": normal_replay_file_name,
+                "written_file": replay_file_name,
+                "recovery": !hourly_met,
+                "reason": if hourly_met { "gate_passed" } else { "gate_failed" },
+                "gate_problems": gate_problems.clone(),
+                "normal_file_quarantine": normal_quarantine
+                    .as_ref()
+                    .map(ReplayQuarantineReport::as_json)
+                    .unwrap_or(Value::Null),
+            }),
+        );
         obj.insert(
             "replay_entries".to_string(),
             json!({
@@ -784,15 +837,99 @@ fn run() -> Result<(), String> {
                 "session_manifest_role": "recorder_manifest",
             }),
         );
+        obj.insert(
+            "production_profile".to_string(),
+            production_profile_summary.as_json(),
+        );
     }
     let pretty = serde_json::to_vec_pretty(&manifest)
         .map_err(|e| format!("serialize manifest failed: {e}"))?;
     fs::write(&manifest_path, pretty).map_err(|e| format!("write manifest failed: {e}"))?;
-    write_native_replay_container(&cfg, &pipe_bytes, &manifest, &manifest_path, &replay_path)?;
+    for line in production_profile_summary_lines(&production_profile_summary) {
+        eprintln!("{line}");
+    }
+    if let Some(errors) = manifest
+        .get("collector_control_errors")
+        .and_then(Value::as_array)
+    {
+        let errors = errors.iter().filter_map(Value::as_str).collect::<Vec<_>>();
+        if !errors.is_empty() {
+            eprintln!(
+                "recorder error: collector control invalid; errors={}",
+                errors.join(",")
+            );
+        }
+    }
     if !hourly_met {
+        eprintln!(
+            "recorder warning: gates failed; writing recovery replay {} instead of normal replay {}; problems={}",
+            replay_path.display(),
+            normal_replay_path.display(),
+            if gate_problems.is_empty() {
+                "unspecified".to_string()
+            } else {
+                gate_problems.join(",")
+            }
+        );
+        if let Some(report) = &normal_quarantine {
+            if report.attempted && report.ok {
+                eprintln!(
+                    "recorder warning: quarantined stale normal replay {} -> {}; reason={}",
+                    report.old_file,
+                    report.new_file.as_deref().unwrap_or("unknown"),
+                    report.reason
+                );
+            } else if report.attempted {
+                eprintln!(
+                    "recorder error: could not quarantine normal replay {}; it may be stale; error={}",
+                    report.old_file,
+                    report.error.as_deref().unwrap_or("unknown")
+                );
+            }
+        }
+    }
+    // Fold the decoded compact records into per-game-hour world-state snapshots.
+    // Only the compact stream carries H4CR records; the JSON debug stream has no
+    // fold and packs an empty snapshots array.
+    let world_snapshots = match cfg.stream_format {
+        StreamFormat::Compact => {
+            let mut fold = WorldFold::new(replay_game_id.clone());
+            fold.ingest_stream(&pipe_bytes);
+            fold.finish()
+        }
+        StreamFormat::Json => Vec::new(),
+    };
+    write_native_replay_container(
+        &cfg,
+        &pipe_bytes,
+        &world_snapshots,
+        &manifest,
+        &manifest_path,
+        &replay_path,
+    )?;
+    if !hourly_met {
+        let quarantine_detail = normal_quarantine
+            .as_ref()
+            .filter(|report| report.attempted && !report.ok)
+            .map(|report| {
+                format!(
+                    "; normal replay quarantine failed for {}: {}; stale normal may remain",
+                    report.old_file,
+                    report.error.as_deref().unwrap_or("unknown")
+                )
+            })
+            .unwrap_or_default();
         return Err(format!(
-            "hourly requirement not met; manifest written to {}",
-            manifest_path.display()
+            "hourly requirement not met; recovery replay written to {}; normal replay not updated at {}; manifest written to {}; problems={}{}",
+            replay_path.display(),
+            normal_replay_path.display(),
+            manifest_path.display(),
+            if gate_problems.is_empty() {
+                "unspecified".to_string()
+            } else {
+                gate_problems.join(",")
+            },
+            quarantine_detail
         ));
     }
     println!("{}", manifest_path.display());
@@ -808,6 +945,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut dwell_ms = 250u64;
     let mut min_game_hours = 12i32;
     let mut scheduled_domains = Vec::new();
+    let mut production = false;
     let mut lightweight_root_frame = false;
     let mut special_projects_scan = false;
     let mut compact_country_frame = false;
@@ -818,6 +956,8 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut session_id = None;
     let mut stream_format = StreamFormat::Json;
     let mut extraction_perf_gate = false;
+    let mut static_templates_equipment_catalog: Option<PathBuf> = None;
+    let mut static_localisation_join: Option<PathBuf> = None;
     let mut i = 0usize;
     while i < args.len() {
         match args[i].as_str() {
@@ -857,6 +997,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                     scheduled_domains.push(domain);
                 }
             }
+            "--production" => production = true,
             "--lightweight-root-frame" => lightweight_root_frame = true,
             "--special-projects-scan" => special_projects_scan = true,
             "--compact-country-frame" => compact_country_frame = true,
@@ -903,10 +1044,39 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 stream_format = parse_stream_format(args.get(i), "--stream-format")?;
             }
             "--extraction-perf-gate" => extraction_perf_gate = true,
+            "--static-templates-equipment-catalog" => {
+                if static_templates_equipment_catalog.is_some() {
+                    return Err(
+                        "duplicate --static-templates-equipment-catalog is not allowed".to_string(),
+                    );
+                }
+                i += 1;
+                static_templates_equipment_catalog = Some(PathBuf::from(required(
+                    args.get(i),
+                    "--static-templates-equipment-catalog",
+                )?));
+            }
+            "--static-localisation-join" => {
+                if static_localisation_join.is_some() {
+                    return Err("duplicate --static-localisation-join is not allowed".to_string());
+                }
+                i += 1;
+                static_localisation_join = Some(PathBuf::from(required(
+                    args.get(i),
+                    "--static-localisation-join",
+                )?));
+            }
             "--help" | "-h" => return Err(usage()),
             other => return Err(format!("unknown argument {other}\n{}", usage())),
         }
         i += 1;
+    }
+    if production {
+        for domain in compact_contract::production_profile_scheduled_names() {
+            if !scheduled_domains.iter().any(|existing| existing == domain) {
+                scheduled_domains.push(domain.to_string());
+            }
+        }
     }
     let dll = dll.ok_or_else(usage)?;
     let dll = fs::canonicalize(&dll).map_err(|e| format!("dll not found: {e}"))?;
@@ -919,6 +1089,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         dwell_ms,
         min_game_hours,
         scheduled_domains,
+        production,
         lightweight_root_frame,
         special_projects_scan,
         compact_country_frame,
@@ -929,17 +1100,158 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         session_id: session_id.unwrap_or_else(|| format!("native_{}", pipe_token())),
         stream_format,
         extraction_perf_gate,
+        static_artifacts: {
+            let mut requested = Vec::new();
+            if let Some(path) = static_templates_equipment_catalog {
+                requested.push(StaticArtifactRequest {
+                    name: STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG,
+                    path,
+                });
+            }
+            if let Some(path) = static_localisation_join {
+                requested.push(StaticArtifactRequest {
+                    name: STATIC_ARTIFACT_LOCALISATION_JOIN,
+                    path,
+                });
+            }
+            requested
+        },
     })
 }
 
+/// The full, ordered set of static-artifact names the recorder knows how to pack.
+/// The index/manifest records EVERY one of these as present or absent, so a reader
+/// always learns precisely which enrichment bundles a recording carries (and,
+/// fail-closed, which it is missing) — never fabricated, never silently dropped.
+const STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG: &str =
+    compact_contract::STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG;
+const STATIC_ARTIFACT_LOCALISATION_JOIN: &str = compact_contract::STATIC_ARTIFACT_LOCALISATION_JOIN;
+const KNOWN_STATIC_ARTIFACTS: &[&str] = &[
+    STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG,
+    STATIC_ARTIFACT_LOCALISATION_JOIN,
+];
+
+fn build_production_profile_summary(cfg: &Config) -> ProductionProfileSummary {
+    let profile = compact_contract::production_profile_domains();
+    let profile_ids: BTreeSet<u16> = profile.iter().map(|descriptor| descriptor.id).collect();
+    let scheduled_ids: BTreeSet<u16> = cfg
+        .scheduled_domains
+        .iter()
+        .filter_map(|domain| compact_domain_id(domain))
+        .collect();
+    let requested_static_artifacts: BTreeSet<&'static str> = cfg
+        .static_artifacts
+        .iter()
+        .map(|request| request.name)
+        .collect();
+
+    ProductionProfileSummary {
+        enabled: cfg.production,
+        profile_domains: profile
+            .iter()
+            .map(|descriptor| descriptor.wire_name)
+            .collect(),
+        required_static_artifacts: compact_contract::REQUIRED_STATIC_ARTIFACTS.to_vec(),
+        profile_domains_not_scheduled: profile
+            .iter()
+            .filter(|descriptor| !scheduled_ids.contains(&descriptor.id))
+            .map(|descriptor| descriptor.wire_name)
+            .collect(),
+        scheduled_domains_not_in_profile: cfg
+            .scheduled_domains
+            .iter()
+            .filter(|domain| {
+                compact_domain_id(domain)
+                    .map(|id| !profile_ids.contains(&id))
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect(),
+        missing_required_static_artifacts: compact_contract::REQUIRED_STATIC_ARTIFACTS
+            .iter()
+            .copied()
+            .filter(|name| !requested_static_artifacts.contains(name))
+            .collect(),
+    }
+}
+
+fn production_profile_summary_lines(summary: &ProductionProfileSummary) -> Vec<String> {
+    let mut lines = vec![format!(
+        "recorder summary: production_profile={} profile_domains_not_scheduled={} scheduled_domains_not_in_profile={}",
+        if summary.enabled { "enabled" } else { "disabled" },
+        display_static_list(&summary.profile_domains_not_scheduled),
+        display_string_list(&summary.scheduled_domains_not_in_profile),
+    )];
+    if summary.enabled && !summary.missing_required_static_artifacts.is_empty() {
+        let missing = summary
+            .missing_required_static_artifacts
+            .iter()
+            .map(|name| format!("{name} ({})", static_artifact_flag_name(name)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(format!(
+            "recorder warning: --production missing required static artifacts: {missing}"
+        ));
+    }
+    lines
+}
+
+fn display_static_list(items: &[&str]) -> String {
+    if items.is_empty() {
+        "none".to_string()
+    } else {
+        items.join(", ")
+    }
+}
+
+fn display_string_list(items: &[String]) -> String {
+    if items.is_empty() {
+        "none".to_string()
+    } else {
+        items.join(", ")
+    }
+}
+
+fn static_artifact_flag_name(name: &str) -> &'static str {
+    match name {
+        STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG => "--static-templates-equipment-catalog",
+        STATIC_ARTIFACT_LOCALISATION_JOIN => "--static-localisation-join",
+        _ => "--unknown-static-artifact",
+    }
+}
+
 fn usage() -> String {
-    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--stream-format json|compact] [--extraction-perf-gate] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path]".to_string()
+    "usage: collector_record --pid <pid> --dll <collector.dll> --out-dir <dir> [--duration-s N] [--sample-ms N] [--min-game-hours N] [--scheduled-domain name] [--production] [--stream-format json|compact] [--extraction-perf-gate] [--lightweight-root-frame] [--special-projects-scan] [--compact-country-frame] [--division-body-bridge value|--division-body-bridge-file path] [--special-projects-bridge value|--special-projects-bridge-file path] [--idea-group-filter-file path] [--advisor-token-filter-file path] [--static-templates-equipment-catalog path] [--static-localisation-join path]\n\
+     \n\
+     Static artifacts (OPTIONAL): pre-built deterministic enrichment bundles packed\n\
+     into the .battleplan alongside the live snapshot series. Each is byte-copied\n\
+     (never re-serialized) as a role=\"static_artifact\" entry, hashed (sha256), and\n\
+     described in index.json's top-level `static_artifacts` list with its mod-identity\n\
+     keying carried from the artifact itself. When a flag is omitted the container\n\
+     still packs and verifies, and the index records that artifact as absent\n\
+     (present=false, with a reason) — never fabricated. A flag that names an\n\
+      unreadable/corrupt path is a HARD error, not a silent skip.\n\
+      \n\
+      Production profile: --production expands to every schedulable compact domain\n\
+      whose descriptor status belongs to the shared compact_contract production\n\
+      profile, unioned with explicit --scheduled-domain values.\n\
+      \n\
+        --static-templates-equipment-catalog path   domain-59 templates/equipment catalog JSON\n\
+                                                    (templates_equipment_catalog_gate.py out/ dir:\n\
+                                                    <game_id>/domain59_static_catalog.json)\n\
+       --static-localisation-join path              R3 localisation bundle JSON\n\
+                                                    (localisation_gate.py out/ dir:\n\
+                                                    <game_id>/localisation_catalog.json)".to_string()
 }
 
 fn required(value: Option<&String>, flag: &str) -> Result<String, String> {
-    value
+    let v = value
         .cloned()
-        .ok_or_else(|| format!("{flag} requires a value"))
+        .ok_or_else(|| format!("{flag} requires a value"))?;
+    if v.trim().is_empty() {
+        return Err(format!("{flag} requires a non-empty value"));
+    }
+    Ok(v)
 }
 
 fn parse_u32(value: Option<&String>, flag: &str) -> Result<u32, String> {
@@ -1033,13 +1345,457 @@ fn created_utc_label() -> String {
     format!("unix_seconds:{secs}")
 }
 
+fn expected_static_artifact_schema(name: &str) -> &'static str {
+    match name {
+        STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG => {
+            "templates_equipment_catalog_live.static_artifact.v1"
+        }
+        STATIC_ARTIFACT_LOCALISATION_JOIN => "static_localisation_join_r3.static_artifact.v1",
+        _ => "unknown.static_artifact.v1",
+    }
+}
+
+/// Reduce a possibly-personal filesystem path to a portable basename. The
+/// container spec forbids personal paths in emitted metadata (§0 "No personal
+/// paths"); the domain-59 catalog embeds absolute install/mod roots, so we keep
+/// only the final component (mirrors `redact_path` in the Python gates).
+fn redact_root_basename(root: &str) -> String {
+    let trimmed = root.trim_end_matches(['/', '\\']);
+    let tail = trimmed
+        .rsplit(['/', '\\'])
+        .find(|segment| !segment.is_empty())
+        .unwrap_or(trimmed);
+    tail.to_string()
+}
+
+fn is_drive_absolute_path(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+}
+
+fn is_unc_absolute_path(value: &str) -> bool {
+    value.starts_with(r"\\") || value.starts_with("//")
+}
+
+fn is_unix_rooted_path(value: &str) -> bool {
+    value.starts_with('/') && !value.starts_with("//")
+}
+
+fn redact_absolute_path_string(value: &str) -> String {
+    if is_drive_absolute_path(value) || is_unc_absolute_path(value) || is_unix_rooted_path(value) {
+        redact_root_basename(value)
+    } else {
+        value.to_string()
+    }
+}
+
+fn redact_json_strings(value: &Value) -> Value {
+    match value {
+        Value::String(text) => Value::String(redact_absolute_path_string(text)),
+        Value::Array(values) => Value::Array(values.iter().map(redact_json_strings).collect()),
+        Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (key, value) in map {
+                out.insert(redact_absolute_path_string(key), redact_json_strings(value));
+            }
+            Value::Object(out)
+        }
+        other => other.clone(),
+    }
+}
+
+fn invalid_static_artifact_shape(request: &StaticArtifactRequest, detail: &str) -> String {
+    format!(
+        "static artifact {:?} at {} has invalid provenance shape: {detail}",
+        request.name,
+        request.path.display()
+    )
+}
+
+fn require_object_root<'a>(
+    request: &StaticArtifactRequest,
+    catalog: &'a Value,
+) -> Result<&'a serde_json::Map<String, Value>, String> {
+    catalog.as_object().ok_or_else(|| {
+        invalid_static_artifact_shape(request, "artifact root must be a JSON object")
+    })
+}
+
+fn require_field<'a>(
+    request: &StaticArtifactRequest,
+    object: &'a serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<&'a Value, String> {
+    object
+        .get(field)
+        .ok_or_else(|| invalid_static_artifact_shape(request, &format!("missing field {field}")))
+}
+
+fn require_nonempty_str_field<'a>(
+    request: &StaticArtifactRequest,
+    object: &'a serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<&'a str, String> {
+    require_nonempty_str_field_named(request, object, field, field)
+}
+
+fn require_nonempty_str_field_named<'a>(
+    request: &StaticArtifactRequest,
+    object: &'a serde_json::Map<String, Value>,
+    key: &str,
+    field: &str,
+) -> Result<&'a str, String> {
+    let value = object
+        .get(key)
+        .ok_or_else(|| invalid_static_artifact_shape(request, &format!("missing field {field}")))?;
+    let text = value.as_str().ok_or_else(|| {
+        invalid_static_artifact_shape(request, &format!("field {field} must be a string"))
+    })?;
+    if text.trim().is_empty() {
+        Err(invalid_static_artifact_shape(
+            request,
+            &format!("field {field} must be non-empty"),
+        ))
+    } else {
+        Ok(text)
+    }
+}
+
+fn require_object_field<'a>(
+    request: &StaticArtifactRequest,
+    object: &'a serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<&'a serde_json::Map<String, Value>, String> {
+    require_field(request, object, field)?
+        .as_object()
+        .ok_or_else(|| {
+            invalid_static_artifact_shape(request, &format!("field {field} must be a JSON object"))
+        })
+}
+
+fn require_nonempty_layers<'a>(
+    request: &StaticArtifactRequest,
+    object: &'a serde_json::Map<String, Value>,
+) -> Result<&'a Vec<Value>, String> {
+    let layers = require_field(request, object, "layers")?
+        .as_array()
+        .ok_or_else(|| {
+            invalid_static_artifact_shape(request, "field layers must be a JSON array")
+        })?;
+    if layers.is_empty() {
+        return Err(invalid_static_artifact_shape(
+            request,
+            "field layers must be a non-empty array",
+        ));
+    }
+    for (index, layer) in layers.iter().enumerate() {
+        let layer_object = layer.as_object().ok_or_else(|| {
+            invalid_static_artifact_shape(
+                request,
+                &format!("field layers[{index}] must be a JSON object"),
+            )
+        })?;
+        require_nonempty_str_field_named(
+            request,
+            layer_object,
+            "label",
+            &format!("layers[{index}].label"),
+        )?;
+        require_nonempty_str_field_named(
+            request,
+            layer_object,
+            "root",
+            &format!("layers[{index}].root"),
+        )?;
+    }
+    Ok(layers)
+}
+
+fn validate_static_artifact_shape(
+    request: &StaticArtifactRequest,
+    catalog: &Value,
+) -> Result<(), String> {
+    let object = require_object_root(request, catalog)?;
+    let schema = require_nonempty_str_field(request, object, "schema")?;
+    let expected = expected_static_artifact_schema(request.name);
+    if schema != expected {
+        return Err(invalid_static_artifact_shape(
+            request,
+            &format!("field schema expected {expected:?}, got {schema:?}"),
+        ));
+    }
+    let kind = require_nonempty_str_field(request, object, "artifact_kind")?;
+    if kind != "deterministic_static_replay_enrichment" {
+        return Err(invalid_static_artifact_shape(
+            request,
+            &format!(
+                "field artifact_kind expected {:?}, got {kind:?}",
+                "deterministic_static_replay_enrichment"
+            ),
+        ));
+    }
+    require_nonempty_str_field(request, object, "artifact_sha256")?;
+    require_nonempty_layers(request, object)?;
+
+    match request.name {
+        STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG => {
+            let domain_id = require_field(request, object, "domain_id")?
+                .as_u64()
+                .ok_or_else(|| {
+                    invalid_static_artifact_shape(request, "field domain_id must be an integer")
+                })?;
+            if domain_id != 59 {
+                return Err(invalid_static_artifact_shape(
+                    request,
+                    &format!("field domain_id expected 59, got {domain_id}"),
+                ));
+            }
+            require_object_field(request, object, "counts")?;
+        }
+        STATIC_ARTIFACT_LOCALISATION_JOIN => {
+            let request_value = require_nonempty_str_field(request, object, "request")?;
+            if request_value != "R3" {
+                return Err(invalid_static_artifact_shape(
+                    request,
+                    &format!("field request expected \"R3\", got {request_value:?}"),
+                ));
+            }
+            let meta = require_object_field(request, object, "meta")?;
+            if meta.get("key_count").and_then(Value::as_u64).is_none() {
+                return Err(invalid_static_artifact_shape(
+                    request,
+                    "missing field meta.key_count or field meta.key_count must be an integer",
+                ));
+            }
+        }
+        _ => {
+            return Err(invalid_static_artifact_shape(
+                request,
+                "unknown static artifact name",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn whitelisted_object(
+    object: &serde_json::Map<String, Value>,
+    fields: &[&str],
+) -> serde_json::Map<String, Value> {
+    let mut out = serde_json::Map::new();
+    for field in fields {
+        if let Some(value) = object.get(*field) {
+            out.insert((*field).to_string(), redact_json_strings(value));
+        }
+    }
+    out
+}
+
+fn whitelisted_layers(catalog: &Value) -> Value {
+    let layers = catalog
+        .get("layers")
+        .and_then(Value::as_array)
+        .expect("static artifact layers validated before provenance build");
+    let out: Vec<Value> = layers
+        .iter()
+        .map(|layer| {
+            let object = layer
+                .as_object()
+                .expect("static artifact layer objects validated before provenance build");
+            let mut carried = serde_json::Map::new();
+            if let Some(value) = object.get("label") {
+                carried.insert("label".to_string(), redact_json_strings(value));
+            }
+            if let Some(root) = object.get("root").and_then(Value::as_str) {
+                carried.insert(
+                    "root_basename".to_string(),
+                    Value::String(redact_root_basename(root)),
+                );
+            }
+            if let Some(value) = object.get("replace_path") {
+                carried.insert("replace_path".to_string(), redact_json_strings(value));
+            }
+            Value::Object(carried)
+        })
+        .collect();
+    Value::Array(out)
+}
+
+/// Build the provenance block surfaced into `index.json` for a present artifact.
+/// Only explicitly whitelisted fields are carried, and every carried string is
+/// path-redacted before it reaches the public roster.
+fn artifact_provenance(request: &StaticArtifactRequest, catalog: &Value) -> Result<Value, String> {
+    validate_static_artifact_shape(request, catalog)?;
+    let object = catalog
+        .as_object()
+        .expect("static artifact root validated before provenance build");
+    let mut out = serde_json::Map::new();
+    for field in ["schema", "artifact_kind", "artifact_sha256"] {
+        out.insert(field.to_string(), redact_json_strings(&object[field]));
+    }
+    out.insert(
+        "mod_identity_layers".to_string(),
+        whitelisted_layers(catalog),
+    );
+
+    match request.name {
+        STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG => {
+            out.insert(
+                "domain_id".to_string(),
+                redact_json_strings(&object["domain_id"]),
+            );
+            let counts = object["counts"]
+                .as_object()
+                .expect("domain-59 counts validated before provenance build");
+            out.insert(
+                "counts".to_string(),
+                Value::Object(whitelisted_object(
+                    counts,
+                    &[
+                        "division_template_files",
+                        "division_templates",
+                        "equipment_definition_files",
+                        "equipment_definitions",
+                        "unit_definition_files",
+                        "unit_definitions",
+                    ],
+                )),
+            );
+        }
+        STATIC_ARTIFACT_LOCALISATION_JOIN => {
+            out.insert(
+                "request".to_string(),
+                redact_json_strings(&object["request"]),
+            );
+            let meta = object["meta"]
+                .as_object()
+                .expect("localisation meta validated before provenance build");
+            out.insert(
+                "meta".to_string(),
+                Value::Object(whitelisted_object(
+                    meta,
+                    &[
+                        "by_layer_new_keys",
+                        "by_layer_override_keys",
+                        "files_read",
+                        "files_total",
+                        "key_count",
+                        "language",
+                        "layers",
+                        "lines_seen",
+                        "overrides",
+                    ],
+                )),
+            );
+        }
+        _ => unreachable!("static artifact name validated before provenance build"),
+    }
+    Ok(Value::Object(out))
+}
+
+/// The container-relative filename a static artifact payload is stored under. Kept
+/// stable per artifact name so a reader can resolve it deterministically.
+fn static_artifact_file_name(name: &str) -> &'static str {
+    match name {
+        STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG => "domain59_static_catalog.json",
+        STATIC_ARTIFACT_LOCALISATION_JOIN => "localisation_catalog.json",
+        // unreachable for KNOWN_STATIC_ARTIFACTS; defensive default keeps the path
+        // safe (no personal path, no separators) if a new name is added without a
+        // filename mapping.
+        _ => "static_artifact.json",
+    }
+}
+
+/// One resolved static artifact ready to pack: its container payload path, raw
+/// bytes, packed-bytes sha256, and the `index.json` descriptor (present=true).
+struct ResolvedStaticArtifact {
+    payload_path: String,
+    bytes: Vec<u8>,
+    index_descriptor: Value,
+}
+
+/// Read + resolve a requested static artifact.
+///
+/// * A present, readable, JSON-parseable artifact yields the packed entry + a
+///   present=true descriptor carrying its provenance (mod-identity keying,
+///   schema, self-declared sha, counts/meta) and the packed-bytes sha256.
+/// * A path that is set but UNREADABLE or not valid JSON is a HARD error — the
+///   whole container write fails closed rather than silently dropping the bundle.
+fn resolve_static_artifact(
+    game_id: &str,
+    request: &StaticArtifactRequest,
+) -> Result<ResolvedStaticArtifact, String> {
+    let bytes = fs::read(&request.path).map_err(|e| {
+        format!(
+            "read static artifact {:?} at {} failed: {e}",
+            request.name,
+            request.path.display()
+        )
+    })?;
+    // Parse to surface provenance AND to fail closed on a corrupt/truncated file
+    // (a byte blob that is not valid JSON is not a usable enrichment bundle).
+    let catalog: Value = serde_json::from_slice(&bytes).map_err(|e| {
+        format!(
+            "static artifact {:?} at {} is not valid JSON (corrupt/unreadable): {e}",
+            request.name,
+            request.path.display()
+        )
+    })?;
+    let file_name = static_artifact_file_name(request.name);
+    let payload_path = format!("static/{}/{}", request.name, file_name);
+    let sha256 = to_hex(&Sha256::digest(&bytes));
+    let provenance = artifact_provenance(request, &catalog)?;
+    let index_descriptor = json!({
+        "name": request.name,
+        "present": true,
+        "role": "static_artifact",
+        "path": payload_path.clone(),
+        "sha256": sha256,
+        "bytes": bytes.len() as u64,
+        "provenance": provenance,
+    });
+    let _ = game_id; // payload_path is game-relative; game_id prefix is added by caller.
+    Ok(ResolvedStaticArtifact {
+        payload_path,
+        bytes,
+        index_descriptor,
+    })
+}
+
 fn write_native_replay_container(
     cfg: &Config,
     stream_bytes: &[u8],
+    snapshots: &[(i64, String, Vec<u8>)],
     manifest: &Value,
     manifest_path: &Path,
     replay_path: &Path,
 ) -> Result<(), String> {
+    write_native_replay_container_with_verifier(
+        cfg,
+        stream_bytes,
+        snapshots,
+        manifest,
+        manifest_path,
+        replay_path,
+        verify_native_replay_container,
+    )
+}
+
+fn write_native_replay_container_with_verifier<F>(
+    cfg: &Config,
+    stream_bytes: &[u8],
+    snapshots: &[(i64, String, Vec<u8>)],
+    manifest: &Value,
+    manifest_path: &Path,
+    replay_path: &Path,
+    verifier: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&Path, &str, &str, &[u8], &[(String, Vec<u8>)]) -> Result<(), String>,
+{
     let game_id = manifest
         .get("replay_game_id")
         .and_then(Value::as_str)
@@ -1052,10 +1808,57 @@ fn write_native_replay_container(
         .unwrap_or("native_session_manifest.json");
     let stream_payload_path = format!("collector_raw/{stream_name}");
     let manifest_payload_path = format!("recorder/{manifest_name}");
+    // Each folded world-state snapshot becomes a role:"snapshot" entry; the
+    // index lists them by hour_index (the canonical key). The snapshots array is
+    // empty only when the fold produced no game hours (e.g. JSON debug stream).
+    let mut snapshot_entries: Vec<(String, Vec<u8>)> = Vec::with_capacity(snapshots.len());
+    let mut index_snapshots: Vec<Value> = Vec::with_capacity(snapshots.len());
+    for (hour_index, date, bytes) in snapshots {
+        let file = format!("snapshots/{hour_index:012}.snapshot.json");
+        index_snapshots.push(json!({
+            "hour_index": hour_index,
+            "date": date,
+            "file": file.clone(),
+        }));
+        snapshot_entries.push((format!("{game_id}/{file}"), bytes.clone()));
+    }
+
+    // Resolve requested static artifacts. A requested-but-unreadable/corrupt path
+    // is a HARD error (fail closed). The index records EVERY known artifact as
+    // present or absent, so a reader always learns exactly which enrichment bundles
+    // this recording carries — the absent ones are badged, never fabricated.
+    let mut resolved_by_name: BTreeMap<&'static str, ResolvedStaticArtifact> = BTreeMap::new();
+    for request in &cfg.static_artifacts {
+        let resolved = resolve_static_artifact(&game_id, request)?;
+        resolved_by_name.insert(request.name, resolved);
+    }
+    let mut static_artifact_index: Vec<Value> = Vec::with_capacity(KNOWN_STATIC_ARTIFACTS.len());
+    let mut static_artifact_entries: Vec<(String, Vec<u8>)> = Vec::new();
+    for name in KNOWN_STATIC_ARTIFACTS {
+        if let Some(resolved) = resolved_by_name.get(name) {
+            static_artifact_index.push(resolved.index_descriptor.clone());
+            static_artifact_entries.push((
+                format!("{game_id}/{}", resolved.payload_path),
+                resolved.bytes.clone(),
+            ));
+        } else {
+            // Measured absence — distinct from a wrong value, surfaced never guessed.
+            static_artifact_index.push(json!({
+                "name": name,
+                "present": false,
+                "role": "static_artifact",
+                "absence_reason": "not supplied to the recorder for this recording",
+            }));
+        }
+    }
+
     let index_bytes = serde_json::to_vec_pretty(&json!({
         "game_id": game_id.clone(),
-        "schema_version": "native_collector_session_v1",
-        "snapshots": [],
+        "schema_version": "1",
+        "snapshots": index_snapshots,
+        // Top-level static-artifact roster: name, present/absent, sha256 (present),
+        // and provenance/mod-identity keying carried from the artifact itself.
+        "static_artifacts": static_artifact_index,
     }))
     .map_err(|e| format!("serialize replay index failed: {e}"))?;
     let timeline_bytes = serde_json::to_vec_pretty(&json!({
@@ -1069,7 +1872,7 @@ fn write_native_replay_container(
     .map_err(|e| format!("serialize replay timeline failed: {e}"))?;
     let manifest_bytes =
         fs::read(manifest_path).map_err(|e| format!("read session manifest failed: {e}"))?;
-    let entries = vec![
+    let mut entries = vec![
         PackEntry {
             path: format!("payload/{game_id}/index.json"),
             bytes: index_bytes,
@@ -1095,6 +1898,25 @@ fn write_native_replay_container(
             hour_index: None,
         },
     ];
+    for ((path, bytes), (hour_index, _, _)) in snapshot_entries.iter().zip(snapshots.iter()) {
+        entries.push(PackEntry {
+            path: format!("payload/{path}"),
+            bytes: bytes.clone(),
+            role: "snapshot",
+            hour_index: Some(*hour_index),
+        });
+    }
+    // Present static artifacts are byte-copied as role="static_artifact" entries.
+    // pack() computes their sha256 into the manifest; the index descriptor carries
+    // the same sha256 plus provenance, so both layers agree.
+    for (path, bytes) in &static_artifact_entries {
+        entries.push(PackEntry {
+            path: format!("payload/{path}"),
+            bytes: bytes.clone(),
+            role: "static_artifact",
+            hour_index: None,
+        });
+    }
     let identity = PackIdentity {
         schema_version: Some("native_collector_session_v1".to_string()),
         created_utc: Some(created_utc_label()),
@@ -1102,13 +1924,28 @@ fn write_native_replay_container(
     };
     let packed = pack(&game_id, &entries, &identity, true)
         .map_err(|e| format!("pack replay container failed: {e}"))?;
-    let tmp = replay_path.with_extension("hoi4replay.tmp");
-    fs::write(&tmp, packed).map_err(|e| format!("write replay temp failed: {e}"))?;
-    if replay_path.exists() {
-        fs::remove_file(replay_path).map_err(|e| format!("replace existing replay failed: {e}"))?;
+    let tmp = write_unique_replay_temp(replay_path, &packed)?;
+    let result = verifier(
+        &tmp,
+        &game_id,
+        &stream_payload_path,
+        stream_bytes,
+        &static_artifact_entries,
+    )
+    .and_then(|()| finalize_verified_replay(&tmp, replay_path));
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
     }
-    fs::rename(&tmp, replay_path).map_err(|e| format!("finalize replay failed: {e}"))?;
+    result
+}
 
+fn verify_native_replay_container(
+    replay_path: &Path,
+    game_id: &str,
+    stream_payload_path: &str,
+    stream_bytes: &[u8],
+    static_artifact_entries: &[(String, Vec<u8>)],
+) -> Result<(), String> {
     let container = Container::open(replay_path, &ExpectedIdentity::default())
         .map_err(|e| format!("verify replay open failed: {e}"))?;
     container
@@ -1121,7 +1958,240 @@ fn write_native_replay_container(
     if verified_stream != stream_bytes {
         return Err("verify replay stream entry failed: compact bytes changed".to_string());
     }
+    // Each present static artifact must round-trip byte-identically through the
+    // verified container (loss-less pack, spec §5) and be reachable by its role.
+    let static_role_entries = container.entries_by_role("static_artifact");
+    if static_role_entries.len() != static_artifact_entries.len() {
+        return Err(format!(
+            "verify replay static artifacts failed: packed {} role entries, container reports {}",
+            static_artifact_entries.len(),
+            static_role_entries.len()
+        ));
+    }
+    for (path, bytes) in static_artifact_entries {
+        let entry_path = format!("payload/{path}");
+        let verified = container
+            .read_entry_bytes(&entry_path)
+            .map_err(|e| format!("verify replay static artifact {entry_path} failed: {e}"))?;
+        if &verified != bytes {
+            return Err(format!(
+                "verify replay static artifact {entry_path} failed: payload bytes changed"
+            ));
+        }
+    }
     Ok(())
+}
+
+fn replay_path_for_gate(out_dir: &Path, hourly_met: bool) -> PathBuf {
+    if hourly_met {
+        out_dir.join("native_session.battleplan")
+    } else {
+        out_dir.join("native_session.failed.battleplan")
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ReplayQuarantineReport {
+    attempted: bool,
+    ok: bool,
+    old_file: String,
+    new_file: Option<String>,
+    reason: &'static str,
+    error: Option<String>,
+    stale_normal_may_remain: bool,
+}
+
+impl ReplayQuarantineReport {
+    fn as_json(&self) -> Value {
+        json!({
+            "attempted": self.attempted,
+            "ok": self.ok,
+            "old_file": self.old_file,
+            "new_file": self.new_file,
+            "reason": self.reason,
+            "error": self.error,
+            "stale_normal_may_remain": self.stale_normal_may_remain,
+        })
+    }
+}
+
+fn quarantine_normal_replay(normal_replay_path: &Path) -> ReplayQuarantineReport {
+    let old_file = normal_replay_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("native_session.battleplan")
+        .to_string();
+    let reason = "gate_failed_normal_name_must_be_absent";
+    // try_exists: a metadata-access error must be loud (possibly-stale), never
+    // silently read as absence.
+    match normal_replay_path.try_exists() {
+        Ok(true) => {}
+        Ok(false) => {
+            return ReplayQuarantineReport {
+                attempted: false,
+                ok: true,
+                old_file,
+                new_file: None,
+                reason: "normal_file_absent",
+                error: None,
+                stale_normal_may_remain: false,
+            };
+        }
+        Err(err) => {
+            return ReplayQuarantineReport {
+                attempted: false,
+                ok: false,
+                old_file,
+                new_file: None,
+                reason,
+                error: Some(format!("cannot stat normal replay: {err}")),
+                stale_normal_may_remain: true,
+            };
+        }
+    }
+
+    for attempt in 0..64 {
+        let quarantine_path = replay_quarantine_candidate(normal_replay_path, attempt);
+        if quarantine_path.exists() {
+            continue;
+        }
+        let new_file = quarantine_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("native_session.stale.battleplan")
+            .to_string();
+        match fs::rename(normal_replay_path, &quarantine_path) {
+            Ok(()) => {
+                return ReplayQuarantineReport {
+                    attempted: true,
+                    ok: true,
+                    old_file,
+                    new_file: Some(new_file),
+                    reason,
+                    error: None,
+                    stale_normal_may_remain: false,
+                };
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return ReplayQuarantineReport {
+                    attempted: false,
+                    ok: true,
+                    old_file,
+                    new_file: None,
+                    reason: "normal_file_absent",
+                    error: None,
+                    stale_normal_may_remain: false,
+                };
+            }
+            Err(err) => {
+                return ReplayQuarantineReport {
+                    attempted: true,
+                    ok: false,
+                    old_file,
+                    new_file: Some(new_file),
+                    reason,
+                    error: Some(format!("rename failed: {err}")),
+                    stale_normal_may_remain: true,
+                };
+            }
+        }
+    }
+
+    ReplayQuarantineReport {
+        attempted: true,
+        ok: false,
+        old_file,
+        new_file: None,
+        reason,
+        error: Some("could not allocate a unique stale quarantine name".to_string()),
+        stale_normal_may_remain: true,
+    }
+}
+
+fn replay_quarantine_candidate(normal_replay_path: &Path, attempt: usize) -> PathBuf {
+    let timestamp = replay_quarantine_timestamp();
+    let suffix = if attempt == 0 {
+        String::new()
+    } else {
+        format!("-{attempt}")
+    };
+    normal_replay_path.with_file_name(format!(
+        "native_session.stale-{timestamp}{suffix}.battleplan"
+    ))
+}
+
+fn replay_quarantine_timestamp() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::from_secs(0))
+        .as_secs();
+    format!("unix-{secs}")
+}
+
+fn manifest_hourly_problems(manifest: &Value) -> Vec<String> {
+    manifest
+        .get("hourly_requirement")
+        .and_then(|hourly| hourly.get("problems"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn replay_temp_candidate(replay_path: &Path, attempt: usize) -> PathBuf {
+    let file_name = replay_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("native_session.battleplan");
+    replay_path.with_file_name(format!("{file_name}.tmp-{}-{attempt}", pipe_token()))
+}
+
+fn write_unique_replay_temp(replay_path: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
+    for attempt in 0..32 {
+        let tmp = replay_temp_candidate(replay_path, attempt);
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+        {
+            Ok(mut file) => {
+                if let Err(err) = file.write_all(bytes) {
+                    let _ = fs::remove_file(&tmp);
+                    return Err(format!("write replay temp failed: {err}"));
+                }
+                return Ok(tmp);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(format!("write replay temp failed: {err}")),
+        }
+    }
+    Err(format!(
+        "write replay temp failed: could not allocate a unique temp path for {}",
+        replay_path.display()
+    ))
+}
+
+fn finalize_verified_replay(tmp: &Path, replay_path: &Path) -> Result<(), String> {
+    let tmp_wide = wide(tmp.as_os_str());
+    let replay_wide = wide(replay_path.as_os_str());
+    let ok = unsafe {
+        MoveFileExW(
+            tmp_wide.as_ptr(),
+            replay_wide.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if ok == 0 {
+        Err(format!("finalize replay failed: {}", last_error()))
+    } else {
+        Ok(())
+    }
 }
 
 fn pipe_token() -> String {
@@ -1374,6 +2444,19 @@ fn summarize_frames(raw: &[u8]) -> Summary {
         let frame_type = value.get("type").and_then(Value::as_str);
         if frame_type == Some("collector_started") {
             summary.collector_started_count += 1;
+            if value
+                .get("scheduled_domains_valid")
+                .and_then(Value::as_bool)
+                == Some(false)
+            {
+                let reason = value
+                    .get("scheduled_domains_error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                summary
+                    .control_errors
+                    .insert(format!("scheduled_domains_invalid:{reason}"));
+            }
             add_domains(value.get("domains"), &mut summary.domains_seen);
             if let Some(root) = value.get("root_probe") {
                 add_domains(root.get("domains"), &mut summary.domains_seen);
@@ -1416,6 +2499,9 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
     };
     let mut offset = 0usize;
     let mut previous_sequence: Option<u64> = None;
+    // the game campaign hour counts are small enough that this finalized-hour set stays bounded.
+    let mut finalized_hours: BTreeSet<i32> = BTreeSet::new();
+    let mut delta_baselines_seen: BTreeSet<u16> = BTreeSet::new();
     while offset < raw.len() {
         let remaining = raw.len().saturating_sub(offset);
         if remaining < COMPACT_RECORD_HEADER_LEN {
@@ -1474,6 +2560,15 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
         summary.max_payload_len = summary.max_payload_len.max(payload_len);
         summary.max_record_len = summary.max_record_len.max(record_len);
         summary.domains_seen.insert(domain_id);
+        if matches!(
+            record_type,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF | COMPACT_RECORD_TYPE_DOMAIN_DATA
+        ) && finalized_hours.contains(&game_hour_raw)
+        {
+            summary.late_records_after_frame_end =
+                summary.late_records_after_frame_end.saturating_add(1);
+            add_compact_domain_problem(&mut summary, domain_id, "late_record_after_frame_end", 1);
+        }
         match record_type {
             COMPACT_RECORD_TYPE_DOMAIN_PERF => {
                 summary.domain_perf_record_count += 1;
@@ -1512,6 +2607,9 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
             }
             COMPACT_RECORD_TYPE_DOMAIN_DATA => {
                 summary.domain_data_record_count += 1;
+                if !FOLDED_DOMAIN_IDS.contains(&domain_id) {
+                    summary.unfolded_domain_data.insert(domain_id);
+                }
                 *summary
                     .per_hour_data_domain_counts
                     .entry(game_hour_raw)
@@ -1520,6 +2618,12 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     .or_default() += 1;
                 let domain = summary.per_domain.entry(domain_id).or_default();
                 domain.data_record_count += 1;
+                track_delta_baseline_for_summary(
+                    &mut summary,
+                    &mut delta_baselines_seen,
+                    domain_id,
+                    payload,
+                );
                 match domain_id {
                     10 => decode_compact_fuel_data_payload(offset, payload, &mut summary),
                     11 => decode_compact_production_data_payload(offset, payload, &mut summary),
@@ -1533,6 +2637,9 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     ),
                     16 => decode_compact_decisions_data_payload(offset, payload, &mut summary),
                     17 => decode_compact_diplomacy_data_payload(offset, payload, &mut summary),
+                    18 => {
+                        decode_compact_country_identity_data_payload(offset, payload, &mut summary)
+                    }
                     20 => decode_compact_divisions_data_payload(offset, payload, &mut summary),
                     21 => decode_compact_land_combats_data_payload(offset, payload, &mut summary),
                     22 => decode_compact_map_control_data_payload(offset, payload, &mut summary),
@@ -1611,6 +2718,20 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                             &mut summary,
                         )
                     }
+                    COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE => {
+                        decode_compact_characters_leaders_cabinet_live_data_payload(
+                            offset,
+                            payload,
+                            &mut summary,
+                        )
+                    }
+                    COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE => {
+                        decode_compact_construction_buildings_state_damage_live_data_payload(
+                            offset,
+                            payload,
+                            &mut summary,
+                        )
+                    }
                     COMPACT_DOMAIN_SCRIPTED_STATE_FLAGS_VARIABLES_LIVE => {
                         decode_compact_scripted_state_flags_variables_data_payload(
                             offset,
@@ -1625,6 +2746,27 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                             &mut summary,
                         )
                     }
+                    COMPACT_DOMAIN_DIPLOMACY_INTEL_OPERATIVES_LIVE => {
+                        decode_compact_diplomacy_intel_operatives_live_data_payload(
+                            offset,
+                            payload,
+                            &mut summary,
+                        )
+                    }
+                    COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE => {
+                        decode_compact_land_combat_detail_events_live_data_payload(
+                            offset,
+                            payload,
+                            &mut summary,
+                        )
+                    }
+                    COMPACT_DOMAIN_NAVAL_MISSIONS_STATUS_LIVE => {
+                        decode_compact_naval_missions_status_live_data_payload(
+                            offset,
+                            payload,
+                            &mut summary,
+                        )
+                    }
                     other => summary.parse_errors.push(format!(
                         "offset {offset}: unsupported domain data payload for {}",
                         compact_domain_name(other)
@@ -1633,6 +2775,7 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
             }
             COMPACT_RECORD_TYPE_FRAME_END => {
                 summary.frame_end_record_count += 1;
+                finalized_hours.insert(game_hour_raw);
                 *summary
                     .frame_end_hour_counts
                     .entry(game_hour_raw)
@@ -1736,6 +2879,78 @@ fn decode_compact_fuel_data_payload(offset: usize, payload: &[u8], summary: &mut
         }
         let _ = gain_raw;
         let _ = cost_raw;
+    }
+}
+
+fn decode_compact_country_identity_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    if payload.len() < 20 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: country_identity data payload is {} byte(s), expected at least 20",
+            payload.len()
+        ));
+        return;
+    }
+    let row_count = read_u32_le(payload, 8) as usize;
+    let changed_rows = read_u32_le(payload, 12) as usize;
+    let status_flags = read_u32_le(payload, 16);
+    summary.status_flags_or |= status_flags;
+    if changed_rows > row_count {
+        summary.parse_errors.push(format!(
+            "offset {offset}: country_identity data changed_rows {changed_rows} > row_count {row_count}"
+        ));
+    }
+    if let Some(domain) = summary.per_domain.get_mut(&18) {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(changed_rows as u64);
+        domain.status_flags_or |= status_flags;
+    }
+    add_compact_domain_data_unit(summary, 18, "country_identity_rows", row_count);
+    let mut cursor = 20usize;
+    let mut seen_tag_ids = BTreeSet::new();
+    for row_index in 0..row_count {
+        if cursor + 4 > payload.len() {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country_identity data row {row_index} truncated before tag_db_id"
+            ));
+            return;
+        }
+        let tag_db_id = read_u32_le(payload, cursor);
+        cursor += 4;
+        let tag = match read_compact_string(payload, &mut cursor, "country_identity tag") {
+            Ok(tag) => tag,
+            Err(err) => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: country_identity data row {row_index}: {err}"
+                ));
+                return;
+            }
+        };
+        if tag_db_id == 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country_identity data row {row_index} has zero tag_db_id"
+            ));
+        } else if !seen_tag_ids.insert(tag_db_id) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country_identity data row {row_index} duplicates tag_db_id {tag_db_id}"
+            ));
+        }
+        if tag.is_empty() {
+            summary.parse_errors.push(format!(
+                "offset {offset}: country_identity data row {row_index} has empty tag"
+            ));
+        }
+    }
+    if cursor != payload.len() {
+        summary.parse_errors.push(format!(
+            "offset {offset}: country_identity data payload has {} trailing byte(s) after {row_count} row(s)",
+            payload.len() - cursor
+        ));
     }
 }
 
@@ -6020,6 +7235,107 @@ fn decode_compact_air_variant_archetypes_data_payload(
     }
 }
 
+fn decode_compact_characters_leaders_cabinet_live_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    let lane_summary = domain47::decode_payload(offset, payload);
+    summary.status_flags_or |= lane_summary.status_flags_or;
+    summary.parse_errors.extend(lane_summary.parse_errors);
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE)
+    {
+        domain.status_flags_or |= lane_summary.status_flags_or;
+        domain.data_rows_total = domain
+            .data_rows_total
+            .saturating_add(lane_summary.row_count_total);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(lane_summary.row_count_total);
+        for (name, count) in lane_summary.data_units_total {
+            let entry = domain.data_units_total.entry(name.to_string()).or_default();
+            *entry = entry.saturating_add(count);
+        }
+    }
+}
+
+fn decode_compact_construction_buildings_state_damage_live_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    let decoded = match domain48::decoder_gate::decode_domain48_compact(payload) {
+        Ok(decoded) => decoded,
+        Err(err) => {
+            summary
+                .parse_errors
+                .push(format!("offset {offset}: domain48 decode failed: {err}"));
+            return;
+        }
+    };
+    summary.status_flags_or |= decoded.frame.status_flags;
+    if !compact_contract::compact_status_is_failure(decoded.frame.status_flags) && !decoded.gate.ok
+    {
+        summary.parse_errors.push(format!(
+            "offset {offset}: domain48 gate failed: {}",
+            decoded.gate.errors.join("; ")
+        ));
+    }
+    let row_count = decoded
+        .summary
+        .construction_rows
+        .saturating_add(decoded.summary.building_rows)
+        .saturating_add(decoded.summary.resource_rows);
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE)
+    {
+        domain.status_flags_or |= decoded.frame.status_flags;
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(row_count as u64);
+    }
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE,
+        "construction_queue_rows",
+        decoded.summary.construction_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE,
+        "construction_queue_target_state_rows",
+        decoded.summary.construction_rows_with_target_state,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE,
+        "building_rows",
+        decoded.summary.building_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE,
+        "damaged_building_rows",
+        decoded.summary.damaged_building_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE,
+        "resource_rows",
+        decoded.summary.resource_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE,
+        "target_state_unavailable_badged",
+        usize::from(decoded.summary.target_state_unavailable_badged),
+    );
+}
+
 fn decode_compact_scripted_state_flags_variables_data_payload(
     offset: usize,
     payload: &[u8],
@@ -6070,6 +7386,137 @@ fn decode_compact_occupation_resistance_compliance_data_payload(
             *entry = entry.saturating_add(count);
         }
     }
+}
+
+fn decode_compact_diplomacy_intel_operatives_live_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    let lane_summary = diplomacy53::compact::decode_payload(offset, payload);
+    summary.status_flags_or |= lane_summary.status_flags_or;
+    summary.parse_errors.extend(lane_summary.parse_errors);
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_DIPLOMACY_INTEL_OPERATIVES_LIVE)
+    {
+        domain.status_flags_or |= lane_summary.status_flags_or;
+        domain.data_rows_total = domain
+            .data_rows_total
+            .saturating_add(lane_summary.data_rows_total);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(lane_summary.data_changed_rows_total);
+        for (name, count) in lane_summary.data_units_total {
+            let entry = domain.data_units_total.entry(name.to_string()).or_default();
+            *entry = entry.saturating_add(count);
+        }
+    }
+}
+
+fn decode_compact_naval_missions_status_live_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    let lane_summary = naval56::decode_payload(offset, payload);
+    summary.status_flags_or |= lane_summary.status_flags_or;
+    summary.parse_errors.extend(lane_summary.parse_errors);
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_NAVAL_MISSIONS_STATUS_LIVE)
+    {
+        domain.status_flags_or |= lane_summary.status_flags_or;
+        domain.data_rows_total = domain
+            .data_rows_total
+            .saturating_add(lane_summary.row_count_total);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(lane_summary.changed_rows_total);
+        for (name, count) in lane_summary.data_units_total {
+            let entry = domain.data_units_total.entry(name.to_string()).or_default();
+            *entry = entry.saturating_add(count);
+        }
+    }
+}
+
+fn decode_compact_land_combat_detail_events_live_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    let decoded = match land_detail55::decode_detail_events_payload(offset, payload) {
+        Ok(decoded) => decoded,
+        Err(errors) => {
+            summary.parse_errors.extend(errors);
+            return;
+        }
+    };
+    summary.status_flags_or |= decoded.status_flags;
+    let mut phase_started_rows = 0usize;
+    let mut phase_updated_rows = 0usize;
+    let mut phase_ended_rows = 0usize;
+    let mut participant_joined_rows = 0usize;
+    let mut participant_left_unclassified_rows = 0usize;
+    for row in &decoded.rows {
+        match row.event_kind {
+            land_detail55::EVENT_PHASE_STARTED => phase_started_rows += 1,
+            land_detail55::EVENT_PHASE_UPDATED => phase_updated_rows += 1,
+            land_detail55::EVENT_PHASE_ENDED => phase_ended_rows += 1,
+            land_detail55::EVENT_PARTICIPANT_JOINED => participant_joined_rows += 1,
+            land_detail55::EVENT_PARTICIPANT_LEFT_UNCLASSIFIED => {
+                participant_left_unclassified_rows += 1
+            }
+            _ => {}
+        }
+    }
+    let row_count = decoded.rows.len();
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE)
+    {
+        domain.status_flags_or |= decoded.status_flags;
+        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(row_count as u64);
+    }
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE,
+        "land_combat_detail_event_rows",
+        row_count,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE,
+        "land_combat_detail_phase_started_rows",
+        phase_started_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE,
+        "land_combat_detail_phase_updated_rows",
+        phase_updated_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE,
+        "land_combat_detail_phase_ended_rows",
+        phase_ended_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE,
+        "land_combat_detail_participant_joined_rows",
+        participant_joined_rows,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE,
+        "land_combat_detail_participant_left_unclassified_rows",
+        participant_left_unclassified_rows,
+    );
 }
 
 fn decode_compact_air_variant_upgrades_data_payload(
@@ -9641,6 +11088,28 @@ fn compact_expected_domain_ids(scheduled_domains: &[String]) -> Vec<u16> {
     ids
 }
 
+fn compact_forced_domain_dependencies_json(scheduled_domains: &[String]) -> Value {
+    if scheduled_domains.is_empty() {
+        return json!([]);
+    }
+    let requested_55 = scheduled_domains.iter().any(|domain| {
+        compact_domain_id(domain) == Some(COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE)
+    });
+    let requested_21 = scheduled_domains
+        .iter()
+        .any(|domain| compact_domain_id(domain) == Some(21));
+    if requested_55 && !requested_21 {
+        json!([{
+            "requested_domain": "land_combat_detail_events_live",
+            "forced_domain": "land_combats",
+            "forced_domain_id": 21,
+            "reason": "domain 55 derives transition events from the same in-frame domain-21 combat snapshot and logical generation tracker",
+        }])
+    } else {
+        json!([])
+    }
+}
+
 fn compact_domain_id(domain: &str) -> Option<u16> {
     compact_domain_registry::id_for_scheduled_name(domain)
 }
@@ -9963,11 +11432,172 @@ fn compact_domain_summaries_json(summary: &CompactSummary) -> Value {
                 "unit_count_total": domain.unit_count_total,
                 "changed_unit_count_total": domain.changed_unit_count_total,
                 "status_flags_or": domain.status_flags_or,
+                "world_folded": FOLDED_DOMAIN_IDS.contains(domain_id),
+                "problems": domain.problems,
                 "read_time_us": timing_summary_json(&domain.read_times_us),
             }),
         );
     }
     Value::Object(out)
+}
+
+fn add_compact_domain_problem(
+    summary: &mut CompactSummary,
+    domain_id: u16,
+    problem: &str,
+    count: u64,
+) {
+    if count == 0 {
+        return;
+    }
+    let domain = summary.per_domain.entry(domain_id).or_default();
+    let entry = domain.problems.entry(problem.to_string()).or_default();
+    *entry = entry.saturating_add(count);
+}
+
+fn track_delta_baseline_for_summary(
+    summary: &mut CompactSummary,
+    baselines_seen: &mut BTreeSet<u16>,
+    domain_id: u16,
+    payload: &[u8],
+) {
+    if !matches!(domain_id, 20 | 22) {
+        return;
+    }
+    let Some(status_flags) = compact_payload_status_flags(payload) else {
+        return;
+    };
+    if compact_contract::compact_status_is_failure(status_flags) {
+        return;
+    }
+    let delta = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
+    if delta {
+        if !baselines_seen.contains(&domain_id) {
+            add_compact_domain_problem(summary, domain_id, "delta_before_baseline", 1);
+        }
+    } else {
+        baselines_seen.insert(domain_id);
+    }
+}
+
+fn compact_payload_status_flags(payload: &[u8]) -> Option<u32> {
+    (payload.len() >= 20).then(|| read_u32_le(payload, 16))
+}
+
+fn compact_domain_problem_count(summary: &CompactSummary, problem: &str) -> u64 {
+    summary
+        .per_domain
+        .values()
+        .filter_map(|domain| domain.problems.get(problem))
+        .copied()
+        .sum()
+}
+
+fn compact_domain_problem_domains_json(summary: &CompactSummary, problem: &str) -> Value {
+    Value::Array(
+        summary
+            .per_domain
+            .iter()
+            .filter_map(|(domain_id, domain)| {
+                let count = domain.problems.get(problem).copied().unwrap_or(0);
+                (count > 0).then(|| {
+                    json!({
+                        "domain_id": domain_id,
+                        "domain": compact_domain_name(*domain_id),
+                        "count": count,
+                    })
+                })
+            })
+            .collect(),
+    )
+}
+
+fn compact_domain_descriptor_list_json(domain_ids: &BTreeSet<u16>) -> Value {
+    Value::Array(
+        domain_ids
+            .iter()
+            .map(|domain_id| {
+                json!({
+                    "domain_id": domain_id,
+                    "domain": compact_domain_name(*domain_id),
+                })
+            })
+            .collect(),
+    )
+}
+
+fn compact_profile_unfolded_domains(summary: &CompactSummary) -> BTreeSet<u16> {
+    let profile_ids: BTreeSet<u16> = compact_contract::production_profile_domains()
+        .into_iter()
+        .map(|descriptor| descriptor.id)
+        .collect();
+    summary
+        .unfolded_domain_data
+        .intersection(&profile_ids)
+        .copied()
+        .collect()
+}
+
+fn compact_stream_manifest_json(
+    summary: &CompactSummary,
+    expected_domain_ids: &[u16],
+    coverage_errors: &[String],
+    scheduled_domains: &[String],
+) -> Value {
+    let failure_status_flags_or = summary.status_flags_or & COMPACT_STATUS_FAILURE_MASK;
+    let failure_status_seen = compact_contract::compact_status_is_failure(summary.status_flags_or);
+    let worker_panic_seen = (summary.status_flags_or & COMPACT_STATUS_WORKER_PANIC) != 0;
+    let bridge_unavailable_seen =
+        (summary.status_flags_or & COMPACT_STATUS_BRIDGE_UNAVAILABLE) != 0;
+    let source_unavailable_seen =
+        (summary.status_flags_or & COMPACT_STATUS_SOURCE_UNAVAILABLE) != 0;
+    let partial_data_seen = (summary.status_flags_or & COMPACT_STATUS_PARTIAL_DATA) != 0;
+    let transition_baseline_reset_seen =
+        (summary.status_flags_or & COMPACT_STATUS_TRANSITION_BASELINE_RESET) != 0;
+    let control_invalid_seen = (summary.status_flags_or & COMPACT_STATUS_CONTROL_INVALID) != 0;
+    let profile_unfolded = compact_profile_unfolded_domains(summary);
+    json!({
+        "record_magic": "H4CR",
+        "record_header_len": COMPACT_RECORD_HEADER_LEN,
+        "record_version": COMPACT_RECORD_VERSION,
+        "record_count": summary.record_count,
+        "domain_perf_record_count": summary.domain_perf_record_count,
+        "domain_data_record_count": summary.domain_data_record_count,
+        "frame_end_record_count": summary.frame_end_record_count,
+        "total_bytes": summary.total_bytes,
+        "total_payload_bytes": summary.total_payload_bytes,
+        "max_payload_len": summary.max_payload_len,
+        "max_record_len": summary.max_record_len,
+        "decodable": summary.parse_errors.is_empty(),
+        "ordered": summary.ordering_errors.is_empty(),
+        "status_flags_or": summary.status_flags_or,
+        "failure_status_flags_or": failure_status_flags_or,
+        "failure_status_seen": failure_status_seen,
+        "worker_panic_seen": worker_panic_seen,
+        "bridge_unavailable_seen": bridge_unavailable_seen,
+        "source_unavailable_seen": source_unavailable_seen,
+        "partial_data_seen": partial_data_seen,
+        "transition_baseline_reset_seen": transition_baseline_reset_seen,
+        "control_invalid_seen": control_invalid_seen,
+        "domains_seen": compact_domain_names(&summary.domains_seen),
+        "expected_domains": compact_domain_names_from_ids(expected_domain_ids),
+        "forced_domain_dependencies": compact_forced_domain_dependencies_json(scheduled_domains),
+        "domain_coverage": {
+            "ok": coverage_errors.is_empty(),
+            "expected_domain_count": expected_domain_ids.len(),
+            "errors": coverage_errors,
+        },
+        "world_fold": {
+            "folded_domains": compact_domain_names_from_ids(FOLDED_DOMAIN_IDS),
+            "unfolded_domains": compact_domain_descriptor_list_json(&summary.unfolded_domain_data),
+            "production_profile_unfolded_domains": compact_domain_descriptor_list_json(&profile_unfolded),
+            "delta_before_baseline": compact_domain_problem_domains_json(summary, "delta_before_baseline"),
+            "late_records_after_frame_end": summary.late_records_after_frame_end,
+            "late_record_domains": compact_domain_problem_domains_json(summary, "late_record_after_frame_end"),
+        },
+        "per_domain": compact_domain_summaries_json(summary),
+        "frame_time_us": timing_summary_json(&summary.frame_times_us),
+    })
 }
 
 fn add_compact_domain_data_unit(
@@ -10012,6 +11642,28 @@ fn timing_summary_json(values: &[u64]) -> Value {
     })
 }
 
+fn json_hourly_problems(summary: &Summary, min_game_hours: i32) -> Vec<String> {
+    let mut problems = Vec::new();
+    if !summary.parse_errors.is_empty() {
+        problems.push("json_stream_not_decodable".to_string());
+    }
+    if !summary.control_errors.is_empty() {
+        problems.push("collector_control_invalid_scheduled_domains".to_string());
+    }
+    if summary.skipped_hours != 0 {
+        problems.push("skipped_game_hours_detected".to_string());
+    }
+    let Some((first, last)) = summary.first_hour.zip(summary.last_hour) else {
+        problems.push("no_game_hours_observed".to_string());
+        return problems;
+    };
+    let advanced = last.saturating_sub(first);
+    if advanced < min_game_hours {
+        problems.push("minimum_game_hours_not_reached".to_string());
+    }
+    problems
+}
+
 fn compact_hourly_problems(
     summary: &CompactSummary,
     min_game_hours: i32,
@@ -10027,6 +11679,12 @@ fn compact_hourly_problems(
     if summary.skipped_hours != 0 {
         problems.push("skipped_game_hours_detected".to_string());
     }
+    if (summary.status_flags_or & COMPACT_STATUS_CONTROL_INVALID) != 0 {
+        problems.push("collector_control_invalid_scheduled_domains".to_string());
+    }
+    if compact_contract::compact_status_is_failure(summary.status_flags_or) {
+        problems.push("compact_failure_status_seen".to_string());
+    }
     if (summary.status_flags_or & COMPACT_STATUS_WORKER_PANIC) != 0 {
         problems.push("compact_worker_panic_seen".to_string());
     }
@@ -10039,14 +11697,26 @@ fn compact_hourly_problems(
     if (summary.status_flags_or & COMPACT_STATUS_PARTIAL_DATA) != 0 {
         problems.push("compact_partial_data".to_string());
     }
+    if (summary.status_flags_or & COMPACT_STATUS_TRANSITION_BASELINE_RESET) != 0 {
+        problems.push("compact_transition_baseline_reset".to_string());
+    }
+    if compact_domain_problem_count(summary, "delta_before_baseline") != 0 {
+        problems.push("compact_delta_before_baseline".to_string());
+    }
+    if summary.late_records_after_frame_end != 0 {
+        problems.push("compact_late_records_after_frame_end".to_string());
+    }
+    if !compact_profile_unfolded_domains(summary).is_empty() {
+        problems.push("production_profile_unfolded_domain_data".to_string());
+    }
     if !coverage_errors.is_empty() {
         problems.push("scheduled_domain_coverage_failed".to_string());
     }
-    let advanced = summary
-        .first_hour
-        .zip(summary.last_hour)
-        .map(|(first, last)| last.saturating_sub(first))
-        .unwrap_or(0);
+    let Some((first, last)) = summary.first_hour.zip(summary.last_hour) else {
+        problems.push("no_game_hours_observed".to_string());
+        return problems;
+    };
+    let advanced = last.saturating_sub(first);
     if advanced < min_game_hours {
         problems.push("minimum_game_hours_not_reached".to_string());
     }
@@ -10171,6 +11841,39 @@ mod tests {
         let summary = summarize_frames(raw);
         assert_eq!(summary.unique_hours, vec![20, 23]);
         assert_eq!(summary.skipped_hours, 2);
+    }
+
+    #[test]
+    fn summary_surfaces_invalid_scheduled_domains_control() {
+        let raw = br#"{"type":"collector_started","capture_boundary":"scheduled_hour_snapshot","scheduled_domains_valid":false,"scheduled_domains_error":"too_many","root_probe":{"domains":["clock"],"current_game_date_raw":20}}
+"#;
+        let summary = summarize_frames(raw);
+
+        assert!(summary
+            .control_errors
+            .contains("scheduled_domains_invalid:too_many"));
+        let problems = json_hourly_problems(&summary, 0);
+        assert!(problems.contains(&"collector_control_invalid_scheduled_domains".to_string()));
+    }
+
+    #[test]
+    fn compact_summary_reports_forced_land_combat_dependency_for_domain55() {
+        let notes = compact_forced_domain_dependencies_json(&[String::from(
+            "land_combat_detail_events_live",
+        )]);
+        let notes = notes.as_array().unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(
+            notes[0]["requested_domain"],
+            json!("land_combat_detail_events_live")
+        );
+        assert_eq!(notes[0]["forced_domain"], json!("land_combats"));
+
+        let none = compact_forced_domain_dependencies_json(&[
+            String::from("land_combat_detail_events_live"),
+            String::from("land_combats"),
+        ]);
+        assert!(none.as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -10323,6 +12026,28 @@ mod tests {
             summary.per_domain.get(&10).unwrap().status_flags_or & COMPACT_STATUS_WORKER_PANIC,
             0
         );
+    }
+
+    #[test]
+    fn compact_summary_surfaces_invalid_control_status_as_hard_problem() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload_with_status(1_000, 0, COMPACT_STATUS_CONTROL_INVALID),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        let problems = compact_hourly_problems(&summary, 0, &[]);
+
+        assert_ne!(summary.status_flags_or & COMPACT_STATUS_CONTROL_INVALID, 0);
+        assert!(compact_contract::compact_status_is_failure(
+            summary.status_flags_or
+        ));
+        assert!(problems.contains(&"collector_control_invalid_scheduled_domains".to_string()));
     }
 
     #[test]
@@ -11056,6 +12781,386 @@ mod tests {
         );
         assert_eq!(compact_domain_id("ships"), Some(29));
         assert_eq!(compact_domain_name(29), "ships");
+    }
+
+    #[test]
+    fn compact_summary_decodes_naval_missions_status_live_data_record() {
+        let row = naval56::NavalMissionStatusRow {
+            task_force_id: 201,
+            fleet_id: 200,
+            owner_tag_db_id: 1,
+            flags: naval56::compact::FLAG_VALIDATED_DIRECT
+                | naval56::compact::FLAG_FIXTURE_REQUIRED
+                | naval56::compact::FLAG_HAS_LOCATION
+                | naval56::compact::FLAG_HAS_SUNK_CONVOY_COUNT,
+            location_province_id: 12345,
+            sunk_convoys: 2,
+            source_status: naval56::compact::STATUS_MISSION_FIXTURE_REQUIRED
+                | naval56::compact::STATUS_HOME_BASE_FIXTURE_REQUIRED
+                | naval56::compact::STATUS_REPAIR_RETREAT_FIXTURE_REQUIRED
+                | naval56::compact::STATUS_CONVOY_CONTEXT_FIXTURE_REQUIRED,
+            ..naval56::NavalMissionStatusRow::default()
+        };
+        let payload = naval56::encode_payload(
+            &naval56::NavalMissionStatusHeader {
+                elapsed_wall_ms: 7,
+                changed_rows: 1,
+                observed_task_forces: 1,
+                validated_location_rows: 1,
+                fixture_required_rows: 1,
+                convoy_sunk_count_rows: 1,
+                ..naval56::NavalMissionStatusHeader::default()
+            },
+            &[row],
+        );
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            COMPACT_DOMAIN_NAVAL_MISSIONS_STATUS_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(500, 1, 1, 1, 1),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            COMPACT_DOMAIN_NAVAL_MISSIONS_STATUS_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_100, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(
+            &summary,
+            &[COMPACT_DOMAIN_NAVAL_MISSIONS_STATUS_LIVE],
+        )
+        .is_empty());
+        let naval = summary
+            .per_domain
+            .get(&COMPACT_DOMAIN_NAVAL_MISSIONS_STATUS_LIVE)
+            .unwrap();
+        assert_eq!(naval.data_record_count, 1);
+        assert_eq!(naval.data_rows_total, 1);
+        assert_eq!(naval.data_changed_rows_total, 1);
+        assert_eq!(
+            naval
+                .data_units_total
+                .get("naval_mission_location_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            naval
+                .data_units_total
+                .get("naval_mission_sunk_convoy_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            naval
+                .data_units_total
+                .get("naval_mission_rows_with_mission")
+                .copied(),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn compact_summary_decodes_diplomacy_intel_operatives_live_data_record() {
+        let mut rows = diplomacy53::extractor::proof_fixture_rows();
+        rows.operation_anchors.clear();
+        rows.intel_map.clear();
+        let report = diplomacy53::extractor::build_domain53_payload(
+            rows,
+            diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+        );
+        assert!(report.ok(), "{:?}", report.errors);
+
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            COMPACT_DOMAIN_DIPLOMACY_INTEL_OPERATIVES_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &report.payload,
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        let domain = summary
+            .per_domain
+            .get(&COMPACT_DOMAIN_DIPLOMACY_INTEL_OPERATIVES_LIVE)
+            .unwrap();
+        assert_eq!(domain.data_record_count, 1);
+        assert_eq!(domain.data_rows_total, 18);
+        assert_eq!(
+            domain
+                .data_units_total
+                .get("agency_capacity_cluster_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            domain
+                .data_units_total
+                .get("operative_lifecycle_rows")
+                .copied(),
+            Some(3)
+        );
+        assert!(!summary
+            .unfolded_domain_data
+            .contains(&COMPACT_DOMAIN_DIPLOMACY_INTEL_OPERATIVES_LIVE));
+    }
+
+    #[test]
+    fn compact_summary_decodes_characters_leaders_cabinet_live_data_record() {
+        let rows = vec![
+            domain47::CharacterLaneRow::Character(domain47::CharacterRow {
+                country_tag_db_id: 47,
+                char_id: 1001,
+                name: Some("Antonio de Oliveira Salazar"),
+                token: Some("POR_salazar"),
+            }),
+            domain47::CharacterLaneRow::UnitLeader(domain47::UnitLeaderRow {
+                country_tag_db_id: 47,
+                unit_leader_id: 4713,
+                char_id: 1001,
+                leader_kind: domain47::UNIT_LEADER_ARMY,
+                skill: Some(4),
+                experience_raw: Some(123_456),
+                attack: Some(2),
+                defense: Some(3),
+                planning: Some(4),
+                logistics: Some(5),
+                maneuvering: None,
+                coordination: None,
+                token: Some("POR_salazar"),
+                name: Some("Antonio de Oliveira Salazar"),
+                trait_count: 0,
+            }),
+            domain47::CharacterLaneRow::CountryLeaderRole(domain47::CountryLeaderRoleRow {
+                country_tag_db_id: 47,
+                char_id: 1001,
+                name: Some("Antonio de Oliveira Salazar"),
+                token: Some("POR_salazar"),
+            }),
+            domain47::CharacterLaneRow::ActiveRuler(domain47::ActiveRulerRow {
+                country_tag_db_id: 47,
+                char_id: 1001,
+                ruling_party: Some("neutrality"),
+                name: Some("Antonio de Oliveira Salazar"),
+                token: Some("POR_salazar"),
+                leader_vec_size: 1,
+                ambiguous: false,
+            }),
+        ];
+        let payload = domain47::encode_payload(0, 0, domain47::SCHEMA_ROOTS_VALIDATED, &rows);
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(500, 4, 4, 4, 4),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_100, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(
+            &summary,
+            &[COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE],
+        )
+        .is_empty());
+        let domain = summary
+            .per_domain
+            .get(&COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE)
+            .unwrap();
+        assert_eq!(domain.data_record_count, 1);
+        assert_eq!(domain.data_rows_total, 4);
+        assert_eq!(domain.data_changed_rows_total, 4);
+        assert_eq!(
+            domain.data_units_total.get("character_rows").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            domain.data_units_total.get("unit_leader_rows").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            domain
+                .data_units_total
+                .get("country_leader_role_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            domain.data_units_total.get("active_ruler_rows").copied(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn compact_summary_decodes_construction_buildings_state_damage_live_data_record() {
+        let frame = domain48::LaneFrame {
+            game_hour_raw: 100,
+            status_flags: 0,
+            source_flags: domain48::SOURCE_FLAG_DLL_NATIVE
+                | domain48::SOURCE_FLAG_SHARED_COUNTRY_ROOTS
+                | domain48::SOURCE_FLAG_SHARED_MAP_TOPOLOGY
+                | domain48::SOURCE_FLAG_HEALTHY_LEVEL_CANDIDATE,
+            observed_country_roots: 1,
+            observed_state_roots: 1,
+            observed_province_roots: 1,
+            construction_rows: vec![domain48::ConstructionQueueRow {
+                tag_db_id: 1,
+                line_id: 77,
+                template_id: Some(20_013),
+                active_factories: 15,
+                cost_raw: 10_000_000,
+                produced_raw: 5_000_000,
+                priority: 0,
+                target_state_id: Some(42),
+            }],
+            building_rows: vec![domain48::BuildingRow {
+                scope: domain48::SCOPE_STATE,
+                location_id: 42,
+                state_id: 42,
+                type_id: 0x2fab,
+                level: 5,
+                healthy_level: Some(4),
+            }],
+            resource_rows: vec![domain48::StateResourceRow {
+                state_id: 42,
+                resource_id: 0x3e03,
+                amount_raw: 2_500_000,
+            }],
+        };
+        let payload = domain48::encode_lane_frame(&frame);
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(500, 3, 3, 3, 3),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        );
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_100, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert!(compact_domain_coverage_errors(
+            &summary,
+            &[COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE],
+        )
+        .is_empty());
+        let domain = summary
+            .per_domain
+            .get(&COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE)
+            .unwrap();
+        assert_eq!(domain.data_record_count, 1);
+        assert_eq!(domain.data_rows_total, 3);
+        assert_eq!(domain.data_changed_rows_total, 3);
+        assert_eq!(
+            domain
+                .data_units_total
+                .get("construction_queue_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            domain
+                .data_units_total
+                .get("construction_queue_target_state_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            domain.data_units_total.get("building_rows").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            domain
+                .data_units_total
+                .get("damaged_building_rows")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            domain.data_units_total.get("resource_rows").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            domain
+                .data_units_total
+                .get("target_state_unavailable_badged")
+                .copied(),
+            None
+        );
     }
 
     #[test]
@@ -13506,6 +15611,306 @@ mod tests {
     }
 
     #[test]
+    fn compact_summary_records_delta_before_baseline_domain_problem() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            20,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_divisions_delta_data_payload(),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_200, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        let problems = compact_hourly_problems(&summary, 0, &[]);
+        let divisions = summary.per_domain.get(&20).unwrap();
+
+        assert_eq!(
+            divisions.problems.get("delta_before_baseline").copied(),
+            Some(1)
+        );
+        assert!(problems.contains(&"compact_delta_before_baseline".to_string()));
+        let manifest = compact_stream_manifest_json(&summary, &[20], &[], &[]);
+        assert_eq!(
+            manifest["world_fold"]["delta_before_baseline"][0]["domain"],
+            json!("divisions")
+        );
+    }
+
+    #[test]
+    fn compact_summary_keeps_reserved_unfolded_domain_out_of_profile_escalation() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            49,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            &test_domain_payload(7_500, 11_200, 11_200, 10_100, 10_100),
+        );
+        append_test_compact_record(&mut raw, 2, 100, 49, COMPACT_RECORD_TYPE_DOMAIN_DATA, &[]);
+        append_test_compact_record(
+            &mut raw,
+            3,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_200, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        let coverage_errors = compact_domain_coverage_errors(&summary, &[49]);
+        let problems = compact_hourly_problems(&summary, 0, &coverage_errors);
+        let manifest = compact_stream_manifest_json(
+            &summary,
+            &[49],
+            &coverage_errors,
+            &["naval_combat_lifecycle_live".into()],
+        );
+
+        assert!(summary.unfolded_domain_data.contains(&49));
+        assert!(coverage_errors.is_empty());
+        assert!(!problems.contains(&"production_profile_unfolded_domain_data".to_string()));
+        assert_eq!(
+            manifest["world_fold"]["production_profile_unfolded_domains"],
+            json!([])
+        );
+    }
+
+    #[test]
+    fn compact_manifest_reports_transition_baseline_reset_seen() {
+        let mut raw = Vec::new();
+        let payload = land_detail55::encode_detail_events_payload(
+            7,
+            COMPACT_STATUS_DELTA_DATA | COMPACT_STATUS_TRANSITION_BASELINE_RESET,
+            &[],
+        );
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_200, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        let manifest = compact_stream_manifest_json(
+            &summary,
+            &[COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE],
+            &[],
+            &["land_combat_detail_events_live".into()],
+        );
+        let problems = compact_hourly_problems(&summary, 0, &[]);
+
+        assert_eq!(manifest["transition_baseline_reset_seen"], json!(true));
+        assert!(problems.contains(&"compact_transition_baseline_reset".to_string()));
+    }
+
+    #[test]
+    fn compact_summary_counts_late_records_after_frame_end() {
+        let mut raw = Vec::new();
+        append_test_compact_record(
+            &mut raw,
+            1,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_200, 1),
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            20,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &test_divisions_data_payload(0),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+        let problems = compact_hourly_problems(&summary, 0, &[]);
+
+        assert_eq!(summary.late_records_after_frame_end, 1);
+        assert_eq!(
+            summary
+                .per_domain
+                .get(&20)
+                .unwrap()
+                .problems
+                .get("late_record_after_frame_end")
+                .copied(),
+            Some(1)
+        );
+        assert!(problems.contains(&"compact_late_records_after_frame_end".to_string()));
+    }
+
+    #[test]
+    fn failed_gate_replay_uses_recovery_name_and_leaves_normal_name_absent() {
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan_failed_pack_test_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let manifest_path = dir.join("native_session_manifest.json");
+        let normal_path = replay_path_for_gate(&dir, true);
+        let failed_path = replay_path_for_gate(&dir, false);
+        let raw = {
+            let mut raw = Vec::new();
+            append_test_compact_record(
+                &mut raw,
+                1,
+                60_759_359,
+                1000,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                &test_frame_payload(2_000, 1),
+            );
+            raw
+        };
+        let manifest = json!({
+            "schema": "native_collector_session_v1",
+            "session_id": "failed pack test/session",
+            "replay_game_id": replay_game_id("failed pack test/session"),
+            "stream_format": "compact",
+            "hourly_requirement": {
+                "met": false,
+                "problems": ["compact_stream_not_decodable"],
+            },
+            "replay_file": "native_session.failed.battleplan",
+            "replay_artifact": {
+                "normal_file": "native_session.battleplan",
+                "written_file": "native_session.failed.battleplan",
+                "recovery": true,
+                "reason": "gate_failed",
+                "gate_problems": ["compact_stream_not_decodable"],
+            },
+        });
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let cfg = test_config(vec![], None);
+        let snapshots = Vec::new();
+
+        write_native_replay_container(
+            &cfg,
+            &raw,
+            &snapshots,
+            &manifest,
+            &manifest_path,
+            &failed_path,
+        )
+        .unwrap();
+
+        assert!(!normal_path.exists());
+        assert!(failed_path.exists());
+        assert_eq!(
+            manifest_hourly_problems(&manifest),
+            vec!["compact_stream_not_decodable".to_string()]
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failed_gate_quarantines_existing_normal_replay_before_writing_recovery() {
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan_failed_quarantine_test_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let manifest_path = dir.join("native_session_manifest.json");
+        let normal_path = replay_path_for_gate(&dir, true);
+        let failed_path = replay_path_for_gate(&dir, false);
+        let prior_bytes = b"previous verified replay bytes";
+        fs::write(&normal_path, prior_bytes).unwrap();
+
+        let quarantine = quarantine_normal_replay(&normal_path);
+        assert!(quarantine.attempted);
+        assert!(quarantine.ok);
+        let quarantine_name = quarantine.new_file.clone().unwrap();
+        let quarantine_path = dir.join(&quarantine_name);
+        let manifest = json!({
+            "schema": "native_collector_session_v1",
+            "session_id": "failed quarantine test/session",
+            "replay_game_id": replay_game_id("failed quarantine test/session"),
+            "stream_format": "compact",
+            "hourly_requirement": {
+                "met": false,
+                "problems": ["compact_stream_not_decodable"],
+            },
+            "replay_file": "native_session.failed.battleplan",
+            "replay_artifact": {
+                "normal_file": "native_session.battleplan",
+                "written_file": "native_session.failed.battleplan",
+                "recovery": true,
+                "reason": "gate_failed",
+                "gate_problems": ["compact_stream_not_decodable"],
+                "normal_file_quarantine": quarantine.as_json(),
+            },
+        });
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let raw = {
+            let mut raw = Vec::new();
+            append_test_compact_record(
+                &mut raw,
+                1,
+                60_759_359,
+                1000,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                &test_frame_payload(2_000, 1),
+            );
+            raw
+        };
+        let cfg = test_config(vec![], None);
+
+        write_native_replay_container(&cfg, &raw, &[], &manifest, &manifest_path, &failed_path)
+            .unwrap();
+
+        assert!(!normal_path.exists());
+        assert!(failed_path.exists());
+        assert_eq!(fs::read(&quarantine_path).unwrap(), prior_bytes);
+        let manifest_on_disk: Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        let quarantine_json = &manifest_on_disk["replay_artifact"]["normal_file_quarantine"];
+        assert_eq!(quarantine_json["attempted"], json!(true));
+        assert_eq!(quarantine_json["ok"], json!(true));
+        assert_eq!(
+            quarantine_json["old_file"],
+            json!("native_session.battleplan")
+        );
+        assert_eq!(quarantine_json["new_file"], json!(quarantine_name));
+        assert_eq!(
+            quarantine_json["reason"],
+            json!("gate_failed_normal_name_must_be_absent")
+        );
+        assert_eq!(quarantine_json["stale_normal_may_remain"], json!(false));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn replay_container_preserves_compact_stream_bytes() {
         let dir =
             std::env::temp_dir().join(format!("battle-plan_pack_test_{}", std::process::id()));
@@ -13513,11 +15918,14 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let manifest_path = dir.join("native_session_manifest.json");
         let replay_path = dir.join("native_session.battleplan");
+        // 1936.1.1.0 raw date (in the calendar sanity window so the fold emits a
+        // snapshot for this hour). hour_index = raw - 43_799_999 = 16_959_360.
+        let game_hour_raw = 60_759_359i32;
         let mut raw = Vec::new();
         append_test_compact_record(
             &mut raw,
             1,
-            100,
+            game_hour_raw,
             10,
             COMPACT_RECORD_TYPE_DOMAIN_PERF,
             &test_domain_payload(1_250, 355, 12, 44, 44),
@@ -13525,7 +15933,7 @@ mod tests {
         append_test_compact_record(
             &mut raw,
             2,
-            100,
+            game_hour_raw,
             10,
             COMPACT_RECORD_TYPE_DOMAIN_DATA,
             &test_fuel_data_payload(&[(47, 4_046_848, 14_950_400, 245_760, -73_728)]),
@@ -13533,7 +15941,7 @@ mod tests {
         append_test_compact_record(
             &mut raw,
             3,
-            100,
+            game_hour_raw,
             1000,
             COMPACT_RECORD_TYPE_FRAME_END,
             &test_frame_payload(2_000, 1),
@@ -13558,6 +15966,7 @@ mod tests {
             dwell_ms: 0,
             min_game_hours: 0,
             scheduled_domains: vec!["fuel_live".to_string()],
+            production: false,
             lightweight_root_frame: true,
             special_projects_scan: false,
             compact_country_frame: true,
@@ -13568,9 +15977,27 @@ mod tests {
             session_id: "pack test/session".to_string(),
             stream_format: StreamFormat::Compact,
             extraction_perf_gate: true,
+            static_artifacts: Vec::new(),
         };
 
-        write_native_replay_container(&cfg, &raw, &manifest, &manifest_path, &replay_path).unwrap();
+        let mut fold = WorldFold::new(replay_game_id("pack test/session"));
+        fold.ingest_stream(&raw);
+        let snapshots = fold.finish();
+        assert_eq!(
+            snapshots.len(),
+            1,
+            "one folded snapshot for the single hour"
+        );
+
+        write_native_replay_container(
+            &cfg,
+            &raw,
+            &snapshots,
+            &manifest,
+            &manifest_path,
+            &replay_path,
+        )
+        .unwrap();
 
         let container = Container::open(&replay_path, &ExpectedIdentity::default()).unwrap();
         container.verify_all().unwrap();
@@ -13581,6 +16008,18 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(stored, raw);
+        // the container's index now lists the folded snapshot and it loads by hour
+        let index = container.index();
+        assert_eq!(index.snapshots.len(), 1);
+        let hour_index = index.snapshots[0].hour_index.unwrap();
+        let snap = container.load(hour_index).unwrap();
+        assert_eq!(snap.hour_index, Some(hour_index));
+        assert_eq!(snap.schema_version.as_ref().unwrap(), "1");
+        // fuel folded into the country keyed by stringified tag_db_id
+        assert!(snap
+            .country_path("47", "fuel.current")
+            .and_then(Value::as_f64)
+            .is_some());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -13656,6 +16095,126 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn parse_args_production_expands_profile_and_preserves_explicit_domains() {
+        let dir = std::env::temp_dir().join(format!(
+            "battle-plan-recorder_host_production_args_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let dll = dir.join("collector.dll");
+        fs::write(&dll, b"").unwrap();
+
+        let cfg = parse_args(vec![
+            "--pid".to_string(),
+            "1234".to_string(),
+            "--dll".to_string(),
+            dll.display().to_string(),
+            "--out-dir".to_string(),
+            dir.join("out").display().to_string(),
+            "--scheduled-domain".to_string(),
+            "country_identity".to_string(),
+            "--scheduled-domain".to_string(),
+            "fuel_live".to_string(),
+            "--production".to_string(),
+        ])
+        .unwrap();
+
+        assert!(cfg.production);
+        assert_eq!(cfg.scheduled_domains[0], "country_identity");
+        assert_eq!(cfg.scheduled_domains[1], "fuel_live");
+        assert_eq!(
+            cfg.scheduled_domains
+                .iter()
+                .filter(|domain| domain.as_str() == "fuel_live")
+                .count(),
+            1,
+            "explicit profile domains should not be duplicated"
+        );
+        for profile_domain in compact_contract::production_profile_scheduled_names() {
+            assert!(
+                cfg.scheduled_domains
+                    .iter()
+                    .any(|domain| domain == profile_domain),
+                "{profile_domain} missing from --production expansion"
+            );
+        }
+        assert!(
+            cfg.scheduled_domains
+                .iter()
+                .any(|domain| domain == "naval_missions_status_live"),
+            "validated/schedulable domain 56 should be added by --production"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn production_profile_summary_populates_mismatch_lists() {
+        let cfg = test_config(
+            vec!["fuel_live", "country_identity", "unknown_future"],
+            None,
+        );
+        let summary = build_production_profile_summary(&cfg);
+
+        assert!(
+            !summary.profile_domains_not_scheduled.contains(&"fuel_live"),
+            "scheduled profile domain should not be reported missing"
+        );
+        assert!(
+            summary
+                .profile_domains_not_scheduled
+                .contains(&"land_combat_detail_events_live"),
+            "unscheduled profile domain should be visible"
+        );
+        assert_eq!(
+            summary.scheduled_domains_not_in_profile,
+            vec!["country_identity".to_string(), "unknown_future".to_string()]
+        );
+
+        let manifest_block = summary.as_json();
+        assert_eq!(
+            manifest_block["scheduled_domains_not_in_profile"],
+            json!(["country_identity", "unknown_future"])
+        );
+        assert!(manifest_block["profile_domains_not_scheduled"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value.as_str() == Some("land_combat_detail_events_live")));
+    }
+
+    #[test]
+    fn production_profile_summary_warns_for_missing_required_static_artifacts() {
+        let mut cfg = test_config(
+            compact_contract::production_profile_scheduled_names()
+                .into_iter()
+                .collect(),
+            None,
+        );
+        cfg.production = true;
+        cfg.static_artifacts = Vec::new();
+
+        let summary = build_production_profile_summary(&cfg);
+        assert_eq!(
+            summary.missing_required_static_artifacts.as_slice(),
+            compact_contract::REQUIRED_STATIC_ARTIFACTS
+        );
+        let lines = production_profile_summary_lines(&summary);
+        assert!(lines.iter().any(|line| {
+            line.contains("recorder warning: --production missing required static artifacts")
+                && line.contains("templates_equipment_catalog")
+                && line.contains("--static-templates-equipment-catalog")
+                && line.contains("localisation_join")
+                && line.contains("--static-localisation-join")
+        }));
+        assert_eq!(
+            summary.as_json()["missing_required_static_artifacts"],
+            json!(["templates_equipment_catalog", "localisation_join"])
+        );
+    }
+
     fn test_domain_payload(
         read_time_us: u64,
         row_count: u32,
@@ -13686,6 +16245,7 @@ mod tests {
                 .into_iter()
                 .map(|domain| domain.to_string())
                 .collect(),
+            production: false,
             lightweight_root_frame: true,
             special_projects_scan: false,
             compact_country_frame: true,
@@ -13696,6 +16256,7 @@ mod tests {
             session_id: "test-session".to_string(),
             stream_format: StreamFormat::Compact,
             extraction_perf_gate: true,
+            static_artifacts: Vec::new(),
         }
     }
 
@@ -13720,12 +16281,20 @@ mod tests {
     }
 
     fn test_frame_payload(frame_time_us: u64, emitted_domains: u32) -> Vec<u8> {
+        test_frame_payload_with_status(frame_time_us, emitted_domains, 0)
+    }
+
+    fn test_frame_payload_with_status(
+        frame_time_us: u64,
+        emitted_domains: u32,
+        status_flags: u32,
+    ) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(&0u64.to_le_bytes());
         payload.extend_from_slice(&frame_time_us.to_le_bytes());
         payload.extend_from_slice(&emitted_domains.to_le_bytes());
         payload.extend_from_slice(&emitted_domains.to_le_bytes());
-        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&status_flags.to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
         payload
     }
@@ -15916,5 +18485,597 @@ mod tests {
             &test_frame_payload(2_000, 1),
         );
         *next_sequence += 1;
+    }
+
+    // ---------------------------------------------------------------------
+    // Static-artifact production packing (domain-59 catalog + R3 localisation)
+    // ---------------------------------------------------------------------
+
+    /// A valid single-hour compact stream + its folded snapshots, so a container
+    /// packs and verifies exactly like the production path (fuel frame keeps the
+    /// world fold non-empty). `game_hour_raw` picks an hour inside the calendar
+    /// sanity window so the fold emits a snapshot.
+    fn valid_stream_and_snapshots(session_id: &str) -> (Vec<u8>, Vec<(i64, String, Vec<u8>)>) {
+        let mut raw = Vec::new();
+        let mut seq = 1u64;
+        append_test_fuel_compact_frame(&mut raw, &mut seq, 60_759_359, 47);
+        let mut fold = WorldFold::new(replay_game_id(session_id));
+        fold.ingest_stream(&raw);
+        let snapshots = fold.finish();
+        assert_eq!(
+            snapshots.len(),
+            1,
+            "one folded snapshot for the single hour"
+        );
+        (raw, snapshots)
+    }
+
+    fn static_artifact_test_dir(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("hoi4_static_artifact_{tag}_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_session_manifest(dir: &Path, session_id: &str) -> (PathBuf, Value) {
+        let manifest = json!({
+            "schema": "native_collector_session_v1",
+            "session_id": session_id,
+            "replay_game_id": replay_game_id(session_id),
+            "stream_format": "compact",
+        });
+        let manifest_path = dir.join("native_session_manifest.json");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        (manifest_path, manifest)
+    }
+
+    /// A domain-59-shaped catalog. `root` deliberately carries a personal absolute
+    /// path so the test proves the manifest keeps only the basename (spec §0).
+    fn fake_domain59_catalog() -> (Vec<u8>, Value) {
+        let catalog = json!({
+            "schema": "templates_equipment_catalog_live.static_artifact.v1",
+            "domain_id": 59,
+            "artifact_kind": "deterministic_static_replay_enrichment",
+            "artifact_sha256": "deadbeef",
+            "counts": { "division_templates": 306, "equipment_definitions": 59 },
+            "layers": [
+                { "label": "vanilla", "replace_path": [],
+                  "root": "X:\\SteamLibrary\\steamapps\\common\\Hearts of Iron IV" },
+                { "label": "AMSB - DEV", "replace_path": ["history/units"],
+                  "root": "C:\\Users\\Example\\Documents\\mod\\test" },
+            ],
+            "catalog": { "division_templates": [] },
+        });
+        (serde_json::to_vec_pretty(&catalog).unwrap(), catalog)
+    }
+
+    fn fake_localisation_catalog() -> Vec<u8> {
+        let catalog = json!({
+            "schema": "static_localisation_join_r3.static_artifact.v1",
+            "request": "R3",
+            "artifact_kind": "deterministic_static_replay_enrichment",
+            "artifact_sha256": "cafebabe",
+            "meta": { "key_count": 139950, "language": "english" },
+            "layers": [
+                { "label": "vanilla", "replace_path": [], "root": "the game" },
+                { "label": "AMSB - DEV", "replace_path": ["history/units"], "root": "test" },
+            ],
+            "keys": {},
+        });
+        serde_json::to_vec_pretty(&catalog).unwrap()
+    }
+
+    fn container_index_static_artifacts(container: &Container) -> Vec<Value> {
+        // The typed Index does not model static_artifacts, so re-read the verified
+        // index bytes to inspect the top-level roster.
+        let game_id = container.game_id().to_string();
+        let bytes = container
+            .read_entry_bytes(&format!("payload/{game_id}/index.json"))
+            .unwrap();
+        let index: Value = serde_json::from_slice(&bytes).unwrap();
+        index
+            .get("static_artifacts")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn static_artifacts_present_are_packed_verified_and_hashed() {
+        let session_id = "static present/session";
+        let dir = static_artifact_test_dir("present");
+        let (manifest_path, manifest) = write_session_manifest(&dir, session_id);
+        let replay_path = dir.join("native_session.battleplan");
+
+        let (d59_bytes, _d59) = fake_domain59_catalog();
+        let loc_bytes = fake_localisation_catalog();
+        let d59_path = dir.join("domain59_static_catalog.json");
+        let loc_path = dir.join("localisation_catalog.json");
+        fs::write(&d59_path, &d59_bytes).unwrap();
+        fs::write(&loc_path, &loc_bytes).unwrap();
+
+        let mut cfg = test_config(vec!["fuel_live"], None);
+        cfg.session_id = session_id.to_string();
+        cfg.out_dir = dir.clone();
+        cfg.static_artifacts = vec![
+            StaticArtifactRequest {
+                name: STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG,
+                path: d59_path.clone(),
+            },
+            StaticArtifactRequest {
+                name: STATIC_ARTIFACT_LOCALISATION_JOIN,
+                path: loc_path.clone(),
+            },
+        ];
+
+        let (raw, snapshots) = valid_stream_and_snapshots(session_id);
+        write_native_replay_container(
+            &cfg,
+            &raw,
+            &snapshots,
+            &manifest,
+            &manifest_path,
+            &replay_path,
+        )
+        .unwrap();
+
+        let container = Container::open(&replay_path, &ExpectedIdentity::default()).unwrap();
+        container.verify_all().unwrap();
+        let game_id = replay_game_id(session_id);
+
+        // both payloads round-trip byte-identically under their role
+        let role_entries = container.entries_by_role("static_artifact");
+        assert_eq!(role_entries.len(), 2, "two packed static artifacts");
+        let d59_stored = container
+            .read_entry_bytes(&format!(
+                "payload/{game_id}/static/templates_equipment_catalog/domain59_static_catalog.json"
+            ))
+            .unwrap();
+        assert_eq!(d59_stored, d59_bytes, "domain-59 catalog is byte-identical");
+        let loc_stored = container
+            .read_entry_bytes(&format!(
+                "payload/{game_id}/static/localisation_join/localisation_catalog.json"
+            ))
+            .unwrap();
+        assert_eq!(
+            loc_stored, loc_bytes,
+            "localisation catalog is byte-identical"
+        );
+
+        // per-entry sha256 in the manifest == sha256 of the packed bytes
+        let d59_entry = role_entries
+            .iter()
+            .find(|e| e.path.ends_with("domain59_static_catalog.json"))
+            .expect("domain-59 role entry present");
+        assert_eq!(d59_entry.sha256, Sha256::hex(&d59_bytes));
+        assert_eq!(d59_entry.bytes, d59_bytes.len() as u64);
+
+        // index roster: both present, sha256 recorded, provenance + mod-identity
+        // keying carried, and personal paths REDACTED to basenames (spec §0).
+        let roster = container_index_static_artifacts(&container);
+        assert_eq!(roster.len(), KNOWN_STATIC_ARTIFACTS.len());
+        let d59_row = roster
+            .iter()
+            .find(|r| r["name"] == json!("templates_equipment_catalog"))
+            .unwrap();
+        assert_eq!(d59_row["present"], json!(true));
+        assert_eq!(d59_row["sha256"], json!(Sha256::hex(&d59_bytes)));
+        assert_eq!(d59_row["provenance"]["domain_id"], json!(59));
+        assert_eq!(d59_row["provenance"]["artifact_sha256"], json!("deadbeef"));
+        let layers = d59_row["provenance"]["mod_identity_layers"]
+            .as_array()
+            .unwrap();
+        assert_eq!(layers.len(), 2);
+        assert_eq!(layers[0]["root_basename"], json!("the game"));
+        assert_eq!(layers[1]["root_basename"], json!("test"));
+        // no personal path substring leaked anywhere into the roster
+        let roster_text = serde_json::to_string(&roster).unwrap();
+        assert!(!roster_text.contains("SteamLibrary"));
+        assert!(!roster_text.contains("someone"));
+
+        let loc_row = roster
+            .iter()
+            .find(|r| r["name"] == json!("localisation_join"))
+            .unwrap();
+        assert_eq!(loc_row["present"], json!(true));
+        assert_eq!(loc_row["provenance"]["request"], json!("R3"));
+        assert_eq!(loc_row["provenance"]["meta"]["key_count"], json!(139950));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn static_artifacts_absent_still_packs_and_records_absence() {
+        let session_id = "static absent/session";
+        let dir = static_artifact_test_dir("absent");
+        let (manifest_path, manifest) = write_session_manifest(&dir, session_id);
+        let replay_path = dir.join("native_session.battleplan");
+
+        let mut cfg = test_config(vec!["fuel_live"], None);
+        cfg.session_id = session_id.to_string();
+        cfg.out_dir = dir.clone();
+        cfg.static_artifacts = Vec::new(); // none supplied
+
+        let (raw, snapshots) = valid_stream_and_snapshots(session_id);
+        write_native_replay_container(
+            &cfg,
+            &raw,
+            &snapshots,
+            &manifest,
+            &manifest_path,
+            &replay_path,
+        )
+        .unwrap();
+
+        // container still opens + fully verifies
+        let container = Container::open(&replay_path, &ExpectedIdentity::default()).unwrap();
+        container.verify_all().unwrap();
+        assert!(
+            container.entries_by_role("static_artifact").is_empty(),
+            "no static-artifact entries packed"
+        );
+
+        // every KNOWN artifact is recorded as absent with a reason — never fabricated
+        let roster = container_index_static_artifacts(&container);
+        assert_eq!(roster.len(), KNOWN_STATIC_ARTIFACTS.len());
+        for row in &roster {
+            assert_eq!(row["present"], json!(false));
+            assert!(row.get("sha256").is_none(), "absent artifact has no sha256");
+            assert!(
+                row["absence_reason"].as_str().is_some(),
+                "absent artifact carries a fail-closed reason"
+            );
+        }
+        let names: Vec<&str> = roster.iter().map(|r| r["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"templates_equipment_catalog"));
+        assert!(names.contains(&"localisation_join"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn static_artifact_missing_path_is_hard_error_not_silent_skip() {
+        let session_id = "static missing/session";
+        let dir = static_artifact_test_dir("missing");
+        let (manifest_path, manifest) = write_session_manifest(&dir, session_id);
+        let replay_path = dir.join("native_session.battleplan");
+
+        let mut cfg = test_config(vec!["fuel_live"], None);
+        cfg.session_id = session_id.to_string();
+        cfg.out_dir = dir.clone();
+        // path is set but the file does not exist -> must fail closed
+        cfg.static_artifacts = vec![StaticArtifactRequest {
+            name: STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG,
+            path: dir.join("does_not_exist.json"),
+        }];
+
+        let (raw, snapshots) = valid_stream_and_snapshots(session_id);
+        let err = write_native_replay_container(
+            &cfg,
+            &raw,
+            &snapshots,
+            &manifest,
+            &manifest_path,
+            &replay_path,
+        )
+        .expect_err("unreadable static artifact must be a hard error");
+        assert!(
+            err.contains("read static artifact") && err.contains("templates_equipment_catalog"),
+            "error names the failing artifact: {err}"
+        );
+        // and no half-written container was left behind
+        assert!(!replay_path.exists(), "no container produced on hard error");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn static_artifact_corrupt_json_is_hard_error() {
+        let session_id = "static corrupt/session";
+        let dir = static_artifact_test_dir("corrupt");
+        let (manifest_path, manifest) = write_session_manifest(&dir, session_id);
+        let replay_path = dir.join("native_session.battleplan");
+
+        let bad_path = dir.join("localisation_catalog.json");
+        fs::write(&bad_path, b"{ this is not valid json ").unwrap();
+
+        let mut cfg = test_config(vec!["fuel_live"], None);
+        cfg.session_id = session_id.to_string();
+        cfg.out_dir = dir.clone();
+        cfg.static_artifacts = vec![StaticArtifactRequest {
+            name: STATIC_ARTIFACT_LOCALISATION_JOIN,
+            path: bad_path,
+        }];
+
+        let (raw, snapshots) = valid_stream_and_snapshots(session_id);
+        let err = write_native_replay_container(
+            &cfg,
+            &raw,
+            &snapshots,
+            &manifest,
+            &manifest_path,
+            &replay_path,
+        )
+        .expect_err("corrupt static artifact JSON must be a hard error");
+        assert!(
+            err.contains("not valid JSON") && err.contains("localisation_join"),
+            "error names the corrupt artifact: {err}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn static_artifact_wrong_json_shape_is_hard_error() {
+        let dir = static_artifact_test_dir("wrong_shape");
+        let cases: Vec<(&str, &'static str, Vec<u8>, &str)> = vec![
+            (
+                "null_root",
+                STATIC_ARTIFACT_LOCALISATION_JOIN,
+                b"null".to_vec(),
+                "JSON object",
+            ),
+            (
+                "empty_object",
+                STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG,
+                b"{}".to_vec(),
+                "schema",
+            ),
+            (
+                "missing_layers",
+                STATIC_ARTIFACT_LOCALISATION_JOIN,
+                serde_json::to_vec_pretty(&json!({
+                    "schema": "static_localisation_join_r3.static_artifact.v1",
+                    "request": "R3",
+                    "artifact_kind": "deterministic_static_replay_enrichment",
+                    "artifact_sha256": "cafebabe",
+                    "meta": { "key_count": 1, "language": "english" },
+                    "keys": {},
+                }))
+                .unwrap(),
+                "layers",
+            ),
+        ];
+
+        for (tag, name, bytes, expected) in cases {
+            let path = dir.join(format!("{tag}.json"));
+            fs::write(&path, bytes).unwrap();
+            let request = StaticArtifactRequest { name, path };
+            let err = match resolve_static_artifact("shape_test", &request) {
+                Ok(_) => panic!("{tag} unexpectedly resolved as a valid artifact"),
+                Err(err) => err,
+            };
+            assert!(
+                err.contains("invalid provenance shape")
+                    && err.contains(expected)
+                    && err.contains(name),
+                "{tag} error should name the bad shape and artifact: {err}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_args_rejects_duplicate_static_artifact_flags() {
+        let dir = static_artifact_test_dir("duplicate_args");
+        let dll = dir.join("collector.dll");
+        fs::write(&dll, b"").unwrap();
+
+        for flag in [
+            "--static-templates-equipment-catalog",
+            "--static-localisation-join",
+        ] {
+            let err = match parse_args(vec![
+                "--pid".to_string(),
+                "1234".to_string(),
+                "--dll".to_string(),
+                dll.display().to_string(),
+                "--out-dir".to_string(),
+                dir.join("out").display().to_string(),
+                flag.to_string(),
+                dir.join("first.json").display().to_string(),
+                flag.to_string(),
+                dir.join("second.json").display().to_string(),
+            ]) {
+                Ok(_) => panic!("{flag} duplicate was accepted"),
+                Err(err) => err,
+            };
+            assert!(
+                err.contains("duplicate") && err.contains(flag),
+                "duplicate error should name the repeated flag: {err}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn static_artifact_roster_redacts_nested_paths_and_drops_unlisted_fields() {
+        let session_id = "static redaction/session";
+        let dir = static_artifact_test_dir("redaction");
+        let (manifest_path, manifest) = write_session_manifest(&dir, session_id);
+        let replay_path = dir.join("native_session.battleplan");
+
+        let (_, mut d59_catalog) = fake_domain59_catalog();
+        d59_catalog["layers"][0]["label"] = json!(r"C:\Users\Example\OneDrive\Documents\mod\vanilla");
+        d59_catalog["layers"][0]["replace_path"] = json!([
+            r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV\history\units",
+            { "nested": r"C:\Users\Example\OneDrive\Documents\mod\test" },
+        ]);
+        d59_catalog["counts"]["division_templates"] =
+            json!(r"C:\Users\Example\OneDrive\Documents\mod\test");
+        d59_catalog["counts"]["unlisted_leak"] =
+            json!(r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV");
+        d59_catalog["unlisted_top_level"] =
+            json!({ "path": r"C:\Users\Example\OneDrive\Documents\mod\test" });
+
+        let mut loc_catalog: Value = serde_json::from_slice(&fake_localisation_catalog()).unwrap();
+        loc_catalog["layers"][0]["label"] = json!(r"\\server\share\OneDrive\vanilla");
+        loc_catalog["layers"][1]["replace_path"] =
+            json!([r"C:\Users\Example\OneDrive\Documents\mod\test\history\units"]);
+        loc_catalog["meta"]["language"] =
+            json!(r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV\english");
+        loc_catalog["meta"]["layers"] = json!([
+            r"C:\Users\Example\OneDrive\Documents\mod\test",
+            r"/home/user/OneDrive/mod/test",
+        ]);
+        loc_catalog["meta"]["by_layer_new_keys"] =
+            json!({ r"C:\Users\Example\OneDrive\Documents\mod\test": 12 });
+        loc_catalog["meta"]["unlisted_leak"] =
+            json!({ "path": r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV" });
+
+        let d59_bytes = serde_json::to_vec_pretty(&d59_catalog).unwrap();
+        let loc_bytes = serde_json::to_vec_pretty(&loc_catalog).unwrap();
+        let d59_path = dir.join("domain59_static_catalog.json");
+        let loc_path = dir.join("localisation_catalog.json");
+        fs::write(&d59_path, &d59_bytes).unwrap();
+        fs::write(&loc_path, &loc_bytes).unwrap();
+
+        let mut cfg = test_config(vec!["fuel_live"], None);
+        cfg.session_id = session_id.to_string();
+        cfg.out_dir = dir.clone();
+        cfg.static_artifacts = vec![
+            StaticArtifactRequest {
+                name: STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG,
+                path: d59_path,
+            },
+            StaticArtifactRequest {
+                name: STATIC_ARTIFACT_LOCALISATION_JOIN,
+                path: loc_path,
+            },
+        ];
+
+        let (raw, snapshots) = valid_stream_and_snapshots(session_id);
+        write_native_replay_container(
+            &cfg,
+            &raw,
+            &snapshots,
+            &manifest,
+            &manifest_path,
+            &replay_path,
+        )
+        .unwrap();
+
+        let container = Container::open(&replay_path, &ExpectedIdentity::default()).unwrap();
+        let roster = container_index_static_artifacts(&container);
+        let roster_text = serde_json::to_string(&roster).unwrap();
+        for needle in [
+            r"C:\\Users",
+            r"C:\Users",
+            r"F:\\",
+            r"F:\",
+            "SteamLibrary",
+            "OneDrive",
+        ] {
+            assert!(
+                !roster_text.contains(needle),
+                "roster leaked {needle}: {roster_text}"
+            );
+        }
+        assert!(
+            !roster_text.contains("unlisted_leak") && !roster_text.contains("unlisted_top_level"),
+            "unlisted provenance fields must be dropped: {roster_text}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn verification_failure_keeps_existing_final_container_untouched() {
+        let session_id = "static verify failure/session";
+        let dir = static_artifact_test_dir("verify_failure");
+        let (manifest_path, manifest) = write_session_manifest(&dir, session_id);
+        let replay_path = dir.join("native_session.battleplan");
+        let original_final = b"pre-existing final replay bytes";
+        fs::write(&replay_path, original_final).unwrap();
+
+        let mut cfg = test_config(vec!["fuel_live"], None);
+        cfg.session_id = session_id.to_string();
+        cfg.out_dir = dir.clone();
+        cfg.static_artifacts = Vec::new();
+
+        let (raw, snapshots) = valid_stream_and_snapshots(session_id);
+        let err = match write_native_replay_container_with_verifier(
+            &cfg,
+            &raw,
+            &snapshots,
+            &manifest,
+            &manifest_path,
+            &replay_path,
+            |tmp_path, _, _, _, _| {
+                assert!(tmp_path.exists(), "verification runs against the temp file");
+                assert_ne!(tmp_path, replay_path.as_path());
+                Err("injected verification failure".to_string())
+            },
+        ) {
+            Ok(_) => panic!("injected verification failure unexpectedly succeeded"),
+            Err(err) => err,
+        };
+        assert!(
+            err.contains("injected verification failure"),
+            "error should surface verifier rejection: {err}"
+        );
+        assert_eq!(
+            fs::read(&replay_path).unwrap(),
+            original_final,
+            "failed verification must leave the existing final replay untouched"
+        );
+        let leftover_tmp: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| name.contains(".tmp-"))
+            .collect();
+        assert!(
+            leftover_tmp.is_empty(),
+            "failed verification should clean temp files: {leftover_tmp:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_args_accepts_static_artifact_flags() {
+        let dir = static_artifact_test_dir("args");
+        let dll = dir.join("collector.dll");
+        fs::write(&dll, b"").unwrap();
+        let d59 = dir.join("domain59_static_catalog.json");
+        let loc = dir.join("localisation_catalog.json");
+        fs::write(&d59, b"{}").unwrap();
+        fs::write(&loc, b"{}").unwrap();
+
+        let cfg = parse_args(vec![
+            "--pid".to_string(),
+            "1234".to_string(),
+            "--dll".to_string(),
+            dll.display().to_string(),
+            "--out-dir".to_string(),
+            dir.join("out").display().to_string(),
+            "--static-templates-equipment-catalog".to_string(),
+            d59.display().to_string(),
+            "--static-localisation-join".to_string(),
+            loc.display().to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(cfg.static_artifacts.len(), 2);
+        assert_eq!(
+            cfg.static_artifacts[0].name,
+            STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG
+        );
+        assert_eq!(cfg.static_artifacts[0].path, d59);
+        assert_eq!(
+            cfg.static_artifacts[1].name,
+            STATIC_ARTIFACT_LOCALISATION_JOIN
+        );
+        assert_eq!(cfg.static_artifacts[1].path, loc);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -2,8 +2,8 @@
 
 This does not edit shared collector or recorder entrypoints. It checks that the
 current shared files still have the expected integration anchors, rejects stale
-provisional ids because they are occupied, and verifies the orchestrator registry
-assignment for the final domain id.
+provisional ids because they are occupied, and verifies the compact-domain
+registry assignment for the final domain id.
 """
 
 from __future__ import annotations

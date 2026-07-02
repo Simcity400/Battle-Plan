@@ -3,6 +3,9 @@
 
 
 Domain 55 is assigned to `land_combat_detail_events_live`.
+Shared collector scheduling intentionally forces domain 21 `land_combats` when
+domain 55 is requested, because detail events derive from the same in-frame
+combat snapshot and logical generation tracker.
 
 This lane currently proves only the production-shaped subset that can be derived
 from the accepted domain-21 `CLandCombat` root:

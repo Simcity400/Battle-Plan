@@ -1,0 +1,11 @@
+[package]
+name = "army_battleplans_depth_live_lane"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+# Remove this once the serial worker adds this crate to extractor/native/Cargo.toml.
+# It keeps lane-local tests runnable before shared workspace registration.
+[workspace]

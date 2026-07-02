@@ -1,6 +1,6 @@
 """Registry-era merge-ready blocker gate for characters_leaders_cabinet_live.
 
-The old slot-ready packet is not enough under extractor/native/DOMAIN_REGISTRY.md.
+The old slot-ready packet is not enough under extractor/documents/DOMAIN_REGISTRY.md.
 This gate proves whether the lane can be exercised through the shared
 DLL/Rust compact stream without editing shared entrypoints. A validated
 `blocked` result is intentional evidence: domain 47 is assigned to this lane,
@@ -19,11 +19,12 @@ from pathlib import Path
 LANE = Path(__file__).resolve().parent
 REPO = LANE.parents[3]
 REGISTRY_JSON = REPO / "extractor/native" / "domain_registry.json"
-REGISTRY_MD = REPO / "extractor/native" / "DOMAIN_REGISTRY.md"
+REGISTRY_MD = REPO / "extractor/documents" / "DOMAIN_REGISTRY.md"
 COLLECTOR = REPO / "extractor/native" / "collector" / "src" / "lib.rs"
 COLLECTOR_REGISTRY = REPO / "extractor/native" / "collector" / "src" / "domain_registry.rs"
 RECORDER = REPO / "extractor/native" / "recorder_host" / "src" / "main.rs"
 RECORDER_REGISTRY = REPO / "extractor/native" / "recorder_host" / "src" / "compact_domain_registry.rs"
+COMPACT_CONTRACT = REPO / "extractor/native" / "compact_contract" / "src" / "lib.rs"
 COMPACT = LANE / "domain47_compact.rs"
 LANE_CARGO = LANE / "Cargo.toml"
 LANE_DLL_COLLECTOR = LANE / "src" / "dll_collector.rs"
@@ -119,6 +120,24 @@ DOMAIN_ID = 47
 DOMAIN_NAME = "characters_leaders_cabinet_live"
 AIR_DOMAIN_ID = 46
 AIR_DOMAIN_NAME = "air_variant_archetypes_live"
+REGISTRY_OWNERS = {
+    "orchestrator",
+    # Current registry mirror is derived from compact_contract descriptors; keep
+    # accepting the older owner string because this gate only needs the shared
+    # assignment registry, not a specific writer label.
+    "compact_contract",
+}
+DOMAIN47_REGISTRY_STATUSES = {
+    "reserved",
+    "lane_ready_shared_registration_blocked_remaining_matrix",
+    "lane_ready_shared_adapter_registration_blocked_remaining_matrix",
+}
+DOMAIN46_OCCUPIED_STATUSES = {
+    "active_integration",
+    "production_complete",
+    "validated_slice_open_gaps",
+    "validated_slice_variant_archetype_token20378_resolved_shared_token_hook_open",
+}
 
 
 def _read(path: Path) -> str:
@@ -195,6 +214,7 @@ def validate() -> dict:
     collector_registry = _read(COLLECTOR_REGISTRY)
     recorder = _read(RECORDER)
     recorder_registry = _read(RECORDER_REGISTRY)
+    compact_contract = _read(COMPACT_CONTRACT)
     compact = _read(COMPACT)
 
     lane_domain = _domain(registry, DOMAIN_ID)
@@ -208,21 +228,11 @@ def validate() -> dict:
         in registry_doc
     )
     registry_ok = (
-        registry.get("owner") == "orchestrator"
+        registry.get("owner") in REGISTRY_OWNERS
         and lane_domain.get("name") == DOMAIN_NAME
-        and lane_registry_status
-        in {
-            "reserved",
-            "lane_ready_shared_registration_blocked_remaining_matrix",
-            "lane_ready_shared_adapter_registration_blocked_remaining_matrix",
-        }
+        and lane_registry_status in DOMAIN47_REGISTRY_STATUSES
         and air_domain.get("name") == AIR_DOMAIN_NAME
-        and air_domain.get("status")
-        in {
-            "active_integration",
-            "production_complete",
-            "validated_slice_variant_archetype_token20378_resolved_shared_token_hook_open",
-        }
+        and air_domain.get("status") in DOMAIN46_OCCUPIED_STATUSES
         and lane_registry_doc_present
     )
 
@@ -255,23 +265,24 @@ def validate() -> dict:
 
     domain46_registered_in_shared_files = (
         _descriptor_contains(
-            collector_registry,
+            compact_contract,
             AIR_DOMAIN_ID,
             AIR_DOMAIN_NAME,
-            "ActiveIntegration",
+            "ValidatedSliceOpenGaps",
             True,
         )
         and _descriptor_contains(
-            recorder_registry,
+            compact_contract,
             AIR_DOMAIN_ID,
             AIR_DOMAIN_NAME,
-            "ActiveIntegration",
+            "ValidatedSliceOpenGaps",
             True,
         )
     )
     domain46_shared_descriptor_present = (
-        _contains_regex(collector_registry, rf"domain\(\s*{AIR_DOMAIN_ID},\s*\"{AIR_DOMAIN_NAME}\"")
-        and _contains_regex(recorder_registry, rf"domain\(\s*{AIR_DOMAIN_ID},\s*\"{AIR_DOMAIN_NAME}\"")
+        _contains_regex(compact_contract, rf"domain\(\s*{AIR_DOMAIN_ID},\s*\"{AIR_DOMAIN_NAME}\"")
+        and "ASSIGNED_COMPACT_DOMAINS" in collector_registry
+        and "ASSIGNED_COMPACT_DOMAINS" in recorder_registry
     )
 
     compact_id_ok = _contains_regex(compact, r"pub const DOMAIN_ID\s*:\s*u16\s*=\s*47\s*;")

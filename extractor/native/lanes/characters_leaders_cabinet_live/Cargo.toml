@@ -1,15 +1,17 @@
 [package]
-name = "characters_leaders_cabinet_live_lane"
+name = "characters_leaders_cabinet_live"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
+name = "characters_leaders_cabinet_live_lane"
 path = "src/lib.rs"
 
 [features]
 replay-verify = ["dep:snapshot"]
 
 [dependencies]
+compact_contract = { path = "../../compact_contract" }
 snapshot = { path = "../../snapshot", optional = true }
 
 [[bin]]
@@ -33,5 +35,3 @@ path = "src/bin/adapter_fixture_gate.rs"
 [[bin]]
 name = "scheduled_adapter_benchmark"
 path = "src/bin/scheduled_adapter_benchmark.rs"
-
-[workspace]

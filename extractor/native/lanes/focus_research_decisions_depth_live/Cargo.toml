@@ -3,8 +3,6 @@ name = "focus_research_decisions_depth_live"
 version = "0.1.0"
 edition = "2021"
 
-[workspace]
-
 [lib]
 name = "focus_research_decisions_depth_live"
 path = "src/lib.rs"

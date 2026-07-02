@@ -1,8 +1,8 @@
 use country_economy_counters_live_lane::{
     append_compact_record, counter_badge_rows, domain_name, economy_counter_badges,
-    encode_counter_payload, gate_counter_stream, summarize_source_stream, DOMAIN_FRAME, DOMAIN_ID,
-    DOMAIN_FUEL_LIVE, DOMAIN_PRODUCTION_LIVE, RECORD_TYPE_DOMAIN_DATA, RECORD_TYPE_DOMAIN_PERF,
-    RECORD_TYPE_FRAME_END, STATUS_LANE_LOCAL_PROOF,
+    encode_counter_payload, gate_counter_stream, summarize_source_stream, DOMAIN_FRAME,
+    DOMAIN_FUEL_LIVE, DOMAIN_ID, DOMAIN_PRODUCTION_LIVE, RECORD_TYPE_DOMAIN_DATA,
+    RECORD_TYPE_DOMAIN_PERF, RECORD_TYPE_FRAME_END, STATUS_LANE_LOCAL_PROOF,
 };
 use serde_json::json;
 use std::env;
@@ -122,7 +122,14 @@ fn counter_stream(rows: &[country_economy_counters_live_lane::CounterBadgeRow]) 
         RECORD_TYPE_DOMAIN_DATA,
         &encode_counter_payload(1, STATUS_LANE_LOCAL_PROOF, rows),
     );
-    append_compact_record(&mut raw, 3, 0, DOMAIN_FRAME, RECORD_TYPE_FRAME_END, &frame_payload(1));
+    append_compact_record(
+        &mut raw,
+        3,
+        0,
+        DOMAIN_FRAME,
+        RECORD_TYPE_FRAME_END,
+        &frame_payload(1),
+    );
     raw
 }
 

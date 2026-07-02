@@ -17,8 +17,8 @@ from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
 _DEFS = _HERE.parent
-_REPO = _DEFS.parent
-_GAME_ASSETS = _REPO / "game_assets"
+_REPO = _DEFS.parent.parent
+_GAME_ASSETS = _REPO / "replay_interface" / "game_assets"
 for _p in (str(_GAME_ASSETS), str(_DEFS)):
     if _p not in sys.path:
         sys.path.insert(0, _p)

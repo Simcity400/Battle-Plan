@@ -14,10 +14,10 @@ pub const CONSTRUCTION_ROW_LEN: usize = 40;
 pub const BUILDING_ROW_LEN: usize = 32;
 pub const RESOURCE_ROW_LEN: usize = 16;
 
-pub const STATUS_WORKER_PANIC: u32 = 1 << 6;
-pub const STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
-pub const STATUS_PARTIAL_DATA: u32 = 1 << 9;
-pub const STATUS_DELTA_DATA: u32 = 1 << 10;
+pub const STATUS_WORKER_PANIC: u32 = compact_contract::COMPACT_STATUS_WORKER_PANIC;
+pub const STATUS_SOURCE_UNAVAILABLE: u32 = compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE;
+pub const STATUS_PARTIAL_DATA: u32 = compact_contract::COMPACT_STATUS_PARTIAL_DATA;
+pub const STATUS_DELTA_DATA: u32 = compact_contract::COMPACT_STATUS_DELTA_DATA;
 
 pub const SOURCE_FLAG_DLL_NATIVE: u32 = 1;
 pub const SOURCE_FLAG_SHARED_COUNTRY_ROOTS: u32 = 1 << 1;
@@ -25,59 +25,70 @@ pub const SOURCE_FLAG_SHARED_MAP_TOPOLOGY: u32 = 1 << 2;
 pub const SOURCE_FLAG_HEALTHY_LEVEL_CANDIDATE: u32 = 1 << 3;
 pub const SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE: u32 = 1 << 4;
 
-pub const BUILD_PROFILE: &str = "870ebf";
-pub const HEAP_LO: usize = 0x10000000000;
-pub const HEAP_HI: usize = 0x7FF000000000;
-pub const POINTER_WIDTH: usize = 8;
+pub const BUILD_PROFILE: &str = compact_contract::build_profile::DOMAIN48_BUILD_PROFILE;
+pub const HEAP_LO: usize = compact_contract::build_profile::DOMAIN48_HEAP_LO;
+pub const HEAP_HI: usize = compact_contract::build_profile::DOMAIN48_HEAP_HI;
+pub const POINTER_WIDTH: usize = compact_contract::build_profile::DOMAIN48_POINTER_WIDTH;
 
-pub const STATE_VTABLE_RVA: usize = 0x29206C0;
-pub const STATE_OFF_SID: usize = 0x58;
-pub const STATE_OFF_DEF: usize = 0x30;
-pub const STATE_OFF_BUILDINGS_VEC: usize = 0x158;
-pub const STATE_DEF_OFF_RESOURCES_PTR: usize = 0xF8;
-pub const STATE_DEF_OFF_RESOURCES_SIZE: usize = 0x100;
-pub const STATE_DEF_OFF_RESOURCES_CAP: usize = 0x104;
-pub const STATE_RESOURCE_STRIDE: usize = 0x10;
-pub const STATE_RESOURCE_NO_ID: u32 = u32::MAX;
-pub const STATE_RESOURCE_MAX_ROWS: u32 = 16;
-pub const STATE_RESOURCE_MAX_ABS_RAW: i32 = 100_000_000;
+pub const STATE_VTABLE_RVA: usize = compact_contract::build_profile::STATE_VTABLE_RVA;
+pub const STATE_OFF_SID: usize = compact_contract::build_profile::STATE_OFF_SID;
+pub const STATE_OFF_DEF: usize = compact_contract::build_profile::STATE_OFF_DEF;
+pub const STATE_OFF_BUILDINGS_VEC: usize = compact_contract::build_profile::STATE_OFF_BUILDINGS_VEC;
+pub const STATE_DEF_OFF_RESOURCES_PTR: usize =
+    compact_contract::build_profile::STATE_DEF_OFF_RESOURCES_PTR;
+pub const STATE_DEF_OFF_RESOURCES_SIZE: usize =
+    compact_contract::build_profile::STATE_DEF_OFF_RESOURCES_SIZE;
+pub const STATE_DEF_OFF_RESOURCES_CAP: usize =
+    compact_contract::build_profile::STATE_DEF_OFF_RESOURCES_CAP;
+pub const STATE_RESOURCE_STRIDE: usize = compact_contract::build_profile::STATE_RESOURCE_STRIDE;
+pub const STATE_RESOURCE_NO_ID: u32 = compact_contract::build_profile::STATE_RESOURCE_NO_ID;
+pub const STATE_RESOURCE_MAX_ROWS: u32 = compact_contract::build_profile::STATE_RESOURCE_MAX_ROWS;
+pub const STATE_RESOURCE_MAX_ABS_RAW: i32 =
+    compact_contract::build_profile::STATE_RESOURCE_MAX_ABS_RAW;
 
-pub const CPROVINCE_VTABLE_RVA: usize = 0x295AF68;
-pub const CPROVINCE_OFF_ID: usize = 0xA4;
-pub const CPROVINCE_OFF_STATE: usize = 0xC0;
-pub const CPROVINCE_OFF_BUILDINGS_VEC: usize = 0x1C8;
+pub const CPROVINCE_VTABLE_RVA: usize = compact_contract::build_profile::CPROVINCE_VTABLE_RVA;
+pub const CPROVINCE_OFF_ID: usize = compact_contract::build_profile::CPROVINCE_OFF_ID;
+pub const CPROVINCE_OFF_STATE: usize = compact_contract::build_profile::CPROVINCE_OFF_STATE;
+pub const CPROVINCE_OFF_BUILDINGS_VEC: usize =
+    compact_contract::build_profile::CPROVINCE_OFF_BUILDINGS_VEC;
 
-pub const CBUILDING_VTABLE_RVA: usize = 0x2973B88;
-pub const CBUILDING_OFF_TYPE: usize = 0x08;
-pub const CBUILDING_OFF_LEVEL: usize = 0x40;
-pub const CBUILDING_OFF_HEALTHY_LEVEL: usize = 0x42;
-pub const BUILDING_VECTOR_MAX: u32 = 64;
-pub const BUILDING_LEVEL_SANE_MAX: u32 = 1_000;
+pub const CBUILDING_VTABLE_RVA: usize = compact_contract::build_profile::CBUILDING_VTABLE_RVA;
+pub const CBUILDING_OFF_TYPE: usize = compact_contract::build_profile::CBUILDING_OFF_TYPE;
+pub const CBUILDING_OFF_LEVEL: usize = compact_contract::build_profile::CBUILDING_OFF_LEVEL;
+pub const CBUILDING_OFF_HEALTHY_LEVEL: usize =
+    compact_contract::build_profile::CBUILDING_OFF_HEALTHY_LEVEL;
+pub const BUILDING_VECTOR_MAX: u32 = compact_contract::build_profile::BUILDING_VECTOR_MAX;
+pub const BUILDING_LEVEL_SANE_MAX: u32 = compact_contract::build_profile::BUILDING_LEVEL_SANE_MAX;
 
-pub const OBJ_PROD_MANAGER: usize = 0x0F68;
-pub const CONSTRUCTION_BEGIN: usize = 0x70;
-pub const CONSTRUCTION_CAP: usize = 0x78;
-pub const CONSTRUCTION_SIZE: usize = 0x7C;
-pub const CONSTRUCTION_STRIDE: usize = 0x08;
-pub const LINE_TYPE: usize = 0x08;
-pub const LINE_ID: usize = 0x0C;
-pub const LINE_ACTIVE_FACTORIES: usize = 0x18;
-pub const LINE_COST: usize = 0x28;
-pub const LINE_PRODUCED: usize = 0x38;
-pub const LINE_CONSTRUCTION_SUB: usize = 0x70;
-pub const LINE_TYPE_CONSTRUCTION: u32 = 59;
-pub const CONSTRUCTION_TEMPLATE_ID: usize = 0x08;
-pub const CONSTRUCTION_TARGET_LOCATION_PTR: usize = 0x1D8;
-pub const TARGET_LOCATION_ID: usize = 0x6C;
-pub const MAX_CONSTRUCTION_TEMPLATE_ID: u32 = 10_000_000;
-pub const MAX_PRODUCTION_VECTOR_ENTRIES: u32 = 4096;
-pub const MAX_PRODUCTION_LINE_FIXED_RAW: i32 = 2_000_000_000;
-pub const MAX_ACTIVE_FACTORIES: i32 = 100_000;
+pub const OBJ_PROD_MANAGER: usize = compact_contract::build_profile::OBJ_PROD_MANAGER;
+pub const CONSTRUCTION_BEGIN: usize = compact_contract::build_profile::CONSTRUCTION_BEGIN;
+pub const CONSTRUCTION_CAP: usize = compact_contract::build_profile::CONSTRUCTION_CAP;
+pub const CONSTRUCTION_SIZE: usize = compact_contract::build_profile::CONSTRUCTION_SIZE;
+pub const CONSTRUCTION_STRIDE: usize = compact_contract::build_profile::CONSTRUCTION_STRIDE;
+pub const LINE_TYPE: usize = compact_contract::build_profile::LINE_TYPE;
+pub const LINE_ID: usize = compact_contract::build_profile::LINE_ID;
+pub const LINE_ACTIVE_FACTORIES: usize = compact_contract::build_profile::LINE_ACTIVE_FACTORIES;
+pub const LINE_COST: usize = compact_contract::build_profile::LINE_COST;
+pub const LINE_PRODUCED: usize = compact_contract::build_profile::LINE_PRODUCED;
+pub const LINE_CONSTRUCTION_SUB: usize = compact_contract::build_profile::LINE_CONSTRUCTION_SUB;
+pub const LINE_TYPE_CONSTRUCTION: u32 = compact_contract::build_profile::LINE_TYPE_CONSTRUCTION;
+pub const CONSTRUCTION_TEMPLATE_ID: usize =
+    compact_contract::build_profile::CONSTRUCTION_TEMPLATE_ID;
+pub const CONSTRUCTION_TARGET_LOCATION_PTR: usize =
+    compact_contract::build_profile::CONSTRUCTION_TARGET_LOCATION_PTR;
+pub const TARGET_LOCATION_ID: usize = compact_contract::build_profile::TARGET_LOCATION_ID;
+pub const MAX_CONSTRUCTION_TEMPLATE_ID: u32 =
+    compact_contract::build_profile::MAX_CONSTRUCTION_TEMPLATE_ID;
+pub const MAX_PRODUCTION_VECTOR_ENTRIES: u32 =
+    compact_contract::build_profile::MAX_PRODUCTION_VECTOR_ENTRIES;
+pub const MAX_PRODUCTION_LINE_FIXED_RAW: i32 =
+    compact_contract::build_profile::MAX_PRODUCTION_LINE_FIXED_RAW;
+pub const MAX_ACTIVE_FACTORIES: i32 = compact_contract::build_profile::MAX_ACTIVE_FACTORIES;
 
-pub const SCOPE_STATE: u32 = 1;
-pub const SCOPE_PROVINCE: u32 = 2;
-pub const MAX_STATE_ID: u32 = 65_535;
-pub const MAX_PROVINCE_ID: u32 = 65_535;
+pub const SCOPE_STATE: u32 = compact_contract::build_profile::SCOPE_STATE;
+pub const SCOPE_PROVINCE: u32 = compact_contract::build_profile::SCOPE_PROVINCE;
+pub const MAX_STATE_ID: u32 = compact_contract::build_profile::MAX_STATE_ID;
+pub const MAX_PROVINCE_ID: u32 = compact_contract::build_profile::MAX_PROVINCE_ID;
 
 pub const CONSTRUCTION_FLAG_TEMPLATE_PRESENT: u32 = 1;
 pub const CONSTRUCTION_FLAG_TARGET_STATE_PRESENT: u32 = 1 << 1;
@@ -192,6 +203,29 @@ pub struct GateReport {
     pub errors: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RowRead<T> {
+    pub rows: Vec<T>,
+    pub skipped_rows: u32,
+}
+
+impl<T> RowRead<T> {
+    fn empty() -> Self {
+        Self {
+            rows: Vec::new(),
+            skipped_rows: 0,
+        }
+    }
+
+    fn push(&mut self, row: T) {
+        self.rows.push(row);
+    }
+
+    fn skip(&mut self) {
+        self.skipped_rows = self.skipped_rows.saturating_add(1);
+    }
+}
+
 pub fn production_manager_from_country<M: LaneMemory>(
     mem: &M,
     country_ptr: usize,
@@ -203,7 +237,7 @@ pub fn production_manager_from_country<M: LaneMemory>(
 pub fn read_country_construction_queue<M: LaneMemory>(
     mem: &M,
     root: CountryConstructionRoot,
-) -> Option<Vec<ConstructionQueueRow>> {
+) -> Option<RowRead<ConstructionQueueRow>> {
     let manager = production_manager_from_country(mem, root.country_ptr)?;
     read_construction_queue_from_manager_with_targets(mem, manager, root.tag_db_id, None)
 }
@@ -212,7 +246,7 @@ pub fn read_construction_queue_from_manager<M: LaneMemory>(
     mem: &M,
     manager: usize,
     tag_db_id: u32,
-) -> Option<Vec<ConstructionQueueRow>> {
+) -> Option<RowRead<ConstructionQueueRow>> {
     read_construction_queue_from_manager_with_targets(mem, manager, tag_db_id, None)
 }
 
@@ -221,7 +255,7 @@ pub fn read_country_construction_queue_with_target_states<M: LaneMemory>(
     root: CountryConstructionRoot,
     state_roots: &[StateRoot],
     province_roots: &[ProvinceRoot],
-) -> Option<Vec<ConstructionQueueRow>> {
+) -> Option<RowRead<ConstructionQueueRow>> {
     let manager = production_manager_from_country(mem, root.country_ptr)?;
     let lookup = TargetStateLookup::new(state_roots, province_roots);
     read_construction_queue_from_manager_with_targets(mem, manager, root.tag_db_id, Some(&lookup))
@@ -232,7 +266,7 @@ fn read_construction_queue_from_manager_with_targets<M: LaneMemory>(
     manager: usize,
     tag_db_id: u32,
     target_lookup: Option<&TargetStateLookup>,
-) -> Option<Vec<ConstructionQueueRow>> {
+) -> Option<RowRead<ConstructionQueueRow>> {
     if tag_db_id == 0 || !is_heap_ptr(manager) {
         return None;
     }
@@ -243,7 +277,7 @@ fn read_construction_queue_from_manager_with_targets<M: LaneMemory>(
         return None;
     }
     if size == 0 {
-        return Some(Vec::new());
+        return Some(RowRead::empty());
     }
     if !is_heap_ptr(begin) {
         return None;
@@ -254,22 +288,26 @@ fn read_construction_queue_from_manager_with_targets<M: LaneMemory>(
         return None;
     }
 
-    let mut rows = Vec::new();
+    let mut read = RowRead::empty();
     for offset in (0..byte_len).step_by(CONSTRUCTION_STRIDE) {
         let line_ptr = read_u64_from_slice(&raw, offset)? as usize;
         if !is_heap_ptr(line_ptr) {
+            read.skip();
             continue;
         }
         if mem.read_u32(line_ptr.checked_add(LINE_TYPE)?)? != LINE_TYPE_CONSTRUCTION {
+            read.skip();
             continue;
         }
         let active_factories = mem.read_i32(line_ptr.checked_add(LINE_ACTIVE_FACTORIES)?)?;
         if !(0..=MAX_ACTIVE_FACTORIES).contains(&active_factories) {
+            read.skip();
             continue;
         }
         let cost_raw = read_production_fixed_raw(mem, line_ptr.checked_add(LINE_COST)?)?;
         let produced_raw = read_production_fixed_raw(mem, line_ptr.checked_add(LINE_PRODUCED)?)?;
         if cost_raw < 0 || produced_raw < 0 {
+            read.skip();
             continue;
         }
         let sub_ptr = mem.read_u64(line_ptr.checked_add(LINE_CONSTRUCTION_SUB)?)? as usize;
@@ -283,7 +321,7 @@ fn read_construction_queue_from_manager_with_targets<M: LaneMemory>(
             read_construction_target_location_id(mem, sub_ptr)
                 .and_then(|location_id| lookup.target_state_id(template_id, location_id))
         });
-        rows.push(ConstructionQueueRow {
+        read.push(ConstructionQueueRow {
             tag_db_id,
             line_id: mem.read_u32(line_ptr.checked_add(LINE_ID)?)?,
             template_id,
@@ -294,7 +332,7 @@ fn read_construction_queue_from_manager_with_targets<M: LaneMemory>(
             target_state_id,
         });
     }
-    Some(rows)
+    Some(read)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -352,7 +390,7 @@ pub fn read_state_building_rows<M: LaneMemory>(
     mem: &M,
     module_base: usize,
     root: StateRoot,
-) -> Option<Vec<BuildingRow>> {
+) -> Option<RowRead<BuildingRow>> {
     read_building_rows_for_location(
         mem,
         module_base,
@@ -368,7 +406,7 @@ pub fn read_province_building_rows<M: LaneMemory>(
     mem: &M,
     module_base: usize,
     root: ProvinceRoot,
-) -> Option<Vec<BuildingRow>> {
+) -> Option<RowRead<BuildingRow>> {
     read_building_rows_for_location(
         mem,
         module_base,
@@ -388,7 +426,7 @@ pub fn read_building_rows_for_location<M: LaneMemory>(
     state_id: u32,
     obj_base: usize,
     vec_off: usize,
-) -> Option<Vec<BuildingRow>> {
+) -> Option<RowRead<BuildingRow>> {
     if !is_heap_ptr(obj_base) {
         return None;
     }
@@ -406,7 +444,7 @@ pub fn read_building_rows_for_location<M: LaneMemory>(
         return None;
     }
     if logical == 0 {
-        return Some(Vec::new());
+        return Some(RowRead::empty());
     }
     if !is_heap_ptr(begin) {
         return None;
@@ -418,18 +456,22 @@ pub fn read_building_rows_for_location<M: LaneMemory>(
     }
     let cbuilding_vtable = module_base.checked_add(CBUILDING_VTABLE_RVA)?;
     let mut by_type: BTreeMap<u32, BuildingAccumulator> = BTreeMap::new();
+    let mut skipped_rows = 0u32;
     for index in 0..logical {
         let offset = (index as usize).checked_mul(8)?;
         let building_ptr = read_u64_from_slice(&ptrs, offset)? as usize;
         if !is_heap_ptr(building_ptr) {
+            skipped_rows = skipped_rows.saturating_add(1);
             continue;
         }
         if mem.read_u64(building_ptr)? as usize != cbuilding_vtable {
+            skipped_rows = skipped_rows.saturating_add(1);
             continue;
         }
         let type_id = mem.read_u32(building_ptr.checked_add(CBUILDING_OFF_TYPE)?)?;
         let level = mem.read_u16(building_ptr.checked_add(CBUILDING_OFF_LEVEL)?)? as u32;
         if type_id == 0 || level > BUILDING_LEVEL_SANE_MAX {
+            skipped_rows = skipped_rows.saturating_add(1);
             continue;
         }
         let healthy_level = mem
@@ -441,8 +483,8 @@ pub fn read_building_rows_for_location<M: LaneMemory>(
             .or_default()
             .add(level, healthy_level);
     }
-    Some(
-        by_type
+    Some(RowRead {
+        rows: by_type
             .into_iter()
             .map(|(type_id, acc)| BuildingRow {
                 scope,
@@ -453,13 +495,14 @@ pub fn read_building_rows_for_location<M: LaneMemory>(
                 healthy_level: acc.healthy_level(),
             })
             .collect(),
-    )
+        skipped_rows,
+    })
 }
 
 pub fn read_state_resource_rows<M: LaneMemory>(
     mem: &M,
     root: StateRoot,
-) -> Option<Vec<StateResourceRow>> {
+) -> Option<RowRead<StateResourceRow>> {
     if !is_heap_ptr(root.state_ptr) {
         return None;
     }
@@ -472,7 +515,7 @@ pub fn read_state_resource_rows<M: LaneMemory>(
     let cap = mem.read_u32(state_def.checked_add(STATE_DEF_OFF_RESOURCES_CAP)?)?;
     let logical_rows = state_resource_logical_rows(size, cap)?;
     if logical_rows == 0 {
-        return Some(Vec::new());
+        return Some(RowRead::empty());
     }
     if !is_heap_ptr(data) {
         return None;
@@ -495,8 +538,8 @@ pub fn read_state_resource_rows<M: LaneMemory>(
         }
         resources.insert(resource_id, amount_raw);
     }
-    Some(
-        resources
+    Some(RowRead {
+        rows: resources
             .into_iter()
             .map(|(resource_id, amount_raw)| StateResourceRow {
                 state_id: root.state_id,
@@ -504,7 +547,8 @@ pub fn read_state_resource_rows<M: LaneMemory>(
                 amount_raw,
             })
             .collect(),
-    )
+        skipped_rows: 0,
+    })
 }
 
 pub fn encode_lane_frame(frame: &LaneFrame) -> Vec<u8> {
@@ -843,6 +887,12 @@ fn validate_construction_row(index: usize, row: &ConstructionQueueRow) -> Result
     if row.tag_db_id == 0 {
         return Err(format!("construction row {index} has zero tag_db_id"));
     }
+    if row.tag_db_id > compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID {
+        return Err(format!(
+            "construction row {index} invalid tag_db_id {}",
+            row.tag_db_id
+        ));
+    }
     if row.template_id == Some(0) {
         return Err(format!("construction row {index} has zero template_id"));
     }
@@ -1040,20 +1090,17 @@ mod tests {
     }
 
     #[test]
-    fn slot_ready_domain_id_avoids_current_shared_domain_ids() {
-        let current_shared_domain_ids = [
-            10u16, 11, 12, 13, 14, 15, 16, 17, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32, 33,
-            34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
-        ];
-
-        assert!(
-            !current_shared_domain_ids.contains(&DOMAIN_ID),
-            "lane-local proposed domain id {DOMAIN_ID} collides with current shared compact domains"
-        );
+    fn domain_id_matches_shared_compact_descriptor() {
+        let descriptor = compact_contract::assigned_descriptor_by_id(DOMAIN_ID)
+            .expect("domain 48 descriptor is registered");
+        assert_eq!(DOMAIN_ID, 48);
+        assert_eq!(descriptor.canonical_name, DOMAIN_NAME);
+        assert!(descriptor.schedulable);
+        assert!(descriptor.requires_data_record);
     }
 
     #[test]
-    fn extractor_reads_construction_queue_and_skips_invalid_rows() {
+    fn extractor_counts_skipped_construction_rows() {
         let manager = 0x1000_0000_0000usize;
         let vector = 0x1000_0000_1000usize;
         let good_line = 0x1000_0000_2000usize;
@@ -1075,15 +1122,52 @@ mod tests {
         mem.write_u32(bad_line + LINE_TYPE, LINE_TYPE_CONSTRUCTION);
         mem.write_i32(bad_line + LINE_ACTIVE_FACTORIES, -1);
 
-        let rows = read_construction_queue_from_manager(&mem, manager, 123).unwrap();
+        let read = read_construction_queue_from_manager(&mem, manager, 123).unwrap();
 
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].tag_db_id, 123);
-        assert_eq!(rows[0].line_id, 77);
-        assert_eq!(rows[0].template_id, Some(20_013));
-        assert_eq!(rows[0].active_factories, 15);
-        assert_eq!(rows[0].cost_raw, 1_450_000_000);
-        assert_eq!(rows[0].priority, 0);
+        assert_eq!(read.skipped_rows, 1);
+        assert_eq!(read.rows.len(), 1);
+        assert_eq!(read.rows[0].tag_db_id, 123);
+        assert_eq!(read.rows[0].line_id, 77);
+        assert_eq!(read.rows[0].template_id, Some(20_013));
+        assert_eq!(read.rows[0].active_factories, 15);
+        assert_eq!(read.rows[0].cost_raw, 1_450_000_000);
+        assert_eq!(read.rows[0].priority, 0);
+    }
+
+    #[test]
+    fn collector_skipped_construction_row_is_rowless_partial() {
+        let country = 0x1000_0000_0000usize;
+        let manager = 0x1000_0000_1000usize;
+        let vector = 0x1000_0000_2000usize;
+        let bad_line = 0x1000_0000_3000usize;
+        let mut mem = FakeMemory::default();
+        mem.write_u64(country + OBJ_PROD_MANAGER, manager as u64);
+        mem.write_u64(manager + CONSTRUCTION_BEGIN, vector as u64);
+        mem.write_u32(manager + CONSTRUCTION_CAP, 1);
+        mem.write_u32(manager + CONSTRUCTION_SIZE, 1);
+        mem.write_u64(vector, bad_line as u64);
+        mem.write_u32(bad_line + LINE_TYPE, LINE_TYPE_CONSTRUCTION);
+        mem.write_i32(bad_line + LINE_ACTIVE_FACTORIES, -1);
+
+        let output = collector_module::collect_domain48_frame(
+            &mem,
+            collector_module::CollectorRoots {
+                module_base: 0x1400_0000,
+                game_hour_raw: 321,
+                country_roots: vec![CountryConstructionRoot {
+                    tag_db_id: 123,
+                    country_ptr: country,
+                }],
+                state_roots: Vec::new(),
+                province_roots: Vec::new(),
+            },
+        );
+
+        assert_eq!(output.stats.skipped_construction_rows, 1);
+        assert_ne!(output.frame.status_flags & STATUS_PARTIAL_DATA, 0);
+        assert!(output.frame.construction_rows.is_empty());
+        assert!(output.frame.building_rows.is_empty());
+        assert!(output.frame.resource_rows.is_empty());
     }
 
     #[test]
@@ -1140,13 +1224,14 @@ mod tests {
                 state_id: 42,
             }],
         );
-        let rows =
+        let read =
             read_construction_queue_from_manager_with_targets(&mem, manager, 123, Some(&lookup))
                 .unwrap();
 
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].target_state_id, Some(42));
-        assert_eq!(rows[1].target_state_id, Some(42));
+        assert_eq!(read.skipped_rows, 0);
+        assert_eq!(read.rows.len(), 2);
+        assert_eq!(read.rows[0].target_state_id, Some(42));
+        assert_eq!(read.rows[1].target_state_id, Some(42));
     }
 
     #[test]
@@ -1155,16 +1240,18 @@ mod tests {
         let state = 0x1000_0001_0000usize;
         let vector = 0x1000_0002_0000usize;
         let building = 0x1000_0003_0000usize;
+        let bad_building = 0x2000usize;
         let mut mem = FakeMemory::default();
         mem.write_u64(state + STATE_OFF_BUILDINGS_VEC, vector as u64);
-        mem.write_u64(state + STATE_OFF_BUILDINGS_VEC + 8, 1u64 << 32);
+        mem.write_u64(state + STATE_OFF_BUILDINGS_VEC + 8, 2u64 << 32);
         mem.write_u64(vector, building as u64);
+        mem.write_u64(vector + 8, bad_building as u64);
         mem.write_u64(building, (base + CBUILDING_VTABLE_RVA) as u64);
         mem.write_u32(building + CBUILDING_OFF_TYPE, 0x2FAB);
         mem.write_u16(building + CBUILDING_OFF_LEVEL, 5);
         mem.write_u16(building + CBUILDING_OFF_HEALTHY_LEVEL, 4);
 
-        let rows = read_state_building_rows(
+        let read = read_state_building_rows(
             &mem,
             base,
             StateRoot {
@@ -1174,8 +1261,9 @@ mod tests {
         )
         .unwrap();
 
+        assert_eq!(read.skipped_rows, 1);
         assert_eq!(
-            rows,
+            read.rows,
             vec![BuildingRow {
                 scope: SCOPE_STATE,
                 location_id: 42,
@@ -1201,7 +1289,7 @@ mod tests {
         mem.write_i32(rows_ptr, 2_500_000);
         mem.write_u32(rows_ptr + 8, 0x3E03);
 
-        let rows = read_state_resource_rows(
+        let read = read_state_resource_rows(
             &mem,
             StateRoot {
                 state_id: 64,
@@ -1210,8 +1298,9 @@ mod tests {
         )
         .unwrap();
 
+        assert_eq!(read.skipped_rows, 0);
         assert_eq!(
-            rows,
+            read.rows,
             vec![StateResourceRow {
                 state_id: 64,
                 resource_id: 0x3E03,

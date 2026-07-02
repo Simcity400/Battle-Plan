@@ -22,7 +22,7 @@ from typing import Any
 
 LANE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = LANE_DIR.parents[3]
-GAME_ASSETS = REPO_ROOT / "game_assets"
+GAME_ASSETS = REPO_ROOT / "replay_interface" / "game_assets"
 DEFAULT_VANILLA_FALLBACK = Path(r"C:/Program Files (x86)/Steam/steamapps/common/Hearts of Iron IV")
 DEFAULT_MOD = (REPO_ROOT.parent / "test").resolve()
 DEFAULT_DESCRIPTOR = DEFAULT_MOD.with_suffix(".mod")

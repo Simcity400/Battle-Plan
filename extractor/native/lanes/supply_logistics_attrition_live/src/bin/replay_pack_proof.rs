@@ -40,7 +40,10 @@ fn run() -> Result<(), String> {
     if payload_summary.csupply_input_rows_total == 0
         && payload_summary.pressure_candidate_rows_total == 0
     {
-        return Err("domain44 payload has zero csupply input rows and zero pressure candidate rows".to_string());
+        return Err(
+            "domain44 payload has zero csupply input rows and zero pressure candidate rows"
+                .to_string(),
+        );
     }
 
     fs::create_dir_all(&options.out_dir).map_err(|err| format!("create out dir failed: {err}"))?;
@@ -88,7 +91,8 @@ fn run() -> Result<(), String> {
     });
     let proof_bytes = serde_json::to_vec_pretty(&proof).map_err(|err| err.to_string())?;
     fs::write(&proof_out, &proof_bytes).map_err(|err| format!("write proof failed: {err}"))?;
-    fs::write(&proof_md, proof_markdown(&proof)).map_err(|err| format!("write proof md failed: {err}"))?;
+    fs::write(&proof_md, proof_markdown(&proof))
+        .map_err(|err| format!("write proof md failed: {err}"))?;
     println!("{}", String::from_utf8_lossy(&proof_bytes));
     Ok(())
 }
@@ -163,8 +167,9 @@ fn gate_stream(raw: &[u8]) -> Result<StreamGate, String> {
         let payload_len = read_u32_le(header, 24) as usize;
         let reserved = read_u32_le(header, 28);
         if reserved != 0 {
-            gate.problems
-                .push(format!("offset {offset}: compact record reserved field is nonzero"));
+            gate.problems.push(format!(
+                "offset {offset}: compact record reserved field is nonzero"
+            ));
         }
         if let Some(previous) = previous_sequence {
             if sequence <= previous {
@@ -199,7 +204,9 @@ fn gate_stream(raw: &[u8]) -> Result<StreamGate, String> {
                 gate.division_rows_total = gate
                     .division_rows_total
                     .saturating_add(summary.division_rows_total);
-                gate.badge_rows_total = gate.badge_rows_total.saturating_add(summary.badge_rows_total);
+                gate.badge_rows_total = gate
+                    .badge_rows_total
+                    .saturating_add(summary.badge_rows_total);
                 gate.csupply_input_rows_total = gate
                     .csupply_input_rows_total
                     .saturating_add(summary.csupply_input_rows_total);
@@ -234,12 +241,15 @@ fn gate_stream(raw: &[u8]) -> Result<StreamGate, String> {
             .push(format!("frame_end_records {} != 1", gate.frame_end_records));
     }
     if data_hour != frame_hour {
-        gate.problems
-            .push(format!("data_hour {:?} != frame_hour {:?}", data_hour, frame_hour));
+        gate.problems.push(format!(
+            "data_hour {:?} != frame_hour {:?}",
+            data_hour, frame_hour
+        ));
     }
     if gate.csupply_input_rows_total == 0 && gate.pressure_candidate_rows_total == 0 {
-        gate.problems
-            .push("csupply_input_rows_total and pressure_candidate_rows_total are both zero".to_string());
+        gate.problems.push(
+            "csupply_input_rows_total and pressure_candidate_rows_total are both zero".to_string(),
+        );
     }
     gate.unique_game_hours = if data_hour.is_some() && data_hour == frame_hour {
         1
@@ -374,7 +384,8 @@ fn verify_replay(
         schema_version: Some(REPLAY_SCHEMA_VERSION.to_string()),
         ..Default::default()
     };
-    let container = Container::from_bytes(replay.to_vec(), &expected).map_err(|err| err.to_string())?;
+    let container =
+        Container::from_bytes(replay.to_vec(), &expected).map_err(|err| err.to_string())?;
     container.verify_all().map_err(|err| err.to_string())?;
     let stream_entries = container.entries_by_role("collector_compact_stream");
     if stream_entries.len() != 1 {

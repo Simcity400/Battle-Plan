@@ -14,9 +14,10 @@ COLLECTOR = REPO / "extractor/native" / "collector" / "src" / "lib.rs"
 COLLECTOR_REGISTRY = REPO / "extractor/native" / "collector" / "src" / "domain_registry.rs"
 RECORDER = REPO / "extractor/native" / "recorder_host" / "src" / "main.rs"
 RECORDER_REGISTRY = REPO / "extractor/native" / "recorder_host" / "src" / "compact_domain_registry.rs"
+COMPACT_CONTRACT = REPO / "extractor/native" / "compact_contract" / "src" / "lib.rs"
 CODEC = LANE / "domain47_compact.rs"
 REGISTRY_JSON = REPO / "extractor/native" / "domain_registry.json"
-REGISTRY_MD = REPO / "extractor/native" / "DOMAIN_REGISTRY.md"
+REGISTRY_MD = REPO / "extractor/documents" / "DOMAIN_REGISTRY.md"
 
 
 def require(condition: bool, message: str) -> None:
@@ -46,6 +47,14 @@ def domain_status_is(row: dict, *accepted: str) -> bool:
     return row.get("status") in set(accepted)
 
 
+DOMAIN46_OCCUPIED_STATUSES = {
+    "active_integration",
+    "production_complete",
+    "validated_slice_open_gaps",
+    "validated_slice_variant_archetype_token20378_resolved_shared_token_hook_open",
+}
+
+
 def main() -> None:
     packet = json.loads(PACKET.read_text(encoding="utf-8"))
     domain_id = int(packet["final_domain_id"])
@@ -57,6 +66,7 @@ def main() -> None:
     collector_registry = read_text(COLLECTOR_REGISTRY)
     recorder = read_text(RECORDER)
     recorder_registry = read_text(RECORDER_REGISTRY)
+    compact_contract = read_text(COMPACT_CONTRACT)
     codec = read_text(CODEC)
     registry = json.loads(REGISTRY_JSON.read_text(encoding="utf-8"))
     registry_doc = read_text(REGISTRY_MD)
@@ -68,52 +78,41 @@ def main() -> None:
             "registry does not assign id 47 to this lane")
     require(domain_status_is(
         domains.get(47, {}),
-        "reserved",
-        "lane_ready_shared_registration_blocked_remaining_matrix",
-        "lane_ready_shared_adapter_registration_blocked_remaining_matrix",
-    ), "registry id 47 is not lane-ready/reserved for this lane")
+        "validated_slice_open_gaps",
+    ), "registry id 47 is not the integrated validated-slice/open-gap status")
+    require(domains.get(47, {}).get("schedulable") is True,
+            "registry id 47 must be schedulable after integration")
     require(domains.get(46, {}).get("name") == "air_variant_archetypes_live",
             "registry id 46 is not air_variant_archetypes_live")
-    require(domains.get(46, {}).get("status") in {
-        "active_integration",
-        "production_complete",
-        "validated_slice_variant_archetype_token20378_resolved_shared_token_hook_open",
-    },
+    require(domains.get(46, {}).get("status") in DOMAIN46_OCCUPIED_STATUSES,
             "registry id 46 is not occupied by air_variant_archetypes_live")
-    require((
-        "| 47 | `characters_leaders_cabinet_live` | reserved |" in registry_doc
-        or "| 47 | `characters_leaders_cabinet_live` | lane-ready; shared registration blocked; remaining matrix written |" in registry_doc
-        or "| 47 | `characters_leaders_cabinet_live` | lane-ready; shared adapter/registration blocked; remaining matrix written |" in registry_doc
-    ),
-            "registry markdown id 47 row missing")
-    require(descriptor_has(collector_registry, 44, "supply_logistics_attrition_live",
+    require(
+        "| 47 | `characters_leaders_cabinet_live` | shared integration pending:" in registry_doc
+        and "_r2_characters_leaders_cabinet_live" in registry_doc
+        and "advisor roster, appointed advisor, character portrait, and unit-leader trait-token rows are blocked" in registry_doc,
+        "registry markdown id 47 integrated row missing or excluded scope not named",
+    )
+    require("ASSIGNED_COMPACT_DOMAINS" in collector_registry,
+            "collector registry no longer consumes compact_contract descriptors")
+    require("ASSIGNED_COMPACT_DOMAINS" in recorder_registry,
+            "recorder registry no longer consumes compact_contract descriptors")
+    require(descriptor_has(compact_contract, 44, "supply_logistics_attrition_live",
                            "ValidatedSliceOpenGaps", True),
-            "collector registry id 44 supply descriptor missing")
-    require(descriptor_has(recorder_registry, 44, "supply_logistics_attrition_live",
+            "compact_contract id 44 supply descriptor missing")
+    require(descriptor_has(compact_contract, 45, "focus_research_decisions_depth_live",
                            "ValidatedSliceOpenGaps", True),
-            "recorder registry id 44 supply descriptor missing")
-    require(descriptor_has(collector_registry, 45, "focus_research_decisions_depth_live",
+            "compact_contract id 45 focus/research/decisions descriptor missing")
+    require(descriptor_has(compact_contract, 46, "air_variant_archetypes_live",
                            "ValidatedSliceOpenGaps", True),
-            "collector registry id 45 focus/research/decisions descriptor missing")
-    require(descriptor_has(recorder_registry, 45, "focus_research_decisions_depth_live",
-                           "ValidatedSliceOpenGaps", True),
-            "recorder registry id 45 focus/research/decisions descriptor missing")
-    require(descriptor_has(collector_registry, 46, "air_variant_archetypes_live",
-                           "ValidatedSliceOpenGaps", True),
-            "collector registry id 46 air_variant_archetypes descriptor missing")
-    require(descriptor_has(recorder_registry, 46, "air_variant_archetypes_live",
-                           "ValidatedSliceOpenGaps", True),
-            "recorder registry id 46 air_variant_archetypes descriptor missing")
-    require(descriptor_has(collector_registry, 47, domain_name, "Reserved", False),
-            "collector registry id 47 reserved descriptor missing")
-    require(descriptor_has(recorder_registry, 47, domain_name, "Reserved", False),
-            "recorder registry id 47 reserved descriptor missing")
-    require(not re.search(r"COMPACT_DOMAIN_[A-Z0-9_]+:\s*u16\s*=\s*47\s*;", collector),
-            "shared collector already uses domain id 47")
-    require("append_compact_characters_leaders_cabinet" not in collector,
-            "shared collector already appends this lane")
-    require("decode_compact_characters_leaders_cabinet" not in recorder,
-            "shared recorder already decodes this lane")
+            "compact_contract id 46 air_variant_archetypes descriptor missing")
+    require(descriptor_has(compact_contract, 47, domain_name, "ValidatedSliceOpenGaps", True),
+            "compact_contract id 47 integrated descriptor missing")
+    require(re.search(r"COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE\s*:\s*u16\s*=\s*47\s*;", collector),
+            "shared collector domain id 47 constant missing")
+    require("append_compact_characters_leaders_cabinet" in collector,
+            "shared collector append hook missing")
+    require("decode_compact_characters_leaders_cabinet" in recorder,
+            "shared recorder decoder hook missing")
     require("pub const DOMAIN_ID: u16 = 47;" in codec, "lane codec is not final id 47")
     require("schema_flags_or" in codec, "lane codec must report schema_flags_or")
     require("SCHEMA_APPOINTED_FROM_ACTIVE_IDEAS" in codec, "lane codec lacks appointee schema flag")
@@ -141,8 +140,8 @@ def main() -> None:
         "shared_id_44_rejected": "supply_logistics_attrition_live",
         "shared_id_45_rejected": "focus_research_decisions_depth_live",
         "shared_id_46_rejected": f"air_variant_archetypes_live {domains.get(46, {}).get('status')}",
-        "shared_id_47_lane_ready_registry_only": domains.get(47, {}).get("status"),
-        "shared_entrypoints_untouched": True,
+        "shared_id_47_integrated_registry_status": domains.get(47, {}).get("status"),
+        "shared_entrypoints_integrated": True,
         "proof": proof_state,
     }, indent=2, sort_keys=True))
 
