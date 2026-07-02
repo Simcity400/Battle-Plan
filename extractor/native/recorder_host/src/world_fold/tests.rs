@@ -1129,6 +1129,45 @@ fn chunk3_folds_d45_old_header_frd2_elapsed_collision_as_v1() {
 }
 
 #[test]
+fn chunk3_folds_d45_schema_v2_flag_without_frd2_as_malformed_unknown() {
+    let payload = chunk3_frd_payload_old_header();
+    assert_ne!(payload.get(0..4), Some(b"FRD2".as_slice()));
+    let snapshot = snapshot_for_domain_records_with_flags(vec![
+        (18, country_identity_payload(&[(47, "GER"), (48, "SPR")]), 0),
+        (45, payload, COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2),
+    ]);
+
+    let countries = snapshot["countries"].as_object().unwrap();
+    assert!(countries.values().all(|country| country
+        .get("decisions")
+        .and_then(|decisions| decisions.get("_r2_depth_status"))
+        .is_none()));
+    assert!(countries.values().all(|country| country
+        .get("decisions")
+        .and_then(|decisions| decisions.get("_r2_depth_targets"))
+        .is_none()));
+    assert!(snapshot["provenance"]["collector"]["domain_problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|problem| problem["domain_id"] == json!(45)
+            && problem["problem"] == json!("malformed_payload")));
+    assert!(!snapshot["provenance"]["collector"]["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|domain| domain == "focus_research_decisions_depth_live"));
+    assert!(snapshot["provenance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("missing FRD2 sanity marker")));
+}
+
+#[test]
 fn chunk3_folds_d45_omitted_targets_as_partial_provenance_note() {
     let snapshot = snapshot_for_domain_records_with_flags(vec![
         (18, country_identity_payload(&[(47, "GER"), (48, "SPR")]), 0),

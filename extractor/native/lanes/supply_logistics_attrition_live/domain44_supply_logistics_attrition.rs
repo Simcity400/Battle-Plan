@@ -46,7 +46,7 @@ pub const BADGE_CSUPPLY_INPUT_ARRAYS_UNSAFE: i32 = 5;
 
 pub const MAX_PROVINCE_ID: u32 = 13_413;
 pub const MAX_STATE_ID: u32 = 1_081;
-pub const MAX_TAG_DB_ID: u32 = 2_048;
+pub const MAX_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 pub const MAX_DIVISION_ID: u32 = i32::MAX as u32;
 pub const MAX_SUPPLY_RAW: i32 = 100_000_000;
 pub const MAX_SUPPLY_GAIN_RAW: i32 = 500_000;

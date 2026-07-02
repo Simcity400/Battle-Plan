@@ -34,7 +34,8 @@ pub const KNOWN_FLAGS: u32 = FLAG_HAS_LEADER
     | FLAG_VALIDATED_DIRECT;
 
 pub const MAX_OOB_ID: u32 = 4_000_000;
-pub const MAX_OWNER_TAG_DB_ID: u32 = 2_048;
+pub const MAX_OWNER_TAG_DB_ID: u32 =
+    compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 pub const MAX_PROVINCE_ID: u32 = 1_000_000;
 pub const MAX_REGION_ID: u32 = 4_096;
 pub const MAX_LEADER_SKILL: u32 = 15;

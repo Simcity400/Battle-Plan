@@ -39,6 +39,7 @@ pub const COUNTRY_DATABASE_OFFSET: usize = 0x33189C8;
 /// Country table traversal may retain a wider structural guard, but emitted
 /// compact owner ids must share this cap with lane validators to avoid encoder
 /// panics on high sparse slots.
+/// Existing 1024/4096 tag/table caps are deliberate-or-unaudited; harmonizing them requires a contract-change patch with boundary fixtures.
 pub const MAX_COMPACT_OWNER_TAG_DB_ID: u32 = 2_048;
 
 /// Domain 57 session multiplayer metadata roots for supported build 870ebf.

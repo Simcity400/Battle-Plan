@@ -8,6 +8,7 @@ name = "market_trade_live_lane"
 path = "src/lib.rs"
 
 [dependencies]
+compact_contract = { path = "../../compact_contract" }
 serde_json = "1"
 snapshot = { path = "../../snapshot" }
 

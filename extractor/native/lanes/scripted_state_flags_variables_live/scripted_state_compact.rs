@@ -35,7 +35,7 @@ pub const ROW_FLAG_DELETED: u32 = 1 << 4;
 
 pub const MAX_KEY_BYTES: usize = 512;
 pub const MAX_KEY_TABLE_BYTES: usize = 8 * 1024 * 1024;
-pub const MAX_COUNTRY_TAG_DB_ID: u32 = 2_048;
+pub const MAX_COUNTRY_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 pub const MAX_STATE_ID: u32 = 65_535;
 
 const KNOWN_ROW_FLAGS: u32 = ROW_FLAG_KEY_PRESENT

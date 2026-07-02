@@ -45,7 +45,7 @@ pub const MEMBER_SUNK_CONVOYS_PRESENT: u32 = 1 << 13;
 
 pub const MAX_COMBAT_ID: u32 = 0x7fff_ffff;
 pub const MAX_SHIP_INSTANCE_ID: u32 = 4_000_000;
-pub const MAX_OWNER_TAG_DB_ID: u32 = 2_048;
+pub const MAX_OWNER_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 pub const MAX_GROUP_INDEX: u32 = 64;
 pub const MAX_MEMBER_INDEX: u32 = 1_000;
 pub const MAX_BATTLE_SLOT_INDEX: u32 = 4_096;

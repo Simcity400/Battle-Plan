@@ -55,7 +55,7 @@ pub const GAP_CURRENT_SUPPORT_NONE: u32 = 0;
 pub const GAP_CURRENT_SUPPORT_PARTIAL: u32 = 1;
 pub const GAP_CURRENT_SUPPORT_OWNED_ELSEWHERE: u32 = 2;
 
-const MAX_TAG_DB_ID: u32 = 2_048;
+const MAX_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 const MAX_VARIANT_ID: u32 = i32::MAX as u32;
 const MAX_FACTORIES: i32 = 100_000;
 const MAX_SLOT_HANDLE: u32 = 1_000_000;

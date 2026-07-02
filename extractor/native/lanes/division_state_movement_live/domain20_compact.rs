@@ -57,7 +57,8 @@ pub const MAX_PROVINCE_ID: u32 = 1_000_000;
 pub const MAX_COMBAT_REF_COUNT: u32 = 1_000;
 pub const MAX_ORGANISATION_RAW: u32 = 100_000_000;
 pub const MAX_STRENGTH_RAW: u32 = 1_000_000_000;
-pub const MAX_OWNER_TAG_DB_ID: u32 = 2_048;
+pub const MAX_OWNER_TAG_DB_ID: u32 =
+    compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 pub const MAX_ARMY_ID: u32 = i32::MAX as u32;
 pub const MAX_TEMPLATE_ID: u32 = i32::MAX as u32;
 pub const MAX_SUPPLY_RAW: u32 = 100_000_000;

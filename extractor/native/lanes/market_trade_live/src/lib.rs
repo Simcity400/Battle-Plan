@@ -18,7 +18,8 @@ pub const STATUS_PARTIAL_DATA: u32 = 1 << 9;
 pub const MARKET_TRADE_HEADER_LEN: usize = 48;
 pub const MARKET_TRADE_ROW_LEN: usize = 48;
 pub const MARKET_TRADE_CONTRACT_TYPE: u32 = 81;
-pub const MARKET_TRADE_MAX_TAG_DB_ID: u32 = 2_048;
+pub const MARKET_TRADE_MAX_TAG_DB_ID: u32 =
+    compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 pub const MARKET_TRADE_MAX_CONTRACT_ID: u32 = i32::MAX as u32;
 pub const MARKET_TRADE_MAX_VARIANT_ID: u32 = i32::MAX as u32;
 pub const MARKET_TRADE_MAX_AMOUNT_RAW: i64 = 1_000_000_000_000_000;

@@ -252,7 +252,7 @@ const COMPACT_SUPPLY_BADGE_CONVOY_LOGISTICS_PRESSURE_UNPINNED: i32 = 4;
 const COMPACT_SUPPLY_BADGE_CSUPPLY_INPUT_ARRAYS_UNSAFE: i32 = 5;
 const COMPACT_SUPPLY_MAX_PROVINCE_ID: u32 = 13_413;
 const COMPACT_SUPPLY_MAX_STATE_ID: u32 = 1_081;
-const COMPACT_SUPPLY_MAX_TAG_DB_ID: u32 = 2_048;
+const COMPACT_SUPPLY_MAX_TAG_DB_ID: u32 = COMPACT_MAX_OWNER_TAG_DB_ID;
 const COMPACT_SUPPLY_MAX_DIVISION_ID: u32 = i32::MAX as u32;
 const COMPACT_SUPPLY_MAX_SUPPLY_RAW: i32 = 100_000_000;
 const COMPACT_SUPPLY_MAX_SUPPLY_GAIN_RAW: i32 = 500_000;
@@ -265,7 +265,7 @@ const COMPACT_MAX_DIVISION_PROVINCE_ID: u32 = 1_000_000;
 const COMPACT_MAX_DIVISION_COMBAT_REF_COUNT: u32 = 1_000;
 const COMPACT_MAX_DIVISION_ORGANISATION_RAW: u32 = 100_000_000;
 const COMPACT_MAX_DIVISION_STRENGTH_RAW: u32 = 1_000_000_000;
-const COMPACT_MAX_DIVISION_OWNER_TAG_DB_ID: u32 = 2_048;
+const COMPACT_MAX_DIVISION_OWNER_TAG_DB_ID: u32 = COMPACT_MAX_OWNER_TAG_DB_ID;
 const COMPACT_MAX_ARMY_ID: u32 = i32::MAX as u32;
 const COMPACT_MAX_DIVISION_EXPERIENCE_RAW: u32 = u32::MAX;
 const COMPACT_MAX_DIVISION_SUPPLY_RAW: u32 = 100_000_000;
@@ -315,7 +315,7 @@ const COMPACT_SHIP_ROW_FLAG_TASK_FORCE: u32 = 1 << 1;
 const COMPACT_SHIP_ROW_FLAG_DEFINITION: u32 = 1 << 2;
 const COMPACT_SHIP_ROW_FLAG_OWNER: u32 = 1 << 3;
 const COMPACT_SHIP_MAX_ID: u32 = 4_000_000;
-const COMPACT_SHIP_MAX_OWNER_TAG_DB_ID: u32 = 2_048;
+const COMPACT_SHIP_MAX_OWNER_TAG_DB_ID: u32 = COMPACT_MAX_OWNER_TAG_DB_ID;
 const COMPACT_SHIP_MAX_CATEGORY: u32 = 128;
 const COMPACT_SHIP_MAX_STRENGTH_RAW: u32 = 1_000_000_000;
 const COMPACT_SHIP_MAX_ORGANISATION_RAW: u32 = 100_000_000;
@@ -15597,6 +15597,62 @@ mod tests {
         );
         assert_eq!(
             depth.data_units_total.get("decision_target_rows").copied(),
+            None
+        );
+    }
+
+    #[test]
+    fn compact_summary_rejects_frd_schema_v2_flag_without_frd2_magic() {
+        let payload = test_frd_depth_data_payload_old_header();
+        assert_ne!(
+            payload.get(0..4),
+            Some(COMPACT_FRD_DEPTH_SCHEMA_MAGIC.as_slice())
+        );
+        let mut raw = Vec::new();
+        append_test_compact_record_with_flags(
+            &mut raw,
+            1,
+            100,
+            COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2,
+            &payload,
+        );
+        append_test_compact_record(
+            &mut raw,
+            2,
+            100,
+            1000,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &test_frame_payload(1_000, 1),
+        );
+
+        let summary = summarize_compact_stream(&raw);
+
+        assert!(
+            summary
+                .parse_errors
+                .iter()
+                .any(|err| err.contains("missing FRD2 sanity marker")),
+            "{:?}",
+            summary.parse_errors
+        );
+        let depth = summary
+            .per_domain
+            .get(&COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE)
+            .unwrap();
+        assert_eq!(depth.data_record_count, 1);
+        assert_eq!(depth.data_rows_total, 0);
+        assert_eq!(depth.data_changed_rows_total, 0);
+        assert_eq!(
+            depth.data_units_total.get("decision_target_rows").copied(),
+            None
+        );
+        assert_eq!(
+            depth
+                .data_units_total
+                .get("decision_country_target_rows")
+                .copied(),
             None
         );
     }

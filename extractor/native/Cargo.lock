@@ -85,6 +85,9 @@ dependencies = [
 [[package]]
 name = "country_economy_production_stockpile_live_lane"
 version = "0.1.0"
+dependencies = [
+ "compact_contract",
+]
 
 [[package]]
 name = "crc32fast"
@@ -145,6 +148,7 @@ dependencies = [
 name = "market_trade_live_lane"
 version = "0.1.0"
 dependencies = [
+ "compact_contract",
  "serde_json",
  "snapshot",
 ]
@@ -169,6 +173,7 @@ dependencies = [
 name = "naval_combat_live_lane"
 version = "0.1.0"
 dependencies = [
+ "compact_contract",
  "serde",
  "serde_json",
  "snapshot",
@@ -225,6 +230,9 @@ dependencies = [
 [[package]]
 name = "scripted_state_flags_variables_live_lane"
 version = "0.1.0"
+dependencies = [
+ "compact_contract",
+]
 
 [[package]]
 name = "serde"
@@ -297,6 +305,7 @@ dependencies = [
 name = "supply_logistics_attrition_live_lane"
 version = "0.1.0"
 dependencies = [
+ "compact_contract",
  "serde_json",
  "snapshot",
 ]
