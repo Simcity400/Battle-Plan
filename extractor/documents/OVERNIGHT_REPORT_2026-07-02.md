@@ -3,6 +3,19 @@
 ## TL;DR
 All accepted work is **committed and green** at `8dd85e295` (Rust workspace 73 test-result blocks, Python 1085 passed, `replay_interface/` untouched). The overnight queue did **not** fully finish: the Codex sandbox began failing intermittently (`windows sandbox: helper_unknown_error: apply deny-read ACLs`) partway through, which blocked the remaining delegated lane integrations. I stopped rather than force-run through an unstable environment and risk a broken tree. One genuinely serious correctness issue was found and contained (domain 53). Nothing needs the game except the final live proof.
 
+## Codex sandbox status update - 2026-07-02
+The sandbox blocker named in this report has been fixed on the local machine.
+Root causes were a corrupt
+`C:\Users\Example\.codex\.sandbox\deny_read_acl_state.json` file and PATH resolving
+`codex-windows-sandbox-setup.exe` from the WindowsApps package instead of the
+current runnable Codex runtime directory. The corrupt state file was quarantined,
+the user PATH now prefers
+`C:\Users\Example\AppData\Local\OpenAI\Codex\bin\ea1c60319a1dcb19`, and a
+workspace sandbox write/read/delete smoke test passed via plain `codex`.
+
+This only unblocks the tooling issue. It does not mark any of the queued lane
+work below as complete.
+
 ## What landed (committed at 8dd85e295)
 - **Lanes 55, 56, 48, 47** integrated (collector + recorder decode + world_fold), validated slices only, fixture-blocked scope fail-closed.
 - **Fold backlog fully closed** — every decoded domain now reaches snapshots (occupation 52, map_detail 23, supply 44, market 43, OOB/naval/air cluster 27–42/46, projects 41, depth 45, scripted_state 51, div_equipment 26, weather 24). Established field-ownership merge (no cross-domain clobber), decoder-strict folds, three-state semantics.
@@ -24,7 +37,7 @@ Prompted by the 53 finding, I audited whether each lane's deep offsets are valid
 
 **Decisive conclusion:** the fail-closed architecture (vtable-identity checks + skip-counting → `PARTIAL_DATA` + retain-on-unknown fold) means **stale offsets can never fabricate data — only produce source-unavailable/partial**. So the **live speed-five proof is the definitive offset validator**: any lane with stale 870ebf offsets will surface domain partial/source failures and fail the `--production` gate (which requires zero such failures). No emergency downgrades beyond 53. **Watch domain 47 specifically during the live proof** — if it shows partial/source-unavailable, its offsets need re-probing.
 
-## Not done (blocked on the intermittent Codex sandbox)
+## Not done (previously blocked on the intermittent Codex sandbox)
 These are ready (packets pre-authored, offline-drafted) but need reliable delegation to apply into shared files:
 - **Lane 54** battleplans — packet + draft ready; 3 apply attempts all hit the sandbox ACL error.
 - **Domain 43/45 slices** — `SLICE_PACKET.md` authored in each lane.
@@ -35,4 +48,5 @@ These are ready (packets pre-authored, offline-drafted) but need reliable delega
 1. **Batched live speed-five proof** (needs the game unpaused). Run with `--production` + explicit `--scheduled-domain country_identity` + both static-artifact flags. Watch domain 47 for partial/source failures (offset-provenance check). Start with the strict domain-57 probe while still paused.
 2. **Then** the bucket-2 discovery check-in you asked for.
 
-Suggested first move on waking: re-verify the Codex sandbox is stable (a trivial write health-check), then resume the queue at lane 54.
+Suggested first move on waking: the Codex sandbox health-check has now passed;
+resume the queue at lane 54.

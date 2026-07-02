@@ -1,5 +1,6 @@
 #![recursion_limit = "256"]
 
+use army_battleplans_depth_live_lane as battleplans54;
 use characters_leaders_cabinet_live_lane as domain47;
 use construction_buildings_state_damage_live_lane as domain48;
 use diplomacy_intel_operatives_live as diplomacy53;
@@ -84,6 +85,7 @@ const COMPACT_DOMAIN_CONSTRUCTION_BUILDINGS_STATE_DAMAGE_LIVE: u16 = 48;
 const COMPACT_DOMAIN_SCRIPTED_STATE_FLAGS_VARIABLES_LIVE: u16 = 51;
 const COMPACT_DOMAIN_OCCUPATION_RESISTANCE_COMPLIANCE_LIVE: u16 = 52;
 const COMPACT_DOMAIN_DIPLOMACY_INTEL_OPERATIVES_LIVE: u16 = diplomacy53::DOMAIN_ID;
+const COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE: u16 = battleplans54::DOMAIN_ID;
 const COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE: u16 = 55;
 const COMPACT_DOMAIN_NAVAL_MISSIONS_STATUS_LIVE: u16 = 56;
 #[cfg(test)]
@@ -2748,6 +2750,13 @@ fn summarize_compact_stream(raw: &[u8]) -> CompactSummary {
                     }
                     COMPACT_DOMAIN_DIPLOMACY_INTEL_OPERATIVES_LIVE => {
                         decode_compact_diplomacy_intel_operatives_live_data_payload(
+                            offset,
+                            payload,
+                            &mut summary,
+                        )
+                    }
+                    COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE => {
+                        decode_compact_army_battleplans_depth_live_data_payload(
                             offset,
                             payload,
                             &mut summary,
@@ -7414,6 +7423,85 @@ fn decode_compact_diplomacy_intel_operatives_live_data_payload(
     }
 }
 
+fn decode_compact_army_battleplans_depth_live_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut CompactSummary,
+) {
+    let lane_summary = battleplans54::decode_depth_payload(offset, payload);
+    summary.status_flags_or |= lane_summary.totals.status_flags_or;
+    summary.parse_errors.extend(lane_summary.parse_errors);
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE)
+    {
+        domain.status_flags_or |= lane_summary.totals.status_flags_or;
+        domain.data_rows_total = domain
+            .data_rows_total
+            .saturating_add(lane_summary.totals.rows);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(lane_summary.totals.changed_rows);
+    }
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE,
+        "army_battleplans_depth_rows",
+        lane_summary.totals.rows as usize,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE,
+        "army_battleplans_target_state_rows",
+        lane_summary.totals.target_rows as usize,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE,
+        "army_battleplans_path_geometry_rows",
+        lane_summary.totals.path_geometry_rows as usize,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE,
+        "army_battleplans_non_type5_exact_path_rows",
+        lane_summary.totals.non_type5_exact_path_rows as usize,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE,
+        "army_battleplans_fixture_blocked_rows",
+        lane_summary
+            .totals
+            .unsupported_geometry_rows
+            .saturating_add(lane_summary.totals.execution_fixture_required_rows) as usize,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE,
+        "army_battleplans_assigned_units_exact_rows",
+        lane_summary.totals.assigned_units_exact_rows as usize,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE,
+        "army_battleplans_order_linkage_exact_rows",
+        lane_summary.totals.order_linkage_exact_rows as usize,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE,
+        "army_battleplans_omitted_non_exact_rows",
+        lane_summary.totals.omitted_non_exact_rows as usize,
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE,
+        "army_battleplans_path_geometry_omitted_rows",
+        lane_summary.totals.path_geometry_omitted_rows as usize,
+    );
+}
+
 fn decode_compact_naval_missions_status_live_data_payload(
     offset: usize,
     payload: &[u8],
@@ -11098,16 +11186,41 @@ fn compact_forced_domain_dependencies_json(scheduled_domains: &[String]) -> Valu
     let requested_21 = scheduled_domains
         .iter()
         .any(|domain| compact_domain_id(domain) == Some(21));
+    let requested_54 = scheduled_domains.iter().any(|domain| {
+        compact_domain_id(domain) == Some(COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE)
+    });
+    let requested_27 = scheduled_domains
+        .iter()
+        .any(|domain| compact_domain_id(domain) == Some(27));
+    let requested_28 = scheduled_domains
+        .iter()
+        .any(|domain| compact_domain_id(domain) == Some(28));
+    let mut dependencies = Vec::new();
     if requested_55 && !requested_21 {
-        json!([{
+        dependencies.push(json!({
             "requested_domain": "land_combat_detail_events_live",
             "forced_domain": "land_combats",
             "forced_domain_id": 21,
             "reason": "domain 55 derives transition events from the same in-frame domain-21 combat snapshot and logical generation tracker",
-        }])
-    } else {
-        json!([])
+        }));
     }
+    if requested_54 && !requested_27 {
+        dependencies.push(json!({
+            "requested_domain": "army_battleplans_depth_live",
+            "forced_domain": "army_orders",
+            "forced_domain_id": 27,
+            "reason": "domain 54 derives generation/order rows from the same-frame army_orders read",
+        }));
+    }
+    if requested_54 && !requested_28 {
+        dependencies.push(json!({
+            "requested_domain": "army_battleplans_depth_live",
+            "forced_domain": "oob_command",
+            "forced_domain_id": 28,
+            "reason": "domain 54 requires exact same-frame assignment and order-linkage status from oob_command",
+        }));
+    }
+    Value::Array(dependencies)
 }
 
 fn compact_domain_id(domain: &str) -> Option<u16> {

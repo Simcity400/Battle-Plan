@@ -47,7 +47,7 @@
     { "id": 51, "name": "scripted_state_flags_variables_live", "status": "validated_slice_open_gaps", "schedulable": true, "requires_data_record": true },
     { "id": 52, "name": "occupation_resistance_compliance_live", "status": "validated_slice_open_gaps", "schedulable": true, "requires_data_record": true },
     { "id": 53, "name": "diplomacy_intel_operatives_live", "status": "active_integration", "schedulable": false, "requires_data_record": true },
-    { "id": 54, "name": "army_battleplans_depth_live", "status": "reserved", "schedulable": false, "requires_data_record": true },
+    { "id": 54, "name": "army_battleplans_depth_live", "status": "validated_slice_open_gaps", "schedulable": true, "requires_data_record": true },
     { "id": 55, "name": "land_combat_detail_events_live", "status": "validated_slice_open_gaps", "schedulable": true, "requires_data_record": true },
     { "id": 56, "name": "naval_missions_status_live", "status": "validated_slice_open_gaps", "schedulable": true, "requires_data_record": true },
     { "id": 57, "name": "session_multiplayer_metadata_live", "status": "reserved", "schedulable": false, "requires_data_record": true },

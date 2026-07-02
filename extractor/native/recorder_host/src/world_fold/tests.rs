@@ -4032,6 +4032,51 @@ fn d56_payload(status_flags: u32, rows: &[naval56::NavalMissionStatusRow]) -> Ve
     )
 }
 
+fn d54_path_row(
+    army_id: u32,
+    slot_index: u32,
+    path_provinces: Vec<u32>,
+) -> battleplans54::BattleplanDepthRow {
+    battleplans54::BattleplanDepthRow {
+        army_id,
+        generation: 1,
+        deleted: false,
+        slot_index,
+        order_type: 3,
+        target_states: Vec::new(),
+        path_provinces,
+        target_declared_count: None,
+        target_status: battleplans54::STATUS_UNSUPPORTED,
+        geometry_status: battleplans54::STATUS_EXACT,
+        execution_status: battleplans54::STATUS_FIXTURE_REQUIRED,
+        assigned_units_status: battleplans54::STATUS_EXACT,
+        order_linkage_status: battleplans54::STATUS_EXACT,
+        stance_status: battleplans54::STATUS_UNKNOWN,
+        aggressiveness_status: battleplans54::STATUS_UNKNOWN,
+    }
+}
+
+fn d54_payload(
+    status_flags: u32,
+    rows: &[battleplans54::BattleplanDepthRow],
+    omitted_non_exact_rows: u32,
+    path_geometry_omitted_rows: u32,
+) -> Vec<u8> {
+    battleplans54::encode_depth_payload(
+        rows,
+        5,
+        status_flags,
+        rows.len().min(u32::MAX as usize) as u32,
+        1,
+        rows.len()
+            .saturating_add(omitted_non_exact_rows as usize)
+            .saturating_add(path_geometry_omitted_rows as usize)
+            .min(u32::MAX as usize) as u32,
+        omitted_non_exact_rows,
+        path_geometry_omitted_rows,
+    )
+}
+
 fn d48_payload(status_flags: u32, target_state_id: Option<u32>) -> Vec<u8> {
     let target_unavailable = target_state_id.is_none();
     let frame = domain48::LaneFrame {
@@ -4536,6 +4581,34 @@ fn chunk2_folds_d56_naval_status_under_oob_extra_without_owning_entities() {
         .unwrap()
         .iter()
         .any(|domain| domain["domain_id"] == json!(56)));
+}
+
+#[test]
+fn chunk2_d54_partial_with_rows_keeps_orders_and_surfaces_omissions() {
+    let rows = [d54_path_row(17, 2, vec![101, 102])];
+    let snap = chunk1_one_snapshot(vec![(
+        54,
+        d54_payload(COMPACT_STATUS_PARTIAL_DATA, &rows, 1, 1),
+    )]);
+
+    let extra = &snap["order_of_battle"]["extra"]["army_battleplans_depth_live"];
+    assert_eq!(
+        extra["known"],
+        json!(true),
+        "extra={extra:#} problems={:#} notes={:#}",
+        snap["provenance"]["collector"]["domain_problems"],
+        snap["provenance"]["notes"]
+    );
+    assert_eq!(extra["orders"].as_array().unwrap().len(), 1);
+    assert_eq!(extra["orders"][0]["army_id"], json!(17));
+    assert_eq!(extra["orders"][0]["path_provinces"], json!([101, 102]));
+    assert_eq!(extra["omitted_non_exact_rows_this_hour"], json!(1));
+    assert_eq!(extra["path_geometry_omitted_rows_this_hour"], json!(1));
+    assert!(extra["provenance_notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note.as_str().unwrap().contains("non-exact")));
 }
 
 #[test]

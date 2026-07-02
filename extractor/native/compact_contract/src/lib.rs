@@ -651,8 +651,8 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         54,
         "army_battleplans_depth_live",
         "army_battleplans_depth_live",
-        CompactDomainStatus::Reserved,
-        false,
+        CompactDomainStatus::ValidatedSliceOpenGaps,
+        true,
         true,
         &[],
     ),
@@ -833,7 +833,10 @@ mod tests {
         assert_eq!(id_for_scheduled_name("fuel_live"), Some(10));
         assert_eq!(id_for_scheduled_name("state_ownership"), Some(22));
         assert_eq!(id_for_scheduled_name("air_variant_archetypes"), Some(46));
-        assert_eq!(id_for_scheduled_name("diplomacy_intel_operatives_live"), None);
+        assert_eq!(
+            id_for_scheduled_name("diplomacy_intel_operatives_live"),
+            None
+        );
         assert_eq!(id_for_scheduled_name("air_variant_archetypes_live"), None);
         assert_eq!(
             wire_name_for_id(53),
@@ -872,6 +875,10 @@ mod tests {
         assert!(
             profile_ids.contains(&56),
             "domain 56 is a validated slice with explicit open gaps"
+        );
+        assert!(
+            profile_ids.contains(&54),
+            "domain 54 is a validated slice with explicit open gaps"
         );
         assert!(
             profile_ids.contains(&48),

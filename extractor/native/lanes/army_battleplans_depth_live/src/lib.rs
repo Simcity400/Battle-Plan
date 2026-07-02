@@ -7,15 +7,21 @@
 pub const DOMAIN_ID: u16 = 54;
 pub const DOMAIN_NAME: &str = "army_battleplans_depth_live";
 
-pub const ARMY_VTABLE_RVA: u64 = 0x293BC60;
-pub const ORDER_VTABLE_RVA: u64 = 0x296FAE8;
-pub const ARMY_OFF_ORDERS_VEC: u64 = 0x98;
-pub const ORDER_OFF_TYPE: u64 = 0x30;
-pub const ORDER_OFF_ARMY_BACKREF: u64 = 0x38;
-pub const ORDER_OFF_PATH_BEGIN: u64 = 0x70;
-pub const ORDER_OFF_PATH_SIZE: u64 = 0x78;
-pub const ORDER_OFF_TYPE5_STATES_BEGIN: u64 = 0xE0;
-pub const ORDER_OFF_TYPE5_STATES_SIZE: u64 = 0xE8;
+pub const ARMY_VTABLE_RVA: u64 = compact_contract::build_profile::DOMAIN54_ARMY_VTABLE_RVA as u64;
+pub const ORDER_VTABLE_RVA: u64 = compact_contract::build_profile::DOMAIN54_ORDER_VTABLE_RVA as u64;
+pub const ARMY_OFF_ORDERS_VEC: u64 =
+    compact_contract::build_profile::DOMAIN54_ARMY_OFF_ORDERS_VEC as u64;
+pub const ORDER_OFF_TYPE: u64 = compact_contract::build_profile::DOMAIN54_ORDER_OFF_TYPE as u64;
+pub const ORDER_OFF_ARMY_BACKREF: u64 =
+    compact_contract::build_profile::DOMAIN54_ORDER_OFF_ARMY_BACKREF as u64;
+pub const ORDER_OFF_PATH_BEGIN: u64 =
+    compact_contract::build_profile::DOMAIN54_ORDER_OFF_PATH_BEGIN as u64;
+pub const ORDER_OFF_PATH_SIZE: u64 =
+    compact_contract::build_profile::DOMAIN54_ORDER_OFF_PATH_SIZE as u64;
+pub const ORDER_OFF_TYPE5_STATES_BEGIN: u64 =
+    compact_contract::build_profile::DOMAIN54_ORDER_OFF_TYPE5_STATES_BEGIN as u64;
+pub const ORDER_OFF_TYPE5_STATES_SIZE: u64 =
+    compact_contract::build_profile::DOMAIN54_ORDER_OFF_TYPE5_STATES_SIZE as u64;
 
 pub const HEADER_LEN: usize = 52;
 pub const ROW_LEN: usize = 64;
@@ -38,16 +44,9 @@ pub const STATUS_VALIDATION_FAILED: u32 = 5;
 pub const STATUS_FIXTURE_REQUIRED: u32 = 6;
 pub const STATUS_COLD_PREFLIGHT_ONLY: u32 = 7;
 
-pub const COMPACT_STATUS_DELTA_DATA: u32 = 1 << 10;
-pub const COMPACT_STATUS_FAILURE_MASK: u32 = (1 << 0)
-    | (1 << 1)
-    | (1 << 2)
-    | (1 << 3)
-    | (1 << 6)
-    | (1 << 7)
-    | (1 << 8)
-    | (1 << 9)
-    | (1 << 12);
+pub const COMPACT_STATUS_DELTA_DATA: u32 = compact_contract::COMPACT_STATUS_DELTA_DATA;
+pub const COMPACT_STATUS_PARTIAL_DATA: u32 = compact_contract::COMPACT_STATUS_PARTIAL_DATA;
+pub const COMPACT_STATUS_FAILURE_MASK: u32 = compact_contract::COMPACT_STATUS_FAILURE_MASK;
 
 const ORDER_TYPE5_OFFENSIVE: i32 = 5;
 const MAX_CHILD_ROWS: u32 = 5_000;
@@ -113,6 +112,8 @@ pub struct DepthExtraction {
     pub rows: Vec<BattleplanDepthRow>,
     pub type5_exact_rows: u32,
     pub type5_non_exact_omitted_rows: u32,
+    pub assignment_or_linkage_omitted_rows: u32,
+    pub path_geometry_omitted_rows: u32,
     pub non_type5_exact_path_rows: u32,
     pub path_geometry_rows: u32,
     pub non_type5_fixture_blocked_rows: u32,
@@ -145,6 +146,8 @@ pub struct DecodeTotals {
     pub order_linkage_exact_rows: u64,
     pub stance_unknown_rows: u64,
     pub aggressiveness_unknown_rows: u64,
+    pub omitted_non_exact_rows: u64,
+    pub path_geometry_omitted_rows: u64,
     pub status_flags_or: u32,
 }
 
@@ -159,7 +162,7 @@ pub trait CompactDomainSink {
 }
 
 pub fn compact_status_is_failure(status_flags: u32) -> bool {
-    (status_flags & COMPACT_STATUS_FAILURE_MASK) != 0
+    compact_contract::compact_status_is_failure(status_flags)
 }
 
 pub fn status_code_from_name(name: &str) -> u32 {
@@ -254,14 +257,7 @@ pub fn read_non_type5_path_provinces<M: BattleplansDepthMemory>(
         MAX_PROVINCE_ID,
     )
     .map(|(values, _)| (values, STATUS_EXACT))
-    .unwrap_or_else(|status| {
-        let status = if status == STATUS_OVERFLOW {
-            STATUS_OVERFLOW
-        } else {
-            STATUS_FIXTURE_REQUIRED
-        };
-        (Vec::new(), status)
-    })
+    .unwrap_or_else(|status| (Vec::new(), status))
 }
 
 pub fn extract_validated_depth_subset(source: &[RawOrderObservation]) -> DepthExtraction {
@@ -288,6 +284,8 @@ pub fn extract_validated_depth_subset(source: &[RawOrderObservation]) -> DepthEx
             continue;
         }
         if row.assigned_units_status != STATUS_EXACT || row.order_linkage_status != STATUS_EXACT {
+            out.assignment_or_linkage_omitted_rows =
+                out.assignment_or_linkage_omitted_rows.saturating_add(1);
             continue;
         }
         if row.order_type == ORDER_TYPE5_OFFENSIVE && row.target_status != STATUS_EXACT {
@@ -304,6 +302,11 @@ pub fn extract_validated_depth_subset(source: &[RawOrderObservation]) -> DepthEx
                     .path_geometry_rows
                     .saturating_add(row.path_provinces.len().min(u32::MAX as usize) as u32);
                 (STATUS_UNSUPPORTED, STATUS_EXACT, row.path_provinces.clone())
+            } else if row.geometry_status == STATUS_OVERFLOW
+                || row.geometry_status == STATUS_VALIDATION_FAILED
+            {
+                out.path_geometry_omitted_rows = out.path_geometry_omitted_rows.saturating_add(1);
+                continue;
             } else {
                 out.non_type5_fixture_blocked_rows =
                     out.non_type5_fixture_blocked_rows.saturating_add(1);
@@ -348,6 +351,9 @@ pub fn collect_and_encode_depth_record(
 ) -> EncodedDepthRecord {
     let extraction = extract_validated_depth_subset(observations);
     let emitted_rows = extraction.rows.len().min(u32::MAX as usize) as u32;
+    let omitted_non_exact_rows = extraction
+        .type5_non_exact_omitted_rows
+        .saturating_add(extraction.assignment_or_linkage_omitted_rows);
     let payload = encode_depth_payload(
         &extraction.rows,
         elapsed_wall_ms,
@@ -355,6 +361,8 @@ pub fn collect_and_encode_depth_record(
         emitted_rows,
         observed_army_rows,
         observed_order_rows,
+        omitted_non_exact_rows,
+        extraction.path_geometry_omitted_rows,
     );
     EncodedDepthRecord {
         domain_id: DOMAIN_ID,
@@ -390,6 +398,8 @@ pub fn encode_depth_payload(
     changed_rows: u32,
     observed_army_rows: u32,
     observed_order_rows: u32,
+    omitted_non_exact_rows: u32,
+    path_geometry_omitted_rows: u32,
 ) -> Vec<u8> {
     let target_count = rows
         .iter()
@@ -425,8 +435,8 @@ pub fn encode_depth_payload(
     out.extend_from_slice(&(target_count.min(u32::MAX as usize) as u32).to_le_bytes());
     out.extend_from_slice(&unsupported_geometry_rows.to_le_bytes());
     out.extend_from_slice(&execution_unknown_rows.to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&omitted_non_exact_rows.to_le_bytes());
+    out.extend_from_slice(&path_geometry_omitted_rows.to_le_bytes());
     out.extend_from_slice(&(path_count.min(u32::MAX as usize) as u32).to_le_bytes());
 
     let mut target_cursor = 0u32;
@@ -522,14 +532,9 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DecodeSummary {
     let target_count = read_u32(payload, 28) as usize;
     let unsupported_geometry_rows = read_u32(payload, 32) as usize;
     let execution_unknown_rows = read_u32(payload, 36) as usize;
-    let direct_root_count = read_u32(payload, 40) as usize;
-    let direct_member_count = read_u32(payload, 44) as usize;
+    let omitted_non_exact_rows = read_u32(payload, 40) as usize;
+    let path_geometry_omitted_rows = read_u32(payload, 44) as usize;
     let path_count = read_u32(payload, 48) as usize;
-    if direct_root_count != 0 || direct_member_count != 0 {
-        summary.parse_errors.push(format!(
-            "offset {offset}: direct-root rows are not in the validated integration slice"
-        ));
-    }
     let expected = HEADER_LEN
         .saturating_add(row_count.saturating_mul(ROW_LEN))
         .saturating_add(target_count.saturating_mul(TARGET_ROW_LEN))
@@ -563,6 +568,8 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DecodeSummary {
     summary.totals.path_geometry_rows = path_count as u64;
     summary.totals.unsupported_geometry_rows = unsupported_geometry_rows as u64;
     summary.totals.execution_fixture_required_rows = execution_unknown_rows as u64;
+    summary.totals.omitted_non_exact_rows = omitted_non_exact_rows as u64;
+    summary.totals.path_geometry_omitted_rows = path_geometry_omitted_rows as u64;
     summary.totals.status_flags_or = status_flags;
 
     let mut cursor = HEADER_LEN;
@@ -855,7 +862,8 @@ mod tests {
 
         fn read_bytes(&self, address: u64, len: usize) -> Option<Vec<u8>> {
             let bytes = self.bytes.get(&address)?;
-            (bytes.len() == len).then(|| bytes.clone())
+            let _ = len;
+            Some(bytes.clone())
         }
 
         fn is_heap_pointer(&self, address: u64) -> bool {
@@ -925,9 +933,50 @@ mod tests {
         let record = collect_and_encode_depth_record(&[non_exact, no_assignment], 77, 0, 2, 2);
         assert_eq!(record.emitted_rows, 0);
         assert_eq!(record.extraction.type5_non_exact_omitted_rows, 1);
+        assert_eq!(record.extraction.assignment_or_linkage_omitted_rows, 1);
         let decoded = decode_depth_payload(0, &record.payload);
         assert_eq!(decoded.parse_errors, Vec::<String>::new());
         assert_eq!(decoded.totals.rows, 0);
+        assert_eq!(decoded.totals.omitted_non_exact_rows, 2);
+    }
+
+    #[test]
+    fn keeps_exact_rows_when_a_sibling_row_is_non_exact() {
+        let mut input = (0..50)
+            .map(|index| exact_order(100 + index, index, 3, Vec::new(), vec![1_000 + index]))
+            .collect::<Vec<_>>();
+        let mut no_assignment = exact_order(999, 50, 3, Vec::new(), vec![2_000]);
+        no_assignment.assigned_units_status = STATUS_FIXTURE_REQUIRED;
+        input.push(no_assignment);
+
+        let record = collect_and_encode_depth_record(&input, 77, 0, 51, 51);
+        assert_eq!(record.emitted_rows, 50);
+        assert_eq!(record.extraction.assignment_or_linkage_omitted_rows, 1);
+        let decoded = decode_depth_payload(0, &record.payload);
+        assert_eq!(decoded.parse_errors, Vec::<String>::new());
+        assert_eq!(decoded.totals.rows, 50);
+        assert_eq!(decoded.totals.omitted_non_exact_rows, 1);
+        assert_eq!(decoded.totals.path_geometry_rows, 50);
+    }
+
+    #[test]
+    fn drops_invalid_path_rows_but_keeps_fixture_blocked_rows() {
+        let exact = exact_order(10, 0, 3, Vec::new(), vec![101, 102]);
+        let mut invalid = exact_order(11, 1, 3, Vec::new(), Vec::new());
+        invalid.geometry_status = STATUS_VALIDATION_FAILED;
+        let mut fixture = exact_order(12, 2, 3, Vec::new(), Vec::new());
+        fixture.geometry_status = STATUS_FIXTURE_REQUIRED;
+
+        let record = collect_and_encode_depth_record(&[exact, invalid, fixture], 77, 0, 3, 3);
+        assert_eq!(record.emitted_rows, 2);
+        assert_eq!(record.extraction.path_geometry_omitted_rows, 1);
+        assert_eq!(record.extraction.non_type5_fixture_blocked_rows, 1);
+        let decoded = decode_depth_payload(0, &record.payload);
+        assert_eq!(decoded.parse_errors, Vec::<String>::new());
+        assert_eq!(decoded.totals.rows, 2);
+        assert_eq!(decoded.totals.path_geometry_rows, 2);
+        assert_eq!(decoded.totals.path_geometry_omitted_rows, 1);
+        assert_eq!(decoded.totals.unsupported_geometry_rows, 1);
     }
 
     #[test]
@@ -983,5 +1032,54 @@ mod tests {
         assert_eq!(row.path_provinces, vec![101, 102, 103]);
         assert_eq!(row.geometry_status, STATUS_EXACT);
         assert_eq!(row.target_status, STATUS_UNSUPPORTED);
+    }
+
+    fn path_vector_test_memory(begin: u64, size: u32, bytes: Option<Vec<u8>>) -> TestMemory {
+        let mut mem = TestMemory {
+            module_base: 0x1000_0000,
+            ..Default::default()
+        };
+        let army_body = 0x2000;
+        let order_ptr = 0x3000;
+        mem.u64s
+            .insert(order_ptr, mem.module_base + ORDER_VTABLE_RVA);
+        mem.u64s
+            .insert(order_ptr + ORDER_OFF_ARMY_BACKREF, army_body);
+        mem.i32s.insert(order_ptr + ORDER_OFF_TYPE, 3);
+        mem.u64s.insert(order_ptr + ORDER_OFF_PATH_BEGIN, begin);
+        mem.u32s.insert(order_ptr + ORDER_OFF_PATH_SIZE, size);
+        if let Some(bytes) = bytes {
+            mem.bytes.insert(begin, bytes);
+        }
+        mem
+    }
+
+    fn assert_path_vector_is_omitted(mem: &TestMemory) {
+        let row =
+            validated_order_observation(mem, 17, 9, 0x2000, 0x3000, 2, STATUS_EXACT, STATUS_EXACT)
+                .expect("validated order");
+        assert_eq!(row.geometry_status, STATUS_VALIDATION_FAILED);
+
+        let record = collect_and_encode_depth_record(&[row], 10, 0, 1, 1);
+        assert_eq!(record.extraction.path_geometry_omitted_rows, 1);
+        let decoded = decode_depth_payload(0, &record.payload);
+        assert_eq!(decoded.parse_errors, Vec::<String>::new());
+        assert_eq!(decoded.totals.rows, 0);
+        assert_eq!(decoded.totals.path_geometry_omitted_rows, 1);
+    }
+
+    #[test]
+    fn memory_helper_non_heap_path_vector_is_validation_failed_and_omitted() {
+        let mem = path_vector_test_memory(0, 2, None);
+
+        assert_path_vector_is_omitted(&mem);
+    }
+
+    #[test]
+    fn memory_helper_short_path_vector_is_validation_failed_and_omitted() {
+        let path_begin = 0x4000;
+        let mem = path_vector_test_memory(path_begin, 2, Some(101u32.to_le_bytes().to_vec()));
+
+        assert_path_vector_is_omitted(&mem);
     }
 }

@@ -4,6 +4,33 @@ Packet scope: registration-ready plan for the validated domain-54 slice only.
 Do not apply this packet while another worker owns shared collector/recorder
 entrypoints.
 
+## Offset Provenance Finding
+
+Serial integration status: the validated slice is eligible for schedulable
+`ValidatedSliceOpenGaps` registration. This is not an older-build carryover:
+the lane archive and proof gate identify the validated executable as
+`870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad` and list
+the dereferenced field policy validated for that build: `CArmy` vtable RVA
+`0x293BC60`, order vtable RVA `0x296FAE8`, `CArmy+0x98`,
+`order+0x30`, `order+0x38`, type-5 `order+0xE0/+0xE8`, and non-type-5
+`order+0x70/+0x78`.
+
+Runtime collector identity is not a full executable-SHA read. Shared production
+matching uses `compact_contract::build_profile` sentinel checks for the profile
+label, daily-update bytes, and long-string bytes. If those sentinel checks
+produce `PROFILE_MISMATCH`, domain 54 must emit a rowless `PARTIAL_DATA` frame
+with the mismatch status and must not force or dereference its offset-dependent
+dependency paths.
+
+The decisive proof family is
+`extractor/native/runs/army_battleplans_depth_live_save_geometry_870ebf_20260701_v1`:
+the archive records `137/171` save/live paired type-5 rows matching save
+`states` at `order+0xE0/+0xE8`, `95/111` save/live paired non-type-5 rows
+matching save `path` at `order+0x70/+0x78`, and rejection of the old type-3
+`order+0xC0/+0xC8` primary path candidate (`0/17` matches). The direct-root
+candidate families remain rejected or partial and are not part of this hot-loop
+integration.
+
 ## Validated Slice Target
 
 Integrate only these fields:
@@ -36,8 +63,9 @@ Lane-local code in this packet:
 
 - `src/lib.rs` contains the compact domain-54 encoder/decoder plus isolated
   live-memory helper traits for the validated path-vector slice.
-- `fold_draft.rs` contains a standalone fold draft and unit tests for baseline,
-  delta, and failure behavior. It is intentionally not wired into a build.
+- The integrated fold/parser lives in
+  `extractor/native/recorder_host/src/world_fold.rs`; the prior draft file has
+  been applied and removed.
 
 ## Shared Registration Prerequisites
 
@@ -673,8 +701,7 @@ Add apply arm:
 54 => self.fold_army_battleplans_depth(payload),
 ```
 
-Use `fold_draft.rs` for the exact parser and accumulator behavior. The logic
-to move into `world_fold.rs` is:
+Use the integrated `world_fold.rs` parser and accumulator behavior:
 
 ```rust
 fn fold_army_battleplans_depth(&mut self, payload: &[u8]) -> Result<(), String> {
@@ -706,9 +733,9 @@ fn fold_army_battleplans_depth(&mut self, payload: &[u8]) -> Result<(), String> 
         self.army_battleplans_depth_baseline_seen = true;
     }
 
-    // Move the row parser from fold_draft.rs here so target/path child rows are
-    // available as values. Apply deleted rows as removals and non-deleted rows
-    // as upserts keyed by (army_id, generation, slot_index).
+    // Decode target/path child rows as values. Apply deleted rows as removals
+    // and non-deleted rows as upserts keyed by (army_id, generation,
+    // slot_index). Preserve omitted-row counters in the extra provenance fields.
     Ok(())
 }
 ```

@@ -13,6 +13,13 @@ name = "air_wings_variants_lifecycle_live_lane"
 version = "0.1.0"
 
 [[package]]
+name = "army_battleplans_depth_live_lane"
+version = "0.1.0"
+dependencies = [
+ "compact_contract",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -31,6 +38,7 @@ name = "collector"
 version = "0.1.0"
 dependencies = [
  "air_wings_variants_lifecycle_live_lane",
+ "army_battleplans_depth_live_lane",
  "characters_leaders_cabinet_live",
  "compact_contract",
  "construction_buildings_state_damage_live",
@@ -199,6 +207,7 @@ name = "recorder_host"
 version = "0.1.0"
 dependencies = [
  "air_wings_variants_lifecycle_live_lane",
+ "army_battleplans_depth_live_lane",
  "characters_leaders_cabinet_live",
  "compact_contract",
  "construction_buildings_state_damage_live",

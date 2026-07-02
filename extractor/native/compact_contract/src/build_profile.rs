@@ -41,6 +41,20 @@ pub const COUNTRY_DATABASE_OFFSET: usize = 0x33189C8;
 /// panics on high sparse slots.
 pub const MAX_COMPACT_OWNER_TAG_DB_ID: u32 = 2_048;
 
+/// Domain 54 army/order battleplan offsets for the supported profile.
+///
+/// Current-build provenance is documented in
+/// `extractor/documents/archive/native_lanes/army_oob_orders_battleplans_live/ARMY_BATTLEPLANS_DEPTH_REGISTRATION_PLAN.md`.
+pub const DOMAIN54_ARMY_VTABLE_RVA: usize = 0x293BC60;
+pub const DOMAIN54_ORDER_VTABLE_RVA: usize = 0x296FAE8;
+pub const DOMAIN54_ARMY_OFF_ORDERS_VEC: usize = 0x98;
+pub const DOMAIN54_ORDER_OFF_TYPE: usize = 0x30;
+pub const DOMAIN54_ORDER_OFF_ARMY_BACKREF: usize = 0x38;
+pub const DOMAIN54_ORDER_OFF_PATH_BEGIN: usize = 0x70;
+pub const DOMAIN54_ORDER_OFF_PATH_SIZE: usize = 0x78;
+pub const DOMAIN54_ORDER_OFF_TYPE5_STATES_BEGIN: usize = 0xE0;
+pub const DOMAIN54_ORDER_OFF_TYPE5_STATES_SIZE: usize = 0xE8;
+
 /// Short build proof id retained by the domain 48 proof binaries.
 pub const DOMAIN48_BUILD_PROFILE: &str = "870ebf";
 

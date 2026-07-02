@@ -20,6 +20,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use army_battleplans_depth_live_lane as battleplans54;
 use characters_leaders_cabinet_live_lane as domain47;
 use compact_contract::calendar::{date_from_raw, hour_index_from_raw};
 use compact_contract::{
@@ -170,6 +171,7 @@ const CHARACTERS_LEADERS_CABINET_DOMAIN_ID: u16 = 47;
 const CONSTRUCTION_BUILDINGS_STATE_DAMAGE_DOMAIN_ID: u16 = 48;
 const SCRIPTED_STATE_DOMAIN_ID: u16 = 51;
 const DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID: u16 = diplomacy53::DOMAIN_ID;
+const ARMY_BATTLEPLANS_DEPTH_DOMAIN_ID: u16 = battleplans54::DOMAIN_ID;
 const NAVAL_MISSIONS_STATUS_DOMAIN_ID: u16 = 56;
 const DOMAIN47_R2_KEY: &str = "_r2_characters_leaders_cabinet_live";
 const CONSTRUCTION_BUILDINGS_STATE_DAMAGE_EXTRA_KEY: &str =
@@ -401,7 +403,7 @@ const AIR_VARIANT_ARCHETYPE_KNOWN_FLAGS: u32 = ROW_FLAG_DELETED_LOW_BIT
 /// The set of domains this fold understands and folds into world state.
 pub const FOLDED_DOMAIN_IDS: &[u16] = &[
     10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
-    36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 55, 56,
+    36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 51, 52, 53, 54, 55, 56,
 ];
 
 /// A running world-state accumulator. Feed every H4CR record; snapshots are
@@ -480,6 +482,12 @@ pub struct WorldFold {
     /// existence; D56 only annotates validated task-force status under
     /// `order_of_battle.extra.naval_missions_status_live`.
     naval_missions_status: BTreeMap<u32, NavalMissionTaskForceFoldRow>,
+    /// D54 R2-projected active army battleplan depth annotations. D27 owns
+    /// `battle_plan_orders`; D54 writes only its named extra bucket.
+    army_battleplans_depth: BTreeMap<ArmyBattleplanDepthKey, ArmyBattleplanDepthOrder>,
+    army_battleplans_depth_unknown_this_hour: bool,
+    army_battleplans_depth_omitted_non_exact_this_hour: u64,
+    army_battleplans_depth_path_omitted_this_hour: u64,
     air_wings: BTreeMap<AirWingKey, AirWingState>,
     air_wing_loadouts: BTreeMap<AirWingKey, AirWingLoadoutState>,
     /// D32 loadout keys touched this hour or invalidated by a D30 delete. At
@@ -610,6 +618,10 @@ impl WorldFold {
             oob_commands: BTreeMap::new(),
             ships: BTreeMap::new(),
             naval_missions_status: BTreeMap::new(),
+            army_battleplans_depth: BTreeMap::new(),
+            army_battleplans_depth_unknown_this_hour: false,
+            army_battleplans_depth_omitted_non_exact_this_hour: 0,
+            army_battleplans_depth_path_omitted_this_hour: 0,
             air_wings: BTreeMap::new(),
             air_wing_loadouts: BTreeMap::new(),
             air_wing_loadout_orphan_check_keys_this_hour: BTreeSet::new(),
@@ -834,6 +846,9 @@ impl WorldFold {
         self.domain53_world_overlay_this_hour = Domain53WorldOverlay::default();
         self.supply_unknown_this_hour = false;
         self.market_trade_unknown_this_hour = false;
+        self.army_battleplans_depth_unknown_this_hour = false;
+        self.army_battleplans_depth_omitted_non_exact_this_hour = 0;
+        self.army_battleplans_depth_path_omitted_this_hour = 0;
     }
 
     /// Mutable country object for a tag_db_id, created empty on first use.
@@ -1245,6 +1260,7 @@ impl WorldFold {
             51 => self.fold_scripted_state(payload),
             52 => self.fold_occupation_resistance_compliance(payload),
             53 => self.fold_diplomacy_intel_operatives(payload),
+            54 => self.fold_army_battleplans_depth(payload),
             55 => self.fold_land_combat_detail_events(payload),
             56 => self.fold_naval_missions_status(payload),
             _ => {
@@ -2368,7 +2384,78 @@ impl WorldFold {
                 .insert("naval_missions_status_live".into(), naval_status);
         }
 
+        if self.fold_domain_unknown(ARMY_BATTLEPLANS_DEPTH_DOMAIN_ID)
+            || self.fold_domain_seen(ARMY_BATTLEPLANS_DEPTH_DOMAIN_ID)
+        {
+            ensure_json_object_mut(&mut out, "extra").insert(
+                "army_battleplans_depth_live".into(),
+                self.army_battleplans_depth_extra_json(),
+            );
+        }
+
         Value::Object(out)
+    }
+
+    fn army_battleplans_depth_extra_json(&self) -> Value {
+        let mut orders = self
+            .army_battleplans_depth
+            .values()
+            .map(|order| {
+                json!({
+                    "army_id": order.key.army_id,
+                    "generation": order.key.generation,
+                    "slot_index": order.key.slot_index,
+                    "order_type": order.order_type,
+                    "target_states": order.target_states,
+                    "path_provinces": order.path_provinces,
+                    "target_declared_count": order.target_declared_count,
+                    "target_status": order.target_status,
+                    "geometry_status": order.geometry_status,
+                    "execution_status": order.execution_status,
+                    "assigned_units_status": order.assigned_units_status,
+                    "order_linkage_status": order.order_linkage_status,
+                    "stance_status": order.stance_status,
+                    "aggressiveness_status": order.aggressiveness_status,
+                })
+            })
+            .collect::<Vec<_>>();
+        orders.sort_by(|a, b| {
+            let ak = (
+                a.get("army_id").and_then(Value::as_u64).unwrap_or(0),
+                a.get("generation").and_then(Value::as_u64).unwrap_or(0),
+                a.get("slot_index").and_then(Value::as_u64).unwrap_or(0),
+            );
+            let bk = (
+                b.get("army_id").and_then(Value::as_u64).unwrap_or(0),
+                b.get("generation").and_then(Value::as_u64).unwrap_or(0),
+                b.get("slot_index").and_then(Value::as_u64).unwrap_or(0),
+            );
+            ak.cmp(&bk)
+        });
+        let mut provenance_notes = Vec::new();
+        if self.army_battleplans_depth_omitted_non_exact_this_hour != 0 {
+            provenance_notes.push(format!(
+                "{} non-exact army battleplan depth row(s) omitted this hour",
+                self.army_battleplans_depth_omitted_non_exact_this_hour
+            ));
+        }
+        if self.army_battleplans_depth_path_omitted_this_hour != 0 {
+            provenance_notes.push(format!(
+                "{} invalid/overflow path geometry row(s) omitted this hour",
+                self.army_battleplans_depth_path_omitted_this_hour
+            ));
+        }
+        json!({
+            "known": !self.army_battleplans_depth_unknown_this_hour
+                && self.fold_domain_seen(ARMY_BATTLEPLANS_DEPTH_DOMAIN_ID),
+            "baseline_seen": self
+                .delta_baselines_seen
+                .contains(&ARMY_BATTLEPLANS_DEPTH_DOMAIN_ID),
+            "omitted_non_exact_rows_this_hour": self.army_battleplans_depth_omitted_non_exact_this_hour,
+            "path_geometry_omitted_rows_this_hour": self.army_battleplans_depth_path_omitted_this_hour,
+            "provenance_notes": provenance_notes,
+            "orders": orders,
+        })
     }
 
     fn build_naval_missions_status_extra(&self, unresolved: &mut BTreeSet<u32>) -> Value {
@@ -7018,6 +7105,63 @@ impl WorldFold {
         Ok(())
     }
 
+    // --- DOMAIN 54 army_battleplans_depth_live (R2 OOB annotation) -------
+    fn fold_army_battleplans_depth(&mut self, payload: &[u8]) -> Result<(), String> {
+        let decoded_summary = battleplans54::decode_depth_payload(0, payload);
+        if !decoded_summary.parse_errors.is_empty() {
+            return Err(decoded_summary.parse_errors.join("; "));
+        }
+        let status_flags = decoded_summary.totals.status_flags_or;
+        let hard_failure_mask = COMPACT_STATUS_FAILURE_MASK & !COMPACT_STATUS_PARTIAL_DATA;
+        if (status_flags & hard_failure_mask) != 0 {
+            self.army_battleplans_depth_unknown_this_hour = true;
+            self.mark_fold_domain_unknown(
+                ARMY_BATTLEPLANS_DEPTH_DOMAIN_ID,
+                "compact_status_failure",
+                format!(
+                    "army_battleplans_depth_live failure status {:#x}; battleplan depth state unknown this hour",
+                    status_flags & hard_failure_mask
+                ),
+            );
+            return Ok(());
+        }
+        if (status_flags & COMPACT_STATUS_DELTA_DATA) != 0
+            && !self
+                .delta_baselines_seen
+                .contains(&ARMY_BATTLEPLANS_DEPTH_DOMAIN_ID)
+        {
+            self.army_battleplans_depth_unknown_this_hour = true;
+            self.mark_fold_domain_unknown(
+                ARMY_BATTLEPLANS_DEPTH_DOMAIN_ID,
+                "delta_before_baseline",
+                "army_battleplans_depth_live delta arrived before a full baseline; rows ignored this hour",
+            );
+            return Ok(());
+        }
+
+        let decoded = decode_army_battleplans_depth_payload(payload)?;
+        self.army_battleplans_depth_omitted_non_exact_this_hour = decoded.omitted_non_exact_rows;
+        self.army_battleplans_depth_path_omitted_this_hour = decoded.path_geometry_omitted_rows;
+        if !decoded.is_delta {
+            self.army_battleplans_depth.clear();
+            self.delta_baselines_seen
+                .insert(ARMY_BATTLEPLANS_DEPTH_DOMAIN_ID);
+        }
+
+        for row in decoded.rows {
+            if row.deleted {
+                self.army_battleplans_depth.remove(&row.order.key);
+            } else {
+                self.army_battleplans_depth
+                    .insert(row.order.key.clone(), row.order);
+            }
+        }
+
+        self.army_battleplans_depth_unknown_this_hour = false;
+        self.mark_fold_domain_success(ARMY_BATTLEPLANS_DEPTH_DOMAIN_ID);
+        Ok(())
+    }
+
     // --- DOMAIN 56 naval_missions_status_live (R2 OOB annotation) --------
     fn fold_naval_missions_status(&mut self, payload: &[u8]) -> Result<(), String> {
         let decoded =
@@ -7908,6 +8052,41 @@ struct ArmyOrderState {
     target_states: Vec<u32>,
     target_state_declared_count: u32,
     target_status_code: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ArmyBattleplanDepthKey {
+    army_id: u32,
+    generation: u64,
+    slot_index: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ArmyBattleplanDepthOrder {
+    key: ArmyBattleplanDepthKey,
+    order_type: i32,
+    target_states: Vec<u32>,
+    path_provinces: Vec<u32>,
+    target_declared_count: Option<u32>,
+    target_status: &'static str,
+    geometry_status: &'static str,
+    execution_status: &'static str,
+    assigned_units_status: &'static str,
+    order_linkage_status: &'static str,
+    stance_status: &'static str,
+    aggressiveness_status: &'static str,
+}
+
+struct DecodedArmyBattleplansDepthPayload {
+    is_delta: bool,
+    omitted_non_exact_rows: u64,
+    path_geometry_omitted_rows: u64,
+    rows: Vec<DecodedArmyBattleplansDepthRow>,
+}
+
+struct DecodedArmyBattleplansDepthRow {
+    deleted: bool,
+    order: ArmyBattleplanDepthOrder,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -8868,6 +9047,167 @@ struct MapDetailI32Entry {
 struct MapDetailU32Entry {
     type_id: u32,
     level: u32,
+}
+
+fn decode_army_battleplans_depth_payload(
+    payload: &[u8],
+) -> Result<DecodedArmyBattleplansDepthPayload, String> {
+    need(
+        payload,
+        battleplans54::HEADER_LEN,
+        "army_battleplans_depth_live header",
+    )?;
+    let row_count = read_u32(payload, 8) as usize;
+    let status_flags = read_u32(payload, 16);
+    let target_count = read_u32(payload, 28) as usize;
+    let omitted_non_exact_rows = read_u32(payload, 40) as u64;
+    let path_geometry_omitted_rows = read_u32(payload, 44) as u64;
+    let path_count = read_u32(payload, 48) as usize;
+    let rows_end =
+        battleplans54::HEADER_LEN.saturating_add(row_count.saturating_mul(battleplans54::ROW_LEN));
+    let target_table_start = rows_end;
+    let path_table_start = target_table_start
+        .saturating_add(target_count.saturating_mul(battleplans54::TARGET_ROW_LEN));
+    let expected_len = path_table_start
+        .saturating_add(path_count.saturating_mul(battleplans54::PATH_GEOMETRY_ROW_LEN));
+    if payload.len() != expected_len {
+        return Err(format!(
+            "army_battleplans_depth_live len {} != {expected_len}",
+            payload.len()
+        ));
+    }
+
+    let mut rows = Vec::with_capacity(row_count);
+    let mut declared_targets = 0usize;
+    let mut declared_paths = 0usize;
+    for row_index in 0..row_count {
+        let base = battleplans54::HEADER_LEN + row_index * battleplans54::ROW_LEN;
+        let army_id = read_u32(payload, base);
+        let generation = read_u64(payload, base + 4);
+        let flags = read_u32(payload, base + 12);
+        let slot_index = read_u32(payload, base + 16);
+        let order_type = read_i32(payload, base + 20);
+        let child_first = read_u32(payload, base + 24) as usize;
+        let child_count = read_u32(payload, base + 28) as usize;
+        let target_declared = read_u32(payload, base + 32);
+        let target_status = read_u32(payload, base + 36);
+        let geometry_status = read_u32(payload, base + 40);
+        let execution_status = read_u32(payload, base + 44);
+        let assigned_units_status = read_u32(payload, base + 48);
+        let order_linkage_status = read_u32(payload, base + 52);
+        let stance_status = read_u32(payload, base + 56);
+        let aggressiveness_status = read_u32(payload, base + 60);
+
+        let deleted = flags & battleplans54::FLAG_DELETED != 0;
+        let has_targets = flags & battleplans54::FLAG_TARGET_STATES != 0;
+        let has_path = flags & battleplans54::FLAG_PATH_GEOMETRY != 0;
+        if has_targets && has_path {
+            return Err(format!(
+                "army_battleplans_depth_live row {row_index} has both target and path children"
+            ));
+        }
+        let target_states = if has_targets {
+            let end = child_first
+                .checked_add(child_count)
+                .ok_or_else(|| "army_battleplans_depth_live target range overflow".to_string())?;
+            if end > target_count {
+                return Err(format!(
+                    "army_battleplans_depth_live row {row_index} target range exceeds child table"
+                ));
+            }
+            declared_targets = declared_targets.saturating_add(child_count);
+            read_depth_child_table(
+                payload,
+                target_table_start,
+                child_first,
+                child_count,
+                battleplans54::TARGET_ROW_LEN,
+            )
+        } else {
+            Vec::new()
+        };
+        let path_provinces = if has_path {
+            let end = child_first
+                .checked_add(child_count)
+                .ok_or_else(|| "army_battleplans_depth_live path range overflow".to_string())?;
+            if end > path_count {
+                return Err(format!(
+                    "army_battleplans_depth_live row {row_index} path range exceeds child table"
+                ));
+            }
+            declared_paths = declared_paths.saturating_add(child_count);
+            read_depth_child_table(
+                payload,
+                path_table_start,
+                child_first,
+                child_count,
+                battleplans54::PATH_GEOMETRY_ROW_LEN,
+            )
+        } else {
+            Vec::new()
+        };
+        let target_declared_count =
+            (flags & battleplans54::FLAG_TARGET_STATE_COUNT != 0).then_some(target_declared);
+
+        rows.push(DecodedArmyBattleplansDepthRow {
+            deleted,
+            order: ArmyBattleplanDepthOrder {
+                key: ArmyBattleplanDepthKey {
+                    army_id,
+                    generation,
+                    slot_index,
+                },
+                order_type,
+                target_states,
+                path_provinces,
+                target_declared_count,
+                target_status: battleplans_depth_status_name(target_status),
+                geometry_status: battleplans_depth_status_name(geometry_status),
+                execution_status: battleplans_depth_status_name(execution_status),
+                assigned_units_status: battleplans_depth_status_name(assigned_units_status),
+                order_linkage_status: battleplans_depth_status_name(order_linkage_status),
+                stance_status: battleplans_depth_status_name(stance_status),
+                aggressiveness_status: battleplans_depth_status_name(aggressiveness_status),
+            },
+        });
+    }
+    if declared_targets != target_count {
+        return Err("army_battleplans_depth_live target child count mismatch".into());
+    }
+    if declared_paths != path_count {
+        return Err("army_battleplans_depth_live path child count mismatch".into());
+    }
+    Ok(DecodedArmyBattleplansDepthPayload {
+        is_delta: status_flags & COMPACT_STATUS_DELTA_DATA != 0,
+        omitted_non_exact_rows,
+        path_geometry_omitted_rows,
+        rows,
+    })
+}
+
+fn read_depth_child_table(
+    payload: &[u8],
+    table_start: usize,
+    first: usize,
+    count: usize,
+    row_len: usize,
+) -> Vec<u32> {
+    (0..count)
+        .map(|index| read_u32(payload, table_start + (first + index) * row_len))
+        .collect()
+}
+
+fn battleplans_depth_status_name(status: u32) -> &'static str {
+    match status {
+        battleplans54::STATUS_EXACT => "exact",
+        battleplans54::STATUS_UNKNOWN => "unknown",
+        battleplans54::STATUS_UNSUPPORTED => "unsupported",
+        battleplans54::STATUS_OVERFLOW => "overflow",
+        battleplans54::STATUS_VALIDATION_FAILED => "validation_failed",
+        battleplans54::STATUS_FIXTURE_REQUIRED => "fixture_required",
+        battleplans54::STATUS_COLD_PREFLIGHT_ONLY => "cold_preflight_only",
+        _ => "none",
+    }
 }
 
 /// Merge `add` into `country[key]`, preserving keys already written by another
